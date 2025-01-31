@@ -12,6 +12,7 @@ import (
 	"github.com/adrianliechti/wingman/pkg/cli"
 	"github.com/adrianliechti/wingman/pkg/coder"
 	"github.com/adrianliechti/wingman/pkg/completer"
+	"github.com/adrianliechti/wingman/pkg/openapi"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -64,6 +65,8 @@ func initApp() cli.Command {
 		Suggest: true,
 		Version: version,
 
+		HideHelp: true,
+
 		HideHelpCommand: true,
 
 		Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -96,6 +99,8 @@ func initApp() cli.Command {
 				Name:  "chat",
 				Usage: "AI Chat",
 
+				HideHelp: true,
+
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					return chat.Run(ctx, client, defaultModel)
 				},
@@ -105,8 +110,59 @@ func initApp() cli.Command {
 				Name:  "coder",
 				Usage: "AI Coder",
 
+				HideHelp: true,
+
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					return coder.Run(ctx, client, defaultModel, "")
+				},
+			},
+
+			{
+				Name:  "openapi",
+				Usage: "AI OpenAPI Client",
+
+				HideHelp: true,
+
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "file",
+						Usage: "Specification",
+
+						Required: true,
+					},
+
+					&cli.StringFlag{
+						Name:  "url",
+						Usage: "API Base URL",
+
+						Required: true,
+					},
+
+					&cli.StringFlag{
+						Name:  "bearer",
+						Usage: "API Bearer",
+					},
+
+					&cli.StringFlag{
+						Name:  "username",
+						Usage: "API Username",
+					},
+
+					&cli.StringFlag{
+						Name:  "password",
+						Usage: "API Password",
+					},
+				},
+
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					path := cmd.String("file")
+
+					url := cmd.String("url")
+					bearer := cmd.String("bearer")
+					username := cmd.String("username")
+					password := cmd.String("password")
+
+					return openapi.Run(ctx, client, defaultModel, path, url, bearer, username, password)
 				},
 			},
 		},
