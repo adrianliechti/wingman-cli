@@ -36,8 +36,6 @@ func Run(ctx context.Context, client *wingman.Client, model string, tools []tool
 		input.Messages = append(input.Messages, wingman.SystemMessage(options.System))
 	}
 
-	println()
-
 	for {
 		prompt, _ := cli.Prompt("> ", "")
 

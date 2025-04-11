@@ -11,7 +11,7 @@ import (
 	"github.com/adrianliechti/wingman-cli/app/complete"
 	"github.com/adrianliechti/wingman-cli/pkg/cli"
 
-	"github.com/adrianliechti/wingman/pkg/client"
+	wingman "github.com/adrianliechti/wingman/pkg/client"
 )
 
 var version string
@@ -30,29 +30,20 @@ func main() {
 }
 
 func initApp() cli.Command {
-	apiKey := os.Getenv("OPENAI_API_KEY")
+	url := os.Getenv("WINGMAN_URL")
+	model := os.Getenv("WINGMAN_MODEL")
 
-	if apiKey == "" {
-		apiKey = "-"
+	if url == "" {
+		url = "http://localhost:8080"
 	}
 
-	baseURL := os.Getenv("OPENAI_BASE_URL")
+	var options []wingman.RequestOption
 
-	if baseURL == "" {
-		baseURL = "https://api.openai.com/v1/"
-
-		if apiKey == "-" {
-			baseURL = "http://localhost:8080/v1/"
-		}
+	if token := os.Getenv("WINGMAN_TOKEN"); token != "" {
+		options = append(options, wingman.WithToken(token))
 	}
 
-	defaultModel := os.Getenv("OPENAI_MODEL")
-
-	if defaultModel == "" {
-		defaultModel = "gpt-4o"
-	}
-
-	client := client.New(strings.TrimSuffix(baseURL, "/v1/"))
+	client := wingman.New(url, options...)
 
 	return cli.Command{
 		Usage: "Wingman AI CLI",
@@ -79,12 +70,12 @@ func initApp() cli.Command {
 				}
 
 				println()
-				return complete.Run(ctx, client, defaultModel, prompt)
+				return complete.Run(ctx, client, model, prompt)
 			}
 
 			if cmd.Args().Len() > 0 {
 				println()
-				return complete.Run(ctx, client, defaultModel, prompt)
+				return complete.Run(ctx, client, model, prompt)
 			}
 
 			return cli.ShowCommandHelp(cmd)
@@ -98,7 +89,8 @@ func initApp() cli.Command {
 				HideHelp: true,
 
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					return chat.Run(ctx, client, defaultModel)
+					println()
+					return chat.Run(ctx, client, model)
 				},
 			},
 
@@ -109,7 +101,8 @@ func initApp() cli.Command {
 				HideHelp: true,
 
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					return agent.RunMCP(ctx, client, defaultModel)
+					println()
+					return agent.RunMCP(ctx, client, model)
 				},
 			},
 
@@ -120,7 +113,8 @@ func initApp() cli.Command {
 				HideHelp: true,
 
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					return agent.RunCoder(ctx, client, defaultModel)
+					println()
+					return agent.RunCoder(ctx, client, model)
 				},
 			},
 
@@ -169,7 +163,8 @@ func initApp() cli.Command {
 					username := cmd.String("username")
 					password := cmd.String("password")
 
-					return agent.RunOpenAPI(ctx, client, defaultModel, path, url, bearer, username, password)
+					println()
+					return agent.RunOpenAPI(ctx, client, model, path, url, bearer, username, password)
 				},
 			},
 		},

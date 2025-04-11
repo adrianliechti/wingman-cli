@@ -8,8 +8,6 @@ import (
 )
 
 func Run(ctx context.Context, client *wingman.Client, model string) error {
-	println()
-
 	input := wingman.CompletionRequest{
 		Model: model,
 
