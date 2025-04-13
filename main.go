@@ -9,6 +9,7 @@ import (
 	"github.com/adrianliechti/wingman-cli/app/agent"
 	"github.com/adrianliechti/wingman-cli/app/chat"
 	"github.com/adrianliechti/wingman-cli/app/complete"
+	"github.com/adrianliechti/wingman-cli/app/rag"
 
 	"github.com/adrianliechti/go-cli"
 	wingman "github.com/adrianliechti/wingman/pkg/client"
@@ -91,6 +92,18 @@ func initApp() cli.Command {
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					println()
 					return chat.Run(ctx, client, model)
+				},
+			},
+
+			{
+				Name:  "rag",
+				Usage: "AI RAG Chat",
+
+				HideHelp: true,
+
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					println()
+					return rag.Run(ctx, client, model)
 				},
 			},
 
