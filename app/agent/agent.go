@@ -37,11 +37,13 @@ func Run(ctx context.Context, client *wingman.Client, model string, tools []tool
 	}
 
 	for {
-		prompt, err := cli.Prompt("", "")
+		prompt, err := cli.Text("", "")
 
 		if err != nil {
 			break
 		}
+
+		println()
 
 		input.Messages = append(input.Messages, wingman.UserMessage(prompt))
 
@@ -69,20 +71,6 @@ func Run(ctx context.Context, client *wingman.Client, model string, tools []tool
 			}
 
 			for _, call := range calls {
-				var content string
-
-				fn := func() error {
-					content, err = handleToolCall(ctx, tools, call)
-
-					if err != nil {
-						content = err.Error()
-					}
-
-					return nil
-				}
-
-				cli.Run("Invoking "+call.Name+"...", fn)
-
 				content, err := handleToolCall(ctx, tools, call)
 
 				if err != nil {

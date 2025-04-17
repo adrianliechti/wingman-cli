@@ -2,28 +2,16 @@ package openapi
 
 import (
 	"context"
-	"io"
 	"strings"
 	"unicode"
 
 	"github.com/getkin/kin-openapi/openapi3"
 
+	"github.com/adrianliechti/wingman-cli/pkg/rest"
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 )
 
-type Client interface {
-	Execute(ctx context.Context, method, path, contentType string, body io.Reader) ([]byte, error)
-}
-
-type Catalog struct {
-	doc *openapi3.T
-
-	client Client
-
-	operations map[string]Operation
-}
-
-func New(path string, client Client) (*Catalog, error) {
+func New(path string, client *rest.Client) (*Catalog, error) {
 	doc, err := parse(path)
 
 	if err != nil {
@@ -45,13 +33,27 @@ func New(path string, client Client) (*Catalog, error) {
 	}, nil
 }
 
-func (c *Catalog) Tools() []tool.Tool {
+var (
+	_ tool.Provider = (*Catalog)(nil)
+)
+
+type Catalog struct {
+	doc *openapi3.T
+
+	client *rest.Client
+
+	operations map[string]Operation
+}
+
+func (c *Catalog) Tools(ctx context.Context) ([]tool.Tool, error) {
 	var tools []tool.Tool
 
 	for _, o := range c.operations {
 		tool := tool.Tool{
 			Name:        o.Name,
 			Description: o.Description,
+
+			Schema: o.Schema,
 
 			Execute: func(ctx context.Context, args map[string]any) (any, error) {
 				return o.Execute(ctx, c.client, args)
@@ -61,7 +63,7 @@ func (c *Catalog) Tools() []tool.Tool {
 		tools = append(tools, tool)
 	}
 
-	return tools
+	return tools, nil
 }
 
 func getOperations(doc *openapi3.T) (map[string]Operation, error) {
@@ -140,7 +142,11 @@ func getOperations(doc *openapi3.T) (map[string]Operation, error) {
 				if content != nil {
 					contentType = "application/json"
 
-					properties["body"] = content.Schema.Value.Properties
+					properties["body"] = map[string]any{
+						"type":       "object",
+						"properties": content.Schema.Value.Properties,
+					}
+
 					required = append(required, "body")
 				}
 			}

@@ -393,14 +393,13 @@ func IndexDir(ctx context.Context, client *wingman.Client, index Index, root str
 			for i, segment := range embeddings.Segments {
 				document := Document{
 					Title:  metadata.Title,
-					Source: fmt.Sprintf("%s#%d", metadata.Path, i+1),
+					Source: metadata.Path,
 
 					Content:   segment.Text,
 					Embedding: segment.Embedding,
 
 					Metadata: map[string]string{
-						"filename": metadata.Name,
-						"filepath": metadata.Path,
+						"path": metadata.Path,
 
 						"index":    fmt.Sprintf("%d", i),
 						"revision": metadata.Revision,
@@ -436,14 +435,14 @@ func IndexDir(ctx context.Context, client *wingman.Client, index Index, root str
 		var deletions []string
 
 		for _, d := range list {
-			filepath := d.Metadata["filepath"]
+			path := d.Metadata["path"]
 			revision := d.Metadata["revision"]
 
-			if filepath == "" || revision == "" {
+			if path == "" || revision == "" {
 				continue
 			}
 
-			ref := revisions[filepath]
+			ref := revisions[path]
 
 			if strings.EqualFold(revision, ref) {
 				continue

@@ -5,12 +5,11 @@ import (
 	_ "embed"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"strings"
 
-	"github.com/adrianliechti/wingman-cli/pkg/openapi"
-	openapiclient "github.com/adrianliechti/wingman-cli/pkg/openapi/client"
+	"github.com/adrianliechti/wingman-cli/pkg/rest"
+	"github.com/adrianliechti/wingman-cli/pkg/tool/openapi"
 
 	"github.com/adrianliechti/go-cli"
 	wingman "github.com/adrianliechti/wingman/pkg/client"
@@ -25,10 +24,10 @@ func RunOpenAPI(ctx context.Context, client *wingman.Client, model string, path,
 	println("🤗 Hello, I'm your OpenAPI AI Assistant")
 	println()
 
-	c, err := openapiclient.New(url,
-		openapiclient.WithBearer(bearer),
-		openapiclient.WithBasicAuth(username, password),
-		openapiclient.WithConfirm(handleConfirm),
+	c, err := rest.New(url,
+		rest.WithBearer(bearer),
+		rest.WithBasicAuth(username, password),
+		rest.WithConfirm(handleConfirm),
 	)
 
 	if err != nil {
@@ -41,7 +40,12 @@ func RunOpenAPI(ctx context.Context, client *wingman.Client, model string, path,
 		return err
 	}
 
-	tools := catalog.Tools()
+	tools, err := catalog.Tools(ctx)
+
+	if err != nil {
+		return err
+	}
+
 	tools = toolsWrapper(client, model, tools)
 
 	return Run(ctx, client, model, tools, &RunOptions{
@@ -50,8 +54,8 @@ func RunOpenAPI(ctx context.Context, client *wingman.Client, model string, path,
 }
 
 func handleConfirm(method, path, contentType string, body io.Reader) error {
-	fmt.Printf("⚡️ %s %s", method, path)
-	fmt.Println()
+	cli.Infof("⚡️ %s %s", method, path)
+	cli.Info()
 
 	if body != nil && contentType == "application/json" {
 		var val map[string]any
@@ -59,7 +63,7 @@ func handleConfirm(method, path, contentType string, body io.Reader) error {
 		json.NewDecoder(body).Decode(&val)
 		data, _ := json.MarshalIndent(val, "", "  ")
 
-		fmt.Println(string(data))
+		cli.Debug(string(data))
 	}
 
 	if strings.EqualFold(method, "HEAD") || strings.EqualFold(method, "GET") {

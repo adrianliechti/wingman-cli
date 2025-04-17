@@ -26,7 +26,7 @@ func Run(ctx context.Context, client *wingman.Client, model string) error {
 	}
 
 	for {
-		prompt, err := cli.Prompt("", "")
+		prompt, err := cli.Text("", "")
 
 		if err != nil {
 			break
@@ -35,6 +35,8 @@ func Run(ctx context.Context, client *wingman.Client, model string) error {
 		if prompt == "" {
 			continue
 		}
+
+		println()
 
 		input.Messages = append(input.Messages, wingman.UserMessage(prompt))
 

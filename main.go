@@ -13,11 +13,14 @@ import (
 
 	"github.com/adrianliechti/go-cli"
 	wingman "github.com/adrianliechti/wingman/pkg/client"
+
+	"github.com/joho/godotenv"
 )
 
 var version string
 
 func main() {
+	godotenv.Load()
 	// ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGKILL, syscall.SIGTERM)
 	// defer stop()
 
@@ -96,30 +99,6 @@ func initApp() cli.Command {
 			},
 
 			{
-				Name:  "rag",
-				Usage: "AI RAG Chat",
-
-				HideHelp: true,
-
-				Action: func(ctx context.Context, cmd *cli.Command) error {
-					println()
-					return rag.Run(ctx, client, model)
-				},
-			},
-
-			{
-				Name:  "mcp",
-				Usage: "AI MCP Agent",
-
-				HideHelp: true,
-
-				Action: func(ctx context.Context, cmd *cli.Command) error {
-					println()
-					return agent.RunMCP(ctx, client, model)
-				},
-			},
-
-			{
 				Name:  "coder",
 				Usage: "AI Coder",
 
@@ -132,8 +111,44 @@ func initApp() cli.Command {
 			},
 
 			{
+				Name:  "rag",
+				Usage: "RAG Chat",
+
+				HideHelp: true,
+
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					println()
+					return rag.Run(ctx, client, model)
+				},
+			},
+
+			{
+				Name:  "mcp",
+				Usage: "MCP Agent",
+
+				HideHelp: true,
+
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					println()
+					return agent.RunMCP(ctx, client, model)
+				},
+			},
+
+			{
+				Name:  "azure",
+				Usage: "Azure Agent",
+
+				HideHelp: true,
+
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					println()
+					return agent.RunAzure(ctx, client, model)
+				},
+			},
+
+			{
 				Name:  "openapi",
-				Usage: "AI OpenAPI Client",
+				Usage: "OpenAPI Agent",
 
 				HideHelp: true,
 

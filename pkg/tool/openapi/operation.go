@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+
+	"github.com/adrianliechti/wingman-cli/pkg/rest"
 )
 
 type Operation struct {
@@ -22,7 +24,7 @@ type Operation struct {
 	Schema map[string]any
 }
 
-func (o *Operation) Execute(ctx context.Context, client Client, parameters map[string]any) (string, error) {
+func (o *Operation) Execute(ctx context.Context, client *rest.Client, parameters map[string]any) (string, error) {
 	path := o.Path
 
 	query := url.Values{}

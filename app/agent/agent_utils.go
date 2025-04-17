@@ -12,6 +12,22 @@ import (
 	wingman "github.com/adrianliechti/wingman/pkg/client"
 )
 
+func ParsePrompt() (string, error) {
+	return parsePrompt()
+}
+
+func ParseMCP() ([]tool.Tool, error) {
+	return parseMCP()
+}
+
+func OptimizeTools(client *wingman.Client, model string, tools []tool.Tool) []tool.Tool {
+	return toolsWrapper(client, model, tools)
+}
+
+func OptimizeTool(client *wingman.Client, model string, tool tool.Tool) tool.Tool {
+	return toolWrapper(client, model, tool)
+}
+
 func parsePrompt() (string, error) {
 	for _, name := range []string{".prompt.md", ".prompt.txt", "prompt.md", "prompt.txt"} {
 		if _, err := os.Stat(name); os.IsNotExist(err) {

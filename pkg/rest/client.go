@@ -1,4 +1,4 @@
-package client
+package rest
 
 import (
 	"bytes"
@@ -84,6 +84,10 @@ func (c *Client) Execute(ctx context.Context, method, path, contentType string, 
 	if c.confirm != nil {
 		if err := c.confirm(method, path, contentType, body); err != nil {
 			return nil, err
+		}
+
+		if data != nil {
+			body = bytes.NewReader(data)
 		}
 	}
 
