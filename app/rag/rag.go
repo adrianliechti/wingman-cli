@@ -32,10 +32,10 @@ func Run(ctx context.Context, client *wingman.Client, model string) error {
 	}
 
 	index := NewIndex(client)
-	index.Import(filepath.Join(root, ".cache", "index"))
+	index.Import(filepath.Join(root, ".wingman", "index"))
 
 	IndexDir(ctx, client, index, root)
-	index.Export(filepath.Join(root, ".cache", "index"))
+	index.Export(filepath.Join(root, ".wingman", "index"))
 
 	tools := []tool.Tool{
 		{
@@ -248,7 +248,7 @@ func IndexDir(ctx context.Context, client *wingman.Client, index Index, root str
 			return nil
 		}
 
-		if strings.Contains(path, ".cache") {
+		if strings.Contains(path, ".wingman") {
 			return nil
 		}
 
@@ -266,7 +266,7 @@ func IndexDir(ctx context.Context, client *wingman.Client, index Index, root str
 		md5_hash := md5.Sum(data)
 		md5_text := hex.EncodeToString(md5_hash[:])
 
-		cachedir := filepath.Join(root, ".cache", md5_text[0:2], md5_text[2:4], md5_text)
+		cachedir := filepath.Join(root, ".wingman", md5_text[0:2], md5_text[2:4], md5_text)
 		os.MkdirAll(cachedir, 0755)
 
 		info, err := e.Info()

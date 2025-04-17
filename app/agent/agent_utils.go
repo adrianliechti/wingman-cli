@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 
 	"github.com/adrianliechti/wingman-cli/pkg/mcp"
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
@@ -154,9 +155,15 @@ func toolWrapper(client *wingman.Client, model string, t tool.Tool) tool.Tool {
 				data = string(json)
 			}
 
+			data = strings.TrimSpace(data)
+
 			// println("#######")
 			// println(data)
 			// println()
+
+			if len(data) <= 4000 {
+				return data, nil
+			}
 
 			completion, err := client.Completions.New(ctx, wingman.CompletionRequest{
 				Model: model,
