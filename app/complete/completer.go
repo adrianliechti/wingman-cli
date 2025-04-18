@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/adrianliechti/go-cli"
 	wingman "github.com/adrianliechti/wingman/pkg/client"
 )
 
@@ -33,7 +34,7 @@ func Run(ctx context.Context, client *wingman.Client, model, prompt string) erro
 		return err
 	}
 
-	println()
+	cli.Info()
 
 	return nil
 }

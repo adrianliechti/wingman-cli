@@ -6,32 +6,25 @@ import (
 
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 	"github.com/adrianliechti/wingman-cli/pkg/tool/azure"
+	"github.com/adrianliechti/wingman-cli/pkg/util"
+
+	"github.com/adrianliechti/go-cli"
 	wingman "github.com/adrianliechti/wingman/pkg/client"
 )
 
 var (
-	//go:embed system_azure.txt
-	system_azure string
+	//go:embed prompt_azure.txt
+	prompt_azure string
 )
 
 func RunAzure(ctx context.Context, client *wingman.Client, model string) error {
-	println("🤗 Hello, I'm your Azure AI Assistant")
-	println()
+	cli.Info("🤗 Hello, I'm your Azure AI Assistant")
+	cli.Info()
 
 	azure, err := azure.New()
 
 	if err != nil {
 		return err
-	}
-
-	system, err := ParsePrompt()
-
-	if err != nil {
-		return err
-	}
-
-	if system == "" {
-		system = system_azure
 	}
 
 	var tools []tool.Tool
@@ -40,11 +33,12 @@ func RunAzure(ctx context.Context, client *wingman.Client, model string) error {
 		tools = append(tools, t...)
 	}
 
-	tools = toolsWrapper(client, model, tools)
+	tools = util.OptimizeTools(client, model, tools)
 
-	println()
+	cli.Info()
 
 	return Run(ctx, client, model, tools, &RunOptions{
-		System: system,
+		Prompt:     prompt_azure,
+		PromptFile: true,
 	})
 }

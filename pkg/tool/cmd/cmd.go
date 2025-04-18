@@ -1,4 +1,4 @@
-package cli
+package cmd
 
 import (
 	"context"
@@ -8,29 +8,29 @@ import (
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 )
 
-func New(name string) (*CLI, error) {
+func New(name string) (*Command, error) {
 	_, err := exec.LookPath(name)
 
 	if err != nil {
 		return nil, err
 	}
 
-	fs := &CLI{
+	c := &Command{
 		name: name,
 	}
 
-	return fs, nil
+	return c, nil
 }
 
 var (
-	_ tool.Provider = (*CLI)(nil)
+	_ tool.Provider = (*Command)(nil)
 )
 
-type CLI struct {
+type Command struct {
 	name string
 }
 
-func (c *CLI) Tools(ctx context.Context) ([]tool.Tool, error) {
+func (c *Command) Tools(ctx context.Context) ([]tool.Tool, error) {
 	return []tool.Tool{
 		{
 			Name:        "run_cli_" + c.name,

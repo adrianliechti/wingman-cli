@@ -10,13 +10,15 @@ import (
 
 	"github.com/adrianliechti/wingman-cli/pkg/markdown"
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
+	"github.com/adrianliechti/wingman-cli/pkg/util"
 
 	"github.com/adrianliechti/go-cli"
 	wingman "github.com/adrianliechti/wingman/pkg/client"
 )
 
 type RunOptions struct {
-	System string
+	Prompt     string
+	PromptFile bool
 }
 
 func Run(ctx context.Context, client *wingman.Client, model string, tools []tool.Tool, options *RunOptions) error {
@@ -24,16 +26,26 @@ func Run(ctx context.Context, client *wingman.Client, model string, tools []tool
 		options = new(RunOptions)
 	}
 
+	if options.PromptFile {
+		prompt, err := util.ParsePrompt()
+
+		if err != nil {
+			return err
+		}
+
+		options.Prompt = prompt
+	}
+
 	input := wingman.CompletionRequest{
 		Model: model,
 
 		CompleteOptions: wingman.CompleteOptions{
-			Tools: toTools(tools),
+			Tools: util.ConvertTools(tools),
 		},
 	}
 
-	if options.System != "" {
-		input.Messages = append(input.Messages, wingman.SystemMessage(options.System))
+	if options.Prompt != "" {
+		input.Messages = append(input.Messages, wingman.SystemMessage(options.Prompt))
 	}
 
 	for {
@@ -43,7 +55,7 @@ func Run(ctx context.Context, client *wingman.Client, model string, tools []tool
 			break
 		}
 
-		println()
+		cli.Info()
 
 		input.Messages = append(input.Messages, wingman.UserMessage(prompt))
 

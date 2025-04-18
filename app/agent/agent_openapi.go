@@ -10,19 +10,20 @@ import (
 
 	"github.com/adrianliechti/wingman-cli/pkg/rest"
 	"github.com/adrianliechti/wingman-cli/pkg/tool/openapi"
+	"github.com/adrianliechti/wingman-cli/pkg/util"
 
 	"github.com/adrianliechti/go-cli"
 	wingman "github.com/adrianliechti/wingman/pkg/client"
 )
 
 var (
-	//go:embed system_openapi.txt
-	system_openapi string
+	//go:embed prompt_openapi.txt
+	prompt_openapi string
 )
 
 func RunOpenAPI(ctx context.Context, client *wingman.Client, model string, path, url, bearer, username, password string) error {
-	println("🤗 Hello, I'm your OpenAPI AI Assistant")
-	println()
+	cli.Info("🤗 Hello, I'm your OpenAPI AI Assistant")
+	cli.Info()
 
 	c, err := rest.New(url,
 		rest.WithBearer(bearer),
@@ -46,10 +47,10 @@ func RunOpenAPI(ctx context.Context, client *wingman.Client, model string, path,
 		return err
 	}
 
-	tools = toolsWrapper(client, model, tools)
+	tools = util.OptimizeTools(client, model, tools)
 
 	return Run(ctx, client, model, tools, &RunOptions{
-		System: system_openapi,
+		Prompt: prompt_openapi,
 	})
 }
 

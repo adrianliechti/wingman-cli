@@ -4,19 +4,15 @@ import (
 	"context"
 
 	"github.com/adrianliechti/wingman-cli/pkg/mcp"
+	"github.com/adrianliechti/wingman-cli/pkg/util"
 
+	"github.com/adrianliechti/go-cli"
 	wingman "github.com/adrianliechti/wingman/pkg/client"
 )
 
 func RunMCP(ctx context.Context, client *wingman.Client, model string) error {
-	println("🤗 Hello, I'm your AI Assistant")
-	println()
-
-	system, err := parsePrompt()
-
-	if err != nil {
-		return err
-	}
+	cli.Info("🤗 Hello, I'm your AI Assistant")
+	cli.Info()
 
 	cfg, err := mcp.Parse("mcp.json")
 
@@ -40,11 +36,11 @@ func RunMCP(ctx context.Context, client *wingman.Client, model string) error {
 		return err
 	}
 
-	tools = toolsWrapper(client, model, tools)
+	tools = util.OptimizeTools(client, model, tools)
 
-	println()
+	cli.Info()
 
 	return Run(ctx, client, model, tools, &RunOptions{
-		System: system,
+		PromptFile: true,
 	})
 }
