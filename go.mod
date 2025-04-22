@@ -6,9 +6,9 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.18.0
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.8.2
 	github.com/adrianliechti/go-cli v0.0.5
+	github.com/adrianliechti/go-hnsw v0.0.0-20250422111325-e2fc886ce8eb
 	github.com/adrianliechti/wingman v0.0.0-20250416201402-92fa22782b0f
 	github.com/charmbracelet/glamour v0.10.0
-	github.com/coder/hnsw v0.6.1
 	github.com/getkin/kin-openapi v0.131.0
 	github.com/invopop/yaml v0.3.1
 	github.com/joho/godotenv v1.5.1
@@ -79,7 +79,6 @@ require (
 	github.com/go-sql-driver/mysql v1.8.1 // indirect
 	github.com/golang-jwt/jwt/v5 v5.2.2 // indirect
 	github.com/google/generative-ai-go v0.19.0 // indirect
-	github.com/google/renameio v1.0.1 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.6 // indirect

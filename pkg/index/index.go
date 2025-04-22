@@ -12,7 +12,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"github.com/coder/hnsw"
+	"github.com/adrianliechti/go-hnsw"
 )
 
 type Index struct {
