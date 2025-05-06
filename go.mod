@@ -6,12 +6,12 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.18.0
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.9.0
 	github.com/adrianliechti/go-cli v0.0.5
-	github.com/adrianliechti/wingman v0.0.0-20250505111825-1138ba0e3b6a
+	github.com/adrianliechti/wingman v0.0.0-20250505193633-36534d5c4b8b
 	github.com/charmbracelet/glamour v0.10.0
 	github.com/getkin/kin-openapi v0.132.0
 	github.com/invopop/yaml v0.3.1
 	github.com/joho/godotenv v1.5.1
-	github.com/mark3labs/mcp-go v0.25.0
+	github.com/mark3labs/mcp-go v0.26.0
 	github.com/ncruces/go-sqlite3 v0.25.1
 	github.com/ncruces/go-sqlite3/gormlite v0.24.0
 	gopkg.in/yaml.v3 v3.0.1

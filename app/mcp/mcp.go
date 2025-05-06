@@ -1,16 +1,17 @@
-package agent
+package mcp
 
 import (
 	"context"
 
 	"github.com/adrianliechti/wingman-cli/app"
+	"github.com/adrianliechti/wingman-cli/pkg/agent"
 	"github.com/adrianliechti/wingman-cli/pkg/util"
 
 	"github.com/adrianliechti/go-cli"
 	wingman "github.com/adrianliechti/wingman/pkg/client"
 )
 
-func RunMCP(ctx context.Context, client *wingman.Client) error {
+func Run(ctx context.Context, client *wingman.Client) error {
 	tools := app.MustParseMCP()
 	prompt := app.MustParsePrompt()
 
@@ -26,5 +27,5 @@ func RunMCP(ctx context.Context, client *wingman.Client) error {
 
 	cli.Info()
 
-	return Run(ctx, client, app.ThinkingModel, prompt, tools)
+	return agent.Run(ctx, client, app.ThinkingModel, prompt, tools)
 }

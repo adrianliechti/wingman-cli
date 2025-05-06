@@ -1,4 +1,4 @@
-package agent
+package openapi
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/adrianliechti/wingman-cli/app"
+	"github.com/adrianliechti/wingman-cli/pkg/agent"
 	"github.com/adrianliechti/wingman-cli/pkg/rest"
 	"github.com/adrianliechti/wingman-cli/pkg/tool/openapi"
 	"github.com/adrianliechti/wingman-cli/pkg/util"
@@ -18,11 +19,11 @@ import (
 )
 
 var (
-	//go:embed prompt_openapi.txt
-	prompt_openapi string
+	//go:embed prompt.txt
+	DefaultPrompt string
 )
 
-func RunOpenAPI(ctx context.Context, client *wingman.Client, path, url, bearer, username, password string) error {
+func Run(ctx context.Context, client *wingman.Client, path, url, bearer, username, password string) error {
 	c, err := rest.New(url,
 		rest.WithBearer(bearer),
 		rest.WithBasicAuth(username, password),
@@ -42,7 +43,7 @@ func RunOpenAPI(ctx context.Context, client *wingman.Client, path, url, bearer, 
 	prompt := app.MustParsePrompt()
 
 	if prompt == "" {
-		prompt = prompt_openapi
+		prompt = DefaultPrompt
 	}
 
 	tools, err := catalog.Tools(ctx)
@@ -57,7 +58,7 @@ func RunOpenAPI(ctx context.Context, client *wingman.Client, path, url, bearer, 
 	cli.Info("🤗 Hello, I'm your OpenAPI AI Assistant")
 	cli.Info()
 
-	return Run(ctx, client, app.ThinkingModel, prompt, tools)
+	return agent.Run(ctx, client, app.ThinkingModel, prompt, tools)
 }
 
 func handleConfirm(method, path, contentType string, body io.Reader) error {

@@ -1,10 +1,11 @@
-package agent
+package coder
 
 import (
 	"context"
 	_ "embed"
 
 	"github.com/adrianliechti/wingman-cli/app"
+	"github.com/adrianliechti/wingman-cli/pkg/agent"
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 	"github.com/adrianliechti/wingman-cli/pkg/tool/cmd"
 	"github.com/adrianliechti/wingman-cli/pkg/tool/fs"
@@ -15,11 +16,11 @@ import (
 )
 
 var (
-	//go:embed prompt_coder.txt
-	prompt_coder string
+	//go:embed prompt.txt
+	DefaultPrompt string
 )
 
-func RunCoder(ctx context.Context, client *wingman.Client) error {
+func Run(ctx context.Context, client *wingman.Client) error {
 	fs, err := fs.New("")
 
 	if err != nil {
@@ -45,5 +46,5 @@ func RunCoder(ctx context.Context, client *wingman.Client) error {
 		}
 	}
 
-	return Run(ctx, client, app.ThinkingModel, prompt_coder, tools)
+	return agent.Run(ctx, client, app.ThinkingModel, DefaultPrompt, tools)
 }

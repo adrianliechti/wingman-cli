@@ -66,10 +66,6 @@ func OptimizeTool(client *wingman.Client, model string, t tool.Tool) tool.Tool {
 				return nil, errors.New("goal is required")
 			}
 
-			// println("#######")
-			// println("🥅", goal)
-			// println()
-
 			input, ok := args["input"].(map[string]any)
 
 			if !ok {
@@ -94,10 +90,6 @@ func OptimizeTool(client *wingman.Client, model string, t tool.Tool) tool.Tool {
 
 			data = strings.TrimSpace(data)
 
-			// println("#######")
-			// println(data)
-			// println()
-
 			if len(data) <= 4000 {
 				return data, nil
 			}
@@ -116,11 +108,6 @@ func OptimizeTool(client *wingman.Client, model string, t tool.Tool) tool.Tool {
 			}
 
 			content := completion.Message.Text()
-
-			// println("#######")
-			// println("summary", summary)
-			// println()
-
 			return content, nil
 		},
 	}

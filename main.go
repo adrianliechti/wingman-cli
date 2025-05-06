@@ -7,9 +7,12 @@ import (
 	"strings"
 
 	"github.com/adrianliechti/wingman-cli/app"
-	"github.com/adrianliechti/wingman-cli/app/agent"
+	"github.com/adrianliechti/wingman-cli/app/azure"
 	"github.com/adrianliechti/wingman-cli/app/chat"
+	"github.com/adrianliechti/wingman-cli/app/coder"
 	"github.com/adrianliechti/wingman-cli/app/complete"
+	"github.com/adrianliechti/wingman-cli/app/mcp"
+	"github.com/adrianliechti/wingman-cli/app/openapi"
 	"github.com/adrianliechti/wingman-cli/app/rag"
 
 	"github.com/adrianliechti/go-cli"
@@ -98,7 +101,7 @@ func initApp(client *wingman.Client) cli.Command {
 				HideHelp: true,
 
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					return agent.RunMCP(ctx, client)
+					return mcp.Run(ctx, client)
 				},
 			},
 
@@ -109,7 +112,7 @@ func initApp(client *wingman.Client) cli.Command {
 				HideHelp: true,
 
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					return agent.RunCoder(ctx, client)
+					return coder.Run(ctx, client)
 				},
 			},
 
@@ -120,7 +123,7 @@ func initApp(client *wingman.Client) cli.Command {
 				HideHelp: true,
 
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					return agent.RunAzure(ctx, client)
+					return azure.Run(ctx, client)
 				},
 			},
 
@@ -169,8 +172,7 @@ func initApp(client *wingman.Client) cli.Command {
 					username := cmd.String("username")
 					password := cmd.String("password")
 
-					cli.Info()
-					return agent.RunOpenAPI(ctx, client, path, url, bearer, username, password)
+					return openapi.Run(ctx, client, path, url, bearer, username, password)
 				},
 			},
 		},

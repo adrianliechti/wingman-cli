@@ -1,10 +1,11 @@
-package agent
+package azure
 
 import (
 	"context"
 	_ "embed"
 
 	"github.com/adrianliechti/wingman-cli/app"
+	"github.com/adrianliechti/wingman-cli/pkg/agent"
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 	"github.com/adrianliechti/wingman-cli/pkg/tool/azure"
 	"github.com/adrianliechti/wingman-cli/pkg/util"
@@ -14,11 +15,11 @@ import (
 )
 
 var (
-	//go:embed prompt_azure.txt
-	prompt_azure string
+	//go:embed prompt.txt
+	DefaultPrompt string
 )
 
-func RunAzure(ctx context.Context, client *wingman.Client) error {
+func Run(ctx context.Context, client *wingman.Client) error {
 	azure, err := azure.New()
 
 	if err != nil {
@@ -28,7 +29,7 @@ func RunAzure(ctx context.Context, client *wingman.Client) error {
 	prompt := app.MustParsePrompt()
 
 	if prompt == "" {
-		prompt = prompt_azure
+		prompt = DefaultPrompt
 	}
 
 	var tools []tool.Tool
@@ -43,5 +44,5 @@ func RunAzure(ctx context.Context, client *wingman.Client) error {
 	cli.Info("🤗 Hello, I'm your Azure AI Assistant")
 	cli.Info()
 
-	return Run(ctx, client, app.ThinkingModel, prompt, tools)
+	return agent.Run(ctx, client, app.ThinkingModel, prompt, tools)
 }
