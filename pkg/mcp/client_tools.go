@@ -4,18 +4,25 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"mcp"
 )
 
-func (c *Client) Tools(ctx context.Context) ([]tool.Tool, error) {
+func (m *Manager) Tools(ctx context.Context) ([]tool.Tool, error) {
 	var result []tool.Tool
 
-	for _, c := range c.clients {
-		resp, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+	for _, c := range m.clients {
+		s, err := c.connect(ctx)
+
+		if err != nil {
+			return nil, err
+		}
+
+		defer s.Close()
+
+		resp, err := s.ListTools(ctx, &mcp.ListToolsParams{})
 
 		if err != nil {
 			return nil, err
@@ -49,11 +56,15 @@ func (c *Client) Tools(ctx context.Context) ([]tool.Tool, error) {
 						args = map[string]any{}
 					}
 
-					req := mcp.CallToolRequest{}
-					req.Params.Name = t.Name
-					req.Params.Arguments = args
+					s, err := c.connect(ctx)
 
-					result, err := c.CallTool(ctx, req)
+					if err != nil {
+						return nil, err
+					}
+
+					defer s.Close()
+
+					result, err := s.CallTool(ctx, t.Name, args, &mcp.CallToolOptions{})
 
 					if err != nil {
 						return nil, err
@@ -64,16 +75,11 @@ func (c *Client) Tools(ctx context.Context) ([]tool.Tool, error) {
 					}
 
 					for _, content := range result.Content {
-						switch content := content.(type) {
-						case mcp.TextContent:
-							text := strings.TrimSpace(content.Text)
-							return text, nil
-
-						case mcp.ImageContent:
-							return nil, errors.New("image content not supported")
-
-						case mcp.EmbeddedResource:
-							return nil, errors.New("embedded resource not supported")
+						switch content.Type {
+						case "text":
+							return content.Text, nil
+						default:
+							return nil, errors.New("unsupported content type")
 						}
 					}
 

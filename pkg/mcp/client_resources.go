@@ -6,14 +6,22 @@ import (
 
 	"github.com/adrianliechti/wingman-cli/pkg/resource"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"mcp"
 )
 
-func (c *Client) Resources(ctx context.Context) ([]resource.Resource, error) {
+func (m *Manager) Resources(ctx context.Context) ([]resource.Resource, error) {
 	var result []resource.Resource
 
-	for _, c := range c.clients {
-		resp, err := c.ListResources(ctx, mcp.ListResourcesRequest{})
+	for _, c := range m.clients {
+		s, err := c.connect(ctx)
+
+		if err != nil {
+			return nil, err
+		}
+
+		defer s.Close()
+
+		resp, err := s.ListResources(ctx, &mcp.ListResourcesParams{})
 
 		if err != nil {
 			return nil, err
@@ -29,27 +37,32 @@ func (c *Client) Resources(ctx context.Context) ([]resource.Resource, error) {
 				ContentType: r.MIMEType,
 
 				Content: func(ctx context.Context) ([]byte, error) {
-					req := mcp.ReadResourceRequest{}
-					req.Params.URI = r.URI
-
-					result, err := c.ReadResource(ctx, req)
+					s, err := c.connect(ctx)
 
 					if err != nil {
 						return nil, err
 					}
 
-					if len(result.Contents) > 1 {
-						return nil, errors.New("multiple contents not supported")
+					defer s.Close()
+
+					result, err := s.ReadResource(ctx, &mcp.ReadResourceParams{
+						URI: r.URI,
+					})
+
+					if err != nil {
+						return nil, err
 					}
 
-					for _, content := range result.Contents {
-						switch content := content.(type) {
-						case mcp.TextResourceContents:
-							return []byte(content.Text), nil
+					if result.Contents == nil {
+						return nil, errors.New("no content returned")
+					}
 
-						case mcp.BlobResourceContents:
-							return []byte(content.Blob), nil
-						}
+					if result.Contents.Blob != nil {
+						return []byte(result.Contents.Blob), nil
+					}
+
+					if result.Contents.Text != "" {
+						return []byte(result.Contents.Text), nil
 					}
 
 					return nil, errors.New("no content returned")

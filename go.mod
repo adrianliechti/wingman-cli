@@ -1,6 +1,8 @@
 module github.com/adrianliechti/wingman-cli
 
-go 1.24.2
+go 1.24.3
+
+replace mcp => /Users/adrian/Projects/go-mcp
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.18.0
@@ -11,13 +13,13 @@ require (
 	github.com/getkin/kin-openapi v0.132.0
 	github.com/invopop/yaml v0.3.1
 	github.com/joho/godotenv v1.5.1
-	github.com/mark3labs/mcp-go v0.28.0
 	github.com/ncruces/go-sqlite3 v0.25.2
 	github.com/ncruces/go-sqlite3/gormlite v0.24.0
 	github.com/rs/cors v1.11.1
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/datatypes v1.2.5
 	gorm.io/gorm v1.26.1
+	mcp v0.0.0-00010101000000-000000000000
 )
 
 require (
@@ -91,6 +93,7 @@ require (
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
+	github.com/mark3labs/mcp-go v0.28.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect

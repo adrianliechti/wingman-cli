@@ -3,76 +3,63 @@ package mcp
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/mcp"
+	"mcp"
 )
 
-type Client struct {
-	clients map[string]*client.Client
+type Manager struct {
+	clients map[string]*Client
 }
 
-func New(config *Config) (*Client, error) {
-	c := &Client{
-		clients: make(map[string]*client.Client),
+func New(config *Config) (*Manager, error) {
+	m := &Manager{
+		clients: make(map[string]*Client),
 	}
-
-	ctx := context.Background()
 
 	for n, s := range config.Servers {
 		switch s.Type {
 		case "stdio":
 			env := []string{}
 
+			env = append(env, os.Environ()...)
+
 			for k, v := range s.Env {
 				env = append(env, k+"="+v)
 			}
 
-			client, err := client.NewStdioMCPClient(s.Command, env, s.Args...)
+			cmd := exec.Command(s.Command, s.Args...)
+			cmd.Env = env
 
-			if err != nil {
-				return nil, err
+			c := &Client{
+				client:    mcp.NewClient("wingman", "1.0.0", &mcp.ClientOptions{}),
+				transport: mcp.NewCommandTransport(cmd),
 			}
 
-			c.clients[n] = client
+			m.clients[n] = c
 
 		case "sse":
-			client, err := client.NewSSEMCPClient(s.URL, client.WithHeaders(s.Headers))
-
-			if err != nil {
-				return nil, err
+			c := &Client{
+				client:    mcp.NewClient("wingman", "1.0.0", &mcp.ClientOptions{}),
+				transport: mcp.NewSSEClientTransport(s.URL),
 			}
 
-			c.clients[n] = client
+			m.clients[n] = c
+
 		default:
 			return nil, errors.New("invalid server type")
 		}
 	}
 
-	for _, c := range c.clients {
-		if err := c.Start(ctx); err != nil {
-			return nil, err
-		}
-	}
-
-	for _, c := range c.clients {
-		req := mcp.InitializeRequest{}
-		req.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-		req.Params.ClientInfo = mcp.Implementation{
-			Name:    "wingman",
-			Version: "1.0.0",
-		}
-
-		if _, err := c.Initialize(ctx, req); err != nil {
-			return nil, err
-		}
-	}
-
-	return c, nil
+	return m, nil
 }
 
-func (c *Client) Close() {
-	for _, c := range c.clients {
-		c.Close()
-	}
+type Client struct {
+	client    *mcp.Client
+	transport mcp.Transport
+}
+
+func (c *Client) connect(ctx context.Context) (*mcp.ClientSession, error) {
+	return c.client.Connect(ctx, c.transport)
 }

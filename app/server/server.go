@@ -3,14 +3,14 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/adrianliechti/wingman-cli/app"
-	"github.com/adrianliechti/wingman-cli/pkg/util"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"mcp"
+	"mcp/jsonschema"
+
 	"github.com/rs/cors"
 
 	"github.com/adrianliechti/go-cli"
@@ -20,7 +20,7 @@ import (
 func Run(ctx context.Context, client *wingman.Client) error {
 	tools := app.MustConnectTools(ctx)
 
-	tools = util.OptimizeTools(client, app.DefaultModel, tools)
+	//tools = util.OptimizeTools(client, app.DefaultModel, tools)
 
 	cli.Info()
 	cli.Info("🖥️ MCP Server")
@@ -32,58 +32,69 @@ func Run(ctx context.Context, client *wingman.Client) error {
 
 	cli.Info()
 
-	s := server.NewMCPServer(
-		"Wingman MCP Server",
-		"1.0.0",
-		server.WithToolCapabilities(false),
-	)
+	s := mcp.NewServer("sse", "1.0.0", &mcp.ServerOptions{})
 
 	for _, t := range tools {
-		schema, _ := json.Marshal(t.Schema)
+		data, _ := json.Marshal(t.Schema)
 
-		tool := mcp.Tool{
-			Name:           t.Name,
-			Description:    t.Description,
-			RawInputSchema: schema,
+		var schema jsonschema.Schema
+		json.Unmarshal(data, &schema)
+
+		tool := &mcp.ServerTool{
+			Tool: &mcp.Tool{
+				Name:        t.Name,
+				Description: t.Description,
+
+				InputSchema: &schema,
+			},
+
+			Handler: func(ctx context.Context, s *mcp.ServerSession, r *mcp.CallToolParams) (*mcp.CallToolResult, error) {
+				var args map[string]any
+				json.Unmarshal(r.Arguments, &args)
+
+				result, err := t.Execute(ctx, args)
+
+				if err != nil {
+					return nil, err
+				}
+
+				var content string
+
+				switch v := result.(type) {
+				case string:
+					content = v
+				default:
+					data, _ := json.Marshal(v)
+					content = string(data)
+				}
+
+				return &mcp.CallToolResult{
+					Content: []*mcp.Content{
+						mcp.NewTextContent(content),
+					},
+				}, nil
+			},
 		}
 
-		s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			result, err := t.Execute(ctx, request.Params.Arguments)
-
-			if err != nil {
-				return nil, err
-			}
-
-			var content string
-
-			switch v := result.(type) {
-			case string:
-				content = v
-			default:
-				data, _ := json.Marshal(v)
-				content = string(data)
-			}
-
-			return &mcp.CallToolResult{
-				Content: []mcp.Content{
-					mcp.NewTextContent(content),
-				},
-			}, nil
-		})
+		s.AddTools(tool)
 	}
 
 	addr := "localhost:4200"
 
-	server := server.NewSSEServer(s,
-		server.WithBaseURL(fmt.Sprintf("http://%s", addr)),
-	)
+	handler := mcp.NewSSEHandler(func(r *http.Request) *mcp.Server {
+		url := r.URL.Path
+		log.Printf("Handling request for URL %s\n", url)
 
-	mux := http.NewServeMux()
+		switch url {
+		case "/sse":
+			return s
 
-	mux.Handle("/sse", server)
-	mux.Handle("/message", server)
+		default:
+			return nil
+		}
+	})
 
-	if err := http.ListenAndServe(addr, cors.AllowAll().Handler(mux)); err != nil {
+	if err := http.ListenAndServe(addr, cors.AllowAll().Handler(handler)); err != nil {
 		return err
 	}
 
