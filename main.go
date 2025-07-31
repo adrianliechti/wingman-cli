@@ -9,6 +9,7 @@ import (
 	"github.com/adrianliechti/wingman-cli/app"
 	"github.com/adrianliechti/wingman-cli/app/agent"
 	"github.com/adrianliechti/wingman-cli/app/bridge"
+	"github.com/adrianliechti/wingman-cli/app/browser"
 	"github.com/adrianliechti/wingman-cli/app/chat"
 	"github.com/adrianliechti/wingman-cli/app/coder"
 	"github.com/adrianliechti/wingman-cli/app/complete"
@@ -123,6 +124,17 @@ func initApp(client *wingman.Client) cli.Command {
 
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					return coder.Run(ctx, client)
+				},
+			},
+
+			{
+				Name:  "browser",
+				Usage: "Browser Agent",
+
+				HideHelp: true,
+
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return browser.Run(ctx, client)
 				},
 			},
 		},
