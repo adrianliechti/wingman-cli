@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
+	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
 	"github.com/chromedp/chromedp"
@@ -67,24 +68,25 @@ func (c *Client) Close() error {
 
 func (c *Client) Tools(ctx context.Context) ([]tool.Tool, error) {
 	query_tool := tool.Tool{
+
 		Name:        "fetch_website",
 		Description: "fetch and return the markdown content from a given URL, including website pages and similar sources",
 
-		Schema: map[string]any{
-			"type": "object",
+		Schema: &tool.Schema{
+			Type: "object",
 
-			"properties": map[string]any{
-				"url": map[string]any{
-					"type":        "string",
-					"description": "the URL of the website to crawl staring with http:// or https://",
+			Properties: map[string]*jsonschema.Schema{
+				"url": {
+					Type:        "string",
+					Description: "the URL of the website to crawl starting with http:// or https://",
 				},
 			},
 
-			"required": []string{"url"},
+			Required: []string{"url"},
 		},
 
-		Execute: func(ctx context.Context, args map[string]any) (any, error) {
-			url, ok := args["url"].(string)
+		ToolHandler: func(ctx context.Context, params map[string]any) (any, error) {
+			url, ok := params["url"].(string)
 
 			if !ok {
 				return nil, errors.New("missing url parameter")

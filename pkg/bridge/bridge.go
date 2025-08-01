@@ -36,6 +36,8 @@ func Run(ctx context.Context, client *wingman.Client, instructions string, tools
 			return err
 		}
 
+		schema.Schema = "https://json-schema.org/draft/2020-12/schema"
+
 		if schema.Type == "object" && len(schema.Properties) == 0 {
 			properties := map[string]*jsonschema.Schema{}
 			properties["dummy_property"] = &jsonschema.Schema{
@@ -45,39 +47,35 @@ func Run(ctx context.Context, client *wingman.Client, instructions string, tools
 			schema.Properties = properties
 		}
 
-		handler := func(ctx context.Context, session *mcp.ServerSession, params *mcp.CallToolParamsFor[map[string]any]) (*mcp.CallToolResultFor[any], error) {
+		handler := func(ctx context.Context, session *mcp.ServerSession, params *mcp.CallToolParamsFor[map[string]any]) (*mcp.CallToolResult, error) {
 			args := params.Arguments
 
-			result, err := t.Execute(ctx, args)
+			result, err := t.ToolHandler(ctx, args)
 
 			if err != nil {
-				return &mcp.CallToolResultFor[any]{
-					IsError: true,
-
-					Content: []mcp.Content{
-						&mcp.TextContent{
-							Text: err.Error(),
-						},
-					},
-				}, nil
+				return nil, err
 			}
 
-			var content string
+			var content []mcp.Content
 
 			switch v := result.(type) {
 			case string:
-				content = v
+				content = append(content, &mcp.TextContent{
+					Text: v,
+				})
+			case *mcp.CallToolResult:
+				return v, nil
+
 			default:
 				data, _ := json.Marshal(v)
-				content = string(data)
+
+				content = append(content, &mcp.TextContent{
+					Text: string(data),
+				})
 			}
 
-			return &mcp.CallToolResultFor[any]{
-				Content: []mcp.Content{
-					&mcp.TextContent{
-						Text: content,
-					},
-				},
+			return &mcp.CallToolResult{
+				Content: content,
 			}, nil
 		}
 

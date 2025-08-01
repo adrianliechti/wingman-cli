@@ -2,10 +2,10 @@ package retriever
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 	"github.com/adrianliechti/wingman/pkg/index"
+	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 )
 
 type Retriever struct {
@@ -24,37 +24,25 @@ func (r *Retriever) Tools(ctx context.Context) ([]tool.Tool, error) {
 			Name:        "retrieve_documents",
 			Description: "Query the knowledge base to find relevant documents to answer questions",
 
-			Schema: map[string]any{
-				"type": "object",
+			Schema: &jsonschema.Schema{
+				Type: "object",
 
-				"properties": map[string]any{
-					"query": map[string]any{
-						"type":        "string",
-						"description": "The natural language query input. The query input should be clear and standalone",
+				Properties: map[string]*jsonschema.Schema{
+					"query": {
+						Type:        "string",
+						Description: "The natural language query input. The query input should be clear and standalone",
 					},
 				},
 
-				"required": []string{"query"},
+				Required: []string{"query"},
 			},
 
-			Execute: func(ctx context.Context, args map[string]any) (any, error) {
-				data, err := json.Marshal(args)
-
-				if err != nil {
-					return nil, err
-				}
-
-				var parameters struct {
-					Query string `json:"query"`
-				}
-
-				if err := json.Unmarshal(data, &parameters); err != nil {
-					return nil, err
-				}
+			ToolHandler: func(ctx context.Context, params map[string]any) (any, error) {
+				query := params["query"].(string)
 
 				limit := 5
 
-				documents, err := r.index.Query(ctx, parameters.Query, &index.QueryOptions{
+				documents, err := r.index.Query(ctx, query, &index.QueryOptions{
 					Limit: &limit,
 				})
 

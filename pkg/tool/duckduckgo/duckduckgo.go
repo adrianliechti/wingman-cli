@@ -3,7 +3,6 @@ package duckduckgo
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 	"github.com/adrianliechti/wingman/pkg/text"
+	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 )
 
 func New() (*Client, error) {
@@ -35,21 +35,21 @@ func (c *Client) Tools(ctx context.Context) ([]tool.Tool, error) {
 		Name:        "search_online",
 		Description: "Search online if the requested information cannot be found in the language model or the information could be present in a time after the language model was trained",
 
-		Schema: map[string]any{
-			"type": "object",
+		Schema: &jsonschema.Schema{
+			Type: "object",
 
-			"properties": map[string]any{
-				"query": map[string]any{
-					"type":        "string",
-					"description": "the text to search online for",
+			Properties: map[string]*jsonschema.Schema{
+				"query": {
+					Type:        "string",
+					Description: "the text to search online for",
 				},
 			},
 
-			"required": []string{"query"},
+			Required: []string{"query"},
 		},
 
-		Execute: func(ctx context.Context, args map[string]any) (any, error) {
-			query, ok := args["query"].(string)
+		ToolHandler: func(ctx context.Context, params map[string]any) (any, error) {
+			query, ok := params["query"].(string)
 
 			if !ok {
 				return nil, errors.New("missing query parameter")
@@ -61,8 +61,7 @@ func (c *Client) Tools(ctx context.Context) ([]tool.Tool, error) {
 				return nil, err
 			}
 
-			data, _ := json.MarshalIndent(results, "", "  ")
-			return string(data), nil
+			return results, nil
 		},
 	}
 

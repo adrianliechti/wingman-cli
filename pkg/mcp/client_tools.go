@@ -2,9 +2,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"strings"
 
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 
@@ -30,33 +27,13 @@ func (c *Client) Tools(ctx context.Context) ([]tool.Tool, error) {
 		}
 
 		for _, t := range resp.Tools {
-			var schema tool.Schema
-
-			input, _ := t.InputSchema.MarshalJSON()
-
-			if err := json.Unmarshal([]byte(input), &schema); err != nil {
-				return nil, err
-			}
-
-			if len(t.InputSchema.Properties) == 0 {
-				schema = map[string]any{
-					"type":                 "object",
-					"properties":           map[string]any{},
-					"additionalProperties": false,
-				}
-			}
-
 			tool := tool.Tool{
 				Name:        t.Name,
 				Description: t.Description,
 
-				Schema: schema,
+				Schema: t.InputSchema,
 
-				Execute: func(ctx context.Context, args map[string]any) (any, error) {
-					if args == nil {
-						args = map[string]any{}
-					}
-
+				ToolHandler: func(ctx context.Context, params map[string]any) (any, error) {
 					session, err := c.createSession(ctx, name)
 
 					if err != nil {
@@ -65,35 +42,10 @@ func (c *Client) Tools(ctx context.Context) ([]tool.Tool, error) {
 
 					defer session.Close()
 
-					resp, err := session.CallTool(ctx, &mcp.CallToolParams{
+					return session.CallTool(ctx, &mcp.CallToolParams{
 						Name:      t.Name,
-						Arguments: args,
+						Arguments: params,
 					})
-
-					if err != nil {
-						return nil, err
-					}
-
-					if len(resp.Content) > 1 {
-						return nil, errors.New("multiple content types not supported")
-					}
-
-					for _, content := range resp.Content {
-						switch content := content.(type) {
-						case *mcp.TextContent:
-							return strings.TrimSpace(content.Text), nil
-						case *mcp.ImageContent:
-							return nil, errors.New("image content not supported")
-						case *mcp.AudioContent:
-							return nil, errors.New("audio content not supported")
-						case *mcp.EmbeddedResource:
-							return nil, errors.New("embedded resource not supported")
-						default:
-							return nil, errors.New("unknown content type")
-						}
-					}
-
-					return nil, errors.New("no content returned")
 				},
 			}
 
