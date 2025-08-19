@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rs/cors"
 
@@ -29,23 +28,23 @@ func Run(ctx context.Context, client *wingman.Client, instructions string, tools
 	s := mcp.NewServer(impl, opts)
 
 	for _, t := range tools {
-		data, _ := json.Marshal(t.Schema)
-		schema := new(jsonschema.Schema)
+		// data, _ := json.Marshal(t.Schema)
+		// schema := new(jsonschema.Schema)
 
-		if err := schema.UnmarshalJSON(data); err != nil {
-			return err
-		}
+		// if err := schema.UnmarshalJSON(data); err != nil {
+		// 	return err
+		// }
 
-		schema.Schema = "https://json-schema.org/draft/2020-12/schema"
+		// schema.Schema = "https://json-schema.org/draft/2020-12/schema"
 
-		if schema.Type == "object" && len(schema.Properties) == 0 {
-			properties := map[string]*jsonschema.Schema{}
-			properties["dummy_property"] = &jsonschema.Schema{
-				Type: "null",
-			}
+		// if schema.Type == "object" && len(schema.Properties) == 0 {
+		// 	properties := map[string]*jsonschema.Schema{}
+		// 	properties["dummy_property"] = &jsonschema.Schema{
+		// 		Type: "null",
+		// 	}
 
-			schema.Properties = properties
-		}
+		// 	schema.Properties = properties
+		// }
 
 		handler := func(ctx context.Context, session *mcp.ServerSession, params *mcp.CallToolParamsFor[map[string]any]) (*mcp.CallToolResult, error) {
 			args := params.Arguments
@@ -83,7 +82,7 @@ func Run(ctx context.Context, client *wingman.Client, instructions string, tools
 			Name:        t.Name,
 			Description: t.Description,
 
-			InputSchema: schema,
+			InputSchema: t.Schema,
 		}
 
 		s.AddTool(tool, handler)
@@ -106,12 +105,16 @@ func Run(ctx context.Context, client *wingman.Client, instructions string, tools
 		json.NewEncoder(w).Encode(data)
 	})
 
-	h := mcp.NewSSEHandler(func(request *http.Request) *mcp.Server {
+	sse := mcp.NewSSEHandler(func(request *http.Request) *mcp.Server {
 		return s
 	})
 
-	mux.Handle("/sse", h)
-	// mux.Handle("/message", h)
+	mcp := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		return s
+	}, nil)
+
+	mux.Handle("/sse", sse)
+	mux.Handle("/mcp", mcp)
 
 	server := &http.Server{
 		Addr:    addr,

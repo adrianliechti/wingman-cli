@@ -1,14 +1,14 @@
-package browser
+package powerups
 
 import (
 	"context"
 	_ "embed"
 
-	"github.com/adrianliechti/wingman-cli/app"
-	"github.com/adrianliechti/wingman-cli/pkg/agent"
+	"github.com/adrianliechti/wingman-cli/pkg/bridge"
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 	"github.com/adrianliechti/wingman-cli/pkg/tool/browser"
 	"github.com/adrianliechti/wingman-cli/pkg/tool/duckduckgo"
+	"github.com/adrianliechti/wingman-cli/pkg/tool/fs"
 
 	"github.com/adrianliechti/go-cli"
 	wingman "github.com/adrianliechti/wingman/pkg/client"
@@ -20,6 +20,12 @@ var (
 )
 
 func Run(ctx context.Context, client *wingman.Client) error {
+	fs, err := fs.New("")
+
+	if err != nil {
+		return err
+	}
+
 	ddg, err := duckduckgo.New()
 
 	if err != nil {
@@ -35,10 +41,14 @@ func Run(ctx context.Context, client *wingman.Client) error {
 	defer browser.Close()
 
 	cli.Info()
-	cli.Info("🤗 Hello, I'm your AI Coder")
+	cli.Info("Wingman Power-Ups")
 	cli.Info()
 
 	var tools []tool.Tool
+
+	if t, err := fs.Tools(ctx); err == nil {
+		tools = append(tools, t...)
+	}
 
 	if t, err := ddg.Tools(ctx); err == nil {
 		tools = append(tools, t...)
@@ -48,5 +58,5 @@ func Run(ctx context.Context, client *wingman.Client) error {
 		tools = append(tools, t...)
 	}
 
-	return agent.Run(ctx, client, app.ThinkingModel, DefaultPrompt, tools)
+	return bridge.Run(ctx, client, "", tools)
 }
