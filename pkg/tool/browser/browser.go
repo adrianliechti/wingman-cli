@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
-	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
 	"github.com/chromedp/chromedp"
@@ -75,7 +74,7 @@ func (c *Client) Tools(ctx context.Context) ([]tool.Tool, error) {
 		Schema: &tool.Schema{
 			Type: "object",
 
-			Properties: map[string]*jsonschema.Schema{
+			Properties: map[string]*tool.Schema{
 				"url": {
 					Type:        "string",
 					Description: "the URL of the website to crawl starting with http:// or https://",

@@ -8,7 +8,6 @@ import (
 
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 	wingman "github.com/adrianliechti/wingman/pkg/client"
-	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 )
 
 func ConvertTools(tools []tool.Tool) []wingman.Tool {
@@ -51,10 +50,10 @@ func OptimizeTool(client *wingman.Client, model string, t tool.Tool) tool.Tool {
 		Name:        t.Name,
 		Description: t.Description,
 
-		Schema: &jsonschema.Schema{
+		Schema: &tool.Schema{
 			Type: "object",
 
-			Properties: map[string]*jsonschema.Schema{
+			Properties: map[string]*tool.Schema{
 				"goal": {
 					Type:        "string",
 					Description: "The goal of the task including the expected record, fields and information you expect or search in the result. This goal is used to compress and filter large results.",

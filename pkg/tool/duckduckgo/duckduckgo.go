@@ -11,7 +11,6 @@ import (
 
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 	"github.com/adrianliechti/wingman/pkg/text"
-	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 )
 
 func New() (*Client, error) {
@@ -35,10 +34,10 @@ func (c *Client) Tools(ctx context.Context) ([]tool.Tool, error) {
 		Name:        "search_online",
 		Description: "Search online if the requested information cannot be found in the language model or the information could be present in a time after the language model was trained",
 
-		Schema: &jsonschema.Schema{
+		Schema: &tool.Schema{
 			Type: "object",
 
-			Properties: map[string]*jsonschema.Schema{
+			Properties: map[string]*tool.Schema{
 				"query": {
 					Type:        "string",
 					Description: "the text to search online for",

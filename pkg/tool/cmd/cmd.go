@@ -5,7 +5,6 @@ import (
 	"os/exec"
 
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
-	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 )
 
 func New(name string) (*Command, error) {
@@ -39,11 +38,11 @@ func (c *Command) Tools(ctx context.Context) ([]tool.Tool, error) {
 			Schema: &tool.Schema{
 				Type: "object",
 
-				Properties: map[string]*jsonschema.Schema{
+				Properties: map[string]*tool.Schema{
 					"args": {
 						Type: "array",
 
-						Items: &jsonschema.Schema{
+						Items: &tool.Schema{
 							Type: "string",
 						},
 					},

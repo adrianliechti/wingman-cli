@@ -46,8 +46,12 @@ func Run(ctx context.Context, client *wingman.Client, instructions string, tools
 		// 	schema.Properties = properties
 		// }
 
-		handler := func(ctx context.Context, session *mcp.ServerSession, params *mcp.CallToolParamsFor[map[string]any]) (*mcp.CallToolResult, error) {
-			args := params.Arguments
+		handler := func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			var args map[string]any
+
+			if v, ok := req.Params.Arguments.(json.RawMessage); ok {
+				json.Unmarshal(v, &args)
+			}
 
 			result, err := t.ToolHandler(ctx, args)
 
@@ -58,12 +62,13 @@ func Run(ctx context.Context, client *wingman.Client, instructions string, tools
 			var content []mcp.Content
 
 			switch v := result.(type) {
+			case *mcp.CallToolResult:
+				return v, nil
+
 			case string:
 				content = append(content, &mcp.TextContent{
 					Text: v,
 				})
-			case *mcp.CallToolResult:
-				return v, nil
 
 			default:
 				data, _ := json.Marshal(v)

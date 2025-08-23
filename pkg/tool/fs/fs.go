@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
-	"github.com/modelcontextprotocol/go-sdk/jsonschema"
 )
 
 func New(root string) (*FS, error) {
@@ -50,10 +49,10 @@ func (fs *FS) Tools(ctx context.Context) ([]tool.Tool, error) {
 			Name:        "list_dir",
 			Description: "list files and directories recursively at path",
 
-			Schema: &jsonschema.Schema{
+			Schema: &tool.Schema{
 				Type: "object",
 
-				Properties: map[string]*jsonschema.Schema{
+				Properties: map[string]*tool.Schema{
 					"path": {
 						Type: "string",
 					},
@@ -70,10 +69,10 @@ func (fs *FS) Tools(ctx context.Context) ([]tool.Tool, error) {
 			Name:        "read_file",
 			Description: "read the (text) content of a file at path",
 
-			Schema: &jsonschema.Schema{
+			Schema: &tool.Schema{
 				Type: "object",
 
-				Properties: map[string]*jsonschema.Schema{
+				Properties: map[string]*tool.Schema{
 					"path": {
 						Type: "string",
 					},
@@ -91,10 +90,10 @@ func (fs *FS) Tools(ctx context.Context) ([]tool.Tool, error) {
 			Name:        "create_file",
 			Description: "create or overwrite file at path with content (text)",
 
-			Schema: &jsonschema.Schema{
+			Schema: &tool.Schema{
 				Type: "object",
 
-				Properties: map[string]*jsonschema.Schema{
+				Properties: map[string]*tool.Schema{
 					"path": {
 						Type: "string",
 					},
@@ -122,10 +121,10 @@ func (fs *FS) Tools(ctx context.Context) ([]tool.Tool, error) {
 			Name:        "delete_file",
 			Description: "delete a file at path and all empty parent directories",
 
-			Schema: &jsonschema.Schema{
+			Schema: &tool.Schema{
 				Type: "object",
 
-				Properties: map[string]*jsonschema.Schema{
+				Properties: map[string]*tool.Schema{
 					"path": {
 						Type: "string",
 					},
@@ -148,10 +147,10 @@ func (fs *FS) Tools(ctx context.Context) ([]tool.Tool, error) {
 			Name:        "create_dir",
 			Description: "create a directory at path and all missing parent directories",
 
-			Schema: &jsonschema.Schema{
+			Schema: &tool.Schema{
 				Type: "object",
 
-				Properties: map[string]*jsonschema.Schema{
+				Properties: map[string]*tool.Schema{
 					"path": {
 						Type: "string",
 					},
@@ -174,10 +173,10 @@ func (fs *FS) Tools(ctx context.Context) ([]tool.Tool, error) {
 			Name:        "delete_dir",
 			Description: "delete a dir at path and all child files and directories",
 
-			Schema: &jsonschema.Schema{
+			Schema: &tool.Schema{
 				Type: "object",
 
-				Properties: map[string]*jsonschema.Schema{
+				Properties: map[string]*tool.Schema{
 					"path": {
 						Type: "string",
 					},
