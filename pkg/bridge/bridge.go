@@ -22,6 +22,8 @@ func Run(ctx context.Context, client *wingman.Client, instructions string, tools
 	}
 
 	opts := &mcp.ServerOptions{
+		Instructions: instructions,
+
 		KeepAlive: time.Second * 30,
 	}
 
