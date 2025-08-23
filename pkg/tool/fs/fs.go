@@ -49,19 +49,19 @@ func (fs *FS) Tools(ctx context.Context) ([]tool.Tool, error) {
 			Name:        "list_dir",
 			Description: "list files and directories recursively at path",
 
-			Schema: tool.Schema{
-				"type": "object",
-				"properties": map[string]any{
-					"path": map[string]string{
-						"type": "string",
+			Schema: &tool.Schema{
+				Type: "object",
+
+				Properties: map[string]*tool.Schema{
+					"path": {
+						Type: "string",
 					},
 				},
 
-				"required": []string{"path"},
+				Required: []string{"path"},
 			},
-
-			Execute: func(ctx context.Context, args map[string]any) (any, error) {
-				path := args["path"].(string)
+			ToolHandler: func(ctx context.Context, params map[string]any) (any, error) {
+				path := params["path"].(string)
 				return fs.ListDir(path)
 			},
 		},
@@ -69,20 +69,20 @@ func (fs *FS) Tools(ctx context.Context) ([]tool.Tool, error) {
 			Name:        "read_file",
 			Description: "read the (text) content of a file at path",
 
-			Schema: tool.Schema{
-				"type": "object",
+			Schema: &tool.Schema{
+				Type: "object",
 
-				"properties": map[string]any{
-					"path": map[string]string{
-						"type": "string",
+				Properties: map[string]*tool.Schema{
+					"path": {
+						Type: "string",
 					},
 				},
 
-				"required": []string{"path"},
+				Required: []string{"path"},
 			},
 
-			Execute: func(ctx context.Context, args map[string]any) (any, error) {
-				path := args["path"].(string)
+			ToolHandler: func(ctx context.Context, params map[string]any) (any, error) {
+				path := params["path"].(string)
 				return fs.ReadFile(path)
 			},
 		},
@@ -90,25 +90,25 @@ func (fs *FS) Tools(ctx context.Context) ([]tool.Tool, error) {
 			Name:        "create_file",
 			Description: "create or overwrite file at path with content (text)",
 
-			Schema: tool.Schema{
-				"type": "object",
+			Schema: &tool.Schema{
+				Type: "object",
 
-				"properties": map[string]any{
-					"path": map[string]string{
-						"type": "string",
+				Properties: map[string]*tool.Schema{
+					"path": {
+						Type: "string",
 					},
 
-					"content": map[string]string{
-						"type": "string",
+					"content": {
+						Type: "string",
 					},
 				},
 
-				"required": []string{"path", "content"},
+				Required: []string{"path", "content"},
 			},
 
-			Execute: func(ctx context.Context, args map[string]any) (any, error) {
-				path := args["path"].(string)
-				data := args["content"].(string)
+			ToolHandler: func(ctx context.Context, params map[string]any) (any, error) {
+				path := params["path"].(string)
+				data := params["content"].(string)
 
 				if err := fs.CreateFile(path, data); err != nil {
 					return nil, err
@@ -121,20 +121,20 @@ func (fs *FS) Tools(ctx context.Context) ([]tool.Tool, error) {
 			Name:        "delete_file",
 			Description: "delete a file at path and all empty parent directories",
 
-			Schema: tool.Schema{
-				"type": "object",
+			Schema: &tool.Schema{
+				Type: "object",
 
-				"properties": map[string]any{
-					"path": map[string]string{
-						"type": "string",
+				Properties: map[string]*tool.Schema{
+					"path": {
+						Type: "string",
 					},
 				},
 
-				"required": []string{"path"},
+				Required: []string{"path"},
 			},
 
-			Execute: func(ctx context.Context, args map[string]any) (any, error) {
-				path := args["path"].(string)
+			ToolHandler: func(ctx context.Context, params map[string]any) (any, error) {
+				path := params["path"].(string)
 
 				if err := fs.DeleteFile(path); err != nil {
 					return nil, err
@@ -145,22 +145,22 @@ func (fs *FS) Tools(ctx context.Context) ([]tool.Tool, error) {
 		},
 		{
 			Name:        "create_dir",
-			Description: "create a directroy at path and all missing parent directories",
+			Description: "create a directory at path and all missing parent directories",
 
-			Schema: tool.Schema{
-				"type": "object",
+			Schema: &tool.Schema{
+				Type: "object",
 
-				"properties": map[string]any{
-					"path": map[string]string{
-						"type": "string",
+				Properties: map[string]*tool.Schema{
+					"path": {
+						Type: "string",
 					},
 				},
 
-				"required": []string{"path"},
+				Required: []string{"path"},
 			},
 
-			Execute: func(ctx context.Context, args map[string]any) (any, error) {
-				path := args["path"].(string)
+			ToolHandler: func(ctx context.Context, params map[string]any) (any, error) {
+				path := params["path"].(string)
 
 				if err := fs.CreateDir(path); err != nil {
 					return nil, err
@@ -173,20 +173,20 @@ func (fs *FS) Tools(ctx context.Context) ([]tool.Tool, error) {
 			Name:        "delete_dir",
 			Description: "delete a dir at path and all child files and directories",
 
-			Schema: tool.Schema{
-				"type": "object",
+			Schema: &tool.Schema{
+				Type: "object",
 
-				"properties": map[string]any{
-					"path": map[string]string{
-						"type": "string",
+				Properties: map[string]*tool.Schema{
+					"path": {
+						Type: "string",
 					},
 				},
 
-				"required": []string{"path"},
+				Required: []string{"path"},
 			},
 
-			Execute: func(ctx context.Context, args map[string]any) (any, error) {
-				path := args["path"].(string)
+			ToolHandler: func(ctx context.Context, params map[string]any) (any, error) {
+				path := params["path"].(string)
 
 				if err := fs.DeleteDir(path); err != nil {
 					return nil, err

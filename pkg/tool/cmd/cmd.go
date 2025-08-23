@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"os/exec"
 
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
@@ -36,36 +35,35 @@ func (c *Command) Tools(ctx context.Context) ([]tool.Tool, error) {
 			Name:        "run_cli_" + c.name,
 			Description: "run the `" + c.name + "` command line interface command with the given arguments",
 
-			Schema: tool.Schema{
-				"type": "object",
+			Schema: &tool.Schema{
+				Type: "object",
 
-				"properties": map[string]any{
-					"args": map[string]any{
-						"type": "array",
+				Properties: map[string]*tool.Schema{
+					"args": {
+						Type: "array",
 
-						"items": map[string]any{
-							"type": "string",
+						Items: &tool.Schema{
+							Type: "string",
 						},
 					},
 				},
 			},
 
-			Execute: func(ctx context.Context, args map[string]any) (any, error) {
-				data, err := json.Marshal(args)
+			ToolHandler: func(ctx context.Context, params map[string]any) (any, error) {
+				argsInterface := params["args"]
+				var args []string
 
-				if err != nil {
-					return nil, err
+				if argsInterface != nil {
+					if argsSlice, ok := argsInterface.([]interface{}); ok {
+						for _, arg := range argsSlice {
+							if argStr, ok := arg.(string); ok {
+								args = append(args, argStr)
+							}
+						}
+					}
 				}
 
-				var parameters struct {
-					Args []string `json:"args"`
-				}
-
-				if err := json.Unmarshal(data, &parameters); err != nil {
-					return nil, err
-				}
-
-				output, err := exec.CommandContext(ctx, c.name, parameters.Args...).CombinedOutput()
+				output, err := exec.CommandContext(ctx, c.name, args...).CombinedOutput()
 
 				if err != nil {
 					return nil, err

@@ -21,15 +21,17 @@ var (
 )
 
 func Run(ctx context.Context, client *wingman.Client) error {
+	instructions := DefaultPrompt
+
+	if val := app.MustParseInstructions(); val != "" {
+		instructions += "\n\n" + val
+	}
+
 	fs, err := fs.New("")
 
 	if err != nil {
 		return err
 	}
-
-	cli.Info()
-	cli.Info("🤗 Hello, I'm your AI Coder")
-	cli.Info()
 
 	var tools []tool.Tool
 
@@ -46,5 +48,9 @@ func Run(ctx context.Context, client *wingman.Client) error {
 		}
 	}
 
-	return agent.Run(ctx, client, app.ThinkingModel, DefaultPrompt, tools)
+	cli.Info()
+	cli.Info("🤗 Hello, I'm your AI Coder")
+	cli.Info()
+
+	return agent.Run(ctx, client, app.ThinkingModel, instructions, tools)
 }

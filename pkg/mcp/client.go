@@ -106,7 +106,7 @@ func (c *Client) createSession(ctx context.Context, server string) (*mcp.ClientS
 
 	client := mcp.NewClient(impl, opts)
 
-	return client.Connect(ctx, transport)
+	return client.Connect(ctx, transport, nil)
 }
 
 type rt struct {

@@ -9,11 +9,10 @@ import (
 	"github.com/adrianliechti/wingman-cli/app"
 	"github.com/adrianliechti/wingman-cli/app/agent"
 	"github.com/adrianliechti/wingman-cli/app/bridge"
-	"github.com/adrianliechti/wingman-cli/app/browser"
 	"github.com/adrianliechti/wingman-cli/app/chat"
 	"github.com/adrianliechti/wingman-cli/app/coder"
 	"github.com/adrianliechti/wingman-cli/app/complete"
-	"github.com/adrianliechti/wingman-cli/app/rag"
+	"github.com/adrianliechti/wingman-cli/app/powerups"
 
 	"github.com/adrianliechti/go-cli"
 	"github.com/joho/godotenv"
@@ -82,18 +81,7 @@ func initApp(client *wingman.Client) cli.Command {
 					return chat.Run(ctx, client, app.DefaultModel)
 				},
 			},
-
-			{
-				Name:  "rag",
-				Usage: "RAG Chat",
-
-				HideHelp: true,
-
-				Action: func(ctx context.Context, cmd *cli.Command) error {
-					return rag.Run(ctx, client, app.DefaultModel)
-				},
-			},
-
+			
 			{
 				Name:  "agent",
 				Usage: "MCP Agent",
@@ -128,13 +116,13 @@ func initApp(client *wingman.Client) cli.Command {
 			},
 
 			{
-				Name:  "browser",
-				Usage: "Browser Agent",
+				Name:  "powerups",
+				Usage: "Power-Ups",
 
 				HideHelp: true,
 
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					return browser.Run(ctx, client)
+					return powerups.Run(ctx, client)
 				},
 			},
 		},

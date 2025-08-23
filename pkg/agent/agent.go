@@ -85,14 +85,14 @@ func Run(ctx context.Context, client *wingman.Client, model, instructions string
 }
 
 func handleToolCall(ctx context.Context, tools []tool.Tool, call wingman.ToolCall) (string, error) {
-	var handler tool.ExecuteFn
+	var handler tool.ToolHandler
 
 	for _, t := range tools {
 		if !strings.EqualFold(t.Name, call.Name) {
 			continue
 		}
 
-		handler = t.Execute
+		handler = t.ToolHandler
 	}
 
 	if handler == nil {
