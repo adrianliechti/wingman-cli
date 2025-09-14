@@ -35,6 +35,10 @@ func Run(ctx context.Context, client *wingman.Client) error {
 
 	var tools []tool.Tool
 
+	// if t, err := think.Tools(ctx); err == nil {
+	// 	tools = append(tools, t...)
+	// }
+
 	if t, err := fs.Tools(ctx); err == nil {
 		tools = append(tools, t...)
 	}
