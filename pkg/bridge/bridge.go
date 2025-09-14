@@ -30,30 +30,9 @@ func Run(ctx context.Context, client *wingman.Client, instructions string, tools
 	s := mcp.NewServer(impl, opts)
 
 	for _, t := range tools {
-		// data, _ := json.Marshal(t.Schema)
-		// schema := new(jsonschema.Schema)
-
-		// if err := schema.UnmarshalJSON(data); err != nil {
-		// 	return err
-		// }
-
-		// schema.Schema = "https://json-schema.org/draft/2020-12/schema"
-
-		// if schema.Type == "object" && len(schema.Properties) == 0 {
-		// 	properties := map[string]*jsonschema.Schema{}
-		// 	properties["dummy_property"] = &jsonschema.Schema{
-		// 		Type: "null",
-		// 	}
-
-		// 	schema.Properties = properties
-		// }
-
 		handler := func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var args map[string]any
-
-			if v, ok := req.Params.Arguments.(json.RawMessage); ok {
-				json.Unmarshal(v, &args)
-			}
+			json.Unmarshal(req.Params.Arguments, &args)
 
 			result, err := t.ToolHandler(ctx, args)
 
@@ -61,28 +40,30 @@ func Run(ctx context.Context, client *wingman.Client, instructions string, tools
 				return nil, err
 			}
 
-			var content []mcp.Content
-
 			switch v := result.(type) {
 			case *mcp.CallToolResult:
 				return v, nil
 
 			case string:
-				content = append(content, &mcp.TextContent{
-					Text: v,
-				})
+				return &mcp.CallToolResult{
+					Content: []mcp.Content{
+						&mcp.TextContent{
+							Text: v,
+						},
+					},
+				}, nil
 
 			default:
 				data, _ := json.Marshal(v)
 
-				content = append(content, &mcp.TextContent{
-					Text: string(data),
-				})
+				return &mcp.CallToolResult{
+					Content: []mcp.Content{
+						&mcp.TextContent{
+							Text: string(data),
+						},
+					},
+				}, nil
 			}
-
-			return &mcp.CallToolResult{
-				Content: content,
-			}, nil
 		}
 
 		tool := &mcp.Tool{

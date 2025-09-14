@@ -33,7 +33,9 @@ func New(config *Config) (*Client, error) {
 				cmd := exec.Command(s.Command, s.Args...)
 				cmd.Env = env
 
-				return mcp.NewCommandTransport(cmd), nil
+				return &mcp.CommandTransport{
+					Command: cmd,
+				}, nil
 			}
 
 		case "http":
@@ -48,11 +50,12 @@ func New(config *Config) (*Client, error) {
 			}
 
 			c.transports[n] = func() (mcp.Transport, error) {
-				transport := mcp.NewStreamableClientTransport(s.URL, &mcp.StreamableClientTransportOptions{
-					HTTPClient: client,
-				})
+				return &mcp.StreamableClientTransport{
+					Endpoint: s.URL,
 
-				return transport, nil
+					HTTPClient: client,
+					MaxRetries: -1,
+				}, nil
 			}
 
 		case "sse":
@@ -67,11 +70,11 @@ func New(config *Config) (*Client, error) {
 			}
 
 			c.transports[n] = func() (mcp.Transport, error) {
-				transport := mcp.NewSSEClientTransport(s.URL, &mcp.SSEClientTransportOptions{
-					HTTPClient: client,
-				})
+				return &mcp.SSEClientTransport{
+					Endpoint: s.URL,
 
-				return transport, nil
+					HTTPClient: client,
+				}, nil
 			}
 
 		default:
