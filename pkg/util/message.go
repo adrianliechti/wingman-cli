@@ -13,7 +13,6 @@ func messageTokens(message wingman.Message) int {
 
 	for _, c := range message.Content {
 		result += len(c.Text)
-		result += len(c.Refusal)
 
 		if c.File != nil {
 			result += len(c.File.Content)
