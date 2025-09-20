@@ -5,12 +5,12 @@ go 1.25
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.4.0
 	github.com/adrianliechti/go-cli v0.0.8
-	github.com/adrianliechti/wingman v0.0.0-20250919095653-6f631a5b2b0c
+	github.com/adrianliechti/wingman v0.0.0-20250920171505-7ba3c113b670
 	github.com/charmbracelet/glamour v0.10.0
 	github.com/chromedp/chromedp v0.14.1
 	github.com/google/jsonschema-go v0.2.3
 	github.com/joho/godotenv v1.5.1
-	github.com/modelcontextprotocol/go-sdk v0.5.0
+	github.com/modelcontextprotocol/go-sdk v0.6.0
 	github.com/rs/cors v1.11.1
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -88,7 +88,7 @@ require (
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/reflow v0.3.0 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
-	github.com/openai/openai-go/v2 v2.5.0 // indirect
+	github.com/openai/openai-go/v2 v2.6.0 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/replicate/replicate-go v0.26.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect

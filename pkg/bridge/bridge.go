@@ -95,7 +95,7 @@ func Run(ctx context.Context, client *wingman.Client, instructions string, tools
 
 	sse := mcp.NewSSEHandler(func(request *http.Request) *mcp.Server {
 		return s
-	})
+	}, nil)
 
 	mcp := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return s
