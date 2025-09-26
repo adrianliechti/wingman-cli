@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 
@@ -27,11 +28,16 @@ func (c *Client) Tools(ctx context.Context) ([]tool.Tool, error) {
 		}
 
 		for _, t := range resp.Tools {
+			var schema tool.Schema
+
+			data, _ := json.Marshal(t.InputSchema)
+			_ = json.Unmarshal(data, &schema)
+
 			tool := tool.Tool{
 				Name:        t.Name,
 				Description: t.Description,
 
-				Schema: t.InputSchema,
+				Schema: &schema,
 
 				ToolHandler: func(ctx context.Context, params map[string]any) (any, error) {
 					session, err := c.createSession(ctx, name)
