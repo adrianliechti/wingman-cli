@@ -38,29 +38,29 @@ type Config struct {
 	Skills []skill.Skill
 }
 
-func Default() (*Config, error) {
-	workingDir, err := os.Getwd()
+func Default() (*Config, func(), error) {
+	wd, err := os.Getwd()
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to get working directory: %w", err)
+		return nil, nil, fmt.Errorf("failed to get working directory: %w", err)
 	}
 
-	root, err := os.OpenRoot(workingDir)
+	root, err := os.OpenRoot(wd)
 
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	scratchDir := filepath.Join(os.TempDir(), fmt.Sprintf("wingman-%d", time.Now().Unix()))
 
 	if err := os.MkdirAll(scratchDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create scratch directory: %w", err)
+		return nil, nil, fmt.Errorf("failed to create scratch directory: %w", err)
 	}
 
 	scratch, err := os.OpenRoot(scratchDir)
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to open scratch directory: %w", err)
+		return nil, nil, fmt.Errorf("failed to open scratch directory: %w", err)
 	}
 
 	env := &tool.Environment{
@@ -73,19 +73,19 @@ func Default() (*Config, error) {
 
 	tools := slices.Concat(fs.Tools(), shell.Tools())
 
-	mcp, _ := mcp.Load(filepath.Join(workingDir, "mcp.json"))
+	mcp, _ := mcp.Load(filepath.Join(wd, "mcp.json"))
 
-	skills, _ := skill.Discover(workingDir)
+	skills, _ := skill.Discover(wd)
 
 	instructions, err := renderInstructions(env, skills, mcp != nil)
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to render instructions: %w", err)
+		return nil, nil, fmt.Errorf("failed to render instructions: %w", err)
 	}
 
 	client, model, modelMini := createClient()
 
-	return &Config{
+	cfg := &Config{
 		Client:    client,
 		Model:     model,
 		ModelMini: modelMini,
@@ -105,7 +105,9 @@ func Default() (*Config, error) {
 
 		Tools:  tools,
 		Skills: skills,
-	}, nil
+	}
+
+	return cfg, cfg.Cleanup, nil
 }
 
 func createClient() (openai.Client, string, string) {

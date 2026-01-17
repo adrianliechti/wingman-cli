@@ -3,6 +3,7 @@ package fs
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -70,6 +71,29 @@ func stripBom(content string) (bom string, text string) {
 	return "", content
 }
 
+func mapFuzzyIndexToOriginal(original, fuzzy string, fuzzyIdx int) int {
+	if fuzzyIdx <= 0 {
+		return 0
+	}
+
+	if fuzzyIdx >= len(fuzzy) {
+		return len(original)
+	}
+
+	fuzzyPos := 0
+	originalPos := 0
+
+	for originalPos < len(original) && fuzzyPos < fuzzyIdx {
+		_, origSize := utf8.DecodeRuneInString(original[originalPos:])
+		_, fuzzySize := utf8.DecodeRuneInString(fuzzy[fuzzyPos:])
+
+		originalPos += origSize
+		fuzzyPos += fuzzySize
+	}
+
+	return originalPos
+}
+
 func normalizeForFuzzyMatch(text string) string {
 	lines := strings.Split(text, "\n")
 
@@ -134,12 +158,15 @@ func fuzzyFindText(content, oldText string) fuzzyMatchResult {
 		}
 	}
 
+	originalIndex := mapFuzzyIndexToOriginal(content, fuzzyContent, fuzzyIndex)
+	originalEndIndex := mapFuzzyIndexToOriginal(content, fuzzyContent, fuzzyIndex+len(fuzzyOldText))
+
 	return fuzzyMatchResult{
 		found:                 true,
-		index:                 fuzzyIndex,
-		matchLength:           len(fuzzyOldText),
+		index:                 originalIndex,
+		matchLength:           originalEndIndex - originalIndex,
 		usedFuzzyMatch:        true,
-		contentForReplacement: fuzzyContent,
+		contentForReplacement: content,
 	}
 }
 

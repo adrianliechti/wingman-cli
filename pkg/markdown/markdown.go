@@ -30,9 +30,12 @@ func Render(text string) string {
 	})
 
 	// Handle incomplete code blocks (streaming)
-	incompleteCodeBlockRe := regexp.MustCompile("(?s)```(\\w*)\\n(.*?)$")
+	// Count opening ``` markers that aren't closed
+	backtickCount := strings.Count(text, "```")
+	hasIncompleteBlock := backtickCount%2 == 1
 
-	if !strings.Contains(text, "```\n") || strings.Count(text, "```")%2 == 1 {
+	if hasIncompleteBlock {
+		incompleteCodeBlockRe := regexp.MustCompile("(?s)```(\\w*)\\n([^`]*)$")
 		text = incompleteCodeBlockRe.ReplaceAllStringFunc(text, func(match string) string {
 			parts := incompleteCodeBlockRe.FindStringSubmatch(match)
 

@@ -37,9 +37,10 @@ type App struct {
 	chatWidth     int
 	lastToolName  string
 
-	promptChan   chan promptRequest
-	promptMu     sync.Mutex
-	promptActive bool
+	promptChan    chan promptRequest
+	promptMu      sync.Mutex
+	promptActive  bool
+	currentPrompt *promptRequest
 
 	mcpManager    *mcp.Manager
 	mcpTools      []tool.Tool

@@ -30,16 +30,19 @@ func LsTool() tool.Tool {
 
 		Execute: func(env *tool.Environment, args map[string]any) (string, error) {
 			pathArg := "."
+
 			if p, ok := args["path"].(string); ok && p != "" {
 				pathArg = p
 			}
 
 			limit := DefaultListLimit
+
 			if l, ok := args["limit"].(float64); ok && l > 0 {
 				limit = int(l)
 			}
 
 			info, err := env.Root.Stat(pathArg)
+
 			if err != nil {
 				return "", fmt.Errorf("path not found: %s", pathArg)
 			}
@@ -49,12 +52,14 @@ func LsTool() tool.Tool {
 			}
 
 			dir, err := env.Root.Open(pathArg)
+
 			if err != nil {
 				return "", fmt.Errorf("failed to open directory: %w", err)
 			}
 			defer dir.Close()
 
 			entries, err := dir.ReadDir(-1)
+
 			if err != nil {
 				return "", fmt.Errorf("failed to read directory: %w", err)
 			}
@@ -63,30 +68,33 @@ func LsTool() tool.Tool {
 				return "(empty directory)", nil
 			}
 
-			var results []string
-			entryLimitReached := false
+			sort.Slice(entries, func(i, j int) bool {
+				return entries[i].Name() < entries[j].Name()
+			})
 
-			for i, entry := range entries {
-				if i >= limit {
-					entryLimitReached = true
+			var names []string
+
+			for _, entry := range entries {
+				if len(names) >= limit {
 					break
 				}
 
 				name := entry.Name()
+
 				if entry.IsDir() {
 					name += "/"
 				}
-				results = append(results, name)
+
+				names = append(names, name)
 			}
 
-			sort.Strings(results)
-
-			rawOutput := strings.Join(results, "\n")
-			truncatedOutput, _, bytesTruncated := truncateHead(rawOutput)
+			output := strings.Join(names, "\n")
+			output, _, bytesTruncated := truncateHead(output)
 
 			var notices []string
-			if entryLimitReached {
-				notices = append(notices, fmt.Sprintf("%d entries limit reached. Use limit=%d for more", limit, limit*2))
+
+			if len(entries) > limit {
+				notices = append(notices, fmt.Sprintf("%d entries limit reached", limit))
 			}
 
 			if bytesTruncated {
@@ -94,10 +102,10 @@ func LsTool() tool.Tool {
 			}
 
 			if len(notices) > 0 {
-				truncatedOutput += fmt.Sprintf("\n\n[%s]", strings.Join(notices, ". "))
+				output += fmt.Sprintf("\n\n[%s]", strings.Join(notices, ". "))
 			}
 
-			return truncatedOutput, nil
+			return output, nil
 		},
 	}
 }

@@ -59,18 +59,14 @@ func (a *App) respondToPrompt(approved bool) {
 	a.promptMu.Lock()
 	defer a.promptMu.Unlock()
 
-	if !a.promptActive {
+	if !a.promptActive || a.currentPrompt == nil {
 		return
 	}
 
-	select {
-	case req := <-a.promptChan:
-		req.response <- approved
-		a.promptActive = false
-		a.input.SetPlaceholder("Ask anything...")
-
-	default:
-	}
+	a.currentPrompt.response <- approved
+	a.currentPrompt = nil
+	a.promptActive = false
+	a.input.SetPlaceholder("Ask anything...")
 }
 
 func (a *App) promptUser(message string) (bool, error) {
@@ -90,14 +86,13 @@ func (a *App) handlePromptRequests() {
 	for req := range a.promptChan {
 		a.promptMu.Lock()
 		a.promptActive = true
+		a.currentPrompt = &req
 		a.promptMu.Unlock()
 
 		a.app.QueueUpdateDraw(func() {
 			fmt.Fprint(a.chatView, markdown.FormatPrompt("Confirm Command", req.message, a.chatWidth))
 			a.input.SetPlaceholder("y/n")
 		})
-
-		a.promptChan <- req
 	}
 }
 
