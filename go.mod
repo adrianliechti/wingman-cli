@@ -1,6 +1,6 @@
 module github.com/adrianliechti/wingman-cli
 
-go 1.25.5
+go 1.25.0
 
 require (
 	github.com/alecthomas/chroma/v2 v2.22.0
