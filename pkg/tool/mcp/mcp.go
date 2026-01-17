@@ -23,10 +23,6 @@ type Manager struct {
 }
 
 func New(cfg *Config) *Manager {
-	if cfg == nil {
-		cfg = &Config{}
-	}
-
 	return &Manager{
 		Config: cfg,
 

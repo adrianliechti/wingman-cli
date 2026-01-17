@@ -25,10 +25,6 @@ func loadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-
 		return nil, fmt.Errorf("failed to read mcp.json: %w", err)
 	}
 
