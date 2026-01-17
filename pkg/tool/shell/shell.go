@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
@@ -131,24 +130,6 @@ func buildCommand(ctx context.Context, command, workingDir string) *exec.Cmd {
 	setupProcessGroup(cmd)
 
 	return cmd
-}
-
-func setupProcessGroup(cmd *exec.Cmd) {
-	if runtime.GOOS != "windows" {
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	}
-}
-
-func killProcessGroup(cmd *exec.Cmd) {
-	if cmd.Process == nil {
-		return
-	}
-
-	if runtime.GOOS == "windows" {
-		exec.Command("taskkill", "/T", "/F", "/PID", fmt.Sprintf("%d", cmd.Process.Pid)).Run()
-	} else {
-		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
 }
 
 func truncateOutput(output string, sessionDir string) (truncated string, tempFile string) {

@@ -5,7 +5,7 @@ go 1.25.5
 require (
 	github.com/alecthomas/chroma/v2 v2.22.0
 	github.com/bmatcuk/doublestar/v4 v4.9.2
-	github.com/gdamore/tcell/v3 v3.1.1
+	github.com/gdamore/tcell/v2 v2.13.7
 	github.com/go-git/go-git/v5 v5.16.4
 	github.com/modelcontextprotocol/go-sdk v1.2.0
 	github.com/openai/openai-go/v3 v3.16.0
@@ -17,7 +17,6 @@ require (
 require (
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/gdamore/encoding v1.0.1 // indirect
-	github.com/gdamore/tcell/v2 v2.13.7 // indirect
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
 	github.com/go-git/go-billy/v5 v5.6.2 // indirect
 	github.com/google/jsonschema-go v0.3.0 // indirect

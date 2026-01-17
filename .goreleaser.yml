@@ -1,0 +1,39 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - binary: wingman
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+
+brews:
+  - repository:
+      owner: adrianliechti
+      name: homebrew-tap
+
+    commit_author:
+      name: Adrian Liechti
+      email: adrian@localhost
+
+scoops:
+  - repository:
+      owner: adrianliechti
+      name: scoop-bucket
+
+    commit_author:
+      name: Adrian Liechti
+      email: adrian@localhost
