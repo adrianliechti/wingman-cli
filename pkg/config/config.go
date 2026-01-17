@@ -77,7 +77,7 @@ func Default() (*Config, error) {
 
 	skills, _ := skill.Discover(workingDir)
 
-	instructions, err := renderInstructions(env, skills)
+	instructions, err := renderInstructions(env, skills, mcp != nil)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to render instructions: %w", err)
@@ -155,9 +155,10 @@ func createClient() (openai.Client, string) {
 type instructionData struct {
 	*tool.Environment
 	Skills string
+	MCP    bool
 }
 
-func renderInstructions(env *tool.Environment, skills []skill.Skill) (string, error) {
+func renderInstructions(env *tool.Environment, skills []skill.Skill, hasMCP bool) (string, error) {
 	tmpl, err := template.New("instructions").Parse(instructionsTemplate)
 	if err != nil {
 		return "", err
@@ -166,6 +167,7 @@ func renderInstructions(env *tool.Environment, skills []skill.Skill) (string, er
 	data := instructionData{
 		Environment: env,
 		Skills:      skill.FormatForPrompt(skills),
+		MCP:         hasMCP,
 	}
 
 	var buf bytes.Buffer
