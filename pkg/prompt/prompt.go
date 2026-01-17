@@ -1,0 +1,29 @@
+package prompt
+
+import (
+	"bytes"
+	_ "embed"
+	"text/template"
+)
+
+//go:embed instructions.txt
+var Instructions string
+
+//go:embed compaction.txt
+var Compaction string
+
+func Render(tmpl string, data any) (string, error) {
+	t, err := template.New("prompt").Parse(tmpl)
+
+	if err != nil {
+		return "", err
+	}
+
+	var buf bytes.Buffer
+
+	if err := t.Execute(&buf, data); err != nil {
+		return "", err
+	}
+
+	return buf.String(), nil
+}

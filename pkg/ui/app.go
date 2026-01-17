@@ -6,16 +6,17 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
+
+	"github.com/openai/openai-go/v3/responses"
+
 	"github.com/adrianliechti/wingman-cli/pkg/agent"
 	"github.com/adrianliechti/wingman-cli/pkg/config"
 	"github.com/adrianliechti/wingman-cli/pkg/markdown"
 	"github.com/adrianliechti/wingman-cli/pkg/theme"
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 	"github.com/adrianliechti/wingman-cli/pkg/tool/mcp"
-
-	"github.com/gdamore/tcell/v2"
-	"github.com/openai/openai-go/v3/responses"
-	"github.com/rivo/tview"
 )
 
 type promptRequest struct {
@@ -53,6 +54,9 @@ type App struct {
 	mcpError      error
 	mcpConnecting bool
 	startupError  string
+
+	statusBar   *tview.TextView
+	totalTokens int64
 }
 
 func New(ctx context.Context, cfg *config.Config, ag *agent.Agent) *App {
@@ -69,6 +73,11 @@ func New(ctx context.Context, cfg *config.Config, ag *agent.Agent) *App {
 	cfg.Environment.PromptUser = a.promptUser
 
 	return a
+}
+
+func (a *App) stop() {
+	a.app.EnableMouse(false)
+	a.app.Stop()
 }
 
 func (a *App) promptUser(message string) (bool, error) {
@@ -201,6 +210,28 @@ func (a *App) setupUI() {
 	a.updateWelcomeView()
 }
 
+func (a *App) updateStatusBar() {
+	t := theme.Default
+
+	if a.totalTokens > 0 {
+		a.statusBar.SetText(fmt.Sprintf("[%s]%s[-] • [%s]%s[-]", t.BrBlack, formatTokens(a.totalTokens), t.Cyan, a.config.Model))
+	} else {
+		a.statusBar.SetText(fmt.Sprintf("[%s]%s[-]", t.Cyan, a.config.Model))
+	}
+}
+
+func formatTokens(tokens int64) string {
+	if tokens >= 1000000 {
+		return fmt.Sprintf("%.1fM", float64(tokens)/1000000)
+	}
+
+	if tokens >= 1000 {
+		return fmt.Sprintf("%.1fK", float64(tokens)/1000)
+	}
+
+	return fmt.Sprintf("%d", tokens)
+}
+
 func (a *App) updateWelcomeView() {
 	var sb strings.Builder
 
@@ -231,14 +262,14 @@ func (a *App) buildLayout() *tview.Flex {
 		SetText(fmt.Sprintf("[%s]enter[-] [%s]send[-]", t.BrBlack, t.Foreground))
 	inputHint.SetBackgroundColor(tcell.ColorDefault)
 
-	statusBar := tview.NewTextView().
+	a.statusBar = tview.NewTextView().
 		SetDynamicColors(true).
 		SetTextAlign(tview.AlignRight)
-	statusBar.SetText(fmt.Sprintf("[%s]%s[-]", t.Cyan, a.config.Model))
-	statusBar.SetBackgroundColor(tcell.ColorDefault)
+	a.updateStatusBar()
+	a.statusBar.SetBackgroundColor(tcell.ColorDefault)
 
 	bottomBar.AddItem(inputHint, 0, 1, false)
-	bottomBar.AddItem(statusBar, 0, 1, false)
+	bottomBar.AddItem(a.statusBar, 0, 1, false)
 
 	bottomBarContainer := tview.NewFlex().SetDirection(tview.FlexColumn)
 	bottomBarContainer.AddItem(nil, 4, 0, false)
@@ -299,7 +330,7 @@ func (a *App) buildLayout() *tview.Flex {
 
 func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	if event.Key() == tcell.KeyCtrlC {
-		a.app.Stop()
+		a.stop()
 		return nil
 	}
 
@@ -314,6 +345,8 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	if event.Key() == tcell.KeyCtrlL {
 		a.chatView.Clear()
 		a.agent.Clear()
+		a.totalTokens = 0
+		a.updateStatusBar()
 		return nil
 	}
 
@@ -398,12 +431,14 @@ func (a *App) submitInput() {
 
 	switch query {
 	case "/quit":
-		a.app.Stop()
+		a.stop()
 		return
 
 	case "/clear":
 		a.chatView.Clear()
 		a.agent.Clear()
+		a.totalTokens = 0
+		a.updateStatusBar()
 		a.input.SetText("", true)
 		return
 
@@ -432,11 +467,40 @@ func (a *App) streamResponse(query string) {
 	var content strings.Builder
 	var streamErr error
 	var currentTool string
+	var lastCompaction *agent.CompactionInfo
 
 	for msg, err := range a.agent.Send(a.ctx, query, a.allTools()) {
 		if err != nil {
 			streamErr = err
 			break
+		}
+
+		if msg.Usage != nil {
+			a.totalTokens = msg.Usage.InputTokens + msg.Usage.OutputTokens
+
+			a.app.QueueUpdateDraw(func() {
+				a.updateStatusBar()
+			})
+
+			continue
+		}
+
+		if msg.Compaction != nil {
+			if msg.Compaction.InProgress {
+				a.app.QueueUpdateDraw(func() {
+					a.rerenderChat()
+					fmt.Fprint(a.chatView, markdown.FormatCompactionProgress(msg.Compaction.FromTokens, a.chatWidth))
+				})
+			} else {
+				lastCompaction = msg.Compaction
+				a.totalTokens = msg.Compaction.ToTokens
+
+				a.app.QueueUpdateDraw(func() {
+					a.updateStatusBar()
+				})
+			}
+
+			continue
 		}
 
 		if msg.ToolCall != nil {
@@ -474,6 +538,10 @@ func (a *App) streamResponse(query string) {
 			fmt.Fprintf(a.chatView, "\n[%s]Error: %v[-]\n\n", t.Red, streamErr)
 		} else {
 			a.rerenderChat()
+
+			if lastCompaction != nil {
+				fmt.Fprint(a.chatView, markdown.FormatCompaction(lastCompaction.FromTokens, lastCompaction.ToTokens, a.chatWidth))
+			}
 		}
 
 		a.isStreaming = false
@@ -486,6 +554,10 @@ func (a *App) rerenderChatWithStreaming(streamingContent string) {
 	for _, item := range a.agent.Messages() {
 		if msg := item.OfMessage; msg != nil {
 			content := msg.Content.OfString.Value
+
+			if strings.HasPrefix(content, "<conversation_summary>") {
+				continue
+			}
 
 			switch msg.Role {
 			case responses.EasyInputMessageRoleUser:
@@ -518,6 +590,10 @@ func (a *App) rerenderChatWithToolProgress(streamingContent string, toolName str
 	for _, item := range a.agent.Messages() {
 		if msg := item.OfMessage; msg != nil {
 			content := msg.Content.OfString.Value
+
+			if strings.HasPrefix(content, "<conversation_summary>") {
+				continue
+			}
 
 			switch msg.Role {
 			case responses.EasyInputMessageRoleUser:
@@ -556,6 +632,10 @@ func (a *App) rerenderChat() {
 	for _, item := range a.agent.Messages() {
 		if msg := item.OfMessage; msg != nil {
 			content := msg.Content.OfString.Value
+
+			if strings.HasPrefix(content, "<conversation_summary>") {
+				continue
+			}
 
 			switch msg.Role {
 			case responses.EasyInputMessageRoleUser:

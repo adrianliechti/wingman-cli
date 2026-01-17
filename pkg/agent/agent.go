@@ -17,13 +17,21 @@ import (
 type Agent struct {
 	*config.Config
 
-	messages []responses.ResponseInputItemUnionParam
+	messages        []responses.ResponseInputItemUnionParam
+	lastInputTokens int64
 }
 
 type Message struct {
 	Content    []Content
 	ToolCall   *ToolCall
 	ToolResult *ToolResult
+	Compaction *CompactionInfo
+	Usage      *Usage
+}
+
+type Usage struct {
+	InputTokens  int64
+	OutputTokens int64
 }
 
 type Content struct {
@@ -73,7 +81,11 @@ func (a *Agent) Send(ctx context.Context, query string, tools []tool.Tool) iter.
 				},
 
 				Tools: formattedTools,
+
+				Truncation: responses.ResponseNewParamsTruncationAuto,
 			})
+
+			var usage Usage
 
 			for stream.Next() {
 				event := stream.Current()
@@ -81,7 +93,14 @@ func (a *Agent) Send(ctx context.Context, query string, tools []tool.Tool) iter.
 				if event.Type == "response.output_text.delta" {
 					fullResponse.WriteString(event.Delta)
 
-					msg := Message{Content: []Content{{Text: event.Delta}}}
+					msg := Message{
+						Content: []Content{
+							{
+								Text: event.Delta,
+							},
+						},
+					}
+
 					if !yield(msg, nil) {
 						return
 					}
@@ -89,6 +108,12 @@ func (a *Agent) Send(ctx context.Context, query string, tools []tool.Tool) iter.
 
 				if event.Type == "response.output_item.done" && event.Item.Type == "function_call" {
 					toolCalls = append(toolCalls, event.Item.AsFunctionCall())
+				}
+
+				if event.Response.Usage.InputTokens > 0 {
+					usage.InputTokens = event.Response.Usage.InputTokens
+					usage.OutputTokens = event.Response.Usage.OutputTokens
+					a.lastInputTokens = event.Response.Usage.InputTokens
 				}
 			}
 
@@ -106,6 +131,32 @@ func (a *Agent) Send(ctx context.Context, query string, tools []tool.Tool) iter.
 							Content: responses.EasyInputMessageContentUnionParam{OfString: openai.String(text)},
 						},
 					})
+				}
+
+				if usage.InputTokens > 0 {
+					if !yield(Message{Usage: &usage}, nil) {
+						return
+					}
+				}
+
+				if a.shouldCompact(a.lastInputTokens) {
+					if !yield(Message{Compaction: &CompactionInfo{InProgress: true, FromTokens: a.lastInputTokens}}, nil) {
+						return
+					}
+
+					compaction, err := a.compact(ctx, a.lastInputTokens)
+
+					if err != nil {
+						yield(Message{}, err)
+
+						return
+					}
+
+					if compaction != nil {
+						if !yield(Message{Compaction: compaction}, nil) {
+							return
+						}
+					}
 				}
 
 				return

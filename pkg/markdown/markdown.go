@@ -155,10 +155,10 @@ func FormatToolCall(name string, output string, width int) string {
 	fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.Yellow, titleLine)
 
 	for _, line := range strings.Split(output, "\n") {
-		wrapped := wrapLine(fmt.Sprintf("[%s]%s[-]", t.BrBlack, line), contentWidth)
+		wrapped := wrapLine(line, contentWidth)
 
 		for _, wl := range wrapped {
-			fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.Yellow, wl)
+			fmt.Fprintf(&result, "%s[%s]┃[-] [%s]%s[-]\n", indent, t.Yellow, t.BrBlack, wl)
 		}
 	}
 
@@ -176,6 +176,36 @@ func FormatToolProgress(name string, width int) string {
 
 	titleLine := fmt.Sprintf("[%s::b]⚡ %s[-::-] [%s]running...[-]", t.Yellow, name, t.BrBlack)
 	fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.Yellow, titleLine)
+
+	result.WriteString("\n")
+
+	return result.String()
+}
+
+func FormatCompactionProgress(fromTokens int64, width int) string {
+	const indent = "  "
+
+	t := theme.Default
+
+	var result strings.Builder
+
+	titleLine := fmt.Sprintf("[%s::b]⚡ Compacting context[-::-] [%s](%d tokens)...[-]", t.Cyan, t.BrBlack, fromTokens)
+	fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.Cyan, titleLine)
+
+	result.WriteString("\n")
+
+	return result.String()
+}
+
+func FormatCompaction(fromTokens, toTokens int64, width int) string {
+	const indent = "  "
+
+	t := theme.Default
+
+	var result strings.Builder
+
+	titleLine := fmt.Sprintf("[%s::b]⚡ Context compacted[-::-] [%s]%d → %d tokens[-]", t.Cyan, t.BrBlack, fromTokens, toTokens)
+	fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.Cyan, titleLine)
 
 	result.WriteString("\n")
 
