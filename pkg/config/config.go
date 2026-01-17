@@ -9,15 +9,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+
 	"github.com/adrianliechti/wingman-cli/pkg/prompt"
 	"github.com/adrianliechti/wingman-cli/pkg/skill"
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 	"github.com/adrianliechti/wingman-cli/pkg/tool/fs"
 	"github.com/adrianliechti/wingman-cli/pkg/tool/mcp"
 	"github.com/adrianliechti/wingman-cli/pkg/tool/shell"
-
-	"github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/option"
 )
 
 type Config struct {
@@ -93,13 +93,13 @@ func Default() (*Config, error) {
 		Environment:  env,
 		Instructions: instructions,
 
-		MaxContextTokens: 5000,
-		ReserveTokens:    1000,
-		KeepRecentTokens: 2000,
+		// MaxContextTokens: 5000,
+		// ReserveTokens:    1000,
+		// KeepRecentTokens: 2000,
 
-		// MaxContextTokens: 100000,
-		// ReserveTokens:    16000,
-		// KeepRecentTokens: 20000,
+		MaxContextTokens: 180_000,
+		ReserveTokens:    16_000,
+		KeepRecentTokens: 20_000,
 
 		MCP: mcp,
 

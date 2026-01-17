@@ -43,7 +43,7 @@ func SetDark() {
 		IsLight:    false,
 		Background: tcell.GetColor("#161821"),
 		Foreground: tcell.GetColor("#c6c8d1"),
-		Selection:  tcell.GetColor("#272c42"),
+		Selection:  tcell.GetColor("#2a2f3f"),
 		Cursor:     tcell.GetColor("#c6c8d1"),
 		Black:      tcell.GetColor("#1e2132"),
 		Red:        tcell.GetColor("#e27878"),

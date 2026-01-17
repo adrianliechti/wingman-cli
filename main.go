@@ -9,9 +9,9 @@ import (
 	"syscall"
 
 	"github.com/adrianliechti/wingman-cli/pkg/agent"
+	"github.com/adrianliechti/wingman-cli/pkg/app"
 	"github.com/adrianliechti/wingman-cli/pkg/config"
 	"github.com/adrianliechti/wingman-cli/pkg/theme"
-	"github.com/adrianliechti/wingman-cli/pkg/ui"
 )
 
 func main() {
@@ -29,9 +29,9 @@ func main() {
 	ctx := context.Background()
 	agent := agent.New(cfg)
 
-	app := ui.New(ctx, cfg, agent)
+	a := app.New(ctx, cfg, agent)
 
-	if err := app.Run(); err != nil {
+	if err := a.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		cfg.Cleanup()
 		os.Exit(1)

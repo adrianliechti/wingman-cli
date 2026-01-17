@@ -1,169 +1,17 @@
-package ui
+package app
 
 import (
-	"context"
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
 	"github.com/openai/openai-go/v3/responses"
 
-	"github.com/adrianliechti/wingman-cli/pkg/agent"
-	"github.com/adrianliechti/wingman-cli/pkg/config"
 	"github.com/adrianliechti/wingman-cli/pkg/markdown"
 	"github.com/adrianliechti/wingman-cli/pkg/theme"
-	"github.com/adrianliechti/wingman-cli/pkg/tool"
-	"github.com/adrianliechti/wingman-cli/pkg/tool/mcp"
 )
-
-type promptRequest struct {
-	message  string
-	response chan bool
-}
-
-type App struct {
-	app           *tview.Application
-	agent         *agent.Agent
-	config        *config.Config
-	chatView      *tview.TextView
-	errorView     *tview.TextView
-	mcpStatusView *tview.TextView
-	input         *tview.TextArea
-	mainContent   *tview.Flex
-	welcomeView   *tview.TextView
-	chatContainer *tview.Flex
-	inputSection  *tview.Flex
-	inputFrame    *tview.Frame
-	mainLayout    *tview.Flex
-	isWelcomeMode bool
-	isStreaming   bool
-	ctx           context.Context
-	chatWidth     int
-	lastToolName  string
-
-	promptChan   chan promptRequest
-	promptMu     sync.Mutex
-	promptActive bool
-
-	mcpManager    *mcp.Manager
-	mcpTools      []tool.Tool
-	mcpMu         sync.Mutex
-	mcpError      error
-	mcpConnecting bool
-	startupError  string
-
-	statusBar   *tview.TextView
-	totalTokens int64
-}
-
-func New(ctx context.Context, cfg *config.Config, ag *agent.Agent) *App {
-	a := &App{
-		app:           tview.NewApplication(),
-		agent:         ag,
-		config:        cfg,
-		ctx:           ctx,
-		isWelcomeMode: true,
-		isStreaming:   false,
-		promptChan:    make(chan promptRequest),
-	}
-
-	cfg.Environment.PromptUser = a.promptUser
-
-	return a
-}
-
-func (a *App) stop() {
-	a.app.EnableMouse(false)
-	a.app.Stop()
-}
-
-func (a *App) promptUser(message string) (bool, error) {
-	responseChan := make(chan bool, 1)
-
-	a.promptChan <- promptRequest{
-		message:  message,
-		response: responseChan,
-	}
-
-	result := <-responseChan
-
-	return result, nil
-}
-
-func (a *App) Run() error {
-	a.setupUI()
-
-	go a.handlePromptRequests()
-
-	if a.config.MCP != nil {
-		a.mcpConnecting = true
-		a.updateWelcomeView()
-
-		go func() {
-			err := a.initMCP()
-
-			a.mcpConnecting = false
-			a.app.QueueUpdateDraw(func() {
-				a.updateWelcomeView()
-
-				if err != nil || a.mcpError != nil {
-					a.renderMCPInitError(err)
-				}
-			})
-		}()
-	}
-
-	return a.app.SetRoot(a.buildLayout(), true).EnableMouse(true).Run()
-}
-
-func (a *App) initMCP() error {
-	if a.config.MCP == nil {
-		return nil
-	}
-
-	a.mcpManager = a.config.MCP
-
-	if err := a.mcpManager.Connect(a.ctx); err != nil {
-		a.mcpError = err
-	}
-
-	mcpTools, err := a.mcpManager.Tools(a.ctx)
-
-	if err != nil {
-		return err
-	}
-
-	a.mcpMu.Lock()
-	a.mcpTools = mcpTools
-	a.mcpMu.Unlock()
-
-	return nil
-}
-
-func (a *App) allTools() []tool.Tool {
-	a.mcpMu.Lock()
-	defer a.mcpMu.Unlock()
-
-	return append(a.config.Tools, a.mcpTools...)
-}
-
-func (a *App) handlePromptRequests() {
-	for req := range a.promptChan {
-		a.promptMu.Lock()
-		a.promptActive = true
-		a.promptMu.Unlock()
-
-		a.app.QueueUpdateDraw(func() {
-			fmt.Fprint(a.chatView, markdown.FormatPrompt("Confirm Command", req.message, a.chatWidth))
-			a.input.SetPlaceholder("y/n")
-		})
-
-		a.promptChan <- req
-	}
-}
 
 func (a *App) setupUI() {
 	t := theme.Default
@@ -208,38 +56,6 @@ func (a *App) setupUI() {
 	a.mainContent.AddItem(a.welcomeView, 0, 1, false)
 
 	a.updateWelcomeView()
-}
-
-func (a *App) updateStatusBar() {
-	t := theme.Default
-
-	if a.totalTokens > 0 {
-		a.statusBar.SetText(fmt.Sprintf("[%s]%s[-] • [%s]%s[-]", t.BrBlack, formatTokens(a.totalTokens), t.Cyan, a.config.Model))
-	} else {
-		a.statusBar.SetText(fmt.Sprintf("[%s]%s[-]", t.Cyan, a.config.Model))
-	}
-}
-
-func formatTokens(tokens int64) string {
-	if tokens >= 1000000 {
-		return fmt.Sprintf("%.1fM", float64(tokens)/1000000)
-	}
-
-	if tokens >= 1000 {
-		return fmt.Sprintf("%.1fK", float64(tokens)/1000)
-	}
-
-	return fmt.Sprintf("%d", tokens)
-}
-
-func (a *App) updateWelcomeView() {
-	var sb strings.Builder
-
-	sb.WriteString(Logo)
-
-	a.welcomeView.SetText(sb.String())
-
-	a.mcpStatusView.SetText("")
 }
 
 func (a *App) buildLayout() *tview.Flex {
@@ -297,6 +113,7 @@ func (a *App) buildLayout() *tview.Flex {
 
 	a.chatContainer.SetDrawFunc(func(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {
 		newWidth := width - 6
+
 		if newWidth != a.chatWidth && !a.isWelcomeMode && !a.isStreaming {
 			a.chatWidth = newWidth
 			a.rerenderChat()
@@ -328,67 +145,6 @@ func (a *App) buildLayout() *tview.Flex {
 	return a.mainLayout
 }
 
-func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
-	if event.Key() == tcell.KeyCtrlC {
-		a.stop()
-		return nil
-	}
-
-	a.promptMu.Lock()
-	isPrompt := a.promptActive
-	a.promptMu.Unlock()
-
-	if isPrompt {
-		return a.handlePromptInput(event)
-	}
-
-	if event.Key() == tcell.KeyCtrlL {
-		a.chatView.Clear()
-		a.agent.Clear()
-		a.totalTokens = 0
-		a.updateStatusBar()
-		return nil
-	}
-
-	if event.Key() == tcell.KeyEnter && !a.isStreaming {
-		a.submitInput()
-		return nil
-	}
-
-	return event
-}
-
-func (a *App) handlePromptInput(event *tcell.EventKey) *tcell.EventKey {
-	switch event.Rune() {
-	case 'y', 'Y':
-		a.respondToPrompt(true)
-		return nil
-	case 'n', 'N':
-		a.respondToPrompt(false)
-		return nil
-	}
-
-	return nil
-}
-
-func (a *App) respondToPrompt(approved bool) {
-	a.promptMu.Lock()
-	defer a.promptMu.Unlock()
-
-	if !a.promptActive {
-		return
-	}
-
-	select {
-	case req := <-a.promptChan:
-		req.response <- approved
-		a.promptActive = false
-		a.input.SetPlaceholder("Ask anything...")
-
-	default:
-	}
-}
-
 func (a *App) updateInputHeight() {
 	text := a.input.GetText()
 	lines := strings.Count(text, "\n") + 1
@@ -400,152 +156,36 @@ func (a *App) updateInputHeight() {
 	a.mainLayout.ResizeItem(a.inputSection, height, 0)
 }
 
-func (a *App) switchToChat() {
-	if !a.isWelcomeMode {
-		return
-	}
-
-	a.isWelcomeMode = false
-	a.mainContent.Clear()
-	a.mainContent.SetDirection(tview.FlexRow)
-	a.mainContent.AddItem(a.errorView, 0, 0, false)
-	a.mainContent.AddItem(a.chatView, 0, 1, false)
-
-	a.updateErrorView()
-
-	a.mainLayout.Clear()
-	a.mainLayout.
-		AddItem(a.chatContainer, 0, 1, false).
-		AddItem(a.inputSection, 6, 0, true)
-}
-
-func (a *App) submitInput() {
-	if a.isStreaming {
-		return
-	}
-
-	query := a.input.GetText()
-	if query == "" {
-		return
-	}
-
-	switch query {
-	case "/quit":
-		a.stop()
-		return
-
-	case "/clear":
-		a.chatView.Clear()
-		a.agent.Clear()
-		a.totalTokens = 0
-		a.updateStatusBar()
-		a.input.SetText("", true)
-		return
-
-	case "/help":
-		a.switchToChat()
-		a.input.SetText("", true)
-		t := theme.Default
-		fmt.Fprintf(a.chatView, "[%s::b]Commands[-::-]\n", t.Cyan)
-		fmt.Fprintf(a.chatView, "  [%s]/help[-]   - Show this help\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/clear[-]  - Clear chat history\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/quit[-]   - Exit application\n\n", t.BrCyan)
-		return
-	}
-
-	a.switchToChat()
-	a.isStreaming = true
-	a.input.SetText("", true)
-	fmt.Fprint(a.chatView, markdown.FormatUserMessage(query, a.chatWidth))
-
-	go a.streamResponse(query)
-}
-
-func (a *App) streamResponse(query string) {
+func (a *App) updateStatusBar() {
 	t := theme.Default
 
-	var content strings.Builder
-	var streamErr error
-	var currentTool string
-	var lastCompaction *agent.CompactionInfo
+	if a.totalTokens > 0 {
+		a.statusBar.SetText(fmt.Sprintf("[%s]%s[-] • [%s]%s[-]", t.BrBlack, formatTokens(a.totalTokens), t.Cyan, a.config.Model))
+	} else {
+		a.statusBar.SetText(fmt.Sprintf("[%s]%s[-]", t.Cyan, a.config.Model))
+	}
+}
 
-	for msg, err := range a.agent.Send(a.ctx, query, a.allTools()) {
-		if err != nil {
-			streamErr = err
-			break
-		}
-
-		if msg.Usage != nil {
-			a.totalTokens = msg.Usage.InputTokens + msg.Usage.OutputTokens
-
-			a.app.QueueUpdateDraw(func() {
-				a.updateStatusBar()
-			})
-
-			continue
-		}
-
-		if msg.Compaction != nil {
-			if msg.Compaction.InProgress {
-				a.app.QueueUpdateDraw(func() {
-					a.rerenderChat()
-					fmt.Fprint(a.chatView, markdown.FormatCompactionProgress(msg.Compaction.FromTokens, a.chatWidth))
-				})
-			} else {
-				lastCompaction = msg.Compaction
-				a.totalTokens = msg.Compaction.ToTokens
-
-				a.app.QueueUpdateDraw(func() {
-					a.updateStatusBar()
-				})
-			}
-
-			continue
-		}
-
-		if msg.ToolCall != nil {
-			currentTool = msg.ToolCall.Name
-
-			a.app.QueueUpdateDraw(func() {
-				a.rerenderChatWithToolProgress(content.String(), currentTool)
-			})
-
-			continue
-		}
-
-		if msg.ToolResult != nil {
-			currentTool = ""
-			content.Reset()
-
-			a.app.QueueUpdateDraw(func() {
-				a.rerenderChat()
-			})
-
-			continue
-		}
-
-		for _, c := range msg.Content {
-			content.WriteString(c.Text)
-		}
-
-		a.app.QueueUpdateDraw(func() {
-			a.rerenderChatWithStreaming(content.String())
-		})
+func formatTokens(tokens int64) string {
+	if tokens >= 1000000 {
+		return fmt.Sprintf("%.1fM", float64(tokens)/1000000)
 	}
 
-	a.app.QueueUpdateDraw(func() {
-		if streamErr != nil {
-			fmt.Fprintf(a.chatView, "\n[%s]Error: %v[-]\n\n", t.Red, streamErr)
-		} else {
-			a.rerenderChat()
+	if tokens >= 1000 {
+		return fmt.Sprintf("%.1fK", float64(tokens)/1000)
+	}
 
-			if lastCompaction != nil {
-				fmt.Fprint(a.chatView, markdown.FormatCompaction(lastCompaction.FromTokens, lastCompaction.ToTokens, a.chatWidth))
-			}
-		}
+	return fmt.Sprintf("%d", tokens)
+}
 
-		a.isStreaming = false
-	})
+func (a *App) updateWelcomeView() {
+	var sb strings.Builder
+
+	sb.WriteString(Logo)
+
+	a.welcomeView.SetText(sb.String())
+
+	a.mcpStatusView.SetText("")
 }
 
 func (a *App) rerenderChatWithStreaming(streamingContent string) {
@@ -577,6 +217,7 @@ func (a *App) rerenderChatWithStreaming(streamingContent string) {
 			if len(output) > 500 {
 				output = output[:500] + "..."
 			}
+
 			fmt.Fprint(a.chatView, markdown.FormatToolCall(a.lastToolName, output, a.chatWidth))
 		}
 	}
@@ -613,6 +254,7 @@ func (a *App) rerenderChatWithToolProgress(streamingContent string, toolName str
 			if len(output) > 500 {
 				output = output[:500] + "..."
 			}
+
 			fmt.Fprint(a.chatView, markdown.FormatToolCall(a.lastToolName, output, a.chatWidth))
 		}
 	}
@@ -686,6 +328,7 @@ func (a *App) updateErrorView() {
 	}
 
 	width := a.chatWidth
+
 	if width == 0 {
 		width = 80
 	}

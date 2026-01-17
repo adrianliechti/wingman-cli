@@ -1,6 +1,8 @@
 package tool
 
-import "os"
+import (
+	"os"
+)
 
 type Tool struct {
 	Name        string

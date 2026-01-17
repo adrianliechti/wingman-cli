@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/rivo/tview"
+
 	"github.com/adrianliechti/wingman-cli/pkg/theme"
 )
 
@@ -158,7 +160,8 @@ func FormatToolCall(name string, output string, width int) string {
 		wrapped := wrapLine(line, contentWidth)
 
 		for _, wl := range wrapped {
-			fmt.Fprintf(&result, "%s[%s]┃[-] [%s]%s[-]\n", indent, t.Yellow, t.BrBlack, wl)
+			escaped := tview.Escape(wl)
+			fmt.Fprintf(&result, "%s[%s]┃[-] [%s]%s[-]\n", indent, t.Yellow, t.BrBlack, escaped)
 		}
 	}
 

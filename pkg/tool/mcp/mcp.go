@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/adrianliechti/wingman-cli/pkg/tool"
-
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/adrianliechti/wingman-cli/pkg/tool"
 )
 
 type Manager struct {
