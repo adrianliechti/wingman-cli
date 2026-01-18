@@ -42,6 +42,49 @@ func ShellTool() tool.Tool {
 	}
 }
 
+// isSafeCommand checks if the command starts with a known safe/read-only command
+func isSafeCommand(command string) bool {
+	command = strings.TrimSpace(command)
+
+	// Extract words from the command
+	words := strings.Fields(command)
+	if len(words) == 0 {
+		return false
+	}
+
+	cmd := words[0]
+
+	// Handle paths like /usr/bin/ls or ./script
+	cmd = filepath.Base(cmd)
+
+	// First, check if it's a simple safe command (no subcommand check needed)
+	for _, safe := range safeCommands {
+		if cmd == safe {
+			return true
+		}
+	}
+
+	// Check if this command requires subcommand validation
+	if allowedSubcmds, hasSubcmds := safeSubcommands[cmd]; hasSubcmds {
+		if len(words) < 2 {
+			// Command requires subcommand but none provided
+			return false
+		}
+
+		// Get the rest of the command after the main command
+		restOfCommand := strings.TrimSpace(strings.TrimPrefix(command, words[0]))
+
+		for _, subCmd := range allowedSubcmds {
+			if strings.HasPrefix(restOfCommand, subCmd) {
+				return true
+			}
+		}
+		return false
+	}
+
+	return false
+}
+
 func executeShell(env *tool.Environment, args map[string]any) (string, error) {
 	command, ok := args["command"].(string)
 	if !ok || command == "" {
@@ -53,7 +96,7 @@ func executeShell(env *tool.Environment, args map[string]any) (string, error) {
 		timeout = int(t)
 	}
 
-	if env.PromptUser != nil {
+	if env.PromptUser != nil && !isSafeCommand(command) {
 		approved, err := env.PromptUser("$" + command)
 		if err != nil {
 			return "", fmt.Errorf("failed to get user approval: %w", err)
