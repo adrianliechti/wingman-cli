@@ -197,7 +197,8 @@ func (a *App) submitInput() {
 	a.clearPendingContent()
 
 	go func() {
-		instructions := a.config.Instructions
+		instructions := a.config.AgentInstructions
+
 		if a.currentMode == ModePlan {
 			instructions = a.config.PlanningInstructions
 		}

@@ -8,9 +8,7 @@ Environment:
 Capabilities:
 - Filesystem: read, write, edit files; list directories; find files by pattern
 - Shell: execute commands (requires user approval)
-{{- if .MCP}}
-- MCP: additional tools from configured MCP servers
-{{- end}}
+- Tools: use any available tools when helpful for the task
 
 Workflow:
 1. Gather context first - read relevant files, explore the codebase structure
@@ -28,4 +26,11 @@ Skills:
 When a user's request matches a skill's description, read the skill's SKILL.md file to load detailed instructions before proceeding.
 
 {{.Skills}}
+{{end}}
+{{if .Instructions}}
+Project Guidelines (from AGENTS.md):
+
+```text
+{{.Instructions}}
+```
 {{end}}

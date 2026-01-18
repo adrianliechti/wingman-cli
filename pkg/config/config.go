@@ -37,8 +37,9 @@ type Config struct {
 	Model  string
 	Client openai.Client
 
-	Environment          *tool.Environment
-	Instructions         string
+	Environment *tool.Environment
+
+	AgentInstructions    string
 	PlanningInstructions string
 
 	MaxContextTokens int64
@@ -90,13 +91,15 @@ func Default() (*Config, func(), error) {
 
 	skills, _ := skill.Discover(wd)
 
-	instructions, err := renderInstructions(env, skills, mcp != nil)
+	instructions := readAgentsFile(wd)
+
+	agentinstructions, err := renderAgentInstructions(env, instructions, skills)
 
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to render instructions: %w", err)
 	}
 
-	planningInstructions, err := renderPlanningInstructions(env, skills, mcp != nil)
+	planningInstructions, err := renderPlanningInstructions(env, instructions, skills)
 
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to render planning instructions: %w", err)
@@ -109,7 +112,7 @@ func Default() (*Config, func(), error) {
 		Model:  model,
 
 		Environment:          env,
-		Instructions:         instructions,
+		AgentInstructions:    agentinstructions,
 		PlanningInstructions: planningInstructions,
 
 		// MaxContextTokens: 5000,
@@ -184,25 +187,25 @@ func createClient() (openai.Client, string) {
 
 type instructionData struct {
 	*tool.Environment
-	Skills string
-	MCP    bool
+	Skills       string
+	Instructions string
 }
 
-func renderInstructions(env *tool.Environment, skills []skill.Skill, hasMCP bool) (string, error) {
+func renderAgentInstructions(env *tool.Environment, instructions string, skills []skill.Skill) (string, error) {
 	data := instructionData{
-		Environment: env,
-		Skills:      skill.FormatForPrompt(skills),
-		MCP:         hasMCP,
+		Environment:  env,
+		Skills:       skill.FormatForPrompt(skills),
+		Instructions: instructions,
 	}
 
 	return prompt.Render(prompt.Instructions, data)
 }
 
-func renderPlanningInstructions(env *tool.Environment, skills []skill.Skill, hasMCP bool) (string, error) {
+func renderPlanningInstructions(env *tool.Environment, instructions string, skills []skill.Skill) (string, error) {
 	data := instructionData{
-		Environment: env,
-		Skills:      skill.FormatForPrompt(skills),
-		MCP:         hasMCP,
+		Environment:  env,
+		Skills:       skill.FormatForPrompt(skills),
+		Instructions: instructions,
 	}
 
 	return prompt.Render(prompt.Planning, data)
@@ -226,4 +229,14 @@ func (c *Config) Cleanup() {
 	if c.Environment.Root != nil {
 		c.Environment.Root.Close()
 	}
+}
+
+func readAgentsFile(wd string) string {
+	data, err := os.ReadFile(filepath.Join(wd, "AGENTS.md"))
+
+	if err != nil {
+		return ""
+	}
+
+	return strings.TrimSpace(string(data))
 }

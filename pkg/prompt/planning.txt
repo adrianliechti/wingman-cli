@@ -16,9 +16,7 @@ Environment:
 Capabilities for Research (read-only):
 - Filesystem: read files, list directories, find files by pattern
 - Shell: execute read-only commands for gathering information
-{{- if .MCP}}
-- MCP: additional tools from configured MCP servers
-{{- end}}
+- Tools: use any available tools when helpful for research
 
 Workflow:
 1. RESEARCH: Gather context autonomously - read relevant files, explore codebase structure, understand the problem space
@@ -53,4 +51,11 @@ Guidelines:
 {{if .Skills}}
 Skills (for reference during planning):
 {{.Skills}}
+{{end}}
+{{if .Instructions}}
+Project Guidelines (from AGENTS.md):
+
+```text
+{{.Instructions}}
+```
 {{end}}
