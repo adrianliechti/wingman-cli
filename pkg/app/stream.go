@@ -162,4 +162,21 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 
 		a.phase = PhaseIdle
 	})
+
+	if streamErr == nil {
+		var commit string
+
+		for _, c := range input {
+			if c.Text != "" {
+				commit = c.Text
+				break
+			}
+		}
+
+		if commit == "" {
+			commit = "<unknown>"
+		}
+
+		a.commitRewind(commit)
+	}
 }

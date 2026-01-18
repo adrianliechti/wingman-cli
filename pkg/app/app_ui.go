@@ -160,6 +160,7 @@ func (a *App) submitInput() {
 		fmt.Fprintf(a.chatView, "  [%s]/help[-]   - Show this help\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/model[-]  - Select AI model\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/paste[-]  - Paste from clipboard (Ctrl+V / Cmd+V / Paste)\n", t.BrCyan)
+		fmt.Fprintf(a.chatView, "  [%s]/rewind[-] - Restore to previous checkpoint\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/clear[-]  - Clear chat history\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/quit[-]   - Exit application\n\n", t.BrCyan)
 		a.chatView.ScrollToEnd()
@@ -173,6 +174,11 @@ func (a *App) submitInput() {
 	case "/model":
 		a.input.SetText("", true)
 		a.showModelPicker()
+		return
+
+	case "/rewind":
+		a.input.SetText("", true)
+		a.showRewindPicker()
 		return
 	}
 

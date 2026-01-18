@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/gdamore/tcell/v2"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/adrianliechti/wingman-cli/pkg/agent"
 	"github.com/adrianliechti/wingman-cli/pkg/config"
+	"github.com/adrianliechti/wingman-cli/pkg/rewind"
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 	"github.com/adrianliechti/wingman-cli/pkg/tool/mcp"
 )
@@ -58,6 +60,9 @@ type App struct {
 	mcpMu         sync.Mutex
 	mcpError      error
 	mcpConnecting bool
+
+	// Rewind state
+	rewind *rewind.Manager
 }
 
 func New(ctx context.Context, cfg *config.Config, ag *agent.Agent) *App {
@@ -74,10 +79,21 @@ func New(ctx context.Context, cfg *config.Config, ag *agent.Agent) *App {
 
 	cfg.Environment.PromptUser = a.promptUser
 
+	rm, err := rewind.New(cfg.Environment.WorkingDir())
+	if err != nil {
+		a.startupError = fmt.Sprintf("rewind init failed: %v", err)
+	} else {
+		a.rewind = rm
+	}
+
 	return a
 }
 
 func (a *App) stop() {
+	if a.rewind != nil {
+		a.rewind.Cleanup()
+	}
+
 	a.app.EnableMouse(false)
 	a.app.Stop()
 }
