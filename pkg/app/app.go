@@ -60,6 +60,8 @@ type App struct {
 	inputHint   *tview.TextView
 	totalTokens int64
 	currentMode Mode
+
+	modelPickerActive bool
 }
 
 func New(ctx context.Context, cfg *config.Config, ag *agent.Agent) *App {

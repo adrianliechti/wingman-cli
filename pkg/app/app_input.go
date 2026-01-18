@@ -18,6 +18,10 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
+	if a.modelPickerActive {
+		return event
+	}
+
 	a.promptMu.Lock()
 	isPrompt := a.promptActive
 	a.promptMu.Unlock()
@@ -150,8 +154,14 @@ func (a *App) submitInput() {
 		t := theme.Default
 		fmt.Fprintf(a.chatView, "[%s::b]Commands[-::-]\n", t.Cyan)
 		fmt.Fprintf(a.chatView, "  [%s]/help[-]   - Show this help\n", t.BrCyan)
+		fmt.Fprintf(a.chatView, "  [%s]/model[-]  - Select AI model\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/clear[-]  - Clear chat history\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/quit[-]   - Exit application\n\n", t.BrCyan)
+		return
+
+	case "/model":
+		a.input.SetText("", true)
+		a.showModelPicker()
 		return
 	}
 

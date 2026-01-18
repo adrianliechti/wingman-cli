@@ -20,6 +20,19 @@ import (
 	"github.com/adrianliechti/wingman-cli/pkg/tool/shell"
 )
 
+// AvailableModels lists supported models in priority order
+var AvailableModels = []string{
+	"claude-opus-4-5",
+	"claude-sonnet-4-5",
+	"gpt-5.2-codex",
+	"gpt-5.2",
+	"gpt-5.1-codex-max",
+	"gpt-5.1-codex",
+	"gpt-5.1",
+	"gpt-5-codex",
+	"gpt-5",
+}
+
 type Config struct {
 	Model  string
 	Client openai.Client
@@ -96,7 +109,7 @@ func Default() (*Config, func(), error) {
 		Model:  model,
 
 		Environment:          env,
-		Instructions: instructions,
+		Instructions:         instructions,
 		PlanningInstructions: planningInstructions,
 
 		// MaxContextTokens: 5000,
@@ -128,7 +141,7 @@ func createClient() (openai.Client, string) {
 		}
 
 		if model == "" {
-			model = "gpt-5.2-codex"
+			model = AvailableModels[0]
 		}
 
 		client := openai.NewClient(
@@ -152,7 +165,7 @@ func createClient() (openai.Client, string) {
 		}
 
 		if model == "" {
-			model = "gpt-5.2-codex"
+			model = AvailableModels[0]
 		}
 
 		client := openai.NewClient(
@@ -166,7 +179,7 @@ func createClient() (openai.Client, string) {
 	return openai.NewClient(
 		option.WithBaseURL("http://localhost:8080/v1"),
 		option.WithAPIKey("-"),
-	), "gpt-5.2-codex"
+	), AvailableModels[0]
 }
 
 type instructionData struct {
