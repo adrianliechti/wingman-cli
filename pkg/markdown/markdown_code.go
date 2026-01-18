@@ -7,6 +7,7 @@ import (
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
+	"github.com/rivo/tview"
 
 	"github.com/adrianliechti/wingman-cli/pkg/theme"
 )
@@ -42,7 +43,7 @@ func highlightCode(code, lang string) string {
 
 	for _, token := range iterator.Tokens() {
 		entry := style.Get(token.Type)
-		text := token.Value
+		text := tview.Escape(token.Value)
 
 		if entry.Colour.IsSet() {
 			fmt.Fprintf(&result, "[%s]%s[-]", entry.Colour.String(), text)

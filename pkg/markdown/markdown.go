@@ -1,11 +1,16 @@
 package markdown
 
 import (
+	"bytes"
 	"fmt"
 	"regexp"
 	"strings"
 
 	"github.com/rivo/tview"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/renderer"
+	"github.com/yuin/goldmark/util"
 
 	"github.com/adrianliechti/wingman-cli/pkg/theme"
 )
@@ -13,62 +18,51 @@ import (
 func Render(text string) string {
 	t := theme.Default
 
-	// Handle complete code blocks
-	codeBlockRe := regexp.MustCompile("(?s)```(\\w*)\\n(.*?)```")
-
-	text = codeBlockRe.ReplaceAllStringFunc(text, func(match string) string {
-		parts := codeBlockRe.FindStringSubmatch(match)
-
-		if len(parts) >= 3 {
-			lang := parts[1]
-			code := parts[2]
-
-			return formatCodeBlock(code, lang, t)
-		}
-
-		return match
-	})
-
 	// Handle incomplete code blocks (streaming)
 	// Count opening ``` markers that aren't closed
+	completeText := text
+	incompleteCode := ""
+	incompleteLang := ""
+
 	backtickCount := strings.Count(text, "```")
-	hasIncompleteBlock := backtickCount%2 == 1
-
-	if hasIncompleteBlock {
+	if backtickCount%2 == 1 {
+		// Find the last incomplete code block
 		incompleteCodeBlockRe := regexp.MustCompile("(?s)```(\\w*)\\n([^`]*)$")
-		text = incompleteCodeBlockRe.ReplaceAllStringFunc(text, func(match string) string {
-			parts := incompleteCodeBlockRe.FindStringSubmatch(match)
-
-			if len(parts) >= 3 {
-				lang := parts[1]
-				code := parts[2]
-
-				return formatCodeBlock(code, lang, t)
-			}
-
-			return match
-		})
+		matches := incompleteCodeBlockRe.FindStringSubmatchIndex(text)
+		if matches != nil {
+			incompleteLang = text[matches[2]:matches[3]]
+			incompleteCode = text[matches[4]:matches[5]]
+			completeText = text[:matches[0]]
+		}
 	}
 
-	inlineCodeRe := regexp.MustCompile("`([^`]+)`")
-	text = inlineCodeRe.ReplaceAllString(text, fmt.Sprintf("[%s]$1[-]", t.Cyan))
+	// Create goldmark with GFM and custom tview renderer
+	// Priority 100 ensures our renderer takes precedence over the default HTML renderer (1000)
+	md := goldmark.New(
+		goldmark.WithExtensions(extension.GFM),
+		goldmark.WithRenderer(
+			renderer.NewRenderer(
+				renderer.WithNodeRenderers(
+					util.Prioritized(NewTviewRenderer(), 100),
+				),
+			),
+		),
+	)
 
-	h2Re := regexp.MustCompile("(?m)^## (.+)$")
-	text = h2Re.ReplaceAllString(text, fmt.Sprintf("[%s::b]$1[-::-]", t.Magenta))
+	var buf bytes.Buffer
+	if err := md.Convert([]byte(completeText), &buf); err != nil {
+		// Fallback to original text on error
+		return text
+	}
 
-	h1Re := regexp.MustCompile("(?m)^# (.+)$")
-	text = h1Re.ReplaceAllString(text, fmt.Sprintf("[%s::b]$1[-::-]", t.Blue))
+	result := buf.String()
 
-	boldRe := regexp.MustCompile(`\*\*([^*]+)\*\*`)
-	text = boldRe.ReplaceAllString(text, "[::b]$1[::-]")
+	// Append incomplete code block if present
+	if incompleteCode != "" {
+		result += formatCodeBlock(incompleteCode, incompleteLang, t)
+	}
 
-	italicRe := regexp.MustCompile(`\*([^*]+)\*`)
-	text = italicRe.ReplaceAllString(text, "[::i]$1[::-]")
-
-	listRe := regexp.MustCompile(`(?m)^(\s*)- (.+)$`)
-	text = listRe.ReplaceAllString(text, fmt.Sprintf("$1[%s]•[-] $2", t.Yellow))
-
-	return text
+	return result
 }
 
 func FormatUserMessage(content string, width int) string {
@@ -84,7 +78,7 @@ func FormatUserMessage(content string, width int) string {
 		wrapped := wrapLine(line, contentWidth)
 
 		for _, wl := range wrapped {
-			result.WriteString(fmt.Sprintf("%s[%s]┃[-] %s\n", indent, t.Cyan, wl))
+			fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.Cyan, wl)
 		}
 	}
 
@@ -104,16 +98,10 @@ func FormatAssistantMessage(content string, width int) string {
 	rendered := Render(content)
 
 	for _, line := range strings.Split(rendered, "\n") {
-		// Code block lines (contain │ from line numbers) should not be wrapped
-		if strings.Contains(line, "│") {
-			result.WriteString(fmt.Sprintf("%s[%s]┃[-] %s\n", indent, t.Blue, line))
-			continue
-		}
-
 		wrapped := wrapLine(line, contentWidth)
 
 		for _, wl := range wrapped {
-			result.WriteString(fmt.Sprintf("%s[%s]┃[-] %s\n", indent, t.Blue, wl))
+			fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.Blue, wl)
 		}
 	}
 

@@ -1,17 +1,44 @@
 package markdown
 
 import (
-	"regexp"
 	"strings"
-	"unicode/utf8"
+
+	"github.com/mattn/go-runewidth"
 )
 
-var tagRe = regexp.MustCompile(`\[[^\]]*\]`)
-
 func visibleLen(s string) int {
-	clean := tagRe.ReplaceAllString(s, "")
+	runes := []rune(s)
+	count := 0
+	for i := 0; i < len(runes); {
+		if runes[i] == '[' {
+			// Escaped literal '[' => "[[]"
+			if i+2 < len(runes) && runes[i+1] == '[' && runes[i+2] == ']' {
+				count += runewidth.RuneWidth('[')
+				i += 3
+				continue
+			}
+			// Escaped literal ']' => "[]]"
+			if i+2 < len(runes) && runes[i+1] == ']' && runes[i+2] == ']' {
+				count += runewidth.RuneWidth(']')
+				i += 3
+				continue
+			}
+			// Tview tag => "[... ]" with no nested '['
+			j := i + 1
+			for j < len(runes) && runes[j] != ']' && runes[j] != '[' {
+				j++
+			}
+			if j < len(runes) && runes[j] == ']' {
+				i = j + 1
+				continue
+			}
+		}
 
-	return utf8.RuneCountInString(clean)
+		count += runewidth.RuneWidth(runes[i])
+		i++
+	}
+
+	return count
 }
 
 func wrapLine(line string, width int) []string {
@@ -27,8 +54,8 @@ func wrapLine(line string, width int) []string {
 	currentLineLen := 0
 	currentWordLen := 0
 
-	inTag := false
-	var tagBuilder strings.Builder
+	runes := []rune(line)
+	i := 0
 
 	flushWord := func() {
 		if currentWord.Len() == 0 {
@@ -47,31 +74,46 @@ func wrapLine(line string, width int) []string {
 		currentWordLen = 0
 	}
 
-	for _, r := range line {
-		if r == '[' && !inTag {
-			inTag = true
-			tagBuilder.Reset()
-			tagBuilder.WriteRune(r)
-			continue
-		}
+	for i < len(runes) {
+		r := runes[i]
 
-		if inTag {
-			tagBuilder.WriteRune(r)
-			if r == ']' {
-				inTag = false
-				currentWord.WriteString(tagBuilder.String())
+		if r == '[' {
+			// Escaped literal '[' => "[[]"
+			if i+2 < len(runes) && runes[i+1] == '[' && runes[i+2] == ']' {
+				currentWord.WriteString("[[]")
+				currentWordLen += runewidth.RuneWidth('[')
+				i += 3
+				continue
 			}
-			continue
+			// Escaped literal ']' => "[]]"
+			if i+2 < len(runes) && runes[i+1] == ']' && runes[i+2] == ']' {
+				currentWord.WriteString("[]]")
+				currentWordLen += runewidth.RuneWidth(']')
+				i += 3
+				continue
+			}
+			// Tview tag => "[... ]" with no nested '['
+			j := i + 1
+			for j < len(runes) && runes[j] != ']' && runes[j] != '[' {
+				j++
+			}
+			if j < len(runes) && runes[j] == ']' {
+				tag := string(runes[i : j+1])
+				currentWord.WriteString(tag)
+				i = j + 1
+				continue
+			}
 		}
 
 		if r == ' ' {
 			currentWord.WriteRune(r)
-			currentWordLen++
+			currentWordLen += runewidth.RuneWidth(r)
 			flushWord()
 		} else {
 			currentWord.WriteRune(r)
-			currentWordLen++
+			currentWordLen += runewidth.RuneWidth(r)
 		}
+		i++
 	}
 
 	flushWord()

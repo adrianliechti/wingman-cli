@@ -7,14 +7,17 @@ require (
 	github.com/bmatcuk/doublestar/v4 v4.9.2
 	github.com/gdamore/tcell/v2 v2.13.7
 	github.com/go-git/go-git/v5 v5.16.4
+	github.com/mattn/go-runewidth v0.0.19
 	github.com/modelcontextprotocol/go-sdk v1.2.0
 	github.com/openai/openai-go/v3 v3.16.0
 	github.com/rivo/tview v0.42.0
+	github.com/yuin/goldmark v1.7.4
 	golang.org/x/term v0.39.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
+	github.com/clipperhouse/uax29/v2 v2.2.0 // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/gdamore/encoding v1.0.1 // indirect
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
