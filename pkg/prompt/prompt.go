@@ -9,6 +9,9 @@ import (
 //go:embed instructions.txt
 var Instructions string
 
+//go:embed planning.txt
+var Planning string
+
 //go:embed compaction.txt
 var Compaction string
 

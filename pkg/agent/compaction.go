@@ -136,12 +136,6 @@ func estimateMessageTokens(msg responses.ResponseInputItemUnionParam) int64 {
 }
 
 func (a *Agent) summarize(ctx context.Context, messages []responses.ResponseInputItemUnionParam) (string, error) {
-	model := a.ModelMini
-
-	if model == "" {
-		model = a.Model
-	}
-
 	var conversation strings.Builder
 
 	for _, msg := range messages {
@@ -171,7 +165,7 @@ func (a *Agent) summarize(ctx context.Context, messages []responses.ResponseInpu
 	}
 
 	resp, err := a.Client.Responses.New(ctx, responses.ResponseNewParams{
-		Model: model,
+		Model: a.Model,
 
 		Instructions: openai.String(prompt.Compaction),
 

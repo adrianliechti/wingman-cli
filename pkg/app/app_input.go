@@ -34,6 +34,11 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
+	if event.Key() == tcell.KeyTab && !a.isStreaming && a.input.GetText() == "" {
+		a.toggleMode()
+		return nil
+	}
+
 	if event.Key() == tcell.KeyEnter && !a.isStreaming {
 		a.submitInput()
 		return nil
@@ -166,7 +171,12 @@ func (a *App) streamResponse(query string) {
 	var currentTool string
 	var lastCompaction *agent.CompactionInfo
 
-	for msg, err := range a.agent.Send(a.ctx, query, a.allTools()) {
+	instructions := a.config.Instructions
+	if a.currentMode == ModePlan {
+		instructions = a.config.PlanningInstructions
+	}
+
+	for msg, err := range a.agent.Send(a.ctx, query, instructions, a.allTools()) {
 		if err != nil {
 			streamErr = err
 			break

@@ -21,12 +21,12 @@ import (
 )
 
 type Config struct {
-	Model     string
-	ModelMini string
-	Client    openai.Client
+	Model  string
+	Client openai.Client
 
-	Environment  *tool.Environment
-	Instructions string
+	Environment          *tool.Environment
+	Instructions         string
+	PlanningInstructions string
 
 	MaxContextTokens int64
 	ReserveTokens    int64
@@ -83,15 +83,21 @@ func Default() (*Config, func(), error) {
 		return nil, nil, fmt.Errorf("failed to render instructions: %w", err)
 	}
 
-	client, model, modelMini := createClient()
+	planningInstructions, err := renderPlanningInstructions(env, skills, mcp != nil)
+
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to render planning instructions: %w", err)
+	}
+
+	client, model := createClient()
 
 	cfg := &Config{
-		Client:    client,
-		Model:     model,
-		ModelMini: modelMini,
+		Client: client,
+		Model:  model,
 
-		Environment:  env,
+		Environment:          env,
 		Instructions: instructions,
+		PlanningInstructions: planningInstructions,
 
 		// MaxContextTokens: 5000,
 		// ReserveTokens:    1000,
@@ -110,13 +116,12 @@ func Default() (*Config, func(), error) {
 	return cfg, cfg.Cleanup, nil
 }
 
-func createClient() (openai.Client, string, string) {
+func createClient() (openai.Client, string) {
 	if url, ok := os.LookupEnv("WINGMAN_URL"); ok {
 		baseURL := strings.TrimRight(url, "/") + "/v1"
 
 		token, _ := os.LookupEnv("WINGMAN_TOKEN")
 		model := os.Getenv("WINGMAN_MODEL")
-		modelMini := os.Getenv("WINGMAN_MODEL_MINI")
 
 		if token == "" {
 			token = "-"
@@ -131,13 +136,12 @@ func createClient() (openai.Client, string, string) {
 			option.WithAPIKey(token),
 		)
 
-		return client, model, modelMini
+		return client, model
 	}
 
 	if token, ok := os.LookupEnv("OPENAI_API_KEY"); ok {
 		baseURL := "https://api.openai.com/v1"
 		model := os.Getenv("OPENAI_MODEL")
-		modelMini := os.Getenv("OPENAI_MODEL_MINI")
 
 		if url, ok := os.LookupEnv("OPENAI_BASE_URL"); ok {
 			baseURL = url
@@ -156,13 +160,13 @@ func createClient() (openai.Client, string, string) {
 			option.WithAPIKey(token),
 		)
 
-		return client, model, modelMini
+		return client, model
 	}
 
 	return openai.NewClient(
 		option.WithBaseURL("http://localhost:8080/v1"),
 		option.WithAPIKey("-"),
-	), "gpt-5.2-codex", ""
+	), "gpt-5.2-codex"
 }
 
 type instructionData struct {
@@ -179,6 +183,16 @@ func renderInstructions(env *tool.Environment, skills []skill.Skill, hasMCP bool
 	}
 
 	return prompt.Render(prompt.Instructions, data)
+}
+
+func renderPlanningInstructions(env *tool.Environment, skills []skill.Skill, hasMCP bool) (string, error) {
+	data := instructionData{
+		Environment: env,
+		Skills:      skill.FormatForPrompt(skills),
+		MCP:         hasMCP,
+	}
+
+	return prompt.Render(prompt.Planning, data)
 }
 
 func (c *Config) Cleanup() {

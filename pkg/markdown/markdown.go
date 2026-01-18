@@ -104,6 +104,12 @@ func FormatAssistantMessage(content string, width int) string {
 	rendered := Render(content)
 
 	for _, line := range strings.Split(rendered, "\n") {
+		// Code block lines (contain │ from line numbers) should not be wrapped
+		if strings.Contains(line, "│") {
+			result.WriteString(fmt.Sprintf("%s[%s]┃[-] %s\n", indent, t.Blue, line))
+			continue
+		}
+
 		wrapped := wrapLine(line, contentWidth)
 
 		for _, wl := range wrapped {

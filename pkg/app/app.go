@@ -17,6 +17,13 @@ type promptRequest struct {
 	response chan bool
 }
 
+type Mode int
+
+const (
+	ModeAgent Mode = iota
+	ModePlan
+)
+
 type App struct {
 	app           *tview.Application
 	agent         *agent.Agent
@@ -50,7 +57,9 @@ type App struct {
 	startupError  string
 
 	statusBar   *tview.TextView
+	inputHint   *tview.TextView
 	totalTokens int64
+	currentMode Mode
 }
 
 func New(ctx context.Context, cfg *config.Config, ag *agent.Agent) *App {
@@ -122,6 +131,15 @@ func (a *App) initMCP() error {
 	a.mcpMu.Unlock()
 
 	return nil
+}
+
+func (a *App) toggleMode() {
+	if a.currentMode == ModeAgent {
+		a.currentMode = ModePlan
+	} else {
+		a.currentMode = ModeAgent
+	}
+	a.updateStatusBar()
 }
 
 func (a *App) allTools() []tool.Tool {

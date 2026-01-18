@@ -69,14 +69,15 @@ func (a *App) buildLayout() *tview.Flex {
 
 	a.input.SetChangedFunc(func() {
 		a.updateInputHeight()
+		a.updateInputHint()
 	})
 
 	bottomBar := tview.NewFlex().SetDirection(tview.FlexColumn)
 
-	inputHint := tview.NewTextView().
-		SetDynamicColors(true).
-		SetText(fmt.Sprintf("[%s]enter[-] [%s]send[-]", t.BrBlack, t.Foreground))
-	inputHint.SetBackgroundColor(tcell.ColorDefault)
+	a.inputHint = tview.NewTextView().
+		SetDynamicColors(true)
+	a.inputHint.SetBackgroundColor(tcell.ColorDefault)
+	a.updateInputHint()
 
 	a.statusBar = tview.NewTextView().
 		SetDynamicColors(true).
@@ -84,7 +85,7 @@ func (a *App) buildLayout() *tview.Flex {
 	a.updateStatusBar()
 	a.statusBar.SetBackgroundColor(tcell.ColorDefault)
 
-	bottomBar.AddItem(inputHint, 0, 1, false)
+	bottomBar.AddItem(a.inputHint, 0, 1, false)
 	bottomBar.AddItem(a.statusBar, 0, 1, false)
 
 	bottomBarContainer := tview.NewFlex().SetDirection(tview.FlexColumn)
@@ -159,10 +160,25 @@ func (a *App) updateInputHeight() {
 func (a *App) updateStatusBar() {
 	t := theme.Default
 
+	modeLabel := "Agent"
+	if a.currentMode == ModePlan {
+		modeLabel = "Plan"
+	}
+
 	if a.totalTokens > 0 {
-		a.statusBar.SetText(fmt.Sprintf("[%s]%s[-] • [%s]%s[-]", t.BrBlack, formatTokens(a.totalTokens), t.Cyan, a.config.Model))
+		a.statusBar.SetText(fmt.Sprintf("[%s]%s[-] • [%s]%s[-] • [%s]%s[-]", t.BrBlack, formatTokens(a.totalTokens), t.Cyan, a.config.Model, t.Yellow, modeLabel))
 	} else {
-		a.statusBar.SetText(fmt.Sprintf("[%s]%s[-]", t.Cyan, a.config.Model))
+		a.statusBar.SetText(fmt.Sprintf("[%s]%s[-] • [%s]%s[-]", t.Cyan, a.config.Model, t.Yellow, modeLabel))
+	}
+}
+
+func (a *App) updateInputHint() {
+	t := theme.Default
+
+	if a.input.GetText() == "" && !a.isStreaming {
+		a.inputHint.SetText(fmt.Sprintf("[%s]enter[-] [%s]send[-]  [%s]tab[-] [%s]mode[-]", t.BrBlack, t.Foreground, t.BrBlack, t.Foreground))
+	} else {
+		a.inputHint.SetText(fmt.Sprintf("[%s]enter[-] [%s]send[-]", t.BrBlack, t.Foreground))
 	}
 }
 

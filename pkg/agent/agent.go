@@ -62,7 +62,7 @@ func New(cfg *config.Config) *Agent {
 	}
 }
 
-func (a *Agent) Send(ctx context.Context, query string, tools []tool.Tool) iter.Seq2[Message, error] {
+func (a *Agent) Send(ctx context.Context, query string, instructions string, tools []tool.Tool) iter.Seq2[Message, error] {
 	a.messages = append(a.messages, responses.ResponseInputItemUnionParam{
 		OfMessage: &responses.EasyInputMessageParam{
 			Role:    responses.EasyInputMessageRoleUser,
@@ -74,7 +74,7 @@ func (a *Agent) Send(ctx context.Context, query string, tools []tool.Tool) iter.
 		formattedTools := formatTools(tools)
 
 		for {
-			text, toolCalls, usage, err := a.streamResponse(ctx, yield, formattedTools)
+			text, toolCalls, usage, err := a.streamResponse(ctx, yield, instructions, formattedTools)
 
 			if err != nil {
 				if err != errYieldStopped {
@@ -107,10 +107,10 @@ func (a *Agent) Send(ctx context.Context, query string, tools []tool.Tool) iter.
 	}
 }
 
-func (a *Agent) streamResponse(ctx context.Context, yield func(Message, error) bool, tools []responses.ToolUnionParam) (string, []responses.ResponseFunctionToolCall, Usage, error) {
+func (a *Agent) streamResponse(ctx context.Context, yield func(Message, error) bool, instructions string, tools []responses.ToolUnionParam) (string, []responses.ResponseFunctionToolCall, Usage, error) {
 	stream := a.Client.Responses.NewStreaming(ctx, responses.ResponseNewParams{
 		Model:        a.Model,
-		Instructions: openai.String(a.Instructions),
+		Instructions: openai.String(instructions),
 		Input:        responses.ResponseNewParamsInputUnion{OfInputItemList: a.messages},
 		Tools:        tools,
 		Truncation:   responses.ResponseNewParamsTruncationAuto,
