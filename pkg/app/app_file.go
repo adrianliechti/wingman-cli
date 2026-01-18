@@ -1,12 +1,14 @@
 package app
 
 import (
+	"bufio"
 	"fmt"
 	"io/fs"
 	"path/filepath"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"github.com/rivo/tview"
 
 	"github.com/adrianliechti/wingman-cli/pkg/agent"
@@ -42,6 +44,10 @@ func (a *App) collectFiles() []fileMatch {
 	var files []fileMatch
 	fsys := a.config.Environment.Root.FS()
 
+	var allPatterns []gitignore.Pattern
+	allPatterns = append(allPatterns, loadGitignore(fsys, nil)...)
+	matcher := gitignore.NewMatcher(allPatterns)
+
 	fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -56,11 +62,29 @@ func (a *App) collectFiles() []fileMatch {
 			if defaultIgnoreDirs[name] {
 				return filepath.SkipDir
 			}
+
+			relPath := filepath.ToSlash(path)
+			pathParts := strings.Split(relPath, "/")
+			if matcher.Match(pathParts, true) {
+				return filepath.SkipDir
+			}
+
+			newPatterns := loadGitignore(fsys, strings.Split(path, string(filepath.Separator)))
+			if len(newPatterns) > 0 {
+				allPatterns = append(allPatterns, newPatterns...)
+				matcher = gitignore.NewMatcher(allPatterns)
+			}
 			return nil
 		}
 
 		// Skip hidden files
 		if strings.HasPrefix(d.Name(), ".") {
+			return nil
+		}
+
+		relPath := filepath.ToSlash(path)
+		pathParts := strings.Split(relPath, "/")
+		if matcher.Match(pathParts, false) {
 			return nil
 		}
 
@@ -73,6 +97,35 @@ func (a *App) collectFiles() []fileMatch {
 	})
 
 	return files
+}
+
+func loadGitignore(fsys fs.FS, domain []string) []gitignore.Pattern {
+	gitignorePath := ".gitignore"
+	if len(domain) > 0 {
+		gitignorePath = filepath.Join(append(domain, ".gitignore")...)
+	}
+
+	f, err := fsys.Open(gitignorePath)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	var patterns []gitignore.Pattern
+	scanner := bufio.NewScanner(f)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		patterns = append(patterns, gitignore.ParsePattern(line, domain))
+	}
+
+	return patterns
 }
 
 // filterFiles performs case-insensitive substring matching on filenames
