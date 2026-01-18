@@ -13,6 +13,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/storage/filesystem"
+	"github.com/go-git/go-git/v5/utils/merkletrie"
 )
 
 type Checkpoint struct {
@@ -198,4 +199,121 @@ func (m *Manager) Cleanup() {
 	if m.gitDir != "" {
 		os.RemoveAll(m.gitDir)
 	}
+}
+
+// FileStatus represents the status of a file in the diff
+type FileStatus int
+
+const (
+	StatusAdded FileStatus = iota
+	StatusModified
+	StatusDeleted
+)
+
+// FileDiff represents a diff for a single file
+type FileDiff struct {
+	Path   string
+	Status FileStatus
+	Patch  string
+}
+
+// DiffFromBaseline returns the diff between the baseline commit and the current HEAD
+func (m *Manager) DiffFromBaseline() ([]FileDiff, error) {
+	// Get all commits
+	checkpoints, err := m.List()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list checkpoints: %w", err)
+	}
+
+	if len(checkpoints) == 0 {
+		return nil, errors.New("no checkpoints available")
+	}
+
+	// The baseline is the last commit in the list (oldest)
+	baselineHash := checkpoints[len(checkpoints)-1].Hash
+
+	// The current state is the first commit (newest) - but we need to commit any pending changes first
+	if err := m.worktree.AddWithOptions(&git.AddOptions{All: true}); err != nil {
+		return nil, fmt.Errorf("failed to add files: %w", err)
+	}
+
+	// Get the baseline commit
+	baselineCommit, err := m.repo.CommitObject(plumbing.NewHash(baselineHash))
+	if err != nil {
+		return nil, fmt.Errorf("failed to get baseline commit: %w", err)
+	}
+
+	baselineTree, err := baselineCommit.Tree()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get baseline tree: %w", err)
+	}
+
+	// Get HEAD commit
+	headRef, err := m.repo.Head()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get HEAD: %w", err)
+	}
+
+	headCommit, err := m.repo.CommitObject(headRef.Hash())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get HEAD commit: %w", err)
+	}
+
+	headTree, err := headCommit.Tree()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get HEAD tree: %w", err)
+	}
+
+	// Get the diff between baseline and HEAD
+	changes, err := baselineTree.Diff(headTree)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute diff: %w", err)
+	}
+
+	if len(changes) == 0 {
+		return nil, errors.New("no changes from baseline")
+	}
+
+	var diffs []FileDiff
+
+	for _, change := range changes {
+		patch, err := change.Patch()
+		if err != nil {
+			continue
+		}
+
+		var status FileStatus
+		var path string
+
+		action, err := change.Action()
+		if err != nil {
+			continue
+		}
+
+		switch action {
+		case merkletrie.Insert:
+			status = StatusAdded
+			path = change.To.Name
+		case merkletrie.Delete:
+			status = StatusDeleted
+			path = change.From.Name
+		case merkletrie.Modify:
+			status = StatusModified
+			path = change.To.Name
+		default:
+			continue
+		}
+
+		diffs = append(diffs, FileDiff{
+			Path:   path,
+			Status: status,
+			Patch:  patch.String(),
+		})
+	}
+
+	if len(diffs) == 0 {
+		return nil, errors.New("no changes from baseline")
+	}
+
+	return diffs, nil
 }

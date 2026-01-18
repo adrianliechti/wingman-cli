@@ -69,3 +69,47 @@ func formatCodeBlock(code, lang string, t theme.Theme) string {
 
 	return result.String()
 }
+
+// HighlightDiff applies syntax highlighting to a unified diff string
+func HighlightDiff(diff string) string {
+	lexer := lexers.Get("diff")
+
+	if lexer == nil {
+		lexer = lexers.Fallback
+	}
+
+	lexer = chroma.Coalesce(lexer)
+
+	styleName := "github-dark"
+
+	if theme.Default.IsLight {
+		styleName = "github"
+	}
+
+	style := styles.Get(styleName)
+
+	if style == nil {
+		return diff
+	}
+
+	iterator, err := lexer.Tokenise(nil, diff)
+
+	if err != nil {
+		return diff
+	}
+
+	var result strings.Builder
+
+	for _, token := range iterator.Tokens() {
+		entry := style.Get(token.Type)
+		text := tview.Escape(token.Value)
+
+		if entry.Colour.IsSet() {
+			fmt.Fprintf(&result, "[%s]%s[-]", entry.Colour.String(), text)
+		} else {
+			result.WriteString(text)
+		}
+	}
+
+	return result.String()
+}
