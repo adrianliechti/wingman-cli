@@ -166,4 +166,23 @@ var safeSubcommands = map[string][]string{
 
 	// npx - generally safe for running local binaries
 	"npx": {"which", "--version", "-v"},
+
+	// Docker - read-only subcommands
+	"docker": {"version", "--version", "-v", "info", "ps", "container ls", "container list", "images", "image ls", "image list", "volume ls", "volume list", "volume inspect", "network ls", "network list", "network inspect", "logs", "inspect", "top", "stats", "diff", "history", "port", "events", "config ls", "config inspect", "secret ls", "secret inspect", "system df", "system info", "context ls", "context show", "manifest inspect", "search", "help"},
+
+	// Docker Compose - read-only subcommands
+	"docker-compose": {"ps", "config", "images", "logs", "top", "events", "version", "--version", "help"},
+
+	// Kubernetes kubectl - read-only subcommands
+	"kubectl": {"version", "--version", "get", "describe", "logs", "explain", "api-resources", "api-versions", "cluster-info", "top", "config view", "config get-contexts", "config current-context", "auth can-i", "auth whoami", "diff", "events", "help"},
+
+	// Helm - read-only subcommands
+	"helm": {"version", "--version", "list", "ls", "status", "get", "get all", "get hooks", "get manifest", "get notes", "get values", "history", "show", "show all", "show chart", "show crds", "show readme", "show values", "search hub", "search repo", "repo list", "env", "help"},
+
+	// Kustomize - read-only subcommands
+	"kustomize": {"build", "cfg", "version", "help"},
+
+	// Terraform/OpenTofu - read-only subcommands
+	"terraform": {"version", "providers", "state list", "state show", "output", "graph", "show", "validate", "fmt", "help", "-version", "-help"},
+	"tofu":      {"version", "providers", "state list", "state show", "output", "graph", "show", "validate", "fmt", "help", "-version", "-help"},
 }

@@ -24,7 +24,16 @@ type Agent struct {
 	lastInputTokens int64
 }
 
+type MessageRole string
+
+const (
+	RoleUser      MessageRole = "user"
+	RoleAssistant MessageRole = "assistant"
+	RoleSystem    MessageRole = "system"
+)
+
 type Message struct {
+	Role    MessageRole
 	Content []Content
 
 	ToolCall   *ToolCall
@@ -85,7 +94,7 @@ func (a *Agent) Send(ctx context.Context, query string, instructions string, too
 			}
 
 			if len(toolCalls) > 0 {
-				if err := a.processToolCalls(ctx, yield, toolCalls, tools); err != nil{
+				if err := a.processToolCalls(ctx, yield, toolCalls, tools); err != nil {
 					if err != errYieldStopped {
 						yield(Message{}, err)
 					}
@@ -273,8 +282,55 @@ func (a *Agent) executeTool(ctx context.Context, tc responses.ResponseFunctionTo
 	return result
 }
 
-func (a *Agent) Messages() []responses.ResponseInputItemUnionParam {
-	return a.messages
+func (a *Agent) Messages() []Message {
+	var result []Message
+	var lastToolName string
+
+	for _, item := range a.messages {
+		if msg := item.OfMessage; msg != nil {
+			content := msg.Content.OfString.Value
+
+			// Skip conversation summaries
+			if strings.HasPrefix(content, "<conversation_summary>") {
+				continue
+			}
+
+			var role MessageRole
+			switch msg.Role {
+			case responses.EasyInputMessageRoleUser:
+				role = RoleUser
+
+			case responses.EasyInputMessageRoleAssistant:
+				role = RoleAssistant
+
+			default:
+				role = RoleSystem
+			}
+
+			result = append(result, Message{
+				Role:    role,
+				Content: []Content{{Text: content}},
+			})
+		}
+
+		if fc := item.OfFunctionCall; fc != nil {
+			lastToolName = fc.Name
+		}
+
+		if fco := item.OfFunctionCallOutput; fco != nil {
+			output := fco.Output.OfString.Value
+
+			result = append(result, Message{
+				Role: RoleAssistant,
+				ToolResult: &ToolResult{
+					Name:    lastToolName,
+					Content: []Content{{Text: output}},
+				},
+			})
+		}
+	}
+
+	return result
 }
 
 func (a *Agent) Clear() {

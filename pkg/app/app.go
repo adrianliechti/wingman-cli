@@ -13,68 +13,62 @@ import (
 	"github.com/adrianliechti/wingman-cli/pkg/tool/mcp"
 )
 
-type promptRequest struct {
-	message  string
-	response chan bool
-}
-
-type Mode int
-
-const (
-	ModeAgent Mode = iota
-	ModePlan
-)
-
 type App struct {
-	app           *tview.Application
-	agent         *agent.Agent
-	config        *config.Config
+	// Core dependencies
+	app    *tview.Application
+	agent  *agent.Agent
+	config *config.Config
+	ctx    context.Context
+
+	// UI Components
 	pages         *tview.Pages
 	chatView      *tview.TextView
 	errorView     *tview.TextView
 	mcpStatusView *tview.TextView
-	input         *tview.TextArea
-	mainContent   *tview.Flex
 	welcomeView   *tview.TextView
+	input         *tview.TextArea
+	statusBar     *tview.TextView
+	inputHint     *tview.TextView
+
+	// Layout containers
+	mainContent   *tview.Flex
 	chatContainer *tview.Flex
 	inputSection  *tview.Flex
 	inputFrame    *tview.Frame
 	mainLayout    *tview.Flex
-	isWelcomeMode bool
-	isStreaming   bool
-	ctx           context.Context
-	chatWidth     int
-	lastToolName  string
 
-	promptChan    chan promptRequest
-	promptMu      sync.Mutex
-	promptActive  bool
-	currentPrompt *promptRequest
+	// Components
+	spinner *Spinner
 
+	// State
+	phase          AppPhase
+	currentMode    Mode
+	isWelcomeMode  bool
+	pickerActive   bool
+	promptActive   bool
+	promptResponse chan bool
+	totalTokens    int64
+	startupError   string
+	chatWidth      int
+
+	// MCP state
 	mcpManager    *mcp.Manager
 	mcpTools      []tool.Tool
 	mcpMu         sync.Mutex
 	mcpError      error
 	mcpConnecting bool
-	startupError  string
-
-	statusBar   *tview.TextView
-	inputHint   *tview.TextView
-	totalTokens int64
-	currentMode Mode
-
-	pickerActive bool
 }
 
 func New(ctx context.Context, cfg *config.Config, ag *agent.Agent) *App {
+	tvApp := tview.NewApplication()
+
 	a := &App{
-		app:           tview.NewApplication(),
+		app:           tvApp,
 		agent:         ag,
 		config:        cfg,
 		ctx:           ctx,
 		isWelcomeMode: true,
-		isStreaming:   false,
-		promptChan:    make(chan promptRequest),
+		phase:         PhaseIdle,
 	}
 
 	cfg.Environment.PromptUser = a.promptUser
@@ -89,8 +83,6 @@ func (a *App) stop() {
 
 func (a *App) Run() error {
 	a.setupUI()
-
-	go a.handlePromptRequests()
 
 	if a.config.MCP != nil {
 		a.mcpConnecting = true
@@ -111,6 +103,7 @@ func (a *App) Run() error {
 	}
 
 	mainLayout := a.buildLayout()
+	a.spinner = NewSpinner(a.app, a.inputHint, a.updateInputHint)
 	a.pages = tview.NewPages()
 	a.pages.SetBackgroundColor(tcell.ColorDefault)
 	a.pages.AddPage("main", mainLayout, true, true)
