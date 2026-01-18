@@ -18,13 +18,33 @@ const maxToolOutputLen = 500
 // Input handling
 
 func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
+	// Handle Ctrl+C: close modals first, then stop app
 	if event.Key() == tcell.KeyCtrlC {
+		if a.filePickerActive {
+			a.closeFilePicker()
+			return nil
+		}
+		if a.pickerActive {
+			a.closePicker()
+			return nil
+		}
 		a.stop()
 		return nil
 	}
 
-	if a.pickerActive {
+	// Let picker handle its own events
+	if a.pickerActive || a.filePickerActive {
 		return event
+	}
+
+	// Handle @ to trigger file picker (don't insert @ into input)
+	if event.Rune() == '@' {
+		go func() {
+			a.showFilePicker("", func(path string) {
+				a.addFileToContext(path)
+			})
+		}()
+		return nil // consume the event - don't type @
 	}
 
 	// Handle prompt mode
@@ -58,8 +78,15 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	}
 
 	isStreaming := a.phase != PhaseIdle
-	if event.Key() == tcell.KeyTab && !isStreaming && a.input.GetText() == "" {
+	if event.Key() == tcell.KeyTab && !isStreaming {
 		a.toggleMode()
+		return nil
+	}
+
+	// Escape clears input and pending content
+	if event.Key() == tcell.KeyEscape {
+		a.input.SetText("", true)
+		a.clearPendingContent()
 		return nil
 	}
 
@@ -116,6 +143,7 @@ func (a *App) pasteFromClipboard() {
 
 func (a *App) clearPendingContent() {
 	a.pendingContent = nil
+	a.pendingFiles = nil
 	a.updateInputHint()
 }
 
@@ -162,12 +190,20 @@ func (a *App) submitInput() {
 		fmt.Fprintf(a.chatView, "[%s::b]Commands[-::-]\n", t.Cyan)
 		fmt.Fprintf(a.chatView, "  [%s]/help[-]   - Show this help\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/model[-]  - Select AI model\n", t.BrCyan)
+		fmt.Fprintf(a.chatView, "  [%s]/file[-]   - Add file to context (or type @filename)\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/paste[-]  - Paste from clipboard (Ctrl+V / Cmd+V / Paste)\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/rewind[-] - Restore to previous checkpoint\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/diff[-]   - Show changes from baseline\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/clear[-]  - Clear chat history\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/quit[-]   - Exit application\n\n", t.BrCyan)
 		a.chatView.ScrollToEnd()
+		return
+
+	case "/file":
+		a.input.SetText("", true)
+		go a.showFilePicker("", func(path string) {
+			a.addFileToContext(path)
+		})
 		return
 
 	case "/paste":
@@ -195,8 +231,17 @@ func (a *App) submitInput() {
 	a.input.SetText("", true)
 
 	imageCount := a.countPendingImages()
-	if imageCount > 0 {
-		fmt.Fprint(a.chatView, markdown.FormatUserMessage(fmt.Sprintf("%s\n[📷 %d image(s)]", query, imageCount), a.chatWidth))
+	fileCount := len(a.pendingFiles)
+
+	if imageCount > 0 || fileCount > 0 {
+		var attachments []string
+		if imageCount > 0 {
+			attachments = append(attachments, fmt.Sprintf("📷 %d image(s)", imageCount))
+		}
+		if fileCount > 0 {
+			attachments = append(attachments, fmt.Sprintf("📄 %d file(s)", fileCount))
+		}
+		fmt.Fprint(a.chatView, markdown.FormatUserMessage(fmt.Sprintf("%s\n[%s]", query, strings.Join(attachments, ", ")), a.chatWidth))
 	} else {
 		fmt.Fprint(a.chatView, markdown.FormatUserMessage(query, a.chatWidth))
 	}
@@ -410,11 +455,14 @@ func (a *App) updateInputHint() {
 		parts = append(parts, fmt.Sprintf("[%s]📎 %d image(s)[-]", t.Cyan, imageCount))
 	}
 
+	fileCount := len(a.pendingFiles)
+	if fileCount > 0 {
+		parts = append(parts, fmt.Sprintf("[%s]📄 %d file(s)[-]", t.Cyan, fileCount))
+	}
+
 	isStreaming := a.phase != PhaseIdle
-	if a.input.GetText() == "" && !isStreaming {
-		parts = append(parts, fmt.Sprintf("[%s]enter[-] [%s]send[-]  [%s]tab[-] [%s]mode[-]", t.BrBlack, t.Foreground, t.BrBlack, t.Foreground))
-	} else {
-		parts = append(parts, fmt.Sprintf("[%s]enter[-] [%s]send[-]", t.BrBlack, t.Foreground))
+	if !isStreaming {
+		parts = append(parts, fmt.Sprintf("[%s]enter[-] [%s]send[-]  [%s]tab[-] [%s]mode[-]  [%s]@[-] [%s]file[-]  [%s]esc[-] [%s]clear[-]", t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground))
 	}
 
 	a.inputHint.SetText(strings.Join(parts, "  "))

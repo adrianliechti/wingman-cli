@@ -43,16 +43,18 @@ type App struct {
 	spinner *Spinner
 
 	// State
-	phase          AppPhase
-	currentMode    Mode
-	isWelcomeMode  bool
-	pickerActive   bool
-	promptActive   bool
-	promptResponse chan bool
-	totalTokens    int64
-	startupError   string
-	chatWidth      int
-	pendingContent []agent.Content
+	phase            AppPhase
+	currentMode      Mode
+	isWelcomeMode    bool
+	pickerActive     bool
+	filePickerActive bool
+	promptActive     bool
+	promptResponse   chan bool
+	totalTokens      int64
+	startupError     string
+	chatWidth        int
+	pendingContent   []agent.Content
+	pendingFiles     []string
 
 	// MCP state
 	mcpManager    *mcp.Manager

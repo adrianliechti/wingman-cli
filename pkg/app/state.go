@@ -28,13 +28,13 @@ func GetPhaseConfig(phase AppPhase, toolName string) PhaseConfig {
 	case PhaseThinking:
 		return PhaseConfig{
 			Message:  "Thinking...",
-			Color:    t.Cyan.String(),
+			Color:    t.BrBlack.String(),
 			Animated: true,
 		}
 	case PhaseStreaming:
 		return PhaseConfig{
 			Message:  "Thinking...",
-			Color:    t.Cyan.String(),
+			Color:    t.BrBlack.String(),
 			Animated: true,
 		}
 	case PhaseToolRunning:

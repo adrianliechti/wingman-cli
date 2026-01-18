@@ -45,7 +45,7 @@ func (a *App) showPicker(title string, items []PickerItem, selectedID string, on
 	})
 
 	list.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEscape {
+		if event.Key() == tcell.KeyEscape || event.Key() == tcell.KeyCtrlC {
 			a.closePicker()
 			return nil
 		}
