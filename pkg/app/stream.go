@@ -35,8 +35,8 @@ func extractToolHint(argsJSON string) string {
 	return ""
 }
 
-// streamResponse processes a user query and streams the response
-func (a *App) streamResponse(query string, instructions string, tools []tool.Tool) {
+// streamResponse processes user input and streams the response
+func (a *App) streamResponse(input []agent.Content, instructions string, tools []tool.Tool) {
 	t := theme.Default
 
 	var content strings.Builder
@@ -51,7 +51,7 @@ func (a *App) streamResponse(query string, instructions string, tools []tool.Too
 	// Force immediate UI update to show thinking state
 	a.app.QueueUpdateDraw(func() {})
 
-	for msg, err := range a.agent.Send(a.ctx, query, instructions, tools) {
+	for msg, err := range a.agent.Send(a.ctx, instructions, input, tools) {
 		if err != nil {
 			streamErr = err
 			break

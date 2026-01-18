@@ -8,6 +8,7 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/adrianliechti/wingman-cli/pkg/agent"
+	"github.com/adrianliechti/wingman-cli/pkg/clipboard"
 	"github.com/adrianliechti/wingman-cli/pkg/markdown"
 	"github.com/adrianliechti/wingman-cli/pkg/theme"
 )
@@ -44,6 +45,12 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		a.agent.Clear()
 		a.totalTokens = 0
 		a.updateStatusBar()
+		return nil
+	}
+
+	// Ctrl+V, Cmd+V, or terminal paste event to paste images from clipboard
+	if event.Key() == tcell.KeyCtrlV || (event.Modifiers()&tcell.ModMeta != 0 && (event.Rune() == 'v' || event.Rune() == 'V')) || event.Name() == "Paste" {
+		a.pasteFromClipboard()
 		return nil
 	}
 
@@ -89,6 +96,38 @@ func (a *App) promptUser(message string) (bool, error) {
 	return result, nil
 }
 
+func (a *App) pasteFromClipboard() {
+	contents, err := clipboard.Read()
+	if err != nil || len(contents) == 0 {
+		return
+	}
+
+	for _, c := range contents {
+		if c.Image != nil {
+			a.pendingContent = append(a.pendingContent, agent.Content{Image: c.Image})
+		}
+	}
+
+	a.updateInputHint()
+}
+
+func (a *App) clearPendingContent() {
+	a.pendingContent = nil
+	a.updateInputHint()
+}
+
+func (a *App) countPendingImages() int {
+	count := 0
+
+	for _, c := range a.pendingContent {
+		if c.Image != nil {
+			count++
+		}
+	}
+
+	return count
+}
+
 func (a *App) submitInput() {
 	if a.phase != PhaseIdle {
 		return
@@ -120,9 +159,15 @@ func (a *App) submitInput() {
 		fmt.Fprintf(a.chatView, "[%s::b]Commands[-::-]\n", t.Cyan)
 		fmt.Fprintf(a.chatView, "  [%s]/help[-]   - Show this help\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/model[-]  - Select AI model\n", t.BrCyan)
+		fmt.Fprintf(a.chatView, "  [%s]/paste[-]  - Paste from clipboard (Ctrl+V / Cmd+V / Paste)\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/clear[-]  - Clear chat history\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/quit[-]   - Exit application\n\n", t.BrCyan)
 		a.chatView.ScrollToEnd()
+		return
+
+	case "/paste":
+		a.input.SetText("", true)
+		a.pasteFromClipboard()
 		return
 
 	case "/model":
@@ -133,7 +178,17 @@ func (a *App) submitInput() {
 
 	a.switchToChat()
 	a.input.SetText("", true)
-	fmt.Fprint(a.chatView, markdown.FormatUserMessage(query, a.chatWidth))
+
+	imageCount := a.countPendingImages()
+	if imageCount > 0 {
+		fmt.Fprint(a.chatView, markdown.FormatUserMessage(fmt.Sprintf("%s\n[📷 %d image(s)]", query, imageCount), a.chatWidth))
+	} else {
+		fmt.Fprint(a.chatView, markdown.FormatUserMessage(query, a.chatWidth))
+	}
+
+	input := []agent.Content{{Text: query}}
+	input = append(input, a.pendingContent...)
+	a.clearPendingContent()
 
 	go func() {
 		instructions := a.config.Instructions
@@ -141,7 +196,7 @@ func (a *App) submitInput() {
 			instructions = a.config.PlanningInstructions
 		}
 
-		a.streamResponse(query, instructions, a.allTools())
+		a.streamResponse(input, instructions, a.allTools())
 	}()
 }
 
@@ -332,12 +387,21 @@ func (a *App) updateStatusBar() {
 func (a *App) updateInputHint() {
 	t := theme.Default
 
+	var parts []string
+
+	imageCount := a.countPendingImages()
+	if imageCount > 0 {
+		parts = append(parts, fmt.Sprintf("[%s]📎 %d image(s)[-]", t.Cyan, imageCount))
+	}
+
 	isStreaming := a.phase != PhaseIdle
 	if a.input.GetText() == "" && !isStreaming {
-		a.inputHint.SetText(fmt.Sprintf("[%s]enter[-] [%s]send[-]  [%s]tab[-] [%s]mode[-]", t.BrBlack, t.Foreground, t.BrBlack, t.Foreground))
+		parts = append(parts, fmt.Sprintf("[%s]enter[-] [%s]send[-]  [%s]tab[-] [%s]mode[-]", t.BrBlack, t.Foreground, t.BrBlack, t.Foreground))
 	} else {
-		a.inputHint.SetText(fmt.Sprintf("[%s]enter[-] [%s]send[-]", t.BrBlack, t.Foreground))
+		parts = append(parts, fmt.Sprintf("[%s]enter[-] [%s]send[-]", t.BrBlack, t.Foreground))
 	}
+
+	a.inputHint.SetText(strings.Join(parts, "  "))
 }
 
 func formatTokens(tokens int64) string {

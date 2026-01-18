@@ -50,7 +50,8 @@ type Usage struct {
 }
 
 type Content struct {
-	Text string
+	Text  string
+	Image *string // base64 data URL, e.g. "data:image/png;base64,..."
 }
 
 type ToolCall struct {
@@ -72,13 +73,8 @@ func New(cfg *config.Config) *Agent {
 	}
 }
 
-func (a *Agent) Send(ctx context.Context, query string, instructions string, tools []tool.Tool) iter.Seq2[Message, error] {
-	a.messages = append(a.messages, responses.ResponseInputItemUnionParam{
-		OfMessage: &responses.EasyInputMessageParam{
-			Role:    responses.EasyInputMessageRoleUser,
-			Content: responses.EasyInputMessageContentUnionParam{OfString: openai.String(query)},
-		},
-	})
+func (a *Agent) Send(ctx context.Context, instructions string, input []Content, tools []tool.Tool) iter.Seq2[Message, error] {
+	a.messages = append(a.messages, a.userMessage(input))
 
 	return func(yield func(Message, error) bool) {
 		formattedTools := formatTools(tools)
@@ -283,6 +279,31 @@ func (a *Agent) executeTool(ctx context.Context, tc responses.ResponseFunctionTo
 	return result
 }
 
+func (a *Agent) userMessage(input []Content) responses.ResponseInputItemUnionParam {
+	var parts responses.ResponseInputMessageContentListParam
+
+	for _, c := range input {
+		if c.Text != "" {
+			parts = append(parts, responses.ResponseInputContentParamOfInputText(c.Text))
+		}
+		if c.Image != nil && *c.Image != "" {
+			parts = append(parts, responses.ResponseInputContentUnionParam{
+				OfInputImage: &responses.ResponseInputImageParam{
+					ImageURL: openai.String(*c.Image),
+					Detail:   responses.ResponseInputImageDetailAuto,
+				},
+			})
+		}
+	}
+
+	return responses.ResponseInputItemUnionParam{
+		OfMessage: &responses.EasyInputMessageParam{
+			Role:    responses.EasyInputMessageRoleUser,
+			Content: responses.EasyInputMessageContentUnionParam{OfInputItemContentList: parts},
+		},
+	}
+}
+
 func (a *Agent) Messages() []Message {
 	var result []Message
 	var lastToolName string
@@ -290,29 +311,63 @@ func (a *Agent) Messages() []Message {
 
 	for _, item := range a.messages {
 		if msg := item.OfMessage; msg != nil {
-			content := msg.Content.OfString.Value
+			// Handle string content
+			if msg.Content.OfString.Value != "" {
+				content := msg.Content.OfString.Value
 
-			// Skip conversation summaries
-			if strings.HasPrefix(content, "<conversation_summary>") {
+				// Skip conversation summaries
+				if strings.HasPrefix(content, "<conversation_summary>") {
+					continue
+				}
+
+				var role MessageRole
+				switch msg.Role {
+				case responses.EasyInputMessageRoleUser:
+					role = RoleUser
+				case responses.EasyInputMessageRoleAssistant:
+					role = RoleAssistant
+				default:
+					role = RoleSystem
+				}
+
+				result = append(result, Message{
+					Role:    role,
+					Content: []Content{{Text: content}},
+				})
 				continue
 			}
 
-			var role MessageRole
-			switch msg.Role {
-			case responses.EasyInputMessageRoleUser:
-				role = RoleUser
+			// Handle multi-part content (text + images)
+			if len(msg.Content.OfInputItemContentList) > 0 {
+				var role MessageRole
+				switch msg.Role {
+				case responses.EasyInputMessageRoleUser:
+					role = RoleUser
+				case responses.EasyInputMessageRoleAssistant:
+					role = RoleAssistant
+				default:
+					role = RoleSystem
+				}
 
-			case responses.EasyInputMessageRoleAssistant:
-				role = RoleAssistant
+				var contents []Content
+				for _, part := range msg.Content.OfInputItemContentList {
+					if part.OfInputText != nil {
+						contents = append(contents, Content{Text: part.OfInputText.Text})
+					}
+					if part.OfInputImage != nil && part.OfInputImage.ImageURL.Value != "" {
+						imageURL := part.OfInputImage.ImageURL.Value
+						contents = append(contents, Content{Image: &imageURL})
+					}
+				}
 
-			default:
-				role = RoleSystem
+				if len(contents) > 0 {
+					result = append(result, Message{
+						Role:    role,
+						Content: contents,
+					})
+				}
+				continue
 			}
-
-			result = append(result, Message{
-				Role:    role,
-				Content: []Content{{Text: content}},
-			})
 		}
 
 		if fc := item.OfFunctionCall; fc != nil {

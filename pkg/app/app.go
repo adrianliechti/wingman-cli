@@ -50,6 +50,7 @@ type App struct {
 	totalTokens    int64
 	startupError   string
 	chatWidth      int
+	pendingContent []agent.Content
 
 	// MCP state
 	mcpManager    *mcp.Manager
