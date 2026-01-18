@@ -272,7 +272,7 @@ func (a *App) buildLayout() *tview.Flex {
 		if newWidth != a.chatWidth && !a.isWelcomeMode && !isStreaming && len(a.agent.Messages()) > 0 {
 			a.chatWidth = newWidth
 			messages := a.agent.Messages()
-			a.renderChat(messages, "", "")
+			a.renderChat(messages, "", "", "")
 		} else if a.chatWidth == 0 {
 			a.chatWidth = newWidth
 		}
@@ -397,7 +397,7 @@ func (a *App) updateErrorView() {
 
 // Chat rendering (inlined from ChatRenderer)
 
-func (a *App) renderChat(messages []agent.Message, streamingContent string, toolName string) {
+func (a *App) renderChat(messages []agent.Message, streamingContent string, toolName string, toolHint string) {
 	a.chatView.Clear()
 
 	for _, msg := range messages {
@@ -409,7 +409,7 @@ func (a *App) renderChat(messages []agent.Message, streamingContent string, tool
 	}
 
 	if toolName != "" {
-		fmt.Fprint(a.chatView, markdown.FormatToolProgress(toolName, a.chatWidth))
+		fmt.Fprint(a.chatView, markdown.FormatToolProgress(toolName, toolHint, a.chatWidth))
 	}
 }
 
@@ -419,7 +419,8 @@ func (a *App) renderMessage(msg agent.Message) {
 		if len(output) > maxToolOutputLen {
 			output = output[:maxToolOutputLen] + "..."
 		}
-		fmt.Fprint(a.chatView, markdown.FormatToolCall(msg.ToolResult.Name, output, a.chatWidth))
+		hint := extractToolHint(msg.ToolResult.Args)
+		fmt.Fprint(a.chatView, markdown.FormatToolCall(msg.ToolResult.Name, hint, output, a.chatWidth))
 		return
 	}
 

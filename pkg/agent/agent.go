@@ -62,6 +62,7 @@ type ToolCall struct {
 type ToolResult struct {
 	ID      string
 	Name    string
+	Args    string
 	Content []Content
 }
 
@@ -285,6 +286,7 @@ func (a *Agent) executeTool(ctx context.Context, tc responses.ResponseFunctionTo
 func (a *Agent) Messages() []Message {
 	var result []Message
 	var lastToolName string
+	var lastToolArgs string
 
 	for _, item := range a.messages {
 		if msg := item.OfMessage; msg != nil {
@@ -315,6 +317,7 @@ func (a *Agent) Messages() []Message {
 
 		if fc := item.OfFunctionCall; fc != nil {
 			lastToolName = fc.Name
+			lastToolArgs = fc.Arguments
 		}
 
 		if fco := item.OfFunctionCallOutput; fco != nil {
@@ -324,6 +327,7 @@ func (a *Agent) Messages() []Message {
 				Role: RoleAssistant,
 				ToolResult: &ToolResult{
 					Name:    lastToolName,
+					Args:    lastToolArgs,
 					Content: []Content{{Text: output}},
 				},
 			})

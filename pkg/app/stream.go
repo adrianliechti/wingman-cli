@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -9,6 +10,30 @@ import (
 	"github.com/adrianliechti/wingman-cli/pkg/theme"
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 )
+
+// extractToolHint extracts a display hint from tool arguments JSON.
+func extractToolHint(argsJSON string) string {
+	var args map[string]any
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return ""
+	}
+
+	// Priority order of parameters to use as hint
+	hintKeys := []string{"path", "file", "command", "url", "query", "pattern", "name"}
+
+	for _, key := range hintKeys {
+		if val, ok := args[key]; ok {
+			if str, ok := val.(string); ok && str != "" {
+				if len(str) > 50 {
+					str = str[:47] + "..."
+				}
+				return str
+			}
+		}
+	}
+
+	return ""
+}
 
 // streamResponse processes a user query and streams the response
 func (a *App) streamResponse(query string, instructions string, tools []tool.Tool) {
@@ -51,7 +76,7 @@ func (a *App) streamResponse(query string, instructions string, tools []tool.Too
 
 				a.app.QueueUpdateDraw(func() {
 					messages := a.agent.Messages()
-					a.renderChat(messages, "", "")
+					a.renderChat(messages, "", "", "")
 				})
 			} else {
 				lastCompaction = msg.Compaction
@@ -72,11 +97,12 @@ func (a *App) streamResponse(query string, instructions string, tools []tool.Too
 			}
 
 			toolName := msg.ToolCall.Name
+			toolHint := extractToolHint(msg.ToolCall.Args)
 			currentContent := content.String()
 
 			a.app.QueueUpdateDraw(func() {
 				messages := a.agent.Messages()
-				a.renderChat(messages, currentContent, toolName)
+				a.renderChat(messages, currentContent, toolName, toolHint)
 			})
 
 			continue
@@ -92,7 +118,7 @@ func (a *App) streamResponse(query string, instructions string, tools []tool.Too
 
 			a.app.QueueUpdateDraw(func() {
 				messages := a.agent.Messages()
-				a.renderChat(messages, "", "")
+				a.renderChat(messages, "", "", "")
 			})
 
 			continue
@@ -113,7 +139,7 @@ func (a *App) streamResponse(query string, instructions string, tools []tool.Too
 		currentContent := content.String()
 		a.app.QueueUpdateDraw(func() {
 			messages := a.agent.Messages()
-			a.renderChat(messages, currentContent, "")
+			a.renderChat(messages, currentContent, "", "")
 		})
 	}
 
@@ -127,7 +153,7 @@ func (a *App) streamResponse(query string, instructions string, tools []tool.Too
 			fmt.Fprintf(a.chatView, "\n[%s]Error: %v[-]\n\n", t.Red, streamErr)
 		} else {
 			messages := a.agent.Messages()
-			a.renderChat(messages, "", "")
+			a.renderChat(messages, "", "", "")
 
 			if lastCompaction != nil {
 				fmt.Fprint(a.chatView, markdown.FormatCompaction(lastCompaction.FromTokens, lastCompaction.ToTokens, a.chatWidth))

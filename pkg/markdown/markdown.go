@@ -141,7 +141,7 @@ func FormatPrompt(title string, message string, width int) string {
 	return result.String()
 }
 
-func FormatToolCall(name string, output string, width int) string {
+func FormatToolCall(name string, hint string, output string, width int) string {
 	const indent = "  "
 	const barWidth = 4
 
@@ -151,6 +151,9 @@ func FormatToolCall(name string, output string, width int) string {
 	var result strings.Builder
 
 	titleLine := fmt.Sprintf("[%s::b]⚡ %s[-::-]", t.Yellow, name)
+	if hint != "" {
+		titleLine = fmt.Sprintf("[%s::b]⚡ %s[-::-] [%s]%s[-]", t.Yellow, name, t.BrBlack, tview.Escape(hint))
+	}
 	fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.Yellow, titleLine)
 
 	for _, line := range strings.Split(output, "\n") {
@@ -167,7 +170,7 @@ func FormatToolCall(name string, output string, width int) string {
 	return result.String()
 }
 
-func FormatToolProgress(name string, width int) string {
+func FormatToolProgress(name string, hint string, width int) string {
 	const indent = "  "
 
 	t := theme.Default
@@ -175,6 +178,9 @@ func FormatToolProgress(name string, width int) string {
 	var result strings.Builder
 
 	titleLine := fmt.Sprintf("[%s::b]⚡ %s[-::-] [%s]running...[-]", t.Yellow, name, t.BrBlack)
+	if hint != "" {
+		titleLine = fmt.Sprintf("[%s::b]⚡ %s[-::-] [%s]%s[-]", t.Yellow, name, t.BrBlack, tview.Escape(hint))
+	}
 	fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.Yellow, titleLine)
 
 	result.WriteString("\n")
