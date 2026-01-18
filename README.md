@@ -10,12 +10,15 @@ A powerful AI-powered coding assistant that runs directly in your terminal. Wing
 
 - **Interactive TUI** — Rich terminal interface with markdown rendering and syntax highlighting
 - **File Operations** — Read, write, edit, and search files in your codebase
-- **Shell Integration** — Execute shell commands with full output capture
+- **Shell Integration** — Execute shell commands with elicitation
 - **MCP Support** — Extend functionality with Model Context Protocol servers
 - **Context Management** — Automatic conversation compaction to handle long sessions
-- **Multi-Model Support** — Works with OpenAI, Anthropic, and compatible APIs
-- **Rewind** — Undo changes and restore previous states
-- **Skills** — Define custom workflows and capabilities
+- **Multi-Model Support** — Works with any [OpenResponses API](https://www.openresponses.org) compatible endpoint with auto-selection
+- **Rewind & Diff** — Checkpoint-based undo with visual diff viewer
+- **Skills** — Define custom workflows using [Agent Skills](https://agentskills.io) format
+- **Image Support** — Paste images from clipboard for vision-capable models
+- **File Context** — Add files to context with `@filename` or `/file` command
+- **Theme Detection** — Automatic light/dark theme based on terminal settings
 
 ## 📦 Installation
 
@@ -38,10 +41,10 @@ go build -o wingman .
 1. **Set up your API key:**
 
 ```bash
-# For OpenAI (or any OpenAI-compatible API)
+# For any OpenResponses API compatible endpoint
 export OPENAI_API_KEY="your-api-key"
 
-# Optional: custom OpenAI-compatible endpoint
+# Optional: custom endpoint (defaults to OpenAI)
 export OPENAI_BASE_URL="https://your-api-endpoint/v1"
 ```
 
@@ -67,7 +70,7 @@ wingman
 |----------|-------------|
 | `OPENAI_API_KEY` | OpenAI API key (required) |
 | `OPENAI_BASE_URL` | Custom OpenAI-compatible API endpoint |
-| `OPENAI_MODEL` | Model to use (default: `claude-opus-4-5`) |
+| `OPENAI_MODEL` | Model to use (auto-selected if not specified) |
 
 **Alternative: Wingman Server**
 
@@ -122,4 +125,50 @@ Wingman comes with powerful built-in tools:
 - **Agent Mode** — Full autonomous operation with tool execution
 - **Plan Mode** — Planning and analysis without making changes
 
-Toggle between modes using the keyboard shortcut displayed in the status bar.
+Toggle between modes using `Tab` key.
+
+## ⌨️ Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Enter` | Send message |
+| `Tab` | Toggle Agent/Plan mode |
+| `@` | Open file picker to add context |
+| `Ctrl+V` / `Cmd+V` | Paste image from clipboard |
+| `Ctrl+L` | Clear chat history |
+| `Escape` | Clear input and pending attachments |
+| `Ctrl+C` | Close modal or exit |
+
+## 📝 Commands
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show available commands |
+| `/model` | Select AI model from available options |
+| `/file` | Add file to context |
+| `/paste` | Paste from clipboard |
+| `/rewind` | Restore to previous checkpoint |
+| `/diff` | Show changes from session baseline |
+| `/clear` | Clear chat history |
+| `/quit` | Exit application |
+
+## 🔧 Skills
+
+Skills are reusable workflows defined in `SKILL.md` files. Wingman discovers skills from:
+- `.skills/`
+- `.github/`
+- `.claude/`
+- `.opencode/`
+
+Example skill file (`.skills/testing/SKILL.md`):
+
+```markdown
+---
+name: run-tests
+description: Run the project test suite with coverage
+---
+
+# Testing Skill
+
+Run tests with: `go test -cover ./...`
+```
