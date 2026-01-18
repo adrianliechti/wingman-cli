@@ -103,6 +103,9 @@ func (a *App) stop() {
 func (a *App) Run() error {
 	a.setupUI()
 
+	// Auto-select model if not configured
+	a.autoSelectModel()
+
 	if a.config.MCP != nil {
 		a.mcpConnecting = true
 		a.updateWelcomeView()

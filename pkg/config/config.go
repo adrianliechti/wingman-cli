@@ -143,10 +143,6 @@ func createClient() (openai.Client, string) {
 			token = "-"
 		}
 
-		if model == "" {
-			model = AvailableModels[0]
-		}
-
 		client := openai.NewClient(
 			option.WithBaseURL(baseURL),
 			option.WithAPIKey(token),
@@ -167,10 +163,6 @@ func createClient() (openai.Client, string) {
 			model = m
 		}
 
-		if model == "" {
-			model = AvailableModels[0]
-		}
-
 		client := openai.NewClient(
 			option.WithBaseURL(baseURL),
 			option.WithAPIKey(token),
@@ -182,7 +174,7 @@ func createClient() (openai.Client, string) {
 	return openai.NewClient(
 		option.WithBaseURL("http://localhost:8080/v1"),
 		option.WithAPIKey("-"),
-	), AvailableModels[0]
+	), ""
 }
 
 type instructionData struct {

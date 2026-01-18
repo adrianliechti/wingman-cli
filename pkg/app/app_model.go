@@ -6,6 +6,34 @@ import (
 	"github.com/adrianliechti/wingman-cli/pkg/config"
 )
 
+func (a *App) autoSelectModel() {
+	if a.config.Model != "" {
+		return
+	}
+
+	// Fetch models from API
+	apiModels, err := a.config.Client.Models.List(a.ctx)
+
+	if err != nil {
+		return
+	}
+
+	// Find first available model matching our priority list
+	for _, allowed := range config.AvailableModels {
+		for _, model := range apiModels.Data {
+			if model.ID == allowed {
+				a.config.Model = model.ID
+				return
+			}
+		}
+	}
+
+	// If no model matches priority list, use first available model
+	if len(apiModels.Data) > 0 {
+		a.config.Model = apiModels.Data[0].ID
+	}
+}
+
 func (a *App) showModelPicker() {
 	// Fetch models from API
 	apiModels, err := a.config.Client.Models.List(a.ctx)

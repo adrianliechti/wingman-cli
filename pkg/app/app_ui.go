@@ -211,7 +211,7 @@ func (a *App) submitInput() {
 		a.pasteFromClipboard()
 		return
 
-	case "/model":
+	case "/models", "/model":
 		a.input.SetText("", true)
 		a.showModelPicker()
 		return
