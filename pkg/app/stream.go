@@ -132,11 +132,11 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 			continue
 		}
 
-		// Streaming content - stop spinner, show content
+		// Streaming content - keep spinner running to show activity
 		if a.phase != PhaseStreaming {
 			a.phase = PhaseStreaming
 			if a.spinner != nil {
-				a.spinner.Stop()
+				a.spinner.SetPhase(PhaseStreaming, "")
 			}
 		}
 

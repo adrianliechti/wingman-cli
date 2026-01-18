@@ -31,6 +31,12 @@ func GetPhaseConfig(phase AppPhase, toolName string) PhaseConfig {
 			Color:    t.Cyan.String(),
 			Animated: true,
 		}
+	case PhaseStreaming:
+		return PhaseConfig{
+			Message:  "Thinking...",
+			Color:    t.Cyan.String(),
+			Animated: true,
+		}
 	case PhaseToolRunning:
 		msg := "Running tool..."
 		if toolName != "" {
