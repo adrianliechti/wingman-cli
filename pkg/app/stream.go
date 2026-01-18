@@ -19,7 +19,15 @@ func extractToolHint(argsJSON string) string {
 	}
 
 	// Priority order of parameters to use as hint
-	hintKeys := []string{"path", "file", "command", "url", "query", "pattern", "name"}
+	hintKeys := []string{
+		"query",
+		"pattern",
+		"command",
+		"path",
+		"file",
+		"url",
+		"name",
+	}
 
 	for _, key := range hintKeys {
 		if val, ok := args[key]; ok {

@@ -3,6 +3,7 @@
 package clipboard
 
 import (
+	"encoding/base64"
 	"os/exec"
 	"strings"
 )
@@ -24,6 +25,7 @@ func Read() ([]Content, error) {
 
 func readText() (string, error) {
 	output, err := exec.Command("powershell", "-NoProfile", "-Command", "Get-Clipboard").Output()
+
 	if err != nil {
 		return "", err
 	}
@@ -32,25 +34,26 @@ func readText() (string, error) {
 }
 
 func readImage() (string, error) {
-	script := `
-$img = Get-Clipboard -Format Image
-if ($img -ne $null) {
-    $ms = New-Object System.IO.MemoryStream
-    $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
-    $bytes = $ms.ToArray()
-    $ms.Close()
-    [Convert]::ToBase64String($bytes)
-}
-`
-	output, err := exec.Command("powershell", "-NoProfile", "-Command", script).Output()
+	// Use the same approach as opencode-ai (TypeScript version)
+	// Load System.Windows.Forms assembly and use in-memory stream
+	script := `Add-Type -AssemblyName System.Windows.Forms; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($img) { $ms = New-Object System.IO.MemoryStream; $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); [System.Convert]::ToBase64String($ms.ToArray()) }`
+
+	output, err := exec.Command("powershell.exe", "-NonInteractive", "-NoProfile", "-Command", script).Output()
+
 	if err != nil {
+		return "", err
+	}
+
+	data := strings.TrimSpace(string(output))
+
+	if data == "" {
 		return "", nil
 	}
 
-	encoded := strings.TrimSpace(string(output))
-	if encoded == "" {
-		return "", nil
+	// Verify it's valid base64 and has data
+	if _, err := base64.StdEncoding.DecodeString(data); err != nil {
+		return "", err
 	}
 
-	return "data:image/png;base64," + encoded, nil
+	return "data:image/png;base64," + data, nil
 }

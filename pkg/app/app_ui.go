@@ -49,7 +49,10 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	}
 
 	// Ctrl+V, Cmd+V, or terminal paste event to paste images from clipboard
-	if event.Key() == tcell.KeyCtrlV || (event.Modifiers()&tcell.ModMeta != 0 && (event.Rune() == 'v' || event.Rune() == 'V')) || event.Name() == "Paste" {
+	if event.Key() == tcell.KeyCtrlV || event.Rune() == 0x16 ||
+		(event.Modifiers()&tcell.ModCtrl != 0 && (event.Rune() == 'v' || event.Rune() == 'V')) ||
+		(event.Modifiers()&tcell.ModMeta != 0 && (event.Rune() == 'v' || event.Rune() == 'V')) ||
+		event.Name() == "Paste" {
 		a.pasteFromClipboard()
 		return nil
 	}
