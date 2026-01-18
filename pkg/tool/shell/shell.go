@@ -85,7 +85,7 @@ func isSafeCommand(command string) bool {
 	return false
 }
 
-func executeShell(env *tool.Environment, args map[string]any) (string, error) {
+func executeShell(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
 	command, ok := args["command"].(string)
 	if !ok || command == "" {
 		return "", fmt.Errorf("command is required")
@@ -107,7 +107,7 @@ func executeShell(env *tool.Environment, args map[string]any) (string, error) {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
 	cmd := buildCommand(ctx, command, env.WorkingDir())

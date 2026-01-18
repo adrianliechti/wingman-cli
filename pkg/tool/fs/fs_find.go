@@ -2,6 +2,7 @@ package fs
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -44,7 +45,7 @@ func FindTool() tool.Tool {
 			"required": []string{"pattern"},
 		},
 
-		Execute: func(env *tool.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
 			pattern, ok := args["pattern"].(string)
 			if !ok || pattern == "" {
 				return "", fmt.Errorf("pattern is required")

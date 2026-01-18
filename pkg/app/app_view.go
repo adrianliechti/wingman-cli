@@ -115,7 +115,7 @@ func (a *App) buildLayout() *tview.Flex {
 	a.chatContainer.SetDrawFunc(func(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {
 		newWidth := width - 6
 
-		if newWidth != a.chatWidth && !a.isWelcomeMode && !a.isStreaming {
+		if newWidth != a.chatWidth && !a.isWelcomeMode && !a.isStreaming && len(a.agent.Messages()) > 0 {
 			a.chatWidth = newWidth
 			a.rerenderChat()
 		} else if a.chatWidth == 0 {

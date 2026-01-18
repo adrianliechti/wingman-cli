@@ -1,6 +1,7 @@
 package fs
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -23,7 +24,7 @@ func EditTool() tool.Tool {
 			"required": []string{"path", "old_text", "new_text"},
 		},
 
-		Execute: func(env *tool.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
 			pathArg, ok := args["path"].(string)
 			if !ok || pathArg == "" {
 				return "", fmt.Errorf("path is required")

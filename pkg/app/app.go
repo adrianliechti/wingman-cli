@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
 	"github.com/adrianliechti/wingman-cli/pkg/agent"
@@ -28,6 +29,7 @@ type App struct {
 	app           *tview.Application
 	agent         *agent.Agent
 	config        *config.Config
+	pages         *tview.Pages
 	chatView      *tview.TextView
 	errorView     *tview.TextView
 	mcpStatusView *tview.TextView
@@ -61,7 +63,7 @@ type App struct {
 	totalTokens int64
 	currentMode Mode
 
-	modelPickerActive bool
+	pickerActive bool
 }
 
 func New(ctx context.Context, cfg *config.Config, ag *agent.Agent) *App {
@@ -108,7 +110,12 @@ func (a *App) Run() error {
 		}()
 	}
 
-	return a.app.SetRoot(a.buildLayout(), true).EnableMouse(true).Run()
+	mainLayout := a.buildLayout()
+	a.pages = tview.NewPages()
+	a.pages.SetBackgroundColor(tcell.ColorDefault)
+	a.pages.AddPage("main", mainLayout, true, true)
+
+	return a.app.SetRoot(a.pages, true).EnableMouse(true).Run()
 }
 
 func (a *App) initMCP() error {

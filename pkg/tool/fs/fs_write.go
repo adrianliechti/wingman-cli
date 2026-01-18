@@ -1,6 +1,7 @@
 package fs
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 
@@ -22,7 +23,7 @@ func WriteTool() tool.Tool {
 			"required": []string{"path", "content"},
 		},
 
-		Execute: func(env *tool.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
 			pathArg, ok := args["path"].(string)
 
 			if !ok || pathArg == "" {

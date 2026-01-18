@@ -1,67 +1,42 @@
 package app
 
 import (
-	"github.com/gdamore/tcell/v2"
-	"github.com/rivo/tview"
+	"slices"
 
 	"github.com/adrianliechti/wingman-cli/pkg/config"
-	"github.com/adrianliechti/wingman-cli/pkg/theme"
 )
 
 func (a *App) showModelPicker() {
-	a.modelPickerActive = true
-	t := theme.Default
-
-	list := tview.NewList().
-		ShowSecondaryText(false)
-	list.SetBorder(true)
-	list.SetTitle(" Select Model ")
-	list.SetTitleAlign(tview.AlignCenter)
-	list.SetBorderColor(t.Cyan)
-	list.SetBackgroundColor(t.Background)
-	list.SetMainTextColor(t.Foreground)
-	list.SetSelectedTextColor(t.Background)
-	list.SetSelectedBackgroundColor(t.Cyan)
-
-	currentIndex := 0
-	for i, model := range config.AvailableModels {
-		if model == a.config.Model {
-			currentIndex = i
-		}
-		list.AddItem(model, "", 0, nil)
+	// Fetch models from API
+	apiModels, err := a.config.Client.Models.List(a.ctx)
+	if err != nil {
+		return
 	}
 
-	list.SetCurrentItem(currentIndex)
-
-	list.SetSelectedFunc(func(index int, mainText string, secondaryText string, shortcut rune) {
-		a.config.Model = config.AvailableModels[index]
-		a.updateStatusBar()
-		a.closeModelPicker()
-	})
-
-	list.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEscape {
-			a.closeModelPicker()
-			return nil
+	// Filter to only available models
+	var items []PickerItem
+	for _, allowed := range config.AvailableModels {
+		for _, model := range apiModels.Data {
+			if model.ID == allowed {
+				items = append(items, PickerItem{ID: model.ID, Text: model.ID})
+				break
+			}
 		}
-		return event
+	}
+
+	// If no models match, check if current model exists and add it
+	if len(items) == 0 {
+		if slices.Contains(config.AvailableModels, a.config.Model) {
+			items = append(items, PickerItem{ID: a.config.Model, Text: a.config.Model})
+		}
+	}
+
+	if len(items) == 0 {
+		return
+	}
+
+	a.showPicker("Select Model", items, a.config.Model, func(item PickerItem) {
+		a.config.Model = item.ID
+		a.updateStatusBar()
 	})
-
-	// Create a centered modal layout
-	modal := tview.NewFlex().
-		AddItem(nil, 0, 1, false).
-		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
-			AddItem(nil, 0, 1, false).
-			AddItem(list, len(config.AvailableModels)+2, 0, true).
-			AddItem(nil, 0, 1, false), 30, 0, true).
-		AddItem(nil, 0, 1, false)
-
-	modal.SetBackgroundColor(tcell.ColorDefault)
-
-	a.app.SetRoot(modal, true).SetFocus(list)
-}
-
-func (a *App) closeModelPicker() {
-	a.modelPickerActive = false
-	a.app.SetRoot(a.buildLayout(), true).SetFocus(a.input)
 }

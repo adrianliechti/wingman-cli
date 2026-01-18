@@ -85,7 +85,7 @@ func (a *Agent) Send(ctx context.Context, query string, instructions string, too
 			}
 
 			if len(toolCalls) > 0 {
-				if err := a.processToolCalls(yield, toolCalls, tools); err != nil {
+				if err := a.processToolCalls(ctx, yield, toolCalls, tools); err != nil{
 					if err != errYieldStopped {
 						yield(Message{}, err)
 					}
@@ -153,7 +153,7 @@ func (a *Agent) streamResponse(ctx context.Context, yield func(Message, error) b
 	return fullResponse.String(), toolCalls, usage, nil
 }
 
-func (a *Agent) processToolCalls(yield func(Message, error) bool, toolCalls []responses.ResponseFunctionToolCall, tools []tool.Tool) error {
+func (a *Agent) processToolCalls(ctx context.Context, yield func(Message, error) bool, toolCalls []responses.ResponseFunctionToolCall, tools []tool.Tool) error {
 	for _, tc := range toolCalls {
 		a.messages = append(a.messages, responses.ResponseInputItemUnionParam{
 			OfFunctionCall: &responses.ResponseFunctionToolCallParam{
@@ -169,7 +169,7 @@ func (a *Agent) processToolCalls(yield func(Message, error) bool, toolCalls []re
 			return errYieldStopped
 		}
 
-		result := a.executeTool(tc, tools)
+		result := a.executeTool(ctx, tc, tools)
 
 		resultMsg := Message{ToolResult: &ToolResult{
 			ID:      tc.CallID,
@@ -243,7 +243,7 @@ func formatTools(tools []tool.Tool) []responses.ToolUnionParam {
 	return result
 }
 
-func (a *Agent) executeTool(tc responses.ResponseFunctionToolCall, tools []tool.Tool) string {
+func (a *Agent) executeTool(ctx context.Context, tc responses.ResponseFunctionToolCall, tools []tool.Tool) string {
 	var t *tool.Tool
 
 	for i := range tools {
@@ -264,7 +264,7 @@ func (a *Agent) executeTool(tc responses.ResponseFunctionToolCall, tools []tool.
 		return fmt.Sprintf("error: failed to parse arguments: %v", err)
 	}
 
-	result, err := t.Execute(a.Environment, args)
+	result, err := t.Execute(ctx, a.Environment, args)
 
 	if err != nil {
 		return fmt.Sprintf("error: %v", err)

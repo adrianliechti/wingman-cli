@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"context"
 	"os"
 )
 
@@ -8,7 +9,7 @@ type Tool struct {
 	Name        string
 	Description string
 	Parameters  map[string]any
-	Execute     func(env *Environment, args map[string]any) (string, error)
+	Execute     func(ctx context.Context, env *Environment, args map[string]any) (string, error)
 }
 
 type Environment struct {

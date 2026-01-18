@@ -1,6 +1,7 @@
 package fs
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -28,7 +29,7 @@ func LsTool() tool.Tool {
 			},
 		},
 
-		Execute: func(env *tool.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
 			pathArg := "."
 
 			if p, ok := args["path"].(string); ok && p != "" {

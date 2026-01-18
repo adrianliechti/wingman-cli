@@ -164,14 +164,14 @@ func convertTool(serverName string, session *mcp.ClientSession, mcpTool mcp.Tool
 
 		Parameters: params,
 
-		Execute: func(env *tool.Environment, args map[string]any) (string, error) {
-			return callTool(session, mcpTool.Name, args)
+		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
+			return callTool(ctx, session, mcpTool.Name, args)
 		},
 	}
 }
 
-func callTool(session *mcp.ClientSession, name string, args map[string]any) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+func callTool(ctx context.Context, session *mcp.ClientSession, name string, args map[string]any) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{

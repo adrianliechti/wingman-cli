@@ -1,6 +1,7 @@
 package fs
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -27,7 +28,7 @@ func ReadTool() tool.Tool {
 			"required": []string{"path"},
 		},
 
-		Execute: func(env *tool.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
 			pathArg, ok := args["path"].(string)
 
 			if !ok || pathArg == "" {

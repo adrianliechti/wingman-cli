@@ -18,7 +18,7 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
-	if a.modelPickerActive {
+	if a.pickerActive {
 		return event
 	}
 
@@ -129,7 +129,7 @@ func (a *App) submitInput() {
 		return
 	}
 
-	query := a.input.GetText()
+	query := strings.TrimSpace(a.input.GetText())
 
 	if query == "" {
 		return
@@ -157,6 +157,7 @@ func (a *App) submitInput() {
 		fmt.Fprintf(a.chatView, "  [%s]/model[-]  - Select AI model\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/clear[-]  - Clear chat history\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/quit[-]   - Exit application\n\n", t.BrCyan)
+		a.chatView.ScrollToEnd()
 		return
 
 	case "/model":
