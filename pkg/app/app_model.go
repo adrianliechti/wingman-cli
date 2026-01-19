@@ -68,3 +68,39 @@ func (a *App) showModelPicker() {
 		a.updateStatusBar()
 	})
 }
+
+func (a *App) cycleModel() {
+	// Fetch models from API
+	apiModels, err := a.config.Client.Models.List(a.ctx)
+	if err != nil {
+		return
+	}
+
+	// Build list of available models
+	var models []string
+	for _, allowed := range config.AvailableModels {
+		for _, model := range apiModels.Data {
+			if model.ID == allowed {
+				models = append(models, model.ID)
+				break
+			}
+		}
+	}
+
+	if len(models) == 0 {
+		return
+	}
+
+	// Find current model index and cycle to next
+	currentIdx := -1
+	for i, m := range models {
+		if m == a.config.Model {
+			currentIdx = i
+			break
+		}
+	}
+
+	nextIdx := (currentIdx + 1) % len(models)
+	a.config.Model = models[nextIdx]
+	a.updateStatusBar()
+}

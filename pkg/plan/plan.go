@@ -99,6 +99,24 @@ func HasPlan() bool {
 	return defaultManager.current != nil
 }
 
+// Stats returns the count of completed and total steps
+func Stats() (done, total int) {
+	defaultManager.mu.RLock()
+	defer defaultManager.mu.RUnlock()
+
+	if defaultManager.current == nil {
+		return 0, 0
+	}
+
+	total = len(defaultManager.current.Steps)
+	for _, step := range defaultManager.current.Steps {
+		if step.Status == StatusDone || step.Status == StatusSkipped {
+			done++
+		}
+	}
+	return done, total
+}
+
 // Format returns a string representation of the current plan
 func Format() string {
 	defaultManager.mu.RLock()

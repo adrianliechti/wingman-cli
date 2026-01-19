@@ -10,6 +10,7 @@ import (
 	"github.com/adrianliechti/wingman-cli/pkg/agent"
 	"github.com/adrianliechti/wingman-cli/pkg/clipboard"
 	"github.com/adrianliechti/wingman-cli/pkg/markdown"
+	"github.com/adrianliechti/wingman-cli/pkg/plan"
 	"github.com/adrianliechti/wingman-cli/pkg/theme"
 )
 
@@ -80,6 +81,12 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	isStreaming := a.phase != PhaseIdle
 	if event.Key() == tcell.KeyTab && !isStreaming {
 		a.toggleMode()
+		return nil
+	}
+
+	// Shift+Tab cycles through models
+	if event.Key() == tcell.KeyBacktab && !isStreaming {
+		go a.cycleModel()
 		return nil
 	}
 
@@ -179,6 +186,7 @@ func (a *App) submitInput() {
 		a.chatView.Clear()
 		a.agent.Clear()
 		a.totalTokens = 0
+		plan.Reset()
 		a.updateStatusBar()
 		a.input.SetText("", true)
 		return
@@ -192,8 +200,8 @@ func (a *App) submitInput() {
 		fmt.Fprintf(a.chatView, "  [%s]/model[-]  - Select AI model\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/file[-]   - Add file to context (or type @filename)\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/paste[-]  - Paste from clipboard (Ctrl+V / Cmd+V / Paste)\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/rewind[-] - Restore to previous checkpoint\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/diff[-]   - Show changes from baseline\n", t.BrCyan)
+		fmt.Fprintf(a.chatView, "  [%s]/rewind[-] - Restore to previous checkpoint\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/clear[-]  - Clear chat history\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/quit[-]   - Exit application\n\n", t.BrCyan)
 		a.chatView.ScrollToEnd()
@@ -230,6 +238,7 @@ func (a *App) submitInput() {
 	a.switchToChat()
 	a.app.ForceDraw() // Ensure chatWidth is set before printing user message
 	a.input.SetText("", true)
+	plan.Reset()
 
 	imageCount := a.countPendingImages()
 	fileCount := len(a.pendingFiles)
@@ -438,11 +447,24 @@ func (a *App) updateStatusBar() {
 		modeLabel = "Plan"
 	}
 
+	var parts []string
+
 	if a.totalTokens > 0 {
-		a.statusBar.SetText(fmt.Sprintf("[%s]%s[-] • [%s]%s[-] • [%s]%s[-]", t.BrBlack, formatTokens(a.totalTokens), t.Cyan, a.config.Model, t.Yellow, modeLabel))
-	} else {
-		a.statusBar.SetText(fmt.Sprintf("[%s]%s[-] • [%s]%s[-]", t.Cyan, a.config.Model, t.Yellow, modeLabel))
+		parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.BrBlack, formatTokens(a.totalTokens)))
 	}
+
+	if done, total := plan.Stats(); total > 0 {
+		if done == total {
+			parts = append(parts, fmt.Sprintf("[%s]✓ %d/%d[-]", t.Green, done, total))
+		} else {
+			parts = append(parts, fmt.Sprintf("[%s]◐ %d/%d[-]", t.Blue, done, total))
+		}
+	}
+
+	parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Cyan, a.config.Model))
+	parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Yellow, modeLabel))
+
+	a.statusBar.SetText(strings.Join(parts, " • "))
 }
 
 func (a *App) updateInputHint() {
@@ -462,7 +484,7 @@ func (a *App) updateInputHint() {
 
 	isStreaming := a.phase != PhaseIdle
 	if !isStreaming {
-		parts = append(parts, fmt.Sprintf("[%s]enter[-] [%s]send[-]  [%s]tab[-] [%s]mode[-]  [%s]@[-] [%s]file[-]  [%s]esc[-] [%s]clear[-]", t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground))
+		parts = append(parts, fmt.Sprintf("[%s]enter[-] [%s]send[-]  [%s]tab[-] [%s]mode[-]  [%s]shift+tab[-] [%s]model[-]  [%s]@[-] [%s]file[-]  [%s]esc[-] [%s]clear[-]", t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground))
 	}
 
 	a.inputHint.SetText(strings.Join(parts, "  "))
