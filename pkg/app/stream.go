@@ -32,6 +32,8 @@ func extractToolHint(argsJSON string) string {
 	for _, key := range hintKeys {
 		if val, ok := args[key]; ok {
 			if str, ok := val.(string); ok && str != "" {
+				// Collapse newlines and multiple spaces to single space
+				str = strings.Join(strings.Fields(str), " ")
 				if len(str) > 50 {
 					str = str[:47] + "..."
 				}
@@ -127,6 +129,7 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 			a.app.QueueUpdateDraw(func() {
 				messages := a.agent.Messages()
 				a.renderChat(messages, "", "", "")
+				a.updateStatusBar()
 			})
 
 			continue

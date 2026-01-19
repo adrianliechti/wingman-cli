@@ -147,8 +147,8 @@ Toggle between modes using `Tab` key.
 | `/model` | Select AI model from available options |
 | `/file` | Add file to context |
 | `/paste` | Paste from clipboard |
-| `/rewind` | Restore to previous checkpoint |
 | `/diff` | Show changes from session baseline |
+| `/rewind` | Restore to previous checkpoint |
 | `/clear` | Clear chat history |
 | `/quit` | Exit application |
 
