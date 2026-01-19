@@ -71,45 +71,44 @@ func formatCodeBlock(code, lang string, t theme.Theme) string {
 }
 
 // HighlightDiff applies syntax highlighting to a unified diff string
+// using theme-consistent colors for additions/deletions
 func HighlightDiff(diff string) string {
-	lexer := lexers.Get("diff")
-
-	if lexer == nil {
-		lexer = lexers.Fallback
-	}
-
-	lexer = chroma.Coalesce(lexer)
-
-	styleName := "github-dark"
-
-	if theme.Default.IsLight {
-		styleName = "github"
-	}
-
-	style := styles.Get(styleName)
-
-	if style == nil {
-		return diff
-	}
-
-	iterator, err := lexer.Tokenise(nil, diff)
-
-	if err != nil {
-		return diff
-	}
+	t := theme.Default
+	lines := strings.Split(diff, "\n")
 
 	var result strings.Builder
 
-	for _, token := range iterator.Tokens() {
-		entry := style.Get(token.Type)
-		text := tview.Escape(token.Value)
+	for i, line := range lines {
+		lineNum := fmt.Sprintf("[%s]%3d[-] ", t.BrBlack, i+1)
 
-		if entry.Colour.IsSet() {
-			fmt.Fprintf(&result, "[%s]%s[-]", entry.Colour.String(), text)
-		} else {
-			result.WriteString(text)
+		if len(line) == 0 {
+			result.WriteString(lineNum + "\n")
+			continue
+		}
+
+		escaped := tview.Escape(line)
+
+		switch {
+		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
+			// File headers - bold foreground
+			fmt.Fprintf(&result, "%s[%s::b]%s[-::-]\n", lineNum, t.Foreground, escaped)
+		case strings.HasPrefix(line, "@@"):
+			// Hunk headers - cyan
+			fmt.Fprintf(&result, "%s[%s]%s[-]\n", lineNum, t.Cyan, escaped)
+		case strings.HasPrefix(line, "+"):
+			// Additions - green
+			fmt.Fprintf(&result, "%s[%s]%s[-]\n", lineNum, t.Green, escaped)
+		case strings.HasPrefix(line, "-"):
+			// Deletions - red
+			fmt.Fprintf(&result, "%s[%s]%s[-]\n", lineNum, t.Red, escaped)
+		case strings.HasPrefix(line, "diff "), strings.HasPrefix(line, "index "):
+			// Meta lines - dim
+			fmt.Fprintf(&result, "%s[%s]%s[-]\n", lineNum, t.BrBlack, escaped)
+		default:
+			// Context lines - normal
+			fmt.Fprintf(&result, "%s%s\n", lineNum, escaped)
 		}
 	}
 
-	return result.String()
+	return strings.TrimSuffix(result.String(), "\n")
 }

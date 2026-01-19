@@ -17,6 +17,7 @@ import (
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 	"github.com/adrianliechti/wingman-cli/pkg/tool/fs"
 	"github.com/adrianliechti/wingman-cli/pkg/tool/mcp"
+	"github.com/adrianliechti/wingman-cli/pkg/tool/plan"
 	"github.com/adrianliechti/wingman-cli/pkg/tool/shell"
 )
 
@@ -85,7 +86,7 @@ func Default() (*Config, func(), error) {
 		Scratch: scratch,
 	}
 
-	tools := slices.Concat(fs.Tools(), shell.Tools())
+	tools := slices.Concat(fs.Tools(), shell.Tools(), plan.Tools())
 
 	mcp, _ := mcp.Load(filepath.Join(wd, "mcp.json"))
 

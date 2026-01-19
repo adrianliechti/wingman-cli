@@ -228,6 +228,7 @@ func (a *App) submitInput() {
 	}
 
 	a.switchToChat()
+	a.app.ForceDraw() // Ensure chatWidth is set before printing user message
 	a.input.SetText("", true)
 
 	imageCount := a.countPendingImages()
@@ -384,15 +385,14 @@ func (a *App) buildLayout() *tview.Flex {
 	a.chatContainer.SetDrawFunc(func(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {
 		newWidth := width - 6
 
+		// Re-render chat on resize (only when idle and not in welcome mode)
 		isStreaming := a.phase != PhaseIdle
 		if newWidth != a.chatWidth && !a.isWelcomeMode && !isStreaming && len(a.agent.Messages()) > 0 {
-			a.chatWidth = newWidth
 			messages := a.agent.Messages()
 			a.renderChat(messages, "", "", "")
-		} else if a.chatWidth == 0 {
-			a.chatWidth = newWidth
 		}
 
+		a.chatWidth = newWidth
 		return x, y, width, height
 	})
 

@@ -79,36 +79,38 @@ func (a *Agent) Send(ctx context.Context, instructions string, input []Content, 
 	return func(yield func(Message, error) bool) {
 		formattedTools := formatTools(tools)
 
-		for {
-			text, toolCalls, usage, err := a.streamResponse(ctx, yield, instructions, formattedTools)
+		text, toolCalls, usage, err := a.streamResponse(ctx, yield, instructions, formattedTools)
 
+		for len(toolCalls) > 0 && err == nil {
+			// Save any streamed text before processing tool calls
+			if text != "" {
+				a.messages = append(a.messages, responses.ResponseInputItemUnionParam{
+					OfMessage: &responses.EasyInputMessageParam{
+						Role:    responses.EasyInputMessageRoleAssistant,
+						Content: responses.EasyInputMessageContentUnionParam{OfString: openai.String(text)},
+					},
+				})
+			}
+
+			err = a.processToolCalls(ctx, yield, toolCalls, tools)
 			if err != nil {
-				if err != errYieldStopped {
-					yield(Message{}, err)
-				}
-
-				return
+				break
 			}
 
-			if len(toolCalls) > 0 {
-				if err := a.processToolCalls(ctx, yield, toolCalls, tools); err != nil {
-					if err != errYieldStopped {
-						yield(Message{}, err)
-					}
+			text, toolCalls, usage, err = a.streamResponse(ctx, yield, instructions, formattedTools)
+		}
 
-					return
-				}
-
-				continue
+		if err != nil {
+			if err != errYieldStopped {
+				yield(Message{}, err)
 			}
-
-			if err := a.finalizeResponse(ctx, yield, text, usage); err != nil {
-				if err != errYieldStopped {
-					yield(Message{}, err)
-				}
-			}
-
 			return
+		}
+
+		if err := a.finalizeResponse(ctx, yield, text, usage); err != nil {
+			if err != errYieldStopped {
+				yield(Message{}, err)
+			}
 		}
 	}
 }
