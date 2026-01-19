@@ -97,7 +97,7 @@ func executeShell(ctx context.Context, env *tool.Environment, args map[string]an
 	}
 
 	if env.PromptUser != nil && !isSafeCommand(command) {
-		approved, err := env.PromptUser("$" + command)
+		approved, err := env.PromptUser("❯ " + command)
 		if err != nil {
 			return "", fmt.Errorf("failed to get user approval: %w", err)
 		}

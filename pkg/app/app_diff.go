@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -28,138 +29,304 @@ func (a *App) showDiffView() {
 	a.pickerActive = true
 	t := theme.Default
 
+	// Calculate stats
+	var added, modified, deleted int
+	var totalInsertions, totalDeletions int
+	for _, diff := range diffs {
+		switch diff.Status {
+		case rewind.StatusAdded:
+			added++
+		case rewind.StatusModified:
+			modified++
+		case rewind.StatusDeleted:
+			deleted++
+		}
+		ins, del := countDiffStats(diff.Patch)
+		totalInsertions += ins
+		totalDeletions += del
+	}
+
 	// Track selection state
 	selectedIndex := 0
 
-	// Create the file list view (custom rendering for clean look)
-	fileList := tview.NewTextView().
+	// === FILE LIST ===
+	fileListView := tview.NewTextView().
 		SetDynamicColors(true).
 		SetScrollable(true).
 		SetWrap(false)
-	fileList.SetBackgroundColor(tcell.ColorDefault)
+	fileListView.SetBackgroundColor(tcell.ColorDefault)
 
-	// Create the diff content view
-	diffView := tview.NewTextView().
-		SetDynamicColors(true).
-		SetScrollable(true).
-		SetWrap(false)
-	diffView.SetBackgroundColor(tcell.ColorDefault)
-
-	// Render file list with selection highlight
 	renderFileList := func() {
-		fileList.Clear()
+		fileListView.Clear()
+		var sb strings.Builder
+
 		for i, diff := range diffs {
-			var color tcell.Color
-			var prefix string
+			var statusColor tcell.Color
+			var statusIcon string
 
 			switch diff.Status {
 			case rewind.StatusAdded:
-				color = t.Green
-				prefix = "+ "
+				statusColor = t.Green
+				statusIcon = "●"
 			case rewind.StatusModified:
-				color = t.Yellow
-				prefix = "~ "
+				statusColor = t.Yellow
+				statusIcon = "●"
 			case rewind.StatusDeleted:
-				color = t.Red
-				prefix = "- "
+				statusColor = t.Red
+				statusIcon = "●"
 			default:
-				color = t.Foreground
-				prefix = "  "
+				statusColor = t.Foreground
+				statusIcon = "○"
 			}
 
-			// Highlight selected item with cyan, others with status color
+			// Get per-file stats
+			ins, del := countDiffStats(diff.Patch)
+			statsStr := fmt.Sprintf("[%s]+%d[-] [%s]-%d[-]", t.Green, ins, t.Red, del)
+
 			if i == selectedIndex {
-				fmt.Fprintf(fileList, "[%s]▸ %s[-]\n", t.Cyan, diff.Path)
+				// Selected: cyan arrow, cyan filename
+				fmt.Fprintf(&sb, "  [%s]▶[-] [%s]%s[-] [%s::b]%s[-::-] %s\n",
+					t.Cyan, statusColor, statusIcon, t.Cyan, diff.Path, statsStr)
 			} else {
-				fmt.Fprintf(fileList, "[%s]%s%s[-]\n", color, prefix, diff.Path)
+				// Unselected: status colored icon, normal filename
+				fmt.Fprintf(&sb, "    [%s]%s[-] [%s]%s[-] %s\n",
+					statusColor, statusIcon, t.Foreground, diff.Path, statsStr)
 			}
 		}
-		// Scroll to keep selected item visible
-		fileList.ScrollTo(selectedIndex, 0)
+
+		fileListView.SetText(sb.String())
+		fileListView.ScrollTo(selectedIndex, 0)
 	}
 
-	// Update diff view when selection changes
-	updateDiffView := func() {
-		if selectedIndex >= 0 && selectedIndex < len(diffs) {
-			highlighted := markdown.HighlightDiff(diffs[selectedIndex].Patch)
-			diffView.SetText(highlighted)
-			diffView.ScrollToBeginning()
+	// === DIFF CONTENT ===
+	diffContentView := tview.NewTextView().
+		SetDynamicColors(true).
+		SetScrollable(true).
+		SetWrap(false)
+	diffContentView.SetBackgroundColor(tcell.ColorDefault)
+
+	renderDiffContent := func() {
+		if selectedIndex < 0 || selectedIndex >= len(diffs) {
+			return
 		}
+
+		diff := diffs[selectedIndex]
+		diffContentView.Clear()
+
+		// Diff content with syntax highlighting (no header - path is already in the diff)
+		highlighted := markdown.HighlightDiff(diff.Patch)
+		diffContentView.SetText(highlighted)
+		diffContentView.ScrollToBeginning()
 	}
 
 	// Initial render
 	renderFileList()
 	if len(diffs) > 0 {
-		updateDiffView()
+		renderDiffContent()
 	}
 
-	// Handle file list navigation
-	fileList.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+	// === BOTTOM BAR (hint + status) ===
+	hintBar := tview.NewTextView().
+		SetDynamicColors(true).
+		SetTextAlign(tview.AlignLeft)
+	hintBar.SetBackgroundColor(tcell.ColorDefault)
+
+	statusBar := tview.NewTextView().
+		SetDynamicColors(true).
+		SetTextAlign(tview.AlignRight)
+	statusBar.SetBackgroundColor(tcell.ColorDefault)
+
+	// Build status text
+	var statParts []string
+	if added > 0 {
+		statParts = append(statParts, fmt.Sprintf("[%s]+%d[-]", t.Green, added))
+	}
+	if modified > 0 {
+		statParts = append(statParts, fmt.Sprintf("[%s]~%d[-]", t.Yellow, modified))
+	}
+	if deleted > 0 {
+		statParts = append(statParts, fmt.Sprintf("[%s]-%d[-]", t.Red, deleted))
+	}
+	fmt.Fprintf(statusBar, "[%s]%d file(s)[-] %s  [%s]+%d[-] [%s]-%d[-]",
+		t.BrBlack, len(diffs), strings.Join(statParts, " "), t.Green, totalInsertions, t.Red, totalDeletions)
+
+	// Track which panel has focus
+	focusedPanel := 0 // 0 = fileList, 1 = diffContent
+
+	updateHintBar := func() {
+		hintBar.Clear()
+		if focusedPanel == 0 {
+			fmt.Fprintf(hintBar, "[%s]esc[-] [%s]close[-]  [%s]tab[-] [%s]switch[-]  [%s]↑↓/jk[-] [%s]select[-]",
+				t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground)
+		} else {
+			fmt.Fprintf(hintBar, "[%s]esc[-] [%s]close[-]  [%s]tab[-] [%s]switch[-]  [%s]↑↓/jk[-] [%s]scroll[-]  [%s]g/G[-] [%s]top/bottom[-]",
+				t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground)
+		}
+	}
+	updateHintBar()
+
+	// === LAYOUT ===
+
+	// Vertical separator between panels
+	separator := tview.NewBox().SetBackgroundColor(tcell.ColorDefault)
+	separator.SetDrawFunc(func(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {
+		sepColor := t.BrBlack
+		for i := y; i < y+height; i++ {
+			screen.SetContent(x, i, '│', nil, tcell.StyleDefault.Foreground(sepColor))
+		}
+		return x + 1, y, width - 1, height
+	})
+
+	// Two-pane content area
+	panelsContainer := tview.NewFlex().SetDirection(tview.FlexColumn).
+		AddItem(fileListView, 40, 0, true).
+		AddItem(separator, 1, 0, false).
+		AddItem(diffContentView, 0, 1, false)
+	panelsContainer.SetBackgroundColor(tcell.ColorDefault)
+
+	// Add margins (matching chat mode: 2 left, 4 right)
+	contentWithMargins := tview.NewFlex().SetDirection(tview.FlexColumn).
+		AddItem(nil, 2, 0, false).
+		AddItem(panelsContainer, 0, 1, true).
+		AddItem(nil, 4, 0, false)
+	contentWithMargins.SetBackgroundColor(tcell.ColorDefault)
+
+	// Bottom bar with hint and status
+	bottomBar := tview.NewFlex().SetDirection(tview.FlexColumn).
+		AddItem(hintBar, 0, 1, false).
+		AddItem(statusBar, 0, 1, false)
+	bottomBar.SetBackgroundColor(tcell.ColorDefault)
+	// Clear the entire bottom bar area before drawing to prevent underlying content from showing through
+	bottomBar.SetDrawFunc(func(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {
+		for row := y; row < y+height; row++ {
+			for col := x; col < x+width; col++ {
+				screen.SetContent(col, row, ' ', nil, tcell.StyleDefault)
+			}
+		}
+		return x, y, width, height
+	})
+
+	// Bottom bar with margins
+	bottomBarWithMargins := tview.NewFlex().SetDirection(tview.FlexColumn).
+		AddItem(nil, 4, 0, false).
+		AddItem(bottomBar, 0, 1, false).
+		AddItem(nil, 4, 0, false)
+	bottomBarWithMargins.SetBackgroundColor(tcell.ColorDefault)
+	// Clear margins as well
+	bottomBarWithMargins.SetDrawFunc(func(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {
+		for row := y; row < y+height; row++ {
+			for col := x; col < x+width; col++ {
+				screen.SetContent(col, row, ' ', nil, tcell.StyleDefault)
+			}
+		}
+		return x, y, width, height
+	})
+
+	// Top spacer - blank line
+	topSpacer := tview.NewBox().SetBackgroundColor(tcell.ColorDefault)
+
+	// Spacer above status bar - blank line
+	statusSpacer := tview.NewBox().SetBackgroundColor(tcell.ColorDefault)
+	statusSpacer.SetDrawFunc(func(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {
+		for row := y; row < y+height; row++ {
+			for col := x; col < x+width; col++ {
+				screen.SetContent(col, row, ' ', nil, tcell.StyleDefault)
+			}
+		}
+		return x, y, width, height
+	})
+
+	// Final container
+	container := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(topSpacer, 1, 0, false).
+		AddItem(contentWithMargins, 0, 1, true).
+		AddItem(statusSpacer, 1, 0, false).
+		AddItem(bottomBarWithMargins, 1, 0, false)
+	container.SetBackgroundColor(tcell.ColorDefault)
+
+	// === INPUT HANDLING ===
+
+	fileListView.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Key() {
 		case tcell.KeyUp:
 			if selectedIndex > 0 {
 				selectedIndex--
 				renderFileList()
-				updateDiffView()
+				renderDiffContent()
 			}
 			return nil
 		case tcell.KeyDown:
 			if selectedIndex < len(diffs)-1 {
 				selectedIndex++
 				renderFileList()
-				updateDiffView()
+				renderDiffContent()
+			}
+			return nil
+		}
+		switch event.Rune() {
+		case 'k':
+			if selectedIndex > 0 {
+				selectedIndex--
+				renderFileList()
+				renderDiffContent()
+			}
+			return nil
+		case 'j':
+			if selectedIndex < len(diffs)-1 {
+				selectedIndex++
+				renderFileList()
+				renderDiffContent()
 			}
 			return nil
 		}
 		return event
 	})
 
-	// Create a subtle separator
-	separator := tview.NewBox().SetBackgroundColor(tcell.ColorDefault)
-	separator.SetDrawFunc(func(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {
-		for i := y; i < y+height; i++ {
-			screen.SetContent(x, i, '│', nil, tcell.StyleDefault.Foreground(t.BrBlack))
+	diffContentView.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		row, col := diffContentView.GetScrollOffset()
+		switch event.Key() {
+		case tcell.KeyUp:
+			if row > 0 {
+				diffContentView.ScrollTo(row-1, col)
+			}
+			return nil
+		case tcell.KeyDown:
+			diffContentView.ScrollTo(row+1, col)
+			return nil
 		}
-		return x + 1, y, width - 1, height
+		switch event.Rune() {
+		case 'j':
+			diffContentView.ScrollTo(row+1, col)
+			return nil
+		case 'k':
+			if row > 0 {
+				diffContentView.ScrollTo(row-1, col)
+			}
+			return nil
+		case 'g':
+			diffContentView.ScrollToBeginning()
+			return nil
+		case 'G':
+			diffContentView.ScrollToEnd()
+			return nil
+		}
+		return event
 	})
 
-	// Layout: fileList on left, separator, diff on right
-	content := tview.NewFlex().SetDirection(tview.FlexColumn).
-		AddItem(fileList, 0, 2, true).
-		AddItem(separator, 1, 0, false).
-		AddItem(diffView, 0, 8, false)
-	content.SetBackgroundColor(tcell.ColorDefault)
-
-	// Bottom hint bar (like input hints)
-	hintBar := tview.NewTextView().
-		SetDynamicColors(true).
-		SetTextAlign(tview.AlignLeft)
-	hintBar.SetBackgroundColor(tcell.ColorDefault)
-	fmt.Fprintf(hintBar, "[%s]esc[-] [%s]close[-]  [%s]tab[-] [%s]switch[-]  [%s]↑↓[-] [%s]select[-]  [%s]←→[-] [%s]scroll[-]", t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground)
-
-	// Main container
-	container := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(content, 0, 1, true).
-		AddItem(hintBar, 1, 0, false)
-	container.SetBackgroundColor(tcell.ColorDefault)
-
-	// Track which panel has focus
-	focusedPanel := 0 // 0 = fileList, 1 = diff
-
-	// Handle input
 	container.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Key() {
 		case tcell.KeyEscape:
 			a.closeDiffView()
 			return nil
 		case tcell.KeyTab:
-			// Toggle focus between panels
 			if focusedPanel == 0 {
 				focusedPanel = 1
-				a.app.SetFocus(diffView)
+				a.app.SetFocus(diffContentView)
+				updateHintBar()
 			} else {
 				focusedPanel = 0
-				a.app.SetFocus(fileList)
+				a.app.SetFocus(fileListView)
+				updateHintBar()
 			}
 			return nil
 		}
@@ -168,7 +335,7 @@ func (a *App) showDiffView() {
 
 	if a.pages != nil {
 		a.pages.AddPage("diff", container, true, true)
-		a.app.SetFocus(fileList)
+		a.app.SetFocus(fileListView)
 	}
 }
 
@@ -178,4 +345,25 @@ func (a *App) closeDiffView() {
 		a.pages.RemovePage("diff")
 		a.app.SetFocus(a.input)
 	}
+}
+
+// countDiffStats counts insertions and deletions in a unified diff patch
+func countDiffStats(patch string) (insertions, deletions int) {
+	for _, line := range strings.Split(patch, "\n") {
+		if len(line) == 0 {
+			continue
+		}
+		// Skip diff headers
+		if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") ||
+			strings.HasPrefix(line, "@@") || strings.HasPrefix(line, "diff ") ||
+			strings.HasPrefix(line, "index ") {
+			continue
+		}
+		if line[0] == '+' {
+			insertions++
+		} else if line[0] == '-' {
+			deletions++
+		}
+	}
+	return
 }
