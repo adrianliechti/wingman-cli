@@ -5,6 +5,7 @@ package clipboard
 import (
 	"encoding/base64"
 	"os/exec"
+	"strings"
 )
 
 // Read reads text and image content from the Linux clipboard.
@@ -50,4 +51,18 @@ func readImage() (string, error) {
 	encoded := base64.StdEncoding.EncodeToString(output)
 
 	return "data:image/png;base64," + encoded, nil
+}
+
+// WriteText writes text to the Linux clipboard.
+func WriteText(text string) error {
+	// Try wl-copy (Wayland) first, then xclip (X11)
+	cmd := exec.Command("wl-copy")
+	cmd.Stdin = strings.NewReader(text)
+	if err := cmd.Run(); err == nil {
+		return nil
+	}
+
+	cmd = exec.Command("xclip", "-selection", "clipboard")
+	cmd.Stdin = strings.NewReader(text)
+	return cmd.Run()
 }

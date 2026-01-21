@@ -140,7 +140,7 @@ func (a *App) Run() error {
 	a.pages.SetBackgroundColor(tcell.ColorDefault)
 	a.pages.AddPage("main", mainLayout, true, true)
 
-	return a.app.SetRoot(a.pages, true).EnableMouse(true).Run()
+	return a.app.SetRoot(a.pages, true).EnableMouse(true).EnablePaste(true).Run()
 }
 
 func (a *App) initMCP() error {

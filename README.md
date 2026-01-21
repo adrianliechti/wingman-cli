@@ -118,6 +118,7 @@ Wingman comes with powerful built-in tools:
 | `edit` | Make surgical edits to existing files |
 | `ls` | List directory contents |
 | `find` | Find files using glob patterns |
+| `grep` | Search file contents using regex patterns |
 | `shell` | Execute shell commands |
 
 ## 🎨 Modes
@@ -133,6 +134,7 @@ Toggle between modes using `Tab` key.
 |----------|--------|
 | `Enter` | Send message |
 | `Tab` | Toggle Agent/Plan mode |
+| `Shift+Tab` | Cycle through available models |
 | `@` | Open file picker to add context |
 | `Ctrl+V` / `Cmd+V` | Paste image from clipboard |
 | `Ctrl+L` | Clear chat history |
@@ -147,6 +149,7 @@ Toggle between modes using `Tab` key.
 | `/model` | Select AI model from available options |
 | `/file` | Add file to context |
 | `/paste` | Paste from clipboard |
+| `/plan` | Show current plan |
 | `/diff` | Show changes from session baseline |
 | `/rewind` | Restore to previous checkpoint |
 | `/clear` | Clear chat history |

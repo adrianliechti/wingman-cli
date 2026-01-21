@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 // Read reads text and image content from the macOS clipboard.
@@ -68,4 +69,11 @@ func readImage() (string, error) {
 	encoded := base64.StdEncoding.EncodeToString(data)
 
 	return "data:image/png;base64," + encoded, nil
+}
+
+// WriteText writes text to the macOS clipboard.
+func WriteText(text string) error {
+	cmd := exec.Command("pbcopy")
+	cmd.Stdin = strings.NewReader(text)
+	return cmd.Run()
 }

@@ -57,3 +57,9 @@ func readImage() (string, error) {
 
 	return "data:image/png;base64," + data, nil
 }
+
+// WriteText writes text to the Windows clipboard.
+func WriteText(text string) error {
+	cmd := exec.Command("powershell", "-NoProfile", "-Command", "Set-Clipboard", "-Value", text)
+	return cmd.Run()
+}

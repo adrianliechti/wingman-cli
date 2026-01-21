@@ -40,8 +40,17 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
-	// Handle Ctrl+C: close modals, cancel stream, or stop app
+	// Handle Ctrl+C: copy if text selected, else close modals, cancel stream, or stop app
 	if event.Key() == tcell.KeyCtrlC {
+		// Check if text is selected in input - if so, copy it
+		if !a.pickerActive && !a.filePickerActive && a.input.HasSelection() {
+			selectedText, _, _ := a.input.GetSelection()
+			if selectedText != "" {
+				clipboard.WriteText(selectedText)
+				return nil
+			}
+		}
+
 		if a.filePickerActive {
 			a.closeFilePicker()
 			return nil
@@ -91,15 +100,6 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		a.agent.Clear()
 		a.totalTokens = 0
 		a.updateStatusBar()
-		return nil
-	}
-
-	// Ctrl+V, Cmd+V, or terminal paste event to paste images from clipboard
-	if event.Key() == tcell.KeyCtrlV || event.Rune() == 0x16 ||
-		(event.Modifiers()&tcell.ModCtrl != 0 && (event.Rune() == 'v' || event.Rune() == 'V')) ||
-		(event.Modifiers()&tcell.ModMeta != 0 && (event.Rune() == 'v' || event.Rune() == 'V')) ||
-		event.Name() == "Paste" {
-		a.pasteFromClipboard()
 		return nil
 	}
 
@@ -159,6 +159,11 @@ func (a *App) pasteFromClipboard() {
 	for _, c := range contents {
 		if c.Image != nil {
 			a.pendingContent = append(a.pendingContent, agent.Content{Image: c.Image})
+		}
+		if c.Text != "" {
+			// Get selection range (start, end are byte positions)
+			_, start, end := a.input.GetSelection()
+			a.input.Replace(start, end, c.Text)
 		}
 	}
 
@@ -379,6 +384,18 @@ func (a *App) buildLayout() *tview.Flex {
 	a.input.SetChangedFunc(func() {
 		a.updateInputHeight()
 		a.updateInputHint()
+	})
+
+	// Handle Ctrl+V/Cmd+V to paste from clipboard (images + text)
+	a.input.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		// Check for paste: Ctrl+V or Cmd+V (macOS)
+		isPaste := event.Key() == tcell.KeyCtrlV ||
+			(event.Modifiers()&tcell.ModMeta != 0 && (event.Rune() == 'v' || event.Rune() == 'V'))
+		if isPaste {
+			a.pasteFromClipboard()
+			return nil // Consume event - we handled the paste
+		}
+		return event
 	})
 
 	bottomBar := tview.NewFlex().SetDirection(tview.FlexColumn)

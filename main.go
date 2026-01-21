@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/adrianliechti/wingman-cli/pkg/agent"
 	"github.com/adrianliechti/wingman-cli/pkg/app"
@@ -16,6 +14,9 @@ import (
 func main() {
 	theme.Auto()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	cfg, cleanup, err := config.Default()
 
 	if err != nil {
@@ -24,9 +25,6 @@ func main() {
 	}
 
 	defer cleanup()
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	agent := agent.New(cfg)
 
