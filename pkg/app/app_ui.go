@@ -10,7 +10,6 @@ import (
 	"github.com/adrianliechti/wingman-cli/pkg/agent"
 	"github.com/adrianliechti/wingman-cli/pkg/clipboard"
 	"github.com/adrianliechti/wingman-cli/pkg/markdown"
-	"github.com/adrianliechti/wingman-cli/pkg/plan"
 	"github.com/adrianliechti/wingman-cli/pkg/theme"
 )
 
@@ -19,7 +18,29 @@ const maxToolOutputLen = 500
 // Input handling
 
 func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
-	// Handle Ctrl+C: close modals first, then stop app
+	isStreaming := a.phase != PhaseIdle
+
+	// Handle Escape: close modals, cancel stream, or clear input
+	if event.Key() == tcell.KeyEscape {
+		if a.filePickerActive {
+			a.closeFilePicker()
+			return nil
+		}
+		if a.pickerActive {
+			a.closePicker()
+			return nil
+		}
+		if isStreaming {
+			a.cancelStream()
+			return nil
+		}
+		// Clear input and pending content when idle
+		a.input.SetText("", true)
+		a.clearPendingContent()
+		return nil
+	}
+
+	// Handle Ctrl+C: close modals, cancel stream, or stop app
 	if event.Key() == tcell.KeyCtrlC {
 		if a.filePickerActive {
 			a.closeFilePicker()
@@ -27,6 +48,10 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		}
 		if a.pickerActive {
 			a.closePicker()
+			return nil
+		}
+		if isStreaming {
+			a.cancelStream()
 			return nil
 		}
 		a.stop()
@@ -78,7 +103,6 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
-	isStreaming := a.phase != PhaseIdle
 	if event.Key() == tcell.KeyTab && !isStreaming {
 		a.toggleMode()
 		return nil
@@ -87,13 +111,6 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	// Shift+Tab cycles through models
 	if event.Key() == tcell.KeyBacktab && !isStreaming {
 		go a.cycleModel()
-		return nil
-	}
-
-	// Escape clears input and pending content
-	if event.Key() == tcell.KeyEscape {
-		a.input.SetText("", true)
-		a.clearPendingContent()
 		return nil
 	}
 
@@ -148,6 +165,14 @@ func (a *App) pasteFromClipboard() {
 	a.updateInputHint()
 }
 
+func (a *App) cancelStream() {
+	a.streamMu.Lock()
+	if a.streamCancel != nil {
+		a.streamCancel()
+	}
+	a.streamMu.Unlock()
+}
+
 func (a *App) clearPendingContent() {
 	a.pendingContent = nil
 	a.pendingFiles = nil
@@ -186,7 +211,7 @@ func (a *App) submitInput() {
 		a.chatView.Clear()
 		a.agent.Clear()
 		a.totalTokens = 0
-		plan.Reset()
+		a.plan.Clear()
 		a.updateStatusBar()
 		a.input.SetText("", true)
 		return
@@ -200,6 +225,7 @@ func (a *App) submitInput() {
 		fmt.Fprintf(a.chatView, "  [%s]/model[-]  - Select AI model\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/file[-]   - Add file to context (or type @filename)\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/paste[-]  - Paste from clipboard (Ctrl+V / Cmd+V / Paste)\n", t.BrCyan)
+		fmt.Fprintf(a.chatView, "  [%s]/plan[-]   - Show current plan\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/diff[-]   - Show changes from baseline\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/rewind[-] - Restore to previous checkpoint\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/clear[-]  - Clear chat history\n", t.BrCyan)
@@ -233,15 +259,16 @@ func (a *App) submitInput() {
 		a.input.SetText("", true)
 		a.showDiffView()
 		return
+
+	case "/plan":
+		a.input.SetText("", true)
+		a.showPlanView()
+		return
 	}
 
 	a.switchToChat()
 	a.app.ForceDraw() // Ensure chatWidth is set before printing user message
 	a.input.SetText("", true)
-	// Only reset plan if there's no existing plan (preserve plans from planning mode)
-	if !plan.HasPlan() {
-		plan.Reset()
-	}
 
 	imageCount := a.countPendingImages()
 	fileCount := len(a.pendingFiles)
@@ -268,9 +295,6 @@ func (a *App) submitInput() {
 
 		if a.currentMode == ModePlan {
 			instructions = a.config.PlanningInstructions
-		} else if plan.HasPlan() && !plan.IsComplete() {
-			// Append plan to agent instructions
-			instructions = instructions + "\n\n## Active Plan\n\nYou have an active plan from Planning Mode. Follow this plan and update step status as you work through each step using the `update_plan` tool:\n\n" + plan.Format()
 		}
 
 		a.streamResponse(input, instructions, a.allTools())
@@ -459,12 +483,8 @@ func (a *App) updateStatusBar() {
 		parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.BrBlack, formatTokens(a.totalTokens)))
 	}
 
-	if done, total := plan.Stats(); total > 0 {
-		if done == total {
-			parts = append(parts, fmt.Sprintf("[%s]✓ %d/%d[-]", t.Green, done, total))
-		} else {
-			parts = append(parts, fmt.Sprintf("[%s]◐ %d/%d[-]", t.Blue, done, total))
-		}
+	if ps := a.planStats(); ps != "" {
+		parts = append(parts, ps)
 	}
 
 	parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Cyan, a.config.Model))

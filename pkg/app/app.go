@@ -10,6 +10,7 @@ import (
 
 	"github.com/adrianliechti/wingman-cli/pkg/agent"
 	"github.com/adrianliechti/wingman-cli/pkg/config"
+	"github.com/adrianliechti/wingman-cli/pkg/plan"
 	"github.com/adrianliechti/wingman-cli/pkg/rewind"
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 	"github.com/adrianliechti/wingman-cli/pkg/tool/mcp"
@@ -56,6 +57,13 @@ type App struct {
 	pendingContent   []agent.Content
 	pendingFiles     []string
 
+	// Stream cancellation
+	streamCancel context.CancelFunc
+	streamMu     sync.Mutex
+
+	// Plan state
+	plan *plan.Plan
+
 	// MCP state
 	mcpManager    *mcp.Manager
 	mcpTools      []tool.Tool
@@ -77,9 +85,11 @@ func New(ctx context.Context, cfg *config.Config, ag *agent.Agent) *App {
 		ctx:           ctx,
 		isWelcomeMode: true,
 		phase:         PhaseIdle,
+		plan:          &plan.Plan{},
 	}
 
 	cfg.Environment.PromptUser = a.promptUser
+	cfg.Environment.Plan = a.plan
 
 	rm, err := rewind.New(cfg.Environment.WorkingDir())
 	if err != nil {

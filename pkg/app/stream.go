@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -49,6 +51,19 @@ func extractToolHint(argsJSON string) string {
 func (a *App) streamResponse(input []agent.Content, instructions string, tools []tool.Tool) {
 	t := theme.Default
 
+	// Create cancellable context for this stream
+	streamCtx, cancel := context.WithCancel(a.ctx)
+
+	a.streamMu.Lock()
+	a.streamCancel = cancel
+	a.streamMu.Unlock()
+
+	defer func() {
+		a.streamMu.Lock()
+		a.streamCancel = nil
+		a.streamMu.Unlock()
+	}()
+
 	var content strings.Builder
 	var streamErr error
 	var lastCompaction *agent.CompactionInfo
@@ -61,7 +76,7 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 	// Force immediate UI update to show thinking state
 	a.app.QueueUpdateDraw(func() {})
 
-	for msg, err := range a.agent.Send(a.ctx, instructions, input, tools) {
+	for msg, err := range a.agent.Send(streamCtx, instructions, input, tools) {
 		if err != nil {
 			streamErr = err
 			break
@@ -154,14 +169,21 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 		})
 	}
 
-	// Finalize
+	// Finalize - set phase before stopping spinner so hint updates correctly
+	a.phase = PhaseIdle
+
 	if a.spinner != nil {
 		a.spinner.Stop()
 	}
 
 	a.app.QueueUpdateDraw(func() {
 		if streamErr != nil {
-			fmt.Fprintf(a.chatView, "\n[%s]Error: %v[-]\n\n", t.Red, streamErr)
+			if errors.Is(streamErr, context.Canceled) {
+				// User cancelled - show brief notice instead of error
+				fmt.Fprintf(a.chatView, "\n[%s]Cancelled[-]\n\n", t.Yellow)
+			} else {
+				fmt.Fprintf(a.chatView, "\n[%s]Error: %v[-]\n\n", t.Red, streamErr)
+			}
 		} else {
 			messages := a.agent.Messages()
 			a.renderChat(messages, "", "", "")
@@ -170,8 +192,6 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 				fmt.Fprint(a.chatView, markdown.FormatCompaction(lastCompaction.FromTokens, lastCompaction.ToTokens, a.chatWidth))
 			}
 		}
-
-		a.phase = PhaseIdle
 	})
 
 	if streamErr == nil {

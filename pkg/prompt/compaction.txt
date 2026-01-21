@@ -13,7 +13,7 @@ Output ONLY the XML summary, no other text:
   <goal>What the user is trying to accomplish</goal>
   <progress>
     <done>List of completed tasks</done>
-    <in_progress>Current work being done</in_progress>
+    <running>Current work being done</running>
   </progress>
   <decisions>Key decisions made with brief rationale</decisions>
   <files>

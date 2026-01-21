@@ -11,5 +11,6 @@ func Tools() []tool.Tool {
 		EditTool(),
 		LsTool(),
 		FindTool(),
+		GrepTool(),
 	}
 }
