@@ -51,6 +51,7 @@ func UpdatePlan() tool.Tool {
 	return tool.Tool{
 		Name:        "update_plan",
 		Description: `Manage task plan. Actions: "set" (create plan with tasks), "update" (change task status by index), "get" (show current plan).`,
+		Hidden:      true,
 
 		Parameters: map[string]any{
 			"type": "object",

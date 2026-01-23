@@ -182,3 +182,12 @@ func (a *App) allTools() []tool.Tool {
 
 	return append(a.config.Tools, a.mcpTools...)
 }
+
+func (a *App) isToolHidden(name string) bool {
+	for _, t := range a.allTools() {
+		if t.Name == name {
+			return t.Hidden
+		}
+	}
+	return false
+}

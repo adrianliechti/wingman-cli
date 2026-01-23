@@ -601,13 +601,16 @@ func (a *App) renderChat(messages []agent.Message, streamingContent string, tool
 		fmt.Fprint(a.chatView, markdown.FormatAssistantMessage(streamingContent, a.chatWidth))
 	}
 
-	if toolName != "" {
+	if toolName != "" && !a.isToolHidden(toolName) {
 		fmt.Fprint(a.chatView, markdown.FormatToolProgress(toolName, toolHint, a.chatWidth))
 	}
 }
 
 func (a *App) renderMessage(msg agent.Message) {
 	if msg.ToolResult != nil {
+		if a.isToolHidden(msg.ToolResult.Name) {
+			return
+		}
 		output := msg.ToolResult.Content[0].Text
 		if len(output) > maxToolOutputLen {
 			output = output[:maxToolOutputLen] + "..."

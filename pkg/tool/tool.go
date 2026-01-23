@@ -12,6 +12,7 @@ type Tool struct {
 	Description string
 	Parameters  map[string]any
 	Execute     func(ctx context.Context, env *Environment, args map[string]any) (string, error)
+	Hidden      bool
 }
 
 type Environment struct {
