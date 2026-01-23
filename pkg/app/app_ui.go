@@ -22,12 +22,8 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 
 	// Handle Escape: close modals, cancel stream, or clear input
 	if event.Key() == tcell.KeyEscape {
-		if a.filePickerActive {
-			a.closeFilePicker()
-			return nil
-		}
-		if a.pickerActive {
-			a.closePicker()
+		if a.hasActiveModal() {
+			a.closeActiveModal()
 			return nil
 		}
 		if isStreaming {
@@ -43,7 +39,7 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	// Handle Ctrl+C: copy if text selected, else close modals, cancel stream, or stop app
 	if event.Key() == tcell.KeyCtrlC {
 		// Check if text is selected in input - if so, copy it
-		if !a.pickerActive && !a.filePickerActive && a.input.HasSelection() {
+		if !a.hasActiveModal() && a.input.HasSelection() {
 			selectedText, _, _ := a.input.GetSelection()
 			if selectedText != "" {
 				clipboard.WriteText(selectedText)
@@ -51,12 +47,8 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 			}
 		}
 
-		if a.filePickerActive {
-			a.closeFilePicker()
-			return nil
-		}
-		if a.pickerActive {
-			a.closePicker()
+		if a.hasActiveModal() {
+			a.closeActiveModal()
 			return nil
 		}
 		if isStreaming {
@@ -67,8 +59,8 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
-	// Let picker handle its own events
-	if a.pickerActive || a.filePickerActive {
+	// Let modal handle its own events
+	if a.hasActiveModal() {
 		return event
 	}
 

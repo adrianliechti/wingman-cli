@@ -26,7 +26,7 @@ func (a *App) showDiffView() {
 		return
 	}
 
-	a.pickerActive = true
+	a.activeModal = ModalDiff
 	t := theme.Default
 
 	// Calculate stats
@@ -315,9 +315,6 @@ func (a *App) showDiffView() {
 
 	container.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Key() {
-		case tcell.KeyEscape:
-			a.closeDiffView()
-			return nil
 		case tcell.KeyTab:
 			if focusedPanel == 0 {
 				focusedPanel = 1
@@ -340,7 +337,7 @@ func (a *App) showDiffView() {
 }
 
 func (a *App) closeDiffView() {
-	a.pickerActive = false
+	a.activeModal = ModalNone
 	if a.pages != nil {
 		a.pages.RemovePage("diff")
 		a.app.SetFocus(a.input)

@@ -2,6 +2,17 @@ package app
 
 import "github.com/adrianliechti/wingman-cli/pkg/theme"
 
+// Modal represents the currently active modal type
+type Modal string
+
+const (
+	ModalNone       Modal = ""
+	ModalPicker     Modal = "picker"
+	ModalFilePicker Modal = "file-picker"
+	ModalDiff       Modal = "diff"
+	ModalPlan       Modal = "plan"
+)
+
 // AppPhase represents the current operational phase of the application
 type AppPhase int
 

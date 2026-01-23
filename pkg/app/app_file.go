@@ -163,11 +163,11 @@ func (a *App) showFilePicker(initialQuery string, onSelect func(path string)) {
 	files := a.collectFiles()
 
 	a.app.QueueUpdateDraw(func() {
-		if a.filePickerActive || a.pickerActive {
+		if a.hasActiveModal() {
 			return
 		}
 
-		a.filePickerActive = true
+		a.activeModal = ModalFilePicker
 		t := theme.Default
 		filtered := filterFiles(files, initialQuery)
 
@@ -296,7 +296,7 @@ func (a *App) showFilePicker(initialQuery string, onSelect func(path string)) {
 }
 
 func (a *App) closeFilePicker() {
-	a.filePickerActive = false
+	a.activeModal = ModalNone
 	if a.pages != nil {
 		a.pages.RemovePage(filePickerPageID)
 		a.app.SetFocus(a.input)

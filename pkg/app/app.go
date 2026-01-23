@@ -44,18 +44,17 @@ type App struct {
 	spinner *Spinner
 
 	// State
-	phase            AppPhase
-	currentMode      Mode
-	isWelcomeMode    bool
-	pickerActive     bool
-	filePickerActive bool
-	promptActive     bool
-	promptResponse   chan bool
-	totalTokens      int64
-	startupError     string
-	chatWidth        int
-	pendingContent   []agent.Content
-	pendingFiles     []string
+	phase          AppPhase
+	currentMode    Mode
+	isWelcomeMode  bool
+	activeModal    Modal
+	promptActive   bool
+	promptResponse chan bool
+	totalTokens    int64
+	startupError   string
+	chatWidth      int
+	pendingContent []agent.Content
+	pendingFiles   []string
 
 	// Stream cancellation
 	streamCancel context.CancelFunc
@@ -174,6 +173,25 @@ func (a *App) toggleMode() {
 		a.currentMode = ModeAgent
 	}
 	a.updateStatusBar()
+}
+
+// hasActiveModal returns true if any modal is currently open
+func (a *App) hasActiveModal() bool {
+	return a.activeModal != ModalNone
+}
+
+// closeActiveModal closes the currently active modal
+func (a *App) closeActiveModal() {
+	switch a.activeModal {
+	case ModalPicker:
+		a.closePicker()
+	case ModalFilePicker:
+		a.closeFilePicker()
+	case ModalDiff:
+		a.closeDiffView()
+	case ModalPlan:
+		a.closePlanView()
+	}
 }
 
 func (a *App) allTools() []tool.Tool {

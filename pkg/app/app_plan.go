@@ -48,7 +48,7 @@ func (a *App) showPlanView() {
 		return
 	}
 
-	a.pickerActive = true
+	a.activeModal = ModalPlan
 
 	total := len(a.plan.Tasks)
 
@@ -160,9 +160,6 @@ func (a *App) showPlanView() {
 	// === INPUT HANDLING ===
 	planView.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Key() {
-		case tcell.KeyEsc:
-			a.closePlanView()
-			return nil
 		case tcell.KeyUp:
 			row, col := planView.GetScrollOffset()
 			planView.ScrollTo(row-1, col)
@@ -194,7 +191,7 @@ func (a *App) showPlanView() {
 }
 
 func (a *App) closePlanView() {
-	a.pickerActive = false
+	a.activeModal = ModalNone
 	if a.pages != nil {
 		a.pages.RemovePage("plan")
 		a.app.SetFocus(a.input)

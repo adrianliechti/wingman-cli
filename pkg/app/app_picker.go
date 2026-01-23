@@ -17,7 +17,7 @@ func (a *App) showPicker(title string, items []PickerItem, selectedID string, on
 		return
 	}
 
-	a.pickerActive = true
+	a.activeModal = ModalPicker
 	t := theme.Default
 
 	list := tview.NewList().
@@ -92,7 +92,7 @@ func (a *App) showPicker(title string, items []PickerItem, selectedID string, on
 }
 
 func (a *App) closePicker() {
-	a.pickerActive = false
+	a.activeModal = ModalNone
 	if a.pages != nil {
 		a.pages.RemovePage("picker")
 		a.app.SetFocus(a.input)
