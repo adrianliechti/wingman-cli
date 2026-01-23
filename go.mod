@@ -3,7 +3,7 @@ module github.com/adrianliechti/wingman-cli
 go 1.25.0
 
 require (
-	github.com/alecthomas/chroma/v2 v2.23.0
+	github.com/alecthomas/chroma/v2 v2.23.1
 	github.com/bmatcuk/doublestar/v4 v4.9.2
 	github.com/gdamore/tcell/v2 v2.13.7
 	github.com/go-git/go-billy/v5 v5.7.0
