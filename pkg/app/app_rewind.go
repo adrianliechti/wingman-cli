@@ -10,13 +10,16 @@ func (a *App) showRewindPicker() {
 	if a.rewind == nil {
 		t := theme.Default
 		fmt.Fprintf(a.chatView, "[%s]Rewind not available[-]\n\n", t.Yellow)
+
 		return
 	}
 
 	checkpoints, err := a.rewind.List()
+
 	if err != nil || len(checkpoints) == 0 {
 		t := theme.Default
 		fmt.Fprintf(a.chatView, "[%s]No checkpoints available[-]\n\n", t.Yellow)
+
 		return
 	}
 
@@ -33,6 +36,7 @@ func (a *App) showRewindPicker() {
 		if err := a.rewind.Restore(item.ID); err != nil {
 			t := theme.Default
 			fmt.Fprintf(a.chatView, "[%s]Failed to restore: %v[-]\n\n", t.Red, err)
+
 			return
 		}
 

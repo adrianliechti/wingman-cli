@@ -16,6 +16,7 @@ import (
 // extractToolHint extracts a display hint from tool arguments JSON.
 func extractToolHint(argsJSON string) string {
 	var args map[string]any
+
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return ""
 	}
@@ -36,9 +37,11 @@ func extractToolHint(argsJSON string) string {
 			if str, ok := val.(string); ok && str != "" {
 				// Collapse newlines and multiple spaces to single space
 				str = strings.Join(strings.Fields(str), " ")
+
 				if len(str) > 50 {
 					str = str[:47] + "..."
 				}
+
 				return str
 			}
 		}
@@ -70,6 +73,7 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 
 	// Start with thinking phase and immediately show it
 	a.phase = PhaseThinking
+
 	if a.spinner != nil {
 		a.spinner.Start(PhaseThinking, "")
 	}
@@ -95,6 +99,7 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 		if msg.Compaction != nil {
 			if msg.Compaction.InProgress {
 				a.phase = PhaseCompacting
+
 				if a.spinner != nil {
 					a.spinner.SetPhase(PhaseCompacting, "")
 				}
@@ -117,6 +122,7 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 
 		if msg.ToolCall != nil {
 			a.phase = PhaseToolRunning
+
 			if a.spinner != nil {
 				a.spinner.SetPhase(PhaseToolRunning, msg.ToolCall.Name)
 			}
@@ -136,6 +142,7 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 		if msg.ToolResult != nil {
 			// Tool complete, back to thinking for next iteration
 			a.phase = PhaseThinking
+
 			if a.spinner != nil {
 				a.spinner.SetPhase(PhaseThinking, "")
 			}
@@ -153,6 +160,7 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 		// Streaming content - keep spinner running to show activity
 		if a.phase != PhaseStreaming {
 			a.phase = PhaseStreaming
+
 			if a.spinner != nil {
 				a.spinner.SetPhase(PhaseStreaming, "")
 			}

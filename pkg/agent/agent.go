@@ -93,6 +93,7 @@ func (a *Agent) Send(ctx context.Context, instructions string, input []Content, 
 			}
 
 			err = a.processToolCalls(ctx, yield, toolCalls, tools)
+
 			if err != nil {
 				break
 			}
@@ -104,6 +105,7 @@ func (a *Agent) Send(ctx context.Context, instructions string, input []Content, 
 			if err != errYieldStopped {
 				yield(Message{}, err)
 			}
+
 			return
 		}
 
@@ -142,6 +144,7 @@ func (a *Agent) streamResponse(ctx context.Context, yield func(Message, error) b
 			}
 
 		case "response.output_item.done":
+
 			if event.Item.Type == "function_call" {
 				toolCalls = append(toolCalls, event.Item.AsFunctionCall())
 			}
@@ -288,6 +291,7 @@ func (a *Agent) userMessage(input []Content) responses.ResponseInputItemUnionPar
 		if c.Text != "" {
 			parts = append(parts, responses.ResponseInputContentParamOfInputText(c.Text))
 		}
+
 		if c.Image != nil && *c.Image != "" {
 			parts = append(parts, responses.ResponseInputContentUnionParam{
 				OfInputImage: &responses.ResponseInputImageParam{
@@ -352,10 +356,12 @@ func (a *Agent) Messages() []Message {
 				}
 
 				var contents []Content
+
 				for _, part := range msg.Content.OfInputItemContentList {
 					if part.OfInputText != nil {
 						contents = append(contents, Content{Text: part.OfInputText.Text})
 					}
+
 					if part.OfInputImage != nil && part.OfInputImage.ImageURL.Value != "" {
 						imageURL := part.OfInputImage.ImageURL.Value
 						contents = append(contents, Content{Image: &imageURL})

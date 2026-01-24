@@ -1,10 +1,15 @@
 package fs
 
 import (
+	"bufio"
 	"fmt"
+	"io/fs"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 )
 
 const (
@@ -24,11 +29,17 @@ func normalizePath(path, workingDir string) string {
 	absWorkingDir := cleanPath(workingDir)
 
 	rel, err := filepath.Rel(absWorkingDir, absPath)
+
 	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return rel
 	}
 
 	return filepath.FromSlash(path)
+}
+
+// normalizePathFS normalizes a path and converts to forward slashes for fs.FS operations.
+func normalizePathFS(path, workingDir string) string {
+	return pathpkg.Clean(filepath.ToSlash(normalizePath(path, workingDir)))
 }
 
 // isOutsideWorkspace checks if an absolute path is outside the workspace.
@@ -42,6 +53,7 @@ func isOutsideWorkspace(path, workingDir string) bool {
 	absWorkingDir := cleanPath(workingDir)
 
 	rel, err := filepath.Rel(absWorkingDir, absPath)
+
 	if err != nil {
 		return true
 	}
@@ -275,4 +287,87 @@ func containsLine(lines []string, line string) bool {
 	}
 
 	return false
+}
+
+// Common ignore directories that should be skipped during file traversal
+var defaultIgnoreDirs = map[string]bool{
+	".git":         true,
+	"node_modules": true,
+	".svn":         true,
+	"__pycache__":  true,
+	".venv":        true,
+	"vendor":       true,
+}
+
+// isBinaryFile checks if a file is likely binary based on its extension
+func isBinaryFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	binaryExts := map[string]bool{
+		".exe": true, ".dll": true, ".so": true, ".dylib": true,
+		".bin": true, ".dat": true, ".db": true, ".sqlite": true,
+		".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
+		".bmp": true, ".ico": true, ".webp": true, ".svg": true,
+		".pdf": true, ".doc": true, ".docx": true, ".xls": true,
+		".xlsx": true, ".ppt": true, ".pptx": true,
+		".zip": true, ".tar": true, ".gz": true, ".rar": true,
+		".7z": true, ".bz2": true, ".xz": true,
+		".mp3": true, ".mp4": true, ".avi": true, ".mov": true,
+		".wav": true, ".flac": true, ".ogg": true, ".webm": true,
+		".woff": true, ".woff2": true, ".ttf": true, ".otf": true, ".eot": true,
+		".pyc": true, ".pyo": true, ".class": true, ".o": true, ".a": true,
+	}
+
+	return binaryExts[ext]
+}
+
+// relPathSlash returns the relative path from base to target using forward slashes
+func relPathSlash(base, target string) string {
+	rel, err := filepath.Rel(filepath.FromSlash(base), filepath.FromSlash(target))
+
+	if err != nil {
+		return target
+	}
+
+	return filepath.ToSlash(rel)
+}
+
+// pathDomain returns the path split into components for gitignore matching
+func pathDomain(fsPath string) []string {
+	if fsPath == "" || fsPath == "." {
+		return nil
+	}
+
+	return strings.Split(fsPath, "/")
+}
+
+// loadGitignore loads gitignore patterns from a .gitignore file
+func loadGitignore(fsys fs.FS, domain []string) []gitignore.Pattern {
+	gitignorePath := ".gitignore"
+
+	if len(domain) > 0 {
+		gitignorePath = pathpkg.Join(append(domain, ".gitignore")...)
+	}
+
+	f, err := fsys.Open(gitignorePath)
+
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	var patterns []gitignore.Pattern
+	scanner := bufio.NewScanner(f)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		trimmed := strings.TrimSpace(line)
+
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		patterns = append(patterns, gitignore.ParsePattern(line, domain))
+	}
+
+	return patterns
 }

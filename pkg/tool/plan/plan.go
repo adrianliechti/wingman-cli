@@ -98,21 +98,26 @@ func UpdatePlan() tool.Tool {
 
 func executeUpdatePlan(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
 	action, ok := args["action"].(string)
+
 	if !ok {
 		return "", fmt.Errorf("action is required")
 	}
 
 	switch action {
 	case "set":
+
 		return actionSet(env, args)
 
 	case "update":
+
 		return actionUpdate(env, args)
 
 	case "get":
+
 		return actionGet(env)
 
 	default:
+
 		return "", fmt.Errorf("unknown action: %s", action)
 	}
 }
@@ -131,6 +136,7 @@ func actionSet(env *tool.Environment, args map[string]any) (string, error) {
 
 	switch v := tasksRaw.(type) {
 	case []any:
+
 		for _, item := range v {
 			if s, ok := item.(string); ok {
 				taskDescriptions = append(taskDescriptions, s)
@@ -156,6 +162,7 @@ func actionSet(env *tool.Environment, args map[string]any) (string, error) {
 
 func actionUpdate(env *tool.Environment, args map[string]any) (string, error) {
 	indexRaw, ok := args["index"]
+
 	if !ok {
 		return "", fmt.Errorf("index is required for 'update' action")
 	}
@@ -171,6 +178,7 @@ func actionUpdate(env *tool.Environment, args map[string]any) (string, error) {
 		index = v
 
 	default:
+
 		return "", fmt.Errorf("index must be a number")
 	}
 

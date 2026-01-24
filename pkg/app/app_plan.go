@@ -45,6 +45,7 @@ func (a *App) showPlanView() {
 
 	if a.plan.IsEmpty() {
 		fmt.Fprintf(a.chatView, "[%s]No plan set[-]\n\n", t.Yellow)
+
 		return
 	}
 
@@ -163,10 +164,13 @@ func (a *App) showPlanView() {
 		case tcell.KeyUp:
 			row, col := planView.GetScrollOffset()
 			planView.ScrollTo(row-1, col)
+
 			return nil
+
 		case tcell.KeyDown:
 			row, col := planView.GetScrollOffset()
 			planView.ScrollTo(row+1, col)
+
 			return nil
 		}
 
@@ -174,10 +178,13 @@ func (a *App) showPlanView() {
 		case 'j':
 			row, col := planView.GetScrollOffset()
 			planView.ScrollTo(row+1, col)
+
 			return nil
+
 		case 'k':
 			row, col := planView.GetScrollOffset()
 			planView.ScrollTo(row-1, col)
+
 			return nil
 		}
 
@@ -192,6 +199,7 @@ func (a *App) showPlanView() {
 
 func (a *App) closePlanView() {
 	a.activeModal = ModalNone
+
 	if a.pages != nil {
 		a.pages.RemovePage("plan")
 		a.app.SetFocus(a.input)

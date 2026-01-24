@@ -16,13 +16,16 @@ func (a *App) showDiffView() {
 	if a.rewind == nil {
 		t := theme.Default
 		fmt.Fprintf(a.chatView, "[%s]Diff not available (rewind not initialized)[-]\n\n", t.Yellow)
+
 		return
 	}
 
 	diffs, err := a.rewind.DiffFromBaseline()
+
 	if err != nil {
 		t := theme.Default
 		fmt.Fprintf(a.chatView, "[%s]%v[-]\n\n", t.Yellow, err)
+
 		return
 	}
 
@@ -32,12 +35,15 @@ func (a *App) showDiffView() {
 	// Calculate stats
 	var added, modified, deleted int
 	var totalInsertions, totalDeletions int
+
 	for _, diff := range diffs {
 		switch diff.Status {
 		case rewind.StatusAdded:
 			added++
+
 		case rewind.StatusModified:
 			modified++
+
 		case rewind.StatusDeleted:
 			deleted++
 		}
@@ -121,6 +127,7 @@ func (a *App) showDiffView() {
 
 	// Initial render
 	renderFileList()
+
 	if len(diffs) > 0 {
 		renderDiffContent()
 	}
@@ -138,12 +145,15 @@ func (a *App) showDiffView() {
 
 	// Build status text
 	var statParts []string
+
 	if added > 0 {
 		statParts = append(statParts, fmt.Sprintf("[%s]+%d[-]", t.Green, added))
 	}
+
 	if modified > 0 {
 		statParts = append(statParts, fmt.Sprintf("[%s]~%d[-]", t.Yellow, modified))
 	}
+
 	if deleted > 0 {
 		statParts = append(statParts, fmt.Sprintf("[%s]-%d[-]", t.Red, deleted))
 	}
@@ -155,6 +165,7 @@ func (a *App) showDiffView() {
 
 	updateHintBar := func() {
 		hintBar.Clear()
+
 		if focusedPanel == 0 {
 			fmt.Fprintf(hintBar, "[%s]esc[-] [%s]close[-]  [%s]tab[-] [%s]switch[-]  [%s]↑↓/jk[-] [%s]select[-]",
 				t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground)
@@ -171,9 +182,11 @@ func (a *App) showDiffView() {
 	separator := tview.NewBox().SetBackgroundColor(tcell.ColorDefault)
 	separator.SetDrawFunc(func(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {
 		sepColor := t.BrBlack
+
 		for i := y; i < y+height; i++ {
 			screen.SetContent(x, i, '│', nil, tcell.StyleDefault.Foreground(sepColor))
 		}
+
 		return x + 1, y, width - 1, height
 	})
 
@@ -203,6 +216,7 @@ func (a *App) showDiffView() {
 				screen.SetContent(col, row, ' ', nil, tcell.StyleDefault)
 			}
 		}
+
 		return x, y, width, height
 	})
 
@@ -219,6 +233,7 @@ func (a *App) showDiffView() {
 				screen.SetContent(col, row, ' ', nil, tcell.StyleDefault)
 			}
 		}
+
 		return x, y, width, height
 	})
 
@@ -233,6 +248,7 @@ func (a *App) showDiffView() {
 				screen.SetContent(col, row, ' ', nil, tcell.StyleDefault)
 			}
 		}
+
 		return x, y, width, height
 	})
 
@@ -249,73 +265,99 @@ func (a *App) showDiffView() {
 	fileListView.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Key() {
 		case tcell.KeyUp:
+
 			if selectedIndex > 0 {
 				selectedIndex--
 				renderFileList()
 				renderDiffContent()
 			}
+
 			return nil
+
 		case tcell.KeyDown:
+
 			if selectedIndex < len(diffs)-1 {
 				selectedIndex++
 				renderFileList()
 				renderDiffContent()
 			}
+
 			return nil
 		}
 		switch event.Rune() {
 		case 'k':
+
 			if selectedIndex > 0 {
 				selectedIndex--
 				renderFileList()
 				renderDiffContent()
 			}
+
 			return nil
+
 		case 'j':
+
 			if selectedIndex < len(diffs)-1 {
 				selectedIndex++
 				renderFileList()
 				renderDiffContent()
 			}
+
 			return nil
 		}
+
 		return event
 	})
 
 	diffContentView.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		row, col := diffContentView.GetScrollOffset()
+
 		switch event.Key() {
 		case tcell.KeyUp:
+
 			if row > 0 {
 				diffContentView.ScrollTo(row-1, col)
 			}
+
 			return nil
+
 		case tcell.KeyDown:
 			diffContentView.ScrollTo(row+1, col)
+
 			return nil
 		}
 		switch event.Rune() {
 		case 'j':
 			diffContentView.ScrollTo(row+1, col)
+
 			return nil
+
 		case 'k':
+
 			if row > 0 {
 				diffContentView.ScrollTo(row-1, col)
 			}
+
 			return nil
+
 		case 'g':
 			diffContentView.ScrollToBeginning()
+
 			return nil
+
 		case 'G':
 			diffContentView.ScrollToEnd()
+
 			return nil
 		}
+
 		return event
 	})
 
 	container.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Key() {
 		case tcell.KeyTab:
+
 			if focusedPanel == 0 {
 				focusedPanel = 1
 				a.app.SetFocus(diffContentView)
@@ -325,8 +367,10 @@ func (a *App) showDiffView() {
 				a.app.SetFocus(fileListView)
 				updateHintBar()
 			}
+
 			return nil
 		}
+
 		return event
 	})
 
@@ -338,6 +382,7 @@ func (a *App) showDiffView() {
 
 func (a *App) closeDiffView() {
 	a.activeModal = ModalNone
+
 	if a.pages != nil {
 		a.pages.RemovePage("diff")
 		a.app.SetFocus(a.input)
@@ -356,11 +401,13 @@ func countDiffStats(patch string) (insertions, deletions int) {
 			strings.HasPrefix(line, "index ") {
 			continue
 		}
+
 		if line[0] == '+' {
 			insertions++
 		} else if line[0] == '-' {
 			deletions++
 		}
 	}
+
 	return
 }

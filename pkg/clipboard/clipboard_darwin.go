@@ -27,6 +27,7 @@ func Read() ([]Content, error) {
 
 func readText() (string, error) {
 	output, err := exec.Command("pbpaste").Output()
+
 	if err != nil {
 		return "", err
 	}
@@ -36,6 +37,7 @@ func readText() (string, error) {
 
 func readImage() (string, error) {
 	tmpFile, err := os.CreateTemp("", "clipboard-*.png")
+
 	if err != nil {
 		return "", nil
 	}
@@ -50,18 +52,22 @@ func readImage() (string, error) {
 			set fileRef to open for access tmpFile with write permission
 			write imageData to fileRef
 			close access fileRef
+
 			return "ok"
 		on error
+
 			return "no image"
 		end try
 	`, tmpPath)
 
 	output, err := exec.Command("osascript", "-e", script).Output()
+
 	if err != nil || string(output) != "ok\n" {
 		return "", nil
 	}
 
 	data, err := os.ReadFile(tmpPath)
+
 	if err != nil || len(data) == 0 {
 		return "", nil
 	}
@@ -75,5 +81,6 @@ func readImage() (string, error) {
 func WriteText(text string) error {
 	cmd := exec.Command("pbcopy")
 	cmd.Stdin = strings.NewReader(text)
+
 	return cmd.Run()
 }

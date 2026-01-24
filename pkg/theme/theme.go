@@ -38,12 +38,14 @@ type Theme struct {
 	BrWhite    tcell.Color
 }
 
+// SetDark sets the Iceberg dark theme
+// Based on https://github.com/cocopon/iceberg.vim
 func SetDark() {
 	Default = Theme{
 		IsLight:    false,
 		Background: tcell.GetColor("#161821"),
 		Foreground: tcell.GetColor("#c6c8d1"),
-		Selection:  tcell.GetColor("#2a2f3f"),
+		Selection:  tcell.GetColor("#272c42"), // Visual highlight color
 		Cursor:     tcell.GetColor("#c6c8d1"),
 		Black:      tcell.GetColor("#1e2132"),
 		Red:        tcell.GetColor("#e27878"),
@@ -64,12 +66,14 @@ func SetDark() {
 	}
 }
 
+// SetLight sets the Iceberg light theme
+// Based on https://github.com/cocopon/iceberg.vim
 func SetLight() {
 	Default = Theme{
 		IsLight:    true,
 		Background: tcell.GetColor("#e8e9ec"),
 		Foreground: tcell.GetColor("#33374c"),
-		Selection:  tcell.GetColor("#cacdd7"),
+		Selection:  tcell.GetColor("#c9cdd7"), // Visual highlight color
 		Cursor:     tcell.GetColor("#33374c"),
 		Black:      tcell.GetColor("#dcdfe7"),
 		Red:        tcell.GetColor("#cc517a"),

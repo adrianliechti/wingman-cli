@@ -58,11 +58,13 @@ func WriteText(text string) error {
 	// Try wl-copy (Wayland) first, then xclip (X11)
 	cmd := exec.Command("wl-copy")
 	cmd.Stdin = strings.NewReader(text)
+
 	if err := cmd.Run(); err == nil {
 		return nil
 	}
 
 	cmd = exec.Command("xclip", "-selection", "clipboard")
 	cmd.Stdin = strings.NewReader(text)
+
 	return cmd.Run()
 }

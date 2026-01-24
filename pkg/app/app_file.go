@@ -53,24 +53,29 @@ func (a *App) collectFiles() []fileMatch {
 		// Skip ignored directories
 		if d.IsDir() {
 			name := d.Name()
+
 			if name != "." && strings.HasPrefix(name, ".") {
 				return filepath.SkipDir
 			}
+
 			if defaultIgnoreDirs[name] {
 				return filepath.SkipDir
 			}
 
 			relPath := filepath.ToSlash(path)
 			pathParts := strings.Split(relPath, "/")
+
 			if matcher.Match(pathParts, true) {
 				return filepath.SkipDir
 			}
 
 			newPatterns := loadGitignore(fsys, strings.Split(path, string(filepath.Separator)))
+
 			if len(newPatterns) > 0 {
 				allPatterns = append(allPatterns, newPatterns...)
 				matcher = gitignore.NewMatcher(allPatterns)
 			}
+
 			return nil
 		}
 
@@ -81,6 +86,7 @@ func (a *App) collectFiles() []fileMatch {
 
 		relPath := filepath.ToSlash(path)
 		pathParts := strings.Split(relPath, "/")
+
 		if matcher.Match(pathParts, false) {
 			return nil
 		}
@@ -98,11 +104,13 @@ func (a *App) collectFiles() []fileMatch {
 
 func loadGitignore(fsys fs.FS, domain []string) []gitignore.Pattern {
 	gitignorePath := ".gitignore"
+
 	if len(domain) > 0 {
 		gitignorePath = filepath.Join(append(domain, ".gitignore")...)
 	}
 
 	f, err := fsys.Open(gitignorePath)
+
 	if err != nil {
 		return nil
 	}
@@ -132,6 +140,7 @@ func filterFiles(files []fileMatch, query string) []fileMatch {
 		if len(files) > maxFileResults {
 			return files[:maxFileResults]
 		}
+
 		return files
 	}
 
@@ -145,6 +154,7 @@ func filterFiles(files []fileMatch, query string) []fileMatch {
 
 		if strings.Contains(nameLower, query) || strings.Contains(pathLower, query) {
 			matches = append(matches, f)
+
 			if len(matches) >= maxFileResults {
 				break
 			}
@@ -188,9 +198,11 @@ func (a *App) showFilePicker(initialQuery string, onSelect func(path string)) {
 		updateList := func(query string) {
 			list.Clear()
 			filtered = filterFiles(files, query)
+
 			for _, f := range filtered {
 				list.AddItem("  "+f.Path, "", 0, nil)
 			}
+
 			if len(filtered) > 0 {
 				list.SetCurrentItem(0)
 			}
@@ -207,8 +219,10 @@ func (a *App) showFilePicker(initialQuery string, onSelect func(path string)) {
 		// Handle selection
 		selectFile := func() {
 			idx := list.GetCurrentItem()
+
 			if idx >= 0 && idx < len(filtered) {
 				a.closeFilePicker()
+
 				if onSelect != nil {
 					onSelect(filtered[idx].Path)
 				}
@@ -223,39 +237,52 @@ func (a *App) showFilePicker(initialQuery string, onSelect func(path string)) {
 			switch event.Key() {
 			case tcell.KeyCtrlC, tcell.KeyEscape:
 				a.closeFilePicker()
+
 				return nil
 			case tcell.KeyEnter, tcell.KeyTab:
 				selectFile()
+
 				return nil
 			case tcell.KeyDown:
+
 				if idx := list.GetCurrentItem(); idx < list.GetItemCount()-1 {
 					list.SetCurrentItem(idx + 1)
 				}
+
 				return nil
 			case tcell.KeyUp:
+
 				if idx := list.GetCurrentItem(); idx > 0 {
 					list.SetCurrentItem(idx - 1)
 				}
+
 				return nil
 			}
+
 			return event
 		})
 
 		list.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 			if event.Key() == tcell.KeyEscape || event.Key() == tcell.KeyCtrlC {
 				a.closeFilePicker()
+
 				return nil
 			}
+
 			if event.Key() == tcell.KeyRune {
 				searchInput.SetText(searchInput.GetText() + string(event.Rune()))
+
 				return nil
 			}
+
 			if event.Key() == tcell.KeyBackspace || event.Key() == tcell.KeyBackspace2 {
 				if t := searchInput.GetText(); len(t) > 0 {
 					searchInput.SetText(t[:len(t)-1])
 				}
+
 				return nil
 			}
+
 			return event
 		})
 
@@ -294,6 +321,7 @@ func (a *App) showFilePicker(initialQuery string, onSelect func(path string)) {
 
 func (a *App) closeFilePicker() {
 	a.activeModal = ModalNone
+
 	if a.pages != nil {
 		a.pages.RemovePage(filePickerPageID)
 		a.app.SetFocus(a.input)

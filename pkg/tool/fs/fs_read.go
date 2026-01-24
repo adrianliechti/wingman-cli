@@ -43,16 +43,15 @@ func ReadTool() tool.Tool {
 
 			normalizedPath := normalizePath(pathArg, workingDir)
 
-			offset := 0
-
-			if o, ok := args["offset"].(float64); ok && o > 0 {
-				offset = int(o) - 1
-			}
-
 			limit := 0
+			offset := 0
 
 			if l, ok := args["limit"].(float64); ok && l > 0 {
 				limit = int(l)
+			}
+
+			if o, ok := args["offset"].(float64); ok && o > 0 {
+				offset = int(o) - 1
 			}
 
 			content, err := env.Root.ReadFile(normalizedPath)

@@ -25,10 +25,12 @@ func Render(text string) string {
 	incompleteLang := ""
 
 	backtickCount := strings.Count(text, "```")
+
 	if backtickCount%2 == 1 {
 		// Find the last incomplete code block
 		incompleteCodeBlockRe := regexp.MustCompile("(?s)```([\\w+#.-]*)\\n([^`]*)$")
 		matches := incompleteCodeBlockRe.FindStringSubmatchIndex(text)
+
 		if matches != nil {
 			incompleteLang = text[matches[2]:matches[3]]
 			incompleteCode = text[matches[4]:matches[5]]
@@ -50,6 +52,7 @@ func Render(text string) string {
 	)
 
 	var buf bytes.Buffer
+
 	if err := md.Convert([]byte(completeText), &buf); err != nil {
 		// Fallback to original text on error
 		return text
@@ -151,6 +154,7 @@ func FormatToolCall(name string, hint string, output string, width int) string {
 	var result strings.Builder
 
 	titleLine := fmt.Sprintf("[%s::b]⚡ %s[-::-]", t.Yellow, name)
+
 	if hint != "" {
 		titleLine = fmt.Sprintf("[%s::b]⚡ %s[-::-] [%s]%s[-]", t.Yellow, name, t.BrBlack, tview.Escape(hint))
 	}
@@ -178,6 +182,7 @@ func FormatToolProgress(name string, hint string, width int) string {
 	var result strings.Builder
 
 	titleLine := fmt.Sprintf("[%s::b]⚡ %s[-::-] [%s]running...[-]", t.Yellow, name, t.BrBlack)
+
 	if hint != "" {
 		titleLine = fmt.Sprintf("[%s::b]⚡ %s[-::-] [%s]%s[-]", t.Yellow, name, t.BrBlack, tview.Escape(hint))
 	}

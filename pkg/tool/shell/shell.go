@@ -48,6 +48,7 @@ func isSafeCommand(command string) bool {
 
 	// Extract words from the command
 	words := strings.Fields(command)
+
 	if len(words) == 0 {
 		return false
 	}
@@ -79,6 +80,7 @@ func isSafeCommand(command string) bool {
 				return true
 			}
 		}
+
 		return false
 	}
 
@@ -87,17 +89,20 @@ func isSafeCommand(command string) bool {
 
 func executeShell(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
 	command, ok := args["command"].(string)
+
 	if !ok || command == "" {
 		return "", fmt.Errorf("command is required")
 	}
 
 	timeout := defaultTimeout
+
 	if t, ok := args["timeout"].(float64); ok {
 		timeout = int(t)
 	}
 
 	if env.PromptUser != nil && !isSafeCommand(command) {
 		approved, err := env.PromptUser("❯ " + command)
+
 		if err != nil {
 			return "", fmt.Errorf("failed to get user approval: %w", err)
 		}
@@ -116,6 +121,7 @@ func executeShell(ctx context.Context, env *tool.Environment, args map[string]an
 	cmd.Stderr = &output
 
 	err := cmd.Start()
+
 	if err != nil {
 		return "", fmt.Errorf("failed to start command: %w", err)
 	}
@@ -128,6 +134,7 @@ func executeShell(ctx context.Context, env *tool.Environment, args map[string]an
 	select {
 	case <-ctx.Done():
 		killProcessGroup(cmd)
+
 		return "", fmt.Errorf("command timed out after %d seconds", timeout)
 	case err := <-done:
 		result := output.String()
@@ -135,11 +142,13 @@ func executeShell(ctx context.Context, env *tool.Environment, args map[string]an
 
 		if err != nil {
 			exitCode := -1
+
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				exitCode = exitErr.ExitCode()
 			}
 
 			msg := truncated
+
 			if tempFile != "" {
 				msg += fmt.Sprintf("\n\n[Output truncated. Full output saved to: %s]", tempFile)
 			}
@@ -163,6 +172,7 @@ func buildCommand(ctx context.Context, command, workingDir string) *exec.Cmd {
 		cmd = exec.CommandContext(ctx, "cmd", "/c", command)
 	} else {
 		shell := os.Getenv("SHELL")
+
 		if shell == "" {
 			shell = "/bin/sh"
 		}

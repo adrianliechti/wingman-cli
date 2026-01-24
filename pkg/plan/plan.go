@@ -38,6 +38,7 @@ func (p *Plan) Clear() {
 func (p *Plan) SetTasks(title string, descriptions []string) {
 	p.Title = title
 	p.Tasks = make([]Task, len(descriptions))
+
 	for i, desc := range descriptions {
 		p.Tasks[i] = Task{
 			Description: desc,
@@ -57,5 +58,6 @@ func (p *Plan) UpdateTask(index int, status Status) error {
 	}
 
 	p.Tasks[index].Status = status
+
 	return nil
 }

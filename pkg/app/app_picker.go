@@ -28,6 +28,7 @@ func (a *App) showPicker(title string, items []PickerItem, selectedID string, on
 	list.SetSelectedBackgroundColor(tview.Styles.PrimitiveBackgroundColor)
 
 	currentIndex := 0
+
 	for i, item := range items {
 		if item.ID == selectedID {
 			currentIndex = i
@@ -39,6 +40,7 @@ func (a *App) showPicker(title string, items []PickerItem, selectedID string, on
 
 	list.SetSelectedFunc(func(index int, mainText string, secondaryText string, shortcut rune) {
 		a.closePicker()
+
 		if onSelect != nil {
 			onSelect(items[index])
 		}
@@ -47,13 +49,16 @@ func (a *App) showPicker(title string, items []PickerItem, selectedID string, on
 	list.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		if event.Key() == tcell.KeyEscape || event.Key() == tcell.KeyCtrlC {
 			a.closePicker()
+
 			return nil
 		}
+
 		return event
 	})
 
 	// Calculate dimensions
 	maxWidth := len(title) + 4
+
 	for _, item := range items {
 		if len(item.Text)+6 > maxWidth {
 			maxWidth = len(item.Text) + 6
@@ -93,6 +98,7 @@ func (a *App) showPicker(title string, items []PickerItem, selectedID string, on
 
 func (a *App) closePicker() {
 	a.activeModal = ModalNone
+
 	if a.pages != nil {
 		a.pages.RemovePage("picker")
 		a.app.SetFocus(a.input)

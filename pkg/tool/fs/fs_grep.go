@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -60,11 +61,13 @@ func GrepTool() tool.Tool {
 
 		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
 			pattern, ok := args["pattern"].(string)
+
 			if !ok || pattern == "" {
 				return "", fmt.Errorf("pattern is required")
 			}
 
 			searchPath := "."
+
 			if p, ok := args["path"].(string); ok && p != "" {
 				searchPath = p
 			}
@@ -75,24 +78,28 @@ func GrepTool() tool.Tool {
 				return "", fmt.Errorf("cannot search: path %q is outside workspace %q", searchPath, workingDir)
 			}
 
-			searchPath = normalizePath(searchPath, workingDir)
+			searchPathFS := normalizePathFS(searchPath, workingDir)
 
 			glob := ""
+
 			if g, ok := args["glob"].(string); ok {
 				glob = g
 			}
 
 			ignoreCase := false
+
 			if ic, ok := args["ignoreCase"].(bool); ok {
 				ignoreCase = ic
 			}
 
 			contextLines := 0
+
 			if c, ok := args["context"].(float64); ok && c > 0 {
 				contextLines = int(c)
 			}
 
 			limit := DefaultGrepLimit
+
 			if l, ok := args["limit"].(float64); ok && l > 0 {
 				limit = int(l)
 			}
@@ -102,12 +109,14 @@ func GrepTool() tool.Tool {
 				pattern = "(?i)" + pattern
 			}
 			re, err := regexp.Compile(pattern)
+
 			if err != nil {
 				return "", fmt.Errorf("invalid regex pattern: %w", err)
 			}
 
 			// Check if path exists
 			info, err := env.Root.Stat(searchPath)
+
 			if err != nil {
 				return "", fmt.Errorf("path not found: %s", searchPath)
 			}
@@ -116,10 +125,12 @@ func GrepTool() tool.Tool {
 
 			// If path is a file, search just that file
 			if !info.IsDir() {
-				matches := searchFileWithContext(fsys, searchPath, re, contextLines, limit)
+				matches := searchFileWithContext(fsys, searchPathFS, re, contextLines, limit)
+
 				if len(matches) == 0 {
 					return "No matches found", nil
 				}
+
 				return strings.Join(matches, "\n"), nil
 			}
 
@@ -132,7 +143,7 @@ func GrepTool() tool.Tool {
 			matchCount := 0
 			limitReached := false
 
-			err = fs.WalkDir(fsys, searchPath, func(path string, d fs.DirEntry, err error) error {
+			err = fs.WalkDir(fsys, searchPathFS, func(path string, d fs.DirEntry, err error) error {
 				if err != nil {
 					return nil
 				}
@@ -144,17 +155,19 @@ func GrepTool() tool.Tool {
 					}
 
 					relPath := path
-					if searchPath != "." {
-						relPath, _ = filepath.Rel(searchPath, path)
+
+					if searchPathFS != "." {
+						relPath = relPathSlash(searchPathFS, path)
 					}
-					pathParts := strings.Split(filepath.ToSlash(relPath), "/")
+					pathParts := strings.Split(relPath, "/")
 
 					if matcher.Match(pathParts, true) {
 						return filepath.SkipDir
 					}
 
 					// Load nested gitignore
-					newPatterns := loadGitignore(fsys, strings.Split(path, string(filepath.Separator)))
+					newPatterns := loadGitignore(fsys, pathDomain(path))
+
 					if len(newPatterns) > 0 {
 						allPatterns = append(allPatterns, newPatterns...)
 						matcher = gitignore.NewMatcher(allPatterns)
@@ -165,10 +178,11 @@ func GrepTool() tool.Tool {
 
 				// Check gitignore for files
 				relPath := path
-				if searchPath != "." {
-					relPath, _ = filepath.Rel(searchPath, path)
+
+				if searchPathFS != "." {
+					relPath = relPathSlash(searchPathFS, path)
 				}
-				pathParts := strings.Split(filepath.ToSlash(relPath), "/")
+				pathParts := strings.Split(relPath, "/")
 
 				if matcher.Match(pathParts, false) {
 					return nil
@@ -176,10 +190,12 @@ func GrepTool() tool.Tool {
 
 				// Check glob pattern
 				if glob != "" {
-					matched, _ := doublestar.Match(glob, filepath.Base(path))
+					matched, _ := doublestar.Match(glob, pathpkg.Base(path))
+
 					if !matched {
 						// Also try matching against the full relative path
-						matched, _ = doublestar.Match(glob, filepath.ToSlash(relPath))
+						matched, _ = doublestar.Match(glob, relPath)
+
 						if !matched {
 							return nil
 						}
@@ -193,12 +209,15 @@ func GrepTool() tool.Tool {
 
 				// Search file
 				remaining := limit - matchCount
+
 				if remaining <= 0 {
 					limitReached = true
+
 					return filepath.SkipAll
 				}
 
 				matches := searchFileWithContext(fsys, path, re, contextLines, remaining)
+
 				if len(matches) > 0 {
 					results = append(results, matches...)
 					matchCount += len(matches)
@@ -219,9 +238,11 @@ func GrepTool() tool.Tool {
 			output, _, bytesTruncated := truncateHead(output)
 
 			var notices []string
+
 			if limitReached || matchCount >= limit {
 				notices = append(notices, fmt.Sprintf("%d matches limit reached", limit))
 			}
+
 			if bytesTruncated {
 				notices = append(notices, fmt.Sprintf("%dKB limit reached", DefaultMaxBytes/1024))
 			}
@@ -237,10 +258,13 @@ func GrepTool() tool.Tool {
 
 func searchFileWithContext(fsys fs.FS, path string, re *regexp.Regexp, contextLines, limit int) []string {
 	f, err := fsys.Open(path)
+
 	if err != nil {
 		return nil
 	}
 	defer f.Close()
+
+	displayPath := filepath.FromSlash(path)
 
 	var lines []string
 	scanner := bufio.NewScanner(f)
@@ -300,39 +324,22 @@ func searchFileWithContext(fsys fs.FS, path string, re *regexp.Regexp, contextLi
 			printed[j] = true
 
 			prefix := " "
+
 			if matchedLines[j] {
 				prefix = ">"
 			}
 
 			// Format: path:linenum:prefix:content
 			lineContent := lines[j]
+
 			if len(lineContent) > 200 {
 				lineContent = lineContent[:197] + "..."
 			}
 
-			results = append(results, fmt.Sprintf("%s:%d:%s %s", path, j+1, prefix, lineContent))
+			results = append(results, fmt.Sprintf("%s:%d:%s %s", displayPath, j+1, prefix, lineContent))
 			lastPrinted = j
 		}
 	}
 
 	return results
-}
-
-func isBinaryFile(path string) bool {
-	ext := strings.ToLower(filepath.Ext(path))
-	binaryExts := map[string]bool{
-		".exe": true, ".dll": true, ".so": true, ".dylib": true,
-		".bin": true, ".dat": true, ".db": true, ".sqlite": true,
-		".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
-		".bmp": true, ".ico": true, ".webp": true, ".svg": true,
-		".pdf": true, ".doc": true, ".docx": true, ".xls": true,
-		".xlsx": true, ".ppt": true, ".pptx": true,
-		".zip": true, ".tar": true, ".gz": true, ".rar": true,
-		".7z": true, ".bz2": true, ".xz": true,
-		".mp3": true, ".mp4": true, ".avi": true, ".mov": true,
-		".wav": true, ".flac": true, ".ogg": true, ".webm": true,
-		".woff": true, ".woff2": true, ".ttf": true, ".otf": true, ".eot": true,
-		".pyc": true, ".pyo": true, ".class": true, ".o": true, ".a": true,
-	}
-	return binaryExts[ext]
 }

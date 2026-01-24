@@ -37,12 +37,14 @@ func GetPhaseConfig(phase AppPhase, toolName string) PhaseConfig {
 
 	switch phase {
 	case PhaseThinking:
+
 		return PhaseConfig{
 			Message:  "Thinking...",
 			Color:    t.BrBlack.String(),
 			Animated: true,
 		}
 	case PhaseStreaming:
+
 		return PhaseConfig{
 			Message:  "Thinking...",
 			Color:    t.BrBlack.String(),
@@ -50,21 +52,25 @@ func GetPhaseConfig(phase AppPhase, toolName string) PhaseConfig {
 		}
 	case PhaseToolRunning:
 		msg := "Running tool..."
+
 		if toolName != "" {
 			msg = "Running " + toolName + "..."
 		}
+
 		return PhaseConfig{
 			Message:  msg,
 			Color:    t.Yellow.String(),
 			Animated: true,
 		}
 	case PhaseCompacting:
+
 		return PhaseConfig{
 			Message:  "Compacting context...",
 			Color:    t.Magenta.String(),
 			Animated: true,
 		}
 	default:
+
 		return PhaseConfig{
 			Message:  "",
 			Color:    t.BrBlack.String(),

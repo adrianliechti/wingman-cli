@@ -26,6 +26,7 @@ func EditTool() tool.Tool {
 
 		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
 			pathArg, ok := args["path"].(string)
+
 			if !ok || pathArg == "" {
 				return "", fmt.Errorf("path is required")
 			}
@@ -39,16 +40,19 @@ func EditTool() tool.Tool {
 			normalizedPath := normalizePath(pathArg, workingDir)
 
 			oldText, ok := args["old_text"].(string)
+
 			if !ok || oldText == "" {
 				return "", fmt.Errorf("old_text is required")
 			}
 
 			newText, ok := args["new_text"].(string)
+
 			if !ok {
 				return "", fmt.Errorf("new_text is required")
 			}
 
 			contentBytes, err := env.Root.ReadFile(normalizedPath)
+
 			if err != nil {
 				return "", pathError("read file", pathArg, normalizedPath, workingDir, err)
 			}
@@ -62,6 +66,7 @@ func EditTool() tool.Tool {
 			normalizedNewText := normalizeToLF(newText)
 
 			matchResult := fuzzyFindText(normalizedContent, normalizedOldText)
+
 			if !matchResult.found {
 				return "", fmt.Errorf("could not find the exact text in %s. The old text must match exactly including all whitespace and newlines", pathArg)
 			}
@@ -84,6 +89,7 @@ func EditTool() tool.Tool {
 			finalContent := bom + restoreLineEndings(newContent, originalEnding)
 
 			outFile, err := env.Root.Create(normalizedPath)
+
 			if err != nil {
 				return "", pathError("write file", pathArg, normalizedPath, workingDir, err)
 			}

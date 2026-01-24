@@ -49,6 +49,7 @@ func New(workingDir string) (*Manager, error) {
 
 	if err != nil {
 		os.RemoveAll(gitDir)
+
 		return nil, fmt.Errorf("failed to init repo: %w", err)
 	}
 
@@ -56,6 +57,7 @@ func New(workingDir string) (*Manager, error) {
 
 	if err != nil {
 		os.RemoveAll(gitDir)
+
 		return nil, fmt.Errorf("failed to get config: %w", err)
 	}
 
@@ -63,18 +65,23 @@ func New(workingDir string) (*Manager, error) {
 
 	if err := repo.SetConfig(cfg); err != nil {
 		os.RemoveAll(gitDir)
+
 		return nil, fmt.Errorf("failed to set config: %w", err)
 	}
 
 	repo, err = git.Open(storage, workTreeFS)
+
 	if err != nil {
 		os.RemoveAll(gitDir)
+
 		return nil, fmt.Errorf("failed to open repo: %w", err)
 	}
 
 	worktree, err := repo.Worktree()
+
 	if err != nil {
 		os.RemoveAll(gitDir)
+
 		return nil, fmt.Errorf("failed to get worktree: %w", err)
 	}
 
@@ -87,6 +94,7 @@ func New(workingDir string) (*Manager, error) {
 
 	if err := m.baseline(); err != nil {
 		os.RemoveAll(gitDir)
+
 		return nil, fmt.Errorf("failed to create baseline commit: %w", err)
 	}
 
@@ -112,6 +120,7 @@ func (m *Manager) baseline() error {
 	}
 
 	m.baselineHash = hash
+
 	return nil
 }
 
@@ -149,6 +158,7 @@ func (m *Manager) commit(message string) error {
 func (m *Manager) Commit(message string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	return m.commit(message)
 }
 
@@ -247,33 +257,39 @@ func (m *Manager) DiffFromBaseline() ([]FileDiff, error) {
 
 	// Get the baseline commit using cached hash
 	baselineCommit, err := m.repo.CommitObject(m.baselineHash)
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get baseline commit: %w", err)
 	}
 
 	baselineTree, err := baselineCommit.Tree()
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get baseline tree: %w", err)
 	}
 
 	// Get HEAD commit
 	headRef, err := m.repo.Head()
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get HEAD: %w", err)
 	}
 
 	headCommit, err := m.repo.CommitObject(headRef.Hash())
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get HEAD commit: %w", err)
 	}
 
 	headTree, err := headCommit.Tree()
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get HEAD tree: %w", err)
 	}
 
 	// Get the diff between baseline and HEAD
 	changes, err := baselineTree.Diff(headTree)
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute diff: %w", err)
 	}
@@ -286,6 +302,7 @@ func (m *Manager) DiffFromBaseline() ([]FileDiff, error) {
 
 	for _, change := range changes {
 		patch, err := change.Patch()
+
 		if err != nil {
 			continue
 		}
@@ -294,6 +311,7 @@ func (m *Manager) DiffFromBaseline() ([]FileDiff, error) {
 		var path string
 
 		action, err := change.Action()
+
 		if err != nil {
 			continue
 		}

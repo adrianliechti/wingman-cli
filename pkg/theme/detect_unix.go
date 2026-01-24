@@ -20,6 +20,7 @@ func queryTerminalBackground() bool {
 	}
 
 	oldState, err := term.MakeRaw(fd)
+
 	if err != nil {
 		return false
 	}
@@ -47,8 +48,10 @@ func queryTerminalBackground() bool {
 	// non-blocking reads while still in raw mode
 	syscall.SetNonblock(fd, true)
 	drainBuf := make([]byte, 64)
+
 	for {
 		n, _ := syscall.Read(fd, drainBuf)
+
 		if n <= 0 {
 			break
 		}

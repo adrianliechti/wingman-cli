@@ -9,6 +9,7 @@ import (
 func visibleLen(s string) int {
 	runes := []rune(s)
 	count := 0
+
 	for i := 0; i < len(runes); {
 		if runes[i] == '[' {
 			// Escaped literal '[' => "[[]"
@@ -25,9 +26,11 @@ func visibleLen(s string) int {
 			}
 			// Tview tag => "[... ]" with no nested '['
 			j := i + 1
+
 			for j < len(runes) && runes[j] != ']' && runes[j] != '[' {
 				j++
 			}
+
 			if j < len(runes) && runes[j] == ']' {
 				i = j + 1
 				continue
@@ -94,9 +97,11 @@ func wrapLine(line string, width int) []string {
 			}
 			// Tview tag => "[... ]" with no nested '['
 			j := i + 1
+
 			for j < len(runes) && runes[j] != ']' && runes[j] != '[' {
 				j++
 			}
+
 			if j < len(runes) && runes[j] == ']' {
 				tag := string(runes[i : j+1])
 				currentWord.WriteString(tag)

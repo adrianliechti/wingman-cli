@@ -52,6 +52,7 @@ func (s *Spinner) Start(phase AppPhase, toolName string) {
 		// Already running, just update the display
 		s.render()
 		s.app.QueueUpdateDraw(func() {})
+
 		return
 	}
 
@@ -88,6 +89,7 @@ func (s *Spinner) Stop() {
 	}
 
 	s.active = false
+
 	if s.ticker != nil {
 		s.ticker.Stop()
 	}
@@ -103,6 +105,7 @@ func (s *Spinner) Stop() {
 func (s *Spinner) IsActive() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	return s.active
 }
 
@@ -110,11 +113,14 @@ func (s *Spinner) run() {
 	for {
 		select {
 		case <-s.stopChan:
+
 			return
 		case <-s.ticker.C:
 			s.mu.Lock()
+
 			if !s.active {
 				s.mu.Unlock()
+
 				return
 			}
 			s.frame = (s.frame + 1) % len(spinnerFrames)
@@ -133,6 +139,7 @@ func (s *Spinner) render() {
 		if s.onStop != nil {
 			s.onStop()
 		}
+
 		return
 	}
 
@@ -140,6 +147,7 @@ func (s *Spinner) render() {
 	frame := spinnerFrames[s.frame]
 
 	var color string
+
 	switch s.phase {
 	case PhaseThinking:
 		color = t.Cyan.String()

@@ -23,6 +23,7 @@ func (a *App) autoSelectModel() {
 		for _, model := range apiModels.Data {
 			if model.ID == allowed {
 				a.config.Model = model.ID
+
 				return
 			}
 		}
@@ -37,12 +38,14 @@ func (a *App) autoSelectModel() {
 func (a *App) showModelPicker() {
 	// Fetch models from API
 	apiModels, err := a.config.Client.Models.List(a.ctx)
+
 	if err != nil {
 		return
 	}
 
 	// Filter to only available models
 	var items []PickerItem
+
 	for _, allowed := range config.AvailableModels {
 		for _, model := range apiModels.Data {
 			if model.ID == allowed {
@@ -72,12 +75,14 @@ func (a *App) showModelPicker() {
 func (a *App) cycleModel() {
 	// Fetch models from API
 	apiModels, err := a.config.Client.Models.List(a.ctx)
+
 	if err != nil {
 		return
 	}
 
 	// Build list of available models
 	var models []string
+
 	for _, allowed := range config.AvailableModels {
 		for _, model := range apiModels.Data {
 			if model.ID == allowed {
@@ -93,6 +98,7 @@ func (a *App) cycleModel() {
 
 	// Find current model index and cycle to next
 	currentIdx := -1
+
 	for i, m := range models {
 		if m == a.config.Model {
 			currentIdx = i

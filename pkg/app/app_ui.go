@@ -24,15 +24,19 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	if event.Key() == tcell.KeyEscape {
 		if a.hasActiveModal() {
 			a.closeActiveModal()
+
 			return nil
 		}
+
 		if isStreaming {
 			a.cancelStream()
+
 			return nil
 		}
 		// Clear input and pending content when idle
 		a.input.SetText("", true)
 		a.clearPendingContent()
+
 		return nil
 	}
 
@@ -41,21 +45,27 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		// Check if text is selected in input - if so, copy it
 		if !a.hasActiveModal() && a.input.HasSelection() {
 			selectedText, _, _ := a.input.GetSelection()
+
 			if selectedText != "" {
 				clipboard.WriteText(selectedText)
+
 				return nil
 			}
 		}
 
 		if a.hasActiveModal() {
 			a.closeActiveModal()
+
 			return nil
 		}
+
 		if isStreaming {
 			a.cancelStream()
+
 			return nil
 		}
 		a.stop()
+
 		return nil
 	}
 
@@ -71,6 +81,7 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 				a.addFileToContext(path)
 			})
 		}()
+
 		return nil // consume the event - don't type @
 	}
 
@@ -79,11 +90,15 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		switch event.Rune() {
 		case 'y', 'Y':
 			a.promptResponse <- true
+
 			return nil
+
 		case 'n', 'N':
 			a.promptResponse <- false
+
 			return nil
 		}
+
 		return nil // consume all input when prompt is active
 	}
 
@@ -92,22 +107,26 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		a.agent.Clear()
 		a.totalTokens = 0
 		a.updateStatusBar()
+
 		return nil
 	}
 
 	if event.Key() == tcell.KeyTab && !isStreaming {
 		a.toggleMode()
+
 		return nil
 	}
 
 	// Shift+Tab cycles through models
 	if event.Key() == tcell.KeyBacktab && !isStreaming {
 		go a.cycleModel()
+
 		return nil
 	}
 
 	if event.Key() == tcell.KeyEnter && !isStreaming {
 		a.submitInput()
+
 		return nil
 	}
 
@@ -131,6 +150,7 @@ func (a *App) promptUser(message string) (bool, error) {
 		a.app.QueueUpdateDraw(func() {
 			a.input.SetPlaceholder("Ask anything...")
 		})
+
 		return false, a.ctx.Err()
 	}
 
@@ -144,6 +164,7 @@ func (a *App) promptUser(message string) (bool, error) {
 
 func (a *App) pasteFromClipboard() {
 	contents, err := clipboard.Read()
+
 	if err != nil || len(contents) == 0 {
 		return
 	}
@@ -152,6 +173,7 @@ func (a *App) pasteFromClipboard() {
 		if c.Image != nil {
 			a.pendingContent = append(a.pendingContent, agent.Content{Image: c.Image})
 		}
+
 		if c.Text != "" {
 			// Get selection range (start, end are byte positions)
 			_, start, end := a.input.GetSelection()
@@ -164,6 +186,7 @@ func (a *App) pasteFromClipboard() {
 
 func (a *App) cancelStream() {
 	a.streamMu.Lock()
+
 	if a.streamCancel != nil {
 		a.streamCancel()
 	}
@@ -202,6 +225,7 @@ func (a *App) submitInput() {
 	switch query {
 	case "/quit":
 		a.stop()
+
 		return
 
 	case "/clear":
@@ -211,6 +235,7 @@ func (a *App) submitInput() {
 		a.plan.Clear()
 		a.updateStatusBar()
 		a.input.SetText("", true)
+
 		return
 
 	case "/help":
@@ -228,6 +253,7 @@ func (a *App) submitInput() {
 		fmt.Fprintf(a.chatView, "  [%s]/clear[-]  - Clear chat history\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/quit[-]   - Exit application\n\n", t.BrCyan)
 		a.chatView.ScrollToEnd()
+
 		return
 
 	case "/file":
@@ -235,31 +261,37 @@ func (a *App) submitInput() {
 		go a.showFilePicker("", func(path string) {
 			a.addFileToContext(path)
 		})
+
 		return
 
 	case "/paste":
 		a.input.SetText("", true)
 		a.pasteFromClipboard()
+
 		return
 
 	case "/models", "/model":
 		a.input.SetText("", true)
 		a.showModelPicker()
+
 		return
 
 	case "/rewind":
 		a.input.SetText("", true)
 		a.showRewindPicker()
+
 		return
 
 	case "/diff":
 		a.input.SetText("", true)
 		a.showDiffView()
+
 		return
 
 	case "/plan":
 		a.input.SetText("", true)
 		a.showPlanView()
+
 		return
 	}
 
@@ -272,9 +304,11 @@ func (a *App) submitInput() {
 
 	if imageCount > 0 || fileCount > 0 {
 		var attachments []string
+
 		if imageCount > 0 {
 			attachments = append(attachments, fmt.Sprintf("📷 %d image(s)", imageCount))
 		}
+
 		if fileCount > 0 {
 			attachments = append(attachments, fmt.Sprintf("📄 %d file(s)", fileCount))
 		}
@@ -289,6 +323,7 @@ func (a *App) submitInput() {
 	if len(a.pendingFiles) > 0 {
 		var sb strings.Builder
 		sb.WriteString("\n[Attached files - use the read tool to access their content]\n")
+
 		for _, f := range a.pendingFiles {
 			sb.WriteString(fmt.Sprintf("- %s\n", f))
 		}
@@ -391,12 +426,14 @@ func (a *App) buildLayout() *tview.Flex {
 	// Handle Ctrl+V/Cmd+V to paste from clipboard (images + text)
 	a.input.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
 		// Check for paste: Ctrl+V or Cmd+V (macOS)
-		isPaste := event.Key() == tcell.KeyCtrlV ||
-			(event.Modifiers()&tcell.ModMeta != 0 && (event.Rune() == 'v' || event.Rune() == 'V'))
+		isPaste := event.Key() == tcell.KeyCtrlV || (event.Modifiers()&tcell.ModMeta != 0 && (event.Rune() == 'v' || event.Rune() == 'V'))
+
 		if isPaste {
 			a.pasteFromClipboard()
+
 			return nil // Consume event - we handled the paste
 		}
+
 		return event
 	})
 
@@ -445,12 +482,14 @@ func (a *App) buildLayout() *tview.Flex {
 
 		// Re-render chat on resize (only when idle and not in welcome mode)
 		isStreaming := a.phase != PhaseIdle
+
 		if newWidth != a.chatWidth && !a.isWelcomeMode && !isStreaming && len(a.agent.Messages()) > 0 {
 			messages := a.agent.Messages()
 			a.renderChat(messages, "", "", "")
 		}
 
 		a.chatWidth = newWidth
+
 		return x, y, width, height
 	})
 
@@ -492,6 +531,7 @@ func (a *App) updateStatusBar() {
 	t := theme.Default
 
 	modeLabel := "Agent"
+
 	if a.currentMode == ModePlan {
 		modeLabel = "Plan"
 	}
@@ -518,16 +558,19 @@ func (a *App) updateInputHint() {
 	var parts []string
 
 	imageCount := a.countPendingImages()
+
 	if imageCount > 0 {
 		parts = append(parts, fmt.Sprintf("[%s]📎 %d image(s)[-]", t.Cyan, imageCount))
 	}
 
 	fileCount := len(a.pendingFiles)
+
 	if fileCount > 0 {
 		parts = append(parts, fmt.Sprintf("[%s]📄 %d file(s)[-]", t.Cyan, fileCount))
 	}
 
 	isStreaming := a.phase != PhaseIdle
+
 	if !isStreaming {
 		parts = append(parts, fmt.Sprintf("[%s]enter[-] [%s]send[-]  [%s]tab[-] [%s]mode[-]  [%s]shift+tab[-] [%s]model[-]  [%s]@[-] [%s]file[-]  [%s]esc[-] [%s]clear[-]", t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground))
 	}
@@ -614,15 +657,18 @@ func (a *App) renderMessage(msg agent.Message) {
 			return
 		}
 		output := msg.ToolResult.Content[0].Text
+
 		if len(output) > maxToolOutputLen {
 			output = output[:maxToolOutputLen] + "..."
 		}
 		hint := extractToolHint(msg.ToolResult.Args)
 		fmt.Fprint(a.chatView, markdown.FormatToolCall(msg.ToolResult.Name, hint, output, a.chatWidth))
+
 		return
 	}
 
 	content := ""
+
 	if len(msg.Content) > 0 {
 		content = msg.Content[0].Text
 	}

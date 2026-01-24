@@ -91,6 +91,7 @@ func New(ctx context.Context, cfg *config.Config, ag *agent.Agent) *App {
 	cfg.Environment.Plan = a.plan
 
 	rm, err := rewind.New(cfg.Environment.WorkingDir())
+
 	if err != nil {
 		a.startupError = fmt.Sprintf("rewind init failed: %v", err)
 	} else {
@@ -207,5 +208,6 @@ func (a *App) isToolHidden(name string) bool {
 			return t.Hidden
 		}
 	}
+
 	return false
 }
