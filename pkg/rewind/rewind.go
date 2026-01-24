@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/go-git/go-billy/v5/osfs"
@@ -23,10 +24,12 @@ type Checkpoint struct {
 }
 
 type Manager struct {
-	repo       *git.Repository
-	worktree   *git.Worktree
-	gitDir     string
-	workingDir string
+	mu           sync.Mutex
+	repo         *git.Repository
+	worktree     *git.Worktree
+	gitDir       string
+	workingDir   string
+	baselineHash plumbing.Hash
 }
 
 func New(workingDir string) (*Manager, error) {
@@ -95,7 +98,7 @@ func (m *Manager) baseline() error {
 		return fmt.Errorf("failed to add files: %w", err)
 	}
 
-	_, err := m.worktree.Commit("Baseline", &git.CommitOptions{
+	hash, err := m.worktree.Commit("Baseline", &git.CommitOptions{
 		Author: &object.Signature{
 			Name:  "wingman",
 			Email: "wingman@local",
@@ -108,6 +111,7 @@ func (m *Manager) baseline() error {
 		return fmt.Errorf("failed to commit: %w", err)
 	}
 
+	m.baselineHash = hash
 	return nil
 }
 
@@ -143,10 +147,15 @@ func (m *Manager) commit(message string) error {
 }
 
 func (m *Manager) Commit(message string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.commit(message)
 }
 
 func (m *Manager) List() ([]Checkpoint, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	ref, err := m.repo.Head()
 
 	if err != nil {
@@ -181,6 +190,16 @@ func (m *Manager) List() ([]Checkpoint, error) {
 func (m *Manager) Restore(hash string) error {
 	if hash == "" {
 		return errors.New("empty hash")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Clean untracked files first so restore is complete
+	if err := m.worktree.Clean(&git.CleanOptions{
+		Dir: true,
+	}); err != nil {
+		return fmt.Errorf("failed to clean worktree: %w", err)
 	}
 
 	err := m.worktree.Checkout(&git.CheckoutOptions{
@@ -219,26 +238,15 @@ type FileDiff struct {
 
 // DiffFromBaseline returns the diff between the baseline commit and the current HEAD
 func (m *Manager) DiffFromBaseline() ([]FileDiff, error) {
-	// Get all commits
-	checkpoints, err := m.List()
-	if err != nil {
-		return nil, fmt.Errorf("failed to list checkpoints: %w", err)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.baselineHash.IsZero() {
+		return nil, errors.New("no baseline available")
 	}
 
-	if len(checkpoints) == 0 {
-		return nil, errors.New("no checkpoints available")
-	}
-
-	// The baseline is the last commit in the list (oldest)
-	baselineHash := checkpoints[len(checkpoints)-1].Hash
-
-	// The current state is the first commit (newest) - but we need to commit any pending changes first
-	if err := m.worktree.AddWithOptions(&git.AddOptions{All: true}); err != nil {
-		return nil, fmt.Errorf("failed to add files: %w", err)
-	}
-
-	// Get the baseline commit
-	baselineCommit, err := m.repo.CommitObject(plumbing.NewHash(baselineHash))
+	// Get the baseline commit using cached hash
+	baselineCommit, err := m.repo.CommitObject(m.baselineHash)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get baseline commit: %w", err)
 	}
