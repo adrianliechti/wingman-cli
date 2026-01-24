@@ -16,6 +16,8 @@ type Tool struct {
 }
 
 type Environment struct {
+	Date string
+
 	OS   string
 	Arch string
 

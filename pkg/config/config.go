@@ -79,6 +79,8 @@ func Default() (*Config, func(), error) {
 	}
 
 	env := &tool.Environment{
+		Date: time.Now().Format("January 2, 2006"),
+
 		OS:   runtime.GOOS,
 		Arch: runtime.GOARCH,
 
