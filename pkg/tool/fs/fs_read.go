@@ -35,6 +35,14 @@ func ReadTool() tool.Tool {
 				return "", fmt.Errorf("path is required")
 			}
 
+			workingDir := env.WorkingDir()
+
+			if isOutsideWorkspace(pathArg, workingDir) {
+				return "", fmt.Errorf("cannot read file: path %q is outside workspace %q", pathArg, workingDir)
+			}
+
+			normalizedPath := normalizePath(pathArg, workingDir)
+
 			offset := 0
 
 			if o, ok := args["offset"].(float64); ok && o > 0 {
@@ -47,10 +55,10 @@ func ReadTool() tool.Tool {
 				limit = int(l)
 			}
 
-			content, err := env.Root.ReadFile(pathArg)
+			content, err := env.Root.ReadFile(normalizedPath)
 
 			if err != nil {
-				return "", fmt.Errorf("file not found: %s", pathArg)
+				return "", pathError("read file", pathArg, normalizedPath, workingDir, err)
 			}
 
 			lines := strings.Split(string(content), "\n")

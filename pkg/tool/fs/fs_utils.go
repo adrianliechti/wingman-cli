@@ -2,6 +2,7 @@ package fs
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 )
@@ -10,6 +11,68 @@ const (
 	DefaultMaxLines = 2000
 	DefaultMaxBytes = 30 * 1024 // 30KB
 )
+
+// normalizePath converts an absolute path to a relative path if it starts with the working directory.
+// This is needed because os.Root expects relative paths, but the LLM may provide absolute paths.
+// Always returns paths with OS-native separators (backslash on Windows, forward slash on Unix).
+func normalizePath(path, workingDir string) string {
+	if !filepath.IsAbs(path) {
+		return filepath.FromSlash(path)
+	}
+
+	absPath := cleanPath(path)
+	absWorkingDir := cleanPath(workingDir)
+
+	rel, err := filepath.Rel(absWorkingDir, absPath)
+	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return rel
+	}
+
+	return filepath.FromSlash(path)
+}
+
+// isOutsideWorkspace checks if an absolute path is outside the workspace.
+// Returns true if the path is absolute and doesn't start with workingDir.
+func isOutsideWorkspace(path, workingDir string) bool {
+	if !filepath.IsAbs(path) {
+		return false
+	}
+
+	absPath := cleanPath(path)
+	absWorkingDir := cleanPath(workingDir)
+
+	rel, err := filepath.Rel(absWorkingDir, absPath)
+	if err != nil {
+		return true
+	}
+
+	if rel == "." {
+		return false
+	}
+
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func cleanPath(path string) string {
+	if path == "" {
+		return path
+	}
+
+	return filepath.Clean(filepath.FromSlash(path))
+}
+
+// pathError creates a helpful error message for path-related issues.
+func pathError(action, originalPath, normalizedPath, workingDir string, err error) error {
+	if isOutsideWorkspace(originalPath, workingDir) {
+		return fmt.Errorf("%s failed: path %q is outside workspace %q", action, originalPath, workingDir)
+	}
+
+	if originalPath != normalizedPath {
+		return fmt.Errorf("%s failed: %s (resolved from %s): %w", action, normalizedPath, originalPath, err)
+	}
+
+	return fmt.Errorf("%s failed: %s: %w", action, originalPath, err)
+}
 
 func truncateHead(content string) (result string, byLines bool, byBytes bool) {
 	lines := strings.Split(content, "\n")

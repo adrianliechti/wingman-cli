@@ -69,6 +69,14 @@ func GrepTool() tool.Tool {
 				searchPath = p
 			}
 
+			workingDir := env.WorkingDir()
+
+			if isOutsideWorkspace(searchPath, workingDir) {
+				return "", fmt.Errorf("cannot search: path %q is outside workspace %q", searchPath, workingDir)
+			}
+
+			searchPath = normalizePath(searchPath, workingDir)
+
 			glob := ""
 			if g, ok := args["glob"].(string); ok {
 				glob = g

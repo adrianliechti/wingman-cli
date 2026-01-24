@@ -36,26 +36,34 @@ func LsTool() tool.Tool {
 				pathArg = p
 			}
 
+			workingDir := env.WorkingDir()
+
+			if isOutsideWorkspace(pathArg, workingDir) {
+				return "", fmt.Errorf("cannot list directory: path %q is outside workspace %q", pathArg, workingDir)
+			}
+
+			normalizedPath := normalizePath(pathArg, workingDir)
+
 			limit := DefaultListLimit
 
 			if l, ok := args["limit"].(float64); ok && l > 0 {
 				limit = int(l)
 			}
 
-			info, err := env.Root.Stat(pathArg)
+			info, err := env.Root.Stat(normalizedPath)
 
 			if err != nil {
-				return "", fmt.Errorf("path not found: %s", pathArg)
+				return "", pathError("stat path", pathArg, normalizedPath, workingDir, err)
 			}
 
 			if !info.IsDir() {
 				return "", fmt.Errorf("path is not a directory: %s", pathArg)
 			}
 
-			dir, err := env.Root.Open(pathArg)
+			dir, err := env.Root.Open(normalizedPath)
 
 			if err != nil {
-				return "", fmt.Errorf("failed to open directory: %w", err)
+				return "", pathError("open directory", pathArg, normalizedPath, workingDir, err)
 			}
 			defer dir.Close()
 

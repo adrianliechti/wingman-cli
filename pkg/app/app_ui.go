@@ -285,6 +285,16 @@ func (a *App) submitInput() {
 
 	input := []agent.Content{{Text: query}}
 	input = append(input, a.pendingContent...)
+
+	if len(a.pendingFiles) > 0 {
+		var sb strings.Builder
+		sb.WriteString("\n[Attached files - use the read tool to access their content]\n")
+		for _, f := range a.pendingFiles {
+			sb.WriteString(fmt.Sprintf("- %s\n", f))
+		}
+		input = append(input, agent.Content{Text: sb.String()})
+	}
+
 	a.clearPendingContent()
 
 	go func() {

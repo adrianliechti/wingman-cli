@@ -56,6 +56,14 @@ func FindTool() tool.Tool {
 				searchDir = p
 			}
 
+			workingDir := env.WorkingDir()
+
+			if isOutsideWorkspace(searchDir, workingDir) {
+				return "", fmt.Errorf("cannot search: path %q is outside workspace %q", searchDir, workingDir)
+			}
+
+			searchDir = normalizePath(searchDir, workingDir)
+
 			limit := DefaultFindLimit
 			if l, ok := args["limit"].(float64); ok && l > 0 {
 				limit = int(l)
@@ -63,7 +71,7 @@ func FindTool() tool.Tool {
 
 			info, err := env.Root.Stat(searchDir)
 			if err != nil {
-				return "", fmt.Errorf("path not found: %s", searchDir)
+				return "", pathError("stat path", searchDir, searchDir, workingDir, err)
 			}
 
 			if !info.IsDir() {

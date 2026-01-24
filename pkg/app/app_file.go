@@ -2,7 +2,6 @@ package app
 
 import (
 	"bufio"
-	"fmt"
 	"io/fs"
 	"path/filepath"
 	"strings"
@@ -11,7 +10,6 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"github.com/rivo/tview"
 
-	"github.com/adrianliechti/wingman-cli/pkg/agent"
 	"github.com/adrianliechti/wingman-cli/pkg/theme"
 )
 
@@ -28,7 +26,6 @@ var defaultIgnoreDirs = map[string]bool{
 }
 
 const (
-	maxFileSize      = 100 * 1024 // 100KB
 	maxFileResults   = 50
 	filePickerPageID = "file-picker"
 )
@@ -303,41 +300,8 @@ func (a *App) closeFilePicker() {
 	}
 }
 
-// readFileContent reads a file and formats it with header, respecting size limits
-func (a *App) readFileContent(path string) (string, error) {
-	content, err := a.config.Environment.Root.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("failed to read file: %w", err)
-	}
-
-	text := string(content)
-	truncated := false
-
-	if len(content) > maxFileSize {
-		text = string(content[:maxFileSize])
-		truncated = true
-	}
-
-	// Format with header
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("--- file: %s ---\n", path))
-	sb.WriteString(text)
-	if truncated {
-		sb.WriteString("\n... [truncated, file exceeds 100KB limit]")
-	}
-	sb.WriteString("\n---")
-
-	return sb.String(), nil
-}
-
-// addFileToContext adds a file's content to the pending context
+// addFileToContext adds a file path to the pending context
 func (a *App) addFileToContext(path string) error {
-	content, err := a.readFileContent(path)
-	if err != nil {
-		return err
-	}
-
-	a.pendingContent = append(a.pendingContent, agent.Content{Text: content})
 	a.pendingFiles = append(a.pendingFiles, path)
 	a.updateInputHint()
 

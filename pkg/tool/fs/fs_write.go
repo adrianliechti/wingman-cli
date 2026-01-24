@@ -30,24 +30,32 @@ func WriteTool() tool.Tool {
 				return "", fmt.Errorf("path is required")
 			}
 
+			workingDir := env.WorkingDir()
+
+			if isOutsideWorkspace(pathArg, workingDir) {
+				return "", fmt.Errorf("cannot write file: path %q is outside workspace %q", pathArg, workingDir)
+			}
+
+			normalizedPath := normalizePath(pathArg, workingDir)
+
 			content, ok := args["content"].(string)
 
 			if !ok {
 				return "", fmt.Errorf("content is required")
 			}
 
-			dir := filepath.Dir(pathArg)
+			dir := filepath.Dir(normalizedPath)
 
 			if dir != "." && dir != "" {
 				if err := env.Root.MkdirAll(dir, 0755); err != nil {
-					return "", fmt.Errorf("failed to create directory: %w", err)
+					return "", pathError("create directory", pathArg, normalizedPath, workingDir, err)
 				}
 			}
 
-			file, err := env.Root.Create(pathArg)
+			file, err := env.Root.Create(normalizedPath)
 
 			if err != nil {
-				return "", fmt.Errorf("failed to create file: %w", err)
+				return "", pathError("create file", pathArg, normalizedPath, workingDir, err)
 			}
 
 			defer file.Close()

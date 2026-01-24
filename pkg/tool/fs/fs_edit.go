@@ -30,6 +30,14 @@ func EditTool() tool.Tool {
 				return "", fmt.Errorf("path is required")
 			}
 
+			workingDir := env.WorkingDir()
+
+			if isOutsideWorkspace(pathArg, workingDir) {
+				return "", fmt.Errorf("cannot edit file: path %q is outside workspace %q", pathArg, workingDir)
+			}
+
+			normalizedPath := normalizePath(pathArg, workingDir)
+
 			oldText, ok := args["old_text"].(string)
 			if !ok || oldText == "" {
 				return "", fmt.Errorf("old_text is required")
@@ -40,9 +48,9 @@ func EditTool() tool.Tool {
 				return "", fmt.Errorf("new_text is required")
 			}
 
-			contentBytes, err := env.Root.ReadFile(pathArg)
+			contentBytes, err := env.Root.ReadFile(normalizedPath)
 			if err != nil {
-				return "", fmt.Errorf("file not found: %s", pathArg)
+				return "", pathError("read file", pathArg, normalizedPath, workingDir, err)
 			}
 
 			rawContent := string(contentBytes)
@@ -75,9 +83,9 @@ func EditTool() tool.Tool {
 
 			finalContent := bom + restoreLineEndings(newContent, originalEnding)
 
-			outFile, err := env.Root.Create(pathArg)
+			outFile, err := env.Root.Create(normalizedPath)
 			if err != nil {
-				return "", fmt.Errorf("failed to create file: %w", err)
+				return "", pathError("write file", pathArg, normalizedPath, workingDir, err)
 			}
 			defer outFile.Close()
 
