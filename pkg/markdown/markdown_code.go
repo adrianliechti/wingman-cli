@@ -30,13 +30,13 @@ func highlightCode(code, lang string) string {
 	style := styles.Get(styleName)
 
 	if style == nil {
-		return code
+		return tview.Escape(code)
 	}
 
 	iterator, err := lexer.Tokenise(nil, code)
 
 	if err != nil {
-		return code
+		return tview.Escape(code)
 	}
 
 	var result strings.Builder

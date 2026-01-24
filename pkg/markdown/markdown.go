@@ -27,7 +27,7 @@ func Render(text string) string {
 	backtickCount := strings.Count(text, "```")
 	if backtickCount%2 == 1 {
 		// Find the last incomplete code block
-		incompleteCodeBlockRe := regexp.MustCompile("(?s)```(\\w*)\\n([^`]*)$")
+		incompleteCodeBlockRe := regexp.MustCompile("(?s)```([\\w+#.-]*)\\n([^`]*)$")
 		matches := incompleteCodeBlockRe.FindStringSubmatchIndex(text)
 		if matches != nil {
 			incompleteLang = text[matches[2]:matches[3]]
@@ -188,7 +188,7 @@ func FormatToolProgress(name string, hint string, width int) string {
 	return result.String()
 }
 
-func FormatCompactionProgress(fromTokens int64, width int) string {
+func FormatCompactionProgress(fromTokens int64) string {
 	const indent = "  "
 
 	t := theme.Default
@@ -203,7 +203,7 @@ func FormatCompactionProgress(fromTokens int64, width int) string {
 	return result.String()
 }
 
-func FormatCompaction(fromTokens, toTokens int64, width int) string {
+func FormatCompaction(fromTokens, toTokens int64) string {
 	const indent = "  "
 
 	t := theme.Default

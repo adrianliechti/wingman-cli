@@ -189,7 +189,7 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 			a.renderChat(messages, "", "", "")
 
 			if lastCompaction != nil {
-				fmt.Fprint(a.chatView, markdown.FormatCompaction(lastCompaction.FromTokens, lastCompaction.ToTokens, a.chatWidth))
+				fmt.Fprint(a.chatView, markdown.FormatCompaction(lastCompaction.FromTokens, lastCompaction.ToTokens))
 			}
 		}
 	})

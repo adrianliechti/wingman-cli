@@ -338,8 +338,9 @@ func (r *TviewRenderer) renderTable(w util.BufWriter, source []byte, node ast.No
 	colWidths := make([]int, len(table.Alignments))
 	for _, row := range rows {
 		for i, cell := range row {
-			if i < len(colWidths) && len(cell) > colWidths[i] {
-				colWidths[i] = len(cell)
+			cellWidth := visibleLen(cell)
+			if i < len(colWidths) && cellWidth > colWidths[i] {
+				colWidths[i] = cellWidth
 			}
 		}
 	}
@@ -357,7 +358,7 @@ func (r *TviewRenderer) renderTable(w util.BufWriter, source []byte, node ast.No
 			w.WriteString(escaped)
 			// Pad to column width
 			if i < len(colWidths) {
-				padding := colWidths[i] - len(cell)
+				padding := colWidths[i] - visibleLen(cell)
 				for j := 0; j < padding; j++ {
 					w.WriteString(" ")
 				}
