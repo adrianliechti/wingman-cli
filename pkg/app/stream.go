@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/adrianliechti/wingman-cli/pkg/agent"
-	"github.com/adrianliechti/wingman-cli/pkg/markdown"
 	"github.com/adrianliechti/wingman-cli/pkg/theme"
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 )
@@ -69,7 +68,6 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 
 	var content strings.Builder
 	var streamErr error
-	var lastCompaction *agent.CompactionInfo
 
 	// Start with thinking phase and immediately show it
 	a.phase = PhaseThinking
@@ -86,95 +84,54 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 			break
 		}
 
-		if msg.Usage != nil {
-			a.totalTokens = msg.Usage.InputTokens + msg.Usage.OutputTokens
-
-			a.app.QueueUpdateDraw(func() {
-				a.updateStatusBar()
-			})
-
-			continue
-		}
-
-		if msg.Compaction != nil {
-			if msg.Compaction.InProgress {
-				a.phase = PhaseCompacting
+		// Handle different message types
+		for _, c := range msg.Content {
+			if c.ToolCall != nil {
+				a.phase = PhaseToolRunning
 
 				if a.spinner != nil {
-					a.spinner.SetPhase(PhaseCompacting, "")
+					a.spinner.SetPhase(PhaseToolRunning, c.ToolCall.Name)
 				}
+
+				toolName := c.ToolCall.Name
+				toolHint := extractToolHint(c.ToolCall.Args)
+				currentContent := content.String()
+
+				a.app.QueueUpdateDraw(func() {
+					messages := a.agent.Messages()
+					a.renderChat(messages, currentContent, toolName, toolHint)
+				})
+			} else if c.ToolResult != nil {
+				a.phase = PhaseThinking
+
+				if a.spinner != nil {
+					a.spinner.SetPhase(PhaseThinking, "")
+				}
+				content.Reset()
 
 				a.app.QueueUpdateDraw(func() {
 					messages := a.agent.Messages()
 					a.renderChat(messages, "", "", "")
-				})
-			} else {
-				lastCompaction = msg.Compaction
-				a.totalTokens = msg.Compaction.ToTokens
-
-				a.app.QueueUpdateDraw(func() {
 					a.updateStatusBar()
 				})
-			}
+			} else if c.Text != "" {
+				if a.phase != PhaseStreaming {
+					a.phase = PhaseStreaming
 
-			continue
-		}
+					if a.spinner != nil {
+						a.spinner.SetPhase(PhaseStreaming, "")
+					}
+				}
 
-		if msg.ToolCall != nil {
-			a.phase = PhaseToolRunning
+				content.WriteString(c.Text)
+				currentContent := content.String()
 
-			if a.spinner != nil {
-				a.spinner.SetPhase(PhaseToolRunning, msg.ToolCall.Name)
-			}
-
-			toolName := msg.ToolCall.Name
-			toolHint := extractToolHint(msg.ToolCall.Args)
-			currentContent := content.String()
-
-			a.app.QueueUpdateDraw(func() {
-				messages := a.agent.Messages()
-				a.renderChat(messages, currentContent, toolName, toolHint)
-			})
-
-			continue
-		}
-
-		if msg.ToolResult != nil {
-			// Tool complete, back to thinking for next iteration
-			a.phase = PhaseThinking
-
-			if a.spinner != nil {
-				a.spinner.SetPhase(PhaseThinking, "")
-			}
-			content.Reset()
-
-			a.app.QueueUpdateDraw(func() {
-				messages := a.agent.Messages()
-				a.renderChat(messages, "", "", "")
-				a.updateStatusBar()
-			})
-
-			continue
-		}
-
-		// Streaming content - keep spinner running to show activity
-		if a.phase != PhaseStreaming {
-			a.phase = PhaseStreaming
-
-			if a.spinner != nil {
-				a.spinner.SetPhase(PhaseStreaming, "")
+				a.app.QueueUpdateDraw(func() {
+					messages := a.agent.Messages()
+					a.renderChat(messages, currentContent, "", "")
+				})
 			}
 		}
-
-		for _, c := range msg.Content {
-			content.WriteString(c.Text)
-		}
-
-		currentContent := content.String()
-		a.app.QueueUpdateDraw(func() {
-			messages := a.agent.Messages()
-			a.renderChat(messages, currentContent, "", "")
-		})
 	}
 
 	// Finalize - set phase before stopping spinner so hint updates correctly
@@ -183,6 +140,10 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 	if a.spinner != nil {
 		a.spinner.Stop()
 	}
+
+	// Update token count from agent usage
+	usage := a.agent.Usage()
+	a.totalTokens = usage.InputTokens + usage.OutputTokens
 
 	a.app.QueueUpdateDraw(func() {
 		if streamErr != nil {
@@ -195,11 +156,9 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 		} else {
 			messages := a.agent.Messages()
 			a.renderChat(messages, "", "", "")
-
-			if lastCompaction != nil {
-				fmt.Fprint(a.chatView, markdown.FormatCompaction(lastCompaction.FromTokens, lastCompaction.ToTokens))
-			}
 		}
+
+		a.updateStatusBar()
 	})
 
 	if streamErr == nil {

@@ -171,7 +171,7 @@ func (a *App) pasteFromClipboard() {
 
 	for _, c := range contents {
 		if c.Image != nil {
-			a.pendingContent = append(a.pendingContent, agent.Content{Image: c.Image})
+			a.pendingContent = append(a.pendingContent, agent.Content{File: &agent.File{Data: *c.Image}})
 		}
 
 		if c.Text != "" {
@@ -203,7 +203,7 @@ func (a *App) countPendingImages() int {
 	count := 0
 
 	for _, c := range a.pendingContent {
-		if c.Image != nil {
+		if c.File != nil {
 			count++
 		}
 	}
@@ -652,19 +652,22 @@ func (a *App) renderChat(messages []agent.Message, streamingContent string, tool
 }
 
 func (a *App) renderMessage(msg agent.Message) {
-	if msg.ToolResult != nil {
-		if a.isToolHidden(msg.ToolResult.Name) {
+	// Check for tool result in content
+	for _, c := range msg.Content {
+		if c.ToolResult != nil {
+			if a.isToolHidden(c.ToolResult.Name) {
+				return
+			}
+			output := c.ToolResult.Content
+
+			if len(output) > maxToolOutputLen {
+				output = output[:maxToolOutputLen] + "..."
+			}
+			hint := extractToolHint(c.ToolResult.Args)
+			fmt.Fprint(a.chatView, markdown.FormatToolCall(c.ToolResult.Name, hint, output, a.chatWidth))
+
 			return
 		}
-		output := msg.ToolResult.Content[0].Text
-
-		if len(output) > maxToolOutputLen {
-			output = output[:maxToolOutputLen] + "..."
-		}
-		hint := extractToolHint(msg.ToolResult.Args)
-		fmt.Fprint(a.chatView, markdown.FormatToolCall(msg.ToolResult.Name, hint, output, a.chatWidth))
-
-		return
 	}
 
 	content := ""

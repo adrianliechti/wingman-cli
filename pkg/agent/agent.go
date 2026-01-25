@@ -20,51 +20,8 @@ var errYieldStopped = errors.New("yield stopped")
 type Agent struct {
 	*config.Config
 
-	messages        []responses.ResponseInputItemUnionParam
-	lastInputTokens int64
-}
-
-type MessageRole string
-
-const (
-	RoleUser      MessageRole = "user"
-	RoleAssistant MessageRole = "assistant"
-	RoleSystem    MessageRole = "system"
-)
-
-type Message struct {
-	Role    MessageRole
-	Content []Content
-
-	ToolCall   *ToolCall
-	ToolResult *ToolResult
-
-	Usage *Usage
-
-	Compaction *CompactionInfo
-}
-
-type Usage struct {
-	InputTokens  int64
-	OutputTokens int64
-}
-
-type Content struct {
-	Text  string
-	Image *string // base64 data URL, e.g. "data:image/png;base64,..."
-}
-
-type ToolCall struct {
-	ID   string
-	Name string
-	Args string
-}
-
-type ToolResult struct {
-	ID      string
-	Name    string
-	Args    string
-	Content []Content
+	messages []responses.ResponseInputItemUnionParam
+	usage    Usage
 }
 
 func New(cfg *config.Config) *Agent {
@@ -109,15 +66,30 @@ func (a *Agent) Send(ctx context.Context, instructions string, input []Content, 
 			return
 		}
 
-		if err := a.finalizeResponse(ctx, yield, text, usage); err != nil {
-			if err != errYieldStopped {
+		// Finalize response
+		if text != "" {
+			a.messages = append(a.messages, responses.ResponseInputItemUnionParam{
+				OfMessage: &responses.EasyInputMessageParam{
+					Role:    responses.EasyInputMessageRoleAssistant,
+					Content: responses.EasyInputMessageContentUnionParam{OfString: openai.String(text)},
+				},
+			})
+		}
+
+		if usage.InputTokens > 0 {
+			a.usage.InputTokens = usage.InputTokens
+			a.usage.OutputTokens += usage.OutputTokens
+		}
+
+		if a.shouldCompact(usage.InputTokens) {
+			if err := a.compact(ctx); err != nil {
 				yield(Message{}, err)
 			}
 		}
 	}
 }
 
-func (a *Agent) streamResponse(ctx context.Context, yield func(Message, error) bool, instructions string, tools []responses.ToolUnionParam) (string, []responses.ResponseFunctionToolCall, Usage, error) {
+func (a *Agent) streamResponse(ctx context.Context, yield func(Message, error) bool, instructions string, tools []responses.ToolUnionParam) (string, []ToolCall, Usage, error) {
 	stream := a.Client.Responses.NewStreaming(ctx, responses.ResponseNewParams{
 		Model:        a.Model,
 		Instructions: openai.String(instructions),
@@ -127,7 +99,7 @@ func (a *Agent) streamResponse(ctx context.Context, yield func(Message, error) b
 	})
 
 	var fullResponse strings.Builder
-	var toolCalls []responses.ResponseFunctionToolCall
+	var toolCalls []ToolCall
 	var usage Usage
 
 	for stream.Next() {
@@ -137,23 +109,29 @@ func (a *Agent) streamResponse(ctx context.Context, yield func(Message, error) b
 		case "response.output_text.delta":
 			fullResponse.WriteString(event.Delta)
 
-			msg := Message{Content: []Content{{Text: event.Delta}}}
+			msg := Message{
+				Role:    RoleAssistant,
+				Content: []Content{{Text: event.Delta}},
+			}
 
 			if !yield(msg, nil) {
 				return "", nil, Usage{}, errYieldStopped
 			}
 
 		case "response.output_item.done":
-
 			if event.Item.Type == "function_call" {
-				toolCalls = append(toolCalls, event.Item.AsFunctionCall())
+				fc := event.Item.AsFunctionCall()
+				toolCalls = append(toolCalls, ToolCall{
+					ID:   fc.CallID,
+					Name: fc.Name,
+					Args: fc.Arguments,
+				})
 			}
 		}
 
 		if event.Response.Usage.InputTokens > 0 {
 			usage.InputTokens = event.Response.Usage.InputTokens
 			usage.OutputTokens = event.Response.Usage.OutputTokens
-			a.lastInputTokens = event.Response.Usage.InputTokens
 		}
 	}
 
@@ -164,17 +142,20 @@ func (a *Agent) streamResponse(ctx context.Context, yield func(Message, error) b
 	return fullResponse.String(), toolCalls, usage, nil
 }
 
-func (a *Agent) processToolCalls(ctx context.Context, yield func(Message, error) bool, toolCalls []responses.ResponseFunctionToolCall, tools []tool.Tool) error {
+func (a *Agent) processToolCalls(ctx context.Context, yield func(Message, error) bool, toolCalls []ToolCall, tools []tool.Tool) error {
 	for _, tc := range toolCalls {
 		a.messages = append(a.messages, responses.ResponseInputItemUnionParam{
 			OfFunctionCall: &responses.ResponseFunctionToolCallParam{
-				CallID:    tc.CallID,
+				CallID:    tc.ID,
 				Name:      tc.Name,
-				Arguments: tc.Arguments,
+				Arguments: tc.Args,
 			},
 		})
 
-		msg := Message{ToolCall: &ToolCall{ID: tc.CallID, Name: tc.Name, Args: tc.Arguments}}
+		msg := Message{
+			Role:    RoleAssistant,
+			Content: []Content{{ToolCall: &ToolCall{ID: tc.ID, Name: tc.Name, Args: tc.Args}}},
+		}
 
 		if !yield(msg, nil) {
 			return errYieldStopped
@@ -182,11 +163,14 @@ func (a *Agent) processToolCalls(ctx context.Context, yield func(Message, error)
 
 		result := a.executeTool(ctx, tc, tools)
 
-		resultMsg := Message{ToolResult: &ToolResult{
-			ID:      tc.CallID,
-			Name:    tc.Name,
-			Content: []Content{{Text: result}},
-		}}
+		resultMsg := Message{
+			Role: RoleAssistant,
+			Content: []Content{{ToolResult: &ToolResult{
+				ID:      tc.ID,
+				Name:    tc.Name,
+				Content: result,
+			}}},
+		}
 
 		if !yield(resultMsg, nil) {
 			return errYieldStopped
@@ -194,51 +178,12 @@ func (a *Agent) processToolCalls(ctx context.Context, yield func(Message, error)
 
 		a.messages = append(a.messages, responses.ResponseInputItemUnionParam{
 			OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
-				CallID: tc.CallID,
+				CallID: tc.ID,
 				Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
 					OfString: openai.String(result),
 				},
 			},
 		})
-	}
-
-	return nil
-}
-
-func (a *Agent) finalizeResponse(ctx context.Context, yield func(Message, error) bool, text string, usage Usage) error {
-	if text != "" {
-		a.messages = append(a.messages, responses.ResponseInputItemUnionParam{
-			OfMessage: &responses.EasyInputMessageParam{
-				Role:    responses.EasyInputMessageRoleAssistant,
-				Content: responses.EasyInputMessageContentUnionParam{OfString: openai.String(text)},
-			},
-		})
-	}
-
-	if usage.InputTokens > 0 {
-		if !yield(Message{Usage: &usage}, nil) {
-			return errYieldStopped
-		}
-	}
-
-	if !a.shouldCompact(a.lastInputTokens) {
-		return nil
-	}
-
-	if !yield(Message{Compaction: &CompactionInfo{InProgress: true, FromTokens: a.lastInputTokens}}, nil) {
-		return errYieldStopped
-	}
-
-	compaction, err := a.compact(ctx, a.lastInputTokens)
-
-	if err != nil {
-		return err
-	}
-
-	if compaction != nil {
-		if !yield(Message{Compaction: compaction}, nil) {
-			return errYieldStopped
-		}
 	}
 
 	return nil
@@ -254,7 +199,7 @@ func formatTools(tools []tool.Tool) []responses.ToolUnionParam {
 	return result
 }
 
-func (a *Agent) executeTool(ctx context.Context, tc responses.ResponseFunctionToolCall, tools []tool.Tool) string {
+func (a *Agent) executeTool(ctx context.Context, tc ToolCall, tools []tool.Tool) string {
 	var t *tool.Tool
 
 	for i := range tools {
@@ -271,7 +216,7 @@ func (a *Agent) executeTool(ctx context.Context, tc responses.ResponseFunctionTo
 
 	var args map[string]any
 
-	if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
+	if err := json.Unmarshal([]byte(tc.Args), &args); err != nil {
 		return fmt.Sprintf("error: failed to parse arguments: %v", err)
 	}
 
@@ -292,10 +237,10 @@ func (a *Agent) userMessage(input []Content) responses.ResponseInputItemUnionPar
 			parts = append(parts, responses.ResponseInputContentParamOfInputText(c.Text))
 		}
 
-		if c.Image != nil && *c.Image != "" {
+		if c.File != nil && c.File.Data != "" {
 			parts = append(parts, responses.ResponseInputContentUnionParam{
 				OfInputImage: &responses.ResponseInputImageParam{
-					ImageURL: openai.String(*c.Image),
+					ImageURL: openai.String(c.File.Data),
 					Detail:   responses.ResponseInputImageDetailAuto,
 				},
 			})
@@ -307,6 +252,19 @@ func (a *Agent) userMessage(input []Content) responses.ResponseInputItemUnionPar
 			Role:    responses.EasyInputMessageRoleUser,
 			Content: responses.EasyInputMessageContentUnionParam{OfInputItemContentList: parts},
 		},
+	}
+}
+
+func convertRole(role responses.EasyInputMessageRole) MessageRole {
+	switch role {
+	case responses.EasyInputMessageRoleUser:
+		return RoleUser
+
+	case responses.EasyInputMessageRoleAssistant:
+		return RoleAssistant
+
+	default:
+		return RoleSystem
 	}
 }
 
@@ -326,18 +284,8 @@ func (a *Agent) Messages() []Message {
 					continue
 				}
 
-				var role MessageRole
-				switch msg.Role {
-				case responses.EasyInputMessageRoleUser:
-					role = RoleUser
-				case responses.EasyInputMessageRoleAssistant:
-					role = RoleAssistant
-				default:
-					role = RoleSystem
-				}
-
 				result = append(result, Message{
-					Role:    role,
+					Role:    convertRole(msg.Role),
 					Content: []Content{{Text: content}},
 				})
 				continue
@@ -345,16 +293,6 @@ func (a *Agent) Messages() []Message {
 
 			// Handle multi-part content (text + images)
 			if len(msg.Content.OfInputItemContentList) > 0 {
-				var role MessageRole
-				switch msg.Role {
-				case responses.EasyInputMessageRoleUser:
-					role = RoleUser
-				case responses.EasyInputMessageRoleAssistant:
-					role = RoleAssistant
-				default:
-					role = RoleSystem
-				}
-
 				var contents []Content
 
 				for _, part := range msg.Content.OfInputItemContentList {
@@ -363,14 +301,13 @@ func (a *Agent) Messages() []Message {
 					}
 
 					if part.OfInputImage != nil && part.OfInputImage.ImageURL.Value != "" {
-						imageURL := part.OfInputImage.ImageURL.Value
-						contents = append(contents, Content{Image: &imageURL})
+						contents = append(contents, Content{File: &File{Data: part.OfInputImage.ImageURL.Value}})
 					}
 				}
 
 				if len(contents) > 0 {
 					result = append(result, Message{
-						Role:    role,
+						Role:    convertRole(msg.Role),
 						Content: contents,
 					})
 				}
@@ -388,16 +325,20 @@ func (a *Agent) Messages() []Message {
 
 			result = append(result, Message{
 				Role: RoleAssistant,
-				ToolResult: &ToolResult{
+				Content: []Content{{ToolResult: &ToolResult{
 					Name:    lastToolName,
 					Args:    lastToolArgs,
-					Content: []Content{{Text: output}},
-				},
+					Content: output,
+				}}},
 			})
 		}
 	}
 
 	return result
+}
+
+func (a *Agent) Usage() Usage {
+	return a.usage
 }
 
 func (a *Agent) Clear() {

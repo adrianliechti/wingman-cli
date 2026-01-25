@@ -10,12 +10,6 @@ import (
 	"github.com/adrianliechti/wingman-cli/pkg/prompt"
 )
 
-type CompactionInfo struct {
-	InProgress bool
-	FromTokens int64
-	ToTokens   int64
-}
-
 func (a *Agent) shouldCompact(inputTokens int64) bool {
 	if a.MaxContextTokens <= 0 {
 		return false
@@ -24,11 +18,11 @@ func (a *Agent) shouldCompact(inputTokens int64) bool {
 	return inputTokens > a.MaxContextTokens-a.ReserveTokens
 }
 
-func (a *Agent) compact(ctx context.Context, inputTokens int64) (*CompactionInfo, error) {
+func (a *Agent) compact(ctx context.Context) error {
 	cutIdx := a.findCutPoint()
 
 	if cutIdx <= 0 {
-		return nil, nil
+		return nil
 	}
 
 	toSummarize := a.messages[:cutIdx]
@@ -37,7 +31,7 @@ func (a *Agent) compact(ctx context.Context, inputTokens int64) (*CompactionInfo
 	summary, err := a.summarize(ctx, toSummarize)
 
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	summaryMsg := responses.ResponseInputItemUnionParam{
@@ -48,13 +42,9 @@ func (a *Agent) compact(ctx context.Context, inputTokens int64) (*CompactionInfo
 	}
 
 	a.messages = append([]responses.ResponseInputItemUnionParam{summaryMsg}, toKeep...)
+	a.usage.InputTokens = a.estimateTokens()
 
-	newTokens := a.estimateTokens()
-
-	return &CompactionInfo{
-		FromTokens: inputTokens,
-		ToTokens:   newTokens,
-	}, nil
+	return nil
 }
 
 func (a *Agent) findCutPoint() int {
