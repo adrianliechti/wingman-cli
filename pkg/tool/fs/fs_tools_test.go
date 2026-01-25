@@ -540,6 +540,25 @@ func TestFindTool(t *testing.T) {
 			t.Errorf("expected 'No files found', got: %s", result)
 		}
 	})
+
+	t.Run("find with absolute path", func(t *testing.T) {
+		result, err := findTool.Execute(context.Background(), env, map[string]any{
+			"pattern": "**/*.go",
+			"path":    tmpDir, // absolute path to workspace root
+		})
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !strings.Contains(result, "main.go") {
+			t.Errorf("expected main.go, got: %s", result)
+		}
+
+		if !strings.Contains(result, "app.go") {
+			t.Errorf("expected app.go, got: %s", result)
+		}
+	})
 }
 
 func TestGrepTool(t *testing.T) {
@@ -666,6 +685,25 @@ func TestGrepTool(t *testing.T) {
 
 		if strings.Contains(result, "file1.go") {
 			t.Errorf("should only search single file, got: %s", result)
+		}
+	})
+
+	t.Run("grep with absolute path", func(t *testing.T) {
+		result, err := grepTool.Execute(context.Background(), env, map[string]any{
+			"pattern": "func",
+			"path":    tmpDir, // absolute path to workspace root
+		})
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !strings.Contains(result, "file1.go") {
+			t.Errorf("expected file1.go in results, got: %s", result)
+		}
+
+		if !strings.Contains(result, "Hello") {
+			t.Errorf("expected 'Hello' in results, got: %s", result)
 		}
 	})
 }

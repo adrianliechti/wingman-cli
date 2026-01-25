@@ -115,10 +115,10 @@ func GrepTool() tool.Tool {
 			}
 
 			// Check if path exists
-			info, err := env.Root.Stat(searchPath)
+			info, err := env.Root.Stat(searchPathFS)
 
 			if err != nil {
-				return "", fmt.Errorf("path not found: %s", searchPath)
+				return "", pathError("stat path", searchPath, searchPathFS, workingDir, err)
 			}
 
 			fsys := env.Root.FS()

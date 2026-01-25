@@ -62,10 +62,10 @@ func FindTool() tool.Tool {
 				limit = int(l)
 			}
 
-			info, err := env.Root.Stat(searchDir)
+			info, err := env.Root.Stat(searchDirFS)
 
 			if err != nil {
-				return "", pathError("stat path", searchDir, searchDir, workingDir, err)
+				return "", pathError("stat path", searchDir, searchDirFS, workingDir, err)
 			}
 
 			if !info.IsDir() {
