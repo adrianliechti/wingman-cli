@@ -6,8 +6,6 @@ import (
 	"time"
 
 	"github.com/rivo/tview"
-
-	"github.com/adrianliechti/wingman-cli/pkg/theme"
 )
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -24,18 +22,14 @@ type Spinner struct {
 	frame    int
 	phase    AppPhase
 	toolName string
-
-	// Callback to restore hint when stopped
-	onStop func()
 }
 
-// NewSpinner creates a new spinner component that renders to the given view
-func NewSpinner(app *tview.Application, view *tview.TextView, onStop func()) *Spinner {
+// NewSpinner creates a new spinner component
+func NewSpinner(app *tview.Application, view *tview.TextView) *Spinner {
 	return &Spinner{
 		view:     view,
 		app:      app,
 		stopChan: make(chan struct{}),
-		onStop:   onStop,
 	}
 }
 
@@ -49,10 +43,7 @@ func (s *Spinner) Start(phase AppPhase, toolName string) {
 	s.frame = 0
 
 	if s.active {
-		// Already running, just update the display
 		s.render()
-		s.app.QueueUpdateDraw(func() {})
-
 		return
 	}
 
@@ -61,7 +52,6 @@ func (s *Spinner) Start(phase AppPhase, toolName string) {
 	s.stopChan = make(chan struct{})
 
 	s.render()
-	s.app.QueueUpdateDraw(func() {})
 	go s.run()
 }
 
@@ -75,7 +65,6 @@ func (s *Spinner) SetPhase(phase AppPhase, toolName string) {
 
 	if s.active {
 		s.render()
-		s.app.QueueUpdateDraw(func() {})
 	}
 }
 
@@ -89,44 +78,26 @@ func (s *Spinner) Stop() {
 	}
 
 	s.active = false
-
 	if s.ticker != nil {
 		s.ticker.Stop()
 	}
 	close(s.stopChan)
-
-	// Restore the hint text
-	if s.onStop != nil {
-		s.onStop()
-	}
-}
-
-// IsActive returns whether the spinner is currently animating
-func (s *Spinner) IsActive() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.active
 }
 
 func (s *Spinner) run() {
 	for {
 		select {
 		case <-s.stopChan:
-
 			return
 		case <-s.ticker.C:
 			s.mu.Lock()
-
 			if !s.active {
 				s.mu.Unlock()
-
 				return
 			}
 			s.frame = (s.frame + 1) % len(spinnerFrames)
 			s.render()
 			s.mu.Unlock()
-
 			s.app.QueueUpdateDraw(func() {})
 		}
 	}
@@ -134,33 +105,10 @@ func (s *Spinner) run() {
 
 func (s *Spinner) render() {
 	config := GetPhaseConfig(s.phase, s.toolName)
-
 	if config.Message == "" {
-		if s.onStop != nil {
-			s.onStop()
-		}
-
+		s.view.SetText("")
 		return
 	}
-
-	t := theme.Default
 	frame := spinnerFrames[s.frame]
-
-	var color string
-
-	switch s.phase {
-	case PhaseThinking:
-		color = t.Cyan.String()
-
-	case PhaseToolRunning:
-		color = t.Yellow.String()
-
-	case PhaseCompacting:
-		color = t.Magenta.String()
-
-	default:
-		color = t.BrBlack.String()
-	}
-
-	s.view.SetText(fmt.Sprintf("[%s]%s %s[-]", color, frame, config.Message))
+	s.view.SetText(fmt.Sprintf("[%s]%s %s[-]", config.Color, frame, config.Message))
 }

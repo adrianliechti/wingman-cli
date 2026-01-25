@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"fmt"
 	"sync"
 
 	"github.com/gdamore/tcell/v2"
@@ -24,14 +23,12 @@ type App struct {
 	ctx    context.Context
 
 	// UI Components
-	pages         *tview.Pages
-	chatView      *tview.TextView
-	errorView     *tview.TextView
-	mcpStatusView *tview.TextView
-	welcomeView   *tview.TextView
-	input         *tview.TextArea
-	statusBar     *tview.TextView
-	inputHint     *tview.TextView
+	pages       *tview.Pages
+	chatView    *tview.TextView
+	welcomeView *tview.TextView
+	input       *tview.TextArea
+	statusBar   *tview.TextView
+	inputHint   *tview.TextView
 
 	// Layout containers
 	mainContent   *tview.Flex
@@ -51,7 +48,6 @@ type App struct {
 	promptActive   bool
 	promptResponse chan bool
 	totalTokens    int64
-	startupError   string
 	chatWidth      int
 	pendingContent []agent.Content
 	pendingFiles   []string
@@ -64,11 +60,10 @@ type App struct {
 	plan *plan.Plan
 
 	// MCP state
-	mcpManager    *mcp.Manager
-	mcpTools      []tool.Tool
-	mcpMu         sync.Mutex
-	mcpError      error
-	mcpConnecting bool
+	mcpManager *mcp.Manager
+	mcpTools   []tool.Tool
+	mcpMu      sync.Mutex
+	mcpError   error
 
 	// Rewind state
 	rewind *rewind.Manager
@@ -91,10 +86,7 @@ func New(ctx context.Context, cfg *config.Config, ag *agent.Agent) *App {
 	cfg.Environment.Plan = a.plan
 
 	rm, err := rewind.New(cfg.Environment.WorkingDir())
-
-	if err != nil {
-		a.startupError = fmt.Sprintf("rewind init failed: %v", err)
-	} else {
+	if err == nil {
 		a.rewind = rm
 	}
 
@@ -117,25 +109,21 @@ func (a *App) Run() error {
 	a.autoSelectModel()
 
 	if a.config.MCP != nil {
-		a.mcpConnecting = true
-		a.updateWelcomeView()
-
 		go func() {
 			err := a.initMCP()
-
-			a.mcpConnecting = false
-			a.app.QueueUpdateDraw(func() {
-				a.updateWelcomeView()
-
-				if err != nil || a.mcpError != nil {
-					a.renderMCPInitError(err)
+			if err != nil || a.mcpError != nil {
+				if err == nil {
+					err = a.mcpError
 				}
-			})
+				a.app.QueueUpdateDraw(func() {
+					a.showError("MCP initialization failed", err)
+				})
+			}
 		}()
 	}
 
 	mainLayout := a.buildLayout()
-	a.spinner = NewSpinner(a.app, a.inputHint, a.updateInputHint)
+	a.spinner = NewSpinner(a.app, a.inputHint)
 	a.pages = tview.NewPages()
 	a.pages.SetBackgroundColor(tcell.ColorDefault)
 	a.pages.AddPage("main", mainLayout, true, true)

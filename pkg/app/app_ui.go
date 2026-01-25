@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
@@ -15,57 +16,48 @@ import (
 
 const maxToolOutputLen = 500
 
+// isStreaming returns true if the app is currently processing a request
+func (a *App) isStreaming() bool {
+	return a.phase != PhaseIdle
+}
+
 // Input handling
 
 func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
-	isStreaming := a.phase != PhaseIdle
-
 	// Handle Escape: close modals, cancel stream, or clear input
 	if event.Key() == tcell.KeyEscape {
 		if a.hasActiveModal() {
 			a.closeActiveModal()
-
 			return nil
 		}
-
-		if isStreaming {
+		if a.isStreaming() {
 			a.cancelStream()
-
 			return nil
 		}
 		// Clear input and pending content when idle
 		a.input.SetText("", true)
 		a.clearPendingContent()
-
 		return nil
 	}
 
 	// Handle Ctrl+C: copy if text selected, else close modals, cancel stream, or stop app
 	if event.Key() == tcell.KeyCtrlC {
-		// Check if text is selected in input - if so, copy it
 		if !a.hasActiveModal() && a.input.HasSelection() {
 			selectedText, _, _ := a.input.GetSelection()
-
 			if selectedText != "" {
 				clipboard.WriteText(selectedText)
-
 				return nil
 			}
 		}
-
 		if a.hasActiveModal() {
 			a.closeActiveModal()
-
 			return nil
 		}
-
-		if isStreaming {
+		if a.isStreaming() {
 			a.cancelStream()
-
 			return nil
 		}
 		a.stop()
-
 		return nil
 	}
 
@@ -103,30 +95,23 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	}
 
 	if event.Key() == tcell.KeyCtrlL {
-		a.chatView.Clear()
-		a.agent.Clear()
-		a.totalTokens = 0
-		a.updateStatusBar()
-
+		a.clearChat()
 		return nil
 	}
 
-	if event.Key() == tcell.KeyTab && !isStreaming {
+	if event.Key() == tcell.KeyTab && !a.isStreaming() {
 		a.toggleMode()
-
 		return nil
 	}
 
 	// Shift+Tab cycles through models
-	if event.Key() == tcell.KeyBacktab && !isStreaming {
+	if event.Key() == tcell.KeyBacktab && !a.isStreaming() {
 		go a.cycleModel()
-
 		return nil
 	}
 
-	if event.Key() == tcell.KeyEnter && !isStreaming {
+	if event.Key() == tcell.KeyEnter && !a.isStreaming() {
 		a.submitInput()
-
 		return nil
 	}
 
@@ -199,6 +184,23 @@ func (a *App) clearPendingContent() {
 	a.updateInputHint()
 }
 
+func (a *App) clearChat() {
+	a.chatView.Clear()
+	a.agent.Clear()
+	a.totalTokens = 0
+	a.plan.Clear()
+	a.updateStatusBar()
+}
+
+func (a *App) showError(title string, err error) {
+	a.switchToChat()
+	width := a.chatWidth
+	if width == 0 {
+		width = 80
+	}
+	fmt.Fprint(a.chatView, markdown.FormatError(title, err.Error(), width))
+}
+
 func (a *App) countPendingImages() int {
 	count := 0
 
@@ -229,13 +231,8 @@ func (a *App) submitInput() {
 		return
 
 	case "/clear":
-		a.chatView.Clear()
-		a.agent.Clear()
-		a.totalTokens = 0
-		a.plan.Clear()
-		a.updateStatusBar()
+		a.clearChat()
 		a.input.SetText("", true)
-
 		return
 
 	case "/help":
@@ -300,30 +297,30 @@ func (a *App) submitInput() {
 	a.input.SetText("", true)
 
 	imageCount := a.countPendingImages()
-	fileCount := len(a.pendingFiles)
 
-	if imageCount > 0 || fileCount > 0 {
+	// Build display text with attachments
+	displayText := query
+	if imageCount > 0 || len(a.pendingFiles) > 0 {
 		var attachments []string
-
-		if imageCount > 0 {
-			attachments = append(attachments, fmt.Sprintf("📷 %d image(s)", imageCount))
+		if imageCount == 1 {
+			attachments = append(attachments, "📷 1 image")
+		} else if imageCount > 1 {
+			attachments = append(attachments, fmt.Sprintf("📷 %d images", imageCount))
 		}
-
-		if fileCount > 0 {
-			attachments = append(attachments, fmt.Sprintf("📄 %d file(s)", fileCount))
+		for _, f := range a.pendingFiles {
+			attachments = append(attachments, fmt.Sprintf("📄 %s", filepath.Base(f)))
 		}
-		fmt.Fprint(a.chatView, markdown.FormatUserMessage(fmt.Sprintf("%s\n[%s]", query, strings.Join(attachments, ", ")), a.chatWidth))
-	} else {
-		fmt.Fprint(a.chatView, markdown.FormatUserMessage(query, a.chatWidth))
+		displayText = fmt.Sprintf("%s\n[%s]", query, strings.Join(attachments, ", "))
 	}
+	fmt.Fprint(a.chatView, markdown.FormatUserMessage(displayText, a.chatWidth))
 
-	input := []agent.Content{{Text: query}}
+	// Build input for agent - display text plus hidden file list for context
+	input := []agent.Content{{Text: displayText}}
 	input = append(input, a.pendingContent...)
 
 	if len(a.pendingFiles) > 0 {
 		var sb strings.Builder
 		sb.WriteString("\n[Attached files - use the read tool to access their content]\n")
-
 		for _, f := range a.pendingFiles {
 			sb.WriteString(fmt.Sprintf("- %s\n", f))
 		}
@@ -351,10 +348,7 @@ func (a *App) switchToChat() {
 	a.isWelcomeMode = false
 	a.mainContent.Clear()
 	a.mainContent.SetDirection(tview.FlexRow)
-	a.mainContent.AddItem(a.errorView, 0, 0, false)
 	a.mainContent.AddItem(a.chatView, 0, 1, false)
-
-	a.updateErrorView()
 
 	a.mainLayout.Clear()
 	a.mainLayout.
@@ -383,18 +377,6 @@ func (a *App) setupUI() {
 	a.chatView.SetBorder(false)
 	a.chatView.SetBackgroundColor(tcell.ColorDefault)
 
-	a.errorView = tview.NewTextView().
-		SetDynamicColors(true).
-		SetWordWrap(true)
-	a.errorView.SetBorder(false)
-	a.errorView.SetBackgroundColor(tcell.ColorDefault)
-
-	a.mcpStatusView = tview.NewTextView().
-		SetDynamicColors(true).
-		SetTextAlign(tview.AlignLeft)
-	a.mcpStatusView.SetBorder(false)
-	a.mcpStatusView.SetBackgroundColor(tcell.ColorDefault)
-
 	inputBgColor := t.Selection
 	a.input = tview.NewTextArea().
 		SetPlaceholder("Ask anything...")
@@ -405,8 +387,6 @@ func (a *App) setupUI() {
 
 	a.mainContent = tview.NewFlex().SetDirection(tview.FlexRow)
 	a.mainContent.AddItem(a.welcomeView, 0, 1, false)
-
-	a.updateWelcomeView()
 }
 
 func (a *App) buildLayout() *tview.Flex {
@@ -463,11 +443,6 @@ func (a *App) buildLayout() *tview.Flex {
 	inputContainer.AddItem(a.inputFrame, 0, 1, true)
 	inputContainer.AddItem(nil, 4, 0, false)
 
-	statusContainer := tview.NewFlex().SetDirection(tview.FlexColumn)
-	statusContainer.AddItem(nil, 4, 0, false)
-	statusContainer.AddItem(a.mcpStatusView, 0, 1, false)
-	statusContainer.AddItem(nil, 4, 0, false)
-
 	a.inputSection = tview.NewFlex().SetDirection(tview.FlexRow)
 	a.inputSection.AddItem(inputContainer, 0, 1, true)
 	a.inputSection.AddItem(bottomBarContainer, 1, 0, false)
@@ -481,13 +456,9 @@ func (a *App) buildLayout() *tview.Flex {
 		newWidth := width - 6
 
 		// Re-render chat on resize (only when idle and not in welcome mode)
-		isStreaming := a.phase != PhaseIdle
-
-		if newWidth != a.chatWidth && !a.isWelcomeMode && !isStreaming && len(a.agent.Messages()) > 0 {
-			messages := a.agent.Messages()
-			a.renderChat(messages, "", "", "")
+		if newWidth != a.chatWidth && !a.isWelcomeMode && !a.isStreaming() && len(a.agent.Messages()) > 0 {
+			a.renderChat(a.agent.Messages(), "", "", "")
 		}
-
 		a.chatWidth = newWidth
 
 		return x, y, width, height
@@ -499,7 +470,6 @@ func (a *App) buildLayout() *tview.Flex {
 		a.mainLayout.
 			AddItem(nil, 2, 0, false).
 			AddItem(a.welcomeView, 12, 0, false).
-			AddItem(statusContainer, 4, 0, false).
 			AddItem(nil, 0, 1, false).
 			AddItem(a.inputSection, 6, 0, true).
 			AddItem(nil, 0, 2, false)
@@ -558,21 +528,21 @@ func (a *App) updateInputHint() {
 	var parts []string
 
 	imageCount := a.countPendingImages()
-
-	if imageCount > 0 {
-		parts = append(parts, fmt.Sprintf("[%s]📎 %d image(s)[-]", t.Cyan, imageCount))
+	if imageCount == 1 {
+		parts = append(parts, fmt.Sprintf("[%s]📎 1 image[-]", t.Cyan))
+	} else if imageCount > 1 {
+		parts = append(parts, fmt.Sprintf("[%s]📎 %d images[-]", t.Cyan, imageCount))
 	}
 
-	fileCount := len(a.pendingFiles)
-
-	if fileCount > 0 {
-		parts = append(parts, fmt.Sprintf("[%s]📄 %d file(s)[-]", t.Cyan, fileCount))
+	if len(a.pendingFiles) == 1 {
+		name := filepath.Base(a.pendingFiles[0])
+		parts = append(parts, fmt.Sprintf("[%s]📄 %s[-]", t.Cyan, name))
+	} else if len(a.pendingFiles) > 1 {
+		parts = append(parts, fmt.Sprintf("[%s]📄 %d files[-]", t.Cyan, len(a.pendingFiles)))
 	}
 
-	isStreaming := a.phase != PhaseIdle
-
-	if !isStreaming {
-		parts = append(parts, fmt.Sprintf("[%s]enter[-] [%s]send[-]  [%s]tab[-] [%s]mode[-]  [%s]shift+tab[-] [%s]model[-]  [%s]@[-] [%s]file[-]  [%s]esc[-] [%s]clear[-]", t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground))
+	if !a.isStreaming() {
+		parts = append(parts, fmt.Sprintf("[%s]tab[-] [%s]mode[-]  [%s]shift+tab[-] [%s]model[-]  [%s]@[-] [%s]file[-]  [%s]esc[-] [%s]clear[-]", t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground))
 	}
 
 	a.inputHint.SetText(strings.Join(parts, "  "))
@@ -588,49 +558,6 @@ func formatTokens(tokens int64) string {
 	}
 
 	return fmt.Sprintf("%d", tokens)
-}
-
-func (a *App) updateWelcomeView() {
-	var sb strings.Builder
-
-	sb.WriteString(Logo)
-
-	a.welcomeView.SetText(sb.String())
-
-	a.mcpStatusView.SetText("")
-}
-
-func (a *App) renderMCPInitError(err error) {
-	if err == nil {
-		err = a.mcpError
-	}
-
-	if err == nil {
-		return
-	}
-
-	a.switchToChat()
-	a.startupError = err.Error()
-
-	a.updateErrorView()
-}
-
-func (a *App) updateErrorView() {
-	if a.startupError == "" {
-		a.errorView.SetText("")
-		a.mainContent.ResizeItem(a.errorView, 0, 0)
-
-		return
-	}
-
-	width := a.chatWidth
-
-	if width == 0 {
-		width = 80
-	}
-
-	a.errorView.SetText(markdown.FormatError("MCP initialization failed", a.startupError, width))
-	a.mainContent.ResizeItem(a.errorView, 4, 0)
 }
 
 // Chat rendering (inlined from ChatRenderer)
@@ -670,8 +597,8 @@ func (a *App) renderMessage(msg agent.Message) {
 		}
 	}
 
+	// Get first text content for display
 	content := ""
-
 	if len(msg.Content) > 0 {
 		content = msg.Content[0].Text
 	}
