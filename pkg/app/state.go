@@ -21,7 +21,6 @@ const (
 	PhaseThinking
 	PhaseStreaming
 	PhaseToolRunning
-	PhaseCompacting
 )
 
 // PhaseConfig holds display configuration for each phase
@@ -36,41 +35,23 @@ func GetPhaseConfig(phase AppPhase, toolName string) PhaseConfig {
 	t := theme.Default
 
 	switch phase {
-	case PhaseThinking:
-
+	case PhaseThinking, PhaseStreaming:
 		return PhaseConfig{
 			Message:  "Thinking...",
-			Color:    t.BrBlack.String(),
-			Animated: true,
-		}
-	case PhaseStreaming:
-
-		return PhaseConfig{
-			Message:  "Thinking...",
-			Color:    t.BrBlack.String(),
+			Color:    t.Cyan.String(),
 			Animated: true,
 		}
 	case PhaseToolRunning:
 		msg := "Running tool..."
-
 		if toolName != "" {
 			msg = "Running " + toolName + "..."
 		}
-
 		return PhaseConfig{
 			Message:  msg,
 			Color:    t.Yellow.String(),
 			Animated: true,
 		}
-	case PhaseCompacting:
-
-		return PhaseConfig{
-			Message:  "Compacting context...",
-			Color:    t.Magenta.String(),
-			Animated: true,
-		}
 	default:
-
 		return PhaseConfig{
 			Message:  "",
 			Color:    t.BrBlack.String(),

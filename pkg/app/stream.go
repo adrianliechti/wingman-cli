@@ -56,6 +56,7 @@ func (a *App) setPhase(phase AppPhase, hint string) {
 	if a.spinner != nil {
 		if phase == PhaseIdle {
 			a.spinner.Stop()
+			a.updateInputHint()
 		} else {
 			a.spinner.SetPhase(phase, hint)
 		}
