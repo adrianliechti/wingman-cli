@@ -13,10 +13,17 @@ import (
 )
 
 func (a *App) showDiffView() {
+	select {
+	case <-a.rewindReady:
+	default:
+		t := theme.Default
+		fmt.Fprintf(a.chatView, "[%s]Diff not available (rewind initializing...)[-]\n\n", t.Yellow)
+		return
+	}
+
 	if a.rewind == nil {
 		t := theme.Default
-		fmt.Fprintf(a.chatView, "[%s]Diff not available (rewind not initialized)[-]\n\n", t.Yellow)
-
+		fmt.Fprintf(a.chatView, "[%s]Diff not available[-]\n\n", t.Yellow)
 		return
 	}
 

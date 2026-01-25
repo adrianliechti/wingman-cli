@@ -82,6 +82,7 @@ func (s *Spinner) Stop() {
 		s.ticker.Stop()
 	}
 	close(s.stopChan)
+	s.view.SetText("")
 }
 
 func (s *Spinner) run() {

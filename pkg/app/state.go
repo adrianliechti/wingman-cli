@@ -18,6 +18,7 @@ type AppPhase int
 
 const (
 	PhaseIdle AppPhase = iota
+	PhasePreparing
 	PhaseThinking
 	PhaseStreaming
 	PhaseToolRunning
@@ -35,6 +36,12 @@ func GetPhaseConfig(phase AppPhase, toolName string) PhaseConfig {
 	t := theme.Default
 
 	switch phase {
+	case PhasePreparing:
+		return PhaseConfig{
+			Message:  "Preparing...",
+			Color:    t.BrBlack.String(),
+			Animated: true,
+		}
 	case PhaseThinking, PhaseStreaming:
 		return PhaseConfig{
 			Message:  "Thinking...",

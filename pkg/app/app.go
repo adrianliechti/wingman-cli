@@ -66,7 +66,8 @@ type App struct {
 	mcpError   error
 
 	// Rewind state
-	rewind *rewind.Manager
+	rewind      *rewind.Manager
+	rewindReady chan struct{}
 }
 
 func New(ctx context.Context, cfg *config.Config, ag *agent.Agent) *App {
@@ -78,24 +79,34 @@ func New(ctx context.Context, cfg *config.Config, ag *agent.Agent) *App {
 		config:        cfg,
 		ctx:           ctx,
 		isWelcomeMode: true,
-		phase:         PhaseIdle,
+		phase:         PhasePreparing,
 		plan:          &plan.Plan{},
+		rewindReady:   make(chan struct{}),
 	}
 
 	cfg.Environment.PromptUser = a.promptUser
 	cfg.Environment.Plan = a.plan
 
-	rm, err := rewind.New(cfg.Environment.WorkingDir())
-	if err == nil {
-		a.rewind = rm
-	}
+	// Initialize rewind asynchronously to avoid blocking startup
+	go func() {
+		defer close(a.rewindReady)
+		if rm, err := rewind.New(cfg.Environment.WorkingDir()); err == nil {
+			a.rewind = rm
+		}
+	}()
 
 	return a
 }
 
 func (a *App) stop() {
-	if a.rewind != nil {
-		a.rewind.Cleanup()
+	// Wait briefly for rewind to be ready, then cleanup
+	select {
+	case <-a.rewindReady:
+		if a.rewind != nil {
+			a.rewind.Cleanup()
+		}
+	default:
+		// Rewind not ready yet, nothing to cleanup
 	}
 
 	a.app.EnableMouse(false)
@@ -127,6 +138,17 @@ func (a *App) Run() error {
 	a.pages = tview.NewPages()
 	a.pages.SetBackgroundColor(tcell.ColorDefault)
 	a.pages.AddPage("main", mainLayout, true, true)
+
+	// Show "Preparing..." while rewind initializes, then transition to idle
+	a.spinner.Start(PhasePreparing, "")
+	go func() {
+		<-a.rewindReady
+		a.app.QueueUpdateDraw(func() {
+			a.spinner.Stop()
+			a.phase = PhaseIdle
+			a.updateInputHint()
+		})
+	}()
 
 	return a.app.SetRoot(a.pages, true).EnableMouse(true).EnablePaste(true).Run()
 }

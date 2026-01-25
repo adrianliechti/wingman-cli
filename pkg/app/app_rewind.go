@@ -7,10 +7,17 @@ import (
 )
 
 func (a *App) showRewindPicker() {
+	select {
+	case <-a.rewindReady:
+	default:
+		t := theme.Default
+		fmt.Fprintf(a.chatView, "[%s]Rewind initializing...[-]\n\n", t.Yellow)
+		return
+	}
+
 	if a.rewind == nil {
 		t := theme.Default
 		fmt.Fprintf(a.chatView, "[%s]Rewind not available[-]\n\n", t.Yellow)
-
 		return
 	}
 
@@ -46,6 +53,12 @@ func (a *App) showRewindPicker() {
 }
 
 func (a *App) commitRewind(message string) {
+	select {
+	case <-a.rewindReady:
+	default:
+		return // Rewind not ready yet
+	}
+
 	if a.rewind == nil {
 		return
 	}

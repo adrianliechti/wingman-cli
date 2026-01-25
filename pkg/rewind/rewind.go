@@ -12,6 +12,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/cache"
+	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/storage/filesystem"
 	"github.com/go-git/go-git/v5/utils/merkletrie"
@@ -101,7 +102,16 @@ func New(workingDir string) (*Manager, error) {
 	return m, nil
 }
 
+func (m *Manager) loadExcludePatterns() []gitignore.Pattern {
+	// Load patterns from .gitignore files in the working directory
+	patterns, _ := gitignore.ReadPatterns(m.worktree.Filesystem, nil)
+	return patterns
+}
+
 func (m *Manager) baseline() error {
+	// Load gitignore patterns to exclude common large directories
+	m.worktree.Excludes = m.loadExcludePatterns()
+
 	if err := m.worktree.AddWithOptions(&git.AddOptions{All: true}); err != nil {
 		return fmt.Errorf("failed to add files: %w", err)
 	}
