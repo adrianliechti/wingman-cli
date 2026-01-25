@@ -2,11 +2,13 @@ package app
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
+	"golang.org/x/term"
 
 	"github.com/adrianliechti/wingman-cli/pkg/agent"
 	"github.com/adrianliechti/wingman-cli/pkg/clipboard"
@@ -15,6 +17,44 @@ import (
 )
 
 const maxToolOutputLen = 500
+const compactWidthThreshold = 100
+
+// isCompactMode returns true if padding should be removed (small screen or vscode caller)
+func (a *App) isCompactMode() bool {
+	if os.Getenv("WINGMAN_CALLER") == "vscode" {
+		return true
+	}
+
+	// Try to get terminal width directly
+	if width, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && width > 0 {
+		if width < compactWidthThreshold {
+			return true
+		}
+	}
+
+	// Fallback: chatWidth is set during draw
+	if a.chatWidth > 0 && a.chatWidth+6 < compactWidthThreshold {
+		return true
+	}
+
+	return false
+}
+
+// getMargins returns (left, right) margins based on compact mode
+func (a *App) getMargins() (int, int) {
+	if a.isCompactMode() {
+		return 0, 0
+	}
+	return 2, 4
+}
+
+// getInputMargins returns (left, right) margins for input area based on compact mode
+func (a *App) getInputMargins() (int, int) {
+	if a.isCompactMode() {
+		return 0, 0
+	}
+	return 4, 4
+}
 
 // isStreaming returns true if the app is currently processing a request
 func (a *App) isStreaming() bool {
@@ -433,27 +473,32 @@ func (a *App) buildLayout() *tview.Flex {
 	bottomBar.AddItem(a.inputHint, 0, 1, false)
 	bottomBar.AddItem(a.statusBar, 0, 1, false)
 
+	inputLeftMargin, inputRightMargin := a.getInputMargins()
+
 	bottomBarContainer := tview.NewFlex().SetDirection(tview.FlexColumn)
-	bottomBarContainer.AddItem(nil, 4, 0, false)
+	bottomBarContainer.AddItem(nil, inputLeftMargin, 0, false)
 	bottomBarContainer.AddItem(bottomBar, 0, 1, false)
-	bottomBarContainer.AddItem(nil, 4, 0, false)
+	bottomBarContainer.AddItem(nil, inputRightMargin, 0, false)
 
 	inputContainer := tview.NewFlex().SetDirection(tview.FlexColumn)
-	inputContainer.AddItem(nil, 4, 0, false)
+	inputContainer.AddItem(nil, inputLeftMargin, 0, false)
 	inputContainer.AddItem(a.inputFrame, 0, 1, true)
-	inputContainer.AddItem(nil, 4, 0, false)
+	inputContainer.AddItem(nil, inputRightMargin, 0, false)
 
 	a.inputSection = tview.NewFlex().SetDirection(tview.FlexRow)
 	a.inputSection.AddItem(inputContainer, 0, 1, true)
 	a.inputSection.AddItem(bottomBarContainer, 1, 0, false)
 
+	leftMargin, rightMargin := a.getMargins()
+	totalMargin := leftMargin + rightMargin
+
 	a.chatContainer = tview.NewFlex().SetDirection(tview.FlexColumn)
-	a.chatContainer.AddItem(nil, 2, 0, false)
+	a.chatContainer.AddItem(nil, leftMargin, 0, false)
 	a.chatContainer.AddItem(a.mainContent, 0, 1, false)
-	a.chatContainer.AddItem(nil, 4, 0, false)
+	a.chatContainer.AddItem(nil, rightMargin, 0, false)
 
 	a.chatContainer.SetDrawFunc(func(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {
-		newWidth := width - 6
+		newWidth := width - totalMargin
 
 		// Re-render chat on resize (only when idle and not in welcome mode)
 		if newWidth != a.chatWidth && !a.isWelcomeMode && !a.isStreaming() && len(a.agent.Messages()) > 0 {
@@ -467,12 +512,20 @@ func (a *App) buildLayout() *tview.Flex {
 	a.mainLayout = tview.NewFlex().SetDirection(tview.FlexRow)
 
 	if a.isWelcomeMode {
-		a.mainLayout.
-			AddItem(nil, 2, 0, false).
-			AddItem(a.welcomeView, 12, 0, false).
-			AddItem(nil, 0, 1, false).
-			AddItem(a.inputSection, 6, 0, true).
-			AddItem(nil, 0, 2, false)
+		if a.isCompactMode() {
+			// In compact mode, skip the logo and go straight to input
+			a.mainLayout.
+				AddItem(nil, 0, 1, false).
+				AddItem(a.inputSection, 6, 0, true).
+				AddItem(nil, 0, 1, false)
+		} else {
+			a.mainLayout.
+				AddItem(nil, 2, 0, false).
+				AddItem(a.welcomeView, 12, 0, false).
+				AddItem(nil, 0, 1, false).
+				AddItem(a.inputSection, 6, 0, true).
+				AddItem(nil, 0, 2, false)
+		}
 	} else {
 		a.mainLayout.
 			AddItem(a.chatContainer, 0, 1, false).

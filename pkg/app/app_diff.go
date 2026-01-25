@@ -197,11 +197,15 @@ func (a *App) showDiffView() {
 		AddItem(diffContentView, 0, 1, false)
 	panelsContainer.SetBackgroundColor(tcell.ColorDefault)
 
-	// Add margins (matching chat mode: 2 left, 4 right)
+	// Get margins based on compact mode
+	leftMargin, rightMargin := a.getMargins()
+	inputLeftMargin, inputRightMargin := a.getInputMargins()
+
+	// Add margins (matching chat mode)
 	contentWithMargins := tview.NewFlex().SetDirection(tview.FlexColumn).
-		AddItem(nil, 2, 0, false).
+		AddItem(nil, leftMargin, 0, false).
 		AddItem(panelsContainer, 0, 1, true).
-		AddItem(nil, 4, 0, false)
+		AddItem(nil, rightMargin, 0, false)
 	contentWithMargins.SetBackgroundColor(tcell.ColorDefault)
 
 	// Bottom bar with hint and status
@@ -222,9 +226,9 @@ func (a *App) showDiffView() {
 
 	// Bottom bar with margins
 	bottomBarWithMargins := tview.NewFlex().SetDirection(tview.FlexColumn).
-		AddItem(nil, 4, 0, false).
+		AddItem(nil, inputLeftMargin, 0, false).
 		AddItem(bottomBar, 0, 1, false).
-		AddItem(nil, 4, 0, false)
+		AddItem(nil, inputRightMargin, 0, false)
 	bottomBarWithMargins.SetBackgroundColor(tcell.ColorDefault)
 	// Clear margins as well
 	bottomBarWithMargins.SetDrawFunc(func(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {

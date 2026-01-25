@@ -131,17 +131,21 @@ func (a *App) showPlanView() {
 		AddItem(statusBar, 0, 1, false)
 	bottomBar.SetBackgroundColor(tcell.ColorDefault)
 
+	// Get margins based on compact mode
+	leftMargin, rightMargin := a.getMargins()
+	inputLeftMargin, inputRightMargin := a.getInputMargins()
+
 	bottomBarWithMargins := tview.NewFlex().SetDirection(tview.FlexColumn).
-		AddItem(nil, 4, 0, false).
+		AddItem(nil, inputLeftMargin, 0, false).
 		AddItem(bottomBar, 0, 1, false).
-		AddItem(nil, 4, 0, false)
+		AddItem(nil, inputRightMargin, 0, false)
 	bottomBarWithMargins.SetBackgroundColor(tcell.ColorDefault)
 
 	// Content with margins
 	contentWithMargins := tview.NewFlex().SetDirection(tview.FlexColumn).
-		AddItem(nil, 2, 0, false).
+		AddItem(nil, leftMargin, 0, false).
 		AddItem(planView, 0, 1, true).
-		AddItem(nil, 4, 0, false)
+		AddItem(nil, rightMargin, 0, false)
 	contentWithMargins.SetBackgroundColor(tcell.ColorDefault)
 
 	// Top spacer
