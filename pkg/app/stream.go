@@ -49,6 +49,27 @@ func extractToolHint(argsJSON string) string {
 	return ""
 }
 
+// setPhase updates the phase and spinner state.
+func (a *App) setPhase(phase AppPhase, hint string) {
+	a.phase = phase
+
+	if a.spinner != nil {
+		if phase == PhaseIdle {
+			a.spinner.Stop()
+		} else {
+			a.spinner.SetPhase(phase, hint)
+		}
+	}
+}
+
+// render queues a UI update with the current state.
+func (a *App) render(streaming, toolName, toolHint string) {
+	messages := a.agent.Messages() // Capture now, not in closure
+	a.app.QueueUpdateDraw(func() {
+		a.renderChat(messages, streaming, toolName, toolHint)
+	})
+}
+
 // streamResponse processes user input and streams the response
 func (a *App) streamResponse(input []agent.Content, instructions string, tools []tool.Tool) {
 	t := theme.Default
@@ -69,13 +90,11 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 	var content strings.Builder
 	var streamErr error
 
-	// Start with thinking phase and immediately show it
-	a.phase = PhaseThinking
-
+	// Start with thinking phase
 	if a.spinner != nil {
 		a.spinner.Start(PhaseThinking, "")
 	}
-	// Force immediate UI update to show thinking state
+	a.setPhase(PhaseThinking, "")
 	a.app.QueueUpdateDraw(func() {})
 
 	for msg, err := range a.agent.Send(streamCtx, instructions, input, tools) {
@@ -84,64 +103,30 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 			break
 		}
 
-		// Handle different message types
 		for _, c := range msg.Content {
-			if c.ToolCall != nil {
-				a.phase = PhaseToolRunning
+			switch {
+			case c.ToolCall != nil:
+				a.setPhase(PhaseToolRunning, c.ToolCall.Name)
+				a.render(content.String(), c.ToolCall.Name, extractToolHint(c.ToolCall.Args))
 
-				if a.spinner != nil {
-					a.spinner.SetPhase(PhaseToolRunning, c.ToolCall.Name)
-				}
-
-				toolName := c.ToolCall.Name
-				toolHint := extractToolHint(c.ToolCall.Args)
-				currentContent := content.String()
-
-				a.app.QueueUpdateDraw(func() {
-					messages := a.agent.Messages()
-					a.renderChat(messages, currentContent, toolName, toolHint)
-				})
-			} else if c.ToolResult != nil {
-				a.phase = PhaseThinking
-
-				if a.spinner != nil {
-					a.spinner.SetPhase(PhaseThinking, "")
-				}
+			case c.ToolResult != nil:
+				a.setPhase(PhaseThinking, "")
 				content.Reset()
+				a.render("", "", "")
+				a.app.QueueUpdateDraw(func() { a.updateStatusBar() })
 
-				a.app.QueueUpdateDraw(func() {
-					messages := a.agent.Messages()
-					a.renderChat(messages, "", "", "")
-					a.updateStatusBar()
-				})
-			} else if c.Text != "" {
+			case c.Text != "":
 				if a.phase != PhaseStreaming {
-					a.phase = PhaseStreaming
-
-					if a.spinner != nil {
-						a.spinner.SetPhase(PhaseStreaming, "")
-					}
+					a.setPhase(PhaseStreaming, "")
 				}
-
 				content.WriteString(c.Text)
-				currentContent := content.String()
-
-				a.app.QueueUpdateDraw(func() {
-					messages := a.agent.Messages()
-					a.renderChat(messages, currentContent, "", "")
-				})
+				a.render(content.String(), "", "")
 			}
 		}
 	}
 
-	// Finalize - set phase before stopping spinner so hint updates correctly
-	a.phase = PhaseIdle
+	a.setPhase(PhaseIdle, "")
 
-	if a.spinner != nil {
-		a.spinner.Stop()
-	}
-
-	// Update token count from agent usage
 	usage := a.agent.Usage()
 	a.totalTokens = usage.InputTokens + usage.OutputTokens
 
