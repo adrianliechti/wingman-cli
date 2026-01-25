@@ -15,6 +15,9 @@ var Planning string
 //go:embed compaction.txt
 var Compaction string
 
+//go:embed review.txt
+var Review string
+
 func Render(tmpl string, data any) (string, error) {
 	t, err := template.New("prompt").Parse(tmpl)
 

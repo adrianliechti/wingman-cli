@@ -286,6 +286,7 @@ func (a *App) submitInput() {
 		fmt.Fprintf(a.chatView, "  [%s]/paste[-]  - Paste from clipboard (Ctrl+V / Cmd+V / Paste)\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/plan[-]   - Show current plan\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/diff[-]   - Show changes from baseline\n", t.BrCyan)
+		fmt.Fprintf(a.chatView, "  [%s]/review[-] - Review code changes with AI\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/rewind[-] - Restore to previous checkpoint\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/clear[-]  - Clear chat history\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/quit[-]   - Exit application\n\n", t.BrCyan)
@@ -328,6 +329,12 @@ func (a *App) submitInput() {
 	case "/plan":
 		a.input.SetText("", true)
 		a.showPlanView()
+
+		return
+
+	case "/review":
+		a.input.SetText("", true)
+		a.startReview("")
 
 		return
 	}
