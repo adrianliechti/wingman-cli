@@ -4,13 +4,13 @@ go 1.25.0
 
 require (
 	github.com/alecthomas/chroma/v2 v2.23.1
-	github.com/bmatcuk/doublestar/v4 v4.9.2
-	github.com/gdamore/tcell/v2 v2.13.7
+	github.com/bmatcuk/doublestar/v4 v4.10.0
+	github.com/gdamore/tcell/v2 v2.13.8
 	github.com/go-git/go-billy/v5 v5.7.0
 	github.com/go-git/go-git/v5 v5.16.4
 	github.com/mattn/go-runewidth v0.0.19
 	github.com/modelcontextprotocol/go-sdk v1.2.0
-	github.com/openai/openai-go/v3 v3.16.0
+	github.com/openai/openai-go/v3 v3.17.0
 	github.com/rivo/tview v0.42.0
 	github.com/yuin/goldmark v1.7.16
 	golang.org/x/term v0.39.0
