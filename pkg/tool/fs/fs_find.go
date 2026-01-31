@@ -3,12 +3,10 @@ package fs
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"path/filepath"
 	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
-	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 )
@@ -50,11 +48,11 @@ func FindTool() tool.Tool {
 
 			workingDir := env.WorkingDir()
 
-			if isOutsideWorkspace(searchDir, workingDir) {
-				return "", fmt.Errorf("cannot search: path %q is outside workspace %q", searchDir, workingDir)
-			}
+			searchDirFS, err := ensurePathInWorkspaceFS(searchDir, workingDir, "search")
 
-			searchDirFS := normalizePathFS(searchDir, workingDir)
+			if err != nil {
+				return "", err
+			}
 
 			limit := DefaultFindLimit
 
@@ -73,60 +71,17 @@ func FindTool() tool.Tool {
 			}
 
 			fsys := env.Root.FS()
-
-			var allPatterns []gitignore.Pattern
-			allPatterns = append(allPatterns, loadGitignore(fsys, nil)...)
-
-			matcher := gitignore.NewMatcher(allPatterns)
-
 			var results []string
 			resultLimitReached := false
 
-			err = fs.WalkDir(fsys, searchDirFS, func(path string, d fs.DirEntry, err error) error {
-				if err != nil {
-					return nil
-				}
-
-				if d.IsDir() && defaultIgnoreDirs[d.Name()] {
-					return filepath.SkipDir
-				}
-
-				relPath := path
-
-				if searchDirFS != "." {
-					relPath = relPathSlash(searchDirFS, path)
-				}
-
-				pathParts := strings.Split(relPath, "/")
-
-				if d.IsDir() {
-					if matcher.Match(pathParts, true) {
-						return filepath.SkipDir
-					}
-
-					newPatterns := loadGitignore(fsys, pathDomain(path))
-
-					if len(newPatterns) > 0 {
-						allPatterns = append(allPatterns, newPatterns...)
-						matcher = gitignore.NewMatcher(allPatterns)
-					}
-
-					return nil
-				}
-
-				if matcher.Match(pathParts, false) {
-					return nil
-				}
-
+			err = walkWorkspace(ctx, fsys, searchDirFS, func(path, relPath string) error {
 				if len(results) >= limit {
 					resultLimitReached = true
 
 					return filepath.SkipAll
 				}
 
-				matchPath := relPath
-
-				matched, err := doublestar.Match(pattern, matchPath)
+				matched, err := doublestar.Match(pattern, relPath)
 
 				if err != nil {
 					return nil

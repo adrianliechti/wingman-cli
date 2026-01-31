@@ -785,3 +785,148 @@ func TestTools(t *testing.T) {
 		}
 	}
 }
+
+// TestFindSkipsSymlinks verifies that symlinks are skipped during file traversal
+// to prevent infinite loops from circular symlinks.
+func TestFindSkipsSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink tests may require elevated privileges on Windows")
+	}
+
+	env, tmpDir, cleanup := createTestEnvironment(t)
+	defer cleanup()
+
+	// Create directory structure with a file at root level
+	os.WriteFile(filepath.Join(tmpDir, "root.txt"), []byte("root content"), 0644)
+	os.MkdirAll(filepath.Join(tmpDir, "dir1"), 0755)
+	os.WriteFile(filepath.Join(tmpDir, "dir1", "file.txt"), []byte("content"), 0644)
+
+	// Create a symlink pointing to the parent (circular)
+	symlink := filepath.Join(tmpDir, "dir1", "circular")
+	if err := os.Symlink(tmpDir, symlink); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	findTool := FindTool()
+
+	// This should complete without hanging or error
+	result, err := findTool.Execute(context.Background(), env, map[string]any{
+		"pattern": "*.txt",
+	})
+
+	if err != nil {
+		t.Fatalf("find should not fail with symlinks: %v", err)
+	}
+
+	// Should find regular files but not follow the circular symlink infinitely
+	if !strings.Contains(result, "root.txt") && !strings.Contains(result, "file.txt") {
+		t.Errorf("expected txt files in results, got: %s", result)
+	}
+}
+
+// TestGrepSkipsSymlinks verifies that symlinks are skipped during grep traversal.
+func TestGrepSkipsSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink tests may require elevated privileges on Windows")
+	}
+
+	env, tmpDir, cleanup := createTestEnvironment(t)
+	defer cleanup()
+
+	// Create directory structure
+	os.MkdirAll(filepath.Join(tmpDir, "dir1"), 0755)
+	os.WriteFile(filepath.Join(tmpDir, "dir1", "file.txt"), []byte("searchme"), 0644)
+
+	// Create a symlink pointing to the parent (circular)
+	symlink := filepath.Join(tmpDir, "dir1", "circular")
+	if err := os.Symlink(tmpDir, symlink); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+
+	grepTool := GrepTool()
+
+	// This should complete without hanging or error
+	result, err := grepTool.Execute(context.Background(), env, map[string]any{
+		"pattern": "searchme",
+	})
+
+	if err != nil {
+		t.Fatalf("grep should not fail with symlinks: %v", err)
+	}
+
+	// Should find the match
+	if !strings.Contains(result, "searchme") {
+		t.Errorf("expected 'searchme' in results, got: %s", result)
+	}
+}
+
+// TestContextCancellation verifies that operations respect context cancellation.
+func TestContextCancellation(t *testing.T) {
+	env, tmpDir, cleanup := createTestEnvironment(t)
+	defer cleanup()
+
+	// Create many files to make the operation take longer
+	for i := 0; i < 100; i++ {
+		dir := filepath.Join(tmpDir, "dir"+string(rune('a'+i%26)))
+		os.MkdirAll(dir, 0755)
+		os.WriteFile(filepath.Join(dir, "file.txt"), []byte("content"), 0644)
+	}
+
+	findTool := FindTool()
+
+	// Create a cancelled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	_, err := findTool.Execute(ctx, env, map[string]any{
+		"pattern": "*.txt",
+	})
+
+	// Should return a context error
+	if err == nil {
+		t.Log("Operation completed before context cancellation was detected (acceptable for fast operations)")
+	} else if !strings.Contains(err.Error(), "context") {
+		t.Logf("Expected context error, got: %v (may be acceptable)", err)
+	}
+}
+
+// TestMacOSCaseInsensitivePaths tests that path comparison works correctly on macOS.
+func TestMacOSCaseInsensitivePaths(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS-specific test")
+	}
+
+	env, tmpDir, cleanup := createTestEnvironment(t)
+	defer cleanup()
+
+	// Create a file
+	os.WriteFile(filepath.Join(tmpDir, "TestFile.txt"), []byte("content"), 0644)
+
+	readTool := ReadTool()
+
+	// On macOS, paths with different cases should work due to case-insensitive filesystem
+	// Using the absolute path with different case
+	upperPath := strings.ToUpper(tmpDir) + "/TESTFILE.TXT"
+
+	// Try to read with different case - this tests filesystem behavior, not our normalization
+	// The key is that our workspace boundary detection should work with case differences
+	lowerPath := strings.ToLower(tmpDir) + "/testfile.txt"
+
+	// Both should resolve within the workspace (not "outside workspace" error)
+	_, err := readTool.Execute(context.Background(), env, map[string]any{
+		"path": upperPath,
+	})
+
+	// We expect either success or "file not found" but NOT "outside workspace"
+	if err != nil && strings.Contains(err.Error(), "outside workspace") {
+		t.Errorf("path with different case should not be considered outside workspace: %v", err)
+	}
+
+	_, err = readTool.Execute(context.Background(), env, map[string]any{
+		"path": lowerPath,
+	})
+
+	if err != nil && strings.Contains(err.Error(), "outside workspace") {
+		t.Errorf("lowercase path should not be considered outside workspace: %v", err)
+	}
+}

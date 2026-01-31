@@ -1,5 +1,7 @@
 package shell
 
+import "strings"
+
 // safeCommands is a list of read-only commands that don't require user confirmation
 var safeCommands = []string{
 	// Unix: Search & find
@@ -27,7 +29,7 @@ var safeCommands = []string{
 	"stat",
 	"wc",
 
-	// Unix: Text processing (read-only)
+	// Unix: Text processing (read-only, piped usage)
 	"awk",
 	"sed",
 	"cut",
@@ -37,9 +39,19 @@ var safeCommands = []string{
 	"diff",
 	"comm",
 	"join",
+	"column",
+	"jq",
+	"yq",
+	"xq",
+
+	// Unix: Path utilities
+	"pwd",
+	"realpath",
+	"dirname",
+	"basename",
+	"readlink",
 
 	// Unix: System info
-	"pwd",
 	"echo",
 	"env",
 	"printenv",
@@ -54,6 +66,8 @@ var safeCommands = []string{
 	"ps",
 	"top",
 	"htop",
+	"id",
+	"groups",
 
 	// Unix: Help & documentation
 	"man",
@@ -66,32 +80,82 @@ var safeCommands = []string{
 	"ruby",
 	"php",
 
-	// Windows: Search & find
+	// Windows cmd.exe: Search & find
 	"findstr",
 	"where",
 
-	// Windows: List & view
+	// Windows cmd.exe: List & view
 	"dir",
-	"type",
-	"more",
-	"tree",
 
-	// Windows: Text processing
-	"sort",
+	// Windows cmd.exe: Text processing
 	"fc",
 	"comp",
 
-	// Windows: System info
+	// Windows cmd.exe: System info
 	"cd",
-	"echo",
 	"set",
-	"hostname",
-	"date",
 	"time",
 	"ver",
 	"systeminfo",
 	"tasklist",
-	"whoami",
+
+	// PowerShell: Common read-only cmdlets (case-insensitive matching in isSafeCommand)
+	"Get-Content",
+	"Get-ChildItem",
+	"Get-Location",
+	"Get-Item",
+	"Get-ItemProperty",
+	"Get-Process",
+	"Get-Service",
+	"Get-Command",
+	"Get-Help",
+	"Get-Alias",
+	"Get-Variable",
+	"Get-Date",
+	"Get-Host",
+	"Get-History",
+	"Get-FileHash",
+	"Get-Acl",
+	"Select-String",
+	"Select-Object",
+	"Where-Object",
+	"ForEach-Object",
+	"Format-List",
+	"Format-Table",
+	"Format-Wide",
+	"Out-String",
+	"Test-Path",
+	"Test-Connection",
+	"Measure-Object",
+	"Measure-Command",
+	"Compare-Object",
+	"Sort-Object",
+	"Group-Object",
+	"Resolve-Path",
+	"Split-Path",
+	"Join-Path",
+	"ConvertTo-Json",
+	"ConvertFrom-Json",
+
+	// PowerShell aliases
+	"gc",  // Get-Content
+	"gci", // Get-ChildItem
+	"gl",  // Get-Location
+	"gi",  // Get-Item
+	"gps", // Get-Process
+	"gsv", // Get-Service
+	"gcm", // Get-Command
+	"gal", // Get-Alias
+	"gv",  // Get-Variable
+	"sls", // Select-String
+	"ft",  // Format-Table
+	"fl",  // Format-List
+	"fw",  // Format-Wide
+	"oh",  // Out-Host
+	"pwd", // Get-Location (also Unix)
+	"cat", // Get-Content (also Unix)
+	"ls",  // Get-ChildItem (also Unix)
+	"dir", // Get-ChildItem (also Windows)
 }
 
 // safeSubcommands is a map of commands to their safe subcommands
@@ -185,4 +249,23 @@ var safeSubcommands = map[string][]string{
 	// Terraform/OpenTofu - read-only subcommands
 	"terraform": {"version", "providers", "state list", "state show", "output", "graph", "show", "validate", "fmt", "help", "-version", "-help"},
 	"tofu":      {"version", "providers", "state list", "state show", "output", "graph", "show", "validate", "fmt", "help", "-version", "-help"},
+}
+
+var safeCommandSet = map[string]struct{}{}
+var safeSubcommandPrefixes = map[string][]string{}
+
+func init() {
+	for _, cmd := range safeCommands {
+		safeCommandSet[strings.ToLower(cmd)] = struct{}{}
+	}
+
+	for cmd, subs := range safeSubcommands {
+		cmdLower := strings.ToLower(cmd)
+		if len(subs) == 0 {
+			continue
+		}
+		for _, sub := range subs {
+			safeSubcommandPrefixes[cmdLower] = append(safeSubcommandPrefixes[cmdLower], strings.ToLower(sub))
+		}
+	}
 }

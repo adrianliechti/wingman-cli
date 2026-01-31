@@ -37,11 +37,11 @@ func ReadTool() tool.Tool {
 
 			workingDir := env.WorkingDir()
 
-			if isOutsideWorkspace(pathArg, workingDir) {
-				return "", fmt.Errorf("cannot read file: path %q is outside workspace %q", pathArg, workingDir)
-			}
+			normalizedPath, err := ensurePathInWorkspace(pathArg, workingDir, "read file")
 
-			normalizedPath := normalizePath(pathArg, workingDir)
+			if err != nil {
+				return "", err
+			}
 
 			limit := 0
 			offset := 0

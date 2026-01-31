@@ -38,11 +38,11 @@ func LsTool() tool.Tool {
 
 			workingDir := env.WorkingDir()
 
-			if isOutsideWorkspace(pathArg, workingDir) {
-				return "", fmt.Errorf("cannot list directory: path %q is outside workspace %q", pathArg, workingDir)
-			}
+			normalizedPath, err := ensurePathInWorkspace(pathArg, workingDir, "list directory")
 
-			normalizedPath := normalizePath(pathArg, workingDir)
+			if err != nil {
+				return "", err
+			}
 
 			limit := DefaultListLimit
 

@@ -33,11 +33,11 @@ func EditTool() tool.Tool {
 
 			workingDir := env.WorkingDir()
 
-			if isOutsideWorkspace(pathArg, workingDir) {
-				return "", fmt.Errorf("cannot edit file: path %q is outside workspace %q", pathArg, workingDir)
-			}
+			normalizedPath, err := ensurePathInWorkspace(pathArg, workingDir, "edit file")
 
-			normalizedPath := normalizePath(pathArg, workingDir)
+			if err != nil {
+				return "", err
+			}
 
 			oldText, ok := args["old_text"].(string)
 

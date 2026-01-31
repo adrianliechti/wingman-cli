@@ -32,11 +32,11 @@ func WriteTool() tool.Tool {
 
 			workingDir := env.WorkingDir()
 
-			if isOutsideWorkspace(pathArg, workingDir) {
-				return "", fmt.Errorf("cannot write file: path %q is outside workspace %q", pathArg, workingDir)
-			}
+			normalizedPath, err := ensurePathInWorkspace(pathArg, workingDir, "write file")
 
-			normalizedPath := normalizePath(pathArg, workingDir)
+			if err != nil {
+				return "", err
+			}
 
 			content, ok := args["content"].(string)
 

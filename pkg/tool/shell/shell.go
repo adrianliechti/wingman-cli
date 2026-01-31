@@ -23,7 +23,7 @@ const (
 func ShellTool() tool.Tool {
 	return tool.Tool{
 		Name:        "shell",
-		Description: "Execute a shell command. The command runs in the working directory. On Unix systems, uses $SHELL or /bin/sh. On Windows, uses cmd.exe. Returns stdout/stderr combined. If output is truncated, a temp file path is provided to read the full output.",
+		Description: "Execute a shell command. The command runs in the working directory. On Unix systems, uses $SHELL or /bin/sh. On Windows, uses PowerShell. Returns stdout/stderr combined. If output is truncated, a temp file path is provided to read the full output.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -53,35 +53,26 @@ func isSafeCommand(command string) bool {
 		return false
 	}
 
-	cmd := words[0]
+	cmd := strings.ToLower(filepath.Base(words[0]))
 
-	// Handle paths like /usr/bin/ls or ./script
-	cmd = filepath.Base(cmd)
-
-	// First, check if it's a simple safe command (no subcommand check needed)
-	for _, safe := range safeCommands {
-		if cmd == safe {
-			return true
-		}
+	if _, ok := safeCommandSet[cmd]; ok {
+		return true
 	}
 
-	// Check if this command requires subcommand validation
-	if allowedSubcmds, hasSubcmds := safeSubcommands[cmd]; hasSubcmds {
-		if len(words) < 2 {
-			// Command requires subcommand but none provided
-			return false
-		}
-
-		// Get the rest of the command after the main command
-		restOfCommand := strings.TrimSpace(strings.TrimPrefix(command, words[0]))
-
-		for _, subCmd := range allowedSubcmds {
-			if strings.HasPrefix(restOfCommand, subCmd) {
-				return true
-			}
-		}
-
+	allowedSubcmds, hasSubcmds := safeSubcommandPrefixes[cmd]
+	if !hasSubcmds {
 		return false
+	}
+
+	if len(words) < 2 {
+		return false
+	}
+
+	restOfCommand := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(command, words[0])))
+	for _, subCmd := range allowedSubcmds {
+		if strings.HasPrefix(restOfCommand, subCmd) {
+			return true
+		}
 	}
 
 	return false
@@ -169,7 +160,12 @@ func buildCommand(ctx context.Context, command, workingDir string) *exec.Cmd {
 	var cmd *exec.Cmd
 
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/c", command)
+		// Use PowerShell on Windows for better compatibility with LLM-generated commands.
+		// PowerShell handles Unix-style quoting and escaping much better than cmd.exe:
+		// - Backslash-escaped quotes (\") work as expected
+		// - Single quotes work as string delimiters
+		// - More consistent behavior with Unix shells
+		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-NoLogo", "-NonInteractive", "-Command", command)
 	} else {
 		shell := os.Getenv("SHELL")
 
