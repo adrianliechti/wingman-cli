@@ -23,7 +23,7 @@ const (
 func ShellTool() tool.Tool {
 	return tool.Tool{
 		Name:        "shell",
-		Description: "Execute a shell command. The command runs in the working directory. On Unix systems, uses $SHELL or /bin/sh. On Windows, uses cmd.exe. Returns stdout/stderr combined. If output is truncated, a temp file path is provided to read the full output.",
+		Description: "Execute a shell command. The command runs in the working directory. On Unix systems, uses $SHELL or /bin/sh. On Windows, uses PowerShell. Returns stdout/stderr combined. If output is truncated, a temp file path is provided to read the full output.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -58,15 +58,24 @@ func isSafeCommand(command string) bool {
 	// Handle paths like /usr/bin/ls or ./script
 	cmd = filepath.Base(cmd)
 
+	// For case-insensitive matching (PowerShell cmdlets)
+	cmdLower := strings.ToLower(cmd)
+
 	// First, check if it's a simple safe command (no subcommand check needed)
 	for _, safe := range safeCommands {
-		if cmd == safe {
+		if cmd == safe || cmdLower == strings.ToLower(safe) {
 			return true
 		}
 	}
 
 	// Check if this command requires subcommand validation
-	if allowedSubcmds, hasSubcmds := safeSubcommands[cmd]; hasSubcmds {
+	// Try both exact match and lowercase for the command key
+	allowedSubcmds, hasSubcmds := safeSubcommands[cmd]
+	if !hasSubcmds {
+		allowedSubcmds, hasSubcmds = safeSubcommands[cmdLower]
+	}
+
+	if hasSubcmds {
 		if len(words) < 2 {
 			// Command requires subcommand but none provided
 			return false
@@ -169,7 +178,12 @@ func buildCommand(ctx context.Context, command, workingDir string) *exec.Cmd {
 	var cmd *exec.Cmd
 
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/c", command)
+		// Use PowerShell on Windows for better compatibility with LLM-generated commands.
+		// PowerShell handles Unix-style quoting and escaping much better than cmd.exe:
+		// - Backslash-escaped quotes (\") work as expected
+		// - Single quotes work as string delimiters
+		// - More consistent behavior with Unix shells
+		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-NoLogo", "-NonInteractive", "-Command", command)
 	} else {
 		shell := os.Getenv("SHELL")
 
