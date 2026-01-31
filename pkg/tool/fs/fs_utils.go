@@ -2,14 +2,17 @@ package fs
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io/fs"
 	pathpkg "path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
+	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
 const (
@@ -25,12 +28,7 @@ func normalizePath(path, workingDir string) string {
 		return filepath.FromSlash(path)
 	}
 
-	absPath := cleanPath(path)
-	absWorkingDir := cleanPath(workingDir)
-
-	rel, err := filepath.Rel(absWorkingDir, absPath)
-
-	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if rel, ok := relPathWithinWorkspace(path, workingDir); ok {
 		return rel
 	}
 
@@ -42,6 +40,24 @@ func normalizePathFS(path, workingDir string) string {
 	return pathpkg.Clean(filepath.ToSlash(normalizePath(path, workingDir)))
 }
 
+// ensurePathInWorkspace validates that a path is inside the workspace and returns a normalized path.
+func ensurePathInWorkspace(pathArg, workingDir, action string) (string, error) {
+	if isOutsideWorkspace(pathArg, workingDir) {
+		return "", fmt.Errorf("cannot %s: path %q is outside workspace %q", action, pathArg, workingDir)
+	}
+
+	return normalizePath(pathArg, workingDir), nil
+}
+
+// ensurePathInWorkspaceFS validates that a path is inside the workspace and returns a normalized fs.FS path.
+func ensurePathInWorkspaceFS(pathArg, workingDir, action string) (string, error) {
+	if isOutsideWorkspace(pathArg, workingDir) {
+		return "", fmt.Errorf("cannot %s: path %q is outside workspace %q", action, pathArg, workingDir)
+	}
+
+	return normalizePathFS(pathArg, workingDir), nil
+}
+
 // isOutsideWorkspace checks if an absolute path is outside the workspace.
 // Returns true if the path is absolute and doesn't start with workingDir.
 func isOutsideWorkspace(path, workingDir string) bool {
@@ -49,20 +65,67 @@ func isOutsideWorkspace(path, workingDir string) bool {
 		return false
 	}
 
-	absPath := cleanPath(path)
+	_, ok := relPathWithinWorkspace(path, workingDir)
+
+	return !ok
+}
+
+// relPathWithinWorkspace returns the relative path from workingDir to absPath
+// if absPath is within workingDir. It preserves the original casing where possible.
+func relPathWithinWorkspace(absPath, workingDir string) (string, bool) {
+	if !filepath.IsAbs(absPath) {
+		return filepath.FromSlash(absPath), true
+	}
+
+	absPathClean := cleanPath(absPath)
 	absWorkingDir := cleanPath(workingDir)
 
-	rel, err := filepath.Rel(absWorkingDir, absPath)
+	compPath := normalizePathForComparison(absPathClean)
+	compWorking := normalizePathForComparison(absWorkingDir)
+	sep := string(filepath.Separator)
+
+	if compPath == compWorking {
+		return ".", true
+	}
+
+	prefix := compWorking
+	if !strings.HasSuffix(prefix, sep) {
+		prefix += sep
+	}
+
+	if strings.HasPrefix(compPath, prefix) {
+		if strings.HasSuffix(absWorkingDir, sep) {
+			return absPathClean[len(absWorkingDir):], true
+		}
+
+		return absPathClean[len(absWorkingDir)+len(sep):], true
+	}
+
+	relComp, err := filepath.Rel(compWorking, compPath)
 
 	if err != nil {
-		return true
+		return "", false
 	}
 
-	if rel == "." {
-		return false
+	if relComp == "." {
+		return ".", true
 	}
 
-	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	if relComp == ".." || strings.HasPrefix(relComp, ".."+sep) {
+		return "", false
+	}
+
+	if relOrig, err := filepath.Rel(absWorkingDir, absPathClean); err == nil {
+		if relOrig == "." {
+			return ".", true
+		}
+
+		if relOrig != ".." && !strings.HasPrefix(relOrig, ".."+sep) {
+			return relOrig, true
+		}
+	}
+
+	return relComp, true
 }
 
 func cleanPath(path string) string {
@@ -71,6 +134,16 @@ func cleanPath(path string) string {
 	}
 
 	return filepath.Clean(filepath.FromSlash(path))
+}
+
+// normalizePathForComparison normalizes paths for case-insensitive comparison.
+// Windows paths are fully case-insensitive, and macOS (APFS) is case-insensitive by default.
+// We treat both as case-insensitive for path comparison.
+func normalizePathForComparison(path string) string {
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		return strings.ToLower(path)
+	}
+	return path
 }
 
 // pathError creates a helpful error message for path-related issues.
@@ -170,32 +243,28 @@ func mapFuzzyIndexToOriginal(original, fuzzy string, fuzzyIdx int) int {
 }
 
 func normalizeForFuzzyMatch(text string) string {
+	// Trim trailing whitespace from each line
 	lines := strings.Split(text, "\n")
-
 	for i, line := range lines {
 		lines[i] = strings.TrimRight(line, " \t")
 	}
-
 	text = strings.Join(lines, "\n")
 
-	replacements := map[string]string{
-		// Smart single quotes
-		"\u2018": "'", "\u2019": "'", "\u201A": "'", "\u201B": "'",
-		// Smart double quotes
-		"\u201C": "\"", "\u201D": "\"", "\u201E": "\"", "\u201F": "\"",
-		// Various dashes/hyphens
-		"\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2015": "-", "\u2212": "-",
-		// Special spaces
-		"\u00A0": " ", "\u2002": " ", "\u2003": " ", "\u2004": " ", "\u2005": " ",
-		"\u2006": " ", "\u2007": " ", "\u2008": " ", "\u2009": " ", "\u200A": " ",
-		"\u202F": " ", "\u205F": " ", "\u3000": " ",
-	}
+	// Replace common Unicode variations that LLMs often introduce
+	replacer := strings.NewReplacer(
+		// Smart quotes → ASCII quotes
+		"\u2018", "'", "\u2019", "'", "\u201A", "'", "\u201B", "'", // single
+		"\u201C", "\"", "\u201D", "\"", "\u201E", "\"", "\u201F", "\"", // double
+		// Dashes → hyphen
+		"\u2010", "-", "\u2011", "-", "\u2012", "-", "\u2013", "-",
+		"\u2014", "-", "\u2015", "-", "\u2212", "-",
+		// Special spaces → regular space
+		"\u00A0", " ", "\u2002", " ", "\u2003", " ", "\u2004", " ", "\u2005", " ",
+		"\u2006", " ", "\u2007", " ", "\u2008", " ", "\u2009", " ", "\u200A", " ",
+		"\u202F", " ", "\u205F", " ", "\u3000", " ",
+	)
 
-	for old, new := range replacements {
-		text = strings.ReplaceAll(text, old, new)
-	}
-
-	return text
+	return replacer.Replace(text)
 }
 
 type fuzzyMatchResult struct {
@@ -246,47 +315,44 @@ func fuzzyFindText(content, oldText string) fuzzyMatchResult {
 }
 
 func generateDiffString(oldContent, newContent string) string {
-	oldLines := strings.Split(oldContent, "\n")
-	newLines := strings.Split(newContent, "\n")
+	dmp := diffmatchpatch.New()
+
+	// Create line-based diff for better readability
+	oldLines, newLines, lineArray := dmp.DiffLinesToChars(oldContent, newContent)
+	diffs := dmp.DiffMain(oldLines, newLines, false)
+	diffs = dmp.DiffCharsToLines(diffs, lineArray)
+	diffs = dmp.DiffCleanupSemantic(diffs)
 
 	var output strings.Builder
-	maxLen := len(oldLines)
+	oldLineNum := 1
+	newLineNum := 1
 
-	if len(newLines) > maxLen {
-		maxLen = len(newLines)
-	}
+	for _, diff := range diffs {
+		lines := strings.Split(diff.Text, "\n")
 
-	lineNumWidth := len(fmt.Sprintf("%d", maxLen))
-
-	i, j := 0, 0
-
-	for i < len(oldLines) || j < len(newLines) {
-		if i < len(oldLines) && j < len(newLines) && oldLines[i] == newLines[j] {
-			i++
-			j++
-			continue
+		// Remove empty last element from split if text ends with newline
+		if len(lines) > 0 && lines[len(lines)-1] == "" {
+			lines = lines[:len(lines)-1]
 		}
 
-		if i < len(oldLines) && (j >= len(newLines) || !containsLine(newLines[j:], oldLines[i])) {
-			output.WriteString(fmt.Sprintf("-%*d %s\n", lineNumWidth, i+1, oldLines[i]))
-			i++
-		} else if j < len(newLines) {
-			output.WriteString(fmt.Sprintf("+%*d %s\n", lineNumWidth, j+1, newLines[j]))
-			j++
+		switch diff.Type {
+		case diffmatchpatch.DiffEqual:
+			oldLineNum += len(lines)
+			newLineNum += len(lines)
+		case diffmatchpatch.DiffDelete:
+			for _, line := range lines {
+				output.WriteString(fmt.Sprintf("-%d %s\n", oldLineNum, line))
+				oldLineNum++
+			}
+		case diffmatchpatch.DiffInsert:
+			for _, line := range lines {
+				output.WriteString(fmt.Sprintf("+%d %s\n", newLineNum, line))
+				newLineNum++
+			}
 		}
 	}
 
 	return output.String()
-}
-
-func containsLine(lines []string, line string) bool {
-	for _, l := range lines {
-		if l == line {
-			return true
-		}
-	}
-
-	return false
 }
 
 // Common ignore directories that should be skipped during file traversal
@@ -299,25 +365,26 @@ var defaultIgnoreDirs = map[string]bool{
 	"vendor":       true,
 }
 
+var binaryExtensions = map[string]bool{
+	".exe": true, ".dll": true, ".so": true, ".dylib": true,
+	".bin": true, ".dat": true, ".db": true, ".sqlite": true,
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
+	".bmp": true, ".ico": true, ".webp": true, ".svg": true,
+	".pdf": true, ".doc": true, ".docx": true, ".xls": true,
+	".xlsx": true, ".ppt": true, ".pptx": true,
+	".zip": true, ".tar": true, ".gz": true, ".rar": true,
+	".7z": true, ".bz2": true, ".xz": true,
+	".mp3": true, ".mp4": true, ".avi": true, ".mov": true,
+	".wav": true, ".flac": true, ".ogg": true, ".webm": true,
+	".woff": true, ".woff2": true, ".ttf": true, ".otf": true, ".eot": true,
+	".pyc": true, ".pyo": true, ".class": true, ".o": true, ".a": true,
+}
+
 // isBinaryFile checks if a file is likely binary based on its extension
 func isBinaryFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
-	binaryExts := map[string]bool{
-		".exe": true, ".dll": true, ".so": true, ".dylib": true,
-		".bin": true, ".dat": true, ".db": true, ".sqlite": true,
-		".png": true, ".jpg": true, ".jpeg": true, ".gif": true,
-		".bmp": true, ".ico": true, ".webp": true, ".svg": true,
-		".pdf": true, ".doc": true, ".docx": true, ".xls": true,
-		".xlsx": true, ".ppt": true, ".pptx": true,
-		".zip": true, ".tar": true, ".gz": true, ".rar": true,
-		".7z": true, ".bz2": true, ".xz": true,
-		".mp3": true, ".mp4": true, ".avi": true, ".mov": true,
-		".wav": true, ".flac": true, ".ogg": true, ".webm": true,
-		".woff": true, ".woff2": true, ".ttf": true, ".otf": true, ".eot": true,
-		".pyc": true, ".pyo": true, ".class": true, ".o": true, ".a": true,
-	}
 
-	return binaryExts[ext]
+	return binaryExtensions[ext]
 }
 
 // relPathSlash returns the relative path from base to target using forward slashes
@@ -329,6 +396,14 @@ func relPathSlash(base, target string) string {
 	}
 
 	return filepath.ToSlash(rel)
+}
+
+func relPathFromBase(base, path string) string {
+	if base == "." {
+		return path
+	}
+
+	return relPathSlash(base, path)
 }
 
 // pathDomain returns the path split into components for gitignore matching
@@ -370,4 +445,59 @@ func loadGitignore(fsys fs.FS, domain []string) []gitignore.Pattern {
 	}
 
 	return patterns
+}
+
+// walkWorkspace traverses files under root, respecting gitignore and default ignore dirs.
+// It skips symlinks and calls onFile for each non-ignored file.
+// Returning filepath.SkipAll from onFile stops traversal.
+func walkWorkspace(ctx context.Context, fsys fs.FS, root string, onFile func(path, relPath string) error) error {
+	var allPatterns []gitignore.Pattern
+	allPatterns = append(allPatterns, loadGitignore(fsys, nil)...)
+	matcher := gitignore.NewMatcher(allPatterns)
+
+	return fs.WalkDir(fsys, root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+
+		// Check for context cancellation
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// Skip symlinks to prevent infinite loops
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+
+		if d.IsDir() && defaultIgnoreDirs[d.Name()] {
+			return filepath.SkipDir
+		}
+
+		relPath := relPathFromBase(root, path)
+		pathParts := strings.Split(relPath, "/")
+
+		if d.IsDir() {
+			if matcher.Match(pathParts, true) {
+				return filepath.SkipDir
+			}
+
+			newPatterns := loadGitignore(fsys, pathDomain(path))
+
+			if len(newPatterns) > 0 {
+				allPatterns = append(allPatterns, newPatterns...)
+				matcher = gitignore.NewMatcher(allPatterns)
+			}
+
+			return nil
+		}
+
+		if matcher.Match(pathParts, false) {
+			return nil
+		}
+
+		return onFile(path, relPath)
+	})
 }

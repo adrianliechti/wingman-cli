@@ -3,6 +3,7 @@ package fs
 import (
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -48,6 +49,12 @@ func TestNormalizePath(t *testing.T) {
 				path:       "C:\\Users\\test\\project\\src\\file.go",
 				workingDir: "C:\\Users\\test\\project",
 				want:       "src\\file.go",
+			},
+			{
+				name:       "windows preserves original casing",
+				path:       "C:\\Users\\Test\\Project\\SRC\\File.go",
+				workingDir: "c:\\users\\test\\project",
+				want:       "SRC\\File.go",
 			},
 			{
 				name:       "windows absolute path outside workspace",
@@ -871,6 +878,97 @@ func TestMapFuzzyIndexToOriginal(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNormalizePathForComparison tests case-sensitivity handling across platforms.
+func TestNormalizePathForComparison(t *testing.T) {
+	t.Run("case normalization on case-insensitive systems", func(t *testing.T) {
+		path := "/Users/Test/Project/File.go"
+		normalized := normalizePathForComparison(path)
+
+		switch runtime.GOOS {
+		case "windows", "darwin":
+			// Windows and macOS should lowercase for comparison
+			if normalized != "/users/test/project/file.go" {
+				t.Errorf("normalizePathForComparison(%q) = %q, want lowercase on %s", path, normalized, runtime.GOOS)
+			}
+		default:
+			// Linux should preserve case
+			if normalized != path {
+				t.Errorf("normalizePathForComparison(%q) = %q, want unchanged on %s", path, normalized, runtime.GOOS)
+			}
+		}
+	})
+
+	t.Run("path comparison works with different cases", func(t *testing.T) {
+		switch runtime.GOOS {
+		case "windows", "darwin":
+			// On case-insensitive systems, paths with different cases should match
+			path1 := normalizePathForComparison("/Users/Test/Project")
+			path2 := normalizePathForComparison("/users/test/project")
+			if path1 != path2 {
+				t.Errorf("paths should match after normalization on %s: %q != %q", runtime.GOOS, path1, path2)
+			}
+		default:
+			// On Linux, paths with different cases should NOT match
+			path1 := normalizePathForComparison("/Users/Test/Project")
+			path2 := normalizePathForComparison("/users/test/project")
+			if path1 == path2 {
+				t.Errorf("paths should NOT match on case-sensitive Linux: %q == %q", path1, path2)
+			}
+		}
+	})
+}
+
+// TestGenerateDiffStringFormat tests that the diff output uses the go-diff library properly.
+func TestGenerateDiffStringFormat(t *testing.T) {
+	t.Run("diff shows deletions with minus prefix", func(t *testing.T) {
+		oldContent := "line1\nremove me\nline3"
+		newContent := "line1\nline3"
+		diff := generateDiffString(oldContent, newContent)
+
+		if !strings.Contains(diff, "-") {
+			t.Errorf("diff should contain '-' for deletions: %q", diff)
+		}
+		if !strings.Contains(diff, "remove me") {
+			t.Errorf("diff should show deleted line: %q", diff)
+		}
+	})
+
+	t.Run("diff shows additions with plus prefix", func(t *testing.T) {
+		oldContent := "line1\nline3"
+		newContent := "line1\nadd me\nline3"
+		diff := generateDiffString(oldContent, newContent)
+
+		if !strings.Contains(diff, "+") {
+			t.Errorf("diff should contain '+' for additions: %q", diff)
+		}
+		if !strings.Contains(diff, "add me") {
+			t.Errorf("diff should show added line: %q", diff)
+		}
+	})
+
+	t.Run("diff shows line numbers", func(t *testing.T) {
+		oldContent := "line1\nold\nline3"
+		newContent := "line1\nnew\nline3"
+		diff := generateDiffString(oldContent, newContent)
+
+		// Should show line numbers in the diff output
+		if !strings.Contains(diff, "2") {
+			t.Errorf("diff should show line numbers: %q", diff)
+		}
+	})
+
+	t.Run("diff handles multiline changes", func(t *testing.T) {
+		oldContent := "func main() {\n\tfmt.Println(\"old\")\n}"
+		newContent := "func main() {\n\tfmt.Println(\"new\")\n\treturn\n}"
+		diff := generateDiffString(oldContent, newContent)
+
+		// Should show both deletion and addition
+		if !strings.Contains(diff, "-") || !strings.Contains(diff, "+") {
+			t.Errorf("diff should show both deletions and additions: %q", diff)
+		}
+	})
 }
 
 func TestIsBinaryFile(t *testing.T) {

@@ -11,12 +11,16 @@ import (
 	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
-	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 )
 
-const DefaultGrepLimit = 100
+const (
+	DefaultGrepLimit     = 100
+	DefaultScanBufSize   = 64 * 1024  // 64KB initial buffer
+	MaxScanBufSize       = 1024 * 1024 // 1MB max buffer for long lines
+	MaxLineDisplayLength = 200
+)
 
 func GrepTool() tool.Tool {
 	return tool.Tool{
@@ -74,11 +78,11 @@ func GrepTool() tool.Tool {
 
 			workingDir := env.WorkingDir()
 
-			if isOutsideWorkspace(searchPath, workingDir) {
-				return "", fmt.Errorf("cannot search: path %q is outside workspace %q", searchPath, workingDir)
-			}
+			searchPathFS, err := ensurePathInWorkspaceFS(searchPath, workingDir, "search")
 
-			searchPathFS := normalizePathFS(searchPath, workingDir)
+			if err != nil {
+				return "", err
+			}
 
 			glob := ""
 
@@ -134,60 +138,11 @@ func GrepTool() tool.Tool {
 				return strings.Join(matches, "\n"), nil
 			}
 
-			// Load gitignore patterns
-			var allPatterns []gitignore.Pattern
-			allPatterns = append(allPatterns, loadGitignore(fsys, nil)...)
-			matcher := gitignore.NewMatcher(allPatterns)
-
 			var results []string
 			matchCount := 0
 			limitReached := false
 
-			err = fs.WalkDir(fsys, searchPathFS, func(path string, d fs.DirEntry, err error) error {
-				if err != nil {
-					return nil
-				}
-
-				// Skip ignored directories
-				if d.IsDir() {
-					if defaultIgnoreDirs[d.Name()] {
-						return filepath.SkipDir
-					}
-
-					relPath := path
-
-					if searchPathFS != "." {
-						relPath = relPathSlash(searchPathFS, path)
-					}
-					pathParts := strings.Split(relPath, "/")
-
-					if matcher.Match(pathParts, true) {
-						return filepath.SkipDir
-					}
-
-					// Load nested gitignore
-					newPatterns := loadGitignore(fsys, pathDomain(path))
-
-					if len(newPatterns) > 0 {
-						allPatterns = append(allPatterns, newPatterns...)
-						matcher = gitignore.NewMatcher(allPatterns)
-					}
-
-					return nil
-				}
-
-				// Check gitignore for files
-				relPath := path
-
-				if searchPathFS != "." {
-					relPath = relPathSlash(searchPathFS, path)
-				}
-				pathParts := strings.Split(relPath, "/")
-
-				if matcher.Match(pathParts, false) {
-					return nil
-				}
-
+			err = walkWorkspace(ctx, fsys, searchPathFS, func(path, relPath string) error {
 				// Check glob pattern
 				if glob != "" {
 					matched, _ := doublestar.Match(glob, pathpkg.Base(path))
@@ -270,8 +225,8 @@ func searchFileWithContext(fsys fs.FS, path string, re *regexp.Regexp, contextLi
 	scanner := bufio.NewScanner(f)
 
 	// Use a reasonable buffer size for long lines
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
+	buf := make([]byte, 0, DefaultScanBufSize)
+	scanner.Buffer(buf, MaxScanBufSize)
 
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
@@ -332,8 +287,8 @@ func searchFileWithContext(fsys fs.FS, path string, re *regexp.Regexp, contextLi
 			// Format: path:linenum:prefix:content
 			lineContent := lines[j]
 
-			if len(lineContent) > 200 {
-				lineContent = lineContent[:197] + "..."
+			if len(lineContent) > MaxLineDisplayLength {
+				lineContent = lineContent[:MaxLineDisplayLength-3] + "..."
 			}
 
 			results = append(results, fmt.Sprintf("%s:%d:%s %s", displayPath, j+1, prefix, lineContent))
