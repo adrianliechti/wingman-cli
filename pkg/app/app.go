@@ -12,6 +12,7 @@ import (
 	"github.com/adrianliechti/wingman-cli/pkg/plan"
 	"github.com/adrianliechti/wingman-cli/pkg/rewind"
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
+	"github.com/adrianliechti/wingman-cli/pkg/tool/lsp"
 	"github.com/adrianliechti/wingman-cli/pkg/tool/mcp"
 )
 
@@ -209,7 +210,12 @@ func (a *App) allTools() []tool.Tool {
 	a.mcpMu.Lock()
 	defer a.mcpMu.Unlock()
 
-	return append(a.config.Tools, a.mcpTools...)
+	tools := append(a.config.Tools, a.mcpTools...)
+
+	// Always include LSP tool - it will return an error if no server found for a file
+	tools = append(tools, lsp.NewTool(a.config.Environment.WorkingDir()))
+
+	return tools
 }
 
 func (a *App) isToolHidden(name string) bool {
