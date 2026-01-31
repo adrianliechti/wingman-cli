@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/adrianliechti/wingman-cli/pkg/prompt"
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
@@ -20,6 +21,9 @@ var validOperations = []string{
 	"workspaceSymbols",
 	"incomingCalls",
 	"outgoingCalls",
+	"diagnostics",
+	"rename",
+	"codeActions",
 }
 
 // NewTool creates an LSP tool that connects on-demand for each invocation.
@@ -51,6 +55,10 @@ func NewTool(workingDir string) tool.Tool {
 					"type":        "string",
 					"description": "Search query for workspaceSymbols operation",
 				},
+				"newName": map[string]any{
+					"type":        "string",
+					"description": "New name for the symbol (required for rename operation)",
+				},
 			},
 			"required": []string{"operation"},
 		},
@@ -60,21 +68,28 @@ func NewTool(workingDir string) tool.Tool {
 			line := intArg(args, "line")
 			column := intArg(args, "column")
 			query, _ := args["query"].(string)
+			newName, _ := args["newName"].(string)
 
 			// Validate operation
 			if !isValidOperation(operation) {
 				return "", fmt.Errorf("invalid operation: %s", operation)
 			}
 
-			// File is always required (anchors which LSP server to use)
+			// File is required for all operations
 			if file == "" {
 				return "", fmt.Errorf("file is required for %s operation", operation)
 			}
 
-			needsPosition := operation != "documentSymbols" && operation != "workspaceSymbols"
+			// Determine if operation needs position (line/column)
+			needsPosition := operation != "documentSymbols" && operation != "workspaceSymbols" && operation != "diagnostics" && operation != "codeActions"
 
 			if needsPosition && (line == 0 || column == 0) {
 				return "", fmt.Errorf("line and column are required for %s operation", operation)
+			}
+
+			// Rename requires newName
+			if operation == "rename" && newName == "" {
+				return "", fmt.Errorf("newName is required for rename operation")
 			}
 
 			// Make path absolute if relative
@@ -83,10 +98,8 @@ func NewTool(workingDir string) tool.Tool {
 			}
 
 			// Check file exists
-			if file != "" {
-				if _, err := os.Stat(file); os.IsNotExist(err) {
-					return "", fmt.Errorf("file not found: %s", file)
-				}
+			if _, err := os.Stat(file); os.IsNotExist(err) {
+				return "", fmt.Errorf("file not found: %s", file)
 			}
 
 			// Connect to appropriate LSP server
@@ -96,10 +109,13 @@ func NewTool(workingDir string) tool.Tool {
 			}
 			defer session.Close()
 
-			// Open document
-			uri, err := session.OpenDocument(ctx, file)
-			if err != nil {
-				return "", err
+			// Open document for operations that need it
+			var uri string
+			if operation != "workspaceSymbols" {
+				uri, err = session.OpenDocument(ctx, file)
+				if err != nil {
+					return "", err
+				}
 			}
 
 			// Execute operation
@@ -120,6 +136,12 @@ func NewTool(workingDir string) tool.Tool {
 				return execIncomingCalls(ctx, session, uri, line, column, workingDir)
 			case "outgoingCalls":
 				return execOutgoingCalls(ctx, session, uri, line, column, workingDir)
+			case "diagnostics":
+				return execDiagnostics(ctx, session, uri, file, workingDir)
+			case "rename":
+				return execRename(ctx, session, uri, line, column, newName, workingDir)
+			case "codeActions":
+				return execCodeActions(ctx, session, uri, file, workingDir)
 			default:
 				return "", fmt.Errorf("unknown operation: %s", operation)
 			}
@@ -382,4 +404,115 @@ func execOutgoingCalls(ctx context.Context, session *Session, uri string, line, 
 	}
 
 	return formatOutgoingCalls(calls, workingDir), nil
+}
+
+// execDiagnostics gets diagnostics (errors, warnings) for a file.
+func execDiagnostics(ctx context.Context, session *Session, uri string, filePath string, workingDir string) (string, error) {
+	// Try pull diagnostics first (LSP 3.17+)
+	params := DocumentDiagnosticParams{
+		TextDocument: TextDocumentIdentifier{URI: uri},
+	}
+
+	var result json.RawMessage
+	call := session.conn.Call(ctx, "textDocument/diagnostic", params)
+	if err := call.Await(ctx, &result); err == nil && result != nil && string(result) != "null" {
+		// Parse full document diagnostic report
+		var report FullDocumentDiagnosticReport
+		if err := json.Unmarshal(result, &report); err == nil {
+			if len(report.Items) == 0 {
+				return "No diagnostics found", nil
+			}
+			return formatDiagnostics(report.Items, filePath, workingDir), nil
+		}
+
+		// Try parsing as direct array of diagnostics
+		var diagnostics []Diagnostic
+		if err := json.Unmarshal(result, &diagnostics); err == nil {
+			if len(diagnostics) == 0 {
+				return "No diagnostics found", nil
+			}
+			return formatDiagnostics(diagnostics, filePath, workingDir), nil
+		}
+	}
+
+	// Pull diagnostics not supported or failed - return message
+	return "No diagnostics available (server may not support pull diagnostics)", nil
+}
+
+// execRename renames a symbol across the workspace.
+func execRename(ctx context.Context, session *Session, uri string, line, column int, newName string, workingDir string) (string, error) {
+	params := RenameParams{
+		TextDocument: TextDocumentIdentifier{URI: uri},
+		Position:     Position{Line: line - 1, Character: column - 1},
+		NewName:      newName,
+	}
+
+	var result json.RawMessage
+	call := session.conn.Call(ctx, "textDocument/rename", params)
+	if err := call.Await(ctx, &result); err != nil {
+		return "", fmt.Errorf("rename: %w", err)
+	}
+
+	if result == nil || string(result) == "null" {
+		return "Rename not available at this position", nil
+	}
+
+	var edit WorkspaceEdit
+	if err := json.Unmarshal(result, &edit); err != nil {
+		return "", fmt.Errorf("parse workspace edit: %w", err)
+	}
+
+	if len(edit.Changes) == 0 {
+		return "No changes needed for rename", nil
+	}
+
+	return formatWorkspaceEdit(&edit, workingDir), nil
+}
+
+// execCodeActions gets available code actions for a file.
+func execCodeActions(ctx context.Context, session *Session, uri string, filePath string, workingDir string) (string, error) {
+	// Read file to get full range
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", fmt.Errorf("read file: %w", err)
+	}
+
+	lines := strings.Split(string(content), "\n")
+	endLine := len(lines) - 1
+	endChar := 0
+	if endLine >= 0 && len(lines[endLine]) > 0 {
+		endChar = len(lines[endLine])
+	}
+
+	params := CodeActionParams{
+		TextDocument: TextDocumentIdentifier{URI: uri},
+		Range: Range{
+			Start: Position{Line: 0, Character: 0},
+			End:   Position{Line: endLine, Character: endChar},
+		},
+		Context: CodeActionContext{
+			Diagnostics: []Diagnostic{},
+		},
+	}
+
+	var result json.RawMessage
+	call := session.conn.Call(ctx, "textDocument/codeAction", params)
+	if err := call.Await(ctx, &result); err != nil {
+		return "", fmt.Errorf("codeAction: %w", err)
+	}
+
+	if result == nil || string(result) == "null" {
+		return "No code actions available", nil
+	}
+
+	var actions []CodeAction
+	if err := json.Unmarshal(result, &actions); err != nil {
+		return "", fmt.Errorf("parse code actions: %w", err)
+	}
+
+	if len(actions) == 0 {
+		return "No code actions available", nil
+	}
+
+	return formatCodeActions(actions, workingDir), nil
 }

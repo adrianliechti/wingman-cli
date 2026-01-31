@@ -137,6 +137,26 @@ func (s *Session) initialize(ctx context.Context) error {
 				PublishDiagnostics: PublishDiagnosticsClientCapabilities{
 					RelatedInformation: true,
 				},
+				Rename: RenameClientCapabilities{
+					PrepareSupport: true,
+				},
+				CodeAction: CodeActionClientCapabilities{
+					CodeActionLiteralSupport: &CodeActionLiteralSupport{
+						CodeActionKind: CodeActionKindSupport{
+							ValueSet: []string{
+								"quickfix",
+								"refactor",
+								"refactor.extract",
+								"refactor.inline",
+								"refactor.rewrite",
+								"source",
+								"source.organizeImports",
+								"source.fixAll",
+							},
+						},
+					},
+				},
+				Diagnostic: DiagnosticClientCapabilities{},
 			},
 			Workspace: WorkspaceClientCapabilities{
 				Symbol: WorkspaceSymbolClientCapabilities{},
@@ -244,6 +264,9 @@ type TextDocumentClientCapabilities struct {
 	DocumentSymbol     DocumentSymbolClientCapabilities     `json:"documentSymbol,omitempty"`
 	CallHierarchy      CallHierarchyClientCapabilities      `json:"callHierarchy,omitempty"`
 	PublishDiagnostics PublishDiagnosticsClientCapabilities `json:"publishDiagnostics,omitempty"`
+	Rename             RenameClientCapabilities             `json:"rename,omitempty"`
+	CodeAction         CodeActionClientCapabilities         `json:"codeAction,omitempty"`
+	Diagnostic         DiagnosticClientCapabilities         `json:"diagnostic,omitempty"`
 }
 
 type TextDocumentSyncClientCapabilities struct {
@@ -270,6 +293,25 @@ type CallHierarchyClientCapabilities struct{}
 
 type PublishDiagnosticsClientCapabilities struct {
 	RelatedInformation bool `json:"relatedInformation,omitempty"`
+}
+
+type RenameClientCapabilities struct {
+	PrepareSupport bool `json:"prepareSupport,omitempty"`
+}
+
+type CodeActionClientCapabilities struct {
+	CodeActionLiteralSupport *CodeActionLiteralSupport `json:"codeActionLiteralSupport,omitempty"`
+}
+
+type CodeActionLiteralSupport struct {
+	CodeActionKind CodeActionKindSupport `json:"codeActionKind"`
+}
+
+type CodeActionKindSupport struct {
+	ValueSet []string `json:"valueSet"`
+}
+
+type DiagnosticClientCapabilities struct {
 }
 
 type TextDocumentIdentifier struct {
@@ -381,6 +423,82 @@ type CallHierarchyOutgoingCall struct {
 	FromRanges []Range           `json:"fromRanges"`
 }
 
+// Diagnostic represents a diagnostic, such as a compiler error or warning.
+type Diagnostic struct {
+	Range    Range  `json:"range"`
+	Severity int    `json:"severity,omitempty"`
+	Code     any    `json:"code,omitempty"`
+	Source   string `json:"source,omitempty"`
+	Message  string `json:"message"`
+}
+
+// DiagnosticSeverity values.
+const (
+	DiagnosticSeverityError       = 1
+	DiagnosticSeverityWarning     = 2
+	DiagnosticSeverityInformation = 3
+	DiagnosticSeverityHint        = 4
+)
+
+// DocumentDiagnosticParams for textDocument/diagnostic request.
+type DocumentDiagnosticParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+}
+
+// FullDocumentDiagnosticReport for diagnostic response.
+type FullDocumentDiagnosticReport struct {
+	Kind  string       `json:"kind"`
+	Items []Diagnostic `json:"items"`
+}
+
+// RenameParams for textDocument/rename request.
+type RenameParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Position     Position               `json:"position"`
+	NewName      string                 `json:"newName"`
+}
+
+// WorkspaceEdit represents changes to many resources.
+type WorkspaceEdit struct {
+	Changes map[string][]TextEdit `json:"changes,omitempty"`
+}
+
+// TextEdit represents a textual edit applicable to a text document.
+type TextEdit struct {
+	Range   Range  `json:"range"`
+	NewText string `json:"newText"`
+}
+
+// CodeActionParams for textDocument/codeAction request.
+type CodeActionParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Range        Range                  `json:"range"`
+	Context      CodeActionContext      `json:"context"`
+}
+
+// CodeActionContext contains additional diagnostic information.
+type CodeActionContext struct {
+	Diagnostics []Diagnostic `json:"diagnostics"`
+	Only        []string     `json:"only,omitempty"`
+}
+
+// CodeAction represents a code action (quick fix, refactoring, etc.).
+type CodeAction struct {
+	Title       string         `json:"title"`
+	Kind        string         `json:"kind,omitempty"`
+	Diagnostics []Diagnostic   `json:"diagnostics,omitempty"`
+	IsPreferred bool           `json:"isPreferred,omitempty"`
+	Edit        *WorkspaceEdit `json:"edit,omitempty"`
+	Command     *Command       `json:"command,omitempty"`
+}
+
+// Command represents a reference to a command.
+type Command struct {
+	Title     string `json:"title"`
+	Command   string `json:"command"`
+	Arguments []any  `json:"arguments,omitempty"`
+}
+
 // symbolKindName converts LSP SymbolKind to a human-readable name.
 func symbolKindName(kind int) string {
 	kinds := map[int]string{
@@ -415,4 +533,20 @@ func symbolKindName(kind int) string {
 		return name
 	}
 	return "Unknown"
+}
+
+// diagnosticSeverityName converts DiagnosticSeverity to a human-readable name.
+func diagnosticSeverityName(severity int) string {
+	switch severity {
+	case DiagnosticSeverityError:
+		return "Error"
+	case DiagnosticSeverityWarning:
+		return "Warning"
+	case DiagnosticSeverityInformation:
+		return "Info"
+	case DiagnosticSeverityHint:
+		return "Hint"
+	default:
+		return "Unknown"
+	}
 }

@@ -53,44 +53,25 @@ func isSafeCommand(command string) bool {
 		return false
 	}
 
-	cmd := words[0]
+	cmd := strings.ToLower(filepath.Base(words[0]))
+	if _, ok := safeCommandSet[cmd]; ok {
+		return true
+	}
 
-	// Handle paths like /usr/bin/ls or ./script
-	cmd = filepath.Base(cmd)
+	allowedSubcmds, hasSubcmds := safeSubcommandPrefixes[cmd]
+	if !hasSubcmds {
+		return false
+	}
 
-	// For case-insensitive matching (PowerShell cmdlets)
-	cmdLower := strings.ToLower(cmd)
+	if len(words) < 2 {
+		return false
+	}
 
-	// First, check if it's a simple safe command (no subcommand check needed)
-	for _, safe := range safeCommands {
-		if cmd == safe || cmdLower == strings.ToLower(safe) {
+	restOfCommand := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(command, words[0])))
+	for _, subCmd := range allowedSubcmds {
+		if strings.HasPrefix(restOfCommand, subCmd) {
 			return true
 		}
-	}
-
-	// Check if this command requires subcommand validation
-	// Try both exact match and lowercase for the command key
-	allowedSubcmds, hasSubcmds := safeSubcommands[cmd]
-	if !hasSubcmds {
-		allowedSubcmds, hasSubcmds = safeSubcommands[cmdLower]
-	}
-
-	if hasSubcmds {
-		if len(words) < 2 {
-			// Command requires subcommand but none provided
-			return false
-		}
-
-		// Get the rest of the command after the main command
-		restOfCommand := strings.TrimSpace(strings.TrimPrefix(command, words[0]))
-
-		for _, subCmd := range allowedSubcmds {
-			if strings.HasPrefix(restOfCommand, subCmd) {
-				return true
-			}
-		}
-
-		return false
 	}
 
 	return false

@@ -16,6 +16,7 @@ Environment:
 Capabilities:
 - Filesystem: read files, list directories, find files by pattern
 - Shell: execute read-only commands for gathering information
+- LSP: code intelligence (definitions, references, implementations, call hierarchy, diagnostics) when available
 - Tools: use any available tools when helpful for research
 - Plan tracking: use `update_plan` tool to track progress
 

@@ -9,6 +9,9 @@ Supported operations:
 - workspaceSymbols: Search for symbols across the entire workspace
 - incomingCalls: Find all functions/methods that call the function at a position
 - outgoingCalls: Find all functions/methods called by the function at a position
+- diagnostics: Get compiler errors, warnings, and hints for a file
+- rename: Rename a symbol across all files (returns proposed changes, does not apply them)
+- codeActions: Get available quick fixes and refactorings for a file
 
 Most operations require:
 - file: The file to operate on (absolute or relative path)
@@ -16,6 +19,17 @@ Most operations require:
 - column: The character offset (1-based, as shown in editors)
 
 The workspaceSymbols operation requires:
+- file: Any file in the project (used to detect the language server)
 - query: The search query for symbols
+
+The diagnostics operation requires:
+- file: The file to check for errors/warnings (no line/column needed)
+
+The rename operation requires:
+- file, line, column: Position of the symbol to rename
+- newName: The new name for the symbol
+
+The codeActions operation requires:
+- file: The file to get code actions for (no line/column needed, scans entire file)
 
 Note: LSP servers are auto-detected based on project files. If no server is available for a file type, an error will be returned.

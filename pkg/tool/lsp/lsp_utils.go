@@ -164,3 +164,101 @@ func formatOutgoingCalls(calls []CallHierarchyOutgoingCall, workingDir string) s
 
 	return sb.String()
 }
+
+// formatDiagnostics formats diagnostics for display.
+func formatDiagnostics(diagnostics []Diagnostic, filePath string, workingDir string) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Diagnostics (%d found):\n", len(diagnostics)))
+
+	// Make path relative if possible
+	displayPath := filePath
+	if rel, err := filepath.Rel(workingDir, filePath); err == nil && !strings.HasPrefix(rel, "..") {
+		displayPath = rel
+	}
+
+	for _, diag := range diagnostics {
+		severity := diagnosticSeverityName(diag.Severity)
+		line := diag.Range.Start.Line + 1
+		col := diag.Range.Start.Character + 1
+		source := ""
+		if diag.Source != "" {
+			source = fmt.Sprintf("[%s] ", diag.Source)
+		}
+		sb.WriteString(fmt.Sprintf("  %s:%d:%d %s: %s%s\n", displayPath, line, col, severity, source, diag.Message))
+	}
+
+	return sb.String()
+}
+
+// formatWorkspaceEdit formats a workspace edit for display.
+func formatWorkspaceEdit(edit *WorkspaceEdit, workingDir string) string {
+	var sb strings.Builder
+
+	totalEdits := 0
+	for _, edits := range edit.Changes {
+		totalEdits += len(edits)
+	}
+
+	sb.WriteString(fmt.Sprintf("Workspace Edit (%d files, %d changes):\n", len(edit.Changes), totalEdits))
+
+	for uri, edits := range edit.Changes {
+		path := uriToPath(uri)
+		if rel, err := filepath.Rel(workingDir, path); err == nil && !strings.HasPrefix(rel, "..") {
+			path = rel
+		}
+		sb.WriteString(fmt.Sprintf("\n  %s (%d changes):\n", path, len(edits)))
+
+		for _, e := range edits {
+			startLine := e.Range.Start.Line + 1
+			endLine := e.Range.End.Line + 1
+			if startLine == endLine {
+				sb.WriteString(fmt.Sprintf("    Line %d: ", startLine))
+			} else {
+				sb.WriteString(fmt.Sprintf("    Lines %d-%d: ", startLine, endLine))
+			}
+			// Truncate long replacements
+			text := e.NewText
+			if len(text) > 50 {
+				text = text[:47] + "..."
+			}
+			text = strings.ReplaceAll(text, "\n", "\\n")
+			sb.WriteString(fmt.Sprintf("→ %q\n", text))
+		}
+	}
+
+	return sb.String()
+}
+
+// formatCodeActions formats code actions for display.
+func formatCodeActions(actions []CodeAction, workingDir string) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Code Actions (%d available):\n", len(actions)))
+
+	for i, action := range actions {
+		kind := ""
+		if action.Kind != "" {
+			kind = fmt.Sprintf(" [%s]", action.Kind)
+		}
+		preferred := ""
+		if action.IsPreferred {
+			preferred = " (preferred)"
+		}
+		sb.WriteString(fmt.Sprintf("  %d. %s%s%s\n", i+1, action.Title, kind, preferred))
+
+		// Show edit summary if available
+		if action.Edit != nil && len(action.Edit.Changes) > 0 {
+			totalEdits := 0
+			for _, edits := range action.Edit.Changes {
+				totalEdits += len(edits)
+			}
+			sb.WriteString(fmt.Sprintf("      → %d file(s), %d change(s)\n", len(action.Edit.Changes), totalEdits))
+		}
+
+		// Show command if available
+		if action.Command != nil {
+			sb.WriteString(fmt.Sprintf("      → Command: %s\n", action.Command.Title))
+		}
+	}
+
+	return sb.String()
+}

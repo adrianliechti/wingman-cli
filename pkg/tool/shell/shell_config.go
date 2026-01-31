@@ -1,5 +1,7 @@
 package shell
 
+import "strings"
+
 // safeCommands is a list of read-only commands that don't require user confirmation
 var safeCommands = []string{
 	// Unix: Search & find
@@ -247,4 +249,23 @@ var safeSubcommands = map[string][]string{
 	// Terraform/OpenTofu - read-only subcommands
 	"terraform": {"version", "providers", "state list", "state show", "output", "graph", "show", "validate", "fmt", "help", "-version", "-help"},
 	"tofu":      {"version", "providers", "state list", "state show", "output", "graph", "show", "validate", "fmt", "help", "-version", "-help"},
+}
+
+var safeCommandSet = map[string]struct{}{}
+var safeSubcommandPrefixes = map[string][]string{}
+
+func init() {
+	for _, cmd := range safeCommands {
+		safeCommandSet[strings.ToLower(cmd)] = struct{}{}
+	}
+
+	for cmd, subs := range safeSubcommands {
+		cmdLower := strings.ToLower(cmd)
+		if len(subs) == 0 {
+			continue
+		}
+		for _, sub := range subs {
+			safeSubcommandPrefixes[cmdLower] = append(safeSubcommandPrefixes[cmdLower], strings.ToLower(sub))
+		}
+	}
 }

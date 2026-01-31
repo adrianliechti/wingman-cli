@@ -12,6 +12,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.2.0
 	github.com/openai/openai-go/v3 v3.17.0
 	github.com/rivo/tview v0.42.0
+	github.com/sergi/go-diff v1.4.0
 	github.com/yuin/goldmark v1.7.16
 	golang.org/x/term v0.39.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -37,7 +38,6 @@ require (
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/pjbgf/sha1cd v0.5.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/skeema/knownhosts v1.3.2 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.2.0 // indirect
