@@ -1,72 +1,51 @@
 package main
 
 import (
+	"context"
 	"flag"
-	"log"
-	"os"
-	"runtime"
-	"slices"
-	"time"
 
+	"github.com/adrianliechti/wingman-cli/pkg/app"
+	"github.com/adrianliechti/wingman-cli/pkg/config"
 	"github.com/adrianliechti/wingman-cli/pkg/server"
-	"github.com/adrianliechti/wingman-cli/pkg/tool"
-	"github.com/adrianliechti/wingman-cli/pkg/tool/fs"
-	"github.com/adrianliechti/wingman-cli/pkg/tool/plan"
-	"github.com/adrianliechti/wingman-cli/pkg/tool/shell"
 )
 
 func main() {
 	addr := flag.String("addr", ":3000", "address to listen on")
 	flag.Parse()
 
-	wd, err := os.Getwd()
+	cfg, cleanup, err := config.Default()
 
 	if err != nil {
-		log.Fatalf("failed to get working directory: %v", err)
+		panic("failed to load config: " + err.Error())
 	}
 
-	root, err := os.OpenRoot(wd)
+	defer cleanup()
 
-	if err != nil {
-		log.Fatalf("failed to open root: %v", err)
+	tools := cfg.Tools
+
+	if cfg.MCP != nil {
+		mcpTools, _ := cfg.MCP.Tools(context.Background())
+		tools = append(tools, mcpTools...)
 	}
 
-	defer root.Close()
+	// Create TUI and get pre-wired server options
+	ui, opts := app.NewServerUI()
 
-	scratchDir, err := os.MkdirTemp("", "wingman-server-*")
+	// Create server with options
+	s := server.New(tools, cfg.Environment, opts)
 
-	if err != nil {
-		log.Fatalf("failed to create scratch directory: %v", err)
-	}
+	// Update UI with server info
+	ui.SetServerInfo(*addr)
 
-	defer os.RemoveAll(scratchDir)
+	// Start HTTP server in background
+	go func() {
+		if err := s.ListenAndServe(*addr); err != nil {
+			panic("server error: " + err.Error())
+		}
+	}()
 
-	scratch, err := os.OpenRoot(scratchDir)
-
-	if err != nil {
-		log.Fatalf("failed to open scratch: %v", err)
-	}
-
-	defer scratch.Close()
-
-	env := &tool.Environment{
-		Date: time.Now().Format("January 2, 2006"),
-
-		OS:   runtime.GOOS,
-		Arch: runtime.GOARCH,
-
-		Root:    root,
-		Scratch: scratch,
-	}
-
-	tools := slices.Concat(fs.Tools(), shell.Tools(), plan.Tools())
-
-	s := server.New(tools, env)
-
-	log.Printf("Starting MCP server on %s", *addr)
-	log.Printf("Working directory: %s", wd)
-
-	if err := s.ListenAndServe(*addr); err != nil {
-		log.Fatalf("server error: %v", err)
+	// Run TUI (blocks until Ctrl+C)
+	if err := ui.Run(); err != nil {
+		panic("UI error: " + err.Error())
 	}
 }
