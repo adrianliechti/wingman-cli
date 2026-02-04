@@ -1,0 +1,24 @@
+{
+    "$schema": "https://opencode.ai/config.json",
+
+    "model": "wingman/gpt-5.2-codex",
+    "small_model": "wingman/gpt-5.2-codex",
+    
+    "provider": {
+        "wingman": {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "Wingman",
+    
+            "options": {
+                "baseURL": "WINGMAN_URL",
+                "apiKey": "WINGMAN_TOKEN"
+            },
+    
+            "models": {
+                "gpt-5.2-codex": {
+                    "name": "Wingman Codex"
+                }
+            }
+        }
+    }
+}

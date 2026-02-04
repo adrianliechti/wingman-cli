@@ -9,9 +9,30 @@ import (
 	"github.com/adrianliechti/wingman-cli/pkg/app"
 	"github.com/adrianliechti/wingman-cli/pkg/config"
 	"github.com/adrianliechti/wingman-cli/pkg/theme"
+
+	"github.com/adrianliechti/wingman-cli/pkg/cli/claude"
+	"github.com/adrianliechti/wingman-cli/pkg/cli/codex"
+	"github.com/adrianliechti/wingman-cli/pkg/cli/opencode"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Getenv("WINGMAN_URL") != "" {
+		if os.Args[1] == "claude" {
+			claude.Run(os.Args[2:])
+			return
+		}
+
+		if os.Args[1] == "codex" {
+			codex.Run(os.Args[2:])
+			return
+		}
+
+		if os.Args[1] == "opencode" {
+			opencode.Run(os.Args[2:])
+			return
+		}
+	}
+
 	theme.Auto()
 
 	ctx, cancel := context.WithCancel(context.Background())
