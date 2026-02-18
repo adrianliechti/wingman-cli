@@ -82,10 +82,7 @@ func (a *Agent) Send(ctx context.Context, instructions string, input []Content, 
 		}
 
 		if a.shouldCompact(usage.InputTokens) {
-			if err := a.compact(ctx); err != nil {
-				yield(Message{}, err)
-			}
-
+			a.compact(ctx)
 			a.usage.OutputTokens = 0
 		}
 	}

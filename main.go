@@ -19,18 +19,18 @@ func main() {
 	ctx := context.Background()
 
 	if len(os.Args) > 1 && os.Getenv("WINGMAN_URL") != "" {
-		if os.Args[1] == "claude" {
-			claude.Run(ctx, os.Args[2:])
+		if os.Args[1] == "codex" {
+			codex.Run(ctx, os.Args[2:], nil)
 			return
 		}
 
-		if os.Args[1] == "codex" {
-			codex.Run(ctx, os.Args[2:])
+		if os.Args[1] == "claude" {
+			claude.Run(ctx, os.Args[2:], nil)
 			return
 		}
 
 		if os.Args[1] == "opencode" {
-			opencode.Run(ctx, os.Args[2:])
+			opencode.Run(ctx, os.Args[2:], nil)
 			return
 		}
 	}

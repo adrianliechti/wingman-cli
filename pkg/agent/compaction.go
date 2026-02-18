@@ -18,11 +18,11 @@ func (a *Agent) shouldCompact(inputTokens int64) bool {
 	return inputTokens > a.MaxContextTokens-a.ReserveTokens
 }
 
-func (a *Agent) compact(ctx context.Context) error {
+func (a *Agent) compact(ctx context.Context) {
 	cutIdx := a.findCutPoint()
 
 	if cutIdx <= 0 {
-		return nil
+		return
 	}
 
 	toSummarize := a.messages[:cutIdx]
@@ -31,7 +31,9 @@ func (a *Agent) compact(ctx context.Context) error {
 	summary, err := a.summarize(ctx, toSummarize)
 
 	if err != nil {
-		return err
+		// Graceful fallback: if summarization fails, just continue without compacting.
+		// The server-side Truncation: Auto safety net will handle overflow.
+		return
 	}
 
 	summaryMsg := responses.ResponseInputItemUnionParam{
@@ -43,8 +45,6 @@ func (a *Agent) compact(ctx context.Context) error {
 
 	a.messages = append([]responses.ResponseInputItemUnionParam{summaryMsg}, toKeep...)
 	a.usage.InputTokens = a.estimateTokens()
-
-	return nil
 }
 
 func (a *Agent) findCutPoint() int {
@@ -125,31 +125,40 @@ func estimateMessageTokens(msg responses.ResponseInputItemUnionParam) int64 {
 	return int64(len(text) / 4)
 }
 
+const maxSummaryContentLength = 3000
+
 func (a *Agent) summarize(ctx context.Context, messages []responses.ResponseInputItemUnionParam) (string, error) {
 	var conversation strings.Builder
 
 	for _, msg := range messages {
 		if msg.OfMessage != nil {
-			role := string(msg.OfMessage.Role)
-
 			if msg.OfMessage.Content.OfString.Valid() {
-				conversation.WriteString(role + ": " + msg.OfMessage.Content.OfString.Value + "\n\n")
+				content := msg.OfMessage.Content.OfString.Value
+				role := string(msg.OfMessage.Role)
+
+				conversation.WriteString("[" + role + "]\n" + content + "\n\n")
 			}
 		}
 
 		if msg.OfFunctionCall != nil {
-			conversation.WriteString("tool_call: " + msg.OfFunctionCall.Name + "(" + msg.OfFunctionCall.Arguments + ")\n\n")
+			args := msg.OfFunctionCall.Arguments
+
+			if len(args) > maxSummaryContentLength {
+				args = args[:maxSummaryContentLength] + "...[truncated]"
+			}
+
+			conversation.WriteString("[Tool Call] " + msg.OfFunctionCall.Name + "\n" + args + "\n\n")
 		}
 
 		if msg.OfFunctionCallOutput != nil {
 			if msg.OfFunctionCallOutput.Output.OfString.Valid() {
 				output := msg.OfFunctionCallOutput.Output.OfString.Value
 
-				if len(output) > 2000 {
-					output = output[:2000] + "...[truncated]"
+				if len(output) > maxSummaryContentLength {
+					output = output[:maxSummaryContentLength] + "...[truncated]"
 				}
 
-				conversation.WriteString("tool_result: " + output + "\n\n")
+				conversation.WriteString("[Tool Result]\n" + output + "\n\n")
 			}
 		}
 	}
