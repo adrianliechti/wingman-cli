@@ -1,30 +1,40 @@
 package claude
 
 import (
+	"context"
 	"os"
 	"os/exec"
 )
 
-func Run(args []string) {
+func Run(ctx context.Context, args []string) error {
+	cfg, err := NewConfig(ctx)
+
+	if err != nil {
+		return err
+	}
+
+	vars := map[string]string{
+		"ANTHROPIC_BASE_URL":   cfg.BaseURL,
+		"ANTHROPIC_API_KEY":    "",
+		"ANTHROPIC_AUTH_TOKEN": cfg.AuthToken,
+
+		"DISABLE_PROMPT_CACHING":      "1",
+		"DISABLE_INSTALLATION_CHECKS": "1",
+
+		"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS":   "1",
+		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+		"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY":      "1",
+
+		"ANTHROPIC_DEFAULT_OPUS_MODEL":   cfg.OpusModel,
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL":  cfg.HaikuModel,
+		"ANTHROPIC_DEFAULT_SONNET_MODEL": cfg.SonnetModel,
+	}
+
 	env := os.Environ()
 
-	if val := os.Getenv("WINGMAN_URL"); val != "" {
-		env = append(env, "ANTHROPIC_BASE_URL="+val)
+	for k, v := range vars {
+		env = append(env, k+"="+v)
 	}
-
-	if val := os.Getenv("WINGMAN_TOKEN"); val != "" {
-		env = append(env, "ANTHROPIC_API_KEY=")
-		env = append(env, "ANTHROPIC_AUTH_TOKEN="+val)
-	}
-
-	env = append(env, "DISABLE_TELEMETRY=1")
-	env = append(env, "DISABLE_ERROR_REPORTING=1")
-	env = append(env, "DISABLE_INSTALLATION_CHECKS=1")
-	env = append(env, "DISABLE_NON_ESSENTIAL_MODEL_CALLS=1")
-
-	env = append(env, "ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-4-5")
-	env = append(env, "ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-4-5")
-	env = append(env, "ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-4-5")
 
 	cmd := exec.Command("claude", args...)
 	cmd.Env = env
@@ -32,5 +42,5 @@ func Run(args []string) {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	cmd.Run()
+	return cmd.Run()
 }

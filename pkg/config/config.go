@@ -24,8 +24,12 @@ import (
 
 // AvailableModels lists supported models in priority order
 var AvailableModels = []string{
+	"claude-opus-4-6",
 	"claude-opus-4-5",
+
+	"claude-sonnet-4-6",
 	"claude-sonnet-4-5",
+
 	"gpt-5.2-codex",
 	"gpt-5.2",
 	"gpt-5.1-codex-max",
@@ -119,13 +123,10 @@ func Default() (*Config, func(), error) {
 		Client: client,
 		Model:  model,
 
-		Environment:          env,
+		Environment: env,
+
 		AgentInstructions:    agentinstructions,
 		PlanningInstructions: planningInstructions,
-
-		// MaxContextTokens: 5000,
-		// ReserveTokens:    1000,
-		// KeepRecentTokens: 2000,
 
 		MaxContextTokens: 180_000,
 		ReserveTokens:    16_000,

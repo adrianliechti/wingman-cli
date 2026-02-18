@@ -16,9 +16,11 @@ import (
 )
 
 func main() {
+	ctx := context.Background()
+
 	if len(os.Args) > 1 && os.Getenv("WINGMAN_URL") != "" {
 		if os.Args[1] == "claude" {
-			claude.Run(os.Args[2:])
+			claude.Run(ctx, os.Args[2:])
 			return
 		}
 
