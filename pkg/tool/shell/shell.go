@@ -24,20 +24,25 @@ func ShellTool() tool.Tool {
 	return tool.Tool{
 		Name:        "shell",
 		Description: "Execute a shell command. The command runs in the working directory. On Unix systems, uses $SHELL or /bin/sh. On Windows, uses PowerShell. Returns stdout/stderr combined. If output is truncated, a temp file path is provided to read the full output.",
+
 		Parameters: map[string]any{
 			"type": "object",
+
 			"properties": map[string]any{
 				"command": map[string]any{
 					"type":        "string",
 					"description": "The shell command to execute",
 				},
+
 				"timeout": map[string]any{
 					"type":        "integer",
 					"description": fmt.Sprintf("Timeout in seconds (default: %d)", defaultTimeout),
 				},
 			},
+
 			"required": []string{"command"},
 		},
+
 		Execute: executeShell,
 	}
 }
@@ -60,6 +65,7 @@ func isSafeCommand(command string) bool {
 	}
 
 	allowedSubcmds, hasSubcmds := safeSubcommandPrefixes[cmd]
+
 	if !hasSubcmds {
 		return false
 	}
@@ -69,6 +75,7 @@ func isSafeCommand(command string) bool {
 	}
 
 	restOfCommand := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(command, words[0])))
+
 	for _, subCmd := range allowedSubcmds {
 		if strings.HasPrefix(restOfCommand, subCmd) {
 			return true
@@ -107,6 +114,7 @@ func executeShell(ctx context.Context, env *tool.Environment, args map[string]an
 	defer cancel()
 
 	cmd := buildCommand(ctx, command, env.WorkingDir())
+
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
@@ -118,6 +126,7 @@ func executeShell(ctx context.Context, env *tool.Environment, args map[string]an
 	}
 
 	done := make(chan error, 1)
+
 	go func() {
 		done <- cmd.Wait()
 	}()
@@ -128,8 +137,7 @@ func executeShell(ctx context.Context, env *tool.Environment, args map[string]an
 
 		return "", fmt.Errorf("command timed out after %d seconds", timeout)
 	case err := <-done:
-		result := output.String()
-		truncated, tempFile := truncateOutput(result, env.ScratchDir())
+		truncated := truncateOutput(output.String(), env.ScratchDir())
 
 		if err != nil {
 			exitCode := -1
@@ -138,18 +146,9 @@ func executeShell(ctx context.Context, env *tool.Environment, args map[string]an
 				exitCode = exitErr.ExitCode()
 			}
 
-			msg := truncated
+			truncated += fmt.Sprintf("\n\nCommand exited with code %d", exitCode)
 
-			if tempFile != "" {
-				msg += fmt.Sprintf("\n\n[Output truncated. Full output saved to: %s]", tempFile)
-			}
-			msg += fmt.Sprintf("\n\nCommand exited with code %d", exitCode)
-
-			return msg, nil
-		}
-
-		if tempFile != "" {
-			truncated += fmt.Sprintf("\n\n[Output truncated. Full output saved to: %s]", tempFile)
+			return truncated, nil
 		}
 
 		return truncated, nil
@@ -157,54 +156,70 @@ func executeShell(ctx context.Context, env *tool.Environment, args map[string]an
 }
 
 func buildCommand(ctx context.Context, command, workingDir string) *exec.Cmd {
-	var cmd *exec.Cmd
-
 	if runtime.GOOS == "windows" {
-		// Use PowerShell on Windows for better compatibility with LLM-generated commands.
-		// PowerShell handles Unix-style quoting and escaping much better than cmd.exe:
-		// - Backslash-escaped quotes (\") work as expected
-		// - Single quotes work as string delimiters
-		// - More consistent behavior with Unix shells
-		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-NoLogo", "-NonInteractive", "-Command", command)
-	} else {
-		shell := os.Getenv("SHELL")
+		cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NoLogo", "-NonInteractive", "-Command", command)
+		cmd.Dir = workingDir
 
-		if shell == "" {
-			shell = "/bin/sh"
-		}
-		cmd = exec.CommandContext(ctx, shell, "-c", command)
+		setupProcessGroup(cmd)
+
+		return cmd
 	}
 
+	shell := os.Getenv("SHELL")
+
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+
+	cmd := exec.CommandContext(ctx, shell, "-c", command)
 	cmd.Dir = workingDir
+
 	setupProcessGroup(cmd)
 
 	return cmd
 }
 
-func truncateOutput(output string, sessionDir string) (truncated string, tempFile string) {
-	lines := strings.Split(output, "\n")
-	byteCount := len(output)
+func truncateOutput(output string, sessionDir string) string {
+	totalLines := strings.Count(output, "\n") + 1
+	totalBytes := len(output)
 
-	needsTruncation := len(lines) > maxLines || byteCount > maxBytes
+	needsTruncation := totalLines > maxLines || totalBytes > maxBytes
 
 	if !needsTruncation {
-		return output, ""
+		return output
 	}
+
+	var tempFile string
 
 	if sessionDir != "" {
 		tempFile = filepath.Join(sessionDir, fmt.Sprintf("output-%d.txt", time.Now().UnixNano()))
 		os.WriteFile(tempFile, []byte(output), 0644)
 	}
 
+	lines := strings.Split(output, "\n")
+
 	if len(lines) > maxLines {
 		lines = lines[len(lines)-maxLines:]
 	}
 
-	truncated = strings.Join(lines, "\n")
+	truncated := strings.Join(lines, "\n")
 
 	if len(truncated) > maxBytes {
 		truncated = truncated[len(truncated)-maxBytes:]
 	}
 
-	return truncated, tempFile
+	shownLines := strings.Count(truncated, "\n") + 1
+	shownBytes := len(truncated)
+
+	var notice string
+
+	if tempFile != "" {
+		notice = fmt.Sprintf("[Output truncated: showing last %d of %d lines (%d of %d bytes). Full output: %s]\n\n",
+			shownLines, totalLines, shownBytes, totalBytes, tempFile)
+	} else {
+		notice = fmt.Sprintf("[Output truncated: showing last %d of %d lines (%d of %d bytes)]\n\n",
+			shownLines, totalLines, shownBytes, totalBytes)
+	}
+
+	return notice + truncated
 }

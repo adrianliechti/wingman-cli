@@ -85,6 +85,8 @@ func (a *Agent) Send(ctx context.Context, instructions string, input []Content, 
 			if err := a.compact(ctx); err != nil {
 				yield(Message{}, err)
 			}
+
+			a.usage.OutputTokens = 0
 		}
 	}
 }
@@ -193,7 +195,20 @@ func formatTools(tools []tool.Tool) []responses.ToolUnionParam {
 	var result []responses.ToolUnionParam
 
 	for _, t := range tools {
-		result = append(result, responses.ToolParamOfFunction(t.Name, t.Parameters, false))
+
+		f := &responses.FunctionToolParam{
+			Name:       t.Name,
+			Parameters: t.Parameters,
+			Strict:     openai.Bool(false),
+		}
+
+		if t.Description != "" {
+			f.Description = openai.String(t.Description)
+		}
+
+		result = append(result, responses.ToolUnionParam{
+			OfFunction: f,
+		})
 	}
 
 	return result
