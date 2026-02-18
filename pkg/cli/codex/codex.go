@@ -5,16 +5,33 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/adrianliechti/wingman-cli/pkg/cli"
 )
 
-func Run(ctx context.Context, args []string) error {
-	cfg, err := NewConfig(ctx)
+func Run(ctx context.Context, args []string, options *cli.RunOptions) error {
+	if options == nil {
+		options = new(cli.RunOptions)
+	}
+
+	if options.Path == "" {
+		options.Path = "codex"
+	}
+
+	if options.Env == nil {
+		options.Env = os.Environ()
+	}
+
+	cfg, err := NewConfig(ctx, options)
 
 	if err != nil {
 		return err
 	}
 
 	url := strings.TrimRight(cfg.BaseURL, "/") + "/v1"
+
+	env := options.Env
+	env = append(env, "WINGMAN_TOKEN="+cfg.AuthToken)
 
 	arg := []string{
 		"--config", "model=\"" + cfg.Model + "\"",
@@ -39,7 +56,9 @@ func Run(ctx context.Context, args []string) error {
 
 	args = append(arg, args...)
 
-	cmd := exec.Command("codex", args...)
+	cmd := exec.Command(options.Path, args...)
+	cmd.Env = env
+
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

@@ -4,10 +4,24 @@ import (
 	"context"
 	"os"
 	"os/exec"
+
+	"github.com/adrianliechti/wingman-cli/pkg/cli"
 )
 
-func Run(ctx context.Context, args []string) error {
-	cfg, err := NewConfig(ctx)
+func Run(ctx context.Context, args []string, options *cli.RunOptions) error {
+	if options == nil {
+		options = new(cli.RunOptions)
+	}
+
+	if options.Path == "" {
+		options.Path = "claude"
+	}
+
+	if options.Env == nil {
+		options.Env = os.Environ()
+	}
+
+	cfg, err := NewConfig(ctx, options)
 
 	if err != nil {
 		return err
@@ -30,14 +44,15 @@ func Run(ctx context.Context, args []string) error {
 		"ANTHROPIC_DEFAULT_SONNET_MODEL": cfg.SonnetModel,
 	}
 
-	env := os.Environ()
+	env := options.Env
 
 	for k, v := range vars {
 		env = append(env, k+"="+v)
 	}
 
-	cmd := exec.Command("claude", args...)
+	cmd := exec.Command(options.Path, args...)
 	cmd.Env = env
+
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

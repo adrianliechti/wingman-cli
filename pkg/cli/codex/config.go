@@ -7,6 +7,8 @@ import (
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+
+	"github.com/adrianliechti/wingman-cli/pkg/cli"
 )
 
 type CodexConfig struct {
@@ -16,21 +18,34 @@ type CodexConfig struct {
 	Model string
 }
 
-func NewConfig(ctx context.Context) (*CodexConfig, error) {
-	baseURL := os.Getenv("WINGMAN_URL")
-	authToken := os.Getenv("WINGMAN_TOKEN")
-
-	if baseURL == "" {
-		baseURL = "http://localhost:4242"
+func NewConfig(ctx context.Context, options *cli.RunOptions) (*CodexConfig, error) {
+	if options == nil {
+		options = new(cli.RunOptions)
 	}
 
-	if authToken == "" {
-		authToken = "-"
+	if options.WingmanURL == "" {
+		val := os.Getenv("WINGMAN_URL")
+
+		if val == "" {
+			val = "http://localhost:4242"
+		}
+
+		options.WingmanURL = val
+	}
+
+	if options.WingmanToken == "" {
+		val := os.Getenv("WINGMAN_TOKEN")
+
+		if val == "" {
+			val = "-"
+		}
+
+		options.WingmanToken = val
 	}
 
 	client := openai.NewClient(
-		option.WithBaseURL(strings.TrimRight(baseURL, "/")+"/v1"),
-		option.WithAPIKey(authToken),
+		option.WithBaseURL(strings.TrimRight(options.WingmanURL, "/")+"/v1"),
+		option.WithAPIKey(options.WingmanToken),
 	)
 
 	iter := client.Models.ListAutoPaging(ctx)
@@ -46,8 +61,8 @@ func NewConfig(ctx context.Context) (*CodexConfig, error) {
 	}
 
 	cfg := &CodexConfig{
-		BaseURL:   baseURL,
-		AuthToken: authToken,
+		BaseURL:   options.WingmanURL,
+		AuthToken: options.WingmanToken,
 	}
 
 	pick := func(candidates ...string) string {
