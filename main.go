@@ -30,7 +30,7 @@ func main() {
 		}
 
 		if os.Args[1] == "opencode" {
-			opencode.Run(os.Args[2:])
+			opencode.Run(ctx, os.Args[2:])
 			return
 		}
 	}
