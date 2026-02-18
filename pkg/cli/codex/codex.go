@@ -1,28 +1,23 @@
 package codex
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"strings"
 )
 
-func Run(args []string) {
-	model := os.Getenv("WINGMAN_MODEL")
+func Run(ctx context.Context, args []string) error {
+	cfg, err := NewConfig(ctx)
 
-	if model != "" {
-		model = "gpt-5.2-codex"
+	if err != nil {
+		return err
 	}
 
-	url := os.Getenv("WINGMAN_URL")
-
-	if url == "" {
-		url = "http://localhost:4242"
-	}
-
-	url = strings.TrimRight(url, "/") + "/v1"
+	url := strings.TrimRight(cfg.BaseURL, "/") + "/v1"
 
 	arg := []string{
-		"--config", "model=\"" + model + "\"",
+		"--config", "model=\"" + cfg.Model + "\"",
 
 		"--config", "model_provider=\"wingman\"",
 
@@ -31,8 +26,15 @@ func Run(args []string) {
 		"--config", "model_providers.wingman.env_key=\"WINGMAN_TOKEN\"",
 		"--config", "model_providers.wingman.requires_openai_auth=false",
 
+		"--config", "tui.show_tooltips=false",
+
+		"--config", "web_search=\"disabled\"",
+		"--config", "features.remote_models=false",
+
 		"--config", "feedback.enabled=false",
 		"--config", "analytics.enabled=false",
+
+		"--config", "check_for_update_on_startup=false",
 	}
 
 	args = append(arg, args...)
@@ -42,5 +44,5 @@ func Run(args []string) {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	cmd.Run()
+	return cmd.Run()
 }

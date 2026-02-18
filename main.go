@@ -25,7 +25,7 @@ func main() {
 		}
 
 		if os.Args[1] == "codex" {
-			codex.Run(os.Args[2:])
+			codex.Run(ctx, os.Args[2:])
 			return
 		}
 
