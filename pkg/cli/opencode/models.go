@@ -101,17 +101,17 @@ var candidates = []modelGroup{
 		name: "Wingman Devstral",
 
 		models: []modelEntry{
-			{id: "devstral", inputTokens: 256000, outputTokens: 256000},
-			{id: "devstral-medium", inputTokens: 256000, outputTokens: 256000},
 			{id: "devstral-medium-latest", inputTokens: 256000, outputTokens: 256000},
+			{id: "devstral-medium", inputTokens: 256000, outputTokens: 256000},
+			{id: "devstral", inputTokens: 256000, outputTokens: 256000},
 		},
 	},
 	{
 		name: "Wingman Devstral Small",
 
 		models: []modelEntry{
-			{id: "devstral-small", inputTokens: 256000, outputTokens: 256000},
 			{id: "devstral-small-latest", inputTokens: 256000, outputTokens: 256000},
+			{id: "devstral-small", inputTokens: 256000, outputTokens: 256000},
 		},
 	},
 

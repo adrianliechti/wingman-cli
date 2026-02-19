@@ -11,6 +11,8 @@ import (
 	"github.com/adrianliechti/wingman-cli/pkg/cli"
 )
 
+type RunOptions = cli.RunOptions
+
 type ClaudeConfig struct {
 	BaseURL   string
 	AuthToken string
@@ -20,9 +22,9 @@ type ClaudeConfig struct {
 	SonnetModel string
 }
 
-func NewConfig(ctx context.Context, options *cli.RunOptions) (*ClaudeConfig, error) {
+func NewConfig(ctx context.Context, options *RunOptions) (*ClaudeConfig, error) {
 	if options == nil {
-		options = new(cli.RunOptions)
+		options = new(RunOptions)
 	}
 
 	if options.WingmanURL == "" {

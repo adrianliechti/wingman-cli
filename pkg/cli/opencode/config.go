@@ -12,9 +12,11 @@ import (
 	"github.com/adrianliechti/wingman-cli/pkg/cli"
 )
 
-func NewConfig(ctx context.Context, options *cli.RunOptions) (string, error) {
+type RunOptions = cli.RunOptions
+
+func NewConfig(ctx context.Context, options *RunOptions) (string, error) {
 	if options == nil {
-		options = new(cli.RunOptions)
+		options = new(RunOptions)
 	}
 
 	if options.WingmanURL == "" {

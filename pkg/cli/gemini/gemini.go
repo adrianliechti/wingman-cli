@@ -1,4 +1,4 @@
-package opencode
+package gemini
 
 import (
 	"context"
@@ -12,7 +12,7 @@ func Run(ctx context.Context, args []string, options *RunOptions) error {
 	}
 
 	if options.Path == "" {
-		options.Path = "opencode"
+		options.Path = "gemini"
 	}
 
 	if options.Env == nil {
@@ -25,8 +25,23 @@ func Run(ctx context.Context, args []string, options *RunOptions) error {
 		return err
 	}
 
+	vars := map[string]string{
+		"GOOGLE_GEMINI_BASE_URL": cfg.BaseURL,
+
+		"GEMINI_DEFAULT_AUTH_TYPE":      "gemini-api-key",
+		"GEMINI_API_KEY":                cfg.AuthToken,
+		"GEMINI_API_KEY_AUTH_MECHANISM": "bearer",
+
+		"GEMINI_MODEL": cfg.Model,
+
+		"GEMINI_TELEMETRY_ENABLED": "false",
+	}
+
 	env := options.Env
-	env = append(env, "OPENCODE_CONFIG_CONTENT="+cfg)
+
+	for k, v := range vars {
+		env = append(env, k+"="+v)
+	}
 
 	cmd := exec.Command(options.Path, args...)
 	cmd.Env = env

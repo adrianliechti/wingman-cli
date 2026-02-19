@@ -5,13 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-
-	"github.com/adrianliechti/wingman-cli/pkg/cli"
 )
 
-func Run(ctx context.Context, args []string, options *cli.RunOptions) error {
+func Run(ctx context.Context, args []string, options *RunOptions) error {
 	if options == nil {
-		options = new(cli.RunOptions)
+		options = new(RunOptions)
 	}
 
 	if options.Path == "" {

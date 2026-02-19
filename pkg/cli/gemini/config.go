@@ -1,4 +1,4 @@
-package codex
+package gemini
 
 import (
 	"context"
@@ -13,14 +13,14 @@ import (
 
 type RunOptions = cli.RunOptions
 
-type CodexConfig struct {
+type GeminiConfig struct {
 	BaseURL   string
 	AuthToken string
 
 	Model string
 }
 
-func NewConfig(ctx context.Context, options *RunOptions) (*CodexConfig, error) {
+func NewConfig(ctx context.Context, options *RunOptions) (*GeminiConfig, error) {
 	if options == nil {
 		options = new(RunOptions)
 	}
@@ -62,7 +62,7 @@ func NewConfig(ctx context.Context, options *RunOptions) (*CodexConfig, error) {
 		return nil, err
 	}
 
-	cfg := &CodexConfig{
+	cfg := &GeminiConfig{
 		BaseURL:   options.WingmanURL,
 		AuthToken: options.WingmanToken,
 	}
@@ -77,24 +77,14 @@ func NewConfig(ctx context.Context, options *RunOptions) (*CodexConfig, error) {
 	}
 
 	cfg.Model = pick(
-		// Codex models
-		"gpt-5.3-codex",
-		"gpt-5.2-codex",
-		"gpt-5.1-codex-max",
-		"gpt-5.1-codex",
-		"gpt-5-codex",
+		// Gemini Pro models
+		"gemini-3.1-pro-preview",
+		"gemini-3-pro-preview",
+		"gemini-2.5-pro",
 
-		// Codex Mini models
-		"gpt-5.3-codex-spark",
-		"gpt-5.1-codex-mini",
-
-		// ChatGPT models
-		"gpt-5.2",
-		"gpt-5.1",
-		"gpt-5",
-
-		// ChatGPT Mini models
-		"gpt-5-mini",
+		// Gemini Flash models
+		"gemini-3-flash-preview",
+		"gemini-2.5-flash",
 	)
 
 	return cfg, nil
