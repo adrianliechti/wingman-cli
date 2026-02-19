@@ -82,7 +82,7 @@ var candidates = []modelGroup{
 		name: "Wingman Gemini Pro",
 
 		models: []modelEntry{
-			{id: "gemini-3-pro", inputTokens: 200000, outputTokens: 64000},
+			{id: "gemini-3.1-pro-preview", inputTokens: 200000, outputTokens: 64000},
 			{id: "gemini-3-pro-preview", inputTokens: 200000, outputTokens: 64000},
 			{id: "gemini-2.5-pro", inputTokens: 200000, outputTokens: 64000},
 		},
@@ -91,7 +91,6 @@ var candidates = []modelGroup{
 		name: "Wingman Gemini Flash",
 
 		models: []modelEntry{
-			{id: "gemini-3-flash", inputTokens: 200000, outputTokens: 64000},
 			{id: "gemini-3-flash-preview", inputTokens: 200000, outputTokens: 64000},
 			{id: "gemini-2.5-flash", inputTokens: 200000, outputTokens: 64000},
 		},
