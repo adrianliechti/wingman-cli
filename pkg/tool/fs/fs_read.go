@@ -73,7 +73,14 @@ func ReadTool() tool.Tool {
 				end = offset + limit
 			}
 
-			selected := strings.Join(lines[offset:end], "\n")
+			var numbered []string
+
+			for i, line := range lines[offset:end] {
+				lineNum := offset + i + 1
+				numbered = append(numbered, fmt.Sprintf("%6d\t%s", lineNum, line))
+			}
+
+			selected := strings.Join(numbered, "\n")
 			output, truncatedByLines, truncatedByBytes := truncateHead(selected)
 
 			outputLines := len(strings.Split(output, "\n"))
