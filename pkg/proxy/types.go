@@ -2,6 +2,19 @@ package proxy
 
 import "time"
 
+type UserInfo struct {
+	Name  string
+	Email string
+}
+
+type ProxyOptions struct {
+	Port  int
+	URL   string
+	Token string
+
+	User *UserInfo
+}
+
 type RequestEntry struct {
 	ID        int
 	Timestamp time.Time

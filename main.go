@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 
@@ -22,7 +23,11 @@ func main() {
 
 	if len(os.Args) > 1 && os.Getenv("WINGMAN_URL") != "" {
 		if os.Args[1] == "proxy" {
-			if err := proxy.Run(ctx, os.Args[2:]); err != nil {
+			fs := flag.NewFlagSet("proxy", flag.ExitOnError)
+			port := fs.Int("port", 4242, "port to listen on")
+			fs.Parse(os.Args[2:])
+
+			if err := proxy.Run(ctx, proxy.ProxyOptions{Port: *port}); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}

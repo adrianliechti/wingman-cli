@@ -1,23 +1,101 @@
 package proxy
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
+	"net/http/httputil"
+	"net/url"
 	"time"
 )
 
-func startServer(ctx context.Context, addr, upstream, token string, store *Store) error {
-	upstream = strings.TrimRight(upstream, "/")
+type contextKey struct{}
+
+func startServer(ctx context.Context, addr, upstream, token string, user *UserInfo, store *Store) error {
+	target, err := url.Parse(upstream)
+	if err != nil {
+		return fmt.Errorf("invalid upstream URL: %w", err)
+	}
+
+	rp := &httputil.ReverseProxy{
+		FlushInterval: -1,
+		Director: func(req *http.Request) {
+			req.URL.Scheme = target.Scheme
+			req.URL.Host = target.Host
+			req.URL.Path = target.Path + req.URL.Path
+			req.Host = ""
+
+			if token != "" && req.Header.Get("Authorization") == "" {
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
+
+			if user != nil {
+				if user.Name != "" {
+					req.Header.Set("X-Forwarded-User", user.Name)
+				}
+
+				if user.Email != "" {
+					req.Header.Set("X-Forwarded-Email", user.Email)
+				}
+			}
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if p, ok := r.Context().Value(contextKey{}).(*string); ok {
+				*p = err.Error()
+			}
+
+			http.Error(w, "upstream request failed", http.StatusBadGateway)
+		},
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		handleProxy(w, r, upstream, token, store)
+		start := time.Now()
+
+		reqBody, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(reqBody))
+
+		model := extractModel(reqBody)
+		streaming := extractStreaming(reqBody)
+
+		var upstreamErr string
+		r = r.WithContext(context.WithValue(r.Context(), contextKey{}, &upstreamErr))
+
+		crw := &capturingResponseWriter{ResponseWriter: w, status: http.StatusOK}
+		rp.ServeHTTP(crw, r)
+
+		respBody := crw.body.Bytes()
+
+		entry := RequestEntry{
+			Timestamp:    start,
+			Method:       r.Method,
+			Path:         r.URL.Path,
+			Status:       crw.status,
+			Duration:     time.Since(start),
+			Model:        model,
+			Streaming:    streaming,
+			RequestBody:  reqBody,
+			ResponseBody: respBody,
+			Error:        upstreamErr,
+		}
+
+		if upstreamErr == "" {
+			var meta Metadata
+			if streaming {
+				meta = extractMetadataSSE(r.URL.Path, reqBody, respBody)
+			} else {
+				meta = extractMetadata(r.URL.Path, reqBody, respBody)
+			}
+
+			entry.Model = meta.Model
+			entry.InputTokens = meta.InputTokens
+			entry.OutputTokens = meta.OutputTokens
+		}
+
+		store.Add(entry)
 	})
 
 	server := &http.Server{
@@ -41,133 +119,26 @@ func startServer(ctx context.Context, addr, upstream, token string, store *Store
 	return nil
 }
 
-func handleProxy(w http.ResponseWriter, r *http.Request, upstream, token string, store *Store) {
-	start := time.Now()
-
-	reqBody, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "failed to read request body", http.StatusBadGateway)
-		return
-	}
-	r.Body.Close()
-
-	model := extractModel(reqBody)
-	streaming := extractStreaming(reqBody)
-
-	targetURL := upstream + r.URL.Path
-	if r.URL.RawQuery != "" {
-		targetURL += "?" + r.URL.RawQuery
-	}
-
-	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, bytes.NewReader(reqBody))
-	if err != nil {
-		http.Error(w, "failed to create upstream request", http.StatusBadGateway)
-		return
-	}
-
-	for key, values := range r.Header {
-		for _, v := range values {
-			proxyReq.Header.Add(key, v)
-		}
-	}
-
-	proxyReq.Header.Del("Host")
-
-	if token != "" && proxyReq.Header.Get("Authorization") == "" {
-		proxyReq.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	resp, err := http.DefaultClient.Do(proxyReq)
-	if err != nil {
-		entry := RequestEntry{
-			Timestamp:   start,
-			Method:      r.Method,
-			Path:        r.URL.Path,
-			Duration:    time.Since(start),
-			Model:       model,
-			Streaming:   streaming,
-			RequestBody: reqBody,
-			Error:       err.Error(),
-		}
-		store.Add(entry)
-
-		http.Error(w, "upstream request failed", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-
-	entry := RequestEntry{
-		Timestamp:   start,
-		Method:      r.Method,
-		Path:        r.URL.Path,
-		Status:      resp.StatusCode,
-		Model:       model,
-		Streaming:   streaming,
-		RequestBody: reqBody,
-	}
-
-	if streaming && resp.StatusCode == http.StatusOK && strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		respBody := handleSSE(w, resp, r)
-		entry.ResponseBody = respBody
-		entry.Duration = time.Since(start)
-
-		meta := extractMetadataSSE(r.URL.Path, reqBody, respBody)
-		entry.Model = meta.Model
-		entry.InputTokens = meta.InputTokens
-		entry.OutputTokens = meta.OutputTokens
-	} else {
-		respBody, _ := io.ReadAll(resp.Body)
-		entry.ResponseBody = respBody
-		entry.Duration = time.Since(start)
-
-		meta := extractMetadata(r.URL.Path, reqBody, respBody)
-		entry.Model = meta.Model
-		entry.InputTokens = meta.InputTokens
-		entry.OutputTokens = meta.OutputTokens
-
-		for key, values := range resp.Header {
-			for _, v := range values {
-				w.Header().Add(key, v)
-			}
-		}
-		w.WriteHeader(resp.StatusCode)
-		w.Write(respBody)
-	}
-
-	store.Add(entry)
+type capturingResponseWriter struct {
+	http.ResponseWriter
+	status int
+	body   bytes.Buffer
 }
 
-func handleSSE(w http.ResponseWriter, resp *http.Response, r *http.Request) []byte {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		body, _ := io.ReadAll(resp.Body)
-		w.Write(body)
-		return body
+func (c *capturingResponseWriter) WriteHeader(status int) {
+	c.status = status
+	c.ResponseWriter.WriteHeader(status)
+}
+
+func (c *capturingResponseWriter) Write(b []byte) (int, error) {
+	c.body.Write(b)
+	return c.ResponseWriter.Write(b)
+}
+
+func (c *capturingResponseWriter) Flush() {
+	if f, ok := c.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
 	}
-
-	for key, values := range resp.Header {
-		for _, v := range values {
-			w.Header().Add(key, v)
-		}
-	}
-	w.WriteHeader(resp.StatusCode)
-
-	var buf bytes.Buffer
-	scanner := bufio.NewScanner(resp.Body)
-
-	// increase buffer for large SSE chunks
-	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		buf.WriteString(line)
-		buf.WriteString("\n")
-
-		fmt.Fprintf(w, "%s\n", line)
-		flusher.Flush()
-	}
-
-	return buf.Bytes()
 }
 
 func extractModel(body []byte) string {

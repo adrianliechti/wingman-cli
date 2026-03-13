@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"strings"
@@ -10,19 +9,26 @@ import (
 	"github.com/adrianliechti/wingman-cli/pkg/theme"
 )
 
-func Run(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("proxy", flag.ExitOnError)
+func Run(ctx context.Context, opts ProxyOptions) error {
+	upstream := opts.URL
+	if upstream == "" {
+		upstream = os.Getenv("WINGMAN_URL")
+	}
+	upstream = strings.TrimRight(upstream, "/")
 
-	port := fs.Int("port", 4242, "port to listen on")
+	token := opts.Token
+	if token == "" {
+		token = os.Getenv("WINGMAN_TOKEN")
+	}
 
-	fs.Parse(args)
-
-	upstream := strings.TrimRight(os.Getenv("WINGMAN_URL"), "/")
-	token := os.Getenv("WINGMAN_TOKEN")
+	port := opts.Port
+	if port == 0 {
+		port = 4242
+	}
 
 	theme.Auto()
 
-	listenAddr := fmt.Sprintf("localhost:%d", *port)
+	listenAddr := fmt.Sprintf("localhost:%d", port)
 	store := NewStore()
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -32,7 +38,7 @@ func Run(ctx context.Context, args []string) error {
 	errCh := make(chan error, 1)
 
 	go func() {
-		errCh <- startServer(ctx, listenAddr, upstream, token, store)
+		errCh <- startServer(ctx, listenAddr, upstream, token, opts.User, store)
 	}()
 
 	// Start TUI
