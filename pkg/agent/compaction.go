@@ -129,6 +129,7 @@ const maxSummaryContentLength = 3000
 
 func (a *Agent) summarize(ctx context.Context, messages []responses.ResponseInputItemUnionParam) (string, error) {
 	var conversation strings.Builder
+	var lastToolName string
 
 	for _, msg := range messages {
 		if msg.OfMessage != nil {
@@ -136,11 +137,16 @@ func (a *Agent) summarize(ctx context.Context, messages []responses.ResponseInpu
 				content := msg.OfMessage.Content.OfString.Value
 				role := string(msg.OfMessage.Role)
 
+				if strings.HasPrefix(content, "<conversation_summary>") {
+					continue
+				}
+
 				conversation.WriteString("[" + role + "]\n" + content + "\n\n")
 			}
 		}
 
 		if msg.OfFunctionCall != nil {
+			lastToolName = msg.OfFunctionCall.Name
 			args := msg.OfFunctionCall.Arguments
 
 			if len(args) > maxSummaryContentLength {
@@ -158,7 +164,7 @@ func (a *Agent) summarize(ctx context.Context, messages []responses.ResponseInpu
 					output = output[:maxSummaryContentLength] + "...[truncated]"
 				}
 
-				conversation.WriteString("[Tool Result]\n" + output + "\n\n")
+				conversation.WriteString("[Tool Result: " + lastToolName + "]\n" + output + "\n\n")
 			}
 		}
 	}
