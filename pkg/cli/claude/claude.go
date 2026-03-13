@@ -46,6 +46,7 @@ func Run(ctx context.Context, args []string, options *RunOptions) error {
 		"CLAUDE_CODE_DISABLE_1M_CONTEXT":        "1",
 		"CLAUDE_CODE_DISABLE_FAST_MODE":         "1",
 		"CLAUDE_CODE_DISABLE_AUTO_MEMORY":       "1",
+		"CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS":  "1",
 		"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS":  "1",
 		"CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": "1",
 
