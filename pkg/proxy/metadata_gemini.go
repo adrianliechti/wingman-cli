@@ -7,7 +7,7 @@ import (
 
 // Gemini: /v1beta/models/{model}:generateContent, /v1beta/models/{model}:streamGenerateContent
 
-func metadataFromGemini(reqBody, respBody []byte, path string) Metadata {
+func metadataFromGemini(respBody []byte, path string) Metadata {
 	var m Metadata
 
 	m.Model = extractGeminiModel(path)
@@ -36,13 +36,13 @@ func metadataFromGemini(reqBody, respBody []byte, path string) Metadata {
 	return m
 }
 
-func metadataFromGeminiSSE(reqBody, sseBody []byte, path string) Metadata {
+func metadataFromGeminiSSE(sseBody []byte, path string) Metadata {
 	var m Metadata
 
 	m.Model = extractGeminiModel(path)
 
 	// last SSE chunk has cumulative usageMetadata
-	for _, data := range sseDataReverse(sseBody) {
+	for _, data := range sseData(sseBody) {
 		var obj struct {
 			ModelVersion  string `json:"modelVersion"`
 			UsageMetadata struct {
@@ -51,19 +51,20 @@ func metadataFromGeminiSSE(reqBody, sseBody []byte, path string) Metadata {
 			} `json:"usageMetadata"`
 		}
 
-		if json.Unmarshal([]byte(data), &obj) == nil {
-			in := obj.UsageMetadata.PromptTokenCount
-			out := obj.UsageMetadata.CandidatesTokenCount
+		if json.Unmarshal([]byte(data), &obj) != nil {
+			continue
+		}
 
-			if in > 0 || out > 0 {
-				if obj.ModelVersion != "" {
-					m.Model = obj.ModelVersion
-				}
+		in := obj.UsageMetadata.PromptTokenCount
+		out := obj.UsageMetadata.CandidatesTokenCount
 
-				m.InputTokens = in
-				m.OutputTokens = out
-				return m
+		if in > 0 || out > 0 {
+			if obj.ModelVersion != "" {
+				m.Model = obj.ModelVersion
 			}
+
+			m.InputTokens = in
+			m.OutputTokens = out
 		}
 	}
 
@@ -74,15 +75,16 @@ func metadataFromGeminiSSE(reqBody, sseBody []byte, path string) Metadata {
 // e.g. /v1beta/models/gemini-pro:generateContent -> gemini-pro
 func extractGeminiModel(path string) string {
 	for _, prefix := range []string{"/v1/models/", "/v1beta/models/"} {
-		if strings.HasPrefix(path, prefix) {
-			rest := strings.TrimPrefix(path, prefix)
-
-			if idx := strings.Index(rest, ":"); idx >= 0 {
-				return rest[:idx]
-			}
-
-			return rest
+		rest, ok := strings.CutPrefix(path, prefix)
+		if !ok {
+			continue
 		}
+
+		if model, _, ok := strings.Cut(rest, ":"); ok {
+			return model
+		}
+
+		return rest
 	}
 
 	return ""

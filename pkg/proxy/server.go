@@ -16,19 +16,21 @@ type contextKey struct{}
 
 func startServer(ctx context.Context, addr, upstream, token string, user *UserInfo, store *Store) error {
 	target, err := url.Parse(upstream)
+
 	if err != nil {
 		return fmt.Errorf("invalid upstream URL: %w", err)
 	}
 
 	rp := &httputil.ReverseProxy{
 		FlushInterval: -1,
+
 		Director: func(req *http.Request) {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.URL.Path = target.Path + req.URL.Path
 			req.Host = ""
 
-			if token != "" && req.Header.Get("Authorization") == "" {
+			if token != "" {
 				req.Header.Set("Authorization", "Bearer "+token)
 			}
 
@@ -42,6 +44,7 @@ func startServer(ctx context.Context, addr, upstream, token string, user *UserIn
 				}
 			}
 		},
+
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			if p, ok := r.Context().Value(contextKey{}).(*string); ok {
 				*p = err.Error()
@@ -52,13 +55,19 @@ func startServer(ctx context.Context, addr, upstream, token string, user *UserIn
 	}
 
 	mux := http.NewServeMux()
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
-		reqBody, _ := io.ReadAll(r.Body)
+		reqBody, err := io.ReadAll(r.Body)
+
+		if err != nil {
+			http.Error(w, "failed to read request body", http.StatusBadRequest)
+			return
+		}
+
 		r.Body = io.NopCloser(bytes.NewReader(reqBody))
 
-		model := extractModel(reqBody)
 		streaming := extractStreaming(reqBody)
 
 		var upstreamErr string
@@ -75,7 +84,6 @@ func startServer(ctx context.Context, addr, upstream, token string, user *UserIn
 			Path:         r.URL.Path,
 			Status:       crw.status,
 			Duration:     time.Since(start),
-			Model:        model,
 			Streaming:    streaming,
 			RequestBody:  reqBody,
 			ResponseBody: respBody,
@@ -93,6 +101,8 @@ func startServer(ctx context.Context, addr, upstream, token string, user *UserIn
 			entry.Model = meta.Model
 			entry.InputTokens = meta.InputTokens
 			entry.OutputTokens = meta.OutputTokens
+		} else {
+			entry.Model = extractModel(reqBody)
 		}
 
 		store.Add(entry)
@@ -163,11 +173,11 @@ func extractStreaming(body []byte) bool {
 	}
 
 	var obj struct {
-		Stream any `json:"stream"`
+		Stream *bool `json:"stream"`
 	}
 
-	if json.Unmarshal(body, &obj) == nil {
-		return obj.Stream != nil && obj.Stream != false
+	if json.Unmarshal(body, &obj) == nil && obj.Stream != nil {
+		return *obj.Stream
 	}
 
 	return false

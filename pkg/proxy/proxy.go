@@ -10,18 +10,19 @@ import (
 )
 
 func Run(ctx context.Context, opts ProxyOptions) error {
-	upstream := opts.URL
-	if upstream == "" {
-		upstream = os.Getenv("WINGMAN_URL")
-	}
-	upstream = strings.TrimRight(upstream, "/")
-
 	token := opts.Token
+	target := strings.TrimRight(opts.URL, "/")
+
 	if token == "" {
 		token = os.Getenv("WINGMAN_TOKEN")
 	}
 
+	if target == "" {
+		target = os.Getenv("WINGMAN_URL")
+	}
+
 	port := opts.Port
+
 	if port == 0 {
 		port = 4242
 	}
@@ -38,11 +39,11 @@ func Run(ctx context.Context, opts ProxyOptions) error {
 	errCh := make(chan error, 1)
 
 	go func() {
-		errCh <- startServer(ctx, listenAddr, upstream, token, opts.User, store)
+		errCh <- startServer(ctx, listenAddr, target, token, opts.User, store)
 	}()
 
 	// Start TUI
-	ui := newTUI(store, listenAddr, upstream)
+	ui := newTUI(store, listenAddr, target)
 
 	go func() {
 		if err := <-errCh; err != nil {
@@ -52,11 +53,5 @@ func Run(ctx context.Context, opts ProxyOptions) error {
 		}
 	}()
 
-	if err := ui.Run(); err != nil {
-		cancel()
-		return err
-	}
-
-	cancel()
-	return nil
+	return ui.Run()
 }

@@ -39,7 +39,7 @@ func metadataFromAnthropicSSE(reqBody, sseBody []byte) Metadata {
 
 	// message_start contains model + input tokens
 	// message_delta contains output tokens
-	for _, data := range sseDataForward(sseBody) {
+	for _, data := range sseData(sseBody) {
 		var msg struct {
 			Type    string `json:"type"`
 			Message struct {

@@ -483,7 +483,16 @@ func (t *tui) saveEntry(entry RequestEntry) {
 		}
 	}
 
-	os.WriteFile(name, []byte(buf.String()), 0644)
+	if err := os.WriteFile(name, []byte(buf.String()), 0644); err != nil {
+		t.app.QueueUpdateDraw(func() {
+			t.statusBar.SetText(fmt.Sprintf("[red]Save failed: %v[-]", err))
+		})
+		return
+	}
+
+	t.app.QueueUpdateDraw(func() {
+		t.statusBar.SetText(fmt.Sprintf("[green]Saved to %s[-]", name))
+	})
 }
 
 func formatTokenCount(n int) string {

@@ -39,7 +39,7 @@ func metadataFromOpenAISSE(reqBody, sseBody []byte) Metadata {
 
 	m.Model = extractJSONField(reqBody, "model")
 
-	for _, data := range sseDataReverse(sseBody) {
+	for _, data := range sseData(sseBody) {
 		var obj struct {
 			Usage struct {
 				PromptTokens     int `json:"prompt_tokens"`
@@ -49,15 +49,16 @@ func metadataFromOpenAISSE(reqBody, sseBody []byte) Metadata {
 			} `json:"usage"`
 		}
 
-		if json.Unmarshal([]byte(data), &obj) == nil {
-			in := obj.Usage.PromptTokens + obj.Usage.InputTokens
-			out := obj.Usage.CompletionTokens + obj.Usage.OutputTokens
+		if json.Unmarshal([]byte(data), &obj) != nil {
+			continue
+		}
 
-			if in > 0 || out > 0 {
-				m.InputTokens = in
-				m.OutputTokens = out
-				return m
-			}
+		in := obj.Usage.PromptTokens + obj.Usage.InputTokens
+		out := obj.Usage.CompletionTokens + obj.Usage.OutputTokens
+
+		if in > 0 || out > 0 {
+			m.InputTokens = in
+			m.OutputTokens = out
 		}
 	}
 
