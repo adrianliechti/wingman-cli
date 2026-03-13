@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/adrianliechti/wingman-cli/pkg/theme"
 )
@@ -13,15 +14,11 @@ func Run(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("proxy", flag.ExitOnError)
 
 	port := fs.Int("port", 4242, "port to listen on")
-	upstream := fs.String("upstream", "", "upstream OpenAI-compatible API URL (required)")
 
 	fs.Parse(args)
 
-	if *upstream == "" {
-		fmt.Fprintln(os.Stderr, "Error: --upstream is required")
-		fmt.Fprintln(os.Stderr, "Usage: wingman proxy --upstream https://api.openai.com --port 4242")
-		os.Exit(1)
-	}
+	upstream := strings.TrimRight(os.Getenv("WINGMAN_URL"), "/")
+	token := os.Getenv("WINGMAN_TOKEN")
 
 	theme.Auto()
 
@@ -35,11 +32,11 @@ func Run(ctx context.Context, args []string) error {
 	errCh := make(chan error, 1)
 
 	go func() {
-		errCh <- startServer(ctx, listenAddr, *upstream, store)
+		errCh <- startServer(ctx, listenAddr, upstream, token, store)
 	}()
 
 	// Start TUI
-	ui := newTUI(store, listenAddr, *upstream)
+	ui := newTUI(store, listenAddr, upstream)
 
 	go func() {
 		if err := <-errCh; err != nil {

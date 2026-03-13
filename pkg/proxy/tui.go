@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -17,6 +18,15 @@ const (
 	pageList   = "list"
 	pageDetail = "detail"
 )
+
+const logo = `
+[#84a0c6]██╗    ██╗[#89b8c2]██╗[#b4be82]███╗   ██╗[#e2a478] ██████╗[#e27878]███╗   ███╗[#a093c7] █████╗ [#91acd1]███╗   ██╗
+[#84a0c6]██║    ██║[#89b8c2]██║[#b4be82]████╗  ██║[#e2a478]██╔════╝[#e27878]████╗ ████║[#a093c7]██╔══██╗[#91acd1]████╗  ██║
+[#84a0c6]██║ █╗ ██║[#89b8c2]██║[#b4be82]██╔██╗ ██║[#e2a478]██║  ███╗[#e27878]██╔████╔██║[#a093c7]███████║[#91acd1]██╔██╗ ██║
+[#84a0c6]██║███╗██║[#89b8c2]██║[#b4be82]██║╚██╗██║[#e2a478]██║   ██║[#e27878]██║╚██╔╝██║[#a093c7]██╔══██║[#91acd1]██║╚██╗██║
+[#84a0c6]╚███╔███╔╝[#89b8c2]██║[#b4be82]██║ ╚████║[#e2a478]╚██████╔╝[#e27878]██║ ╚═╝ ██║[#a093c7]██║  ██║[#91acd1]██║ ╚████║
+[#84a0c6] ╚══╝╚══╝ [#89b8c2]╚═╝[#b4be82]╚═╝  ╚═══╝[#e2a478] ╚═════╝ [#e27878]╚═╝     ╚═╝[#a093c7]╚═╝  ╚═╝[#91acd1]╚═╝  ╚═══╝[-]
+`
 
 type tui struct {
 	app   *tview.Application
@@ -96,7 +106,6 @@ func (t *tui) build() {
 	startLayout := tview.NewFlex().SetDirection(tview.FlexRow)
 	startLayout.SetBackgroundColor(tcell.ColorDefault)
 	startLayout.AddItem(t.startView, 0, 1, true)
-	startLayout.AddItem(t.statusBar, 1, 0, false)
 
 	listLayout := tview.NewFlex().SetDirection(tview.FlexRow)
 	listLayout.SetBackgroundColor(tcell.ColorDefault)
@@ -148,9 +157,6 @@ func (t *tui) build() {
 					}
 				}
 				return nil
-			case tcell.KeyEscape:
-				t.switchTo(pageStart)
-				return nil
 			case tcell.KeyCtrlC:
 				t.app.Stop()
 				return nil
@@ -172,6 +178,18 @@ func (t *tui) build() {
 			case tcell.KeyRune:
 				if event.Rune() == 'q' {
 					t.app.Stop()
+					return nil
+				}
+				if event.Rune() == 's' {
+					if entry, ok := t.store.Get(t.selectedID); ok {
+						t.saveEntry(entry)
+					}
+					return nil
+				}
+				if event.Rune() == ' ' {
+					row, col := t.detail.GetScrollOffset()
+					_, _, _, height := t.detail.GetInnerRect()
+					t.detail.ScrollTo(row+height, col)
 					return nil
 				}
 			}
@@ -234,22 +252,15 @@ func (t *tui) startPageContent() string {
 
 	var b strings.Builder
 
-	b.WriteString(fmt.Sprintf("\n[%s::b]  WINGMAN PROXY[-::-]\n\n", th.Blue))
+	b.WriteString(strings.ReplaceAll(logo, "\n", "\n  "))
+	b.WriteString("\n")
 
-	b.WriteString(fmt.Sprintf("  [%s]OpenAI-compatible API proxy with request logging and token tracking.[-]\n\n", th.Foreground))
-
-	b.WriteString(fmt.Sprintf("  [%s::b]Listening[-::-]  [%s]%s[-]\n", th.Yellow, th.Foreground, t.listenAddr))
-	b.WriteString(fmt.Sprintf("  [%s::b]Upstream[-::-]   [%s]%s[-]\n\n", th.Yellow, th.Foreground, t.upstream))
+	b.WriteString(fmt.Sprintf("  [%s::b]Listening[-::-]  [%s]http://%s[-]\n\n", th.Yellow, th.Foreground, t.listenAddr))
 
 	b.WriteString(fmt.Sprintf("  [%s::b]Usage[-::-]\n", th.Cyan))
 	b.WriteString(fmt.Sprintf("  [%s]Point your OpenAI client to the proxy:[-]\n\n", th.BrBlack))
 	b.WriteString(fmt.Sprintf("  [%s]export OPENAI_BASE_URL=http://%s/v1[-]\n", th.Green, t.listenAddr))
-	b.WriteString(fmt.Sprintf("  [%s]export OPENAI_API_KEY=your-key[-]\n\n", th.Green))
-
-	b.WriteString(fmt.Sprintf("  [%s::b]Keys[-::-]\n", th.Cyan))
-	b.WriteString(fmt.Sprintf("  [%s]enter[-]  [%s]request list[-]    ", th.Yellow, th.BrBlack))
-	b.WriteString(fmt.Sprintf("[%s]esc[-]  [%s]back[-]    ", th.Yellow, th.BrBlack))
-	b.WriteString(fmt.Sprintf("[%s]q[-]  [%s]quit[-]\n", th.Yellow, th.BrBlack))
+	b.WriteString(fmt.Sprintf("  [%s]export OPENAI_API_KEY=any-value[-]\n\n", th.Green))
 
 	return b.String()
 }
@@ -270,7 +281,7 @@ func (t *tui) updateStatusBar() {
 			th.Cyan, formatTokenCount(inputTotal), formatTokenCount(outputTotal)))
 	}
 
-	t.statusBar.SetText(strings.Join(parts, " [%s]•[-] "))
+	t.statusBar.SetText(strings.Join(parts, fmt.Sprintf(" [%s]•[-] ", th.BrBlack)))
 }
 
 func (t *tui) renderTable() {
@@ -379,7 +390,6 @@ func (t *tui) renderDetail() {
 	b.WriteString(fmt.Sprintf("  [%s]Status[-]    [%s]%d[-]\n", th.BrBlack, statusColor, entry.Status))
 	b.WriteString(fmt.Sprintf("  [%s]Duration[-]  [%s]%s[-]\n", th.BrBlack, th.Foreground, entry.Duration.Round(time.Millisecond)))
 	b.WriteString(fmt.Sprintf("  [%s]Model[-]     [%s]%s[-]\n", th.BrBlack, th.Cyan, entry.Model))
-	b.WriteString(fmt.Sprintf("  [%s]Streaming[-] [%s]%v[-]\n", th.BrBlack, th.Foreground, entry.Streaming))
 
 	if entry.InputTokens > 0 || entry.OutputTokens > 0 {
 		b.WriteString(fmt.Sprintf("  [%s]Tokens[-]    [%s]%s in / %s out[-]\n",
@@ -389,8 +399,6 @@ func (t *tui) renderDetail() {
 	if entry.Error != "" {
 		b.WriteString(fmt.Sprintf("  [%s]Error[-]     [%s]%s[-]\n", th.BrBlack, th.Red, entry.Error))
 	}
-
-	b.WriteString(fmt.Sprintf("\n  [%s]esc[-] [%s]back to list[-]\n", th.Yellow, th.BrBlack))
 
 	// Request body
 	if len(entry.RequestBody) > 0 {
@@ -452,6 +460,30 @@ func formatSSEBody(data []byte, th theme.Theme) string {
 	}
 
 	return b.String()
+}
+
+func (t *tui) saveEntry(entry RequestEntry) {
+	name := fmt.Sprintf("%s.jsonl", entry.Timestamp.Format("20060102_150405"))
+
+	var buf strings.Builder
+
+	if len(entry.RequestBody) > 0 {
+		var req bytes.Buffer
+		if json.Indent(&req, entry.RequestBody, "", "  ") == nil {
+			buf.WriteString(req.String())
+			buf.WriteString("\n")
+		}
+	}
+
+	if len(entry.ResponseBody) > 0 {
+		var resp bytes.Buffer
+		if json.Indent(&resp, entry.ResponseBody, "", "  ") == nil {
+			buf.WriteString(resp.String())
+			buf.WriteString("\n")
+		}
+	}
+
+	os.WriteFile(name, []byte(buf.String()), 0644)
 }
 
 func formatTokenCount(n int) string {

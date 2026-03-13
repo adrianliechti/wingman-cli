@@ -12,12 +12,12 @@ import (
 	"time"
 )
 
-func startServer(ctx context.Context, addr, upstream string, store *Store) error {
+func startServer(ctx context.Context, addr, upstream, token string, store *Store) error {
 	upstream = strings.TrimRight(upstream, "/")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		handleProxy(w, r, upstream, store)
+		handleProxy(w, r, upstream, token, store)
 	})
 
 	server := &http.Server{
@@ -41,7 +41,7 @@ func startServer(ctx context.Context, addr, upstream string, store *Store) error
 	return nil
 }
 
-func handleProxy(w http.ResponseWriter, r *http.Request, upstream string, store *Store) {
+func handleProxy(w http.ResponseWriter, r *http.Request, upstream, token string, store *Store) {
 	start := time.Now()
 
 	reqBody, err := io.ReadAll(r.Body)
@@ -72,6 +72,10 @@ func handleProxy(w http.ResponseWriter, r *http.Request, upstream string, store 
 	}
 
 	proxyReq.Header.Del("Host")
+
+	if token != "" && proxyReq.Header.Get("Authorization") == "" {
+		proxyReq.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	resp, err := http.DefaultClient.Do(proxyReq)
 	if err != nil {
@@ -106,12 +110,20 @@ func handleProxy(w http.ResponseWriter, r *http.Request, upstream string, store 
 		respBody := handleSSE(w, resp, r)
 		entry.ResponseBody = respBody
 		entry.Duration = time.Since(start)
-		parseSSEUsage(&entry)
+
+		meta := extractMetadataSSE(r.URL.Path, reqBody, respBody)
+		entry.Model = meta.Model
+		entry.InputTokens = meta.InputTokens
+		entry.OutputTokens = meta.OutputTokens
 	} else {
 		respBody, _ := io.ReadAll(resp.Body)
 		entry.ResponseBody = respBody
 		entry.Duration = time.Since(start)
-		parseUsage(&entry, respBody)
+
+		meta := extractMetadata(r.URL.Path, reqBody, respBody)
+		entry.Model = meta.Model
+		entry.InputTokens = meta.InputTokens
+		entry.OutputTokens = meta.OutputTokens
 
 		for key, values := range resp.Header {
 			for _, v := range values {
@@ -188,66 +200,4 @@ func extractStreaming(body []byte) bool {
 	}
 
 	return false
-}
-
-func parseUsage(entry *RequestEntry, body []byte) {
-	if len(body) == 0 {
-		return
-	}
-
-	var obj struct {
-		Usage struct {
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			InputTokens      int `json:"input_tokens"`
-			OutputTokens     int `json:"output_tokens"`
-		} `json:"usage"`
-	}
-
-	if json.Unmarshal(body, &obj) == nil {
-		entry.InputTokens = obj.Usage.PromptTokens + obj.Usage.InputTokens
-		entry.OutputTokens = obj.Usage.CompletionTokens + obj.Usage.OutputTokens
-	}
-}
-
-func parseSSEUsage(entry *RequestEntry) {
-	if len(entry.ResponseBody) == 0 {
-		return
-	}
-
-	lines := strings.Split(string(entry.ResponseBody), "\n")
-
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-
-		data := strings.TrimPrefix(line, "data: ")
-
-		if data == "[DONE]" {
-			continue
-		}
-
-		var obj struct {
-			Usage struct {
-				PromptTokens     int `json:"prompt_tokens"`
-				CompletionTokens int `json:"completion_tokens"`
-				InputTokens      int `json:"input_tokens"`
-				OutputTokens     int `json:"output_tokens"`
-			} `json:"usage"`
-		}
-
-		if json.Unmarshal([]byte(data), &obj) == nil {
-			in := obj.Usage.PromptTokens + obj.Usage.InputTokens
-			out := obj.Usage.CompletionTokens + obj.Usage.OutputTokens
-
-			if in > 0 || out > 0 {
-				entry.InputTokens = in
-				entry.OutputTokens = out
-				return
-			}
-		}
-	}
 }
