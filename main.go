@@ -14,10 +14,19 @@ import (
 	"github.com/adrianliechti/wingman-cli/pkg/cli/codex"
 	"github.com/adrianliechti/wingman-cli/pkg/cli/gemini"
 	"github.com/adrianliechti/wingman-cli/pkg/cli/opencode"
+	"github.com/adrianliechti/wingman-cli/pkg/proxy"
 )
 
 func main() {
 	ctx := context.Background()
+
+	if len(os.Args) > 1 && os.Args[1] == "proxy" {
+		if err := proxy.Run(ctx, os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if len(os.Args) > 1 && os.Getenv("WINGMAN_URL") != "" {
 		if os.Args[1] == "codex" {

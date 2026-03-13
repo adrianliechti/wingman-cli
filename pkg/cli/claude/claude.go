@@ -48,6 +48,7 @@ func Run(ctx context.Context, args []string, options *RunOptions) error {
 		"CLAUDE_CODE_DISABLE_AUTO_MEMORY":       "1",
 		"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS":  "1",
 		"CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": "1",
+		"CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS":  "1",
 
 		"ANTHROPIC_DEFAULT_OPUS_MODEL":   cfg.OpusModel,
 		"ANTHROPIC_DEFAULT_HAIKU_MODEL":  cfg.HaikuModel,
