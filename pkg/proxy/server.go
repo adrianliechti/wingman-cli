@@ -60,7 +60,6 @@ func startServer(ctx context.Context, addr, upstream, token string, user *UserIn
 		start := time.Now()
 
 		reqBody, err := io.ReadAll(r.Body)
-
 		if err != nil {
 			http.Error(w, "failed to read request body", http.StatusBadRequest)
 			return
@@ -68,15 +67,14 @@ func startServer(ctx context.Context, addr, upstream, token string, user *UserIn
 
 		r.Body = io.NopCloser(bytes.NewReader(reqBody))
 
-		streaming := extractStreaming(reqBody)
-
 		var upstreamErr string
 		r = r.WithContext(context.WithValue(r.Context(), contextKey{}, &upstreamErr))
 
 		crw := &capturingResponseWriter{ResponseWriter: w, status: http.StatusOK}
 		rp.ServeHTTP(crw, r)
 
-		respBody := crw.body.Bytes()
+		respBody := crw.Bytes()
+		streaming := extractStreaming(reqBody)
 
 		entry := RequestEntry{
 			Timestamp:    start,
@@ -141,8 +139,12 @@ func (c *capturingResponseWriter) WriteHeader(status int) {
 }
 
 func (c *capturingResponseWriter) Write(b []byte) (int, error) {
-	c.body.Write(b)
+	_, _ = c.body.Write(b)
 	return c.ResponseWriter.Write(b)
+}
+
+func (c *capturingResponseWriter) Bytes() []byte {
+	return c.body.Bytes()
 }
 
 func (c *capturingResponseWriter) Flush() {

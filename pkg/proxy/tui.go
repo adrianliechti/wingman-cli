@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -464,35 +465,48 @@ func formatSSEBody(data []byte, th theme.Theme) string {
 
 func (t *tui) saveEntry(entry RequestEntry) {
 	name := fmt.Sprintf("%s.jsonl", entry.Timestamp.Format("20060102_150405"))
+	_, err := writeEntryFile(name, entry)
+	if err != nil {
+		t.statusBar.SetText(fmt.Sprintf("[red]Save failed: %v[-]", err))
+	}
+}
 
+func writeEntryFile(name string, entry RequestEntry) (string, error) {
+	path := filepath.Clean(name)
+	err := os.WriteFile(path, buildSavedEntry(entry), 0644)
+	if err != nil {
+		return "", err
+	}
+
+	return path, nil
+}
+
+func buildSavedEntry(entry RequestEntry) []byte {
 	var buf strings.Builder
 
-	if len(entry.RequestBody) > 0 {
-		var req bytes.Buffer
-		if json.Indent(&req, entry.RequestBody, "", "  ") == nil {
-			buf.WriteString(req.String())
-			buf.WriteString("\n")
-		}
-	}
+	appendSavedBody(&buf, entry.RequestBody)
+	appendSavedBody(&buf, entry.ResponseBody)
 
-	if len(entry.ResponseBody) > 0 {
-		var resp bytes.Buffer
-		if json.Indent(&resp, entry.ResponseBody, "", "  ") == nil {
-			buf.WriteString(resp.String())
-			buf.WriteString("\n")
-		}
-	}
+	return []byte(buf.String())
+}
 
-	if err := os.WriteFile(name, []byte(buf.String()), 0644); err != nil {
-		t.app.QueueUpdateDraw(func() {
-			t.statusBar.SetText(fmt.Sprintf("[red]Save failed: %v[-]", err))
-		})
+func appendSavedBody(buf *strings.Builder, body []byte) {
+	if len(body) == 0 {
 		return
 	}
 
-	t.app.QueueUpdateDraw(func() {
-		t.statusBar.SetText(fmt.Sprintf("[green]Saved to %s[-]", name))
-	})
+	if buf.Len() > 0 {
+		buf.WriteString("\n")
+	}
+
+	var pretty bytes.Buffer
+	if json.Indent(&pretty, body, "", "  ") == nil {
+		buf.WriteString(pretty.String())
+	} else {
+		buf.Write(body)
+	}
+
+	buf.WriteString("\n")
 }
 
 func formatTokenCount(n int) string {
