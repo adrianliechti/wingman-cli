@@ -9,7 +9,8 @@ Supported operations:
 - workspaceSymbols: Search for symbols across the entire workspace
 - incomingCalls: Find all functions/methods that call the function at a position
 - outgoingCalls: Find all functions/methods called by the function at a position
-- diagnostics: Get compiler errors, warnings, and hints for a file
+- diagnostics: Get compiler errors, warnings, and hints for a single file
+- workspaceDiagnostics: Get all compiler errors, warnings, and hints across the entire workspace (no file needed)
 - rename: Rename a symbol across all files (returns proposed changes, does not apply them)
 - codeActions: Get available quick fixes and refactorings for a file
 
@@ -18,9 +19,9 @@ Most operations require:
 - line: The line number (1-based, as shown in editors)
 - column: The character offset (1-based, as shown in editors)
 
-The workspaceSymbols operation requires:
-- file: Any file in the project (used to detect the language server)
-- query: The search query for symbols
+Workspace-level operations (no file required):
+- workspaceDiagnostics: Scans the entire project for errors/warnings across all detected language servers
+- workspaceSymbols: Searches for symbols across all detected language servers (requires query)
 
 The diagnostics operation requires:
 - file: The file to check for errors/warnings (no line/column needed)

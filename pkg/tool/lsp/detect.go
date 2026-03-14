@@ -93,6 +93,35 @@ func hasLanguage(languages []string, ext string) bool {
 	return false
 }
 
+// DetectServers finds all available LSP servers for the workspace by checking
+// project markers in the working directory. Returns one server per project type.
+func DetectServers(workingDir string) []Server {
+	var servers []Server
+	seen := make(map[string]bool) // track by command to avoid duplicates
+
+	for _, pt := range knownProjects {
+		if !hasAnyFile(workingDir, pt.Markers) {
+			continue
+		}
+
+		for _, candidate := range pt.Servers {
+			if seen[candidate.Command] {
+				continue
+			}
+
+			if _, err := exec.LookPath(candidate.Command); err != nil {
+				continue
+			}
+
+			servers = append(servers, candidate)
+			seen[candidate.Command] = true
+			break // first available server per project type
+		}
+	}
+
+	return servers
+}
+
 // isSubPath checks if child is under parent directory.
 func isSubPath(parent, child string) bool {
 	parent = filepath.Clean(parent)

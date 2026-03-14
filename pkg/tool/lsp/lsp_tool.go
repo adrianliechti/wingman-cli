@@ -22,12 +22,13 @@ var validOperations = []string{
 	"incomingCalls",
 	"outgoingCalls",
 	"diagnostics",
+	"workspaceDiagnostics",
 	"rename",
 	"codeActions",
 }
 
-// NewTool creates an LSP tool that connects on-demand for each invocation.
-func NewTool(workingDir string) tool.Tool {
+// NewTool creates an LSP tool that uses a Manager for session caching.
+func NewTool(manager *Manager) tool.Tool {
 	return tool.Tool{
 		Name:        "lsp",
 		Description: prompt.LSP,
@@ -41,7 +42,7 @@ func NewTool(workingDir string) tool.Tool {
 				},
 				"file": map[string]any{
 					"type":        "string",
-					"description": "Absolute or relative path to the source file",
+					"description": "Absolute or relative path to the source file (not required for workspaceDiagnostics and workspaceSymbols)",
 				},
 				"line": map[string]any{
 					"type":        "integer",
@@ -75,13 +76,15 @@ func NewTool(workingDir string) tool.Tool {
 				return "", fmt.Errorf("invalid operation: %s", operation)
 			}
 
-			// File is required for all operations
-			if file == "" {
+			// Workspace-level operations that don't require a file
+			isWorkspaceOp := operation == "workspaceDiagnostics" || operation == "workspaceSymbols"
+
+			if !isWorkspaceOp && file == "" {
 				return "", fmt.Errorf("file is required for %s operation", operation)
 			}
 
 			// Determine if operation needs position (line/column)
-			needsPosition := operation != "documentSymbols" && operation != "workspaceSymbols" && operation != "diagnostics" && operation != "codeActions"
+			needsPosition := operation != "documentSymbols" && operation != "workspaceSymbols" && operation != "diagnostics" && operation != "codeActions" && operation != "workspaceDiagnostics"
 
 			if needsPosition && (line == 0 || column == 0) {
 				return "", fmt.Errorf("line and column are required for %s operation", operation)
@@ -92,9 +95,18 @@ func NewTool(workingDir string) tool.Tool {
 				return "", fmt.Errorf("newName is required for rename operation")
 			}
 
+			// Handle workspace-level operations (no file required)
+			if operation == "workspaceDiagnostics" {
+				return execWorkspaceDiagnostics(ctx, manager)
+			}
+
+			if operation == "workspaceSymbols" && file == "" {
+				return execWorkspaceSymbolsAll(ctx, manager, query)
+			}
+
 			// Make path absolute if relative
 			if file != "" && !filepath.IsAbs(file) {
-				file = filepath.Join(workingDir, file)
+				file = filepath.Join(manager.workingDir, file)
 			}
 
 			// Check file exists
@@ -102,14 +114,13 @@ func NewTool(workingDir string) tool.Tool {
 				return "", fmt.Errorf("file not found: %s", file)
 			}
 
-			// Connect to appropriate LSP server
-			session, err := Connect(ctx, workingDir, file)
+			// Get or create a cached LSP session
+			session, err := manager.GetSession(ctx, file)
 			if err != nil {
 				return "", err
 			}
-			defer session.Close()
 
-			// Open document for operations that need it
+			// Open/sync document for operations that need it
 			var uri string
 			if operation != "workspaceSymbols" {
 				uri, err = session.OpenDocument(ctx, file)
@@ -121,27 +132,27 @@ func NewTool(workingDir string) tool.Tool {
 			// Execute operation
 			switch operation {
 			case "definition":
-				return execDefinition(ctx, session, uri, line, column, workingDir)
+				return execDefinition(ctx, session, uri, line, column, manager.workingDir)
 			case "references":
-				return execReferences(ctx, session, uri, line, column, workingDir)
+				return execReferences(ctx, session, uri, line, column, manager.workingDir)
 			case "hover":
 				return execHover(ctx, session, uri, line, column)
 			case "implementation":
-				return execImplementation(ctx, session, uri, line, column, workingDir)
+				return execImplementation(ctx, session, uri, line, column, manager.workingDir)
 			case "documentSymbols":
 				return execDocumentSymbols(ctx, session, uri)
 			case "workspaceSymbols":
-				return execWorkspaceSymbols(ctx, session, query, workingDir)
+				return execWorkspaceSymbols(ctx, session, query, manager.workingDir)
 			case "incomingCalls":
-				return execIncomingCalls(ctx, session, uri, line, column, workingDir)
+				return execIncomingCalls(ctx, session, uri, line, column, manager.workingDir)
 			case "outgoingCalls":
-				return execOutgoingCalls(ctx, session, uri, line, column, workingDir)
+				return execOutgoingCalls(ctx, session, uri, line, column, manager.workingDir)
 			case "diagnostics":
-				return execDiagnostics(ctx, session, uri, file, workingDir)
+				return execDiagnostics(ctx, session, uri, file, manager.workingDir)
 			case "rename":
-				return execRename(ctx, session, uri, line, column, newName, workingDir)
+				return execRename(ctx, session, uri, line, column, newName, manager.workingDir)
 			case "codeActions":
-				return execCodeActions(ctx, session, uri, file, workingDir)
+				return execCodeActions(ctx, session, uri, file, manager.workingDir)
 			default:
 				return "", fmt.Errorf("unknown operation: %s", operation)
 			}
@@ -290,7 +301,7 @@ func execDocumentSymbols(ctx context.Context, session *Session, uri string) (str
 	return "No symbols found", nil
 }
 
-// execWorkspaceSymbols searches for symbols across the workspace.
+// execWorkspaceSymbols searches for symbols across the workspace using a specific session.
 func execWorkspaceSymbols(ctx context.Context, session *Session, query string, workingDir string) (string, error) {
 	params := WorkspaceSymbolParams{
 		Query: query,
@@ -312,6 +323,44 @@ func execWorkspaceSymbols(ctx context.Context, session *Session, query string, w
 	}
 
 	return formatWorkspaceSymbols(symbols, workingDir), nil
+}
+
+// execWorkspaceSymbolsAll searches for symbols across all detected LSP servers.
+func execWorkspaceSymbolsAll(ctx context.Context, manager *Manager, query string) (string, error) {
+	servers := DetectServers(manager.workingDir)
+	if len(servers) == 0 {
+		return "", fmt.Errorf("no LSP servers detected in workspace")
+	}
+
+	var allSymbols []SymbolInformation
+
+	for _, server := range servers {
+		session, err := manager.GetSessionByServer(ctx, server)
+		if err != nil {
+			continue
+		}
+
+		params := WorkspaceSymbolParams{Query: query}
+
+		var result json.RawMessage
+		call := session.conn.Call(ctx, "workspace/symbol", params)
+		if err := call.Await(ctx, &result); err != nil {
+			continue
+		}
+
+		var symbols []SymbolInformation
+		if err := json.Unmarshal(result, &symbols); err != nil {
+			continue
+		}
+
+		allSymbols = append(allSymbols, symbols...)
+	}
+
+	if len(allSymbols) == 0 {
+		return "No symbols found", nil
+	}
+
+	return formatWorkspaceSymbols(allSymbols, manager.workingDir), nil
 }
 
 // execIncomingCalls finds all callers of a function.
@@ -406,7 +455,7 @@ func execOutgoingCalls(ctx context.Context, session *Session, uri string, line, 
 	return formatOutgoingCalls(calls, workingDir), nil
 }
 
-// execDiagnostics gets diagnostics (errors, warnings) for a file.
+// execDiagnostics gets diagnostics (errors, warnings) for a single file.
 func execDiagnostics(ctx context.Context, session *Session, uri string, filePath string, workingDir string) (string, error) {
 	// Try pull diagnostics first (LSP 3.17+)
 	params := DocumentDiagnosticParams{
@@ -437,6 +486,109 @@ func execDiagnostics(ctx context.Context, session *Session, uri string, filePath
 
 	// Pull diagnostics not supported or failed - return message
 	return "No diagnostics available (server may not support pull diagnostics)", nil
+}
+
+// execWorkspaceDiagnostics gets diagnostics across the entire workspace by
+// discovering source files and requesting per-file diagnostics.
+func execWorkspaceDiagnostics(ctx context.Context, manager *Manager) (string, error) {
+	servers := DetectServers(manager.workingDir)
+	if len(servers) == 0 {
+		return "", fmt.Errorf("no LSP servers detected in workspace")
+	}
+
+	var sb strings.Builder
+	totalDiags := 0
+
+	for _, server := range servers {
+		session, err := manager.GetSessionByServer(ctx, server)
+		if err != nil {
+			continue
+		}
+
+		files := discoverSourceFiles(manager.workingDir, server.Languages, 50)
+
+		for _, file := range files {
+			uri, err := session.OpenDocument(ctx, file)
+			if err != nil {
+				continue
+			}
+
+			params := DocumentDiagnosticParams{
+				TextDocument: TextDocumentIdentifier{URI: uri},
+			}
+
+			var result json.RawMessage
+			call := session.conn.Call(ctx, "textDocument/diagnostic", params)
+			if err := call.Await(ctx, &result); err != nil || result == nil || string(result) == "null" {
+				continue
+			}
+
+			displayPath := file
+			if rel, err := filepath.Rel(manager.workingDir, file); err == nil && !strings.HasPrefix(rel, "..") {
+				displayPath = rel
+			}
+
+			// Try FullDocumentDiagnosticReport
+			var report FullDocumentDiagnosticReport
+			if err := json.Unmarshal(result, &report); err == nil && len(report.Items) > 0 {
+				for _, diag := range report.Items {
+					totalDiags++
+					fmt.Fprintf(&sb, "  %s:%d:%d %s: %s\n", displayPath, diag.Range.Start.Line+1, diag.Range.Start.Character+1, diagnosticSeverityName(diag.Severity), diag.Message)
+				}
+				continue
+			}
+
+			// Try direct array
+			var diagnostics []Diagnostic
+			if err := json.Unmarshal(result, &diagnostics); err == nil {
+				for _, diag := range diagnostics {
+					totalDiags++
+					fmt.Fprintf(&sb, "  %s:%d:%d %s: %s\n", displayPath, diag.Range.Start.Line+1, diag.Range.Start.Character+1, diagnosticSeverityName(diag.Severity), diag.Message)
+				}
+			}
+		}
+	}
+
+	if totalDiags == 0 {
+		return "No workspace diagnostics found", nil
+	}
+
+	return fmt.Sprintf("Workspace Diagnostics (%d found):\n%s", totalDiags, sb.String()), nil
+}
+
+// discoverSourceFiles finds source files in the workspace matching the given extensions.
+func discoverSourceFiles(workingDir string, extensions []string, maxFiles int) []string {
+	extSet := make(map[string]bool, len(extensions))
+	for _, ext := range extensions {
+		extSet["."+ext] = true
+	}
+
+	var files []string
+	filepath.Walk(workingDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+
+		// Skip hidden directories and common non-source directories
+		if info.IsDir() {
+			name := info.Name()
+			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" || name == "__pycache__" || name == "target" || name == "build" || name == "dist" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if extSet[filepath.Ext(path)] {
+			files = append(files, path)
+			if len(files) >= maxFiles {
+				return filepath.SkipAll
+			}
+		}
+
+		return nil
+	})
+
+	return files
 }
 
 // execRename renames a symbol across the workspace.

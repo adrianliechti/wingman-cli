@@ -68,6 +68,10 @@ type App struct {
 	mcpMu      sync.Mutex
 	mcpError   error
 
+	// LSP state
+	lspManager *lsp.Manager
+	lspTool    tool.Tool
+
 	// Rewind state
 	rewind      *rewind.Manager
 	rewindReady chan struct{}
@@ -75,6 +79,8 @@ type App struct {
 
 func New(ctx context.Context, cfg *config.Config, ag *agent.Agent) *App {
 	tvApp := tview.NewApplication()
+
+	lspManager := lsp.NewManager(cfg.Environment.WorkingDir())
 
 	a := &App{
 		app:           tvApp,
@@ -85,6 +91,8 @@ func New(ctx context.Context, cfg *config.Config, ag *agent.Agent) *App {
 		phase:         PhasePreparing,
 		plan:          &plan.Plan{},
 		rewindReady:   make(chan struct{}),
+		lspManager:    lspManager,
+		lspTool:       lsp.NewTool(lspManager),
 	}
 
 	cfg.Environment.PromptUser = a.promptUser
@@ -102,6 +110,11 @@ func New(ctx context.Context, cfg *config.Config, ag *agent.Agent) *App {
 }
 
 func (a *App) stop() {
+	// Shut down cached LSP servers
+	if a.lspManager != nil {
+		a.lspManager.Close()
+	}
+
 	// Wait briefly for rewind to be ready, then cleanup
 	select {
 	case <-a.rewindReady:
@@ -219,8 +232,8 @@ func (a *App) allTools() []tool.Tool {
 
 	tools := append(a.config.Tools, a.mcpTools...)
 
-	// Always include LSP tool - it will return an error if no server found for a file
-	tools = append(tools, lsp.NewTool(a.config.Environment.WorkingDir()))
+	// Always include LSP tool (session-cached)
+	tools = append(tools, a.lspTool)
 
 	return tools
 }
