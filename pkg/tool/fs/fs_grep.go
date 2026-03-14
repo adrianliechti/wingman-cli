@@ -51,6 +51,10 @@ func GrepTool() tool.Tool {
 					"type":        "boolean",
 					"description": "Case-insensitive search (default: false)",
 				},
+				"literal": map[string]any{
+					"type":        "boolean",
+					"description": "Treat pattern as a literal string, not a regex (default: false)",
+				},
 				"context": map[string]any{
 					"type":        "integer",
 					"description": "Lines of context around matches (default: 0)",
@@ -108,11 +112,21 @@ func GrepTool() tool.Tool {
 				limit = int(l)
 			}
 
-			// Compile regex
-			if ignoreCase {
-				pattern = "(?i)" + pattern
+			literal := false
+
+			if l, ok := args["literal"].(bool); ok {
+				literal = l
 			}
-			re, err := regexp.Compile(pattern)
+
+			// Compile regex
+			regexPattern := pattern
+			if literal {
+				regexPattern = regexp.QuoteMeta(pattern)
+			}
+			if ignoreCase {
+				regexPattern = "(?i)" + regexPattern
+			}
+			re, err := regexp.Compile(regexPattern)
 
 			if err != nil {
 				return "", fmt.Errorf("invalid regex pattern: %w", err)

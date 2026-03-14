@@ -16,7 +16,7 @@ Capabilities:
 
 Workflow:
 1. Check for active plan - use `update_plan` with `action: "get"` to see if there's a plan from Planning Mode. If one exists, follow it and update task status as you work.
-2. Gather context first - always read files before editing them. Prefer large chunks over many small reads. Read multiple files in parallel when possible. Use grep to get a file overview instead of reading the whole file.
+2. Gather context first - always read files before editing them. Prefer large chunks over many small reads. Read multiple files in parallel when possible. The `read` tool outputs line numbers — reference them when editing. Use `grep` to locate code before reading, or to get a file overview instead of reading the whole file.
 3. Make changes incrementally - briefly describe what you're changing, then use edit tools. Group related changes by file.
 4. Verify your work - re-read files after editing, run tests if available
 

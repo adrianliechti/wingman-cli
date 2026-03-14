@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"sync"
 
 	"github.com/gdamore/tcell/v2"
@@ -112,6 +114,11 @@ func (a *App) stop() {
 
 	a.app.EnableMouse(false)
 	a.app.Stop()
+
+	// Explicitly disable mouse tracking modes that tview may have enabled.
+	// tview's screen.Fini() should handle this, but a race between terminal
+	// restore and pending mouse events can leak escape sequences to the shell.
+	fmt.Fprint(os.Stdout, "\033[?1000l\033[?1002l\033[?1003l\033[?1006l")
 }
 
 func (a *App) Run() error {
