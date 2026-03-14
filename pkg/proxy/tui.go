@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -297,7 +298,7 @@ func (t *tui) renderTable() {
 			SetExpansion(1)
 
 		if i == 2 {
-			cell.SetExpansion(3) // Path gets more space
+			cell.SetExpansion(3) // URL gets more space
 		}
 
 		t.table.SetCell(0, i, cell)
@@ -335,7 +336,7 @@ func (t *tui) renderTable() {
 		}{
 			{e.Timestamp.Format("15:04:05"), th.BrBlack},
 			{e.Method, th.Magenta},
-			{e.Path, th.Foreground},
+			{requestURLPathText(e.URL), th.Foreground},
 			{statusText, statusColor},
 			{dur, th.BrBlack},
 			{e.Model, th.Cyan},
@@ -387,7 +388,7 @@ func (t *tui) renderDetail() {
 	b.WriteString(fmt.Sprintf("\n  [%s::b]Request Detail[-::-]\n\n", th.Blue))
 
 	b.WriteString(fmt.Sprintf("  [%s]Method[-]    [%s]%s[-]\n", th.BrBlack, th.Magenta, entry.Method))
-	b.WriteString(fmt.Sprintf("  [%s]Path[-]      [%s]%s[-]\n", th.BrBlack, th.Foreground, entry.Path))
+	b.WriteString(fmt.Sprintf("  [%s]URL[-]       [%s]%s[-]\n", th.BrBlack, th.Foreground, requestURLText(entry.URL)))
 	b.WriteString(fmt.Sprintf("  [%s]Status[-]    [%s]%d[-]\n", th.BrBlack, statusColor, entry.Status))
 	b.WriteString(fmt.Sprintf("  [%s]Duration[-]  [%s]%s[-]\n", th.BrBlack, th.Foreground, entry.Duration.Round(time.Millisecond)))
 	b.WriteString(fmt.Sprintf("  [%s]Model[-]     [%s]%s[-]\n", th.BrBlack, th.Cyan, entry.Model))
@@ -420,6 +421,34 @@ func (t *tui) renderDetail() {
 
 	t.detail.SetText(b.String())
 	t.detail.ScrollToBeginning()
+}
+
+func requestURLText(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+
+	if uri := u.RequestURI(); uri != "" {
+		return uri
+	}
+
+	return u.String()
+}
+
+func requestURLPathText(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+
+	if path := u.EscapedPath(); path != "" {
+		return path
+	}
+
+	if u.Path != "" {
+		return u.Path
+	}
+
+	return "/"
 }
 
 func formatJSON(data []byte, th theme.Theme) string {

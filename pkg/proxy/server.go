@@ -66,6 +66,7 @@ func startServer(ctx context.Context, addr, upstream, token string, user *UserIn
 		}
 
 		r.Body = io.NopCloser(bytes.NewReader(reqBody))
+		requestURL := cloneURL(r.URL)
 
 		var upstreamErr string
 		r = r.WithContext(context.WithValue(r.Context(), contextKey{}, &upstreamErr))
@@ -79,7 +80,7 @@ func startServer(ctx context.Context, addr, upstream, token string, user *UserIn
 		entry := RequestEntry{
 			Timestamp:    start,
 			Method:       r.Method,
-			Path:         r.URL.Path,
+			URL:          requestURL,
 			Status:       crw.status,
 			Duration:     time.Since(start),
 			Streaming:    streaming,
@@ -91,9 +92,9 @@ func startServer(ctx context.Context, addr, upstream, token string, user *UserIn
 		if upstreamErr == "" {
 			var meta Metadata
 			if streaming {
-				meta = extractMetadataSSE(r.URL.Path, reqBody, respBody)
+				meta = extractMetadataSSE(requestURL.Path, reqBody, respBody)
 			} else {
-				meta = extractMetadata(r.URL.Path, reqBody, respBody)
+				meta = extractMetadata(requestURL.Path, reqBody, respBody)
 			}
 
 			entry.Model = meta.Model
@@ -125,6 +126,15 @@ func startServer(ctx context.Context, addr, upstream, token string, user *UserIn
 	}
 
 	return nil
+}
+
+func cloneURL(u *url.URL) *url.URL {
+	if u == nil {
+		return nil
+	}
+
+	copy := *u
+	return &copy
 }
 
 type capturingResponseWriter struct {
