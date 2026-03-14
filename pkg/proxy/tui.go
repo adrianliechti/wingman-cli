@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -428,10 +427,6 @@ func requestURLText(u *url.URL) string {
 		return ""
 	}
 
-	if uri := u.RequestURI(); uri != "" {
-		return uri
-	}
-
 	return u.String()
 }
 
@@ -440,15 +435,7 @@ func requestURLPathText(u *url.URL) string {
 		return ""
 	}
 
-	if path := u.EscapedPath(); path != "" {
-		return path
-	}
-
-	if u.Path != "" {
-		return u.Path
-	}
-
-	return "/"
+	return u.Path
 }
 
 func formatJSON(data []byte, th theme.Theme) string {
@@ -494,48 +481,35 @@ func formatSSEBody(data []byte, th theme.Theme) string {
 
 func (t *tui) saveEntry(entry RequestEntry) {
 	name := fmt.Sprintf("%s.jsonl", entry.Timestamp.Format("20060102_150405"))
-	_, err := writeEntryFile(name, entry)
-	if err != nil {
+
+	if err := os.WriteFile(name, buildSavedEntry(entry), 0644); err != nil {
 		t.statusBar.SetText(fmt.Sprintf("[red]Save failed: %v[-]", err))
 	}
-}
-
-func writeEntryFile(name string, entry RequestEntry) (string, error) {
-	path := filepath.Clean(name)
-	err := os.WriteFile(path, buildSavedEntry(entry), 0644)
-	if err != nil {
-		return "", err
-	}
-
-	return path, nil
 }
 
 func buildSavedEntry(entry RequestEntry) []byte {
 	var buf strings.Builder
 
-	appendSavedBody(&buf, entry.RequestBody)
-	appendSavedBody(&buf, entry.ResponseBody)
+	for i, body := range [][]byte{entry.RequestBody, entry.ResponseBody} {
+		if len(body) == 0 {
+			continue
+		}
 
-	return []byte(buf.String())
-}
+		if i > 0 && buf.Len() > 0 {
+			buf.WriteString("\n")
+		}
 
-func appendSavedBody(buf *strings.Builder, body []byte) {
-	if len(body) == 0 {
-		return
-	}
+		var pretty bytes.Buffer
+		if json.Indent(&pretty, body, "", "  ") == nil {
+			buf.WriteString(pretty.String())
+		} else {
+			buf.Write(body)
+		}
 
-	if buf.Len() > 0 {
 		buf.WriteString("\n")
 	}
 
-	var pretty bytes.Buffer
-	if json.Indent(&pretty, body, "", "  ") == nil {
-		buf.WriteString(pretty.String())
-	} else {
-		buf.Write(body)
-	}
-
-	buf.WriteString("\n")
+	return []byte(buf.String())
 }
 
 func formatTokenCount(n int) string {

@@ -66,7 +66,8 @@ func startServer(ctx context.Context, addr, upstream, token string, user *UserIn
 		}
 
 		r.Body = io.NopCloser(bytes.NewReader(reqBody))
-		requestURL := cloneURL(r.URL)
+
+		requestURL := *r.URL
 
 		var upstreamErr string
 		r = r.WithContext(context.WithValue(r.Context(), contextKey{}, &upstreamErr))
@@ -74,13 +75,13 @@ func startServer(ctx context.Context, addr, upstream, token string, user *UserIn
 		crw := &capturingResponseWriter{ResponseWriter: w, status: http.StatusOK}
 		rp.ServeHTTP(crw, r)
 
-		respBody := crw.Bytes()
+		respBody := crw.body.Bytes()
 		streaming := extractStreaming(reqBody)
 
 		entry := RequestEntry{
 			Timestamp:    start,
 			Method:       r.Method,
-			URL:          requestURL,
+			URL:          &requestURL,
 			Status:       crw.status,
 			Duration:     time.Since(start),
 			Streaming:    streaming,
@@ -128,15 +129,6 @@ func startServer(ctx context.Context, addr, upstream, token string, user *UserIn
 	return nil
 }
 
-func cloneURL(u *url.URL) *url.URL {
-	if u == nil {
-		return nil
-	}
-
-	copy := *u
-	return &copy
-}
-
 type capturingResponseWriter struct {
 	http.ResponseWriter
 	status int
@@ -149,12 +141,8 @@ func (c *capturingResponseWriter) WriteHeader(status int) {
 }
 
 func (c *capturingResponseWriter) Write(b []byte) (int, error) {
-	_, _ = c.body.Write(b)
+	c.body.Write(b)
 	return c.ResponseWriter.Write(b)
-}
-
-func (c *capturingResponseWriter) Bytes() []byte {
-	return c.body.Bytes()
 }
 
 func (c *capturingResponseWriter) Flush() {
