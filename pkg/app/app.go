@@ -157,7 +157,27 @@ func (a *App) Run() error {
 		})
 	}()
 
-	return a.app.SetRoot(a.pages, true).EnableMouse(true).EnablePaste(true).Run()
+	root := &pasteInterceptRoot{
+		Primitive: a.pages,
+		intercept: func(text string) bool {
+			paths := detectFilePaths(text, a.config.Environment.WorkingDir())
+			if len(paths) == 0 {
+				return false
+			}
+
+			for _, p := range paths {
+				a.addFileToContext(normalizeFilePath(p, a.config.Environment.WorkingDir()))
+			}
+
+			a.app.QueueUpdateDraw(func() {
+				a.updateInputHint()
+			})
+
+			return true
+		},
+	}
+
+	return a.app.SetRoot(root, true).EnableMouse(true).EnablePaste(true).Run()
 }
 
 func (a *App) initMCP() error {

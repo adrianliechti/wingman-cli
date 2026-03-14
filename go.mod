@@ -12,6 +12,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.4.1
 	github.com/openai/openai-go/v3 v3.26.0
 	github.com/rivo/tview v0.42.0
+	github.com/sahilm/fuzzy v0.1.1
 	github.com/sergi/go-diff v1.4.0
 	github.com/yuin/goldmark v1.7.16
 	golang.org/x/term v0.41.0

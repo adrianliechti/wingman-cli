@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"fmt"
 	"io/fs"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"github.com/rivo/tview"
+	"github.com/sahilm/fuzzy"
 
 	"github.com/adrianliechti/wingman-cli/pkg/theme"
 )
@@ -35,6 +37,12 @@ type fileMatch struct {
 	Path string
 	Name string
 }
+
+// fileMatches implements fuzzy.Source for []fileMatch
+type fileMatches []fileMatch
+
+func (f fileMatches) String(i int) string { return f[i].Path }
+func (f fileMatches) Len() int            { return len(f) }
 
 // collectFiles walks the workspace and collects all file paths
 func (a *App) collectFiles() []fileMatch {
@@ -133,10 +141,9 @@ func loadGitignore(fsys fs.FS, domain []string) []gitignore.Pattern {
 	return patterns
 }
 
-// filterFiles performs case-insensitive substring matching on filenames
-func filterFiles(files []fileMatch, query string) []fileMatch {
+// fuzzyFilterFiles performs fuzzy matching on file paths, sorted by score.
+func fuzzyFilterFiles(files []fileMatch, query string) []fileMatch {
 	if query == "" {
-		// Return first N files when no query
 		if len(files) > maxFileResults {
 			return files[:maxFileResults]
 		}
@@ -144,29 +151,24 @@ func filterFiles(files []fileMatch, query string) []fileMatch {
 		return files
 	}
 
-	query = strings.ToLower(query)
+	results := fuzzy.FindFrom(query, fileMatches(files))
+
 	var matches []fileMatch
 
-	for _, f := range files {
-		// Match against both filename and path
-		nameLower := strings.ToLower(f.Name)
-		pathLower := strings.ToLower(f.Path)
+	for _, r := range results {
+		matches = append(matches, files[r.Index])
 
-		if strings.Contains(nameLower, query) || strings.Contains(pathLower, query) {
-			matches = append(matches, f)
-
-			if len(matches) >= maxFileResults {
-				break
-			}
+		if len(matches) >= maxFileResults {
+			break
 		}
 	}
 
 	return matches
 }
 
-// showFilePicker displays a file selection picker with filtering.
+// showFilePicker displays a file selection picker with fuzzy filtering and multi-select.
 // Must be called from a goroutine as it collects files before showing UI.
-func (a *App) showFilePicker(initialQuery string, onSelect func(path string)) {
+func (a *App) showFilePicker(initialQuery string, onSelect func(paths []string)) {
 	files := a.collectFiles()
 
 	a.app.QueueUpdateDraw(func() {
@@ -176,7 +178,8 @@ func (a *App) showFilePicker(initialQuery string, onSelect func(path string)) {
 
 		a.activeModal = ModalFilePicker
 		t := theme.Default
-		filtered := filterFiles(files, initialQuery)
+		filtered := fuzzyFilterFiles(files, initialQuery)
+		selected := make(map[string]bool)
 
 		// Create the list
 		list := tview.NewList().
@@ -194,17 +197,49 @@ func (a *App) showFilePicker(initialQuery string, onSelect func(path string)) {
 		searchInput.SetFieldTextColor(t.Foreground)
 		searchInput.SetText(initialQuery)
 
+		// Function to render a list item with selection state
+		itemText := func(f fileMatch) string {
+			if selected[f.Path] {
+				return fmt.Sprintf("  [%s]●[-] %s", t.Cyan, f.Path)
+			}
+
+			return "  " + f.Path
+		}
+
 		// Function to update list items
 		updateList := func(query string) {
 			list.Clear()
-			filtered = filterFiles(files, query)
+			filtered = fuzzyFilterFiles(files, query)
+			selected = make(map[string]bool)
 
 			for _, f := range filtered {
-				list.AddItem("  "+f.Path, "", 0, nil)
+				list.AddItem(itemText(f), "", 0, nil)
 			}
 
 			if len(filtered) > 0 {
 				list.SetCurrentItem(0)
+			}
+		}
+
+		// Refresh list item text without changing filtered results
+		refreshList := func() {
+			for i, f := range filtered {
+				list.SetItemText(i, itemText(f), "")
+			}
+		}
+
+		// Toggle selection of current item
+		toggleCurrent := func() {
+			idx := list.GetCurrentItem()
+			if idx >= 0 && idx < len(filtered) {
+				path := filtered[idx].Path
+				selected[path] = !selected[path]
+
+				if !selected[path] {
+					delete(selected, path)
+				}
+
+				refreshList()
 			}
 		}
 
@@ -217,20 +252,33 @@ func (a *App) showFilePicker(initialQuery string, onSelect func(path string)) {
 		})
 
 		// Handle selection
-		selectFile := func() {
-			idx := list.GetCurrentItem()
+		selectFiles := func() {
+			var paths []string
 
-			if idx >= 0 && idx < len(filtered) {
-				a.closeFilePicker()
-
-				if onSelect != nil {
-					onSelect(filtered[idx].Path)
+			// Collect toggled files in display order
+			for _, f := range filtered {
+				if selected[f.Path] {
+					paths = append(paths, f.Path)
 				}
+			}
+
+			// If none toggled, use the highlighted item
+			if len(paths) == 0 {
+				idx := list.GetCurrentItem()
+				if idx >= 0 && idx < len(filtered) {
+					paths = []string{filtered[idx].Path}
+				}
+			}
+
+			a.closeFilePicker()
+
+			if onSelect != nil && len(paths) > 0 {
+				onSelect(paths)
 			}
 		}
 
 		list.SetSelectedFunc(func(index int, mainText string, secondaryText string, shortcut rune) {
-			selectFile()
+			selectFiles()
 		})
 
 		searchInput.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
@@ -239,8 +287,12 @@ func (a *App) showFilePicker(initialQuery string, onSelect func(path string)) {
 				a.closeFilePicker()
 
 				return nil
-			case tcell.KeyEnter, tcell.KeyTab:
-				selectFile()
+			case tcell.KeyEnter:
+				selectFiles()
+
+				return nil
+			case tcell.KeyTab:
+				toggleCurrent()
 
 				return nil
 			case tcell.KeyDown:
