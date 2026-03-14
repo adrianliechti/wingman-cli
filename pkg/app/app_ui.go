@@ -109,8 +109,10 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	// Handle @ to trigger file picker (don't insert @ into input)
 	if event.Rune() == '@' {
 		go func() {
-			a.showFilePicker("", func(path string) {
-				a.addFileToContext(path)
+			a.showFilePicker("", func(paths []string) {
+				for _, p := range paths {
+					a.addFileToContext(p)
+				}
 			})
 		}()
 
@@ -200,6 +202,16 @@ func (a *App) pasteFromClipboard() {
 		}
 
 		if c.Text != "" {
+			// Check if the clipboard text contains file paths
+			paths := detectFilePaths(c.Text, a.config.Environment.WorkingDir())
+			if len(paths) > 0 {
+				for _, p := range paths {
+					a.addFileToContext(normalizeFilePath(p, a.config.Environment.WorkingDir()))
+				}
+
+				continue
+			}
+
 			// Get selection range (start, end are byte positions)
 			_, start, end := a.input.GetSelection()
 			a.input.Replace(start, end, c.Text)
@@ -296,8 +308,10 @@ func (a *App) submitInput() {
 
 	case "/file":
 		a.input.SetText("", true)
-		go a.showFilePicker("", func(path string) {
-			a.addFileToContext(path)
+		go a.showFilePicker("", func(paths []string) {
+			for _, p := range paths {
+				a.addFileToContext(p)
+			}
 		})
 
 		return

@@ -1,6 +1,9 @@
 package proxy
 
-import "time"
+import (
+	"net/url"
+	"time"
+)
 
 type UserInfo struct {
 	Name  string
@@ -18,10 +21,12 @@ type ProxyOptions struct {
 type RequestEntry struct {
 	ID        int
 	Timestamp time.Time
-	Method    string
-	Path      string
-	Status    int
-	Duration  time.Duration
+
+	Method string
+	URL    *url.URL
+
+	Status   int
+	Duration time.Duration
 
 	Model     string
 	Streaming bool
