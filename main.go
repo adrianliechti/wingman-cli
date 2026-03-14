@@ -16,10 +16,23 @@ import (
 	"github.com/adrianliechti/wingman-cli/pkg/cli/gemini"
 	"github.com/adrianliechti/wingman-cli/pkg/cli/opencode"
 	"github.com/adrianliechti/wingman-cli/pkg/proxy"
+	"github.com/adrianliechti/wingman-cli/pkg/server"
 )
 
 func main() {
 	ctx := context.Background()
+
+	if len(os.Args) > 1 && os.Args[1] == "server" {
+		fs := flag.NewFlagSet("server", flag.ExitOnError)
+		port := fs.Int("port", 8090, "port to listen on")
+		fs.Parse(os.Args[2:])
+
+		if err := server.Run(ctx, server.ServerOptions{Port: *port}); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if len(os.Args) > 1 && os.Getenv("WINGMAN_URL") != "" {
 		if os.Args[1] == "proxy" {
