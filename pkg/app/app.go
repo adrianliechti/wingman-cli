@@ -11,7 +11,6 @@ import (
 
 	"github.com/adrianliechti/wingman-cli/pkg/agent"
 	"github.com/adrianliechti/wingman-cli/pkg/config"
-	"github.com/adrianliechti/wingman-cli/pkg/plan"
 	"github.com/adrianliechti/wingman-cli/pkg/rewind"
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 	"github.com/adrianliechti/wingman-cli/pkg/tool/mcp"
@@ -58,9 +57,6 @@ type App struct {
 	streamCancel context.CancelFunc
 	streamMu     sync.Mutex
 
-	// Plan state
-	plan *plan.Plan
-
 	// MCP state
 	mcpManager *mcp.Manager
 	mcpTools   []tool.Tool
@@ -82,12 +78,10 @@ func New(ctx context.Context, cfg *config.Config, ag *agent.Agent) *App {
 		ctx:           ctx,
 		isWelcomeMode: true,
 		phase:         PhasePreparing,
-		plan:          &plan.Plan{},
 		rewindReady:   make(chan struct{}),
 	}
 
 	cfg.Environment.PromptUser = a.promptUser
-	cfg.Environment.Plan = a.plan
 
 	// Initialize rewind asynchronously to avoid blocking startup
 	go func() {
@@ -227,8 +221,6 @@ func (a *App) closeActiveModal() {
 		a.closeFilePicker()
 	case ModalDiff:
 		a.closeDiffView()
-	case ModalPlan:
-		a.closePlanView()
 	}
 }
 

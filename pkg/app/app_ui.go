@@ -240,7 +240,6 @@ func (a *App) clearChat() {
 	a.chatView.Clear()
 	a.agent.Clear()
 	a.totalTokens = 0
-	a.plan.Clear()
 	a.updateStatusBar()
 }
 
@@ -337,12 +336,6 @@ func (a *App) submitInput() {
 	case "/diff":
 		a.input.SetText("", true)
 		a.showDiffView()
-
-		return
-
-	case "/plan":
-		a.input.SetText("", true)
-		a.showPlanView()
 
 		return
 
@@ -584,10 +577,6 @@ func (a *App) updateStatusBar() {
 
 	if a.totalTokens > 0 {
 		parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.BrBlack, formatTokens(a.totalTokens)))
-	}
-
-	if ps := a.planStats(); ps != "" {
-		parts = append(parts, ps)
 	}
 
 	parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Cyan, a.config.Model))

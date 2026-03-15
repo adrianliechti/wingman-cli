@@ -10,7 +10,6 @@ const (
 	ModalPicker     Modal = "picker"
 	ModalFilePicker Modal = "file-picker"
 	ModalDiff       Modal = "diff"
-	ModalPlan       Modal = "plan"
 	ModalReview     Modal = "review"
 )
 

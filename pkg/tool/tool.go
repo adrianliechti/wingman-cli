@@ -3,8 +3,6 @@ package tool
 import (
 	"context"
 	"os"
-
-	"github.com/adrianliechti/wingman-cli/pkg/plan"
 )
 
 type Tool struct {
@@ -24,7 +22,6 @@ type Environment struct {
 	Root    *os.Root
 	Scratch *os.Root
 
-	Plan       *plan.Plan
 	PromptUser func(prompt string) (bool, error)
 }
 
