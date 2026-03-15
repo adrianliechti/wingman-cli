@@ -1,7 +1,8 @@
-package gemini
+package junie
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 
@@ -13,14 +14,7 @@ import (
 
 type RunOptions = cli.RunOptions
 
-type GeminiConfig struct {
-	BaseURL   string
-	AuthToken string
-
-	Model string
-}
-
-func NewConfig(ctx context.Context, options *RunOptions) (*GeminiConfig, error) {
+func NewConfig(ctx context.Context, options *RunOptions) (string, error) {
 	if options == nil {
 		options = new(RunOptions)
 	}
@@ -59,12 +53,7 @@ func NewConfig(ctx context.Context, options *RunOptions) (*GeminiConfig, error) 
 	}
 
 	if err := iter.Err(); err != nil {
-		return nil, err
-	}
-
-	cfg := &GeminiConfig{
-		BaseURL:   options.WingmanURL,
-		AuthToken: options.WingmanToken,
+		return "", err
 	}
 
 	pick := func(candidates ...string) string {
@@ -76,16 +65,69 @@ func NewConfig(ctx context.Context, options *RunOptions) (*GeminiConfig, error) 
 		return ""
 	}
 
-	cfg.Model = pick(
-		// Gemini Pro models
+	mainModel := pick(
+		// Claude models
+		"claude-opus-4-6",
+		"claude-opus-4-5",
+		"claude-sonnet-4-6",
+		"claude-sonnet-4-5",
+
+		// OpenAI models
+		"gpt-5.4",
+		"gpt-5.3-codex",
+		"gpt-5.2-codex",
+		"gpt-5.1-codex",
+		"gpt-5.2",
+		"gpt-5.1",
+		"gpt-5",
+
+		// Gemini models
 		"gemini-3.1-pro-preview",
 		"gemini-3-pro-preview",
 		"gemini-2.5-pro",
+	)
 
-		// Gemini Flash models
+	smallModel := pick(
+		// Claude Haiku
+		"claude-haiku-4-6",
+		"claude-haiku-4-5",
+
+		// OpenAI Mini
+		"gpt-5.3-codex-spark",
+		"gpt-5.1-codex-mini",
+		"gpt-5-mini",
+
+		// Gemini Flash
 		"gemini-3-flash-preview",
 		"gemini-2.5-flash",
 	)
 
-	return cfg, nil
+	if mainModel == "" {
+		mainModel = smallModel
+	}
+
+	if smallModel == "" {
+		smallModel = mainModel
+	}
+
+	url := strings.TrimRight(options.WingmanURL, "/") + "/v1"
+
+	cfg := map[string]any{
+		"baseUrl": url,
+		"apiType": "OpenAIResponses",
+
+		"id": mainModel,
+
+		"extraHeaders": map[string]any{
+			"Authorization": "Bearer " + options.WingmanToken,
+		},
+
+		"fasterModel": map[string]any{
+			"id": smallModel,
+		},
+	}
+
+	data, _ := json.MarshalIndent(cfg, "", "  ")
+
+	return string(data), nil
 }

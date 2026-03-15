@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/adrianliechti/wingman-cli/pkg/agent"
-	"github.com/adrianliechti/wingman-cli/pkg/theme"
-	"github.com/adrianliechti/wingman-cli/pkg/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/theme"
+	"github.com/adrianliechti/wingman-agent/pkg/tool"
 )
 
 // extractToolHint extracts a display hint from tool arguments JSON.

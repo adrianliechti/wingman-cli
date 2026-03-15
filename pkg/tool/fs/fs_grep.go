@@ -12,12 +12,12 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 
-	"github.com/adrianliechti/wingman-cli/pkg/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/tool"
 )
 
 const (
 	DefaultGrepLimit     = 100
-	DefaultScanBufSize   = 64 * 1024  // 64KB initial buffer
+	DefaultScanBufSize   = 64 * 1024   // 64KB initial buffer
 	MaxScanBufSize       = 1024 * 1024 // 1MB max buffer for long lines
 	MaxLineDisplayLength = 200
 )

@@ -2,6 +2,7 @@ package theme
 
 import (
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 )
 
 var Default Theme
@@ -38,6 +39,22 @@ type Theme struct {
 	BrWhite    tcell.Color
 }
 
+func applyTviewStyles() {
+	tview.Styles = tview.Theme{
+		PrimitiveBackgroundColor:    Default.Background,
+		ContrastBackgroundColor:     Default.Selection,
+		MoreContrastBackgroundColor: Default.Black,
+		BorderColor:                 Default.BrBlack,
+		TitleColor:                  Default.Foreground,
+		GraphicsColor:               Default.BrBlack,
+		PrimaryTextColor:            Default.Foreground,
+		SecondaryTextColor:          Default.Yellow,
+		TertiaryTextColor:           Default.BrBlack,
+		InverseTextColor:            Default.Background,
+		ContrastSecondaryTextColor:  Default.Cyan,
+	}
+}
+
 // SetDark sets the Iceberg dark theme
 // Based on https://github.com/cocopon/iceberg.vim
 func SetDark() {
@@ -64,6 +81,8 @@ func SetDark() {
 		BrCyan:     tcell.GetColor("#95c4ce"),
 		BrWhite:    tcell.GetColor("#d2d4de"),
 	}
+
+	applyTviewStyles()
 }
 
 // SetLight sets the Iceberg light theme
@@ -92,4 +111,6 @@ func SetLight() {
 		BrCyan:     tcell.GetColor("#327698"),
 		BrWhite:    tcell.GetColor("#262a3f"),
 	}
+
+	applyTviewStyles()
 }

@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/adrianliechti/wingman-cli/pkg/agent"
-	"github.com/adrianliechti/wingman-cli/pkg/prompt"
-	"github.com/adrianliechti/wingman-cli/pkg/rewind"
-	"github.com/adrianliechti/wingman-cli/pkg/theme"
+	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/prompt"
+	"github.com/adrianliechti/wingman-agent/pkg/rewind"
+	"github.com/adrianliechti/wingman-agent/pkg/theme"
 )
 
 // reviewData holds template data for the review prompt
@@ -61,7 +61,7 @@ func (a *App) startReview(commitRef string) {
 	}
 
 	// Prepare review data
-	env := a.config.Environment
+	env := a.agent.Environment
 	data := reviewData{
 		Date:       env.Date,
 		OS:         env.OS,

@@ -10,10 +10,10 @@ import (
 	"github.com/rivo/tview"
 	"golang.org/x/term"
 
-	"github.com/adrianliechti/wingman-cli/pkg/agent"
-	"github.com/adrianliechti/wingman-cli/pkg/clipboard"
-	"github.com/adrianliechti/wingman-cli/pkg/markdown"
-	"github.com/adrianliechti/wingman-cli/pkg/theme"
+	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/clipboard"
+	"github.com/adrianliechti/wingman-agent/pkg/markdown"
+	"github.com/adrianliechti/wingman-agent/pkg/theme"
 )
 
 const maxToolOutputLen = 500
@@ -109,8 +109,10 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	// Handle @ to trigger file picker (don't insert @ into input)
 	if event.Rune() == '@' {
 		go func() {
-			a.showFilePicker("", func(path string) {
-				a.addFileToContext(path)
+			a.showFilePicker("", func(paths []string) {
+				for _, p := range paths {
+					a.addFileToContext(p)
+				}
 			})
 		}()
 
@@ -200,6 +202,16 @@ func (a *App) pasteFromClipboard() {
 		}
 
 		if c.Text != "" {
+			// Check if the clipboard text contains file paths
+			paths := detectFilePaths(c.Text, a.agent.Environment.WorkingDir())
+			if len(paths) > 0 {
+				for _, p := range paths {
+					a.addFileToContext(normalizeFilePath(p, a.agent.Environment.WorkingDir()))
+				}
+
+				continue
+			}
+
 			// Get selection range (start, end are byte positions)
 			_, start, end := a.input.GetSelection()
 			a.input.Replace(start, end, c.Text)
@@ -228,7 +240,6 @@ func (a *App) clearChat() {
 	a.chatView.Clear()
 	a.agent.Clear()
 	a.totalTokens = 0
-	a.plan.Clear()
 	a.updateStatusBar()
 }
 
@@ -284,7 +295,6 @@ func (a *App) submitInput() {
 		fmt.Fprintf(a.chatView, "  [%s]/model[-]  - Select AI model\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/file[-]   - Add file to context (or type @filename)\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/paste[-]  - Paste from clipboard (Ctrl+V / Cmd+V / Paste)\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/plan[-]   - Show current plan\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/diff[-]   - Show changes from baseline\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/review[-] - Review code changes with AI\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/rewind[-] - Restore to previous checkpoint\n", t.BrCyan)
@@ -296,8 +306,10 @@ func (a *App) submitInput() {
 
 	case "/file":
 		a.input.SetText("", true)
-		go a.showFilePicker("", func(path string) {
-			a.addFileToContext(path)
+		go a.showFilePicker("", func(paths []string) {
+			for _, p := range paths {
+				a.addFileToContext(p)
+			}
 		})
 
 		return
@@ -323,12 +335,6 @@ func (a *App) submitInput() {
 	case "/diff":
 		a.input.SetText("", true)
 		a.showDiffView()
-
-		return
-
-	case "/plan":
-		a.input.SetText("", true)
-		a.showPlanView()
 
 		return
 
@@ -377,10 +383,10 @@ func (a *App) submitInput() {
 	a.clearPendingContent()
 
 	go func() {
-		instructions := a.config.AgentInstructions
+		instructions := a.agent.AgentInstructions
 
 		if a.currentMode == ModePlan {
-			instructions = a.config.PlanningInstructions
+			instructions = a.agent.PlanningInstructions
 		}
 
 		a.streamResponse(input, instructions, a.allTools())
@@ -572,11 +578,7 @@ func (a *App) updateStatusBar() {
 		parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.BrBlack, formatTokens(a.totalTokens)))
 	}
 
-	if ps := a.planStats(); ps != "" {
-		parts = append(parts, ps)
-	}
-
-	parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Cyan, a.config.Model))
+	parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Cyan, a.agent.Model))
 	parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Yellow, modeLabel))
 
 	a.statusBar.SetText(strings.Join(parts, " • "))
@@ -636,6 +638,8 @@ func (a *App) renderChat(messages []agent.Message, streamingContent string, tool
 	if toolName != "" && !a.isToolHidden(toolName) {
 		fmt.Fprint(a.chatView, markdown.FormatToolProgress(toolName, toolHint, a.chatWidth))
 	}
+
+	a.chatView.ScrollToEnd()
 }
 
 func (a *App) renderMessage(msg agent.Message) {

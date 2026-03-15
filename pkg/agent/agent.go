@@ -11,20 +11,19 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
 
-	"github.com/adrianliechti/wingman-cli/pkg/config"
-	"github.com/adrianliechti/wingman-cli/pkg/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/tool"
 )
 
 var errYieldStopped = errors.New("yield stopped")
 
 type Agent struct {
-	*config.Config
+	*Config
 
 	messages []responses.ResponseInputItemUnionParam
 	usage    Usage
 }
 
-func New(cfg *config.Config) *Agent {
+func New(cfg *Config) *Agent {
 	return &Agent{
 		Config: cfg,
 	}
@@ -92,9 +91,13 @@ func (a *Agent) streamResponse(ctx context.Context, yield func(Message, error) b
 	stream := a.Client.Responses.NewStreaming(ctx, responses.ResponseNewParams{
 		Model:        a.Model,
 		Instructions: openai.String(instructions),
-		Input:        responses.ResponseNewParamsInputUnion{OfInputItemList: a.messages},
-		Tools:        tools,
-		Truncation:   responses.ResponseNewParamsTruncationAuto,
+
+		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: a.messages},
+
+		Tools:             tools,
+		ParallelToolCalls: openai.Bool(true),
+
+		Truncation: responses.ResponseNewParamsTruncationAuto,
 	})
 
 	var fullResponse strings.Builder

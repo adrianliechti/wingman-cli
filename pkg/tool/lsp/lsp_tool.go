@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/adrianliechti/wingman-cli/pkg/prompt"
-	"github.com/adrianliechti/wingman-cli/pkg/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/prompt"
+	"github.com/adrianliechti/wingman-agent/pkg/tool"
 )
 
 var validOperations = []string{

@@ -1,4 +1,4 @@
-package config
+package agent
 
 import (
 	"fmt"
@@ -12,14 +12,13 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 
-	"github.com/adrianliechti/wingman-cli/pkg/prompt"
-	"github.com/adrianliechti/wingman-cli/pkg/skill"
-	"github.com/adrianliechti/wingman-cli/pkg/tool"
-	"github.com/adrianliechti/wingman-cli/pkg/tool/fs"
-	"github.com/adrianliechti/wingman-cli/pkg/tool/mcp"
-	"github.com/adrianliechti/wingman-cli/pkg/tool/plan"
-	"github.com/adrianliechti/wingman-cli/pkg/tool/search"
-	"github.com/adrianliechti/wingman-cli/pkg/tool/shell"
+	"github.com/adrianliechti/wingman-agent/pkg/prompt"
+	"github.com/adrianliechti/wingman-agent/pkg/skill"
+	"github.com/adrianliechti/wingman-agent/pkg/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/tool/fs"
+	"github.com/adrianliechti/wingman-agent/pkg/tool/mcp"
+	"github.com/adrianliechti/wingman-agent/pkg/tool/search"
+	"github.com/adrianliechti/wingman-agent/pkg/tool/shell"
 )
 
 // AvailableModels lists supported models in priority order
@@ -30,6 +29,8 @@ var AvailableModels = []string{
 	"claude-sonnet-4-6",
 	"claude-sonnet-4-5",
 
+	"gpt-5.4",
+	"gpt-5.3-codex",
 	"gpt-5.2-codex",
 	"gpt-5.2",
 	"gpt-5.1-codex-max",
@@ -58,7 +59,7 @@ type Config struct {
 	Skills []skill.Skill
 }
 
-func Default() (*Config, func(), error) {
+func DefaultConfig() (*Config, func(), error) {
 	wd, err := os.Getwd()
 
 	if err != nil {
@@ -93,7 +94,7 @@ func Default() (*Config, func(), error) {
 		Scratch: scratch,
 	}
 
-	tools := slices.Concat(fs.Tools(), shell.Tools(), plan.Tools())
+	tools := slices.Concat(fs.Tools(), shell.Tools())
 
 	if os.Getenv("WINGMAN_SEARCH") != "" {
 		tools = append(tools, search.Tools()...)
@@ -128,7 +129,7 @@ func Default() (*Config, func(), error) {
 		AgentInstructions:    agentinstructions,
 		PlanningInstructions: planningInstructions,
 
-		MaxContextTokens: 180_000,
+		MaxContextTokens: 400_000,
 		ReserveTokens:    16_000,
 		KeepRecentTokens: 20_000,
 

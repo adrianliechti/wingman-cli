@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/adrianliechti/wingman-cli/pkg/tool/lsp/jsonrpc2"
+	"github.com/adrianliechti/wingman-agent/pkg/tool/lsp/jsonrpc2"
 )
 
 // Session represents a connected LSP server session.
