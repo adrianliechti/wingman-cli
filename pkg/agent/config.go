@@ -1,4 +1,4 @@
-package config
+package agent
 
 import (
 	"fmt"
@@ -59,7 +59,7 @@ type Config struct {
 	Skills []skill.Skill
 }
 
-func Default() (*Config, func(), error) {
+func DefaultConfig() (*Config, func(), error) {
 	wd, err := os.Getwd()
 
 	if err != nil {
@@ -129,7 +129,7 @@ func Default() (*Config, func(), error) {
 		AgentInstructions:    agentinstructions,
 		PlanningInstructions: planningInstructions,
 
-		MaxContextTokens: 180_000,
+		MaxContextTokens: 400_000,
 		ReserveTokens:    16_000,
 		KeepRecentTokens: 20_000,
 

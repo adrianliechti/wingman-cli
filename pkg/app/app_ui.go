@@ -203,10 +203,10 @@ func (a *App) pasteFromClipboard() {
 
 		if c.Text != "" {
 			// Check if the clipboard text contains file paths
-			paths := detectFilePaths(c.Text, a.config.Environment.WorkingDir())
+			paths := detectFilePaths(c.Text, a.agent.Environment.WorkingDir())
 			if len(paths) > 0 {
 				for _, p := range paths {
-					a.addFileToContext(normalizeFilePath(p, a.config.Environment.WorkingDir()))
+					a.addFileToContext(normalizeFilePath(p, a.agent.Environment.WorkingDir()))
 				}
 
 				continue
@@ -384,10 +384,10 @@ func (a *App) submitInput() {
 	a.clearPendingContent()
 
 	go func() {
-		instructions := a.config.AgentInstructions
+		instructions := a.agent.AgentInstructions
 
 		if a.currentMode == ModePlan {
-			instructions = a.config.PlanningInstructions
+			instructions = a.agent.PlanningInstructions
 		}
 
 		a.streamResponse(input, instructions, a.allTools())
@@ -579,7 +579,7 @@ func (a *App) updateStatusBar() {
 		parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.BrBlack, formatTokens(a.totalTokens)))
 	}
 
-	parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Cyan, a.config.Model))
+	parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Cyan, a.agent.Model))
 	parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Yellow, modeLabel))
 
 	a.statusBar.SetText(strings.Join(parts, " • "))

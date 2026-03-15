@@ -61,7 +61,7 @@ func (a *App) startReview(commitRef string) {
 	}
 
 	// Prepare review data
-	env := a.config.Environment
+	env := a.agent.Environment
 	data := reviewData{
 		Date:       env.Date,
 		OS:         env.OS,

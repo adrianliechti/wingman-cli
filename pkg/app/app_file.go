@@ -47,7 +47,7 @@ func (f fileMatches) Len() int            { return len(f) }
 // collectFiles walks the workspace and collects all file paths
 func (a *App) collectFiles() []fileMatch {
 	var files []fileMatch
-	fsys := a.config.Environment.Root.FS()
+	fsys := a.agent.Environment.Root.FS()
 
 	var allPatterns []gitignore.Pattern
 	allPatterns = append(allPatterns, loadGitignore(fsys, nil)...)

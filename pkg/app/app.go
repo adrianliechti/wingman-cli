@@ -10,7 +10,6 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/adrianliechti/wingman-cli/pkg/agent"
-	"github.com/adrianliechti/wingman-cli/pkg/config"
 	"github.com/adrianliechti/wingman-cli/pkg/rewind"
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 	"github.com/adrianliechti/wingman-cli/pkg/tool/mcp"
@@ -18,10 +17,11 @@ import (
 
 type App struct {
 	// Core dependencies
-	app    *tview.Application
-	agent  *agent.Agent
-	config *config.Config
-	ctx    context.Context
+	ctx context.Context
+	app *tview.Application
+
+	agent *agent.Agent
+	//config *agent.Config
 
 	// UI Components
 	pages       *tview.Pages
@@ -68,25 +68,26 @@ type App struct {
 	rewindReady chan struct{}
 }
 
-func New(ctx context.Context, cfg *config.Config, ag *agent.Agent) *App {
-	tvApp := tview.NewApplication()
+func New(ctx context.Context, agent *agent.Agent) *App {
+	app := tview.NewApplication()
 
 	a := &App{
-		app:           tvApp,
-		agent:         ag,
-		config:        cfg,
-		ctx:           ctx,
+		ctx: ctx,
+		app: app,
+
+		agent: agent,
+
 		isWelcomeMode: true,
 		phase:         PhasePreparing,
 		rewindReady:   make(chan struct{}),
 	}
 
-	cfg.Environment.PromptUser = a.promptUser
+	agent.Environment.PromptUser = a.promptUser
 
 	// Initialize rewind asynchronously to avoid blocking startup
 	go func() {
 		defer close(a.rewindReady)
-		if rm, err := rewind.New(cfg.Environment.WorkingDir()); err == nil {
+		if rm, err := rewind.New(agent.Environment.WorkingDir()); err == nil {
 			a.rewind = rm
 		}
 	}()
@@ -120,7 +121,7 @@ func (a *App) Run() error {
 	// Auto-select model if not configured
 	a.autoSelectModel()
 
-	if a.config.MCP != nil {
+	if a.agent.MCP != nil {
 		go func() {
 			err := a.initMCP()
 			if err != nil || a.mcpError != nil {
@@ -153,14 +154,16 @@ func (a *App) Run() error {
 
 	root := &pasteInterceptRoot{
 		Primitive: a.pages,
+
 		intercept: func(text string) bool {
-			paths := detectFilePaths(text, a.config.Environment.WorkingDir())
+			paths := detectFilePaths(text, a.agent.Environment.WorkingDir())
+
 			if len(paths) == 0 {
 				return false
 			}
 
 			for _, p := range paths {
-				a.addFileToContext(normalizeFilePath(p, a.config.Environment.WorkingDir()))
+				a.addFileToContext(normalizeFilePath(p, a.agent.Environment.WorkingDir()))
 			}
 
 			a.app.QueueUpdateDraw(func() {
@@ -175,11 +178,11 @@ func (a *App) Run() error {
 }
 
 func (a *App) initMCP() error {
-	if a.config.MCP == nil {
+	if a.agent.MCP == nil {
 		return nil
 	}
 
-	a.mcpManager = a.config.MCP
+	a.mcpManager = a.agent.MCP
 
 	if err := a.mcpManager.Connect(a.ctx); err != nil {
 		a.mcpError = err
@@ -228,7 +231,7 @@ func (a *App) allTools() []tool.Tool {
 	a.mcpMu.Lock()
 	defer a.mcpMu.Unlock()
 
-	return append(a.config.Tools, a.mcpTools...)
+	return append(a.agent.Tools, a.mcpTools...)
 }
 
 func (a *App) isToolHidden(name string) bool {

@@ -8,7 +8,6 @@ import (
 
 	"github.com/adrianliechti/wingman-cli/pkg/agent"
 	"github.com/adrianliechti/wingman-cli/pkg/app"
-	"github.com/adrianliechti/wingman-cli/pkg/config"
 	"github.com/adrianliechti/wingman-cli/pkg/theme"
 
 	"github.com/adrianliechti/wingman-cli/pkg/cli/claude"
@@ -60,7 +59,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cfg, cleanup, err := config.Default()
+	cfg, cleanup, err := agent.DefaultConfig()
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -69,9 +68,7 @@ func main() {
 
 	defer cleanup()
 
-	agent := agent.New(cfg)
-
-	app := app.New(ctx, cfg, agent)
+	app := app.New(ctx, agent.New(cfg))
 
 	if err := app.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

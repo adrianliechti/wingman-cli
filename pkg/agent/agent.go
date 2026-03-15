@@ -11,20 +11,19 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
 
-	"github.com/adrianliechti/wingman-cli/pkg/config"
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 )
 
 var errYieldStopped = errors.New("yield stopped")
 
 type Agent struct {
-	*config.Config
+	*Config
 
 	messages []responses.ResponseInputItemUnionParam
 	usage    Usage
 }
 
-func New(cfg *config.Config) *Agent {
+func New(cfg *Config) *Agent {
 	return &Agent{
 		Config: cfg,
 	}
