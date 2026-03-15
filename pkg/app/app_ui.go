@@ -295,7 +295,6 @@ func (a *App) submitInput() {
 		fmt.Fprintf(a.chatView, "  [%s]/model[-]  - Select AI model\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/file[-]   - Add file to context (or type @filename)\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/paste[-]  - Paste from clipboard (Ctrl+V / Cmd+V / Paste)\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/plan[-]   - Show current plan\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/diff[-]   - Show changes from baseline\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/review[-] - Review code changes with AI\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/rewind[-] - Restore to previous checkpoint\n", t.BrCyan)
@@ -639,6 +638,8 @@ func (a *App) renderChat(messages []agent.Message, streamingContent string, tool
 	if toolName != "" && !a.isToolHidden(toolName) {
 		fmt.Fprint(a.chatView, markdown.FormatToolProgress(toolName, toolHint, a.chatWidth))
 	}
+
+	a.chatView.ScrollToEnd()
 }
 
 func (a *App) renderMessage(msg agent.Message) {

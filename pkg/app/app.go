@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/gdamore/tcell/v2"
@@ -63,6 +64,9 @@ type App struct {
 	mcpMu      sync.Mutex
 	mcpError   error
 
+	// Confirm dialog state
+	confirmResponse chan bool
+
 	// Rewind state
 	rewind      *rewind.Manager
 	rewindReady chan struct{}
@@ -83,14 +87,6 @@ func New(ctx context.Context, agent *agent.Agent) *App {
 	}
 
 	agent.Environment.PromptUser = a.promptUser
-
-	// Initialize rewind asynchronously to avoid blocking startup
-	go func() {
-		defer close(a.rewindReady)
-		if rm, err := rewind.New(agent.Environment.WorkingDir()); err == nil {
-			a.rewind = rm
-		}
-	}()
 
 	return a
 }
@@ -143,6 +139,28 @@ func (a *App) Run() error {
 
 	// Show "Preparing..." while rewind initializes, then transition to idle
 	a.spinner.Start(PhasePreparing, "")
+
+	// Initialize rewind asynchronously
+	go func() {
+		defer close(a.rewindReady)
+
+		workDir := a.agent.Environment.WorkingDir()
+		gitDir := filepath.Join(workDir, ".git")
+
+		if _, err := os.Stat(gitDir); os.IsNotExist(err) {
+			if !a.showConfirm("Current directory is not a git repository. Continue?") {
+				a.app.QueueUpdate(func() {
+					a.stop()
+				})
+				return
+			}
+		}
+
+		if rm, err := rewind.New(workDir); err == nil {
+			a.rewind = rm
+		}
+	}()
+
 	go func() {
 		<-a.rewindReady
 		a.app.QueueUpdateDraw(func() {
@@ -224,6 +242,42 @@ func (a *App) closeActiveModal() {
 		a.closeFilePicker()
 	case ModalDiff:
 		a.closeDiffView()
+	case ModalConfirm:
+		a.closeConfirm(false)
+	}
+}
+
+func (a *App) showConfirm(message string) bool {
+	a.confirmResponse = make(chan bool, 1)
+
+	a.app.QueueUpdateDraw(func() {
+		modal := tview.NewModal().
+			SetText(message).
+			AddButtons([]string{"Yes", "No"}).
+			SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+				a.closeConfirm(buttonLabel == "Yes")
+			})
+
+		a.activeModal = ModalConfirm
+		a.pages.AddPage("confirm", modal, true, true)
+	})
+
+	return <-a.confirmResponse
+}
+
+func (a *App) closeConfirm(result bool) {
+	a.activeModal = ModalNone
+
+	if a.pages != nil {
+		a.pages.RemovePage("confirm")
+		a.app.SetFocus(a.input)
+	}
+
+	if a.confirmResponse != nil {
+		select {
+		case a.confirmResponse <- result:
+		default:
+		}
 	}
 }
 
