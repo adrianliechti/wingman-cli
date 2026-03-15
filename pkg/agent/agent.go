@@ -92,9 +92,13 @@ func (a *Agent) streamResponse(ctx context.Context, yield func(Message, error) b
 	stream := a.Client.Responses.NewStreaming(ctx, responses.ResponseNewParams{
 		Model:        a.Model,
 		Instructions: openai.String(instructions),
-		Input:        responses.ResponseNewParamsInputUnion{OfInputItemList: a.messages},
-		Tools:        tools,
-		Truncation:   responses.ResponseNewParamsTruncationAuto,
+
+		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: a.messages},
+
+		Tools:             tools,
+		ParallelToolCalls: openai.Bool(true),
+
+		Truncation: responses.ResponseNewParamsTruncationAuto,
 	})
 
 	var fullResponse strings.Builder
