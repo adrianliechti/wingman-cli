@@ -10,8 +10,8 @@ const (
 	ModalPicker     Modal = "picker"
 	ModalFilePicker Modal = "file-picker"
 	ModalDiff       Modal = "diff"
-	ModalPlan       Modal = "plan"
 	ModalReview     Modal = "review"
+	ModalConfirm    Modal = "confirm"
 )
 
 // AppPhase represents the current operational phase of the application

@@ -4,14 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
 	"github.com/adrianliechti/wingman-cli/pkg/agent"
-	"github.com/adrianliechti/wingman-cli/pkg/config"
-	"github.com/adrianliechti/wingman-cli/pkg/plan"
 	"github.com/adrianliechti/wingman-cli/pkg/rewind"
 	"github.com/adrianliechti/wingman-cli/pkg/tool"
 	"github.com/adrianliechti/wingman-cli/pkg/tool/mcp"
@@ -19,10 +18,11 @@ import (
 
 type App struct {
 	// Core dependencies
-	app    *tview.Application
-	agent  *agent.Agent
-	config *config.Config
-	ctx    context.Context
+	ctx context.Context
+	app *tview.Application
+
+	agent *agent.Agent
+	//config *agent.Config
 
 	// UI Components
 	pages       *tview.Pages
@@ -58,44 +58,35 @@ type App struct {
 	streamCancel context.CancelFunc
 	streamMu     sync.Mutex
 
-	// Plan state
-	plan *plan.Plan
-
 	// MCP state
 	mcpManager *mcp.Manager
 	mcpTools   []tool.Tool
 	mcpMu      sync.Mutex
 	mcpError   error
 
+	// Confirm dialog state
+	confirmResponse chan bool
+
 	// Rewind state
 	rewind      *rewind.Manager
 	rewindReady chan struct{}
 }
 
-func New(ctx context.Context, cfg *config.Config, ag *agent.Agent) *App {
-	tvApp := tview.NewApplication()
+func New(ctx context.Context, agent *agent.Agent) *App {
+	app := tview.NewApplication()
 
 	a := &App{
-		app:           tvApp,
-		agent:         ag,
-		config:        cfg,
-		ctx:           ctx,
+		ctx: ctx,
+		app: app,
+
+		agent: agent,
+
 		isWelcomeMode: true,
 		phase:         PhasePreparing,
-		plan:          &plan.Plan{},
 		rewindReady:   make(chan struct{}),
 	}
 
-	cfg.Environment.PromptUser = a.promptUser
-	cfg.Environment.Plan = a.plan
-
-	// Initialize rewind asynchronously to avoid blocking startup
-	go func() {
-		defer close(a.rewindReady)
-		if rm, err := rewind.New(cfg.Environment.WorkingDir()); err == nil {
-			a.rewind = rm
-		}
-	}()
+	agent.Environment.PromptUser = a.promptUser
 
 	return a
 }
@@ -126,7 +117,7 @@ func (a *App) Run() error {
 	// Auto-select model if not configured
 	a.autoSelectModel()
 
-	if a.config.MCP != nil {
+	if a.agent.MCP != nil {
 		go func() {
 			err := a.initMCP()
 			if err != nil || a.mcpError != nil {
@@ -148,6 +139,28 @@ func (a *App) Run() error {
 
 	// Show "Preparing..." while rewind initializes, then transition to idle
 	a.spinner.Start(PhasePreparing, "")
+
+	// Initialize rewind asynchronously
+	go func() {
+		defer close(a.rewindReady)
+
+		workDir := a.agent.Environment.WorkingDir()
+		gitDir := filepath.Join(workDir, ".git")
+
+		if _, err := os.Stat(gitDir); os.IsNotExist(err) {
+			if !a.showConfirm("Current directory is not a git repository. Continue?") {
+				a.app.QueueUpdate(func() {
+					a.stop()
+				})
+				return
+			}
+		}
+
+		if rm, err := rewind.New(workDir); err == nil {
+			a.rewind = rm
+		}
+	}()
+
 	go func() {
 		<-a.rewindReady
 		a.app.QueueUpdateDraw(func() {
@@ -157,15 +170,37 @@ func (a *App) Run() error {
 		})
 	}()
 
-	return a.app.SetRoot(a.pages, true).EnableMouse(true).EnablePaste(true).Run()
+	root := &pasteInterceptRoot{
+		Primitive: a.pages,
+
+		intercept: func(text string) bool {
+			paths := detectFilePaths(text, a.agent.Environment.WorkingDir())
+
+			if len(paths) == 0 {
+				return false
+			}
+
+			for _, p := range paths {
+				a.addFileToContext(normalizeFilePath(p, a.agent.Environment.WorkingDir()))
+			}
+
+			a.app.QueueUpdateDraw(func() {
+				a.updateInputHint()
+			})
+
+			return true
+		},
+	}
+
+	return a.app.SetRoot(root, true).EnableMouse(true).EnablePaste(true).Run()
 }
 
 func (a *App) initMCP() error {
-	if a.config.MCP == nil {
+	if a.agent.MCP == nil {
 		return nil
 	}
 
-	a.mcpManager = a.config.MCP
+	a.mcpManager = a.agent.MCP
 
 	if err := a.mcpManager.Connect(a.ctx); err != nil {
 		a.mcpError = err
@@ -207,8 +242,42 @@ func (a *App) closeActiveModal() {
 		a.closeFilePicker()
 	case ModalDiff:
 		a.closeDiffView()
-	case ModalPlan:
-		a.closePlanView()
+	case ModalConfirm:
+		a.closeConfirm(false)
+	}
+}
+
+func (a *App) showConfirm(message string) bool {
+	a.confirmResponse = make(chan bool, 1)
+
+	a.app.QueueUpdateDraw(func() {
+		modal := tview.NewModal().
+			SetText(message).
+			AddButtons([]string{"Yes", "No"}).
+			SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+				a.closeConfirm(buttonLabel == "Yes")
+			})
+
+		a.activeModal = ModalConfirm
+		a.pages.AddPage("confirm", modal, true, true)
+	})
+
+	return <-a.confirmResponse
+}
+
+func (a *App) closeConfirm(result bool) {
+	a.activeModal = ModalNone
+
+	if a.pages != nil {
+		a.pages.RemovePage("confirm")
+		a.app.SetFocus(a.input)
+	}
+
+	if a.confirmResponse != nil {
+		select {
+		case a.confirmResponse <- result:
+		default:
+		}
 	}
 }
 
@@ -216,7 +285,7 @@ func (a *App) allTools() []tool.Tool {
 	a.mcpMu.Lock()
 	defer a.mcpMu.Unlock()
 
-	return append(a.config.Tools, a.mcpTools...)
+	return append(a.agent.Tools, a.mcpTools...)
 }
 
 func (a *App) isToolHidden(name string) bool {

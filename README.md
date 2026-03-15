@@ -41,7 +41,7 @@ go build -o wingman .
 1. **Set up your API key:**
 
 ```bash
-# For any OpenResponses API compatible endpoint
+# For any OpenAI-compatible API endpoint
 export OPENAI_API_KEY="your-api-key"
 
 # Optional: custom endpoint (defaults to OpenAI)
@@ -49,15 +49,13 @@ export OPENAI_BASE_URL="https://your-api-endpoint/v1"
 ```
 
 2. **Run Wingman in your project directory:**
-
 ```bash
 wingman
 ```
 
 3. **Start chatting!** Ask Wingman to help with coding tasks:
 
-```
-> Show me all TODO comments in this project
+```> Show me all TODO comments in this project
 > Refactor the config package to use dependency injection
 > Write tests for the agent module
 ```
@@ -149,8 +147,8 @@ Toggle between modes using `Tab` key.
 | `/model` | Select AI model from available options |
 | `/file` | Add file to context |
 | `/paste` | Paste from clipboard |
-| `/plan` | Show current plan |
 | `/diff` | Show changes from session baseline |
+| `/review` | Review code changes with AI |
 | `/rewind` | Restore to previous checkpoint |
 | `/clear` | Clear chat history |
 | `/quit` | Exit application |
@@ -175,3 +173,26 @@ description: Run the project test suite with coverage
 
 Run tests with: `go test -cover ./...`
 ```
+
+## 🔀 Proxy Mode
+
+When `WINGMAN_URL` is set, Wingman can act as a local API proxy with a TUI dashboard for inspecting requests:
+
+```bash
+wingman proxy [--port 4242]
+```
+
+This starts a local OpenAI-compatible proxy server that forwards requests to your Wingman server, showing real-time request/response details in a terminal UI.
+
+## 🧩 CLI Wrappers
+
+When `WINGMAN_URL` is set, Wingman can launch other coding agents pre-configured to use your Wingman server as their backend:
+
+```bash
+wingman codex [args...]    # Launch OpenAI Codex CLI
+wingman claude [args...]   # Launch Claude Code
+wingman gemini [args...]   # Launch Gemini CLI
+wingman opencode [args...] # Launch OpenCode
+```
+
+Each wrapper automatically configures the target CLI tool with the correct endpoint and authentication.
