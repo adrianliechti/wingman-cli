@@ -52,9 +52,9 @@ func SearchTool() tool.Tool {
 			var sb strings.Builder
 
 			for i, r := range results {
-				sb.WriteString(fmt.Sprintf("## %d. %s\n", i+1, r.Title))
-				sb.WriteString(fmt.Sprintf("URL: %s\n", r.URL))
-				sb.WriteString(fmt.Sprintf("%s\n\n", r.Content))
+				fmt.Fprintf(&sb, "## %d. %s\n", i+1, r.Title)
+				fmt.Fprintf(&sb, "URL: %s\n", r.URL)
+				fmt.Fprintf(&sb, "%s\n\n", r.Content)
 			}
 
 			return sb.String(), nil

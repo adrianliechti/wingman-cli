@@ -341,12 +341,12 @@ func generateDiffString(oldContent, newContent string) string {
 			newLineNum += len(lines)
 		case diffmatchpatch.DiffDelete:
 			for _, line := range lines {
-				output.WriteString(fmt.Sprintf("-%d %s\n", oldLineNum, line))
+				fmt.Fprintf(&output, "-%d %s\n", oldLineNum, line)
 				oldLineNum++
 			}
 		case diffmatchpatch.DiffInsert:
 			for _, line := range lines {
-				output.WriteString(fmt.Sprintf("+%d %s\n", newLineNum, line))
+				fmt.Fprintf(&output, "+%d %s\n", newLineNum, line)
 				newLineNum++
 			}
 		}

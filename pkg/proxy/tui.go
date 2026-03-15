@@ -255,15 +255,15 @@ func (t *tui) startPageContent() string {
 
 	var b strings.Builder
 
-	b.WriteString(strings.ReplaceAll(logo, "\n", "\n  "))
-	b.WriteString("\n")
+	fmt.Fprint(&b, strings.ReplaceAll(logo, "\n", "\n  "))
+	fmt.Fprint(&b, "\n")
 
-	b.WriteString(fmt.Sprintf("  [%s::b]Listening[-::-]  [%s]http://%s[-]\n\n", th.Yellow, th.Foreground, t.listenAddr))
+	fmt.Fprintf(&b, "  [%s::b]Listening[-::-]  [%s]http://%s[-]\n\n", th.Yellow, th.Foreground, t.listenAddr)
 
-	b.WriteString(fmt.Sprintf("  [%s::b]Usage[-::-]\n", th.Cyan))
-	b.WriteString(fmt.Sprintf("  [%s]Point your OpenAI client to the proxy:[-]\n\n", th.BrBlack))
-	b.WriteString(fmt.Sprintf("  [%s]export OPENAI_BASE_URL=http://%s/v1[-]\n", th.Green, t.listenAddr))
-	b.WriteString(fmt.Sprintf("  [%s]export OPENAI_API_KEY=any-value[-]\n\n", th.Green))
+	fmt.Fprintf(&b, "  [%s::b]Usage[-::-]\n", th.Cyan)
+	fmt.Fprintf(&b, "  [%s]Point your OpenAI client to the proxy:[-]\n\n", th.BrBlack)
+	fmt.Fprintf(&b, "  [%s]export OPENAI_BASE_URL=http://%s/v1[-]\n", th.Green, t.listenAddr)
+	fmt.Fprintf(&b, "  [%s]export OPENAI_API_KEY=any-value[-]\n\n", th.Green)
 
 	return b.String()
 }
@@ -386,37 +386,37 @@ func (t *tui) renderDetail() {
 		statusColor = th.Red
 	}
 
-	b.WriteString(fmt.Sprintf("\n  [%s::b]Request Detail[-::-]\n\n", th.Blue))
+	fmt.Fprintf(&b, "\n  [%s::b]Request Detail[-::-]\n\n", th.Blue)
 
-	b.WriteString(fmt.Sprintf("  [%s]Method[-]    [%s]%s[-]\n", th.BrBlack, th.Magenta, entry.Method))
-	b.WriteString(fmt.Sprintf("  [%s]URL[-]       [%s]%s[-]\n", th.BrBlack, th.Foreground, requestURLText(entry.URL)))
-	b.WriteString(fmt.Sprintf("  [%s]Status[-]    [%s]%d[-]\n", th.BrBlack, statusColor, entry.Status))
-	b.WriteString(fmt.Sprintf("  [%s]Duration[-]  [%s]%s[-]\n", th.BrBlack, th.Foreground, entry.Duration.Round(time.Millisecond)))
-	b.WriteString(fmt.Sprintf("  [%s]Model[-]     [%s]%s[-]\n", th.BrBlack, th.Cyan, entry.Model))
+	fmt.Fprintf(&b, "  [%s]Method[-]    [%s]%s[-]\n", th.BrBlack, th.Magenta, entry.Method)
+	fmt.Fprintf(&b, "  [%s]URL[-]       [%s]%s[-]\n", th.BrBlack, th.Foreground, requestURLText(entry.URL))
+	fmt.Fprintf(&b, "  [%s]Status[-]    [%s]%d[-]\n", th.BrBlack, statusColor, entry.Status)
+	fmt.Fprintf(&b, "  [%s]Duration[-]  [%s]%s[-]\n", th.BrBlack, th.Foreground, entry.Duration.Round(time.Millisecond))
+	fmt.Fprintf(&b, "  [%s]Model[-]     [%s]%s[-]\n", th.BrBlack, th.Cyan, entry.Model)
 
 	if entry.InputTokens > 0 || entry.OutputTokens > 0 {
-		b.WriteString(fmt.Sprintf("  [%s]Tokens[-]    [%s]%s in / %s out[-]\n",
-			th.BrBlack, th.Cyan, formatTokenCount(entry.InputTokens), formatTokenCount(entry.OutputTokens)))
+		fmt.Fprintf(&b, "  [%s]Tokens[-]    [%s]%s in / %s out[-]\n",
+			th.BrBlack, th.Cyan, formatTokenCount(entry.InputTokens), formatTokenCount(entry.OutputTokens))
 	}
 
 	if entry.Error != "" {
-		b.WriteString(fmt.Sprintf("  [%s]Error[-]     [%s]%s[-]\n", th.BrBlack, th.Red, entry.Error))
+		fmt.Fprintf(&b, "  [%s]Error[-]     [%s]%s[-]\n", th.BrBlack, th.Red, entry.Error)
 	}
 
 	// Request body
 	if len(entry.RequestBody) > 0 {
-		b.WriteString(fmt.Sprintf("\n  [%s::b]─── Request Body ───[-::-]\n\n", th.Yellow))
-		b.WriteString(formatJSON(entry.RequestBody, th))
+		fmt.Fprintf(&b, "\n  [%s::b]─── Request Body ───[-::-]\n\n", th.Yellow)
+		fmt.Fprint(&b, formatJSON(entry.RequestBody, th))
 	}
 
 	// Response body
 	if len(entry.ResponseBody) > 0 {
-		b.WriteString(fmt.Sprintf("\n  [%s::b]─── Response Body ───[-::-]\n\n", th.Yellow))
+		fmt.Fprintf(&b, "\n  [%s::b]─── Response Body ───[-::-]\n\n", th.Yellow)
 
 		if !isJSON(entry.ResponseBody) {
-			b.WriteString(formatSSEBody(entry.ResponseBody, th))
+			fmt.Fprint(&b, formatSSEBody(entry.ResponseBody, th))
 		} else {
-			b.WriteString(formatJSON(entry.ResponseBody, th))
+			fmt.Fprint(&b, formatJSON(entry.ResponseBody, th))
 		}
 	}
 
@@ -453,28 +453,28 @@ func formatJSON(data []byte, th theme.Theme) string {
 func formatSSEBody(data []byte, th theme.Theme) string {
 	var b strings.Builder
 
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(string(data), "\n")
+	for line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 
-		if strings.HasPrefix(line, "data: ") {
-			payload := strings.TrimPrefix(line, "data: ")
+		if after, ok := strings.CutPrefix(line, "data: "); ok {
+			payload := after
 			if payload == "[DONE]" {
-				b.WriteString(fmt.Sprintf("  [%s]data: [DONE][-]\n", th.BrBlack))
+				fmt.Fprintf(&b, "  [%s]data: [DONE][-]\n", th.BrBlack)
 				continue
 			}
 
 			var pretty bytes.Buffer
 			if json.Indent(&pretty, []byte(payload), "  ", "  ") == nil {
-				b.WriteString(fmt.Sprintf("  [%s]data: %s[-]\n", th.Foreground, tview.Escape(pretty.String())))
+				fmt.Fprintf(&b, "  [%s]data: %s[-]\n", th.Foreground, tview.Escape(pretty.String()))
 			} else {
-				b.WriteString(fmt.Sprintf("  [%s]%s[-]\n", th.Foreground, tview.Escape(line)))
+				fmt.Fprintf(&b, "  [%s]%s[-]\n", th.Foreground, tview.Escape(line))
 			}
 		} else {
-			b.WriteString(fmt.Sprintf("  [%s]%s[-]\n", th.BrBlack, tview.Escape(line)))
+			fmt.Fprintf(&b, "  [%s]%s[-]\n", th.BrBlack, tview.Escape(line))
 		}
 	}
 
@@ -498,17 +498,17 @@ func buildSavedEntry(entry RequestEntry) []byte {
 		}
 
 		if i > 0 && buf.Len() > 0 {
-			buf.WriteString("\n")
+			fmt.Fprint(&buf, "\n")
 		}
 
 		var pretty bytes.Buffer
 		if json.Indent(&pretty, body, "", "  ") == nil {
-			buf.WriteString(pretty.String())
+			fmt.Fprint(&buf, pretty.String())
 		} else {
 			buf.Write(body)
 		}
 
-		buf.WriteString("\n")
+		fmt.Fprint(&buf, "\n")
 	}
 
 	return []byte(buf.String())

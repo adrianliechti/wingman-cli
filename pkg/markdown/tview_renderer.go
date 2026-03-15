@@ -168,11 +168,11 @@ func (r *TviewRenderer) renderListItem(w util.BufWriter, source []byte, node ast
 		parent := n.Parent().(*ast.List)
 
 		// Calculate indent level
-		indent := ""
+		var indent strings.Builder
 
 		for p := parent.Parent(); p != nil; p = p.Parent() {
 			if _, ok := p.(*ast.ListItem); ok {
-				indent += "  "
+				indent.WriteString("  ")
 			}
 		}
 
@@ -186,9 +186,9 @@ func (r *TviewRenderer) renderListItem(w util.BufWriter, source []byte, node ast
 				}
 				idx++
 			}
-			fmt.Fprintf(w, "%s[%s]%d.[-] ", indent, r.theme.Yellow, parent.Start+idx-1)
+			fmt.Fprintf(w, "%s[%s]%d.[-] ", indent.String(), r.theme.Yellow, parent.Start+idx-1)
 		} else {
-			fmt.Fprintf(w, "%s[%s]•[-] ", indent, r.theme.Yellow)
+			fmt.Fprintf(w, "%s[%s]•[-] ", indent.String(), r.theme.Yellow)
 		}
 	} else {
 		w.WriteString("\n")
@@ -396,7 +396,7 @@ func (r *TviewRenderer) renderTable(w util.BufWriter, source []byte, node ast.No
 			if i < len(colWidths) {
 				padding := colWidths[i] - visibleLen(cell)
 
-				for j := 0; j < padding; j++ {
+				for range padding {
 					w.WriteString(" ")
 				}
 			}

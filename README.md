@@ -11,6 +11,7 @@ A powerful AI-powered coding assistant that runs directly in your terminal. Wing
 - **Interactive TUI** — Rich terminal interface with markdown rendering and syntax highlighting
 - **File Operations** — Read, write, edit, and search files in your codebase
 - **Shell Integration** — Execute shell commands with elicitation
+- **LSP Integration** — Code intelligence via auto-detected language servers (definitions, references, diagnostics, call hierarchy, and more)
 - **MCP Support** — Extend functionality with Model Context Protocol servers
 - **Context Management** — Automatic conversation compaction to handle long sessions
 - **Multi-Model Support** — Works with any [OpenResponses API](https://www.openresponses.org) compatible endpoint with auto-selection
@@ -118,6 +119,35 @@ Wingman comes with powerful built-in tools:
 | `find` | Find files using glob patterns |
 | `grep` | Search file contents using regex patterns |
 | `shell` | Execute shell commands |
+| `lsp` | Code intelligence (definitions, references, diagnostics, symbols, call hierarchy) |
+
+### LSP Support
+
+Wingman automatically detects and connects to language servers based on project files. No configuration needed — if you have a language server installed, Wingman will use it.
+
+| Language | Server | Detected By |
+|----------|--------|-------------|
+| Go | `gopls` | `go.mod`, `go.work` |
+| TypeScript/JS | `typescript-language-server`, `vtsls` | `tsconfig.json`, `package.json` |
+| Python | `basedpyright`, `pyright`, `pylsp` | `pyproject.toml`, `requirements.txt` |
+| Rust | `rust-analyzer` | `Cargo.toml` |
+| C/C++ | `clangd`, `ccls` | `compile_commands.json`, `CMakeLists.txt` |
+| Java | `jdtls` | `pom.xml`, `build.gradle` |
+| C# | `OmniSharp`, `csharp-ls` | `*.csproj`, `*.sln` |
+| Ruby | `ruby-lsp`, `solargraph` | `Gemfile` |
+| PHP | `intelephense`, `phpactor` | `composer.json` |
+| Swift | `sourcekit-lsp` | `Package.swift` |
+| Kotlin | `kotlin-language-server` | `build.gradle.kts` |
+| Zig | `zls` | `build.zig` |
+| And more... | | Terraform, Scala, Haskell, Elixir, Lua, YAML, Docker |
+
+The LSP tool provides these operations:
+- **diagnostics** / **workspaceDiagnostics** — Compiler errors and warnings
+- **definition** / **implementation** — Navigate to symbol definitions or interface implementations
+- **references** — Find all usages of a symbol
+- **hover** — Type information and documentation
+- **documentSymbol** / **workspaceSymbol** — List or search symbols
+- **incomingCalls** / **outgoingCalls** — Explore call graphs
 
 ## 🎨 Modes
 
@@ -192,6 +222,7 @@ When `WINGMAN_URL` is set, Wingman can launch other coding agents pre-configured
 wingman codex [args...]    # Launch OpenAI Codex CLI
 wingman claude [args...]   # Launch Claude Code
 wingman gemini [args...]   # Launch Gemini CLI
+wingman junie [args...]    # Launch JetBrains Junie
 wingman opencode [args...] # Launch OpenCode
 ```
 

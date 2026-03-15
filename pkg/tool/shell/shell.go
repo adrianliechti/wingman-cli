@@ -59,7 +59,6 @@ func isSafeCommand(command string) bool {
 	}
 
 	cmd := strings.ToLower(filepath.Base(words[0]))
-
 	if _, ok := safeCommandSet[cmd]; ok {
 		return true
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/rewind"
 	"github.com/adrianliechti/wingman-agent/pkg/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/tool/lsp"
 	"github.com/adrianliechti/wingman-agent/pkg/tool/mcp"
 )
 
@@ -64,6 +65,10 @@ type App struct {
 	mcpMu      sync.Mutex
 	mcpError   error
 
+	// LSP state
+	lspManager *lsp.Manager
+	lspTool    tool.Tool
+
 	// Confirm dialog state
 	confirmResponse chan bool
 
@@ -75,6 +80,8 @@ type App struct {
 func New(ctx context.Context, agent *agent.Agent) *App {
 	app := tview.NewApplication()
 
+	lspManager := lsp.NewManager(agent.Environment.WorkingDir())
+
 	a := &App{
 		ctx: ctx,
 		app: app,
@@ -83,7 +90,11 @@ func New(ctx context.Context, agent *agent.Agent) *App {
 
 		isWelcomeMode: true,
 		phase:         PhasePreparing,
-		rewindReady:   make(chan struct{}),
+
+		lspManager: lspManager,
+		lspTool:    lsp.NewTool(lspManager),
+
+		rewindReady: make(chan struct{}),
 	}
 
 	agent.Environment.PromptUser = a.promptUser
@@ -92,6 +103,11 @@ func New(ctx context.Context, agent *agent.Agent) *App {
 }
 
 func (a *App) stop() {
+	// Shut down cached LSP servers
+	if a.lspManager != nil {
+		a.lspManager.Close()
+	}
+
 	// Wait briefly for rewind to be ready, then cleanup
 	select {
 	case <-a.rewindReady:
@@ -285,7 +301,12 @@ func (a *App) allTools() []tool.Tool {
 	a.mcpMu.Lock()
 	defer a.mcpMu.Unlock()
 
-	return append(a.agent.Tools, a.mcpTools...)
+	tools := append([]tool.Tool{}, a.agent.Tools...)
+
+	tools = append(tools, a.mcpTools...)
+	tools = append(tools, a.lspTool)
+
+	return tools
 }
 
 func (a *App) isToolHidden(name string) bool {

@@ -9,6 +9,7 @@ Environment:
 Capabilities:
 - Filesystem: read, write, edit files; list directories; find files by pattern
 - Shell: execute commands (requires user approval)
+- LSP: code intelligence (definitions, references, hover, call hierarchy) when available
 - Tools: use any available tools when helpful for the task
 - Always use absolute file paths when invoking tools
 - Tools may be disabled — if a needed tool is unavailable, explain what you would do and ask user to enable it

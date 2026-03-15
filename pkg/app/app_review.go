@@ -54,10 +54,10 @@ func (a *App) startReview(commitRef string) {
 		case rewind.StatusDeleted:
 			statusStr = "deleted"
 		}
-		diffContent.WriteString(fmt.Sprintf("\n### File: %s (%s)\n", diff.Path, statusStr))
-		diffContent.WriteString("```diff\n")
-		diffContent.WriteString(diff.Patch)
-		diffContent.WriteString("```\n")
+		fmt.Fprintf(&diffContent, "\n### File: %s (%s)\n", diff.Path, statusStr)
+		fmt.Fprint(&diffContent, "```diff\n")
+		fmt.Fprint(&diffContent, diff.Patch)
+		fmt.Fprint(&diffContent, "```\n")
 	}
 
 	// Prepare review data
