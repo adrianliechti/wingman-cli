@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-type contextKey struct{}
-
 func startServer(ctx context.Context, addr, upstream, token string, user *UserInfo, store *Store) error {
 	target, err := url.Parse(upstream)
 
@@ -46,8 +44,8 @@ func startServer(ctx context.Context, addr, upstream, token string, user *UserIn
 		},
 
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			if p, ok := r.Context().Value(contextKey{}).(*string); ok {
-				*p = err.Error()
+			if crw, ok := w.(*capturingResponseWriter); ok {
+				crw.err = err.Error()
 			}
 
 			http.Error(w, "upstream request failed", http.StatusBadGateway)
@@ -58,25 +56,16 @@ func startServer(ctx context.Context, addr, upstream, token string, user *UserIn
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-
-		reqBody, err := io.ReadAll(r.Body)
-		if err != nil {
-			http.Error(w, "failed to read request body", http.StatusBadRequest)
-			return
-		}
-
-		r.Body = io.NopCloser(bytes.NewReader(reqBody))
-
 		requestURL := *r.URL
 
-		var upstreamErr string
-		r = r.WithContext(context.WithValue(r.Context(), contextKey{}, &upstreamErr))
+		var reqBuf bytes.Buffer
+		r.Body = io.NopCloser(io.TeeReader(r.Body, &reqBuf))
 
 		crw := &capturingResponseWriter{ResponseWriter: w, status: http.StatusOK}
 		rp.ServeHTTP(crw, r)
 
+		reqBody := reqBuf.Bytes()
 		respBody := crw.body.Bytes()
-		streaming := extractStreaming(reqBody)
 
 		entry := RequestEntry{
 			Timestamp:    start,
@@ -84,20 +73,13 @@ func startServer(ctx context.Context, addr, upstream, token string, user *UserIn
 			URL:          &requestURL,
 			Status:       crw.status,
 			Duration:     time.Since(start),
-			Streaming:    streaming,
 			RequestBody:  reqBody,
 			ResponseBody: respBody,
-			Error:        upstreamErr,
+			Error:        crw.err,
 		}
 
-		if upstreamErr == "" {
-			var meta Metadata
-			if streaming {
-				meta = extractMetadataSSE(requestURL.Path, reqBody, respBody)
-			} else {
-				meta = extractMetadata(requestURL.Path, reqBody, respBody)
-			}
-
+		if crw.err == "" {
+			meta := extractMetadata(requestURL.Path, reqBody, respBody)
 			entry.Model = meta.Model
 			entry.InputTokens = meta.InputTokens
 			entry.OutputTokens = meta.OutputTokens
@@ -133,6 +115,7 @@ type capturingResponseWriter struct {
 	http.ResponseWriter
 	status int
 	body   bytes.Buffer
+	err    string
 }
 
 func (c *capturingResponseWriter) WriteHeader(status int) {
@@ -167,18 +150,3 @@ func extractModel(body []byte) string {
 	return ""
 }
 
-func extractStreaming(body []byte) bool {
-	if len(body) == 0 {
-		return false
-	}
-
-	var obj struct {
-		Stream *bool `json:"stream"`
-	}
-
-	if json.Unmarshal(body, &obj) == nil && obj.Stream != nil {
-		return *obj.Stream
-	}
-
-	return false
-}

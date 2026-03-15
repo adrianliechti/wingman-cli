@@ -42,7 +42,7 @@ type tui struct {
 	listenAddr string
 	upstream   string
 
-	selectedID int
+	selectedID string
 	activePage string
 
 	seenRequests int
@@ -218,9 +218,11 @@ func (t *tui) switchTo(page string) {
 }
 
 func (t *tui) Run() error {
-	// Watch for store updates
 	go func() {
-		for range t.store.Notify() {
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+
+		for range ticker.C {
 			t.app.QueueUpdateDraw(func() {
 				entries := t.store.List()
 
@@ -411,7 +413,7 @@ func (t *tui) renderDetail() {
 	if len(entry.ResponseBody) > 0 {
 		b.WriteString(fmt.Sprintf("\n  [%s::b]─── Response Body ───[-::-]\n\n", th.Yellow))
 
-		if entry.Streaming {
+		if !isJSON(entry.ResponseBody) {
 			b.WriteString(formatSSEBody(entry.ResponseBody, th))
 		} else {
 			b.WriteString(formatJSON(entry.ResponseBody, th))

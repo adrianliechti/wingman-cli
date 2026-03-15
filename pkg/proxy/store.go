@@ -1,49 +1,28 @@
 package proxy
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/google/uuid"
+)
 
 type Store struct {
 	mu      sync.RWMutex
 	entries []RequestEntry
-	nextID  int
-
-	notify chan struct{}
 }
 
 func NewStore() *Store {
-	return &Store{
-		notify: make(chan struct{}, 1),
-	}
+	return &Store{}
 }
 
-func (s *Store) Notify() <-chan struct{} {
-	return s.notify
-}
-
-func (s *Store) Add(entry RequestEntry) int {
+func (s *Store) Add(entry RequestEntry) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.nextID++
-	entry.ID = s.nextID
-
+	entry.ID = uuid.NewString()
 	s.entries = append(s.entries, entry)
-	s.signal()
 
 	return entry.ID
-}
-
-func (s *Store) Update(id int, fn func(*RequestEntry)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for i := range s.entries {
-		if s.entries[i].ID == id {
-			fn(&s.entries[i])
-			s.signal()
-			return
-		}
-	}
 }
 
 func (s *Store) List() []RequestEntry {
@@ -55,7 +34,7 @@ func (s *Store) List() []RequestEntry {
 	return result
 }
 
-func (s *Store) Get(id int) (RequestEntry, bool) {
+func (s *Store) Get(id string) (RequestEntry, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -78,11 +57,4 @@ func (s *Store) TotalTokens() (input, output int) {
 	}
 
 	return
-}
-
-func (s *Store) signal() {
-	select {
-	case s.notify <- struct{}{}:
-	default:
-	}
 }

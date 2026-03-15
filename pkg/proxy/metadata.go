@@ -13,29 +13,42 @@ type Metadata struct {
 }
 
 func extractMetadata(path string, reqBody, respBody []byte) Metadata {
+	streaming := !isJSON(respBody)
+
 	switch {
 	case strings.HasPrefix(path, "/v1/messages"):
+		if streaming {
+			return metadataFromAnthropicSSE(reqBody, respBody)
+		}
 		return metadataFromAnthropic(reqBody, respBody)
 
 	case isGeminiPath(path):
+		if streaming {
+			return metadataFromGeminiSSE(respBody, path)
+		}
 		return metadataFromGemini(respBody, path)
 
 	default:
+		if streaming {
+			return metadataFromOpenAISSE(reqBody, respBody)
+		}
 		return metadataFromOpenAI(reqBody, respBody)
 	}
 }
 
-func extractMetadataSSE(path string, reqBody, sseBody []byte) Metadata {
-	switch {
-	case strings.HasPrefix(path, "/v1/messages"):
-		return metadataFromAnthropicSSE(reqBody, sseBody)
-
-	case isGeminiPath(path):
-		return metadataFromGeminiSSE(sseBody, path)
-
-	default:
-		return metadataFromOpenAISSE(reqBody, sseBody)
+func isJSON(data []byte) bool {
+	for _, b := range data {
+		switch b {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '{', '[':
+			return true
+		default:
+			return false
+		}
 	}
+
+	return false
 }
 
 func isGeminiPath(path string) bool {

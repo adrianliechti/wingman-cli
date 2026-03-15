@@ -19,7 +19,7 @@ type ProxyOptions struct {
 }
 
 type RequestEntry struct {
-	ID        int
+	ID        string
 	Timestamp time.Time
 
 	Method string
@@ -28,8 +28,7 @@ type RequestEntry struct {
 	Status   int
 	Duration time.Duration
 
-	Model     string
-	Streaming bool
+	Model string
 
 	InputTokens  int
 	OutputTokens int
