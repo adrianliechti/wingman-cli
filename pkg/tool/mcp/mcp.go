@@ -13,7 +13,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/adrianliechti/wingman-cli/pkg/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/tool"
 )
 
 type Manager struct {

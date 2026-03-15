@@ -9,7 +9,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/rivo/tview"
 
-	"github.com/adrianliechti/wingman-cli/pkg/theme"
+	"github.com/adrianliechti/wingman-agent/pkg/theme"
 )
 
 func highlightCode(code, lang string) string {

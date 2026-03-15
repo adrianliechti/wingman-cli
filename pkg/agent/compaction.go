@@ -7,7 +7,7 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
 
-	"github.com/adrianliechti/wingman-cli/pkg/prompt"
+	"github.com/adrianliechti/wingman-agent/pkg/prompt"
 )
 
 func (a *Agent) shouldCompact(inputTokens int64) bool {

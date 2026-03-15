@@ -6,15 +6,15 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/adrianliechti/wingman-cli/pkg/agent"
-	"github.com/adrianliechti/wingman-cli/pkg/app"
-	"github.com/adrianliechti/wingman-cli/pkg/theme"
+	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/app"
+	"github.com/adrianliechti/wingman-agent/pkg/theme"
 
-	"github.com/adrianliechti/wingman-cli/pkg/cli/claude"
-	"github.com/adrianliechti/wingman-cli/pkg/cli/codex"
-	"github.com/adrianliechti/wingman-cli/pkg/cli/gemini"
-	"github.com/adrianliechti/wingman-cli/pkg/cli/opencode"
-	"github.com/adrianliechti/wingman-cli/pkg/proxy"
+	"github.com/adrianliechti/wingman-agent/pkg/cli/claude"
+	"github.com/adrianliechti/wingman-agent/pkg/cli/codex"
+	"github.com/adrianliechti/wingman-agent/pkg/cli/gemini"
+	"github.com/adrianliechti/wingman-agent/pkg/cli/opencode"
+	"github.com/adrianliechti/wingman-agent/pkg/proxy"
 )
 
 func main() {

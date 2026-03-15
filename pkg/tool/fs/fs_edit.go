@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/adrianliechti/wingman-cli/pkg/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/tool"
 )
 
 func EditTool() tool.Tool {

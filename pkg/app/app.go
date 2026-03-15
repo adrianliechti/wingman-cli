@@ -10,10 +10,10 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
-	"github.com/adrianliechti/wingman-cli/pkg/agent"
-	"github.com/adrianliechti/wingman-cli/pkg/rewind"
-	"github.com/adrianliechti/wingman-cli/pkg/tool"
-	"github.com/adrianliechti/wingman-cli/pkg/tool/mcp"
+	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/rewind"
+	"github.com/adrianliechti/wingman-agent/pkg/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/tool/mcp"
 )
 
 type App struct {

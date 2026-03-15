@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/adrianliechti/wingman-cli/pkg/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/tool"
 )
 
 func WriteTool() tool.Tool {

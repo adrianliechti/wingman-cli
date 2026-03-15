@@ -3,7 +3,7 @@ package app
 import (
 	"slices"
 
-	"github.com/adrianliechti/wingman-cli/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/agent"
 )
 
 func (a *App) autoSelectModel() {

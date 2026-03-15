@@ -1,4 +1,4 @@
-module github.com/adrianliechti/wingman-cli
+module github.com/adrianliechti/wingman-agent
 
 go 1.25.0
 

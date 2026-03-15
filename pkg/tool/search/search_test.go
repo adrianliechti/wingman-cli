@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/adrianliechti/wingman-cli/pkg/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/tool"
 )
 
 func TestSearchTool(t *testing.T) {

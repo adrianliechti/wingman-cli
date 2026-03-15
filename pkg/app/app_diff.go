@@ -7,9 +7,9 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
-	"github.com/adrianliechti/wingman-cli/pkg/markdown"
-	"github.com/adrianliechti/wingman-cli/pkg/rewind"
-	"github.com/adrianliechti/wingman-cli/pkg/theme"
+	"github.com/adrianliechti/wingman-agent/pkg/markdown"
+	"github.com/adrianliechti/wingman-agent/pkg/rewind"
+	"github.com/adrianliechti/wingman-agent/pkg/theme"
 )
 
 func (a *App) showDiffView() {

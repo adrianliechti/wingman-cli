@@ -25,14 +25,14 @@ A powerful AI-powered coding assistant that runs directly in your terminal. Wing
 ### From Source
 
 ```bash
-go install github.com/adrianliechti/wingman-cli@latest
+go install github.com/adrianliechti/wingman-agent@latest
 ```
 
 ### Build Locally
 
 ```bash
-git clone https://github.com/adrianliechti/wingman-cli.git
-cd wingman-cli
+git clone https://github.com/adrianliechti/wingman-agent.git
+cd wingman-agent
 go build -o wingman .
 ```
 

@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/adrianliechti/wingman-cli/pkg/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/tool"
 )
 
 const DefaultListLimit = 500

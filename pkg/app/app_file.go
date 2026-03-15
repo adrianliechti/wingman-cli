@@ -12,7 +12,7 @@ import (
 	"github.com/rivo/tview"
 	"github.com/sahilm/fuzzy"
 
-	"github.com/adrianliechti/wingman-cli/pkg/theme"
+	"github.com/adrianliechti/wingman-agent/pkg/theme"
 )
 
 // Directories to skip when collecting files

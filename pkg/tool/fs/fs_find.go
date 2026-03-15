@@ -8,7 +8,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 
-	"github.com/adrianliechti/wingman-cli/pkg/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/tool"
 )
 
 const DefaultFindLimit = 1000

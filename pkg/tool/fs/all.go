@@ -1,7 +1,7 @@
 package fs
 
 import (
-	"github.com/adrianliechti/wingman-cli/pkg/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/tool"
 )
 
 func Tools() []tool.Tool {

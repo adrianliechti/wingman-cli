@@ -10,10 +10,10 @@ import (
 	"github.com/rivo/tview"
 	"golang.org/x/term"
 
-	"github.com/adrianliechti/wingman-cli/pkg/agent"
-	"github.com/adrianliechti/wingman-cli/pkg/clipboard"
-	"github.com/adrianliechti/wingman-cli/pkg/markdown"
-	"github.com/adrianliechti/wingman-cli/pkg/theme"
+	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/clipboard"
+	"github.com/adrianliechti/wingman-agent/pkg/markdown"
+	"github.com/adrianliechti/wingman-agent/pkg/theme"
 )
 
 const maxToolOutputLen = 500

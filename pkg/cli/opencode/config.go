@@ -9,7 +9,7 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 
-	"github.com/adrianliechti/wingman-cli/pkg/cli"
+	"github.com/adrianliechti/wingman-agent/pkg/cli"
 )
 
 type RunOptions = cli.RunOptions
