@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/tool/lsp/jsonrpc2"
@@ -22,6 +23,8 @@ type Session struct {
 	cmd        *exec.Cmd
 	rootURI    string
 	cancelFunc context.CancelFunc
+
+	docVersion int64 // atomic counter for document versions
 
 	// Track opened documents to avoid reopening
 	openedDocs map[string]struct{}
@@ -105,15 +108,6 @@ func (m *Manager) Close() {
 		session.Close()
 		delete(m.sessions, key)
 	}
-}
-
-// Connect starts and initializes an LSP server for the given file (non-cached).
-func Connect(ctx context.Context, workingDir string, filePath string) (*Session, error) {
-	server := FindServer(workingDir, filePath)
-	if server == nil {
-		return nil, fmt.Errorf("no LSP server found for file: %s", filePath)
-	}
-	return connect(ctx, workingDir, *server)
 }
 
 func connect(ctx context.Context, workingDir string, server Server) (*Session, error) {
@@ -208,9 +202,12 @@ func (s *Session) initialize(ctx context.Context) error {
 				Hover: HoverClientCapabilities{
 					ContentFormat: []string{"plaintext", "markdown"},
 				},
-				Definition: DefinitionClientCapabilities{},
-				References: ReferencesClientCapabilities{},
-				Diagnostic: DiagnosticClientCapabilities{},
+				Definition:      DefinitionClientCapabilities{},
+				References:      ReferencesClientCapabilities{},
+				Implementation:  ImplementationClientCapabilities{},
+				DocumentSymbol:  DocumentSymbolClientCapabilities{},
+				Diagnostic:      DiagnosticClientCapabilities{},
+				CallHierarchy:   CallHierarchyClientCapabilities{},
 			},
 		},
 	}
@@ -248,7 +245,7 @@ func (s *Session) OpenDocument(ctx context.Context, filePath string) (string, er
 		changeParams := DidChangeTextDocumentParams{
 			TextDocument: VersionedTextDocumentIdentifier{
 				URI:     uri,
-				Version: int(time.Now().UnixMilli()),
+				Version: int(atomic.AddInt64(&s.docVersion, 1)),
 			},
 			ContentChanges: []TextDocumentContentChangeEvent{
 				{Text: string(content)},
@@ -313,149 +310,4 @@ func uriToPath(uri string) string {
 		return after
 	}
 	return uri
-}
-
-// LSP Protocol Types
-
-type InitializeParams struct {
-	ProcessID    int                `json:"processId"`
-	RootURI      string             `json:"rootUri"`
-	Capabilities ClientCapabilities `json:"capabilities"`
-}
-
-type ClientCapabilities struct {
-	TextDocument TextDocumentClientCapabilities `json:"textDocument,omitempty"`
-}
-
-type TextDocumentClientCapabilities struct {
-	Synchronization TextDocumentSyncClientCapabilities `json:"synchronization,omitempty"`
-	Hover           HoverClientCapabilities            `json:"hover,omitempty"`
-	Definition      DefinitionClientCapabilities       `json:"definition,omitempty"`
-	References      ReferencesClientCapabilities       `json:"references,omitempty"`
-	Diagnostic      DiagnosticClientCapabilities       `json:"diagnostic,omitempty"`
-}
-
-type TextDocumentSyncClientCapabilities struct {
-	DidSave bool `json:"didSave,omitempty"`
-}
-
-type HoverClientCapabilities struct {
-	ContentFormat []string `json:"contentFormat,omitempty"`
-}
-
-type DefinitionClientCapabilities struct {
-	LinkSupport bool `json:"linkSupport,omitempty"`
-}
-
-type ReferencesClientCapabilities struct{}
-
-type DiagnosticClientCapabilities struct{}
-
-type TextDocumentIdentifier struct {
-	URI string `json:"uri"`
-}
-
-type VersionedTextDocumentIdentifier struct {
-	URI     string `json:"uri"`
-	Version int    `json:"version"`
-}
-
-type TextDocumentItem struct {
-	URI        string `json:"uri"`
-	LanguageID string `json:"languageId"`
-	Version    int    `json:"version"`
-	Text       string `json:"text"`
-}
-
-type DidOpenTextDocumentParams struct {
-	TextDocument TextDocumentItem `json:"textDocument"`
-}
-
-type DidChangeTextDocumentParams struct {
-	TextDocument   VersionedTextDocumentIdentifier  `json:"textDocument"`
-	ContentChanges []TextDocumentContentChangeEvent `json:"contentChanges"`
-}
-
-type TextDocumentContentChangeEvent struct {
-	Text string `json:"text"`
-}
-
-type Position struct {
-	Line      int `json:"line"`
-	Character int `json:"character"`
-}
-
-type Range struct {
-	Start Position `json:"start"`
-	End   Position `json:"end"`
-}
-
-type Location struct {
-	URI   string `json:"uri"`
-	Range Range  `json:"range"`
-}
-
-type TextDocumentPositionParams struct {
-	TextDocument TextDocumentIdentifier `json:"textDocument"`
-	Position     Position               `json:"position"`
-}
-
-type ReferenceParams struct {
-	TextDocument TextDocumentIdentifier `json:"textDocument"`
-	Position     Position               `json:"position"`
-	Context      ReferenceContext       `json:"context"`
-}
-
-type ReferenceContext struct {
-	IncludeDeclaration bool `json:"includeDeclaration"`
-}
-
-type Hover struct {
-	Contents MarkupContent `json:"contents"`
-	Range    *Range        `json:"range,omitempty"`
-}
-
-type MarkupContent struct {
-	Kind  string `json:"kind"`
-	Value string `json:"value"`
-}
-
-type Diagnostic struct {
-	Range    Range  `json:"range"`
-	Severity int    `json:"severity,omitempty"`
-	Code     any    `json:"code,omitempty"`
-	Source   string `json:"source,omitempty"`
-	Message  string `json:"message"`
-}
-
-const (
-	DiagnosticSeverityError       = 1
-	DiagnosticSeverityWarning     = 2
-	DiagnosticSeverityInformation = 3
-	DiagnosticSeverityHint        = 4
-)
-
-type DocumentDiagnosticParams struct {
-	TextDocument TextDocumentIdentifier `json:"textDocument"`
-}
-
-type FullDocumentDiagnosticReport struct {
-	Kind  string       `json:"kind"`
-	Items []Diagnostic `json:"items"`
-}
-
-// diagnosticSeverityName converts DiagnosticSeverity to a human-readable name.
-func diagnosticSeverityName(severity int) string {
-	switch severity {
-	case DiagnosticSeverityError:
-		return "Error"
-	case DiagnosticSeverityWarning:
-		return "Warning"
-	case DiagnosticSeverityInformation:
-		return "Info"
-	case DiagnosticSeverityHint:
-		return "Hint"
-	default:
-		return "Unknown"
-	}
 }

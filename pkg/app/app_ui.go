@@ -373,9 +373,9 @@ func (a *App) submitInput() {
 
 	if len(a.pendingFiles) > 0 {
 		var sb strings.Builder
-		sb.WriteString("\n[Attached files - use the read tool to access their content]\n")
+		fmt.Fprint(&sb, "\n[Attached files - use the read tool to access their content]\n")
 		for _, f := range a.pendingFiles {
-			sb.WriteString(fmt.Sprintf("- %s\n", f))
+			fmt.Fprintf(&sb, "- %s\n", f)
 		}
 		input = append(input, agent.Content{Text: sb.String()})
 	}

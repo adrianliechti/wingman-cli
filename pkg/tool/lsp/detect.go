@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -73,11 +74,18 @@ func FindServer(workingDir, filePath string) *Server {
 }
 
 // hasAnyFile checks if any of the named files exist in the directory.
+// Supports glob patterns (e.g., "*.csproj").
 func hasAnyFile(dir string, names []string) bool {
 	for _, name := range names {
-		path := filepath.Join(dir, name)
-		if _, err := os.Stat(path); err == nil {
-			return true
+		if strings.ContainsAny(name, "*?[") {
+			matches, _ := filepath.Glob(filepath.Join(dir, name))
+			if len(matches) > 0 {
+				return true
+			}
+		} else {
+			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+				return true
+			}
 		}
 	}
 	return false
@@ -85,12 +93,7 @@ func hasAnyFile(dir string, names []string) bool {
 
 // hasLanguage checks if the language/extension is in the list.
 func hasLanguage(languages []string, ext string) bool {
-	for _, lang := range languages {
-		if lang == ext {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(languages, ext)
 }
 
 // DetectServers finds all available LSP servers for the workspace by checking

@@ -77,7 +77,7 @@ func FormatUserMessage(content string, width int) string {
 
 	var result strings.Builder
 
-	for _, line := range strings.Split(content, "\n") {
+	for line := range strings.SplitSeq(content, "\n") {
 		wrapped := wrapLine(line, contentWidth)
 
 		for _, wl := range wrapped {
@@ -100,7 +100,7 @@ func FormatAssistantMessage(content string, width int) string {
 	var result strings.Builder
 	rendered := Render(content)
 
-	for _, line := range strings.Split(rendered, "\n") {
+	for line := range strings.SplitSeq(rendered, "\n") {
 		wrapped := wrapLine(line, contentWidth)
 
 		for _, wl := range wrapped {
@@ -128,7 +128,7 @@ func FormatPrompt(title string, message string, width int) string {
 		fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.Red, wl)
 	}
 
-	for _, line := range strings.Split(message, "\n") {
+	for line := range strings.SplitSeq(message, "\n") {
 		wrapped := wrapLine(line, contentWidth)
 
 		for _, wl := range wrapped {
@@ -160,7 +160,7 @@ func FormatToolCall(name string, hint string, output string, width int) string {
 	}
 	fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.Yellow, titleLine)
 
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		wrapped := wrapLine(line, contentWidth)
 
 		for _, wl := range wrapped {
@@ -234,7 +234,7 @@ func FormatError(title string, message string, width int) string {
 	titleLine := fmt.Sprintf("[%s::b]⚠ %s[-::-]", t.Yellow, title)
 	fmt.Fprintf(&result, "[%s]┃[-] %s\n", t.Red, titleLine)
 
-	for _, line := range strings.Split(message, "\n") {
+	for line := range strings.SplitSeq(message, "\n") {
 		if line == "" {
 			continue
 		}

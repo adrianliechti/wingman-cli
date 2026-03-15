@@ -1,10 +1,34 @@
-Use Language Server Protocol (LSP) to get code intelligence from the project's language server.
-
-Supported operations:
-- diagnostics: Get compiler errors, warnings, and hints for a single file (requires file)
-- workspaceDiagnostics: Get all compiler errors and warnings across the entire project (no file needed)
-- definition: Find where a symbol is defined (requires file, line, column)
-- references: Find all references to a symbol (requires file, line, column)
-- hover: Get type information and documentation for a symbol (requires file, line, column)
+Interact with Language Server Protocol (LSP) servers to get code intelligence features.
 
 LSP servers are auto-detected based on project files (go.mod, package.json, Cargo.toml, etc.).
+
+Supported operations:
+
+- definition: Find where a symbol is defined
+- references: Find all references to a symbol
+- implementation: Find implementations of an interface or abstract method
+- hover: Get type information and documentation for a symbol
+- diagnostics: Get compiler errors, warnings, and hints for a single file
+- workspaceDiagnostics: Get all diagnostics across the entire project (no file needed)
+- documentSymbol: Get all symbols (functions, classes, variables) in a file
+- workspaceSymbol: Search for symbols across the entire workspace (no file needed, uses query)
+- incomingCalls: Find all callers of the function at a position
+- outgoingCalls: Find all functions called by the function at a position
+
+Parameters:
+- operation (required): The operation to perform
+- file: Path to the source file (not required for workspaceDiagnostics and workspaceSymbol)
+- line: 1-based line number (required for definition, references, implementation, hover, incomingCalls, outgoingCalls)
+- column: 1-based column offset (required for definition, references, implementation, hover, incomingCalls, outgoingCalls)
+- query: Search query (only for workspaceSymbol)
+
+Usage guidance:
+- Use diagnostics after editing files to verify changes compile correctly
+- Use workspaceDiagnostics to get a project-wide health check
+- Use definition to navigate to a symbol's source, especially for understanding unfamiliar code
+- Use references before renaming or refactoring to find all usages
+- Use implementation to find concrete types that implement an interface
+- Use hover to quickly check types and signatures without reading the full file
+- Use documentSymbol to get an overview of a file's structure
+- Use workspaceSymbol to locate a symbol by name when you don't know which file it's in
+- Use incomingCalls/outgoingCalls to understand call graphs and impact of changes

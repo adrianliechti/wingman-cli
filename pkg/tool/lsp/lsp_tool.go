@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/adrianliechti/wingman-agent/pkg/prompt"
@@ -17,7 +18,12 @@ var validOperations = []string{
 	"workspaceDiagnostics",
 	"definition",
 	"references",
+	"implementation",
 	"hover",
+	"documentSymbol",
+	"workspaceSymbol",
+	"incomingCalls",
+	"outgoingCalls",
 }
 
 // NewTool creates an LSP tool for coding agents.
@@ -35,7 +41,7 @@ func NewTool(manager *Manager) tool.Tool {
 				},
 				"file": map[string]any{
 					"type":        "string",
-					"description": "Path to the source file (not required for workspaceDiagnostics)",
+					"description": "Path to the source file (not required for workspaceDiagnostics and workspaceSymbol)",
 				},
 				"line": map[string]any{
 					"type":        "integer",
@@ -45,12 +51,17 @@ func NewTool(manager *Manager) tool.Tool {
 					"type":        "integer",
 					"description": "Column offset (1-based)",
 				},
+				"query": map[string]any{
+					"type":        "string",
+					"description": "Search query (only for workspaceSymbol)",
+				},
 			},
 			"required": []string{"operation"},
 		},
 		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
 			operation, _ := args["operation"].(string)
 			file, _ := args["file"].(string)
+			query, _ := args["query"].(string)
 			line := intArg(args, "line")
 			column := intArg(args, "column")
 
@@ -58,17 +69,20 @@ func NewTool(manager *Manager) tool.Tool {
 				return "", fmt.Errorf("invalid operation: %s", operation)
 			}
 
-			// workspaceDiagnostics needs no file
-			if operation == "workspaceDiagnostics" {
+			// Operations that don't need a file
+			switch operation {
+			case "workspaceDiagnostics":
 				return execWorkspaceDiagnostics(ctx, manager)
+			case "workspaceSymbol":
+				return execWorkspaceSymbol(ctx, manager, query)
 			}
 
 			if file == "" {
 				return "", fmt.Errorf("file is required for %s operation", operation)
 			}
 
-			// definition, references, hover need line+column
-			needsPosition := operation != "diagnostics"
+			// Operations that need position
+			needsPosition := operation != "diagnostics" && operation != "documentSymbol"
 			if needsPosition && (line == 0 || column == 0) {
 				return "", fmt.Errorf("line and column are required for %s operation", operation)
 			}
@@ -95,11 +109,19 @@ func NewTool(manager *Manager) tool.Tool {
 			case "diagnostics":
 				return execDiagnostics(ctx, session, uri, file, manager.workingDir)
 			case "definition":
-				return execDefinition(ctx, session, uri, line, column, manager.workingDir)
+				return execLocationOp(ctx, session, "textDocument/definition", "Definition", uri, line, column, manager.workingDir)
 			case "references":
 				return execReferences(ctx, session, uri, line, column, manager.workingDir)
+			case "implementation":
+				return execLocationOp(ctx, session, "textDocument/implementation", "Implementations", uri, line, column, manager.workingDir)
 			case "hover":
 				return execHover(ctx, session, uri, line, column)
+			case "documentSymbol":
+				return execDocumentSymbol(ctx, session, uri, file, manager.workingDir)
+			case "incomingCalls":
+				return execCallHierarchy(ctx, session, uri, line, column, manager.workingDir, true)
+			case "outgoingCalls":
+				return execCallHierarchy(ctx, session, uri, line, column, manager.workingDir, false)
 			default:
 				return "", fmt.Errorf("unknown operation: %s", operation)
 			}
@@ -108,44 +130,28 @@ func NewTool(manager *Manager) tool.Tool {
 }
 
 func isValidOperation(op string) bool {
-	for _, v := range validOperations {
-		if v == op {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(validOperations, op)
 }
 
 func execDiagnostics(ctx context.Context, session *Session, uri string, filePath string, workingDir string) (string, error) {
-	params := DocumentDiagnosticParams{
-		TextDocument: TextDocumentIdentifier{URI: uri},
+	diags := collectDiagnostics(ctx, session, uri)
+	if len(diags) == 0 {
+		return "No diagnostics found", nil
 	}
 
-	var result json.RawMessage
-	call := session.conn.Call(ctx, "textDocument/diagnostic", params)
-	if err := call.Await(ctx, &result); err == nil && result != nil && string(result) != "null" {
-		var report FullDocumentDiagnosticReport
-		if err := json.Unmarshal(result, &report); err == nil && len(report.Items) > 0 {
-			return formatDiagnostics(report.Items, filePath, workingDir), nil
-		}
-
-		var diagnostics []Diagnostic
-		if err := json.Unmarshal(result, &diagnostics); err == nil && len(diagnostics) > 0 {
-			return formatDiagnostics(diagnostics, filePath, workingDir), nil
-		}
-	}
-
-	return "No diagnostics found", nil
+	return formatDiagnostics(diags, filePath, workingDir), nil
 }
 
-func execDefinition(ctx context.Context, session *Session, uri string, line, column int, workingDir string) (string, error) {
+// execLocationOp handles definition, implementation, and similar operations
+// that return Location or LocationLink responses.
+func execLocationOp(ctx context.Context, session *Session, method string, title string, uri string, line, column int, workingDir string) (string, error) {
 	params := TextDocumentPositionParams{
 		TextDocument: TextDocumentIdentifier{URI: uri},
 		Position:     Position{Line: line - 1, Character: column - 1},
 	}
 
 	var result json.RawMessage
-	call := session.conn.Call(ctx, "textDocument/definition", params)
+	call := session.conn.Call(ctx, method, params)
 	if err := call.Await(ctx, &result); err != nil {
 		return "", err
 	}
@@ -156,10 +162,10 @@ func execDefinition(ctx context.Context, session *Session, uri string, line, col
 	}
 
 	if len(locations) == 0 {
-		return "No definition found", nil
+		return fmt.Sprintf("No %s found", strings.ToLower(title)), nil
 	}
 
-	return formatLocations("Definition", locations, workingDir), nil
+	return formatLocations(title, locations, workingDir), nil
 }
 
 func execReferences(ctx context.Context, session *Session, uri string, line, column int, workingDir string) (string, error) {
@@ -205,14 +211,94 @@ func execHover(ctx context.Context, session *Session, uri string, line, column i
 
 	var hover Hover
 	if err := json.Unmarshal(result, &hover); err != nil {
-		var rawContent any
-		if err := json.Unmarshal(result, &rawContent); err == nil {
-			return fmt.Sprintf("%v", rawContent), nil
-		}
 		return "", err
 	}
 
+	if hover.Contents.Value == "" {
+		return "No hover information available", nil
+	}
+
 	return hover.Contents.Value, nil
+}
+
+func execDocumentSymbol(ctx context.Context, session *Session, uri string, filePath string, workingDir string) (string, error) {
+	params := DocumentSymbolParams{
+		TextDocument: TextDocumentIdentifier{URI: uri},
+	}
+
+	var result json.RawMessage
+	call := session.conn.Call(ctx, "textDocument/documentSymbol", params)
+	if err := call.Await(ctx, &result); err != nil {
+		return "", err
+	}
+
+	if result == nil || string(result) == "null" {
+		return "No symbols found", nil
+	}
+
+	// Try SymbolInformation[] first — check for location.uri which is unique to it
+	var symInfos []SymbolInformation
+	if err := json.Unmarshal(result, &symInfos); err == nil && len(symInfos) > 0 && symInfos[0].Location.URI != "" {
+		return formatSymbolInformations(symInfos, workingDir), nil
+	}
+
+	// Fall back to DocumentSymbol[] (hierarchical, has selectionRange but no location)
+	var docSymbols []DocumentSymbol
+	if err := json.Unmarshal(result, &docSymbols); err == nil && len(docSymbols) > 0 {
+		return formatDocumentSymbols(docSymbols, filePath, workingDir, 0), nil
+	}
+
+	return "No symbols found", nil
+}
+
+func execWorkspaceSymbol(ctx context.Context, manager *Manager, query string) (string, error) {
+	servers := DetectServers(manager.workingDir)
+	if len(servers) == 0 {
+		return "", fmt.Errorf("no LSP servers detected in workspace")
+	}
+
+	var allSymInfos []SymbolInformation
+	var allWsSymbols []WorkspaceSymbol
+
+	for _, server := range servers {
+		session, err := manager.GetSessionByServer(ctx, server)
+		if err != nil {
+			continue
+		}
+
+		params := WorkspaceSymbolParams{
+			Query: query,
+		}
+
+		var result json.RawMessage
+		call := session.conn.Call(ctx, "workspace/symbol", params)
+		if err := call.Await(ctx, &result); err != nil || result == nil || string(result) == "null" {
+			continue
+		}
+
+		// Try SymbolInformation[] first (has location.uri with range)
+		var symInfos []SymbolInformation
+		if err := json.Unmarshal(result, &symInfos); err == nil && len(symInfos) > 0 && symInfos[0].Location.URI != "" {
+			allSymInfos = append(allSymInfos, symInfos...)
+			continue
+		}
+
+		// Fall back to WorkspaceSymbol[] (location range may be omitted)
+		var wsSymbols []WorkspaceSymbol
+		if err := json.Unmarshal(result, &wsSymbols); err == nil {
+			allWsSymbols = append(allWsSymbols, wsSymbols...)
+		}
+	}
+
+	if len(allSymInfos) > 0 {
+		return formatSymbolInformations(allSymInfos, manager.workingDir), nil
+	}
+
+	if len(allWsSymbols) > 0 {
+		return formatWorkspaceSymbols(allWsSymbols, manager.workingDir), nil
+	}
+
+	return "No symbols found", nil
 }
 
 func execWorkspaceDiagnostics(ctx context.Context, manager *Manager) (string, error) {
@@ -238,36 +324,16 @@ func execWorkspaceDiagnostics(ctx context.Context, manager *Manager) (string, er
 				continue
 			}
 
-			params := DocumentDiagnosticParams{
-				TextDocument: TextDocumentIdentifier{URI: uri},
-			}
-
-			var result json.RawMessage
-			call := session.conn.Call(ctx, "textDocument/diagnostic", params)
-			if err := call.Await(ctx, &result); err != nil || result == nil || string(result) == "null" {
+			diags := collectDiagnostics(ctx, session, uri)
+			if len(diags) == 0 {
 				continue
 			}
 
-			displayPath := file
-			if rel, err := filepath.Rel(manager.workingDir, file); err == nil && !strings.HasPrefix(rel, "..") {
-				displayPath = rel
-			}
+			displayPath := relPath(manager.workingDir, file)
 
-			var report FullDocumentDiagnosticReport
-			if err := json.Unmarshal(result, &report); err == nil && len(report.Items) > 0 {
-				for _, diag := range report.Items {
-					totalDiags++
-					fmt.Fprintf(&sb, "  %s:%d:%d %s: %s\n", displayPath, diag.Range.Start.Line+1, diag.Range.Start.Character+1, diagnosticSeverityName(diag.Severity), diag.Message)
-				}
-				continue
-			}
-
-			var diagnostics []Diagnostic
-			if err := json.Unmarshal(result, &diagnostics); err == nil {
-				for _, diag := range diagnostics {
-					totalDiags++
-					fmt.Fprintf(&sb, "  %s:%d:%d %s: %s\n", displayPath, diag.Range.Start.Line+1, diag.Range.Start.Character+1, diagnosticSeverityName(diag.Severity), diag.Message)
-				}
+			for _, diag := range diags {
+				totalDiags++
+				fmt.Fprintf(&sb, "  %s:%d:%d %s: %s\n", displayPath, diag.Range.Start.Line+1, diag.Range.Start.Character+1, diagnosticSeverityName(diag.Severity), diag.Message)
 			}
 		}
 	}
@@ -277,6 +343,97 @@ func execWorkspaceDiagnostics(ctx context.Context, manager *Manager) (string, er
 	}
 
 	return fmt.Sprintf("Workspace Diagnostics (%d found):\n%s", totalDiags, sb.String()), nil
+}
+
+// collectDiagnostics retrieves diagnostics for a single document URI.
+func collectDiagnostics(ctx context.Context, session *Session, uri string) []Diagnostic {
+	params := DocumentDiagnosticParams{
+		TextDocument: TextDocumentIdentifier{URI: uri},
+	}
+
+	var result json.RawMessage
+	call := session.conn.Call(ctx, "textDocument/diagnostic", params)
+	if err := call.Await(ctx, &result); err != nil || result == nil || string(result) == "null" {
+		return nil
+	}
+
+	var report FullDocumentDiagnosticReport
+	if err := json.Unmarshal(result, &report); err == nil && len(report.Items) > 0 {
+		return report.Items
+	}
+
+	var diagnostics []Diagnostic
+	if err := json.Unmarshal(result, &diagnostics); err == nil {
+		return diagnostics
+	}
+
+	return nil
+}
+
+// execCallHierarchy handles both incomingCalls and outgoingCalls.
+func execCallHierarchy(ctx context.Context, session *Session, uri string, line, column int, workingDir string, incoming bool) (string, error) {
+	prepareParams := TextDocumentPositionParams{
+		TextDocument: TextDocumentIdentifier{URI: uri},
+		Position:     Position{Line: line - 1, Character: column - 1},
+	}
+
+	var prepareResult json.RawMessage
+	call := session.conn.Call(ctx, "textDocument/prepareCallHierarchy", prepareParams)
+	if err := call.Await(ctx, &prepareResult); err != nil {
+		return "", err
+	}
+
+	items, err := parseCallHierarchyItems(prepareResult)
+	if err != nil || len(items) == 0 {
+		return "No call hierarchy item found at this position", nil
+	}
+
+	if incoming {
+		return execIncomingCalls(ctx, session, items[0], workingDir)
+	}
+	return execOutgoingCalls(ctx, session, items[0], workingDir)
+}
+
+func execIncomingCalls(ctx context.Context, session *Session, item CallHierarchyItem, workingDir string) (string, error) {
+	params := CallHierarchyIncomingCallsParams{Item: item}
+
+	var result json.RawMessage
+	call := session.conn.Call(ctx, "callHierarchy/incomingCalls", params)
+	if err := call.Await(ctx, &result); err != nil {
+		return "", err
+	}
+
+	var calls []CallHierarchyIncomingCall
+	if err := unmarshalResult(result, &calls); err != nil {
+		return "", err
+	}
+
+	if len(calls) == 0 {
+		return "No incoming calls found", nil
+	}
+
+	return formatIncomingCalls(calls, workingDir), nil
+}
+
+func execOutgoingCalls(ctx context.Context, session *Session, item CallHierarchyItem, workingDir string) (string, error) {
+	params := CallHierarchyOutgoingCallsParams{Item: item}
+
+	var result json.RawMessage
+	call := session.conn.Call(ctx, "callHierarchy/outgoingCalls", params)
+	if err := call.Await(ctx, &result); err != nil {
+		return "", err
+	}
+
+	var calls []CallHierarchyOutgoingCall
+	if err := unmarshalResult(result, &calls); err != nil {
+		return "", err
+	}
+
+	if len(calls) == 0 {
+		return "No outgoing calls found", nil
+	}
+
+	return formatOutgoingCalls(calls, workingDir), nil
 }
 
 func discoverSourceFiles(workingDir string, extensions []string, maxFiles int) []string {

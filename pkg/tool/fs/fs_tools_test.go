@@ -866,7 +866,7 @@ func TestContextCancellation(t *testing.T) {
 	defer cleanup()
 
 	// Create many files to make the operation take longer
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		dir := filepath.Join(tmpDir, "dir"+string(rune('a'+i%26)))
 		os.MkdirAll(dir, 0755)
 		os.WriteFile(filepath.Join(dir, "file.txt"), []byte("content"), 0644)

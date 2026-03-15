@@ -402,7 +402,7 @@ func (a *App) closeDiffView() {
 
 // countDiffStats counts insertions and deletions in a unified diff patch
 func countDiffStats(patch string) (insertions, deletions int) {
-	for _, line := range strings.Split(patch, "\n") {
+	for line := range strings.SplitSeq(patch, "\n") {
 		if len(line) == 0 {
 			continue
 		}

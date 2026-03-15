@@ -114,17 +114,17 @@ func FormatForPrompt(skills []Skill) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("<available_skills>\n")
+	fmt.Fprint(&sb, "<available_skills>\n")
 
 	for _, s := range skills {
-		sb.WriteString("  <skill>\n")
-		sb.WriteString(fmt.Sprintf("    <name>%s</name>\n", s.Name))
-		sb.WriteString(fmt.Sprintf("    <description>%s</description>\n", s.Description))
-		sb.WriteString(fmt.Sprintf("    <location>%s/SKILL.md</location>\n", s.Location))
-		sb.WriteString("  </skill>\n")
+		fmt.Fprint(&sb, "  <skill>\n")
+		fmt.Fprintf(&sb, "    <name>%s</name>\n", s.Name)
+		fmt.Fprintf(&sb, "    <description>%s</description>\n", s.Description)
+		fmt.Fprintf(&sb, "    <location>%s/SKILL.md</location>\n", s.Location)
+		fmt.Fprint(&sb, "  </skill>\n")
 	}
 
-	sb.WriteString("</available_skills>")
+	fmt.Fprint(&sb, "</available_skills>")
 
 	return sb.String()
 }
