@@ -32,6 +32,9 @@ func startServer(ctx context.Context, addr, upstream, token string, user *UserIn
 				req.Header.Set("Authorization", "Bearer "+token)
 			}
 
+			// Disable compressed responses so captured bodies are readable.
+			req.Header.Del("Accept-Encoding")
+
 			if user != nil {
 				if user.Name != "" {
 					req.Header.Set("X-Forwarded-User", user.Name)

@@ -6,13 +6,21 @@ import (
 	"github.com/google/uuid"
 )
 
+const defaultMaxEntries = 100
+
 type Store struct {
-	mu      sync.RWMutex
-	entries []RequestEntry
+	mu         sync.RWMutex
+	entries    []RequestEntry
+	maxEntries int
+
+	totalInput  int
+	totalOutput int
 }
 
 func NewStore() *Store {
-	return &Store{}
+	return &Store{
+		maxEntries: defaultMaxEntries,
+	}
 }
 
 func (s *Store) Add(entry RequestEntry) string {
@@ -21,6 +29,13 @@ func (s *Store) Add(entry RequestEntry) string {
 
 	entry.ID = uuid.NewString()
 	s.entries = append(s.entries, entry)
+
+	s.totalInput += entry.InputTokens
+	s.totalOutput += entry.OutputTokens
+
+	if len(s.entries) > s.maxEntries {
+		s.entries = s.entries[len(s.entries)-s.maxEntries:]
+	}
 
 	return entry.ID
 }
@@ -51,10 +66,5 @@ func (s *Store) TotalTokens() (input, output int) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	for _, e := range s.entries {
-		input += e.InputTokens
-		output += e.OutputTokens
-	}
-
-	return
+	return s.totalInput, s.totalOutput
 }
