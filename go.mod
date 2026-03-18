@@ -11,7 +11,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/mattn/go-runewidth v0.0.21
 	github.com/modelcontextprotocol/go-sdk v1.4.1
-	github.com/openai/openai-go/v3 v3.26.0
+	github.com/openai/openai-go/v3 v3.29.0
 	github.com/rivo/tview v0.42.0
 	github.com/sahilm/fuzzy v0.1.1
 	github.com/sergi/go-diff v1.4.0

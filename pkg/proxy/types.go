@@ -31,6 +31,7 @@ type RequestEntry struct {
 	Model string
 
 	InputTokens  int
+	CachedTokens int
 	OutputTokens int
 
 	RequestBody  []byte

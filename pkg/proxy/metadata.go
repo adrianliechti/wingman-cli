@@ -9,6 +9,7 @@ type Metadata struct {
 	Model string
 
 	InputTokens  int
+	CachedTokens int
 	OutputTokens int
 }
 

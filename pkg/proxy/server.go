@@ -85,6 +85,7 @@ func startServer(ctx context.Context, addr, upstream, token string, user *UserIn
 			meta := extractMetadata(requestURL.Path, reqBody, respBody)
 			entry.Model = meta.Model
 			entry.InputTokens = meta.InputTokens
+			entry.CachedTokens = meta.CachedTokens
 			entry.OutputTokens = meta.OutputTokens
 		} else {
 			entry.Model = extractModel(reqBody)

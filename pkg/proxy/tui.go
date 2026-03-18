@@ -387,8 +387,13 @@ func (t *tui) renderDetail() {
 	fmt.Fprintf(&b, "  [%s]Model[-]     [%s]%s[-]\n", th.BrBlack, th.Cyan, entry.Model)
 
 	if entry.InputTokens > 0 || entry.OutputTokens > 0 {
-		fmt.Fprintf(&b, "  [%s]Tokens[-]    [%s]%s in / %s out[-]\n",
-			th.BrBlack, th.Cyan, formatTokenCount(entry.InputTokens), formatTokenCount(entry.OutputTokens))
+		if entry.CachedTokens > 0 {
+			fmt.Fprintf(&b, "  [%s]Tokens[-]    [%s]%s in (%s cached) / %s out[-]\n",
+				th.BrBlack, th.Cyan, formatTokenCount(entry.InputTokens), formatTokenCount(entry.CachedTokens), formatTokenCount(entry.OutputTokens))
+		} else {
+			fmt.Fprintf(&b, "  [%s]Tokens[-]    [%s]%s in / %s out[-]\n",
+				th.BrBlack, th.Cyan, formatTokenCount(entry.InputTokens), formatTokenCount(entry.OutputTokens))
+		}
 	}
 
 	if entry.Error != "" {
