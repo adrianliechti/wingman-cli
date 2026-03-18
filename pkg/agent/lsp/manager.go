@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -58,27 +57,7 @@ func (m *Manager) GetSession(ctx context.Context, filePath string) (*Session, er
 		return nil, fmt.Errorf("no LSP server found for file: %s", filePath)
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	key := server.Command
-
-	if session, ok := m.sessions[key]; ok {
-		// Verify the session is still alive by checking if the process exists
-		if session.cmd.ProcessState == nil {
-			return session, nil
-		}
-		// Process exited, remove stale session
-		delete(m.sessions, key)
-	}
-
-	session, err := connect(ctx, m.workingDir, *server)
-	if err != nil {
-		return nil, err
-	}
-
-	m.sessions[key] = session
-	return session, nil
+	return m.GetSessionByServer(ctx, *server)
 }
 
 // GetSessionByServer returns a cached session or creates a new one for a specific server.
@@ -315,10 +294,3 @@ func fileURI(path string) string {
 	return "file://" + absPath
 }
 
-// uriToPath converts a file:// URI to a file path.
-func uriToPath(uri string) string {
-	if after, ok := strings.CutPrefix(uri, "file://"); ok {
-		return after
-	}
-	return uri
-}

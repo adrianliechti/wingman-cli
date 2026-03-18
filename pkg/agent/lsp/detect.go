@@ -6,123 +6,121 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/bmatcuk/doublestar/v4"
 )
 
-// FindServer finds an appropriate LSP server for the given file by walking up
-// the directory tree from the file's location, looking for project markers.
-// It stops at workingDir and won't search above it.
+// projectRoot represents a detected project and its available LSP servers.
+type projectRoot struct {
+	Dir     string
+	Servers []Server
+}
+
+// detectAll scans the working directory tree for known project markers and
+// returns all detected project roots with their available LSP servers.
+func detectAll(workingDir string) []projectRoot {
+	var roots []projectRoot
+	seen := make(map[string]bool) // dir+command dedup
+
+	fsys := os.DirFS(workingDir)
+
+	for _, pt := range knownProjects {
+		for _, marker := range pt.Markers {
+			pattern := "**/" + marker
+
+			matches, err := doublestar.Glob(fsys, pattern)
+			if err != nil {
+				continue
+			}
+
+			for _, match := range matches {
+				dir := filepath.Join(workingDir, filepath.Dir(match))
+
+				for _, candidate := range pt.Servers {
+					key := dir + "\x00" + candidate.Command
+					if seen[key] {
+						continue
+					}
+					seen[key] = true
+
+					if _, err := exec.LookPath(candidate.Command); err != nil {
+						continue
+					}
+
+					roots = append(roots, projectRoot{
+						Dir:     dir,
+						Servers: []Server{candidate},
+					})
+					break // first available server per project type per dir
+				}
+			}
+		}
+	}
+
+	return roots
+}
+
+// FindServer finds an appropriate LSP server for the given file by scanning
+// the working directory tree for project markers, then picking the server
+// whose project root is the closest ancestor of the file.
 func FindServer(workingDir, filePath string) *Server {
-	// Get file extension
 	ext := strings.TrimPrefix(filepath.Ext(filePath), ".")
 	if ext == "" {
 		return nil
 	}
 
-	// Start from the file's directory
 	dir := filepath.Dir(filePath)
+	roots := detectAll(workingDir)
 
-	// Ensure we're within workingDir
-	if !isSubPath(workingDir, dir) {
-		dir = workingDir
-	}
+	// Find the closest ancestor project root that has a server for this extension.
+	var best *Server
+	bestLen := -1
 
-	// Walk up the directory tree
-	for {
-		// Check each project type for markers in this directory
-		for _, pt := range knownProjects {
-			if !hasAnyFile(dir, pt.Markers) {
-				continue
+	for _, root := range roots {
+		if !isSubPath(root.Dir, dir) {
+			continue
+		}
+		if len(root.Dir) <= bestLen {
+			continue
+		}
+		for _, s := range root.Servers {
+			if hasLanguage(s.Languages, ext) {
+				srv := s
+				best = &srv
+				bestLen = len(root.Dir)
+				break
 			}
-
-			// Found a project marker, check if it has a server for our file type
-			for _, candidate := range pt.Servers {
-				// Check if this server handles our file extension
-				if !hasLanguage(candidate.Languages, ext) {
-					continue
-				}
-
-				// Check if binary is available
-				if _, err := exec.LookPath(candidate.Command); err != nil {
-					continue
-				}
-
-				// Found a matching server
-				return &candidate
-			}
-		}
-
-		// Stop if we've reached the working directory
-		if dir == workingDir {
-			break
-		}
-
-		// Move up one directory
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			// Reached filesystem root
-			break
-		}
-		dir = parent
-
-		// Don't go above workingDir
-		if !isSubPath(workingDir, dir) {
-			break
 		}
 	}
 
-	return nil
+	return best
 }
 
-// hasAnyFile checks if any of the named files exist in the directory.
-// Supports glob patterns (e.g., "*.csproj").
-func hasAnyFile(dir string, names []string) bool {
-	for _, name := range names {
-		if strings.ContainsAny(name, "*?[") {
-			matches, _ := filepath.Glob(filepath.Join(dir, name))
-			if len(matches) > 0 {
-				return true
+// DetectServers finds all available LSP servers for the workspace by scanning
+// the directory tree for project markers. Returns one server per project type
+// per project root.
+func DetectServers(workingDir string) []Server {
+	roots := detectAll(workingDir)
+
+	var servers []Server
+	seen := make(map[string]bool)
+
+	for _, root := range roots {
+		for _, s := range root.Servers {
+			if seen[s.Command] {
+				continue
 			}
-		} else {
-			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
-				return true
-			}
+			seen[s.Command] = true
+			servers = append(servers, s)
 		}
 	}
-	return false
+
+	return servers
 }
 
 // hasLanguage checks if the language/extension is in the list.
 func hasLanguage(languages []string, ext string) bool {
 	return slices.Contains(languages, ext)
-}
-
-// DetectServers finds all available LSP servers for the workspace by checking
-// project markers in the working directory. Returns one server per project type.
-func DetectServers(workingDir string) []Server {
-	var servers []Server
-	seen := make(map[string]bool) // track by command to avoid duplicates
-
-	for _, pt := range knownProjects {
-		if !hasAnyFile(workingDir, pt.Markers) {
-			continue
-		}
-
-		for _, candidate := range pt.Servers {
-			if seen[candidate.Command] {
-				continue
-			}
-
-			if _, err := exec.LookPath(candidate.Command); err != nil {
-				continue
-			}
-
-			servers = append(servers, candidate)
-			seen[candidate.Command] = true
-			break // first available server per project type
-		}
-	}
-
-	return servers
 }
 
 // isSubPath checks if child is under parent directory.
@@ -134,10 +132,10 @@ func isSubPath(parent, child string) bool {
 		return true
 	}
 
-	// Ensure parent ends with separator for proper prefix matching
 	if !strings.HasSuffix(parent, string(filepath.Separator)) {
 		parent += string(filepath.Separator)
 	}
 
 	return strings.HasPrefix(child, parent)
 }
+
