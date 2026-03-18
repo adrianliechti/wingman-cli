@@ -3,7 +3,7 @@ package app
 import (
 	"fmt"
 
-	"github.com/adrianliechti/wingman-agent/pkg/theme"
+	"github.com/adrianliechti/wingman-agent/pkg/ui/theme"
 )
 
 func (a *App) showRewindPicker() {

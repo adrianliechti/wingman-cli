@@ -12,7 +12,7 @@ import (
 	"github.com/yuin/goldmark/renderer"
 	"github.com/yuin/goldmark/util"
 
-	"github.com/adrianliechti/wingman-agent/pkg/theme"
+	"github.com/adrianliechti/wingman-agent/pkg/ui/theme"
 )
 
 func Render(text string) string {

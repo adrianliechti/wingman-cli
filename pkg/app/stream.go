@@ -8,8 +8,9 @@ import (
 	"strings"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
-	"github.com/adrianliechti/wingman-agent/pkg/theme"
-	"github.com/adrianliechti/wingman-agent/pkg/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+
+	"github.com/adrianliechti/wingman-agent/pkg/ui/theme"
 )
 
 // extractToolHint extracts a display hint from tool arguments JSON.

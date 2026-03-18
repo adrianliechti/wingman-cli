@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/adrianliechti/wingman-agent/pkg/theme"
+	"github.com/adrianliechti/wingman-agent/pkg/ui/theme"
 )
 
 func Run(ctx context.Context, opts ProxyOptions) error {

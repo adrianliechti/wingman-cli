@@ -5,9 +5,10 @@ import (
 	"strings"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
-	"github.com/adrianliechti/wingman-agent/pkg/prompt"
-	"github.com/adrianliechti/wingman-agent/pkg/rewind"
-	"github.com/adrianliechti/wingman-agent/pkg/theme"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/prompt"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/rewind"
+
+	"github.com/adrianliechti/wingman-agent/pkg/ui/theme"
 )
 
 // reviewData holds template data for the review prompt

@@ -1,6 +1,6 @@
 package app
 
-import "github.com/adrianliechti/wingman-agent/pkg/theme"
+import "github.com/adrianliechti/wingman-agent/pkg/ui/theme"
 
 // Modal represents the currently active modal type
 type Modal string

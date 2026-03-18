@@ -11,9 +11,10 @@ import (
 	"golang.org/x/term"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
-	"github.com/adrianliechti/wingman-agent/pkg/clipboard"
-	"github.com/adrianliechti/wingman-agent/pkg/markdown"
-	"github.com/adrianliechti/wingman-agent/pkg/theme"
+
+	"github.com/adrianliechti/wingman-agent/pkg/ui/clipboard"
+	"github.com/adrianliechti/wingman-agent/pkg/ui/markdown"
+	"github.com/adrianliechti/wingman-agent/pkg/ui/theme"
 )
 
 const maxToolOutputLen = 500

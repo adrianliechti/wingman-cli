@@ -11,7 +11,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/adrianliechti/wingman-agent/pkg/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
 func SearchTool() tool.Tool {

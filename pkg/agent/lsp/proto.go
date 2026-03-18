@@ -204,21 +204,6 @@ type FullDocumentDiagnosticReport struct {
 	Items []Diagnostic `json:"items"`
 }
 
-func diagnosticSeverityName(severity int) string {
-	switch severity {
-	case DiagnosticSeverityError:
-		return "Error"
-	case DiagnosticSeverityWarning:
-		return "Warning"
-	case DiagnosticSeverityInformation:
-		return "Info"
-	case DiagnosticSeverityHint:
-		return "Hint"
-	default:
-		return "Unknown"
-	}
-}
-
 // Document Symbols
 
 type DocumentSymbolParams struct {

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/adrianliechti/wingman-agent/pkg/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
 // createTestEnvironment creates a test environment with a temporary directory

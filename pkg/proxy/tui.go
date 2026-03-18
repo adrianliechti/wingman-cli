@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/adrianliechti/wingman-agent/pkg/theme"
 	"github.com/adrianliechti/wingman-agent/pkg/ui"
+	"github.com/adrianliechti/wingman-agent/pkg/ui/theme"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 )
@@ -20,7 +20,6 @@ const (
 	pageList   = "list"
 	pageDetail = "detail"
 )
-
 
 type tui struct {
 	app   *tview.Application

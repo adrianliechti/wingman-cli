@@ -815,7 +815,7 @@ func TestRelPathSlash(t *testing.T) {
 		{
 			name:   "nested path",
 			base:   "src",
-			target: "src/pkg/tool/fs/file.go",
+			target: "src/pkg/agent/tool/fs/file.go",
 			want:   "pkg/tool/fs/file.go",
 		},
 	}

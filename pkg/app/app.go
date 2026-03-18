@@ -11,10 +11,13 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
-	"github.com/adrianliechti/wingman-agent/pkg/rewind"
-	"github.com/adrianliechti/wingman-agent/pkg/tool"
-	"github.com/adrianliechti/wingman-agent/pkg/tool/lsp"
-	"github.com/adrianliechti/wingman-agent/pkg/tool/mcp"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/lsp"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/mcp"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/rewind"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+
+	lsptool "github.com/adrianliechti/wingman-agent/pkg/agent/tool/lsp"
+	mcptool "github.com/adrianliechti/wingman-agent/pkg/agent/tool/mcp"
 )
 
 type App struct {
@@ -92,7 +95,7 @@ func New(ctx context.Context, agent *agent.Agent) *App {
 		phase:         PhasePreparing,
 
 		lspManager: lspManager,
-		lspTool:    lsp.NewTool(lspManager),
+		lspTool:    lsptool.NewTool(lspManager),
 
 		rewindReady: make(chan struct{}),
 	}
@@ -222,7 +225,7 @@ func (a *App) initMCP() error {
 		a.mcpError = err
 	}
 
-	mcpTools, err := a.mcpManager.Tools(a.ctx)
+	mcpTools, err := mcptool.Tools(a.ctx, a.mcpManager)
 
 	if err != nil {
 		return err

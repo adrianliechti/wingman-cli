@@ -12,13 +12,13 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 
-	"github.com/adrianliechti/wingman-agent/pkg/prompt"
-	"github.com/adrianliechti/wingman-agent/pkg/skill"
-	"github.com/adrianliechti/wingman-agent/pkg/tool"
-	"github.com/adrianliechti/wingman-agent/pkg/tool/fs"
-	"github.com/adrianliechti/wingman-agent/pkg/tool/mcp"
-	"github.com/adrianliechti/wingman-agent/pkg/tool/search"
-	"github.com/adrianliechti/wingman-agent/pkg/tool/shell"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/mcp"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/prompt"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/skill"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/fs"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/search"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/shell"
 )
 
 // AvailableModels lists supported models in priority order

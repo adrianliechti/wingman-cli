@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/adrianliechti/wingman-agent/pkg/tool/lsp/jsonrpc2"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/lsp/jsonrpc2"
 )
 
 // Session represents a connected LSP server session.
@@ -44,6 +44,11 @@ func NewManager(workingDir string) *Manager {
 		workingDir: workingDir,
 		sessions:   make(map[string]*Session),
 	}
+}
+
+// WorkingDir returns the working directory for this manager.
+func (m *Manager) WorkingDir() string {
+	return m.workingDir
 }
 
 // GetSession returns a cached session or creates a new one for the given file.
@@ -189,6 +194,12 @@ func (s *Session) Close() {
 	s.cancelFunc()
 }
 
+// CallAndAwait invokes an LSP method and waits for the result.
+func (s *Session) CallAndAwait(ctx context.Context, method string, params any, result any) error {
+	call := s.conn.Call(ctx, method, params)
+	return call.Await(ctx, result)
+}
+
 // initialize performs the LSP initialize handshake.
 func (s *Session) initialize(ctx context.Context) error {
 	params := InitializeParams{
@@ -202,12 +213,12 @@ func (s *Session) initialize(ctx context.Context) error {
 				Hover: HoverClientCapabilities{
 					ContentFormat: []string{"plaintext", "markdown"},
 				},
-				Definition:      DefinitionClientCapabilities{},
-				References:      ReferencesClientCapabilities{},
-				Implementation:  ImplementationClientCapabilities{},
-				DocumentSymbol:  DocumentSymbolClientCapabilities{},
-				Diagnostic:      DiagnosticClientCapabilities{},
-				CallHierarchy:   CallHierarchyClientCapabilities{},
+				Definition:     DefinitionClientCapabilities{},
+				References:     ReferencesClientCapabilities{},
+				Implementation: ImplementationClientCapabilities{},
+				DocumentSymbol: DocumentSymbolClientCapabilities{},
+				Diagnostic:     DiagnosticClientCapabilities{},
+				CallHierarchy:  CallHierarchyClientCapabilities{},
 			},
 		},
 	}
