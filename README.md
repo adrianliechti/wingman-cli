@@ -13,7 +13,6 @@ A powerful AI-powered coding assistant that runs directly in your terminal. Wing
 - **Shell Integration** — Execute shell commands with elicitation
 - **LSP Integration** — Code intelligence via auto-detected language servers (definitions, references, diagnostics, call hierarchy, and more)
 - **MCP Support** — Extend functionality with Model Context Protocol servers
-- **Context Management** — Automatic conversation compaction to handle long sessions
 - **Multi-Model Support** — Works with any [OpenResponses API](https://www.openresponses.org) compatible endpoint with auto-selection
 - **Rewind & Diff** — Checkpoint-based undo with visual diff viewer
 - **Skills** — Define custom workflows using [Agent Skills](https://agentskills.io) format

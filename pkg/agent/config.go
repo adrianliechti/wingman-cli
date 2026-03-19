@@ -49,10 +49,6 @@ type Config struct {
 	AgentInstructions    string
 	PlanningInstructions string
 
-	MaxContextTokens int64
-	ReserveTokens    int64
-	KeepRecentTokens int64
-
 	MCP *mcp.Manager
 
 	Tools  []tool.Tool
@@ -128,10 +124,6 @@ func DefaultConfig() (*Config, func(), error) {
 
 		AgentInstructions:    agentinstructions,
 		PlanningInstructions: planningInstructions,
-
-		MaxContextTokens: 400_000,
-		ReserveTokens:    16_000,
-		KeepRecentTokens: 20_000,
 
 		MCP: mcp,
 

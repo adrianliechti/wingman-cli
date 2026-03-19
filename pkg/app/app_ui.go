@@ -13,7 +13,6 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 
 	"github.com/adrianliechti/wingman-agent/pkg/ui/clipboard"
-	"github.com/adrianliechti/wingman-agent/pkg/ui/markdown"
 	"github.com/adrianliechti/wingman-agent/pkg/ui/theme"
 )
 
@@ -166,7 +165,7 @@ func (a *App) promptUser(message string) (bool, error) {
 	a.promptActive = true
 
 	a.app.QueueUpdateDraw(func() {
-		fmt.Fprint(a.chatView, markdown.FormatPrompt("Confirm Command", message, a.chatWidth))
+		fmt.Fprint(a.chatView, formatPrompt("Confirm Command", message, a.chatWidth))
 		a.input.SetPlaceholder("y/n")
 	})
 
@@ -250,7 +249,7 @@ func (a *App) showError(title string, err error) {
 	if width == 0 {
 		width = 80
 	}
-	fmt.Fprint(a.chatView, markdown.FormatError(title, err.Error(), width))
+	fmt.Fprint(a.chatView, formatError(title, err.Error(), width))
 }
 
 func (a *App) countPendingImages() int {
@@ -366,7 +365,7 @@ func (a *App) submitInput() {
 		}
 		displayText = fmt.Sprintf("%s\n[%s]", query, strings.Join(attachments, ", "))
 	}
-	fmt.Fprint(a.chatView, markdown.FormatUserMessage(displayText, a.chatWidth))
+	fmt.Fprint(a.chatView, formatUserMessage(displayText, a.chatWidth))
 
 	// Build input for agent - display text plus hidden file list for context
 	input := []agent.Content{{Text: displayText}}
@@ -633,11 +632,11 @@ func (a *App) renderChat(messages []agent.Message, streamingContent string, tool
 	}
 
 	if streamingContent != "" {
-		fmt.Fprint(a.chatView, markdown.FormatAssistantMessage(streamingContent, a.chatWidth))
+		fmt.Fprint(a.chatView, formatAssistantMessage(streamingContent, a.chatWidth))
 	}
 
 	if toolName != "" && !a.isToolHidden(toolName) {
-		fmt.Fprint(a.chatView, markdown.FormatToolProgress(toolName, toolHint, a.chatWidth))
+		fmt.Fprint(a.chatView, formatToolProgress(toolName, toolHint, a.chatWidth))
 	}
 
 	a.chatView.ScrollToEnd()
@@ -656,7 +655,7 @@ func (a *App) renderMessage(msg agent.Message) {
 				output = output[:maxToolOutputLen] + "..."
 			}
 			hint := extractToolHint(c.ToolResult.Args)
-			fmt.Fprint(a.chatView, markdown.FormatToolCall(c.ToolResult.Name, hint, output, a.chatWidth))
+			fmt.Fprint(a.chatView, formatToolCall(c.ToolResult.Name, hint, output, a.chatWidth))
 
 			return
 		}
@@ -670,8 +669,8 @@ func (a *App) renderMessage(msg agent.Message) {
 
 	switch msg.Role {
 	case agent.RoleUser:
-		fmt.Fprint(a.chatView, markdown.FormatUserMessage(content, a.chatWidth))
+		fmt.Fprint(a.chatView, formatUserMessage(content, a.chatWidth))
 	case agent.RoleAssistant:
-		fmt.Fprint(a.chatView, markdown.FormatAssistantMessage(content, a.chatWidth))
+		fmt.Fprint(a.chatView, formatAssistantMessage(content, a.chatWidth))
 	}
 }

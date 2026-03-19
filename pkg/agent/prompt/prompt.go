@@ -12,9 +12,6 @@ var Instructions string
 //go:embed planning.txt
 var Planning string
 
-//go:embed compaction.txt
-var Compaction string
-
 //go:embed review.txt
 var Review string
 
