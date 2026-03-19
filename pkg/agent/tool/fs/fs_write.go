@@ -64,7 +64,15 @@ func WriteTool() tool.Tool {
 				return "", fmt.Errorf("failed to write file: %w", err)
 			}
 
-			return fmt.Sprintf("Successfully wrote %d bytes to %s", len(content), pathArg), nil
+			result := fmt.Sprintf("Successfully wrote %d bytes to %s", len(content), pathArg)
+
+			if env.DiagnoseFile != nil {
+				if diag := env.DiagnoseFile(ctx, normalizedPath); diag != "" {
+					result += "\n\n" + diag
+				}
+			}
+
+			return result, nil
 		},
 	}
 }

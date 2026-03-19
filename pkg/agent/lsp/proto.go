@@ -119,7 +119,7 @@ type ReferenceContext struct {
 
 // Hover
 
-type Hover struct {
+type HoverResponse struct {
 	Contents HoverContents `json:"contents"`
 	Range    *Range        `json:"range,omitempty"`
 }
@@ -171,11 +171,6 @@ func (h *HoverContents) UnmarshalJSON(data []byte) error {
 	// Fallback: use raw string
 	h.Value = string(data)
 	return nil
-}
-
-type MarkupContent struct {
-	Kind  string `json:"kind"`
-	Value string `json:"value"`
 }
 
 // Diagnostics

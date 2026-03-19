@@ -4,31 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
-	"sync/atomic"
-	"time"
-
-	"github.com/adrianliechti/wingman-agent/pkg/agent/lsp/jsonrpc2"
 )
-
-// Session represents a connected LSP server session.
-type Session struct {
-	server     Server
-	conn       *jsonrpc2.Connection
-	cmd        *exec.Cmd
-	rootURI    string
-	cancelFunc context.CancelFunc
-
-	docVersion int64 // atomic counter for document versions
-
-	// Track opened documents to avoid reopening
-	openedDocs map[string]struct{}
-	mu         sync.Mutex
-}
 
 // Manager caches LSP sessions so servers are reused across tool invocations.
 type Manager struct {
@@ -94,203 +74,123 @@ func (m *Manager) Close() {
 	}
 }
 
-func connect(ctx context.Context, workingDir string, server Server) (*Session, error) {
-	// Create command
-	cmd := exec.Command(server.Command, server.Args...)
-	cmd.Dir = workingDir
-	cmd.Env = os.Environ()
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("stdin pipe: %w", err)
+// WorkspaceDiagnostics collects diagnostics across all workspace files.
+func (m *Manager) WorkspaceDiagnostics(ctx context.Context) (string, error) {
+	servers := DetectServers(m.workingDir)
+	if len(servers) == 0 {
+		return "", fmt.Errorf("no LSP servers detected in workspace")
 	}
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		stdin.Close()
-		return nil, fmt.Errorf("stdout pipe: %w", err)
+	var sb strings.Builder
+	totalDiags := 0
+
+	for _, server := range servers {
+		session, err := m.GetSessionByServer(ctx, server)
+		if err != nil {
+			continue
+		}
+
+		for _, file := range discoverSourceFiles(m.workingDir, server.Languages, 50) {
+			uri, err := session.OpenDocument(ctx, file)
+			if err != nil {
+				continue
+			}
+
+			diags := session.CollectDiagnostics(ctx, uri)
+			if len(diags) == 0 {
+				continue
+			}
+
+			displayPath := relPath(m.workingDir, file)
+			for _, diag := range diags {
+				totalDiags++
+				fmt.Fprintf(&sb, "  %s:%d:%d %s: %s\n", displayPath, diag.Range.Start.Line+1, diag.Range.Start.Character+1, DiagnosticSeverityName(diag.Severity), diag.Message)
+			}
+		}
 	}
 
-	if err := cmd.Start(); err != nil {
-		stdin.Close()
-		stdout.Close()
-		return nil, fmt.Errorf("start command: %w", err)
+	if totalDiags == 0 {
+		return "No workspace diagnostics found", nil
 	}
 
-	// Create JSON-RPC connection
-	connCtx, cancel := context.WithCancel(context.Background())
+	return fmt.Sprintf("Workspace Diagnostics (%d found):\n%s", totalDiags, sb.String()), nil
+}
 
-	framer := jsonrpc2.HeaderFramer()
-	reader := framer.Reader(stdout)
-	writer := framer.Writer(stdin)
+// WorkspaceSymbols searches for symbols across the workspace.
+func (m *Manager) WorkspaceSymbols(ctx context.Context, query string) (string, error) {
+	servers := DetectServers(m.workingDir)
+	if len(servers) == 0 {
+		return "", fmt.Errorf("no LSP servers detected in workspace")
+	}
 
-	conn := jsonrpc2.NewConnection(connCtx, jsonrpc2.ConnectionConfig{
-		Reader: reader,
-		Writer: writer,
-		Closer: &cmdCloser{cmd: cmd, stdin: stdin, stdout: stdout},
-		Bind: func(c *jsonrpc2.Connection) jsonrpc2.Handler {
-			return jsonrpc2.HandlerFunc(func(ctx context.Context, req *jsonrpc2.Request) (any, error) {
-				return nil, jsonrpc2.ErrNotHandled
-			})
-		},
+	var allSymInfos []SymbolInformation
+	var allWsSymbols []WorkspaceSymbol
+
+	for _, server := range servers {
+		session, err := m.GetSessionByServer(ctx, server)
+		if err != nil {
+			continue
+		}
+
+		var result json.RawMessage
+		if err := session.CallAndAwait(ctx, "workspace/symbol", WorkspaceSymbolParams{Query: query}, &result); err != nil || result == nil || string(result) == "null" {
+			continue
+		}
+
+		// Try SymbolInformation[] first (has location.uri with range)
+		var symInfos []SymbolInformation
+		if err := unmarshalResult(result, &symInfos); err == nil && len(symInfos) > 0 && symInfos[0].Location.URI != "" {
+			allSymInfos = append(allSymInfos, symInfos...)
+			continue
+		}
+
+		// Fall back to WorkspaceSymbol[] (location range may be omitted)
+		var wsSymbols []WorkspaceSymbol
+		if err := unmarshalResult(result, &wsSymbols); err == nil {
+			allWsSymbols = append(allWsSymbols, wsSymbols...)
+		}
+	}
+
+	if len(allSymInfos) > 0 {
+		return formatSymbolInformations(allSymInfos, m.workingDir), nil
+	}
+
+	if len(allWsSymbols) > 0 {
+		return formatWorkspaceSymbols(allWsSymbols, m.workingDir), nil
+	}
+
+	return "No symbols found", nil
+}
+
+func discoverSourceFiles(workingDir string, extensions []string, maxFiles int) []string {
+	extSet := make(map[string]bool, len(extensions))
+	for _, ext := range extensions {
+		extSet["."+ext] = true
+	}
+
+	var files []string
+	filepath.Walk(workingDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+
+		if info.IsDir() {
+			name := info.Name()
+			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" || name == "__pycache__" || name == "target" || name == "build" || name == "dist" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if extSet[filepath.Ext(path)] {
+			files = append(files, path)
+			if len(files) >= maxFiles {
+				return filepath.SkipAll
+			}
+		}
+
+		return nil
 	})
 
-	session := &Session{
-		server:     server,
-		conn:       conn,
-		cmd:        cmd,
-		rootURI:    fileURI(workingDir),
-		cancelFunc: cancel,
-		openedDocs: make(map[string]struct{}),
-	}
-
-	// Initialize the LSP server
-	initCtx, initCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer initCancel()
-
-	if err := session.initialize(initCtx); err != nil {
-		cancel()
-		cmd.Process.Kill()
-		cmd.Wait()
-		return nil, fmt.Errorf("initialize: %w", err)
-	}
-
-	return session, nil
+	return files
 }
-
-// Close shuts down the LSP server connection.
-func (s *Session) Close() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	// Send shutdown request
-	call := s.conn.Call(ctx, "shutdown", nil)
-	call.Await(ctx, nil)
-
-	// Send exit notification
-	s.conn.Notify(ctx, "exit", nil)
-
-	s.cancelFunc()
-}
-
-// CallAndAwait invokes an LSP method and waits for the result.
-func (s *Session) CallAndAwait(ctx context.Context, method string, params any, result any) error {
-	call := s.conn.Call(ctx, method, params)
-	return call.Await(ctx, result)
-}
-
-// initialize performs the LSP initialize handshake.
-func (s *Session) initialize(ctx context.Context) error {
-	params := InitializeParams{
-		ProcessID: os.Getpid(),
-		RootURI:   s.rootURI,
-		Capabilities: ClientCapabilities{
-			TextDocument: TextDocumentClientCapabilities{
-				Synchronization: TextDocumentSyncClientCapabilities{
-					DidSave: true,
-				},
-				Hover: HoverClientCapabilities{
-					ContentFormat: []string{"plaintext", "markdown"},
-				},
-				Definition:     DefinitionClientCapabilities{},
-				References:     ReferencesClientCapabilities{},
-				Implementation: ImplementationClientCapabilities{},
-				DocumentSymbol: DocumentSymbolClientCapabilities{},
-				Diagnostic:     DiagnosticClientCapabilities{},
-				CallHierarchy:  CallHierarchyClientCapabilities{},
-			},
-		},
-	}
-
-	var result json.RawMessage
-	call := s.conn.Call(ctx, "initialize", params)
-	if err := call.Await(ctx, &result); err != nil {
-		return err
-	}
-
-	// Send initialized notification
-	if err := s.conn.Notify(ctx, "initialized", struct{}{}); err != nil {
-		return fmt.Errorf("initialized notification: %w", err)
-	}
-
-	return nil
-}
-
-// OpenDocument opens a document in the LSP server, or no-ops if already open.
-// It also sends didChange if the file content has changed since last open.
-func (s *Session) OpenDocument(ctx context.Context, filePath string) (string, error) {
-	uri := fileURI(filePath)
-
-	content, err := os.ReadFile(filePath)
-	if err != nil {
-		return "", fmt.Errorf("read file: %w", err)
-	}
-
-	s.mu.Lock()
-	_, alreadyOpen := s.openedDocs[uri]
-	s.mu.Unlock()
-
-	if alreadyOpen {
-		// Send didChange to sync latest content
-		changeParams := DidChangeTextDocumentParams{
-			TextDocument: VersionedTextDocumentIdentifier{
-				URI:     uri,
-				Version: int(atomic.AddInt64(&s.docVersion, 1)),
-			},
-			ContentChanges: []TextDocumentContentChangeEvent{
-				{Text: string(content)},
-			},
-		}
-
-		if err := s.conn.Notify(ctx, "textDocument/didChange", changeParams); err != nil {
-			return "", fmt.Errorf("didChange: %w", err)
-		}
-
-		return uri, nil
-	}
-
-	params := DidOpenTextDocumentParams{
-		TextDocument: TextDocumentItem{
-			URI:        uri,
-			LanguageID: s.server.LanguageID,
-			Version:    1,
-			Text:       string(content),
-		},
-	}
-
-	if err := s.conn.Notify(ctx, "textDocument/didOpen", params); err != nil {
-		return "", fmt.Errorf("didOpen: %w", err)
-	}
-
-	s.mu.Lock()
-	s.openedDocs[uri] = struct{}{}
-	s.mu.Unlock()
-
-	return uri, nil
-}
-
-// cmdCloser wraps exec.Cmd for io.Closer interface.
-type cmdCloser struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout io.ReadCloser
-}
-
-func (c *cmdCloser) Close() error {
-	c.stdin.Close()
-	c.stdout.Close()
-	if c.cmd.Process != nil {
-		c.cmd.Process.Kill()
-	}
-	return c.cmd.Wait()
-}
-
-// fileURI converts a file path to a file:// URI.
-func fileURI(path string) string {
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		absPath = path
-	}
-	return "file://" + absPath
-}
-

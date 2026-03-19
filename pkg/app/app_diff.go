@@ -414,9 +414,10 @@ func countDiffStats(patch string) (insertions, deletions int) {
 			continue
 		}
 
-		if line[0] == '+' {
+		switch line[0] {
+		case '+':
 			insertions++
-		} else if line[0] == '-' {
+		case '-':
 			deletions++
 		}
 	}

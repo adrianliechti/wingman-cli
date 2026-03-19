@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -101,6 +102,7 @@ func New(ctx context.Context, agent *agent.Agent) *App {
 	}
 
 	agent.Environment.PromptUser = a.promptUser
+	agent.Environment.DiagnoseFile = a.lspDiagnostics
 
 	return a
 }
@@ -310,6 +312,33 @@ func (a *App) allTools() []tool.Tool {
 	tools = append(tools, a.lspTool)
 
 	return tools
+}
+
+func (a *App) lspDiagnostics(ctx context.Context, path string) string {
+	absPath := path
+	if !filepath.IsAbs(absPath) {
+		absPath = filepath.Join(a.lspManager.WorkingDir(), path)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	session, err := a.lspManager.GetSession(ctx, absPath)
+	if err != nil {
+		return ""
+	}
+
+	uri, err := session.OpenDocument(ctx, absPath)
+	if err != nil {
+		return ""
+	}
+
+	diags := session.WaitForDiagnostics(ctx, uri)
+	if len(diags) == 0 {
+		return ""
+	}
+
+	return lsp.FormatDiagnostics(diags, path, a.lspManager.WorkingDir())
 }
 
 func (a *App) isToolHidden(name string) bool {

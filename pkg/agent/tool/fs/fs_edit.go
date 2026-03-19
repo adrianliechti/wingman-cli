@@ -101,7 +101,15 @@ func EditTool() tool.Tool {
 
 			diff := generateDiffString(baseContent, newContent)
 
-			return fmt.Sprintf("Successfully replaced text in %s.\n\n%s", pathArg, diff), nil
+			result := fmt.Sprintf("Successfully replaced text in %s.\n\n%s", pathArg, diff)
+
+			if env.DiagnoseFile != nil {
+				if diag := env.DiagnoseFile(ctx, normalizedPath); diag != "" {
+					result += "\n\n" + diag
+				}
+			}
+
+			return result, nil
 		},
 	}
 }

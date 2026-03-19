@@ -9,15 +9,15 @@ type Server struct {
 	LanguageID string   // LSP language identifier (e.g., "go")
 }
 
-// ProjectType maps project markers to LSP server candidates.
-type ProjectType struct {
+// projectType maps project markers to LSP server candidates.
+type projectType struct {
 	Name    string   // Project type name (e.g., "go")
 	Markers []string // Files that indicate this project type (e.g., ["go.mod"])
 	Servers []Server // Server candidates in priority order (first available wins)
 }
 
 // knownProjects contains the registry of known project types and their LSP servers.
-var knownProjects = []ProjectType{
+var knownProjects = []projectType{
 	// Go
 	{
 		Name:    "go",
