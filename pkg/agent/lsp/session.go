@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,6 +34,7 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 	cmd := exec.Command(server.Command, server.Args...)
 	cmd.Dir = workingDir
 	cmd.Env = os.Environ()
+	cmd.Stderr = io.Discard
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -481,16 +481,18 @@ type cmdCloser struct {
 func (c *cmdCloser) Close() error {
 	c.stdin.Close()
 	c.stdout.Close()
+
 	if c.cmd.Process != nil {
 		c.cmd.Process.Kill()
 	}
-	return c.cmd.Wait()
-}
 
-func fileURI(path string) string {
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		absPath = path
+	done := make(chan error, 1)
+	go func() { done <- c.cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("timeout waiting for LSP process to exit")
 	}
-	return "file://" + absPath
 }

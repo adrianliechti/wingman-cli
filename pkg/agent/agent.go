@@ -48,7 +48,7 @@ func (a *Agent) Send(ctx context.Context, instructions string, input []Content, 
 			a.messages = append(a.messages, outputItems...)
 
 			if usage.InputTokens > 0 {
-				a.usage.InputTokens = usage.InputTokens
+				a.usage.InputTokens += usage.InputTokens
 				a.usage.OutputTokens += usage.OutputTokens
 			}
 

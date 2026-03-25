@@ -30,9 +30,62 @@ func (m *Manager) WorkingDir() string {
 	return m.workingDir
 }
 
+// FindServer finds an appropriate LSP server for the given file.
+func (m *Manager) FindServer(filePath string) *Server {
+	ext := strings.TrimPrefix(filepath.Ext(filePath), ".")
+	if ext == "" {
+		return nil
+	}
+
+	dir := filepath.Dir(filePath)
+	roots := detectAll(m.workingDir)
+
+	var best *Server
+	bestLen := -1
+
+	for _, root := range roots {
+		if !isSubPath(root.Dir, dir) {
+			continue
+		}
+		if len(root.Dir) <= bestLen {
+			continue
+		}
+		for _, s := range root.Servers {
+			if hasLanguage(s.Languages, ext) {
+				srv := s
+				best = &srv
+				bestLen = len(root.Dir)
+				break
+			}
+		}
+	}
+
+	return best
+}
+
+// DetectServers finds all available LSP servers for the workspace.
+func (m *Manager) DetectServers() []Server {
+	roots := detectAll(m.workingDir)
+
+	var servers []Server
+	seen := make(map[string]bool)
+
+	for _, root := range roots {
+		for _, s := range root.Servers {
+			if seen[s.Command] {
+				continue
+			}
+			seen[s.Command] = true
+			servers = append(servers, s)
+		}
+	}
+
+	return servers
+}
+
 // GetSession returns a cached session or creates a new one for the given file.
 func (m *Manager) GetSession(ctx context.Context, filePath string) (*Session, error) {
-	server := FindServer(m.workingDir, filePath)
+	server := m.FindServer(filePath)
 	if server == nil {
 		return nil, fmt.Errorf("no LSP server found for file: %s", filePath)
 	}
@@ -42,24 +95,35 @@ func (m *Manager) GetSession(ctx context.Context, filePath string) (*Session, er
 
 // GetSessionByServer returns a cached session or creates a new one for a specific server.
 func (m *Manager) GetSessionByServer(ctx context.Context, server Server) (*Session, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	key := server.Command
 
+	// Fast path: check cache
+	m.mu.Lock()
 	if session, ok := m.sessions[key]; ok {
 		if session.cmd.ProcessState == nil {
+			m.mu.Unlock()
 			return session, nil
 		}
 		delete(m.sessions, key)
 	}
+	m.mu.Unlock()
 
+	// Slow path: connect without holding the lock
 	session, err := connect(ctx, m.workingDir, server)
 	if err != nil {
 		return nil, err
 	}
 
+	// Store result, handle concurrent connection race
+	m.mu.Lock()
+	if existing, ok := m.sessions[key]; ok && existing.cmd.ProcessState == nil {
+		m.mu.Unlock()
+		session.Close()
+		return existing, nil
+	}
 	m.sessions[key] = session
+	m.mu.Unlock()
+
 	return session, nil
 }
 
@@ -76,7 +140,7 @@ func (m *Manager) Close() {
 
 // WorkspaceDiagnostics collects diagnostics across all workspace files.
 func (m *Manager) WorkspaceDiagnostics(ctx context.Context) (string, error) {
-	servers := DetectServers(m.workingDir)
+	servers := m.DetectServers()
 	if len(servers) == 0 {
 		return "", fmt.Errorf("no LSP servers detected in workspace")
 	}
@@ -118,7 +182,7 @@ func (m *Manager) WorkspaceDiagnostics(ctx context.Context) (string, error) {
 
 // WorkspaceSymbols searches for symbols across the workspace.
 func (m *Manager) WorkspaceSymbols(ctx context.Context, query string) (string, error) {
-	servers := DetectServers(m.workingDir)
+	servers := m.DetectServers()
 	if len(servers) == 0 {
 		return "", fmt.Errorf("no LSP servers detected in workspace")
 	}

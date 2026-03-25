@@ -13,13 +13,6 @@ func relPath(workingDir, path string) string {
 	return path
 }
 
-func uriToPath(uri string) string {
-	if after, ok := strings.CutPrefix(uri, "file://"); ok {
-		return after
-	}
-	return uri
-}
-
 func formatLocations(title string, locations []Location, workingDir string) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%s (%d found):\n", title, len(locations))
