@@ -36,6 +36,8 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 	cmd.Env = os.Environ()
 	cmd.Stderr = io.Discard
 
+	setSysProcAttr(cmd)
+
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("stdin pipe: %w", err)
@@ -162,8 +164,12 @@ func (s *Session) CollectDiagnostics(ctx context.Context, uri string) []Diagnost
 		TextDocument: TextDocumentIdentifier{URI: uri},
 	}
 
+	// Per-call timeout so an unresponsive server doesn't block the caller.
+	callCtx, callCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer callCancel()
+
 	var result json.RawMessage
-	if err := s.CallAndAwait(ctx, "textDocument/diagnostic", params, &result); err != nil || result == nil || string(result) == "null" {
+	if err := s.CallAndAwait(callCtx, "textDocument/diagnostic", params, &result); err != nil || result == nil || string(result) == "null" {
 		return nil
 	}
 
@@ -179,6 +185,7 @@ func (s *Session) CollectDiagnostics(ctx context.Context, uri string) []Diagnost
 
 	return nil
 }
+
 
 // WaitForDiagnostics polls for diagnostics until results appear or the context expires.
 func (s *Session) WaitForDiagnostics(ctx context.Context, uri string) []Diagnostic {
