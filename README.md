@@ -1,4 +1,4 @@
-# Wingman CLI
+# Wingman Agent
 
 A powerful AI-powered coding assistant that runs directly in your terminal. Wingman helps you with coding tasks by reading files, executing commands, editing code, and writing new files — all through natural conversation.
 
@@ -10,7 +10,7 @@ A powerful AI-powered coding assistant that runs directly in your terminal. Wing
 
 - **Interactive TUI** — Rich terminal interface with markdown rendering and syntax highlighting
 - **File Operations** — Read, write, edit, and search files in your codebase
-- **Shell Integration** — Execute shell commands with elicitation
+- **Shell Integration** — Execute shell commands with user approval
 - **LSP Integration** — Code intelligence via auto-detected language servers (definitions, references, diagnostics, call hierarchy, and more)
 - **MCP Support** — Extend functionality with Model Context Protocol servers
 - **Multi-Model Support** — Works with any [OpenResponses API](https://www.openresponses.org) compatible endpoint with auto-selection
@@ -55,7 +55,8 @@ wingman
 
 3. **Start chatting!** Ask Wingman to help with coding tasks:
 
-```> Show me all TODO comments in this project
+```
+> Show me all TODO comments in this project
 > Refactor the config package to use dependency injection
 > Write tests for the agent module
 ```

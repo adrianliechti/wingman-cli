@@ -32,41 +32,33 @@ func (a *Agent) Send(ctx context.Context, instructions string, input []Content, 
 	a.messages = append(a.messages, a.userMessage(input))
 
 	return func(yield func(Message, error) bool) {
-		formattedTools := formatTools(tools)
-
-		for {
-			outputItems, toolCalls, usage, err := a.streamResponse(ctx, yield, instructions, formattedTools)
-
-			if err != nil {
-				if err != errYieldStopped {
-					yield(Message{}, err)
-				}
-				return
-			}
-
-			// Append all output items (messages, reasoning, function calls) as-is to history
-			a.messages = append(a.messages, outputItems...)
-
-			if usage.InputTokens > 0 {
-				a.usage.InputTokens += usage.InputTokens
-				a.usage.OutputTokens += usage.OutputTokens
-			}
-
-			if len(toolCalls) == 0 {
-				break
-			}
-
-			if err := a.processToolCalls(ctx, yield, toolCalls, tools); err != nil {
-				if err != errYieldStopped {
-					yield(Message{}, err)
-				}
-				return
-			}
+		if err := a.run(ctx, yield, instructions, tools); err != nil && err != errYieldStopped {
+			yield(Message{}, err)
 		}
 	}
 }
 
-func (a *Agent) streamResponse(ctx context.Context, yield func(Message, error) bool, instructions string, tools []responses.ToolUnionParam) ([]responses.ResponseInputItemUnionParam, []ToolCall, Usage, error) {
+func (a *Agent) run(ctx context.Context, yield func(Message, error) bool, instructions string, tools []tool.Tool) error {
+	formattedTools := formatTools(tools)
+
+	for {
+		outputItems, err := a.streamResponse(ctx, yield, instructions, formattedTools)
+		if err != nil {
+			return err
+		}
+
+		toolCalls := extractToolCalls(outputItems)
+		if len(toolCalls) == 0 {
+			return nil
+		}
+
+		if err := a.processToolCalls(ctx, yield, toolCalls, tools); err != nil {
+			return err
+		}
+	}
+}
+
+func (a *Agent) streamResponse(ctx context.Context, yield func(Message, error) bool, instructions string, tools []responses.ToolUnionParam) ([]responses.ResponseInputItemUnionParam, error) {
 	stream := a.Client.Responses.NewStreaming(ctx, responses.ResponseNewParams{
 		Model:        a.Model,
 		Instructions: openai.String(instructions),
@@ -79,14 +71,18 @@ func (a *Agent) streamResponse(ctx context.Context, yield func(Message, error) b
 		Store:      openai.Bool(false),
 		Truncation: responses.ResponseNewParamsTruncationAuto,
 
+		ContextManagement: []responses.ResponseNewParamsContextManagement{{
+			Type:             "compaction",
+			CompactThreshold: openai.Int(200000),
+		}},
+
 		Include: []responses.ResponseIncludable{
 			responses.ResponseIncludableReasoningEncryptedContent,
 		},
 	})
 
-	var toolCalls []ToolCall
-	var usage Usage
 	var outputItems []responses.ResponseInputItemUnionParam
+	var compacted bool
 
 	for stream.Next() {
 		event := stream.Current()
@@ -99,7 +95,7 @@ func (a *Agent) streamResponse(ctx context.Context, yield func(Message, error) b
 			}
 
 			if !yield(msg, nil) {
-				return nil, nil, Usage{}, errYieldStopped
+				return nil, errYieldStopped
 			}
 
 		case responses.ResponseOutputItemDoneEvent:
@@ -128,26 +124,46 @@ func (a *Agent) streamResponse(ctx context.Context, yield func(Message, error) b
 					OfFunctionCall: &p,
 				})
 
-				toolCalls = append(toolCalls, ToolCall{
-					ID:   item.CallID,
-					Name: item.Name,
-					Args: item.Arguments,
-				})
+			case responses.ResponseCompactionItem:
+				outputItems = append(outputItems, responses.ResponseInputItemParamOfCompaction(item.EncryptedContent))
+				compacted = true
 			}
 
 		case responses.ResponseCompletedEvent:
 			if e.Response.Usage.InputTokens > 0 {
-				usage.InputTokens = e.Response.Usage.InputTokens
-				usage.OutputTokens = e.Response.Usage.OutputTokens
+				a.usage.InputTokens += e.Response.Usage.InputTokens
+				a.usage.OutputTokens += e.Response.Usage.OutputTokens
 			}
 		}
 	}
 
 	if err := stream.Err(); err != nil {
-		return nil, nil, Usage{}, err
+		return nil, err
 	}
 
-	return outputItems, toolCalls, usage, nil
+	if compacted {
+		a.messages = outputItems
+	} else {
+		a.messages = append(a.messages, outputItems...)
+	}
+
+	return outputItems, nil
+}
+
+func extractToolCalls(items []responses.ResponseInputItemUnionParam) []ToolCall {
+	var toolCalls []ToolCall
+
+	for _, item := range items {
+		if fc := item.OfFunctionCall; fc != nil {
+			toolCalls = append(toolCalls, ToolCall{
+				ID:   fc.CallID,
+				Name: fc.Name,
+				Args: fc.Arguments,
+			})
+		}
+	}
+
+	return toolCalls
 }
 
 func (a *Agent) processToolCalls(ctx context.Context, yield func(Message, error) bool, toolCalls []ToolCall, tools []tool.Tool) error {
@@ -193,7 +209,6 @@ func formatTools(tools []tool.Tool) []responses.ToolUnionParam {
 	var result []responses.ToolUnionParam
 
 	for _, t := range tools {
-
 		f := &responses.FunctionToolParam{
 			Name:       t.Name,
 			Parameters: t.Parameters,
@@ -283,8 +298,7 @@ func convertRole(role responses.EasyInputMessageRole) MessageRole {
 
 func (a *Agent) Messages() []Message {
 	var result []Message
-	var lastToolName string
-	var lastToolArgs string
+	toolCallsByID := make(map[string]ToolCall)
 
 	for _, item := range a.messages {
 		if msg := item.OfMessage; msg != nil {
@@ -343,19 +357,18 @@ func (a *Agent) Messages() []Message {
 		}
 
 		if fc := item.OfFunctionCall; fc != nil {
-			lastToolName = fc.Name
-			lastToolArgs = fc.Arguments
+			toolCallsByID[fc.CallID] = ToolCall{Name: fc.Name, Args: fc.Arguments}
 		}
 
 		if fco := item.OfFunctionCallOutput; fco != nil {
-			output := fco.Output.OfString.Value
+			tc := toolCallsByID[fco.CallID]
 
 			result = append(result, Message{
 				Role: RoleAssistant,
 				Content: []Content{{ToolResult: &ToolResult{
-					Name:    lastToolName,
-					Args:    lastToolArgs,
-					Content: output,
+					Name:    tc.Name,
+					Args:    tc.Args,
+					Content: fco.Output.OfString.Value,
 				}}},
 			})
 		}
