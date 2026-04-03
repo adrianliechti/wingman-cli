@@ -66,6 +66,11 @@ type App struct {
 	streamCancel context.CancelFunc
 	streamMu     sync.Mutex
 
+	// Current tool progress (for sub-agent status updates)
+	currentToolName string
+	currentToolHint string
+
+
 	// MCP state
 	mcpManager *mcp.Manager
 	mcpTools   []tool.Tool
@@ -108,10 +113,8 @@ func New(ctx context.Context, agent *agent.Agent) *App {
 	agent.Environment.PromptUser = a.promptUser
 	agent.Environment.DiagnoseFile = a.lspDiagnostics
 	agent.Environment.StatusUpdate = func(status string) {
-		a.setPhase(PhaseToolRunning, "")
-		if a.spinner != nil {
-			a.spinner.SetPhase(PhaseToolRunning, status)
-		}
+		a.currentToolHint = status
+		a.render("", a.currentToolName, status)
 	}
 
 	return a
@@ -169,7 +172,7 @@ func (a *App) Run() error {
 	a.pages.AddPage("main", mainLayout, true, true)
 
 	// Show "Preparing..." while rewind initializes, then transition to idle
-	a.spinner.Start(PhasePreparing, "")
+	a.spinner.Start(PhasePreparing)
 
 	// Initialize rewind asynchronously
 	go func() {

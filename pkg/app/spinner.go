@@ -17,11 +17,10 @@ type Spinner struct {
 	ticker   *time.Ticker
 	stopChan chan struct{}
 
-	mu       sync.Mutex
-	active   bool
-	frame    int
-	phase    AppPhase
-	toolName string
+	mu     sync.Mutex
+	active bool
+	frame  int
+	phase  AppPhase
 }
 
 // NewSpinner creates a new spinner component
@@ -34,12 +33,11 @@ func NewSpinner(app *tview.Application, view *tview.TextView) *Spinner {
 }
 
 // Start begins the spinner animation with the given phase
-func (s *Spinner) Start(phase AppPhase, toolName string) {
+func (s *Spinner) Start(phase AppPhase) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.phase = phase
-	s.toolName = toolName
 	s.frame = 0
 
 	if s.active {
@@ -56,12 +54,11 @@ func (s *Spinner) Start(phase AppPhase, toolName string) {
 }
 
 // SetPhase updates the spinner phase without restarting
-func (s *Spinner) SetPhase(phase AppPhase, toolName string) {
+func (s *Spinner) SetPhase(phase AppPhase) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.phase = phase
-	s.toolName = toolName
 
 	if s.active {
 		s.render()
@@ -105,7 +102,7 @@ func (s *Spinner) run() {
 }
 
 func (s *Spinner) render() {
-	config := GetPhaseConfig(s.phase, s.toolName)
+	config := GetPhaseConfig(s.phase)
 	if config.Message == "" {
 		s.view.SetText("")
 		return

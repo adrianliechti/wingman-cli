@@ -200,7 +200,7 @@ func runSubAgent(ctx context.Context, client openai.Client, model string, env *t
 		for _, tc := range toolCalls {
 			if env.StatusUpdate != nil {
 				hint := extractToolHint(tc.args)
-				env.StatusUpdate(fmt.Sprintf("agent > %s %s", tc.name, hint))
+				env.StatusUpdate(fmt.Sprintf("%s %s", tc.name, hint))
 			}
 
 			result := executeTool(ctx, env, tc, tools)
@@ -230,11 +230,7 @@ func extractToolHint(argsJSON string) string {
 	keys := []string{"pattern", "command", "path", "query", "url", "prompt"}
 	for _, key := range keys {
 		if val, ok := args[key].(string); ok && val != "" {
-			val = strings.Join(strings.Fields(val), " ")
-			if len(val) > 50 {
-				val = val[:47] + "..."
-			}
-			return val
+			return strings.Join(strings.Fields(val), " ")
 		}
 	}
 

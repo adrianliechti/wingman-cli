@@ -10,20 +10,23 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/ui/theme"
 )
 
-func formatUserMessage(content string, width int) string {
-	const indent = "  "
-	const barWidth = 4
+const (
+	chatIndent   = "  "
+	chatBarWidth = 4
+)
 
+func (a *App) contentWidth() int {
+	return a.chatWidth - len(chatIndent) - chatBarWidth
+}
+
+func (a *App) formatUserMessage(content string) string {
 	t := theme.Default
-	contentWidth := width - len(indent) - barWidth
 
 	var result strings.Builder
 
-	for line := range strings.SplitSeq(content, "\n") {
-		wrapped := markdown.WrapLine(line, contentWidth)
-
-		for _, wl := range wrapped {
-			fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.Cyan, wl)
+	for line := range strings.SplitSeq(strings.TrimRight(content, "\n"), "\n") {
+		for _, wl := range markdown.WrapLine(line, a.contentWidth()) {
+			fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", chatIndent, t.Cyan, wl)
 		}
 	}
 
@@ -32,21 +35,15 @@ func formatUserMessage(content string, width int) string {
 	return result.String()
 }
 
-func formatAssistantMessage(content string, width int) string {
-	const indent = "  "
-	const barWidth = 4
-
+func (a *App) formatAssistantMessage(content string) string {
 	t := theme.Default
-	contentWidth := width - len(indent) - barWidth
 
 	var result strings.Builder
-	rendered := markdown.Render(content)
+	rendered := strings.TrimRight(markdown.Render(content), "\n")
 
 	for line := range strings.SplitSeq(rendered, "\n") {
-		wrapped := markdown.WrapLine(line, contentWidth)
-
-		for _, wl := range wrapped {
-			fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.Blue, wl)
+		for _, wl := range markdown.WrapLine(line, a.contentWidth()) {
+			fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", chatIndent, t.Blue, wl)
 		}
 	}
 
@@ -55,31 +52,25 @@ func formatAssistantMessage(content string, width int) string {
 	return result.String()
 }
 
-func formatPrompt(title string, message string, hint string, width int) string {
-	const indent = "  "
-	const barWidth = 4
-
+func (a *App) formatPrompt(title string, message string, hint string) string {
 	t := theme.Default
-	contentWidth := width - len(indent) - barWidth
 
 	var result strings.Builder
 
 	titleLine := fmt.Sprintf("[%s::b]%s[-::-]", t.Yellow, title)
 
-	for _, wl := range markdown.WrapLine(titleLine, contentWidth) {
-		fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.Red, wl)
+	for _, wl := range markdown.WrapLine(titleLine, a.contentWidth()) {
+		fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", chatIndent, t.Red, wl)
 	}
 
 	for line := range strings.SplitSeq(message, "\n") {
-		wrapped := markdown.WrapLine(line, contentWidth)
-
-		for _, wl := range wrapped {
-			fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.Red, wl)
+		for _, wl := range markdown.WrapLine(line, a.contentWidth()) {
+			fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", chatIndent, t.Red, wl)
 		}
 	}
 
 	if hint != "" {
-		fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.Red, hint)
+		fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", chatIndent, t.Red, hint)
 	}
 
 	result.WriteString("\n")
@@ -87,28 +78,74 @@ func formatPrompt(title string, message string, hint string, width int) string {
 	return result.String()
 }
 
-func formatToolCall(name string, hint string, output string, width int) string {
-	const indent = "  "
-	const barWidth = 4
+// toolDisplay returns the icon and label for a tool.
+func toolDisplay(name string) (string, string) {
+	if name == "agent" {
+		return "🤖", ""
+	}
 
+	return "⚡", name
+}
+
+func (a *App) toolHintSpace(label string) int {
+	prefixLen := len(chatIndent) + chatBarWidth + 2 // bar + space + icon
+	if label != "" {
+		prefixLen += 1 + len(label)
+	}
+
+	return a.chatWidth - prefixLen - 2
+}
+
+func truncateHint(hint string, maxLen int) string {
+	if maxLen <= 3 || hint == "" {
+		return ""
+	}
+
+	if len(hint) <= maxLen {
+		return hint
+	}
+
+	return hint[:maxLen-3] + "..."
+}
+
+func (a *App) formatToolTitle(icon, label, hint, color string, bold bool) string {
+	hint = truncateHint(hint, a.toolHintSpace(label))
 	t := theme.Default
-	contentWidth := width - len(indent) - barWidth
+
+	style := ""
+	styleEnd := ""
+	if bold {
+		style = "::b"
+		styleEnd = "-::-"
+	}
+
+	var title string
+
+	if label != "" {
+		title = fmt.Sprintf("[%s%s]%s %s[%s]", color, style, icon, label, styleEnd)
+	} else {
+		title = fmt.Sprintf("[%s%s]%s[%s]", color, style, icon, styleEnd)
+	}
+
+	if hint != "" {
+		title += fmt.Sprintf(" [%s]%s[-]", t.BrBlack, tview.Escape(hint))
+	}
+
+	return title
+}
+
+func (a *App) formatToolCall(name string, hint string, output string) string {
+	t := theme.Default
+	icon, label := toolDisplay(name)
 
 	var result strings.Builder
 
-	titleLine := fmt.Sprintf("[%s::b]⚡ %s[-::-]", t.Yellow, name)
+	title := a.formatToolTitle(icon, label, hint, t.Yellow.String(), true)
+	fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", chatIndent, t.Yellow, title)
 
-	if hint != "" {
-		titleLine = fmt.Sprintf("[%s::b]⚡ %s[-::-] [%s]%s[-]", t.Yellow, name, t.BrBlack, tview.Escape(hint))
-	}
-	fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.Yellow, titleLine)
-
-	for line := range strings.SplitSeq(output, "\n") {
-		wrapped := markdown.WrapLine(line, contentWidth)
-
-		for _, wl := range wrapped {
-			escaped := tview.Escape(wl)
-			fmt.Fprintf(&result, "%s[%s]┃[-] [%s]%s[-]\n", indent, t.Yellow, t.BrBlack, escaped)
+	for line := range strings.SplitSeq(strings.TrimRight(output, "\n"), "\n") {
+		for _, wl := range markdown.WrapLine(line, a.contentWidth()) {
+			fmt.Fprintf(&result, "%s[%s]┃[-] [%s]%s[-]\n", chatIndent, t.Yellow, t.BrBlack, tview.Escape(wl))
 		}
 	}
 
@@ -117,47 +154,30 @@ func formatToolCall(name string, hint string, output string, width int) string {
 	return result.String()
 }
 
-func formatToolCallCollapsed(name string, hint string) string {
-	const indent = "  "
-
+func (a *App) formatToolCallCollapsed(name string, hint string) string {
 	t := theme.Default
+	icon, label := toolDisplay(name)
 
-	var result strings.Builder
+	title := a.formatToolTitle(icon, label, hint, t.BrBlack.String(), false)
 
-	titleLine := fmt.Sprintf("[%s]⚡ %s[-]", t.BrBlack, name)
-
-	if hint != "" {
-		titleLine = fmt.Sprintf("[%s]⚡ %s[-] [%s]%s[-]", t.BrBlack, name, t.BrBlack, tview.Escape(hint))
-	}
-	fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.BrBlack, titleLine)
-
-	return result.String()
+	return fmt.Sprintf("%s[%s]┃[-] %s\n", chatIndent, t.BrBlack, title)
 }
 
-func formatToolProgress(name string, hint string) string {
-	const indent = "  "
-
+func (a *App) formatToolProgress(name string, hint string) string {
 	t := theme.Default
+	icon, label := toolDisplay(name)
 
-	var result strings.Builder
-
-	titleLine := fmt.Sprintf("[%s::b]⚡ %s[-::-] [%s]running...[-]", t.Yellow, name, t.BrBlack)
-
-	if hint != "" {
-		titleLine = fmt.Sprintf("[%s::b]⚡ %s[-::-] [%s]%s[-]", t.Yellow, name, t.BrBlack, tview.Escape(hint))
+	if hint == "" {
+		hint = "running..."
 	}
-	fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.Yellow, titleLine)
 
-	result.WriteString("\n")
+	title := a.formatToolTitle(icon, label, hint, t.Yellow.String(), true)
 
-	return result.String()
+	return fmt.Sprintf("%s[%s]┃[-] %s\n\n", chatIndent, t.Yellow, title)
 }
 
-func formatError(title string, message string, width int) string {
-	const barWidth = 4
-
+func (a *App) formatError(title string, message string) string {
 	t := theme.Default
-	contentWidth := width - barWidth
 
 	var result strings.Builder
 
@@ -169,9 +189,7 @@ func formatError(title string, message string, width int) string {
 			continue
 		}
 
-		wrapped := markdown.WrapLine(fmt.Sprintf("[%s]%s[-]", t.BrBlack, line), contentWidth)
-
-		for _, wl := range wrapped {
+		for _, wl := range markdown.WrapLine(fmt.Sprintf("[%s]%s[-]", t.BrBlack, line), a.contentWidth()) {
 			fmt.Fprintf(&result, "[%s]┃[-] %s\n", t.Red, wl)
 		}
 	}

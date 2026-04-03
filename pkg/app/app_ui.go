@@ -167,6 +167,12 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		return nil // consume all input when prompt is active
 	}
 
+	// Ctrl+Y: copy last assistant message to clipboard
+	if event.Key() == tcell.KeyCtrlY && !a.hasActiveModal() {
+		a.copyLastResponse()
+		return nil
+	}
+
 	if event.Key() == tcell.KeyCtrlL {
 		a.clearChat()
 		return nil
@@ -191,65 +197,76 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	return event
 }
 
+func (a *App) resetPlaceholder() {
+	a.app.QueueUpdateDraw(func() {
+		a.input.SetPlaceholder("Ask anything...")
+	})
+}
+
 func (a *App) promptUser(message string) (bool, error) {
 	a.promptResponse = make(chan bool, 1)
 	a.promptActive = true
+	defer func() {
+		a.promptActive = false
+		a.resetPlaceholder()
+	}()
 
 	t := theme.Default
 	hint := fmt.Sprintf("[%s]Press [-][%s::b]y[-::-][%s] to approve, [-][%s::b]n[-::-][%s] to deny[-]", t.BrBlack, t.Green, t.BrBlack, t.Red, t.BrBlack)
 
 	a.app.QueueUpdateDraw(func() {
-		fmt.Fprint(a.chatView, formatPrompt("Confirm Command", message, hint, a.chatWidth))
+		fmt.Fprint(a.chatView, a.formatPrompt("Confirm Command", message, hint))
 		a.input.SetPlaceholder("y/n")
 	})
 
-	var result bool
 	select {
-	case result = <-a.promptResponse:
+	case result := <-a.promptResponse:
+		return result, nil
 	case <-a.ctx.Done():
-		a.promptActive = false
-		a.app.QueueUpdateDraw(func() {
-			a.input.SetPlaceholder("Ask anything...")
-		})
-
 		return false, a.ctx.Err()
 	}
-
-	a.promptActive = false
-	a.app.QueueUpdateDraw(func() {
-		a.input.SetPlaceholder("Ask anything...")
-	})
-
-	return result, nil
 }
 
 func (a *App) askUser(question string) (string, error) {
 	a.askResponse = make(chan string, 1)
 	a.askActive = true
+	defer func() {
+		a.askActive = false
+		a.resetPlaceholder()
+	}()
 
 	a.app.QueueUpdateDraw(func() {
-		fmt.Fprint(a.chatView, formatPrompt("Question", question, "", a.chatWidth))
+		fmt.Fprint(a.chatView, a.formatPrompt("Question", question, ""))
 		a.input.SetPlaceholder("Type your answer and press Enter...")
 	})
 
-	var result string
 	select {
-	case result = <-a.askResponse:
+	case result := <-a.askResponse:
+		return result, nil
 	case <-a.ctx.Done():
-		a.askActive = false
-		a.app.QueueUpdateDraw(func() {
-			a.input.SetPlaceholder("Ask anything...")
-		})
-
 		return "", a.ctx.Err()
 	}
+}
 
-	a.askActive = false
-	a.app.QueueUpdateDraw(func() {
-		a.input.SetPlaceholder("Ask anything...")
-	})
+func (a *App) copyLastResponse() {
+	messages := a.agent.Messages()
 
-	return result, nil
+	// Find the last assistant message (walking backwards)
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == agent.RoleAssistant {
+			for _, c := range messages[i].Content {
+				if c.Text != "" {
+					clipboard.WriteText(c.Text)
+
+					// Brief visual feedback
+					t := theme.Default
+					fmt.Fprintf(a.chatView, "\n  [%s]Copied to clipboard[-]\n", t.BrBlack)
+
+					return
+				}
+			}
+		}
+	}
 }
 
 func (a *App) pasteFromClipboard() {
@@ -308,11 +325,7 @@ func (a *App) clearChat() {
 
 func (a *App) showError(title string, err error) {
 	a.switchToChat()
-	width := a.chatWidth
-	if width == 0 {
-		width = 80
-	}
-	fmt.Fprint(a.chatView, formatError(title, err.Error(), width))
+	fmt.Fprint(a.chatView, a.formatError(title, err.Error()))
 }
 
 func (a *App) countPendingImages() int {
@@ -428,7 +441,7 @@ func (a *App) submitInput() {
 		}
 		displayText = fmt.Sprintf("%s\n[%s]", query, strings.Join(attachments, ", "))
 	}
-	fmt.Fprint(a.chatView, formatUserMessage(displayText, a.chatWidth))
+	fmt.Fprint(a.chatView, a.formatUserMessage(displayText))
 
 	// Build input for agent - display text plus hidden file list for context
 	input := []agent.Content{{Text: displayText}}
@@ -576,11 +589,14 @@ func (a *App) buildLayout() *tview.Flex {
 	a.chatContainer.SetDrawFunc(func(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {
 		newWidth := width - totalMargin
 
-		// Re-render chat on resize (only when idle and not in welcome mode)
-		if newWidth != a.chatWidth && !a.isWelcomeMode && !a.isStreaming() && len(a.agent.Messages()) > 0 {
-			a.renderChat(a.agent.Messages(), "", "", "")
+		if newWidth != a.chatWidth {
+			a.chatWidth = newWidth
+
+			// Re-render chat on resize to re-wrap content to new width
+			if !a.isWelcomeMode && len(a.agent.Messages()) > 0 {
+				a.renderChat(a.agent.Messages(), "", a.currentToolName, a.currentToolHint)
+			}
 		}
-		a.chatWidth = newWidth
 
 		return x, y, width, height
 	})
@@ -647,6 +663,11 @@ func (a *App) updateStatusBar() {
 	a.statusBar.SetText(strings.Join(parts, " • "))
 }
 
+func (a *App) formatShortcut(key, label string) string {
+	t := theme.Default
+	return fmt.Sprintf("[%s]%s[-] [%s]%s[-]", t.BrBlack, key, t.Foreground, label)
+}
+
 func (a *App) updateInputHint() {
 	t := theme.Default
 
@@ -660,8 +681,7 @@ func (a *App) updateInputHint() {
 	}
 
 	if len(a.pendingFiles) == 1 {
-		name := filepath.Base(a.pendingFiles[0])
-		parts = append(parts, fmt.Sprintf("[%s]📄 %s[-]", t.Cyan, name))
+		parts = append(parts, fmt.Sprintf("[%s]📄 %s[-]", t.Cyan, filepath.Base(a.pendingFiles[0])))
 	} else if len(a.pendingFiles) > 1 {
 		parts = append(parts, fmt.Sprintf("[%s]📄 %d files[-]", t.Cyan, len(a.pendingFiles)))
 	}
@@ -671,7 +691,15 @@ func (a *App) updateInputHint() {
 		if a.toolOutputExpanded {
 			expandLabel = "collapse"
 		}
-		parts = append(parts, fmt.Sprintf("[%s]tab[-] [%s]mode[-]  [%s]shift+tab[-] [%s]model[-]  [%s]@[-] [%s]file[-]  [%s]ctrl+e[-] [%s]%s[-]  [%s]esc[-] [%s]clear[-]", t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, expandLabel, t.BrBlack, t.Foreground))
+
+		parts = append(parts,
+			a.formatShortcut("tab", "mode"),
+			a.formatShortcut("shift+tab", "model"),
+			a.formatShortcut("@", "file"),
+			a.formatShortcut("ctrl+y", "copy"),
+			a.formatShortcut("ctrl+e", expandLabel),
+			a.formatShortcut("esc", "clear"),
+		)
 	}
 
 	a.inputHint.SetText(strings.Join(parts, "  "))
@@ -694,24 +722,46 @@ func formatTokens(tokens int64) string {
 func (a *App) renderChat(messages []agent.Message, streamingContent string, toolName string, toolHint string) {
 	a.chatView.Clear()
 
+	prevWasTool := false
+
 	for _, msg := range messages {
+		isTool := isToolMessage(msg)
+
+		// Add separator between tool results and non-tool messages
+		if prevWasTool && !isTool {
+			fmt.Fprint(a.chatView, "\n")
+		}
+
 		a.renderMessage(msg)
+		prevWasTool = isTool
 	}
 
 	if streamingContent != "" {
-		fmt.Fprint(a.chatView, formatAssistantMessage(streamingContent, a.chatWidth))
+		if prevWasTool {
+			fmt.Fprint(a.chatView, "\n")
+		}
+		fmt.Fprint(a.chatView, a.formatAssistantMessage(streamingContent))
 	}
 
 	if toolName != "" && !a.isToolHidden(toolName) {
-		fmt.Fprint(a.chatView, formatToolProgress(toolName, toolHint))
+		fmt.Fprint(a.chatView, a.formatToolProgress(toolName, toolHint))
 	}
 
 	a.chatView.ScrollToEnd()
 }
 
-func (a *App) renderMessage(msg agent.Message) {
-	// Check for tool result in content
+func isToolMessage(msg agent.Message) bool {
 	for _, c := range msg.Content {
+		if c.ToolResult != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) renderMessage(msg agent.Message) {
+	for _, c := range msg.Content {
+		// Tool results
 		if c.ToolResult != nil {
 			if a.isToolHidden(c.ToolResult.Name) {
 				return
@@ -721,30 +771,32 @@ func (a *App) renderMessage(msg agent.Message) {
 
 			if a.toolOutputExpanded {
 				output := c.ToolResult.Content
-
 				if len(output) > maxToolOutputLen {
 					output = output[:maxToolOutputLen] + "..."
 				}
-
-				fmt.Fprint(a.chatView, formatToolCall(c.ToolResult.Name, hint, output, a.chatWidth))
+				fmt.Fprint(a.chatView, a.formatToolCall(c.ToolResult.Name, hint, output))
 			} else {
-				fmt.Fprint(a.chatView, formatToolCallCollapsed(c.ToolResult.Name, hint))
+				fmt.Fprint(a.chatView, a.formatToolCallCollapsed(c.ToolResult.Name, hint))
 			}
 
 			return
 		}
-	}
 
-	// Get first text content for display
-	content := ""
-	if len(msg.Content) > 0 {
-		content = msg.Content[0].Text
-	}
+		// Tool calls have no displayable content
+		if c.ToolCall != nil {
+			return
+		}
 
-	switch msg.Role {
-	case agent.RoleUser:
-		fmt.Fprint(a.chatView, formatUserMessage(content, a.chatWidth))
-	case agent.RoleAssistant:
-		fmt.Fprint(a.chatView, formatAssistantMessage(content, a.chatWidth))
+		// Text content
+		if c.Text != "" {
+			switch msg.Role {
+			case agent.RoleUser:
+				fmt.Fprint(a.chatView, a.formatUserMessage(c.Text))
+			case agent.RoleAssistant:
+				fmt.Fprint(a.chatView, a.formatAssistantMessage(c.Text))
+			}
+
+			return
+		}
 	}
 }

@@ -14,6 +14,7 @@ import (
 )
 
 // extractToolHint extracts a display hint from tool arguments JSON.
+// Returns the full hint text — truncation is handled by the format functions based on available width.
 func extractToolHint(argsJSON string) string {
 	var args map[string]any
 
@@ -24,11 +25,7 @@ func extractToolHint(argsJSON string) string {
 	// If a description is provided (e.g., shell tool), prefer it as the hint
 	if desc, ok := args["description"]; ok {
 		if str, ok := desc.(string); ok && str != "" {
-			str = strings.Join(strings.Fields(str), " ")
-			if len(str) > 60 {
-				str = str[:57] + "..."
-			}
-			return str
+			return strings.Join(strings.Fields(str), " ")
 		}
 	}
 
@@ -37,6 +34,7 @@ func extractToolHint(argsJSON string) string {
 		"query",
 		"pattern",
 		"command",
+		"prompt",
 		"path",
 		"file",
 		"url",
@@ -46,14 +44,7 @@ func extractToolHint(argsJSON string) string {
 	for _, key := range hintKeys {
 		if val, ok := args[key]; ok {
 			if str, ok := val.(string); ok && str != "" {
-				// Collapse newlines and multiple spaces to single space
-				str = strings.Join(strings.Fields(str), " ")
-
-				if len(str) > 50 {
-					str = str[:47] + "..."
-				}
-
-				return str
+				return strings.Join(strings.Fields(str), " ")
 			}
 		}
 	}
@@ -62,7 +53,7 @@ func extractToolHint(argsJSON string) string {
 }
 
 // setPhase updates the phase and spinner state.
-func (a *App) setPhase(phase AppPhase, hint string) {
+func (a *App) setPhase(phase AppPhase) {
 	a.phase = phase
 
 	if a.spinner != nil {
@@ -70,7 +61,7 @@ func (a *App) setPhase(phase AppPhase, hint string) {
 			a.spinner.Stop()
 			a.updateInputHint()
 		} else {
-			a.spinner.SetPhase(phase, hint)
+			a.spinner.SetPhase(phase)
 		}
 	}
 }
@@ -105,9 +96,9 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 
 	// Start with thinking phase
 	if a.spinner != nil {
-		a.spinner.Start(PhaseThinking, "")
+		a.spinner.Start(PhaseThinking)
 	}
-	a.setPhase(PhaseThinking, "")
+	a.setPhase(PhaseThinking)
 	a.app.QueueUpdateDraw(func() {})
 
 	for msg, err := range a.agent.Send(streamCtx, instructions, input, tools) {
@@ -119,18 +110,23 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 		for _, c := range msg.Content {
 			switch {
 			case c.ToolCall != nil:
-				a.setPhase(PhaseToolRunning, c.ToolCall.Name)
-				a.render(content.String(), c.ToolCall.Name, extractToolHint(c.ToolCall.Args))
+				a.currentToolName = c.ToolCall.Name
+				a.currentToolHint = extractToolHint(c.ToolCall.Args)
+				a.setPhase(PhaseToolRunning)
+				content.Reset()
+				a.render("", c.ToolCall.Name, a.currentToolHint)
 
 			case c.ToolResult != nil:
-				a.setPhase(PhaseThinking, "")
+				a.currentToolName = ""
+				a.currentToolHint = ""
 				content.Reset()
-				a.render("", "", "")
-				a.app.QueueUpdateDraw(func() { a.updateStatusBar() })
+				// Don't re-render here — let the next event (ToolCall or Text)
+				// update the view. This avoids flashing empty state between
+				// rapid tool call/result pairs.
 
 			case c.Text != "":
 				if a.phase != PhaseStreaming {
-					a.setPhase(PhaseStreaming, "")
+					a.setPhase(PhaseStreaming)
 				}
 				content.WriteString(c.Text)
 				a.render(content.String(), "", "")
@@ -138,7 +134,7 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 		}
 	}
 
-	a.setPhase(PhaseIdle, "")
+	a.setPhase(PhaseIdle)
 
 	usage := a.agent.Usage()
 	a.totalTokens = usage.InputTokens + usage.OutputTokens

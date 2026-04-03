@@ -73,14 +73,11 @@ func (a *App) showModelPicker() {
 }
 
 func (a *App) cycleModel() {
-	// Fetch models from API
 	apiModels, err := a.agent.Client.Models.List(a.ctx)
-
 	if err != nil {
 		return
 	}
 
-	// Build list of available models
 	var models []string
 
 	for _, allowed := range agent.AvailableModels {
@@ -92,21 +89,18 @@ func (a *App) cycleModel() {
 		}
 	}
 
-	if len(models) == 0 {
+	if len(models) <= 1 {
 		return
 	}
 
-	// Find current model index and cycle to next
-	currentIdx := -1
-
 	for i, m := range models {
 		if m == a.agent.Model {
-			currentIdx = i
+			a.agent.Model = models[(i+1)%len(models)]
 			break
 		}
 	}
 
-	nextIdx := (currentIdx + 1) % len(models)
-	a.agent.Model = models[nextIdx]
-	a.updateStatusBar()
+	a.app.QueueUpdateDraw(func() {
+		a.updateStatusBar()
+	})
 }

@@ -33,7 +33,7 @@ type PhaseConfig struct {
 }
 
 // GetPhaseConfig returns the display configuration for a given phase
-func GetPhaseConfig(phase AppPhase, toolName string) PhaseConfig {
+func GetPhaseConfig(phase AppPhase) PhaseConfig {
 	t := theme.Default
 
 	switch phase {
@@ -50,12 +50,8 @@ func GetPhaseConfig(phase AppPhase, toolName string) PhaseConfig {
 			Animated: true,
 		}
 	case PhaseToolRunning:
-		msg := "Running tool..."
-		if toolName != "" {
-			msg = "Running " + toolName + "..."
-		}
 		return PhaseConfig{
-			Message:  msg,
+			Message:  "Running...",
 			Color:    t.Yellow.String(),
 			Animated: true,
 		}
