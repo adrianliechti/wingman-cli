@@ -21,6 +21,17 @@ func extractToolHint(argsJSON string) string {
 		return ""
 	}
 
+	// If a description is provided (e.g., shell tool), prefer it as the hint
+	if desc, ok := args["description"]; ok {
+		if str, ok := desc.(string); ok && str != "" {
+			str = strings.Join(strings.Fields(str), " ")
+			if len(str) > 60 {
+				str = str[:57] + "..."
+			}
+			return str
+		}
+	}
+
 	// Priority order of parameters to use as hint
 	hintKeys := []string{
 		"query",

@@ -17,18 +17,22 @@ func FindTool() tool.Tool {
 	return tool.Tool{
 		Name: "find",
 
-		Description: fmt.Sprintf(
-			"Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore files and common ignore patterns (node_modules, .git, etc). Output is truncated to %d results or %dKB (whichever is hit first).",
-			DefaultFindLimit,
-			DefaultMaxBytes/1024,
-		),
+		Description: strings.Join([]string{
+			fmt.Sprintf("Fast file pattern matching. Returns matching paths relative to search directory. Respects .gitignore. Truncated to %d results or %dKB.", DefaultFindLimit, DefaultMaxBytes/1024),
+			"",
+			"Usage:",
+			"- Use this tool to find files by name or extension. NEVER run find or ls -R via the shell.",
+			"- Supports glob patterns like \"**/*.go\", \"src/**/*.ts\", \"*.{js,jsx}\".",
+			"- Use this when exploring a codebase to discover structure before using grep or read.",
+			"- For content search (finding text inside files), use `grep` instead.",
+		}, "\n"),
 
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"pattern": map[string]any{"type": "string", "description": "Glob pattern to match files (e.g. *.go, **/*.txt)"},
-				"path":    map[string]any{"type": "string", "description": "Directory to search in (defaults to current directory)"},
-				"limit":   map[string]any{"type": "integer", "description": "Maximum number of results to return"},
+				"pattern": map[string]any{"type": "string", "description": "Glob pattern to match files (e.g., \"**/*.go\", \"src/**/*.ts\")"},
+				"path":    map[string]any{"type": "string", "description": "Directory to search in (defaults to working directory)"},
+				"limit":   map[string]any{"type": "integer", "description": "Maximum number of results to return (default: 1000)"},
 			},
 			"required": []string{"pattern"},
 		},

@@ -12,18 +12,23 @@ func ReadTool() tool.Tool {
 	return tool.Tool{
 		Name: "read",
 
-		Description: fmt.Sprintf(
-			"Read the contents of a file. For text files, output is truncated to %d lines or %dKB (whichever is hit first). Use offset/limit for large files.",
-			DefaultMaxLines,
-			DefaultMaxBytes/1024,
-		),
+		Description: strings.Join([]string{
+			fmt.Sprintf("Read the contents of a file. Output is returned with line numbers (cat -n format). Truncated to %d lines or %dKB.", DefaultMaxLines, DefaultMaxBytes/1024),
+			"",
+			"Usage:",
+			"- You must read a file before editing it. The edit tool will reference line numbers from this output.",
+			"- When you already know which part of the file you need, use offset/limit to read just that part.",
+			"- You can read multiple files in parallel by calling this tool multiple times in one response.",
+			"- If you read a file and it was truncated, use offset to continue reading from where it left off.",
+			"- Prefer using `grep` to locate relevant code before reading entire files.",
+		}, "\n"),
 
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":   map[string]any{"type": "string", "description": "Path to the file to read"},
+				"path":   map[string]any{"type": "string", "description": "Absolute path to the file to read"},
 				"offset": map[string]any{"type": "integer", "description": "Line number to start reading from (1-based)"},
-				"limit":  map[string]any{"type": "integer", "description": "Maximum number of lines to read"},
+				"limit":  map[string]any{"type": "integer", "description": "Maximum number of lines to read. Only provide if the file is too large to read at once."},
 			},
 			"required": []string{"path"},
 		},

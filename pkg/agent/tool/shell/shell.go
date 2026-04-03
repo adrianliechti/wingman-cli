@@ -21,9 +21,26 @@ const (
 )
 
 func ShellTool() tool.Tool {
+	description := strings.Join([]string{
+		fmt.Sprintf("Execute a shell command and return its output. Runs in the working directory with a default timeout of %d seconds.", defaultTimeout),
+		"",
+		"IMPORTANT: Avoid using this tool to run find, grep, cat, head, tail, sed, or awk commands. Use the dedicated tools instead:",
+		"- File search: Use `find` (NOT shell find or ls)",
+		"- Content search: Use `grep` (NOT shell grep or rg)",
+		"- Read files: Use `read` (NOT cat/head/tail)",
+		"- Edit files: Use `edit` (NOT sed/awk)",
+		"- Write files: Use `write` (NOT echo/cat with heredoc)",
+		"",
+		"Usage:",
+		"- When issuing multiple independent commands, make multiple shell tool calls in parallel.",
+		"- For dependent commands, chain with && in a single call.",
+		"- For git commands: prefer new commits over amending; never use --no-verify or --force unless explicitly asked; never use -i (interactive) flags.",
+		"- Avoid unnecessary sleep commands. If a command is long-running, increase the timeout instead.",
+	}, "\n")
+
 	return tool.Tool{
 		Name:        "shell",
-		Description: "Execute a shell command. The command runs in the working directory. On Unix systems, uses $SHELL or /bin/sh. On Windows, uses PowerShell. Returns stdout/stderr combined. If output is truncated, a temp file path is provided to read the full output.",
+		Description: description,
 
 		Parameters: map[string]any{
 			"type": "object",
@@ -34,9 +51,14 @@ func ShellTool() tool.Tool {
 					"description": "The shell command to execute",
 				},
 
+				"description": map[string]any{
+					"type":        "string",
+					"description": "Brief description of what this command does (e.g., \"Run unit tests\", \"Install dependencies\")",
+				},
+
 				"timeout": map[string]any{
 					"type":        "integer",
-					"description": fmt.Sprintf("Timeout in seconds (default: %d)", defaultTimeout),
+					"description": fmt.Sprintf("Timeout in seconds (default: %d, max: 600)", defaultTimeout),
 				},
 			},
 

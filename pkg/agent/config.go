@@ -16,6 +16,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/prompt"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/skill"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/fetch"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/fs"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/search"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/shell"
@@ -90,11 +91,7 @@ func DefaultConfig() (*Config, func(), error) {
 		Scratch: scratch,
 	}
 
-	tools := slices.Concat(fs.Tools(), shell.Tools())
-
-	if os.Getenv("WINGMAN_SEARCH") != "" {
-		tools = append(tools, search.Tools()...)
-	}
+	tools := slices.Concat(fs.Tools(), shell.Tools(), fetch.Tools(), search.Tools())
 
 	mcp, _ := mcp.Load(filepath.Join(wd, "mcp.json"))
 

@@ -26,26 +26,32 @@ func GrepTool() tool.Tool {
 	return tool.Tool{
 		Name: "grep",
 
-		Description: fmt.Sprintf(
-			"Search file contents for a pattern (regex or literal). Returns matching lines with file path and line number. Respects .gitignore. Output truncated to %d matches or %dKB.",
-			DefaultGrepLimit,
-			DefaultMaxBytes/1024,
-		),
+		Description: strings.Join([]string{
+			fmt.Sprintf("Search file contents for a pattern. Returns matching lines with path and line number. Respects .gitignore. Truncated to %d matches or %dKB.", DefaultGrepLimit, DefaultMaxBytes/1024),
+			"",
+			"Usage:",
+			"- ALWAYS use this tool for content search. NEVER run grep or rg via the shell tool.",
+			"- Supports full regex syntax (e.g., \"log.*Error\", \"func\\s+\\w+\").",
+			"- Filter files with the glob parameter (e.g., \"*.go\", \"*.{ts,tsx}\").",
+			"- Use literal=true for strings containing regex special characters.",
+			"- Use context for surrounding lines when you need to understand the match.",
+			"- Use this to locate relevant code before reading entire files with `read`.",
+		}, "\n"),
 
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"pattern": map[string]any{
 					"type":        "string",
-					"description": "Search pattern (supports regex)",
+					"description": "Search pattern (regex by default, or literal string with literal=true)",
 				},
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Directory or file to search (defaults to current directory)",
+					"description": "Directory or file to search in (defaults to working directory)",
 				},
 				"glob": map[string]any{
 					"type":        "string",
-					"description": "File pattern to filter (e.g., *.go, *.ts)",
+					"description": "Glob pattern to filter files (e.g., \"*.go\", \"*.{ts,tsx}\")",
 				},
 				"ignoreCase": map[string]any{
 					"type":        "boolean",
@@ -53,15 +59,20 @@ func GrepTool() tool.Tool {
 				},
 				"literal": map[string]any{
 					"type":        "boolean",
-					"description": "Treat pattern as a literal string, not a regex (default: false)",
+					"description": "Treat pattern as literal string, not regex (default: false)",
 				},
 				"context": map[string]any{
 					"type":        "integer",
-					"description": "Lines of context around matches (default: 0)",
+					"description": "Number of lines to show before and after each match (default: 0)",
 				},
 				"limit": map[string]any{
 					"type":        "integer",
-					"description": "Maximum number of matches to return",
+					"description": "Maximum number of matches to return (default: 100)",
+				},
+				"output_mode": map[string]any{
+					"type":        "string",
+					"description": "Output format: \"content\" shows matching lines (default), \"files_with_matches\" shows only file paths, \"count\" shows match counts per file.",
+					"enum":        []string{"content", "files_with_matches", "count"},
 				},
 			},
 			"required": []string{"pattern"},
@@ -118,6 +129,12 @@ func GrepTool() tool.Tool {
 				literal = l
 			}
 
+			outputMode := "content"
+
+			if m, ok := args["output_mode"].(string); ok && m != "" {
+				outputMode = m
+			}
+
 			// Compile regex
 			regexPattern := pattern
 			if literal {
@@ -149,12 +166,27 @@ func GrepTool() tool.Tool {
 					return "No matches found", nil
 				}
 
+				if outputMode == "files_with_matches" {
+					return filepath.FromSlash(searchPathFS), nil
+				}
+
+				if outputMode == "count" {
+					return fmt.Sprintf("%s:%d", filepath.FromSlash(searchPathFS), len(matches)), nil
+				}
+
 				return strings.Join(matches, "\n"), nil
 			}
 
 			var results []string
 			matchCount := 0
 			limitReached := false
+
+			// For files_with_matches and count modes, track per-file data
+			type fileMatch struct {
+				path  string
+				count int
+			}
+			var fileMatches []fileMatch
 
 			err = walkWorkspace(ctx, fsys, searchPathFS, func(path, relPath string) error {
 				// Check glob pattern
@@ -176,7 +208,37 @@ func GrepTool() tool.Tool {
 					return nil
 				}
 
-				// Search file
+				// For files_with_matches mode, just check if file has any match
+				if outputMode == "files_with_matches" {
+					matches := searchFileWithContext(fsys, path, re, 0, 1)
+					if len(matches) > 0 {
+						fileMatches = append(fileMatches, fileMatch{path: filepath.FromSlash(relPath)})
+						matchCount++
+
+						if matchCount >= limit {
+							limitReached = true
+							return filepath.SkipAll
+						}
+					}
+					return nil
+				}
+
+				// For count mode, count all matches in file
+				if outputMode == "count" {
+					matches := searchFileWithContext(fsys, path, re, 0, 10000)
+					if len(matches) > 0 {
+						fileMatches = append(fileMatches, fileMatch{path: filepath.FromSlash(relPath), count: len(matches)})
+						matchCount++
+
+						if matchCount >= limit {
+							limitReached = true
+							return filepath.SkipAll
+						}
+					}
+					return nil
+				}
+
+				// Content mode: full results with context
 				remaining := limit - matchCount
 
 				if remaining <= 0 {
@@ -199,11 +261,37 @@ func GrepTool() tool.Tool {
 				return "", fmt.Errorf("search failed: %w", err)
 			}
 
-			if len(results) == 0 {
-				return "No matches found", nil
+			// Build output based on mode
+			var output string
+
+			switch outputMode {
+			case "files_with_matches":
+				if len(fileMatches) == 0 {
+					return "No matches found", nil
+				}
+				paths := make([]string, len(fileMatches))
+				for i, fm := range fileMatches {
+					paths[i] = fm.path
+				}
+				output = strings.Join(paths, "\n")
+
+			case "count":
+				if len(fileMatches) == 0 {
+					return "No matches found", nil
+				}
+				lines := make([]string, len(fileMatches))
+				for i, fm := range fileMatches {
+					lines[i] = fmt.Sprintf("%s:%d", fm.path, fm.count)
+				}
+				output = strings.Join(lines, "\n")
+
+			default: // "content"
+				if len(results) == 0 {
+					return "No matches found", nil
+				}
+				output = strings.Join(results, "\n")
 			}
 
-			output := strings.Join(results, "\n")
 			output, _, bytesTruncated := truncateHead(output)
 
 			var notices []string

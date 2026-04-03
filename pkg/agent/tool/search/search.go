@@ -1,23 +1,31 @@
 package search
 
 import (
-	"bufio"
+	"bytes"
 	"context"
-	"errors"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"net/url"
-	"regexp"
+	"os"
 	"strings"
-	"unicode"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
 func SearchTool() tool.Tool {
+	description := strings.Join([]string{
+		"Search the web for information. Use this when the answer requires up-to-date information beyond the model's knowledge cutoff.",
+		"",
+		"Usage:",
+		"- Use for current events, recent documentation, library versions, or anything time-sensitive.",
+		"- Provide clear, specific search queries for best results.",
+		"- Returns titles, URLs, and content snippets from search results.",
+	}, "\n")
+
 	return tool.Tool{
 		Name:        "search_online",
-		Description: "Search online if the requested information cannot be found in the language model or the information could be present in a time after the language model was trained",
+		Description: description,
 
 		Parameters: map[string]any{
 			"type": "object",
@@ -25,7 +33,7 @@ func SearchTool() tool.Tool {
 			"properties": map[string]any{
 				"query": map[string]any{
 					"type":        "string",
-					"description": "the text to search online for",
+					"description": "The search query",
 				},
 			},
 
@@ -35,138 +43,102 @@ func SearchTool() tool.Tool {
 		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
 			query, ok := args["query"].(string)
 
-			if !ok {
-				return "", errors.New("missing query parameter")
+			if !ok || query == "" {
+				return "", fmt.Errorf("query is required")
 			}
 
-			results, err := search(ctx, query)
+			wingmanURL := os.Getenv("WINGMAN_URL")
 
-			if err != nil {
-				return "", err
+			if wingmanURL == "" {
+				return "", fmt.Errorf("search is not available: WINGMAN_URL is not configured")
 			}
 
-			if len(results) == 0 {
-				return "No results found.", nil
-			}
-
-			var sb strings.Builder
-
-			for i, r := range results {
-				fmt.Fprintf(&sb, "## %d. %s\n", i+1, r.Title)
-				fmt.Fprintf(&sb, "URL: %s\n", r.URL)
-				fmt.Fprintf(&sb, "%s\n\n", r.Content)
-			}
-
-			return sb.String(), nil
+			return searchWingman(ctx, wingmanURL, os.Getenv("WINGMAN_TOKEN"), query)
 		},
 	}
 }
 
 func Tools() []tool.Tool {
+	if os.Getenv("WINGMAN_URL") == "" {
+		return nil
+	}
+
 	return []tool.Tool{
 		SearchTool(),
 	}
 }
 
-type result struct {
-	URL     string
-	Title   string
-	Content string
-}
+func searchWingman(ctx context.Context, baseURL, token, query string) (string, error) {
+	endpoint := strings.TrimRight(baseURL, "/") + "/v1/search"
 
-func search(ctx context.Context, query string) ([]result, error) {
-	u, _ := url.Parse("https://duckduckgo.com/html/")
+	body, err := json.Marshal(map[string]string{
+		"query": query,
+	})
 
-	values := u.Query()
-	values.Set("q", query)
-	u.RawQuery = values.Encode()
+	if err != nil {
+		return "", err
+	}
 
-	req, _ := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
-	req.Header.Set("Referer", "https://www.duckduckgo.com/")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	req.Header.Set("Sec-Fetch-Dest", "document")
-	req.Header.Set("Sec-Fetch-Mode", "navigate")
-	req.Header.Set("Sec-Fetch-Site", "cross-site")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Safari/605.1.15")
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
+
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-
 	defer resp.Body.Close()
 
-	var results []result
-
-	regexLink := regexp.MustCompile(`href="([^"]+)"`)
-	regexSnippet := regexp.MustCompile(`<[^>]*>`)
-
-	scanner := bufio.NewScanner(resp.Body)
-
-	var resultURL string
-	var resultTitle string
-	var resultSnippet string
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		if strings.Contains(line, "result__a") {
-			snippet := regexSnippet.ReplaceAllString(line, "")
-			snippet = normalize(snippet)
-			resultTitle = snippet
-		}
-
-		if strings.Contains(line, "result__url") {
-			links := regexLink.FindStringSubmatch(line)
-
-			if len(links) >= 2 {
-				resultURL = links[1]
-			}
-		}
-
-		if strings.Contains(line, "result__snippet") {
-			snippet := regexSnippet.ReplaceAllString(line, "")
-			snippet = normalize(snippet)
-			resultSnippet = snippet
-		}
-
-		if resultSnippet == "" {
-			continue
-		}
-
-		r := result{
-			URL:     resultURL,
-			Title:   resultTitle,
-			Content: resultSnippet,
-		}
-
-		results = append(results, r)
-		resultURL = ""
-		resultTitle = ""
-		resultSnippet = ""
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("search API returned HTTP %d", resp.StatusCode)
 	}
 
-	return results, nil
-}
+	data, err := io.ReadAll(resp.Body)
 
-// normalize cleans up text by collapsing whitespace and trimming
-func normalize(s string) string {
-	var sb strings.Builder
-	var lastSpace bool
-
-	for _, r := range s {
-		if unicode.IsSpace(r) {
-			if !lastSpace {
-				sb.WriteRune(' ')
-				lastSpace = true
-			}
-		} else {
-			sb.WriteRune(r)
-			lastSpace = false
-		}
+	if err != nil {
+		return "", err
 	}
 
-	return strings.TrimSpace(sb.String())
+	// Try to parse as structured response with results array
+	var structured struct {
+		Results []struct {
+			Title   string `json:"title"`
+			URL     string `json:"url"`
+			Content string `json:"content"`
+		} `json:"results"`
+	}
+
+	if err := json.Unmarshal(data, &structured); err == nil && len(structured.Results) > 0 {
+		var sb strings.Builder
+
+		for i, r := range structured.Results {
+			fmt.Fprintf(&sb, "## %d. %s\n", i+1, r.Title)
+
+			if r.URL != "" {
+				fmt.Fprintf(&sb, "URL: %s\n", r.URL)
+			}
+
+			fmt.Fprintf(&sb, "%s\n\n", r.Content)
+		}
+
+		return sb.String(), nil
+	}
+
+	// Return raw text if not structured
+	result := strings.TrimSpace(string(data))
+
+	if result == "" {
+		return "", fmt.Errorf("empty response from search API")
+	}
+
+	return result, nil
 }

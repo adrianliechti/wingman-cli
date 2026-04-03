@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
@@ -12,13 +13,21 @@ func WriteTool() tool.Tool {
 	return tool.Tool{
 		Name: "write",
 
-		Description: "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+		Description: strings.Join([]string{
+			"Write content to a file. Creates the file and parent directories if they don't exist, overwrites if it does.",
+			"",
+			"Usage:",
+			"- Prefer the `edit` tool for modifying existing files — it only sends the diff and is safer.",
+			"- Only use this tool to create new files or for complete rewrites of existing files.",
+			"- If overwriting an existing file, you MUST read it first to understand the current content.",
+			"- NEVER create documentation files (*.md) or README files unless explicitly requested.",
+		}, "\n"),
 
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":    map[string]any{"type": "string", "description": "Path to the file to write"},
-				"content": map[string]any{"type": "string", "description": "Content to write to the file"},
+				"path":    map[string]any{"type": "string", "description": "Absolute path to the file to write"},
+				"content": map[string]any{"type": "string", "description": "Complete content to write to the file"},
 			},
 			"required": []string{"path", "content"},
 		},
