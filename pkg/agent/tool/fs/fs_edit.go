@@ -84,7 +84,12 @@ func EditTool() tool.Tool {
 			matchResult := fuzzyFindText(normalizedContent, normalizedOldText)
 
 			if !matchResult.found {
-				return "", fmt.Errorf("could not find the exact text in %s. The old text must match exactly including all whitespace and newlines", pathArg)
+				// Provide a helpful snippet of what the file actually contains near the beginning
+				preview := normalizedContent
+				if len(preview) > 200 {
+					preview = preview[:200] + "..."
+				}
+				return "", fmt.Errorf("could not find old_text in %s. Make sure it matches exactly (including whitespace and newlines). File starts with:\n%s", pathArg, preview)
 			}
 
 			fuzzyContent := normalizeForFuzzyMatch(normalizedContent)

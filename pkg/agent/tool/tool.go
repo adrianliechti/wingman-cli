@@ -25,6 +25,7 @@ type Environment struct {
 	AskUser      func(question string) (string, error)
 	PromptUser   func(prompt string) (bool, error)
 	DiagnoseFile func(ctx context.Context, path string) string
+	StatusUpdate func(status string)
 }
 
 func (e *Environment) WorkingDir() string {

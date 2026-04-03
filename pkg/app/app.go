@@ -107,6 +107,12 @@ func New(ctx context.Context, agent *agent.Agent) *App {
 	agent.Environment.AskUser = a.askUser
 	agent.Environment.PromptUser = a.promptUser
 	agent.Environment.DiagnoseFile = a.lspDiagnostics
+	agent.Environment.StatusUpdate = func(status string) {
+		a.setPhase(PhaseToolRunning, "")
+		if a.spinner != nil {
+			a.spinner.SetPhase(PhaseToolRunning, status)
+		}
+	}
 
 	return a
 }

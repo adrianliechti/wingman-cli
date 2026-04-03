@@ -13,14 +13,14 @@ func ReadTool() tool.Tool {
 		Name: "read",
 
 		Description: strings.Join([]string{
-			fmt.Sprintf("Read the contents of a file. Output is returned with line numbers (cat -n format). Truncated to %d lines or %dKB.", DefaultMaxLines, DefaultMaxBytes/1024),
+			fmt.Sprintf("Read the contents of a file. Output includes line numbers. Truncated to %d lines or %dKB.", DefaultMaxLines, DefaultMaxBytes/1024),
 			"",
 			"Usage:",
-			"- You must read a file before editing it. The edit tool will reference line numbers from this output.",
-			"- When you already know which part of the file you need, use offset/limit to read just that part.",
-			"- You can read multiple files in parallel by calling this tool multiple times in one response.",
-			"- If you read a file and it was truncated, use offset to continue reading from where it left off.",
-			"- Prefer using `grep` to locate relevant code before reading entire files.",
+			"- You must read a file before editing it.",
+			"- For large files, use offset and limit to read in chunks. The output will tell you where to continue.",
+			"- Read multiple files in parallel by calling this tool multiple times in one response.",
+			"- Prefer `grep` to locate relevant code before reading entire files.",
+			"- When editing text from read output, preserve the exact indentation as shown AFTER the line number prefix. Never include line numbers in old_text.",
 		}, "\n"),
 
 		Parameters: map[string]any{
@@ -63,6 +63,10 @@ func ReadTool() tool.Tool {
 
 			if err != nil {
 				return "", pathError("read file", pathArg, normalizedPath, workingDir, err)
+			}
+
+			if len(content) == 0 {
+				return "(empty file)", nil
 			}
 
 			lines := strings.Split(string(content), "\n")

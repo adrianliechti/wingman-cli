@@ -358,11 +358,16 @@ func generateDiffString(oldContent, newContent string) string {
 // Common ignore directories that should be skipped during file traversal
 var defaultIgnoreDirs = map[string]bool{
 	".git":         true,
-	"node_modules": true,
+	".hg":          true,
 	".svn":         true,
+	"node_modules": true,
 	"__pycache__":  true,
 	".venv":        true,
 	"vendor":       true,
+	".next":        true,
+	".nuxt":        true,
+	"dist":         true,
+	"build":        true,
 }
 
 var binaryExtensions = map[string]bool{

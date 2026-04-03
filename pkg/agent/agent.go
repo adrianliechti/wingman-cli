@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"sync"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
@@ -102,7 +103,9 @@ func (a *Agent) streamResponse(ctx context.Context, yield func(Message, error) b
 			switch item := e.Item.AsAny().(type) {
 			case responses.ResponseOutputMessage:
 				var p responses.ResponseOutputMessageParam
-				json.Unmarshal([]byte(item.RawJSON()), &p)
+				if err := json.Unmarshal([]byte(item.RawJSON()), &p); err != nil {
+					return nil, fmt.Errorf("failed to parse output message: %w", err)
+				}
 
 				outputItems = append(outputItems, responses.ResponseInputItemUnionParam{
 					OfOutputMessage: &p,
@@ -110,7 +113,9 @@ func (a *Agent) streamResponse(ctx context.Context, yield func(Message, error) b
 
 			case responses.ResponseReasoningItem:
 				var p responses.ResponseReasoningItemParam
-				json.Unmarshal([]byte(item.RawJSON()), &p)
+				if err := json.Unmarshal([]byte(item.RawJSON()), &p); err != nil {
+					return nil, fmt.Errorf("failed to parse reasoning item: %w", err)
+				}
 
 				outputItems = append(outputItems, responses.ResponseInputItemUnionParam{
 					OfReasoning: &p,
@@ -118,7 +123,9 @@ func (a *Agent) streamResponse(ctx context.Context, yield func(Message, error) b
 
 			case responses.ResponseFunctionToolCall:
 				var p responses.ResponseFunctionToolCallParam
-				json.Unmarshal([]byte(item.RawJSON()), &p)
+				if err := json.Unmarshal([]byte(item.RawJSON()), &p); err != nil {
+					return nil, fmt.Errorf("failed to parse function call: %w", err)
+				}
 
 				outputItems = append(outputItems, responses.ResponseInputItemUnionParam{
 					OfFunctionCall: &p,
@@ -167,6 +174,7 @@ func extractToolCalls(items []responses.ResponseInputItemUnionParam) []ToolCall 
 }
 
 func (a *Agent) processToolCalls(ctx context.Context, yield func(Message, error) bool, toolCalls []ToolCall, tools []tool.Tool) error {
+	// First, yield all tool call messages
 	for _, tc := range toolCalls {
 		msg := Message{
 			Role:    RoleAssistant,
@@ -176,15 +184,30 @@ func (a *Agent) processToolCalls(ctx context.Context, yield func(Message, error)
 		if !yield(msg, nil) {
 			return errYieldStopped
 		}
+	}
 
-		result := a.executeTool(ctx, tc, tools)
+	// Execute tool calls concurrently — if the model requested parallel calls,
+	// it expects them to be safe for concurrent execution.
+	results := make([]string, len(toolCalls))
 
+	var wg sync.WaitGroup
+	for i, tc := range toolCalls {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i] = ExecuteTool(ctx, a.Environment, tc, tools)
+		}()
+	}
+	wg.Wait()
+
+	// Yield results and append to messages
+	for i, tc := range toolCalls {
 		resultMsg := Message{
 			Role: RoleAssistant,
 			Content: []Content{{ToolResult: &ToolResult{
 				ID:      tc.ID,
 				Name:    tc.Name,
-				Content: result,
+				Content: results[i],
 			}}},
 		}
 
@@ -196,7 +219,7 @@ func (a *Agent) processToolCalls(ctx context.Context, yield func(Message, error)
 			OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
 				CallID: tc.ID,
 				Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
-					OfString: openai.String(result),
+					OfString: openai.String(results[i]),
 				},
 			},
 		})
@@ -227,16 +250,19 @@ func formatTools(tools []tool.Tool) []responses.ToolUnionParam {
 	return result
 }
 
-func (a *Agent) executeTool(ctx context.Context, tc ToolCall, tools []tool.Tool) string {
-	var t *tool.Tool
-
+func findTool(name string, tools []tool.Tool) *tool.Tool {
 	for i := range tools {
-		if tools[i].Name == tc.Name {
-			t = &tools[i]
-
-			break
+		if tools[i].Name == name {
+			return &tools[i]
 		}
 	}
+
+	return nil
+}
+
+// ExecuteTool looks up and executes a tool by name. Shared between agent and sub-agent.
+func ExecuteTool(ctx context.Context, env *tool.Environment, tc ToolCall, tools []tool.Tool) string {
+	t := findTool(tc.Name, tools)
 
 	if t == nil {
 		return fmt.Sprintf("error: unknown tool %s", tc.Name)
@@ -248,7 +274,7 @@ func (a *Agent) executeTool(ctx context.Context, tc ToolCall, tools []tool.Tool)
 		return fmt.Sprintf("error: failed to parse arguments: %v", err)
 	}
 
-	result, err := t.Execute(ctx, a.Environment, args)
+	result, err := t.Execute(ctx, env, args)
 
 	if err != nil {
 		return fmt.Sprintf("error: %v", err)

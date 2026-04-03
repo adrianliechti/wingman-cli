@@ -14,18 +14,25 @@ import (
 
 func SubAgentTool(client openai.Client, model string, availableTools []tool.Tool) tool.Tool {
 	description := strings.Join([]string{
-		"Launch a sub-agent to handle a task in a separate context. The sub-agent can use all available tools (read, write, edit, grep, find, shell, etc.) and runs its own agentic loop. Only the final answer is returned to you, keeping your context window clean.",
+		"Launch a agent to handle a task in a separate context. The agent has access to all tools and runs its own agentic loop. Only the final answer is returned, keeping your context clean.",
 		"",
-		"Usage:",
-		"- Use for research tasks that require many tool calls (e.g., exploring a codebase, finding all usages of a function).",
-		"- Use for independent subtasks that would otherwise fill your context with intermediate tool results.",
-		"- Provide a clear, self-contained prompt — the sub-agent has no access to your conversation history.",
-		"- Do NOT use for simple tasks that need only 1-2 tool calls — use the tools directly instead.",
-		"- Do NOT use when you need to show intermediate results to the user — those won't be visible.",
+		"When to use:",
+		"- Research tasks requiring many tool calls (exploring codebases, finding all usages of a function).",
+		"- Independent subtasks whose intermediate results would clutter your context.",
+		"- You can launch multiple agents in parallel by making multiple tool calls in one response.",
+		"",
+		"When NOT to use:",
+		"- Simple tasks needing 1-2 tool calls — just use the tools directly.",
+		"- When the user needs to see intermediate results — they won't be visible.",
+		"",
+		"Prompting tips:",
+		"- The agent has NO access to your conversation history. Write the prompt as a self-contained briefing.",
+		"- Be specific: include file paths, function names, and exact requirements.",
+		"- Bad: \"Find the bug.\" Good: \"In /src/api/handler.go, the CreateUser function returns 500 on duplicate emails. Find where the error is swallowed and suggest a fix.\"",
 	}, "\n")
 
 	return tool.Tool{
-		Name:        "sub_agent",
+		Name:        "agent",
 		Description: description,
 
 		Parameters: map[string]any{
@@ -34,7 +41,7 @@ func SubAgentTool(client openai.Client, model string, availableTools []tool.Tool
 			"properties": map[string]any{
 				"prompt": map[string]any{
 					"type":        "string",
-					"description": "A clear, self-contained task description for the sub-agent. Include all necessary context since it has no access to the current conversation.",
+					"description": "A clear, self-contained task description for the agent. Include all necessary context since it has no access to the current conversation.",
 				},
 			},
 
@@ -53,7 +60,7 @@ func SubAgentTool(client openai.Client, model string, availableTools []tool.Tool
 	}
 }
 
-const subAgentInstructions = "You are a sub-agent performing a specific task. Complete the task thoroughly using the tools available to you. When done, provide a clear, concise summary of your findings or results. Do not explain your process — just provide the answer."
+const subAgentInstructions = "You are a agent performing a specific task. Complete the task thoroughly using the tools available to you. When done, provide a clear, concise summary of your findings or results. Do not explain your process — just provide the answer."
 
 const maxIterations = 50
 
@@ -62,7 +69,7 @@ func runSubAgent(ctx context.Context, client openai.Client, model string, env *t
 	var formattedTools []responses.ToolUnionParam
 
 	for _, t := range tools {
-		if t.Hidden || t.Name == "sub_agent" {
+		if t.Hidden || t.Name == "agent" {
 			continue
 		}
 
@@ -91,9 +98,9 @@ func runSubAgent(ctx context.Context, client openai.Client, model string, env *t
 		},
 	}}
 
-	// Agentic loop
+	// Agentic loop with streaming
 	for range maxIterations {
-		resp, err := client.Responses.New(ctx, responses.ResponseNewParams{
+		stream := client.Responses.NewStreaming(ctx, responses.ResponseNewParams{
 			Model:        model,
 			Instructions: openai.String(subAgentInstructions),
 
@@ -111,51 +118,65 @@ func runSubAgent(ctx context.Context, client openai.Client, model string, env *t
 			}},
 		})
 
-		if err != nil {
-			return "", fmt.Errorf("sub-agent error: %w", err)
-		}
-
-		// Convert output items to input items for the next turn
 		var outputItems []responses.ResponseInputItemUnionParam
 		var toolCalls []toolCall
 		var compacted bool
+		var outputText strings.Builder
 
-		for _, item := range resp.Output {
-			switch o := item.AsAny().(type) {
-			case responses.ResponseOutputMessage:
-				var p responses.ResponseOutputMessageParam
-				json.Unmarshal([]byte(o.RawJSON()), &p)
+		for stream.Next() {
+			event := stream.Current()
 
-				outputItems = append(outputItems, responses.ResponseInputItemUnionParam{
-					OfOutputMessage: &p,
-				})
+			switch e := event.AsAny().(type) {
+			case responses.ResponseTextDeltaEvent:
+				outputText.WriteString(e.Delta)
 
-			case responses.ResponseReasoningItem:
-				var p responses.ResponseReasoningItemParam
-				json.Unmarshal([]byte(o.RawJSON()), &p)
+			case responses.ResponseOutputItemDoneEvent:
+				switch o := e.Item.AsAny().(type) {
+				case responses.ResponseOutputMessage:
+					var p responses.ResponseOutputMessageParam
+					if err := json.Unmarshal([]byte(o.RawJSON()), &p); err != nil {
+						return "", fmt.Errorf("agent: failed to parse output message: %w", err)
+					}
 
-				outputItems = append(outputItems, responses.ResponseInputItemUnionParam{
-					OfReasoning: &p,
-				})
+					outputItems = append(outputItems, responses.ResponseInputItemUnionParam{
+						OfOutputMessage: &p,
+					})
 
-			case responses.ResponseFunctionToolCall:
-				var p responses.ResponseFunctionToolCallParam
-				json.Unmarshal([]byte(o.RawJSON()), &p)
+				case responses.ResponseReasoningItem:
+					var p responses.ResponseReasoningItemParam
+					if err := json.Unmarshal([]byte(o.RawJSON()), &p); err != nil {
+						return "", fmt.Errorf("agent: failed to parse reasoning item: %w", err)
+					}
 
-				outputItems = append(outputItems, responses.ResponseInputItemUnionParam{
-					OfFunctionCall: &p,
-				})
+					outputItems = append(outputItems, responses.ResponseInputItemUnionParam{
+						OfReasoning: &p,
+					})
 
-				toolCalls = append(toolCalls, toolCall{
-					id:   o.CallID,
-					name: o.Name,
-					args: o.Arguments,
-				})
+				case responses.ResponseFunctionToolCall:
+					var p responses.ResponseFunctionToolCallParam
+					if err := json.Unmarshal([]byte(o.RawJSON()), &p); err != nil {
+						return "", fmt.Errorf("agent: failed to parse function call: %w", err)
+					}
 
-			case responses.ResponseCompactionItem:
-				outputItems = append(outputItems, responses.ResponseInputItemParamOfCompaction(o.EncryptedContent))
-				compacted = true
+					outputItems = append(outputItems, responses.ResponseInputItemUnionParam{
+						OfFunctionCall: &p,
+					})
+
+					toolCalls = append(toolCalls, toolCall{
+						id:   o.CallID,
+						name: o.Name,
+						args: o.Arguments,
+					})
+
+				case responses.ResponseCompactionItem:
+					outputItems = append(outputItems, responses.ResponseInputItemParamOfCompaction(o.EncryptedContent))
+					compacted = true
+				}
 			}
+		}
+
+		if err := stream.Err(); err != nil {
+			return "", fmt.Errorf("agent error: %w", err)
 		}
 
 		if compacted {
@@ -166,7 +187,7 @@ func runSubAgent(ctx context.Context, client openai.Client, model string, env *t
 
 		// No tool calls means the agent is done
 		if len(toolCalls) == 0 {
-			result := strings.TrimSpace(resp.OutputText())
+			result := strings.TrimSpace(outputText.String())
 
 			if result == "" {
 				return "Sub-agent completed but produced no output.", nil
@@ -177,6 +198,11 @@ func runSubAgent(ctx context.Context, client openai.Client, model string, env *t
 
 		// Execute tool calls and append results
 		for _, tc := range toolCalls {
+			if env.StatusUpdate != nil {
+				hint := extractToolHint(tc.args)
+				env.StatusUpdate(fmt.Sprintf("agent > %s %s", tc.name, hint))
+			}
+
 			result := executeTool(ctx, env, tc, tools)
 
 			messages = append(messages, responses.ResponseInputItemUnionParam{
@@ -190,7 +216,29 @@ func runSubAgent(ctx context.Context, client openai.Client, model string, env *t
 		}
 	}
 
-	return "", fmt.Errorf("sub-agent exceeded maximum iterations (%d)", maxIterations)
+	return "", fmt.Errorf("agent exceeded maximum iterations (%d)", maxIterations)
+}
+
+// extractToolHint returns a short display hint from tool call arguments.
+func extractToolHint(argsJSON string) string {
+	var args map[string]any
+
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return ""
+	}
+
+	keys := []string{"pattern", "command", "path", "query", "url", "prompt"}
+	for _, key := range keys {
+		if val, ok := args[key].(string); ok && val != "" {
+			val = strings.Join(strings.Fields(val), " ")
+			if len(val) > 50 {
+				val = val[:47] + "..."
+			}
+			return val
+		}
+	}
+
+	return ""
 }
 
 type toolCall struct {

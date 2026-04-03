@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
 
@@ -18,13 +20,14 @@ func FindTool() tool.Tool {
 		Name: "find",
 
 		Description: strings.Join([]string{
-			fmt.Sprintf("Fast file pattern matching. Returns matching paths relative to search directory. Respects .gitignore. Truncated to %d results or %dKB.", DefaultFindLimit, DefaultMaxBytes/1024),
+			fmt.Sprintf("Find files by glob pattern. Returns paths sorted by modification time (newest first). Respects .gitignore. Default limit: %d.", DefaultFindLimit),
 			"",
 			"Usage:",
-			"- Use this tool to find files by name or extension. NEVER run find or ls -R via the shell.",
-			"- Supports glob patterns like \"**/*.go\", \"src/**/*.ts\", \"*.{js,jsx}\".",
-			"- Use this when exploring a codebase to discover structure before using grep or read.",
-			"- For content search (finding text inside files), use `grep` instead.",
+			"- NEVER run find or ls -R via the shell — use this tool instead.",
+			"- Supports glob patterns: \"**/*.go\", \"src/**/*.ts\", \"*.{js,jsx}\".",
+			"- Results are sorted newest-first, so recently changed files appear at the top.",
+			"- Use this to discover codebase structure before using grep or read.",
+			"- For searching text inside files, use `grep` instead.",
 		}, "\n"),
 
 		Parameters: map[string]any{
@@ -38,6 +41,8 @@ func FindTool() tool.Tool {
 		},
 
 		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
+			startTime := time.Now()
+
 			pattern, ok := args["pattern"].(string)
 
 			if !ok || pattern == "" {
@@ -75,11 +80,17 @@ func FindTool() tool.Tool {
 			}
 
 			fsys := env.Root.FS()
-			var results []string
+
+			type fileResult struct {
+				path    string
+				modTime time.Time
+			}
+			var results []fileResult
 			resultLimitReached := false
 
 			err = walkWorkspace(ctx, fsys, searchDirFS, func(path, relPath string) error {
-				if len(results) >= limit {
+				// Collect more than limit to allow sorting, but cap at a reasonable number
+				if len(results) >= limit*2 {
 					resultLimitReached = true
 
 					return filepath.SkipAll
@@ -92,7 +103,14 @@ func FindTool() tool.Tool {
 				}
 
 				if matched {
-					results = append(results, filepath.FromSlash(relPath))
+					var modTime time.Time
+					if fi, err := fsys.Open(path); err == nil {
+						if stat, err := fi.Stat(); err == nil {
+							modTime = stat.ModTime()
+						}
+						fi.Close()
+					}
+					results = append(results, fileResult{path: filepath.FromSlash(relPath), modTime: modTime})
 				}
 
 				return nil
@@ -106,22 +124,40 @@ func FindTool() tool.Tool {
 				return "No files found matching pattern", nil
 			}
 
-			rawOutput := strings.Join(results, "\n")
+			// Sort by modification time (newest first)
+			sort.Slice(results, func(i, j int) bool {
+				return results[i].modTime.After(results[j].modTime)
+			})
+
+			// Apply limit
+			if len(results) > limit {
+				results = results[:limit]
+				resultLimitReached = true
+			}
+
+			paths := make([]string, len(results))
+			for i, r := range results {
+				paths[i] = r.path
+			}
+
+			rawOutput := strings.Join(paths, "\n")
 			truncatedOutput, _, bytesTruncated := truncateHead(rawOutput)
+
+			duration := time.Since(startTime)
 
 			var notices []string
 
+			notices = append(notices, fmt.Sprintf("%d files found in %dms", len(results), duration.Milliseconds()))
+
 			if resultLimitReached {
-				notices = append(notices, fmt.Sprintf("%d results limit reached. Use limit=%d for more, or refine pattern", limit, limit*2))
+				notices = append(notices, fmt.Sprintf("%d results limit reached — refine the pattern for more specific results", limit))
 			}
 
 			if bytesTruncated {
 				notices = append(notices, fmt.Sprintf("%dKB limit reached", DefaultMaxBytes/1024))
 			}
 
-			if len(notices) > 0 {
-				truncatedOutput += fmt.Sprintf("\n\n[%s]", strings.Join(notices, ". "))
-			}
+			truncatedOutput += fmt.Sprintf("\n\n[%s]", strings.Join(notices, ". "))
 
 			return truncatedOutput, nil
 		},

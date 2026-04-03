@@ -157,8 +157,8 @@ func TestWriteTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result, "Successfully") {
-			t.Errorf("expected success message, got: %s", result)
+		if !strings.Contains(result, "Created") {
+			t.Errorf("expected 'Created' message, got: %s", result)
 		}
 
 		// Verify file was created

@@ -53,6 +53,10 @@ func WriteTool() tool.Tool {
 				return "", fmt.Errorf("content is required")
 			}
 
+			// Check if file exists before writing (for create vs update reporting)
+			_, existsErr := env.Root.Stat(normalizedPath)
+			isNew := existsErr != nil
+
 			dir := filepath.Dir(normalizedPath)
 
 			if dir != "." && dir != "" {
@@ -73,7 +77,12 @@ func WriteTool() tool.Tool {
 				return "", fmt.Errorf("failed to write file: %w", err)
 			}
 
-			result := fmt.Sprintf("Successfully wrote %d bytes to %s", len(content), pathArg)
+			action := "Updated"
+			if isNew {
+				action = "Created"
+			}
+
+			result := fmt.Sprintf("%s %s (%d bytes)", action, pathArg, len(content))
 
 			if env.DiagnoseFile != nil {
 				if diag := env.DiagnoseFile(ctx, normalizedPath); diag != "" {

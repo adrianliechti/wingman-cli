@@ -16,9 +16,9 @@ import (
 )
 
 const (
-	DefaultGrepLimit     = 100
+	DefaultGrepLimit     = 200
 	DefaultScanBufSize   = 64 * 1024   // 64KB initial buffer
-	MaxScanBufSize       = 1024 * 1024 // 1MB max buffer for long lines
+	MaxScanBufSize       = 1024 * 1024  // 1MB max buffer for long lines
 	MaxLineDisplayLength = 200
 )
 
@@ -27,15 +27,16 @@ func GrepTool() tool.Tool {
 		Name: "grep",
 
 		Description: strings.Join([]string{
-			fmt.Sprintf("Search file contents for a pattern. Returns matching lines with path and line number. Respects .gitignore. Truncated to %d matches or %dKB.", DefaultGrepLimit, DefaultMaxBytes/1024),
+			fmt.Sprintf("Search file contents for a pattern. Respects .gitignore. Default limit: %d matches.", DefaultGrepLimit),
 			"",
 			"Usage:",
-			"- ALWAYS use this tool for content search. NEVER run grep or rg via the shell tool.",
-			"- Supports full regex syntax (e.g., \"log.*Error\", \"func\\s+\\w+\").",
-			"- Filter files with the glob parameter (e.g., \"*.go\", \"*.{ts,tsx}\").",
-			"- Use literal=true for strings containing regex special characters.",
-			"- Use context for surrounding lines when you need to understand the match.",
-			"- Use this to locate relevant code before reading entire files with `read`.",
+			"- ALWAYS use this tool for content search. NEVER run grep or rg via the shell.",
+			"- Supports regex (e.g., \"log.*Error\", \"func\\s+\\w+\"). Literal braces need escaping (use `interface\\{\\}` to find `interface{}`).",
+			"- Filter files with glob (e.g., \"*.go\", \"*.{ts,tsx}\").",
+			"- Use literal=true for strings with regex special characters.",
+			"- Output modes: \"content\" shows matching lines (default), \"files_with_matches\" shows only file paths, \"count\" shows match counts per file.",
+			"- Use multiline=true for patterns spanning multiple lines (e.g., multi-line function signatures, struct definitions).",
+			"- Use head_limit and offset to paginate large result sets.",
 		}, "\n"),
 
 		Parameters: map[string]any{
@@ -61,13 +62,29 @@ func GrepTool() tool.Tool {
 					"type":        "boolean",
 					"description": "Treat pattern as literal string, not regex (default: false)",
 				},
+				"multiline": map[string]any{
+					"type":        "boolean",
+					"description": "Enable multiline mode where . matches newlines and patterns can span lines (default: false)",
+				},
 				"context": map[string]any{
 					"type":        "integer",
 					"description": "Number of lines to show before and after each match (default: 0)",
 				},
-				"limit": map[string]any{
+				"before_context": map[string]any{
 					"type":        "integer",
-					"description": "Maximum number of matches to return (default: 100)",
+					"description": "Number of lines to show before each match (-B). Overrides context for before.",
+				},
+				"after_context": map[string]any{
+					"type":        "integer",
+					"description": "Number of lines to show after each match (-A). Overrides context for after.",
+				},
+				"head_limit": map[string]any{
+					"type":        "integer",
+					"description": fmt.Sprintf("Maximum number of results to return (default: %d)", DefaultGrepLimit),
+				},
+				"offset": map[string]any{
+					"type":        "integer",
+					"description": "Skip first N results before applying head_limit, for pagination (default: 0)",
 				},
 				"output_mode": map[string]any{
 					"type":        "string",
@@ -111,16 +128,44 @@ func GrepTool() tool.Tool {
 				ignoreCase = ic
 			}
 
+			multiline := false
+
+			if ml, ok := args["multiline"].(bool); ok {
+				multiline = ml
+			}
+
 			contextLines := 0
+			beforeContext := 0
+			afterContext := 0
 
 			if c, ok := args["context"].(float64); ok && c > 0 {
 				contextLines = int(c)
+				beforeContext = contextLines
+				afterContext = contextLines
 			}
 
-			limit := DefaultGrepLimit
+			if bc, ok := args["before_context"].(float64); ok && bc > 0 {
+				beforeContext = int(bc)
+			}
 
+			if ac, ok := args["after_context"].(float64); ok && ac > 0 {
+				afterContext = int(ac)
+			}
+
+			headLimit := DefaultGrepLimit
+
+			if l, ok := args["head_limit"].(float64); ok && l > 0 {
+				headLimit = int(l)
+			}
+			// Support legacy "limit" parameter
 			if l, ok := args["limit"].(float64); ok && l > 0 {
-				limit = int(l)
+				headLimit = int(l)
+			}
+
+			resultOffset := 0
+
+			if o, ok := args["offset"].(float64); ok && o > 0 {
+				resultOffset = int(o)
 			}
 
 			literal := false
@@ -140,9 +185,18 @@ func GrepTool() tool.Tool {
 			if literal {
 				regexPattern = regexp.QuoteMeta(pattern)
 			}
+
+			flags := ""
 			if ignoreCase {
-				regexPattern = "(?i)" + regexPattern
+				flags += "i"
 			}
+			if multiline {
+				flags += "s" // dotall: . matches \n
+			}
+			if flags != "" {
+				regexPattern = "(?" + flags + ")" + regexPattern
+			}
+
 			re, err := regexp.Compile(regexPattern)
 
 			if err != nil {
@@ -160,10 +214,21 @@ func GrepTool() tool.Tool {
 
 			// If path is a file, search just that file
 			if !info.IsDir() {
-				matches := searchFileWithContext(fsys, searchPathFS, re, contextLines, limit)
+				matches := searchFileWithContext(fsys, searchPathFS, re, beforeContext, afterContext, headLimit+resultOffset)
 
 				if len(matches) == 0 {
 					return "No matches found", nil
+				}
+
+				// Apply offset
+				if resultOffset > 0 {
+					if resultOffset >= len(matches) {
+						return "No matches found (offset beyond results)", nil
+					}
+					matches = matches[resultOffset:]
+				}
+				if len(matches) > headLimit {
+					matches = matches[:headLimit]
 				}
 
 				if outputMode == "files_with_matches" {
@@ -179,6 +244,7 @@ func GrepTool() tool.Tool {
 
 			var results []string
 			matchCount := 0
+			skippedCount := 0
 			limitReached := false
 
 			// For files_with_matches and count modes, track per-file data
@@ -210,12 +276,18 @@ func GrepTool() tool.Tool {
 
 				// For files_with_matches mode, just check if file has any match
 				if outputMode == "files_with_matches" {
-					matches := searchFileWithContext(fsys, path, re, 0, 1)
+					matches := searchFileWithContext(fsys, path, re, 0, 0, 1)
 					if len(matches) > 0 {
-						fileMatches = append(fileMatches, fileMatch{path: filepath.FromSlash(relPath)})
 						matchCount++
 
-						if matchCount >= limit {
+						if matchCount <= resultOffset {
+							skippedCount++
+							return nil
+						}
+
+						fileMatches = append(fileMatches, fileMatch{path: filepath.FromSlash(relPath)})
+
+						if len(fileMatches) >= headLimit {
 							limitReached = true
 							return filepath.SkipAll
 						}
@@ -225,12 +297,18 @@ func GrepTool() tool.Tool {
 
 				// For count mode, count all matches in file
 				if outputMode == "count" {
-					matches := searchFileWithContext(fsys, path, re, 0, 10000)
+					matches := searchFileWithContext(fsys, path, re, 0, 0, 10000)
 					if len(matches) > 0 {
-						fileMatches = append(fileMatches, fileMatch{path: filepath.FromSlash(relPath), count: len(matches)})
 						matchCount++
 
-						if matchCount >= limit {
+						if matchCount <= resultOffset {
+							skippedCount++
+							return nil
+						}
+
+						fileMatches = append(fileMatches, fileMatch{path: filepath.FromSlash(relPath), count: len(matches)})
+
+						if len(fileMatches) >= headLimit {
 							limitReached = true
 							return filepath.SkipAll
 						}
@@ -239,7 +317,7 @@ func GrepTool() tool.Tool {
 				}
 
 				// Content mode: full results with context
-				remaining := limit - matchCount
+				remaining := headLimit - len(results) + resultOffset - skippedCount
 
 				if remaining <= 0 {
 					limitReached = true
@@ -247,11 +325,22 @@ func GrepTool() tool.Tool {
 					return filepath.SkipAll
 				}
 
-				matches := searchFileWithContext(fsys, path, re, contextLines, remaining)
+				matches := searchFileWithContext(fsys, path, re, beforeContext, afterContext, remaining)
 
-				if len(matches) > 0 {
-					results = append(results, matches...)
-					matchCount += len(matches)
+				for _, m := range matches {
+					matchCount++
+
+					if matchCount <= resultOffset {
+						skippedCount++
+						continue
+					}
+
+					results = append(results, m)
+
+					if len(results) >= headLimit {
+						limitReached = true
+						return filepath.SkipAll
+					}
 				}
 
 				return nil
@@ -296,8 +385,11 @@ func GrepTool() tool.Tool {
 
 			var notices []string
 
-			if limitReached || matchCount >= limit {
-				notices = append(notices, fmt.Sprintf("%d matches limit reached", limit))
+			if limitReached {
+				notices = append(notices, fmt.Sprintf("%d results limit reached", headLimit))
+				if resultOffset == 0 {
+					notices = append(notices, fmt.Sprintf("use offset=%d to see more", headLimit))
+				}
 			}
 
 			if bytesTruncated {
@@ -313,7 +405,7 @@ func GrepTool() tool.Tool {
 	}
 }
 
-func searchFileWithContext(fsys fs.FS, path string, re *regexp.Regexp, contextLines, limit int) []string {
+func searchFileWithContext(fsys fs.FS, path string, re *regexp.Regexp, beforeContext, afterContext, limit int) []string {
 	f, err := fsys.Open(path)
 
 	if err != nil {
@@ -366,8 +458,8 @@ func searchFileWithContext(fsys fs.FS, path string, re *regexp.Regexp, contextLi
 			break
 		}
 
-		start := max(0, i-contextLines)
-		end := min(len(lines)-1, i+contextLines)
+		start := max(0, i-beforeContext)
+		end := min(len(lines)-1, i+afterContext)
 
 		// Add separator if there's a gap
 		if lastPrinted >= 0 && start > lastPrinted+1 {

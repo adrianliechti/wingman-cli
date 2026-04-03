@@ -22,20 +22,22 @@ const (
 
 func ShellTool() tool.Tool {
 	description := strings.Join([]string{
-		fmt.Sprintf("Execute a shell command and return its output. Runs in the working directory with a default timeout of %d seconds.", defaultTimeout),
+		fmt.Sprintf("Execute a shell command and return its output. Default timeout: %ds, max: 600s.", defaultTimeout),
 		"",
-		"IMPORTANT: Avoid using this tool to run find, grep, cat, head, tail, sed, or awk commands. Use the dedicated tools instead:",
-		"- File search: Use `find` (NOT shell find or ls)",
-		"- Content search: Use `grep` (NOT shell grep or rg)",
-		"- Read files: Use `read` (NOT cat/head/tail)",
-		"- Edit files: Use `edit` (NOT sed/awk)",
-		"- Write files: Use `write` (NOT echo/cat with heredoc)",
+		"IMPORTANT: Do NOT use this for file operations — use the dedicated tools instead:",
+		"- File search: `find` (NOT shell find/ls)",
+		"- Content search: `grep` (NOT shell grep/rg)",
+		"- Read files: `read` (NOT cat/head/tail)",
+		"- Edit files: `edit` (NOT sed/awk)",
+		"- Write files: `write` (NOT echo/cat with heredoc)",
 		"",
 		"Usage:",
-		"- When issuing multiple independent commands, make multiple shell tool calls in parallel.",
+		"- Always provide a brief description of what the command does.",
+		"- For multiple independent commands, make multiple shell calls in parallel.",
 		"- For dependent commands, chain with && in a single call.",
-		"- For git commands: prefer new commits over amending; never use --no-verify or --force unless explicitly asked; never use -i (interactive) flags.",
-		"- Avoid unnecessary sleep commands. If a command is long-running, increase the timeout instead.",
+		"- Use ; only when you need sequential execution but don't care if earlier commands fail.",
+		"- For git: prefer new commits over amending; never use --no-verify, --force, or -i (interactive) unless explicitly asked.",
+		"- If a command is long-running, increase the timeout instead of using sleep.",
 	}, "\n")
 
 	return tool.Tool{
@@ -69,8 +71,122 @@ func ShellTool() tool.Tool {
 	}
 }
 
-// isSafeCommand checks if the command starts with a known safe/read-only command
+// isSafeCommand checks if the entire command (including pipes, chains, and subshells) is safe.
 func isSafeCommand(command string) bool {
+	command = strings.TrimSpace(command)
+
+	if command == "" {
+		return false
+	}
+
+	// Split on pipes, chains, and semicolons — every segment must be safe
+	segments := splitCommandSegments(command)
+
+	for _, seg := range segments {
+		if !isSingleCommandSafe(seg) {
+			return false
+		}
+	}
+
+	// Check for command substitution $(...) or `...` — treat as unsafe
+	if strings.Contains(command, "$(") || strings.Contains(command, "`") {
+		return false
+	}
+
+	return true
+}
+
+// splitCommandSegments splits a command string on |, &&, ||, and ; boundaries.
+// It respects quoted strings and parentheses.
+func splitCommandSegments(command string) []string {
+	var segments []string
+	var current strings.Builder
+
+	inSingle := false
+	inDouble := false
+	i := 0
+
+	for i < len(command) {
+		ch := command[i]
+
+		// Handle escape characters
+		if ch == '\\' && i+1 < len(command) && !inSingle {
+			current.WriteByte(ch)
+			i++
+			current.WriteByte(command[i])
+			i++
+			continue
+		}
+
+		// Handle quotes
+		if ch == '\'' && !inDouble {
+			inSingle = !inSingle
+			current.WriteByte(ch)
+			i++
+			continue
+		}
+
+		if ch == '"' && !inSingle {
+			inDouble = !inDouble
+			current.WriteByte(ch)
+			i++
+			continue
+		}
+
+		// Don't split inside quotes
+		if inSingle || inDouble {
+			current.WriteByte(ch)
+			i++
+			continue
+		}
+
+		// Check for && or ||
+		if i+1 < len(command) && ((ch == '&' && command[i+1] == '&') || (ch == '|' && command[i+1] == '|')) {
+			seg := strings.TrimSpace(current.String())
+			if seg != "" {
+				segments = append(segments, seg)
+			}
+			current.Reset()
+			i += 2
+			continue
+		}
+
+		// Check for pipe |
+		if ch == '|' {
+			seg := strings.TrimSpace(current.String())
+			if seg != "" {
+				segments = append(segments, seg)
+			}
+			current.Reset()
+			i++
+			continue
+		}
+
+		// Check for semicolon ;
+		if ch == ';' {
+			seg := strings.TrimSpace(current.String())
+			if seg != "" {
+				segments = append(segments, seg)
+			}
+			current.Reset()
+			i++
+			continue
+		}
+
+		current.WriteByte(ch)
+		i++
+	}
+
+	seg := strings.TrimSpace(current.String())
+	if seg != "" {
+		segments = append(segments, seg)
+	}
+
+	return segments
+}
+
+// isSingleCommandSafe checks if a single command (no pipes/chains) is safe.
+func isSingleCommandSafe(command string) bool {
 	command = strings.TrimSpace(command)
 
 	// Extract words from the command
@@ -117,6 +233,11 @@ func executeShell(ctx context.Context, env *tool.Environment, args map[string]an
 
 	if t, ok := args["timeout"].(float64); ok {
 		timeout = int(t)
+	}
+
+	// Cap timeout at 600 seconds
+	if timeout > 600 {
+		timeout = 600
 	}
 
 	if env.PromptUser != nil && !isSafeCommand(command) {
