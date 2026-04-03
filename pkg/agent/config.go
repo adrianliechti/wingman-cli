@@ -16,10 +16,12 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/prompt"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/skill"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/ask"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/fetch"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/fs"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/search"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/shell"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/subagent"
 )
 
 // AvailableModels lists supported models in priority order
@@ -91,7 +93,7 @@ func DefaultConfig() (*Config, func(), error) {
 		Scratch: scratch,
 	}
 
-	tools := slices.Concat(fs.Tools(), shell.Tools(), fetch.Tools(), search.Tools())
+	tools := slices.Concat(fs.Tools(), shell.Tools(), fetch.Tools(), search.Tools(), ask.Tools())
 
 	mcp, _ := mcp.Load(filepath.Join(wd, "mcp.json"))
 
@@ -112,6 +114,9 @@ func DefaultConfig() (*Config, func(), error) {
 	}
 
 	client, model := createClient()
+
+	// Add sub-agent tool (needs client + model + the other tools)
+	tools = append(tools, subagent.SubAgentTool(client, model, tools))
 
 	cfg := &Config{
 		Client: client,

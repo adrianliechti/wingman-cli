@@ -55,7 +55,7 @@ func formatAssistantMessage(content string, width int) string {
 	return result.String()
 }
 
-func formatPrompt(title string, message string, width int) string {
+func formatPrompt(title string, message string, hint string, width int) string {
 	const indent = "  "
 	const barWidth = 4
 
@@ -78,8 +78,9 @@ func formatPrompt(title string, message string, width int) string {
 		}
 	}
 
-	hint := fmt.Sprintf("[%s]Press [-][%s::b]y[-::-][%s] to approve, [-][%s::b]n[-::-][%s] to deny[-]", t.BrBlack, t.Green, t.BrBlack, t.Red, t.BrBlack)
-	fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.Red, hint)
+	if hint != "" {
+		fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.Red, hint)
+	}
 
 	result.WriteString("\n")
 
@@ -116,7 +117,24 @@ func formatToolCall(name string, hint string, output string, width int) string {
 	return result.String()
 }
 
-func formatToolProgress(name string, hint string, width int) string {
+func formatToolCallCollapsed(name string, hint string) string {
+	const indent = "  "
+
+	t := theme.Default
+
+	var result strings.Builder
+
+	titleLine := fmt.Sprintf("[%s]⚡ %s[-]", t.BrBlack, name)
+
+	if hint != "" {
+		titleLine = fmt.Sprintf("[%s]⚡ %s[-] [%s]%s[-]", t.BrBlack, name, t.BrBlack, tview.Escape(hint))
+	}
+	fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", indent, t.BrBlack, titleLine)
+
+	return result.String()
+}
+
+func formatToolProgress(name string, hint string) string {
 	const indent = "  "
 
 	t := theme.Default

@@ -48,16 +48,19 @@ type App struct {
 	spinner *Spinner
 
 	// State
-	phase          AppPhase
-	currentMode    Mode
-	isWelcomeMode  bool
-	activeModal    Modal
-	promptActive   bool
-	promptResponse chan bool
-	totalTokens    int64
-	chatWidth      int
-	pendingContent []agent.Content
-	pendingFiles   []string
+	phase              AppPhase
+	currentMode        Mode
+	isWelcomeMode      bool
+	activeModal        Modal
+	promptActive       bool
+	promptResponse     chan bool
+	askActive          bool
+	askResponse        chan string
+	toolOutputExpanded bool
+	totalTokens        int64
+	chatWidth          int
+	pendingContent     []agent.Content
+	pendingFiles       []string
 
 	// Stream cancellation
 	streamCancel context.CancelFunc
@@ -101,6 +104,7 @@ func New(ctx context.Context, agent *agent.Agent) *App {
 		rewindReady: make(chan struct{}),
 	}
 
+	agent.Environment.AskUser = a.askUser
 	agent.Environment.PromptUser = a.promptUser
 	agent.Environment.DiagnoseFile = a.lspDiagnostics
 

@@ -22,6 +22,7 @@ type Environment struct {
 	Root    *os.Root
 	Scratch *os.Root
 
+	AskUser      func(question string) (string, error)
 	PromptUser   func(prompt string) (bool, error)
 	DiagnoseFile func(ctx context.Context, path string) string
 }

@@ -101,6 +101,19 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
+	// Ctrl+E: toggle tool output expansion
+	if event.Key() == tcell.KeyCtrlE && !a.hasActiveModal() {
+		a.toolOutputExpanded = !a.toolOutputExpanded
+
+		if !a.isWelcomeMode && !a.isStreaming() && len(a.agent.Messages()) > 0 {
+			a.renderChat(a.agent.Messages(), "", "", "")
+		}
+
+		a.updateInputHint()
+
+		return nil
+	}
+
 	// Let modal handle its own events
 	if a.hasActiveModal() {
 		return event
@@ -117,6 +130,24 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		}()
 
 		return nil // consume the event - don't type @
+	}
+
+	// Handle ask mode (free-text input, submit with Enter)
+	if a.askActive {
+		if event.Key() == tcell.KeyEnter {
+			text := strings.TrimSpace(a.input.GetText())
+
+			if text == "" {
+				return nil // don't submit empty answers
+			}
+
+			a.input.SetText("", true)
+			a.askResponse <- text
+
+			return nil
+		}
+
+		return event
 	}
 
 	// Handle prompt mode
@@ -164,8 +195,11 @@ func (a *App) promptUser(message string) (bool, error) {
 	a.promptResponse = make(chan bool, 1)
 	a.promptActive = true
 
+	t := theme.Default
+	hint := fmt.Sprintf("[%s]Press [-][%s::b]y[-::-][%s] to approve, [-][%s::b]n[-::-][%s] to deny[-]", t.BrBlack, t.Green, t.BrBlack, t.Red, t.BrBlack)
+
 	a.app.QueueUpdateDraw(func() {
-		fmt.Fprint(a.chatView, formatPrompt("Confirm Command", message, a.chatWidth))
+		fmt.Fprint(a.chatView, formatPrompt("Confirm Command", message, hint, a.chatWidth))
 		a.input.SetPlaceholder("y/n")
 	})
 
@@ -182,6 +216,35 @@ func (a *App) promptUser(message string) (bool, error) {
 	}
 
 	a.promptActive = false
+	a.app.QueueUpdateDraw(func() {
+		a.input.SetPlaceholder("Ask anything...")
+	})
+
+	return result, nil
+}
+
+func (a *App) askUser(question string) (string, error) {
+	a.askResponse = make(chan string, 1)
+	a.askActive = true
+
+	a.app.QueueUpdateDraw(func() {
+		fmt.Fprint(a.chatView, formatPrompt("Question", question, "", a.chatWidth))
+		a.input.SetPlaceholder("Type your answer and press Enter...")
+	})
+
+	var result string
+	select {
+	case result = <-a.askResponse:
+	case <-a.ctx.Done():
+		a.askActive = false
+		a.app.QueueUpdateDraw(func() {
+			a.input.SetPlaceholder("Ask anything...")
+		})
+
+		return "", a.ctx.Err()
+	}
+
+	a.askActive = false
 	a.app.QueueUpdateDraw(func() {
 		a.input.SetPlaceholder("Ask anything...")
 	})
@@ -604,7 +667,11 @@ func (a *App) updateInputHint() {
 	}
 
 	if !a.isStreaming() {
-		parts = append(parts, fmt.Sprintf("[%s]tab[-] [%s]mode[-]  [%s]shift+tab[-] [%s]model[-]  [%s]@[-] [%s]file[-]  [%s]esc[-] [%s]clear[-]", t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground))
+		expandLabel := "expand"
+		if a.toolOutputExpanded {
+			expandLabel = "collapse"
+		}
+		parts = append(parts, fmt.Sprintf("[%s]tab[-] [%s]mode[-]  [%s]shift+tab[-] [%s]model[-]  [%s]@[-] [%s]file[-]  [%s]ctrl+e[-] [%s]%s[-]  [%s]esc[-] [%s]clear[-]", t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, t.BrBlack, t.Foreground, expandLabel, t.BrBlack, t.Foreground))
 	}
 
 	a.inputHint.SetText(strings.Join(parts, "  "))
@@ -636,7 +703,7 @@ func (a *App) renderChat(messages []agent.Message, streamingContent string, tool
 	}
 
 	if toolName != "" && !a.isToolHidden(toolName) {
-		fmt.Fprint(a.chatView, formatToolProgress(toolName, toolHint, a.chatWidth))
+		fmt.Fprint(a.chatView, formatToolProgress(toolName, toolHint))
 	}
 
 	a.chatView.ScrollToEnd()
@@ -649,13 +716,20 @@ func (a *App) renderMessage(msg agent.Message) {
 			if a.isToolHidden(c.ToolResult.Name) {
 				return
 			}
-			output := c.ToolResult.Content
 
-			if len(output) > maxToolOutputLen {
-				output = output[:maxToolOutputLen] + "..."
-			}
 			hint := extractToolHint(c.ToolResult.Args)
-			fmt.Fprint(a.chatView, formatToolCall(c.ToolResult.Name, hint, output, a.chatWidth))
+
+			if a.toolOutputExpanded {
+				output := c.ToolResult.Content
+
+				if len(output) > maxToolOutputLen {
+					output = output[:maxToolOutputLen] + "..."
+				}
+
+				fmt.Fprint(a.chatView, formatToolCall(c.ToolResult.Name, hint, output, a.chatWidth))
+			} else {
+				fmt.Fprint(a.chatView, formatToolCallCollapsed(c.ToolResult.Name, hint))
+			}
 
 			return
 		}

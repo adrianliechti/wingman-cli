@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
@@ -71,21 +73,25 @@ func Tools() []tool.Tool {
 func searchWingman(ctx context.Context, baseURL, token, query string) (string, error) {
 	endpoint := strings.TrimRight(baseURL, "/") + "/v1/search"
 
-	body, err := json.Marshal(map[string]string{
-		"query": query,
-	})
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	if err := writer.WriteField("query", query); err != nil {
+		return "", err
+	}
+
+	writer.Close()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, &body)
 
 	if err != nil {
 		return "", err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
-
-	if err != nil {
-		return "", err
-	}
-
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
