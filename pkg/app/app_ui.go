@@ -11,6 +11,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/skill"
 
 	"github.com/adrianliechti/wingman-agent/pkg/ui/clipboard"
 	"github.com/adrianliechti/wingman-agent/pkg/ui/theme"
@@ -372,10 +373,19 @@ func (a *App) submitInput() {
 		fmt.Fprintf(a.chatView, "  [%s]/file[-]   - Add file to context (or type @filename)\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/paste[-]  - Paste from clipboard (Ctrl+V / Cmd+V / Paste)\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/diff[-]   - Show changes from baseline\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/review[-] - Review code changes with AI\n", t.BrCyan)
+		fmt.Fprintf(a.chatView, "  [%s]/review[-]  - Review code changes with AI\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/rewind[-] - Restore to previous checkpoint\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/clear[-]  - Clear chat history\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/quit[-]   - Exit application\n\n", t.BrCyan)
+		fmt.Fprintf(a.chatView, "  [%s]/quit[-]   - Exit application\n", t.BrCyan)
+
+		if len(a.agent.Skills) > 0 {
+			fmt.Fprintf(a.chatView, "\n[%s::b]Skills[-::-]\n", t.Cyan)
+			for _, s := range a.agent.Skills {
+				fmt.Fprintf(a.chatView, "  [%s]/%s[-] - %s\n", t.BrCyan, s.Name, s.Description)
+			}
+		}
+
+		fmt.Fprint(a.chatView, "\n")
 		a.chatView.ScrollToEnd()
 
 		return
@@ -414,11 +424,22 @@ func (a *App) submitInput() {
 
 		return
 
-	case "/review":
-		a.input.SetText("", true)
-		a.startReview("")
+	}
 
-		return
+	// Check for skill slash commands: /skill-name [args]
+	if strings.HasPrefix(query, "/") {
+		parts := strings.SplitN(query[1:], " ", 2)
+		skillName := parts[0]
+		skillArgs := ""
+		if len(parts) > 1 {
+			skillArgs = parts[1]
+		}
+
+		if s := skill.FindSkill(skillName, a.agent.Skills); s != nil {
+			a.input.SetText("", true)
+			a.invokeSkill(s, skillArgs)
+			return
+		}
 	}
 
 	a.switchToChat()
@@ -466,6 +487,37 @@ func (a *App) submitInput() {
 		}
 
 		a.streamResponse(input, instructions, a.allTools())
+	}()
+}
+
+func (a *App) invokeSkill(s *skill.Skill, args string) {
+	content, err := s.GetContent(a.agent.Environment.WorkingDir())
+	if err != nil {
+		a.switchToChat()
+		fmt.Fprintf(a.chatView, "[red]Failed to load skill %q: %v[-]\n\n", s.Name, err)
+		return
+	}
+
+	// Apply argument substitution
+	content = s.ApplyArguments(content, args)
+
+	// Display as a user message
+	a.switchToChat()
+	a.app.ForceDraw()
+
+	displayText := fmt.Sprintf("/%s", s.Name)
+	if args != "" {
+		displayText += " " + args
+	}
+	fmt.Fprint(a.chatView, a.formatUserMessage(displayText))
+
+	// Send skill content as the prompt
+	input := []agent.Content{{Text: content}}
+	input = append(input, a.pendingContent...)
+	a.clearPendingContent()
+
+	go func() {
+		a.streamResponse(input, a.agent.AgentInstructions, a.allTools())
 	}()
 }
 

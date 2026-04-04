@@ -166,8 +166,13 @@ All file paths must be absolute (e.g., `{{.MemoryDir}}/user_role.md`).
 {{end}}
 {{end}}
 {{if .Skills}}
-Skills:
-When a user's request matches a skill's description, read the skill's SKILL.md file to load detailed instructions before proceeding.
+# Skills
+
+Skills are reusable prompts invoked by the user with `/skill-name [args]`. When a user types a slash command, the skill's content is loaded and sent to you as the prompt — follow those instructions.
+
+If a user's request clearly matches a skill's `when-to-use` criteria but they didn't use `/`, suggest the relevant `/skill-name` command they can use.
+
+For file-based skills (non-bundled), read the SKILL.md file at the listed location to see the full instructions.
 
 {{.Skills}}
 {{end}}

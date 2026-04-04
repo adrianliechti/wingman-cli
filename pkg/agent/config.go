@@ -109,7 +109,7 @@ func DefaultConfig() (*Config, func(), error) {
 
 	mcp, _ := mcp.Load(filepath.Join(wd, "mcp.json"))
 
-	skills, _ := skill.Discover(wd)
+	skills := skill.Merge(skill.BundledSkills(), skill.MustDiscover(wd))
 
 	instructions := readAgentsFile(wd)
 
