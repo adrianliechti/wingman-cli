@@ -60,6 +60,7 @@ type App struct {
 	toolOutputExpanded bool
 	totalTokens        int64
 	chatWidth          int
+	lastWelcomeCompact bool
 	pendingContent     []agent.Content
 	pendingFiles       []string
 
