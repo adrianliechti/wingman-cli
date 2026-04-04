@@ -192,11 +192,9 @@ func (a *Agent) processToolCalls(ctx context.Context, yield func(Message, error)
 
 	var wg sync.WaitGroup
 	for i, tc := range toolCalls {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			results[i] = ExecuteTool(ctx, a.Environment, tc, tools)
-		}()
+		})
 	}
 	wg.Wait()
 

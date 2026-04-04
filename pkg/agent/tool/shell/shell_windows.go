@@ -5,10 +5,13 @@ package shell
 import (
 	"fmt"
 	"os/exec"
+	"syscall"
 )
 
 func setupProcessGroup(cmd *exec.Cmd) {
-	// Windows doesn't use process groups the same way Unix does
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
+	}
 }
 
 func killProcessGroup(cmd *exec.Cmd) {

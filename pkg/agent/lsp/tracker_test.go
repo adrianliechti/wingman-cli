@@ -78,7 +78,7 @@ func TestDiagnosticTracker_FilterNew_CapsVolume(t *testing.T) {
 	tracker := NewDiagnosticTracker()
 
 	var diags []Diagnostic
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		diags = append(diags, diag(i, 0, DiagnosticSeverityWarning, "warning"))
 	}
 

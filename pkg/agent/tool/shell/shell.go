@@ -34,7 +34,7 @@ func ShellTool() tool.Tool {
 		"Usage:",
 		"- Always provide a brief description of what the command does.",
 		"- For multiple independent commands, make multiple shell calls in parallel.",
-		"- For dependent commands, chain with && in a single call.",
+		"- For dependent commands, chain with && in a single call (on Windows PowerShell 5.1, use `; if ($?) {` instead since && is not supported).",
 		"- Use ; only when you need sequential execution but don't care if earlier commands fail.",
 		"- For git: prefer new commits over amending; never use --no-verify, --force, or -i (interactive) unless explicitly asked.",
 		"- If a command is long-running, increase the timeout instead of using sleep.",
@@ -298,27 +298,39 @@ func executeShell(ctx context.Context, env *tool.Environment, args map[string]an
 }
 
 func buildCommand(ctx context.Context, command, workingDir string) *exec.Cmd {
+	var cmd *exec.Cmd
+
 	if runtime.GOOS == "windows" {
-		cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NoLogo", "-NonInteractive", "-Command", command)
-		cmd.Dir = workingDir
-
-		setupProcessGroup(cmd)
-
-		return cmd
+		ps := findPowerShell()
+		// Force UTF-8 output to avoid PowerShell 5.1's UTF-16 default
+		wrapped := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + command
+		cmd = exec.CommandContext(ctx, ps, "-NoProfile", "-NoLogo", "-NonInteractive", "-Command", wrapped)
+	} else {
+		shell := os.Getenv("SHELL")
+		if shell == "" {
+			shell = "/bin/sh"
+		}
+		cmd = exec.CommandContext(ctx, shell, "-c", command)
 	}
 
-	shell := os.Getenv("SHELL")
-
-	if shell == "" {
-		shell = "/bin/sh"
-	}
-
-	cmd := exec.CommandContext(ctx, shell, "-c", command)
 	cmd.Dir = workingDir
+	cmd.Env = append(os.Environ(),
+		"GIT_EDITOR=true", // Prevent git from opening interactive editors
+		"WINGMAN=1",       // Marker so scripts can detect agent context
+	)
 
 	setupProcessGroup(cmd)
 
 	return cmd
+}
+
+// findPowerShell returns the path to PowerShell. Prefers pwsh (PowerShell 7+)
+// which supports && and || operators. Falls back to powershell (5.1).
+func findPowerShell() string {
+	if ps, err := exec.LookPath("pwsh"); err == nil {
+		return ps
+	}
+	return "powershell"
 }
 
 func truncateOutput(output string, sessionDir string) string {

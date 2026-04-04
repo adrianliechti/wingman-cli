@@ -113,18 +113,18 @@ func (a *App) formatToolTitle(icon, label, hint, color string, bold bool) string
 	t := theme.Default
 
 	style := ""
-	styleEnd := ""
+	styleEnd := "[-]"
 	if bold {
 		style = "::b"
-		styleEnd = "-::-"
+		styleEnd = "[-::-]"
 	}
 
 	var title string
 
 	if label != "" {
-		title = fmt.Sprintf("[%s%s]%s %s[%s]", color, style, icon, label, styleEnd)
+		title = fmt.Sprintf("[%s%s]%s %s%s", color, style, icon, label, styleEnd)
 	} else {
-		title = fmt.Sprintf("[%s%s]%s[%s]", color, style, icon, styleEnd)
+		title = fmt.Sprintf("[%s%s]%s%s", color, style, icon, styleEnd)
 	}
 
 	if hint != "" {

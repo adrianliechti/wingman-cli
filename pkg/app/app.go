@@ -54,6 +54,7 @@ type App struct {
 	activeModal        Modal
 	promptActive       bool
 	promptResponse     chan bool
+	promptMu           sync.Mutex
 	askActive          bool
 	askResponse        chan string
 	toolOutputExpanded bool

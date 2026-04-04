@@ -18,8 +18,7 @@ func FileURI(path string) string {
 
 	slashPath := filepath.ToSlash(absPath)
 
-	if strings.HasPrefix(slashPath, "//") {
-		hostPath := strings.TrimPrefix(slashPath, "//")
+	if hostPath, ok := strings.CutPrefix(slashPath, "//"); ok {
 		host, rest, ok := strings.Cut(hostPath, "/")
 		if !ok {
 			rest = ""

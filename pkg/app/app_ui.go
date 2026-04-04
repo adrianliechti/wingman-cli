@@ -205,6 +205,10 @@ func (a *App) resetPlaceholder() {
 }
 
 func (a *App) promptUser(message string) (bool, error) {
+	// Serialize prompts — tool calls may run concurrently
+	a.promptMu.Lock()
+	defer a.promptMu.Unlock()
+
 	a.promptResponse = make(chan bool, 1)
 	a.promptActive = true
 	defer func() {
