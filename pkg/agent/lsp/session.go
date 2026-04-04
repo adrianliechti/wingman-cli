@@ -28,6 +28,10 @@ type Session struct {
 
 	openedDocs map[string]struct{}
 	mu         sync.Mutex
+
+	// Push-based diagnostics from textDocument/publishDiagnostics notifications.
+	pushDiags   map[string][]Diagnostic // keyed by URI
+	pushDiagsMu sync.Mutex
 }
 
 func connect(ctx context.Context, workingDir string, server Server) (*Session, error) {
@@ -57,6 +61,16 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 
 	connCtx, cancel := context.WithCancel(context.Background())
 
+	session := &Session{
+		server:     server,
+		cmd:        cmd,
+		rootURI:    FileURI(workingDir),
+		workingDir: workingDir,
+		cancelFunc: cancel,
+		openedDocs: make(map[string]struct{}),
+		pushDiags:  make(map[string][]Diagnostic),
+	}
+
 	framer := jsonrpc2.HeaderFramer()
 	conn := jsonrpc2.NewConnection(connCtx, jsonrpc2.ConnectionConfig{
 		Reader: framer.Reader(stdout),
@@ -64,20 +78,20 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 		Closer: &cmdCloser{cmd: cmd, stdin: stdin, stdout: stdout},
 		Bind: func(c *jsonrpc2.Connection) jsonrpc2.Handler {
 			return jsonrpc2.HandlerFunc(func(ctx context.Context, req *jsonrpc2.Request) (any, error) {
+				if req.Method == "textDocument/publishDiagnostics" {
+					var params PublishDiagnosticsParams
+					if err := json.Unmarshal(req.Params, &params); err == nil {
+						session.pushDiagsMu.Lock()
+						session.pushDiags[params.URI] = params.Diagnostics
+						session.pushDiagsMu.Unlock()
+					}
+					return nil, nil
+				}
 				return nil, jsonrpc2.ErrNotHandled
 			})
 		},
 	})
-
-	session := &Session{
-		server:     server,
-		conn:       conn,
-		cmd:        cmd,
-		rootURI:    fileURI(workingDir),
-		workingDir: workingDir,
-		cancelFunc: cancel,
-		openedDocs: make(map[string]struct{}),
-	}
+	session.conn = conn
 
 	initCtx, initCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer initCancel()
@@ -111,7 +125,7 @@ func (s *Session) CallAndAwait(ctx context.Context, method string, params any, r
 
 // OpenDocument opens a document in the LSP server, syncing content if already open.
 func (s *Session) OpenDocument(ctx context.Context, filePath string) (string, error) {
-	uri := fileURI(filePath)
+	uri := FileURI(filePath)
 
 	content, err := os.ReadFile(filePath)
 	if err != nil {
@@ -134,6 +148,11 @@ func (s *Session) OpenDocument(ctx context.Context, filePath string) (string, er
 		if err := s.conn.Notify(ctx, "textDocument/didChange", changeParams); err != nil {
 			return "", fmt.Errorf("didChange: %w", err)
 		}
+
+		// Send didSave — many LSP servers only trigger full diagnostics on save
+		s.conn.Notify(ctx, "textDocument/didSave", DidSaveTextDocumentParams{
+			TextDocument: TextDocumentIdentifier{URI: uri},
+		})
 
 		return uri, nil
 	}
@@ -158,13 +177,36 @@ func (s *Session) OpenDocument(ctx context.Context, filePath string) (string, er
 	return uri, nil
 }
 
+// PushDiagnostics returns any diagnostics received via publishDiagnostics for the URI.
+func (s *Session) PushDiagnostics(uri string) []Diagnostic {
+	s.pushDiagsMu.Lock()
+	diags := s.pushDiags[uri]
+	s.pushDiagsMu.Unlock()
+	return diags
+}
+
+// ClearPushDiagnostics removes cached push diagnostics for a URI,
+// so that fresh diagnostics will be collected after the next change.
+func (s *Session) ClearPushDiagnostics(uri string) {
+	s.pushDiagsMu.Lock()
+	delete(s.pushDiags, uri)
+	s.pushDiagsMu.Unlock()
+}
+
 // CollectDiagnostics retrieves diagnostics for a single document URI.
+// It first checks push-based diagnostics (from publishDiagnostics notifications),
+// then falls back to pull-based diagnostics (textDocument/diagnostic request).
 func (s *Session) CollectDiagnostics(ctx context.Context, uri string) []Diagnostic {
+	// Check push-based diagnostics first (event-driven, most reliable)
+	if diags := s.PushDiagnostics(uri); len(diags) > 0 {
+		return diags
+	}
+
+	// Fall back to pull-based diagnostics
 	params := DocumentDiagnosticParams{
 		TextDocument: TextDocumentIdentifier{URI: uri},
 	}
 
-	// Per-call timeout so an unresponsive server doesn't block the caller.
 	callCtx, callCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer callCancel()
 
@@ -186,8 +228,8 @@ func (s *Session) CollectDiagnostics(ctx context.Context, uri string) []Diagnost
 	return nil
 }
 
-
-// WaitForDiagnostics polls for diagnostics until results appear or the context expires.
+// WaitForDiagnostics waits for diagnostics until results appear or the context expires.
+// It checks both push-based (publishDiagnostics notifications) and pull-based sources.
 func (s *Session) WaitForDiagnostics(ctx context.Context, uri string) []Diagnostic {
 	// First attempt immediately.
 	if diags := s.CollectDiagnostics(ctx, uri); len(diags) > 0 {

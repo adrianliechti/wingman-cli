@@ -83,6 +83,15 @@ type TextDocumentContentChangeEvent struct {
 	Text string `json:"text"`
 }
 
+type DidSaveTextDocumentParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+}
+
+type PublishDiagnosticsParams struct {
+	URI         string       `json:"uri"`
+	Diagnostics []Diagnostic `json:"diagnostics"`
+}
+
 // Primitives
 
 type Position struct {

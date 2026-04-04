@@ -78,8 +78,9 @@ type App struct {
 	mcpError   error
 
 	// LSP state
-	lspManager *lsp.Manager
-	lspTool    tool.Tool
+	lspManager  *lsp.Manager
+	lspTracker  *lsp.DiagnosticTracker
+	lspTool     tool.Tool
 
 	// Confirm dialog state
 	confirmResponse chan bool
@@ -104,6 +105,7 @@ func New(ctx context.Context, agent *agent.Agent) *App {
 		phase:         PhasePreparing,
 
 		lspManager: lspManager,
+		lspTracker: lsp.NewDiagnosticTracker(),
 		lspTool:    lsptool.NewTool(lspManager),
 
 		rewindReady: make(chan struct{}),
@@ -341,17 +343,40 @@ func (a *App) lspDiagnostics(ctx context.Context, path string) string {
 		return ""
 	}
 
-	uri, err := session.OpenDocument(ctx, absPath)
-	if err != nil {
+	uri := lsp.FileURI(absPath)
+
+	// Capture baseline diagnostics before syncing the changed file content.
+	// This lets us diff against what existed before the edit.
+	baselineDiags := session.PushDiagnostics(uri)
+	if len(baselineDiags) == 0 {
+		baselineDiags = session.CollectDiagnostics(ctx, uri)
+	}
+	a.lspTracker.SetBaseline(uri, baselineDiags)
+
+	// Clear push diagnostics so we get fresh ones after the change
+	session.ClearPushDiagnostics(uri)
+
+	// Now sync the updated file content to the LSP server (sends didChange + didSave)
+	if _, err := session.OpenDocument(ctx, absPath); err != nil {
 		return ""
 	}
 
+	// Wait for new diagnostics
 	diags := session.WaitForDiagnostics(ctx, uri)
 	if len(diags) == 0 {
 		return ""
 	}
 
-	return lsp.FormatDiagnostics(diags, path, a.lspManager.WorkingDir())
+	// Filter to only new diagnostics, sort by severity, cap volume
+	newDiags := a.lspTracker.FilterNew(uri, diags)
+	if len(newDiags) == 0 {
+		return ""
+	}
+
+	// Mark as delivered for cross-turn deduplication
+	a.lspTracker.MarkDelivered(uri, newDiags)
+
+	return lsp.FormatNewDiagnostics(newDiags, path, a.lspManager.WorkingDir())
 }
 
 func (a *App) isToolHidden(name string) bool {

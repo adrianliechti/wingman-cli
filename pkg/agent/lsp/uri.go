@@ -6,7 +6,8 @@ import (
 	"strings"
 )
 
-func fileURI(path string) string {
+// FileURI converts a file path to a file:// URI.
+func FileURI(path string) string {
 	absPath := path
 	if !isAbsolutePath(path) {
 		resolvedPath, err := filepath.Abs(path)
