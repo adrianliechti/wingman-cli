@@ -266,10 +266,12 @@ func ExecuteTool(ctx context.Context, env *tool.Environment, tc ToolCall, tools 
 		return fmt.Sprintf("error: unknown tool %s", tc.Name)
 	}
 
-	var args map[string]any
+	args := make(map[string]any)
 
-	if err := json.Unmarshal([]byte(tc.Args), &args); err != nil {
-		return fmt.Sprintf("error: failed to parse arguments: %v", err)
+	if tc.Args != "" {
+		if err := json.Unmarshal([]byte(tc.Args), &args); err != nil {
+			return fmt.Sprintf("error: failed to parse arguments: %v", err)
+		}
 	}
 
 	result, err := t.Execute(ctx, env, args)
