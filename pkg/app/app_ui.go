@@ -19,6 +19,7 @@ import (
 
 const maxToolOutputLen = 500
 const compactWidthThreshold = 100
+const compactHeightThreshold = 22
 
 // isCompactMode returns true if padding should be removed (small screen or vscode caller)
 func (a *App) isCompactMode() bool {
@@ -26,9 +27,9 @@ func (a *App) isCompactMode() bool {
 		return true
 	}
 
-	// Try to get terminal width directly
-	if width, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && width > 0 {
-		if width < compactWidthThreshold {
+	// Try to get terminal size directly
+	if width, height, err := term.GetSize(int(os.Stdout.Fd())); err == nil && width > 0 {
+		if width < compactWidthThreshold || height < compactHeightThreshold {
 			return true
 		}
 	}
@@ -541,6 +542,28 @@ func (a *App) switchToChat() {
 		AddItem(a.inputSection, 6, 0, true)
 }
 
+// rebuildWelcomeLayout rebuilds the welcome layout based on the current compact mode.
+// Called dynamically during draw when the terminal is resized in welcome mode.
+func (a *App) rebuildWelcomeLayout() {
+	a.mainLayout.Clear()
+	compact := a.isCompactMode()
+	a.lastWelcomeCompact = compact
+
+	if compact {
+		a.mainLayout.
+			AddItem(nil, 0, 1, false).
+			AddItem(a.inputSection, 6, 0, true).
+			AddItem(nil, 0, 1, false)
+	} else {
+		a.mainLayout.
+			AddItem(nil, 2, 0, false).
+			AddItem(a.welcomeView, 12, 0, false).
+			AddItem(nil, 0, 1, false).
+			AddItem(a.inputSection, 6, 0, true).
+			AddItem(nil, 0, 2, false)
+	}
+}
+
 // UI setup and layout
 
 func (a *App) setupUI() {
@@ -660,25 +683,24 @@ func (a *App) buildLayout() *tview.Flex {
 	a.mainLayout = tview.NewFlex().SetDirection(tview.FlexRow)
 
 	if a.isWelcomeMode {
-		if a.isCompactMode() {
-			// In compact mode, skip the logo and go straight to input
-			a.mainLayout.
-				AddItem(nil, 0, 1, false).
-				AddItem(a.inputSection, 6, 0, true).
-				AddItem(nil, 0, 1, false)
-		} else {
-			a.mainLayout.
-				AddItem(nil, 2, 0, false).
-				AddItem(a.welcomeView, 12, 0, false).
-				AddItem(nil, 0, 1, false).
-				AddItem(a.inputSection, 6, 0, true).
-				AddItem(nil, 0, 2, false)
-		}
+		a.lastWelcomeCompact = a.isCompactMode()
+		a.rebuildWelcomeLayout()
 	} else {
 		a.mainLayout.
 			AddItem(a.chatContainer, 0, 1, false).
 			AddItem(a.inputSection, 6, 0, true)
 	}
+
+	// Dynamically toggle logo when terminal resizes in welcome mode
+	a.mainLayout.SetDrawFunc(func(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {
+		if a.isWelcomeMode {
+			compact := a.isCompactMode()
+			if compact != a.lastWelcomeCompact {
+				a.rebuildWelcomeLayout()
+			}
+		}
+		return x, y, width, height
+	})
 
 	a.app.SetInputCapture(a.handleInput)
 
