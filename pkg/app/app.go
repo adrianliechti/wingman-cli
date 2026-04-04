@@ -12,6 +12,7 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/bridge"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/lsp"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/rewind"
@@ -78,6 +79,9 @@ type App struct {
 	mcpTools   []tool.Tool
 	mcpMu      sync.Mutex
 	mcpError   error
+
+	// Bridge state (VS Code IDE integration)
+	bridge *bridge.Bridge
 
 	// LSP state
 	lspManager  *lsp.Manager
@@ -155,19 +159,21 @@ func (a *App) Run() error {
 	// Auto-select model if not configured
 	a.autoSelectModel()
 
-	if a.agent.MCP != nil {
-		go func() {
-			err := a.initMCP()
-			if err != nil || a.mcpError != nil {
-				if err == nil {
-					err = a.mcpError
-				}
-				a.app.QueueUpdateDraw(func() {
-					a.showError("MCP initialization failed", err)
-				})
+	go func() {
+		err := a.initMCP()
+		if err != nil || a.mcpError != nil {
+			if err == nil {
+				err = a.mcpError
 			}
-		}()
-	}
+			a.app.QueueUpdateDraw(func() {
+				a.showError("MCP initialization failed", err)
+			})
+		}
+
+		a.app.QueueUpdateDraw(func() {
+			a.updateStatusBar()
+		})
+	}()
 
 	mainLayout := a.buildLayout()
 	a.spinner = NewSpinner(a.app, a.inputHint)
@@ -234,20 +240,18 @@ func (a *App) Run() error {
 }
 
 func (a *App) initMCP() error {
-	if a.agent.MCP == nil {
-		return nil
-	}
+	if a.agent.MCP != nil {
+		a.mcpManager = a.agent.MCP
 
-	a.mcpManager = a.agent.MCP
-
-	if err := a.mcpManager.Connect(a.ctx); err != nil {
-		a.mcpError = err
+		if err := a.mcpManager.Connect(a.ctx); err != nil {
+			a.mcpError = err
+		}
+	} else {
+		a.mcpManager = mcp.NewManager(&mcp.Config{})
 	}
 
 	// Auto-discover VS Code bridge from lockfiles
-	if bridge := mcp.DiscoverBridge(a.agent.Environment.WorkingDir()); bridge != nil {
-		a.mcpManager.AddServer(a.ctx, "bridge", *bridge)
-	}
+	a.bridge = bridge.Setup(a.ctx, a.agent.Environment.WorkingDir(), a.mcpManager)
 
 	mcpTools, err := mcptool.Tools(a.ctx, a.mcpManager)
 
