@@ -244,6 +244,11 @@ func (a *App) initMCP() error {
 		a.mcpError = err
 	}
 
+	// Auto-discover VS Code bridge from lockfiles
+	if bridge := mcp.DiscoverBridge(a.agent.Environment.WorkingDir()); bridge != nil {
+		a.mcpManager.AddServer(a.ctx, "bridge", *bridge)
+	}
+
 	mcpTools, err := mcptool.Tools(a.ctx, a.mcpManager)
 
 	if err != nil {
@@ -340,12 +345,12 @@ func (a *App) lspDiagnostics(ctx context.Context, path string) string {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
+	uri := lsp.FileURI(absPath)
+
 	session, err := a.lspManager.GetSession(ctx, absPath)
 	if err != nil {
 		return ""
 	}
-
-	uri := lsp.FileURI(absPath)
 
 	// Capture baseline diagnostics before syncing the changed file content.
 	// This lets us diff against what existed before the edit.

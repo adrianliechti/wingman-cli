@@ -47,6 +47,16 @@ func (m *Manager) Connect(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// AddServer registers an additional MCP server and connects it.
+func (m *Manager) AddServer(ctx context.Context, name string, server ServerConfig) error {
+	if m.Servers == nil {
+		m.Servers = make(map[string]ServerConfig)
+	}
+
+	m.Servers[name] = server
+	return m.connect(ctx, name, server)
+}
+
 func (m *Manager) Close() {
 	for _, s := range m.sessions {
 		s.Close()
