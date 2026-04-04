@@ -10,10 +10,13 @@ import (
 	"sync"
 )
 
+const maxRestarts = 3
+
 // Manager caches LSP sessions so servers are reused across tool invocations.
 type Manager struct {
 	workingDir string
 	sessions   map[string]*Session // keyed by server command
+	restarts   map[string]int      // restart count per server command
 	mu         sync.Mutex
 }
 
@@ -22,6 +25,7 @@ func NewManager(workingDir string) *Manager {
 	return &Manager{
 		workingDir: workingDir,
 		sessions:   make(map[string]*Session),
+		restarts:   make(map[string]int),
 	}
 }
 
@@ -94,21 +98,58 @@ func (m *Manager) GetSession(ctx context.Context, filePath string) (*Session, er
 }
 
 // GetSessionByServer returns a cached session or creates a new one for a specific server.
+// If the server has crashed, it attempts to restart it and re-open previously opened documents.
 func (m *Manager) GetSessionByServer(ctx context.Context, server Server) (*Session, error) {
 	key := server.Command
 
 	// Fast path: check cache
 	m.mu.Lock()
 	if session, ok := m.sessions[key]; ok {
-		if session.cmd.ProcessState == nil {
+		if session.IsAlive() {
 			m.mu.Unlock()
 			return session, nil
 		}
+
+		// Server crashed — collect state for recovery
+		openedURIs := session.OpenedDocURIs()
+		restartCount := m.restarts[key]
 		delete(m.sessions, key)
+		m.mu.Unlock()
+
+		if restartCount >= maxRestarts {
+			return nil, fmt.Errorf("LSP server %s crashed %d times, not restarting", server.Name, restartCount)
+		}
+
+		// Attempt restart
+		newSession, err := connect(ctx, m.workingDir, server)
+		if err != nil {
+			return nil, fmt.Errorf("restart %s: %w", server.Name, err)
+		}
+
+		m.mu.Lock()
+		// Check for concurrent restart race
+		if existing, ok := m.sessions[key]; ok && existing.IsAlive() {
+			m.mu.Unlock()
+			newSession.Close()
+			return existing, nil
+		}
+		m.sessions[key] = newSession
+		m.restarts[key] = restartCount + 1
+		m.mu.Unlock()
+
+		// Re-open previously opened documents (best-effort)
+		for _, uri := range openedURIs {
+			path := uriToPath(uri)
+			if path != "" {
+				newSession.OpenDocument(ctx, path)
+			}
+		}
+
+		return newSession, nil
 	}
 	m.mu.Unlock()
 
-	// Slow path: connect without holding the lock
+	// Slow path: first connection
 	session, err := connect(ctx, m.workingDir, server)
 	if err != nil {
 		return nil, err
@@ -116,7 +157,7 @@ func (m *Manager) GetSessionByServer(ctx context.Context, server Server) (*Sessi
 
 	// Store result, handle concurrent connection race
 	m.mu.Lock()
-	if existing, ok := m.sessions[key]; ok && existing.cmd.ProcessState == nil {
+	if existing, ok := m.sessions[key]; ok && existing.IsAlive() {
 		m.mu.Unlock()
 		session.Close()
 		return existing, nil

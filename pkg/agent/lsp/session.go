@@ -3,6 +3,7 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -33,6 +34,8 @@ type Session struct {
 	pushDiags   map[string][]Diagnostic // keyed by URI
 	pushDiagsMu sync.Mutex
 }
+
+const startupTimeout = 30 * time.Second
 
 func connect(ctx context.Context, workingDir string, server Server) (*Session, error) {
 	cmd := exec.Command(server.Command, server.Args...)
@@ -93,7 +96,7 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 	})
 	session.conn = conn
 
-	initCtx, initCancel := context.WithTimeout(ctx, 30*time.Second)
+	initCtx, initCancel := context.WithTimeout(ctx, startupTimeout)
 	defer initCancel()
 
 	if err := session.initialize(initCtx); err != nil {
@@ -104,6 +107,23 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 	}
 
 	return session, nil
+}
+
+// IsAlive returns true if the underlying LSP server process is still running.
+func (s *Session) IsAlive() bool {
+	return s.cmd.ProcessState == nil
+}
+
+// OpenedDocURIs returns the URIs of all documents that were opened in this session.
+func (s *Session) OpenedDocURIs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	uris := make([]string, 0, len(s.openedDocs))
+	for uri := range s.openedDocs {
+		uris = append(uris, uri)
+	}
+	return uris
 }
 
 // Close shuts down the LSP server connection.
@@ -118,9 +138,49 @@ func (s *Session) Close() {
 }
 
 // CallAndAwait invokes an LSP method and waits for the result.
+// It retries transient errors (e.g. rust-analyzer's "content modified") with exponential backoff.
 func (s *Session) CallAndAwait(ctx context.Context, method string, params any, result any) error {
-	call := s.conn.Call(ctx, method, params)
-	return call.Await(ctx, result)
+	var err error
+
+	for attempt := range maxRetries {
+		call := s.conn.Call(ctx, method, params)
+		err = call.Await(ctx, result)
+		if err == nil || !isTransientError(err) {
+			return err
+		}
+
+		delay := retryBaseDelay << attempt
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+
+	return err
+}
+
+const maxRetries = 3
+
+var retryBaseDelay = 500 * time.Millisecond
+
+// isTransientError returns true for LSP error codes that are worth retrying.
+func isTransientError(err error) bool {
+	var wireErr *jsonrpc2.WireError
+	if !errors.As(err, &wireErr) {
+		return false
+	}
+
+	switch wireErr.Code {
+	case -32801: // ContentModified (rust-analyzer, etc.)
+		return true
+	case -32800: // RequestCancelled (server-side cancel, may succeed on retry)
+		return true
+	case -32802: // ServerCancelled
+		return true
+	default:
+		return false
+	}
 }
 
 // OpenDocument opens a document in the LSP server, syncing content if already open.
