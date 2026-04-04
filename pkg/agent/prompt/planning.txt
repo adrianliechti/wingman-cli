@@ -83,6 +83,18 @@ Let the task complexity guide you — don't pad simple tasks, don't skimp on com
 - NO implementation, testing, or validation sections unless specifically requested
 - Be specific: reference exact files, functions, and line numbers when known
 - Ask clarifying questions in "Further Considerations" if needed
+{{if .MemoryDir}}
+## Memory
+
+Persistent memory is stored at `{{.MemoryDir}}`.
+{{if .MemoryContent}}
+Current MEMORY.md:
+
+{{.MemoryContent}}
+{{else}}
+No memories saved yet.
+{{end}}
+{{end}}
 {{if .Skills}}
 Skills (for reference during planning):
 {{.Skills}}

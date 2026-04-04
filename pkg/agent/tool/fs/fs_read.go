@@ -40,9 +40,7 @@ func ReadTool() tool.Tool {
 				return "", fmt.Errorf("path is required")
 			}
 
-			workingDir := env.WorkingDir()
-
-			normalizedPath, err := ensurePathInWorkspace(pathArg, workingDir, "read file")
+			normalizedPath, root, err := resolveRoot(pathArg, env, "read file")
 
 			if err != nil {
 				return "", err
@@ -59,10 +57,10 @@ func ReadTool() tool.Tool {
 				offset = int(o) - 1
 			}
 
-			content, err := env.Root.ReadFile(normalizedPath)
+			content, err := root.ReadFile(normalizedPath)
 
 			if err != nil {
-				return "", pathError("read file", pathArg, normalizedPath, workingDir, err)
+				return "", pathError("read file", pathArg, normalizedPath, env.WorkingDir(), err)
 			}
 
 			if len(content) == 0 {

@@ -42,13 +42,13 @@ func EditTool() tool.Tool {
 				return "", fmt.Errorf("path is required")
 			}
 
-			workingDir := env.WorkingDir()
-
-			normalizedPath, err := ensurePathInWorkspace(pathArg, workingDir, "edit file")
+			normalizedPath, root, err := resolveRoot(pathArg, env, "edit file")
 
 			if err != nil {
 				return "", err
 			}
+
+			workingDir := env.WorkingDir()
 
 			oldText, ok := args["old_text"].(string)
 
@@ -62,7 +62,7 @@ func EditTool() tool.Tool {
 				return "", fmt.Errorf("new_text is required")
 			}
 
-			contentBytes, err := env.Root.ReadFile(normalizedPath)
+			contentBytes, err := root.ReadFile(normalizedPath)
 
 			if err != nil {
 				return "", pathError("read file", pathArg, normalizedPath, workingDir, err)
@@ -129,7 +129,7 @@ func EditTool() tool.Tool {
 
 			finalContent := bom + restoreLineEndings(newContent, originalEnding)
 
-			outFile, err := env.Root.Create(normalizedPath)
+			outFile, err := root.Create(normalizedPath)
 
 			if err != nil {
 				return "", pathError("write file", pathArg, normalizedPath, workingDir, err)

@@ -39,13 +39,13 @@ func WriteTool() tool.Tool {
 				return "", fmt.Errorf("path is required")
 			}
 
-			workingDir := env.WorkingDir()
-
-			normalizedPath, err := ensurePathInWorkspace(pathArg, workingDir, "write file")
+			normalizedPath, root, err := resolveRoot(pathArg, env, "write file")
 
 			if err != nil {
 				return "", err
 			}
+
+			workingDir := env.WorkingDir()
 
 			content, ok := args["content"].(string)
 
@@ -54,18 +54,18 @@ func WriteTool() tool.Tool {
 			}
 
 			// Check if file exists before writing (for create vs update reporting)
-			_, existsErr := env.Root.Stat(normalizedPath)
+			_, existsErr := root.Stat(normalizedPath)
 			isNew := existsErr != nil
 
 			dir := filepath.Dir(normalizedPath)
 
 			if dir != "." && dir != "" {
-				if err := env.Root.MkdirAll(dir, 0755); err != nil {
+				if err := root.MkdirAll(dir, 0755); err != nil {
 					return "", pathError("create directory", pathArg, normalizedPath, workingDir, err)
 				}
 			}
 
-			file, err := env.Root.Create(normalizedPath)
+			file, err := root.Create(normalizedPath)
 
 			if err != nil {
 				return "", pathError("create file", pathArg, normalizedPath, workingDir, err)

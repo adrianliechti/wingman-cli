@@ -21,6 +21,7 @@ type Environment struct {
 
 	Root    *os.Root
 	Scratch *os.Root
+	Memory  *os.Root
 
 	AskUser      func(question string) (string, error)
 	PromptUser   func(prompt string) (bool, error)
@@ -34,4 +35,11 @@ func (e *Environment) WorkingDir() string {
 
 func (e *Environment) ScratchDir() string {
 	return e.Scratch.Name()
+}
+
+func (e *Environment) MemoryDir() string {
+	if e.Memory == nil {
+		return ""
+	}
+	return e.Memory.Name()
 }

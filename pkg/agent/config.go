@@ -13,6 +13,7 @@ import (
 	"github.com/openai/openai-go/v3/option"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/mcp"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/memory"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/prompt"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/skill"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
@@ -93,6 +94,17 @@ func DefaultConfig() (*Config, func(), error) {
 		Scratch: scratch,
 	}
 
+	// Initialize memory directory
+	memDir := memory.Dir(wd)
+	memory.EnsureDir(memDir)
+
+	memRoot, err := os.OpenRoot(memDir)
+	if err == nil {
+		env.Memory = memRoot
+	}
+
+	memContent := memory.LoadEntrypoint(memDir)
+
 	tools := slices.Concat(fs.Tools(), shell.Tools(), fetch.Tools(), search.Tools(), ask.Tools())
 
 	mcp, _ := mcp.Load(filepath.Join(wd, "mcp.json"))
@@ -101,13 +113,13 @@ func DefaultConfig() (*Config, func(), error) {
 
 	instructions := readAgentsFile(wd)
 
-	agentinstructions, err := renderAgentInstructions(env, instructions, skills)
+	agentinstructions, err := renderAgentInstructions(env, instructions, skills, memDir, memContent)
 
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to render instructions: %w", err)
 	}
 
-	planningInstructions, err := renderPlanningInstructions(env, instructions, skills)
+	planningInstructions, err := renderPlanningInstructions(env, instructions, skills, memDir, memContent)
 
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to render planning instructions: %w", err)
@@ -183,25 +195,31 @@ func createClient() (openai.Client, string) {
 
 type instructionData struct {
 	*tool.Environment
-	Skills       string
-	Instructions string
+	Skills        string
+	Instructions  string
+	MemoryDir     string
+	MemoryContent string
 }
 
-func renderAgentInstructions(env *tool.Environment, instructions string, skills []skill.Skill) (string, error) {
+func renderAgentInstructions(env *tool.Environment, instructions string, skills []skill.Skill, memDir, memContent string) (string, error) {
 	data := instructionData{
-		Environment:  env,
-		Skills:       skill.FormatForPrompt(skills),
-		Instructions: instructions,
+		Environment:   env,
+		Skills:        skill.FormatForPrompt(skills),
+		Instructions:  instructions,
+		MemoryDir:     memDir,
+		MemoryContent: memContent,
 	}
 
 	return prompt.Render(prompt.Instructions, data)
 }
 
-func renderPlanningInstructions(env *tool.Environment, instructions string, skills []skill.Skill) (string, error) {
+func renderPlanningInstructions(env *tool.Environment, instructions string, skills []skill.Skill, memDir, memContent string) (string, error) {
 	data := instructionData{
-		Environment:  env,
-		Skills:       skill.FormatForPrompt(skills),
-		Instructions: instructions,
+		Environment:   env,
+		Skills:        skill.FormatForPrompt(skills),
+		Instructions:  instructions,
+		MemoryDir:     memDir,
+		MemoryContent: memContent,
 	}
 
 	return prompt.Render(prompt.Planning, data)
@@ -220,6 +238,10 @@ func (c *Config) Cleanup() {
 		scratchDir := c.Environment.Scratch.Name()
 		c.Environment.Scratch.Close()
 		os.RemoveAll(scratchDir)
+	}
+
+	if c.Environment.Memory != nil {
+		c.Environment.Memory.Close()
 	}
 
 	if c.Environment.Root != nil {

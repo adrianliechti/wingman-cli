@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"os"
 	pathpkg "path"
 	"path/filepath"
 	"runtime"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"github.com/sergi/go-diff/diffmatchpatch"
+
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
 const (
@@ -56,6 +59,29 @@ func ensurePathInWorkspaceFS(pathArg, workingDir, action string) (string, error)
 	}
 
 	return normalizePathFS(pathArg, workingDir), nil
+}
+
+// resolveRoot determines which root (workspace or memory) a path belongs to
+// and returns the normalized relative path and the appropriate os.Root.
+func resolveRoot(pathArg string, env *tool.Environment, action string) (string, *os.Root, error) {
+	workingDir := env.WorkingDir()
+
+	// Try workspace first
+	if !isOutsideWorkspace(pathArg, workingDir) {
+		normalized := normalizePath(pathArg, workingDir)
+		return normalized, env.Root, nil
+	}
+
+	// Try memory directory
+	if env.Memory != nil {
+		memDir := env.MemoryDir()
+		if !isOutsideWorkspace(pathArg, memDir) {
+			normalized := normalizePath(pathArg, memDir)
+			return normalized, env.Memory, nil
+		}
+	}
+
+	return "", nil, fmt.Errorf("cannot %s: path %q is outside workspace %q", action, pathArg, workingDir)
 }
 
 // isOutsideWorkspace checks if an absolute path is outside the workspace.
