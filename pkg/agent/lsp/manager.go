@@ -19,8 +19,8 @@ type Manager struct {
 	restarts   map[string]int      // restart count per server command
 	mu         sync.Mutex
 
-	roots     []projectRoot // cached detection results
-	rootsOnce sync.Once
+	detection detectionResult // cached detection results
+	detectOnce sync.Once
 }
 
 // NewManager creates a new LSP session manager.
@@ -37,12 +37,18 @@ func (m *Manager) WorkingDir() string {
 	return m.workingDir
 }
 
-// detectRoots returns cached detection results, running detection once.
-func (m *Manager) detectRoots() []projectRoot {
-	m.rootsOnce.Do(func() {
-		m.roots = detectAll(m.workingDir)
+// detect returns cached detection results, running detection once.
+func (m *Manager) detect() *detectionResult {
+	m.detectOnce.Do(func() {
+		m.detection = detectAll(m.workingDir)
 	})
-	return m.roots
+	return &m.detection
+}
+
+// MissingServers returns project types detected in the workspace
+// that have no available LSP server binary.
+func (m *Manager) MissingServers() []MissingServer {
+	return m.detect().Missing
 }
 
 // FindServer finds an appropriate LSP server for the given file.
@@ -53,7 +59,7 @@ func (m *Manager) FindServer(filePath string) *Server {
 	}
 
 	dir := filepath.Dir(filePath)
-	roots := m.detectRoots()
+	roots := m.detect().Roots
 
 	var best *Server
 	bestLen := -1
@@ -80,7 +86,7 @@ func (m *Manager) FindServer(filePath string) *Server {
 
 // DetectServers finds all available LSP servers for the workspace.
 func (m *Manager) DetectServers() []Server {
-	roots := m.detectRoots()
+	roots := m.detect().Roots
 
 	var servers []Server
 	seen := make(map[string]bool)

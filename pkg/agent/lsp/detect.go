@@ -34,12 +34,27 @@ var ignoredDirs = map[string]bool{
 	".nuxt":        true,
 }
 
+// detectionResult contains discovered project roots and any projects
+// where no LSP server binary was found.
+type detectionResult struct {
+	Roots   []projectRoot
+	Missing []MissingServer
+}
+
+// MissingServer describes a detected project type with no available LSP server.
+type MissingServer struct {
+	ProjectName string // e.g. "go", "typescript"
+	Servers     []string // candidate commands that were not found
+}
+
 // detectAll scans the working directory tree for known project markers and
 // returns all detected project roots with their available LSP servers.
-func detectAll(workingDir string) []projectRoot {
+func detectAll(workingDir string) detectionResult {
 	var roots []projectRoot
-	seen := make(map[string]bool)     // dir+command dedup
+	seen := make(map[string]bool)          // dir+command dedup
 	lookPathCache := make(map[string]bool) // command -> available
+	detectedTypes := make(map[string]bool) // project types where markers were found
+	resolvedTypes := make(map[string]bool) // project types with at least one server
 
 	fsys := filteredFS{root: workingDir}
 
@@ -55,10 +70,11 @@ func detectAll(workingDir string) []projectRoot {
 			for _, match := range matches {
 				dir := filepath.Join(workingDir, filepath.Dir(match))
 
-				// Check excludes: skip this dir if any exclude marker exists
 				if excluded(dir, pt.Excludes) {
 					continue
 				}
+
+				detectedTypes[pt.Name] = true
 
 				for _, candidate := range pt.Servers {
 					key := dir + "\x00" + candidate.Command
@@ -81,13 +97,29 @@ func detectAll(workingDir string) []projectRoot {
 						Dir:     dir,
 						Servers: []Server{candidate},
 					})
+					resolvedTypes[pt.Name] = true
 					break // first available server per project type per dir
 				}
 			}
 		}
 	}
 
-	return roots
+	var missing []MissingServer
+	for _, pt := range knownProjects {
+		if !detectedTypes[pt.Name] || resolvedTypes[pt.Name] {
+			continue
+		}
+		var cmds []string
+		for _, s := range pt.Servers {
+			cmds = append(cmds, s.Command)
+		}
+		missing = append(missing, MissingServer{
+			ProjectName: pt.Name,
+			Servers:     cmds,
+		})
+	}
+
+	return detectionResult{Roots: roots, Missing: missing}
 }
 
 // excluded returns true if any of the exclude markers exist in dir.
