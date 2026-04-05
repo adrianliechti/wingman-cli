@@ -83,11 +83,24 @@ func (a *App) formatPrompt(title string, message string, hint string) string {
 
 // toolDisplay returns the icon and label for a tool.
 func toolDisplay(name string) (string, string) {
-	if name == "agent" {
-		return "🤖", ""
+	switch {
+	case name == "agent":
+		return "▸", ""
+	case name == "shell":
+		return "$", name
+	case name == "read", name == "write", name == "edit",
+		name == "ls", name == "find", name == "grep":
+		return "⟡", name
+	case name == "fetch", name == "search_online":
+		return "⊕", name
+	case name == "ask_user":
+		return "?", name
+	case strings.HasPrefix(name, "get_lsp_") || strings.HasPrefix(name, "find_lsp_") ||
+		strings.HasPrefix(name, "bridge_get_lsp_") || strings.HasPrefix(name, "bridge_find_lsp_"):
+		return "◇", name
+	default:
+		return "◈", name
 	}
-
-	return "⚡", name
 }
 
 func (a *App) toolHintSpace(label string) int {

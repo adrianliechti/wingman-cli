@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/rewind"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/ui/theme"
 
 	lsptool "github.com/adrianliechti/wingman-agent/pkg/agent/tool/lsp"
 	mcptool "github.com/adrianliechti/wingman-agent/pkg/agent/tool/mcp"
@@ -38,7 +40,7 @@ type App struct {
 	inputHint   *tview.TextView
 
 	// Layout containers
-	mainContent   *tview.Flex
+	contentPages  *tview.Flex
 	chatContainer *tview.Flex
 	inputSection  *tview.Flex
 	inputFrame    *tview.Frame
@@ -50,7 +52,7 @@ type App struct {
 	// State
 	phase              AppPhase
 	currentMode        Mode
-	isWelcomeMode      bool
+	showWelcome        bool
 	activeModal        Modal
 	promptActive       bool
 	promptResponse     chan bool
@@ -60,7 +62,7 @@ type App struct {
 	toolOutputExpanded bool
 	totalTokens        int64
 	chatWidth          int
-	lastWelcomeCompact bool
+	lastCompact        bool
 	pendingContent     []agent.Content
 	pendingFiles       []string
 
@@ -102,7 +104,7 @@ func New(ctx context.Context, agent *agent.Agent) *App {
 
 		agent: agent,
 
-		isWelcomeMode: os.Getenv("WINGMAN_CALLER") != "vscode",
+		showWelcome: os.Getenv("WINGMAN_CALLER") != "vscode",
 		phase:         PhasePreparing,
 
 		lspManager: lspManager,
@@ -167,6 +169,7 @@ func (a *App) Run() error {
 
 		a.app.QueueUpdateDraw(func() {
 			a.updateStatusBar()
+			a.showMissingLSPHint()
 		})
 	}()
 
@@ -368,6 +371,26 @@ func (a *App) localLSPDiagnostics(ctx context.Context, absPath, path string) str
 	a.lspTracker.MarkDelivered(uri, newDiags)
 
 	return lsp.FormatNewDiagnostics(newDiags, path, a.lspManager.WorkingDir())
+}
+
+func (a *App) showMissingLSPHint() {
+	// When bridge is connected, LSP comes from the IDE — no local servers needed.
+	if a.bridge.IsConnected() {
+		return
+	}
+
+	missing := a.lspManager.MissingServers()
+	if len(missing) == 0 {
+		return
+	}
+
+	t := theme.Default
+
+	for _, m := range missing {
+		fmt.Fprintf(a.chatView, "  [%s]┃[-] [%s]No LSP server found for %s (install %s)[-]\n",
+			t.BrBlack, t.BrBlack, m.ProjectName, strings.Join(m.Servers, " or "))
+	}
+	fmt.Fprint(a.chatView, "\n")
 }
 
 func (a *App) isToolHidden(name string) bool {

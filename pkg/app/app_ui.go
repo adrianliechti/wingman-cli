@@ -107,7 +107,7 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	if event.Key() == tcell.KeyCtrlE && !a.hasActiveModal() {
 		a.toolOutputExpanded = !a.toolOutputExpanded
 
-		if !a.isWelcomeMode && !a.isStreaming() && len(a.agent.Messages()) > 0 {
+		if !a.showWelcome && !a.isStreaming() && len(a.agent.Messages()) > 0 {
 			a.renderChat(a.agent.Messages(), "", "", "")
 		}
 
@@ -563,40 +563,27 @@ func (a *App) invokeSkill(s *skill.Skill, args string) {
 }
 
 func (a *App) switchToChat() {
-	if !a.isWelcomeMode {
+	if !a.showWelcome {
 		return
 	}
-
-	a.isWelcomeMode = false
-	a.mainContent.Clear()
-	a.mainContent.SetDirection(tview.FlexRow)
-	a.mainContent.AddItem(a.chatView, 0, 1, false)
-
-	a.mainLayout.Clear()
-	a.mainLayout.
-		AddItem(a.chatContainer, 0, 1, false).
-		AddItem(a.inputSection, 6, 0, true)
+	a.showWelcome = false
+	a.rebuildContentPages()
 }
 
-// rebuildWelcomeLayout rebuilds the welcome layout based on the current compact mode.
-// Called dynamically during draw when the terminal is resized in welcome mode.
-func (a *App) rebuildWelcomeLayout() {
-	a.mainLayout.Clear()
-	compact := a.isCompactMode()
-	a.lastWelcomeCompact = compact
+// rebuildContentPages rebuilds the content area.
+// Welcome mode: logo centered at top, chatView pinned at bottom (above input).
+// Chat mode: chatView fills the entire area.
+func (a *App) rebuildContentPages() {
+	a.contentPages.Clear()
 
-	if compact {
-		a.mainLayout.
-			AddItem(nil, 0, 1, false).
-			AddItem(a.inputSection, 6, 0, true).
-			AddItem(nil, 0, 1, false)
+	if a.showWelcome && !a.isCompactMode() {
+		// Logo centered in upper area, notices pinned above input
+		a.contentPages.AddItem(nil, 0, 2, false)
+		a.contentPages.AddItem(a.welcomeView, 12, 0, false)
+		a.contentPages.AddItem(nil, 0, 3, false)
+		a.contentPages.AddItem(a.chatView, 3, 0, false)
 	} else {
-		a.mainLayout.
-			AddItem(nil, 2, 0, false).
-			AddItem(a.welcomeView, 12, 0, false).
-			AddItem(nil, 0, 1, false).
-			AddItem(a.inputSection, 6, 0, true).
-			AddItem(nil, 0, 2, false)
+		a.contentPages.AddItem(a.chatView, 0, 1, false)
 	}
 }
 
@@ -629,13 +616,9 @@ func (a *App) setupUI() {
 	a.input.SetTextStyle(tcell.StyleDefault.Foreground(t.Foreground).Background(inputBgColor))
 	a.input.SetPlaceholderStyle(tcell.StyleDefault.Foreground(t.BrBlack).Background(inputBgColor))
 
-	a.mainContent = tview.NewFlex().SetDirection(tview.FlexRow)
-
-	if a.isWelcomeMode {
-		a.mainContent.AddItem(a.welcomeView, 0, 1, false)
-	} else {
-		a.mainContent.AddItem(a.chatView, 0, 1, false)
-	}
+	a.contentPages = tview.NewFlex().SetDirection(tview.FlexRow)
+	a.contentPages.SetBackgroundColor(tcell.ColorDefault)
+	a.rebuildContentPages()
 }
 
 func (a *App) buildLayout() *tview.Flex {
@@ -680,7 +663,7 @@ func (a *App) buildLayout() *tview.Flex {
 	a.statusBar.SetBackgroundColor(tcell.ColorDefault)
 
 	bottomBar.AddItem(a.inputHint, 0, 1, false)
-	bottomBar.AddItem(a.statusBar, 0, 1, false)
+	bottomBar.AddItem(a.statusBar, 40, 0, false)
 
 	inputLeftMargin, inputRightMargin := a.getInputMargins()
 
@@ -703,8 +686,10 @@ func (a *App) buildLayout() *tview.Flex {
 
 	a.chatContainer = tview.NewFlex().SetDirection(tview.FlexColumn)
 	a.chatContainer.AddItem(nil, leftMargin, 0, false)
-	a.chatContainer.AddItem(a.mainContent, 0, 1, false)
+	a.chatContainer.AddItem(a.contentPages, 0, 1, false)
 	a.chatContainer.AddItem(nil, rightMargin, 0, false)
+
+	a.lastCompact = a.isCompactMode()
 
 	a.chatContainer.SetDrawFunc(func(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {
 		newWidth := width - totalMargin
@@ -713,8 +698,17 @@ func (a *App) buildLayout() *tview.Flex {
 			a.chatWidth = newWidth
 
 			// Re-render chat on resize to re-wrap content to new width
-			if !a.isWelcomeMode && len(a.agent.Messages()) > 0 {
+			if !a.showWelcome && len(a.agent.Messages()) > 0 {
 				a.renderChat(a.agent.Messages(), "", a.currentToolName, a.currentToolHint)
+			}
+		}
+
+		// Toggle logo visibility on resize while in welcome mode
+		if a.showWelcome {
+			compact := a.isCompactMode()
+			if compact != a.lastCompact {
+				a.lastCompact = compact
+				a.rebuildContentPages()
 			}
 		}
 
@@ -722,26 +716,9 @@ func (a *App) buildLayout() *tview.Flex {
 	})
 
 	a.mainLayout = tview.NewFlex().SetDirection(tview.FlexRow)
-
-	if a.isWelcomeMode {
-		a.lastWelcomeCompact = a.isCompactMode()
-		a.rebuildWelcomeLayout()
-	} else {
-		a.mainLayout.
-			AddItem(a.chatContainer, 0, 1, false).
-			AddItem(a.inputSection, 6, 0, true)
-	}
-
-	// Dynamically toggle logo when terminal resizes in welcome mode
-	a.mainLayout.SetDrawFunc(func(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {
-		if a.isWelcomeMode {
-			compact := a.isCompactMode()
-			if compact != a.lastWelcomeCompact {
-				a.rebuildWelcomeLayout()
-			}
-		}
-		return x, y, width, height
-	})
+	a.mainLayout.
+		AddItem(a.chatContainer, 0, 1, false).
+		AddItem(a.inputSection, 6, 0, true)
 
 	a.app.SetInputCapture(a.handleInput)
 
