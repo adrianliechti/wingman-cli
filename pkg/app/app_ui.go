@@ -491,9 +491,14 @@ func (a *App) submitInput() {
 			instructions = a.agent.PlanningInstructions
 		}
 
-		// Inject IDE context (selection or open file) if bridge is connected
-		if ideContext := a.bridge.GetIDEContext(a.ctx); ideContext != "" {
-			input = append(input, agent.Content{Text: ideContext})
+		// Append bridge instructions if connected
+		if bridgeInstructions := a.bridge.GetInstructions(); bridgeInstructions != "" {
+			instructions += "\n\n" + bridgeInstructions
+		}
+
+		// Inject bridge context (selection or active file) if connected
+		if bridgeContext := a.bridge.GetContext(); bridgeContext != "" {
+			input = append(input, agent.Content{Text: bridgeContext})
 		}
 
 		a.streamResponse(input, instructions, a.allTools())
@@ -741,7 +746,7 @@ func (a *App) updateStatusBar() {
 	}
 
 	if a.bridge.IsConnected() {
-		parts = append(parts, fmt.Sprintf("[%s]IDE[-]", t.Green))
+		parts = append(parts, fmt.Sprintf("[%s]Bridge[-]", t.Green))
 	}
 
 	parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Cyan, a.agent.Model))

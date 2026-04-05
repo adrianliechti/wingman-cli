@@ -57,6 +57,13 @@ func (m *Manager) AddServer(ctx context.Context, name string, server ServerConfi
 	return m.connect(ctx, name, server)
 }
 
+// AddSession registers an externally-created session under the given name.
+// This allows callers to create a client with custom options (e.g. notification
+// handlers) and still have the session managed alongside other MCP servers.
+func (m *Manager) AddSession(name string, session *mcp.ClientSession) {
+	m.sessions[name] = session
+}
+
 func (m *Manager) Close() {
 	for _, s := range m.sessions {
 		s.Close()

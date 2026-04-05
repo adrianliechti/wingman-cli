@@ -80,7 +80,7 @@ type App struct {
 	mcpMu      sync.Mutex
 	mcpError   error
 
-	// Bridge state (VS Code IDE integration)
+	// Bridge state (VS Code bridge integration)
 	bridge *bridge.Bridge
 
 	// LSP state
@@ -335,7 +335,12 @@ func (a *App) allTools() []tool.Tool {
 	tools := append([]tool.Tool{}, a.agent.Tools...)
 
 	tools = append(tools, a.mcpTools...)
-	tools = append(tools, a.lspTool)
+
+	// When bridge is connected it provides all LSP operations via the IDE's
+	// language services. Skip local LSP.
+	if !a.bridge.IsConnected() {
+		tools = append(tools, a.lspTool)
+	}
 
 	return tools
 }
@@ -346,6 +351,29 @@ func (a *App) lspDiagnostics(ctx context.Context, path string) string {
 		absPath = filepath.Join(a.lspManager.WorkingDir(), path)
 	}
 
+	// When bridge is connected, notify it and use its diagnostics.
+	if a.bridge.IsConnected() {
+		return a.bridgeDiagnostics(ctx, absPath)
+	}
+
+	return a.localLSPDiagnostics(ctx, absPath, path)
+}
+
+func (a *App) bridgeDiagnostics(ctx context.Context, absPath string) string {
+	a.bridge.NotifyFileUpdated(ctx, absPath)
+
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	result, err := a.bridge.GetDiagnostics(ctx, absPath)
+	if err != nil || result == "" || result == "[]" {
+		return ""
+	}
+
+	return result
+}
+
+func (a *App) localLSPDiagnostics(ctx context.Context, absPath, path string) string {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 

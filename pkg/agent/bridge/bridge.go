@@ -7,94 +7,182 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/mcp"
+	mgr "github.com/adrianliechti/wingman-agent/pkg/agent/mcp"
 
-	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const serverName = "bridge"
+const (
+	serverName        = "bridge"
+	workspaceStateURI = "wingman://workspace/state"
+)
+
+type workspaceState struct {
+	ActiveFile string     `json:"activeFile"`
+	OpenFiles  []string   `json:"openFiles"`
+	Selection  *selection `json:"selection,omitempty"`
+}
+
+type selection struct {
+	FilePath string   `json:"filePath"`
+	Text     string   `json:"text"`
+	Start    position `json:"start"`
+	End      position `json:"end"`
+}
+
+type position struct {
+	Line      int `json:"line"`
+	Character int `json:"character"`
+}
 
 // Bridge provides IDE integration via a VS Code MCP bridge server.
 type Bridge struct {
-	manager *mcp.Manager
+	session *mcp.ClientSession
+
+	mu    sync.RWMutex
+	state workspaceState
 }
 
 // Setup discovers a VS Code bridge from lockfiles and connects it to the MCP manager.
 // Returns nil if no bridge is found.
-func Setup(ctx context.Context, workingDir string, manager *mcp.Manager) *Bridge {
+func Setup(ctx context.Context, workingDir string, manager *mgr.Manager) *Bridge {
 	url := discoverBridge(workingDir)
 	if url == "" {
 		return nil
 	}
 
-	if err := manager.AddServer(ctx, serverName, mcp.ServerConfig{URL: url}); err != nil {
+	b := &Bridge{}
+
+	client := mcp.NewClient(&mcp.Implementation{
+		Name:    "wingman",
+		Version: "1.0.0",
+	}, &mcp.ClientOptions{
+		ResourceUpdatedHandler: func(ctx context.Context, req *mcp.ResourceUpdatedNotificationRequest) {
+			if req.Params != nil && req.Params.URI == workspaceStateURI {
+				b.refreshState(ctx)
+			}
+		},
+	})
+
+	connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	session, err := client.Connect(connectCtx, &mcp.StreamableClientTransport{Endpoint: url}, nil)
+	if err != nil {
 		return nil
 	}
 
-	return &Bridge{manager: manager}
+	b.session = session
+	manager.AddSession(serverName, session)
+
+	// Subscribe to workspace state changes and read initial state
+	_ = session.Subscribe(ctx, &mcp.SubscribeParams{URI: workspaceStateURI})
+	b.refreshState(ctx)
+
+	return b
 }
 
 // IsConnected returns true if the bridge MCP server is connected.
 func (b *Bridge) IsConnected() bool {
-	if b == nil {
-		return false
-	}
-
-	_, ok := b.manager.Sessions()[serverName]
-	return ok
+	return b != nil && b.session != nil
 }
 
-// GetIDEContext calls get_selection and formats it for prompt injection.
-func (b *Bridge) GetIDEContext(ctx context.Context) string {
+// GetInstructions returns the MCP server instructions from the bridge.
+func (b *Bridge) GetInstructions() string {
 	if !b.IsConnected() {
 		return ""
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-
-	result, err := b.callTool(ctx, "get_selection", nil)
-	if err != nil || result == "" || result == "No active selection" {
-		return ""
-	}
-
-	var sel struct {
-		File  string `json:"file"`
-		Text  string `json:"text"`
-		Start struct{ Line int } `json:"start"`
-		End   struct{ Line int } `json:"end"`
-	}
-
-	if err := json.Unmarshal([]byte(result), &sel); err != nil {
-		return ""
-	}
-
-	if sel.Text != "" {
-		text := sel.Text
-		if len(text) > 2000 {
-			text = text[:2000] + "..."
-		}
-
-		return fmt.Sprintf("[The user selected lines %d to %d from %s in the IDE:\n%s\n\nThis may or may not be related to the current task.]",
-			sel.Start.Line, sel.End.Line, sel.File, text)
-	}
-
-	if sel.File != "" {
-		return fmt.Sprintf("[The user has %s open in the IDE. This may or may not be related to the current task.]", sel.File)
+	if result := b.session.InitializeResult(); result != nil {
+		return result.Instructions
 	}
 
 	return ""
 }
 
-func (b *Bridge) callTool(ctx context.Context, name string, args map[string]any) (string, error) {
-	session, ok := b.manager.Sessions()[serverName]
-	if !ok {
+// GetContext returns the current IDE state formatted for prompt injection.
+func (b *Bridge) GetContext() string {
+	if !b.IsConnected() {
+		return ""
+	}
+
+	b.mu.RLock()
+	state := b.state
+	b.mu.RUnlock()
+
+	if state.Selection != nil && state.Selection.Text != "" {
+		text := state.Selection.Text
+		if len(text) > 2000 {
+			text = text[:2000] + "..."
+		}
+
+		return fmt.Sprintf("[The user selected lines %d to %d from %s in the IDE:\n%s\n\nThis may or may not be related to the current task.]",
+			state.Selection.Start.Line+1, state.Selection.End.Line+1, state.Selection.FilePath, text)
+	}
+
+	if state.ActiveFile != "" {
+		return fmt.Sprintf("[The user has %s open in the IDE. This may or may not be related to the current task.]", state.ActiveFile)
+	}
+
+	return ""
+}
+
+// GetDiagnostics fetches LSP diagnostics from the IDE for a file.
+func (b *Bridge) GetDiagnostics(ctx context.Context, path string) (string, error) {
+	if !b.IsConnected() {
 		return "", fmt.Errorf("bridge not connected")
 	}
 
-	result, err := session.CallTool(ctx, &sdkmcp.CallToolParams{
+	args := map[string]any{}
+	if path != "" {
+		args["path"] = path
+	}
+
+	return b.callTool(ctx, "get_diagnostics", args)
+}
+
+// NotifyFileUpdated tells the IDE that a file was changed externally
+// so language services re-analyze it.
+func (b *Bridge) NotifyFileUpdated(ctx context.Context, path string) {
+	if !b.IsConnected() {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	b.callTool(ctx, "notify_file_updated", map[string]any{"path": path})
+}
+
+func (b *Bridge) refreshState(ctx context.Context) {
+	if b.session == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	result, err := b.session.ReadResource(ctx, &mcp.ReadResourceParams{URI: workspaceStateURI})
+	if err != nil || len(result.Contents) == 0 || result.Contents[0].Text == "" {
+		return
+	}
+
+	var state workspaceState
+	if err := json.Unmarshal([]byte(result.Contents[0].Text), &state); err != nil {
+		return
+	}
+
+	b.mu.Lock()
+	b.state = state
+	b.mu.Unlock()
+}
+
+func (b *Bridge) callTool(ctx context.Context, name string, args map[string]any) (string, error) {
+	result, err := b.session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      name,
 		Arguments: args,
 	})
@@ -104,7 +192,7 @@ func (b *Bridge) callTool(ctx context.Context, name string, args map[string]any)
 
 	var parts []string
 	for _, c := range result.Content {
-		if text, ok := c.(*sdkmcp.TextContent); ok {
+		if text, ok := c.(*mcp.TextContent); ok {
 			parts = append(parts, text.Text)
 		}
 	}
@@ -140,9 +228,15 @@ func discoverBridge(workingDir string) string {
 
 		var lf struct {
 			URL        string   `json:"url"`
+			PID        int      `json:"pid"`
 			Workspaces []string `json:"workspaces"`
 		}
 		if err := json.Unmarshal(data, &lf); err != nil || lf.URL == "" {
+			continue
+		}
+
+		if !isProcessAlive(lf.PID) {
+			os.Remove(filepath.Join(lockDir, entry.Name()))
 			continue
 		}
 
@@ -161,4 +255,17 @@ func isSubPath(parent, child string) bool {
 	parent = filepath.Clean(parent) + string(filepath.Separator)
 	child = filepath.Clean(child) + string(filepath.Separator)
 	return strings.HasPrefix(child, parent)
+}
+
+func isProcessAlive(pid int) bool {
+	if pid == 0 {
+		return true
+	}
+
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+
+	return p.Signal(syscall.Signal(0)) == nil
 }
