@@ -114,21 +114,29 @@ func (b *Bridge) GetContext() string {
 	state := b.state
 	b.mu.RUnlock()
 
+	var parts []string
+
 	if state.Selection != nil && state.Selection.Text != "" {
 		text := state.Selection.Text
 		if len(text) > 2000 {
 			text = text[:2000] + "..."
 		}
 
-		return fmt.Sprintf("[The user selected lines %d to %d from %s in the IDE:\n%s\n\nThis may or may not be related to the current task.]",
-			state.Selection.Start.Line+1, state.Selection.End.Line+1, state.Selection.FilePath, text)
+		parts = append(parts, fmt.Sprintf("The user selected lines %d to %d from %s in the IDE:\n%s",
+			state.Selection.Start.Line+1, state.Selection.End.Line+1, state.Selection.FilePath, text))
+	} else if state.ActiveFile != "" {
+		parts = append(parts, fmt.Sprintf("The user has %s open in the IDE.", state.ActiveFile))
 	}
 
-	if state.ActiveFile != "" {
-		return fmt.Sprintf("[The user has %s open in the IDE. This may or may not be related to the current task.]", state.ActiveFile)
+	if len(state.OpenFiles) > 0 {
+		parts = append(parts, fmt.Sprintf("Open tabs: %s", strings.Join(state.OpenFiles, ", ")))
 	}
 
-	return ""
+	if len(parts) == 0 {
+		return ""
+	}
+
+	return fmt.Sprintf("[%s\n\nThis may or may not be related to the current task.]", strings.Join(parts, "\n"))
 }
 
 // GetDiagnostics fetches LSP diagnostics from the IDE for a file.
@@ -142,7 +150,7 @@ func (b *Bridge) GetDiagnostics(ctx context.Context, path string) (string, error
 		args["path"] = path
 	}
 
-	return b.callTool(ctx, "get_diagnostics", args)
+	return b.callTool(ctx, "get_lsp_diagnostics", args)
 }
 
 // NotifyFileUpdated tells the IDE that a file was changed externally

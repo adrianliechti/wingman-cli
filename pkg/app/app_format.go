@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
 	"github.com/adrianliechti/wingman-agent/pkg/ui/markdown"
@@ -176,6 +177,10 @@ func (a *App) formatToolProgress(name string, hint string) string {
 	title := a.formatToolTitle(icon, label, hint, t.Yellow.String(), true)
 
 	return fmt.Sprintf("%s[%s]┃[-] %s\n\n", chatIndent, t.Yellow, title)
+}
+
+func (a *App) formatNotice(message string, color tcell.Color) string {
+	return fmt.Sprintf("%s[%s]┃[-] [%s]%s[-]\n\n", chatIndent, color, color, message)
 }
 
 func (a *App) formatError(title string, message string) string {

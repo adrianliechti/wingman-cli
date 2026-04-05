@@ -86,9 +86,6 @@ type App struct {
 	lspTracker  *lsp.DiagnosticTracker
 	lspTool     tool.Tool
 
-	// Confirm dialog state
-	confirmResponse chan bool
-
 	// Rewind state
 	rewind      *rewind.Manager
 	rewindReady chan struct{}
@@ -182,7 +179,7 @@ func (a *App) Run() error {
 	// Show "Preparing..." while rewind initializes, then transition to idle
 	a.spinner.Start(PhasePreparing)
 
-	// Initialize rewind asynchronously
+	// Initialize rewind asynchronously (only in git repos)
 	go func() {
 		defer close(a.rewindReady)
 
@@ -190,12 +187,7 @@ func (a *App) Run() error {
 		gitDir := filepath.Join(workDir, ".git")
 
 		if _, err := os.Stat(gitDir); os.IsNotExist(err) {
-			if !a.showConfirm("Current directory is not a git repository. Continue?") {
-				a.app.QueueUpdate(func() {
-					a.stop()
-				})
-				return
-			}
+			return
 		}
 
 		if rm, err := rewind.New(workDir); err == nil {
@@ -285,42 +277,6 @@ func (a *App) closeActiveModal() {
 		a.closeFilePicker()
 	case ModalDiff:
 		a.closeDiffView()
-	case ModalConfirm:
-		a.closeConfirm(false)
-	}
-}
-
-func (a *App) showConfirm(message string) bool {
-	a.confirmResponse = make(chan bool, 1)
-
-	a.app.QueueUpdateDraw(func() {
-		modal := tview.NewModal().
-			SetText(message).
-			AddButtons([]string{"Yes", "No"}).
-			SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-				a.closeConfirm(buttonLabel == "Yes")
-			})
-
-		a.activeModal = ModalConfirm
-		a.pages.AddPage("confirm", modal, true, true)
-	})
-
-	return <-a.confirmResponse
-}
-
-func (a *App) closeConfirm(result bool) {
-	a.activeModal = ModalNone
-
-	if a.pages != nil {
-		a.pages.RemovePage("confirm")
-		a.app.SetFocus(a.input)
-	}
-
-	if a.confirmResponse != nil {
-		select {
-		case a.confirmResponse <- result:
-		default:
-		}
 	}
 }
 

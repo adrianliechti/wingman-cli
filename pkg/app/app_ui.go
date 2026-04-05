@@ -271,10 +271,7 @@ func (a *App) copyLastResponse() {
 			for _, c := range messages[i].Content {
 				if c.Text != "" {
 					clipboard.WriteText(c.Text)
-
-					// Brief visual feedback
-					t := theme.Default
-					fmt.Fprintf(a.chatView, "\n  [%s]Copied to clipboard[-]\n", t.BrBlack)
+					fmt.Fprint(a.chatView, a.formatNotice("Copied to clipboard", theme.Default.BrBlack))
 
 					return
 				}
@@ -402,9 +399,11 @@ func (a *App) submitInput() {
 		fmt.Fprintf(a.chatView, "  [%s]/model[-]  - Select AI model\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/file[-]   - Add file to context (or type @filename)\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/paste[-]  - Paste from clipboard (Ctrl+V / Cmd+V / Paste)\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/diff[-]   - Show changes from baseline\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/review[-]  - Review code changes with AI\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/rewind[-] - Restore to previous checkpoint\n", t.BrCyan)
+		if a.rewind != nil {
+			fmt.Fprintf(a.chatView, "  [%s]/diff[-]   - Show changes from baseline\n", t.BrCyan)
+			fmt.Fprintf(a.chatView, "  [%s]/review[-]  - Review code changes with AI\n", t.BrCyan)
+			fmt.Fprintf(a.chatView, "  [%s]/rewind[-] - Restore to previous checkpoint\n", t.BrCyan)
+		}
 		fmt.Fprintf(a.chatView, "  [%s]/clear[-]  - Clear chat history\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/quit[-]   - Exit application\n", t.BrCyan)
 
@@ -444,12 +443,14 @@ func (a *App) submitInput() {
 
 	case "/rewind":
 		a.input.SetText("", true)
+		a.switchToChat()
 		a.showRewindPicker()
 
 		return
 
 	case "/diff":
 		a.input.SetText("", true)
+		a.switchToChat()
 		a.showDiffView()
 
 		return
@@ -534,7 +535,7 @@ func (a *App) invokeSkill(s *skill.Skill, args string) {
 	content, err := s.GetContent(a.agent.Environment.WorkingDir())
 	if err != nil {
 		a.switchToChat()
-		fmt.Fprintf(a.chatView, "[red]Failed to load skill %q: %v[-]\n\n", s.Name, err)
+		fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("Failed to load skill %q: %v", s.Name, err), theme.Default.Red))
 		return
 	}
 

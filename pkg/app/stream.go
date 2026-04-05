@@ -137,10 +137,9 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 	a.app.QueueUpdateDraw(func() {
 		if streamErr != nil {
 			if errors.Is(streamErr, context.Canceled) {
-				// User cancelled - show brief notice instead of error
-				fmt.Fprintf(a.chatView, "\n[%s]Cancelled[-]\n\n", t.Yellow)
+				fmt.Fprint(a.chatView, a.formatNotice("Cancelled", t.Yellow))
 			} else {
-				fmt.Fprintf(a.chatView, "\n[%s]Error: %v[-]\n\n", t.Red, streamErr)
+				fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("Error: %v", streamErr), t.Red))
 			}
 		} else {
 			messages := a.agent.Messages()
