@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
@@ -187,6 +188,29 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	}
 
 	if event.Key() == tcell.KeyTab && !a.isStreaming() {
+		// Tab-complete slash commands
+		text := a.input.GetText()
+		if strings.HasPrefix(text, "/") && !strings.Contains(text, " ") {
+			matches := a.matchingCommands(text)
+			if len(matches) == 1 {
+				a.input.SetText(matches[0].Name, true)
+				return nil
+			}
+			// Find longest common prefix among matches
+			if len(matches) > 1 {
+				prefix := matches[0].Name
+				for _, m := range matches[1:] {
+					for !strings.HasPrefix(m.Name, prefix) {
+						prefix = prefix[:len(prefix)-1]
+					}
+				}
+				if len(prefix) > len(text) {
+					a.input.SetText(prefix, true)
+					return nil
+				}
+			}
+			return nil
+		}
 		a.toggleMode()
 		return nil
 	}
@@ -395,45 +419,38 @@ func (a *App) submitInput() {
 		a.switchToChat()
 		a.input.SetText("", true)
 		t := theme.Default
-		fmt.Fprintf(a.chatView, "[%s::b]Commands[-::-]\n", t.Cyan)
-		fmt.Fprintf(a.chatView, "  [%s]/help[-]   - Show this help\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/model[-]  - Select AI model\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/file[-]   - Add file to context (or type @filename)\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/paste[-]  - Paste from clipboard (Ctrl+V / Cmd+V / Paste)\n", t.BrCyan)
-		if a.rewind != nil {
-			fmt.Fprintf(a.chatView, "  [%s]/diff[-]   - Show changes from baseline\n", t.BrCyan)
-			fmt.Fprintf(a.chatView, "  [%s]/review[-]  - Review code changes with AI\n", t.BrCyan)
-			fmt.Fprintf(a.chatView, "  [%s]/rewind[-] - Restore to previous checkpoint\n", t.BrCyan)
-		}
-		fmt.Fprintf(a.chatView, "  [%s]/diagnostics[-] - Show LSP diagnostics\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/clear[-]  - Clear chat history\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/quit[-]   - Exit application\n", t.BrCyan)
+		builtinCmds := a.builtinCommands()
+		skillCmds := a.skillCommands()
 
-		if len(a.agent.Skills) > 0 {
+		// Find longest name across all commands for alignment
+		maxLen := 0
+		for _, cmd := range builtinCmds {
+			if len(cmd.Name) > maxLen {
+				maxLen = len(cmd.Name)
+			}
+		}
+		for _, cmd := range skillCmds {
+			if len(cmd.Name) > maxLen {
+				maxLen = len(cmd.Name)
+			}
+		}
+
+		fmt.Fprintf(a.chatView, "[%s::b]Commands[-::-]\n", t.Cyan)
+		for _, cmd := range builtinCmds {
+			pad := strings.Repeat(" ", maxLen-len(cmd.Name))
+			fmt.Fprintf(a.chatView, "  [%s]%s[-]%s    %s\n", t.BrCyan, cmd.Name, pad, cmd.Desc)
+		}
+
+		if len(skillCmds) > 0 {
 			fmt.Fprintf(a.chatView, "\n[%s::b]Skills[-::-]\n", t.Cyan)
-			for _, s := range a.agent.Skills {
-				fmt.Fprintf(a.chatView, "  [%s]/%s[-] - %s\n", t.BrCyan, s.Name, s.Description)
+			for _, cmd := range skillCmds {
+				pad := strings.Repeat(" ", maxLen-len(cmd.Name))
+				fmt.Fprintf(a.chatView, "  [%s]%s[-]%s    %s\n", t.BrCyan, cmd.Name, pad, cmd.Desc)
 			}
 		}
 
 		fmt.Fprint(a.chatView, "\n")
 		a.chatView.ScrollToEnd()
-
-		return
-
-	case "/file":
-		a.input.SetText("", true)
-		go a.showFilePicker("", func(paths []string) {
-			for _, p := range paths {
-				a.addFileToContext(p)
-			}
-		})
-
-		return
-
-	case "/paste":
-		a.input.SetText("", true)
-		a.pasteFromClipboard()
 
 		return
 
@@ -457,10 +474,22 @@ func (a *App) submitInput() {
 
 		return
 
-	case "/diagnostics":
+	case "/problems":
 		a.input.SetText("", true)
 		a.switchToChat()
 		a.showDiagnosticsView()
+
+		return
+
+	case "/copy":
+		a.input.SetText("", true)
+		a.copyLastResponse()
+
+		return
+
+	case "/paste":
+		a.input.SetText("", true)
+		a.pasteFromClipboard()
 
 		return
 
@@ -773,6 +802,70 @@ func (a *App) formatShortcut(key, label string) string {
 	return fmt.Sprintf("[%s]%s[-] [%s]%s[-]", t.BrBlack, key, t.Foreground, label)
 }
 
+type slashCommand struct {
+	Name string
+	Desc string
+}
+
+func (a *App) builtinCommands() []slashCommand {
+	cmds := []slashCommand{
+		{"/help", "Show help"},
+		{"/model", "Select AI model"},
+		{"/problems", "Show problems"},
+	}
+
+	if a.rewind != nil {
+		cmds = append(cmds,
+			slashCommand{"/diff", "Show changes from baseline"},
+			slashCommand{"/rewind", "Restore to previous checkpoint"},
+		)
+	}
+
+	cmds = append(cmds,
+		slashCommand{"/copy", "Copy last response to clipboard"},
+		slashCommand{"/paste", "Paste from clipboard"},
+		slashCommand{"/clear", "Clear chat history"},
+		slashCommand{"/quit", "Exit application"},
+	)
+
+	return cmds
+}
+
+func (a *App) skillCommands() []slashCommand {
+	var cmds []slashCommand
+	for _, s := range a.agent.Skills {
+		cmds = append(cmds, slashCommand{"/" + s.Name, s.Description})
+	}
+	sort.SliceStable(cmds, func(i, j int) bool {
+		if cmds[i].Name == "/init" {
+			return true
+		}
+		if cmds[j].Name == "/init" {
+			return false
+		}
+		return cmds[i].Name < cmds[j].Name
+	})
+	return cmds
+}
+
+func (a *App) availableCommands() []slashCommand {
+	return append(a.builtinCommands(), a.skillCommands()...)
+}
+
+func (a *App) matchingCommands(prefix string) []slashCommand {
+	if prefix == "/" {
+		return a.availableCommands()
+	}
+
+	var matches []slashCommand
+	for _, cmd := range a.availableCommands() {
+		if strings.HasPrefix(cmd.Name, prefix) {
+			matches = append(matches, cmd)
+		}
+	}
+	return matches
+}
+
 func (a *App) updateInputHint() {
 	// Don't overwrite inputHint while the spinner owns it
 	if a.isStreaming() {
@@ -780,6 +873,20 @@ func (a *App) updateInputHint() {
 	}
 
 	t := theme.Default
+
+	// Show command completions when typing /
+	text := a.input.GetText()
+	if strings.HasPrefix(text, "/") && !strings.Contains(text, " ") {
+		matches := a.matchingCommands(text)
+		if len(matches) > 0 {
+			var parts []string
+			for _, m := range matches {
+				parts = append(parts, fmt.Sprintf("[%s::b]%s[-::-] [%s]%s[-]", t.Cyan, m.Name, t.BrBlack, m.Desc))
+			}
+			a.inputHint.SetText(strings.Join(parts, "  "))
+			return
+		}
+	}
 
 	var parts []string
 
@@ -809,7 +916,6 @@ func (a *App) updateInputHint() {
 		a.formatShortcut("tab", "mode"),
 		a.formatShortcut("shift+tab", "model"),
 		a.formatShortcut("@", "file"),
-		a.formatShortcut("ctrl+y", "copy"),
 		a.formatShortcut("ctrl+e", expandLabel),
 		a.formatShortcut("esc", "clear"),
 	)
