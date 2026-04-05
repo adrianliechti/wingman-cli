@@ -28,7 +28,6 @@ type App struct {
 	app *tview.Application
 
 	agent *agent.Agent
-	//config *agent.Config
 
 	// UI Components
 	pages       *tview.Pages
@@ -73,7 +72,6 @@ type App struct {
 	currentToolName string
 	currentToolHint string
 
-
 	// MCP state
 	mcpManager *mcp.Manager
 	mcpTools   []tool.Tool
@@ -107,7 +105,7 @@ func New(ctx context.Context, agent *agent.Agent) *App {
 
 		agent: agent,
 
-		isWelcomeMode: true,
+		isWelcomeMode: os.Getenv("WINGMAN_CALLER") != "vscode",
 		phase:         PhasePreparing,
 
 		lspManager: lspManager,
@@ -208,9 +206,7 @@ func (a *App) Run() error {
 	go func() {
 		<-a.rewindReady
 		a.app.QueueUpdateDraw(func() {
-			a.spinner.Stop()
-			a.phase = PhaseIdle
-			a.updateInputHint()
+			a.setPhase(PhaseIdle)
 		})
 	}()
 

@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+
+version: '3'
+
+tasks:
+  install:
+    desc: Install wingman using go install
+    cmds:
+      - go build -o wingman . && mv wingman $(go env GOPATH)/bin/
+
+  run:
+    desc: Install and run wingman
+    deps: [install]
+    cmds:
+      - $(go env GOPATH)/bin/wingman

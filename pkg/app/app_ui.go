@@ -122,7 +122,7 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	}
 
 	// Handle @ to trigger file picker (don't insert @ into input)
-	if event.Rune() == '@' {
+	if event.Rune() == '@' && !a.isStreaming() {
 		go func() {
 			a.showFilePicker("", func(paths []string) {
 				for _, p := range paths {
@@ -144,6 +144,8 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 			}
 
 			a.input.SetText("", true)
+			fmt.Fprint(a.chatView, a.formatUserMessage(text))
+			a.setPhase(PhaseThinking)
 			a.askResponse <- text
 
 			return nil
@@ -156,11 +158,15 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	if a.promptActive {
 		switch event.Rune() {
 		case 'y', 'Y':
+			fmt.Fprint(a.chatView, a.formatUserMessage("Yes"))
+			a.setPhase(PhaseThinking)
 			a.promptResponse <- true
 
 			return nil
 
 		case 'n', 'N':
+			fmt.Fprint(a.chatView, a.formatUserMessage("No"))
+			a.setPhase(PhaseThinking)
 			a.promptResponse <- false
 
 			return nil
@@ -223,6 +229,7 @@ func (a *App) promptUser(message string) (bool, error) {
 	a.app.QueueUpdateDraw(func() {
 		fmt.Fprint(a.chatView, a.formatPrompt("Confirm Command", message, hint))
 		a.input.SetPlaceholder("y/n")
+		a.app.SetFocus(a.input)
 	})
 
 	select {
@@ -244,6 +251,7 @@ func (a *App) askUser(question string) (string, error) {
 	a.app.QueueUpdateDraw(func() {
 		fmt.Fprint(a.chatView, a.formatPrompt("Question", question, ""))
 		a.input.SetPlaceholder("Type your answer and press Enter...")
+		a.app.SetFocus(a.input)
 	})
 
 	select {
@@ -308,12 +316,29 @@ func (a *App) pasteFromClipboard() {
 }
 
 func (a *App) cancelStream() {
+	// Cancel the stream context first
 	a.streamMu.Lock()
-
 	if a.streamCancel != nil {
 		a.streamCancel()
 	}
 	a.streamMu.Unlock()
+
+	// Unblock any pending ask/prompt so the stream goroutine can exit
+	if a.askActive {
+		a.input.SetText("", true)
+
+		select {
+		case a.askResponse <- "":
+		default:
+		}
+	}
+
+	if a.promptActive {
+		select {
+		case a.promptResponse <- false:
+		default:
+		}
+	}
 }
 
 func (a *App) clearPendingContent() {
@@ -465,7 +490,7 @@ func (a *App) submitInput() {
 		for _, f := range a.pendingFiles {
 			attachments = append(attachments, fmt.Sprintf("📄 %s", filepath.Base(f)))
 		}
-		displayText = fmt.Sprintf("%s\n[%s]", query, strings.Join(attachments, ", "))
+		displayText = fmt.Sprintf("%s\n[%s]%s[-]", query, theme.Default.BrBlack, strings.Join(attachments, ", "))
 	}
 	fmt.Fprint(a.chatView, a.formatUserMessage(displayText))
 
@@ -604,7 +629,12 @@ func (a *App) setupUI() {
 	a.input.SetPlaceholderStyle(tcell.StyleDefault.Foreground(t.BrBlack).Background(inputBgColor))
 
 	a.mainContent = tview.NewFlex().SetDirection(tview.FlexRow)
-	a.mainContent.AddItem(a.welcomeView, 0, 1, false)
+
+	if a.isWelcomeMode {
+		a.mainContent.AddItem(a.welcomeView, 0, 1, false)
+	} else {
+		a.mainContent.AddItem(a.chatView, 0, 1, false)
+	}
 }
 
 func (a *App) buildLayout() *tview.Flex {
@@ -859,7 +889,7 @@ func (a *App) renderMessage(msg agent.Message) {
 		// Tool results
 		if c.ToolResult != nil {
 			if a.isToolHidden(c.ToolResult.Name) {
-				return
+				continue
 			}
 
 			hint := extractToolHint(c.ToolResult.Args)
@@ -874,12 +904,12 @@ func (a *App) renderMessage(msg agent.Message) {
 				fmt.Fprint(a.chatView, a.formatToolCallCollapsed(c.ToolResult.Name, hint))
 			}
 
-			return
+			continue
 		}
 
 		// Tool calls have no displayable content
 		if c.ToolCall != nil {
-			return
+			continue
 		}
 
 		// Text content
@@ -890,8 +920,6 @@ func (a *App) renderMessage(msg agent.Message) {
 			case agent.RoleAssistant:
 				fmt.Fprint(a.chatView, a.formatAssistantMessage(c.Text))
 			}
-
-			return
 		}
 	}
 }

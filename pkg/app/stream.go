@@ -61,7 +61,7 @@ func (a *App) setPhase(phase AppPhase) {
 			a.spinner.Stop()
 			a.updateInputHint()
 		} else {
-			a.spinner.SetPhase(phase)
+			a.spinner.Start(phase)
 		}
 	}
 }
@@ -94,12 +94,7 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 	var content strings.Builder
 	var streamErr error
 
-	// Start with thinking phase
-	if a.spinner != nil {
-		a.spinner.Start(PhaseThinking)
-	}
 	a.setPhase(PhaseThinking)
-	a.app.QueueUpdateDraw(func() {})
 
 	for msg, err := range a.agent.Send(streamCtx, instructions, input, tools) {
 		if err != nil {

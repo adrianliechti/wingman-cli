@@ -63,6 +63,8 @@ func (a *App) formatPrompt(title string, message string, hint string) string {
 		fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", chatIndent, t.Red, wl)
 	}
 
+	fmt.Fprintf(&result, "%s[%s]┃[-]\n", chatIndent, t.Red)
+
 	for line := range strings.SplitSeq(message, "\n") {
 		for _, wl := range markdown.WrapLine(line, a.contentWidth()) {
 			fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", chatIndent, t.Red, wl)

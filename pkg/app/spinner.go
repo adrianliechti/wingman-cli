@@ -53,18 +53,6 @@ func (s *Spinner) Start(phase AppPhase) {
 	go s.run()
 }
 
-// SetPhase updates the spinner phase without restarting
-func (s *Spinner) SetPhase(phase AppPhase) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.phase = phase
-
-	if s.active {
-		s.render()
-	}
-}
-
 // Stop halts the spinner animation
 func (s *Spinner) Stop() {
 	s.mu.Lock()
