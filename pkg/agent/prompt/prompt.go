@@ -12,9 +12,6 @@ var Instructions string
 //go:embed planning.txt
 var Planning string
 
-//go:embed lsp.txt
-var LSP string
-
 func Render(tmpl string, data any) (string, error) {
 	t, err := template.New("prompt").Parse(tmpl)
 

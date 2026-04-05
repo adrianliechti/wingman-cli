@@ -331,7 +331,7 @@ func (s *Session) Definition(ctx context.Context, uri string, line, column int) 
 func (s *Session) References(ctx context.Context, uri string, line, column int) (string, error) {
 	params := ReferenceParams{
 		TextDocument: TextDocumentIdentifier{URI: uri},
-		Position:     Position{Line: line - 1, Character: column - 1},
+		Position:     Position{Line: line, Character: column},
 		Context:      ReferenceContext{IncludeDeclaration: true},
 	}
 
@@ -361,7 +361,7 @@ func (s *Session) Implementation(ctx context.Context, uri string, line, column i
 func (s *Session) Hover(ctx context.Context, uri string, line, column int) (string, error) {
 	params := TextDocumentPositionParams{
 		TextDocument: TextDocumentIdentifier{URI: uri},
-		Position:     Position{Line: line - 1, Character: column - 1},
+		Position:     Position{Line: line, Character: column},
 	}
 
 	var result json.RawMessage
@@ -419,7 +419,7 @@ func (s *Session) DocumentSymbols(ctx context.Context, uri string, filePath stri
 func (s *Session) CallHierarchy(ctx context.Context, uri string, line, column int, incoming bool) (string, error) {
 	params := TextDocumentPositionParams{
 		TextDocument: TextDocumentIdentifier{URI: uri},
-		Position:     Position{Line: line - 1, Character: column - 1},
+		Position:     Position{Line: line, Character: column},
 	}
 
 	var prepareResult json.RawMessage
@@ -474,7 +474,7 @@ func (s *Session) initialize(ctx context.Context) error {
 func (s *Session) locationOp(ctx context.Context, method, title, uri string, line, column int) (string, error) {
 	params := TextDocumentPositionParams{
 		TextDocument: TextDocumentIdentifier{URI: uri},
-		Position:     Position{Line: line - 1, Character: column - 1},
+		Position:     Position{Line: line, Character: column},
 	}
 
 	var result json.RawMessage

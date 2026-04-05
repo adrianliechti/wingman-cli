@@ -84,7 +84,7 @@ type App struct {
 	// LSP state
 	lspManager  *lsp.Manager
 	lspTracker  *lsp.DiagnosticTracker
-	lspTool     tool.Tool
+	lspTools    []tool.Tool
 
 	// Rewind state
 	rewind      *rewind.Manager
@@ -107,7 +107,7 @@ func New(ctx context.Context, agent *agent.Agent) *App {
 
 		lspManager: lspManager,
 		lspTracker: lsp.NewDiagnosticTracker(),
-		lspTool:    lsptool.NewTool(lspManager),
+		lspTools:   lsptool.NewTools(lspManager),
 
 		rewindReady: make(chan struct{}),
 	}
@@ -291,7 +291,7 @@ func (a *App) allTools() []tool.Tool {
 	// When bridge is connected it provides all LSP operations via the IDE's
 	// language services. Skip local LSP.
 	if !a.bridge.IsConnected() {
-		tools = append(tools, a.lspTool)
+		tools = append(tools, a.lspTools...)
 	}
 
 	return tools
