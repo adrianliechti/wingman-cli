@@ -761,6 +761,11 @@ func (a *App) formatShortcut(key, label string) string {
 }
 
 func (a *App) updateInputHint() {
+	// Don't overwrite inputHint while the spinner owns it
+	if a.isStreaming() {
+		return
+	}
+
 	t := theme.Default
 
 	var parts []string
@@ -778,21 +783,19 @@ func (a *App) updateInputHint() {
 		parts = append(parts, fmt.Sprintf("[%s]📄 %d files[-]", t.Cyan, len(a.pendingFiles)))
 	}
 
-	if !a.isStreaming() {
-		expandLabel := "expand"
-		if a.toolOutputExpanded {
-			expandLabel = "collapse"
-		}
-
-		parts = append(parts,
-			a.formatShortcut("tab", "mode"),
-			a.formatShortcut("shift+tab", "model"),
-			a.formatShortcut("@", "file"),
-			a.formatShortcut("ctrl+y", "copy"),
-			a.formatShortcut("ctrl+e", expandLabel),
-			a.formatShortcut("esc", "clear"),
-		)
+	expandLabel := "expand"
+	if a.toolOutputExpanded {
+		expandLabel = "collapse"
 	}
+
+	parts = append(parts,
+		a.formatShortcut("tab", "mode"),
+		a.formatShortcut("shift+tab", "model"),
+		a.formatShortcut("@", "file"),
+		a.formatShortcut("ctrl+y", "copy"),
+		a.formatShortcut("ctrl+e", expandLabel),
+		a.formatShortcut("esc", "clear"),
+	)
 
 	a.inputHint.SetText(strings.Join(parts, "  "))
 }

@@ -88,19 +88,20 @@ func (s *Spinner) run() {
 		case <-s.stopChan:
 			return
 		case <-s.ticker.C:
-			s.mu.Lock()
-			if !s.active {
-				s.mu.Unlock()
-				return
-			}
-			s.frame = (s.frame + 1) % len(spinnerFrames)
-			s.render()
-			s.mu.Unlock()
-			s.app.QueueUpdateDraw(func() {})
+			s.app.QueueUpdateDraw(func() {
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				if !s.active {
+					return
+				}
+				s.frame = (s.frame + 1) % len(spinnerFrames)
+				s.render()
+			})
 		}
 	}
 }
 
+// render updates the view text. Must be called with mu held.
 func (s *Spinner) render() {
 	config := GetPhaseConfig(s.phase)
 	if config.Message == "" {
