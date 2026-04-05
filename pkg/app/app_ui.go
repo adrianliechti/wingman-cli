@@ -405,6 +405,7 @@ func (a *App) submitInput() {
 			fmt.Fprintf(a.chatView, "  [%s]/review[-]  - Review code changes with AI\n", t.BrCyan)
 			fmt.Fprintf(a.chatView, "  [%s]/rewind[-] - Restore to previous checkpoint\n", t.BrCyan)
 		}
+		fmt.Fprintf(a.chatView, "  [%s]/diagnostics[-] - Show LSP diagnostics\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/clear[-]  - Clear chat history\n", t.BrCyan)
 		fmt.Fprintf(a.chatView, "  [%s]/quit[-]   - Exit application\n", t.BrCyan)
 
@@ -453,6 +454,13 @@ func (a *App) submitInput() {
 		a.input.SetText("", true)
 		a.switchToChat()
 		a.showDiffView()
+
+		return
+
+	case "/diagnostics":
+		a.input.SetText("", true)
+		a.switchToChat()
+		a.showDiagnosticsView()
 
 		return
 

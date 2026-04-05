@@ -281,6 +281,8 @@ func (a *App) closeActiveModal() {
 		a.closeFilePicker()
 	case ModalDiff:
 		a.closeDiffView()
+	case ModalDiagnostics:
+		a.closeDiagnosticsView()
 	}
 }
 

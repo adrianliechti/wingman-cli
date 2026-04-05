@@ -196,6 +196,33 @@ func (m *Manager) Close() {
 	}
 }
 
+// CollectAllDiagnostics returns raw diagnostics grouped by file path.
+func (m *Manager) CollectAllDiagnostics(ctx context.Context) map[string][]Diagnostic {
+	servers := m.DetectServers()
+	result := make(map[string][]Diagnostic)
+
+	for _, server := range servers {
+		session, err := m.GetSessionByServer(ctx, server)
+		if err != nil {
+			continue
+		}
+
+		for _, file := range discoverSourceFiles(m.workingDir, server.Languages, 50) {
+			uri, err := session.OpenDocument(ctx, file)
+			if err != nil {
+				continue
+			}
+
+			diags := session.CollectDiagnostics(ctx, uri)
+			if len(diags) > 0 {
+				result[file] = diags
+			}
+		}
+	}
+
+	return result
+}
+
 // WorkspaceDiagnostics collects diagnostics across all workspace files.
 func (m *Manager) WorkspaceDiagnostics(ctx context.Context) (string, error) {
 	servers := m.DetectServers()
