@@ -18,6 +18,9 @@ type Manager struct {
 	sessions   map[string]*Session // keyed by server command
 	restarts   map[string]int      // restart count per server command
 	mu         sync.Mutex
+
+	roots     []projectRoot // cached detection results
+	rootsOnce sync.Once
 }
 
 // NewManager creates a new LSP session manager.
@@ -34,6 +37,14 @@ func (m *Manager) WorkingDir() string {
 	return m.workingDir
 }
 
+// detectRoots returns cached detection results, running detection once.
+func (m *Manager) detectRoots() []projectRoot {
+	m.rootsOnce.Do(func() {
+		m.roots = detectAll(m.workingDir)
+	})
+	return m.roots
+}
+
 // FindServer finds an appropriate LSP server for the given file.
 func (m *Manager) FindServer(filePath string) *Server {
 	ext := strings.TrimPrefix(filepath.Ext(filePath), ".")
@@ -42,7 +53,7 @@ func (m *Manager) FindServer(filePath string) *Server {
 	}
 
 	dir := filepath.Dir(filePath)
-	roots := detectAll(m.workingDir)
+	roots := m.detectRoots()
 
 	var best *Server
 	bestLen := -1
@@ -69,7 +80,7 @@ func (m *Manager) FindServer(filePath string) *Server {
 
 // DetectServers finds all available LSP servers for the workspace.
 func (m *Manager) DetectServers() []Server {
-	roots := detectAll(m.workingDir)
+	roots := m.detectRoots()
 
 	var servers []Server
 	seen := make(map[string]bool)
