@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"os/exec"
 	"sync"
@@ -81,11 +82,9 @@ func (m *Manager) Sessions() map[string]*mcp.ClientSession {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	copy := make(map[string]*mcp.ClientSession, len(m.sessions))
-	for k, v := range m.sessions {
-		copy[k] = v
-	}
-	return copy
+	result := make(map[string]*mcp.ClientSession, len(m.sessions))
+	maps.Copy(result, m.sessions)
+	return result
 }
 
 func (m *Manager) connect(ctx context.Context, name string, server ServerConfig) error {
