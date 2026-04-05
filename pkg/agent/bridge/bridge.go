@@ -91,6 +91,14 @@ func (b *Bridge) IsConnected() bool {
 	return b != nil && b.session != nil
 }
 
+// Close shuts down the bridge session.
+func (b *Bridge) Close() {
+	if b != nil && b.session != nil {
+		b.session.Close()
+		b.session = nil
+	}
+}
+
 // GetInstructions returns the MCP server instructions from the bridge.
 func (b *Bridge) GetInstructions() string {
 	if !b.IsConnected() {

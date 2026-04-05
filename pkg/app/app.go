@@ -127,7 +127,9 @@ func New(ctx context.Context, agent *agent.Agent) *App {
 }
 
 func (a *App) stop() {
-	// Shut down cached LSP servers
+	// Shut down bridge and LSP servers
+	a.bridge.Close()
+
 	if a.lspManager != nil {
 		a.lspManager.Close()
 	}
@@ -319,6 +321,9 @@ func (a *App) lspDiagnostics(ctx context.Context, path string) string {
 
 func (a *App) bridgeDiagnostics(ctx context.Context, absPath string) string {
 	a.bridge.NotifyFileUpdated(ctx, absPath)
+
+	// Give the IDE time to re-analyze the file after notification
+	time.Sleep(500 * time.Millisecond)
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

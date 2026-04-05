@@ -435,17 +435,18 @@ func (a *App) submitInput() {
 			}
 		}
 
-		fmt.Fprintf(a.chatView, "[%s::b]Commands[-::-]\n", t.Cyan)
+		fmt.Fprintf(a.chatView, "  [%s]┃[-] [%s::b]Commands[-::-]\n", t.Cyan, t.Cyan)
 		for _, cmd := range builtinCmds {
 			pad := strings.Repeat(" ", maxLen-len(cmd.Name))
-			fmt.Fprintf(a.chatView, "  [%s]%s[-]%s    %s\n", t.BrCyan, cmd.Name, pad, cmd.Desc)
+			fmt.Fprintf(a.chatView, "  [%s]┃[-]   [%s]%s[-]%s    %s\n", t.Cyan, t.BrCyan, cmd.Name, pad, cmd.Desc)
 		}
 
 		if len(skillCmds) > 0 {
-			fmt.Fprintf(a.chatView, "\n[%s::b]Skills[-::-]\n", t.Cyan)
+			fmt.Fprintf(a.chatView, "  [%s]┃[-]\n", t.Cyan)
+			fmt.Fprintf(a.chatView, "  [%s]┃[-] [%s::b]Skills[-::-]\n", t.Cyan, t.Cyan)
 			for _, cmd := range skillCmds {
 				pad := strings.Repeat(" ", maxLen-len(cmd.Name))
-				fmt.Fprintf(a.chatView, "  [%s]%s[-]%s    %s\n", t.BrCyan, cmd.Name, pad, cmd.Desc)
+				fmt.Fprintf(a.chatView, "  [%s]┃[-]   [%s]%s[-]%s    %s\n", t.Cyan, t.BrCyan, cmd.Name, pad, cmd.Desc)
 			}
 		}
 
@@ -509,6 +510,12 @@ func (a *App) submitInput() {
 			a.invokeSkill(s, skillArgs)
 			return
 		}
+
+		// Unknown slash command
+		a.input.SetText("", true)
+		a.switchToChat()
+		fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("Unknown command: /%s", skillName), theme.Default.Yellow))
+		return
 	}
 
 	a.switchToChat()
@@ -881,7 +888,7 @@ func (a *App) updateInputHint() {
 		if len(matches) > 0 {
 			var parts []string
 			for _, m := range matches {
-				parts = append(parts, fmt.Sprintf("[%s::b]%s[-::-] [%s]%s[-]", t.Cyan, m.Name, t.BrBlack, m.Desc))
+				parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Cyan, m.Name))
 			}
 			a.inputHint.SetText(strings.Join(parts, "  "))
 			return
