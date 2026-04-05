@@ -347,7 +347,8 @@ func (a *App) clearPendingContent() {
 func (a *App) clearChat() {
 	a.chatView.Clear()
 	a.agent.Clear()
-	a.totalTokens = 0
+	a.inputTokens = 0
+	a.outputTokens = 0
 	a.updateStatusBar()
 }
 
@@ -749,12 +750,8 @@ func (a *App) updateStatusBar() {
 
 	var parts []string
 
-	if a.totalTokens > 0 {
-		parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.BrBlack, formatTokens(a.totalTokens)))
-	}
-
-	if a.bridge.IsConnected() {
-		parts = append(parts, fmt.Sprintf("[%s]Bridge[-]", t.Green))
+	if a.inputTokens > 0 || a.outputTokens > 0 {
+		parts = append(parts, fmt.Sprintf("[%s]↑%s ↓%s[-]", t.BrBlack, formatTokens(a.inputTokens), formatTokens(a.outputTokens)))
 	}
 
 	parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Cyan, a.agent.Model))
@@ -794,6 +791,10 @@ func (a *App) updateInputHint() {
 	expandLabel := "expand"
 	if a.toolOutputExpanded {
 		expandLabel = "collapse"
+	}
+
+	if a.bridge.IsConnected() {
+		parts = append(parts, fmt.Sprintf("[%s]⬢[-]", t.Green))
 	}
 
 	parts = append(parts,

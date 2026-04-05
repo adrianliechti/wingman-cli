@@ -132,7 +132,8 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 	a.setPhase(PhaseIdle)
 
 	usage := a.agent.Usage()
-	a.totalTokens = usage.InputTokens + usage.OutputTokens
+	a.inputTokens = usage.InputTokens
+	a.outputTokens = usage.OutputTokens
 
 	a.app.QueueUpdateDraw(func() {
 		if streamErr != nil {

@@ -60,7 +60,8 @@ type App struct {
 	askActive          bool
 	askResponse        chan string
 	toolOutputExpanded bool
-	totalTokens        int64
+	inputTokens        int64
+	outputTokens       int64
 	chatWidth          int
 	lastCompact        bool
 	pendingContent     []agent.Content
