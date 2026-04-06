@@ -32,16 +32,17 @@ func NewSpinner(app *tview.Application, view *tview.TextView) *Spinner {
 	}
 }
 
-// Start begins the spinner animation with the given phase
+// Start begins the spinner animation with the given phase.
+// Safe to call from any goroutine.
 func (s *Spinner) Start(phase AppPhase) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	s.phase = phase
 	s.frame = 0
 
 	if s.active {
-		s.render()
+		s.mu.Unlock()
+		s.queueRender()
 		return
 	}
 
@@ -49,16 +50,19 @@ func (s *Spinner) Start(phase AppPhase) {
 	s.ticker = time.NewTicker(100 * time.Millisecond)
 	s.stopChan = make(chan struct{})
 
-	s.render()
+	s.mu.Unlock()
+
+	s.queueRender()
 	go s.run()
 }
 
-// Stop halts the spinner animation
+// Stop halts the spinner animation.
+// Safe to call from any goroutine.
 func (s *Spinner) Stop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if !s.active {
+		s.mu.Unlock()
 		return
 	}
 
@@ -67,7 +71,12 @@ func (s *Spinner) Stop() {
 		s.ticker.Stop()
 	}
 	close(s.stopChan)
-	s.view.SetText("")
+
+	s.mu.Unlock()
+
+	s.app.QueueUpdateDraw(func() {
+		s.view.SetText("")
+	})
 }
 
 func (s *Spinner) run() {
@@ -76,17 +85,22 @@ func (s *Spinner) run() {
 		case <-s.stopChan:
 			return
 		case <-s.ticker.C:
-			s.app.QueueUpdateDraw(func() {
-				s.mu.Lock()
-				defer s.mu.Unlock()
-				if !s.active {
-					return
-				}
-				s.frame = (s.frame + 1) % len(spinnerFrames)
-				s.render()
-			})
+			s.queueRender()
 		}
 	}
+}
+
+// queueRender schedules a UI update for the spinner frame.
+func (s *Spinner) queueRender() {
+	s.app.QueueUpdateDraw(func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if !s.active {
+			return
+		}
+		s.frame = (s.frame + 1) % len(spinnerFrames)
+		s.render()
+	})
 }
 
 // render updates the view text. Must be called with mu held.

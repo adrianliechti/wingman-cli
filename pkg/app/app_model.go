@@ -73,34 +73,36 @@ func (a *App) showModelPicker() {
 }
 
 func (a *App) cycleModel() {
-	apiModels, err := a.agent.Client.Models.List(a.ctx)
-	if err != nil {
-		return
-	}
+	go func() {
+		apiModels, err := a.agent.Client.Models.List(a.ctx)
+		if err != nil {
+			return
+		}
 
-	var models []string
+		var models []string
 
-	for _, allowed := range agent.AvailableModels {
-		for _, model := range apiModels.Data {
-			if model.ID == allowed {
-				models = append(models, model.ID)
+		for _, allowed := range agent.AvailableModels {
+			for _, model := range apiModels.Data {
+				if model.ID == allowed {
+					models = append(models, model.ID)
+					break
+				}
+			}
+		}
+
+		if len(models) <= 1 {
+			return
+		}
+
+		for i, m := range models {
+			if m == a.agent.Model {
+				a.agent.Model = models[(i+1)%len(models)]
 				break
 			}
 		}
-	}
 
-	if len(models) <= 1 {
-		return
-	}
-
-	for i, m := range models {
-		if m == a.agent.Model {
-			a.agent.Model = models[(i+1)%len(models)]
-			break
-		}
-	}
-
-	a.app.QueueUpdateDraw(func() {
-		a.updateStatusBar()
-	})
+		a.app.QueueUpdateDraw(func() {
+			a.updateStatusBar()
+		})
+	}()
 }

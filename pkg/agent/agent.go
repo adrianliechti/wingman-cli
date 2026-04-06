@@ -47,12 +47,38 @@ func (a *Agent) Send(ctx context.Context, instructions string, input []Content, 
 
 func (a *Agent) run(ctx context.Context, yield func(Message, error) bool, instructions string, tools []tool.Tool) error {
 	formattedTools := formatTools(tools)
+	var recoveryPhase int
 
 	for {
 		outputItems, err := a.streamResponse(ctx, yield, instructions, formattedTools)
+
 		if err != nil {
-			return err
+			if errors.Is(err, errYieldStopped) || errors.Is(err, context.Canceled) || !isRecoverableError(err) {
+				return err
+			}
+
+			switch recoveryPhase {
+			case 0:
+				a.removeOrphanedToolMessages()
+				recoveryPhase = 1
+				continue
+
+			case 1:
+				a.removeOldestToolMessages()
+				recoveryPhase = 2
+				continue
+
+			case 2:
+				a.removeAllToolMessages()
+				recoveryPhase = 3
+				continue
+
+			default:
+				return err
+			}
 		}
+
+		recoveryPhase = 0
 
 		toolCalls := extractToolCalls(outputItems)
 		if len(toolCalls) == 0 {
@@ -191,9 +217,19 @@ func (a *Agent) processToolCalls(ctx context.Context, yield func(Message, error)
 			return errYieldStopped
 		}
 
-		// Execute and yield result immediately
+		// Execute tool and record result in messages immediately
 		result := truncateResult(ExecuteTool(ctx, a.Environment, tc, tools), a.Environment)
 
+		a.messages = append(a.messages, responses.ResponseInputItemUnionParam{
+			OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
+				CallID: tc.ID,
+				Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
+					OfString: openai.String(result),
+				},
+			},
+		})
+
+		// Notify UI (cancellation is safe — message state is already consistent)
 		resultMsg := Message{
 			Role: RoleAssistant,
 			Content: []Content{{ToolResult: &ToolResult{
@@ -206,15 +242,6 @@ func (a *Agent) processToolCalls(ctx context.Context, yield func(Message, error)
 		if !yield(resultMsg, nil) {
 			return errYieldStopped
 		}
-
-		a.messages = append(a.messages, responses.ResponseInputItemUnionParam{
-			OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
-				CallID: tc.ID,
-				Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
-					OfString: openai.String(result),
-				},
-			},
-		})
 	}
 
 	return nil
