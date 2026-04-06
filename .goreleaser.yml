@@ -20,7 +20,7 @@ checksum:
 changelog:
   sort: asc
 
-homebrew_casks:
+brews:
   - repository:
       owner: adrianliechti
       name: homebrew-tap
@@ -28,9 +28,6 @@ homebrew_casks:
     commit_author:
       name: Adrian Liechti
       email: adrian@localhost
-
-    install: |
-      bin.install "wingman"
 
 scoops:
   - repository:
