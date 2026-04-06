@@ -49,9 +49,19 @@ func (a *Agent) run(ctx context.Context, yield func(Message, error) bool, instru
 	formattedTools := formatTools(tools)
 
 	for {
+		a.removeOrphanedToolMessages()
+
 		outputItems, err := a.streamResponse(ctx, yield, instructions, formattedTools)
+
 		if err != nil {
-			return err
+			if !errors.Is(err, errYieldStopped) && !errors.Is(err, context.Canceled) && isRecoverableError(err) {
+				a.compactMessages(ctx)
+				outputItems, err = a.streamResponse(ctx, yield, instructions, formattedTools)
+			}
+
+			if err != nil {
+				return err
+			}
 		}
 
 		toolCalls := extractToolCalls(outputItems)
@@ -191,9 +201,19 @@ func (a *Agent) processToolCalls(ctx context.Context, yield func(Message, error)
 			return errYieldStopped
 		}
 
-		// Execute and yield result immediately
+		// Execute tool and record result in messages immediately
 		result := truncateResult(ExecuteTool(ctx, a.Environment, tc, tools), a.Environment)
 
+		a.messages = append(a.messages, responses.ResponseInputItemUnionParam{
+			OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
+				CallID: tc.ID,
+				Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
+					OfString: openai.String(result),
+				},
+			},
+		})
+
+		// Notify UI (cancellation is safe — message state is already consistent)
 		resultMsg := Message{
 			Role: RoleAssistant,
 			Content: []Content{{ToolResult: &ToolResult{
@@ -206,15 +226,6 @@ func (a *Agent) processToolCalls(ctx context.Context, yield func(Message, error)
 		if !yield(resultMsg, nil) {
 			return errYieldStopped
 		}
-
-		a.messages = append(a.messages, responses.ResponseInputItemUnionParam{
-			OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
-				CallID: tc.ID,
-				Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
-					OfString: openai.String(result),
-				},
-			},
-		})
 	}
 
 	return nil

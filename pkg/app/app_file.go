@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
@@ -167,11 +168,11 @@ func fuzzyFilterFiles(files []fileMatch, query string) []fileMatch {
 }
 
 // showFilePicker displays a file selection picker with fuzzy filtering and multi-select.
-// Must be called from a goroutine as it collects files before showing UI.
 func (a *App) showFilePicker(initialQuery string, onSelect func(paths []string)) {
-	files := a.collectFiles()
+	go func() {
+		files := a.collectFiles()
 
-	a.app.QueueUpdateDraw(func() {
+		a.app.QueueUpdateDraw(func() {
 		if a.hasActiveModal() {
 			return
 		}
@@ -254,12 +255,11 @@ func (a *App) showFilePicker(initialQuery string, onSelect func(paths []string))
 		selectFiles := func() {
 			var paths []string
 
-			// Collect toggled files in display order
-			for _, f := range filtered {
-				if selected[f.Path] {
-					paths = append(paths, f.Path)
-				}
+			// Collect all toggled files (across all searches)
+			for path := range selected {
+				paths = append(paths, path)
 			}
+			sort.Strings(paths)
 
 			// If none toggled, use the highlighted item
 			if len(paths) == 0 {
@@ -367,7 +367,8 @@ func (a *App) showFilePicker(initialQuery string, onSelect func(paths []string))
 
 		a.pages.AddPage(filePickerPageID, modal, true, true)
 		a.app.SetFocus(searchInput)
-	})
+		})
+	}()
 }
 
 func (a *App) closeFilePicker() {

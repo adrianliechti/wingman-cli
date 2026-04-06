@@ -124,13 +124,11 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 
 	// Handle @ to trigger file picker (don't insert @ into input)
 	if event.Rune() == '@' && !a.isStreaming() {
-		go func() {
-			a.showFilePicker("", func(paths []string) {
-				for _, p := range paths {
-					a.addFileToContext(p)
-				}
-			})
-		}()
+		a.showFilePicker("", func(paths []string) {
+			for _, p := range paths {
+				a.addFileToContext(p)
+			}
+		})
 
 		return nil // consume the event - don't type @
 	}
@@ -217,7 +215,7 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 
 	// Shift+Tab cycles through models
 	if event.Key() == tcell.KeyBacktab && !a.isStreaming() {
-		go a.cycleModel()
+		a.cycleModel()
 		return nil
 	}
 
@@ -304,41 +302,43 @@ func (a *App) copyLastResponse() {
 	}
 }
 
-// pasteFromClipboardAsync reads the clipboard off the UI thread, then applies
+// pasteFromClipboard reads the clipboard off the UI thread, then applies
 // changes back on the UI thread via QueueUpdateDraw. This prevents blocking the
 // tview event loop (which would freeze the app and ignore Ctrl+C).
-func (a *App) pasteFromClipboardAsync() {
-	contents, err := clipboard.Read()
+func (a *App) pasteFromClipboard() {
+	go func() {
+		contents, err := clipboard.Read()
 
-	if err != nil || len(contents) == 0 {
-		return
-	}
-
-	a.app.QueueUpdateDraw(func() {
-		for _, c := range contents {
-			if c.Image != nil {
-				a.pendingContent = append(a.pendingContent, agent.Content{File: &agent.File{Data: *c.Image}})
-			}
-
-			if c.Text != "" {
-				// Check if the clipboard text contains file paths
-				paths := detectFilePaths(c.Text, a.agent.Environment.RootDir())
-				if len(paths) > 0 {
-					for _, p := range paths {
-						a.addFileToContext(normalizeFilePath(p, a.agent.Environment.RootDir()))
-					}
-
-					continue
-				}
-
-				// Get selection range (start, end are byte positions)
-				_, start, end := a.input.GetSelection()
-				a.input.Replace(start, end, c.Text)
-			}
+		if err != nil || len(contents) == 0 {
+			return
 		}
 
-		a.updateInputHint()
-	})
+		a.app.QueueUpdateDraw(func() {
+			for _, c := range contents {
+				if c.Image != nil {
+					a.pendingContent = append(a.pendingContent, agent.Content{File: &agent.File{Data: *c.Image}})
+				}
+
+				if c.Text != "" {
+					// Check if the clipboard text contains file paths
+					paths := detectFilePaths(c.Text, a.agent.Environment.RootDir())
+					if len(paths) > 0 {
+						for _, p := range paths {
+							a.addFileToContext(normalizeFilePath(p, a.agent.Environment.RootDir()))
+						}
+
+						continue
+					}
+
+					// Get selection range (start, end are byte positions)
+					_, start, end := a.input.GetSelection()
+					a.input.Replace(start, end, c.Text)
+				}
+			}
+
+			a.updateInputHint()
+		})
+	}()
 }
 
 func (a *App) cancelStream() {
@@ -509,7 +509,7 @@ func (a *App) submitInput() {
 
 	case "/paste":
 		a.input.SetText("", true)
-		go a.pasteFromClipboardAsync()
+		a.pasteFromClipboard()
 
 		return
 
@@ -700,7 +700,7 @@ func (a *App) buildLayout() *tview.Flex {
 		isPaste := event.Key() == tcell.KeyCtrlV || (event.Modifiers()&tcell.ModMeta != 0 && (event.Rune() == 'v' || event.Rune() == 'V'))
 
 		if isPaste {
-			go a.pasteFromClipboardAsync()
+			a.pasteFromClipboard()
 
 			return nil // Consume event - we handled the paste
 		}

@@ -23,23 +23,36 @@ type fileDiagnostics struct {
 	Warnings    int
 }
 
+// showDiagnosticsView collects diagnostics in the background and displays
+// the results when ready.
 func (a *App) showDiagnosticsView() {
 	t := theme.Default
+	fmt.Fprint(a.chatView, a.formatNotice("Collecting diagnostics…", t.BrBlack))
 
-	ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
-	defer cancel()
+	go func() {
+		ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
+		defer cancel()
 
-	files, err := a.collectDiagnostics(ctx)
-	if err != nil {
-		fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("Diagnostics: %v", err), t.Yellow))
-		return
-	}
+		files, err := a.collectDiagnostics(ctx)
 
-	if len(files) == 0 {
-		fmt.Fprint(a.chatView, a.formatNotice("No diagnostics found", t.BrBlack))
-		return
-	}
+		a.app.QueueUpdateDraw(func() {
+			if err != nil {
+				fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("Diagnostics: %v", err), t.Yellow))
+				return
+			}
 
+			if len(files) == 0 {
+				fmt.Fprint(a.chatView, a.formatNotice("No diagnostics found", t.BrBlack))
+				return
+			}
+
+			a.showDiagnosticsModal(files)
+		})
+	}()
+}
+
+func (a *App) showDiagnosticsModal(files []fileDiagnostics) {
+	t := theme.Default
 	a.activeModal = ModalDiagnostics
 
 	// Stats
