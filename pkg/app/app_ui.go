@@ -381,6 +381,39 @@ func (a *App) clearChat() {
 	a.updateStatusBar()
 }
 
+func (a *App) resumeSession() {
+	t := theme.Default
+
+	sessions, err := a.agent.ListSessions()
+	if err != nil || len(sessions) == 0 {
+		fmt.Fprint(a.chatView, a.formatNotice("No sessions to resume", t.Yellow))
+		return
+	}
+
+	// Resume the most recent session
+	last := sessions[0]
+
+	if err := a.agent.LoadSession(last.ID); err != nil {
+		fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("Failed to load session: %v", err), t.Red))
+		return
+	}
+
+	a.sessionID = last.ID
+
+	// Update token count from restored session
+	usage := a.agent.Usage()
+	a.inputTokens = usage.InputTokens
+	a.outputTokens = usage.OutputTokens
+
+	// Re-render chat with restored messages
+	a.switchToChat()
+	a.renderChat(a.agent.Messages(), "", "", "")
+	a.updateStatusBar()
+
+	fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("Resumed session from %s", last.UpdatedAt.Format("Jan 2 15:04")), t.Green))
+	a.chatView.ScrollToEnd()
+}
+
 func (a *App) showError(title string, err error) {
 	a.switchToChat()
 	fmt.Fprint(a.chatView, a.formatError(title, err.Error()))
@@ -417,6 +450,11 @@ func (a *App) submitInput() {
 
 	case "/clear":
 		a.clearChat()
+		a.input.SetText("", true)
+		return
+
+	case "/resume":
+		a.resumeSession()
 		a.input.SetText("", true)
 		return
 
@@ -847,6 +885,7 @@ func (a *App) builtinCommands() []slashCommand {
 	cmds = append(cmds,
 		slashCommand{"/copy", "Copy last response to clipboard"},
 		slashCommand{"/paste", "Paste from clipboard"},
+		slashCommand{"/resume", "Resume last session"},
 		slashCommand{"/clear", "Clear chat history"},
 		slashCommand{"/quit", "Exit application"},
 	)

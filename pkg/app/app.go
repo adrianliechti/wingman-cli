@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
@@ -48,6 +50,9 @@ type App struct {
 
 	// Components
 	spinner *Spinner
+
+	// Session
+	sessionID string
 
 	// State
 	phase              AppPhase
@@ -94,10 +99,17 @@ type App struct {
 	rewindReady chan struct{}
 }
 
-func New(ctx context.Context, agent *agent.Agent) *App {
+func New(ctx context.Context, agent *agent.Agent, resumeSessionID string) *App {
 	app := tview.NewApplication()
 
 	lspManager := lsp.NewManager(agent.Environment.RootDir())
+
+	hasMessages := len(agent.Messages()) > 0
+
+	sessionID := resumeSessionID
+	if sessionID == "" {
+		sessionID = newSessionID()
+	}
 
 	a := &App{
 		ctx: ctx,
@@ -105,7 +117,8 @@ func New(ctx context.Context, agent *agent.Agent) *App {
 
 		agent: agent,
 
-		showWelcome: os.Getenv("WINGMAN_CALLER") != "vscode",
+		sessionID:   sessionID,
+		showWelcome: !hasMessages && os.Getenv("WINGMAN_CALLER") != "vscode",
 		phase:       PhasePreparing,
 
 		lspManager: lspManager,
@@ -130,6 +143,14 @@ func New(ctx context.Context, agent *agent.Agent) *App {
 	return a
 }
 
+func newSessionID() string {
+	return uuid.New().String()
+}
+
+func (a *App) saveSession() {
+	a.agent.SaveSession(a.sessionID)
+}
+
 func (a *App) stop() {
 	// Shut down bridge and LSP servers
 	a.bridge.Close()
@@ -148,6 +169,9 @@ func (a *App) stop() {
 		// Rewind not ready yet, nothing to cleanup
 	}
 
+	// Save session before stopping
+	a.saveSession()
+
 	a.app.EnableMouse(false)
 	a.app.Stop()
 
@@ -155,6 +179,15 @@ func (a *App) stop() {
 	// tview's screen.Fini() should handle this, but a race between terminal
 	// restore and pending mouse events can leak escape sequences to the shell.
 	fmt.Fprint(os.Stdout, "\033[?1000l\033[?1002l\033[?1003l\033[?1006l")
+
+	// Show session summary so the user can resume
+	if len(a.agent.Messages()) > 0 {
+		usage := a.agent.Usage()
+		fmt.Fprintf(os.Stderr, "\n")
+		fmt.Fprintf(os.Stderr, "  Tokens: \u2191%s \u2193%s\n", formatTokens(usage.InputTokens), formatTokens(usage.OutputTokens))
+		fmt.Fprintf(os.Stderr, "  Resume: wingman --resume %s\n", a.sessionID)
+		fmt.Fprintf(os.Stderr, "\n")
+	}
 }
 
 func (a *App) Run() error {
@@ -209,6 +242,17 @@ func (a *App) Run() error {
 		<-a.rewindReady
 		a.app.QueueUpdateDraw(func() {
 			a.setPhase(PhaseIdle)
+
+			// Render restored session (from --resume or /resume)
+			if messages := a.agent.Messages(); len(messages) > 0 {
+				a.switchToChat()
+				a.renderChat(messages, "", "", "")
+
+				usage := a.agent.Usage()
+				a.inputTokens = usage.InputTokens
+				a.outputTokens = usage.OutputTokens
+				a.updateStatusBar()
+			}
 		})
 	}()
 

@@ -188,5 +188,6 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 		}
 
 		a.commitRewind(commit)
+		a.saveSession()
 	}
 }

@@ -93,6 +93,16 @@ func main() {
 		}
 	}
 
+	var resumeID string
+
+	if len(os.Args) > 1 && os.Args[1] == "--resume" {
+		if len(os.Args) > 2 {
+			resumeID = os.Args[2] // wingman --resume <session-id>
+		} else {
+			resumeID = "latest"
+		}
+	}
+
 	theme.Auto()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -107,9 +117,27 @@ func main() {
 
 	defer cleanup()
 
-	app := app.New(ctx, agent.New(cfg))
+	a := agent.New(cfg)
 
-	if err := app.Run(); err != nil {
+	if resumeID != "" {
+		if resumeID == "latest" {
+			sessions, _ := a.ListSessions()
+
+			if len(sessions) > 0 {
+				resumeID = sessions[0].ID
+				a.LoadSession(resumeID)
+			}
+		} else {
+			if err := a.LoadSession(resumeID); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to resume session %s: %v\n", resumeID, err)
+				os.Exit(1)
+			}
+		}
+	}
+
+	application := app.New(ctx, a, resumeID)
+
+	if err := application.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
