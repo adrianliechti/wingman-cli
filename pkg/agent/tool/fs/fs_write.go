@@ -13,7 +13,6 @@ import (
 func WriteTool() tool.Tool {
 	return tool.Tool{
 		Name:            "write",
-		ConcurrencySafe: false,
 
 		Description: strings.Join([]string{
 			"Write content to a file. Creates the file and parent directories if they don't exist, overwrites if it does.",
@@ -92,7 +91,7 @@ func WriteTool() tool.Tool {
 				return "", fmt.Errorf("failed to close file: %w", err)
 			}
 
-			rememberRead(env, normalizedPath, []byte(content), false)
+			rememberRead(env, normalizedPath, []byte(content), 0, 0)
 
 			action := "Updated"
 			if isNew {

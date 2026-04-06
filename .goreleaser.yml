@@ -20,7 +20,7 @@ checksum:
 changelog:
   sort: asc
 
-brews:
+homebrew_casks:
   - repository:
       owner: adrianliechti
       name: homebrew-tap

@@ -14,8 +14,7 @@ const DefaultListLimit = 500
 
 func LsTool() tool.Tool {
 	return tool.Tool{
-		Name:            "ls",
-		ConcurrencySafe: true,
+		Name: "ls",
 
 		Description: fmt.Sprintf(
 			"List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to %d entries or %dKB (whichever is hit first).",

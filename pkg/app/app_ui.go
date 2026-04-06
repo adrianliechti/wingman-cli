@@ -88,7 +88,7 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		if !a.hasActiveModal() && a.input.HasSelection() {
 			selectedText, _, _ := a.input.GetSelection()
 			if selectedText != "" {
-				clipboard.WriteText(selectedText)
+				go clipboard.WriteText(selectedText)
 				return nil
 			}
 		}
@@ -304,36 +304,41 @@ func (a *App) copyLastResponse() {
 	}
 }
 
-func (a *App) pasteFromClipboard() {
+// pasteFromClipboardAsync reads the clipboard off the UI thread, then applies
+// changes back on the UI thread via QueueUpdateDraw. This prevents blocking the
+// tview event loop (which would freeze the app and ignore Ctrl+C).
+func (a *App) pasteFromClipboardAsync() {
 	contents, err := clipboard.Read()
 
 	if err != nil || len(contents) == 0 {
 		return
 	}
 
-	for _, c := range contents {
-		if c.Image != nil {
-			a.pendingContent = append(a.pendingContent, agent.Content{File: &agent.File{Data: *c.Image}})
-		}
-
-		if c.Text != "" {
-			// Check if the clipboard text contains file paths
-			paths := detectFilePaths(c.Text, a.agent.Environment.RootDir())
-			if len(paths) > 0 {
-				for _, p := range paths {
-					a.addFileToContext(normalizeFilePath(p, a.agent.Environment.RootDir()))
-				}
-
-				continue
+	a.app.QueueUpdateDraw(func() {
+		for _, c := range contents {
+			if c.Image != nil {
+				a.pendingContent = append(a.pendingContent, agent.Content{File: &agent.File{Data: *c.Image}})
 			}
 
-			// Get selection range (start, end are byte positions)
-			_, start, end := a.input.GetSelection()
-			a.input.Replace(start, end, c.Text)
-		}
-	}
+			if c.Text != "" {
+				// Check if the clipboard text contains file paths
+				paths := detectFilePaths(c.Text, a.agent.Environment.RootDir())
+				if len(paths) > 0 {
+					for _, p := range paths {
+						a.addFileToContext(normalizeFilePath(p, a.agent.Environment.RootDir()))
+					}
 
-	a.updateInputHint()
+					continue
+				}
+
+				// Get selection range (start, end are byte positions)
+				_, start, end := a.input.GetSelection()
+				a.input.Replace(start, end, c.Text)
+			}
+		}
+
+		a.updateInputHint()
+	})
 }
 
 func (a *App) cancelStream() {
@@ -504,7 +509,7 @@ func (a *App) submitInput() {
 
 	case "/paste":
 		a.input.SetText("", true)
-		a.pasteFromClipboard()
+		go a.pasteFromClipboardAsync()
 
 		return
 
@@ -695,7 +700,7 @@ func (a *App) buildLayout() *tview.Flex {
 		isPaste := event.Key() == tcell.KeyCtrlV || (event.Modifiers()&tcell.ModMeta != 0 && (event.Rune() == 'v' || event.Rune() == 'V'))
 
 		if isPaste {
-			a.pasteFromClipboard()
+			go a.pasteFromClipboardAsync()
 
 			return nil // Consume event - we handled the paste
 		}

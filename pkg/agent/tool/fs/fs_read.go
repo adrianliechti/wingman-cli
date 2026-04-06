@@ -11,8 +11,7 @@ import (
 
 func ReadTool() tool.Tool {
 	return tool.Tool{
-		Name:            "read",
-		ConcurrencySafe: true,
+		Name: "read",
 
 		Description: strings.Join([]string{
 			fmt.Sprintf("Read the contents of a file. Output includes line numbers. Truncated to %d lines or %dKB.", DefaultMaxLines, DefaultMaxBytes/1024),
@@ -66,7 +65,7 @@ func ReadTool() tool.Tool {
 			}
 
 			if len(content) == 0 {
-				rememberRead(env, normalizedPath, content, false)
+				rememberRead(env, normalizedPath, content, 0, 0)
 				return "(empty file)", nil
 			}
 
@@ -92,8 +91,16 @@ func ReadTool() tool.Tool {
 
 			selected := strings.Join(numbered, "\n")
 			output, truncatedByLines, truncatedByBytes := truncateHead(selected)
-			partial := offset > 0 || end < total || truncatedByLines || truncatedByBytes
-			rememberRead(env, normalizedPath, content, partial)
+
+			// Track actual range read. offset/limit of 0,0 means full read.
+			readOffset := offset
+			readLimit := 0
+
+			if end < total || truncatedByLines || truncatedByBytes {
+				readLimit = end - offset
+			}
+
+			rememberRead(env, normalizedPath, content, readOffset, readLimit)
 
 			outputLines := len(strings.Split(output, "\n"))
 			endLine := offset + outputLines

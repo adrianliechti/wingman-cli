@@ -12,7 +12,7 @@ import (
 
 const (
 	planFileName = "PLAN.md"
-	planMaxLines = 200
+	planMaxBytes = 25 * 1024 // 25KB
 )
 
 //go:embed plan_template.txt
@@ -21,7 +21,7 @@ var planTemplateText string
 var planTemplate = template.Must(template.New("plan").Parse(planTemplateText))
 
 // PlanContent reads PLAN.md from the memory directory.
-// Returns empty string if the file doesn't exist. Truncates to planMaxLines.
+// Returns empty string if the file doesn't exist. Truncates to planMaxBytes.
 func (e *Environment) PlanContent() string {
 	dir := e.MemoryDir()
 	if dir == "" {
@@ -38,11 +38,13 @@ func (e *Environment) PlanContent() string {
 		return ""
 	}
 
-	lines := strings.Split(content, "\n")
-	if len(lines) > planMaxLines {
-		lines = lines[:planMaxLines]
-		content = strings.Join(lines, "\n")
-		content += "\n\n> WARNING: PLAN.md exceeded 200 lines and was truncated. Keep the working plan concise and current."
+	if len(content) > planMaxBytes {
+		truncated := content[:planMaxBytes]
+		if idx := strings.LastIndex(truncated, "\n"); idx > 0 {
+			truncated = truncated[:idx]
+		}
+
+		content = truncated + "\n\n> WARNING: PLAN.md exceeded 25KB and was truncated. Keep the working plan concise and current."
 	}
 
 	return content

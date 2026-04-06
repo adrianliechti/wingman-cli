@@ -25,8 +25,7 @@ const (
 
 func GrepTool() tool.Tool {
 	return tool.Tool{
-		Name:            "grep",
-		ConcurrencySafe: true,
+		Name: "grep",
 
 		Description: strings.Join([]string{
 			fmt.Sprintf("Search file contents for a pattern. Respects .gitignore. Default limit: %d matches.", DefaultGrepLimit),
