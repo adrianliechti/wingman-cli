@@ -15,7 +15,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"github.com/sergi/go-diff/diffmatchpatch"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 )
 
 const (
@@ -63,8 +63,8 @@ func ensurePathInWorkspaceFS(pathArg, workingDir, action string) (string, error)
 
 // resolveRoot determines which root (workspace or memory) a path belongs to
 // and returns the normalized relative path and the appropriate os.Root.
-func resolveRoot(pathArg string, env *tool.Environment, action string) (string, *os.Root, error) {
-	workingDir := env.WorkingDir()
+func resolveRoot(pathArg string, env *env.Environment, action string) (string, *os.Root, error) {
+	workingDir := env.RootDir()
 
 	// Try workspace first
 	if !isOutsideWorkspace(pathArg, workingDir) {

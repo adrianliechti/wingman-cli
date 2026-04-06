@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
@@ -222,11 +223,15 @@ func isSingleCommandSafe(command string) bool {
 	return false
 }
 
-func executeShell(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
+func executeShell(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
 	command, ok := args["command"].(string)
 
 	if !ok || command == "" {
 		return "", fmt.Errorf("command is required")
+	}
+
+	if env != nil && env.IsPlanning() && !isSafeCommand(command) {
+		return "", fmt.Errorf("plan mode only allows read-only shell commands")
 	}
 
 	timeout := defaultTimeout
@@ -255,7 +260,7 @@ func executeShell(ctx context.Context, env *tool.Environment, args map[string]an
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	cmd := buildCommand(ctx, command, env.WorkingDir())
+	cmd := buildCommand(ctx, command, env.RootDir())
 
 	var output bytes.Buffer
 	cmd.Stdout = &output

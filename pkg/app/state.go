@@ -9,9 +9,9 @@ const (
 	ModalNone       Modal = ""
 	ModalPicker     Modal = "picker"
 	ModalFilePicker Modal = "file-picker"
-	ModalDiff       Modal = "diff"
-	ModalReview     Modal = "review"
-	ModalConfirm    Modal = "confirm"
+	ModalDiff         Modal = "diff"
+	ModalReview       Modal = "review"
+	ModalDiagnostics  Modal = "diagnostics"
 )
 
 // AppPhase represents the current operational phase of the application
@@ -27,9 +27,8 @@ const (
 
 // PhaseConfig holds display configuration for each phase
 type PhaseConfig struct {
-	Message  string
-	Color    string
-	Animated bool
+	Message string
+	Color   string
 }
 
 // GetPhaseConfig returns the display configuration for a given phase
@@ -39,27 +38,23 @@ func GetPhaseConfig(phase AppPhase) PhaseConfig {
 	switch phase {
 	case PhasePreparing:
 		return PhaseConfig{
-			Message:  "Preparing...",
-			Color:    t.BrBlack.String(),
-			Animated: true,
+			Message: "Preparing...",
+			Color:   t.BrBlack.String(),
 		}
 	case PhaseThinking, PhaseStreaming:
 		return PhaseConfig{
-			Message:  "Thinking...",
-			Color:    t.Cyan.String(),
-			Animated: true,
+			Message: "Thinking...",
+			Color:   t.Cyan.String(),
 		}
 	case PhaseToolRunning:
 		return PhaseConfig{
-			Message:  "Running...",
-			Color:    t.Yellow.String(),
-			Animated: true,
+			Message: "Running...",
+			Color:   t.Yellow.String(),
 		}
 	default:
 		return PhaseConfig{
-			Message:  "",
-			Color:    t.BrBlack.String(),
-			Animated: false,
+			Message: "",
+			Color:   t.BrBlack.String(),
 		}
 	}
 }

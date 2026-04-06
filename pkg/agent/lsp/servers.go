@@ -11,17 +11,54 @@ type Server struct {
 
 // projectType maps project markers to LSP server candidates.
 type projectType struct {
-	Name    string   // Project type name (e.g., "go")
-	Markers []string // Files that indicate this project type (e.g., ["go.mod"])
-	Servers []Server // Server candidates in priority order (first available wins)
+	Name     string   // Project type name (e.g., "go")
+	Markers  []string // Files that indicate this project type (e.g., ["go.mod"])
+	Servers  []Server // Server candidates in priority order (first available wins)
+	Excludes []string // Marker files that exclude this project type (e.g., Deno excludes TS)
 }
 
 // knownProjects contains the registry of known project types and their LSP servers.
 var knownProjects = []projectType{
+	// Deno (must be before TypeScript so it takes priority when deno.json is present)
+	{
+		Name:    "deno",
+		Markers: []string{"deno.json", "deno.jsonc"},
+		Servers: []Server{
+			{
+				Name:       "deno",
+				Command:    "deno",
+				Args:       []string{"lsp"},
+				Languages:  []string{"ts", "tsx", "js", "jsx", "mjs"},
+				LanguageID: "typescript",
+			},
+		},
+	},
+	// TypeScript / JavaScript
+	{
+		Name:     "typescript",
+		Markers:  []string{"tsconfig.json", "jsconfig.json", "package.json", "package-lock.json", "bun.lockb", "yarn.lock", "pnpm-lock.yaml"},
+		Excludes: []string{"deno.json", "deno.jsonc"},
+		Servers: []Server{
+			{
+				Name:       "typescript-language-server",
+				Command:    "typescript-language-server",
+				Args:       []string{"--stdio"},
+				Languages:  []string{"ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"},
+				LanguageID: "typescript",
+			},
+			{
+				Name:       "vtsls",
+				Command:    "vtsls",
+				Args:       []string{"--stdio"},
+				Languages:  []string{"ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"},
+				LanguageID: "typescript",
+			},
+		},
+	},
 	// Go
 	{
 		Name:    "go",
-		Markers: []string{"go.mod", "go.work"},
+		Markers: []string{"go.mod", "go.work", "go.sum"},
 		Servers: []Server{
 			{
 				Name:       "gopls",
@@ -32,31 +69,10 @@ var knownProjects = []projectType{
 			},
 		},
 	},
-	// TypeScript / JavaScript
-	{
-		Name:    "typescript",
-		Markers: []string{"tsconfig.json", "jsconfig.json", "package.json"},
-		Servers: []Server{
-			{
-				Name:       "typescript-language-server",
-				Command:    "typescript-language-server",
-				Args:       []string{"--stdio"},
-				Languages:  []string{"ts", "tsx", "js", "jsx", "mjs", "cjs"},
-				LanguageID: "typescript",
-			},
-			{
-				Name:       "vtsls",
-				Command:    "vtsls",
-				Args:       []string{"--stdio"},
-				Languages:  []string{"ts", "tsx", "js", "jsx", "mjs", "cjs"},
-				LanguageID: "typescript",
-			},
-		},
-	},
 	// Rust
 	{
 		Name:    "rust",
-		Markers: []string{"Cargo.toml"},
+		Markers: []string{"Cargo.toml", "Cargo.lock"},
 		Servers: []Server{
 			{
 				Name:       "rust-analyzer",
@@ -70,7 +86,7 @@ var knownProjects = []projectType{
 	// Python
 	{
 		Name:    "python",
-		Markers: []string{"pyproject.toml", "setup.py", "requirements.txt", "Pipfile", "setup.cfg"},
+		Markers: []string{"pyproject.toml", "setup.py", "requirements.txt", "Pipfile", "setup.cfg", "pyrightconfig.json"},
 		Servers: []Server{
 			{
 				Name:       "basedpyright",
@@ -110,15 +126,15 @@ var knownProjects = []projectType{
 			{
 				Name:       "clangd",
 				Command:    "clangd",
-				Args:       []string{},
-				Languages:  []string{"c", "h", "cpp", "hpp", "cc", "cxx", "hxx"},
+				Args:       []string{"--background-index", "--clang-tidy"},
+				Languages:  []string{"c", "h", "cpp", "hpp", "cc", "cxx", "hxx", "c++", "h++", "hh"},
 				LanguageID: "cpp",
 			},
 			{
 				Name:       "ccls",
 				Command:    "ccls",
 				Args:       []string{},
-				Languages:  []string{"c", "h", "cpp", "hpp", "cc", "cxx", "hxx"},
+				Languages:  []string{"c", "h", "cpp", "hpp", "cc", "cxx", "hxx", "c++", "h++", "hh"},
 				LanguageID: "cpp",
 			},
 		},
@@ -126,7 +142,7 @@ var knownProjects = []projectType{
 	// Java
 	{
 		Name:    "java",
-		Markers: []string{"pom.xml", "build.gradle", "build.gradle.kts", ".project"},
+		Markers: []string{"pom.xml", "build.gradle", "build.gradle.kts", ".project", ".classpath"},
 		Servers: []Server{
 			{
 				Name:       "jdtls",
@@ -140,7 +156,7 @@ var knownProjects = []projectType{
 	// C# / .NET
 	{
 		Name:    "csharp",
-		Markers: []string{"*.csproj", "*.sln", "global.json"},
+		Markers: []string{"*.csproj", "*.sln", "*.slnx", "global.json"},
 		Servers: []Server{
 			{
 				Name:       "omnisharp",
@@ -158,6 +174,20 @@ var knownProjects = []projectType{
 			},
 		},
 	},
+	// F#
+	{
+		Name:    "fsharp",
+		Markers: []string{"*.fsproj", "*.sln", "*.slnx", "global.json"},
+		Servers: []Server{
+			{
+				Name:       "fsautocomplete",
+				Command:    "fsautocomplete",
+				Args:       []string{},
+				Languages:  []string{"fs", "fsi", "fsx"},
+				LanguageID: "fsharp",
+			},
+		},
+	},
 	// Ruby
 	{
 		Name:    "ruby",
@@ -167,14 +197,14 @@ var knownProjects = []projectType{
 				Name:       "ruby-lsp",
 				Command:    "ruby-lsp",
 				Args:       []string{},
-				Languages:  []string{"rb", "rake", "gemspec"},
+				Languages:  []string{"rb", "rake", "gemspec", "ru"},
 				LanguageID: "ruby",
 			},
 			{
 				Name:       "solargraph",
 				Command:    "solargraph",
 				Args:       []string{"stdio"},
-				Languages:  []string{"rb", "rake", "gemspec"},
+				Languages:  []string{"rb", "rake", "gemspec", "ru"},
 				LanguageID: "ruby",
 			},
 		},
@@ -209,7 +239,7 @@ var knownProjects = []projectType{
 				Name:       "zls",
 				Command:    "zls",
 				Args:       []string{},
-				Languages:  []string{"zig"},
+				Languages:  []string{"zig", "zon"},
 				LanguageID: "zig",
 			},
 		},
@@ -231,7 +261,7 @@ var knownProjects = []projectType{
 	// Kotlin
 	{
 		Name:    "kotlin",
-		Markers: []string{"build.gradle.kts", "settings.gradle.kts"},
+		Markers: []string{"settings.gradle.kts", "build.gradle.kts"},
 		Servers: []Server{
 			{
 				Name:       "kotlin-language-server",
@@ -259,7 +289,7 @@ var knownProjects = []projectType{
 	// Elixir
 	{
 		Name:    "elixir",
-		Markers: []string{"mix.exs"},
+		Markers: []string{"mix.exs", "mix.lock"},
 		Servers: []Server{
 			{
 				Name:       "elixir-ls",
@@ -280,7 +310,7 @@ var knownProjects = []projectType{
 	// Haskell
 	{
 		Name:    "haskell",
-		Markers: []string{"stack.yaml", "cabal.project", "hie.yaml"},
+		Markers: []string{"stack.yaml", "cabal.project", "hie.yaml", "*.cabal"},
 		Servers: []Server{
 			{
 				Name:       "haskell-language-server",
@@ -305,10 +335,80 @@ var knownProjects = []projectType{
 			},
 		},
 	},
+	// Dart
+	{
+		Name:    "dart",
+		Markers: []string{"pubspec.yaml", "analysis_options.yaml"},
+		Servers: []Server{
+			{
+				Name:       "dart",
+				Command:    "dart",
+				Args:       []string{"language-server", "--lsp"},
+				Languages:  []string{"dart"},
+				LanguageID: "dart",
+			},
+		},
+	},
+	// Vue
+	{
+		Name:    "vue",
+		Markers: []string{"package.json", "package-lock.json", "bun.lockb", "yarn.lock", "pnpm-lock.yaml"},
+		Servers: []Server{
+			{
+				Name:       "vue-language-server",
+				Command:    "vue-language-server",
+				Args:       []string{"--stdio"},
+				Languages:  []string{"vue"},
+				LanguageID: "vue",
+			},
+		},
+	},
+	// Svelte
+	{
+		Name:    "svelte",
+		Markers: []string{"package.json", "package-lock.json", "bun.lockb", "yarn.lock", "pnpm-lock.yaml"},
+		Servers: []Server{
+			{
+				Name:       "svelteserver",
+				Command:    "svelteserver",
+				Args:       []string{"--stdio"},
+				Languages:  []string{"svelte"},
+				LanguageID: "svelte",
+			},
+		},
+	},
+	// Astro
+	{
+		Name:    "astro",
+		Markers: []string{"package.json", "package-lock.json", "bun.lockb", "yarn.lock", "pnpm-lock.yaml"},
+		Servers: []Server{
+			{
+				Name:       "astro-ls",
+				Command:    "astro-ls",
+				Args:       []string{"--stdio"},
+				Languages:  []string{"astro"},
+				LanguageID: "astro",
+			},
+		},
+	},
+	// Bash / Shell
+	{
+		Name:    "bash",
+		Markers: []string{".bashrc", ".bash_profile", ".zshrc", "*.sh"},
+		Servers: []Server{
+			{
+				Name:       "bash-language-server",
+				Command:    "bash-language-server",
+				Args:       []string{"start"},
+				Languages:  []string{"sh", "bash", "zsh", "ksh"},
+				LanguageID: "shellscript",
+			},
+		},
+	},
 	// Terraform
 	{
 		Name:    "terraform",
-		Markers: []string{"main.tf", "terraform.tf", ".terraform"},
+		Markers: []string{"main.tf", "terraform.tf", ".terraform", ".terraform.lock.hcl"},
 		Servers: []Server{
 			{
 				Name:       "terraform-ls",
@@ -344,6 +444,104 @@ var knownProjects = []projectType{
 				Args:       []string{"--stdio"},
 				Languages:  []string{"dockerfile"},
 				LanguageID: "dockerfile",
+			},
+		},
+	},
+	// OCaml
+	{
+		Name:    "ocaml",
+		Markers: []string{"dune-project", "dune-workspace", ".merlin", "*.opam"},
+		Servers: []Server{
+			{
+				Name:       "ocamllsp",
+				Command:    "ocamllsp",
+				Args:       []string{},
+				Languages:  []string{"ml", "mli"},
+				LanguageID: "ocaml",
+			},
+		},
+	},
+	// Gleam
+	{
+		Name:    "gleam",
+		Markers: []string{"gleam.toml"},
+		Servers: []Server{
+			{
+				Name:       "gleam",
+				Command:    "gleam",
+				Args:       []string{"lsp"},
+				Languages:  []string{"gleam"},
+				LanguageID: "gleam",
+			},
+		},
+	},
+	// Clojure
+	{
+		Name:    "clojure",
+		Markers: []string{"deps.edn", "project.clj", "shadow-cljs.edn", "bb.edn"},
+		Servers: []Server{
+			{
+				Name:       "clojure-lsp",
+				Command:    "clojure-lsp",
+				Args:       []string{"listen"},
+				Languages:  []string{"clj", "cljs", "cljc", "edn"},
+				LanguageID: "clojure",
+			},
+		},
+	},
+	// Nix
+	{
+		Name:    "nix",
+		Markers: []string{"flake.nix", "default.nix", "shell.nix"},
+		Servers: []Server{
+			{
+				Name:       "nixd",
+				Command:    "nixd",
+				Args:       []string{},
+				Languages:  []string{"nix"},
+				LanguageID: "nix",
+			},
+		},
+	},
+	// Prisma
+	{
+		Name:    "prisma",
+		Markers: []string{"schema.prisma"},
+		Servers: []Server{
+			{
+				Name:       "prisma",
+				Command:    "prisma",
+				Args:       []string{"language-server"},
+				Languages:  []string{"prisma"},
+				LanguageID: "prisma",
+			},
+		},
+	},
+	// Typst
+	{
+		Name:    "typst",
+		Markers: []string{"typst.toml"},
+		Servers: []Server{
+			{
+				Name:       "tinymist",
+				Command:    "tinymist",
+				Args:       []string{},
+				Languages:  []string{"typ"},
+				LanguageID: "typst",
+			},
+		},
+	},
+	// LaTeX
+	{
+		Name:    "latex",
+		Markers: []string{".latexmkrc", "latexmkrc", ".texlabroot"},
+		Servers: []Server{
+			{
+				Name:       "texlab",
+				Command:    "texlab",
+				Args:       []string{},
+				Languages:  []string{"tex", "bib"},
+				LanguageID: "latex",
 			},
 		},
 	},

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
 	"github.com/adrianliechti/wingman-agent/pkg/ui/markdown"
@@ -63,6 +64,8 @@ func (a *App) formatPrompt(title string, message string, hint string) string {
 		fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", chatIndent, t.Red, wl)
 	}
 
+	fmt.Fprintf(&result, "%s[%s]┃[-]\n", chatIndent, t.Red)
+
 	for line := range strings.SplitSeq(message, "\n") {
 		for _, wl := range markdown.WrapLine(line, a.contentWidth()) {
 			fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", chatIndent, t.Red, wl)
@@ -80,11 +83,24 @@ func (a *App) formatPrompt(title string, message string, hint string) string {
 
 // toolDisplay returns the icon and label for a tool.
 func toolDisplay(name string) (string, string) {
-	if name == "agent" {
-		return "🤖", ""
+	switch {
+	case name == "agent":
+		return "▸", ""
+	case name == "shell":
+		return "$", name
+	case name == "read", name == "write", name == "edit",
+		name == "ls", name == "find", name == "grep":
+		return "⟡", name
+	case name == "fetch", name == "search_online":
+		return "⊕", name
+	case name == "ask_user":
+		return "?", name
+	case strings.HasPrefix(name, "get_lsp_") || strings.HasPrefix(name, "find_lsp_") ||
+		strings.HasPrefix(name, "bridge_get_lsp_") || strings.HasPrefix(name, "bridge_find_lsp_"):
+		return "◇", name
+	default:
+		return "◈", name
 	}
-
-	return "⚡", name
 }
 
 func (a *App) toolHintSpace(label string) int {
@@ -174,6 +190,10 @@ func (a *App) formatToolProgress(name string, hint string) string {
 	title := a.formatToolTitle(icon, label, hint, t.Yellow.String(), true)
 
 	return fmt.Sprintf("%s[%s]┃[-] %s\n\n", chatIndent, t.Yellow, title)
+}
+
+func (a *App) formatNotice(message string, color tcell.Color) string {
+	return fmt.Sprintf("%s[%s]┃[-] [%s]%s[-]\n\n", chatIndent, color, color, message)
 }
 
 func (a *App) formatError(title string, message string) string {

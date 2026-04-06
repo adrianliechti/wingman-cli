@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -14,6 +16,7 @@ import (
 type Manager struct {
 	*Config
 
+	mu       sync.RWMutex
 	sessions map[string]*mcp.ClientSession
 }
 
@@ -47,14 +50,41 @@ func (m *Manager) Connect(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// AddServer registers an additional MCP server and connects it.
+func (m *Manager) AddServer(ctx context.Context, name string, server ServerConfig) error {
+	if m.Servers == nil {
+		m.Servers = make(map[string]ServerConfig)
+	}
+
+	m.Servers[name] = server
+	return m.connect(ctx, name, server)
+}
+
+// AddSession registers an externally-created session under the given name.
+func (m *Manager) AddSession(name string, session *mcp.ClientSession) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.sessions[name] = session
+}
+
 func (m *Manager) Close() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	for _, s := range m.sessions {
 		s.Close()
 	}
 }
 
+// Sessions returns a snapshot copy of all sessions.
 func (m *Manager) Sessions() map[string]*mcp.ClientSession {
-	return m.sessions
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make(map[string]*mcp.ClientSession, len(m.sessions))
+	maps.Copy(result, m.sessions)
+	return result
 }
 
 func (m *Manager) connect(ctx context.Context, name string, server ServerConfig) error {
@@ -78,7 +108,9 @@ func (m *Manager) connect(ctx context.Context, name string, server ServerConfig)
 		return fmt.Errorf("%s: %w", name, err)
 	}
 
+	m.mu.Lock()
 	m.sessions[name] = session
+	m.mu.Unlock()
 
 	return nil
 }

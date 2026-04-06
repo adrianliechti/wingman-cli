@@ -53,18 +53,6 @@ func (s *Spinner) Start(phase AppPhase) {
 	go s.run()
 }
 
-// SetPhase updates the spinner phase without restarting
-func (s *Spinner) SetPhase(phase AppPhase) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.phase = phase
-
-	if s.active {
-		s.render()
-	}
-}
-
 // Stop halts the spinner animation
 func (s *Spinner) Stop() {
 	s.mu.Lock()
@@ -88,19 +76,20 @@ func (s *Spinner) run() {
 		case <-s.stopChan:
 			return
 		case <-s.ticker.C:
-			s.mu.Lock()
-			if !s.active {
-				s.mu.Unlock()
-				return
-			}
-			s.frame = (s.frame + 1) % len(spinnerFrames)
-			s.render()
-			s.mu.Unlock()
-			s.app.QueueUpdateDraw(func() {})
+			s.app.QueueUpdateDraw(func() {
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				if !s.active {
+					return
+				}
+				s.frame = (s.frame + 1) % len(spinnerFrames)
+				s.render()
+			})
 		}
 	}
 }
 
+// render updates the view text. Must be called with mu held.
 func (s *Spinner) render() {
 	config := GetPhaseConfig(s.phase)
 	if config.Message == "" {

@@ -1,0 +1,33 @@
+{{- if .MemoryDir -}}
+{{- if .PlanMode}}
+Persistent memory is stored at `{{.MemoryDir}}`.
+{{- if .MemoryContent}}
+
+Current MEMORY.md:
+
+{{.MemoryContent}}
+{{- else}}
+
+No memories saved yet.
+{{- end}}
+{{- else}}
+You have a persistent, file-based memory system at `{{.MemoryDir}}`. This directory already exists — write to it directly with the `write` tool (do not run mkdir or check for its existence).
+
+Save lasting user, feedback, project, or reference information there when it will help future conversations. Do not save code structure, git history, debugging solutions already reflected in code, or ephemeral task context.
+
+When saving memory, write each memory to its own file with frontmatter and add a short pointer entry to MEMORY.md. Keep MEMORY.md concise.
+
+Access memory when it seems relevant, when the user refers to prior work, or when they explicitly ask you to remember or recall something.
+{{- if .MemoryContent}}
+
+Current MEMORY.md:
+
+{{.MemoryContent}}
+{{- else}}
+
+Current MEMORY.md:
+
+(empty — no memories saved yet)
+{{- end}}
+{{- end}}
+{{- end}}

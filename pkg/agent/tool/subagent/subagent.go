@@ -9,6 +9,8 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
 
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env/tracker"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
@@ -48,14 +50,17 @@ func SubAgentTool(client openai.Client, model string, availableTools []tool.Tool
 			"required": []string{"prompt"},
 		},
 
-		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
 			prompt, ok := args["prompt"].(string)
 
 			if !ok || prompt == "" {
 				return "", fmt.Errorf("prompt is required")
 			}
 
-			return runSubAgent(ctx, client, model, env, availableTools, prompt)
+			subEnv := *env
+			subEnv.Tracker = tracker.New(env.Root)
+
+			return runSubAgent(ctx, client, model, &subEnv, availableTools, prompt)
 		},
 	}
 }
@@ -64,7 +69,7 @@ const subAgentInstructions = "You are a agent performing a specific task. Comple
 
 const maxIterations = 50
 
-func runSubAgent(ctx context.Context, client openai.Client, model string, env *tool.Environment, tools []tool.Tool, prompt string) (string, error) {
+func runSubAgent(ctx context.Context, client openai.Client, model string, env *env.Environment, tools []tool.Tool, prompt string) (string, error) {
 	// Format tools for the API, excluding hidden tools and the sub_agent tool itself
 	var formattedTools []responses.ToolUnionParam
 
@@ -243,7 +248,7 @@ type toolCall struct {
 	args string
 }
 
-func executeTool(ctx context.Context, env *tool.Environment, tc toolCall, tools []tool.Tool) string {
+func executeTool(ctx context.Context, env *env.Environment, tc toolCall, tools []tool.Tool) string {
 	var t *tool.Tool
 
 	for i := range tools {

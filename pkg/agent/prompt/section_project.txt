@@ -1,0 +1,7 @@
+{{- if .ProjectInstructions}}
+From AGENTS.md:
+
+```text
+{{.ProjectInstructions}}
+```
+{{- end}}

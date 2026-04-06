@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,10 +13,12 @@ import (
 	"github.com/rivo/tview"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/bridge"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/lsp"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/rewind"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/ui/theme"
 
 	lsptool "github.com/adrianliechti/wingman-agent/pkg/agent/tool/lsp"
 	mcptool "github.com/adrianliechti/wingman-agent/pkg/agent/tool/mcp"
@@ -27,7 +30,6 @@ type App struct {
 	app *tview.Application
 
 	agent *agent.Agent
-	//config *agent.Config
 
 	// UI Components
 	pages       *tview.Pages
@@ -38,7 +40,7 @@ type App struct {
 	inputHint   *tview.TextView
 
 	// Layout containers
-	mainContent   *tview.Flex
+	contentPages  *tview.Flex
 	chatContainer *tview.Flex
 	inputSection  *tview.Flex
 	inputFrame    *tview.Frame
@@ -50,7 +52,7 @@ type App struct {
 	// State
 	phase              AppPhase
 	currentMode        Mode
-	isWelcomeMode      bool
+	showWelcome        bool
 	activeModal        Modal
 	promptActive       bool
 	promptResponse     chan bool
@@ -58,9 +60,10 @@ type App struct {
 	askActive          bool
 	askResponse        chan string
 	toolOutputExpanded bool
-	totalTokens        int64
+	inputTokens        int64
+	outputTokens       int64
 	chatWidth          int
-	lastWelcomeCompact bool
+	lastCompact        bool
 	pendingContent     []agent.Content
 	pendingFiles       []string
 
@@ -72,20 +75,19 @@ type App struct {
 	currentToolName string
 	currentToolHint string
 
-
 	// MCP state
 	mcpManager *mcp.Manager
 	mcpTools   []tool.Tool
 	mcpMu      sync.Mutex
 	mcpError   error
 
-	// LSP state
-	lspManager  *lsp.Manager
-	lspTracker  *lsp.DiagnosticTracker
-	lspTool     tool.Tool
+	// Bridge state (VS Code bridge integration)
+	bridge *bridge.Bridge
 
-	// Confirm dialog state
-	confirmResponse chan bool
+	// LSP state
+	lspManager *lsp.Manager
+	lspTracker *lsp.DiagnosticTracker
+	lspTools   []tool.Tool
 
 	// Rewind state
 	rewind      *rewind.Manager
@@ -95,7 +97,7 @@ type App struct {
 func New(ctx context.Context, agent *agent.Agent) *App {
 	app := tview.NewApplication()
 
-	lspManager := lsp.NewManager(agent.Environment.WorkingDir())
+	lspManager := lsp.NewManager(agent.Environment.RootDir())
 
 	a := &App{
 		ctx: ctx,
@@ -103,14 +105,18 @@ func New(ctx context.Context, agent *agent.Agent) *App {
 
 		agent: agent,
 
-		isWelcomeMode: true,
-		phase:         PhasePreparing,
+		showWelcome: os.Getenv("WINGMAN_CALLER") != "vscode",
+		phase:       PhasePreparing,
 
 		lspManager: lspManager,
 		lspTracker: lsp.NewDiagnosticTracker(),
-		lspTool:    lsptool.NewTool(lspManager),
+		lspTools:   lsptool.NewTools(lspManager),
 
 		rewindReady: make(chan struct{}),
+	}
+
+	if agent.Environment != nil {
+		agent.Environment.ExitPlanMode()
 	}
 
 	agent.Environment.AskUser = a.askUser
@@ -125,7 +131,9 @@ func New(ctx context.Context, agent *agent.Agent) *App {
 }
 
 func (a *App) stop() {
-	// Shut down cached LSP servers
+	// Shut down bridge and LSP servers
+	a.bridge.Close()
+
 	if a.lspManager != nil {
 		a.lspManager.Close()
 	}
@@ -155,19 +163,22 @@ func (a *App) Run() error {
 	// Auto-select model if not configured
 	a.autoSelectModel()
 
-	if a.agent.MCP != nil {
-		go func() {
-			err := a.initMCP()
-			if err != nil || a.mcpError != nil {
-				if err == nil {
-					err = a.mcpError
-				}
-				a.app.QueueUpdateDraw(func() {
-					a.showError("MCP initialization failed", err)
-				})
+	go func() {
+		err := a.initMCP()
+		if err != nil || a.mcpError != nil {
+			if err == nil {
+				err = a.mcpError
 			}
-		}()
-	}
+			a.app.QueueUpdateDraw(func() {
+				a.showError("MCP initialization failed", err)
+			})
+		}
+
+		a.app.QueueUpdateDraw(func() {
+			a.updateStatusBar()
+			a.showMissingLSPHint()
+		})
+	}()
 
 	mainLayout := a.buildLayout()
 	a.spinner = NewSpinner(a.app, a.inputHint)
@@ -178,20 +189,15 @@ func (a *App) Run() error {
 	// Show "Preparing..." while rewind initializes, then transition to idle
 	a.spinner.Start(PhasePreparing)
 
-	// Initialize rewind asynchronously
+	// Initialize rewind asynchronously (only in git repos)
 	go func() {
 		defer close(a.rewindReady)
 
-		workDir := a.agent.Environment.WorkingDir()
+		workDir := a.agent.Environment.RootDir()
 		gitDir := filepath.Join(workDir, ".git")
 
 		if _, err := os.Stat(gitDir); os.IsNotExist(err) {
-			if !a.showConfirm("Current directory is not a git repository. Continue?") {
-				a.app.QueueUpdate(func() {
-					a.stop()
-				})
-				return
-			}
+			return
 		}
 
 		if rm, err := rewind.New(workDir); err == nil {
@@ -202,9 +208,7 @@ func (a *App) Run() error {
 	go func() {
 		<-a.rewindReady
 		a.app.QueueUpdateDraw(func() {
-			a.spinner.Stop()
-			a.phase = PhaseIdle
-			a.updateInputHint()
+			a.setPhase(PhaseIdle)
 		})
 	}()
 
@@ -212,14 +216,14 @@ func (a *App) Run() error {
 		Primitive: a.pages,
 
 		intercept: func(text string) bool {
-			paths := detectFilePaths(text, a.agent.Environment.WorkingDir())
+			paths := detectFilePaths(text, a.agent.Environment.RootDir())
 
 			if len(paths) == 0 {
 				return false
 			}
 
 			for _, p := range paths {
-				a.addFileToContext(normalizeFilePath(p, a.agent.Environment.WorkingDir()))
+				a.addFileToContext(normalizeFilePath(p, a.agent.Environment.RootDir()))
 			}
 
 			a.app.QueueUpdateDraw(func() {
@@ -234,15 +238,18 @@ func (a *App) Run() error {
 }
 
 func (a *App) initMCP() error {
-	if a.agent.MCP == nil {
-		return nil
+	if a.agent.MCP != nil {
+		a.mcpManager = a.agent.MCP
+
+		if err := a.mcpManager.Connect(a.ctx); err != nil {
+			a.mcpError = err
+		}
+	} else {
+		a.mcpManager = mcp.NewManager(&mcp.Config{})
 	}
 
-	a.mcpManager = a.agent.MCP
-
-	if err := a.mcpManager.Connect(a.ctx); err != nil {
-		a.mcpError = err
-	}
+	// Auto-discover VS Code bridge from lockfiles
+	a.bridge = bridge.Setup(a.ctx, a.agent.Environment.RootDir(), a.mcpManager)
 
 	mcpTools, err := mcptool.Tools(a.ctx, a.mcpManager)
 
@@ -259,11 +266,11 @@ func (a *App) initMCP() error {
 
 func (a *App) toggleMode() {
 	if a.currentMode == ModeAgent {
-		a.currentMode = ModePlan
-	} else {
-		a.currentMode = ModeAgent
+		a.enterPlanMode(true)
+		return
 	}
-	a.updateStatusBar()
+
+	a.exitPlanMode(true)
 }
 
 // hasActiveModal returns true if any modal is currently open
@@ -280,42 +287,8 @@ func (a *App) closeActiveModal() {
 		a.closeFilePicker()
 	case ModalDiff:
 		a.closeDiffView()
-	case ModalConfirm:
-		a.closeConfirm(false)
-	}
-}
-
-func (a *App) showConfirm(message string) bool {
-	a.confirmResponse = make(chan bool, 1)
-
-	a.app.QueueUpdateDraw(func() {
-		modal := tview.NewModal().
-			SetText(message).
-			AddButtons([]string{"Yes", "No"}).
-			SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-				a.closeConfirm(buttonLabel == "Yes")
-			})
-
-		a.activeModal = ModalConfirm
-		a.pages.AddPage("confirm", modal, true, true)
-	})
-
-	return <-a.confirmResponse
-}
-
-func (a *App) closeConfirm(result bool) {
-	a.activeModal = ModalNone
-
-	if a.pages != nil {
-		a.pages.RemovePage("confirm")
-		a.app.SetFocus(a.input)
-	}
-
-	if a.confirmResponse != nil {
-		select {
-		case a.confirmResponse <- result:
-		default:
-		}
+	case ModalDiagnostics:
+		a.closeDiagnosticsView()
 	}
 }
 
@@ -325,8 +298,15 @@ func (a *App) allTools() []tool.Tool {
 
 	tools := append([]tool.Tool{}, a.agent.Tools...)
 
-	tools = append(tools, a.mcpTools...)
-	tools = append(tools, a.lspTool)
+	if a.currentMode != ModePlan {
+		tools = append(tools, a.mcpTools...)
+	}
+
+	// When bridge is connected it provides all LSP operations via the IDE's
+	// language services. Skip local LSP.
+	if !a.bridge.IsConnected() {
+		tools = append(tools, a.lspTools...)
+	}
 
 	return tools
 }
@@ -337,15 +317,41 @@ func (a *App) lspDiagnostics(ctx context.Context, path string) string {
 		absPath = filepath.Join(a.lspManager.WorkingDir(), path)
 	}
 
+	// When bridge is connected, notify it and use its diagnostics.
+	if a.bridge.IsConnected() {
+		return a.bridgeDiagnostics(ctx, absPath)
+	}
+
+	return a.localLSPDiagnostics(ctx, absPath, path)
+}
+
+func (a *App) bridgeDiagnostics(ctx context.Context, absPath string) string {
+	a.bridge.NotifyFileUpdated(ctx, absPath)
+
+	// Give the IDE time to re-analyze the file after notification
+	time.Sleep(500 * time.Millisecond)
+
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+
+	result, err := a.bridge.GetDiagnostics(ctx, absPath)
+	if err != nil || result == "" || result == "[]" {
+		return ""
+	}
+
+	return result
+}
+
+func (a *App) localLSPDiagnostics(ctx context.Context, absPath, path string) string {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	uri := lsp.FileURI(absPath)
 
 	session, err := a.lspManager.GetSession(ctx, absPath)
 	if err != nil {
 		return ""
 	}
-
-	uri := lsp.FileURI(absPath)
 
 	// Capture baseline diagnostics before syncing the changed file content.
 	// This lets us diff against what existed before the edit.
@@ -379,6 +385,26 @@ func (a *App) lspDiagnostics(ctx context.Context, path string) string {
 	a.lspTracker.MarkDelivered(uri, newDiags)
 
 	return lsp.FormatNewDiagnostics(newDiags, path, a.lspManager.WorkingDir())
+}
+
+func (a *App) showMissingLSPHint() {
+	// When bridge is connected, LSP comes from the IDE — no local servers needed.
+	if a.bridge.IsConnected() {
+		return
+	}
+
+	missing := a.lspManager.MissingServers()
+	if len(missing) == 0 {
+		return
+	}
+
+	t := theme.Default
+
+	for _, m := range missing {
+		fmt.Fprintf(a.chatView, "  [%s]┃[-] [%s]No LSP server found for %s (install %s)[-]\n",
+			t.BrBlack, t.BrBlack, m.ProjectName, strings.Join(m.Servers, " or "))
+	}
+	fmt.Fprint(a.chatView, "\n")
 }
 
 func (a *App) isToolHidden(name string) bool {

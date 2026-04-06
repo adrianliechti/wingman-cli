@@ -210,7 +210,6 @@ func (a *App) showFilePicker(initialQuery string, onSelect func(paths []string))
 		updateList := func(query string) {
 			list.Clear()
 			filtered = fuzzyFilterFiles(files, query)
-			selected = make(map[string]bool)
 
 			for _, f := range filtered {
 				list.AddItem(itemText(f), "", 0, nil)

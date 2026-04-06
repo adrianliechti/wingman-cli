@@ -158,6 +158,17 @@ func (t *tui) build() {
 					t.app.Stop()
 					return nil
 				}
+				if event.Rune() == 's' {
+					row, _ := t.table.GetSelection()
+					if row > 0 {
+						entries := t.store.List()
+						idx := len(entries) - row
+						if idx >= 0 && idx < len(entries) {
+							t.saveEntry(entries[idx])
+						}
+					}
+					return nil
+				}
 			}
 
 		case pageDetail:

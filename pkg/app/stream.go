@@ -61,7 +61,7 @@ func (a *App) setPhase(phase AppPhase) {
 			a.spinner.Stop()
 			a.updateInputHint()
 		} else {
-			a.spinner.SetPhase(phase)
+			a.spinner.Start(phase)
 		}
 	}
 }
@@ -94,12 +94,7 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 	var content strings.Builder
 	var streamErr error
 
-	// Start with thinking phase
-	if a.spinner != nil {
-		a.spinner.Start(PhaseThinking)
-	}
 	a.setPhase(PhaseThinking)
-	a.app.QueueUpdateDraw(func() {})
 
 	for msg, err := range a.agent.Send(streamCtx, instructions, input, tools) {
 		if err != nil {
@@ -132,20 +127,24 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 				a.render(content.String(), "", "")
 			}
 		}
+
+		// Update token count during the loop so the statusbar stays current
+		usage := a.agent.Usage()
+		a.inputTokens = usage.InputTokens
+		a.outputTokens = usage.OutputTokens
+		a.app.QueueUpdateDraw(func() {
+			a.updateStatusBar()
+		})
 	}
 
 	a.setPhase(PhaseIdle)
 
-	usage := a.agent.Usage()
-	a.totalTokens = usage.InputTokens + usage.OutputTokens
-
 	a.app.QueueUpdateDraw(func() {
 		if streamErr != nil {
 			if errors.Is(streamErr, context.Canceled) {
-				// User cancelled - show brief notice instead of error
-				fmt.Fprintf(a.chatView, "\n[%s]Cancelled[-]\n\n", t.Yellow)
+				fmt.Fprint(a.chatView, a.formatNotice("Cancelled", t.Yellow))
 			} else {
-				fmt.Fprintf(a.chatView, "\n[%s]Error: %v[-]\n\n", t.Red, streamErr)
+				fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("Error: %v", streamErr), t.Red))
 			}
 		} else {
 			messages := a.agent.Messages()

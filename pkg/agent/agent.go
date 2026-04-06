@@ -6,13 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"iter"
-	"sync"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
 
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
+
+const maxResultBytes = 50 * 1024 // 50KB per tool result
 
 var errYieldStopped = errors.New("yield stopped")
 
@@ -174,38 +180,26 @@ func extractToolCalls(items []responses.ResponseInputItemUnionParam) []ToolCall 
 }
 
 func (a *Agent) processToolCalls(ctx context.Context, yield func(Message, error) bool, toolCalls []ToolCall, tools []tool.Tool) error {
-	// First, yield all tool call messages
 	for _, tc := range toolCalls {
-		msg := Message{
+		// Yield tool call message
+		callMsg := Message{
 			Role:    RoleAssistant,
 			Content: []Content{{ToolCall: &ToolCall{ID: tc.ID, Name: tc.Name, Args: tc.Args}}},
 		}
 
-		if !yield(msg, nil) {
+		if !yield(callMsg, nil) {
 			return errYieldStopped
 		}
-	}
 
-	// Execute tool calls concurrently — if the model requested parallel calls,
-	// it expects them to be safe for concurrent execution.
-	results := make([]string, len(toolCalls))
+		// Execute and yield result immediately
+		result := truncateResult(ExecuteTool(ctx, a.Environment, tc, tools), a.Environment)
 
-	var wg sync.WaitGroup
-	for i, tc := range toolCalls {
-		wg.Go(func() {
-			results[i] = ExecuteTool(ctx, a.Environment, tc, tools)
-		})
-	}
-	wg.Wait()
-
-	// Yield results and append to messages
-	for i, tc := range toolCalls {
 		resultMsg := Message{
 			Role: RoleAssistant,
 			Content: []Content{{ToolResult: &ToolResult{
 				ID:      tc.ID,
 				Name:    tc.Name,
-				Content: results[i],
+				Content: result,
 			}}},
 		}
 
@@ -217,7 +211,7 @@ func (a *Agent) processToolCalls(ctx context.Context, yield func(Message, error)
 			OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
 				CallID: tc.ID,
 				Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
-					OfString: openai.String(results[i]),
+					OfString: openai.String(result),
 				},
 			},
 		})
@@ -259,17 +253,19 @@ func findTool(name string, tools []tool.Tool) *tool.Tool {
 }
 
 // ExecuteTool looks up and executes a tool by name. Shared between agent and sub-agent.
-func ExecuteTool(ctx context.Context, env *tool.Environment, tc ToolCall, tools []tool.Tool) string {
+func ExecuteTool(ctx context.Context, env *env.Environment, tc ToolCall, tools []tool.Tool) string {
 	t := findTool(tc.Name, tools)
 
 	if t == nil {
 		return fmt.Sprintf("error: unknown tool %s", tc.Name)
 	}
 
-	var args map[string]any
+	args := make(map[string]any)
 
-	if err := json.Unmarshal([]byte(tc.Args), &args); err != nil {
-		return fmt.Sprintf("error: failed to parse arguments: %v", err)
+	if tc.Args != "" {
+		if err := json.Unmarshal([]byte(tc.Args), &args); err != nil {
+			return fmt.Sprintf("error: failed to parse arguments: %v", err)
+		}
 	}
 
 	result, err := t.Execute(ctx, env, args)
@@ -407,4 +403,43 @@ func (a *Agent) Usage() Usage {
 
 func (a *Agent) Clear() {
 	a.messages = nil
+	if a.Environment != nil && a.Environment.Tracker != nil {
+		a.Environment.Tracker.Clear()
+	}
+}
+
+func truncateResult(result string, env *env.Environment) string {
+	if len(result) <= maxResultBytes {
+		return result
+	}
+
+	totalBytes := len(result)
+
+	// Keep the tail (most relevant for command output)
+	truncated := result[totalBytes-maxResultBytes:]
+
+	// Align to next newline to avoid partial lines
+	if idx := strings.Index(truncated, "\n"); idx >= 0 && idx < 512 {
+		truncated = truncated[idx+1:]
+	}
+
+	shownBytes := len(truncated)
+
+	// Write full output to scratch dir if available
+	var notice string
+
+	if env != nil && env.Scratch != nil {
+		name := fmt.Sprintf("result-%d.txt", time.Now().UnixNano())
+		path := filepath.Join(env.ScratchDir(), name)
+
+		if err := os.WriteFile(path, []byte(result), 0644); err == nil {
+			notice = fmt.Sprintf("[Output truncated: showing last %d of %d bytes. Full output: %s]\n\n", shownBytes, totalBytes, path)
+		}
+	}
+
+	if notice == "" {
+		notice = fmt.Sprintf("[Output truncated: showing last %d of %d bytes]\n\n", shownBytes, totalBytes)
+	}
+
+	return notice + truncated
 }

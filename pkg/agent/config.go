@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -12,8 +11,8 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/mcp"
-	"github.com/adrianliechti/wingman-agent/pkg/agent/memory"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/prompt"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/skill"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
@@ -48,7 +47,7 @@ type Config struct {
 	Model  string
 	Client openai.Client
 
-	Environment *tool.Environment
+	Environment *env.Environment
 
 	AgentInstructions    string
 	PlanningInstructions string
@@ -66,64 +65,16 @@ func DefaultConfig() (*Config, func(), error) {
 		return nil, nil, fmt.Errorf("failed to get working directory: %w", err)
 	}
 
-	root, err := os.OpenRoot(wd)
-
+	e, err := env.New(wd)
 	if err != nil {
 		return nil, nil, err
 	}
-
-	scratchDir := filepath.Join(os.TempDir(), fmt.Sprintf("wingman-%d", time.Now().Unix()))
-
-	if err := os.MkdirAll(scratchDir, 0755); err != nil {
-		return nil, nil, fmt.Errorf("failed to create scratch directory: %w", err)
-	}
-
-	scratch, err := os.OpenRoot(scratchDir)
-
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to open scratch directory: %w", err)
-	}
-
-	env := &tool.Environment{
-		Date: time.Now().Format("January 2, 2006"),
-
-		OS:   runtime.GOOS,
-		Arch: runtime.GOARCH,
-
-		Root:    root,
-		Scratch: scratch,
-	}
-
-	// Initialize memory directory
-	memDir := memory.Dir(wd)
-	memory.EnsureDir(memDir)
-
-	memRoot, err := os.OpenRoot(memDir)
-	if err == nil {
-		env.Memory = memRoot
-	}
-
-	memContent := memory.LoadEntrypoint(memDir)
 
 	tools := slices.Concat(fs.Tools(), shell.Tools(), fetch.Tools(), search.Tools(), ask.Tools())
 
 	mcp, _ := mcp.Load(filepath.Join(wd, "mcp.json"))
 
 	skills := skill.Merge(skill.BundledSkills(), skill.MustDiscover(wd))
-
-	instructions := readAgentsFile(wd)
-
-	agentinstructions, err := renderAgentInstructions(env, instructions, skills, memDir, memContent)
-
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to render instructions: %w", err)
-	}
-
-	planningInstructions, err := renderPlanningInstructions(env, instructions, skills, memDir, memContent)
-
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to render planning instructions: %w", err)
-	}
 
 	client, model := createClient()
 
@@ -134,10 +85,10 @@ func DefaultConfig() (*Config, func(), error) {
 		Client: client,
 		Model:  model,
 
-		Environment: env,
+		Environment: e,
 
-		AgentInstructions:    agentinstructions,
-		PlanningInstructions: planningInstructions,
+		AgentInstructions:    prompt.Instructions,
+		PlanningInstructions: prompt.Planning,
 
 		MCP: mcp,
 
@@ -193,36 +144,41 @@ func createClient() (openai.Client, string) {
 	), ""
 }
 
-type instructionData struct {
-	*tool.Environment
-	Skills        string
-	Instructions  string
-	MemoryDir     string
-	MemoryContent string
-}
-
-func renderAgentInstructions(env *tool.Environment, instructions string, skills []skill.Skill, memDir, memContent string) (string, error) {
-	data := instructionData{
-		Environment:   env,
-		Skills:        skill.FormatForPrompt(skills),
-		Instructions:  instructions,
-		MemoryDir:     memDir,
-		MemoryContent: memContent,
+func (a *Agent) BuildInstructions(planMode bool, bridgeInstructions string) string {
+	if a == nil || a.Config == nil {
+		return ""
 	}
 
-	return prompt.Render(prompt.Instructions, data)
+	return a.Config.BuildInstructions(planMode, bridgeInstructions)
 }
 
-func renderPlanningInstructions(env *tool.Environment, instructions string, skills []skill.Skill, memDir, memContent string) (string, error) {
-	data := instructionData{
-		Environment:   env,
-		Skills:        skill.FormatForPrompt(skills),
-		Instructions:  instructions,
-		MemoryDir:     memDir,
-		MemoryContent: memContent,
+func (c *Config) BuildInstructions(planMode bool, bridgeInstructions string) string {
+	if c == nil {
+		return ""
 	}
 
-	return prompt.Render(prompt.Planning, data)
+	base := c.AgentInstructions
+	if planMode {
+		base = c.PlanningInstructions
+	}
+
+	data := prompt.SectionData{
+		PlanMode:            planMode,
+		Date:                time.Now().Format("January 2, 2006"),
+		OS:                  c.Environment.OS,
+		Arch:                c.Environment.Arch,
+		WorkingDir:          c.Environment.RootDir(),
+		MemoryDir:           c.Environment.MemoryDir(),
+		MemoryContent:       c.Environment.MemoryContent(),
+		PlanFile:            c.Environment.PlanFile(),
+		PlanContent:         c.Environment.PlanContent(),
+		Skills:              skill.FormatForPrompt(c.Skills),
+		ProjectInstructions: readAgentsFile(c.Environment.RootDir()),
+		BridgeInstructions:  bridgeInstructions,
+	}
+
+	sections := append([]prompt.Section{{Content: base}}, prompt.RenderSections(data)...)
+	return prompt.ComposeSections(sections...)
 }
 
 func (c *Config) Cleanup() {
@@ -230,22 +186,8 @@ func (c *Config) Cleanup() {
 		c.MCP.Close()
 	}
 
-	if c.Environment == nil {
-		return
-	}
-
-	if c.Environment.Scratch != nil {
-		scratchDir := c.Environment.Scratch.Name()
-		c.Environment.Scratch.Close()
-		os.RemoveAll(scratchDir)
-	}
-
-	if c.Environment.Memory != nil {
-		c.Environment.Memory.Close()
-	}
-
-	if c.Environment.Root != nil {
-		c.Environment.Root.Close()
+	if c.Environment != nil {
+		c.Environment.Close()
 	}
 }
 

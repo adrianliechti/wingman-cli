@@ -14,31 +14,33 @@ import (
 )
 
 func (a *App) showDiffView() {
+	t := theme.Default
+
 	select {
 	case <-a.rewindReady:
 	default:
-		t := theme.Default
-		fmt.Fprintf(a.chatView, "[%s]Diff not available (rewind initializing...)[-]\n\n", t.Yellow)
+		fmt.Fprint(a.chatView, a.formatNotice("Diff not available (rewind initializing...)", t.Yellow))
 		return
 	}
 
 	if a.rewind == nil {
-		t := theme.Default
-		fmt.Fprintf(a.chatView, "[%s]Diff not available[-]\n\n", t.Yellow)
+		fmt.Fprint(a.chatView, a.formatNotice("Diff not available", t.Yellow))
 		return
 	}
 
 	diffs, err := a.rewind.DiffFromBaseline()
 
 	if err != nil {
-		t := theme.Default
-		fmt.Fprintf(a.chatView, "[%s]%v[-]\n\n", t.Yellow, err)
+		fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("%v", err), t.Yellow))
+		return
+	}
 
+	if len(diffs) == 0 {
+		fmt.Fprint(a.chatView, a.formatNotice("No changes", t.BrBlack))
 		return
 	}
 
 	a.activeModal = ModalDiff
-	t := theme.Default
 
 	// Calculate stats
 	var added, modified, deleted int

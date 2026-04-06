@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/app"
@@ -19,7 +20,38 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/ui/theme"
 )
 
+func saveExecutablePath() {
+	path := os.Getenv("WINGMAN_PATH")
+
+	if path == "" {
+		exe, err := os.Executable()
+
+		if err != nil {
+			return
+		}
+
+		path = exe
+	}
+
+	if path == "" {
+		return
+	}
+
+	home, err := os.UserHomeDir()
+
+	if err != nil {
+		return
+	}
+
+	dir := filepath.Join(home, ".wingman")
+	os.MkdirAll(dir, 0755)
+
+	os.WriteFile(filepath.Join(dir, "path"), []byte(path), 0644)
+}
+
 func main() {
+	saveExecutablePath()
+
 	ctx := context.Background()
 
 	if len(os.Args) > 1 && os.Getenv("WINGMAN_URL") != "" {

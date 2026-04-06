@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
@@ -87,7 +88,7 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		if !a.hasActiveModal() && a.input.HasSelection() {
 			selectedText, _, _ := a.input.GetSelection()
 			if selectedText != "" {
-				clipboard.WriteText(selectedText)
+				go clipboard.WriteText(selectedText)
 				return nil
 			}
 		}
@@ -107,7 +108,7 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	if event.Key() == tcell.KeyCtrlE && !a.hasActiveModal() {
 		a.toolOutputExpanded = !a.toolOutputExpanded
 
-		if !a.isWelcomeMode && !a.isStreaming() && len(a.agent.Messages()) > 0 {
+		if !a.showWelcome && !a.isStreaming() && len(a.agent.Messages()) > 0 {
 			a.renderChat(a.agent.Messages(), "", "", "")
 		}
 
@@ -122,7 +123,7 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	}
 
 	// Handle @ to trigger file picker (don't insert @ into input)
-	if event.Rune() == '@' {
+	if event.Rune() == '@' && !a.isStreaming() {
 		go func() {
 			a.showFilePicker("", func(paths []string) {
 				for _, p := range paths {
@@ -144,6 +145,8 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 			}
 
 			a.input.SetText("", true)
+			fmt.Fprint(a.chatView, a.formatUserMessage(text))
+			a.setPhase(PhaseThinking)
 			a.askResponse <- text
 
 			return nil
@@ -156,11 +159,15 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	if a.promptActive {
 		switch event.Rune() {
 		case 'y', 'Y':
+			fmt.Fprint(a.chatView, a.formatUserMessage("Yes"))
+			a.setPhase(PhaseThinking)
 			a.promptResponse <- true
 
 			return nil
 
 		case 'n', 'N':
+			fmt.Fprint(a.chatView, a.formatUserMessage("No"))
+			a.setPhase(PhaseThinking)
 			a.promptResponse <- false
 
 			return nil
@@ -181,6 +188,29 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	}
 
 	if event.Key() == tcell.KeyTab && !a.isStreaming() {
+		// Tab-complete slash commands
+		text := a.input.GetText()
+		if strings.HasPrefix(text, "/") && !strings.Contains(text, " ") {
+			matches := a.matchingCommands(text)
+			if len(matches) == 1 {
+				a.input.SetText(matches[0].Name, true)
+				return nil
+			}
+			// Find longest common prefix among matches
+			if len(matches) > 1 {
+				prefix := matches[0].Name
+				for _, m := range matches[1:] {
+					for !strings.HasPrefix(m.Name, prefix) {
+						prefix = prefix[:len(prefix)-1]
+					}
+				}
+				if len(prefix) > len(text) {
+					a.input.SetText(prefix, true)
+					return nil
+				}
+			}
+			return nil
+		}
 		a.toggleMode()
 		return nil
 	}
@@ -223,6 +253,7 @@ func (a *App) promptUser(message string) (bool, error) {
 	a.app.QueueUpdateDraw(func() {
 		fmt.Fprint(a.chatView, a.formatPrompt("Confirm Command", message, hint))
 		a.input.SetPlaceholder("y/n")
+		a.app.SetFocus(a.input)
 	})
 
 	select {
@@ -244,6 +275,7 @@ func (a *App) askUser(question string) (string, error) {
 	a.app.QueueUpdateDraw(func() {
 		fmt.Fprint(a.chatView, a.formatPrompt("Question", question, ""))
 		a.input.SetPlaceholder("Type your answer and press Enter...")
+		a.app.SetFocus(a.input)
 	})
 
 	select {
@@ -263,10 +295,7 @@ func (a *App) copyLastResponse() {
 			for _, c := range messages[i].Content {
 				if c.Text != "" {
 					clipboard.WriteText(c.Text)
-
-					// Brief visual feedback
-					t := theme.Default
-					fmt.Fprintf(a.chatView, "\n  [%s]Copied to clipboard[-]\n", t.BrBlack)
+					fmt.Fprint(a.chatView, a.formatNotice("Copied to clipboard", theme.Default.BrBlack))
 
 					return
 				}
@@ -275,45 +304,67 @@ func (a *App) copyLastResponse() {
 	}
 }
 
-func (a *App) pasteFromClipboard() {
+// pasteFromClipboardAsync reads the clipboard off the UI thread, then applies
+// changes back on the UI thread via QueueUpdateDraw. This prevents blocking the
+// tview event loop (which would freeze the app and ignore Ctrl+C).
+func (a *App) pasteFromClipboardAsync() {
 	contents, err := clipboard.Read()
 
 	if err != nil || len(contents) == 0 {
 		return
 	}
 
-	for _, c := range contents {
-		if c.Image != nil {
-			a.pendingContent = append(a.pendingContent, agent.Content{File: &agent.File{Data: *c.Image}})
-		}
-
-		if c.Text != "" {
-			// Check if the clipboard text contains file paths
-			paths := detectFilePaths(c.Text, a.agent.Environment.WorkingDir())
-			if len(paths) > 0 {
-				for _, p := range paths {
-					a.addFileToContext(normalizeFilePath(p, a.agent.Environment.WorkingDir()))
-				}
-
-				continue
+	a.app.QueueUpdateDraw(func() {
+		for _, c := range contents {
+			if c.Image != nil {
+				a.pendingContent = append(a.pendingContent, agent.Content{File: &agent.File{Data: *c.Image}})
 			}
 
-			// Get selection range (start, end are byte positions)
-			_, start, end := a.input.GetSelection()
-			a.input.Replace(start, end, c.Text)
-		}
-	}
+			if c.Text != "" {
+				// Check if the clipboard text contains file paths
+				paths := detectFilePaths(c.Text, a.agent.Environment.RootDir())
+				if len(paths) > 0 {
+					for _, p := range paths {
+						a.addFileToContext(normalizeFilePath(p, a.agent.Environment.RootDir()))
+					}
 
-	a.updateInputHint()
+					continue
+				}
+
+				// Get selection range (start, end are byte positions)
+				_, start, end := a.input.GetSelection()
+				a.input.Replace(start, end, c.Text)
+			}
+		}
+
+		a.updateInputHint()
+	})
 }
 
 func (a *App) cancelStream() {
+	// Cancel the stream context first
 	a.streamMu.Lock()
-
 	if a.streamCancel != nil {
 		a.streamCancel()
 	}
 	a.streamMu.Unlock()
+
+	// Unblock any pending ask/prompt so the stream goroutine can exit
+	if a.askActive {
+		a.input.SetText("", true)
+
+		select {
+		case a.askResponse <- "":
+		default:
+		}
+	}
+
+	if a.promptActive {
+		select {
+		case a.promptResponse <- false:
+		default:
+		}
+	}
 }
 
 func (a *App) clearPendingContent() {
@@ -325,7 +376,8 @@ func (a *App) clearPendingContent() {
 func (a *App) clearChat() {
 	a.chatView.Clear()
 	a.agent.Clear()
-	a.totalTokens = 0
+	a.inputTokens = 0
+	a.outputTokens = 0
 	a.updateStatusBar()
 }
 
@@ -372,42 +424,39 @@ func (a *App) submitInput() {
 		a.switchToChat()
 		a.input.SetText("", true)
 		t := theme.Default
-		fmt.Fprintf(a.chatView, "[%s::b]Commands[-::-]\n", t.Cyan)
-		fmt.Fprintf(a.chatView, "  [%s]/help[-]   - Show this help\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/model[-]  - Select AI model\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/file[-]   - Add file to context (or type @filename)\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/paste[-]  - Paste from clipboard (Ctrl+V / Cmd+V / Paste)\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/diff[-]   - Show changes from baseline\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/review[-]  - Review code changes with AI\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/rewind[-] - Restore to previous checkpoint\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/clear[-]  - Clear chat history\n", t.BrCyan)
-		fmt.Fprintf(a.chatView, "  [%s]/quit[-]   - Exit application\n", t.BrCyan)
+		builtinCmds := a.builtinCommands()
+		skillCmds := a.skillCommands()
 
-		if len(a.agent.Skills) > 0 {
-			fmt.Fprintf(a.chatView, "\n[%s::b]Skills[-::-]\n", t.Cyan)
-			for _, s := range a.agent.Skills {
-				fmt.Fprintf(a.chatView, "  [%s]/%s[-] - %s\n", t.BrCyan, s.Name, s.Description)
+		// Find longest name across all commands for alignment
+		maxLen := 0
+		for _, cmd := range builtinCmds {
+			if len(cmd.Name) > maxLen {
+				maxLen = len(cmd.Name)
+			}
+		}
+		for _, cmd := range skillCmds {
+			if len(cmd.Name) > maxLen {
+				maxLen = len(cmd.Name)
+			}
+		}
+
+		fmt.Fprintf(a.chatView, "  [%s]┃[-] [%s::b]Commands[-::-]\n", t.Cyan, t.Cyan)
+		for _, cmd := range builtinCmds {
+			pad := strings.Repeat(" ", maxLen-len(cmd.Name))
+			fmt.Fprintf(a.chatView, "  [%s]┃[-]   [%s]%s[-]%s    %s\n", t.Cyan, t.BrCyan, cmd.Name, pad, cmd.Desc)
+		}
+
+		if len(skillCmds) > 0 {
+			fmt.Fprintf(a.chatView, "  [%s]┃[-]\n", t.Cyan)
+			fmt.Fprintf(a.chatView, "  [%s]┃[-] [%s::b]Skills[-::-]\n", t.Cyan, t.Cyan)
+			for _, cmd := range skillCmds {
+				pad := strings.Repeat(" ", maxLen-len(cmd.Name))
+				fmt.Fprintf(a.chatView, "  [%s]┃[-]   [%s]%s[-]%s    %s\n", t.Cyan, t.BrCyan, cmd.Name, pad, cmd.Desc)
 			}
 		}
 
 		fmt.Fprint(a.chatView, "\n")
 		a.chatView.ScrollToEnd()
-
-		return
-
-	case "/file":
-		a.input.SetText("", true)
-		go a.showFilePicker("", func(paths []string) {
-			for _, p := range paths {
-				a.addFileToContext(p)
-			}
-		})
-
-		return
-
-	case "/paste":
-		a.input.SetText("", true)
-		a.pasteFromClipboard()
 
 		return
 
@@ -417,15 +466,50 @@ func (a *App) submitInput() {
 
 		return
 
+	case "/plan":
+		a.input.SetText("", true)
+		a.switchToChat()
+		a.enterPlanMode(true)
+
+		return
+
+	case "/agent":
+		a.input.SetText("", true)
+		a.switchToChat()
+		a.exitPlanMode(true)
+
+		return
+
 	case "/rewind":
 		a.input.SetText("", true)
+		a.switchToChat()
 		a.showRewindPicker()
 
 		return
 
 	case "/diff":
 		a.input.SetText("", true)
+		a.switchToChat()
 		a.showDiffView()
+
+		return
+
+	case "/problems":
+		a.input.SetText("", true)
+		a.switchToChat()
+		a.showDiagnosticsView()
+
+		return
+
+	case "/copy":
+		a.input.SetText("", true)
+		a.copyLastResponse()
+
+		return
+
+	case "/paste":
+		a.input.SetText("", true)
+		go a.pasteFromClipboardAsync()
 
 		return
 
@@ -445,6 +529,12 @@ func (a *App) submitInput() {
 			a.invokeSkill(s, skillArgs)
 			return
 		}
+
+		// Unknown slash command
+		a.input.SetText("", true)
+		a.switchToChat()
+		fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("Unknown command: /%s", skillName), theme.Default.Yellow))
+		return
 	}
 
 	a.switchToChat()
@@ -465,7 +555,7 @@ func (a *App) submitInput() {
 		for _, f := range a.pendingFiles {
 			attachments = append(attachments, fmt.Sprintf("📄 %s", filepath.Base(f)))
 		}
-		displayText = fmt.Sprintf("%s\n[%s]", query, strings.Join(attachments, ", "))
+		displayText = fmt.Sprintf("%s\n[%s]%s[-]", query, theme.Default.BrBlack, strings.Join(attachments, ", "))
 	}
 	fmt.Fprint(a.chatView, a.formatUserMessage(displayText))
 
@@ -485,10 +575,11 @@ func (a *App) submitInput() {
 	a.clearPendingContent()
 
 	go func() {
-		instructions := a.agent.AgentInstructions
+		instructions := a.currentInstructions()
 
-		if a.currentMode == ModePlan {
-			instructions = a.agent.PlanningInstructions
+		// Inject bridge context (selection or active file) if connected
+		if bridgeContext := a.bridgeContext(); bridgeContext != "" {
+			input = append(input, agent.Content{Text: bridgeContext})
 		}
 
 		a.streamResponse(input, instructions, a.allTools())
@@ -496,10 +587,10 @@ func (a *App) submitInput() {
 }
 
 func (a *App) invokeSkill(s *skill.Skill, args string) {
-	content, err := s.GetContent(a.agent.Environment.WorkingDir())
+	content, err := s.GetContent(a.agent.Environment.RootDir())
 	if err != nil {
 		a.switchToChat()
-		fmt.Fprintf(a.chatView, "[red]Failed to load skill %q: %v[-]\n\n", s.Name, err)
+		fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("Failed to load skill %q: %v", s.Name, err), theme.Default.Red))
 		return
 	}
 
@@ -522,45 +613,36 @@ func (a *App) invokeSkill(s *skill.Skill, args string) {
 	a.clearPendingContent()
 
 	go func() {
-		a.streamResponse(input, a.agent.AgentInstructions, a.allTools())
+		instructions := a.currentInstructions()
+		if bridgeContext := a.bridgeContext(); bridgeContext != "" {
+			input = append(input, agent.Content{Text: bridgeContext})
+		}
+		a.streamResponse(input, instructions, a.allTools())
 	}()
 }
 
 func (a *App) switchToChat() {
-	if !a.isWelcomeMode {
+	if !a.showWelcome {
 		return
 	}
-
-	a.isWelcomeMode = false
-	a.mainContent.Clear()
-	a.mainContent.SetDirection(tview.FlexRow)
-	a.mainContent.AddItem(a.chatView, 0, 1, false)
-
-	a.mainLayout.Clear()
-	a.mainLayout.
-		AddItem(a.chatContainer, 0, 1, false).
-		AddItem(a.inputSection, 6, 0, true)
+	a.showWelcome = false
+	a.rebuildContentPages()
 }
 
-// rebuildWelcomeLayout rebuilds the welcome layout based on the current compact mode.
-// Called dynamically during draw when the terminal is resized in welcome mode.
-func (a *App) rebuildWelcomeLayout() {
-	a.mainLayout.Clear()
-	compact := a.isCompactMode()
-	a.lastWelcomeCompact = compact
+// rebuildContentPages rebuilds the content area.
+// Welcome mode: logo centered at top, chatView pinned at bottom (above input).
+// Chat mode: chatView fills the entire area.
+func (a *App) rebuildContentPages() {
+	a.contentPages.Clear()
 
-	if compact {
-		a.mainLayout.
-			AddItem(nil, 0, 1, false).
-			AddItem(a.inputSection, 6, 0, true).
-			AddItem(nil, 0, 1, false)
+	if a.showWelcome && !a.isCompactMode() {
+		// Logo centered in upper area, notices pinned above input
+		a.contentPages.AddItem(nil, 0, 2, false)
+		a.contentPages.AddItem(a.welcomeView, 12, 0, false)
+		a.contentPages.AddItem(nil, 0, 3, false)
+		a.contentPages.AddItem(a.chatView, 3, 0, false)
 	} else {
-		a.mainLayout.
-			AddItem(nil, 2, 0, false).
-			AddItem(a.welcomeView, 12, 0, false).
-			AddItem(nil, 0, 1, false).
-			AddItem(a.inputSection, 6, 0, true).
-			AddItem(nil, 0, 2, false)
+		a.contentPages.AddItem(a.chatView, 0, 1, false)
 	}
 }
 
@@ -593,8 +675,9 @@ func (a *App) setupUI() {
 	a.input.SetTextStyle(tcell.StyleDefault.Foreground(t.Foreground).Background(inputBgColor))
 	a.input.SetPlaceholderStyle(tcell.StyleDefault.Foreground(t.BrBlack).Background(inputBgColor))
 
-	a.mainContent = tview.NewFlex().SetDirection(tview.FlexRow)
-	a.mainContent.AddItem(a.welcomeView, 0, 1, false)
+	a.contentPages = tview.NewFlex().SetDirection(tview.FlexRow)
+	a.contentPages.SetBackgroundColor(tcell.ColorDefault)
+	a.rebuildContentPages()
 }
 
 func (a *App) buildLayout() *tview.Flex {
@@ -617,7 +700,7 @@ func (a *App) buildLayout() *tview.Flex {
 		isPaste := event.Key() == tcell.KeyCtrlV || (event.Modifiers()&tcell.ModMeta != 0 && (event.Rune() == 'v' || event.Rune() == 'V'))
 
 		if isPaste {
-			a.pasteFromClipboard()
+			go a.pasteFromClipboardAsync()
 
 			return nil // Consume event - we handled the paste
 		}
@@ -639,7 +722,7 @@ func (a *App) buildLayout() *tview.Flex {
 	a.statusBar.SetBackgroundColor(tcell.ColorDefault)
 
 	bottomBar.AddItem(a.inputHint, 0, 1, false)
-	bottomBar.AddItem(a.statusBar, 0, 1, false)
+	bottomBar.AddItem(a.statusBar, 40, 0, false)
 
 	inputLeftMargin, inputRightMargin := a.getInputMargins()
 
@@ -662,8 +745,10 @@ func (a *App) buildLayout() *tview.Flex {
 
 	a.chatContainer = tview.NewFlex().SetDirection(tview.FlexColumn)
 	a.chatContainer.AddItem(nil, leftMargin, 0, false)
-	a.chatContainer.AddItem(a.mainContent, 0, 1, false)
+	a.chatContainer.AddItem(a.contentPages, 0, 1, false)
 	a.chatContainer.AddItem(nil, rightMargin, 0, false)
+
+	a.lastCompact = a.isCompactMode()
 
 	a.chatContainer.SetDrawFunc(func(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {
 		newWidth := width - totalMargin
@@ -672,8 +757,17 @@ func (a *App) buildLayout() *tview.Flex {
 			a.chatWidth = newWidth
 
 			// Re-render chat on resize to re-wrap content to new width
-			if !a.isWelcomeMode && len(a.agent.Messages()) > 0 {
+			if !a.showWelcome && len(a.agent.Messages()) > 0 {
 				a.renderChat(a.agent.Messages(), "", a.currentToolName, a.currentToolHint)
+			}
+		}
+
+		// Toggle logo visibility on resize while in welcome mode
+		if a.showWelcome {
+			compact := a.isCompactMode()
+			if compact != a.lastCompact {
+				a.lastCompact = compact
+				a.rebuildContentPages()
 			}
 		}
 
@@ -681,26 +775,9 @@ func (a *App) buildLayout() *tview.Flex {
 	})
 
 	a.mainLayout = tview.NewFlex().SetDirection(tview.FlexRow)
-
-	if a.isWelcomeMode {
-		a.lastWelcomeCompact = a.isCompactMode()
-		a.rebuildWelcomeLayout()
-	} else {
-		a.mainLayout.
-			AddItem(a.chatContainer, 0, 1, false).
-			AddItem(a.inputSection, 6, 0, true)
-	}
-
-	// Dynamically toggle logo when terminal resizes in welcome mode
-	a.mainLayout.SetDrawFunc(func(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {
-		if a.isWelcomeMode {
-			compact := a.isCompactMode()
-			if compact != a.lastWelcomeCompact {
-				a.rebuildWelcomeLayout()
-			}
-		}
-		return x, y, width, height
-	})
+	a.mainLayout.
+		AddItem(a.chatContainer, 0, 1, false).
+		AddItem(a.inputSection, 6, 0, true)
 
 	a.app.SetInputCapture(a.handleInput)
 
@@ -731,8 +808,8 @@ func (a *App) updateStatusBar() {
 
 	var parts []string
 
-	if a.totalTokens > 0 {
-		parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.BrBlack, formatTokens(a.totalTokens)))
+	if a.inputTokens > 0 || a.outputTokens > 0 {
+		parts = append(parts, fmt.Sprintf("[%s]↑%s ↓%s[-]", t.BrBlack, formatTokens(a.inputTokens), formatTokens(a.outputTokens)))
 	}
 
 	parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Cyan, a.agent.Model))
@@ -746,8 +823,93 @@ func (a *App) formatShortcut(key, label string) string {
 	return fmt.Sprintf("[%s]%s[-] [%s]%s[-]", t.BrBlack, key, t.Foreground, label)
 }
 
+type slashCommand struct {
+	Name string
+	Desc string
+}
+
+func (a *App) builtinCommands() []slashCommand {
+	cmds := []slashCommand{
+		{"/help", "Show help"},
+		{"/model", "Select AI model"},
+		{"/plan", "Enter planning mode"},
+		{"/agent", "Return to execution mode"},
+		{"/problems", "Show problems"},
+	}
+
+	if a.rewind != nil {
+		cmds = append(cmds,
+			slashCommand{"/diff", "Show changes from baseline"},
+			slashCommand{"/rewind", "Restore to previous checkpoint"},
+		)
+	}
+
+	cmds = append(cmds,
+		slashCommand{"/copy", "Copy last response to clipboard"},
+		slashCommand{"/paste", "Paste from clipboard"},
+		slashCommand{"/clear", "Clear chat history"},
+		slashCommand{"/quit", "Exit application"},
+	)
+
+	return cmds
+}
+
+func (a *App) skillCommands() []slashCommand {
+	var cmds []slashCommand
+	for _, s := range a.agent.Skills {
+		cmds = append(cmds, slashCommand{"/" + s.Name, s.Description})
+	}
+	sort.SliceStable(cmds, func(i, j int) bool {
+		if cmds[i].Name == "/init" {
+			return true
+		}
+		if cmds[j].Name == "/init" {
+			return false
+		}
+		return cmds[i].Name < cmds[j].Name
+	})
+	return cmds
+}
+
+func (a *App) availableCommands() []slashCommand {
+	return append(a.builtinCommands(), a.skillCommands()...)
+}
+
+func (a *App) matchingCommands(prefix string) []slashCommand {
+	if prefix == "/" {
+		return a.availableCommands()
+	}
+
+	var matches []slashCommand
+	for _, cmd := range a.availableCommands() {
+		if strings.HasPrefix(cmd.Name, prefix) {
+			matches = append(matches, cmd)
+		}
+	}
+	return matches
+}
+
 func (a *App) updateInputHint() {
+	// Don't overwrite inputHint while the spinner owns it
+	if a.isStreaming() {
+		return
+	}
+
 	t := theme.Default
+
+	// Show command completions when typing /
+	text := a.input.GetText()
+	if strings.HasPrefix(text, "/") && !strings.Contains(text, " ") {
+		matches := a.matchingCommands(text)
+		if len(matches) > 0 {
+			var parts []string
+			for _, m := range matches {
+				parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Cyan, m.Name))
+			}
+			a.inputHint.SetText(strings.Join(parts, "  "))
+			return
+		}
+	}
 
 	var parts []string
 
@@ -764,21 +926,22 @@ func (a *App) updateInputHint() {
 		parts = append(parts, fmt.Sprintf("[%s]📄 %d files[-]", t.Cyan, len(a.pendingFiles)))
 	}
 
-	if !a.isStreaming() {
-		expandLabel := "expand"
-		if a.toolOutputExpanded {
-			expandLabel = "collapse"
-		}
-
-		parts = append(parts,
-			a.formatShortcut("tab", "mode"),
-			a.formatShortcut("shift+tab", "model"),
-			a.formatShortcut("@", "file"),
-			a.formatShortcut("ctrl+y", "copy"),
-			a.formatShortcut("ctrl+e", expandLabel),
-			a.formatShortcut("esc", "clear"),
-		)
+	expandLabel := "expand"
+	if a.toolOutputExpanded {
+		expandLabel = "collapse"
 	}
+
+	if a.bridge.IsConnected() {
+		parts = append(parts, fmt.Sprintf("[%s]⬢[-]", t.Green))
+	}
+
+	parts = append(parts,
+		a.formatShortcut("tab", "mode"),
+		a.formatShortcut("shift+tab", "model"),
+		a.formatShortcut("@", "file"),
+		a.formatShortcut("ctrl+e", expandLabel),
+		a.formatShortcut("esc", "clear"),
+	)
 
 	a.inputHint.SetText(strings.Join(parts, "  "))
 }
@@ -842,7 +1005,7 @@ func (a *App) renderMessage(msg agent.Message) {
 		// Tool results
 		if c.ToolResult != nil {
 			if a.isToolHidden(c.ToolResult.Name) {
-				return
+				continue
 			}
 
 			hint := extractToolHint(c.ToolResult.Args)
@@ -857,12 +1020,12 @@ func (a *App) renderMessage(msg agent.Message) {
 				fmt.Fprint(a.chatView, a.formatToolCallCollapsed(c.ToolResult.Name, hint))
 			}
 
-			return
+			continue
 		}
 
 		// Tool calls have no displayable content
 		if c.ToolCall != nil {
-			return
+			continue
 		}
 
 		// Text content
@@ -873,8 +1036,6 @@ func (a *App) renderMessage(msg agent.Message) {
 			case agent.RoleAssistant:
 				fmt.Fprint(a.chatView, a.formatAssistantMessage(c.Text))
 			}
-
-			return
 		}
 	}
 }

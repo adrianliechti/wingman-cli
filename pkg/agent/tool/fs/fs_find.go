@@ -10,6 +10,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
@@ -40,7 +41,7 @@ func FindTool() tool.Tool {
 			"required": []string{"pattern"},
 		},
 
-		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
 			startTime := time.Now()
 
 			pattern, ok := args["pattern"].(string)
@@ -55,7 +56,7 @@ func FindTool() tool.Tool {
 				searchDir = p
 			}
 
-			workingDir := env.WorkingDir()
+			workingDir := env.RootDir()
 
 			searchDirFS, err := ensurePathInWorkspaceFS(searchDir, workingDir, "search")
 

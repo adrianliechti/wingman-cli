@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
@@ -29,14 +30,14 @@ func LsTool() tool.Tool {
 			},
 		},
 
-		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
 			pathArg := "."
 
 			if p, ok := args["path"].(string); ok && p != "" {
 				pathArg = p
 			}
 
-			workingDir := env.WorkingDir()
+			workingDir := env.RootDir()
 
 			normalizedPath, err := ensurePathInWorkspace(pathArg, workingDir, "list directory")
 

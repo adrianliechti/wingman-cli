@@ -5,127 +5,304 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/lsp"
-	"github.com/adrianliechti/wingman-agent/pkg/agent/prompt"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
-var validOperations = []string{
-	"diagnostics",
-	"workspaceDiagnostics",
-	"definition",
-	"references",
-	"implementation",
-	"hover",
-	"documentSymbol",
-	"workspaceSymbol",
-	"incomingCalls",
-	"outgoingCalls",
+// NewTools creates the LSP tools for coding agents.
+func NewTools(manager *lsp.Manager) []tool.Tool {
+	return []tool.Tool{
+		diagnosticsTool(manager),
+		definitionTool(manager),
+		referencesTool(manager),
+		implementationTool(manager),
+		hoverTool(manager),
+		symbolsTool(manager),
+		hierarchyTool(manager),
+	}
 }
 
-// NewTool creates an LSP tool for coding agents.
-func NewTool(manager *lsp.Manager) tool.Tool {
+func diagnosticsTool(manager *lsp.Manager) tool.Tool {
 	return tool.Tool{
-		Name:        "lsp",
-		Description: prompt.LSP,
+		Name:            "get_lsp_diagnostics",
+		Description:     "Get diagnostics (errors, warnings) for a file or the entire workspace.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"operation": map[string]any{
+				"path": map[string]any{
 					"type":        "string",
-					"enum":        validOperations,
-					"description": "The LSP operation to perform",
+					"description": "Absolute file path. Omit for all diagnostics.",
 				},
-				"file": map[string]any{
+			},
+		},
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+			path, _ := args["path"].(string)
+
+			if path == "" {
+				return manager.WorkspaceDiagnostics(ctx)
+			}
+
+			path = absPath(manager.WorkingDir(), path)
+
+			if _, err := os.Stat(path); os.IsNotExist(err) {
+				return "", fmt.Errorf("file not found: %s", path)
+			}
+
+			session, err := manager.GetSession(ctx, path)
+			if err != nil {
+				return "", err
+			}
+
+			uri, err := session.OpenDocument(ctx, path)
+			if err != nil {
+				return "", err
+			}
+
+			return session.Diagnostics(ctx, uri, path)
+		},
+	}
+}
+
+func definitionTool(manager *lsp.Manager) tool.Tool {
+	return tool.Tool{
+		Name:            "find_lsp_definition",
+		Description:     "Find the definition of a symbol at a given position.",
+		Parameters:      positionParams(),
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+			path, line, column, err := parsePositionArgs(manager.WorkingDir(), args)
+			if err != nil {
+				return "", err
+			}
+
+			session, uri, err := openFile(ctx, manager, path)
+			if err != nil {
+				return "", err
+			}
+
+			return session.Definition(ctx, uri, line, column)
+		},
+	}
+}
+
+func referencesTool(manager *lsp.Manager) tool.Tool {
+	return tool.Tool{
+		Name:            "find_lsp_references",
+		Description:     "Find all references to a symbol at a given position across the workspace.",
+		Parameters:      positionParams(),
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+			path, line, column, err := parsePositionArgs(manager.WorkingDir(), args)
+			if err != nil {
+				return "", err
+			}
+
+			session, uri, err := openFile(ctx, manager, path)
+			if err != nil {
+				return "", err
+			}
+
+			return session.References(ctx, uri, line, column)
+		},
+	}
+}
+
+func implementationTool(manager *lsp.Manager) tool.Tool {
+	return tool.Tool{
+		Name:            "find_lsp_implementation",
+		Description:     "Find implementations of an interface or abstract method at a given position.",
+		Parameters:      positionParams(),
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+			path, line, column, err := parsePositionArgs(manager.WorkingDir(), args)
+			if err != nil {
+				return "", err
+			}
+
+			session, uri, err := openFile(ctx, manager, path)
+			if err != nil {
+				return "", err
+			}
+
+			return session.Implementation(ctx, uri, line, column)
+		},
+	}
+}
+
+func hoverTool(manager *lsp.Manager) tool.Tool {
+	return tool.Tool{
+		Name:            "get_lsp_hover",
+		Description:     "Get hover information (type info, documentation) for a symbol at a given position.",
+		Parameters:      positionParams(),
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+			path, line, column, err := parsePositionArgs(manager.WorkingDir(), args)
+			if err != nil {
+				return "", err
+			}
+
+			session, uri, err := openFile(ctx, manager, path)
+			if err != nil {
+				return "", err
+			}
+
+			return session.Hover(ctx, uri, line, column)
+		},
+	}
+}
+
+func symbolsTool(manager *lsp.Manager) tool.Tool {
+	return tool.Tool{
+		Name:            "find_lsp_symbols",
+		Description:     "Get symbols. With a path: returns the symbol outline (functions, classes, variables) of that file. Without a path: searches symbols across the entire workspace by query.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{
 					"type":        "string",
-					"description": "Path to the source file (not required for workspaceDiagnostics and workspaceSymbol)",
-				},
-				"line": map[string]any{
-					"type":        "integer",
-					"description": "Line number (1-based)",
-				},
-				"column": map[string]any{
-					"type":        "integer",
-					"description": "Column offset (1-based)",
+					"description": "Absolute path to a file. If provided, returns symbols in that file.",
 				},
 				"query": map[string]any{
 					"type":        "string",
-					"description": "Search query (only for workspaceSymbol)",
+					"description": "Search query for workspace-wide symbol search. Used when path is omitted.",
 				},
 			},
-			"required": []string{"operation"},
 		},
-		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
-			operation, _ := args["operation"].(string)
-			file, _ := args["file"].(string)
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+			path, _ := args["path"].(string)
 			query, _ := args["query"].(string)
-			line := intArg(args, "line")
-			column := intArg(args, "column")
 
-			if !slices.Contains(validOperations, operation) {
-				return "", fmt.Errorf("invalid operation: %s", operation)
-			}
-
-			// Operations that don't need a file
-			switch operation {
-			case "workspaceDiagnostics":
-				return manager.WorkspaceDiagnostics(ctx)
-			case "workspaceSymbol":
+			if path == "" {
 				return manager.WorkspaceSymbols(ctx, query)
 			}
 
-			if file == "" {
-				return "", fmt.Errorf("file is required for %s operation", operation)
+			path = absPath(manager.WorkingDir(), path)
+
+			if _, err := os.Stat(path); os.IsNotExist(err) {
+				return "", fmt.Errorf("file not found: %s", path)
 			}
 
-			// Operations that need position
-			needsPosition := operation != "diagnostics" && operation != "documentSymbol"
-			if needsPosition && (line == 0 || column == 0) {
-				return "", fmt.Errorf("line and column are required for %s operation", operation)
-			}
-
-			if !filepath.IsAbs(file) {
-				file = filepath.Join(manager.WorkingDir(), file)
-			}
-
-			if _, err := os.Stat(file); os.IsNotExist(err) {
-				return "", fmt.Errorf("file not found: %s", file)
-			}
-
-			session, err := manager.GetSession(ctx, file)
+			session, err := manager.GetSession(ctx, path)
 			if err != nil {
 				return "", err
 			}
 
-			uri, err := session.OpenDocument(ctx, file)
+			uri, err := session.OpenDocument(ctx, path)
 			if err != nil {
 				return "", err
 			}
 
-			switch operation {
-			case "diagnostics":
-				return session.Diagnostics(ctx, uri, file)
-			case "definition":
-				return session.Definition(ctx, uri, line, column)
-			case "references":
-				return session.References(ctx, uri, line, column)
-			case "implementation":
-				return session.Implementation(ctx, uri, line, column)
-			case "hover":
-				return session.Hover(ctx, uri, line, column)
-			case "documentSymbol":
-				return session.DocumentSymbols(ctx, uri, file)
-			case "incomingCalls":
-				return session.CallHierarchy(ctx, uri, line, column, true)
-			case "outgoingCalls":
-				return session.CallHierarchy(ctx, uri, line, column, false)
-			default:
-				return "", fmt.Errorf("unknown operation: %s", operation)
-			}
+			return session.DocumentSymbols(ctx, uri, path)
 		},
 	}
+}
+
+func hierarchyTool(manager *lsp.Manager) tool.Tool {
+	return tool.Tool{
+		Name:            "find_lsp_hierarchy",
+		Description:     "Get incoming and outgoing calls for a function/method at a given position.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Absolute path to the file",
+				},
+				"line": map[string]any{
+					"type":        "integer",
+					"description": "Line number (0-based)",
+				},
+				"column": map[string]any{
+					"type":        "integer",
+					"description": "Column number (0-based)",
+				},
+				"direction": map[string]any{
+					"type":        "string",
+					"enum":        []string{"incoming", "outgoing"},
+					"description": "Direction of the call hierarchy",
+				},
+			},
+			"required": []string{"path", "line", "column", "direction"},
+		},
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+			path, line, column, err := parsePositionArgs(manager.WorkingDir(), args)
+			if err != nil {
+				return "", err
+			}
+
+			direction, _ := args["direction"].(string)
+			if direction != "incoming" && direction != "outgoing" {
+				return "", fmt.Errorf("direction must be 'incoming' or 'outgoing'")
+			}
+
+			session, uri, err := openFile(ctx, manager, path)
+			if err != nil {
+				return "", err
+			}
+
+			return session.CallHierarchy(ctx, uri, line, column, direction == "incoming")
+		},
+	}
+}
+
+// --- helpers ---
+
+func positionParams() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path": map[string]any{
+				"type":        "string",
+				"description": "Absolute path to the file",
+			},
+			"line": map[string]any{
+				"type":        "integer",
+				"description": "Line number (0-based)",
+			},
+			"column": map[string]any{
+				"type":        "integer",
+				"description": "Column number (0-based)",
+			},
+		},
+		"required": []string{"path", "line", "column"},
+	}
+}
+
+func parsePositionArgs(workingDir string, args map[string]any) (string, int, int, error) {
+	path, _ := args["path"].(string)
+	if path == "" {
+		return "", 0, 0, fmt.Errorf("path is required")
+	}
+
+	path = absPath(workingDir, path)
+
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return "", 0, 0, fmt.Errorf("file not found: %s", path)
+	}
+
+	line := intArg(args, "line")
+	column := intArg(args, "column")
+
+	return path, line, column, nil
+}
+
+func openFile(ctx context.Context, manager *lsp.Manager, path string) (*lsp.Session, string, error) {
+	session, err := manager.GetSession(ctx, path)
+	if err != nil {
+		return nil, "", err
+	}
+
+	uri, err := session.OpenDocument(ctx, path)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return session, uri, nil
+}
+
+func absPath(workingDir, path string) string {
+	if !filepath.IsAbs(path) {
+		return filepath.Join(workingDir, path)
+	}
+	return path
 }
 
 func intArg(args map[string]any, key string) int {

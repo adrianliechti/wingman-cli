@@ -18,6 +18,9 @@ type Manager struct {
 	sessions   map[string]*Session // keyed by server command
 	restarts   map[string]int      // restart count per server command
 	mu         sync.Mutex
+
+	detection detectionResult // cached detection results
+	detectOnce sync.Once
 }
 
 // NewManager creates a new LSP session manager.
@@ -34,6 +37,20 @@ func (m *Manager) WorkingDir() string {
 	return m.workingDir
 }
 
+// detect returns cached detection results, running detection once.
+func (m *Manager) detect() *detectionResult {
+	m.detectOnce.Do(func() {
+		m.detection = detectAll(m.workingDir)
+	})
+	return &m.detection
+}
+
+// MissingServers returns project types detected in the workspace
+// that have no available LSP server binary.
+func (m *Manager) MissingServers() []MissingServer {
+	return m.detect().Missing
+}
+
 // FindServer finds an appropriate LSP server for the given file.
 func (m *Manager) FindServer(filePath string) *Server {
 	ext := strings.TrimPrefix(filepath.Ext(filePath), ".")
@@ -42,7 +59,7 @@ func (m *Manager) FindServer(filePath string) *Server {
 	}
 
 	dir := filepath.Dir(filePath)
-	roots := detectAll(m.workingDir)
+	roots := m.detect().Roots
 
 	var best *Server
 	bestLen := -1
@@ -69,7 +86,7 @@ func (m *Manager) FindServer(filePath string) *Server {
 
 // DetectServers finds all available LSP servers for the workspace.
 func (m *Manager) DetectServers() []Server {
-	roots := detectAll(m.workingDir)
+	roots := m.detect().Roots
 
 	var servers []Server
 	seen := make(map[string]bool)
@@ -177,6 +194,33 @@ func (m *Manager) Close() {
 		session.Close()
 		delete(m.sessions, key)
 	}
+}
+
+// CollectAllDiagnostics returns raw diagnostics grouped by file path.
+func (m *Manager) CollectAllDiagnostics(ctx context.Context) map[string][]Diagnostic {
+	servers := m.DetectServers()
+	result := make(map[string][]Diagnostic)
+
+	for _, server := range servers {
+		session, err := m.GetSessionByServer(ctx, server)
+		if err != nil {
+			continue
+		}
+
+		for _, file := range discoverSourceFiles(m.workingDir, server.Languages, 50) {
+			uri, err := session.OpenDocument(ctx, file)
+			if err != nil {
+				continue
+			}
+
+			diags := session.CollectDiagnostics(ctx, uri)
+			if len(diags) > 0 {
+				result[file] = diags
+			}
+		}
+	}
+
+	return result
 }
 
 // WorkspaceDiagnostics collects diagnostics across all workspace files.

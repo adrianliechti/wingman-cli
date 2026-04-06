@@ -7,26 +7,24 @@ import (
 )
 
 func (a *App) showRewindPicker() {
+	t := theme.Default
+
 	select {
 	case <-a.rewindReady:
 	default:
-		t := theme.Default
-		fmt.Fprintf(a.chatView, "[%s]Rewind initializing...[-]\n\n", t.Yellow)
+		fmt.Fprint(a.chatView, a.formatNotice("Rewind initializing...", t.Yellow))
 		return
 	}
 
 	if a.rewind == nil {
-		t := theme.Default
-		fmt.Fprintf(a.chatView, "[%s]Rewind not available[-]\n\n", t.Yellow)
+		fmt.Fprint(a.chatView, a.formatNotice("Rewind not available", t.Yellow))
 		return
 	}
 
 	checkpoints, err := a.rewind.List()
 
 	if err != nil || len(checkpoints) == 0 {
-		t := theme.Default
-		fmt.Fprintf(a.chatView, "[%s]No checkpoints available[-]\n\n", t.Yellow)
-
+		fmt.Fprint(a.chatView, a.formatNotice("No checkpoints available", t.Yellow))
 		return
 	}
 
@@ -41,14 +39,11 @@ func (a *App) showRewindPicker() {
 
 	a.showPicker("Rewind to", items, "", func(item PickerItem) {
 		if err := a.rewind.Restore(item.ID); err != nil {
-			t := theme.Default
-			fmt.Fprintf(a.chatView, "[%s]Failed to restore: %v[-]\n\n", t.Red, err)
-
+			fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("Failed to restore: %v", err), t.Red))
 			return
 		}
 
-		t := theme.Default
-		fmt.Fprintf(a.chatView, "[%s]Restored to: %s[-]\n\n", t.Green, item.Text)
+		fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("Restored to: %s", item.Text), t.Green))
 	})
 }
 

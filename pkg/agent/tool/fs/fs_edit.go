@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
 func EditTool() tool.Tool {
 	return tool.Tool{
-		Name: "edit",
+		Name:            "edit",
 
 		Description: strings.Join([]string{
 			"Performs exact string replacements in files. This is the preferred tool for modifying existing files.",
@@ -35,7 +36,7 @@ func EditTool() tool.Tool {
 			"required": []string{"path", "old_text", "new_text"},
 		},
 
-		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
 			pathArg, ok := args["path"].(string)
 
 			if !ok || pathArg == "" {
@@ -48,7 +49,11 @@ func EditTool() tool.Tool {
 				return "", err
 			}
 
-			workingDir := env.WorkingDir()
+			workingDir := env.RootDir()
+
+			if err := enforcePlanMutation(env, normalizedPath); err != nil {
+				return "", err
+			}
 
 			oldText, ok := args["old_text"].(string)
 
@@ -69,6 +74,10 @@ func EditTool() tool.Tool {
 			}
 
 			rawContent := string(contentBytes)
+
+			if err := requireFreshFullRead(env, normalizedPath, rawContent); err != nil {
+				return "", err
+			}
 
 			bom, content := stripBom(rawContent)
 			originalEnding := detectLineEnding(content)
@@ -134,11 +143,16 @@ func EditTool() tool.Tool {
 			if err != nil {
 				return "", pathError("write file", pathArg, normalizedPath, workingDir, err)
 			}
-			defer outFile.Close()
-
 			if _, err := outFile.WriteString(finalContent); err != nil {
+				outFile.Close()
 				return "", fmt.Errorf("failed to write file: %w", err)
 			}
+
+			if err := outFile.Close(); err != nil {
+				return "", fmt.Errorf("failed to close file: %w", err)
+			}
+
+			rememberRead(env, normalizedPath, []byte(finalContent), 0, 0)
 
 			diff := generateDiffString(baseContent, newContent)
 

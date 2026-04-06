@@ -1,0 +1,4 @@
+- Current Date: {{.Date}}
+- Operating System: {{.OS}}
+- Architecture: {{.Arch}}
+- Working Directory: {{.WorkingDir}}
