@@ -108,7 +108,7 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 	if event.Key() == tcell.KeyCtrlE && !a.hasActiveModal() {
 		a.toolOutputExpanded = !a.toolOutputExpanded
 
-		if !a.showWelcome && !a.isStreaming() && len(a.agent.Messages()) > 0 {
+		if !a.showWelcome && !a.isStreaming() && !a.promptActive && !a.askActive && len(a.agent.Messages()) > 0 {
 			a.renderChat(a.agent.Messages(), "", "", "")
 		}
 
@@ -757,7 +757,7 @@ func (a *App) buildLayout() *tview.Flex {
 			a.chatWidth = newWidth
 
 			// Re-render chat on resize to re-wrap content to new width
-			if !a.showWelcome && len(a.agent.Messages()) > 0 {
+			if !a.showWelcome && !a.promptActive && !a.askActive && len(a.agent.Messages()) > 0 {
 				a.renderChat(a.agent.Messages(), "", a.currentToolName, a.currentToolHint)
 			}
 		}

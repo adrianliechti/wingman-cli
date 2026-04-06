@@ -99,7 +99,7 @@ func LsTool() tool.Tool {
 			}
 
 			output := strings.Join(names, "\n")
-			output, _, bytesTruncated := truncateHead(output)
+			output, truncated := truncateHead(output)
 
 			var notices []string
 
@@ -107,7 +107,7 @@ func LsTool() tool.Tool {
 				notices = append(notices, fmt.Sprintf("%d entries limit reached", limit))
 			}
 
-			if bytesTruncated {
+			if truncated {
 				notices = append(notices, fmt.Sprintf("%dKB limit reached", DefaultMaxBytes/1024))
 			}
 

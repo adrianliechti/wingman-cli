@@ -68,7 +68,12 @@ func (a *App) setPhase(phase AppPhase) {
 }
 
 // render queues a UI update with the current state.
+// Skipped while a confirmation prompt is active to avoid wiping it.
 func (a *App) render(streaming, toolName, toolHint string) {
+	if a.promptActive || a.askActive {
+		return
+	}
+
 	messages := a.agent.Messages() // Capture now, not in closure
 	a.app.QueueUpdateDraw(func() {
 		a.renderChat(messages, streaming, toolName, toolHint)

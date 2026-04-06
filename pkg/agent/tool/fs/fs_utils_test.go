@@ -577,29 +577,23 @@ func TestStripBom(t *testing.T) {
 
 func TestTruncateHead(t *testing.T) {
 	tests := []struct {
-		name        string
-		content     string
-		wantByLines bool
-		wantByBytes bool
+		name          string
+		content       string
+		wantTruncated bool
 	}{
 		{
-			name:        "small content",
-			content:     "line1\nline2\nline3",
-			wantByLines: false,
-			wantByBytes: false,
+			name:          "small content",
+			content:       "line1\nline2\nline3",
+			wantTruncated: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, byLines, byBytes := truncateHead(tt.content)
+			result, truncated := truncateHead(tt.content)
 
-			if byLines != tt.wantByLines {
-				t.Errorf("truncateHead() byLines = %v, want %v", byLines, tt.wantByLines)
-			}
-
-			if byBytes != tt.wantByBytes {
-				t.Errorf("truncateHead() byBytes = %v, want %v", byBytes, tt.wantByBytes)
+			if truncated != tt.wantTruncated {
+				t.Errorf("truncateHead() truncated = %v, want %v", truncated, tt.wantTruncated)
 			}
 
 			if result == "" && tt.content != "" {

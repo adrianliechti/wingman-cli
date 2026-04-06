@@ -382,7 +382,7 @@ func GrepTool() tool.Tool {
 				output = strings.Join(results, "\n")
 			}
 
-			output, _, bytesTruncated := truncateHead(output)
+			output, truncated := truncateHead(output)
 
 			var notices []string
 
@@ -393,7 +393,7 @@ func GrepTool() tool.Tool {
 				}
 			}
 
-			if bytesTruncated {
+			if truncated {
 				notices = append(notices, fmt.Sprintf("%dKB limit reached", DefaultMaxBytes/1024))
 			}
 

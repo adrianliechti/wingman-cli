@@ -3,7 +3,10 @@ package fs
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
@@ -90,13 +93,13 @@ func ReadTool() tool.Tool {
 			}
 
 			selected := strings.Join(numbered, "\n")
-			output, truncatedByLines, truncatedByBytes := truncateHead(selected)
+			output, truncated := truncateHead(selected)
 
 			// Track actual range read. offset/limit of 0,0 means full read.
 			readOffset := offset
 			readLimit := 0
 
-			if end < total || truncatedByLines || truncatedByBytes {
+			if end < total || truncated {
 				readLimit = end - offset
 			}
 
@@ -105,21 +108,28 @@ func ReadTool() tool.Tool {
 			outputLines := len(strings.Split(output, "\n"))
 			endLine := offset + outputLines
 
-			if truncatedByLines || truncatedByBytes {
+			if truncated || end < total {
+				// Save full content to scratch so the agent can read it there
+				var scratchPath string
+
+				if env != nil && env.Scratch != nil {
+					name := fmt.Sprintf("read-%d.txt", time.Now().UnixNano())
+					path := filepath.Join(env.ScratchDir(), name)
+
+					if err := os.WriteFile(path, content, 0644); err == nil {
+						scratchPath = path
+					}
+				}
+
 				notice := fmt.Sprintf("\n\n[Lines %d-%d of %d", offset+1, endLine, total)
 
-				if truncatedByBytes {
-					notice += fmt.Sprintf(", %dKB limit", DefaultMaxBytes/1024)
+				if scratchPath != "" {
+					notice += fmt.Sprintf(". Full file: %s", scratchPath)
 				}
 
 				notice += fmt.Sprintf(". Use offset=%d to continue]", endLine+1)
 
 				return output + notice, nil
-			}
-
-			if end < total {
-				return output + fmt.Sprintf("\n\n[Lines %d-%d of %d. Use offset=%d to continue]",
-					offset+1, endLine, total, endLine+1), nil
 			}
 
 			return output, nil

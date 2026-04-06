@@ -142,7 +142,7 @@ func FindTool() tool.Tool {
 			}
 
 			rawOutput := strings.Join(paths, "\n")
-			truncatedOutput, _, bytesTruncated := truncateHead(rawOutput)
+			truncatedOutput, truncated := truncateHead(rawOutput)
 
 			duration := time.Since(startTime)
 
@@ -154,7 +154,7 @@ func FindTool() tool.Tool {
 				notices = append(notices, fmt.Sprintf("%d results limit reached — refine the pattern for more specific results", limit))
 			}
 
-			if bytesTruncated {
+			if truncated {
 				notices = append(notices, fmt.Sprintf("%dKB limit reached", DefaultMaxBytes/1024))
 			}
 
