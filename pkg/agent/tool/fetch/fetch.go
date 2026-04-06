@@ -31,7 +31,6 @@ func FetchTool() tool.Tool {
 	return tool.Tool{
 		Name:            "fetch",
 		Description:     description,
-		ConcurrencySafe: true,
 
 		Parameters: map[string]any{
 			"type": "object",

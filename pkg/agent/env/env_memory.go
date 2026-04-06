@@ -8,11 +8,11 @@ import (
 
 const (
 	memoryFileName = "MEMORY.md"
-	memoryMaxLines = 200
+	memoryMaxBytes = 25 * 1024 // 25KB
 )
 
 // MemoryContent reads MEMORY.md from the memory directory.
-// Returns empty string if the file doesn't exist. Truncates to memoryMaxLines.
+// Returns empty string if the file doesn't exist. Truncates to memoryMaxBytes.
 func (e *Environment) MemoryContent() string {
 	dir := e.MemoryDir()
 	if dir == "" {
@@ -29,11 +29,13 @@ func (e *Environment) MemoryContent() string {
 		return ""
 	}
 
-	lines := strings.Split(content, "\n")
-	if len(lines) > memoryMaxLines {
-		lines = lines[:memoryMaxLines]
-		content = strings.Join(lines, "\n")
-		content += "\n\n> WARNING: MEMORY.md exceeded 200 lines and was truncated. Keep index entries concise; move detail into topic files."
+	if len(content) > memoryMaxBytes {
+		truncated := content[:memoryMaxBytes]
+		if idx := strings.LastIndex(truncated, "\n"); idx > 0 {
+			truncated = truncated[:idx]
+		}
+
+		content = truncated + "\n\n> WARNING: MEMORY.md exceeded 25KB and was truncated. Keep index entries concise; move detail into topic files."
 	}
 
 	return content

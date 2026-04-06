@@ -12,7 +12,6 @@ import (
 func EditTool() tool.Tool {
 	return tool.Tool{
 		Name:            "edit",
-		ConcurrencySafe: false,
 
 		Description: strings.Join([]string{
 			"Performs exact string replacements in files. This is the preferred tool for modifying existing files.",
@@ -153,7 +152,7 @@ func EditTool() tool.Tool {
 				return "", fmt.Errorf("failed to close file: %w", err)
 			}
 
-			rememberRead(env, normalizedPath, []byte(finalContent), false)
+			rememberRead(env, normalizedPath, []byte(finalContent), 0, 0)
 
 			diff := generateDiffString(baseContent, newContent)
 

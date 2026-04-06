@@ -44,9 +44,6 @@ func ShellTool() tool.Tool {
 	return tool.Tool{
 		Name:        "shell",
 		Description: description,
-		ConcurrencySafeFunc: func(args map[string]any) bool {
-			return shellCommandIsReadOnly(args)
-		},
 
 		Parameters: map[string]any{
 			"type": "object",
@@ -73,11 +70,6 @@ func ShellTool() tool.Tool {
 
 		Execute: executeShell,
 	}
-}
-
-func shellCommandIsReadOnly(args map[string]any) bool {
-	command, _ := args["command"].(string)
-	return isSafeCommand(command)
 }
 
 // isSafeCommand checks if the entire command (including pipes, chains, and subshells) is safe.

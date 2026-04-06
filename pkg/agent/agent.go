@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"iter"
-	"sync"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
@@ -14,6 +17,8 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
+
+const maxResultBytes = 50 * 1024 // 50KB per tool result
 
 var errYieldStopped = errors.New("yield stopped")
 
@@ -175,51 +180,26 @@ func extractToolCalls(items []responses.ResponseInputItemUnionParam) []ToolCall 
 }
 
 func (a *Agent) processToolCalls(ctx context.Context, yield func(Message, error) bool, toolCalls []ToolCall, tools []tool.Tool) error {
-	// First, yield all tool call messages
 	for _, tc := range toolCalls {
-		msg := Message{
+		// Yield tool call message
+		callMsg := Message{
 			Role:    RoleAssistant,
 			Content: []Content{{ToolCall: &ToolCall{ID: tc.ID, Name: tc.Name, Args: tc.Args}}},
 		}
 
-		if !yield(msg, nil) {
+		if !yield(callMsg, nil) {
 			return errYieldStopped
 		}
-	}
 
-	prepared := make([]preparedToolCall, len(toolCalls))
-	for i, tc := range toolCalls {
-		prepared[i] = prepareToolCall(tc, tools)
-	}
+		// Execute and yield result immediately
+		result := truncateResult(ExecuteTool(ctx, a.Environment, tc, tools), a.Environment)
 
-	results := make([]string, len(toolCalls))
-
-	for _, batch := range partitionToolCalls(prepared) {
-		if batch.concurrent {
-			var wg sync.WaitGroup
-			for _, call := range batch.calls {
-				call := call
-				wg.Go(func() {
-					results[call.index] = call.Execute(ctx, a.Environment)
-				})
-			}
-			wg.Wait()
-			continue
-		}
-
-		for _, call := range batch.calls {
-			results[call.index] = call.Execute(ctx, a.Environment)
-		}
-	}
-
-	// Yield results and append to messages
-	for i, tc := range toolCalls {
 		resultMsg := Message{
 			Role: RoleAssistant,
 			Content: []Content{{ToolResult: &ToolResult{
 				ID:      tc.ID,
 				Name:    tc.Name,
-				Content: results[i],
+				Content: result,
 			}}},
 		}
 
@@ -231,92 +211,13 @@ func (a *Agent) processToolCalls(ctx context.Context, yield func(Message, error)
 			OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
 				CallID: tc.ID,
 				Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
-					OfString: openai.String(results[i]),
+					OfString: openai.String(result),
 				},
 			},
 		})
 	}
 
 	return nil
-}
-
-type preparedToolCall struct {
-	index int
-	call  ToolCall
-	tool  *tool.Tool
-	args  map[string]any
-	err   error
-}
-
-func prepareToolCall(tc ToolCall, tools []tool.Tool) preparedToolCall {
-	prepared := preparedToolCall{
-		call: tc,
-		tool: findTool(tc.Name, tools),
-		args: make(map[string]any),
-	}
-
-	if prepared.tool == nil {
-		return prepared
-	}
-
-	if tc.Args == "" {
-		return prepared
-	}
-
-	prepared.err = json.Unmarshal([]byte(tc.Args), &prepared.args)
-
-	return prepared
-}
-
-func (c preparedToolCall) Execute(ctx context.Context, env *env.Environment) string {
-	if c.tool == nil {
-		return fmt.Sprintf("error: unknown tool %s", c.call.Name)
-	}
-
-	if c.err != nil {
-		return fmt.Sprintf("error: failed to parse arguments: %v", c.err)
-	}
-
-	result, err := c.tool.Execute(ctx, env, c.args)
-	if err != nil {
-		return fmt.Sprintf("error: %v", err)
-	}
-
-	return result
-}
-
-func (c preparedToolCall) AllowsConcurrentExecution() bool {
-	if c.tool == nil || c.err != nil {
-		return false
-	}
-
-	return c.tool.AllowsConcurrentExecution(c.args)
-}
-
-type toolCallBatch struct {
-	concurrent bool
-	calls      []preparedToolCall
-}
-
-func partitionToolCalls(calls []preparedToolCall) []toolCallBatch {
-	var batches []toolCallBatch
-
-	for i := range calls {
-		calls[i].index = i
-
-		concurrent := calls[i].AllowsConcurrentExecution()
-		if len(batches) > 0 && concurrent && batches[len(batches)-1].concurrent {
-			batches[len(batches)-1].calls = append(batches[len(batches)-1].calls, calls[i])
-			continue
-		}
-
-		batches = append(batches, toolCallBatch{
-			concurrent: concurrent,
-			calls:      []preparedToolCall{calls[i]},
-		})
-	}
-
-	return batches
 }
 
 func formatTools(tools []tool.Tool) []responses.ToolUnionParam {
@@ -505,4 +406,40 @@ func (a *Agent) Clear() {
 	if a.Environment != nil && a.Environment.Tracker != nil {
 		a.Environment.Tracker.Clear()
 	}
+}
+
+func truncateResult(result string, env *env.Environment) string {
+	if len(result) <= maxResultBytes {
+		return result
+	}
+
+	totalBytes := len(result)
+
+	// Keep the tail (most relevant for command output)
+	truncated := result[totalBytes-maxResultBytes:]
+
+	// Align to next newline to avoid partial lines
+	if idx := strings.Index(truncated, "\n"); idx >= 0 && idx < 512 {
+		truncated = truncated[idx+1:]
+	}
+
+	shownBytes := len(truncated)
+
+	// Write full output to scratch dir if available
+	var notice string
+
+	if env != nil && env.Scratch != nil {
+		name := fmt.Sprintf("result-%d.txt", time.Now().UnixNano())
+		path := filepath.Join(env.ScratchDir(), name)
+
+		if err := os.WriteFile(path, []byte(result), 0644); err == nil {
+			notice = fmt.Sprintf("[Output truncated: showing last %d of %d bytes. Full output: %s]\n\n", shownBytes, totalBytes, path)
+		}
+	}
+
+	if notice == "" {
+		notice = fmt.Sprintf("[Output truncated: showing last %d of %d bytes]\n\n", shownBytes, totalBytes)
+	}
+
+	return notice + truncated
 }

@@ -9,14 +9,14 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 )
 
-func rememberRead(env *env.Environment, path string, content []byte, partial bool) {
+func rememberRead(env *env.Environment, path string, content []byte, offset, limit int) {
 	var modTime time.Time
 
 	if info, err := env.Root.Stat(path); err == nil {
 		modTime = info.ModTime()
 	}
 
-	env.Tracker.Remember(path, string(content), modTime, partial)
+	env.Tracker.Remember(path, string(content), modTime, offset, limit)
 }
 
 func requireFreshFullRead(env *env.Environment, path, content string) error {
@@ -26,13 +26,13 @@ func requireFreshFullRead(env *env.Environment, path, content string) error {
 		return fmt.Errorf("file has not been read yet. Read it first before writing to it")
 	}
 
-	if snapshot.Partial {
+	if snapshot.IsPartial() {
 		return fmt.Errorf("file was only partially read. Read the full file before writing to it")
 	}
 
 	info, err := env.Root.Stat(path)
 
-	if err == nil && !snapshot.ModTime.IsZero() && info.ModTime().After(snapshot.ModTime) && content != snapshot.Content {
+	if err == nil && !snapshot.Timestamp.IsZero() && info.ModTime().After(snapshot.Timestamp) && content != snapshot.Content {
 		return fmt.Errorf("file has been modified since it was read. Read it again before writing to it")
 	}
 

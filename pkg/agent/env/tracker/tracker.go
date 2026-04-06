@@ -7,9 +7,14 @@ import (
 )
 
 type Snapshot struct {
-	Content string
-	ModTime time.Time
-	Partial bool
+	Content   string
+	Timestamp time.Time
+	Offset    int // 0 means from start
+	Limit     int // 0 means no limit (full read)
+}
+
+func (s Snapshot) IsPartial() bool {
+	return s.Offset > 0 || s.Limit > 0
 }
 
 type Tracker struct {
@@ -26,7 +31,7 @@ func New(root *os.Root) *Tracker {
 	}
 }
 
-func (t *Tracker) Remember(path, content string, modTime time.Time, partial bool) {
+func (t *Tracker) Remember(path, content string, timestamp time.Time, offset, limit int) {
 	if t == nil || t.root == nil {
 		return
 	}
@@ -35,9 +40,10 @@ func (t *Tracker) Remember(path, content string, modTime time.Time, partial bool
 
 	t.mu.Lock()
 	t.files[key] = Snapshot{
-		Content: content,
-		ModTime: modTime,
-		Partial: partial,
+		Content:   content,
+		Timestamp: timestamp,
+		Offset:    offset,
+		Limit:     limit,
 	}
 	t.mu.Unlock()
 }

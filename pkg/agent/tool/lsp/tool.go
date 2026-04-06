@@ -28,7 +28,6 @@ func diagnosticsTool(manager *lsp.Manager) tool.Tool {
 	return tool.Tool{
 		Name:            "get_lsp_diagnostics",
 		Description:     "Get diagnostics (errors, warnings) for a file or the entire workspace.",
-		ConcurrencySafe: true,
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -70,7 +69,6 @@ func definitionTool(manager *lsp.Manager) tool.Tool {
 	return tool.Tool{
 		Name:            "find_lsp_definition",
 		Description:     "Find the definition of a symbol at a given position.",
-		ConcurrencySafe: true,
 		Parameters:      positionParams(),
 		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
 			path, line, column, err := parsePositionArgs(manager.WorkingDir(), args)
@@ -92,7 +90,6 @@ func referencesTool(manager *lsp.Manager) tool.Tool {
 	return tool.Tool{
 		Name:            "find_lsp_references",
 		Description:     "Find all references to a symbol at a given position across the workspace.",
-		ConcurrencySafe: true,
 		Parameters:      positionParams(),
 		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
 			path, line, column, err := parsePositionArgs(manager.WorkingDir(), args)
@@ -114,7 +111,6 @@ func implementationTool(manager *lsp.Manager) tool.Tool {
 	return tool.Tool{
 		Name:            "find_lsp_implementation",
 		Description:     "Find implementations of an interface or abstract method at a given position.",
-		ConcurrencySafe: true,
 		Parameters:      positionParams(),
 		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
 			path, line, column, err := parsePositionArgs(manager.WorkingDir(), args)
@@ -136,7 +132,6 @@ func hoverTool(manager *lsp.Manager) tool.Tool {
 	return tool.Tool{
 		Name:            "get_lsp_hover",
 		Description:     "Get hover information (type info, documentation) for a symbol at a given position.",
-		ConcurrencySafe: true,
 		Parameters:      positionParams(),
 		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
 			path, line, column, err := parsePositionArgs(manager.WorkingDir(), args)
@@ -158,7 +153,6 @@ func symbolsTool(manager *lsp.Manager) tool.Tool {
 	return tool.Tool{
 		Name:            "find_lsp_symbols",
 		Description:     "Get symbols. With a path: returns the symbol outline (functions, classes, variables) of that file. Without a path: searches symbols across the entire workspace by query.",
-		ConcurrencySafe: true,
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -205,7 +199,6 @@ func hierarchyTool(manager *lsp.Manager) tool.Tool {
 	return tool.Tool{
 		Name:            "find_lsp_hierarchy",
 		Description:     "Get incoming and outgoing calls for a function/method at a given position.",
-		ConcurrencySafe: true,
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
