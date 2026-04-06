@@ -122,8 +122,18 @@ func projectMemoryDir(workingDir string) string {
 		home = os.TempDir()
 	}
 
-	sanitized := strings.TrimPrefix(filepath.Clean(workingDir), string(filepath.Separator))
+	sanitized := filepath.Clean(workingDir)
+
+	// On Windows, strip the drive letter prefix (e.g. "C:" or "F:") and the
+	// following separator so the sanitized name doesn't contain a colon, which
+	// is an invalid character in Windows file/folder names.
+	if vol := filepath.VolumeName(sanitized); vol != "" {
+		sanitized = strings.TrimPrefix(sanitized, vol)
+	}
+
+	sanitized = strings.TrimPrefix(sanitized, string(filepath.Separator))
 	sanitized = strings.ReplaceAll(sanitized, string(filepath.Separator), "_")
+	sanitized = strings.ToLower(sanitized)
 
 	return filepath.Join(home, ".wingman", "projects", sanitized, "memory")
 }

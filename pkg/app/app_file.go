@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io/fs"
+	pathpkg "path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -78,7 +79,7 @@ func (a *App) collectFiles() []fileMatch {
 				return filepath.SkipDir
 			}
 
-			newPatterns := loadGitignore(fsys, strings.Split(path, string(filepath.Separator)))
+			newPatterns := loadGitignore(fsys, strings.Split(path, "/"))
 
 			if len(newPatterns) > 0 {
 				allPatterns = append(allPatterns, newPatterns...)
@@ -115,7 +116,7 @@ func loadGitignore(fsys fs.FS, domain []string) []gitignore.Pattern {
 	gitignorePath := ".gitignore"
 
 	if len(domain) > 0 {
-		gitignorePath = filepath.Join(append(domain, ".gitignore")...)
+		gitignorePath = pathpkg.Join(append(domain, ".gitignore")...)
 	}
 
 	f, err := fsys.Open(gitignorePath)
