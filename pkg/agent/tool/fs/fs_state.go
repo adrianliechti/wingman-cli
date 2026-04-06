@@ -10,7 +10,7 @@ import (
 )
 
 func rememberRead(env *tool.Environment, root *os.Root, normalizedPath string, content []byte, partial bool) {
-	if env == nil || env.ReadTracker == nil || root == nil {
+	if env == nil || env.Tracker == nil || root == nil {
 		return
 	}
 
@@ -19,15 +19,15 @@ func rememberRead(env *tool.Environment, root *os.Root, normalizedPath string, c
 		modTime = info.ModTime()
 	}
 
-	env.ReadTracker.Remember(root, normalizedPath, string(content), modTime, partial)
+	env.Tracker.Remember(root, normalizedPath, string(content), modTime, partial)
 }
 
 func requireFreshFullRead(env *tool.Environment, root *os.Root, normalizedPath, currentContent string) error {
-	if env == nil || env.ReadTracker == nil || root == nil {
+	if env == nil || env.Tracker == nil || root == nil {
 		return nil
 	}
 
-	snapshot, ok := env.ReadTracker.Snapshot(root, normalizedPath)
+	snapshot, ok := env.Tracker.Get(root, normalizedPath)
 	if !ok {
 		return fmt.Errorf("file has not been read yet. Read it first before writing to it")
 	}

@@ -2,10 +2,8 @@ package app
 
 import (
 	"fmt"
-	"os"
-	"strings"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/memory"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/plan"
 	"github.com/adrianliechti/wingman-agent/pkg/ui/theme"
 )
 
@@ -21,8 +19,8 @@ func (a *App) enterPlanMode(announce bool) {
 	}
 
 	a.currentMode = ModePlan
-	if a.agent != nil && a.agent.Environment != nil && a.agent.Environment.Session != nil {
-		a.agent.Environment.Session.SetPlanMode(planFile)
+	if a.agent != nil && a.agent.Environment != nil {
+		a.agent.Environment.SetPlanMode(planFile)
 	}
 	a.updateStatusBar()
 
@@ -37,8 +35,8 @@ func (a *App) exitPlanMode(announce bool) {
 	}
 
 	a.currentMode = ModeAgent
-	if a.agent != nil && a.agent.Environment != nil && a.agent.Environment.Session != nil {
-		a.agent.Environment.Session.SetAgentMode()
+	if a.agent != nil && a.agent.Environment != nil {
+		a.agent.Environment.SetAgentMode()
 	}
 	a.updateStatusBar()
 
@@ -52,33 +50,17 @@ func (a *App) exitPlanMode(announce bool) {
 }
 
 func (a *App) ensurePlanFile() (string, error) {
-	if a.planFile == "" {
-		memoryDir := a.agent.Environment.MemoryDir()
-		if memoryDir == "" {
-			memoryDir = memory.Dir(a.agent.Environment.WorkingDir())
-		}
-
-		if memoryDir == "" {
-			return "", fmt.Errorf("memory directory is not available")
-		}
-
-		if err := memory.EnsureDir(memoryDir); err != nil {
-			return "", err
-		}
-
-		a.planFile = memory.PlanPath(memoryDir)
-	}
-
-	data, err := os.ReadFile(a.planFile)
-	if err == nil && strings.TrimSpace(string(data)) != "" {
+	if a.planFile != "" {
 		return a.planFile, nil
 	}
 
-	if err := os.WriteFile(a.planFile, []byte(memory.NewPlanContent()), 0644); err != nil {
+	path, err := plan.Ensure(a.agent.Environment.MemoryDir())
+	if err != nil {
 		return "", err
 	}
 
-	return a.planFile, nil
+	a.planFile = path
+	return path, nil
 }
 
 func (a *App) currentInstructions() string {

@@ -16,7 +16,6 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/bridge"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/lsp"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/mcp"
-	"github.com/adrianliechti/wingman-agent/pkg/agent/memory"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/rewind"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/ui/theme"
@@ -117,12 +116,8 @@ func New(ctx context.Context, agent *agent.Agent) *App {
 		rewindReady: make(chan struct{}),
 	}
 
-	if agent.Environment != nil && agent.Environment.MemoryDir() != "" {
-		a.planFile = memory.PlanPath(agent.Environment.MemoryDir())
-	}
-
-	if agent.Environment != nil && agent.Environment.Session != nil {
-		agent.Environment.Session.SetAgentMode()
+	if agent.Environment != nil {
+		agent.Environment.SetAgentMode()
 	}
 
 	agent.Environment.AskUser = a.askUser

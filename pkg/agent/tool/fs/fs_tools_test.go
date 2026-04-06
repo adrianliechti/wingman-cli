@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tracker"
 )
 
 // createTestEnvironment creates a test environment with a temporary directory
@@ -29,9 +30,8 @@ func createTestEnvironment(t *testing.T) (*tool.Environment, string, func()) {
 	}
 
 	env := &tool.Environment{
-		Root:        root,
-		ReadTracker: tool.NewReadTracker(),
-		Session:     tool.NewSessionState(),
+		Root:    root,
+		Tracker: tracker.New(),
 	}
 
 	cleanup := func() {

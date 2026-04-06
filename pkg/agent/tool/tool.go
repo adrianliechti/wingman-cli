@@ -3,6 +3,9 @@ package tool
 import (
 	"context"
 	"os"
+	"sync"
+
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tracker"
 )
 
 type Tool struct {
@@ -29,11 +32,14 @@ type Environment struct {
 	Arch string
 
 	Root    *os.Root
-	Scratch *os.Root
 	Memory  *os.Root
+	Scratch *os.Root
 
-	ReadTracker *ReadTracker
-	Session     *SessionState
+	Tracker *tracker.Tracker
+
+	planMu   sync.RWMutex
+	planning bool
+	planFile string
 
 	AskUser      func(question string) (string, error)
 	PromptUser   func(prompt string) (bool, error)
@@ -50,24 +56,50 @@ func (e *Environment) ScratchDir() string {
 }
 
 func (e *Environment) MemoryDir() string {
-	if e.Memory == nil {
-		return ""
-	}
 	return e.Memory.Name()
 }
 
+func (e *Environment) SetPlanMode(planFile string) {
+	if e == nil {
+		return
+	}
+
+	e.planMu.Lock()
+	e.planning = true
+	e.planFile = planFile
+	e.planMu.Unlock()
+}
+
+func (e *Environment) SetAgentMode() {
+	if e == nil {
+		return
+	}
+
+	e.planMu.Lock()
+	e.planning = false
+	e.planMu.Unlock()
+}
+
 func (e *Environment) IsPlanning() bool {
-	if e == nil || e.Session == nil {
+	if e == nil {
 		return false
 	}
 
-	return e.Session.IsPlanning()
+	e.planMu.RLock()
+	planning := e.planning
+	e.planMu.RUnlock()
+
+	return planning
 }
 
 func (e *Environment) PlanFile() string {
-	if e == nil || e.Session == nil {
+	if e == nil {
 		return ""
 	}
 
-	return e.Session.PlanFile()
+	e.planMu.RLock()
+	planFile := e.planFile
+	e.planMu.RUnlock()
+
+	return planFile
 }

@@ -501,7 +501,7 @@ func (a *Agent) Usage() Usage {
 
 func (a *Agent) Clear() {
 	a.messages = nil
-	if a.Environment != nil && a.Environment.ReadTracker != nil {
-		a.Environment.ReadTracker.Clear()
+	if a.Environment != nil && a.Environment.Tracker != nil {
+		a.Environment.Tracker.Clear()
 	}
 }
