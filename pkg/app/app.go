@@ -226,9 +226,7 @@ func (a *App) Run() error {
 				a.addFileToContext(normalizeFilePath(p, a.agent.Environment.RootDir()))
 			}
 
-			a.app.QueueUpdateDraw(func() {
-				a.updateInputHint()
-			})
+			a.updateInputHint()
 
 			return true
 		},

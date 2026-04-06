@@ -33,7 +33,7 @@ func NewSpinner(app *tview.Application, view *tview.TextView) *Spinner {
 }
 
 // Start begins the spinner animation with the given phase.
-// Safe to call from any goroutine.
+// Must be called from the UI goroutine (e.g. inside QueueUpdateDraw).
 func (s *Spinner) Start(phase AppPhase) {
 	s.mu.Lock()
 
@@ -41,8 +41,8 @@ func (s *Spinner) Start(phase AppPhase) {
 	s.frame = 0
 
 	if s.active {
+		s.render()
 		s.mu.Unlock()
-		s.queueRender()
 		return
 	}
 
@@ -50,14 +50,14 @@ func (s *Spinner) Start(phase AppPhase) {
 	s.ticker = time.NewTicker(100 * time.Millisecond)
 	s.stopChan = make(chan struct{})
 
+	s.render()
 	s.mu.Unlock()
 
-	s.queueRender()
 	go s.run()
 }
 
 // Stop halts the spinner animation.
-// Safe to call from any goroutine.
+// Must be called from the UI goroutine (e.g. inside QueueUpdateDraw).
 func (s *Spinner) Stop() {
 	s.mu.Lock()
 
@@ -74,9 +74,7 @@ func (s *Spinner) Stop() {
 
 	s.mu.Unlock()
 
-	s.app.QueueUpdateDraw(func() {
-		s.view.SetText("")
-	})
+	s.view.SetText("")
 }
 
 func (s *Spinner) run() {

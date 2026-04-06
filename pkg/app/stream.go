@@ -53,16 +53,14 @@ func extractToolHint(argsJSON string) string {
 }
 
 // setPhase updates the phase and spinner state.
-// Safe to call from any goroutine.
+// Must be called from the UI goroutine (e.g. inside QueueUpdateDraw or an input handler).
 func (a *App) setPhase(phase AppPhase) {
 	a.phase = phase
 
 	if a.spinner != nil {
 		if phase == PhaseIdle {
 			a.spinner.Stop()
-			a.app.QueueUpdateDraw(func() {
-				a.updateInputHint()
-			})
+			a.updateInputHint()
 		} else {
 			a.spinner.Start(phase)
 		}
