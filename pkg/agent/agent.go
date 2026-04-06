@@ -11,6 +11,7 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
 
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
@@ -267,7 +268,7 @@ func prepareToolCall(tc ToolCall, tools []tool.Tool) preparedToolCall {
 	return prepared
 }
 
-func (c preparedToolCall) Execute(ctx context.Context, env *tool.Environment) string {
+func (c preparedToolCall) Execute(ctx context.Context, env *env.Environment) string {
 	if c.tool == nil {
 		return fmt.Sprintf("error: unknown tool %s", c.call.Name)
 	}
@@ -351,7 +352,7 @@ func findTool(name string, tools []tool.Tool) *tool.Tool {
 }
 
 // ExecuteTool looks up and executes a tool by name. Shared between agent and sub-agent.
-func ExecuteTool(ctx context.Context, env *tool.Environment, tc ToolCall, tools []tool.Tool) string {
+func ExecuteTool(ctx context.Context, env *env.Environment, tc ToolCall, tools []tool.Tool) string {
 	t := findTool(tc.Name, tools)
 
 	if t == nil {

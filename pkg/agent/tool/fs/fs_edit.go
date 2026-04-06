@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
@@ -36,7 +37,7 @@ func EditTool() tool.Tool {
 			"required": []string{"path", "old_text", "new_text"},
 		},
 
-		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
 			pathArg, ok := args["path"].(string)
 
 			if !ok || pathArg == "" {
@@ -49,9 +50,9 @@ func EditTool() tool.Tool {
 				return "", err
 			}
 
-			workingDir := env.WorkingDir()
+			workingDir := env.RootDir()
 
-			if err := enforcePlanMutation(env, root, normalizedPath); err != nil {
+			if err := enforcePlanMutation(env, normalizedPath); err != nil {
 				return "", err
 			}
 
@@ -75,7 +76,7 @@ func EditTool() tool.Tool {
 
 			rawContent := string(contentBytes)
 
-			if err := requireFreshFullRead(env, root, normalizedPath, rawContent); err != nil {
+			if err := requireFreshFullRead(env, normalizedPath, rawContent); err != nil {
 				return "", err
 			}
 
@@ -152,7 +153,7 @@ func EditTool() tool.Tool {
 				return "", fmt.Errorf("failed to close file: %w", err)
 			}
 
-			rememberRead(env, root, normalizedPath, []byte(finalContent), false)
+			rememberRead(env, normalizedPath, []byte(finalContent), false)
 
 			diff := generateDiffString(baseContent, newContent)
 

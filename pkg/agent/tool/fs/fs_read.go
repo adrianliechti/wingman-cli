@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
@@ -34,7 +35,7 @@ func ReadTool() tool.Tool {
 			"required": []string{"path"},
 		},
 
-		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
 			pathArg, ok := args["path"].(string)
 
 			if !ok || pathArg == "" {
@@ -61,11 +62,11 @@ func ReadTool() tool.Tool {
 			content, err := root.ReadFile(normalizedPath)
 
 			if err != nil {
-				return "", pathError("read file", pathArg, normalizedPath, env.WorkingDir(), err)
+				return "", pathError("read file", pathArg, normalizedPath, env.RootDir(), err)
 			}
 
 			if len(content) == 0 {
-				rememberRead(env, root, normalizedPath, content, false)
+				rememberRead(env, normalizedPath, content, false)
 				return "(empty file)", nil
 			}
 
@@ -92,7 +93,7 @@ func ReadTool() tool.Tool {
 			selected := strings.Join(numbered, "\n")
 			output, truncatedByLines, truncatedByBytes := truncateHead(selected)
 			partial := offset > 0 || end < total || truncatedByLines || truncatedByBytes
-			rememberRead(env, root, normalizedPath, content, partial)
+			rememberRead(env, normalizedPath, content, partial)
 
 			outputLines := len(strings.Split(output, "\n"))
 			endLine := offset + outputLines

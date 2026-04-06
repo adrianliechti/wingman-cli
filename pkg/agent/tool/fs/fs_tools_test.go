@@ -8,12 +8,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
-	"github.com/adrianliechti/wingman-agent/pkg/agent/tracker"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env/tracker"
 )
 
 // createTestEnvironment creates a test environment with a temporary directory
-func createTestEnvironment(t *testing.T) (*tool.Environment, string, func()) {
+func createTestEnvironment(t *testing.T) (*env.Environment, string, func()) {
 	t.Helper()
 
 	tmpDir, err := os.MkdirTemp("", "fs_test_*")
@@ -29,9 +29,9 @@ func createTestEnvironment(t *testing.T) (*tool.Environment, string, func()) {
 		t.Fatalf("failed to open root: %v", err)
 	}
 
-	env := &tool.Environment{
+	e := &env.Environment{
 		Root:    root,
-		Tracker: tracker.New(),
+		Tracker: tracker.New(root),
 	}
 
 	cleanup := func() {
@@ -39,7 +39,7 @@ func createTestEnvironment(t *testing.T) (*tool.Environment, string, func()) {
 		os.RemoveAll(tmpDir)
 	}
 
-	return env, tmpDir, cleanup
+	return e, tmpDir, cleanup
 }
 
 func TestReadTool(t *testing.T) {
@@ -502,6 +502,194 @@ func TestEditTool(t *testing.T) {
 			t.Fatalf("expected stale-read error, got: %v", err)
 		}
 	})
+}
+
+func createPlanModeEnvironment(t *testing.T) (*env.Environment, string, string, func()) {
+	t.Helper()
+
+	tmpDir, err := os.MkdirTemp("", "fs_plan_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+
+	root, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		os.RemoveAll(tmpDir)
+		t.Fatalf("failed to open root: %v", err)
+	}
+
+	memDir := filepath.Join(tmpDir, ".memory")
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		root.Close()
+		os.RemoveAll(tmpDir)
+		t.Fatalf("failed to create memory dir: %v", err)
+	}
+
+	memRoot, err := os.OpenRoot(memDir)
+	if err != nil {
+		root.Close()
+		os.RemoveAll(tmpDir)
+		t.Fatalf("failed to open memory root: %v", err)
+	}
+
+	e := &env.Environment{
+		Root:    root,
+		Memory:  memRoot,
+		Tracker: tracker.New(root),
+	}
+
+	planFile, err := e.EnterPlanMode()
+	if err != nil {
+		memRoot.Close()
+		root.Close()
+		os.RemoveAll(tmpDir)
+		t.Fatalf("failed to enter plan mode: %v", err)
+	}
+
+	cleanup := func() {
+		memRoot.Close()
+		root.Close()
+		os.RemoveAll(tmpDir)
+	}
+
+	return e, tmpDir, planFile, cleanup
+}
+
+func TestPlanMode_WriteDenied(t *testing.T) {
+	env, tmpDir, planFile, cleanup := createPlanModeEnvironment(t)
+	defer cleanup()
+
+	writeTool := WriteTool()
+
+	t.Run("write to non-plan file denied", func(t *testing.T) {
+		_, err := writeTool.Execute(context.Background(), env, map[string]any{
+			"path":    "some_file.go",
+			"content": "package main",
+		})
+
+		if err == nil {
+			t.Fatal("expected write to be denied in plan mode")
+		}
+
+		if !strings.Contains(err.Error(), "plan mode is read-only") {
+			t.Fatalf("expected plan-mode error, got: %v", err)
+		}
+	})
+
+	t.Run("write to plan file allowed", func(t *testing.T) {
+		// Read the plan file first (required by read-before-write)
+		_, err := ReadTool().Execute(context.Background(), env, map[string]any{
+			"path": planFile,
+		})
+		if err != nil {
+			t.Fatalf("unexpected read error: %v", err)
+		}
+
+		_, err = writeTool.Execute(context.Background(), env, map[string]any{
+			"path":    planFile,
+			"content": "# Updated Plan\n- step 1\n",
+		})
+
+		if err != nil {
+			t.Fatalf("write to plan file should be allowed: %v", err)
+		}
+	})
+
+	t.Run("overwrite existing file denied", func(t *testing.T) {
+		testFile := filepath.Join(tmpDir, "existing.go")
+		os.WriteFile(testFile, []byte("package old"), 0644)
+
+		// Read so read-before-write passes; plan check should still block
+		_, _ = ReadTool().Execute(context.Background(), env, map[string]any{
+			"path": "existing.go",
+		})
+
+		_, err := writeTool.Execute(context.Background(), env, map[string]any{
+			"path":    "existing.go",
+			"content": "package new",
+		})
+
+		if err == nil {
+			t.Fatal("expected overwrite to be denied in plan mode")
+		}
+
+		if !strings.Contains(err.Error(), "plan mode is read-only") {
+			t.Fatalf("expected plan-mode error, got: %v", err)
+		}
+	})
+}
+
+func TestPlanMode_EditDenied(t *testing.T) {
+	env, tmpDir, planFile, cleanup := createPlanModeEnvironment(t)
+	defer cleanup()
+
+	editTool := EditTool()
+
+	t.Run("edit non-plan file denied", func(t *testing.T) {
+		testFile := filepath.Join(tmpDir, "code.go")
+		os.WriteFile(testFile, []byte("package main"), 0644)
+
+		// Read it first
+		_, _ = ReadTool().Execute(context.Background(), env, map[string]any{
+			"path": "code.go",
+		})
+
+		_, err := editTool.Execute(context.Background(), env, map[string]any{
+			"path":     "code.go",
+			"old_text": "main",
+			"new_text": "updated",
+		})
+
+		if err == nil {
+			t.Fatal("expected edit to be denied in plan mode")
+		}
+
+		if !strings.Contains(err.Error(), "plan mode is read-only") {
+			t.Fatalf("expected plan-mode error, got: %v", err)
+		}
+	})
+
+	t.Run("edit plan file allowed", func(t *testing.T) {
+		// Read plan file first
+		_, err := ReadTool().Execute(context.Background(), env, map[string]any{
+			"path": planFile,
+		})
+		if err != nil {
+			t.Fatalf("unexpected read error: %v", err)
+		}
+
+		_, err = editTool.Execute(context.Background(), env, map[string]any{
+			"path":     planFile,
+			"old_text": "# Plan",
+			"new_text": "# Updated Plan",
+		})
+
+		if err != nil {
+			t.Fatalf("edit of plan file should be allowed: %v", err)
+		}
+	})
+}
+
+func TestPlanMode_ReadAllowed(t *testing.T) {
+	env, tmpDir, _, cleanup := createPlanModeEnvironment(t)
+	defer cleanup()
+
+	testFile := filepath.Join(tmpDir, "readable.txt")
+	os.WriteFile(testFile, []byte("content here"), 0644)
+
+	readTool := ReadTool()
+
+	result, err := readTool.Execute(context.Background(), env, map[string]any{
+		"path": "readable.txt",
+	})
+
+	if err != nil {
+		t.Fatalf("read should be allowed in plan mode: %v", err)
+	}
+
+	if !strings.Contains(result, "content here") {
+		t.Errorf("expected file content, got: %s", result)
+	}
 }
 
 func TestLsTool(t *testing.T) {

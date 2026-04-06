@@ -5,13 +5,14 @@ package shell
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 )
 
-func testEnv(t *testing.T) *tool.Environment {
+func testEnv(t *testing.T) *env.Environment {
 	t.Helper()
 
 	tmpDir := t.TempDir()
@@ -27,7 +28,7 @@ func testEnv(t *testing.T) *tool.Environment {
 	}
 	t.Cleanup(func() { scratch.Close() })
 
-	return &tool.Environment{
+	return &env.Environment{
 		Root:    root,
 		Scratch: scratch,
 	}
@@ -212,5 +213,99 @@ func TestComplex_Timeout(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "timed out") {
 		t.Errorf("expected timeout message, got: %v", err)
+	}
+}
+
+func planEnv(t *testing.T) *env.Environment {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	root, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { root.Close() })
+
+	scratch, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { scratch.Close() })
+
+	memDir := filepath.Join(tmpDir, ".memory")
+	if err := os.MkdirAll(memDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	memRoot, err := os.OpenRoot(memDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { memRoot.Close() })
+
+	e := &env.Environment{
+		Root:    root,
+		Scratch: scratch,
+		Memory:  memRoot,
+	}
+
+	if _, err := e.EnterPlanMode(); err != nil {
+		t.Fatalf("failed to enter plan mode: %v", err)
+	}
+
+	return e
+}
+
+func TestPlanMode_UnsafeCommandDenied(t *testing.T) {
+	env := planEnv(t)
+
+	commands := []string{
+		"rm -rf /tmp/foo",
+		"git push origin main",
+		"npm install",
+		"curl -X POST http://example.com",
+	}
+
+	for _, cmd := range commands {
+		t.Run(cmd, func(t *testing.T) {
+			_, err := executeShell(context.Background(), env, map[string]any{
+				"command": cmd,
+				"timeout": float64(5),
+			})
+
+			if err == nil {
+				t.Fatalf("expected unsafe command %q to be denied in plan mode", cmd)
+			}
+
+			if !strings.Contains(err.Error(), "plan mode only allows read-only shell commands") {
+				t.Fatalf("expected plan-mode error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestPlanMode_SafeCommandAllowed(t *testing.T) {
+	env := planEnv(t)
+
+	commands := []string{
+		"ls",
+		"cat /dev/null",
+		"git status",
+		"git log --oneline -5",
+		"echo hello",
+		"grep -r pattern .",
+	}
+
+	for _, cmd := range commands {
+		t.Run(cmd, func(t *testing.T) {
+			_, err := executeShell(context.Background(), env, map[string]any{
+				"command": cmd,
+				"timeout": float64(5),
+			})
+
+			if err != nil && strings.Contains(err.Error(), "plan mode") {
+				t.Fatalf("safe command %q should be allowed in plan mode: %v", cmd, err)
+			}
+		})
 	}
 }

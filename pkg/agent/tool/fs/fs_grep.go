@@ -12,6 +12,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
@@ -96,7 +97,7 @@ func GrepTool() tool.Tool {
 			"required": []string{"pattern"},
 		},
 
-		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
 			pattern, ok := args["pattern"].(string)
 
 			if !ok || pattern == "" {
@@ -109,7 +110,7 @@ func GrepTool() tool.Tool {
 				searchPath = p
 			}
 
-			workingDir := env.WorkingDir()
+			workingDir := env.RootDir()
 
 			searchPathFS, err := ensurePathInWorkspaceFS(searchPath, workingDir, "search")
 

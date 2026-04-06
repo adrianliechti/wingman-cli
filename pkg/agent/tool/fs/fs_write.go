@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
@@ -33,7 +34,7 @@ func WriteTool() tool.Tool {
 			"required": []string{"path", "content"},
 		},
 
-		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
 			pathArg, ok := args["path"].(string)
 
 			if !ok || pathArg == "" {
@@ -46,7 +47,7 @@ func WriteTool() tool.Tool {
 				return "", err
 			}
 
-			workingDir := env.WorkingDir()
+			workingDir := env.RootDir()
 
 			content, ok := args["content"].(string)
 
@@ -54,7 +55,7 @@ func WriteTool() tool.Tool {
 				return "", fmt.Errorf("content is required")
 			}
 
-			if err := enforcePlanMutation(env, root, normalizedPath); err != nil {
+			if err := enforcePlanMutation(env, normalizedPath); err != nil {
 				return "", err
 			}
 
@@ -63,7 +64,7 @@ func WriteTool() tool.Tool {
 			isNew := existsErr != nil
 
 			if !isNew {
-				if err := requireFreshFullRead(env, root, normalizedPath, string(existing)); err != nil {
+				if err := requireFreshFullRead(env, normalizedPath, string(existing)); err != nil {
 					return "", err
 				}
 			}
@@ -91,7 +92,7 @@ func WriteTool() tool.Tool {
 				return "", fmt.Errorf("failed to close file: %w", err)
 			}
 
-			rememberRead(env, root, normalizedPath, []byte(content), false)
+			rememberRead(env, normalizedPath, []byte(content), false)
 
 			action := "Updated"
 			if isNew {

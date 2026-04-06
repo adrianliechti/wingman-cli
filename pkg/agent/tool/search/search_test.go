@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 )
 
 func TestSearchTool(t *testing.T) {
@@ -30,7 +30,7 @@ func TestSearchTool(t *testing.T) {
 func TestSearchToolMissingQuery(t *testing.T) {
 	searchTool := SearchTool()
 
-	env := &tool.Environment{}
+	env := &env.Environment{}
 
 	_, err := searchTool.Execute(context.Background(), env, map[string]any{})
 
@@ -42,7 +42,7 @@ func TestSearchToolMissingQuery(t *testing.T) {
 func TestSearchToolNoWingmanURL(t *testing.T) {
 	searchTool := SearchTool()
 
-	env := &tool.Environment{}
+	env := &env.Environment{}
 
 	t.Setenv("WINGMAN_URL", "")
 

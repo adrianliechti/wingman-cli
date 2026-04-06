@@ -318,10 +318,10 @@ func (a *App) pasteFromClipboard() {
 
 		if c.Text != "" {
 			// Check if the clipboard text contains file paths
-			paths := detectFilePaths(c.Text, a.agent.Environment.WorkingDir())
+			paths := detectFilePaths(c.Text, a.agent.Environment.RootDir())
 			if len(paths) > 0 {
 				for _, p := range paths {
-					a.addFileToContext(normalizeFilePath(p, a.agent.Environment.WorkingDir()))
+					a.addFileToContext(normalizeFilePath(p, a.agent.Environment.RootDir()))
 				}
 
 				continue
@@ -582,7 +582,7 @@ func (a *App) submitInput() {
 }
 
 func (a *App) invokeSkill(s *skill.Skill, args string) {
-	content, err := s.GetContent(a.agent.Environment.WorkingDir())
+	content, err := s.GetContent(a.agent.Environment.RootDir())
 	if err != nil {
 		a.switchToChat()
 		fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("Failed to load skill %q: %v", s.Name, err), theme.Default.Red))

@@ -6,28 +6,22 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 )
 
-func rememberRead(env *tool.Environment, root *os.Root, normalizedPath string, content []byte, partial bool) {
-	if env == nil || env.Tracker == nil || root == nil {
-		return
-	}
-
+func rememberRead(env *env.Environment, path string, content []byte, partial bool) {
 	var modTime time.Time
-	if info, err := root.Stat(normalizedPath); err == nil {
+
+	if info, err := env.Root.Stat(path); err == nil {
 		modTime = info.ModTime()
 	}
 
-	env.Tracker.Remember(root, normalizedPath, string(content), modTime, partial)
+	env.Tracker.Remember(path, string(content), modTime, partial)
 }
 
-func requireFreshFullRead(env *tool.Environment, root *os.Root, normalizedPath, currentContent string) error {
-	if env == nil || env.Tracker == nil || root == nil {
-		return nil
-	}
+func requireFreshFullRead(env *env.Environment, path, content string) error {
+	snapshot, ok := env.Tracker.Get(path)
 
-	snapshot, ok := env.Tracker.Get(root, normalizedPath)
 	if !ok {
 		return fmt.Errorf("file has not been read yet. Read it first before writing to it")
 	}
@@ -36,25 +30,28 @@ func requireFreshFullRead(env *tool.Environment, root *os.Root, normalizedPath, 
 		return fmt.Errorf("file was only partially read. Read the full file before writing to it")
 	}
 
-	info, err := root.Stat(normalizedPath)
-	if err == nil && !snapshot.ModTime.IsZero() && info.ModTime().After(snapshot.ModTime) && currentContent != snapshot.Content {
+	info, err := env.Root.Stat(path)
+
+	if err == nil && !snapshot.ModTime.IsZero() && info.ModTime().After(snapshot.ModTime) && content != snapshot.Content {
 		return fmt.Errorf("file has been modified since it was read. Read it again before writing to it")
 	}
 
 	return nil
 }
 
-func enforcePlanMutation(env *tool.Environment, root *os.Root, normalizedPath string) error {
-	if env == nil || !env.IsPlanning() {
+func enforcePlanMutation(env *env.Environment, path string) error {
+	if !env.IsPlanning() {
 		return nil
 	}
 
 	planFile := env.PlanFile()
+
 	if planFile == "" {
 		return fmt.Errorf("plan mode is active, but no session plan file is configured")
 	}
 
-	target := absoluteRootPath(root, normalizedPath)
+	target := absoluteRootPath(env.Root, path)
+
 	if !samePath(target, planFile) {
 		return fmt.Errorf("plan mode is read-only. You may only modify the session plan file %s", planFile)
 	}
@@ -62,20 +59,20 @@ func enforcePlanMutation(env *tool.Environment, root *os.Root, normalizedPath st
 	return nil
 }
 
-func absoluteRootPath(root *os.Root, normalizedPath string) string {
+func absoluteRootPath(root *os.Root, path string) string {
 	if root == nil {
-		return normalizedPath
+		return path
 	}
 
-	if filepath.IsAbs(normalizedPath) {
-		return filepath.Clean(normalizedPath)
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
 	}
 
-	if normalizedPath == "." {
+	if path == "." {
 		return filepath.Clean(root.Name())
 	}
 
-	return filepath.Clean(filepath.Join(root.Name(), normalizedPath))
+	return filepath.Clean(filepath.Join(root.Name(), path))
 }
 
 func samePath(a, b string) bool {

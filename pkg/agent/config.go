@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -12,9 +11,8 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/mcp"
-	"github.com/adrianliechti/wingman-agent/pkg/agent/memory"
-	"github.com/adrianliechti/wingman-agent/pkg/agent/plan"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/prompt"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/skill"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
@@ -24,7 +22,6 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/search"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/shell"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/subagent"
-	"github.com/adrianliechti/wingman-agent/pkg/agent/tracker"
 )
 
 // AvailableModels lists supported models in priority order
@@ -50,7 +47,7 @@ type Config struct {
 	Model  string
 	Client openai.Client
 
-	Environment *tool.Environment
+	Environment *env.Environment
 
 	AgentInstructions    string
 	PlanningInstructions string
@@ -68,47 +65,10 @@ func DefaultConfig() (*Config, func(), error) {
 		return nil, nil, fmt.Errorf("failed to get working directory: %w", err)
 	}
 
-	root, err := os.OpenRoot(wd)
-
+	e, err := env.New(wd)
 	if err != nil {
 		return nil, nil, err
 	}
-
-	scratchDir := filepath.Join(os.TempDir(), fmt.Sprintf("wingman-%d", time.Now().Unix()))
-
-	if err := os.MkdirAll(scratchDir, 0755); err != nil {
-		return nil, nil, fmt.Errorf("failed to create scratch directory: %w", err)
-	}
-
-	scratch, err := os.OpenRoot(scratchDir)
-
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to open scratch directory: %w", err)
-	}
-
-	env := &tool.Environment{
-		OS:   runtime.GOOS,
-		Arch: runtime.GOARCH,
-
-		Root:    root,
-		Scratch: scratch,
-
-		Tracker: tracker.New(),
-	}
-
-	// Initialize memory directory
-	memDir := projectMemoryDir(wd)
-
-	if err := os.MkdirAll(memDir, 0755); err != nil {
-		return nil, nil, fmt.Errorf("failed to create memory directory: %w", err)
-	}
-
-	memRoot, err := os.OpenRoot(memDir)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to open memory directory: %w", err)
-	}
-
-	env.Memory = memRoot
 
 	tools := slices.Concat(fs.Tools(), shell.Tools(), fetch.Tools(), search.Tools(), ask.Tools())
 
@@ -125,7 +85,7 @@ func DefaultConfig() (*Config, func(), error) {
 		Client: client,
 		Model:  model,
 
-		Environment: env,
+		Environment: e,
 
 		AgentInstructions:    prompt.Instructions,
 		PlanningInstructions: prompt.Planning,
@@ -202,20 +162,18 @@ func (c *Config) BuildInstructions(planMode bool, bridgeInstructions string) str
 		base = c.PlanningInstructions
 	}
 
-	memDir := c.Environment.MemoryDir()
-
 	data := prompt.SectionData{
 		PlanMode:            planMode,
 		Date:                time.Now().Format("January 2, 2006"),
 		OS:                  c.Environment.OS,
 		Arch:                c.Environment.Arch,
-		WorkingDir:          c.Environment.WorkingDir(),
-		MemoryDir:           memDir,
-		MemoryContent:       memory.Load(memDir),
+		WorkingDir:          c.Environment.RootDir(),
+		MemoryDir:           c.Environment.MemoryDir(),
+		MemoryContent:       c.Environment.MemoryContent(),
 		PlanFile:            c.Environment.PlanFile(),
-		PlanContent:         plan.Load(memDir),
+		PlanContent:         c.Environment.PlanContent(),
 		Skills:              skill.FormatForPrompt(c.Skills),
-		ProjectInstructions: readAgentsFile(c.Environment.WorkingDir()),
+		ProjectInstructions: readAgentsFile(c.Environment.RootDir()),
 		BridgeInstructions:  bridgeInstructions,
 	}
 
@@ -223,39 +181,13 @@ func (c *Config) BuildInstructions(planMode bool, bridgeInstructions string) str
 	return prompt.ComposeSections(sections...)
 }
 
-func projectMemoryDir(workingDir string) string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = os.TempDir()
-	}
-
-	sanitized := strings.TrimPrefix(filepath.Clean(workingDir), string(filepath.Separator))
-	sanitized = strings.ReplaceAll(sanitized, string(filepath.Separator), "_")
-
-	return filepath.Join(home, ".wingman", "projects", sanitized, "memory")
-}
-
 func (c *Config) Cleanup() {
 	if c.MCP != nil {
 		c.MCP.Close()
 	}
 
-	if c.Environment == nil {
-		return
-	}
-
-	if c.Environment.Scratch != nil {
-		scratchDir := c.Environment.Scratch.Name()
-		c.Environment.Scratch.Close()
-		os.RemoveAll(scratchDir)
-	}
-
-	if c.Environment.Memory != nil {
-		c.Environment.Memory.Close()
-	}
-
-	if c.Environment.Root != nil {
-		c.Environment.Root.Close()
+	if c.Environment != nil {
+		c.Environment.Close()
 	}
 }
 

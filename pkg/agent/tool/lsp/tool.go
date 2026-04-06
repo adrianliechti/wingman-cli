@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/lsp"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
@@ -37,7 +38,7 @@ func diagnosticsTool(manager *lsp.Manager) tool.Tool {
 				},
 			},
 		},
-		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
 			path, _ := args["path"].(string)
 
 			if path == "" {
@@ -71,7 +72,7 @@ func definitionTool(manager *lsp.Manager) tool.Tool {
 		Description:     "Find the definition of a symbol at a given position.",
 		ConcurrencySafe: true,
 		Parameters:      positionParams(),
-		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
 			path, line, column, err := parsePositionArgs(manager.WorkingDir(), args)
 			if err != nil {
 				return "", err
@@ -93,7 +94,7 @@ func referencesTool(manager *lsp.Manager) tool.Tool {
 		Description:     "Find all references to a symbol at a given position across the workspace.",
 		ConcurrencySafe: true,
 		Parameters:      positionParams(),
-		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
 			path, line, column, err := parsePositionArgs(manager.WorkingDir(), args)
 			if err != nil {
 				return "", err
@@ -115,7 +116,7 @@ func implementationTool(manager *lsp.Manager) tool.Tool {
 		Description:     "Find implementations of an interface or abstract method at a given position.",
 		ConcurrencySafe: true,
 		Parameters:      positionParams(),
-		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
 			path, line, column, err := parsePositionArgs(manager.WorkingDir(), args)
 			if err != nil {
 				return "", err
@@ -137,7 +138,7 @@ func hoverTool(manager *lsp.Manager) tool.Tool {
 		Description:     "Get hover information (type info, documentation) for a symbol at a given position.",
 		ConcurrencySafe: true,
 		Parameters:      positionParams(),
-		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
 			path, line, column, err := parsePositionArgs(manager.WorkingDir(), args)
 			if err != nil {
 				return "", err
@@ -171,7 +172,7 @@ func symbolsTool(manager *lsp.Manager) tool.Tool {
 				},
 			},
 		},
-		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
 			path, _ := args["path"].(string)
 			query, _ := args["query"].(string)
 
@@ -228,7 +229,7 @@ func hierarchyTool(manager *lsp.Manager) tool.Tool {
 			},
 			"required": []string{"path", "line", "column", "direction"},
 		},
-		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
 			path, line, column, err := parsePositionArgs(manager.WorkingDir(), args)
 			if err != nil {
 				return "", err

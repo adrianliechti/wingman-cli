@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/plan"
 	"github.com/adrianliechti/wingman-agent/pkg/ui/theme"
 )
 
@@ -12,16 +11,13 @@ func (a *App) enterPlanMode(announce bool) {
 		return
 	}
 
-	planFile, err := a.ensurePlanFile()
+	planFile, err := a.agent.Environment.EnterPlanMode()
 	if err != nil {
 		fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("Failed to enter plan mode: %v", err), theme.Default.Red))
 		return
 	}
 
 	a.currentMode = ModePlan
-	if a.agent != nil && a.agent.Environment != nil {
-		a.agent.Environment.SetPlanMode(planFile)
-	}
 	a.updateStatusBar()
 
 	if announce {
@@ -36,31 +32,17 @@ func (a *App) exitPlanMode(announce bool) {
 
 	a.currentMode = ModeAgent
 	if a.agent != nil && a.agent.Environment != nil {
-		a.agent.Environment.SetAgentMode()
+		a.agent.Environment.ExitPlanMode()
 	}
 	a.updateStatusBar()
 
 	if announce {
 		message := "Returned to agent mode."
-		if a.planFile != "" {
-			message = fmt.Sprintf("Returned to agent mode. Active plan: %s", a.planFile)
+		if planFile := a.agent.Environment.PlanFile(); planFile != "" {
+			message = fmt.Sprintf("Returned to agent mode. Active plan: %s", planFile)
 		}
 		fmt.Fprint(a.chatView, a.formatNotice(message, theme.Default.Cyan))
 	}
-}
-
-func (a *App) ensurePlanFile() (string, error) {
-	if a.planFile != "" {
-		return a.planFile, nil
-	}
-
-	path, err := plan.Ensure(a.agent.Environment.MemoryDir())
-	if err != nil {
-		return "", err
-	}
-
-	a.planFile = path
-	return path, nil
 }
 
 func (a *App) currentInstructions() string {

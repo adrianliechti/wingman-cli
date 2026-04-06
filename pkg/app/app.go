@@ -66,7 +66,6 @@ type App struct {
 	lastCompact        bool
 	pendingContent     []agent.Content
 	pendingFiles       []string
-	planFile           string
 
 	// Stream cancellation
 	streamCancel context.CancelFunc
@@ -98,7 +97,7 @@ type App struct {
 func New(ctx context.Context, agent *agent.Agent) *App {
 	app := tview.NewApplication()
 
-	lspManager := lsp.NewManager(agent.Environment.WorkingDir())
+	lspManager := lsp.NewManager(agent.Environment.RootDir())
 
 	a := &App{
 		ctx: ctx,
@@ -117,7 +116,7 @@ func New(ctx context.Context, agent *agent.Agent) *App {
 	}
 
 	if agent.Environment != nil {
-		agent.Environment.SetAgentMode()
+		agent.Environment.ExitPlanMode()
 	}
 
 	agent.Environment.AskUser = a.askUser
@@ -194,7 +193,7 @@ func (a *App) Run() error {
 	go func() {
 		defer close(a.rewindReady)
 
-		workDir := a.agent.Environment.WorkingDir()
+		workDir := a.agent.Environment.RootDir()
 		gitDir := filepath.Join(workDir, ".git")
 
 		if _, err := os.Stat(gitDir); os.IsNotExist(err) {
@@ -217,14 +216,14 @@ func (a *App) Run() error {
 		Primitive: a.pages,
 
 		intercept: func(text string) bool {
-			paths := detectFilePaths(text, a.agent.Environment.WorkingDir())
+			paths := detectFilePaths(text, a.agent.Environment.RootDir())
 
 			if len(paths) == 0 {
 				return false
 			}
 
 			for _, p := range paths {
-				a.addFileToContext(normalizeFilePath(p, a.agent.Environment.WorkingDir()))
+				a.addFileToContext(normalizeFilePath(p, a.agent.Environment.RootDir()))
 			}
 
 			a.app.QueueUpdateDraw(func() {
@@ -250,7 +249,7 @@ func (a *App) initMCP() error {
 	}
 
 	// Auto-discover VS Code bridge from lockfiles
-	a.bridge = bridge.Setup(a.ctx, a.agent.Environment.WorkingDir(), a.mcpManager)
+	a.bridge = bridge.Setup(a.ctx, a.agent.Environment.RootDir(), a.mcpManager)
 
 	mcpTools, err := mcptool.Tools(a.ctx, a.mcpManager)
 

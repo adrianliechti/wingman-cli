@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
@@ -45,7 +46,7 @@ func FetchTool() tool.Tool {
 			"required": []string{"url"},
 		},
 
-		Execute: func(ctx context.Context, env *tool.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
 			urlStr, ok := args["url"].(string)
 
 			if !ok || urlStr == "" {
