@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
@@ -39,6 +42,26 @@ func (a *Agent) removeOrphanedToolMessages() {
 		}
 	}
 
+	// Fast path: no orphans
+	hasOrphans := false
+	for id := range callIDs {
+		if !outputIDs[id] {
+			hasOrphans = true
+			break
+		}
+	}
+	if !hasOrphans {
+		for id := range outputIDs {
+			if !callIDs[id] {
+				hasOrphans = true
+				break
+			}
+		}
+	}
+	if !hasOrphans {
+		return
+	}
+
 	var cleaned []responses.ResponseInputItemUnionParam
 
 	for _, item := range a.messages {
@@ -60,59 +83,108 @@ func (a *Agent) removeOrphanedToolMessages() {
 	a.messages = cleaned
 }
 
-// removeOldestToolMessages drops the oldest ~50% of tool call/output pairs
-// to reduce context size, after first removing orphans.
-func (a *Agent) removeOldestToolMessages() {
-	a.removeOrphanedToolMessages()
-	a.messages = dropOldestToolPairs(a.messages)
-}
-
-// dropOldestToolPairs removes the oldest ~50% of tool call + output pairs
-// while preserving user messages, assistant text, reasoning, and compaction items.
-func dropOldestToolPairs(messages []responses.ResponseInputItemUnionParam) []responses.ResponseInputItemUnionParam {
-	type toolPair struct {
-		callIdx   int
-		outputIdx int
+// compactMessages summarizes the entire conversation into a single user
+// message using an LLM call, preserving context while drastically reducing
+// token count. Falls back to removeAllToolMessages if the summary fails.
+func (a *Agent) compactMessages(ctx context.Context) {
+	summary, err := a.summarizeMessages(ctx)
+	if err != nil || summary == "" {
+		a.removeAllToolMessages()
+		return
 	}
 
-	callIndices := make(map[string]int)
-	var pairs []toolPair
+	a.messages = []responses.ResponseInputItemUnionParam{{
+		OfMessage: &responses.EasyInputMessageParam{
+			Role: responses.EasyInputMessageRoleUser,
+			Content: responses.EasyInputMessageContentUnionParam{
+				OfString: openai.String(summary),
+			},
+		},
+	}}
+}
 
-	for i, item := range messages {
-		if fc := item.OfFunctionCall; fc != nil {
-			callIndices[fc.CallID] = i
+const maxSummarizeBytes = 100 * 1024 // 100KB cap for the summarization input
+
+func (a *Agent) summarizeMessages(ctx context.Context) (string, error) {
+	var sb strings.Builder
+
+	for _, item := range a.messages {
+		if sb.Len() > maxSummarizeBytes {
+			break
 		}
+
+		if msg := item.OfMessage; msg != nil {
+			role := string(msg.Role)
+			if text := msg.Content.OfString.Value; text != "" {
+				fmt.Fprintf(&sb, "[%s]: %s\n\n", role, truncate(text, 2000))
+			}
+			for _, part := range msg.Content.OfInputItemContentList {
+				if part.OfInputText != nil {
+					fmt.Fprintf(&sb, "[%s]: %s\n\n", role, truncate(part.OfInputText.Text, 2000))
+				}
+			}
+		}
+
+		if outMsg := item.OfOutputMessage; outMsg != nil {
+			for _, part := range outMsg.Content {
+				if text := part.OfOutputText; text != nil {
+					fmt.Fprintf(&sb, "[assistant]: %s\n\n", truncate(text.Text, 2000))
+				}
+			}
+		}
+
+		if fc := item.OfFunctionCall; fc != nil {
+			fmt.Fprintf(&sb, "[tool call]: %s(%s)\n\n", fc.Name, truncate(fc.Arguments, 200))
+		}
+
 		if fco := item.OfFunctionCallOutput; fco != nil {
-			if ci, ok := callIndices[fco.CallID]; ok {
-				pairs = append(pairs, toolPair{callIdx: ci, outputIdx: i})
+			fmt.Fprintf(&sb, "[tool result]: %s\n\n", truncate(fco.Output.OfString.Value, 500))
+		}
+	}
+
+	if sb.Len() == 0 {
+		return "", nil
+	}
+
+	resp, err := a.Client.Responses.New(ctx, responses.ResponseNewParams{
+		Model: a.Model,
+		Instructions: openai.String(
+			"Summarize the following conversation between a user and an AI assistant. " +
+				"Preserve all important context: what the user asked, what was done, what files were modified, " +
+				"key decisions made, and the current state of the task. " +
+				"Be concise but complete. Format as a briefing the assistant can use to continue the conversation.",
+		),
+		Input: responses.ResponseNewParamsInputUnion{
+			OfString: openai.String(sb.String()),
+		},
+		Store: openai.Bool(false),
+	})
+
+	if err != nil {
+		return "", err
+	}
+
+	var result strings.Builder
+	result.WriteString("[Previous conversation summary]\n\n")
+
+	for _, item := range resp.Output {
+		msg := item.AsMessage()
+		for _, part := range msg.Content {
+			text := part.AsOutputText()
+			if text.Text != "" {
+				result.WriteString(text.Text)
 			}
 		}
 	}
 
-	if len(pairs) <= 2 {
-		return messages
+	return result.String(), nil
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
 	}
-
-	dropCount := len(pairs) / 2
-	dropSet := make(map[int]bool)
-
-	for _, p := range pairs[:dropCount] {
-		dropSet[p.callIdx] = true
-		dropSet[p.outputIdx] = true
-
-		if p.callIdx > 0 && messages[p.callIdx-1].OfReasoning != nil {
-			dropSet[p.callIdx-1] = true
-		}
-	}
-
-	var result []responses.ResponseInputItemUnionParam
-	for i, item := range messages {
-		if !dropSet[i] {
-			result = append(result, item)
-		}
-	}
-
-	return result
+	return s[:maxLen] + " [truncated]"
 }
 
 // removeAllToolMessages removes ALL tool calls and tool results from the

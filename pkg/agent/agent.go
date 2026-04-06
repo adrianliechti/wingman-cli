@@ -47,38 +47,22 @@ func (a *Agent) Send(ctx context.Context, instructions string, input []Content, 
 
 func (a *Agent) run(ctx context.Context, yield func(Message, error) bool, instructions string, tools []tool.Tool) error {
 	formattedTools := formatTools(tools)
-	var recoveryPhase int
 
 	for {
+		a.removeOrphanedToolMessages()
+
 		outputItems, err := a.streamResponse(ctx, yield, instructions, formattedTools)
 
 		if err != nil {
-			if errors.Is(err, errYieldStopped) || errors.Is(err, context.Canceled) || !isRecoverableError(err) {
-				return err
+			if !errors.Is(err, errYieldStopped) && !errors.Is(err, context.Canceled) && isRecoverableError(err) {
+				a.compactMessages(ctx)
+				outputItems, err = a.streamResponse(ctx, yield, instructions, formattedTools)
 			}
 
-			switch recoveryPhase {
-			case 0:
-				a.removeOrphanedToolMessages()
-				recoveryPhase = 1
-				continue
-
-			case 1:
-				a.removeOldestToolMessages()
-				recoveryPhase = 2
-				continue
-
-			case 2:
-				a.removeAllToolMessages()
-				recoveryPhase = 3
-				continue
-
-			default:
+			if err != nil {
 				return err
 			}
 		}
-
-		recoveryPhase = 0
 
 		toolCalls := extractToolCalls(outputItems)
 		if len(toolCalls) == 0 {
