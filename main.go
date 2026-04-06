@@ -93,13 +93,13 @@ func main() {
 		}
 	}
 
-	var resumeID string
+	var sessionID string
 
 	if len(os.Args) > 1 && os.Args[1] == "--resume" {
 		if len(os.Args) > 2 {
-			resumeID = os.Args[2] // wingman --resume <session-id>
+			sessionID = os.Args[2] // wingman --resume <session-id>
 		} else {
-			resumeID = "latest"
+			sessionID = "latest"
 		}
 	}
 
@@ -119,23 +119,7 @@ func main() {
 
 	a := agent.New(cfg)
 
-	if resumeID != "" {
-		if resumeID == "latest" {
-			sessions, _ := a.ListSessions()
-
-			if len(sessions) > 0 {
-				resumeID = sessions[0].ID
-				a.LoadSession(resumeID)
-			}
-		} else {
-			if err := a.LoadSession(resumeID); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: failed to resume session %s: %v\n", resumeID, err)
-				os.Exit(1)
-			}
-		}
-	}
-
-	application := app.New(ctx, a, resumeID)
+	application := app.New(ctx, a, sessionID)
 
 	if err := application.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

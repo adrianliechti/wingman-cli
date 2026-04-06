@@ -99,17 +99,30 @@ type App struct {
 	rewindReady chan struct{}
 }
 
-func New(ctx context.Context, agent *agent.Agent, resumeSessionID string) *App {
+func New(ctx context.Context, agent *agent.Agent, sessionID string) *App {
 	app := tview.NewApplication()
 
 	lspManager := lsp.NewManager(agent.Environment.RootDir())
 
-	hasMessages := len(agent.Messages()) > 0
+	// Resolve and load existing session
+	if sessionID == "latest" {
+		sessions, _ := agent.ListSessions()
 
-	sessionID := resumeSessionID
+		if len(sessions) > 0 {
+			sessionID = sessions[0].ID
+			agent.LoadSession(sessionID)
+		} else {
+			sessionID = ""
+		}
+	} else if sessionID != "" {
+		agent.LoadSession(sessionID)
+	}
+
 	if sessionID == "" {
 		sessionID = newSessionID()
 	}
+
+	hasMessages := len(agent.Messages()) > 0
 
 	a := &App{
 		ctx: ctx,
