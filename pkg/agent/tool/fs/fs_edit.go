@@ -10,7 +10,8 @@ import (
 
 func EditTool() tool.Tool {
 	return tool.Tool{
-		Name: "edit",
+		Name:            "edit",
+		ConcurrencySafe: false,
 
 		Description: strings.Join([]string{
 			"Performs exact string replacements in files. This is the preferred tool for modifying existing files.",
@@ -50,6 +51,10 @@ func EditTool() tool.Tool {
 
 			workingDir := env.WorkingDir()
 
+			if err := enforcePlanMutation(env, root, normalizedPath); err != nil {
+				return "", err
+			}
+
 			oldText, ok := args["old_text"].(string)
 
 			if !ok || oldText == "" {
@@ -69,6 +74,10 @@ func EditTool() tool.Tool {
 			}
 
 			rawContent := string(contentBytes)
+
+			if err := requireFreshFullRead(env, root, normalizedPath, rawContent); err != nil {
+				return "", err
+			}
 
 			bom, content := stripBom(rawContent)
 			originalEnding := detectLineEnding(content)
@@ -134,11 +143,16 @@ func EditTool() tool.Tool {
 			if err != nil {
 				return "", pathError("write file", pathArg, normalizedPath, workingDir, err)
 			}
-			defer outFile.Close()
-
 			if _, err := outFile.WriteString(finalContent); err != nil {
+				outFile.Close()
 				return "", fmt.Errorf("failed to write file: %w", err)
 			}
+
+			if err := outFile.Close(); err != nil {
+				return "", fmt.Errorf("failed to close file: %w", err)
+			}
+
+			rememberRead(env, root, normalizedPath, []byte(finalContent), false)
 
 			diff := generateDiffString(baseContent, newContent)
 

@@ -85,13 +85,14 @@ func DefaultConfig() (*Config, func(), error) {
 	}
 
 	env := &tool.Environment{
-		Date: time.Now().Format("January 2, 2006"),
-
 		OS:   runtime.GOOS,
 		Arch: runtime.GOARCH,
 
 		Root:    root,
 		Scratch: scratch,
+
+		ReadTracker: tool.NewReadTracker(),
+		Session:     tool.NewSessionState(),
 	}
 
 	// Initialize memory directory
@@ -103,27 +104,11 @@ func DefaultConfig() (*Config, func(), error) {
 		env.Memory = memRoot
 	}
 
-	memContent := memory.LoadEntrypoint(memDir)
-
 	tools := slices.Concat(fs.Tools(), shell.Tools(), fetch.Tools(), search.Tools(), ask.Tools())
 
 	mcp, _ := mcp.Load(filepath.Join(wd, "mcp.json"))
 
 	skills := skill.Merge(skill.BundledSkills(), skill.MustDiscover(wd))
-
-	instructions := readAgentsFile(wd)
-
-	agentinstructions, err := renderAgentInstructions(env, instructions, skills, memDir, memContent)
-
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to render instructions: %w", err)
-	}
-
-	planningInstructions, err := renderPlanningInstructions(env, instructions, skills, memDir, memContent)
-
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to render planning instructions: %w", err)
-	}
 
 	client, model := createClient()
 
@@ -136,8 +121,8 @@ func DefaultConfig() (*Config, func(), error) {
 
 		Environment: env,
 
-		AgentInstructions:    agentinstructions,
-		PlanningInstructions: planningInstructions,
+		AgentInstructions:    prompt.Instructions,
+		PlanningInstructions: prompt.Planning,
 
 		MCP: mcp,
 
@@ -193,36 +178,55 @@ func createClient() (openai.Client, string) {
 	), ""
 }
 
-type instructionData struct {
-	*tool.Environment
-	Skills        string
-	Instructions  string
-	MemoryDir     string
-	MemoryContent string
-}
-
-func renderAgentInstructions(env *tool.Environment, instructions string, skills []skill.Skill, memDir, memContent string) (string, error) {
-	data := instructionData{
-		Environment:   env,
-		Skills:        skill.FormatForPrompt(skills),
-		Instructions:  instructions,
-		MemoryDir:     memDir,
-		MemoryContent: memContent,
+func (a *Agent) BuildInstructions(planMode bool, bridgeInstructions string) string {
+	if a == nil || a.Config == nil {
+		return ""
 	}
 
-	return prompt.Render(prompt.Instructions, data)
+	return a.Config.BuildInstructions(planMode, bridgeInstructions)
 }
 
-func renderPlanningInstructions(env *tool.Environment, instructions string, skills []skill.Skill, memDir, memContent string) (string, error) {
-	data := instructionData{
-		Environment:   env,
-		Skills:        skill.FormatForPrompt(skills),
-		Instructions:  instructions,
-		MemoryDir:     memDir,
-		MemoryContent: memContent,
+func (c *Config) BuildInstructions(planMode bool, bridgeInstructions string) string {
+	if c == nil {
+		return ""
 	}
 
-	return prompt.Render(prompt.Planning, data)
+	base := c.AgentInstructions
+	if planMode {
+		base = c.PlanningInstructions
+	}
+
+	memDir := c.memoryDir()
+
+	data := prompt.SectionData{
+		PlanMode:            planMode,
+		Date:                time.Now().Format("January 2, 2006"),
+		OS:                  c.Environment.OS,
+		Arch:                c.Environment.Arch,
+		WorkingDir:          c.Environment.WorkingDir(),
+		MemoryDir:           memDir,
+		MemoryContent:       memory.LoadMemory(memDir),
+		PlanFile:            c.Environment.PlanFile(),
+		PlanContent:         memory.LoadPlan(c.Environment.PlanFile()),
+		Skills:              skill.FormatForPrompt(c.Skills),
+		ProjectInstructions: readAgentsFile(c.Environment.WorkingDir()),
+		BridgeInstructions:  bridgeInstructions,
+	}
+
+	sections := append([]prompt.Section{{Content: base}}, prompt.RenderSections(data)...)
+	return prompt.ComposeSections(sections...)
+}
+
+func (c *Config) memoryDir() string {
+	if c == nil || c.Environment == nil {
+		return ""
+	}
+
+	if memDir := c.Environment.MemoryDir(); memDir != "" {
+		return memDir
+	}
+
+	return memory.Dir(c.Environment.WorkingDir())
 }
 
 func (c *Config) Cleanup() {

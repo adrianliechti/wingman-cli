@@ -11,7 +11,8 @@ import (
 
 func WriteTool() tool.Tool {
 	return tool.Tool{
-		Name: "write",
+		Name:            "write",
+		ConcurrencySafe: false,
 
 		Description: strings.Join([]string{
 			"Write content to a file. Creates the file and parent directories if they don't exist, overwrites if it does.",
@@ -53,9 +54,19 @@ func WriteTool() tool.Tool {
 				return "", fmt.Errorf("content is required")
 			}
 
+			if err := enforcePlanMutation(env, root, normalizedPath); err != nil {
+				return "", err
+			}
+
 			// Check if file exists before writing (for create vs update reporting)
-			_, existsErr := root.Stat(normalizedPath)
+			existing, existsErr := root.ReadFile(normalizedPath)
 			isNew := existsErr != nil
+
+			if !isNew {
+				if err := requireFreshFullRead(env, root, normalizedPath, string(existing)); err != nil {
+					return "", err
+				}
+			}
 
 			dir := filepath.Dir(normalizedPath)
 
@@ -71,11 +82,16 @@ func WriteTool() tool.Tool {
 				return "", pathError("create file", pathArg, normalizedPath, workingDir, err)
 			}
 
-			defer file.Close()
-
 			if _, err := file.WriteString(content); err != nil {
+				file.Close()
 				return "", fmt.Errorf("failed to write file: %w", err)
 			}
+
+			if err := file.Close(); err != nil {
+				return "", fmt.Errorf("failed to close file: %w", err)
+			}
+
+			rememberRead(env, root, normalizedPath, []byte(content), false)
 
 			action := "Updated"
 			if isNew {

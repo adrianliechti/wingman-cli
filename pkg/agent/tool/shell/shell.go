@@ -43,6 +43,9 @@ func ShellTool() tool.Tool {
 	return tool.Tool{
 		Name:        "shell",
 		Description: description,
+		ConcurrencySafeFunc: func(args map[string]any) bool {
+			return shellCommandIsReadOnly(args)
+		},
 
 		Parameters: map[string]any{
 			"type": "object",
@@ -69,6 +72,11 @@ func ShellTool() tool.Tool {
 
 		Execute: executeShell,
 	}
+}
+
+func shellCommandIsReadOnly(args map[string]any) bool {
+	command, _ := args["command"].(string)
+	return isSafeCommand(command)
 }
 
 // isSafeCommand checks if the entire command (including pipes, chains, and subshells) is safe.
@@ -227,6 +235,10 @@ func executeShell(ctx context.Context, env *tool.Environment, args map[string]an
 
 	if !ok || command == "" {
 		return "", fmt.Errorf("command is required")
+	}
+
+	if env != nil && env.IsPlanning() && !isSafeCommand(command) {
+		return "", fmt.Errorf("plan mode only allows read-only shell commands")
 	}
 
 	timeout := defaultTimeout

@@ -26,8 +26,9 @@ func SearchTool() tool.Tool {
 	}, "\n")
 
 	return tool.Tool{
-		Name:        "search_online",
-		Description: description,
+		Name:            "search_online",
+		Description:     description,
+		ConcurrencySafe: true,
 
 		Parameters: map[string]any{
 			"type": "object",

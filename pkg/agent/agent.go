@@ -186,17 +186,30 @@ func (a *Agent) processToolCalls(ctx context.Context, yield func(Message, error)
 		}
 	}
 
-	// Execute tool calls concurrently — if the model requested parallel calls,
-	// it expects them to be safe for concurrent execution.
+	prepared := make([]preparedToolCall, len(toolCalls))
+	for i, tc := range toolCalls {
+		prepared[i] = prepareToolCall(tc, tools)
+	}
+
 	results := make([]string, len(toolCalls))
 
-	var wg sync.WaitGroup
-	for i, tc := range toolCalls {
-		wg.Go(func() {
-			results[i] = ExecuteTool(ctx, a.Environment, tc, tools)
-		})
+	for _, batch := range partitionToolCalls(prepared) {
+		if batch.concurrent {
+			var wg sync.WaitGroup
+			for _, call := range batch.calls {
+				call := call
+				wg.Go(func() {
+					results[call.index] = call.Execute(ctx, a.Environment)
+				})
+			}
+			wg.Wait()
+			continue
+		}
+
+		for _, call := range batch.calls {
+			results[call.index] = call.Execute(ctx, a.Environment)
+		}
 	}
-	wg.Wait()
 
 	// Yield results and append to messages
 	for i, tc := range toolCalls {
@@ -224,6 +237,85 @@ func (a *Agent) processToolCalls(ctx context.Context, yield func(Message, error)
 	}
 
 	return nil
+}
+
+type preparedToolCall struct {
+	index int
+	call  ToolCall
+	tool  *tool.Tool
+	args  map[string]any
+	err   error
+}
+
+func prepareToolCall(tc ToolCall, tools []tool.Tool) preparedToolCall {
+	prepared := preparedToolCall{
+		call: tc,
+		tool: findTool(tc.Name, tools),
+		args: make(map[string]any),
+	}
+
+	if prepared.tool == nil {
+		return prepared
+	}
+
+	if tc.Args == "" {
+		return prepared
+	}
+
+	prepared.err = json.Unmarshal([]byte(tc.Args), &prepared.args)
+
+	return prepared
+}
+
+func (c preparedToolCall) Execute(ctx context.Context, env *tool.Environment) string {
+	if c.tool == nil {
+		return fmt.Sprintf("error: unknown tool %s", c.call.Name)
+	}
+
+	if c.err != nil {
+		return fmt.Sprintf("error: failed to parse arguments: %v", c.err)
+	}
+
+	result, err := c.tool.Execute(ctx, env, c.args)
+	if err != nil {
+		return fmt.Sprintf("error: %v", err)
+	}
+
+	return result
+}
+
+func (c preparedToolCall) AllowsConcurrentExecution() bool {
+	if c.tool == nil || c.err != nil {
+		return false
+	}
+
+	return c.tool.AllowsConcurrentExecution(c.args)
+}
+
+type toolCallBatch struct {
+	concurrent bool
+	calls      []preparedToolCall
+}
+
+func partitionToolCalls(calls []preparedToolCall) []toolCallBatch {
+	var batches []toolCallBatch
+
+	for i := range calls {
+		calls[i].index = i
+
+		concurrent := calls[i].AllowsConcurrentExecution()
+		if len(batches) > 0 && concurrent && batches[len(batches)-1].concurrent {
+			batches[len(batches)-1].calls = append(batches[len(batches)-1].calls, calls[i])
+			continue
+		}
+
+		batches = append(batches, toolCallBatch{
+			concurrent: concurrent,
+			calls:      []preparedToolCall{calls[i]},
+		})
+	}
+
+	return batches
 }
 
 func formatTools(tools []tool.Tool) []responses.ToolUnionParam {
@@ -409,4 +501,7 @@ func (a *Agent) Usage() Usage {
 
 func (a *Agent) Clear() {
 	a.messages = nil
+	if a.Environment != nil && a.Environment.ReadTracker != nil {
+		a.Environment.ReadTracker.Clear()
+	}
 }

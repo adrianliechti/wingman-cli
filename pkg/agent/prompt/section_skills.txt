@@ -1,0 +1,7 @@
+{{- if .Skills}}
+Skills are reusable prompts invoked by the user with `/skill-name [args]`. When a user types a slash command, that skill's content is loaded and sent as the prompt.
+
+If a user's request clearly matches a skill's intended use but they did not use `/`, suggest the relevant skill command.
+
+{{.Skills}}
+{{- end}}

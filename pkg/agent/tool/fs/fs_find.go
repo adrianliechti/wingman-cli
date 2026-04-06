@@ -17,7 +17,8 @@ const DefaultFindLimit = 1000
 
 func FindTool() tool.Tool {
 	return tool.Tool{
-		Name: "find",
+		Name:            "find",
+		ConcurrencySafe: true,
 
 		Description: strings.Join([]string{
 			fmt.Sprintf("Find files by glob pattern. Returns paths sorted by modification time (newest first). Respects .gitignore. Default limit: %d.", DefaultFindLimit),

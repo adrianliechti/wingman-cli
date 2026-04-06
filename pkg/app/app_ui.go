@@ -461,6 +461,20 @@ func (a *App) submitInput() {
 
 		return
 
+	case "/plan":
+		a.input.SetText("", true)
+		a.switchToChat()
+		a.enterPlanMode(true)
+
+		return
+
+	case "/agent":
+		a.input.SetText("", true)
+		a.switchToChat()
+		a.exitPlanMode(true)
+
+		return
+
 	case "/rewind":
 		a.input.SetText("", true)
 		a.switchToChat()
@@ -556,19 +570,10 @@ func (a *App) submitInput() {
 	a.clearPendingContent()
 
 	go func() {
-		instructions := a.agent.AgentInstructions
-
-		if a.currentMode == ModePlan {
-			instructions = a.agent.PlanningInstructions
-		}
-
-		// Append bridge instructions if connected
-		if bridgeInstructions := a.bridge.GetInstructions(); bridgeInstructions != "" {
-			instructions += "\n\n" + bridgeInstructions
-		}
+		instructions := a.currentInstructions()
 
 		// Inject bridge context (selection or active file) if connected
-		if bridgeContext := a.bridge.GetContext(); bridgeContext != "" {
+		if bridgeContext := a.bridgeContext(); bridgeContext != "" {
 			input = append(input, agent.Content{Text: bridgeContext})
 		}
 
@@ -603,7 +608,11 @@ func (a *App) invokeSkill(s *skill.Skill, args string) {
 	a.clearPendingContent()
 
 	go func() {
-		a.streamResponse(input, a.agent.AgentInstructions, a.allTools())
+		instructions := a.currentInstructions()
+		if bridgeContext := a.bridgeContext(); bridgeContext != "" {
+			input = append(input, agent.Content{Text: bridgeContext})
+		}
+		a.streamResponse(input, instructions, a.allTools())
 	}()
 }
 
@@ -818,6 +827,8 @@ func (a *App) builtinCommands() []slashCommand {
 	cmds := []slashCommand{
 		{"/help", "Show help"},
 		{"/model", "Select AI model"},
+		{"/plan", "Enter planning mode"},
+		{"/agent", "Return to execution mode"},
 		{"/problems", "Show problems"},
 	}
 

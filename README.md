@@ -152,9 +152,9 @@ The LSP tool provides these operations:
 ## 🎨 Modes
 
 - **Agent Mode** — Full autonomous operation with tool execution
-- **Plan Mode** — Planning and analysis without making changes
+- **Plan Mode** — Planning and analysis with write access limited to the session plan file
 
-Toggle between modes using `Tab` key.
+Toggle between modes using `Tab` or the explicit `/plan` and `/agent` commands.
 
 ## ⌨️ Keyboard Shortcuts
 
@@ -175,6 +175,8 @@ Toggle between modes using `Tab` key.
 |---------|-------------|
 | `/help` | Show available commands |
 | `/model` | Select AI model from available options |
+| `/plan` | Enter planning mode and create or reuse the session plan file |
+| `/agent` | Return to execution mode while keeping the active session plan |
 | `/file` | Add file to context |
 | `/paste` | Paste from clipboard |
 | `/diff` | Show changes from session baseline |

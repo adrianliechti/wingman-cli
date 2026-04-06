@@ -18,13 +18,14 @@ import (
 const (
 	DefaultGrepLimit     = 200
 	DefaultScanBufSize   = 64 * 1024   // 64KB initial buffer
-	MaxScanBufSize       = 1024 * 1024  // 1MB max buffer for long lines
+	MaxScanBufSize       = 1024 * 1024 // 1MB max buffer for long lines
 	MaxLineDisplayLength = 200
 )
 
 func GrepTool() tool.Tool {
 	return tool.Tool{
-		Name: "grep",
+		Name:            "grep",
+		ConcurrencySafe: true,
 
 		Description: strings.Join([]string{
 			fmt.Sprintf("Search file contents for a pattern. Respects .gitignore. Default limit: %d matches.", DefaultGrepLimit),

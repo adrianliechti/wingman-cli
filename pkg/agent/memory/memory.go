@@ -1,15 +1,40 @@
 package memory
 
 import (
+	"bytes"
+	_ "embed"
 	"os"
 	"path/filepath"
 	"strings"
+	"text/template"
+	"time"
 )
 
 const (
-	entrypointName = "MEMORY.md"
-	maxLines       = 200
+	memoryName = "MEMORY.md"
+	planName   = "PLAN.md"
+	maxLines   = 200
 )
+
+//go:embed plan_template.txt
+var planTemplateText string
+
+var planTemplate = template.Must(template.New("plan").Parse(planTemplateText))
+
+// NewPlanContent returns the default content for a new plan file.
+func NewPlanContent() string {
+	var buf bytes.Buffer
+
+	data := struct{ Date string }{
+		Date: time.Now().Format("2006-01-02 15:04"),
+	}
+
+	if err := planTemplate.Execute(&buf, data); err != nil {
+		return ""
+	}
+
+	return buf.String()
+}
 
 // Dir returns the memory directory path for a given working directory.
 // The path is ~/.wingman/projects/<sanitized-wd>/memory/.
@@ -28,10 +53,10 @@ func EnsureDir(dir string) error {
 	return os.MkdirAll(dir, 0755)
 }
 
-// LoadEntrypoint reads MEMORY.md from the given directory.
+// LoadMemory reads MEMORY.md from the given directory.
 // Returns empty string if the file doesn't exist. Truncates to maxLines.
-func LoadEntrypoint(dir string) string {
-	data, err := os.ReadFile(filepath.Join(dir, entrypointName))
+func LoadMemory(dir string) string {
+	data, err := os.ReadFile(filepath.Join(dir, memoryName))
 	if err != nil {
 		return ""
 	}
@@ -46,6 +71,31 @@ func LoadEntrypoint(dir string) string {
 		lines = lines[:maxLines]
 		content = strings.Join(lines, "\n")
 		content += "\n\n> WARNING: MEMORY.md exceeded 200 lines and was truncated. Keep index entries concise; move detail into topic files."
+	}
+
+	return content
+}
+
+func PlanPath(dir string) string {
+	return filepath.Join(dir, planName)
+}
+
+func LoadPlan(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+
+	content := strings.TrimSpace(string(data))
+	if content == "" {
+		return ""
+	}
+
+	lines := strings.Split(content, "\n")
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
+		content = strings.Join(lines, "\n")
+		content += "\n\n> WARNING: PLAN.md exceeded 200 lines and was truncated. Keep the working plan concise and current."
 	}
 
 	return content

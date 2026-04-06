@@ -16,6 +16,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/bridge"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/lsp"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/mcp"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/memory"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/rewind"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/ui/theme"
@@ -66,6 +67,7 @@ type App struct {
 	lastCompact        bool
 	pendingContent     []agent.Content
 	pendingFiles       []string
+	planFile           string
 
 	// Stream cancellation
 	streamCancel context.CancelFunc
@@ -85,9 +87,9 @@ type App struct {
 	bridge *bridge.Bridge
 
 	// LSP state
-	lspManager  *lsp.Manager
-	lspTracker  *lsp.DiagnosticTracker
-	lspTools    []tool.Tool
+	lspManager *lsp.Manager
+	lspTracker *lsp.DiagnosticTracker
+	lspTools   []tool.Tool
 
 	// Rewind state
 	rewind      *rewind.Manager
@@ -106,13 +108,21 @@ func New(ctx context.Context, agent *agent.Agent) *App {
 		agent: agent,
 
 		showWelcome: os.Getenv("WINGMAN_CALLER") != "vscode",
-		phase:         PhasePreparing,
+		phase:       PhasePreparing,
 
 		lspManager: lspManager,
 		lspTracker: lsp.NewDiagnosticTracker(),
 		lspTools:   lsptool.NewTools(lspManager),
 
 		rewindReady: make(chan struct{}),
+	}
+
+	if agent.Environment != nil && agent.Environment.MemoryDir() != "" {
+		a.planFile = memory.PlanPath(agent.Environment.MemoryDir())
+	}
+
+	if agent.Environment != nil && agent.Environment.Session != nil {
+		agent.Environment.Session.SetAgentMode()
 	}
 
 	agent.Environment.AskUser = a.askUser
@@ -262,11 +272,11 @@ func (a *App) initMCP() error {
 
 func (a *App) toggleMode() {
 	if a.currentMode == ModeAgent {
-		a.currentMode = ModePlan
-	} else {
-		a.currentMode = ModeAgent
+		a.enterPlanMode(true)
+		return
 	}
-	a.updateStatusBar()
+
+	a.exitPlanMode(true)
 }
 
 // hasActiveModal returns true if any modal is currently open
@@ -294,7 +304,9 @@ func (a *App) allTools() []tool.Tool {
 
 	tools := append([]tool.Tool{}, a.agent.Tools...)
 
-	tools = append(tools, a.mcpTools...)
+	if a.currentMode != ModePlan {
+		tools = append(tools, a.mcpTools...)
+	}
 
 	// When bridge is connected it provides all LSP operations via the IDE's
 	// language services. Skip local LSP.

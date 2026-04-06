@@ -28,8 +28,9 @@ func FetchTool() tool.Tool {
 	}, "\n")
 
 	return tool.Tool{
-		Name:        "fetch",
-		Description: description,
+		Name:            "fetch",
+		Description:     description,
+		ConcurrencySafe: true,
 
 		Parameters: map[string]any{
 			"type": "object",

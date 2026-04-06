@@ -29,7 +29,9 @@ func createTestEnvironment(t *testing.T) (*tool.Environment, string, func()) {
 	}
 
 	env := &tool.Environment{
-		Root: root,
+		Root:        root,
+		ReadTracker: tool.NewReadTracker(),
+		Session:     tool.NewSessionState(),
 	}
 
 	cleanup := func() {
@@ -206,6 +208,14 @@ func TestWriteTool(t *testing.T) {
 			t.Fatalf("unexpected error on first write: %v", err)
 		}
 
+		_, err = ReadTool().Execute(context.Background(), env, map[string]any{
+			"path": "overwrite.txt",
+		})
+
+		if err != nil {
+			t.Fatalf("unexpected read error: %v", err)
+		}
+
 		// Overwrite
 		_, err = writeTool.Execute(context.Background(), env, map[string]any{
 			"path":    "overwrite.txt",
@@ -224,6 +234,58 @@ func TestWriteTool(t *testing.T) {
 
 		if string(content) != "updated" {
 			t.Errorf("expected 'updated', got: %s", content)
+		}
+	})
+
+	t.Run("overwrite requires prior read", func(t *testing.T) {
+		testFile := filepath.Join(tmpDir, "overwrite_requires_read.txt")
+		if err := os.WriteFile(testFile, []byte("original"), 0644); err != nil {
+			t.Fatalf("failed to create file: %v", err)
+		}
+
+		_, err := writeTool.Execute(context.Background(), env, map[string]any{
+			"path":    "overwrite_requires_read.txt",
+			"content": "updated",
+		})
+
+		if err == nil {
+			t.Fatal("expected overwrite without prior read to fail")
+		}
+
+		if !strings.Contains(err.Error(), "has not been read yet") {
+			t.Fatalf("expected read-before-write error, got: %v", err)
+		}
+	})
+
+	t.Run("overwrite rejects stale reads", func(t *testing.T) {
+		testFile := filepath.Join(tmpDir, "overwrite_stale.txt")
+		if err := os.WriteFile(testFile, []byte("original"), 0644); err != nil {
+			t.Fatalf("failed to create file: %v", err)
+		}
+
+		_, err := ReadTool().Execute(context.Background(), env, map[string]any{
+			"path": "overwrite_stale.txt",
+		})
+
+		if err != nil {
+			t.Fatalf("unexpected read error: %v", err)
+		}
+
+		if err := os.WriteFile(testFile, []byte("changed outside"), 0644); err != nil {
+			t.Fatalf("failed to modify file: %v", err)
+		}
+
+		_, err = writeTool.Execute(context.Background(), env, map[string]any{
+			"path":    "overwrite_stale.txt",
+			"content": "updated",
+		})
+
+		if err == nil {
+			t.Fatal("expected stale read to fail")
+		}
+
+		if !strings.Contains(err.Error(), "modified since it was read") {
+			t.Fatalf("expected stale-read error, got: %v", err)
 		}
 	})
 
@@ -250,6 +312,14 @@ func TestEditTool(t *testing.T) {
 		testFile := filepath.Join(tmpDir, "edit_test.txt")
 		os.WriteFile(testFile, []byte("hello world"), 0644)
 
+		_, err := ReadTool().Execute(context.Background(), env, map[string]any{
+			"path": "edit_test.txt",
+		})
+
+		if err != nil {
+			t.Fatalf("unexpected read error: %v", err)
+		}
+
 		result, err := editTool.Execute(context.Background(), env, map[string]any{
 			"path":     "edit_test.txt",
 			"old_text": "world",
@@ -275,7 +345,15 @@ func TestEditTool(t *testing.T) {
 		testFile := filepath.Join(tmpDir, "crlf_test.txt")
 		os.WriteFile(testFile, []byte("line1\r\nline2\r\nline3"), 0644)
 
-		_, err := editTool.Execute(context.Background(), env, map[string]any{
+		_, err := ReadTool().Execute(context.Background(), env, map[string]any{
+			"path": "crlf_test.txt",
+		})
+
+		if err != nil {
+			t.Fatalf("unexpected read error: %v", err)
+		}
+
+		_, err = editTool.Execute(context.Background(), env, map[string]any{
 			"path":     "crlf_test.txt",
 			"old_text": "line2",
 			"new_text": "modified",
@@ -296,7 +374,15 @@ func TestEditTool(t *testing.T) {
 		testFile := filepath.Join(tmpDir, "fuzzy_test.txt")
 		os.WriteFile(testFile, []byte("hello   \nworld"), 0644)
 
-		_, err := editTool.Execute(context.Background(), env, map[string]any{
+		_, err := ReadTool().Execute(context.Background(), env, map[string]any{
+			"path": "fuzzy_test.txt",
+		})
+
+		if err != nil {
+			t.Fatalf("unexpected read error: %v", err)
+		}
+
+		_, err = editTool.Execute(context.Background(), env, map[string]any{
 			"path":     "fuzzy_test.txt",
 			"old_text": "hello\nworld",
 			"new_text": "goodbye\nworld",
@@ -317,7 +403,15 @@ func TestEditTool(t *testing.T) {
 		testFile := filepath.Join(tmpDir, "duplicate_test.txt")
 		os.WriteFile(testFile, []byte("foo bar foo"), 0644)
 
-		_, err := editTool.Execute(context.Background(), env, map[string]any{
+		_, err := ReadTool().Execute(context.Background(), env, map[string]any{
+			"path": "duplicate_test.txt",
+		})
+
+		if err != nil {
+			t.Fatalf("unexpected read error: %v", err)
+		}
+
+		_, err = editTool.Execute(context.Background(), env, map[string]any{
 			"path":     "duplicate_test.txt",
 			"old_text": "foo",
 			"new_text": "baz",
@@ -336,7 +430,15 @@ func TestEditTool(t *testing.T) {
 		testFile := filepath.Join(tmpDir, "nomatch_test.txt")
 		os.WriteFile(testFile, []byte("hello world"), 0644)
 
-		_, err := editTool.Execute(context.Background(), env, map[string]any{
+		_, err := ReadTool().Execute(context.Background(), env, map[string]any{
+			"path": "nomatch_test.txt",
+		})
+
+		if err != nil {
+			t.Fatalf("unexpected read error: %v", err)
+		}
+
+		_, err = editTool.Execute(context.Background(), env, map[string]any{
 			"path":     "nomatch_test.txt",
 			"old_text": "xyz",
 			"new_text": "abc",
@@ -344,6 +446,60 @@ func TestEditTool(t *testing.T) {
 
 		if err == nil {
 			t.Error("expected error for no match")
+		}
+	})
+
+	t.Run("edit requires prior read", func(t *testing.T) {
+		testFile := filepath.Join(tmpDir, "edit_requires_read.txt")
+		if err := os.WriteFile(testFile, []byte("hello world"), 0644); err != nil {
+			t.Fatalf("failed to create file: %v", err)
+		}
+
+		_, err := editTool.Execute(context.Background(), env, map[string]any{
+			"path":     "edit_requires_read.txt",
+			"old_text": "world",
+			"new_text": "reader",
+		})
+
+		if err == nil {
+			t.Fatal("expected edit without prior read to fail")
+		}
+
+		if !strings.Contains(err.Error(), "has not been read yet") {
+			t.Fatalf("expected read-before-edit error, got: %v", err)
+		}
+	})
+
+	t.Run("edit rejects stale reads", func(t *testing.T) {
+		testFile := filepath.Join(tmpDir, "edit_stale.txt")
+		if err := os.WriteFile(testFile, []byte("hello world"), 0644); err != nil {
+			t.Fatalf("failed to create file: %v", err)
+		}
+
+		_, err := ReadTool().Execute(context.Background(), env, map[string]any{
+			"path": "edit_stale.txt",
+		})
+
+		if err != nil {
+			t.Fatalf("unexpected read error: %v", err)
+		}
+
+		if err := os.WriteFile(testFile, []byte("changed outside"), 0644); err != nil {
+			t.Fatalf("failed to modify file: %v", err)
+		}
+
+		_, err = editTool.Execute(context.Background(), env, map[string]any{
+			"path":     "edit_stale.txt",
+			"old_text": "world",
+			"new_text": "reader",
+		})
+
+		if err == nil {
+			t.Fatal("expected stale read to fail")
+		}
+
+		if !strings.Contains(err.Error(), "modified since it was read") {
+			t.Fatalf("expected stale-read error, got: %v", err)
 		}
 	})
 }
