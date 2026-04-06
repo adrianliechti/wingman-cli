@@ -100,6 +100,8 @@ type App struct {
 }
 
 func New(ctx context.Context, agent *agent.Agent, sessionID string) *App {
+	saveExecutablePath()
+
 	app := tview.NewApplication()
 
 	lspManager := lsp.NewManager(agent.Environment.RootDir())
@@ -158,6 +160,33 @@ func New(ctx context.Context, agent *agent.Agent, sessionID string) *App {
 
 func newSessionID() string {
 	return uuid.New().String()
+}
+
+func saveExecutablePath() {
+	path := os.Getenv("WINGMAN_PATH")
+
+	if path == "" {
+		exe, err := os.Executable()
+		if err != nil {
+			return
+		}
+
+		path = exe
+	}
+
+	if path == "" {
+		return
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+
+	dir := filepath.Join(home, ".wingman")
+	os.MkdirAll(dir, 0755)
+
+	os.WriteFile(filepath.Join(dir, "path"), []byte(path), 0644)
 }
 
 func (a *App) saveSession() {
