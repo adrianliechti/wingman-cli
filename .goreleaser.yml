@@ -29,6 +29,9 @@ homebrew_casks:
       name: Adrian Liechti
       email: adrian@localhost
 
+    install: |
+      bin.install "wingman"
+
 scoops:
   - repository:
       owner: adrianliechti
