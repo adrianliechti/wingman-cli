@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	mgr "github.com/adrianliechti/wingman-agent/pkg/agent/mcp"
@@ -244,15 +243,9 @@ func discoverBridge(workingDir string) string {
 
 		var lf struct {
 			URL        string   `json:"url"`
-			PID        int      `json:"pid"`
 			Workspaces []string `json:"workspaces"`
 		}
 		if err := json.Unmarshal(data, &lf); err != nil || lf.URL == "" {
-			continue
-		}
-
-		if !isProcessAlive(lf.PID) {
-			os.Remove(filepath.Join(lockDir, entry.Name()))
 			continue
 		}
 
@@ -270,18 +263,6 @@ func discoverBridge(workingDir string) string {
 func isSubPath(parent, child string) bool {
 	parent = filepath.Clean(parent) + string(filepath.Separator)
 	child = filepath.Clean(child) + string(filepath.Separator)
-	return strings.HasPrefix(child, parent)
+	return strings.HasPrefix(strings.ToLower(child), strings.ToLower(parent))
 }
 
-func isProcessAlive(pid int) bool {
-	if pid == 0 {
-		return true
-	}
-
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-
-	return p.Signal(syscall.Signal(0)) == nil
-}
