@@ -30,9 +30,7 @@ func requireFreshFullRead(env *env.Environment, path, content string) error {
 		return fmt.Errorf("file was only partially read. Read the full file before writing to it")
 	}
 
-	info, err := env.Root.Stat(path)
-
-	if err == nil && !snapshot.Timestamp.IsZero() && info.ModTime().After(snapshot.Timestamp) && content != snapshot.Content {
+	if content != snapshot.Content {
 		return fmt.Errorf("file has been modified since it was read. Read it again before writing to it")
 	}
 

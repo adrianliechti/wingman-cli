@@ -53,13 +53,16 @@ func extractToolHint(argsJSON string) string {
 }
 
 // setPhase updates the phase and spinner state.
+// Safe to call from any goroutine.
 func (a *App) setPhase(phase AppPhase) {
 	a.phase = phase
 
 	if a.spinner != nil {
 		if phase == PhaseIdle {
 			a.spinner.Stop()
-			a.updateInputHint()
+			a.app.QueueUpdateDraw(func() {
+				a.updateInputHint()
+			})
 		} else {
 			a.spinner.Start(phase)
 		}
@@ -89,6 +92,19 @@ func (a *App) streamResponse(input []agent.Content, instructions string, tools [
 		a.streamMu.Lock()
 		a.streamCancel = nil
 		a.streamMu.Unlock()
+	}()
+
+	// Recover from panics so the UI never locks up
+	defer func() {
+		if r := recover(); r != nil {
+			a.currentToolName = ""
+			a.currentToolHint = ""
+			a.setPhase(PhaseIdle)
+			a.app.QueueUpdateDraw(func() {
+				fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("Internal error: %v", r), t.Red))
+				a.updateStatusBar()
+			})
+		}
 	}()
 
 	var content strings.Builder
