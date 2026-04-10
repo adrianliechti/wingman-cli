@@ -8,6 +8,31 @@ import (
 	"strings"
 )
 
+const powerShellEncodingPrefix = "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+
+func buildPowerShellArgs(script string, sta bool) []string {
+	args := []string{"-NoProfile", "-NoLogo", "-NonInteractive"}
+
+	if sta {
+		args = append(args, "-Sta")
+	}
+
+	args = append(args, "-Command", powerShellEncodingPrefix+script)
+
+	return args
+}
+
+func runPowerShell(script string, sta bool) ([]byte, error) {
+	return exec.Command("powershell.exe", buildPowerShellArgs(script, sta)...).Output()
+}
+
+func buildWriteTextCommand(text string) *exec.Cmd {
+	cmd := exec.Command("powershell.exe", buildPowerShellArgs(`Set-Clipboard -Value ([Console]::In.ReadToEnd())`, false)...)
+	cmd.Stdin = strings.NewReader(text)
+
+	return cmd
+}
+
 // Read reads text and image content from the Windows clipboard.
 func Read() ([]Content, error) {
 	var contents []Content
@@ -24,13 +49,13 @@ func Read() ([]Content, error) {
 }
 
 func readText() (string, error) {
-	output, err := exec.Command("powershell", "-NoProfile", "-Command", "Get-Clipboard").Output()
+	output, err := runPowerShell(`$text = Get-Clipboard -Format Text -Raw -ErrorAction SilentlyContinue; if ($null -ne $text) { [Console]::Out.Write($text) }`, false)
 
 	if err != nil {
 		return "", err
 	}
 
-	return strings.TrimSpace(string(output)), nil
+	return string(output), nil
 }
 
 func readImage() (string, error) {
@@ -38,7 +63,7 @@ func readImage() (string, error) {
 	// Load System.Windows.Forms assembly and use in-memory stream
 	script := `Add-Type -AssemblyName System.Windows.Forms; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($img) { $ms = New-Object System.IO.MemoryStream; $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); [System.Convert]::ToBase64String($ms.ToArray()) }`
 
-	output, err := exec.Command("powershell.exe", "-NonInteractive", "-NoProfile", "-Command", script).Output()
+	output, err := runPowerShell(script, true)
 
 	if err != nil {
 		return "", err
@@ -60,7 +85,7 @@ func readImage() (string, error) {
 
 // WriteText writes text to the Windows clipboard.
 func WriteText(text string) error {
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", "Set-Clipboard", "-Value", text)
+	cmd := buildWriteTextCommand(text)
 
 	return cmd.Run()
 }

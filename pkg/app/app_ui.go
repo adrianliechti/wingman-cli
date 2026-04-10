@@ -88,7 +88,7 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		if !a.hasActiveModal() && a.input.HasSelection() {
 			selectedText, _, _ := a.input.GetSelection()
 			if selectedText != "" {
-				go clipboard.WriteText(selectedText)
+				a.copyTextToClipboard(selectedText)
 				return nil
 			}
 		}
@@ -284,6 +284,24 @@ func (a *App) askUser(question string) (string, error) {
 	}
 }
 
+func (a *App) copyTextToClipboard(text string) {
+	go func() {
+		err := clipboard.WriteText(text)
+
+		a.app.QueueUpdateDraw(func() {
+			message := "Copied to clipboard"
+			color := theme.Default.BrBlack
+
+			if err != nil {
+				message = fmt.Sprintf("Clipboard copy failed: %v", err)
+				color = theme.Default.Red
+			}
+
+			fmt.Fprint(a.chatView, a.formatNotice(message, color))
+		})
+	}()
+}
+
 func (a *App) copyLastResponse() {
 	messages := a.agent.Messages()
 
@@ -292,8 +310,7 @@ func (a *App) copyLastResponse() {
 		if messages[i].Role == agent.RoleAssistant {
 			for _, c := range messages[i].Content {
 				if c.Text != "" {
-					clipboard.WriteText(c.Text)
-					fmt.Fprint(a.chatView, a.formatNotice("Copied to clipboard", theme.Default.BrBlack))
+					a.copyTextToClipboard(c.Text)
 
 					return
 				}
