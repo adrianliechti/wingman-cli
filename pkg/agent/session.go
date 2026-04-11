@@ -34,6 +34,9 @@ type sessionFile struct {
 // SaveSession persists the current messages to a session file.
 // Creates the sessions directory if needed. Returns the session ID.
 func (a *Agent) SaveSession(id string) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	dir := a.sessionsDir()
 	if dir == "" {
 		return "", fmt.Errorf("no sessions directory available")
@@ -89,6 +92,9 @@ func (a *Agent) SaveSession(id string) (string, error) {
 
 // LoadSession restores messages from a saved session file.
 func (a *Agent) LoadSession(id string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	dir := a.sessionsDir()
 	if dir == "" {
 		return fmt.Errorf("no sessions directory available")

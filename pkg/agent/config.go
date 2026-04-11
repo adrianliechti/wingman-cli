@@ -6,14 +6,12 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/mcp"
-	"github.com/adrianliechti/wingman-agent/pkg/agent/prompt"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/skill"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/ask"
@@ -34,13 +32,17 @@ var AvailableModels = []string{
 }
 
 type Config struct {
+	// Name is an optional identifier for this agent (e.g. "main", "family").
+	Name string
+
 	Model  string
 	Client openai.Client
 
 	Environment *env.Environment
 
-	AgentInstructions    string
-	PlanningInstructions string
+	// Instructions is the default system prompt, used by Send when the
+	// caller passes an empty instructions argument.
+	Instructions string
 
 	MCP *mcp.Manager
 
@@ -62,7 +64,7 @@ func DefaultConfig() (*Config, func(), error) {
 
 	tools := slices.Concat(fs.Tools(), shell.Tools(), fetch.Tools(), search.Tools(), ask.Tools())
 
-	mcp, _ := mcp.Load(filepath.Join(wd, "mcp.json"))
+	mcpManager, _ := mcp.Load(filepath.Join(wd, "mcp.json"))
 
 	skills := skill.Merge(skill.BundledSkills(), skill.MustDiscover(wd))
 
@@ -77,10 +79,7 @@ func DefaultConfig() (*Config, func(), error) {
 
 		Environment: e,
 
-		AgentInstructions:    prompt.Instructions,
-		PlanningInstructions: prompt.Planning,
-
-		MCP: mcp,
+		MCP: mcpManager,
 
 		Tools:  tools,
 		Skills: skills,
@@ -134,43 +133,6 @@ func createClient() (openai.Client, string) {
 	), ""
 }
 
-func (a *Agent) BuildInstructions(planMode bool, bridgeInstructions string) string {
-	if a == nil || a.Config == nil {
-		return ""
-	}
-
-	return a.Config.BuildInstructions(planMode, bridgeInstructions)
-}
-
-func (c *Config) BuildInstructions(planMode bool, bridgeInstructions string) string {
-	if c == nil {
-		return ""
-	}
-
-	base := c.AgentInstructions
-	if planMode {
-		base = c.PlanningInstructions
-	}
-
-	data := prompt.SectionData{
-		PlanMode:            planMode,
-		Date:                time.Now().Format("January 2, 2006"),
-		OS:                  c.Environment.OS,
-		Arch:                c.Environment.Arch,
-		WorkingDir:          c.Environment.RootDir(),
-		MemoryDir:           c.Environment.MemoryDir(),
-		MemoryContent:       c.Environment.MemoryContent(),
-		PlanFile:            c.Environment.PlanFile(),
-		PlanContent:         c.Environment.PlanContent(),
-		Skills:              skill.FormatForPrompt(c.Skills),
-		ProjectInstructions: readAgentsFile(c.Environment.RootDir()),
-		BridgeInstructions:  bridgeInstructions,
-	}
-
-	sections := append([]prompt.Section{{Content: base}}, prompt.RenderSections(data)...)
-	return prompt.ComposeSections(sections...)
-}
-
 func (c *Config) Cleanup() {
 	if c.MCP != nil {
 		c.MCP.Close()
@@ -181,7 +143,7 @@ func (c *Config) Cleanup() {
 	}
 }
 
-func readAgentsFile(wd string) string {
+func ReadAgentsFile(wd string) string {
 	data, err := os.ReadFile(filepath.Join(wd, "AGENTS.md"))
 
 	if err != nil {

@@ -669,6 +669,7 @@ func (a *App) invokeSkill(s *skill.Skill, args string) {
 
 	go func() {
 		instructions := a.currentInstructions()
+
 		if bridgeContext := a.bridgeContext(); bridgeContext != "" {
 			input = append(input, agent.Content{Text: bridgeContext})
 		}

@@ -44,23 +44,3 @@ func (a *App) exitPlanMode(announce bool) {
 		fmt.Fprint(a.chatView, a.formatNotice(message, theme.Default.Cyan))
 	}
 }
-
-func (a *App) currentInstructions() string {
-	return a.agent.BuildInstructions(a.currentMode == ModePlan, a.bridgeInstructions())
-}
-
-func (a *App) bridgeInstructions() string {
-	if a.bridge == nil {
-		return ""
-	}
-
-	return a.bridge.GetInstructions()
-}
-
-func (a *App) bridgeContext() string {
-	if a.bridge == nil {
-		return ""
-	}
-
-	return a.bridge.GetContext()
-}

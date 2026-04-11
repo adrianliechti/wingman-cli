@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/openai/openai-go/v3"
@@ -25,6 +26,7 @@ var errYieldStopped = errors.New("yield stopped")
 type Agent struct {
 	*Config
 
+	mu       sync.Mutex
 	messages []responses.ResponseInputItemUnionParam
 	usage    Usage
 }
@@ -36,9 +38,18 @@ func New(cfg *Config) *Agent {
 }
 
 func (a *Agent) Send(ctx context.Context, instructions string, input []Content, tools []tool.Tool) iter.Seq2[Message, error] {
+	if instructions == "" {
+		instructions = a.Instructions
+	}
+
+	a.mu.Lock()
 	a.messages = append(a.messages, a.userMessage(input))
+	a.mu.Unlock()
 
 	return func(yield func(Message, error) bool) {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+
 		if err := a.run(ctx, yield, instructions, tools); err != nil && err != errYieldStopped {
 			yield(Message{}, err)
 		}
@@ -328,6 +339,9 @@ func convertRole(role responses.EasyInputMessageRole) MessageRole {
 }
 
 func (a *Agent) Messages() []Message {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	var result []Message
 	toolCallsByID := make(map[string]ToolCall)
 
@@ -409,10 +423,15 @@ func (a *Agent) Messages() []Message {
 }
 
 func (a *Agent) Usage() Usage {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	return a.usage
 }
 
 func (a *Agent) Clear() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	a.messages = nil
 	if a.Environment != nil && a.Environment.Tracker != nil {
 		a.Environment.Tracker.Clear()

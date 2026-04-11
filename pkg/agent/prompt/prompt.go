@@ -84,6 +84,13 @@ func RenderSections(data SectionData) []Section {
 	return sections
 }
 
+// BuildInstructions composes a full system prompt from a base prompt and
+// dynamic section data (environment, memory, skills, etc.).
+func BuildInstructions(base string, data SectionData) string {
+	sections := append([]Section{{Content: base}}, RenderSections(data)...)
+	return ComposeSections(sections...)
+}
+
 // ComposeSections joins sections into a single system prompt string.
 // Empty sections are skipped. Titled sections get a ## header.
 func ComposeSections(sections ...Section) string {

@@ -7,7 +7,7 @@ import (
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/rewind"
+	"github.com/adrianliechti/wingman-agent/pkg/app/rewind"
 
 	"github.com/adrianliechti/wingman-agent/pkg/ui/markdown"
 	"github.com/adrianliechti/wingman-agent/pkg/ui/theme"
