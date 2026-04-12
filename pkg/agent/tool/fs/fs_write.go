@@ -3,16 +3,16 @@ package fs
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
-func WriteTool() tool.Tool {
+func WriteTool(root *os.Root) tool.Tool {
 	return tool.Tool{
-		Name:            "write",
+		Name: "write",
 
 		Description: strings.Join([]string{
 			"Write content to a file. Creates the file and parent directories if they don't exist, overwrites if it does.",
@@ -33,20 +33,20 @@ func WriteTool() tool.Tool {
 			"required": []string{"path", "content"},
 		},
 
-		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			pathArg, ok := args["path"].(string)
 
 			if !ok || pathArg == "" {
 				return "", fmt.Errorf("path is required")
 			}
 
-			normalizedPath, root, err := resolveRoot(pathArg, env, "write file")
+			workingDir := root.Name()
+
+			normalizedPath, err := ensurePathInWorkspace(pathArg, workingDir, "write file")
 
 			if err != nil {
 				return "", err
 			}
-
-			workingDir := env.RootDir()
 
 			content, ok := args["content"].(string)
 
@@ -54,19 +54,9 @@ func WriteTool() tool.Tool {
 				return "", fmt.Errorf("content is required")
 			}
 
-			if err := enforcePlanMutation(env, normalizedPath); err != nil {
-				return "", err
-			}
-
 			// Check if file exists before writing (for create vs update reporting)
-			existing, existsErr := root.ReadFile(normalizedPath)
+			_, existsErr := root.ReadFile(normalizedPath)
 			isNew := existsErr != nil
-
-			if !isNew {
-				if err := requireFreshFullRead(env, normalizedPath, string(existing)); err != nil {
-					return "", err
-				}
-			}
 
 			dir := filepath.Dir(normalizedPath)
 
@@ -91,20 +81,12 @@ func WriteTool() tool.Tool {
 				return "", fmt.Errorf("failed to close file: %w", err)
 			}
 
-			rememberRead(env, normalizedPath, []byte(content), 0, 0)
-
 			action := "Updated"
 			if isNew {
 				action = "Created"
 			}
 
 			result := fmt.Sprintf("%s %s (%d bytes)", action, pathArg, len(content))
-
-			if env.DiagnoseFile != nil {
-				if diag := env.DiagnoseFile(ctx, normalizedPath); diag != "" {
-					result += "\n\n" + diag
-				}
-			}
 
 			return result, nil
 		},

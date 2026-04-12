@@ -1,0 +1,9 @@
+{{- if .MemoryDir -}}
+Persistent memory at `{{.MemoryDir}}`. Save important context to files here when it will help future conversations. Keep MEMORY.md as a concise index.
+{{- if .MemoryContent}}
+
+Current MEMORY.md:
+
+{{.MemoryContent}}
+{{- end}}
+{{- end}}

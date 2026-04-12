@@ -7,13 +7,10 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
-	"github.com/adrianliechti/wingman-agent/pkg/agent/env/tracker"
 )
 
-// createTestEnvironment creates a test environment with a temporary directory
-func createTestEnvironment(t *testing.T) (*env.Environment, string, func()) {
+// createTestRoot creates a test os.Root with a temporary directory
+func createTestRoot(t *testing.T) (*os.Root, string, func()) {
 	t.Helper()
 
 	tmpDir, err := os.MkdirTemp("", "fs_test_*")
@@ -29,21 +26,16 @@ func createTestEnvironment(t *testing.T) (*env.Environment, string, func()) {
 		t.Fatalf("failed to open root: %v", err)
 	}
 
-	e := &env.Environment{
-		Root:    root,
-		Tracker: tracker.New(root),
-	}
-
 	cleanup := func() {
 		root.Close()
 		os.RemoveAll(tmpDir)
 	}
 
-	return e, tmpDir, cleanup
+	return root, tmpDir, cleanup
 }
 
 func TestReadTool(t *testing.T) {
-	env, tmpDir, cleanup := createTestEnvironment(t)
+	root, tmpDir, cleanup := createTestRoot(t)
 	defer cleanup()
 
 	// Create test file
@@ -54,10 +46,10 @@ func TestReadTool(t *testing.T) {
 		t.Fatalf("failed to create test file: %v", err)
 	}
 
-	readTool := ReadTool()
+	readTool := ReadTool(root)
 
 	t.Run("read entire file", func(t *testing.T) {
-		result, err := readTool.Execute(context.Background(), env, map[string]any{
+		result, err := readTool.Execute(context.Background(), map[string]any{
 			"path": "test.txt",
 		})
 
@@ -71,7 +63,7 @@ func TestReadTool(t *testing.T) {
 	})
 
 	t.Run("read with offset", func(t *testing.T) {
-		result, err := readTool.Execute(context.Background(), env, map[string]any{
+		result, err := readTool.Execute(context.Background(), map[string]any{
 			"path":   "test.txt",
 			"offset": float64(3),
 		})
@@ -90,7 +82,7 @@ func TestReadTool(t *testing.T) {
 	})
 
 	t.Run("read with limit", func(t *testing.T) {
-		result, err := readTool.Execute(context.Background(), env, map[string]any{
+		result, err := readTool.Execute(context.Background(), map[string]any{
 			"path":  "test.txt",
 			"limit": float64(2),
 		})
@@ -105,7 +97,7 @@ func TestReadTool(t *testing.T) {
 	})
 
 	t.Run("read non-existent file", func(t *testing.T) {
-		_, err := readTool.Execute(context.Background(), env, map[string]any{
+		_, err := readTool.Execute(context.Background(), map[string]any{
 			"path": "nonexistent.txt",
 		})
 
@@ -115,7 +107,7 @@ func TestReadTool(t *testing.T) {
 	})
 
 	t.Run("path outside workspace rejected", func(t *testing.T) {
-		_, err := readTool.Execute(context.Background(), env, map[string]any{
+		_, err := readTool.Execute(context.Background(), map[string]any{
 			"path": "/etc/passwd",
 		})
 
@@ -129,7 +121,7 @@ func TestReadTool(t *testing.T) {
 	})
 
 	t.Run("read with absolute path inside workspace", func(t *testing.T) {
-		result, err := readTool.Execute(context.Background(), env, map[string]any{
+		result, err := readTool.Execute(context.Background(), map[string]any{
 			"path": testFile, // absolute path
 		})
 
@@ -144,13 +136,13 @@ func TestReadTool(t *testing.T) {
 }
 
 func TestWriteTool(t *testing.T) {
-	env, tmpDir, cleanup := createTestEnvironment(t)
+	root, tmpDir, cleanup := createTestRoot(t)
 	defer cleanup()
 
-	writeTool := WriteTool()
+	writeTool := WriteTool(root)
 
 	t.Run("write new file", func(t *testing.T) {
-		result, err := writeTool.Execute(context.Background(), env, map[string]any{
+		result, err := writeTool.Execute(context.Background(), map[string]any{
 			"path":    "newfile.txt",
 			"content": "hello world",
 		})
@@ -176,7 +168,7 @@ func TestWriteTool(t *testing.T) {
 	})
 
 	t.Run("write with nested directory", func(t *testing.T) {
-		_, err := writeTool.Execute(context.Background(), env, map[string]any{
+		_, err := writeTool.Execute(context.Background(), map[string]any{
 			"path":    "subdir/nested/file.txt",
 			"content": "nested content",
 		})
@@ -199,7 +191,7 @@ func TestWriteTool(t *testing.T) {
 
 	t.Run("overwrite existing file", func(t *testing.T) {
 		// First write
-		_, err := writeTool.Execute(context.Background(), env, map[string]any{
+		_, err := writeTool.Execute(context.Background(), map[string]any{
 			"path":    "overwrite.txt",
 			"content": "original",
 		})
@@ -208,7 +200,7 @@ func TestWriteTool(t *testing.T) {
 			t.Fatalf("unexpected error on first write: %v", err)
 		}
 
-		_, err = ReadTool().Execute(context.Background(), env, map[string]any{
+		_, err = ReadTool(root).Execute(context.Background(), map[string]any{
 			"path": "overwrite.txt",
 		})
 
@@ -217,7 +209,7 @@ func TestWriteTool(t *testing.T) {
 		}
 
 		// Overwrite
-		_, err = writeTool.Execute(context.Background(), env, map[string]any{
+		_, err = writeTool.Execute(context.Background(), map[string]any{
 			"path":    "overwrite.txt",
 			"content": "updated",
 		})
@@ -237,60 +229,8 @@ func TestWriteTool(t *testing.T) {
 		}
 	})
 
-	t.Run("overwrite requires prior read", func(t *testing.T) {
-		testFile := filepath.Join(tmpDir, "overwrite_requires_read.txt")
-		if err := os.WriteFile(testFile, []byte("original"), 0644); err != nil {
-			t.Fatalf("failed to create file: %v", err)
-		}
-
-		_, err := writeTool.Execute(context.Background(), env, map[string]any{
-			"path":    "overwrite_requires_read.txt",
-			"content": "updated",
-		})
-
-		if err == nil {
-			t.Fatal("expected overwrite without prior read to fail")
-		}
-
-		if !strings.Contains(err.Error(), "has not been read yet") {
-			t.Fatalf("expected read-before-write error, got: %v", err)
-		}
-	})
-
-	t.Run("overwrite rejects stale reads", func(t *testing.T) {
-		testFile := filepath.Join(tmpDir, "overwrite_stale.txt")
-		if err := os.WriteFile(testFile, []byte("original"), 0644); err != nil {
-			t.Fatalf("failed to create file: %v", err)
-		}
-
-		_, err := ReadTool().Execute(context.Background(), env, map[string]any{
-			"path": "overwrite_stale.txt",
-		})
-
-		if err != nil {
-			t.Fatalf("unexpected read error: %v", err)
-		}
-
-		if err := os.WriteFile(testFile, []byte("changed outside"), 0644); err != nil {
-			t.Fatalf("failed to modify file: %v", err)
-		}
-
-		_, err = writeTool.Execute(context.Background(), env, map[string]any{
-			"path":    "overwrite_stale.txt",
-			"content": "updated",
-		})
-
-		if err == nil {
-			t.Fatal("expected stale read to fail")
-		}
-
-		if !strings.Contains(err.Error(), "modified since it was read") {
-			t.Fatalf("expected stale-read error, got: %v", err)
-		}
-	})
-
 	t.Run("path outside workspace rejected", func(t *testing.T) {
-		_, err := writeTool.Execute(context.Background(), env, map[string]any{
+		_, err := writeTool.Execute(context.Background(), map[string]any{
 			"path":    "/tmp/outside.txt",
 			"content": "should fail",
 		})
@@ -302,17 +242,17 @@ func TestWriteTool(t *testing.T) {
 }
 
 func TestEditTool(t *testing.T) {
-	env, tmpDir, cleanup := createTestEnvironment(t)
+	root, tmpDir, cleanup := createTestRoot(t)
 	defer cleanup()
 
-	editTool := EditTool()
+	editTool := EditTool(root)
 
 	t.Run("simple edit", func(t *testing.T) {
 		// Create test file
 		testFile := filepath.Join(tmpDir, "edit_test.txt")
 		os.WriteFile(testFile, []byte("hello world"), 0644)
 
-		_, err := ReadTool().Execute(context.Background(), env, map[string]any{
+		_, err := ReadTool(root).Execute(context.Background(), map[string]any{
 			"path": "edit_test.txt",
 		})
 
@@ -320,7 +260,7 @@ func TestEditTool(t *testing.T) {
 			t.Fatalf("unexpected read error: %v", err)
 		}
 
-		result, err := editTool.Execute(context.Background(), env, map[string]any{
+		result, err := editTool.Execute(context.Background(), map[string]any{
 			"path":     "edit_test.txt",
 			"old_text": "world",
 			"new_text": "universe",
@@ -345,7 +285,7 @@ func TestEditTool(t *testing.T) {
 		testFile := filepath.Join(tmpDir, "crlf_test.txt")
 		os.WriteFile(testFile, []byte("line1\r\nline2\r\nline3"), 0644)
 
-		_, err := ReadTool().Execute(context.Background(), env, map[string]any{
+		_, err := ReadTool(root).Execute(context.Background(), map[string]any{
 			"path": "crlf_test.txt",
 		})
 
@@ -353,7 +293,7 @@ func TestEditTool(t *testing.T) {
 			t.Fatalf("unexpected read error: %v", err)
 		}
 
-		_, err = editTool.Execute(context.Background(), env, map[string]any{
+		_, err = editTool.Execute(context.Background(), map[string]any{
 			"path":     "crlf_test.txt",
 			"old_text": "line2",
 			"new_text": "modified",
@@ -374,7 +314,7 @@ func TestEditTool(t *testing.T) {
 		testFile := filepath.Join(tmpDir, "fuzzy_test.txt")
 		os.WriteFile(testFile, []byte("hello   \nworld"), 0644)
 
-		_, err := ReadTool().Execute(context.Background(), env, map[string]any{
+		_, err := ReadTool(root).Execute(context.Background(), map[string]any{
 			"path": "fuzzy_test.txt",
 		})
 
@@ -382,7 +322,7 @@ func TestEditTool(t *testing.T) {
 			t.Fatalf("unexpected read error: %v", err)
 		}
 
-		_, err = editTool.Execute(context.Background(), env, map[string]any{
+		_, err = editTool.Execute(context.Background(), map[string]any{
 			"path":     "fuzzy_test.txt",
 			"old_text": "hello\nworld",
 			"new_text": "goodbye\nworld",
@@ -403,7 +343,7 @@ func TestEditTool(t *testing.T) {
 		testFile := filepath.Join(tmpDir, "duplicate_test.txt")
 		os.WriteFile(testFile, []byte("foo bar foo"), 0644)
 
-		_, err := ReadTool().Execute(context.Background(), env, map[string]any{
+		_, err := ReadTool(root).Execute(context.Background(), map[string]any{
 			"path": "duplicate_test.txt",
 		})
 
@@ -411,7 +351,7 @@ func TestEditTool(t *testing.T) {
 			t.Fatalf("unexpected read error: %v", err)
 		}
 
-		_, err = editTool.Execute(context.Background(), env, map[string]any{
+		_, err = editTool.Execute(context.Background(), map[string]any{
 			"path":     "duplicate_test.txt",
 			"old_text": "foo",
 			"new_text": "baz",
@@ -430,7 +370,7 @@ func TestEditTool(t *testing.T) {
 		testFile := filepath.Join(tmpDir, "nomatch_test.txt")
 		os.WriteFile(testFile, []byte("hello world"), 0644)
 
-		_, err := ReadTool().Execute(context.Background(), env, map[string]any{
+		_, err := ReadTool(root).Execute(context.Background(), map[string]any{
 			"path": "nomatch_test.txt",
 		})
 
@@ -438,7 +378,7 @@ func TestEditTool(t *testing.T) {
 			t.Fatalf("unexpected read error: %v", err)
 		}
 
-		_, err = editTool.Execute(context.Background(), env, map[string]any{
+		_, err = editTool.Execute(context.Background(), map[string]any{
 			"path":     "nomatch_test.txt",
 			"old_text": "xyz",
 			"new_text": "abc",
@@ -449,251 +389,10 @@ func TestEditTool(t *testing.T) {
 		}
 	})
 
-	t.Run("edit requires prior read", func(t *testing.T) {
-		testFile := filepath.Join(tmpDir, "edit_requires_read.txt")
-		if err := os.WriteFile(testFile, []byte("hello world"), 0644); err != nil {
-			t.Fatalf("failed to create file: %v", err)
-		}
-
-		_, err := editTool.Execute(context.Background(), env, map[string]any{
-			"path":     "edit_requires_read.txt",
-			"old_text": "world",
-			"new_text": "reader",
-		})
-
-		if err == nil {
-			t.Fatal("expected edit without prior read to fail")
-		}
-
-		if !strings.Contains(err.Error(), "has not been read yet") {
-			t.Fatalf("expected read-before-edit error, got: %v", err)
-		}
-	})
-
-	t.Run("edit rejects stale reads", func(t *testing.T) {
-		testFile := filepath.Join(tmpDir, "edit_stale.txt")
-		if err := os.WriteFile(testFile, []byte("hello world"), 0644); err != nil {
-			t.Fatalf("failed to create file: %v", err)
-		}
-
-		_, err := ReadTool().Execute(context.Background(), env, map[string]any{
-			"path": "edit_stale.txt",
-		})
-
-		if err != nil {
-			t.Fatalf("unexpected read error: %v", err)
-		}
-
-		if err := os.WriteFile(testFile, []byte("changed outside"), 0644); err != nil {
-			t.Fatalf("failed to modify file: %v", err)
-		}
-
-		_, err = editTool.Execute(context.Background(), env, map[string]any{
-			"path":     "edit_stale.txt",
-			"old_text": "world",
-			"new_text": "reader",
-		})
-
-		if err == nil {
-			t.Fatal("expected stale read to fail")
-		}
-
-		if !strings.Contains(err.Error(), "modified since it was read") {
-			t.Fatalf("expected stale-read error, got: %v", err)
-		}
-	})
-}
-
-func createPlanModeEnvironment(t *testing.T) (*env.Environment, string, string, func()) {
-	t.Helper()
-
-	tmpDir, err := os.MkdirTemp("", "fs_plan_test_*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-
-	root, err := os.OpenRoot(tmpDir)
-	if err != nil {
-		os.RemoveAll(tmpDir)
-		t.Fatalf("failed to open root: %v", err)
-	}
-
-	memDir := filepath.Join(tmpDir, ".memory")
-	if err := os.MkdirAll(memDir, 0755); err != nil {
-		root.Close()
-		os.RemoveAll(tmpDir)
-		t.Fatalf("failed to create memory dir: %v", err)
-	}
-
-	memRoot, err := os.OpenRoot(memDir)
-	if err != nil {
-		root.Close()
-		os.RemoveAll(tmpDir)
-		t.Fatalf("failed to open memory root: %v", err)
-	}
-
-	e := &env.Environment{
-		Root:    root,
-		Memory:  memRoot,
-		Tracker: tracker.New(root),
-	}
-
-	planFile, err := e.EnterPlanMode()
-	if err != nil {
-		memRoot.Close()
-		root.Close()
-		os.RemoveAll(tmpDir)
-		t.Fatalf("failed to enter plan mode: %v", err)
-	}
-
-	cleanup := func() {
-		memRoot.Close()
-		root.Close()
-		os.RemoveAll(tmpDir)
-	}
-
-	return e, tmpDir, planFile, cleanup
-}
-
-func TestPlanMode_WriteDenied(t *testing.T) {
-	env, tmpDir, planFile, cleanup := createPlanModeEnvironment(t)
-	defer cleanup()
-
-	writeTool := WriteTool()
-
-	t.Run("write to non-plan file denied", func(t *testing.T) {
-		_, err := writeTool.Execute(context.Background(), env, map[string]any{
-			"path":    "some_file.go",
-			"content": "package main",
-		})
-
-		if err == nil {
-			t.Fatal("expected write to be denied in plan mode")
-		}
-
-		if !strings.Contains(err.Error(), "plan mode is read-only") {
-			t.Fatalf("expected plan-mode error, got: %v", err)
-		}
-	})
-
-	t.Run("write to plan file allowed", func(t *testing.T) {
-		// Read the plan file first (required by read-before-write)
-		_, err := ReadTool().Execute(context.Background(), env, map[string]any{
-			"path": planFile,
-		})
-		if err != nil {
-			t.Fatalf("unexpected read error: %v", err)
-		}
-
-		_, err = writeTool.Execute(context.Background(), env, map[string]any{
-			"path":    planFile,
-			"content": "# Updated Plan\n- step 1\n",
-		})
-
-		if err != nil {
-			t.Fatalf("write to plan file should be allowed: %v", err)
-		}
-	})
-
-	t.Run("overwrite existing file denied", func(t *testing.T) {
-		testFile := filepath.Join(tmpDir, "existing.go")
-		os.WriteFile(testFile, []byte("package old"), 0644)
-
-		// Read so read-before-write passes; plan check should still block
-		_, _ = ReadTool().Execute(context.Background(), env, map[string]any{
-			"path": "existing.go",
-		})
-
-		_, err := writeTool.Execute(context.Background(), env, map[string]any{
-			"path":    "existing.go",
-			"content": "package new",
-		})
-
-		if err == nil {
-			t.Fatal("expected overwrite to be denied in plan mode")
-		}
-
-		if !strings.Contains(err.Error(), "plan mode is read-only") {
-			t.Fatalf("expected plan-mode error, got: %v", err)
-		}
-	})
-}
-
-func TestPlanMode_EditDenied(t *testing.T) {
-	env, tmpDir, planFile, cleanup := createPlanModeEnvironment(t)
-	defer cleanup()
-
-	editTool := EditTool()
-
-	t.Run("edit non-plan file denied", func(t *testing.T) {
-		testFile := filepath.Join(tmpDir, "code.go")
-		os.WriteFile(testFile, []byte("package main"), 0644)
-
-		// Read it first
-		_, _ = ReadTool().Execute(context.Background(), env, map[string]any{
-			"path": "code.go",
-		})
-
-		_, err := editTool.Execute(context.Background(), env, map[string]any{
-			"path":     "code.go",
-			"old_text": "main",
-			"new_text": "updated",
-		})
-
-		if err == nil {
-			t.Fatal("expected edit to be denied in plan mode")
-		}
-
-		if !strings.Contains(err.Error(), "plan mode is read-only") {
-			t.Fatalf("expected plan-mode error, got: %v", err)
-		}
-	})
-
-	t.Run("edit plan file allowed", func(t *testing.T) {
-		// Read plan file first
-		_, err := ReadTool().Execute(context.Background(), env, map[string]any{
-			"path": planFile,
-		})
-		if err != nil {
-			t.Fatalf("unexpected read error: %v", err)
-		}
-
-		_, err = editTool.Execute(context.Background(), env, map[string]any{
-			"path":     planFile,
-			"old_text": "# Plan",
-			"new_text": "# Updated Plan",
-		})
-
-		if err != nil {
-			t.Fatalf("edit of plan file should be allowed: %v", err)
-		}
-	})
-}
-
-func TestPlanMode_ReadAllowed(t *testing.T) {
-	env, tmpDir, _, cleanup := createPlanModeEnvironment(t)
-	defer cleanup()
-
-	testFile := filepath.Join(tmpDir, "readable.txt")
-	os.WriteFile(testFile, []byte("content here"), 0644)
-
-	readTool := ReadTool()
-
-	result, err := readTool.Execute(context.Background(), env, map[string]any{
-		"path": "readable.txt",
-	})
-
-	if err != nil {
-		t.Fatalf("read should be allowed in plan mode: %v", err)
-	}
-
-	if !strings.Contains(result, "content here") {
-		t.Errorf("expected file content, got: %s", result)
-	}
 }
 
 func TestLsTool(t *testing.T) {
-	env, tmpDir, cleanup := createTestEnvironment(t)
+	root, tmpDir, cleanup := createTestRoot(t)
 	defer cleanup()
 
 	// Create test directory structure
@@ -703,10 +402,10 @@ func TestLsTool(t *testing.T) {
 	os.WriteFile(filepath.Join(tmpDir, ".hidden"), []byte("content"), 0644)
 	os.WriteFile(filepath.Join(tmpDir, "subdir", "nested.txt"), []byte("content"), 0644)
 
-	lsTool := LsTool()
+	lsTool := LsTool(root)
 
 	t.Run("list current directory", func(t *testing.T) {
-		result, err := lsTool.Execute(context.Background(), env, map[string]any{})
+		result, err := lsTool.Execute(context.Background(), map[string]any{})
 
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -722,7 +421,7 @@ func TestLsTool(t *testing.T) {
 	})
 
 	t.Run("list includes hidden files", func(t *testing.T) {
-		result, err := lsTool.Execute(context.Background(), env, map[string]any{})
+		result, err := lsTool.Execute(context.Background(), map[string]any{})
 
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -734,7 +433,7 @@ func TestLsTool(t *testing.T) {
 	})
 
 	t.Run("list subdirectory", func(t *testing.T) {
-		result, err := lsTool.Execute(context.Background(), env, map[string]any{
+		result, err := lsTool.Execute(context.Background(), map[string]any{
 			"path": "subdir",
 		})
 
@@ -749,7 +448,7 @@ func TestLsTool(t *testing.T) {
 
 	t.Run("list empty directory", func(t *testing.T) {
 		os.MkdirAll(filepath.Join(tmpDir, "empty"), 0755)
-		result, err := lsTool.Execute(context.Background(), env, map[string]any{
+		result, err := lsTool.Execute(context.Background(), map[string]any{
 			"path": "empty",
 		})
 
@@ -763,7 +462,7 @@ func TestLsTool(t *testing.T) {
 	})
 
 	t.Run("list non-existent path", func(t *testing.T) {
-		_, err := lsTool.Execute(context.Background(), env, map[string]any{
+		_, err := lsTool.Execute(context.Background(), map[string]any{
 			"path": "nonexistent",
 		})
 
@@ -773,7 +472,7 @@ func TestLsTool(t *testing.T) {
 	})
 
 	t.Run("list file instead of directory", func(t *testing.T) {
-		_, err := lsTool.Execute(context.Background(), env, map[string]any{
+		_, err := lsTool.Execute(context.Background(), map[string]any{
 			"path": "file1.txt",
 		})
 
@@ -784,7 +483,7 @@ func TestLsTool(t *testing.T) {
 }
 
 func TestFindTool(t *testing.T) {
-	env, tmpDir, cleanup := createTestEnvironment(t)
+	root, tmpDir, cleanup := createTestRoot(t)
 	defer cleanup()
 
 	// Create test directory structure
@@ -800,10 +499,10 @@ func TestFindTool(t *testing.T) {
 	os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte("*.log\n"), 0644)
 	os.WriteFile(filepath.Join(tmpDir, "debug.log"), []byte("content"), 0644)
 
-	findTool := FindTool()
+	findTool := FindTool(root)
 
 	t.Run("find all go files", func(t *testing.T) {
-		result, err := findTool.Execute(context.Background(), env, map[string]any{
+		result, err := findTool.Execute(context.Background(), map[string]any{
 			"pattern": "**/*.go",
 		})
 
@@ -825,7 +524,7 @@ func TestFindTool(t *testing.T) {
 	})
 
 	t.Run("find excludes node_modules", func(t *testing.T) {
-		result, err := findTool.Execute(context.Background(), env, map[string]any{
+		result, err := findTool.Execute(context.Background(), map[string]any{
 			"pattern": "**/*.js",
 		})
 
@@ -839,7 +538,7 @@ func TestFindTool(t *testing.T) {
 	})
 
 	t.Run("find respects gitignore", func(t *testing.T) {
-		result, err := findTool.Execute(context.Background(), env, map[string]any{
+		result, err := findTool.Execute(context.Background(), map[string]any{
 			"pattern": "*.log",
 		})
 
@@ -853,7 +552,7 @@ func TestFindTool(t *testing.T) {
 	})
 
 	t.Run("find in subdirectory", func(t *testing.T) {
-		result, err := findTool.Execute(context.Background(), env, map[string]any{
+		result, err := findTool.Execute(context.Background(), map[string]any{
 			"pattern": "*.go",
 			"path":    "src",
 		})
@@ -872,7 +571,7 @@ func TestFindTool(t *testing.T) {
 	})
 
 	t.Run("find with no matches", func(t *testing.T) {
-		result, err := findTool.Execute(context.Background(), env, map[string]any{
+		result, err := findTool.Execute(context.Background(), map[string]any{
 			"pattern": "*.xyz",
 		})
 
@@ -886,7 +585,7 @@ func TestFindTool(t *testing.T) {
 	})
 
 	t.Run("find with absolute path", func(t *testing.T) {
-		result, err := findTool.Execute(context.Background(), env, map[string]any{
+		result, err := findTool.Execute(context.Background(), map[string]any{
 			"pattern": "**/*.go",
 			"path":    tmpDir, // absolute path to workspace root
 		})
@@ -906,7 +605,7 @@ func TestFindTool(t *testing.T) {
 }
 
 func TestGrepTool(t *testing.T) {
-	env, tmpDir, cleanup := createTestEnvironment(t)
+	root, tmpDir, cleanup := createTestRoot(t)
 	defer cleanup()
 
 	// Create test files
@@ -914,10 +613,10 @@ func TestGrepTool(t *testing.T) {
 	os.WriteFile(filepath.Join(tmpDir, "file2.go"), []byte("package util\n\nfunc World() {\n\treturn \"world\"\n}"), 0644)
 	os.WriteFile(filepath.Join(tmpDir, "readme.md"), []byte("# Hello World\nThis is a test."), 0644)
 
-	grepTool := GrepTool()
+	grepTool := GrepTool(root)
 
 	t.Run("grep simple pattern", func(t *testing.T) {
-		result, err := grepTool.Execute(context.Background(), env, map[string]any{
+		result, err := grepTool.Execute(context.Background(), map[string]any{
 			"pattern": "func",
 		})
 
@@ -935,7 +634,7 @@ func TestGrepTool(t *testing.T) {
 	})
 
 	t.Run("grep with regex", func(t *testing.T) {
-		result, err := grepTool.Execute(context.Background(), env, map[string]any{
+		result, err := grepTool.Execute(context.Background(), map[string]any{
 			"pattern": "func \\w+\\(",
 		})
 
@@ -949,7 +648,7 @@ func TestGrepTool(t *testing.T) {
 	})
 
 	t.Run("grep case insensitive", func(t *testing.T) {
-		result, err := grepTool.Execute(context.Background(), env, map[string]any{
+		result, err := grepTool.Execute(context.Background(), map[string]any{
 			"pattern":    "HELLO",
 			"ignoreCase": true,
 		})
@@ -964,7 +663,7 @@ func TestGrepTool(t *testing.T) {
 	})
 
 	t.Run("grep with glob filter", func(t *testing.T) {
-		result, err := grepTool.Execute(context.Background(), env, map[string]any{
+		result, err := grepTool.Execute(context.Background(), map[string]any{
 			"pattern": "Hello",
 			"glob":    "*.go",
 		})
@@ -979,7 +678,7 @@ func TestGrepTool(t *testing.T) {
 	})
 
 	t.Run("grep with context lines", func(t *testing.T) {
-		result, err := grepTool.Execute(context.Background(), env, map[string]any{
+		result, err := grepTool.Execute(context.Background(), map[string]any{
 			"pattern": "func Hello",
 			"context": float64(1),
 		})
@@ -1000,7 +699,7 @@ func TestGrepTool(t *testing.T) {
 	})
 
 	t.Run("grep no matches", func(t *testing.T) {
-		result, err := grepTool.Execute(context.Background(), env, map[string]any{
+		result, err := grepTool.Execute(context.Background(), map[string]any{
 			"pattern": "zzz_no_match_zzz",
 		})
 
@@ -1014,7 +713,7 @@ func TestGrepTool(t *testing.T) {
 	})
 
 	t.Run("grep single file", func(t *testing.T) {
-		result, err := grepTool.Execute(context.Background(), env, map[string]any{
+		result, err := grepTool.Execute(context.Background(), map[string]any{
 			"pattern": "Hello",
 			"path":    "readme.md",
 		})
@@ -1033,7 +732,7 @@ func TestGrepTool(t *testing.T) {
 	})
 
 	t.Run("grep with absolute path", func(t *testing.T) {
-		result, err := grepTool.Execute(context.Background(), env, map[string]any{
+		result, err := grepTool.Execute(context.Background(), map[string]any{
 			"pattern": "func",
 			"path":    tmpDir, // absolute path to workspace root
 		})
@@ -1053,18 +752,18 @@ func TestGrepTool(t *testing.T) {
 }
 
 func TestPathHandlingCrossplatform(t *testing.T) {
-	env, tmpDir, cleanup := createTestEnvironment(t)
+	root, tmpDir, cleanup := createTestRoot(t)
 	defer cleanup()
 
 	// Create nested structure
 	os.MkdirAll(filepath.Join(tmpDir, "a", "b", "c"), 0755)
 	os.WriteFile(filepath.Join(tmpDir, "a", "b", "c", "file.txt"), []byte("content"), 0644)
 
-	writeTool := WriteTool()
-	readTool := ReadTool()
+	writeTool := WriteTool(root)
+	readTool := ReadTool(root)
 
 	t.Run("forward slash paths work", func(t *testing.T) {
-		_, err := writeTool.Execute(context.Background(), env, map[string]any{
+		_, err := writeTool.Execute(context.Background(), map[string]any{
 			"path":    "a/b/c/new.txt",
 			"content": "test",
 		})
@@ -1073,7 +772,7 @@ func TestPathHandlingCrossplatform(t *testing.T) {
 			t.Fatalf("unexpected error with forward slashes: %v", err)
 		}
 
-		result, err := readTool.Execute(context.Background(), env, map[string]any{
+		result, err := readTool.Execute(context.Background(), map[string]any{
 			"path": "a/b/c/new.txt",
 		})
 
@@ -1088,7 +787,7 @@ func TestPathHandlingCrossplatform(t *testing.T) {
 
 	if runtime.GOOS == "windows" {
 		t.Run("backslash paths work on windows", func(t *testing.T) {
-			_, err := writeTool.Execute(context.Background(), env, map[string]any{
+			_, err := writeTool.Execute(context.Background(), map[string]any{
 				"path":    "a\\b\\c\\win.txt",
 				"content": "windows",
 			})
@@ -1101,7 +800,10 @@ func TestPathHandlingCrossplatform(t *testing.T) {
 }
 
 func TestTools(t *testing.T) {
-	tools := Tools()
+	root, _, cleanup := createTestRoot(t)
+	defer cleanup()
+
+	tools := Tools(root)
 
 	expectedNames := []string{"read", "write", "edit", "ls", "find", "grep"}
 
@@ -1137,7 +839,7 @@ func TestFindSkipsSymlinks(t *testing.T) {
 		t.Skip("symlink tests may require elevated privileges on Windows")
 	}
 
-	env, tmpDir, cleanup := createTestEnvironment(t)
+	root, tmpDir, cleanup := createTestRoot(t)
 	defer cleanup()
 
 	// Create directory structure with a file at root level
@@ -1151,10 +853,10 @@ func TestFindSkipsSymlinks(t *testing.T) {
 		t.Skipf("cannot create symlink: %v", err)
 	}
 
-	findTool := FindTool()
+	findTool := FindTool(root)
 
 	// This should complete without hanging or error
-	result, err := findTool.Execute(context.Background(), env, map[string]any{
+	result, err := findTool.Execute(context.Background(), map[string]any{
 		"pattern": "*.txt",
 	})
 
@@ -1174,7 +876,7 @@ func TestGrepSkipsSymlinks(t *testing.T) {
 		t.Skip("symlink tests may require elevated privileges on Windows")
 	}
 
-	env, tmpDir, cleanup := createTestEnvironment(t)
+	root, tmpDir, cleanup := createTestRoot(t)
 	defer cleanup()
 
 	// Create directory structure
@@ -1187,10 +889,10 @@ func TestGrepSkipsSymlinks(t *testing.T) {
 		t.Skipf("cannot create symlink: %v", err)
 	}
 
-	grepTool := GrepTool()
+	grepTool := GrepTool(root)
 
 	// This should complete without hanging or error
-	result, err := grepTool.Execute(context.Background(), env, map[string]any{
+	result, err := grepTool.Execute(context.Background(), map[string]any{
 		"pattern": "searchme",
 	})
 
@@ -1206,7 +908,7 @@ func TestGrepSkipsSymlinks(t *testing.T) {
 
 // TestContextCancellation verifies that operations respect context cancellation.
 func TestContextCancellation(t *testing.T) {
-	env, tmpDir, cleanup := createTestEnvironment(t)
+	root, tmpDir, cleanup := createTestRoot(t)
 	defer cleanup()
 
 	// Create many files to make the operation take longer
@@ -1216,13 +918,13 @@ func TestContextCancellation(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, "file.txt"), []byte("content"), 0644)
 	}
 
-	findTool := FindTool()
+	findTool := FindTool(root)
 
 	// Create a cancelled context
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	_, err := findTool.Execute(ctx, env, map[string]any{
+	_, err := findTool.Execute(ctx, map[string]any{
 		"pattern": "*.txt",
 	})
 
@@ -1240,13 +942,13 @@ func TestMacOSCaseInsensitivePaths(t *testing.T) {
 		t.Skip("macOS-specific test")
 	}
 
-	env, tmpDir, cleanup := createTestEnvironment(t)
+	root, tmpDir, cleanup := createTestRoot(t)
 	defer cleanup()
 
 	// Create a file
 	os.WriteFile(filepath.Join(tmpDir, "TestFile.txt"), []byte("content"), 0644)
 
-	readTool := ReadTool()
+	readTool := ReadTool(root)
 
 	// On macOS, paths with different cases should work due to case-insensitive filesystem
 	// Using the absolute path with different case
@@ -1257,7 +959,7 @@ func TestMacOSCaseInsensitivePaths(t *testing.T) {
 	lowerPath := strings.ToLower(tmpDir) + "/testfile.txt"
 
 	// Both should resolve within the workspace (not "outside workspace" error)
-	_, err := readTool.Execute(context.Background(), env, map[string]any{
+	_, err := readTool.Execute(context.Background(), map[string]any{
 		"path": upperPath,
 	})
 
@@ -1266,7 +968,7 @@ func TestMacOSCaseInsensitivePaths(t *testing.T) {
 		t.Errorf("path with different case should not be considered outside workspace: %v", err)
 	}
 
-	_, err = readTool.Execute(context.Background(), env, map[string]any{
+	_, err = readTool.Execute(context.Background(), map[string]any{
 		"path": lowerPath,
 	})
 
