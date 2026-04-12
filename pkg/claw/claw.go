@@ -197,13 +197,25 @@ func (c *Claw) loadAgent(name string) (*managedAgent, error) {
 	return ma, nil
 }
 
-// getAgent returns a loaded agent by chat ID.
+// GetAgent returns a loaded agent by name.
+func (c *Claw) GetAgent(name string) *agent.Agent {
+	if ma, ok := c.agents.Load(name); ok {
+		return ma.(*managedAgent).agent
+	}
+	return nil
+}
+
 func (c *Claw) getAgent(chatID string) *managedAgent {
 	name := nameFromChatID(chatID)
 	if ma, ok := c.agents.Load(name); ok {
 		return ma.(*managedAgent)
 	}
 	return nil
+}
+
+// AgentDir returns the directory for an agent.
+func (c *Claw) AgentDir(name string) string {
+	return c.config.Memory.AgentDir(name)
 }
 
 func (c *Claw) handleMessage(ctx context.Context, msg channel.Message) {

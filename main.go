@@ -12,6 +12,8 @@ import (
 	"github.com/adrianliechti/wingman-agent/app/session"
 
 	"github.com/adrianliechti/wingman-agent/pkg/claw"
+	"github.com/adrianliechti/wingman-agent/pkg/claw/channel"
+	clawtui "github.com/adrianliechti/wingman-agent/pkg/claw/tui"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/proxy"
 
@@ -152,7 +154,8 @@ func runClaw(ctx context.Context) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("%s ready.\n", cfg.AssistantName)
+	// Replace CLI channel with TUI
+	cfg.Channels = []channel.Channel{clawtui.New(c)}
 
 	if err := c.Run(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
