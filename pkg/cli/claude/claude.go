@@ -32,9 +32,14 @@ func Run(ctx context.Context, args []string, options *RunOptions) error {
 		"ANTHROPIC_AUTH_TOKEN": cfg.AuthToken,
 
 		// Model configuration
-		"ANTHROPIC_DEFAULT_OPUS_MODEL":   cfg.OpusModel,
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL":  cfg.HaikuModel,
-		"ANTHROPIC_DEFAULT_SONNET_MODEL": cfg.SonnetModel,
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL":      cfg.HaikuModel,
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME": "Wingman Haiku",
+
+		"ANTHROPIC_DEFAULT_SONNET_MODEL":      cfg.SonnetModel,
+		"ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "Wingman Sonnet",
+
+		"ANTHROPIC_DEFAULT_OPUS_MODEL":      cfg.OpusModel,
+		"ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": "Wingman Opus",
 
 		// Telemetry & data exfiltration prevention
 		"DISABLE_TELEMETRY":                        "1",
@@ -60,6 +65,7 @@ func Run(ctx context.Context, args []string, options *RunOptions) error {
 		"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS":   "1",
 		"CLAUDE_CODE_DISABLE_CRON":               "1",
 		"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+		"CLAUDE_CODE_DISABLE_1M_CONTEXT":         "1",
 
 		// UI & integration lockdown
 		"CLAUDE_CODE_HIDE_ACCOUNT_INFO":     "1",
