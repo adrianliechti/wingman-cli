@@ -3,8 +3,16 @@
 version: '3'
 
 tasks:
+  ui:
+    desc: Build the web UI
+    dir: pkg/server/ui
+    cmds:
+      - npm install
+      - npm run build
+
   install:
     desc: Install wingman using go install
+    deps: [ui]
     cmds:
       - go build -o wingman . && mv wingman $(go env GOPATH)/bin/
 

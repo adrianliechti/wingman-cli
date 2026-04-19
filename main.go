@@ -9,6 +9,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/app"
 	"github.com/adrianliechti/wingman-agent/pkg/proxy"
+	"github.com/adrianliechti/wingman-agent/pkg/server"
 
 	"github.com/adrianliechti/wingman-agent/pkg/cli/claude"
 	"github.com/adrianliechti/wingman-agent/pkg/cli/codex"
@@ -21,6 +22,28 @@ import (
 func main() {
 
 	ctx := context.Background()
+
+	if len(os.Args) > 1 && os.Args[1] == "server" {
+		fs := flag.NewFlagSet("server", flag.ExitOnError)
+		port := fs.Int("port", 4242, "port to listen on")
+		fs.Parse(os.Args[2:])
+
+		cfg, cleanup, err := agent.DefaultConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer cleanup()
+
+		a := agent.New(cfg)
+		s := server.New(a, *port)
+
+		if err := s.Run(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if len(os.Args) > 1 && os.Getenv("WINGMAN_URL") != "" {
 		if os.Args[1] == "proxy" {

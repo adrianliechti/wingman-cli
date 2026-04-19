@@ -1,3 +1,5 @@
 dist/
 .vscode/
 mcp.json
+node_modules/
+pkg/server/static/
