@@ -10,8 +10,8 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
-	"github.com/adrianliechti/wingman-agent/pkg/agent/mcp"
+
+	"github.com/adrianliechti/wingman-agent/pkg/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
@@ -64,7 +64,7 @@ func convertTool(serverName string, session *sdkmcp.ClientSession, mcpTool sdkmc
 
 		Parameters: params,
 
-		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			return callTool(ctx, session, mcpTool.Name, args)
 		},
 	}

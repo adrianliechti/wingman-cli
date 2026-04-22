@@ -4,15 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
-	"time"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
-func ReadTool() tool.Tool {
+func ReadTool(root *os.Root) tool.Tool {
 	return tool.Tool{
 		Name: "read",
 
@@ -37,14 +34,16 @@ func ReadTool() tool.Tool {
 			"required": []string{"path"},
 		},
 
-		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			pathArg, ok := args["path"].(string)
 
 			if !ok || pathArg == "" {
 				return "", fmt.Errorf("path is required")
 			}
 
-			normalizedPath, root, err := resolveRoot(pathArg, env, "read file")
+			workingDir := root.Name()
+
+			normalizedPath, err := ensurePathInWorkspace(pathArg, workingDir, "read file")
 
 			if err != nil {
 				return "", err
@@ -64,11 +63,10 @@ func ReadTool() tool.Tool {
 			content, err := root.ReadFile(normalizedPath)
 
 			if err != nil {
-				return "", pathError("read file", pathArg, normalizedPath, env.RootDir(), err)
+				return "", pathError("read file", pathArg, normalizedPath, workingDir, err)
 			}
 
 			if len(content) == 0 {
-				rememberRead(env, normalizedPath, content, 0, 0)
 				return "(empty file)", nil
 			}
 
@@ -95,38 +93,11 @@ func ReadTool() tool.Tool {
 			selected := strings.Join(numbered, "\n")
 			output, truncated := truncateHead(selected)
 
-			// Track actual range read. offset/limit of 0,0 means full read.
-			readOffset := offset
-			readLimit := 0
-
-			if end < total || truncated {
-				readLimit = end - offset
-			}
-
-			rememberRead(env, normalizedPath, content, readOffset, readLimit)
-
 			outputLines := len(strings.Split(output, "\n"))
 			endLine := offset + outputLines
 
 			if truncated || end < total {
-				// Save full content to scratch so the agent can read it there
-				var scratchPath string
-
-				if env != nil && env.Scratch != nil {
-					name := fmt.Sprintf("read-%d.txt", time.Now().UnixNano())
-					path := filepath.Join(env.ScratchDir(), name)
-
-					if err := os.WriteFile(path, content, 0644); err == nil {
-						scratchPath = path
-					}
-				}
-
 				notice := fmt.Sprintf("\n\n[Lines %d-%d of %d", offset+1, endLine, total)
-
-				if scratchPath != "" {
-					notice += fmt.Sprintf(". Full file: %s", scratchPath)
-				}
-
 				notice += fmt.Sprintf(". Use offset=%d to continue]", endLine+1)
 
 				return output + notice, nil

@@ -12,11 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
-func SearchTool() tool.Tool {
+func Tools() []tool.Tool {
 	description := strings.Join([]string{
 		"Search the web for information. Use this when the answer requires up-to-date information beyond the model's knowledge cutoff.",
 		"",
@@ -26,7 +25,7 @@ func SearchTool() tool.Tool {
 		"- Returns titles, URLs, and content snippets from search results.",
 	}, "\n")
 
-	return tool.Tool{
+	return []tool.Tool{{
 		Name:        "search_online",
 		Description: description,
 
@@ -43,7 +42,7 @@ func SearchTool() tool.Tool {
 			"required": []string{"query"},
 		},
 
-		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			query, ok := args["query"].(string)
 
 			if !ok || query == "" {
@@ -58,17 +57,7 @@ func SearchTool() tool.Tool {
 
 			return searchWingman(ctx, wingmanURL, os.Getenv("WINGMAN_TOKEN"), query)
 		},
-	}
-}
-
-func Tools() []tool.Tool {
-	if os.Getenv("WINGMAN_URL") == "" {
-		return nil
-	}
-
-	return []tool.Tool{
-		SearchTool(),
-	}
+	}}
 }
 
 func searchWingman(ctx context.Context, baseURL, token, query string) (string, error) {

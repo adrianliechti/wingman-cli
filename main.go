@@ -5,9 +5,16 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"path/filepath"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent"
-	"github.com/adrianliechti/wingman-agent/pkg/app"
+	"github.com/adrianliechti/wingman-agent/app"
+	"github.com/adrianliechti/wingman-agent/app/session"
+
+	"github.com/adrianliechti/wingman-agent/pkg/claw"
+	"github.com/adrianliechti/wingman-agent/pkg/claw/channel"
+	clawtui "github.com/adrianliechti/wingman-agent/pkg/claw/tui"
+	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/proxy"
 	"github.com/adrianliechti/wingman-agent/pkg/server"
 
@@ -77,6 +84,12 @@ func main() {
 			opencode.Run(ctx, os.Args[2:], nil)
 			return
 		}
+
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "claw" {
+		runClaw(ctx)
+		return
 	}
 
 	var sessionID string
@@ -94,20 +107,74 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cfg, cleanup, err := agent.DefaultConfig()
-
+	wd, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	defer cleanup()
+	c, err := code.New(wd, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer c.Close()
 
-	a := agent.New(cfg)
+	if sessionID == "latest" {
+		sessions, err := session.List(filepath.Join(filepath.Dir(c.MemoryPath), "sessions"))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 
-	application := app.New(ctx, a, sessionID)
+		if len(sessions) > 0 {
+			sessionID = sessions[0].ID
+		} else {
+			sessionID = ""
+		}
+	}
+
+	if sessionID != "" {
+		s, err := session.Load(filepath.Join(filepath.Dir(c.MemoryPath), "sessions"), sessionID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+		c.Messages = s.State.Messages
+		c.Usage = s.State.Usage
+	}
+
+	application := app.New(ctx, c, sessionID)
 
 	if err := application.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runClaw(ctx context.Context) {
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
+	defer stop()
+
+	cfg, cleanup, err := claw.DefaultConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer cleanup()
+
+	c := claw.New(cfg)
+
+	if err := c.Init(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Replace CLI channel with TUI
+	cfg.Channels = []channel.Channel{clawtui.New(c)}
+
+	if err := c.Run(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}

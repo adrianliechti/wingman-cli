@@ -3,12 +3,10 @@ package search
 import (
 	"context"
 	"testing"
-
-	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 )
 
 func TestSearchTool(t *testing.T) {
-	searchTool := SearchTool()
+	searchTool := Tools()[0]
 
 	if searchTool.Name != "search_online" {
 		t.Errorf("expected name 'search_online', got '%s'", searchTool.Name)
@@ -28,11 +26,9 @@ func TestSearchTool(t *testing.T) {
 }
 
 func TestSearchToolMissingQuery(t *testing.T) {
-	searchTool := SearchTool()
+	searchTool := Tools()[0]
 
-	env := &env.Environment{}
-
-	_, err := searchTool.Execute(context.Background(), env, map[string]any{})
+	_, err := searchTool.Execute(context.Background(), map[string]any{})
 
 	if err == nil {
 		t.Error("expected error for missing query parameter")
@@ -40,13 +36,11 @@ func TestSearchToolMissingQuery(t *testing.T) {
 }
 
 func TestSearchToolNoWingmanURL(t *testing.T) {
-	searchTool := SearchTool()
-
-	env := &env.Environment{}
+	searchTool := Tools()[0]
 
 	t.Setenv("WINGMAN_URL", "")
 
-	_, err := searchTool.Execute(context.Background(), env, map[string]any{
+	_, err := searchTool.Execute(context.Background(), map[string]any{
 		"query": "golang programming",
 	})
 

@@ -1,16 +1,18 @@
 package fs
 
 import (
+	"os"
+
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
-func Tools() []tool.Tool {
+func Tools(root *os.Root) []tool.Tool {
 	return []tool.Tool{
-		ReadTool(),
-		WriteTool(),
-		EditTool(),
-		LsTool(),
-		FindTool(),
-		GrepTool(),
+		ReadTool(root),
+		WriteTool(root),
+		EditTool(root),
+		LsTool(root),
+		FindTool(root),
+		GrepTool(root),
 	}
 }

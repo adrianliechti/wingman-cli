@@ -3,16 +3,16 @@ package fs
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
 const DefaultListLimit = 500
 
-func LsTool() tool.Tool {
+func LsTool(root *os.Root) tool.Tool {
 	return tool.Tool{
 		Name: "ls",
 
@@ -30,14 +30,14 @@ func LsTool() tool.Tool {
 			},
 		},
 
-		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			pathArg := "."
 
 			if p, ok := args["path"].(string); ok && p != "" {
 				pathArg = p
 			}
 
-			workingDir := env.RootDir()
+			workingDir := root.Name()
 
 			normalizedPath, err := ensurePathInWorkspace(pathArg, workingDir, "list directory")
 
@@ -51,7 +51,7 @@ func LsTool() tool.Tool {
 				limit = int(l)
 			}
 
-			info, err := env.Root.Stat(normalizedPath)
+			info, err := root.Stat(normalizedPath)
 
 			if err != nil {
 				return "", pathError("stat path", pathArg, normalizedPath, workingDir, err)
@@ -61,7 +61,7 @@ func LsTool() tool.Tool {
 				return "", fmt.Errorf("path is not a directory: %s", pathArg)
 			}
 
-			dir, err := env.Root.Open(normalizedPath)
+			dir, err := root.Open(normalizedPath)
 
 			if err != nil {
 				return "", pathError("open directory", pathArg, normalizedPath, workingDir, err)

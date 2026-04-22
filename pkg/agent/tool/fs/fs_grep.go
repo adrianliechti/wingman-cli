@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"os"
 	pathpkg "path"
 	"path/filepath"
 	"regexp"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
@@ -23,7 +23,7 @@ const (
 	MaxLineDisplayLength = 200
 )
 
-func GrepTool() tool.Tool {
+func GrepTool(root *os.Root) tool.Tool {
 	return tool.Tool{
 		Name: "grep",
 
@@ -96,7 +96,7 @@ func GrepTool() tool.Tool {
 			"required": []string{"pattern"},
 		},
 
-		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			pattern, ok := args["pattern"].(string)
 
 			if !ok || pattern == "" {
@@ -109,7 +109,7 @@ func GrepTool() tool.Tool {
 				searchPath = p
 			}
 
-			workingDir := env.RootDir()
+			workingDir := root.Name()
 
 			searchPathFS, err := ensurePathInWorkspaceFS(searchPath, workingDir, "search")
 
@@ -205,13 +205,13 @@ func GrepTool() tool.Tool {
 			}
 
 			// Check if path exists
-			info, err := env.Root.Stat(searchPathFS)
+			info, err := root.Stat(searchPathFS)
 
 			if err != nil {
 				return "", pathError("stat path", searchPath, searchPathFS, workingDir, err)
 			}
 
-			fsys := env.Root.FS()
+			fsys := root.FS()
 
 			// If path is a file, search just that file
 			if !info.IsDir() {
