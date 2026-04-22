@@ -65,7 +65,7 @@ func SubAgentTool(client openai.Client, model string, availableTools []tool.Tool
 	}
 }
 
-const subAgentInstructions = "You are a agent performing a specific task. Complete the task thoroughly using the tools available to you. When done, provide a clear, concise summary of your findings or results. Do not explain your process — just provide the answer."
+const subAgentInstructions = "You are an agent performing a specific task. Complete the task thoroughly using the tools available to you. When done, provide a clear, concise summary of your findings or results. Do not explain your process — just provide the answer."
 
 const maxIterations = 50
 

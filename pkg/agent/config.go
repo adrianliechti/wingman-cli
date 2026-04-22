@@ -20,7 +20,6 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/fetch"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/fs"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/search"
-	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/security"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/shell"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/subagent"
 )
@@ -75,9 +74,6 @@ func DefaultConfig() (*Config, func(), error) {
 
 	// Add sub-agent tool (needs client + model + the other tools)
 	tools = append(tools, subagent.SubAgentTool(client, model, tools))
-
-	// Add security scanning tool
-	tools = append(tools, security.Tools(client, model, tools)...)
 
 	cfg := &Config{
 		Client: client,
