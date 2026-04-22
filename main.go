@@ -35,15 +35,20 @@ func main() {
 		port := fs.Int("port", 4242, "port to listen on")
 		fs.Parse(os.Args[2:])
 
-		cfg, cleanup, err := agent.DefaultConfig()
+		wd, err := os.Getwd()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		defer cleanup()
 
-		a := agent.New(cfg)
-		s := server.New(a, *port)
+		c, err := code.New(wd, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer c.Close()
+
+		s := server.New(c, *port)
 
 		if err := s.Run(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)

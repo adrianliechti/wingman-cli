@@ -7,9 +7,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/adrianliechti/wingman-agent/app/session"
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -33,13 +34,13 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// Send current messages on connect
-	messages := convertMessages(s.agent.Messages())
+	messages := convertMessages(s.agent.Messages)
 	if len(messages) > 0 {
 		s.sendMessage(ServerMessage{Type: MsgMessages, Messages: messages})
 	}
 
 	// Send current usage
-	usage := s.agent.Usage()
+	usage := s.agent.Usage
 	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
 		s.sendMessage(ServerMessage{
 			Type:         MsgUsage,
@@ -102,9 +103,6 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 		input = append(input, agent.Content{Text: fmt.Sprintf("[File: %s]", f)})
 	}
 
-	instructions := s.agent.BuildInstructions(false, "")
-	tools := s.allTools()
-
 	streamCtx, cancel := context.WithCancel(ctx)
 
 	s.wsMu.Lock()
@@ -119,7 +117,7 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 
 	s.sendMessage(ServerMessage{Type: MsgPhase, Phase: "thinking"})
 
-	for msg, err := range s.agent.Send(streamCtx, instructions, input, tools) {
+	for msg, err := range s.agent.Send(streamCtx, input) {
 		if err != nil {
 			if err == context.Canceled {
 				s.sendMessage(ServerMessage{Type: MsgError, Message: "Cancelled"})
@@ -157,7 +155,7 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 		}
 
 		// Send usage updates
-		usage := s.agent.Usage()
+		usage := s.agent.Usage
 		s.sendMessage(ServerMessage{
 			Type:         MsgUsage,
 			InputTokens:  usage.InputTokens,
@@ -179,7 +177,11 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 	}
 
 	// Save session
-	s.agent.SaveSession(s.sessionID)
+	state := agent.State{
+		Messages: s.agent.Messages,
+		Usage:    s.agent.Usage,
+	}
+	session.Save(s.sessionsDir, s.sessionID, state)
 
 	s.sendMessage(ServerMessage{Type: MsgDone})
 	s.sendMessage(ServerMessage{Type: MsgPhase, Phase: "idle"})
@@ -213,25 +215,27 @@ func extractToolHintFromArgs(argsJSON string) string {
 }
 
 func (s *Server) autoSelectModel(ctx context.Context) {
-	if s.agent.Model != "" {
+	if s.agent.Config.Model != nil && s.agent.Model() != "" {
 		return
 	}
 
-	apiModels, err := s.agent.Client.Models.List(ctx)
+	models, err := s.agent.Models(ctx)
 	if err != nil {
 		return
 	}
 
 	for _, allowed := range agent.AvailableModels {
-		for _, model := range apiModels.Data {
+		for _, model := range models {
 			if model.ID == allowed {
-				s.agent.Model = model.ID
+				modelID := model.ID
+				s.agent.Config.Model = func() string { return modelID }
 				return
 			}
 		}
 	}
 
-	if len(apiModels.Data) > 0 {
-		s.agent.Model = apiModels.Data[0].ID
+	if len(models) > 0 {
+		modelID := models[0].ID
+		s.agent.Config.Model = func() string { return modelID }
 	}
 }

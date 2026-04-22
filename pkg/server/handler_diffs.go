@@ -3,7 +3,7 @@ package server
 import (
 	"net/http"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/rewind"
+	"github.com/adrianliechti/wingman-agent/app/rewind"
 )
 
 func (s *Server) handleDiffs(w http.ResponseWriter, r *http.Request) {

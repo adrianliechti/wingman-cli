@@ -71,7 +71,7 @@ func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fsys := s.agent.Environment.Root.FS()
+	fsys := s.agent.Root.FS()
 
 	entries, err := fs.ReadDir(fsys, dirPath)
 	if err != nil {
@@ -135,7 +135,7 @@ func (s *Server) handleFileRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fsys := s.agent.Environment.Root.FS()
+	fsys := s.agent.Root.FS()
 
 	data, err := fs.ReadFile(fsys, filePath)
 	if err != nil {

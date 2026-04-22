@@ -15,30 +15,26 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/adrianliechti/wingman-agent/app/rewind"
+	"github.com/adrianliechti/wingman-agent/app/session"
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
-	"github.com/adrianliechti/wingman-agent/pkg/agent/mcp"
-	"github.com/adrianliechti/wingman-agent/pkg/agent/rewind"
-	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/code"
 
-	mcptool "github.com/adrianliechti/wingman-agent/pkg/agent/tool/mcp"
-
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 //go:embed static/*
 var staticFiles embed.FS
 
 type Server struct {
-	agent     *agent.Agent
+	agent     *code.Agent
 	port      int
 	sessionID string
 
+	sessionsDir string
+
 	rewind      *rewind.Manager
 	rewindReady chan struct{}
-
-	mcpManager *mcp.Manager
-	mcpTools   []tool.Tool
-	mcpMu      sync.Mutex
 
 	// WebSocket state (single client)
 	wsMu         sync.Mutex
@@ -50,11 +46,15 @@ type Server struct {
 	promptCh chan bool
 }
 
-func New(agent *agent.Agent, port int) *Server {
+func New(agent *code.Agent, port int) *Server {
+	sessionsDir := filepath.Join(filepath.Dir(agent.MemoryPath), "sessions")
+
 	return &Server{
 		agent:     agent,
 		port:      port,
 		sessionID: newSessionID(),
+
+		sessionsDir: sessionsDir,
 
 		rewindReady: make(chan struct{}),
 		askCh:       make(chan string, 1),
@@ -70,15 +70,8 @@ func (s *Server) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Set environment callbacks
-	s.agent.Environment.AskUser = s.askUser
-	s.agent.Environment.PromptUser = s.promptUser
-	s.agent.Environment.StatusUpdate = func(status string) {
-		s.sendMessage(ServerMessage{Type: MsgPhase, Phase: "tool_running", Hint: status})
-	}
-
 	// Init MCP
-	if err := s.initMCP(ctx); err != nil {
+	if err := s.agent.InitMCP(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "MCP init warning: %v\n", err)
 	}
 
@@ -86,7 +79,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go func() {
 		defer close(s.rewindReady)
 
-		workDir := s.agent.Environment.RootDir()
+		workDir := s.agent.RootPath
 		gitDir := filepath.Join(workDir, ".git")
 
 		if _, err := os.Stat(gitDir); os.IsNotExist(err) {
@@ -160,46 +153,13 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.Handle("/", fileServer)
 }
 
-func (s *Server) initMCP(ctx context.Context) error {
-	if s.agent.MCP != nil {
-		s.mcpManager = s.agent.MCP
-
-		if err := s.mcpManager.Connect(ctx); err != nil {
-			return err
-		}
-	} else {
-		s.mcpManager = mcp.NewManager(&mcp.Config{})
-	}
-
-	mcpTools, err := mcptool.Tools(ctx, s.mcpManager)
-	if err != nil {
-		return err
-	}
-
-	s.mcpMu.Lock()
-	s.mcpTools = mcpTools
-	s.mcpMu.Unlock()
-
-	return nil
-}
-
-func (s *Server) allTools() []tool.Tool {
-	s.mcpMu.Lock()
-	defer s.mcpMu.Unlock()
-
-	tools := append([]tool.Tool{}, s.agent.Tools...)
-	tools = append(tools, s.mcpTools...)
-
-	return tools
-}
-
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
-	messages := convertMessages(s.agent.Messages())
+	messages := convertMessages(s.agent.Messages)
 	writeJSON(w, messages)
 }
 
 func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
-	usage := s.agent.Usage()
+	usage := s.agent.Usage
 	writeJSON(w, map[string]int64{
 		"input_tokens":  usage.InputTokens,
 		"output_tokens": usage.OutputTokens,
@@ -223,7 +183,7 @@ func (s *Server) sendMessage(msg ServerMessage) {
 	conn.Write(context.Background(), websocket.MessageText, data)
 }
 
-func (s *Server) askUser(question string) (string, error) {
+func (s *Server) askUser(ctx context.Context, question string) (string, error) {
 	s.sendMessage(ServerMessage{Type: MsgAsk, Question: question})
 
 	// Drain any stale response
@@ -235,7 +195,7 @@ func (s *Server) askUser(question string) (string, error) {
 	return <-s.askCh, nil
 }
 
-func (s *Server) promptUser(prompt string) (bool, error) {
+func (s *Server) promptUser(ctx context.Context, prompt string) (bool, error) {
 	s.sendMessage(ServerMessage{Type: MsgPrompt, Question: prompt})
 
 	// Drain any stale response
@@ -288,7 +248,7 @@ func convertMessages(messages []agent.Message) []ConversationMessage {
 }
 
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
-	sessions, err := s.agent.ListSessions()
+	sessions, err := session.List(s.sessionsDir)
 	if err != nil {
 		writeJSON(w, []any{})
 		return
@@ -317,7 +277,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleNewSession(w http.ResponseWriter, r *http.Request) {
-	s.agent.Clear()
+	s.agent.Messages = nil
+	s.agent.Usage = agent.Usage{}
 
 	// Reset rewind
 	select {
@@ -332,7 +293,7 @@ func (s *Server) handleNewSession(w http.ResponseWriter, r *http.Request) {
 	s.rewindReady = make(chan struct{})
 	go func() {
 		defer close(s.rewindReady)
-		workDir := s.agent.Environment.RootDir()
+		workDir := s.agent.RootPath
 		gitDir := filepath.Join(workDir, ".git")
 		if _, err := os.Stat(gitDir); os.IsNotExist(err) {
 			return
@@ -354,14 +315,17 @@ func (s *Server) handleLoadSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.agent.LoadSession(id); err != nil {
+	sess, err := session.Load(s.sessionsDir, id)
+	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
 
+	s.agent.Messages = sess.State.Messages
+	s.agent.Usage = sess.State.Usage
 	s.sessionID = id
 
-	messages := convertMessages(s.agent.Messages())
+	messages := convertMessages(s.agent.Messages)
 	writeJSON(w, messages)
 }
 
@@ -372,12 +336,16 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.agent.DeleteSession(id)
+	session.Delete(s.sessionsDir, id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]string{"model": s.agent.Model})
+	model := ""
+	if s.agent.Config.Model != nil {
+		model = s.agent.Model()
+	}
+	writeJSON(w, map[string]string{"model": model})
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
