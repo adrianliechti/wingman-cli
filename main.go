@@ -20,7 +20,6 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/cli/claude"
 	"github.com/adrianliechti/wingman-agent/pkg/cli/codex"
 	"github.com/adrianliechti/wingman-agent/pkg/cli/gemini"
-	"github.com/adrianliechti/wingman-agent/pkg/cli/junie"
 	"github.com/adrianliechti/wingman-agent/pkg/cli/opencode"
 
 	"github.com/adrianliechti/wingman-agent/pkg/ui/theme"
@@ -43,23 +42,18 @@ func main() {
 			return
 		}
 
-		if os.Args[1] == "codex" {
-			codex.Run(ctx, os.Args[2:], nil)
-			return
-		}
-
 		if os.Args[1] == "claude" {
 			claude.Run(ctx, os.Args[2:], nil)
 			return
 		}
 
-		if os.Args[1] == "gemini" {
-			gemini.Run(ctx, os.Args[2:], nil)
+		if os.Args[1] == "codex" {
+			codex.Run(ctx, os.Args[2:], nil)
 			return
 		}
 
-		if os.Args[1] == "junie" {
-			junie.Run(ctx, os.Args[2:], nil)
+		if os.Args[1] == "gemini" {
+			gemini.Run(ctx, os.Args[2:], nil)
 			return
 		}
 

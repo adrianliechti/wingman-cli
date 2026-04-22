@@ -83,6 +83,9 @@ type App struct {
 	// Rewind state
 	rewind      *rewind.Manager
 	rewindReady chan struct{}
+
+	// Mouse capture state (toggle to allow native terminal text selection)
+	mouseEnabled bool
 }
 
 func New(ctx context.Context, agent *code.Agent, sessionID string) *App {
@@ -105,6 +108,8 @@ func New(ctx context.Context, agent *code.Agent, sessionID string) *App {
 
 		lspTracker:  lsp.NewDiagnosticTracker(),
 		rewindReady: make(chan struct{}),
+
+		mouseEnabled: true,
 	}
 
 	agent.Config.Instructions = a.currentInstructions
@@ -271,16 +276,16 @@ func (a *App) Run() error {
 		},
 	}
 
-	return a.app.SetRoot(root, true).EnableMouse(true).EnablePaste(true).Run()
+	return a.app.SetRoot(root, true).EnableMouse(a.mouseEnabled).EnablePaste(true).Run()
 }
 
 func (a *App) toggleMode() {
 	if a.currentMode == ModeAgent {
-		a.enterPlanMode(true)
+		a.enterPlanMode()
 		return
 	}
 
-	a.exitPlanMode(true)
+	a.exitPlanMode()
 }
 
 // hasActiveModal returns true if any modal is currently open

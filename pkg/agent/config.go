@@ -12,11 +12,15 @@ import (
 )
 
 var AvailableModels = []string{
+	"claude-opus-4-7",
 	"claude-opus-4-6",
+	"claude-opus-4-5",
+
 	"claude-sonnet-4-6",
+	"claude-sonnet-4-5",
 
 	"gpt-5.4",
-	"gpt-5.3-codex",
+	"gpt-5.2-codex",
 }
 
 type Config struct {

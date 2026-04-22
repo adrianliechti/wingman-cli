@@ -120,6 +120,10 @@ func NewConfig(ctx context.Context, options *RunOptions) (string, error) {
 
 		"enabled_providers": []string{"wingman"},
 
+		"autoupdate": false,
+		"share":      "disabled",
+		"snapshot":   false,
+
 		"provider": map[string]any{
 			"wingman": map[string]any{
 				"npm": "@ai-sdk/openai-compatible",

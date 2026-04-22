@@ -78,9 +78,9 @@ func NewConfig(ctx context.Context, options *RunOptions) (*ClaudeConfig, error) 
 		return ""
 	}
 
-	cfg.OpusModel = pick("claude-opus-4-6", "claude-opus-4-5")
 	cfg.HaikuModel = pick("claude-haiku-4-6", "claude-haiku-4-5")
 	cfg.SonnetModel = pick("claude-sonnet-4-6", "claude-sonnet-4-5")
+	cfg.OpusModel = pick("claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5")
 
 	return cfg, nil
 }
