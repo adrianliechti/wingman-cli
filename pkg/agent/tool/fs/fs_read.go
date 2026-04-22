@@ -27,7 +27,7 @@ func ReadTool(root *os.Root) tool.Tool {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":   map[string]any{"type": "string", "description": "Absolute path to the file to read"},
+				"path":   map[string]any{"type": "string", "description": "File path relative to the working directory"},
 				"offset": map[string]any{"type": "integer", "description": "Line number to start reading from (1-based)"},
 				"limit":  map[string]any{"type": "integer", "description": "Maximum number of lines to read. Only provide if the file is too large to read at once."},
 			},

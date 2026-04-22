@@ -28,7 +28,7 @@ func EditTool(root *os.Root) tool.Tool {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":        map[string]any{"type": "string", "description": "Absolute path to the file to edit"},
+				"path":        map[string]any{"type": "string", "description": "File path relative to the working directory"},
 				"old_text":    map[string]any{"type": "string", "description": "Exact text to find and replace. Must be unique unless replace_all is true."},
 				"new_text":    map[string]any{"type": "string", "description": "Text to replace the old text with. Must be different from old_text."},
 				"replace_all": map[string]any{"type": "boolean", "description": "Replace all occurrences of old_text instead of just the first. Useful for renaming variables. (default: false)"},

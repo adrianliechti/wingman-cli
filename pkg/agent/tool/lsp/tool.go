@@ -32,7 +32,7 @@ func diagnosticsTool(manager *lsp.Manager) tool.Tool {
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Absolute file path. Omit for all diagnostics.",
+					"description": "File path relative to the working directory. Omit for all diagnostics.",
 				},
 			},
 		},
@@ -157,7 +157,7 @@ func symbolsTool(manager *lsp.Manager) tool.Tool {
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Absolute path to a file. If provided, returns symbols in that file.",
+					"description": "File path relative to the working directory. If provided, returns symbols in that file.",
 				},
 				"query": map[string]any{
 					"type":        "string",
@@ -203,7 +203,7 @@ func hierarchyTool(manager *lsp.Manager) tool.Tool {
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Absolute path to the file",
+					"description": "File path relative to the working directory",
 				},
 				"line": map[string]any{
 					"type":        "integer",
@@ -250,7 +250,7 @@ func positionParams() map[string]any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
-				"description": "Absolute path to the file",
+				"description": "File path relative to the working directory",
 			},
 			"line": map[string]any{
 				"type":        "integer",

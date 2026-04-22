@@ -27,7 +27,7 @@ func WriteTool(root *os.Root) tool.Tool {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":    map[string]any{"type": "string", "description": "Absolute path to the file to write"},
+				"path":    map[string]any{"type": "string", "description": "File path relative to the working directory"},
 				"content": map[string]any{"type": "string", "description": "Complete content to write to the file"},
 			},
 			"required": []string{"path", "content"},
