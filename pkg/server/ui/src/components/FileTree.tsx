@@ -67,7 +67,7 @@ export function FileTree({ onFileSelect }: Props) {
               node.expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />
             ) : null}
           </span>
-          <span className={`shrink-0 ${node.is_dir ? 'text-info' : 'text-fg-dim'}`}>
+          <span className={`shrink-0 ${node.is_dir ? 'text-fg-muted' : 'text-fg-dim'}`}>
             {node.is_dir ? (
               node.expanded ? <FolderOpen size={14} /> : <Folder size={14} />
             ) : (
@@ -81,5 +81,5 @@ export function FileTree({ onFileSelect }: Props) {
     ))
   }
 
-  return <div className="flex-1 overflow-y-auto py-1 bg-bg-surface">{renderNodes(nodes, 0)}</div>
+  return <div className="flex-1 overflow-y-auto py-1 bg-bg">{renderNodes(nodes, 0)}</div>
 }

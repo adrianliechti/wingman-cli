@@ -31,7 +31,7 @@ export function DiffsPanel({ visible, onOpenDiff }: Props) {
   const statusColors: Record<string, string> = { added: 'text-success', modified: 'text-warning', deleted: 'text-danger' }
 
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-bg-surface">
+    <div className="flex flex-col h-full overflow-hidden bg-bg">
       {/* Header */}
       <div className="h-8 px-3 flex items-center justify-between shrink-0">
         <span className="text-[11px] text-fg-muted">

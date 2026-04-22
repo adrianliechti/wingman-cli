@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -119,7 +120,7 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 
 	for msg, err := range s.agent.Send(streamCtx, input) {
 		if err != nil {
-			if err == context.Canceled {
+			if errors.Is(err, context.Canceled) {
 				s.sendMessage(ServerMessage{Type: MsgError, Message: "Cancelled"})
 			} else {
 				s.sendMessage(ServerMessage{Type: MsgError, Message: err.Error()})

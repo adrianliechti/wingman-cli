@@ -256,6 +256,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 
 	type sessionInfo struct {
 		ID        string `json:"id"`
+		Title     string `json:"title,omitempty"`
 		CreatedAt string `json:"created_at"`
 		UpdatedAt string `json:"updated_at"`
 	}
@@ -264,6 +265,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	for _, sess := range sessions {
 		result = append(result, sessionInfo{
 			ID:        sess.ID,
+			Title:     sess.Title,
 			CreatedAt: sess.CreatedAt.Format("2006-01-02 15:04"),
 			UpdatedAt: sess.UpdatedAt.Format("2006-01-02 15:04"),
 		})

@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react'
-import { MessageSquare, FileText, GitCompare, X } from 'lucide-react'
+import { MessageSquare, FileText, GitCompare, X, PanelRightClose, PanelRightOpen } from 'lucide-react'
 import { useWebSocket } from './hooks/useWebSocket'
 import { Sidebar } from './components/Sidebar'
 import { ChatPanel } from './components/ChatPanel'
@@ -24,6 +24,7 @@ export default function App() {
   const [sessionId, setSessionId] = useState('')
   const [rightTab, setRightTab] = useState<RightTab>('changes')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false)
 
   // Center tabs: chat is always first, files are added dynamically
   const [tabs, setTabs] = useState<CenterTab[]>([{ id: 'chat', type: 'chat', label: 'Chat' }])
@@ -103,28 +104,28 @@ export default function App() {
         {/* Center Panel */}
         <div className="flex-1 flex flex-col overflow-hidden min-w-0 bg-bg">
           {/* Tab bar */}
-          <div className="h-9 flex items-stretch bg-bg-surface border-b border-border-subtle shrink-0 overflow-x-auto">
+          <div className="h-10 flex items-stretch bg-bg shrink-0 overflow-x-auto">
             {tabs.map(tab => {
               const active = tab.id === activeTabId
               const Icon = tab.type === 'chat' ? MessageSquare : tab.type === 'diff' ? GitCompare : FileText
               return (
                 <div
                   key={tab.id}
-                  className={`group relative flex items-center gap-1.5 pl-3 pr-2 cursor-pointer text-[12px] shrink-0 select-none transition-colors border-r border-border-subtle ${
+                  className={`group relative flex items-center gap-1.5 px-3 cursor-pointer text-[12px] shrink-0 select-none transition-colors ${
                     active
-                      ? 'bg-bg text-fg'
-                      : 'text-fg-muted hover:text-fg hover:bg-bg-hover'
+                      ? 'text-fg'
+                      : 'text-fg-dim hover:text-fg-muted'
                   }`}
                   onClick={() => setActiveTabId(tab.id)}
                 >
-                  {active && <span className="absolute top-0 left-0 right-0 h-[1px] bg-accent" />}
-                  <Icon size={13} className={active ? 'text-accent' : 'text-fg-dim'} />
+                  {active && <span className="absolute bottom-0 left-2 right-2 h-[2px] bg-accent rounded-full" />}
+                  <Icon size={13} className={active ? 'text-fg-muted' : 'text-fg-dim'} />
                   <span className="truncate max-w-[200px]">{tab.label}</span>
                   {tab.type === 'chat' ? (
                     <span className="w-4" />
                   ) : (
                     <button
-                      className="w-4 h-4 flex items-center justify-center text-fg-dim hover:text-fg hover:bg-bg-active rounded opacity-0 group-hover:opacity-100 transition-opacity"
+                      className="w-4 h-4 flex items-center justify-center text-fg-dim hover:text-fg rounded opacity-0 group-hover:opacity-100 transition-opacity"
                       onClick={e => { e.stopPropagation(); closeTab(tab.id) }}
                       aria-label="Close tab"
                     >
@@ -135,7 +136,17 @@ export default function App() {
               )
             })}
             <div className="flex-1" />
+            <button
+              className="flex items-center justify-center w-10 h-10 text-fg-dim hover:text-fg-muted cursor-pointer transition-colors shrink-0"
+              onClick={() => setRightPanelCollapsed(c => !c)}
+              title={rightPanelCollapsed ? 'Show panel' : 'Hide panel'}
+            >
+              {rightPanelCollapsed ? <PanelRightOpen size={15} /> : <PanelRightClose size={15} />}
+            </button>
           </div>
+
+          {/* Divider */}
+          <div className="h-px bg-border-subtle shrink-0" />
 
           {/* Tab content */}
           <div className="flex-1 overflow-hidden">
@@ -150,20 +161,23 @@ export default function App() {
         </div>
 
         {/* Right Panel */}
-        <div className="w-72 border-l border-border-subtle flex flex-col bg-bg-surface shrink-0">
-          <div className="h-9 flex items-stretch shrink-0 bg-bg-surface border-b border-border-subtle">
-            <RightTabButton active={rightTab === 'changes'} onClick={() => setRightTab('changes')}>Changes</RightTabButton>
-            <RightTabButton active={rightTab === 'files'} onClick={() => setRightTab('files')}>Files</RightTabButton>
-            <div className="flex-1" />
+        {!rightPanelCollapsed && (
+          <div className="w-72 border-l border-border-subtle flex flex-col bg-bg shrink-0">
+            <div className="h-10 flex items-stretch shrink-0">
+              <RightTabButton active={rightTab === 'changes'} onClick={() => setRightTab('changes')}>Changes</RightTabButton>
+              <RightTabButton active={rightTab === 'files'} onClick={() => setRightTab('files')}>Files</RightTabButton>
+              <div className="flex-1" />
+            </div>
+            <div className="h-px bg-border-subtle shrink-0" />
+            <div className="flex-1 overflow-hidden">
+              {rightTab === 'changes' ? (
+                <DiffsPanel visible={true} onOpenDiff={openDiff} />
+              ) : (
+                <FileTree onFileSelect={openFile} />
+              )}
+            </div>
           </div>
-          <div className="flex-1 overflow-hidden">
-            {rightTab === 'changes' ? (
-              <DiffsPanel visible={true} onOpenDiff={openDiff} />
-            ) : (
-              <FileTree onFileSelect={openFile} />
-            )}
-          </div>
-        </div>
+        )}
       </div>
 
       <StatusBar
@@ -182,8 +196,8 @@ export default function App() {
 function RightTabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
     <button
-      className={`relative px-4 text-[10.5px] font-semibold uppercase tracking-[0.08em] cursor-pointer transition-colors ${
-        active ? 'text-fg' : 'text-fg-muted hover:text-fg'
+      className={`relative px-4 text-[11px] font-medium cursor-pointer transition-colors ${
+        active ? 'text-fg' : 'text-fg-dim hover:text-fg-muted'
       }`}
       onClick={onClick}
     >

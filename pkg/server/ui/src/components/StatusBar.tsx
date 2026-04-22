@@ -40,21 +40,20 @@ export function StatusBar({ connected, phase, inputTokens, outputTokens, onToggl
   }
 
   return (
-    <div className="flex justify-between items-center h-7 px-3 border-t border-border bg-bg-surface text-[11px] text-fg-muted shrink-0">
+    <div className="flex justify-between items-center h-7 px-3 border-t border-border-subtle bg-bg text-[11px] text-fg-dim shrink-0">
       <div className="flex items-center gap-2.5">
         <button
-          className="text-fg-muted cursor-pointer text-sm hover:text-fg p-0.5"
+          className="text-fg-dim cursor-pointer text-sm hover:text-fg-muted p-0.5"
           onClick={onToggleSidebar}
           title="Toggle sidebar"
         >
           {'\u2630'}
         </button>
-        <div className="w-[1px] h-3 bg-border" />
-        <div className={`w-2 h-2 rounded-full ${indicatorColor()}`} />
+        <div className={`w-1.5 h-1.5 rounded-full ${indicatorColor()}`} />
         <span>{statusText()}</span>
       </div>
       <div className="flex items-center gap-3">
-        {model && <span className="text-fg-dim">{model}</span>}
+        {model && <span>{model}</span>}
         {(inputTokens > 0 || outputTokens > 0) && (
           <span className="tabular-nums">{'\u2191'}{formatTokens(inputTokens)} {'\u2193'}{formatTokens(outputTokens)}</span>
         )}

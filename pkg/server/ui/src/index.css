@@ -1,32 +1,31 @@
 @import "tailwindcss";
 
 @theme {
-  /* VS Code-inspired dark palette */
-  --color-bg: #1e1e1e;
-  --color-bg-surface: #252526;
-  --color-bg-elevated: #2d2d30;
-  --color-bg-hover: #2a2d2e;
-  --color-bg-active: #37373d;
-  --color-bg-input: #3c3c3c;
+  --color-bg: #0a0a0a;
+  --color-bg-surface: #111111;
+  --color-bg-elevated: #181818;
+  --color-bg-hover: #1a1a1a;
+  --color-bg-active: #222222;
+  --color-bg-input: #161616;
 
-  --color-fg: #d4d4d4;
-  --color-fg-muted: #9d9d9d;
-  --color-fg-dim: #6b6b6b;
+  --color-fg: #e0e0e0;
+  --color-fg-muted: #888888;
+  --color-fg-dim: #555555;
 
-  --color-border: #333333;
-  --color-border-subtle: #2b2b2b;
-  --color-border-strong: #454545;
+  --color-border: #1e1e1e;
+  --color-border-subtle: #161616;
+  --color-border-strong: #333333;
 
-  --color-accent: #0098ff;
-  --color-accent-hover: #1ca6ff;
-  --color-accent-muted: #264f78;
+  --color-accent: #888888;
+  --color-accent-hover: #aaaaaa;
+  --color-accent-muted: #333333;
 
-  --color-success: #4ec9b0;
-  --color-danger: #f48771;
-  --color-warning: #e5c07b;
-  --color-info: #75beff;
-  --color-orange: #ce9178;
-  --color-purple: #c586c0;
+  --color-success: #34d399;
+  --color-danger: #f87171;
+  --color-warning: #fbbf24;
+  --color-info: #60a5fa;
+  --color-orange: #fb923c;
+  --color-purple: #a78bfa;
 
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --font-mono: "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace;
@@ -51,20 +50,17 @@ code, pre {
   font-family: var(--font-mono);
 }
 
-/* Quiet, VS Code-style scrollbars */
+/* Minimal scrollbars */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(121, 121, 121, 0.25);
-  border: 3px solid transparent;
-  background-clip: padding-box;
-  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(121, 121, 121, 0.55);
-  background-clip: padding-box;
+  background: rgba(255, 255, 255, 0.15);
 }
 ::-webkit-scrollbar-track,
 ::-webkit-scrollbar-corner {
@@ -72,7 +68,7 @@ code, pre {
 }
 
 ::selection {
-  background: rgba(0, 152, 255, 0.35);
+  background: rgba(255, 255, 255, 0.15);
 }
 
 @keyframes blink {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowUp, Square, ChevronRight, ChevronDown, AlertCircle } from 'lucide-react'
+import { ArrowUp, Square, ChevronRight, ChevronDown } from 'lucide-react'
 import type { ChatEntry } from '../hooks/useWebSocket'
 import type { Phase } from '../types/protocol'
 
@@ -39,14 +39,19 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
   }, [handleSubmit, isActive, onCancel])
 
   return (
-    <div className="h-full flex flex-col overflow-hidden bg-bg">
-      <div className="flex-1 overflow-y-auto" ref={messagesRef}>
+    <div className="h-full relative overflow-hidden bg-bg">
+      <div className="h-full overflow-y-auto pb-24" ref={messagesRef}>
         {entries.length === 0 ? (
-          <div className="h-full flex items-center justify-center text-fg-dim text-[13px]">
-            Start a conversation…
+          <div className="h-full flex items-center justify-center">
+            <div className="text-center max-w-sm">
+              <div className="text-[28px] font-semibold text-fg mb-2">Wingman</div>
+              <div className="text-[13px] text-fg-dim leading-relaxed">
+                Ask me to write code, fix bugs, explore files, or run commands.
+              </div>
+            </div>
           </div>
         ) : (
-          <div className="max-w-3xl mx-auto px-6 py-6">
+          <div className="px-4 py-4">
             {entries.map(entry => (
               <EntryView
                 key={entry.id}
@@ -57,12 +62,15 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
           </div>
         )}
       </div>
-      <div className="border-t border-border-subtle bg-bg">
-        <div className="max-w-3xl mx-auto px-6 py-3">
+
+      {/* Floating input */}
+      <div className="absolute bottom-0 left-0 right-0">
+        <div className="h-8 bg-gradient-to-t from-bg to-transparent pointer-events-none" />
+        <div className="bg-bg px-4 pb-4">
           <div className="flex items-end gap-2">
-            <div className="flex-1 flex items-end bg-bg-surface border border-border rounded-md focus-within:border-accent transition-colors">
+            <div className="flex-1 flex items-end bg-bg-surface border border-border-subtle rounded-xl focus-within:border-border-strong transition-colors">
               <textarea
-                className="flex-1 bg-transparent px-3 py-2 text-fg text-[13px] resize-none outline-none min-h-[38px] max-h-[200px] leading-normal placeholder:text-fg-dim"
+                className="flex-1 bg-transparent px-4 py-3 text-fg text-[13px] resize-none outline-none min-h-[44px] max-h-[200px] leading-normal placeholder:text-fg-dim"
                 style={{ fieldSizing: 'content' } as React.CSSProperties}
                 value={input}
                 onChange={e => setInput(e.target.value)}
@@ -73,7 +81,7 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
             </div>
             {isActive ? (
               <button
-                className="h-[38px] w-[38px] flex items-center justify-center rounded-md text-fg border border-border bg-bg-surface cursor-pointer hover:bg-bg-hover hover:border-border-strong transition-colors"
+                className="h-[44px] w-[44px] flex items-center justify-center rounded-xl text-fg-muted bg-bg-surface border border-border-subtle cursor-pointer hover:text-fg hover:border-border-strong transition-colors"
                 onClick={onCancel}
                 title="Stop (Esc)"
               >
@@ -81,7 +89,7 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
               </button>
             ) : (
               <button
-                className="h-[38px] w-[38px] flex items-center justify-center rounded-md bg-accent text-white cursor-pointer hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                className="h-[44px] w-[44px] flex items-center justify-center rounded-xl bg-bg-surface border border-border-subtle text-fg-muted cursor-pointer hover:text-fg hover:border-border-strong disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                 onClick={handleSubmit}
                 disabled={!input.trim()}
                 title="Send (Enter)"
@@ -90,9 +98,6 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
               </button>
             )}
           </div>
-          <div className="mt-1.5 text-[10.5px] text-fg-dim">
-            Enter to send, Shift+Enter for newline{isActive ? ', Esc to cancel' : ''}
-          </div>
         </div>
       </div>
     </div>
@@ -100,40 +105,30 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 }
 
 function EntryView({ entry, isStreaming }: { entry: ChatEntry; isStreaming: boolean }) {
-  if (entry.type === 'tool') {
-    return <ToolCallView entry={entry} />
-  }
-
   if (entry.type === 'error') {
     return (
-      <div className="mb-4">
-        <div className="flex items-center gap-2 mb-1.5">
-          <AlertCircle size={12} className="text-danger" />
-          <span className="text-[10.5px] font-semibold uppercase tracking-wider text-danger">Error</span>
-        </div>
-        <div className="text-[13px] leading-relaxed text-danger break-words pl-[18px]">{entry.content}</div>
+      <div className="mb-4 border-l-2 border-danger pl-3">
+        <div className="text-[13px] leading-relaxed text-danger break-words">{entry.content}</div>
       </div>
     )
+  }
+
+  if (entry.type === 'tool') {
+    return <ToolCallView entry={entry} />
   }
 
   const isUser = entry.type === 'user'
 
   return (
-    <div className="mb-5">
-      <div className="flex items-center gap-2 mb-1.5">
-        <div className={`w-1.5 h-1.5 rounded-full ${isUser ? 'bg-info' : 'bg-accent'}`} />
-        <span className={`text-[10.5px] font-semibold uppercase tracking-wider ${isUser ? 'text-info' : 'text-accent'}`}>
-          {isUser ? 'You' : 'Assistant'}
-        </span>
-      </div>
-      <div className="pl-[14px] text-[13px] leading-[1.65] break-words text-fg">
+    <div className={`mb-4 border-l-2 ${isUser ? 'border-success' : 'border-purple'} pl-3`}>
+      <div className="text-[12px] leading-[1.7] break-words min-w-0 font-mono">
         {isUser ? (
-          <span className="whitespace-pre-wrap">{entry.content}</span>
+          <span className="whitespace-pre-wrap text-fg">{entry.content}</span>
         ) : (
           <>
             <MarkdownContent text={entry.content} />
             {isStreaming && (
-              <span className="inline-block w-[7px] h-[14px] bg-accent align-text-bottom ml-0.5 animate-[blink_1s_step-end_infinite]" />
+              <span className="inline-block w-[6px] h-[14px] bg-fg-dim align-text-bottom ml-0.5 animate-[blink_1s_step-end_infinite]" />
             )}
           </>
         )}
@@ -148,23 +143,23 @@ function ToolCallView({ entry }: { entry: ChatEntry }) {
   const displayHint = hint ? truncate(hint, 80) : ''
 
   return (
-    <div className="my-2.5">
+    <div className="mb-4 border-l-2 border-purple pl-3">
       <div
-        className="group flex items-center gap-2 px-2.5 py-1.5 bg-bg-surface border border-border-subtle rounded-md cursor-pointer hover:border-border hover:bg-bg-hover text-[12px] transition-colors"
+        className="flex items-center gap-2 py-0.5 cursor-pointer text-[12px] transition-colors"
         onClick={() => setExpanded(!expanded)}
       >
         <span className="text-fg-dim shrink-0 flex items-center">
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </span>
-        <span className="text-purple font-mono text-[11.5px] shrink-0">{entry.toolName}</span>
+        <span className="text-purple font-mono text-[11px] shrink-0">{entry.toolName}</span>
         {displayHint && (
-          <span className="text-fg-muted font-mono text-[11.5px] overflow-hidden text-ellipsis whitespace-nowrap flex-1">
+          <span className="text-fg-dim font-mono text-[11px] overflow-hidden text-ellipsis whitespace-nowrap flex-1">
             {displayHint}
           </span>
         )}
       </div>
       {expanded && (
-        <div className="mt-1 ml-2.5 px-3 py-2 text-[11.5px] max-h-[320px] overflow-y-auto whitespace-pre-wrap break-all text-fg-muted bg-bg-surface border border-border-subtle rounded-md font-mono leading-relaxed">
+        <div className="mt-1 px-3 py-2 text-[11px] max-h-[320px] overflow-y-auto whitespace-pre-wrap break-all text-fg-dim bg-bg-surface rounded-md font-mono leading-relaxed">
           {truncate(entry.toolResult || '(no output)', 2000)}
         </div>
       )}

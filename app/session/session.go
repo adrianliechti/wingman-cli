@@ -16,6 +16,7 @@ import (
 // Session represents a saved conversation session.
 type Session struct {
 	ID        string      `json:"id"`
+	Title     string      `json:"title,omitempty"`
 	CreatedAt time.Time   `json:"created_at"`
 	UpdatedAt time.Time   `json:"updated_at"`
 	State     agent.State `json:"state"`
@@ -40,6 +41,7 @@ func Save(sessionsDir string, id string, state agent.State) (string, error) {
 	now := time.Now()
 	s := Session{
 		ID:        id,
+		Title:     extractTitle(state.Messages),
 		UpdatedAt: now,
 		State:     state,
 	}
@@ -115,6 +117,32 @@ func Delete(sessionsDir string, id string) error {
 	}
 
 	return os.Remove(filepath.Join(dir, id+".json"))
+}
+
+func extractTitle(messages []agent.Message) string {
+	for _, m := range messages {
+		if m.Role != "user" {
+			continue
+		}
+		for _, c := range m.Content {
+			if c.Text == "" {
+				continue
+			}
+			title := c.Text
+			// Take first line only
+			if idx := strings.IndexAny(title, "\n\r"); idx >= 0 {
+				title = title[:idx]
+			}
+			title = strings.TrimSpace(title)
+			if len(title) > 80 {
+				title = title[:77] + "..."
+			}
+			if title != "" {
+				return title
+			}
+		}
+	}
+	return ""
 }
 
 func loadFile(path string) (Session, error) {
