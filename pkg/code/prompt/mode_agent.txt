@@ -61,7 +61,11 @@ Use the `agent` tool for tasks that require many tool calls in a separate contex
 - Research tasks where intermediate results aren't needed by the user
 - Independent subtasks that would otherwise fill your context with intermediate tool results
 
-Do NOT use agent for simple tasks (1-2 tool calls) — use the tools directly. Provide clear, self-contained prompts since the agent has no access to your conversation.
+The agent runs in an isolated context: it has no access to this conversation, your scratch state, or prior tool results. Write the prompt as a self-contained briefing — include file paths, function names, exact requirements, and what the agent should return.
+
+Launch multiple agents in parallel (multiple `agent` tool calls in a single response) when research tasks are independent — total wall-clock time is roughly the slowest one rather than the sum.
+
+Do NOT use agent for simple tasks (1-2 tool calls) — use the tools directly.
 
 # Tone and Style
 

@@ -32,23 +32,26 @@ func Run(ctx context.Context, args []string, options *RunOptions) error {
 	env = append(env, "WINGMAN_TOKEN="+cfg.AuthToken)
 
 	arg := []string{
+		// Model configuration
 		"--config", "model=\"" + cfg.Model + "\"",
-
 		"--config", "model_provider=\"wingman\"",
-
 		"--config", "model_providers.wingman.name=\"Wingman\"",
 		"--config", "model_providers.wingman.base_url=\"" + url + "\"",
 		"--config", "model_providers.wingman.env_key=\"WINGMAN_TOKEN\"",
 		"--config", "model_providers.wingman.requires_openai_auth=false",
 
-		"--config", "tui.show_tooltips=false",
-
-		"--config", "web_search=\"disabled\"",
-		"--config", "features.remote_models=false",
-
+		// Telemetry & data exfiltration prevention
 		"--config", "feedback.enabled=false",
 		"--config", "analytics.enabled=false",
+		"--config", "history.persistence=\"none\"",
 
+		// Disabled features (security & cost control)
+		"--config", "web_search=\"disabled\"",
+		"--config", "features.remote_models=false",
+		"--config", "features.apps=false",
+
+		// UI
+		"--config", "tui.show_tooltips=false",
 		"--config", "check_for_update_on_startup=false",
 	}
 

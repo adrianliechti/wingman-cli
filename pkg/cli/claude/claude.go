@@ -26,43 +26,54 @@ func Run(ctx context.Context, args []string, options *RunOptions) error {
 	}
 
 	vars := map[string]string{
+		// Auth & API routing
 		"ANTHROPIC_BASE_URL":   cfg.BaseURL,
 		"ANTHROPIC_API_KEY":    "",
 		"ANTHROPIC_AUTH_TOKEN": cfg.AuthToken,
 
-		"DISABLE_AUTOUPDATER": "1",
+		// Model configuration
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL":      cfg.HaikuModel,
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME": "Wingman Haiku",
 
-		"DISABLE_FEEDBACK_COMMAND":    "1",
-		"DISABLE_PROMPT_CACHING":      "1",
-		"DISABLE_INSTALLATION_CHECKS": "1",
-		"DISABLE_EXTRA_USAGE_COMMAND": "1",
-		"DISABLE_UPGRADE_COMMAND":     "1",
-		"DISABLE_DOCTOR_COMMAND":      "1",
+		"ANTHROPIC_DEFAULT_SONNET_MODEL":      cfg.SonnetModel,
+		"ANTHROPIC_DEFAULT_SONNET_MODEL_NAME": "Wingman Sonnet",
+
+		"ANTHROPIC_DEFAULT_OPUS_MODEL":      cfg.OpusModel,
+		"ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": "Wingman Opus",
+
+		// Telemetry & data exfiltration prevention
+		"DISABLE_TELEMETRY":                        "1",
+		"DISABLE_ERROR_REPORTING":                  "1",
+		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+		"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY":      "1",
+		"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB":         "1",
+		"CLAUDE_CODE_SKIP_PROMPT_HISTORY":          "1",
+
+		// Disabled commands (not applicable in managed environment)
+		"DISABLE_AUTOUPDATER":                "1",
+		"DISABLE_FEEDBACK_COMMAND":           "1",
+		"DISABLE_INSTALLATION_CHECKS":        "1",
+		"DISABLE_EXTRA_USAGE_COMMAND":        "1",
+		"DISABLE_UPGRADE_COMMAND":            "1",
+		"DISABLE_DOCTOR_COMMAND":             "1",
 		"DISABLE_INSTALL_GITHUB_APP_COMMAND": "1",
 		"DISABLE_LOGIN_COMMAND":              "1",
 		"DISABLE_LOGOUT_COMMAND":             "1",
 
+		// Disabled features (security & cost control)
+		"CLAUDE_CODE_DISABLE_FAST_MODE":          "1",
+		"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS":   "1",
+		"CLAUDE_CODE_DISABLE_CRON":               "1",
+		"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+		"CLAUDE_CODE_DISABLE_1M_CONTEXT":         "1",
+
+		// UI & integration lockdown
 		"CLAUDE_CODE_HIDE_ACCOUNT_INFO":     "1",
 		"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL": "1",
 
-		"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY":      "1",
-		"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS":   "1",
-		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-
-		"CLAUDE_CODE_DISABLE_1M_CONTEXT":        "1",
-		"CLAUDE_CODE_DISABLE_FAST_MODE":         "1",
-		"CLAUDE_CODE_DISABLE_AUTO_MEMORY":       "1",
-		"CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS":  "1",
-		"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS":  "1",
-		"CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": "1",
-		"CLAUDE_CODE_DISABLE_CRON":              "1",
-
-		"CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1",
 		"ENABLE_CLAUDEAI_MCP_SERVERS": "false",
 
-		"ANTHROPIC_DEFAULT_OPUS_MODEL":   cfg.OpusModel,
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL":  cfg.HaikuModel,
-		"ANTHROPIC_DEFAULT_SONNET_MODEL": cfg.SonnetModel,
+		"CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1",
 	}
 
 	env := options.Env
