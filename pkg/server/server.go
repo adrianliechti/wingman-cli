@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"sync"
 	"syscall"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/app/session"
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
+	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 
 	"github.com/coder/websocket"
 )
@@ -145,6 +147,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/model", s.handleModel)
 	mux.HandleFunc("GET /api/models", s.handleModels)
 	mux.HandleFunc("POST /api/model", s.handleSetModel)
+	mux.HandleFunc("GET /api/diagnostics", s.handleDiagnostics)
 
 	// WebSocket
 	mux.HandleFunc("/ws/chat", s.handleWebSocket)
@@ -385,6 +388,72 @@ func (s *Server) handleSetModel(w http.ResponseWriter, r *http.Request) {
 	s.agent.Config.Model = func() string { return modelID }
 
 	writeJSON(w, map[string]string{"model": modelID})
+}
+
+func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
+	if s.agent.LSP == nil {
+		writeJSON(w, []any{})
+		return
+	}
+
+	allDiags := s.agent.LSP.CollectAllDiagnostics(r.Context())
+
+	type diagItem struct {
+		Path     string `json:"path"`
+		Line     int    `json:"line"`
+		Column   int    `json:"column"`
+		Severity string `json:"severity"`
+		Message  string `json:"message"`
+		Source   string `json:"source,omitempty"`
+	}
+
+	var result []diagItem
+
+	for filePath, diags := range allDiags {
+		// Make path relative to workspace
+		relPath := filePath
+		if rel, err := filepath.Rel(s.agent.RootPath, filePath); err == nil {
+			relPath = rel
+		}
+
+		for _, d := range diags {
+			sev := "info"
+			switch d.Severity {
+			case lsp.DiagnosticSeverityError:
+				sev = "error"
+			case lsp.DiagnosticSeverityWarning:
+				sev = "warning"
+			}
+
+			result = append(result, diagItem{
+				Path:     relPath,
+				Line:     d.Range.Start.Line + 1, // 0-based to 1-based
+				Column:   d.Range.Start.Character + 1,
+				Severity: sev,
+				Message:  d.Message,
+				Source:   d.Source,
+			})
+		}
+	}
+
+	if result == nil {
+		result = []diagItem{}
+	}
+
+	// Sort: errors first, then warnings, then info; within same severity by path then line
+	sevOrder := map[string]int{"error": 0, "warning": 1, "info": 2}
+	sort.Slice(result, func(i, j int) bool {
+		si, sj := sevOrder[result[i].Severity], sevOrder[result[j].Severity]
+		if si != sj {
+			return si < sj
+		}
+		if result[i].Path != result[j].Path {
+			return result[i].Path < result[j].Path
+		}
+		return result[i].Line < result[j].Line
+	})
+
+	writeJSON(w, result)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

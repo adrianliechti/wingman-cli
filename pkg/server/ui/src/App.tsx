@@ -14,6 +14,7 @@ import { DiffsPanel } from "./components/DiffsPanel";
 import { DiffTab } from "./components/DiffTab";
 import { FileTab } from "./components/FileTab";
 import { FileTree } from "./components/FileTree";
+import { ProblemsPanel } from "./components/ProblemsPanel";
 import { PromptDialog } from "./components/PromptDialog";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
@@ -23,10 +24,11 @@ interface CenterTab {
 	id: string;
 	type: "chat" | "file" | "diff";
 	label: string;
-	path?: string; // for file/diff tabs
+	path?: string;
+	line?: number;
 }
 
-type RightTab = "changes" | "files";
+type RightTab = "changes" | "files" | "problems";
 
 export default function App() {
 	const {
@@ -53,15 +55,20 @@ export default function App() {
 	const [activeTabId, setActiveTabId] = useState("chat");
 
 	const openFile = useCallback(
-		(path: string) => {
-			// Check if already open
+		(path: string, line?: number) => {
 			const existing = tabs.find((t) => t.type === "file" && t.path === path);
 			if (existing) {
+				// Update line if provided
+				if (line) {
+					setTabs((prev) =>
+						prev.map((t) => (t.id === existing.id ? { ...t, line } : t)),
+					);
+				}
 				setActiveTabId(existing.id);
 				return;
 			}
 			const label = path.split("/").pop() || path;
-			const tab: CenterTab = { id: `file:${path}`, type: "file", label, path };
+			const tab: CenterTab = { id: `file:${path}`, type: "file", label, path, line };
 			setTabs((prev) => [...prev, tab]);
 			setActiveTabId(tab.id);
 		},
@@ -250,7 +257,7 @@ export default function App() {
 						) : activeTab.type === "diff" && activeTab.path ? (
 							<DiffTab path={activeTab.path} />
 						) : activeTab.path ? (
-							<FileTab path={activeTab.path} />
+							<FileTab path={activeTab.path} line={activeTab.line} />
 						) : null}
 					</div>
 				</div>
@@ -274,12 +281,20 @@ export default function App() {
 							>
 								Files
 							</RightTabButton>
+							<RightTabButton
+								active={rightTab === "problems"}
+								onClick={() => setRightTab("problems")}
+							>
+								Problems
+							</RightTabButton>
 							<div className="flex-1" />
 						</div>
 						<div className="h-px bg-border-subtle shrink-0" />
 						<div className="flex-1 overflow-hidden">
 							{rightTab === "changes" ? (
 								<DiffsPanel visible={true} onOpenDiff={openDiff} />
+							) : rightTab === "problems" ? (
+								<ProblemsPanel onOpenFile={openFile} />
 							) : (
 								<FileTree onFileSelect={openFile} />
 							)}

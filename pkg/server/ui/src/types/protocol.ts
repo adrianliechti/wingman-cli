@@ -135,3 +135,12 @@ export interface DiffEntry {
 	status: "added" | "modified" | "deleted";
 	patch: string;
 }
+
+export interface DiagnosticEntry {
+	path: string;
+	line: number;
+	column: number;
+	severity: "error" | "warning" | "info";
+	message: string;
+	source?: string;
+}

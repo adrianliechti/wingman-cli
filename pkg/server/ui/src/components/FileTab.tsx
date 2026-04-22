@@ -4,6 +4,7 @@ import type { FileContent } from "../types/protocol";
 
 interface Props {
 	path: string;
+	line?: number;
 }
 
 const themeRegistered = { current: false };
@@ -42,7 +43,7 @@ function defineTheme(monaco: Monaco) {
 	});
 }
 
-export function FileTab({ path }: Props) {
+export function FileTab({ path, line }: Props) {
 	const [file, setFile] = useState<FileContent | null>(null);
 	const [loading, setLoading] = useState(true);
 	const monacoRef = useRef<Monaco | null>(null);
@@ -83,6 +84,12 @@ export function FileTab({ path }: Props) {
 			beforeMount={(monaco) => {
 				monacoRef.current = monaco;
 				defineTheme(monaco);
+			}}
+			onMount={(editor) => {
+				if (line && line > 0) {
+					editor.revealLineInCenter(line);
+					editor.setPosition({ lineNumber: line, column: 1 });
+				}
 			}}
 			options={{
 				readOnly: true,
