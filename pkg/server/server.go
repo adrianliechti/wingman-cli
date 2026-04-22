@@ -143,6 +143,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/sessions/{id}/load", s.handleLoadSession)
 	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDeleteSession)
 	mux.HandleFunc("GET /api/model", s.handleModel)
+	mux.HandleFunc("GET /api/models", s.handleModels)
+	mux.HandleFunc("POST /api/model", s.handleSetModel)
 
 	// WebSocket
 	mux.HandleFunc("/ws/chat", s.handleWebSocket)
@@ -348,6 +350,41 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 		model = s.agent.Model()
 	}
 	writeJSON(w, map[string]string{"model": model})
+}
+
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	models, err := s.agent.Models(r.Context())
+	if err != nil {
+		writeJSON(w, []any{})
+		return
+	}
+
+	var result []map[string]string
+	for _, m := range models {
+		result = append(result, map[string]string{"id": m.ID})
+	}
+
+	if result == nil {
+		result = []map[string]string{}
+	}
+
+	writeJSON(w, result)
+}
+
+func (s *Server) handleSetModel(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Model string `json:"model"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Model == "" {
+		http.Error(w, "model is required", http.StatusBadRequest)
+		return
+	}
+
+	modelID := body.Model
+	s.agent.Config.Model = func() string { return modelID }
+
+	writeJSON(w, map[string]string{"model": modelID})
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

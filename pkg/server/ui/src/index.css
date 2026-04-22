@@ -1,80 +1,90 @@
 @import "tailwindcss";
 
 @theme {
-  --color-bg: #0a0a0a;
-  --color-bg-surface: #111111;
-  --color-bg-elevated: #181818;
-  --color-bg-hover: #1a1a1a;
-  --color-bg-active: #222222;
-  --color-bg-input: #161616;
+	--color-bg: #0a0a0a;
+	--color-bg-surface: #111111;
+	--color-bg-elevated: #181818;
+	--color-bg-hover: #1a1a1a;
+	--color-bg-active: #222222;
+	--color-bg-input: #161616;
 
-  --color-fg: #e0e0e0;
-  --color-fg-muted: #888888;
-  --color-fg-dim: #555555;
+	--color-fg: #e0e0e0;
+	--color-fg-muted: #888888;
+	--color-fg-dim: #555555;
 
-  --color-border: #1e1e1e;
-  --color-border-subtle: #161616;
-  --color-border-strong: #333333;
+	--color-border: #1e1e1e;
+	--color-border-subtle: #161616;
+	--color-border-strong: #333333;
 
-  --color-accent: #888888;
-  --color-accent-hover: #aaaaaa;
-  --color-accent-muted: #333333;
+	--color-accent: #888888;
+	--color-accent-hover: #aaaaaa;
+	--color-accent-muted: #333333;
 
-  --color-success: #34d399;
-  --color-danger: #f87171;
-  --color-warning: #fbbf24;
-  --color-info: #60a5fa;
-  --color-orange: #fb923c;
-  --color-purple: #a78bfa;
+	--color-success: #34d399;
+	--color-danger: #f87171;
+	--color-warning: #fbbf24;
+	--color-info: #60a5fa;
+	--color-orange: #fb923c;
+	--color-purple: #a78bfa;
 
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
-  --font-mono: "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace;
+	--font-sans:
+		-apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Helvetica,
+		Arial, sans-serif;
+	--font-mono:
+		"SF Mono", "JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace;
 }
 
-html, body, #root {
-  height: 100%;
+html,
+body,
+#root {
+	height: 100%;
 }
 
 body {
-  font-family: var(--font-sans);
-  font-size: 13px;
-  line-height: 1.5;
-  background: var(--color-bg);
-  color: var(--color-fg);
-  overflow: hidden;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+	font-family: var(--font-sans);
+	font-size: 13px;
+	line-height: 1.5;
+	background: var(--color-bg);
+	color: var(--color-fg);
+	overflow: hidden;
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
 }
 
-code, pre {
-  font-family: var(--font-mono);
+code,
+pre {
+	font-family: var(--font-mono);
 }
 
 /* Minimal scrollbars */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+	width: 6px;
+	height: 6px;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: 3px;
+	background: rgba(255, 255, 255, 0.08);
+	border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.15);
+	background: rgba(255, 255, 255, 0.15);
 }
 ::-webkit-scrollbar-track,
 ::-webkit-scrollbar-corner {
-  background: transparent;
+	background: transparent;
 }
 
 ::selection {
-  background: rgba(255, 255, 255, 0.15);
+	background: rgba(255, 255, 255, 0.15);
 }
 
 @keyframes blink {
-  50% { opacity: 0; }
+	50% {
+		opacity: 0;
+	}
 }
 
 @keyframes pulse {
-  50% { opacity: 0.4; }
+	50% {
+		opacity: 0.4;
+	}
 }
