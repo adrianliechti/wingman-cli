@@ -118,6 +118,12 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
+	// Ctrl+T: toggle mouse capture so the user can select text natively
+	if event.Key() == tcell.KeyCtrlT && !a.hasActiveModal() {
+		a.toggleMouseCapture()
+		return nil
+	}
+
 	// Let modal handle its own events
 	if a.hasActiveModal() {
 		return event
@@ -528,14 +534,14 @@ func (a *App) submitInput() {
 	case "/plan":
 		a.input.SetText("", true)
 		a.switchToChat()
-		a.enterPlanMode(true)
+		a.enterPlanMode()
 
 		return
 
 	case "/agent":
 		a.input.SetText("", true)
 		a.switchToChat()
-		a.exitPlanMode(true)
+		a.exitPlanMode()
 
 		return
 
@@ -945,6 +951,16 @@ func (a *App) matchingCommands(prefix string) []slashCommand {
 	return matches
 }
 
+// toggleMouseCapture toggles tview's mouse capture. When disabled the terminal
+// handles mouse events natively so the user can select and copy text with the
+// mouse. When enabled, tview captures wheel/click events for scrolling and
+// focus handling.
+func (a *App) toggleMouseCapture() {
+	a.mouseEnabled = !a.mouseEnabled
+	a.app.EnableMouse(a.mouseEnabled)
+	a.updateInputHint()
+}
+
 func (a *App) updateInputHint() {
 	// Don't overwrite inputHint while the spinner owns it
 	if a.isStreaming() {
@@ -989,6 +1005,10 @@ func (a *App) updateInputHint() {
 
 	if a.agent.Bridge != nil && a.agent.Bridge.IsConnected() {
 		parts = append(parts, fmt.Sprintf("[%s]⬢[-]", t.Green))
+	}
+
+	if !a.mouseEnabled {
+		parts = append(parts, fmt.Sprintf("[%s]select mode[-]", t.Yellow))
 	}
 
 	parts = append(parts,
