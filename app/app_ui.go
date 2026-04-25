@@ -657,6 +657,8 @@ func (a *App) invokeSkill(s *skill.Skill, args string) {
 		return
 	}
 
+	// Bundled skills materialize on first use so they show up in the
+	// catalog from the next turn onward.
 	if s.Bundled {
 		_, _ = skill.MaterializeBundled(s)
 	}

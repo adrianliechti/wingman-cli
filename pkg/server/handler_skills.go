@@ -35,9 +35,8 @@ func (s *Server) resolveSkill(text string) string {
 		return text
 	}
 
-	// For bundled skills, materialize on first use so they have a real
-	// on-disk location (the catalog will then expose it). Safe to call
-	// repeatedly — it's a no-op if already materialized.
+	// Bundled skills materialize on first use so they show up in the
+	// catalog from the next turn onward.
 	if sk.Bundled {
 		_, _ = skill.MaterializeBundled(sk)
 	}

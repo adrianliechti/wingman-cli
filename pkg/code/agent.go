@@ -108,9 +108,15 @@ func New(workDir string, ui UI) (*Agent, error) {
 	}
 
 	// Skill precedence (later overrides earlier):
-	//   bundled  → shipped with the binary
+	//   bundled  → shipped with the binary, hidden from catalog until invoked
 	//   personal → ~/.claude/skills, ~/.wingman/skills (user-wide)
 	//   project  → .claude, .wingman, .skills, .github, .opencode (this repo)
+	//
+	// Bundled skills aren't materialized at startup — the user discovers
+	// them via the slash-command picker (which lists all skills, on-disk or
+	// not). On first invocation MaterializeBundled writes the file under
+	// ~/.wingman/skills and updates Location, so the catalog picks them up
+	// from the next prompt build onward.
 	bundled := loadBundledSkills()
 	personal := skill.MustDiscoverPersonal()
 	discovered := skill.MustDiscover(workDir)

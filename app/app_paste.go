@@ -61,23 +61,19 @@ func isLikelyFilePath(s string) bool {
 		return false
 	}
 
-	// Absolute Unix path
-	if strings.HasPrefix(s, "/") {
+	// Absolute path (Unix `/foo`, Windows `C:\foo` or drive-relative `\foo`)
+	if filepath.IsAbs(s) {
 		return true
 	}
 
 	// Home-relative
-	if strings.HasPrefix(s, "~/") {
+	if strings.HasPrefix(s, "~/") || strings.HasPrefix(s, `~\`) {
 		return true
 	}
 
 	// Relative paths
-	if strings.HasPrefix(s, "./") || strings.HasPrefix(s, "../") {
-		return true
-	}
-
-	// Windows drive path
-	if len(s) >= 3 && s[1] == ':' && (s[2] == '/' || s[2] == '\\') {
+	if strings.HasPrefix(s, "./") || strings.HasPrefix(s, "../") ||
+		strings.HasPrefix(s, `.\`) || strings.HasPrefix(s, `..\`) {
 		return true
 	}
 

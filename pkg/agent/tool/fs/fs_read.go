@@ -87,9 +87,11 @@ func readFromAllowedLocation(root *os.Root, workingDir, path string, allowedRoot
 	}
 
 	cleaned := cleanPath(path)
+	cmpPath := normalizePathForComparison(cleaned)
 	for _, allowed := range allowedRoots {
 		allowedClean := cleanPath(allowed)
-		if cleaned == allowedClean || strings.HasPrefix(cleaned, allowedClean+string(filepath.Separator)) {
+		cmpAllowed := normalizePathForComparison(allowedClean)
+		if cmpPath == cmpAllowed || strings.HasPrefix(cmpPath, cmpAllowed+string(filepath.Separator)) {
 			content, err := os.ReadFile(cleaned)
 			if err != nil {
 				return nil, fmt.Errorf("read file %q: %w", path, err)
@@ -101,7 +103,8 @@ func readFromAllowedLocation(root *os.Root, workingDir, path string, allowedRoot
 	return nil, fmt.Errorf("cannot read file: path %q is outside workspace and not in any allowed root", path)
 }
 
-// expandHome resolves a leading `~` to the user's home dir.
+// expandHome resolves a leading `~` to the user's home dir. Accepts both
+// `~/...` (forward slash) and `~\...` (Windows backslash) forms.
 func expandHome(path string) string {
 	if path == "~" {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -109,7 +112,7 @@ func expandHome(path string) string {
 		}
 		return path
 	}
-	if strings.HasPrefix(path, "~/") {
+	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
 		if home, err := os.UserHomeDir(); err == nil {
 			return filepath.Join(home, path[2:])
 		}

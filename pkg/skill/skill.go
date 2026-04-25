@@ -405,15 +405,24 @@ func Merge(bundled, discovered []Skill) []Skill {
 	return result
 }
 
+// FormatForPrompt renders the catalog injected into the system prompt.
+// Only skills with an on-disk Location are included — bundled skills appear
+// here only after the user has invoked one (which materializes it). The
+// slash-command picker UI lists everything regardless, so users still
+// discover bundled skills from the very first turn.
 func FormatForPrompt(skills []Skill) string {
-	if len(skills) == 0 {
-		return ""
-	}
-
 	var sb strings.Builder
-	fmt.Fprint(&sb, "<available_skills>\n")
+	count := 0
 
 	for _, s := range skills {
+		if s.Location == "" {
+			continue
+		}
+		if count == 0 {
+			fmt.Fprint(&sb, "<available_skills>\n")
+		}
+		count++
+
 		fmt.Fprint(&sb, "  <skill>\n")
 		fmt.Fprintf(&sb, "    <name>%s</name>\n", s.Name)
 		fmt.Fprintf(&sb, "    <description>%s</description>\n", s.Description)
@@ -422,31 +431,32 @@ func FormatForPrompt(skills []Skill) string {
 			fmt.Fprintf(&sb, "    <when-to-use>%s</when-to-use>\n", s.WhenToUse)
 		}
 
-		if s.Location != "" {
-			fmt.Fprintf(&sb, "    <location>%s/SKILL.md</location>\n", displayLocation(s.Location))
-		}
+		fmt.Fprintf(&sb, "    <location>%s/SKILL.md</location>\n", displayLocation(s.Location))
 
 		fmt.Fprint(&sb, "  </skill>\n")
 	}
 
+	if count == 0 {
+		return ""
+	}
 	fmt.Fprint(&sb, "</available_skills>")
-
 	return sb.String()
 }
 
 // displayLocation returns a path suitable for showing to the LLM. Paths
 // under the user's home dir are abbreviated with `~` so the prompt doesn't
-// leak the username on personal-skill entries.
+// leak the username on personal-skill entries. Always emits forward
+// slashes, even on Windows, so the catalog is consistent and the model
+// sees a single canonical form to round-trip back to the read tool.
 func displayLocation(loc string) string {
-	if !filepath.IsAbs(loc) {
-		return loc
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		if rel, err := filepath.Rel(home, loc); err == nil && !strings.HasPrefix(rel, "..") {
-			return "~/" + filepath.ToSlash(rel)
+	if filepath.IsAbs(loc) {
+		if home, err := os.UserHomeDir(); err == nil {
+			if rel, err := filepath.Rel(home, loc); err == nil && !strings.HasPrefix(rel, "..") {
+				return "~/" + filepath.ToSlash(rel)
+			}
 		}
 	}
-	return loc
+	return filepath.ToSlash(loc)
 }
 
 // parseSkillFile reads a SKILL.md file and returns the skill metadata.
