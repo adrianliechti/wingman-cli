@@ -10,16 +10,18 @@ const (
 
 // Server -> Client message types
 const (
-	MsgTextDelta  = "text_delta"
-	MsgToolCall   = "tool_call"
-	MsgToolResult = "tool_result"
-	MsgPhase      = "phase"
-	MsgPrompt     = "prompt"
-	MsgAsk        = "ask"
-	MsgError      = "error"
-	MsgDone       = "done"
-	MsgUsage      = "usage"
-	MsgMessages   = "messages"
+	MsgTextDelta          = "text_delta"
+	MsgToolCall           = "tool_call"
+	MsgToolResult         = "tool_result"
+	MsgPhase              = "phase"
+	MsgPrompt             = "prompt"
+	MsgAsk                = "ask"
+	MsgError              = "error"
+	MsgDone               = "done"
+	MsgUsage              = "usage"
+	MsgMessages           = "messages"
+	MsgDiffsChanged       = "diffs_changed"
+	MsgCheckpointsChanged = "checkpoints_changed"
 )
 
 // ClientMessage is the envelope for all client-to-server WebSocket messages.
@@ -104,7 +106,17 @@ type FileContent struct {
 
 // DiffEntry represents a file diff from baseline.
 type DiffEntry struct {
-	Path   string `json:"path"`
-	Status string `json:"status"` // "added", "modified", "deleted"
-	Patch  string `json:"patch"`
+	Path     string `json:"path"`
+	Status   string `json:"status"` // "added", "modified", "deleted"
+	Patch    string `json:"patch"`
+	Original string `json:"original,omitempty"`
+	Modified string `json:"modified,omitempty"`
+	Language string `json:"language,omitempty"`
+}
+
+// CheckpointEntry represents a single rewind checkpoint.
+type CheckpointEntry struct {
+	Hash    string `json:"hash"`
+	Message string `json:"message"`
+	Time    string `json:"time"`
 }

@@ -1,18 +1,32 @@
-import { ChevronDown, ChevronRight, Square } from "lucide-react";
+import {
+	ArrowUp,
+	ChevronDown,
+	ChevronRight,
+	Cog,
+	LoaderCircle,
+	Plus,
+	Sparkles,
+	Square,
+	X,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChatEntry } from "../hooks/useWebSocket";
 import type { Phase } from "../types/protocol";
+import { FilePicker } from "./FilePicker";
 import { MarkdownContent } from "./MarkdownContent";
+import { ModelPicker } from "./ModelPicker";
 
 interface Props {
 	entries: ChatEntry[];
 	phase: Phase;
-	onSend: (text: string) => void;
+	onSend: (text: string, files?: string[]) => void;
 	onCancel: () => void;
 }
 
 export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 	const [input, setInput] = useState("");
+	const [files, setFiles] = useState<string[]>([]);
+	const [showPicker, setShowPicker] = useState(false);
 	const messagesRef = useRef<HTMLDivElement>(null);
 
 	const isActive = phase !== "idle";
@@ -25,9 +39,10 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 	const handleSubmit = useCallback(() => {
 		const text = input.trim();
 		if (!text || isActive) return;
-		onSend(text);
+		onSend(text, files.length > 0 ? files : undefined);
 		setInput("");
-	}, [input, isActive, onSend]);
+		setFiles([]);
+	}, [input, isActive, onSend, files]);
 
 	const handleKeyDown = useCallback(
 		(e: React.KeyboardEvent) => {
@@ -42,10 +57,19 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 		[handleSubmit, isActive, onCancel],
 	);
 
+	const addFile = useCallback((path: string) => {
+		setFiles((prev) => (prev.includes(path) ? prev : [...prev, path]));
+		setShowPicker(false);
+	}, []);
+
+	const removeFile = useCallback((path: string) => {
+		setFiles((prev) => prev.filter((p) => p !== path));
+	}, []);
+
 	return (
 		<div className="h-full relative overflow-hidden bg-bg">
 			<div className="h-full overflow-y-auto pb-24" ref={messagesRef}>
-				{entries.length === 0 ? (
+				{entries.length === 0 && phase === "idle" ? (
 					<div className="h-full flex items-center justify-center">
 						<div className="text-center max-w-sm">
 							<div className="text-[28px] font-semibold text-fg mb-2">
@@ -69,6 +93,9 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 								}
 							/>
 						))}
+						{phase !== "idle" && phase !== "streaming" && (
+							<PhaseIndicator phase={phase} />
+						)}
 					</div>
 				)}
 			</div>
@@ -77,33 +104,91 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 			<div className="absolute bottom-0 left-0 right-0">
 				<div className="h-6 bg-gradient-to-t from-bg to-transparent pointer-events-none" />
 				<div className="bg-bg px-4 pb-3">
-					<div className="flex items-start gap-0 font-mono text-[12px]">
-						<span className="text-success leading-[1.7] select-none shrink-0 text-[14px]">
-							{isActive ? "" : ">"}&nbsp;
-						</span>
-						{isActive ? (
-							<div className="flex items-center gap-2 text-fg-dim">
-								<span className="animate-[pulse_1s_infinite]">working...</span>
-								<button
-									type="button"
-									className="text-fg-dim hover:text-fg cursor-pointer transition-colors"
-									onClick={onCancel}
-									title="Stop (Esc)"
-								>
-									<Square size={10} fill="currentColor" />
-								</button>
+					<div className="relative rounded-lg border border-border-subtle bg-bg-surface/60 hover:border-border focus-within:border-border transition-colors">
+						{files.length > 0 && (
+							<div className="flex flex-wrap gap-1 px-2.5 pt-2">
+								{files.map((p) => {
+									const name = p.split("/").pop() || p;
+									return (
+										<span
+											key={p}
+											className="group flex items-center gap-1 px-1.5 py-0.5 rounded bg-bg-active text-[11px] text-fg-muted font-mono"
+											title={p}
+										>
+											<span className="truncate max-w-[180px]">{name}</span>
+											<button
+												type="button"
+												className="text-fg-dim hover:text-fg cursor-pointer"
+												onClick={() => removeFile(p)}
+												aria-label="Remove file"
+											>
+												<X size={10} />
+											</button>
+										</span>
+									);
+								})}
 							</div>
-						) : (
-							<textarea
-								className="flex-1 bg-transparent text-fg resize-none outline-none leading-[1.7] placeholder:text-fg-dim"
-								style={{ fieldSizing: "content" } as React.CSSProperties}
-								value={input}
-								onChange={(e) => setInput(e.target.value)}
-								onKeyDown={handleKeyDown}
-								placeholder=""
-								rows={1}
-							/>
 						)}
+
+						<div className="px-3 pt-2">
+							{isActive ? (
+								<div className="flex items-center gap-2 text-fg-dim text-[12px] font-mono leading-[1.7]">
+									<span className="animate-[pulse_1s_infinite]">working...</span>
+								</div>
+							) : (
+								<textarea
+									className="w-full bg-transparent text-fg text-[12px] font-mono resize-none outline-none leading-[1.7] placeholder:text-fg-dim"
+									style={{ fieldSizing: "content" } as React.CSSProperties}
+									value={input}
+									onChange={(e) => setInput(e.target.value)}
+									onKeyDown={handleKeyDown}
+									placeholder="Message Wingman…"
+									rows={1}
+								/>
+							)}
+						</div>
+
+						<div className="flex items-center justify-between px-1.5 pb-1.5 pt-1 gap-1">
+							<div className="flex items-center gap-1 min-w-0">
+								<div className="relative flex items-center">
+									<button
+										type="button"
+										className="w-7 h-7 flex items-center justify-center rounded text-fg-dim hover:text-fg hover:bg-bg-hover cursor-pointer transition-colors"
+										onClick={() => setShowPicker((s) => !s)}
+										title="Add file context"
+									>
+										<Plus size={14} />
+									</button>
+									{showPicker && (
+										<FilePicker
+											onSelect={addFile}
+											onClose={() => setShowPicker(false)}
+										/>
+									)}
+								</div>
+								<ModelPicker />
+							</div>
+
+							<button
+								type="button"
+								className={`w-7 h-7 flex items-center justify-center rounded cursor-pointer transition-colors ${
+									isActive
+										? "text-fg-dim hover:text-fg hover:bg-bg-hover"
+										: input.trim()
+											? "bg-fg-muted text-bg hover:bg-fg"
+											: "text-fg-dim opacity-40 cursor-not-allowed"
+								}`}
+								onClick={isActive ? onCancel : handleSubmit}
+								disabled={!isActive && !input.trim()}
+								title={isActive ? "Stop (Esc)" : "Send (Enter)"}
+							>
+								{isActive ? (
+									<Square size={10} fill="currentColor" />
+								) : (
+									<ArrowUp size={14} />
+								)}
+							</button>
+						</div>
 					</div>
 				</div>
 			</div>
@@ -149,6 +234,31 @@ function EntryView({
 						)}
 					</>
 				)}
+			</div>
+		</div>
+	);
+}
+
+function PhaseIndicator({ phase }: { phase: Phase }) {
+	let Icon = Sparkles;
+	let label = "Thinking";
+	let iconClass = "text-warning animate-pulse";
+
+	if (phase === "tool_running") {
+		Icon = Cog;
+		label = "Running tool";
+		iconClass = "text-orange animate-spin";
+	} else if (phase === "streaming") {
+		Icon = LoaderCircle;
+		label = "Streaming";
+		iconClass = "text-accent animate-spin";
+	}
+
+	return (
+		<div className="mb-4 border-l-2 border-purple/40 pl-3">
+			<div className="flex items-center gap-2 text-[12px] text-fg-dim font-mono italic">
+				<Icon size={13} className={iconClass} />
+				<span>{label}…</span>
 			</div>
 		</div>
 	);

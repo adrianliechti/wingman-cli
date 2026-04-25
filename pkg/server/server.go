@@ -93,6 +93,14 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}()
 
+	// Watch the working directory for any file changes (terminal, IDE, agent)
+	// and push a diffs_changed event so the UI refetches without polling.
+	go func() {
+		_ = s.watchWorkdir(ctx, s.agent.RootPath, func() {
+			s.sendMessage(ServerMessage{Type: MsgDiffsChanged})
+		})
+	}()
+
 	// Auto-select model
 	s.autoSelectModel(ctx)
 
@@ -137,7 +145,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// API routes
 	mux.HandleFunc("GET /api/files", s.handleFiles)
 	mux.HandleFunc("GET /api/files/read", s.handleFileRead)
+	mux.HandleFunc("GET /api/files/search", s.handleFilesSearch)
 	mux.HandleFunc("GET /api/diffs", s.handleDiffs)
+	mux.HandleFunc("GET /api/checkpoints", s.handleCheckpoints)
+	mux.HandleFunc("POST /api/checkpoints/{hash}/restore", s.handleCheckpointRestore)
 	mux.HandleFunc("GET /api/messages", s.handleMessages)
 	mux.HandleFunc("GET /api/usage", s.handleUsage)
 	mux.HandleFunc("GET /api/sessions", s.handleSessions)

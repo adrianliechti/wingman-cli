@@ -82,6 +82,14 @@ export interface MessagesMessage {
 	messages: ConversationMessage[];
 }
 
+export interface DiffsChangedMessage {
+	type: "diffs_changed";
+}
+
+export interface CheckpointsChangedMessage {
+	type: "checkpoints_changed";
+}
+
 export type ServerMessage =
 	| TextDeltaMessage
 	| ToolCallMessage
@@ -92,7 +100,9 @@ export type ServerMessage =
 	| ErrorMessage
 	| DoneMessage
 	| UsageMessage
-	| MessagesMessage;
+	| MessagesMessage
+	| DiffsChangedMessage
+	| CheckpointsChangedMessage;
 
 // Shared types
 export type Phase = "idle" | "thinking" | "streaming" | "tool_running";
@@ -134,6 +144,15 @@ export interface DiffEntry {
 	path: string;
 	status: "added" | "modified" | "deleted";
 	patch: string;
+	original?: string;
+	modified?: string;
+	language?: string;
+}
+
+export interface CheckpointEntry {
+	hash: string;
+	message: string;
+	time: string;
 }
 
 export interface DiagnosticEntry {

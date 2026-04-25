@@ -1,8 +1,49 @@
+import { DiffEditor, type Monaco } from "@monaco-editor/react";
 import { useEffect, useState } from "react";
 import type { DiffEntry } from "../types/protocol";
 
 interface Props {
 	path: string;
+}
+
+const themeRegistered = { current: false };
+
+function defineTheme(monaco: Monaco) {
+	if (themeRegistered.current) return;
+	themeRegistered.current = true;
+
+	monaco.editor.defineTheme("wingman", {
+		base: "vs-dark",
+		inherit: true,
+		rules: [
+			{ token: "comment", foreground: "555555" },
+			{ token: "keyword", foreground: "a78bfa" },
+			{ token: "string", foreground: "34d399" },
+			{ token: "number", foreground: "fbbf24" },
+			{ token: "type", foreground: "60a5fa" },
+		],
+		colors: {
+			"editor.background": "#0a0a0a",
+			"editor.foreground": "#e0e0e0",
+			"editor.lineHighlightBackground": "#111111",
+			"editor.selectionBackground": "#ffffff26",
+			"editor.inactiveSelectionBackground": "#ffffff15",
+			"editorLineNumber.foreground": "#333333",
+			"editorLineNumber.activeForeground": "#666666",
+			"editorCursor.foreground": "#888888",
+			"editor.lineHighlightBorder": "#00000000",
+			"editorWidget.background": "#111111",
+			"editorWidget.border": "#1e1e1e",
+			"editorGutter.background": "#0a0a0a",
+			"scrollbarSlider.background": "#ffffff14",
+			"scrollbarSlider.hoverBackground": "#ffffff26",
+			"scrollbarSlider.activeBackground": "#ffffff33",
+			"diffEditor.insertedTextBackground": "#1f6f3f33",
+			"diffEditor.removedTextBackground": "#7a282833",
+			"diffEditor.insertedLineBackground": "#1f6f3f1f",
+			"diffEditor.removedLineBackground": "#7a28281f",
+		},
+	});
 }
 
 export function DiffTab({ path }: Props) {
@@ -53,6 +94,40 @@ export function DiffTab({ path }: Props) {
 			<div className="h-full flex items-center justify-center text-fg-dim text-[12px]">
 				No changes for {path}
 			</div>
+		);
+	}
+
+	// Prefer Monaco's diff editor whenever at least one side has content.
+	// The backend strips empty strings from JSON, so for an added file
+	// `original` is undefined (not "") and for a deleted file `modified` is
+	// undefined; treat undefined as empty so those still hit DiffEditor.
+	const original = diff.original ?? "";
+	const modified = diff.modified ?? "";
+	if (original !== "" || modified !== "") {
+		// Side-by-side only makes sense for modified files. For added or deleted
+		// files inline mode renders a single column with green/red line backgrounds,
+		// which avoids a giant empty pane on one side.
+		const inline = diff.status === "added" || diff.status === "deleted";
+		return (
+			<DiffEditor
+				height="100%"
+				language={diff.language || undefined}
+				original={original}
+				modified={modified}
+				theme="wingman"
+				beforeMount={defineTheme}
+				options={{
+					readOnly: true,
+					renderSideBySide: !inline,
+					minimap: { enabled: false },
+					fontSize: 12,
+					lineNumbers: "on",
+					scrollBeyondLastLine: false,
+					renderWhitespace: "none",
+					padding: { top: 8 },
+					hideUnchangedRegions: { enabled: !inline },
+				}}
+			/>
 		);
 	}
 

@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { useCallback, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel";
+import { CheckpointsPanel } from "./components/CheckpointsPanel";
 import { DiffsPanel } from "./components/DiffsPanel";
 import { DiffTab } from "./components/DiffTab";
 import { FileTab } from "./components/FileTab";
@@ -17,7 +18,6 @@ import { FileTree } from "./components/FileTree";
 import { ProblemsPanel } from "./components/ProblemsPanel";
 import { PromptDialog } from "./components/PromptDialog";
 import { Sidebar } from "./components/Sidebar";
-import { StatusBar } from "./components/StatusBar";
 import { useWebSocket } from "./hooks/useWebSocket";
 
 interface CenterTab {
@@ -28,20 +28,19 @@ interface CenterTab {
 	line?: number;
 }
 
-type RightTab = "changes" | "files" | "problems";
+type RightTab = "changes" | "files";
 
 export default function App() {
 	const {
-		connected,
 		phase,
 		entries,
-		usage,
 		prompt,
 		sendChat,
 		cancel,
 		respondPrompt,
 		respondAsk,
 		setEntries,
+		subscribe,
 	} = useWebSocket();
 	const [sessionId, setSessionId] = useState("");
 	const [rightTab, setRightTab] = useState<RightTab>("changes");
@@ -107,6 +106,15 @@ export default function App() {
 		setActiveTabId("chat");
 	}, [setEntries]);
 
+	const handleSessionDeleted = useCallback(
+		(id: string) => {
+			if (id === sessionId) {
+				handleNewSession();
+			}
+		},
+		[sessionId, handleNewSession],
+	);
+
 	const handleSessionSelect = useCallback(
 		async (id: string) => {
 			const res = await fetch(`/api/sessions/${id}/load`, { method: "POST" });
@@ -165,6 +173,7 @@ export default function App() {
 							currentSessionId={sessionId}
 							onSessionSelect={handleSessionSelect}
 							onNewSession={handleNewSession}
+							onSessionDeleted={handleSessionDeleted}
 						/>
 					</div>
 				</div>
@@ -281,34 +290,39 @@ export default function App() {
 							>
 								Files
 							</RightTabButton>
-							<RightTabButton
-								active={rightTab === "problems"}
-								onClick={() => setRightTab("problems")}
-							>
-								Problems
-							</RightTabButton>
 							<div className="flex-1" />
 						</div>
 						<div className="h-px bg-border-subtle shrink-0" />
 						<div className="flex-1 overflow-hidden">
 							{rightTab === "changes" ? (
-								<DiffsPanel visible={true} onOpenDiff={openDiff} />
-							) : rightTab === "problems" ? (
-								<ProblemsPanel onOpenFile={openFile} />
+								<div className="flex flex-col h-full">
+									<div className="flex-[3] min-h-0 overflow-hidden">
+										<DiffsPanel
+											visible={true}
+											onOpenDiff={openDiff}
+											subscribe={subscribe}
+										/>
+									</div>
+									<div className="h-px bg-border-subtle shrink-0" />
+									<div className="flex-[1] min-h-0 overflow-hidden">
+										<CheckpointsPanel visible={true} subscribe={subscribe} />
+									</div>
+								</div>
 							) : (
-								<FileTree onFileSelect={openFile} />
+								<div className="flex flex-col h-full">
+									<div className="flex-[3] min-h-0 overflow-hidden flex flex-col">
+										<FileTree onFileSelect={openFile} />
+									</div>
+									<div className="h-px bg-border-subtle shrink-0" />
+									<div className="flex-[1] min-h-0 overflow-hidden">
+										<ProblemsPanel onOpenFile={openFile} />
+									</div>
+								</div>
 							)}
 						</div>
 					</div>
 				</div>
 			</div>
-
-			<StatusBar
-				connected={connected}
-				phase={phase}
-				inputTokens={usage.inputTokens}
-				outputTokens={usage.outputTokens}
-			/>
 
 			<PromptDialog
 				prompt={prompt}

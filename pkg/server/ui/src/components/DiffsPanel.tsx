@@ -1,13 +1,14 @@
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import type { DiffEntry } from "../types/protocol";
+import type { DiffEntry, ServerMessage } from "../types/protocol";
 
 interface Props {
 	visible: boolean;
 	onOpenDiff?: (path: string) => void;
+	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 }
 
-export function DiffsPanel({ visible, onOpenDiff }: Props) {
+export function DiffsPanel({ visible, onOpenDiff, subscribe }: Props) {
 	const [diffs, setDiffs] = useState<DiffEntry[]>([]);
 
 	const loadDiffs = useCallback(async () => {
@@ -25,8 +26,17 @@ export function DiffsPanel({ visible, onOpenDiff }: Props) {
 	}, []);
 
 	useEffect(() => {
-		if (visible) loadDiffs();
-	}, [visible, loadDiffs]);
+		loadDiffs();
+	}, [loadDiffs]);
+
+	useEffect(() => {
+		if (!subscribe) return;
+		return subscribe((msg) => {
+			if (msg.type === "diffs_changed") {
+				loadDiffs();
+			}
+		});
+	}, [subscribe, loadDiffs]);
 
 	if (!visible) return null;
 

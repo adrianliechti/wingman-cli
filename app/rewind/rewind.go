@@ -14,6 +14,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/storer"
+	"github.com/go-git/go-git/v5/storage"
 	"github.com/go-git/go-git/v5/storage/filesystem"
 	"github.com/go-git/go-git/v5/utils/merkletrie"
 )
@@ -30,7 +32,55 @@ type Manager struct {
 	worktree     *git.Worktree
 	gitDir       string
 	workingDir   string
+	userRepo     *git.Repository // user's actual .git, opened read-only for HEAD lookups
 	baselineHash plumbing.Hash
+	// firstVisibleHash is the oldest commit shown in List(). When the working
+	// tree was dirty at launch, the HEAD baseline commit lives below this and
+	// is hidden so the chain reads simply: "Uncommitted Work" → per-turn …
+	firstVisibleHash plumbing.Hash
+}
+
+// readThroughStorage is a Storer that delegates writes to a primary store and
+// falls back to a read-only secondary object store on cache misses. It lets us
+// reference objects from the user's .git/objects without copying them into our
+// temp rewind store, which avoids an O(repo-size) walk at startup.
+type readThroughStorage struct {
+	storage.Storer
+	secondary storer.EncodedObjectStorer
+}
+
+func (s *readThroughStorage) EncodedObject(t plumbing.ObjectType, h plumbing.Hash) (plumbing.EncodedObject, error) {
+	obj, err := s.Storer.EncodedObject(t, h)
+	if err == nil {
+		return obj, nil
+	}
+	if errors.Is(err, plumbing.ErrObjectNotFound) && s.secondary != nil {
+		return s.secondary.EncodedObject(t, h)
+	}
+	return obj, err
+}
+
+func (s *readThroughStorage) HasEncodedObject(h plumbing.Hash) error {
+	if err := s.Storer.HasEncodedObject(h); err == nil {
+		return nil
+	} else if !errors.Is(err, plumbing.ErrObjectNotFound) {
+		return err
+	}
+	if s.secondary != nil {
+		return s.secondary.HasEncodedObject(h)
+	}
+	return plumbing.ErrObjectNotFound
+}
+
+func (s *readThroughStorage) EncodedObjectSize(h plumbing.Hash) (int64, error) {
+	size, err := s.Storer.EncodedObjectSize(h)
+	if err == nil {
+		return size, nil
+	}
+	if errors.Is(err, plumbing.ErrObjectNotFound) && s.secondary != nil {
+		return s.secondary.EncodedObjectSize(h)
+	}
+	return size, err
 }
 
 func New(workingDir string) (*Manager, error) {
@@ -44,9 +94,24 @@ func New(workingDir string) (*Manager, error) {
 	gitDirFS := osfs.New(gitDir)
 	workTreeFS := osfs.New(workingDir)
 
-	storage := filesystem.NewStorage(gitDirFS, cache.NewObjectLRUDefault())
+	tempStorage := filesystem.NewStorage(gitDirFS, cache.NewObjectLRUDefault())
 
-	repo, err := git.Init(storage, nil)
+	// Open the user's .git read-only, if it exists, so we can reference its
+	// objects via read-through without copying.
+	var userRepo *git.Repository
+	if r, err := git.PlainOpen(workingDir); err == nil {
+		userRepo = r
+	}
+
+	var rewindStorage storage.Storer = tempStorage
+	if userRepo != nil {
+		rewindStorage = &readThroughStorage{
+			Storer:    tempStorage,
+			secondary: userRepo.Storer,
+		}
+	}
+
+	repo, err := git.Init(rewindStorage, nil)
 
 	if err != nil {
 		os.RemoveAll(gitDir)
@@ -70,7 +135,7 @@ func New(workingDir string) (*Manager, error) {
 		return nil, fmt.Errorf("failed to set config: %w", err)
 	}
 
-	repo, err = git.Open(storage, workTreeFS)
+	repo, err = git.Open(rewindStorage, workTreeFS)
 
 	if err != nil {
 		os.RemoveAll(gitDir)
@@ -91,9 +156,10 @@ func New(workingDir string) (*Manager, error) {
 		worktree:   worktree,
 		gitDir:     gitDir,
 		workingDir: workingDir,
+		userRepo:   userRepo,
 	}
 
-	if err := m.baseline(); err != nil {
+	if err := m.initBaseline(); err != nil {
 		os.RemoveAll(gitDir)
 
 		return nil, fmt.Errorf("failed to create baseline commit: %w", err)
@@ -102,21 +168,98 @@ func New(workingDir string) (*Manager, error) {
 	return m, nil
 }
 
-func (m *Manager) loadExcludePatterns() []gitignore.Pattern {
-	// Load patterns from .gitignore files in the working directory
-	patterns, _ := gitignore.ReadPatterns(m.worktree.Filesystem, nil)
-	return patterns
+// initBaseline creates the baseline commit for the rewind history.
+// Preferred: take the user's git HEAD as baseline (so pre-existing uncommitted
+// changes appear in the diff). If the working dir is not a git repo or has no
+// HEAD yet, fall back to snapshotting the current working tree.
+//
+// When HEAD is used and the working tree differs from it, a follow-up
+// "Uncommitted Work" checkpoint is created so the user's pre-existing edits
+// are preserved as a restorable point.
+func (m *Manager) initBaseline() error {
+	hash, ok := m.baselineFromUserHEAD()
+	if !ok {
+		if err := m.baselineFromWorkingTree(); err != nil {
+			return err
+		}
+		m.firstVisibleHash = m.baselineHash
+		return nil
+	}
+
+	m.baselineHash = hash
+	m.firstVisibleHash = hash
+
+	// If the working tree differs from HEAD, "Uncommitted Work" lands on top
+	// and becomes the new first-visible entry — hiding the bare HEAD baseline.
+	// On a clean tree m.commit is a no-op and HEAD stays at the baseline.
+	_ = m.commit("Uncommitted Work")
+	if headRef, err := m.repo.Head(); err == nil {
+		m.firstVisibleHash = headRef.Hash()
+	}
+	return nil
 }
 
-func (m *Manager) baseline() error {
-	// Load gitignore patterns to exclude common large directories
+// baselineFromUserHEAD attempts to read the user's git HEAD and create a
+// baseline commit in our rewind store referencing the HEAD tree. Returns the
+// new commit hash and true on success.
+//
+// We don't copy the HEAD tree's objects — our store is wired up read-through
+// to the user's .git/objects, so referencing the tree hash is enough.
+func (m *Manager) baselineFromUserHEAD() (plumbing.Hash, bool) {
+	if m.userRepo == nil {
+		return plumbing.ZeroHash, false
+	}
+
+	headRef, err := m.userRepo.Head()
+	if err != nil {
+		return plumbing.ZeroHash, false
+	}
+
+	headCommit, err := m.userRepo.CommitObject(headRef.Hash())
+	if err != nil {
+		return plumbing.ZeroHash, false
+	}
+
+	sig := object.Signature{Name: "wingman", Email: "wingman@local", When: time.Now()}
+	baselineCommit := &object.Commit{
+		Author:    sig,
+		Committer: sig,
+		Message:   "Session Start",
+		TreeHash:  headCommit.TreeHash,
+	}
+
+	obj := m.repo.Storer.NewEncodedObject()
+	if err := baselineCommit.Encode(obj); err != nil {
+		return plumbing.ZeroHash, false
+	}
+
+	hash, err := m.repo.Storer.SetEncodedObject(obj)
+	if err != nil {
+		return plumbing.ZeroHash, false
+	}
+
+	branch := plumbing.NewBranchReferenceName("master")
+	if err := m.repo.Storer.SetReference(plumbing.NewHashReference(branch, hash)); err != nil {
+		return plumbing.ZeroHash, false
+	}
+	if err := m.repo.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, branch)); err != nil {
+		return plumbing.ZeroHash, false
+	}
+
+	return hash, true
+}
+
+// baselineFromWorkingTree is the fallback baseline strategy when the user's
+// working dir is not a git repo, or has no HEAD yet. It snapshots whatever
+// is currently on disk.
+func (m *Manager) baselineFromWorkingTree() error {
 	m.worktree.Excludes = m.loadExcludePatterns()
 
 	if err := m.worktree.AddWithOptions(&git.AddOptions{All: true}); err != nil {
 		return fmt.Errorf("failed to add files: %w", err)
 	}
 
-	hash, err := m.worktree.Commit("Baseline", &git.CommitOptions{
+	hash, err := m.worktree.Commit("Session Start", &git.CommitOptions{
 		Author: &object.Signature{
 			Name:  "wingman",
 			Email: "wingman@local",
@@ -134,31 +277,39 @@ func (m *Manager) baseline() error {
 	return nil
 }
 
+
+func (m *Manager) loadExcludePatterns() []gitignore.Pattern {
+	// Load patterns from .gitignore files in the working directory
+	patterns, _ := gitignore.ReadPatterns(m.worktree.Filesystem, nil)
+	return patterns
+}
+
 func (m *Manager) commit(message string) error {
-	if err := m.worktree.AddWithOptions(&git.AddOptions{All: true}); err != nil {
-		return fmt.Errorf("failed to add files: %w", err)
-	}
+	// Cheap status check first: if nothing changed, skip the expensive
+	// AddWithOptions walk entirely. This is the common case for clean repos
+	// and dramatically cheaper than always staging.
+	m.worktree.Excludes = m.loadExcludePatterns()
 
 	status, err := m.worktree.Status()
-
 	if err != nil {
 		return fmt.Errorf("failed to get status: %w", err)
 	}
-
 	if status.IsClean() {
 		return nil
 	}
 
-	_, err = m.worktree.Commit(message, &git.CommitOptions{
+	if err := m.worktree.AddWithOptions(&git.AddOptions{All: true}); err != nil {
+		return fmt.Errorf("failed to add files: %w", err)
+	}
+
+	if _, err := m.worktree.Commit(message, &git.CommitOptions{
 		Author: &object.Signature{
 			Name:  "wingman",
 			Email: "wingman@local",
 			When:  time.Now(),
 		},
 		AllowEmptyCommits: false,
-	})
-
-	if err != nil {
+	}); err != nil {
 		return fmt.Errorf("failed to commit: %w", err)
 	}
 
@@ -197,10 +348,17 @@ func (m *Manager) List() ([]Checkpoint, error) {
 			Time:    c.Author.When,
 		})
 
+		// Stop after we've emitted the oldest user-visible checkpoint;
+		// anything below (e.g. the hidden HEAD baseline when "Uncommitted
+		// Work" exists) is implementation detail.
+		if !m.firstVisibleHash.IsZero() && c.Hash == m.firstVisibleHash {
+			return storer.ErrStop
+		}
+
 		return nil
 	})
 
-	if err != nil {
+	if err != nil && err != storer.ErrStop {
 		return nil, fmt.Errorf("failed to iterate commits: %w", err)
 	}
 
@@ -254,9 +412,68 @@ type FileDiff struct {
 	Path   string
 	Status FileStatus
 	Patch  string
+
+	// Original is the file's content at the baseline (empty when added).
+	Original string
+	// Modified is the file's content in the current working tree (empty when deleted).
+	Modified string
 }
 
-// DiffFromBaseline returns the diff between the baseline commit and the current HEAD
+// snapshotTree captures the current working tree as a tree object without polluting
+// the user-visible checkpoint history. It works by writing a transient commit and
+// then resetting the branch ref back to where it was before — the commit and tree
+// objects remain in the object store as garbage, which is fine for a /tmp repo.
+func (m *Manager) snapshotTree() (*object.Tree, error) {
+	prevHead, err := m.repo.Head()
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get HEAD: %w", err)
+	}
+
+	m.worktree.Excludes = m.loadExcludePatterns()
+
+	if err := m.worktree.AddWithOptions(&git.AddOptions{All: true}); err != nil {
+		return nil, fmt.Errorf("failed to stage: %w", err)
+	}
+
+	snapshotHash, err := m.worktree.Commit("__live__", &git.CommitOptions{
+		Author: &object.Signature{
+			Name:  "wingman",
+			Email: "wingman@local",
+			When:  time.Now(),
+		},
+		AllowEmptyCommits: true,
+	})
+
+	// Always try to roll the branch ref back, even if the commit failed.
+	if rollbackErr := m.repo.Storer.SetReference(plumbing.NewHashReference(prevHead.Name(), prevHead.Hash())); rollbackErr != nil {
+		if err == nil {
+			err = fmt.Errorf("failed to reset HEAD after snapshot: %w", rollbackErr)
+		}
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to snapshot: %w", err)
+	}
+
+	snapshotCommit, err := m.repo.CommitObject(snapshotHash)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to load snapshot commit: %w", err)
+	}
+
+	tree, err := snapshotCommit.Tree()
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to get snapshot tree: %w", err)
+	}
+
+	return tree, nil
+}
+
+// DiffFromBaseline returns the diff between the baseline and the current working tree.
+// The right-hand side is taken from the live working tree (not HEAD), so changes from
+// any source — agent tools, the user's terminal, an external editor — are reflected.
 func (m *Manager) DiffFromBaseline() ([]FileDiff, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -265,7 +482,6 @@ func (m *Manager) DiffFromBaseline() ([]FileDiff, error) {
 		return nil, errors.New("no baseline available")
 	}
 
-	// Get the baseline commit using cached hash
 	baselineCommit, err := m.repo.CommitObject(m.baselineHash)
 
 	if err != nil {
@@ -278,27 +494,13 @@ func (m *Manager) DiffFromBaseline() ([]FileDiff, error) {
 		return nil, fmt.Errorf("failed to get baseline tree: %w", err)
 	}
 
-	// Get HEAD commit
-	headRef, err := m.repo.Head()
+	liveTree, err := m.snapshotTree()
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to get HEAD: %w", err)
+		return nil, fmt.Errorf("failed to snapshot working tree: %w", err)
 	}
 
-	headCommit, err := m.repo.CommitObject(headRef.Hash())
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to get HEAD commit: %w", err)
-	}
-
-	headTree, err := headCommit.Tree()
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to get HEAD tree: %w", err)
-	}
-
-	// Get the diff between baseline and HEAD
-	changes, err := baselineTree.Diff(headTree)
+	changes, err := baselineTree.Diff(liveTree)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute diff: %w", err)
@@ -340,10 +542,25 @@ func (m *Manager) DiffFromBaseline() ([]FileDiff, error) {
 			continue
 		}
 
+		from, to, _ := change.Files()
+		var original, modified string
+		if from != nil {
+			if c, err := from.Contents(); err == nil {
+				original = c
+			}
+		}
+		if to != nil {
+			if c, err := to.Contents(); err == nil {
+				modified = c
+			}
+		}
+
 		diffs = append(diffs, FileDiff{
-			Path:   path,
-			Status: status,
-			Patch:  patch.String(),
+			Path:     path,
+			Status:   status,
+			Patch:    patch.String(),
+			Original: original,
+			Modified: modified,
 		})
 	}
 

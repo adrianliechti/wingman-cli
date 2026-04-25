@@ -37,6 +37,18 @@ export function useWebSocket() {
 
 	const nextId = () => String(++idCounterRef.current);
 
+	// Anyone (e.g. DiffsPanel, CheckpointsPanel) can subscribe to raw server
+	// messages. The set is a ref so adding/removing subscribers does not retrigger
+	// the WebSocket connection effect.
+	const subscribersRef = useRef<Set<(msg: ServerMessage) => void>>(new Set());
+
+	const subscribe = useCallback((handler: (msg: ServerMessage) => void) => {
+		subscribersRef.current.add(handler);
+		return () => {
+			subscribersRef.current.delete(handler);
+		};
+	}, []);
+
 	const finalizeStreaming = useCallback(() => {
 		if (streamingIdRef.current && streamingRef.current) {
 			const id = streamingIdRef.current;
@@ -53,6 +65,9 @@ export function useWebSocket() {
 	const handleMessageRef = useRef<(msg: ServerMessage) => void>(() => {});
 
 	handleMessageRef.current = (msg: ServerMessage) => {
+		for (const sub of subscribersRef.current) {
+			sub(msg);
+		}
 		switch (msg.type) {
 			case "messages": {
 				const restored: ChatEntry[] = [];
@@ -253,5 +268,6 @@ export function useWebSocket() {
 		respondPrompt,
 		respondAsk,
 		setEntries,
+		subscribe,
 	};
 }

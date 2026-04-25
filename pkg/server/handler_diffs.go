@@ -2,6 +2,8 @@ package server
 
 import (
 	"net/http"
+	"path/filepath"
+	"strings"
 
 	"github.com/adrianliechti/wingman-agent/app/rewind"
 )
@@ -38,9 +40,12 @@ func (s *Server) handleDiffs(w http.ResponseWriter, r *http.Request) {
 		}
 
 		result = append(result, DiffEntry{
-			Path:   d.Path,
-			Status: status,
-			Patch:  d.Patch,
+			Path:     d.Path,
+			Status:   status,
+			Patch:    d.Patch,
+			Original: d.Original,
+			Modified: d.Modified,
+			Language: extToLanguage[strings.ToLower(filepath.Ext(d.Path))],
 		})
 	}
 

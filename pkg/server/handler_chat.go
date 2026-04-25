@@ -172,7 +172,12 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 			if commitMsg == "" {
 				commitMsg = "<unknown>"
 			}
-			s.rewind.Commit(commitMsg)
+			if err := s.rewind.Commit(commitMsg); err == nil {
+				s.sendMessage(ServerMessage{Type: MsgCheckpointsChanged})
+			}
+			// fsnotify will likely fire too, but push explicitly to avoid
+			// any race where the UI fetches before the watcher debounces.
+			s.sendMessage(ServerMessage{Type: MsgDiffsChanged})
 		}
 	default:
 	}

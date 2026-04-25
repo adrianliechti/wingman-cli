@@ -121,6 +121,61 @@ func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, files)
 }
 
+func (s *Server) handleFilesSearch(w http.ResponseWriter, r *http.Request) {
+	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+
+	const limit = 50
+
+	fsys := s.agent.Root.FS()
+
+	type hit struct {
+		Path string `json:"path"`
+		Name string `json:"name"`
+	}
+
+	results := make([]hit, 0, limit)
+
+	fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+
+		name := d.Name()
+
+		if d.IsDir() {
+			if p == "." {
+				return nil
+			}
+			if strings.HasPrefix(name, ".") {
+				return fs.SkipDir
+			}
+			switch name {
+			case "node_modules", "__pycache__", ".venv", "vendor", "dist", "build", "target", ".next", ".cache":
+				return fs.SkipDir
+			}
+			return nil
+		}
+
+		if strings.HasPrefix(name, ".") {
+			return nil
+		}
+
+		if q != "" && !strings.Contains(strings.ToLower(p), q) {
+			return nil
+		}
+
+		results = append(results, hit{Path: p, Name: name})
+
+		if len(results) >= limit {
+			return fs.SkipAll
+		}
+
+		return nil
+	})
+
+	writeJSON(w, results)
+}
+
 func (s *Server) handleFileRead(w http.ResponseWriter, r *http.Request) {
 	filePath := r.URL.Query().Get("path")
 	if filePath == "" {

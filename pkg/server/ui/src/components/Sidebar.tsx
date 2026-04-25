@@ -12,12 +12,14 @@ interface Props {
 	currentSessionId: string;
 	onSessionSelect: (id: string) => void;
 	onNewSession: () => void;
+	onSessionDeleted?: (id: string) => void;
 }
 
 export function Sidebar({
 	currentSessionId,
 	onSessionSelect,
 	onNewSession,
+	onSessionDeleted,
 }: Props) {
 	const [sessions, setSessions] = useState<SessionInfo[]>([]);
 
@@ -45,6 +47,7 @@ export function Sidebar({
 	const handleDelete = async (e: React.MouseEvent, id: string) => {
 		e.stopPropagation();
 		await fetch(`/api/sessions/${id}`, { method: "DELETE" });
+		onSessionDeleted?.(id);
 		loadSessions();
 	};
 
@@ -53,14 +56,14 @@ export function Sidebar({
 	return (
 		<div className="w-56 h-full flex flex-col bg-bg shrink-0">
 			{/* Header */}
-			<div className="h-10 px-4 flex items-center justify-between shrink-0">
+			<div className="h-10 pl-4 pr-1.5 flex items-center justify-between shrink-0">
 				<span className="text-[11px] font-medium text-fg-dim uppercase tracking-wider">
 					Sessions
 				</span>
 				<button
 					type="button"
 					onClick={onNewSession}
-					className="w-6 h-6 flex items-center justify-center rounded-md text-fg-dim hover:text-fg hover:bg-bg-hover cursor-pointer transition-colors"
+					className="w-7 h-7 flex items-center justify-center rounded-md text-fg-dim hover:text-fg hover:bg-bg-hover cursor-pointer transition-colors"
 					title="New session"
 				>
 					<Plus size={14} />
