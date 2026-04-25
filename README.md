@@ -17,10 +17,24 @@ A powerful AI-powered coding assistant that runs directly in your terminal. Wing
 - **Rewind & Diff** — Checkpoint-based undo with visual diff viewer
 - **Skills** — Define custom workflows using [Agent Skills](https://agentskills.io) format
 - **Image Support** — Paste images from clipboard for vision-capable models
-- **File Context** — Add files to context with `@filename` or `/file` command
+- **File Context** — Add files to context with `@` or drag-and-drop file paths
 - **Theme Detection** — Automatic light/dark theme based on terminal settings
+- **Session Management** — Conversations are saved automatically and can be resumed
 
 ## 📦 Installation
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew install adrianliechti/tap/wingman
+```
+
+### Scoop (Windows)
+
+```bash
+scoop bucket add adrianliechti https://github.com/adrianliechti/scoop-bucket
+scoop install wingman
+```
 
 ### From Source
 
@@ -61,6 +75,12 @@ wingman
 > Write tests for the agent module
 ```
 
+4. **Resume a previous session:**
+```bash
+wingman --resume              # resume the most recent session
+wingman --resume <session-id> # resume a specific session
+```
+
 ## ⚙️ Configuration
 
 ### Environment Variables
@@ -79,9 +99,11 @@ wingman
 | `WINGMAN_TOKEN` | Wingman authentication token |
 | `WINGMAN_MODEL` | Model to use |
 
+> **Note:** The `fetch` (URL fetching) and `search_online` (web search) tools require `WINGMAN_URL` to be set, as they delegate to the Wingman server's extract and search APIs.
+
 ### Project Configuration
 
-Create an `AGENTS.md` file in your project root to provide context-specific instructions:
+Create an `AGENTS.md` (or `CLAUDE.md`) file in your project root to provide context-specific instructions. Wingman walks up from your working directory and reads all matching files it finds, so you can layer project and workspace-level guidelines:
 
 ```markdown
 # Project Guidelines
@@ -93,11 +115,11 @@ Create an `AGENTS.md` file in your project root to provide context-specific inst
 
 ### MCP Integration
 
-Add a `mcp.json` file to integrate with MCP servers:
+Add an `mcp.json` file to integrate with MCP servers:
 
 ```json
 {
-  "servers": {
+  "mcpServers": {
     "my-server": {
       "command": "npx",
       "args": ["-y", "@my-org/my-mcp-server"]
@@ -105,6 +127,8 @@ Add a `mcp.json` file to integrate with MCP servers:
   }
 }
 ```
+
+Remote (HTTP/SSE) servers are also supported via the `url` and optional `headers` fields.
 
 ## 🛠️ Built-in Tools
 
@@ -119,6 +143,9 @@ Wingman comes with powerful built-in tools:
 | `find` | Find files using glob patterns |
 | `grep` | Search file contents using regex patterns |
 | `shell` | Execute shell commands |
+| `fetch` | Fetch and extract content from a URL (requires `WINGMAN_URL`) |
+| `search_online` | Search the web for up-to-date information (requires `WINGMAN_URL`) |
+| `agent` | Launch a sub-agent to handle independent tasks in a separate context |
 | `lsp` | Code intelligence (definitions, references, diagnostics, symbols, call hierarchy) |
 
 ### LSP Support
@@ -129,17 +156,37 @@ Wingman automatically detects and connects to language servers based on project 
 |----------|--------|-------------|
 | Go | `gopls` | `go.mod`, `go.work` |
 | TypeScript/JS | `typescript-language-server`, `vtsls` | `tsconfig.json`, `package.json` |
-| Python | `basedpyright`, `pyright`, `pylsp` | `pyproject.toml`, `requirements.txt` |
+| Deno | `deno lsp` | `deno.json`, `deno.jsonc` |
+| Python | `basedpyright`, `pyright`, `pylsp`, `jedi-language-server` | `pyproject.toml`, `requirements.txt` |
 | Rust | `rust-analyzer` | `Cargo.toml` |
 | C/C++ | `clangd`, `ccls` | `compile_commands.json`, `CMakeLists.txt` |
 | Java | `jdtls` | `pom.xml`, `build.gradle` |
-| C# | `OmniSharp`, `csharp-ls` | `*.csproj`, `*.sln` |
+| C# | `omnisharp`, `csharp-ls` | `*.csproj`, `*.sln` |
+| F# | `fsautocomplete` | `*.fsproj`, `*.sln` |
 | Ruby | `ruby-lsp`, `solargraph` | `Gemfile` |
 | PHP | `intelephense`, `phpactor` | `composer.json` |
 | Swift | `sourcekit-lsp` | `Package.swift` |
 | Kotlin | `kotlin-language-server` | `build.gradle.kts` |
+| Scala | `metals` | `build.sbt` |
+| Dart | `dart language-server` | `pubspec.yaml` |
 | Zig | `zls` | `build.zig` |
-| And more... | | Terraform, Scala, Haskell, Elixir, Lua, YAML, Docker |
+| Lua | `lua-language-server` | `.luarc.json` |
+| Elixir | `elixir-ls`, `lexical` | `mix.exs` |
+| Haskell | `haskell-language-server` | `stack.yaml`, `*.cabal` |
+| OCaml | `ocamllsp` | `dune-project` |
+| Clojure | `clojure-lsp` | `deps.edn`, `project.clj` |
+| Gleam | `gleam lsp` | `gleam.toml` |
+| Nix | `nixd` | `flake.nix`, `default.nix` |
+| Vue | `vue-language-server` | `package.json` |
+| Svelte | `svelteserver` | `package.json` |
+| Astro | `astro-ls` | `package.json` |
+| Bash | `bash-language-server` | `.bashrc`, `*.sh` |
+| Terraform | `terraform-ls` | `main.tf`, `.terraform` |
+| YAML | `yaml-language-server` | `.yamllint`, `docker-compose.yml` |
+| Docker | `docker-langserver` | `Dockerfile` |
+| Prisma | `prisma language-server` | `schema.prisma` |
+| Typst | `tinymist` | `typst.toml` |
+| LaTeX | `texlab` | `.latexmkrc` |
 
 The LSP tool provides these operations:
 - **diagnostics** / **workspaceDiagnostics** — Compiler errors and warnings
@@ -161,39 +208,67 @@ Toggle between modes using `Tab` or the explicit `/plan` and `/agent` commands.
 | Shortcut | Action |
 |----------|--------|
 | `Enter` | Send message |
-| `Tab` | Toggle Agent/Plan mode |
+| `Tab` | Toggle Agent/Plan mode (or autocomplete slash commands) |
 | `Shift+Tab` | Cycle through available models |
-| `@` | Open file picker to add context |
-| `Ctrl+V` / `Cmd+V` | Paste image from clipboard |
+| `@` | Open fuzzy file picker to add file context |
+| `Ctrl+V` / `Cmd+V` | Paste image or text from clipboard |
+| `Ctrl+E` | Toggle tool output expansion |
+| `Ctrl+T` | Toggle mouse capture (enables native text selection) |
+| `Ctrl+Y` | Copy last assistant response to clipboard |
 | `Ctrl+L` | Clear chat history |
-| `Escape` | Clear input and pending attachments |
-| `Ctrl+C` | Close modal or exit |
+| `Escape` | Cancel stream, close modal, or clear input |
+| `Ctrl+C` | Copy selected text, close modal, cancel stream, or exit |
 
 ## 📝 Commands
 
 | Command | Description |
 |---------|-------------|
-| `/help` | Show available commands |
+| `/help` | Show available commands and skills |
 | `/model` | Select AI model from available options |
-| `/plan` | Enter planning mode and create or reuse the session plan file |
-| `/agent` | Return to execution mode while keeping the active session plan |
-| `/file` | Add file to context |
+| `/plan` | Enter planning mode |
+| `/agent` | Return to execution mode |
+| `/problems` | Show LSP diagnostics for the workspace |
+| `/diff` | Show changes from session baseline (requires git) |
+| `/rewind` | Restore to a previous checkpoint (requires git) |
+| `/copy` | Copy last assistant response to clipboard |
 | `/paste` | Paste from clipboard |
-| `/diff` | Show changes from session baseline |
-| `/review` | Review code changes with AI |
-| `/rewind` | Restore to previous checkpoint |
+| `/resume` | Resume the most recent saved session |
 | `/clear` | Clear chat history |
 | `/quit` | Exit application |
 
+Skill slash commands (e.g. `/commit`, `/code-review`) also appear here — see **Skills** below.
+
 ## 🔧 Skills
 
-Skills are reusable workflows defined in `SKILL.md` files. Wingman discovers skills from:
-- `.skills/`
-- `.github/`
-- `.claude/`
-- `.opencode/`
+Skills are reusable, invocable workflows defined in `SKILL.md` files. Wingman discovers skills from these locations (later directories take priority):
 
-Example skill file (`.skills/testing/SKILL.md`):
+**Personal skills** (user-wide, across all projects):
+- `~/.agents/skills/<name>/SKILL.md`
+- `~/.wingman/skills/<name>/SKILL.md`
+- `~/.claude/skills/<name>/SKILL.md`
+- `~/.config/opencode/skills/<name>/SKILL.md`
+
+**Project skills** (scoped to the current repo):
+- `.agents/skills/<name>/SKILL.md`
+- `.wingman/skills/<name>/SKILL.md`
+- `.claude/skills/<name>/SKILL.md`
+- `.opencode/skills/<name>/SKILL.md`
+
+Project skills override personal skills with the same name, allowing per-project customization.
+
+### Bundled Skills
+
+Wingman ships with built-in skills that are available immediately via slash commands and are materialized to `~/.wingman/skills/` on first use so you can customize them:
+
+| Skill | Description |
+|-------|-------------|
+| `/init` | Scan the project and generate an `AGENTS.md` with conventions and build commands |
+| `/commit` | Stage and commit changes with a well-crafted commit message |
+| `/code-review` | Review code changes for correctness, style, and security |
+| `/security-review` | Deep security audit using parallel sub-agents |
+| `/simplify` | Review changed code for reuse, quality, and efficiency, then fix issues |
+
+### Custom Skill Example
 
 ```markdown
 ---
@@ -205,6 +280,20 @@ description: Run the project test suite with coverage
 
 Run tests with: `go test -cover ./...`
 ```
+
+Place this file at `.wingman/skills/run-tests/SKILL.md` and invoke it with `/run-tests`.
+
+Skills support argument placeholders (`${ARGUMENTS}`, `${1}`, named args) for parameterized workflows.
+
+## 🖥️ Server Mode
+
+Wingman includes a web-based UI server — useful for IDE integrations or browser-based access:
+
+```bash
+wingman server [--port 4242]
+```
+
+This starts an HTTP server at `http://localhost:4242` with a React UI featuring a chat panel, file browser, diff viewer, checkpoint browser, diagnostics panel, and session management. The server uses WebSockets for real-time streaming.
 
 ## 🔀 Proxy Mode
 
@@ -224,8 +313,17 @@ When `WINGMAN_URL` is set, Wingman can launch other coding agents pre-configured
 wingman codex [args...]    # Launch OpenAI Codex CLI
 wingman claude [args...]   # Launch Claude Code
 wingman gemini [args...]   # Launch Gemini CLI
-wingman junie [args...]    # Launch JetBrains Junie
 wingman opencode [args...] # Launch OpenCode
 ```
 
 Each wrapper automatically configures the target CLI tool with the correct endpoint and authentication.
+
+## 🤖 Claw Mode
+
+Wingman includes an experimental multi-agent orchestration mode:
+
+```bash
+wingman claw
+```
+
+Claw manages a pool of named agents with persistent memory, scheduled tasks, and a TUI interface. Each agent has its own sandboxed workspace and can spawn sub-agents. Agents persist their sessions across restarts and support proactive check-in schedules.

@@ -1,30 +1,61 @@
 import Editor, { type Monaco } from "@monaco-editor/react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useColorScheme } from "../hooks/useColorScheme";
 import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
-import type { FileContent } from "../types/protocol";
+import type { FileContent, ServerMessage } from "../types/protocol";
 
 interface Props {
 	path: string;
 	line?: number;
+	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
+	onDeleted?: () => void;
 }
 
-export function FileTab({ path, line }: Props) {
+export function FileTab({ path, line, subscribe, onDeleted }: Props) {
 	const [file, setFile] = useState<FileContent | null>(null);
 	const [loading, setLoading] = useState(true);
 	const monacoRef = useRef<Monaco | null>(null);
 	const scheme = useColorScheme();
 
+	// Keep onDeleted in a ref so `load` stays stable and the WebSocket
+	// subscription doesn't tear down/re-subscribe on every render.
+	const onDeletedRef = useRef(onDeleted);
+	onDeletedRef.current = onDeleted;
+
+	const load = useCallback(async () => {
+		try {
+			const res = await fetch(
+				`/api/files/read?path=${encodeURIComponent(path)}`,
+			);
+			if (res.status === 404) {
+				onDeletedRef.current?.();
+				return;
+			}
+			if (!res.ok) {
+				setLoading(false);
+				return;
+			}
+			const data: FileContent = await res.json();
+			setFile(data);
+			setLoading(false);
+		} catch {
+			setLoading(false);
+		}
+	}, [path]);
+
 	useEffect(() => {
 		setLoading(true);
-		fetch(`/api/files/read?path=${encodeURIComponent(path)}`)
-			.then((r) => r.json())
-			.then((data: FileContent) => {
-				setFile(data);
-				setLoading(false);
-			})
-			.catch(() => setLoading(false));
-	}, [path]);
+		load();
+	}, [load]);
+
+	useEffect(() => {
+		if (!subscribe) return;
+		return subscribe((msg) => {
+			if (msg.type === "files_changed") {
+				load();
+			}
+		});
+	}, [subscribe, load]);
 
 	if (loading) {
 		return (

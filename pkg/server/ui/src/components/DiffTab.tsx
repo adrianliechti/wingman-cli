@@ -1,42 +1,69 @@
 import { DiffEditor } from "@monaco-editor/react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useColorScheme } from "../hooks/useColorScheme";
 import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
-import type { DiffEntry } from "../types/protocol";
+import type { DiffEntry, ServerMessage } from "../types/protocol";
 
 interface Props {
 	path: string;
+	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
+	onDeleted?: () => void;
 }
 
-export function DiffTab({ path }: Props) {
+export function DiffTab({ path, subscribe, onDeleted }: Props) {
 	const [diff, setDiff] = useState<DiffEntry | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
 	const scheme = useColorScheme();
 
+	// Ref so `load` stays stable across renders and the WebSocket subscription
+	// doesn't tear down/re-subscribe each time.
+	const onDeletedRef = useRef(onDeleted);
+	onDeletedRef.current = onDeleted;
+	// Track whether we've ever found a diff for this path. Closing the tab on a
+	// missing entry only makes sense after we've shown one — opening directly
+	// from a stale link should still render the "No changes" state.
+	const hadDiffRef = useRef(false);
+
+	const load = useCallback(async () => {
+		try {
+			const res = await fetch("/api/diffs");
+			if (!res.ok) {
+				setError("failed to load diffs");
+				setLoading(false);
+				return;
+			}
+			const data: DiffEntry[] = await res.json();
+			const match = data.find((d) => d.path === path) || null;
+			if (!match && hadDiffRef.current) {
+				onDeletedRef.current?.();
+				return;
+			}
+			if (match) hadDiffRef.current = true;
+			setDiff(match);
+			setError(null);
+			setLoading(false);
+		} catch (e) {
+			setError(String(e));
+			setLoading(false);
+		}
+	}, [path]);
+
 	useEffect(() => {
-		let cancelled = false;
+		hadDiffRef.current = false;
 		setLoading(true);
 		setError(null);
-		fetch("/api/diffs")
-			.then((r) =>
-				r.ok ? r.json() : Promise.reject(new Error("failed to load diffs")),
-			)
-			.then((data: DiffEntry[]) => {
-				if (cancelled) return;
-				const match = data.find((d) => d.path === path) || null;
-				setDiff(match);
-				setLoading(false);
-			})
-			.catch((e) => {
-				if (cancelled) return;
-				setError(String(e));
-				setLoading(false);
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, [path]);
+		load();
+	}, [load]);
+
+	useEffect(() => {
+		if (!subscribe) return;
+		return subscribe((msg) => {
+			if (msg.type === "diffs_changed") {
+				load();
+			}
+		});
+	}, [subscribe, load]);
 
 	if (loading) {
 		return (

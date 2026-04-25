@@ -121,7 +121,14 @@ func (s *Server) Run(ctx context.Context) error {
 		server.Close()
 	}()
 
-	fmt.Fprintf(os.Stderr, "Wingman server running at http://localhost:%d\n", s.port)
+	url := fmt.Sprintf("http://localhost:%d", s.port)
+	fmt.Fprintf(os.Stderr, "Wingman running at %s\n", url)
+
+	// Open the URL in the user's default browser unless explicitly disabled
+	// (CI, headless servers, SSH sessions, …).
+	if os.Getenv("WINGMAN_NO_BROWSER") == "" {
+		openBrowser(url)
+	}
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err

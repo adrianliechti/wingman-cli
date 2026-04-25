@@ -1,6 +1,7 @@
 import {
 	FileText,
 	GitCompare,
+	Loader2,
 	MessageSquare,
 	PanelLeftClose,
 	PanelLeftOpen,
@@ -32,6 +33,7 @@ type RightTab = "changes" | "files";
 
 export default function App() {
 	const {
+		connected,
 		phase,
 		entries,
 		prompt,
@@ -161,7 +163,7 @@ export default function App() {
 	const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
 
 	return (
-		<div className="flex flex-col h-screen bg-bg text-fg">
+		<div className="relative flex flex-col h-screen bg-bg text-fg">
 			<div className="flex flex-1 overflow-hidden">
 				{/* Left Sidebar */}
 				<div
@@ -272,9 +274,18 @@ export default function App() {
 								onCancel={cancel}
 							/>
 						) : activeTab.type === "diff" && activeTab.path ? (
-							<DiffTab path={activeTab.path} />
+							<DiffTab
+								path={activeTab.path}
+								subscribe={subscribe}
+								onDeleted={() => closeTab(activeTab.id)}
+							/>
 						) : activeTab.path ? (
-							<FileTab path={activeTab.path} line={activeTab.line} />
+							<FileTab
+								path={activeTab.path}
+								line={activeTab.line}
+								subscribe={subscribe}
+								onDeleted={() => closeTab(activeTab.id)}
+							/>
 						) : null}
 					</div>
 				</div>
@@ -340,6 +351,15 @@ export default function App() {
 				onPromptResponse={respondPrompt}
 				onAskResponse={respondAsk}
 			/>
+
+			{!connected && (
+				<div className="absolute inset-0 z-50 flex items-center justify-center backdrop-blur-md bg-bg/60">
+					<div className="flex flex-col items-center gap-3 text-fg-muted">
+						<Loader2 size={28} className="animate-spin" />
+						<div className="text-[13px]">Reconnecting…</div>
+					</div>
+				</div>
+			)}
 		</div>
 	);
 }
