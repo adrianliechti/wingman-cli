@@ -34,6 +34,8 @@ type Skill struct {
 
 // GetContent returns the skill's prompt content. For bundled skills, returns
 // the embedded content. For file-based skills, reads the SKILL.md file.
+// An absolute Location (e.g. personal skills under the user's home dir) is
+// used as-is; a relative Location is resolved against workingDir.
 func (s *Skill) GetContent(workingDir string) (string, error) {
 	if s.Content != "" {
 		return s.Content, nil
@@ -43,7 +45,12 @@ func (s *Skill) GetContent(workingDir string) (string, error) {
 		return "", fmt.Errorf("skill %q has no location or content", s.Name)
 	}
 
-	path := filepath.Join(workingDir, s.Location, "SKILL.md")
+	var path string
+	if filepath.IsAbs(s.Location) {
+		path = filepath.Join(s.Location, "SKILL.md")
+	} else {
+		path = filepath.Join(workingDir, s.Location, "SKILL.md")
+	}
 	return readSkillContent(path)
 }
 
@@ -80,11 +87,25 @@ func (s *Skill) ApplyArguments(content string, args string) string {
 	return content
 }
 
+// skillDirs are project-relative roots scanned for skills. The conventional
+// layout is <root>/<dir>/skills/<name>/SKILL.md, but Discover globs for
+// **/SKILL.md so any nested layout works too.
 var skillDirs = []string{
+	".agents",
 	".skills",
-	".github",
+	".wingman",
 	".claude",
+	".github",
 	".opencode",
+}
+
+// personalSkillRoots are home-relative directories scanned for user-wide
+// skills following <home>/<root>/<name>/SKILL.md.
+var personalSkillRoots = []string{
+	".agents/skills",
+	".wingman/skills",
+	".claude/skills",
+	".config/opencode/skills",
 }
 
 func Discover(root string) ([]Skill, error) {
@@ -118,6 +139,50 @@ func Discover(root string) ([]Skill, error) {
 	}
 
 	return skills, nil
+}
+
+// DiscoverPersonal scans the user's home directory for personal skills under
+// the conventional <home>/.claude/skills and <home>/.wingman/skills paths,
+// matching <home>/<dir>/<name>/SKILL.md. These are user-wide skills available
+// across all projects.
+func DiscoverPersonal() ([]Skill, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+
+	var skills []Skill
+
+	for _, dir := range personalSkillRoots {
+		skillDir := filepath.Join(home, dir)
+		matches, err := doublestar.Glob(os.DirFS(skillDir), "**/SKILL.md")
+
+		if err != nil {
+			continue
+		}
+
+		for _, match := range matches {
+			skillFile := filepath.Join(skillDir, match)
+			sk, err := parseSkillFile(skillFile)
+
+			if err != nil {
+				continue
+			}
+
+			// Personal skills carry an absolute Location since they live
+			// outside the project root.
+			sk.Location = filepath.Dir(skillFile)
+			skills = append(skills, sk)
+		}
+	}
+
+	return skills, nil
+}
+
+// MustDiscoverPersonal is like DiscoverPersonal but returns nil on error.
+func MustDiscoverPersonal() []Skill {
+	skills, _ := DiscoverPersonal()
+	return skills
 }
 
 // LoadBundled loads skills from an embedded filesystem.

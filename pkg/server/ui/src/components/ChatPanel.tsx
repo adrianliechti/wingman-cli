@@ -16,6 +16,7 @@ import { FilePicker } from "./FilePicker";
 import { MarkdownContent } from "./MarkdownContent";
 import { ModelPicker } from "./ModelPicker";
 import { ModePicker } from "./ModePicker";
+import { SkillPicker } from "./SkillPicker";
 
 interface Props {
 	entries: ChatEntry[];
@@ -29,8 +30,15 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 	const [files, setFiles] = useState<string[]>([]);
 	const [showPicker, setShowPicker] = useState(false);
 	const messagesRef = useRef<HTMLDivElement>(null);
+	const textareaRef = useRef<HTMLTextAreaElement>(null);
 
 	const isActive = phase !== "idle";
+
+	// Show the skill picker while the user is still typing the slash command
+	// (no whitespace yet — once they add a space we treat the rest as args).
+	const skillMatch = input.match(/^\/(\S*)$/);
+	const showSkills = !!skillMatch && !isActive;
+	const skillQuery = skillMatch ? skillMatch[1] : "";
 
 	useEffect(() => {
 		const el = messagesRef.current;
@@ -47,6 +55,10 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 
 	const handleKeyDown = useCallback(
 		(e: React.KeyboardEvent) => {
+			// Let SkillPicker handle Enter / Tab / arrows / Escape while it's open.
+			if (showSkills && (e.key === "Enter" || e.key === "Tab" || e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Escape")) {
+				return;
+			}
 			if (e.key === "Enter" && !e.shiftKey) {
 				e.preventDefault();
 				handleSubmit();
@@ -55,7 +67,7 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 				onCancel();
 			}
 		},
-		[handleSubmit, isActive, onCancel],
+		[handleSubmit, isActive, onCancel, showSkills],
 	);
 
 	const addFile = useCallback((path: string) => {
@@ -66,6 +78,23 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 	const removeFile = useCallback((path: string) => {
 		setFiles((prev) => prev.filter((p) => p !== path));
 	}, []);
+
+	const selectSkill = useCallback(
+		(s: { name: string; arguments?: string[] }) => {
+			const hasArgs = !!s.arguments && s.arguments.length > 0;
+			if (hasArgs) {
+				// Pre-fill the slash command and let the user type arguments.
+				setInput(`/${s.name} `);
+				textareaRef.current?.focus();
+			} else if (!isActive) {
+				// No args — fire the skill immediately.
+				onSend(`/${s.name}`, files.length > 0 ? files : undefined);
+				setInput("");
+				setFiles([]);
+			}
+		},
+		[isActive, onSend, files],
+	);
 
 	return (
 		<div className="h-full relative overflow-hidden bg-bg">
@@ -106,6 +135,15 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 				<div className="h-6 bg-gradient-to-t from-bg to-transparent pointer-events-none" />
 				<div className="bg-bg px-4 pb-3">
 					<div className="relative rounded-lg border border-border-subtle bg-bg-surface/60 hover:border-border focus-within:border-border transition-colors">
+						{showSkills && (
+							<SkillPicker
+								query={skillQuery}
+								onSelect={selectSkill}
+								onClose={() => {
+									/* picker closes naturally when input no longer matches */
+								}}
+							/>
+						)}
 						{files.length > 0 && (
 							<div className="flex flex-wrap gap-1 px-2.5 pt-2">
 								{files.map((p) => {
@@ -138,6 +176,7 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 								</div>
 							) : (
 								<textarea
+									ref={textareaRef}
 									className="w-full bg-transparent text-fg text-[12px] font-mono resize-none outline-none leading-[1.7] placeholder:text-fg-dim"
 									style={{ fieldSizing: "content" } as React.CSSProperties}
 									value={input}

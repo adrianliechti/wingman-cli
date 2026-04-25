@@ -159,6 +159,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/mode", s.handleMode)
 	mux.HandleFunc("POST /api/mode", s.handleSetMode)
 	mux.HandleFunc("GET /api/diagnostics", s.handleDiagnostics)
+	mux.HandleFunc("GET /api/skills", s.handleSkills)
 
 	// WebSocket
 	mux.HandleFunc("/ws/chat", s.handleWebSocket)

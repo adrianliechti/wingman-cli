@@ -119,7 +119,12 @@ func New(workDir string, ui UI) (*Agent, error) {
 	lspManager := lsp.NewManager(workDir)
 	lspTools := lsptool.NewTools(lspManager)
 
+	// Skill precedence (later overrides earlier):
+	//   bundled  → shipped with the binary
+	//   personal → ~/.claude/skills, ~/.wingman/skills (user-wide)
+	//   project  → .claude, .wingman, .skills, .github, .opencode (this repo)
 	bundled := loadBundledSkills()
+	personal := skill.MustDiscoverPersonal()
 	discovered := skill.MustDiscover(workDir)
 
 	mcpManager, _ := mcp.Load(filepath.Join(workDir, "mcp.json"))
@@ -132,7 +137,7 @@ func New(workDir string, ui UI) (*Agent, error) {
 		MemoryPath:  memoryDir,
 		ScratchPath: scratchDir,
 
-		Skills: skill.Merge(bundled, discovered),
+		Skills: skill.Merge(skill.Merge(bundled, personal), discovered),
 
 		MCP: mcpManager,
 		LSP: lspManager,

@@ -97,7 +97,11 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 	var input []agent.Content
 
 	if msg.Text != "" {
-		input = append(input, agent.Content{Text: msg.Text})
+		// If the message starts with a slash command that matches one of the
+		// agent's skills, replace the user text with the rendered skill content
+		// (mirrors the CLI's invokeSkill flow in app/app_ui.go:652).
+		text := s.resolveSkill(msg.Text)
+		input = append(input, agent.Content{Text: text})
 	}
 
 	// Add file references as context
