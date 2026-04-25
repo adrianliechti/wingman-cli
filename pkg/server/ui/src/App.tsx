@@ -174,6 +174,7 @@ export default function App() {
 							onSessionSelect={handleSessionSelect}
 							onNewSession={handleNewSession}
 							onSessionDeleted={handleSessionDeleted}
+							subscribe={subscribe}
 						/>
 					</div>
 				</div>

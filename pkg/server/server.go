@@ -78,20 +78,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	// Init rewind async
-	go func() {
-		defer close(s.rewindReady)
-
-		workDir := s.agent.RootPath
-		gitDir := filepath.Join(workDir, ".git")
-
-		if _, err := os.Stat(gitDir); os.IsNotExist(err) {
-			return
-		}
-
-		if rm, err := rewind.New(workDir); err == nil {
-			s.rewind = rm
-		}
-	}()
+	s.restartRewind()
 
 	// Watch the working directory for any file changes (terminal, IDE, agent)
 	// and push a diffs_changed event so the UI refetches without polling.
@@ -263,32 +250,58 @@ func convertMessages(messages []agent.Message) []ConversationMessage {
 	return result
 }
 
+// restartRewind tears down any existing rewind manager and asynchronously
+// initializes a fresh one rooted at the current working directory. The fresh
+// rewindReady channel lets handlers wait for init without races.
+//
+// Once init finishes, the panels are nudged via diffs_changed +
+// checkpoints_changed so they replace any stale state from the previous
+// rewind manager (e.g. after a new session is started).
+func (s *Server) restartRewind() {
+	if s.rewindReady != nil {
+		select {
+		case <-s.rewindReady:
+			if s.rewind != nil {
+				s.rewind.Cleanup()
+				s.rewind = nil
+			}
+		default:
+		}
+	}
+
+	s.rewindReady = make(chan struct{})
+
+	go func() {
+		defer close(s.rewindReady)
+
+		workDir := s.agent.RootPath
+		gitDir := filepath.Join(workDir, ".git")
+		if _, err := os.Stat(gitDir); !os.IsNotExist(err) {
+			if rm, err := rewind.New(workDir); err == nil {
+				s.rewind = rm
+			}
+		}
+
+		s.sendMessage(ServerMessage{Type: MsgDiffsChanged})
+		s.sendMessage(ServerMessage{Type: MsgCheckpointsChanged})
+	}()
+}
+
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	sessions, err := session.List(s.sessionsDir)
 	if err != nil {
-		writeJSON(w, []any{})
+		writeJSON(w, []SessionEntry{})
 		return
 	}
 
-	type sessionInfo struct {
-		ID        string `json:"id"`
-		Title     string `json:"title,omitempty"`
-		CreatedAt string `json:"created_at"`
-		UpdatedAt string `json:"updated_at"`
-	}
-
-	var result []sessionInfo
+	result := make([]SessionEntry, 0, len(sessions))
 	for _, sess := range sessions {
-		result = append(result, sessionInfo{
+		result = append(result, SessionEntry{
 			ID:        sess.ID,
 			Title:     sess.Title,
 			CreatedAt: sess.CreatedAt.Format("2006-01-02 15:04"),
 			UpdatedAt: sess.UpdatedAt.Format("2006-01-02 15:04"),
 		})
-	}
-
-	if result == nil {
-		result = []sessionInfo{}
 	}
 
 	writeJSON(w, result)
@@ -298,30 +311,13 @@ func (s *Server) handleNewSession(w http.ResponseWriter, r *http.Request) {
 	s.agent.Messages = nil
 	s.agent.Usage = agent.Usage{}
 
-	// Reset rewind
-	select {
-	case <-s.rewindReady:
-		if s.rewind != nil {
-			s.rewind.Cleanup()
-		}
-	default:
-	}
-
-	// Re-init rewind
-	s.rewindReady = make(chan struct{})
-	go func() {
-		defer close(s.rewindReady)
-		workDir := s.agent.RootPath
-		gitDir := filepath.Join(workDir, ".git")
-		if _, err := os.Stat(gitDir); os.IsNotExist(err) {
-			return
-		}
-		if rm, err := rewind.New(workDir); err == nil {
-			s.rewind = rm
-		}
-	}()
+	s.restartRewind()
 
 	s.sessionID = newSessionID()
+
+	// The new session has no file on disk yet (created on first save), but
+	// nudging the UI clears any stale "active" highlight client-side.
+	s.sendMessage(ServerMessage{Type: MsgSessionsChanged})
 
 	writeJSON(w, map[string]string{"id": s.sessionID})
 }
@@ -354,7 +350,17 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session.Delete(s.sessionsDir, id)
+	if err := session.Delete(s.sessionsDir, id); err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	s.sendMessage(ServerMessage{Type: MsgSessionsChanged})
+
 	w.WriteHeader(http.StatusNoContent)
 }
 

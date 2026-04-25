@@ -1,4 +1,4 @@
-import { History, RefreshCw, Undo2 } from "lucide-react";
+import { History, Undo2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { CheckpointEntry, ServerMessage } from "../types/protocol";
 
@@ -61,20 +61,12 @@ export function CheckpointsPanel({ visible, subscribe }: Props) {
 
 	return (
 		<div className="flex flex-col h-full overflow-hidden bg-bg">
-			<div className="h-8 px-3 flex items-center justify-between shrink-0">
+			<div className="h-8 px-3 flex items-center shrink-0">
 				<span className="text-[11px] text-fg-muted">
 					{checkpoints.length === 0
 						? "No checkpoints"
 						: `${checkpoints.length} checkpoint${checkpoints.length === 1 ? "" : "s"}`}
 				</span>
-				<button
-					type="button"
-					className="w-5 h-5 flex items-center justify-center rounded text-fg-muted hover:text-fg hover:bg-bg-hover cursor-pointer transition-colors"
-					onClick={load}
-					title="Refresh"
-				>
-					<RefreshCw size={12} />
-				</button>
 			</div>
 			<div className="overflow-y-auto flex-1 px-1 pb-2">
 				{checkpoints.length === 0 && (

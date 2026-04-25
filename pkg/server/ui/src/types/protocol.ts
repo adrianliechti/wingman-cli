@@ -90,6 +90,10 @@ export interface CheckpointsChangedMessage {
 	type: "checkpoints_changed";
 }
 
+export interface SessionsChangedMessage {
+	type: "sessions_changed";
+}
+
 export type ServerMessage =
 	| TextDeltaMessage
 	| ToolCallMessage
@@ -102,7 +106,8 @@ export type ServerMessage =
 	| UsageMessage
 	| MessagesMessage
 	| DiffsChangedMessage
-	| CheckpointsChangedMessage;
+	| CheckpointsChangedMessage
+	| SessionsChangedMessage;
 
 // Shared types
 export type Phase = "idle" | "thinking" | "streaming" | "tool_running";

@@ -1,10 +1,12 @@
 package rewind
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -279,9 +281,53 @@ func (m *Manager) baselineFromWorkingTree() error {
 
 
 func (m *Manager) loadExcludePatterns() []gitignore.Pattern {
-	// Load patterns from .gitignore files in the working directory
+	// In-tree patterns: .git/info/exclude and recursive .gitignore files.
 	patterns, _ := gitignore.ReadPatterns(m.worktree.Filesystem, nil)
+
+	// core.excludesfile from ~/.gitconfig and /etc/gitconfig. The helpers
+	// expect a filesystem rooted at "/" so absolute paths resolve.
+	rootFS := osfs.New("/")
+	if global, err := gitignore.LoadGlobalPatterns(rootFS); err == nil {
+		patterns = append(patterns, global...)
+	}
+	if system, err := gitignore.LoadSystemPatterns(rootFS); err == nil {
+		patterns = append(patterns, system...)
+	}
+
+	// XDG-standard $XDG_CONFIG_HOME/git/ignore (default ~/.config/git/ignore).
+	// Git honors this even when core.excludesfile is unset; go-git does not,
+	// so we read it ourselves.
+	patterns = append(patterns, readXDGIgnore()...)
+
 	return patterns
+}
+
+func readXDGIgnore() []gitignore.Pattern {
+	xdg := os.Getenv("XDG_CONFIG_HOME")
+	if xdg == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil
+		}
+		xdg = filepath.Join(home, ".config")
+	}
+
+	f, err := os.Open(filepath.Join(xdg, "git", "ignore"))
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	var ps []gitignore.Pattern
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "#") || len(strings.TrimSpace(line)) == 0 {
+			continue
+		}
+		ps = append(ps, gitignore.ParsePattern(line, nil))
+	}
+	return ps
 }
 
 func (m *Manager) commit(message string) error {

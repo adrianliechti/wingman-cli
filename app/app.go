@@ -153,7 +153,7 @@ func saveExecutablePath() {
 }
 
 func (a *App) saveSession() {
-	_, _ = session.Save(filepath.Join(filepath.Dir(a.agent.MemoryPath), "sessions"), a.sessionID, agent.State{
+	_ = session.Save(filepath.Join(filepath.Dir(a.agent.MemoryPath), "sessions"), a.sessionID, agent.State{
 		Messages: a.agent.Messages,
 		Usage:    a.agent.Usage,
 	})

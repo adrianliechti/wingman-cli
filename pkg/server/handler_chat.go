@@ -182,12 +182,15 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 	default:
 	}
 
-	// Save session
+	// Save session and notify the sidebar so the new/updated entry shows up
+	// without waiting for the periodic poll.
 	state := agent.State{
 		Messages: s.agent.Messages,
 		Usage:    s.agent.Usage,
 	}
-	session.Save(s.sessionsDir, s.sessionID, state)
+	if err := session.Save(s.sessionsDir, s.sessionID, state); err == nil && len(state.Messages) > 0 {
+		s.sendMessage(ServerMessage{Type: MsgSessionsChanged})
+	}
 
 	s.sendMessage(ServerMessage{Type: MsgDone})
 	s.sendMessage(ServerMessage{Type: MsgPhase, Phase: "idle"})

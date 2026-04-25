@@ -22,21 +22,22 @@ type Session struct {
 	State     agent.State `json:"state"`
 }
 
-func Save(sessionsDir string, id string, state agent.State) (string, error) {
-	dir := sessionsDir
-	if dir == "" {
-		return "", fmt.Errorf("no sessions directory available")
-	}
-
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create sessions directory: %w", err)
+// Save writes the session to disk. It is a no-op if there are no messages, so
+// brand-new (empty) sessions don't leave orphan files. Returns nil in that case.
+func Save(sessionsDir string, id string, state agent.State) error {
+	if sessionsDir == "" {
+		return fmt.Errorf("no sessions directory available")
 	}
 
 	if len(state.Messages) == 0 {
-		return "", nil
+		return nil
 	}
 
-	path := filepath.Join(dir, id+".json")
+	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create sessions directory: %w", err)
+	}
+
+	path := filepath.Join(sessionsDir, id+".json")
 
 	now := time.Now()
 	s := Session{
@@ -54,14 +55,14 @@ func Save(sessionsDir string, id string, state agent.State) (string, error) {
 
 	data, err := json.Marshal(s)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal session: %w", err)
+		return fmt.Errorf("failed to marshal session: %w", err)
 	}
 
 	if err := os.WriteFile(path, data, 0644); err != nil {
-		return "", fmt.Errorf("failed to write session file: %w", err)
+		return fmt.Errorf("failed to write session file: %w", err)
 	}
 
-	return id, nil
+	return nil
 }
 
 func Load(sessionsDir string, id string) (Session, error) {

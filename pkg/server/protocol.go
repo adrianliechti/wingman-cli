@@ -22,6 +22,7 @@ const (
 	MsgMessages           = "messages"
 	MsgDiffsChanged       = "diffs_changed"
 	MsgCheckpointsChanged = "checkpoints_changed"
+	MsgSessionsChanged    = "sessions_changed"
 )
 
 // ClientMessage is the envelope for all client-to-server WebSocket messages.
@@ -119,4 +120,12 @@ type CheckpointEntry struct {
 	Hash    string `json:"hash"`
 	Message string `json:"message"`
 	Time    string `json:"time"`
+}
+
+// SessionEntry represents a saved chat session in the sidebar list.
+type SessionEntry struct {
+	ID        string `json:"id"`
+	Title     string `json:"title,omitempty"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }

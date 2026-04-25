@@ -228,6 +228,14 @@ export function useWebSocket() {
 			ws.onopen = () => {
 				setConnected(true);
 				setPhase("idle");
+				// Trigger panels to refetch in case state changed while
+				// disconnected — fsnotify events don't get replayed across
+				// reconnects, so this is the only safety net.
+				for (const sub of subscribersRef.current) {
+					sub({ type: "diffs_changed" });
+					sub({ type: "checkpoints_changed" });
+					sub({ type: "sessions_changed" });
+				}
 			};
 
 			ws.onclose = () => {

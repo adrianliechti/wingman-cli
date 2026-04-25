@@ -1,5 +1,6 @@
 import { MessageSquare, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import type { ServerMessage } from "../types/protocol";
 
 interface SessionInfo {
 	id: string;
@@ -13,6 +14,7 @@ interface Props {
 	onSessionSelect: (id: string) => void;
 	onNewSession: () => void;
 	onSessionDeleted?: (id: string) => void;
+	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 }
 
 export function Sidebar({
@@ -20,6 +22,7 @@ export function Sidebar({
 	onSessionSelect,
 	onNewSession,
 	onSessionDeleted,
+	subscribe,
 }: Props) {
 	const [sessions, setSessions] = useState<SessionInfo[]>([]);
 
@@ -35,9 +38,16 @@ export function Sidebar({
 
 	useEffect(() => {
 		loadSessions();
-		const interval = setInterval(loadSessions, 10000);
-		return () => clearInterval(interval);
 	}, [loadSessions]);
+
+	useEffect(() => {
+		if (!subscribe) return;
+		return subscribe((msg) => {
+			if (msg.type === "sessions_changed") {
+				loadSessions();
+			}
+		});
+	}, [subscribe, loadSessions]);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: reload when session changes
 	useEffect(() => {

@@ -1,4 +1,3 @@
-import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { DiffEntry, ServerMessage } from "../types/protocol";
 
@@ -54,20 +53,12 @@ export function DiffsPanel({ visible, onOpenDiff, subscribe }: Props) {
 	return (
 		<div className="flex flex-col h-full overflow-hidden bg-bg">
 			{/* Header */}
-			<div className="h-8 px-3 flex items-center justify-between shrink-0">
+			<div className="h-8 px-3 flex items-center shrink-0">
 				<span className="text-[11px] text-fg-muted">
 					{diffs.length === 0
 						? "No changes"
 						: `${diffs.length} ${diffs.length === 1 ? "file" : "files"} changed`}
 				</span>
-				<button
-					type="button"
-					className="w-5 h-5 flex items-center justify-center rounded text-fg-muted hover:text-fg hover:bg-bg-hover cursor-pointer transition-colors"
-					onClick={loadDiffs}
-					title="Refresh"
-				>
-					<RefreshCw size={12} />
-				</button>
 			</div>
 			<div className="overflow-y-auto flex-1 px-1 pb-2">
 				{diffs.length === 0 && (
