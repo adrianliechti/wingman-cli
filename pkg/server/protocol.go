@@ -20,9 +20,11 @@ const (
 	MsgDone               = "done"
 	MsgUsage              = "usage"
 	MsgMessages           = "messages"
-	MsgDiffsChanged       = "diffs_changed"
-	MsgCheckpointsChanged = "checkpoints_changed"
-	MsgSessionsChanged    = "sessions_changed"
+	MsgDiffsChanged        = "diffs_changed"
+	MsgCheckpointsChanged  = "checkpoints_changed"
+	MsgSessionsChanged     = "sessions_changed"
+	MsgFilesChanged        = "files_changed"
+	MsgDiagnosticsChanged  = "diagnostics_changed"
 )
 
 // ClientMessage is the envelope for all client-to-server WebSocket messages.

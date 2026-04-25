@@ -235,6 +235,8 @@ export function useWebSocket() {
 					sub({ type: "diffs_changed" });
 					sub({ type: "checkpoints_changed" });
 					sub({ type: "sessions_changed" });
+					sub({ type: "files_changed" });
+					sub({ type: "diagnostics_changed" });
 				}
 			};
 

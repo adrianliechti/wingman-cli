@@ -81,10 +81,11 @@ func (s *Server) Run(ctx context.Context) error {
 	s.restartRewind()
 
 	// Watch the working directory for any file changes (terminal, IDE, agent)
-	// and push a diffs_changed event so the UI refetches without polling.
+	// and push diffs_changed + files_changed so the panels refetch without polling.
 	go func() {
 		_ = s.watchWorkdir(ctx, s.agent.RootPath, func() {
 			s.sendMessage(ServerMessage{Type: MsgDiffsChanged})
+			s.sendMessage(ServerMessage{Type: MsgFilesChanged})
 		})
 	}()
 
@@ -284,6 +285,8 @@ func (s *Server) restartRewind() {
 
 		s.sendMessage(ServerMessage{Type: MsgDiffsChanged})
 		s.sendMessage(ServerMessage{Type: MsgCheckpointsChanged})
+		s.sendMessage(ServerMessage{Type: MsgFilesChanged})
+		s.sendMessage(ServerMessage{Type: MsgDiagnosticsChanged})
 	}()
 }
 
@@ -315,8 +318,6 @@ func (s *Server) handleNewSession(w http.ResponseWriter, r *http.Request) {
 
 	s.sessionID = newSessionID()
 
-	// The new session has no file on disk yet (created on first save), but
-	// nudging the UI clears any stale "active" highlight client-side.
 	s.sendMessage(ServerMessage{Type: MsgSessionsChanged})
 
 	writeJSON(w, map[string]string{"id": s.sessionID})

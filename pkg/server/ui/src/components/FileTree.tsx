@@ -5,11 +5,12 @@ import {
 	Folder,
 	FolderOpen,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
-import type { FileEntry } from "../types/protocol";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { FileEntry, ServerMessage } from "../types/protocol";
 
 interface Props {
 	onFileSelect: (path: string) => void;
+	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 }
 
 interface TreeNode extends FileEntry {
@@ -18,8 +19,10 @@ interface TreeNode extends FileEntry {
 	loaded?: boolean;
 }
 
-export function FileTree({ onFileSelect }: Props) {
+export function FileTree({ onFileSelect, subscribe }: Props) {
 	const [nodes, setNodes] = useState<TreeNode[]>([]);
+	const nodesRef = useRef(nodes);
+	nodesRef.current = nodes;
 
 	const loadDir = useCallback(async (dirPath: string): Promise<TreeNode[]> => {
 		const res = await fetch(
@@ -38,6 +41,45 @@ export function FileTree({ onFileSelect }: Props) {
 	useEffect(() => {
 		loadDir("").then(setNodes);
 	}, [loadDir]);
+
+	// Refresh the tree while preserving expansion state. Walks every previously
+	// loaded directory, refetches its contents, and recursively rebuilds the
+	// children of expanded folders. New entries appear, removed ones disappear.
+	const refresh = useCallback(async () => {
+		const refreshLevel = async (
+			path: string,
+			prev: TreeNode[],
+		): Promise<TreeNode[]> => {
+			const fresh = await loadDir(path);
+			const prevByPath = new Map(prev.map((n) => [n.path, n]));
+			const result: TreeNode[] = [];
+			for (const f of fresh) {
+				const old = prevByPath.get(f.path);
+				if (old?.is_dir && old.expanded && old.loaded && old.children) {
+					const newChildren = await refreshLevel(f.path, old.children);
+					result.push({
+						...f,
+						expanded: true,
+						loaded: true,
+						children: newChildren,
+					});
+				} else {
+					result.push({ ...f, expanded: false, loaded: false });
+				}
+			}
+			return result;
+		};
+		setNodes(await refreshLevel("", nodesRef.current));
+	}, [loadDir]);
+
+	useEffect(() => {
+		if (!subscribe) return;
+		return subscribe((msg) => {
+			if (msg.type === "files_changed") {
+				refresh();
+			}
+		});
+	}, [subscribe, refresh]);
 
 	const toggleDir = useCallback(
 		async (path: string) => {

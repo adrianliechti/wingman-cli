@@ -1,55 +1,18 @@
-import { DiffEditor, type Monaco } from "@monaco-editor/react";
+import { DiffEditor } from "@monaco-editor/react";
 import { useEffect, useState } from "react";
+import { useColorScheme } from "../hooks/useColorScheme";
+import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
 import type { DiffEntry } from "../types/protocol";
 
 interface Props {
 	path: string;
 }
 
-const themeRegistered = { current: false };
-
-function defineTheme(monaco: Monaco) {
-	if (themeRegistered.current) return;
-	themeRegistered.current = true;
-
-	monaco.editor.defineTheme("wingman", {
-		base: "vs-dark",
-		inherit: true,
-		rules: [
-			{ token: "comment", foreground: "555555" },
-			{ token: "keyword", foreground: "a78bfa" },
-			{ token: "string", foreground: "34d399" },
-			{ token: "number", foreground: "fbbf24" },
-			{ token: "type", foreground: "60a5fa" },
-		],
-		colors: {
-			"editor.background": "#0a0a0a",
-			"editor.foreground": "#e0e0e0",
-			"editor.lineHighlightBackground": "#111111",
-			"editor.selectionBackground": "#ffffff26",
-			"editor.inactiveSelectionBackground": "#ffffff15",
-			"editorLineNumber.foreground": "#333333",
-			"editorLineNumber.activeForeground": "#666666",
-			"editorCursor.foreground": "#888888",
-			"editor.lineHighlightBorder": "#00000000",
-			"editorWidget.background": "#111111",
-			"editorWidget.border": "#1e1e1e",
-			"editorGutter.background": "#0a0a0a",
-			"scrollbarSlider.background": "#ffffff14",
-			"scrollbarSlider.hoverBackground": "#ffffff26",
-			"scrollbarSlider.activeBackground": "#ffffff33",
-			"diffEditor.insertedTextBackground": "#1f6f3f33",
-			"diffEditor.removedTextBackground": "#7a282833",
-			"diffEditor.insertedLineBackground": "#1f6f3f1f",
-			"diffEditor.removedLineBackground": "#7a28281f",
-		},
-	});
-}
-
 export function DiffTab({ path }: Props) {
 	const [diff, setDiff] = useState<DiffEntry | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
+	const scheme = useColorScheme();
 
 	useEffect(() => {
 		let cancelled = false;
@@ -114,8 +77,8 @@ export function DiffTab({ path }: Props) {
 				language={diff.language || undefined}
 				original={original}
 				modified={modified}
-				theme="wingman"
-				beforeMount={defineTheme}
+				theme={wingmanThemeName(scheme)}
+				beforeMount={defineWingmanThemes}
 				options={{
 					readOnly: true,
 					renderSideBySide: !inline,

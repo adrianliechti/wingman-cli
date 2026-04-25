@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
 import Markdown from "react-markdown";
+import { useColorScheme } from "../hooks/useColorScheme";
+import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
 
 export function MarkdownContent({ text }: { text: string }) {
 	if (!text) return null;
@@ -99,32 +101,15 @@ export function MarkdownContent({ text }: { text: string }) {
 
 function CodeBlock({ code, language }: { code: string; language: string }) {
 	const ref = useRef<HTMLPreElement>(null);
+	const scheme = useColorScheme();
 
 	useEffect(() => {
 		let cancelled = false;
 		import("monaco-editor").then((monaco) => {
 			if (cancelled || !ref.current) return;
 
-			try {
-				monaco.editor.defineTheme("wingman", {
-					base: "vs-dark",
-					inherit: true,
-					rules: [
-						{ token: "comment", foreground: "555555" },
-						{ token: "keyword", foreground: "a78bfa" },
-						{ token: "string", foreground: "34d399" },
-						{ token: "number", foreground: "fbbf24" },
-						{ token: "type", foreground: "60a5fa" },
-					],
-					colors: {
-						"editor.background": "#0a0a0a",
-						"editor.foreground": "#e0e0e0",
-					},
-				});
-			} catch {
-				/* already defined */
-			}
-			monaco.editor.setTheme("wingman");
+			defineWingmanThemes(monaco);
+			monaco.editor.setTheme(wingmanThemeName(scheme));
 
 			monaco.editor
 				.colorize(code, language || "plaintext", {})
@@ -138,7 +123,7 @@ function CodeBlock({ code, language }: { code: string; language: string }) {
 		return () => {
 			cancelled = true;
 		};
-	}, [code, language]);
+	}, [code, language, scheme]);
 
 	return (
 		<pre

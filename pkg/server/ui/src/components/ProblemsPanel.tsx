@@ -1,12 +1,13 @@
 import { AlertCircle, AlertTriangle, Info, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import type { DiagnosticEntry } from "../types/protocol";
+import type { DiagnosticEntry, ServerMessage } from "../types/protocol";
 
 interface Props {
 	onOpenFile: (path: string, line: number) => void;
+	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 }
 
-export function ProblemsPanel({ onOpenFile }: Props) {
+export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
 	const [diagnostics, setDiagnostics] = useState<DiagnosticEntry[]>([]);
 	const [loading, setLoading] = useState(false);
 
@@ -30,6 +31,15 @@ export function ProblemsPanel({ onOpenFile }: Props) {
 	useEffect(() => {
 		load();
 	}, [load]);
+
+	useEffect(() => {
+		if (!subscribe) return;
+		return subscribe((msg) => {
+			if (msg.type === "diagnostics_changed") {
+				load();
+			}
+		});
+	}, [subscribe, load]);
 
 	const errors = diagnostics.filter((d) => d.severity === "error");
 	const warnings = diagnostics.filter((d) => d.severity === "warning");

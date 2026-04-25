@@ -1,5 +1,7 @@
 import Editor, { type Monaco } from "@monaco-editor/react";
 import { useEffect, useRef, useState } from "react";
+import { useColorScheme } from "../hooks/useColorScheme";
+import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
 import type { FileContent } from "../types/protocol";
 
 interface Props {
@@ -7,46 +9,11 @@ interface Props {
 	line?: number;
 }
 
-const themeRegistered = { current: false };
-
-function defineTheme(monaco: Monaco) {
-	if (themeRegistered.current) return;
-	themeRegistered.current = true;
-
-	monaco.editor.defineTheme("wingman", {
-		base: "vs-dark",
-		inherit: true,
-		rules: [
-			{ token: "comment", foreground: "555555" },
-			{ token: "keyword", foreground: "a78bfa" },
-			{ token: "string", foreground: "34d399" },
-			{ token: "number", foreground: "fbbf24" },
-			{ token: "type", foreground: "60a5fa" },
-		],
-		colors: {
-			"editor.background": "#0a0a0a",
-			"editor.foreground": "#e0e0e0",
-			"editor.lineHighlightBackground": "#111111",
-			"editor.selectionBackground": "#ffffff26",
-			"editor.inactiveSelectionBackground": "#ffffff15",
-			"editorLineNumber.foreground": "#333333",
-			"editorLineNumber.activeForeground": "#666666",
-			"editorCursor.foreground": "#888888",
-			"editor.lineHighlightBorder": "#00000000",
-			"editorWidget.background": "#111111",
-			"editorWidget.border": "#1e1e1e",
-			"editorGutter.background": "#0a0a0a",
-			"scrollbarSlider.background": "#ffffff14",
-			"scrollbarSlider.hoverBackground": "#ffffff26",
-			"scrollbarSlider.activeBackground": "#ffffff33",
-		},
-	});
-}
-
 export function FileTab({ path, line }: Props) {
 	const [file, setFile] = useState<FileContent | null>(null);
 	const [loading, setLoading] = useState(true);
 	const monacoRef = useRef<Monaco | null>(null);
+	const scheme = useColorScheme();
 
 	useEffect(() => {
 		setLoading(true);
@@ -80,10 +47,10 @@ export function FileTab({ path, line }: Props) {
 			height="100%"
 			language={file.language || undefined}
 			value={file.content}
-			theme="wingman"
+			theme={wingmanThemeName(scheme)}
 			beforeMount={(monaco) => {
 				monacoRef.current = monaco;
-				defineTheme(monaco);
+				defineWingmanThemes(monaco);
 			}}
 			onMount={(editor) => {
 				if (line && line > 0) {

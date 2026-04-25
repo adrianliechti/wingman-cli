@@ -178,9 +178,14 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 			// fsnotify will likely fire too, but push explicitly to avoid
 			// any race where the UI fetches before the watcher debounces.
 			s.sendMessage(ServerMessage{Type: MsgDiffsChanged})
+			s.sendMessage(ServerMessage{Type: MsgFilesChanged})
 		}
 	default:
 	}
+
+	// Diagnostics most often change as a consequence of agent edits — nudge
+	// the panel so users see fresh problems without reopening the tab.
+	s.sendMessage(ServerMessage{Type: MsgDiagnosticsChanged})
 
 	// Save session and notify the sidebar so the new/updated entry shows up
 	// without waiting for the periodic poll.

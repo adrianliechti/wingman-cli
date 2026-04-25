@@ -94,6 +94,14 @@ export interface SessionsChangedMessage {
 	type: "sessions_changed";
 }
 
+export interface FilesChangedMessage {
+	type: "files_changed";
+}
+
+export interface DiagnosticsChangedMessage {
+	type: "diagnostics_changed";
+}
+
 export type ServerMessage =
 	| TextDeltaMessage
 	| ToolCallMessage
@@ -107,7 +115,9 @@ export type ServerMessage =
 	| MessagesMessage
 	| DiffsChangedMessage
 	| CheckpointsChangedMessage
-	| SessionsChangedMessage;
+	| SessionsChangedMessage
+	| FilesChangedMessage
+	| DiagnosticsChangedMessage;
 
 // Shared types
 export type Phase = "idle" | "thinking" | "streaming" | "tool_running";

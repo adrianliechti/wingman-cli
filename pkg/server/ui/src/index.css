@@ -34,6 +34,46 @@
 		"SF Mono", "JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace;
 }
 
+:root {
+	--color-scrollbar-thumb: rgba(255, 255, 255, 0.08);
+	--color-scrollbar-thumb-hover: rgba(255, 255, 255, 0.15);
+	--color-selection: rgba(255, 255, 255, 0.15);
+}
+
+@media (prefers-color-scheme: light) {
+	:root {
+		--color-bg: #ffffff;
+		--color-bg-surface: #f7f7f7;
+		--color-bg-elevated: #f0f0f0;
+		--color-bg-hover: #ededed;
+		--color-bg-active: #e3e3e3;
+		--color-bg-input: #fafafa;
+
+		--color-fg: #1a1a1a;
+		--color-fg-muted: #555555;
+		--color-fg-dim: #999999;
+
+		--color-border: #e5e5e5;
+		--color-border-subtle: #ededed;
+		--color-border-strong: #cccccc;
+
+		--color-accent: #555555;
+		--color-accent-hover: #1a1a1a;
+		--color-accent-muted: #d0d0d0;
+
+		--color-success: #059669;
+		--color-danger: #dc2626;
+		--color-warning: #d97706;
+		--color-info: #2563eb;
+		--color-orange: #ea580c;
+		--color-purple: #7c3aed;
+
+		--color-scrollbar-thumb: rgba(0, 0, 0, 0.15);
+		--color-scrollbar-thumb-hover: rgba(0, 0, 0, 0.28);
+		--color-selection: rgba(0, 0, 0, 0.15);
+	}
+}
+
 html,
 body,
 #root {
@@ -62,11 +102,11 @@ pre {
 	height: 6px;
 }
 ::-webkit-scrollbar-thumb {
-	background: rgba(255, 255, 255, 0.08);
+	background: var(--color-scrollbar-thumb);
 	border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-	background: rgba(255, 255, 255, 0.15);
+	background: var(--color-scrollbar-thumb-hover);
 }
 ::-webkit-scrollbar-track,
 ::-webkit-scrollbar-corner {
@@ -74,7 +114,7 @@ pre {
 }
 
 ::selection {
-	background: rgba(255, 255, 255, 0.15);
+	background: var(--color-selection);
 }
 
 @keyframes blink {
