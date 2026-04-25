@@ -62,11 +62,7 @@ export function CheckpointsPanel({ visible, subscribe }: Props) {
 	return (
 		<div className="flex flex-col h-full overflow-hidden bg-bg">
 			<div className="h-8 px-3 flex items-center shrink-0">
-				<span className="text-[11px] text-fg-muted">
-					{checkpoints.length === 0
-						? "No checkpoints"
-						: `${checkpoints.length} checkpoint${checkpoints.length === 1 ? "" : "s"}`}
-				</span>
+				<span className="text-[11px] text-fg-muted">Checkpoints</span>
 			</div>
 			<div className="overflow-y-auto flex-1 px-1 pb-2">
 				{checkpoints.length === 0 && (

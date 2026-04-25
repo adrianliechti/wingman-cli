@@ -54,11 +54,7 @@ export function DiffsPanel({ visible, onOpenDiff, subscribe }: Props) {
 		<div className="flex flex-col h-full overflow-hidden bg-bg">
 			{/* Header */}
 			<div className="h-8 px-3 flex items-center shrink-0">
-				<span className="text-[11px] text-fg-muted">
-					{diffs.length === 0
-						? "No changes"
-						: `${diffs.length} ${diffs.length === 1 ? "file" : "files"} changed`}
-				</span>
+				<span className="text-[11px] text-fg-muted">Changes</span>
 			</div>
 			<div className="overflow-y-auto flex-1 px-1 pb-2">
 				{diffs.length === 0 && (

@@ -214,26 +214,33 @@ export default function App() {
 									{active && (
 										<span className="absolute bottom-0 left-2 right-2 h-[2px] bg-accent rounded-full" />
 									)}
-									<Icon
-										size={13}
-										className={active ? "text-fg-muted" : "text-fg-dim"}
-									/>
+									<span className="w-3.5 h-3.5 flex items-center justify-center shrink-0">
+										{tab.type === "chat" ? (
+											<Icon
+												size={13}
+												className={active ? "text-fg-muted" : "text-fg-dim"}
+											/>
+										) : (
+											<>
+												<Icon
+													size={13}
+													className={`group-hover:hidden ${active ? "text-fg-muted" : "text-fg-dim"}`}
+												/>
+												<button
+													type="button"
+													className="hidden group-hover:flex w-3.5 h-3.5 items-center justify-center text-fg-dim hover:text-fg rounded transition-colors"
+													onClick={(e) => {
+														e.stopPropagation();
+														closeTab(tab.id);
+													}}
+													aria-label="Close tab"
+												>
+													<X size={11} />
+												</button>
+											</>
+										)}
+									</span>
 									<span className="truncate max-w-[200px]">{tab.label}</span>
-									{tab.type === "chat" ? (
-										<span className="w-4" />
-									) : (
-										<button
-											type="button"
-											className="w-4 h-4 flex items-center justify-center text-fg-dim hover:text-fg rounded opacity-0 group-hover:opacity-100 transition-opacity"
-											onClick={(e) => {
-												e.stopPropagation();
-												closeTab(tab.id);
-											}}
-											aria-label="Close tab"
-										>
-											<X size={11} />
-										</button>
-									)}
 								</div>
 							);
 						})}

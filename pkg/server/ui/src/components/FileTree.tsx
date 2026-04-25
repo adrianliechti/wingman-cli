@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FileEntry, ServerMessage } from "../types/protocol";
+import { getDeviconClass } from "../utils/fileIcons";
 
 interface Props {
 	onFileSelect: (path: string) => void;
@@ -127,7 +128,7 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 						) : null}
 					</span>
 					<span
-						className={`shrink-0 ${node.is_dir ? "text-fg-muted" : "text-fg-dim"}`}
+						className={`shrink-0 flex items-center justify-center w-3.5 h-3.5 ${node.is_dir ? "text-fg-muted" : "text-fg-dim"}`}
 					>
 						{node.is_dir ? (
 							node.expanded ? (
@@ -135,9 +136,13 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 							) : (
 								<Folder size={14} />
 							)
-						) : (
-							<File size={13} />
-						)}
+						) : (() => {
+							const cls = getDeviconClass(node.name);
+							if (cls) {
+								return <i className={`${cls} text-[14px] leading-none`} />;
+							}
+							return <File size={13} />;
+						})()}
 					</span>
 					<span
 						className={`overflow-hidden text-ellipsis ml-0.5 ${node.is_dir ? "text-fg" : ""}`}
