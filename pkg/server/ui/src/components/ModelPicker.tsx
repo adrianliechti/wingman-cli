@@ -1,31 +1,39 @@
-import { ChevronDown } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Brain } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+interface ModelInfo {
+	id: string;
+	name: string;
+}
 
 export function ModelPicker() {
 	const [model, setModel] = useState("");
-	const [models, setModels] = useState<string[]>([]);
+	const [models, setModels] = useState<ModelInfo[]>([]);
 	const [open, setOpen] = useState(false);
 	const popRef = useRef<HTMLDivElement>(null);
 	const btnRef = useRef<HTMLButtonElement>(null);
 
+	const loadModels = useCallback(() => {
+		fetch("/api/models")
+			.then((r) => r.json())
+			.then((data: ModelInfo[]) => setModels(data))
+			.catch(() => {});
+	}, []);
+
+	// Fetch the curated model list on mount so the button can render the
+	// friendly name immediately (otherwise we'd briefly show the raw ID until
+	// the dropdown is first opened).
 	useEffect(() => {
 		fetch("/api/model")
 			.then((r) => r.json())
 			.then((data) => setModel(data.model || ""))
 			.catch(() => {});
-	}, []);
-
-	const loadModels = useCallback(() => {
-		fetch("/api/models")
-			.then((r) => r.json())
-			.then((data: Array<{ id: string }>) => setModels(data.map((m) => m.id)))
-			.catch(() => {});
-	}, []);
+		loadModels();
+	}, [loadModels]);
 
 	const toggle = useCallback(() => {
-		if (!open) loadModels();
 		setOpen((v) => !v);
-	}, [open, loadModels]);
+	}, []);
 
 	const select = useCallback((id: string) => {
 		fetch("/api/model", {
@@ -56,6 +64,11 @@ export function ModelPicker() {
 		return () => document.removeEventListener("mousedown", handler);
 	}, [open]);
 
+	const currentName = useMemo(() => {
+		const match = models.find((m) => m.id === model);
+		return match?.name || model;
+	}, [models, model]);
+
 	if (!model) return null;
 
 	return (
@@ -67,8 +80,8 @@ export function ModelPicker() {
 				className="flex items-center gap-1 px-2 h-7 rounded text-[11.5px] text-fg-muted hover:text-fg hover:bg-bg-hover cursor-pointer transition-colors max-w-[220px]"
 				title={model}
 			>
-				<span className="truncate font-mono">{model}</span>
-				<ChevronDown size={11} className="shrink-0" />
+				<Brain size={12} className="shrink-0" />
+				<span className="truncate">{currentName}</span>
 			</button>
 			{open && (
 				<div
@@ -78,18 +91,18 @@ export function ModelPicker() {
 					{models.length === 0 ? (
 						<div className="px-3 py-2 text-[12px] text-fg-dim">Loading…</div>
 					) : (
-						models.map((id) => (
+						models.map((m) => (
 							<button
 								type="button"
-								key={id}
-								className={`block w-full text-left px-3 py-1.5 text-[12px] font-mono cursor-pointer whitespace-nowrap transition-colors ${
-									id === model
+								key={m.id}
+								className={`block w-full text-left px-3 py-1.5 text-[12px] cursor-pointer whitespace-nowrap transition-colors ${
+									m.id === model
 										? "text-fg bg-bg-active"
 										: "text-fg-muted hover:text-fg hover:bg-bg-hover"
 								}`}
-								onClick={() => select(id)}
+								onClick={() => select(m.id)}
 							>
-								{id}
+								{m.name}
 							</button>
 						))
 					)}

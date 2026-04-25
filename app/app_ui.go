@@ -13,6 +13,7 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/app/session"
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/skill"
 
 	"github.com/adrianliechti/wingman-agent/pkg/ui/clipboard"
@@ -873,7 +874,7 @@ func (a *App) updateStatusBar() {
 		parts = append(parts, fmt.Sprintf("[%s]↑%s ↓%s[-]", t.BrBlack, formatTokens(a.inputTokens), formatTokens(a.outputTokens)))
 	}
 
-	parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Cyan, a.agent.Model()))
+	parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Cyan, code.ModelName(a.agent.Model())))
 	parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Yellow, modeLabel))
 
 	a.statusBar.SetText(strings.Join(parts, " • "))

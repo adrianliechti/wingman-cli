@@ -38,6 +38,11 @@ type Server struct {
 	rewind      *rewind.Manager
 	rewindReady chan struct{}
 
+	// planMode toggles between the default agent system prompt and the
+	// planning-only prompt; protected by mu.
+	mu       sync.Mutex
+	planMode bool
+
 	// WebSocket state (single client)
 	wsMu         sync.Mutex
 	wsConn       *websocket.Conn
@@ -76,6 +81,11 @@ func (s *Server) Run(ctx context.Context) error {
 	if err := s.agent.InitMCP(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "MCP init warning: %v\n", err)
 	}
+
+	// Wire the system prompt builder. Mirrors the CLI's setup in app/app.go:115
+	// — the agent invokes this lazily on every Send, so toggling plan mode
+	// takes effect on the next turn.
+	s.agent.Config.Instructions = s.currentInstructions
 
 	// Init rewind async
 	s.restartRewind()
@@ -146,6 +156,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/model", s.handleModel)
 	mux.HandleFunc("GET /api/models", s.handleModels)
 	mux.HandleFunc("POST /api/model", s.handleSetModel)
+	mux.HandleFunc("GET /api/mode", s.handleMode)
+	mux.HandleFunc("POST /api/mode", s.handleSetMode)
 	mux.HandleFunc("GET /api/diagnostics", s.handleDiagnostics)
 
 	// WebSocket
@@ -376,17 +388,28 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	models, err := s.agent.Models(r.Context())
 	if err != nil {
-		writeJSON(w, []any{})
+		writeJSON(w, []map[string]string{})
 		return
 	}
 
-	var result []map[string]string
+	// Index upstream models by ID so we can confirm each curated entry is
+	// actually offered before exposing it.
+	upstream := make(map[string]bool, len(models))
 	for _, m := range models {
-		result = append(result, map[string]string{"id": m.ID})
+		upstream[m.ID] = true
 	}
 
-	if result == nil {
-		result = []map[string]string{}
+	// Preserve the curated order from code.AvailableModels — that's the order
+	// the user expects to see in the picker.
+	result := make([]map[string]string, 0, len(code.AvailableModels))
+	for _, m := range code.AvailableModels {
+		if !upstream[m.ID] {
+			continue
+		}
+		result = append(result, map[string]string{
+			"id":   m.ID,
+			"name": m.Name,
+		})
 	}
 
 	writeJSON(w, result)

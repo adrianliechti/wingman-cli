@@ -3,7 +3,7 @@ package app
 import (
 	"slices"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/code"
 )
 
 func (a *App) autoSelectModel() {
@@ -17,9 +17,9 @@ func (a *App) autoSelectModel() {
 		return
 	}
 
-	for _, allowed := range agent.AvailableModels {
+	for _, allowed := range code.AvailableModels {
 		for _, m := range models {
-			if m.ID == allowed {
+			if m.ID == allowed.ID {
 				a.setModel(m.ID)
 
 				return
@@ -41,18 +41,22 @@ func (a *App) showModelPicker() {
 
 	var items []PickerItem
 
-	for _, allowed := range agent.AvailableModels {
+	for _, allowed := range code.AvailableModels {
 		for _, m := range models {
-			if m.ID == allowed {
-				items = append(items, PickerItem{ID: m.ID, Text: m.ID})
+			if m.ID == allowed.ID {
+				items = append(items, PickerItem{ID: m.ID, Text: allowed.Name})
 				break
 			}
 		}
 	}
 
 	if len(items) == 0 {
-		if slices.Contains(agent.AvailableModels, a.agent.Model()) {
-			items = append(items, PickerItem{ID: a.agent.Model(), Text: a.agent.Model()})
+		current := a.agent.Model()
+		if i := slices.IndexFunc(code.AvailableModels, func(am code.Model) bool { return am.ID == current }); i >= 0 {
+			items = append(items, PickerItem{
+				ID:   current,
+				Text: code.AvailableModels[i].Name,
+			})
 		}
 	}
 
@@ -75,9 +79,9 @@ func (a *App) cycleModel() {
 
 		var models []string
 
-		for _, allowed := range agent.AvailableModels {
+		for _, allowed := range code.AvailableModels {
 			for _, m := range apiModels {
-				if m.ID == allowed {
+				if m.ID == allowed.ID {
 					models = append(models, m.ID)
 					break
 				}

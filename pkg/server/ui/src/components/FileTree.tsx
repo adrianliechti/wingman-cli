@@ -112,7 +112,7 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 			<div key={node.path}>
 				<div
 					className="flex items-center gap-1 py-[3px] pr-2 cursor-pointer text-fg-muted whitespace-nowrap text-[12px] leading-snug select-none hover:bg-bg-hover hover:text-fg transition-colors"
-					style={{ paddingLeft: 4 + depth * 12 }}
+					style={{ paddingLeft: 12 + depth * 12 }}
 					onClick={() =>
 						node.is_dir ? toggleDir(node.path) : onFileSelect(node.path)
 					}
@@ -158,7 +158,7 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 	};
 
 	return (
-		<div className="flex-1 overflow-y-auto py-1 bg-bg">
+		<div className="flex-1 overflow-y-auto py-2 bg-bg">
 			{renderNodes(nodes, 0)}
 		</div>
 	);

@@ -89,7 +89,7 @@ export function Sidebar({
 				)}
 				{groups.map((group) => (
 					<div key={group.label}>
-						<div className="px-3 pt-4 pb-1.5">
+						<div className="pl-4 pr-3 pt-4 pb-1.5">
 							<span className="text-[10px] font-medium uppercase tracking-wider text-fg-dim">
 								{group.label}
 							</span>

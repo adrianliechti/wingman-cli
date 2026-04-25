@@ -49,7 +49,7 @@ export default function App() {
 
 	// Center tabs: chat is always first, files are added dynamically
 	const [tabs, setTabs] = useState<CenterTab[]>([
-		{ id: "chat", type: "chat", label: "Chat" },
+		{ id: "chat", type: "chat", label: "Session" },
 	]);
 	const [activeTabId, setActiveTabId] = useState("chat");
 

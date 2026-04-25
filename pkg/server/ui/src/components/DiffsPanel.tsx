@@ -52,11 +52,7 @@ export function DiffsPanel({ visible, onOpenDiff, subscribe }: Props) {
 
 	return (
 		<div className="flex flex-col h-full overflow-hidden bg-bg">
-			{/* Header */}
-			<div className="h-8 px-3 flex items-center shrink-0">
-				<span className="text-[11px] text-fg-muted">Changes</span>
-			</div>
-			<div className="overflow-y-auto flex-1 px-1 pb-2">
+			<div className="overflow-y-auto flex-1 py-2">
 				{diffs.length === 0 && (
 					<div className="px-3 py-6 text-[11px] text-fg-dim text-center">
 						No changes yet
@@ -70,7 +66,7 @@ export function DiffsPanel({ visible, onOpenDiff, subscribe }: Props) {
 					return (
 						<div
 							key={diff.path}
-							className="group flex items-center gap-2 mx-1 px-2 py-1.5 rounded cursor-pointer text-[12px] text-fg-muted hover:bg-bg-hover hover:text-fg transition-colors"
+							className="group flex items-center gap-2 px-3 py-1 cursor-pointer text-[12px] text-fg-muted hover:bg-bg-hover hover:text-fg transition-colors"
 							onClick={() => onOpenDiff?.(diff.path)}
 							title={diff.path}
 						>

@@ -15,6 +15,7 @@ import type { Phase } from "../types/protocol";
 import { FilePicker } from "./FilePicker";
 import { MarkdownContent } from "./MarkdownContent";
 import { ModelPicker } from "./ModelPicker";
+import { ModePicker } from "./ModePicker";
 
 interface Props {
 	entries: ChatEntry[];
@@ -149,7 +150,7 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 						</div>
 
 						<div className="flex items-center justify-between px-1.5 pb-1.5 pt-1 gap-1">
-							<div className="flex items-center gap-1 min-w-0">
+							<div className="flex items-center gap-0 min-w-0">
 								<div className="relative flex items-center">
 									<button
 										type="button"
@@ -166,6 +167,7 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 										/>
 									)}
 								</div>
+								<ModePicker />
 								<ModelPicker />
 							</div>
 

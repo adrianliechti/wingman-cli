@@ -10,6 +10,7 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/app/session"
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/code"
 
 	"github.com/coder/websocket"
 )
@@ -238,9 +239,9 @@ func (s *Server) autoSelectModel(ctx context.Context) {
 		return
 	}
 
-	for _, allowed := range agent.AvailableModels {
+	for _, allowed := range code.AvailableModels {
 		for _, model := range models {
-			if model.ID == allowed {
+			if model.ID == allowed.ID {
 				modelID := model.ID
 				s.agent.Config.Model = func() string { return modelID }
 				return
