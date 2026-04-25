@@ -107,8 +107,33 @@ func New(workDir string, ui UI) (*Agent, error) {
 		},
 	}
 
+	// Skill precedence (later overrides earlier):
+	//   bundled  → shipped with the binary
+	//   personal → ~/.claude/skills, ~/.wingman/skills (user-wide)
+	//   project  → .claude, .wingman, .skills, .github, .opencode (this repo)
+	bundled := loadBundledSkills()
+	personal := skill.MustDiscoverPersonal()
+	discovered := skill.MustDiscover(workDir)
+	mergedSkills := skill.Merge(skill.Merge(bundled, personal), discovered)
+
+	// The read tool is sandboxed to workDir; let it also reach personal
+	// skill directories that live outside the workspace. We add each
+	// already-discovered personal skill dir (so the model can read its
+	// SKILL.md plus any bundled scripts/references), AND ~/.wingman/skills
+	// as a whole — bundled skills materialize into that tree on first
+	// invocation and need to be readable in the same session.
+	var allowedReadRoots []string
+	for _, s := range mergedSkills {
+		if s.Location != "" && filepath.IsAbs(s.Location) {
+			allowedReadRoots = append(allowedReadRoots, s.Location)
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		allowedReadRoots = append(allowedReadRoots, filepath.Join(home, ".wingman", "skills"))
+	}
+
 	baseTools := slices.Concat(
-		fs.Tools(root),
+		fs.Tools(root, allowedReadRoots...),
 		shell.Tools(workDir, elicit),
 		fetch.Tools(),
 		search.Tools(),
@@ -118,14 +143,6 @@ func New(workDir string, ui UI) (*Agent, error) {
 
 	lspManager := lsp.NewManager(workDir)
 	lspTools := lsptool.NewTools(lspManager)
-
-	// Skill precedence (later overrides earlier):
-	//   bundled  → shipped with the binary
-	//   personal → ~/.claude/skills, ~/.wingman/skills (user-wide)
-	//   project  → .claude, .wingman, .skills, .github, .opencode (this repo)
-	bundled := loadBundledSkills()
-	personal := skill.MustDiscoverPersonal()
-	discovered := skill.MustDiscover(workDir)
 
 	mcpManager, _ := mcp.Load(filepath.Join(workDir, "mcp.json"))
 
@@ -137,7 +154,7 @@ func New(workDir string, ui UI) (*Agent, error) {
 		MemoryPath:  memoryDir,
 		ScratchPath: scratchDir,
 
-		Skills: skill.Merge(skill.Merge(bundled, personal), discovered),
+		Skills: mergedSkills,
 
 		MCP: mcpManager,
 		LSP: lspManager,

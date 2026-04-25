@@ -35,12 +35,19 @@ func (s *Server) resolveSkill(text string) string {
 		return text
 	}
 
+	// For bundled skills, materialize on first use so they have a real
+	// on-disk location (the catalog will then expose it). Safe to call
+	// repeatedly — it's a no-op if already materialized.
+	if sk.Bundled {
+		_, _ = skill.MaterializeBundled(sk)
+	}
+
 	content, err := sk.GetContent(s.agent.RootPath)
 	if err != nil {
 		return text
 	}
 
-	return sk.ApplyArguments(content, args)
+	return sk.ApplyArguments(content, args, sk.AbsoluteDir(s.agent.RootPath))
 }
 
 func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {

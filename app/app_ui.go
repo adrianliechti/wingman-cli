@@ -657,8 +657,12 @@ func (a *App) invokeSkill(s *skill.Skill, args string) {
 		return
 	}
 
-	// Apply argument substitution
-	content = s.ApplyArguments(content, args)
+	if s.Bundled {
+		_, _ = skill.MaterializeBundled(s)
+	}
+
+	// Apply argument + ${SKILL_DIR} substitution
+	content = s.ApplyArguments(content, args, s.AbsoluteDir(a.agent.RootPath))
 
 	// Display as a user message
 	a.switchToChat()

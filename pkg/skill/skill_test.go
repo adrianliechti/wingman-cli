@@ -62,7 +62,7 @@ func TestApplyArguments(t *testing.T) {
 	content := "Search for ${ARGUMENTS}. Use ${query} in ${file}."
 
 	// Last argument gets everything remaining
-	result := s.ApplyArguments(content, "foo bar.go baz")
+	result := s.ApplyArguments(content, "foo bar.go baz", "")
 
 	if result != "Search for foo bar.go baz. Use foo in bar.go baz." {
 		t.Errorf("got %q", result)
@@ -77,7 +77,7 @@ func TestApplyArguments_LastArgGetsRemainder(t *testing.T) {
 	content := "Commit: ${message}"
 
 	// Single argument gets the full string including spaces
-	result := s.ApplyArguments(content, "fix the login bug")
+	result := s.ApplyArguments(content, "fix the login bug", "")
 
 	if result != "Commit: fix the login bug" {
 		t.Errorf("got %q", result)
@@ -88,7 +88,7 @@ func TestApplyArguments_NoArgs(t *testing.T) {
 	s := Skill{}
 	content := "No args: ${ARGUMENTS}."
 
-	result := s.ApplyArguments(content, "hello world")
+	result := s.ApplyArguments(content, "hello world", "")
 
 	if result != "No args: hello world." {
 		t.Errorf("got %q", result)
@@ -101,7 +101,7 @@ func TestApplyArguments_Empty(t *testing.T) {
 	}
 	content := "Value: ${x}, all: ${ARGUMENTS}."
 
-	result := s.ApplyArguments(content, "")
+	result := s.ApplyArguments(content, "", "")
 
 	if result != "Value: , all: ." {
 		t.Errorf("got %q", result)

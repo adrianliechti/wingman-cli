@@ -6,6 +6,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
@@ -27,6 +30,10 @@ type Skill struct {
 	// Content is the full skill prompt content (after frontmatter).
 	// Set for bundled skills; file-based skills load content on demand.
 	Content string `yaml:"-"`
+
+	// Raw is the original SKILL.md bytes. Set for bundled skills so we can
+	// materialize them to disk byte-for-byte (preserving frontmatter).
+	Raw string `yaml:"-"`
 
 	// Bundled indicates this skill is built-in (not from a SKILL.md file).
 	Bundled bool `yaml:"-"`
@@ -54,49 +61,138 @@ func (s *Skill) GetContent(workingDir string) (string, error) {
 	return readSkillContent(path)
 }
 
-// ApplyArguments substitutes ${ARGUMENTS} and named ${arg_name} placeholders
-// in the content string. Compatible with Claude Code's skill argument format.
-func (s *Skill) ApplyArguments(content string, args string) string {
-	// Replace ${ARGUMENTS} with the full argument string
-	content = strings.ReplaceAll(content, "${ARGUMENTS}", args)
+// ApplyArguments substitutes argument and skill-dir placeholders in the
+// skill content. Supports both brace and no-brace forms for cross-client
+// compatibility (Claude Code uses $-prefix, agentskills.io uses ${...}):
+//
+//   ${ARGUMENTS}, $ARGUMENTS                  → full args string
+//   ${SKILL_DIR}, $SKILL_DIR                  → absolute skill directory
+//   ${CLAUDE_SKILL_DIR}, $CLAUDE_SKILL_DIR    → same (Claude Code alias)
+//   ${ARGUMENTS[N]}, $ARGUMENTS[N]            → 0-based positional arg
+//   ${1}, $1, ${2}, $2, …                     → 1-based positional arg
+//   ${name}, $name                            → named args (last gets remainder)
+//
+// Out-of-range positional indices substitute the empty string. Bare `$KEY`
+// is word-bounded — `$message` substitutes, `$messagefoo` stays literal.
+//
+// If no placeholder matched and args is non-empty, "\n\nARGUMENTS: <args>"
+// is appended so the user's input still reaches the model. This mirrors
+// Claude Code's appendIfNoPlaceholder behaviour.
+func (s *Skill) ApplyArguments(content, args, skillDir string) string {
+	fields := strings.Fields(args)
 
-	// Replace named arguments. The last argument gets the entire remaining string
-	// so that "/commit fix the login bug" passes the full message to ${message}.
+	// Build a name→value lookup table for named/magic placeholders.
+	lookup := map[string]string{
+		"ARGUMENTS":        args,
+		"SKILL_DIR":        skillDir,
+		"CLAUDE_SKILL_DIR": skillDir, // Claude Code compatibility
+	}
 	if len(s.Arguments) > 0 {
 		remaining := args
 		for i, name := range s.Arguments {
-			placeholder := "${" + name + "}"
-
 			if remaining == "" {
-				content = strings.ReplaceAll(content, placeholder, "")
+				lookup[name] = ""
 				continue
 			}
-
-			// Last argument gets everything remaining
 			if i == len(s.Arguments)-1 {
-				content = strings.ReplaceAll(content, placeholder, remaining)
+				lookup[name] = remaining
 			} else {
-				// Earlier arguments get one word each
 				word, rest, _ := strings.Cut(strings.TrimSpace(remaining), " ")
-				content = strings.ReplaceAll(content, placeholder, word)
+				lookup[name] = word
 				remaining = rest
 			}
 		}
 	}
 
+	matched := false
+	resolve := func(name string) (string, bool) {
+		if v, ok := lookup[name]; ok {
+			return v, true
+		}
+		return "", false
+	}
+	resolveIdx := func(idx int) string {
+		if idx >= 0 && idx < len(fields) {
+			return fields[idx]
+		}
+		return ""
+	}
+
+	// Pass 1: ${KEY[N]} and $KEY[N] — indexed access.
+	content = indexedPattern.ReplaceAllStringFunc(content, func(m string) string {
+		sub := indexedPattern.FindStringSubmatch(m)
+		// sub[1] = "ARGUMENTS" (the only indexed name we recognise), sub[2] = digits
+		if sub[1] != "ARGUMENTS" {
+			return m
+		}
+		idx := atoi(sub[2])
+		matched = true
+		return resolveIdx(idx)
+	})
+
+	// Pass 2: ${KEY}.
+	content = bracedPattern.ReplaceAllStringFunc(content, func(m string) string {
+		name := bracedPattern.FindStringSubmatch(m)[1]
+		if i := atoi(name); i > 0 {
+			matched = true
+			return resolveIdx(i - 1) // 1-based for ${N}
+		}
+		if v, ok := resolve(name); ok {
+			matched = true
+			return v
+		}
+		return m // leave unknown vars as literal
+	})
+
+	// Pass 3: $KEY (word-bounded — must be followed by non-word/non-`[` or end).
+	content = barePattern.ReplaceAllStringFunc(content, func(m string) string {
+		sub := barePattern.FindStringSubmatch(m)
+		name, boundary := sub[1], sub[2]
+		if i := atoi(name); i > 0 {
+			matched = true
+			return resolveIdx(i-1) + boundary // 1-based for $N
+		}
+		if v, ok := resolve(name); ok {
+			matched = true
+			return v + boundary
+		}
+		return m
+	})
+
+	if !matched && args != "" {
+		content = content + "\n\nARGUMENTS: " + args
+	}
+
 	return content
 }
 
-// skillDirs are project-relative roots scanned for skills. The conventional
-// layout is <root>/<dir>/skills/<name>/SKILL.md, but Discover globs for
-// **/SKILL.md so any nested layout works too.
+var (
+	// ${ARGUMENTS[3]} or $ARGUMENTS[3]
+	indexedPattern = regexp.MustCompile(`\$\{?([A-Za-z_][A-Za-z0-9_]*)\[(\d+)\]\}?`)
+	// ${KEY}
+	bracedPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*|\d+)\}`)
+	// $KEY — captures the trailing boundary char (or empty at end-of-input)
+	// so we can put it back on substitution. Skipping word chars and `[`
+	// avoids matching mid-identifier or chewing the indexed form already
+	// handled in pass 1.
+	barePattern = regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*|\d+)([^A-Za-z0-9_\[]|$)`)
+)
+
+func atoi(s string) int {
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// skillDirs are project-relative roots scanned for skills. Layout is
+// <root>/<dir>/<name>/SKILL.md (strictly two levels), matching the spec.
 var skillDirs = []string{
-	".agents",
-	".skills",
-	".wingman",
-	".claude",
-	".github",
-	".opencode",
+	".agents/skills",
+	".wingman/skills",
+	".claude/skills",
+	".opencode/skills",
 }
 
 // personalSkillRoots are home-relative directories scanned for user-wide
@@ -108,80 +204,79 @@ var personalSkillRoots = []string{
 	".config/opencode/skills",
 }
 
+// Discover scans the project's skill roots (.claude, .wingman, etc.) for
+// SKILL.md files. Locations are returned relative to root.
 func Discover(root string) ([]Skill, error) {
-	var skills []Skill
-
-	for _, dir := range skillDirs {
-		skillDir := filepath.Join(root, dir)
-		matches, err := doublestar.Glob(os.DirFS(skillDir), "**/SKILL.md")
-
-		if err != nil {
-			continue
-		}
-
-		for _, match := range matches {
-			skillFile := filepath.Join(skillDir, match)
-			skill, err := parseSkillFile(skillFile)
-
-			if err != nil {
-				continue
-			}
-
-			location := filepath.Dir(skillFile)
-
-			if rel, err := filepath.Rel(root, location); err == nil {
-				location = rel
-			}
-
-			skill.Location = location
-			skills = append(skills, skill)
-		}
-	}
-
-	return skills, nil
+	return discover(root, skillDirs, true), nil
 }
 
 // DiscoverPersonal scans the user's home directory for personal skills under
-// the conventional <home>/.claude/skills and <home>/.wingman/skills paths,
-// matching <home>/<dir>/<name>/SKILL.md. These are user-wide skills available
-// across all projects.
+// the conventional roots in personalSkillRoots. These are user-wide skills
+// available across all projects. Locations are returned as absolute paths
+// since they live outside any project root.
 func DiscoverPersonal() ([]Skill, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
 	}
-
-	var skills []Skill
-
-	for _, dir := range personalSkillRoots {
-		skillDir := filepath.Join(home, dir)
-		matches, err := doublestar.Glob(os.DirFS(skillDir), "**/SKILL.md")
-
-		if err != nil {
-			continue
-		}
-
-		for _, match := range matches {
-			skillFile := filepath.Join(skillDir, match)
-			sk, err := parseSkillFile(skillFile)
-
-			if err != nil {
-				continue
-			}
-
-			// Personal skills carry an absolute Location since they live
-			// outside the project root.
-			sk.Location = filepath.Dir(skillFile)
-			skills = append(skills, sk)
-		}
-	}
-
-	return skills, nil
+	return discover(home, personalSkillRoots, false), nil
 }
 
 // MustDiscoverPersonal is like DiscoverPersonal but returns nil on error.
 func MustDiscoverPersonal() []Skill {
 	skills, _ := DiscoverPersonal()
+	return skills
+}
+
+// discover is the shared implementation behind Discover/DiscoverPersonal.
+// It walks each <root>/<dir> for **/SKILL.md, parses the frontmatter, and
+// keeps the first skill encountered for each name (case-insensitive) so a
+// single scan never returns duplicates.
+//
+// When relativeLocation is true (project scope), Location is set relative
+// to root so the system prompt can show e.g. ".claude/skills/foo". Otherwise
+// (personal scope) Location stays absolute so GetContent can find the file
+// without knowing the workdir.
+func discover(root string, dirs []string, relativeLocation bool) []Skill {
+	var skills []Skill
+	seen := make(map[string]bool)
+
+	for _, dir := range dirs {
+		skillDir := filepath.Join(root, dir)
+		matches, err := doublestar.Glob(os.DirFS(skillDir), "*/SKILL.md")
+		if err != nil {
+			continue
+		}
+
+		// Sort for deterministic order across platforms — doublestar.Glob
+		// doesn't guarantee any particular ordering.
+		sort.Strings(matches)
+
+		for _, match := range matches {
+			skillFile := filepath.Join(skillDir, match)
+			sk, err := parseSkillFile(skillFile)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "skill: skipped %s: %v\n", skillFile, err)
+				continue
+			}
+
+			if seen[strings.ToLower(sk.Name)] {
+				continue
+			}
+			seen[strings.ToLower(sk.Name)] = true
+
+			location := filepath.Dir(skillFile)
+			if relativeLocation {
+				if rel, err := filepath.Rel(root, location); err == nil {
+					location = rel
+				}
+			}
+			sk.Location = location
+
+			skills = append(skills, sk)
+		}
+	}
+
 	return skills
 }
 
@@ -213,11 +308,62 @@ func LoadBundled(fsys fs.FS, root string) ([]Skill, error) {
 		}
 
 		skill.Content = content
+		skill.Raw = string(data)
 		skill.Bundled = true
 		skills = append(skills, skill)
 	}
 
 	return skills, nil
+}
+
+// MaterializeBundled writes a bundled skill's SKILL.md to
+// ~/.wingman/skills/<name>/SKILL.md if it isn't already there, and updates
+// the in-memory Skill so subsequent prompt builds in the same session see
+// it as a "real" on-disk skill (with a `<location>` in the catalog).
+//
+// Returns the absolute skill directory. From the next session the file is
+// discovered as a personal skill, so the user can customize it freely
+// without losing it on a wingman update.
+func MaterializeBundled(s *Skill) (string, error) {
+	if !s.Bundled || s.Raw == "" {
+		return "", nil
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	dir := filepath.Join(home, ".wingman", "skills", s.Name)
+	file := filepath.Join(dir, "SKILL.md")
+
+	// If the user has already customized this skill, leave it alone.
+	if _, err := os.Stat(file); err == nil {
+		s.Location = dir
+		return dir, nil
+	}
+
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(file, []byte(s.Raw), 0644); err != nil {
+		return "", err
+	}
+
+	s.Location = dir
+	return dir, nil
+}
+
+// AbsoluteDir returns the absolute filesystem directory of the skill.
+// Bundled skills that haven't been materialized yet return "".
+func (s *Skill) AbsoluteDir(workDir string) string {
+	if s.Location == "" {
+		return ""
+	}
+	if filepath.IsAbs(s.Location) {
+		return s.Location
+	}
+	return filepath.Join(workDir, s.Location)
 }
 
 // FindSkill finds a skill by name (case-insensitive).
@@ -276,8 +422,8 @@ func FormatForPrompt(skills []Skill) string {
 			fmt.Fprintf(&sb, "    <when-to-use>%s</when-to-use>\n", s.WhenToUse)
 		}
 
-		if !s.Bundled && s.Location != "" {
-			fmt.Fprintf(&sb, "    <location>%s/SKILL.md</location>\n", s.Location)
+		if s.Location != "" {
+			fmt.Fprintf(&sb, "    <location>%s/SKILL.md</location>\n", displayLocation(s.Location))
 		}
 
 		fmt.Fprint(&sb, "  </skill>\n")
@@ -286,6 +432,21 @@ func FormatForPrompt(skills []Skill) string {
 	fmt.Fprint(&sb, "</available_skills>")
 
 	return sb.String()
+}
+
+// displayLocation returns a path suitable for showing to the LLM. Paths
+// under the user's home dir are abbreviated with `~` so the prompt doesn't
+// leak the username on personal-skill entries.
+func displayLocation(loc string) string {
+	if !filepath.IsAbs(loc) {
+		return loc
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if rel, err := filepath.Rel(home, loc); err == nil && !strings.HasPrefix(rel, "..") {
+			return "~/" + filepath.ToSlash(rel)
+		}
+	}
+	return loc
 }
 
 // parseSkillFile reads a SKILL.md file and returns the skill metadata.
