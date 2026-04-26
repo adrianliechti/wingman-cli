@@ -8,21 +8,22 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/google/uuid"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
-	"github.com/adrianliechti/wingman-agent/pkg/claw/channel"
-	"github.com/adrianliechti/wingman-agent/pkg/claw/prompt"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/fs"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/shell"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/subagent"
+	"github.com/adrianliechti/wingman-agent/pkg/claw/channel"
+	"github.com/adrianliechti/wingman-agent/pkg/claw/prompt"
 	"github.com/adrianliechti/wingman-agent/pkg/claw/tool/manage"
 	"github.com/adrianliechti/wingman-agent/pkg/claw/tool/schedule"
-	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
-	toolmcp "github.com/adrianliechti/wingman-agent/pkg/agent/tool/mcp"
 )
 
 // managedAgent holds a registered agent and its per-agent resources.
@@ -163,7 +164,7 @@ func (c *Claw) loadAgent(name string) (*managedAgent, error) {
 
 	// Add MCP tools
 	if c.config.MCP != nil {
-		if mcpTools, err := toolmcp.Tools(context.Background(), c.config.MCP); err == nil {
+		if mcpTools, err := mcp.Tools(context.Background(), c.config.MCP); err == nil {
 			agentTools = append(agentTools, mcpTools...)
 		}
 	}

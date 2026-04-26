@@ -4,8 +4,8 @@ import "encoding/json"
 
 // Anthropic: /v1/messages
 
-func metadataFromAnthropic(reqBody, respBody []byte) Metadata {
-	var m Metadata
+func metadataFromAnthropic(reqBody, respBody []byte) metadata {
+	var m metadata
 
 	m.Model = extractJSONField(reqBody, "model")
 
@@ -32,8 +32,8 @@ func metadataFromAnthropic(reqBody, respBody []byte) Metadata {
 	return m
 }
 
-func metadataFromAnthropicSSE(reqBody, sseBody []byte) Metadata {
-	var m Metadata
+func metadataFromAnthropicSSE(reqBody, sseBody []byte) metadata {
+	var m metadata
 
 	m.Model = extractJSONField(reqBody, "model")
 

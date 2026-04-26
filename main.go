@@ -4,31 +4,40 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
 
-	"github.com/adrianliechti/wingman-agent/app"
-	"github.com/adrianliechti/wingman-agent/app/session"
+	"github.com/adrianliechti/wingman-agent/server"
+	clawtui "github.com/adrianliechti/wingman-agent/tui/claw"
+	codetui "github.com/adrianliechti/wingman-agent/tui/code"
 
 	"github.com/adrianliechti/wingman-agent/pkg/claw"
 	"github.com/adrianliechti/wingman-agent/pkg/claw/channel"
-	clawtui "github.com/adrianliechti/wingman-agent/pkg/claw/tui"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
-	"github.com/adrianliechti/wingman-agent/pkg/proxy"
-	"github.com/adrianliechti/wingman-agent/pkg/server"
+	"github.com/adrianliechti/wingman-agent/pkg/session"
+	"github.com/adrianliechti/wingman-agent/tui/proxy"
 
-	"github.com/adrianliechti/wingman-agent/pkg/cli/claude"
-	"github.com/adrianliechti/wingman-agent/pkg/cli/codex"
-	"github.com/adrianliechti/wingman-agent/pkg/cli/gemini"
-	"github.com/adrianliechti/wingman-agent/pkg/cli/opencode"
+	"github.com/adrianliechti/wingman-agent/tui/run/claude"
+	"github.com/adrianliechti/wingman-agent/tui/run/codex"
+	"github.com/adrianliechti/wingman-agent/tui/run/gemini"
+	"github.com/adrianliechti/wingman-agent/tui/run/opencode"
 
-	"github.com/adrianliechti/wingman-agent/pkg/ui/theme"
+	"github.com/adrianliechti/wingman-agent/pkg/tui/theme"
 )
 
 func main() {
 
 	ctx := context.Background()
+
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "--help", "-h", "help":
+			printHelp(os.Stdout)
+			return
+		}
+	}
 
 	if len(os.Args) > 1 && os.Args[1] == "server" {
 		fs := flag.NewFlagSet("server", flag.ExitOnError)
@@ -63,33 +72,36 @@ func main() {
 			port := fs.Int("port", 4242, "port to listen on")
 			fs.Parse(os.Args[2:])
 
-			if err := proxy.Run(ctx, proxy.ProxyOptions{Port: *port}); err != nil {
+			if err := proxy.Run(ctx, proxy.Options{Port: *port}); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
 			return
 		}
 
-		if os.Args[1] == "claude" {
-			claude.Run(ctx, os.Args[2:], nil)
-			return
-		}
+		if os.Args[1] == "run" {
+			if len(os.Args) > 2 {
+				switch os.Args[2] {
+				case "claude":
+					claude.Run(ctx, os.Args[3:], nil)
+					return
+				case "codex":
+					codex.Run(ctx, os.Args[3:], nil)
+					return
+				case "gemini":
+					gemini.Run(ctx, os.Args[3:], nil)
+					return
+				case "opencode":
+					opencode.Run(ctx, os.Args[3:], nil)
+					return
+				}
+			}
 
-		if os.Args[1] == "codex" {
-			codex.Run(ctx, os.Args[2:], nil)
-			return
+			fmt.Fprintln(os.Stderr, "Error: missing or unknown run target")
+			fmt.Fprintln(os.Stderr)
+			printHelp(os.Stderr)
+			os.Exit(1)
 		}
-
-		if os.Args[1] == "gemini" {
-			gemini.Run(ctx, os.Args[2:], nil)
-			return
-		}
-
-		if os.Args[1] == "opencode" {
-			opencode.Run(ctx, os.Args[2:], nil)
-			return
-		}
-
 	}
 
 	if len(os.Args) > 1 && os.Args[1] == "claw" {
@@ -150,7 +162,7 @@ func main() {
 		c.Usage = s.State.Usage
 	}
 
-	application := app.New(ctx, c, sessionID)
+	application := codetui.New(ctx, c, sessionID)
 
 	if err := application.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -183,4 +195,23 @@ func runClaw(ctx context.Context) {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func printHelp(w io.Writer) {
+	fmt.Fprint(w, `wingman — AI coding agent
+
+Usage:
+  wingman [--resume [id]]      Launch the agent TUI
+  wingman server [-port N]     Run the web UI server
+  wingman claw                 Run the claw multi-agent runner
+  wingman proxy [-port N]      Run the API proxy + dashboard (requires WINGMAN_URL)
+  wingman run <target> [args]  Run an external agent through wingman (requires WINGMAN_URL)
+
+Run targets:
+  claude, codex, gemini, opencode
+
+Flags:
+  --resume [id]   Resume the latest (or specified) saved session
+  --help, -h      Show this help
+`)
 }
