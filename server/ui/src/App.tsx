@@ -9,7 +9,7 @@ import {
 	PanelRightOpen,
 	X,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel";
 import { CheckpointsPanel } from "./components/CheckpointsPanel";
 import { DiffsPanel } from "./components/DiffsPanel";
@@ -53,13 +53,25 @@ export default function App() {
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 	const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
 
-	// In scratch mode the Changes tab doesn't exist, so pin to Files when
-	// capabilities arrive and reveal it isn't available.
+	// Auto-switch the right-panel tab when capabilities flip:
+	//   - first load in scratch mode → Files (the default "changes" tab is hidden)
+	//   - flip on (e.g. agent ran `git init`) → Changes
+	//   - flip off (e.g. user `rm -rf .git`) → Files
+	// Only fires on actual flips so manual tab choices persist across reconnects.
+	const prevShowChanges = useRef<boolean | null>(null);
 	useEffect(() => {
-		if (capabilities && !showChanges && rightTab === "changes") {
-			setRightTab("files");
+		if (!capabilities) return;
+		const prev = prevShowChanges.current;
+		prevShowChanges.current = showChanges;
+
+		if (prev === null) {
+			if (!showChanges) setRightTab("files");
+			return;
 		}
-	}, [capabilities, showChanges, rightTab]);
+		if (prev !== showChanges) {
+			setRightTab(showChanges ? "changes" : "files");
+		}
+	}, [capabilities, showChanges]);
 
 	// Center tabs: chat is always first, files are added dynamically
 	const [tabs, setTabs] = useState<CenterTab[]>([

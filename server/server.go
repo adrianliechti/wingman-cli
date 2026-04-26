@@ -505,9 +505,10 @@ func (s *Server) pollFiles(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if s.agent.IsGitRepo() != (s.agent.Rewind != nil) {
-				s.agent.RestartRewind()
+				s.agent.SyncProjectMode()
 				s.sendMessage(CapabilitiesChangedEvent{})
 				s.sendMessage(CheckpointsChangedEvent{})
+				s.sendMessage(DiagnosticsChangedEvent{})
 			}
 
 			s.sendMessage(FilesChangedEvent{})

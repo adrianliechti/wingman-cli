@@ -247,10 +247,11 @@ func (a *Agent) IsGitRepo() bool {
 }
 
 // RestartRewind tears down the existing rewind manager (if any) and creates a
-// fresh one, re-baselining at the current state. Called both on /sessions/new
-// (so checkpoint history is scoped to one conversation) and from the file
-// poll when the working dir's git status flips. rewind.New propagates go-git
-// errors directly, so a non-git dir or any other failure leaves Rewind nil.
+// fresh one, re-baselining at the current state. Used on /sessions/new so
+// checkpoint history is scoped to one conversation. rewind.New propagates
+// go-git errors directly, so a non-git dir or any other failure leaves Rewind
+// nil. LSP is intentionally untouched — gopls/etc. are slow to spin up and
+// shouldn't churn on session boundaries.
 func (a *Agent) RestartRewind() {
 	if a.Rewind != nil {
 		a.Rewind.Cleanup()
@@ -259,6 +260,37 @@ func (a *Agent) RestartRewind() {
 
 	if rm, err := rewind.New(a.RootPath); err == nil {
 		a.Rewind = rm
+	}
+}
+
+// SyncProjectMode rebuilds rewind and LSP when the working dir's git status
+// flips (e.g. agent ran `git init` in a scratch dir). The LSP manager caches
+// its source-tree detection in sync.Once, so we swap the whole manager
+// rather than toggling the flag in place. lspTools closures hold a reference
+// to the old manager and need to be recreated too.
+func (a *Agent) SyncProjectMode() {
+	gitMode := isGitRepo(a.RootPath)
+
+	if a.Rewind != nil {
+		a.Rewind.Cleanup()
+		a.Rewind = nil
+	}
+	if rm, err := rewind.New(a.RootPath); err == nil {
+		a.Rewind = rm
+	}
+
+	a.mu.Lock()
+	oldLSP := a.LSP
+	a.LSP = lsp.NewManager(a.RootPath, gitMode)
+	if gitMode {
+		a.lspTools = lsptool.NewTools(a.LSP)
+	} else {
+		a.lspTools = nil
+	}
+	a.mu.Unlock()
+
+	if oldLSP != nil {
+		oldLSP.Close()
 	}
 }
 
