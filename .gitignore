@@ -1,3 +1,11 @@
 dist/
+node_modules/
+server/static/
+
 .vscode/
+.idea/
+.DS_Store
+
+.env
+.env.*
 mcp.json

@@ -1,0 +1,1131 @@
+package code
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
+	"golang.org/x/term"
+
+	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/code"
+	"github.com/adrianliechti/wingman-agent/pkg/session"
+	"github.com/adrianliechti/wingman-agent/pkg/skill"
+	"github.com/adrianliechti/wingman-agent/pkg/tui"
+
+	"github.com/adrianliechti/wingman-agent/pkg/tui/clipboard"
+	"github.com/adrianliechti/wingman-agent/pkg/tui/theme"
+)
+
+const maxToolOutputLen = 500
+const compactWidthThreshold = 100
+const compactHeightThreshold = 22
+
+// isCompactMode returns true if padding should be removed (small screen or vscode caller)
+func (a *App) isCompactMode() bool {
+	if os.Getenv("WINGMAN_CALLER") == "vscode" {
+		return true
+	}
+
+	// Try to get terminal size directly
+	if width, height, err := term.GetSize(int(os.Stdout.Fd())); err == nil && width > 0 {
+		if width < compactWidthThreshold || height < compactHeightThreshold {
+			return true
+		}
+	}
+
+	// Fallback: chatWidth is set during draw
+	if a.chatWidth > 0 && a.chatWidth+6 < compactWidthThreshold {
+		return true
+	}
+
+	return false
+}
+
+// getMargins returns (left, right) margins based on compact mode
+func (a *App) getMargins() (int, int) {
+	if a.isCompactMode() {
+		return 0, 0
+	}
+	return 2, 4
+}
+
+// getInputMargins returns (left, right) margins for input area based on compact mode
+func (a *App) getInputMargins() (int, int) {
+	if a.isCompactMode() {
+		return 0, 0
+	}
+	return 4, 4
+}
+
+// isStreaming returns true if the app is currently processing a request
+func (a *App) isStreaming() bool {
+	return a.phase != PhaseIdle
+}
+
+// Input handling
+
+func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
+	// Handle Escape: close modals, cancel stream, or clear input
+	if event.Key() == tcell.KeyEscape {
+		if a.hasActiveModal() {
+			a.closeActiveModal()
+			return nil
+		}
+		if a.isStreaming() {
+			a.cancelStream()
+			return nil
+		}
+		// Clear input and pending content when idle
+		a.input.SetText("", true)
+		a.clearPendingContent()
+		return nil
+	}
+
+	// Handle Ctrl+C: copy if text selected, else close modals, cancel stream, or stop app
+	if event.Key() == tcell.KeyCtrlC {
+		if !a.hasActiveModal() && a.input.HasSelection() {
+			selectedText, _, _ := a.input.GetSelection()
+			if selectedText != "" {
+				a.copyTextToClipboard(selectedText)
+				return nil
+			}
+		}
+		if a.hasActiveModal() {
+			a.closeActiveModal()
+			return nil
+		}
+		if a.isStreaming() {
+			a.cancelStream()
+			return nil
+		}
+		a.stop()
+		return nil
+	}
+
+	// Ctrl+E: toggle tool output expansion
+	if event.Key() == tcell.KeyCtrlE && !a.hasActiveModal() {
+		a.toolOutputExpanded = !a.toolOutputExpanded
+
+		if !a.showWelcome && !a.isStreaming() && !a.promptActive && !a.askActive && len(a.agent.Messages) > 0 {
+			a.renderChat(a.agent.Messages)
+		}
+
+		a.updateInputHint()
+
+		return nil
+	}
+
+	// Ctrl+T: toggle mouse capture so the user can select text natively
+	if event.Key() == tcell.KeyCtrlT && !a.hasActiveModal() {
+		a.toggleMouseCapture()
+		return nil
+	}
+
+	// Let modal handle its own events
+	if a.hasActiveModal() {
+		return event
+	}
+
+	// Handle @ to trigger file picker (don't insert @ into input)
+	if event.Rune() == '@' && !a.isStreaming() {
+		a.showFilePicker("", func(paths []string) {
+			for _, p := range paths {
+				a.addFileToContext(p)
+			}
+		})
+
+		return nil // consume the event - don't type @
+	}
+
+	// Handle ask mode (free-text input, submit with Enter)
+	if a.askActive {
+		if event.Key() == tcell.KeyEnter {
+			text := strings.TrimSpace(a.input.GetText())
+
+			if text == "" {
+				return nil // don't submit empty answers
+			}
+
+			a.input.SetText("", true)
+			fmt.Fprint(a.chatView, a.formatUserMessage(text))
+			a.setPhase(PhaseThinking)
+			a.askResponse <- text
+
+			return nil
+		}
+
+		return event
+	}
+
+	// Handle prompt mode
+	if a.promptActive {
+		switch event.Rune() {
+		case 'y', 'Y':
+			fmt.Fprint(a.chatView, a.formatUserMessage("Yes"))
+			a.setPhase(PhaseThinking)
+			a.promptResponse <- true
+
+			return nil
+
+		case 'n', 'N':
+			fmt.Fprint(a.chatView, a.formatUserMessage("No"))
+			a.setPhase(PhaseThinking)
+			a.promptResponse <- false
+
+			return nil
+		}
+
+		return nil // consume all input when prompt is active
+	}
+
+	// Ctrl+Y: copy last assistant message to clipboard
+	if event.Key() == tcell.KeyCtrlY && !a.hasActiveModal() {
+		a.copyLastResponse()
+		return nil
+	}
+
+	if event.Key() == tcell.KeyCtrlL {
+		a.clearChat()
+		return nil
+	}
+
+	if event.Key() == tcell.KeyTab && !a.isStreaming() {
+		// Tab-complete slash commands
+		text := a.input.GetText()
+		if strings.HasPrefix(text, "/") && !strings.Contains(text, " ") {
+			matches := a.matchingCommands(text)
+			if len(matches) == 1 {
+				a.input.SetText(matches[0].Name, true)
+				return nil
+			}
+			// Find longest common prefix among matches
+			if len(matches) > 1 {
+				prefix := matches[0].Name
+				for _, m := range matches[1:] {
+					for !strings.HasPrefix(m.Name, prefix) {
+						prefix = prefix[:len(prefix)-1]
+					}
+				}
+				if len(prefix) > len(text) {
+					a.input.SetText(prefix, true)
+					return nil
+				}
+			}
+			return nil
+		}
+		a.toggleMode()
+		return nil
+	}
+
+	// Shift+Tab cycles through models
+	if event.Key() == tcell.KeyBacktab && !a.isStreaming() {
+		a.cycleModel()
+		return nil
+	}
+
+	if event.Key() == tcell.KeyEnter && !a.isStreaming() {
+		a.submitInput()
+		return nil
+	}
+
+	return event
+}
+
+func (a *App) resetPlaceholder() {
+	a.app.QueueUpdateDraw(func() {
+		a.input.SetPlaceholder("Ask anything...")
+	})
+}
+
+func (a *App) promptUser(message string) (bool, error) {
+	// Serialize prompts — tool calls may run concurrently
+	a.promptMu.Lock()
+	defer a.promptMu.Unlock()
+
+	a.promptResponse = make(chan bool, 1)
+	a.promptActive = true
+	defer func() {
+		a.promptActive = false
+		a.resetPlaceholder()
+	}()
+
+	t := theme.Default
+	hint := fmt.Sprintf("[%s]Press [-][%s::b]y[-::-][%s] to approve, [-][%s::b]n[-::-][%s] to deny[-]", t.BrBlack, t.Green, t.BrBlack, t.Red, t.BrBlack)
+
+	a.app.QueueUpdateDraw(func() {
+		fmt.Fprint(a.chatView, a.formatPrompt("Confirm Command", message, hint))
+		a.input.SetPlaceholder("y/n")
+		a.app.SetFocus(a.input)
+	})
+
+	select {
+	case result := <-a.promptResponse:
+		return result, nil
+	case <-a.ctx.Done():
+		return false, a.ctx.Err()
+	}
+}
+
+func (a *App) askUser(question string) (string, error) {
+	a.askResponse = make(chan string, 1)
+	a.askActive = true
+	defer func() {
+		a.askActive = false
+		a.resetPlaceholder()
+	}()
+
+	a.app.QueueUpdateDraw(func() {
+		fmt.Fprint(a.chatView, a.formatPrompt("Question", question, ""))
+		a.input.SetPlaceholder("Type your answer and press Enter...")
+		a.app.SetFocus(a.input)
+	})
+
+	select {
+	case result := <-a.askResponse:
+		return result, nil
+	case <-a.ctx.Done():
+		return "", a.ctx.Err()
+	}
+}
+
+func (a *App) copyTextToClipboard(text string) {
+	go func() {
+		err := clipboard.WriteText(text)
+
+		a.app.QueueUpdateDraw(func() {
+			message := "Copied to clipboard"
+			color := theme.Default.BrBlack
+
+			if err != nil {
+				message = fmt.Sprintf("Clipboard copy failed: %v", err)
+				color = theme.Default.Red
+			}
+
+			fmt.Fprint(a.chatView, a.formatNotice(message, color))
+		})
+	}()
+}
+
+func (a *App) copyLastResponse() {
+	messages := a.agent.Messages
+
+	// Find the last assistant message (walking backwards)
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == agent.RoleAssistant {
+			for _, c := range messages[i].Content {
+				if c.Text != "" {
+					a.copyTextToClipboard(c.Text)
+
+					return
+				}
+			}
+		}
+	}
+}
+
+// pasteFromClipboard reads the clipboard off the UI thread, then applies
+// changes back on the UI thread via QueueUpdateDraw. This prevents blocking the
+// tview event loop (which would freeze the app and ignore Ctrl+C).
+func (a *App) pasteFromClipboard() {
+	go func() {
+		contents, err := clipboard.Read()
+
+		if err != nil || len(contents) == 0 {
+			return
+		}
+
+		a.app.QueueUpdateDraw(func() {
+			for _, c := range contents {
+				if c.Image != nil {
+					a.pendingContent = append(a.pendingContent, agent.Content{File: &agent.File{Data: *c.Image}})
+				}
+
+				if c.Text != "" {
+					// Check if the clipboard text contains file paths
+					paths := detectFilePaths(c.Text, a.agent.RootPath)
+					if len(paths) > 0 {
+						for _, p := range paths {
+							a.addFileToContext(normalizeFilePath(p, a.agent.RootPath))
+						}
+
+						continue
+					}
+
+					// Get selection range (start, end are byte positions)
+					_, start, end := a.input.GetSelection()
+					a.input.Replace(start, end, c.Text)
+				}
+			}
+
+			a.updateInputHint()
+		})
+	}()
+}
+
+func (a *App) cancelStream() {
+	// Cancel the stream context first
+	a.streamMu.Lock()
+	if a.streamCancel != nil {
+		a.streamCancel()
+	}
+	a.streamMu.Unlock()
+
+	// Unblock any pending ask/prompt so the stream goroutine can exit
+	if a.askActive {
+		a.input.SetText("", true)
+
+		select {
+		case a.askResponse <- "":
+		default:
+		}
+	}
+
+	if a.promptActive {
+		select {
+		case a.promptResponse <- false:
+		default:
+		}
+	}
+}
+
+func (a *App) clearPendingContent() {
+	a.pendingContent = nil
+	a.pendingFiles = nil
+	a.updateInputHint()
+}
+
+func (a *App) clearChat() {
+	a.chatView.Clear()
+	a.agent.Messages = nil
+	a.agent.Usage = agent.Usage{}
+	a.inputTokens = 0
+	a.outputTokens = 0
+	a.updateStatusBar()
+}
+
+func (a *App) resumeSession() {
+	t := theme.Default
+
+	sessions, err := session.List(filepath.Join(filepath.Dir(a.agent.MemoryPath), "sessions"))
+	if err != nil || len(sessions) == 0 {
+		fmt.Fprint(a.chatView, a.formatNotice("No sessions to resume", t.Yellow))
+		return
+	}
+
+	// Resume the most recent session
+	last, err := session.Load(filepath.Join(filepath.Dir(a.agent.MemoryPath), "sessions"), sessions[0].ID)
+	if err != nil {
+		fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("Failed to load session: %v", err), t.Red))
+		return
+	}
+
+	a.agent.Messages = last.State.Messages
+	a.agent.Usage = last.State.Usage
+
+	a.sessionID = last.ID
+
+	// Update token count from restored session
+	usage := a.agent.Usage
+	a.inputTokens = usage.InputTokens
+	a.outputTokens = usage.OutputTokens
+
+	// Re-render chat with restored messages
+	a.switchToChat()
+	a.renderChat(a.agent.Messages)
+	a.updateStatusBar()
+
+	fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("Resumed session from %s", last.UpdatedAt.Format("Jan 2 15:04")), t.Green))
+	a.chatView.ScrollToEnd()
+}
+
+func (a *App) showError(title string, err error) {
+	a.switchToChat()
+	fmt.Fprint(a.chatView, a.formatError(title, err.Error()))
+}
+
+func (a *App) countPendingImages() int {
+	count := 0
+
+	for _, c := range a.pendingContent {
+		if c.File != nil {
+			count++
+		}
+	}
+
+	return count
+}
+
+func (a *App) submitInput() {
+	if a.phase != PhaseIdle {
+		return
+	}
+
+	query := strings.TrimSpace(a.input.GetText())
+
+	if query == "" {
+		return
+	}
+
+	switch query {
+	case "/quit":
+		a.stop()
+
+		return
+
+	case "/clear":
+		a.clearChat()
+		a.input.SetText("", true)
+		return
+
+	case "/resume":
+		a.resumeSession()
+		a.input.SetText("", true)
+		return
+
+	case "/help":
+		a.switchToChat()
+		a.input.SetText("", true)
+		t := theme.Default
+		builtinCmds := a.builtinCommands()
+		skillCmds := a.skillCommands()
+
+		// Find longest name across all commands for alignment
+		maxLen := 0
+		for _, cmd := range builtinCmds {
+			if len(cmd.Name) > maxLen {
+				maxLen = len(cmd.Name)
+			}
+		}
+		for _, cmd := range skillCmds {
+			if len(cmd.Name) > maxLen {
+				maxLen = len(cmd.Name)
+			}
+		}
+
+		fmt.Fprintf(a.chatView, "  [%s]┃[-] [%s::b]Commands[-::-]\n", t.Cyan, t.Cyan)
+		for _, cmd := range builtinCmds {
+			pad := strings.Repeat(" ", maxLen-len(cmd.Name))
+			fmt.Fprintf(a.chatView, "  [%s]┃[-]   [%s]%s[-]%s    %s\n", t.Cyan, t.BrCyan, cmd.Name, pad, cmd.Desc)
+		}
+
+		if len(skillCmds) > 0 {
+			fmt.Fprintf(a.chatView, "  [%s]┃[-]\n", t.Cyan)
+			fmt.Fprintf(a.chatView, "  [%s]┃[-] [%s::b]Skills[-::-]\n", t.Cyan, t.Cyan)
+			for _, cmd := range skillCmds {
+				pad := strings.Repeat(" ", maxLen-len(cmd.Name))
+				fmt.Fprintf(a.chatView, "  [%s]┃[-]   [%s]%s[-]%s    %s\n", t.Cyan, t.BrCyan, cmd.Name, pad, cmd.Desc)
+			}
+		}
+
+		fmt.Fprint(a.chatView, "\n")
+		a.chatView.ScrollToEnd()
+
+		return
+
+	case "/models", "/model":
+		a.input.SetText("", true)
+		a.showModelPicker()
+
+		return
+
+	case "/plan":
+		a.input.SetText("", true)
+		a.switchToChat()
+		a.enterPlanMode()
+
+		return
+
+	case "/agent":
+		a.input.SetText("", true)
+		a.switchToChat()
+		a.exitPlanMode()
+
+		return
+
+	case "/rewind":
+		a.input.SetText("", true)
+		a.switchToChat()
+		a.showRewindPicker()
+
+		return
+
+	case "/diff":
+		a.input.SetText("", true)
+		a.switchToChat()
+		a.showDiffView()
+
+		return
+
+	case "/problems":
+		a.input.SetText("", true)
+		a.switchToChat()
+		a.showDiagnosticsView()
+
+		return
+
+	case "/copy":
+		a.input.SetText("", true)
+		a.copyLastResponse()
+
+		return
+
+	case "/paste":
+		a.input.SetText("", true)
+		a.pasteFromClipboard()
+
+		return
+
+	}
+
+	// Check for skill slash commands: /skill-name [args]
+	if strings.HasPrefix(query, "/") {
+		parts := strings.SplitN(query[1:], " ", 2)
+		skillName := parts[0]
+		skillArgs := ""
+		if len(parts) > 1 {
+			skillArgs = parts[1]
+		}
+
+		if s := skill.FindSkill(skillName, a.agent.Skills); s != nil {
+			a.input.SetText("", true)
+			a.invokeSkill(s, skillArgs)
+			return
+		}
+
+		// Unknown slash command
+		a.input.SetText("", true)
+		a.switchToChat()
+		fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("Unknown command: /%s", skillName), theme.Default.Yellow))
+		return
+	}
+
+	a.switchToChat()
+	a.app.ForceDraw() // Ensure chatWidth is set before printing user message
+	a.input.SetText("", true)
+
+	imageCount := a.countPendingImages()
+
+	// Build display text with attachments
+	displayText := query
+	if imageCount > 0 || len(a.pendingFiles) > 0 {
+		var attachments []string
+		if imageCount == 1 {
+			attachments = append(attachments, "📷 1 image")
+		} else if imageCount > 1 {
+			attachments = append(attachments, fmt.Sprintf("📷 %d images", imageCount))
+		}
+		for _, f := range a.pendingFiles {
+			attachments = append(attachments, fmt.Sprintf("📄 %s", filepath.Base(f)))
+		}
+		displayText = fmt.Sprintf("%s\n[%s]%s[-]", query, theme.Default.BrBlack, strings.Join(attachments, ", "))
+	}
+	fmt.Fprint(a.chatView, a.formatUserMessage(displayText))
+
+	// Build input for agent - display text plus hidden file list for context
+	input := []agent.Content{{Text: displayText}}
+	input = append(input, a.pendingContent...)
+
+	if len(a.pendingFiles) > 0 {
+		var sb strings.Builder
+		fmt.Fprint(&sb, "\n[Attached files - use the read tool to access their content]\n")
+		for _, f := range a.pendingFiles {
+			fmt.Fprintf(&sb, "- %s\n", f)
+		}
+		input = append(input, agent.Content{Text: sb.String()})
+	}
+
+	a.clearPendingContent()
+
+	go func() {
+		if bridgeContext := a.bridgeContext(); bridgeContext != "" {
+			input = append(input, agent.Content{Text: bridgeContext})
+		}
+
+		a.streamResponse(input)
+	}()
+}
+
+func (a *App) invokeSkill(s *skill.Skill, args string) {
+	content, err := s.GetContent(a.agent.RootPath)
+	if err != nil {
+		a.switchToChat()
+		fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("Failed to load skill %q: %v", s.Name, err), theme.Default.Red))
+		return
+	}
+
+	// Bundled skills materialize on first use so they show up in the
+	// catalog from the next turn onward.
+	if s.Bundled {
+		_, _ = skill.MaterializeBundled(s)
+	}
+
+	// Apply argument + ${SKILL_DIR} substitution
+	content = s.ApplyArguments(content, args, s.AbsoluteDir(a.agent.RootPath))
+
+	// Display as a user message
+	a.switchToChat()
+	a.app.ForceDraw()
+
+	displayText := fmt.Sprintf("/%s", s.Name)
+	if args != "" {
+		displayText += " " + args
+	}
+	fmt.Fprint(a.chatView, a.formatUserMessage(displayText))
+
+	// Send skill content as the prompt
+	input := []agent.Content{{Text: content}}
+	input = append(input, a.pendingContent...)
+	a.clearPendingContent()
+
+	go func() {
+		if bridgeContext := a.bridgeContext(); bridgeContext != "" {
+			input = append(input, agent.Content{Text: bridgeContext})
+		}
+		a.streamResponse(input)
+	}()
+}
+
+func (a *App) switchToChat() {
+	if !a.showWelcome {
+		return
+	}
+	a.showWelcome = false
+	a.rebuildContentPages()
+}
+
+// rebuildContentPages rebuilds the content area.
+// Welcome mode: logo centered at top, chatView pinned at bottom (above input).
+// Chat mode: chatView fills the entire area.
+func (a *App) rebuildContentPages() {
+	a.contentPages.Clear()
+
+	if a.showWelcome && !a.isCompactMode() {
+		// Logo centered in upper area; notices flow directly below it.
+		a.contentPages.AddItem(nil, 0, 2, false)
+		a.contentPages.AddItem(a.welcomeView, 12, 0, false)
+		a.contentPages.AddItem(a.chatView, 0, 3, false)
+	} else {
+		a.contentPages.AddItem(a.chatView, 0, 1, false)
+	}
+}
+
+// UI setup and layout
+
+func (a *App) setupUI() {
+	t := theme.Default
+
+	a.welcomeView = tview.NewTextView().
+		SetDynamicColors(true).
+		SetTextAlign(tview.AlignCenter)
+	a.welcomeView.SetText(tui.Logo)
+	a.welcomeView.SetBackgroundColor(tcell.ColorDefault)
+
+	a.chatView = tview.NewTextView().
+		SetDynamicColors(true).
+		SetWordWrap(false).
+		SetScrollable(true).
+		SetChangedFunc(func() {
+			a.app.Draw()
+		})
+	a.chatView.SetBorder(false)
+	a.chatView.SetBackgroundColor(tcell.ColorDefault)
+
+	inputBgColor := t.Selection
+	a.input = tview.NewTextArea().
+		SetPlaceholder("Ask anything...")
+	a.input.SetBackgroundColor(inputBgColor)
+	a.input.SetBorder(false)
+	a.input.SetTextStyle(tcell.StyleDefault.Foreground(t.Foreground).Background(inputBgColor))
+	a.input.SetPlaceholderStyle(tcell.StyleDefault.Foreground(t.BrBlack).Background(inputBgColor))
+
+	a.contentPages = tview.NewFlex().SetDirection(tview.FlexRow)
+	a.contentPages.SetBackgroundColor(tcell.ColorDefault)
+	a.rebuildContentPages()
+}
+
+func (a *App) buildLayout() *tview.Flex {
+	t := theme.Default
+	inputBgColor := t.Selection
+
+	a.inputFrame = tview.NewFrame(a.input).
+		SetBorders(1, 1, 0, 0, 1, 1)
+	a.inputFrame.SetBackgroundColor(inputBgColor)
+	a.inputFrame.SetBorder(false)
+
+	a.input.SetChangedFunc(func() {
+		a.updateInputHeight()
+		a.updateInputHint()
+	})
+
+	// Handle Ctrl+V/Cmd+V to paste from clipboard (images + text)
+	a.input.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		// Check for paste: Ctrl+V or Cmd+V (macOS)
+		isPaste := event.Key() == tcell.KeyCtrlV || (event.Modifiers()&tcell.ModMeta != 0 && (event.Rune() == 'v' || event.Rune() == 'V'))
+
+		if isPaste {
+			a.pasteFromClipboard()
+
+			return nil // Consume event - we handled the paste
+		}
+
+		return event
+	})
+
+	bottomBar := tview.NewFlex().SetDirection(tview.FlexColumn)
+
+	a.inputHint = tview.NewTextView().
+		SetDynamicColors(true)
+	a.inputHint.SetBackgroundColor(tcell.ColorDefault)
+	a.updateInputHint()
+
+	a.statusBar = tview.NewTextView().
+		SetDynamicColors(true).
+		SetTextAlign(tview.AlignRight)
+	a.updateStatusBar()
+	a.statusBar.SetBackgroundColor(tcell.ColorDefault)
+
+	bottomBar.AddItem(a.inputHint, 0, 1, false)
+	bottomBar.AddItem(a.statusBar, 40, 0, false)
+
+	inputLeftMargin, inputRightMargin := a.getInputMargins()
+
+	bottomBarContainer := tview.NewFlex().SetDirection(tview.FlexColumn)
+	bottomBarContainer.AddItem(nil, inputLeftMargin, 0, false)
+	bottomBarContainer.AddItem(bottomBar, 0, 1, false)
+	bottomBarContainer.AddItem(nil, inputRightMargin, 0, false)
+
+	inputContainer := tview.NewFlex().SetDirection(tview.FlexColumn)
+	inputContainer.AddItem(nil, inputLeftMargin, 0, false)
+	inputContainer.AddItem(a.inputFrame, 0, 1, true)
+	inputContainer.AddItem(nil, inputRightMargin, 0, false)
+
+	a.inputSection = tview.NewFlex().SetDirection(tview.FlexRow)
+	a.inputSection.AddItem(inputContainer, 0, 1, true)
+	a.inputSection.AddItem(bottomBarContainer, 1, 0, false)
+
+	leftMargin, rightMargin := a.getMargins()
+	totalMargin := leftMargin + rightMargin
+
+	a.chatContainer = tview.NewFlex().SetDirection(tview.FlexColumn)
+	a.chatContainer.AddItem(nil, leftMargin, 0, false)
+	a.chatContainer.AddItem(a.contentPages, 0, 1, false)
+	a.chatContainer.AddItem(nil, rightMargin, 0, false)
+
+	a.lastCompact = a.isCompactMode()
+
+	a.chatContainer.SetDrawFunc(func(screen tcell.Screen, x, y, width, height int) (int, int, int, int) {
+		newWidth := width - totalMargin
+
+		if newWidth != a.chatWidth {
+			a.chatWidth = newWidth
+
+			// Re-render chat on resize to re-wrap content to new width
+			if !a.showWelcome && !a.promptActive && !a.askActive && len(a.agent.Messages) > 0 {
+				a.renderChat(a.agent.Messages)
+			}
+		}
+
+		// Toggle logo visibility on resize while in welcome mode
+		if a.showWelcome {
+			compact := a.isCompactMode()
+			if compact != a.lastCompact {
+				a.lastCompact = compact
+				a.rebuildContentPages()
+			}
+		}
+
+		return x, y, width, height
+	})
+
+	a.mainLayout = tview.NewFlex().SetDirection(tview.FlexRow)
+	a.mainLayout.
+		AddItem(a.chatContainer, 0, 1, false).
+		AddItem(a.inputSection, 6, 0, true)
+
+	a.app.SetInputCapture(a.handleInput)
+
+	return a.mainLayout
+}
+
+// View updates
+
+func (a *App) updateInputHeight() {
+	text := a.input.GetText()
+	lines := strings.Count(text, "\n") + 1
+
+	minHeight := 6
+	maxHeight := 13
+	height := min(max(lines+5, minHeight), maxHeight)
+
+	a.mainLayout.ResizeItem(a.inputSection, height, 0)
+}
+
+func (a *App) updateStatusBar() {
+	t := theme.Default
+
+	modeLabel := "Agent"
+
+	if a.currentMode == ModePlan {
+		modeLabel = "Plan"
+	}
+
+	var parts []string
+
+	if a.inputTokens > 0 || a.outputTokens > 0 {
+		parts = append(parts, fmt.Sprintf("[%s]↑%s ↓%s[-]", t.BrBlack, tui.FormatTokens(a.inputTokens), tui.FormatTokens(a.outputTokens)))
+	}
+
+	parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Cyan, code.ModelName(a.agent.Model())))
+	parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Yellow, modeLabel))
+
+	a.statusBar.SetText(strings.Join(parts, " • "))
+}
+
+func (a *App) formatShortcut(key, label string) string {
+	t := theme.Default
+	return fmt.Sprintf("[%s]%s[-] [%s]%s[-]", t.BrBlack, key, t.Foreground, label)
+}
+
+type slashCommand struct {
+	Name string
+	Desc string
+}
+
+func (a *App) builtinCommands() []slashCommand {
+	cmds := []slashCommand{
+		{"/help", "Show help"},
+		{"/model", "Select AI model"},
+		{"/plan", "Enter planning mode"},
+		{"/agent", "Return to execution mode"},
+		{"/problems", "Show problems"},
+	}
+
+	if a.rewind != nil {
+		cmds = append(cmds,
+			slashCommand{"/diff", "Show changes from baseline"},
+			slashCommand{"/rewind", "Restore to previous checkpoint"},
+		)
+	}
+
+	cmds = append(cmds,
+		slashCommand{"/copy", "Copy last response to clipboard"},
+		slashCommand{"/paste", "Paste from clipboard"},
+		slashCommand{"/resume", "Resume last session"},
+		slashCommand{"/clear", "Clear chat history"},
+		slashCommand{"/quit", "Exit application"},
+	)
+
+	return cmds
+}
+
+func (a *App) skillCommands() []slashCommand {
+	var cmds []slashCommand
+	for _, s := range a.agent.Skills {
+		cmds = append(cmds, slashCommand{"/" + s.Name, s.Description})
+	}
+	sort.SliceStable(cmds, func(i, j int) bool {
+		if cmds[i].Name == "/init" {
+			return true
+		}
+		if cmds[j].Name == "/init" {
+			return false
+		}
+		return cmds[i].Name < cmds[j].Name
+	})
+	return cmds
+}
+
+func (a *App) availableCommands() []slashCommand {
+	return append(a.builtinCommands(), a.skillCommands()...)
+}
+
+func (a *App) matchingCommands(prefix string) []slashCommand {
+	if prefix == "/" {
+		return a.availableCommands()
+	}
+
+	var matches []slashCommand
+	for _, cmd := range a.availableCommands() {
+		if strings.HasPrefix(cmd.Name, prefix) {
+			matches = append(matches, cmd)
+		}
+	}
+	return matches
+}
+
+// toggleMouseCapture toggles tview's mouse capture. When disabled the terminal
+// handles mouse events natively so the user can select and copy text with the
+// mouse. When enabled, tview captures wheel/click events for scrolling and
+// focus handling.
+func (a *App) toggleMouseCapture() {
+	a.mouseEnabled = !a.mouseEnabled
+	a.app.EnableMouse(a.mouseEnabled)
+	a.updateInputHint()
+}
+
+func (a *App) updateInputHint() {
+	// Don't overwrite inputHint while the spinner owns it
+	if a.isStreaming() {
+		return
+	}
+
+	t := theme.Default
+
+	// Show command completions when typing /
+	text := a.input.GetText()
+	if strings.HasPrefix(text, "/") && !strings.Contains(text, " ") {
+		matches := a.matchingCommands(text)
+		if len(matches) > 0 {
+			var parts []string
+			for _, m := range matches {
+				parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Cyan, m.Name))
+			}
+			a.inputHint.SetText(strings.Join(parts, "  "))
+			return
+		}
+	}
+
+	var parts []string
+
+	imageCount := a.countPendingImages()
+	if imageCount == 1 {
+		parts = append(parts, fmt.Sprintf("[%s]📎 1 image[-]", t.Cyan))
+	} else if imageCount > 1 {
+		parts = append(parts, fmt.Sprintf("[%s]📎 %d images[-]", t.Cyan, imageCount))
+	}
+
+	if len(a.pendingFiles) == 1 {
+		parts = append(parts, fmt.Sprintf("[%s]📄 %s[-]", t.Cyan, filepath.Base(a.pendingFiles[0])))
+	} else if len(a.pendingFiles) > 1 {
+		parts = append(parts, fmt.Sprintf("[%s]📄 %d files[-]", t.Cyan, len(a.pendingFiles)))
+	}
+
+	expandLabel := "expand"
+	if a.toolOutputExpanded {
+		expandLabel = "collapse"
+	}
+
+	if a.agent.Bridge != nil && a.agent.Bridge.IsConnected() {
+		parts = append(parts, fmt.Sprintf("[%s]⬢[-]", t.Green))
+	}
+
+	if !a.mouseEnabled {
+		parts = append(parts, fmt.Sprintf("[%s]select mode[-]", t.Yellow))
+	}
+
+	parts = append(parts,
+		a.formatShortcut("tab", "mode"),
+		a.formatShortcut("shift+tab", "model"),
+		a.formatShortcut("@", "file"),
+		a.formatShortcut("ctrl+e", expandLabel),
+		a.formatShortcut("esc", "clear"),
+	)
+
+	a.inputHint.SetText(strings.Join(parts, "  "))
+}
+
+
+// Chat rendering (inlined from ChatRenderer)
+
+// renderChat redraws the chat view from committed messages plus the current
+// transient overlay (a.streamingReasoning / a.streamingText / a.currentTool*).
+// Callers don't pass streaming state — it's read straight from the App so any
+// redraw (resize, expand toggle, stream tick) reflects the same source of truth.
+func (a *App) renderChat(messages []agent.Message) {
+	a.chatView.Clear()
+
+	prevWasTool := false
+
+	for _, msg := range messages {
+		isTool := isToolMessage(msg)
+
+		// Add separator between tool results and non-tool messages
+		if prevWasTool && !isTool {
+			fmt.Fprint(a.chatView, "\n")
+		}
+
+		a.renderMessage(msg)
+		prevWasTool = isTool
+	}
+
+	if a.streamingReasoning != "" {
+		fmt.Fprint(a.chatView, a.formatReasoningProgress(a.streamingReasoning))
+	}
+
+	if a.streamingText != "" {
+		if prevWasTool {
+			fmt.Fprint(a.chatView, "\n")
+		}
+		fmt.Fprint(a.chatView, a.formatAssistantMessage(a.streamingText))
+	}
+
+	if a.currentToolName != "" && !a.isToolHidden(a.currentToolName) {
+		fmt.Fprint(a.chatView, a.formatToolProgress(a.currentToolName, a.currentToolHint))
+	}
+
+	a.chatView.ScrollToEnd()
+}
+
+func isToolMessage(msg agent.Message) bool {
+	for _, c := range msg.Content {
+		if c.ToolResult != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) renderMessage(msg agent.Message) {
+	for _, c := range msg.Content {
+		// Tool results
+		if c.ToolResult != nil {
+			if a.isToolHidden(c.ToolResult.Name) {
+				continue
+			}
+
+			hint := tui.ExtractToolHint(c.ToolResult.Args)
+
+			if a.toolOutputExpanded {
+				output := c.ToolResult.Content
+				if len(output) > maxToolOutputLen {
+					output = output[:maxToolOutputLen] + "..."
+				}
+				fmt.Fprint(a.chatView, a.formatToolCall(c.ToolResult.Name, hint, output))
+			} else {
+				fmt.Fprint(a.chatView, a.formatToolCallCollapsed(c.ToolResult.Name, hint))
+			}
+
+			continue
+		}
+
+		// Tool calls have no displayable content
+		if c.ToolCall != nil {
+			continue
+		}
+
+		// Reasoning summary (collapsed when expand is off, full when on)
+		if c.Reasoning != nil && c.Reasoning.Summary != "" {
+			if a.toolOutputExpanded {
+				fmt.Fprint(a.chatView, a.formatReasoning(c.Reasoning.Summary))
+			} else {
+				fmt.Fprint(a.chatView, a.formatReasoningCollapsed(c.Reasoning.Summary))
+			}
+			continue
+		}
+
+		// Text content
+		if c.Text != "" {
+			switch msg.Role {
+			case agent.RoleUser:
+				fmt.Fprint(a.chatView, a.formatUserMessage(c.Text))
+			case agent.RoleAssistant:
+				fmt.Fprint(a.chatView, a.formatAssistantMessage(c.Text))
+			}
+		}
+	}
+}

@@ -6,13 +6,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
-func ReadTool() tool.Tool {
+// ReadTool returns the file-read tool. allowedReadRoots are absolute paths
+// outside the workspace that this tool is additionally permitted to read
+// (e.g. discovered personal skill directories). Anything outside both the
+// workspace and the allow-list is rejected.
+func ReadTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 	return tool.Tool{
 		Name: "read",
 
@@ -30,25 +32,22 @@ func ReadTool() tool.Tool {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":   map[string]any{"type": "string", "description": "Absolute path to the file to read"},
+				"path":   map[string]any{"type": "string", "description": "File path relative to the working directory, or an absolute path inside an allowed root (e.g. a discovered skill directory). Paths beginning with `~/` are expanded to the user's home directory."},
 				"offset": map[string]any{"type": "integer", "description": "Line number to start reading from (1-based)"},
 				"limit":  map[string]any{"type": "integer", "description": "Maximum number of lines to read. Only provide if the file is too large to read at once."},
 			},
 			"required": []string{"path"},
 		},
 
-		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			pathArg, ok := args["path"].(string)
 
 			if !ok || pathArg == "" {
 				return "", fmt.Errorf("path is required")
 			}
 
-			normalizedPath, root, err := resolveRoot(pathArg, env, "read file")
-
-			if err != nil {
-				return "", err
-			}
+			workingDir := root.Name()
+			expanded := expandHome(pathArg)
 
 			limit := 0
 			offset := 0
@@ -61,78 +60,104 @@ func ReadTool() tool.Tool {
 				offset = int(o) - 1
 			}
 
-			content, err := root.ReadFile(normalizedPath)
-
+			content, err := readFromAllowedLocation(root, workingDir, expanded, allowedReadRoots)
 			if err != nil {
-				return "", pathError("read file", pathArg, normalizedPath, env.RootDir(), err)
+				return "", err
 			}
 
-			if len(content) == 0 {
-				rememberRead(env, normalizedPath, content, 0, 0)
-				return "(empty file)", nil
-			}
-
-			lines := strings.Split(string(content), "\n")
-			total := len(lines)
-
-			if offset >= total {
-				return "", fmt.Errorf("offset %d is beyond end of file (%d lines)", offset+1, total)
-			}
-
-			end := total
-
-			if limit > 0 && offset+limit < total {
-				end = offset + limit
-			}
-
-			var numbered []string
-
-			for i, line := range lines[offset:end] {
-				lineNum := offset + i + 1
-				numbered = append(numbered, fmt.Sprintf("%6d\t%s", lineNum, line))
-			}
-
-			selected := strings.Join(numbered, "\n")
-			output, truncated := truncateHead(selected)
-
-			// Track actual range read. offset/limit of 0,0 means full read.
-			readOffset := offset
-			readLimit := 0
-
-			if end < total || truncated {
-				readLimit = end - offset
-			}
-
-			rememberRead(env, normalizedPath, content, readOffset, readLimit)
-
-			outputLines := len(strings.Split(output, "\n"))
-			endLine := offset + outputLines
-
-			if truncated || end < total {
-				// Save full content to scratch so the agent can read it there
-				var scratchPath string
-
-				if env != nil && env.Scratch != nil {
-					name := fmt.Sprintf("read-%d.txt", time.Now().UnixNano())
-					path := filepath.Join(env.ScratchDir(), name)
-
-					if err := os.WriteFile(path, content, 0644); err == nil {
-						scratchPath = path
-					}
-				}
-
-				notice := fmt.Sprintf("\n\n[Lines %d-%d of %d", offset+1, endLine, total)
-
-				if scratchPath != "" {
-					notice += fmt.Sprintf(". Full file: %s", scratchPath)
-				}
-
-				notice += fmt.Sprintf(". Use offset=%d to continue]", endLine+1)
-
-				return output + notice, nil
-			}
-
-			return output, nil
+			return formatRead(content, offset, limit)
 		},
 	}
+}
+
+// readFromAllowedLocation tries the workspace root first, then falls back to
+// any path inside the allow-list. Returns the file contents or an error.
+func readFromAllowedLocation(root *os.Root, workingDir, path string, allowedRoots []string) ([]byte, error) {
+	if !isOutsideWorkspace(path, workingDir) {
+		normalizedPath := normalizePath(path, workingDir)
+		content, err := root.ReadFile(normalizedPath)
+		if err != nil {
+			return nil, pathError("read file", path, normalizedPath, workingDir, err)
+		}
+		return content, nil
+	}
+
+	if !filepath.IsAbs(path) {
+		return nil, fmt.Errorf("cannot read file: relative path %q is outside workspace", path)
+	}
+
+	cleaned := cleanPath(path)
+	cmpPath := normalizePathForComparison(cleaned)
+	for _, allowed := range allowedRoots {
+		allowedClean := cleanPath(allowed)
+		cmpAllowed := normalizePathForComparison(allowedClean)
+		if cmpPath == cmpAllowed || strings.HasPrefix(cmpPath, cmpAllowed+string(filepath.Separator)) {
+			content, err := os.ReadFile(cleaned)
+			if err != nil {
+				return nil, fmt.Errorf("read file %q: %w", path, err)
+			}
+			return content, nil
+		}
+	}
+
+	return nil, fmt.Errorf("cannot read file: path %q is outside workspace and not in any allowed root", path)
+}
+
+// expandHome resolves a leading `~` to the user's home dir. Accepts both
+// `~/...` (forward slash) and `~\...` (Windows backslash) forms.
+func expandHome(path string) string {
+	if path == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+		return path
+	}
+	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[2:])
+		}
+	}
+	return path
+}
+
+// formatRead applies the truncation + line-numbering display logic.
+func formatRead(content []byte, offset, limit int) (string, error) {
+	if len(content) == 0 {
+		return "(empty file)", nil
+	}
+
+	lines := strings.Split(string(content), "\n")
+	total := len(lines)
+
+	if offset >= total {
+		return "", fmt.Errorf("offset %d is beyond end of file (%d lines)", offset+1, total)
+	}
+
+	end := total
+
+	if limit > 0 && offset+limit < total {
+		end = offset + limit
+	}
+
+	var numbered []string
+
+	for i, line := range lines[offset:end] {
+		lineNum := offset + i + 1
+		numbered = append(numbered, fmt.Sprintf("%6d\t%s", lineNum, line))
+	}
+
+	selected := strings.Join(numbered, "\n")
+	output, truncated := truncateHead(selected)
+
+	outputLines := len(strings.Split(output, "\n"))
+	endLine := offset + outputLines
+
+	if truncated || end < total {
+		notice := fmt.Sprintf("\n\n[Lines %d-%d of %d", offset+1, endLine, total)
+		notice += fmt.Sprintf(". Use offset=%d to continue]", endLine+1)
+
+		return output + notice, nil
+	}
+
+	return output, nil
 }

@@ -4,8 +4,8 @@ import "encoding/json"
 
 // OpenAI: /v1/chat/completions, /v1/responses, /v1/embeddings
 
-func metadataFromOpenAI(reqBody, respBody []byte) Metadata {
-	var m Metadata
+func metadataFromOpenAI(reqBody, respBody []byte) metadata {
+	var m metadata
 
 	m.Model = extractJSONField(reqBody, "model")
 
@@ -41,8 +41,8 @@ func metadataFromOpenAI(reqBody, respBody []byte) Metadata {
 	return m
 }
 
-func metadataFromOpenAISSE(reqBody, sseBody []byte) Metadata {
-	var m Metadata
+func metadataFromOpenAISSE(reqBody, sseBody []byte) metadata {
+	var m metadata
 
 	m.Model = extractJSONField(reqBody, "model")
 

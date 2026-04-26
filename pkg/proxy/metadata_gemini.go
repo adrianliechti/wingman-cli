@@ -7,8 +7,8 @@ import (
 
 // Gemini: /v1beta/models/{model}:generateContent, /v1beta/models/{model}:streamGenerateContent
 
-func metadataFromGemini(respBody []byte, path string) Metadata {
-	var m Metadata
+func metadataFromGemini(respBody []byte, path string) metadata {
+	var m metadata
 
 	m.Model = extractGeminiModel(path)
 
@@ -36,8 +36,8 @@ func metadataFromGemini(respBody []byte, path string) Metadata {
 	return m
 }
 
-func metadataFromGeminiSSE(sseBody []byte, path string) Metadata {
-	var m Metadata
+func metadataFromGeminiSSE(sseBody []byte, path string) metadata {
+	var m metadata
 
 	m.Model = extractGeminiModel(path)
 

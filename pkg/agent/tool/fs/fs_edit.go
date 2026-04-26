@@ -3,15 +3,15 @@ package fs
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
-func EditTool() tool.Tool {
+func EditTool(root *os.Root) tool.Tool {
 	return tool.Tool{
-		Name:            "edit",
+		Name: "edit",
 
 		Description: strings.Join([]string{
 			"Performs exact string replacements in files. This is the preferred tool for modifying existing files.",
@@ -28,7 +28,7 @@ func EditTool() tool.Tool {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":        map[string]any{"type": "string", "description": "Absolute path to the file to edit"},
+				"path":        map[string]any{"type": "string", "description": "File path relative to the working directory"},
 				"old_text":    map[string]any{"type": "string", "description": "Exact text to find and replace. Must be unique unless replace_all is true."},
 				"new_text":    map[string]any{"type": "string", "description": "Text to replace the old text with. Must be different from old_text."},
 				"replace_all": map[string]any{"type": "boolean", "description": "Replace all occurrences of old_text instead of just the first. Useful for renaming variables. (default: false)"},
@@ -36,22 +36,18 @@ func EditTool() tool.Tool {
 			"required": []string{"path", "old_text", "new_text"},
 		},
 
-		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			pathArg, ok := args["path"].(string)
 
 			if !ok || pathArg == "" {
 				return "", fmt.Errorf("path is required")
 			}
 
-			normalizedPath, root, err := resolveRoot(pathArg, env, "edit file")
+			workingDir := root.Name()
+
+			normalizedPath, err := ensurePathInWorkspace(pathArg, workingDir, "edit file")
 
 			if err != nil {
-				return "", err
-			}
-
-			workingDir := env.RootDir()
-
-			if err := enforcePlanMutation(env, normalizedPath); err != nil {
 				return "", err
 			}
 
@@ -73,13 +69,7 @@ func EditTool() tool.Tool {
 				return "", pathError("read file", pathArg, normalizedPath, workingDir, err)
 			}
 
-			rawContent := string(contentBytes)
-
-			if err := requireFreshFullRead(env, normalizedPath, rawContent); err != nil {
-				return "", err
-			}
-
-			bom, content := stripBom(rawContent)
+			bom, content := stripBom(string(contentBytes))
 			originalEnding := detectLineEnding(content)
 			normalizedContent := normalizeToLF(content)
 			normalizedOldText := normalizeToLF(oldText)
@@ -152,17 +142,9 @@ func EditTool() tool.Tool {
 				return "", fmt.Errorf("failed to close file: %w", err)
 			}
 
-			rememberRead(env, normalizedPath, []byte(finalContent), 0, 0)
-
 			diff := generateDiffString(baseContent, newContent)
 
 			result := fmt.Sprintf("Successfully replaced text in %s.\n\n%s", pathArg, diff)
-
-			if env.DiagnoseFile != nil {
-				if diag := env.DiagnoseFile(ctx, normalizedPath); diag != "" {
-					result += "\n\n" + diag
-				}
-			}
 
 			return result, nil
 		},

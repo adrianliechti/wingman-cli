@@ -3,6 +3,7 @@ package fs
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -10,13 +11,12 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
 const DefaultFindLimit = 1000
 
-func FindTool() tool.Tool {
+func FindTool(root *os.Root) tool.Tool {
 	return tool.Tool{
 		Name: "find",
 
@@ -41,7 +41,7 @@ func FindTool() tool.Tool {
 			"required": []string{"pattern"},
 		},
 
-		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			startTime := time.Now()
 
 			pattern, ok := args["pattern"].(string)
@@ -56,7 +56,7 @@ func FindTool() tool.Tool {
 				searchDir = p
 			}
 
-			workingDir := env.RootDir()
+			workingDir := root.Name()
 
 			searchDirFS, err := ensurePathInWorkspaceFS(searchDir, workingDir, "search")
 
@@ -70,7 +70,7 @@ func FindTool() tool.Tool {
 				limit = int(l)
 			}
 
-			info, err := env.Root.Stat(searchDirFS)
+			info, err := root.Stat(searchDirFS)
 
 			if err != nil {
 				return "", pathError("stat path", searchDir, searchDirFS, workingDir, err)
@@ -80,7 +80,7 @@ func FindTool() tool.Tool {
 				return "", fmt.Errorf("path is not a directory: %s", searchDir)
 			}
 
-			fsys := env.Root.FS()
+			fsys := root.FS()
 
 			type fileResult struct {
 				path    string

@@ -10,14 +10,6 @@ type UserInfo struct {
 	Email string
 }
 
-type ProxyOptions struct {
-	Port  int
-	URL   string
-	Token string
-
-	User *UserInfo
-}
-
 type RequestEntry struct {
 	ID        string
 	Timestamp time.Time

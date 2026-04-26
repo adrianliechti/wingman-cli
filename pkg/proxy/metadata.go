@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-type Metadata struct {
+type metadata struct {
 	Model string
 
 	InputTokens  int
@@ -13,7 +13,7 @@ type Metadata struct {
 	OutputTokens int
 }
 
-func extractMetadata(path string, reqBody, respBody []byte) Metadata {
+func extractMetadata(path string, reqBody, respBody []byte) metadata {
 	streaming := !isJSON(respBody)
 
 	switch {

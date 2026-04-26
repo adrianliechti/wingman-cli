@@ -10,39 +10,37 @@ import (
 	"github.com/openai/openai-go/v3/responses"
 )
 
-// isRecoverableError returns true if the error might be resolved by
-// cleaning up the message history and retrying. Auth and permission
-// errors are never recoverable. Everything else gets a chance.
 func isRecoverableError(err error) bool {
 	var apiErr *openai.Error
 	if !errors.As(err, &apiErr) {
-		return true // local error (JSON parse, etc.) — retry anyway
+		return true
 	}
 
 	switch apiErr.StatusCode {
 	case 401, 403:
-		return false // auth/permission — cleanup won't help
+		return false
 	default:
 		return true
 	}
 }
 
-// removeOrphanedToolMessages removes tool calls without matching outputs
-// and tool outputs without matching calls.
 func (a *Agent) removeOrphanedToolMessages() {
+
 	callIDs := make(map[string]bool)
 	outputIDs := make(map[string]bool)
 
-	for _, item := range a.messages {
-		if fc := item.OfFunctionCall; fc != nil {
-			callIDs[fc.CallID] = true
-		}
-		if fco := item.OfFunctionCallOutput; fco != nil {
-			outputIDs[fco.CallID] = true
+	for _, m := range a.Messages {
+		for _, c := range m.Content {
+			if c.ToolCall != nil && c.ToolCall.ID != "" {
+				callIDs[c.ToolCall.ID] = true
+			}
+
+			if c.ToolResult != nil && c.ToolResult.ID != "" {
+				outputIDs[c.ToolResult.ID] = true
+			}
 		}
 	}
 
-	// Fast path: no orphans
 	hasOrphans := false
 	for id := range callIDs {
 		if !outputIDs[id] {
@@ -62,30 +60,31 @@ func (a *Agent) removeOrphanedToolMessages() {
 		return
 	}
 
-	var cleaned []responses.ResponseInputItemUnionParam
+	var cleaned []Message
 
-	for _, item := range a.messages {
-		if fc := item.OfFunctionCall; fc != nil {
-			if !outputIDs[fc.CallID] {
-				continue
+	for _, m := range a.Messages {
+		drop := false
+
+		for _, c := range m.Content {
+			if c.ToolCall != nil && !outputIDs[c.ToolCall.ID] {
+				drop = true
+				break
+			}
+
+			if c.ToolResult != nil && !callIDs[c.ToolResult.ID] {
+				drop = true
+				break
 			}
 		}
 
-		if fco := item.OfFunctionCallOutput; fco != nil {
-			if !callIDs[fco.CallID] {
-				continue
-			}
+		if !drop {
+			cleaned = append(cleaned, m)
 		}
-
-		cleaned = append(cleaned, item)
 	}
 
-	a.messages = cleaned
+	a.Messages = cleaned
 }
 
-// compactMessages summarizes the entire conversation into a single user
-// message using an LLM call, preserving context while drastically reducing
-// token count. Falls back to removeAllToolMessages if the summary fails.
 func (a *Agent) compactMessages(ctx context.Context) {
 	summary, err := a.summarizeMessages(ctx)
 	if err != nil || summary == "" {
@@ -93,52 +92,39 @@ func (a *Agent) compactMessages(ctx context.Context) {
 		return
 	}
 
-	a.messages = []responses.ResponseInputItemUnionParam{{
-		OfMessage: &responses.EasyInputMessageParam{
-			Role: responses.EasyInputMessageRoleUser,
-			Content: responses.EasyInputMessageContentUnionParam{
-				OfString: openai.String(summary),
-			},
-		},
+	a.Messages = []Message{{
+		Role:    RoleUser,
+		Content: []Content{{Text: summary}},
 	}}
 }
 
-const maxSummarizeBytes = 100 * 1024 // 100KB cap for the summarization input
+const maxSummarizeBytes = 100 * 1024
 
 func (a *Agent) summarizeMessages(ctx context.Context) (string, error) {
 	var sb strings.Builder
+	messages := a.Messages
 
-	for _, item := range a.messages {
+	for _, m := range messages {
 		if sb.Len() > maxSummarizeBytes {
 			break
 		}
 
-		if msg := item.OfMessage; msg != nil {
-			role := string(msg.Role)
-			if text := msg.Content.OfString.Value; text != "" {
-				fmt.Fprintf(&sb, "[%s]: %s\n\n", role, truncate(text, 2000))
+		for _, c := range m.Content {
+			if c.Text != "" {
+				fmt.Fprintf(&sb, "[%s]: %s\n\n", m.Role, truncate(c.Text, 2000))
 			}
-			for _, part := range msg.Content.OfInputItemContentList {
-				if part.OfInputText != nil {
-					fmt.Fprintf(&sb, "[%s]: %s\n\n", role, truncate(part.OfInputText.Text, 2000))
-				}
+
+			if c.Refusal != "" {
+				fmt.Fprintf(&sb, "[%s]: %s\n\n", m.Role, truncate(c.Refusal, 2000))
 			}
-		}
 
-		if outMsg := item.OfOutputMessage; outMsg != nil {
-			for _, part := range outMsg.Content {
-				if text := part.OfOutputText; text != nil {
-					fmt.Fprintf(&sb, "[assistant]: %s\n\n", truncate(text.Text, 2000))
-				}
+			if c.ToolCall != nil {
+				fmt.Fprintf(&sb, "[tool call]: %s(%s)\n\n", c.ToolCall.Name, truncate(c.ToolCall.Args, 200))
 			}
-		}
 
-		if fc := item.OfFunctionCall; fc != nil {
-			fmt.Fprintf(&sb, "[tool call]: %s(%s)\n\n", fc.Name, truncate(fc.Arguments, 200))
-		}
-
-		if fco := item.OfFunctionCallOutput; fco != nil {
-			fmt.Fprintf(&sb, "[tool result]: %s\n\n", truncate(fco.Output.OfString.Value, 500))
+			if c.ToolResult != nil {
+				fmt.Fprintf(&sb, "[tool result]: %s\n\n", truncate(c.ToolResult.Content, 500))
+			}
 		}
 	}
 
@@ -146,8 +132,13 @@ func (a *Agent) summarizeMessages(ctx context.Context) (string, error) {
 		return "", nil
 	}
 
-	resp, err := a.Client.Responses.New(ctx, responses.ResponseNewParams{
-		Model: a.Model,
+	model := ""
+	if a.Config.Model != nil {
+		model = a.Model()
+	}
+
+	resp, err := a.client.Responses.New(ctx, responses.ResponseNewParams{
+		Model: model,
 		Instructions: openai.String(
 			"Summarize the following conversation between a user and an AI assistant. " +
 				"Preserve all important context: what the user asked, what was done, what files were modified, " +
@@ -187,18 +178,24 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + " [truncated]"
 }
 
-// removeAllToolMessages removes ALL tool calls and tool results from the
-// message history, keeping only user messages, assistant text, reasoning,
-// and compaction items. This is the most aggressive cleanup.
 func (a *Agent) removeAllToolMessages() {
-	var cleaned []responses.ResponseInputItemUnionParam
 
-	for _, item := range a.messages {
-		if item.OfFunctionCall != nil || item.OfFunctionCallOutput != nil {
-			continue
+	var cleaned []Message
+
+	for _, m := range a.Messages {
+		drop := false
+
+		for _, c := range m.Content {
+			if c.ToolCall != nil || c.ToolResult != nil {
+				drop = true
+				break
+			}
 		}
-		cleaned = append(cleaned, item)
+
+		if !drop {
+			cleaned = append(cleaned, m)
+		}
 	}
 
-	a.messages = cleaned
+	a.Messages = cleaned
 }

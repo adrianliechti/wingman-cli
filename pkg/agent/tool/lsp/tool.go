@@ -6,8 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
-	"github.com/adrianliechti/wingman-agent/pkg/agent/lsp"
+	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
@@ -33,11 +32,11 @@ func diagnosticsTool(manager *lsp.Manager) tool.Tool {
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Absolute file path. Omit for all diagnostics.",
+					"description": "File path relative to the working directory. Omit for all diagnostics.",
 				},
 			},
 		},
-		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			path, _ := args["path"].(string)
 
 			if path == "" {
@@ -70,7 +69,7 @@ func definitionTool(manager *lsp.Manager) tool.Tool {
 		Name:            "find_lsp_definition",
 		Description:     "Find the definition of a symbol at a given position.",
 		Parameters:      positionParams(),
-		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			path, line, column, err := parsePositionArgs(manager.WorkingDir(), args)
 			if err != nil {
 				return "", err
@@ -91,7 +90,7 @@ func referencesTool(manager *lsp.Manager) tool.Tool {
 		Name:            "find_lsp_references",
 		Description:     "Find all references to a symbol at a given position across the workspace.",
 		Parameters:      positionParams(),
-		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			path, line, column, err := parsePositionArgs(manager.WorkingDir(), args)
 			if err != nil {
 				return "", err
@@ -112,7 +111,7 @@ func implementationTool(manager *lsp.Manager) tool.Tool {
 		Name:            "find_lsp_implementation",
 		Description:     "Find implementations of an interface or abstract method at a given position.",
 		Parameters:      positionParams(),
-		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			path, line, column, err := parsePositionArgs(manager.WorkingDir(), args)
 			if err != nil {
 				return "", err
@@ -133,7 +132,7 @@ func hoverTool(manager *lsp.Manager) tool.Tool {
 		Name:            "get_lsp_hover",
 		Description:     "Get hover information (type info, documentation) for a symbol at a given position.",
 		Parameters:      positionParams(),
-		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			path, line, column, err := parsePositionArgs(manager.WorkingDir(), args)
 			if err != nil {
 				return "", err
@@ -158,7 +157,7 @@ func symbolsTool(manager *lsp.Manager) tool.Tool {
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Absolute path to a file. If provided, returns symbols in that file.",
+					"description": "File path relative to the working directory. If provided, returns symbols in that file.",
 				},
 				"query": map[string]any{
 					"type":        "string",
@@ -166,7 +165,7 @@ func symbolsTool(manager *lsp.Manager) tool.Tool {
 				},
 			},
 		},
-		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			path, _ := args["path"].(string)
 			query, _ := args["query"].(string)
 
@@ -204,7 +203,7 @@ func hierarchyTool(manager *lsp.Manager) tool.Tool {
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Absolute path to the file",
+					"description": "File path relative to the working directory",
 				},
 				"line": map[string]any{
 					"type":        "integer",
@@ -222,7 +221,7 @@ func hierarchyTool(manager *lsp.Manager) tool.Tool {
 			},
 			"required": []string{"path", "line", "column", "direction"},
 		},
-		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			path, line, column, err := parsePositionArgs(manager.WorkingDir(), args)
 			if err != nil {
 				return "", err
@@ -251,7 +250,7 @@ func positionParams() map[string]any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
-				"description": "Absolute path to the file",
+				"description": "File path relative to the working directory",
 			},
 			"line": map[string]any{
 				"type":        "integer",

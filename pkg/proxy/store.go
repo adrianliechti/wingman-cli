@@ -17,7 +17,7 @@ type Store struct {
 	totalOutput int
 }
 
-func NewStore() *Store {
+func newStore() *Store {
 	return &Store{
 		maxEntries: defaultMaxEntries,
 	}

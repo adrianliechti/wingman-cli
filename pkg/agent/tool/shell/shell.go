@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
@@ -21,7 +20,7 @@ const (
 	maxBytes       = 50 * 1024
 )
 
-func ShellTool() tool.Tool {
+func Tools(workDir string, elicit *tool.Elicitation) []tool.Tool {
 	description := strings.Join([]string{
 		fmt.Sprintf("Execute a shell command and return its output. Default timeout: %ds, max: 600s.", defaultTimeout),
 		"",
@@ -41,7 +40,7 @@ func ShellTool() tool.Tool {
 		"- If a command is long-running, increase the timeout instead of using sleep.",
 	}, "\n")
 
-	return tool.Tool{
+	return []tool.Tool{{
 		Name:        "shell",
 		Description: description,
 
@@ -68,8 +67,10 @@ func ShellTool() tool.Tool {
 			"required": []string{"command"},
 		},
 
-		Execute: executeShell,
-	}
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			return executeShell(ctx, workDir, elicit, args)
+		},
+	}}
 }
 
 // isSafeCommand checks if the entire command (including pipes, chains, and subshells) is safe.
@@ -223,15 +224,11 @@ func isSingleCommandSafe(command string) bool {
 	return false
 }
 
-func executeShell(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+func executeShell(ctx context.Context, workDir string, elicit *tool.Elicitation, args map[string]any) (string, error) {
 	command, ok := args["command"].(string)
 
 	if !ok || command == "" {
 		return "", fmt.Errorf("command is required")
-	}
-
-	if env != nil && env.IsPlanning() && !isSafeCommand(command) {
-		return "", fmt.Errorf("plan mode only allows read-only shell commands")
 	}
 
 	timeout := defaultTimeout
@@ -245,8 +242,8 @@ func executeShell(ctx context.Context, env *env.Environment, args map[string]any
 		timeout = 600
 	}
 
-	if env.PromptUser != nil && !isSafeCommand(command) {
-		approved, err := env.PromptUser("❯ " + command)
+	if elicit != nil && elicit.Confirm != nil && !isSafeCommand(command) {
+		approved, err := elicit.Confirm(ctx, "\u276f "+command)
 
 		if err != nil {
 			return "", fmt.Errorf("failed to get user approval: %w", err)
@@ -260,7 +257,7 @@ func executeShell(ctx context.Context, env *env.Environment, args map[string]any
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	cmd := buildCommand(ctx, command, env.RootDir())
+	cmd := buildCommand(ctx, command, workDir)
 
 	var output bytes.Buffer
 	cmd.Stdout = &output
@@ -284,7 +281,7 @@ func executeShell(ctx context.Context, env *env.Environment, args map[string]any
 
 		return "", fmt.Errorf("command timed out after %d seconds", timeout)
 	case err := <-done:
-		truncated := truncateOutput(output.String(), env.ScratchDir())
+		truncated := truncateOutput(output.String())
 
 		if err != nil {
 			exitCode := -1
@@ -338,7 +335,7 @@ func findPowerShell() string {
 	return "powershell"
 }
 
-func truncateOutput(output string, sessionDir string) string {
+func truncateOutput(output string) string {
 	totalLines := strings.Count(output, "\n") + 1
 	totalBytes := len(output)
 
@@ -346,13 +343,6 @@ func truncateOutput(output string, sessionDir string) string {
 
 	if !needsTruncation {
 		return output
-	}
-
-	var tempFile string
-
-	if sessionDir != "" {
-		tempFile = filepath.Join(sessionDir, fmt.Sprintf("output-%d.txt", time.Now().UnixNano()))
-		os.WriteFile(tempFile, []byte(output), 0644)
 	}
 
 	lines := strings.Split(output, "\n")
@@ -370,15 +360,8 @@ func truncateOutput(output string, sessionDir string) string {
 	shownLines := strings.Count(truncated, "\n") + 1
 	shownBytes := len(truncated)
 
-	var notice string
-
-	if tempFile != "" {
-		notice = fmt.Sprintf("[Output truncated: showing last %d of %d lines (%d of %d bytes). Full output: %s]\n\n",
-			shownLines, totalLines, shownBytes, totalBytes, tempFile)
-	} else {
-		notice = fmt.Sprintf("[Output truncated: showing last %d of %d lines (%d of %d bytes)]\n\n",
-			shownLines, totalLines, shownBytes, totalBytes)
-	}
+	notice := fmt.Sprintf("[Output truncated: showing last %d of %d lines (%d of %d bytes)]\n\n",
+		shownLines, totalLines, shownBytes, totalBytes)
 
 	return notice + truncated
 }

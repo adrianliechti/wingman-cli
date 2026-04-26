@@ -12,8 +12,8 @@ import (
 	"time"
 )
 
-func startServer(ctx context.Context, addr, upstream, token string, user *UserInfo, store *Store) error {
-	target, err := url.Parse(upstream)
+func (p *Proxy) Start(ctx context.Context) error {
+	target, err := url.Parse(p.Upstream)
 
 	if err != nil {
 		return fmt.Errorf("invalid upstream URL: %w", err)
@@ -28,20 +28,20 @@ func startServer(ctx context.Context, addr, upstream, token string, user *UserIn
 			req.URL.Path = target.Path + req.URL.Path
 			req.Host = ""
 
-			if token != "" {
-				req.Header.Set("Authorization", "Bearer "+token)
+			if p.Token != "" {
+				req.Header.Set("Authorization", "Bearer "+p.Token)
 			}
 
 			// Disable compressed responses so captured bodies are readable.
 			req.Header.Del("Accept-Encoding")
 
-			if user != nil {
-				if user.Name != "" {
-					req.Header.Set("X-Forwarded-User", user.Name)
+			if p.User != nil {
+				if p.User.Name != "" {
+					req.Header.Set("X-Forwarded-User", p.User.Name)
 				}
 
-				if user.Email != "" {
-					req.Header.Set("X-Forwarded-Email", user.Email)
+				if p.User.Email != "" {
+					req.Header.Set("X-Forwarded-Email", p.User.Email)
 				}
 			}
 		},
@@ -91,11 +91,11 @@ func startServer(ctx context.Context, addr, upstream, token string, user *UserIn
 			entry.Model = extractModel(reqBody)
 		}
 
-		store.Add(entry)
+		p.Store.Add(entry)
 	})
 
 	server := &http.Server{
-		Addr:    addr,
+		Addr:    p.Addr,
 		Handler: mux,
 	}
 
@@ -153,4 +153,3 @@ func extractModel(body []byte) string {
 
 	return ""
 }
-

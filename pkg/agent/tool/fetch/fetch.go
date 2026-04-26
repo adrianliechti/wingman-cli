@@ -11,13 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent/env"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
 const maxFetchBytes = 100 * 1024 // 100KB max content
 
-func FetchTool() tool.Tool {
+func Tools() []tool.Tool {
 	description := strings.Join([]string{
 		"Fetch content from a URL and return it as text. HTML pages are converted to readable text.",
 		"",
@@ -28,8 +27,8 @@ func FetchTool() tool.Tool {
 		"- Large responses are truncated to 100KB.",
 	}, "\n")
 
-	return tool.Tool{
-		Name:            "fetch",
+	return []tool.Tool{{
+		Name:        "fetch",
 		Description:     description,
 
 		Parameters: map[string]any{
@@ -45,7 +44,7 @@ func FetchTool() tool.Tool {
 			"required": []string{"url"},
 		},
 
-		Execute: func(ctx context.Context, env *env.Environment, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			urlStr, ok := args["url"].(string)
 
 			if !ok || urlStr == "" {
@@ -60,17 +59,7 @@ func FetchTool() tool.Tool {
 
 			return extractWingman(ctx, wingmanURL, os.Getenv("WINGMAN_TOKEN"), urlStr)
 		},
-	}
-}
-
-func Tools() []tool.Tool {
-	if os.Getenv("WINGMAN_URL") == "" {
-		return nil
-	}
-
-	return []tool.Tool{
-		FetchTool(),
-	}
+	}}
 }
 
 func extractWingman(ctx context.Context, baseURL, token, urlStr string) (string, error) {
