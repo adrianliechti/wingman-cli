@@ -1,3 +1,5 @@
+import { loader } from "@monaco-editor/react";
+import type * as Monaco from "monaco-editor";
 import { useEffect, useRef } from "react";
 import Markdown from "react-markdown";
 import { useColorScheme } from "../hooks/useColorScheme";
@@ -105,7 +107,7 @@ function CodeBlock({ code, language }: { code: string; language: string }) {
 
 	useEffect(() => {
 		let cancelled = false;
-		import("monaco-editor").then((monaco) => {
+		loader.init().then((monaco: typeof Monaco) => {
 			if (cancelled || !ref.current) return;
 
 			defineWingmanThemes(monaco);

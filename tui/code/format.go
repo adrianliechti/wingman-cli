@@ -179,6 +179,65 @@ func (a *App) formatToolCallCollapsed(name string, hint string) string {
 	return fmt.Sprintf("%s[%s]┃[-] %s\n", chatIndent, t.BrBlack, title)
 }
 
+func (a *App) formatReasoningCollapsed(summary string) string {
+	t := theme.Default
+	hint := truncateHint(lastNonEmptyLine(summary), a.toolHintSpace("thinking"))
+
+	title := fmt.Sprintf("[%s]◆ thinking[-]", t.BrBlack)
+	if hint != "" {
+		title += fmt.Sprintf(" [%s::i]%s[-::-]", t.BrBlack, tview.Escape(hint))
+	}
+
+	return fmt.Sprintf("%s[%s]┃[-] %s\n", chatIndent, t.BrBlack, title)
+}
+
+func (a *App) formatReasoning(summary string) string {
+	t := theme.Default
+
+	var result strings.Builder
+	title := fmt.Sprintf("[%s::b]◆ thinking[-::-]", t.Magenta)
+	fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", chatIndent, t.Magenta, title)
+
+	for line := range strings.SplitSeq(strings.TrimRight(summary, "\n"), "\n") {
+		for _, wl := range markdown.WrapLine(line, a.contentWidth()) {
+			fmt.Fprintf(&result, "%s[%s]┃[-] [%s::i]%s[-::-]\n", chatIndent, t.Magenta, t.BrBlack, tview.Escape(wl))
+		}
+	}
+
+	result.WriteString("\n")
+
+	return result.String()
+}
+
+func (a *App) formatReasoningProgress(summary string) string {
+	t := theme.Default
+
+	var result strings.Builder
+	title := fmt.Sprintf("[%s::b]◆ thinking...[-::-]", t.Magenta)
+	fmt.Fprintf(&result, "%s[%s]┃[-] %s\n", chatIndent, t.Magenta, title)
+
+	for line := range strings.SplitSeq(strings.TrimRight(summary, "\n"), "\n") {
+		for _, wl := range markdown.WrapLine(line, a.contentWidth()) {
+			fmt.Fprintf(&result, "%s[%s]┃[-] [%s::i]%s[-::-]\n", chatIndent, t.Magenta, t.BrBlack, tview.Escape(wl))
+		}
+	}
+
+	result.WriteString("\n")
+
+	return result.String()
+}
+
+func lastNonEmptyLine(s string) string {
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		t := strings.TrimSpace(lines[i])
+		if t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
 func (a *App) formatToolProgress(name string, hint string) string {
 	t := theme.Default
 	icon, label := toolDisplay(name)

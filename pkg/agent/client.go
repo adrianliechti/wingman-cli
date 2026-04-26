@@ -44,6 +44,10 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 		Include: []responses.ResponseIncludable{
 			responses.ResponseIncludableReasoningEncryptedContent,
 		},
+
+		Reasoning: responses.ReasoningParam{
+			Summary: responses.ReasoningSummaryAuto,
+		},
 	})
 
 	var outputItems []responses.ResponseInputItemUnionParam
@@ -57,6 +61,16 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 			msg := Message{
 				Role:    RoleAssistant,
 				Content: []Content{{Text: e.Delta}},
+			}
+
+			if !yield(msg, nil) {
+				return nil, errYieldStopped
+			}
+
+		case responses.ResponseReasoningSummaryTextDeltaEvent:
+			msg := Message{
+				Role:    RoleAssistant,
+				Content: []Content{{Reasoning: &Reasoning{ID: e.ItemID, Summary: e.Delta}}},
 			}
 
 			if !yield(msg, nil) {

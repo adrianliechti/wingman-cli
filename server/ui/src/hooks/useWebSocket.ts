@@ -3,13 +3,14 @@ import type { ClientMessage, Phase, ServerMessage } from "../types/protocol";
 
 export interface ChatEntry {
 	id: string;
-	type: "user" | "assistant" | "tool" | "error";
+	type: "user" | "assistant" | "tool" | "reasoning" | "error";
 	content: string;
 	toolName?: string;
 	toolArgs?: string;
 	toolHint?: string;
 	toolResult?: string;
 	toolId?: string;
+	reasoningId?: string;
 }
 
 interface Usage {
@@ -33,9 +34,11 @@ export function useWebSocket() {
 
 	const streamingRef = useRef("");
 	const streamingIdRef = useRef("");
-	const idCounterRef = useRef(0);
+	const reasoningRef = useRef("");
+	const reasoningIdRef = useRef("");
+	const reasoningEntryIdRef = useRef("");
 
-	const nextId = () => String(++idCounterRef.current);
+	const nextId = () => crypto.randomUUID();
 
 	// Anyone (e.g. DiffsPanel, CheckpointsPanel) can subscribe to raw server
 	// messages. The set is a ref so adding/removing subscribers does not retrigger
@@ -61,6 +64,19 @@ export function useWebSocket() {
 		streamingIdRef.current = "";
 	}, []);
 
+	const finalizeReasoning = useCallback(() => {
+		if (reasoningEntryIdRef.current && reasoningRef.current) {
+			const id = reasoningEntryIdRef.current;
+			const content = reasoningRef.current;
+			setEntries((prev) =>
+				prev.map((e) => (e.id === id ? { ...e, content } : e)),
+			);
+		}
+		reasoningRef.current = "";
+		reasoningIdRef.current = "";
+		reasoningEntryIdRef.current = "";
+	}, []);
+
 	// Stable ref for the message handler so the WebSocket effect doesn't re-run
 	const handleMessageRef = useRef<(msg: ServerMessage) => void>(() => {});
 
@@ -80,6 +96,14 @@ export function useWebSocket() {
 								content: c.text,
 							});
 						}
+						if (c.reasoning?.summary) {
+							restored.push({
+								id: nextId(),
+								type: "reasoning",
+								content: c.reasoning.summary,
+								reasoningId: c.reasoning.id,
+							});
+						}
 						if (c.tool_result) {
 							restored.push({
 								id: nextId(),
@@ -97,6 +121,7 @@ export function useWebSocket() {
 			}
 
 			case "text_delta": {
+				finalizeReasoning();
 				if (!streamingIdRef.current) {
 					const id = nextId();
 					streamingIdRef.current = id;
@@ -115,8 +140,43 @@ export function useWebSocket() {
 				break;
 			}
 
+			case "reasoning_delta": {
+				finalizeStreaming();
+				// A new reasoning item id means a new reasoning block — finalize
+				// the previous one and start fresh.
+				if (
+					reasoningEntryIdRef.current &&
+					reasoningIdRef.current !== msg.id
+				) {
+					finalizeReasoning();
+				}
+				if (!reasoningEntryIdRef.current) {
+					const entryId = nextId();
+					reasoningEntryIdRef.current = entryId;
+					reasoningIdRef.current = msg.id;
+					reasoningRef.current = "";
+					setEntries((prev) => [
+						...prev,
+						{
+							id: entryId,
+							type: "reasoning",
+							content: "",
+							reasoningId: msg.id,
+						},
+					]);
+				}
+				reasoningRef.current += msg.text;
+				const entryId = reasoningEntryIdRef.current;
+				const content = reasoningRef.current;
+				setEntries((prev) =>
+					prev.map((e) => (e.id === entryId ? { ...e, content } : e)),
+				);
+				break;
+			}
+
 			case "tool_call": {
 				finalizeStreaming();
+				finalizeReasoning();
 				setEntries((prev) => [
 					...prev,
 					{
@@ -161,6 +221,7 @@ export function useWebSocket() {
 
 			case "error":
 				finalizeStreaming();
+				finalizeReasoning();
 				setEntries((prev) => [
 					...prev,
 					{ id: nextId(), type: "error", content: msg.message },
@@ -169,6 +230,7 @@ export function useWebSocket() {
 
 			case "done":
 				finalizeStreaming();
+				finalizeReasoning();
 				break;
 
 			case "usage":

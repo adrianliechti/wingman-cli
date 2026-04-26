@@ -28,101 +28,108 @@ import (
 )
 
 func main() {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
 
-	ctx := context.Background()
-
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "--help", "-h", "help":
-			printHelp(os.Stdout)
-			return
-		}
-	}
-
-	if len(os.Args) > 1 && os.Args[1] == "server" {
-		fs := flag.NewFlagSet("server", flag.ExitOnError)
-		port := fs.Int("port", 4242, "port to listen on")
-		fs.Parse(os.Args[2:])
-
-		wd, err := os.Getwd()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-
-		c, err := code.New(wd, nil)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		defer c.Close()
-
-		s := server.New(c, *port)
-
-		if err := s.Run(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+	if len(os.Args) < 2 {
+		runTUI(ctx, "")
 		return
 	}
 
-	if len(os.Args) > 1 && os.Getenv("WINGMAN_URL") != "" {
-		if os.Args[1] == "proxy" {
-			fs := flag.NewFlagSet("proxy", flag.ExitOnError)
-			port := fs.Int("port", 4242, "port to listen on")
-			fs.Parse(os.Args[2:])
-
-			if err := proxy.Run(ctx, proxy.Options{Port: *port}); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-			return
-		}
-
-		if os.Args[1] == "run" {
-			if len(os.Args) > 2 {
-				switch os.Args[2] {
-				case "claude":
-					claude.Run(ctx, os.Args[3:], nil)
-					return
-				case "codex":
-					codex.Run(ctx, os.Args[3:], nil)
-					return
-				case "gemini":
-					gemini.Run(ctx, os.Args[3:], nil)
-					return
-				case "opencode":
-					opencode.Run(ctx, os.Args[3:], nil)
-					return
-				}
-			}
-
-			fmt.Fprintln(os.Stderr, "Error: missing or unknown run target")
-			fmt.Fprintln(os.Stderr)
-			printHelp(os.Stderr)
-			os.Exit(1)
-		}
-	}
-
-	if len(os.Args) > 1 && os.Args[1] == "claw" {
+	switch os.Args[1] {
+	case "--help", "-h", "help":
+		printHelp(os.Stdout)
+		return
+	case "server":
+		runServer(ctx)
+		return
+	case "claw":
 		runClaw(ctx)
 		return
-	}
-
-	var sessionID string
-
-	if len(os.Args) > 1 && os.Args[1] == "--resume" {
-		if len(os.Args) > 2 {
-			sessionID = os.Args[2] // wingman --resume <session-id>
-		} else {
-			sessionID = "latest"
+	case "proxy":
+		if os.Getenv("WINGMAN_URL") != "" {
+			runProxy(ctx)
+			return
 		}
+	case "run":
+		if os.Getenv("WINGMAN_URL") != "" {
+			runRun(ctx)
+			return
+		}
+	case "--resume":
+		sessionID := "latest"
+		if len(os.Args) > 2 {
+			sessionID = os.Args[2]
+		}
+		runTUI(ctx, sessionID)
+		return
 	}
 
-	theme.Auto()
+	runTUI(ctx, "")
+}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+func runServer(ctx context.Context) {
+	fs := flag.NewFlagSet("server", flag.ExitOnError)
+	port := fs.Int("port", 4242, "port to listen on")
+	fs.Parse(os.Args[2:])
+
+	wd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	c, err := code.New(wd, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer c.Close()
+
+	if err := server.New(c, *port).Run(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runProxy(ctx context.Context) {
+	fs := flag.NewFlagSet("proxy", flag.ExitOnError)
+	port := fs.Int("port", 4242, "port to listen on")
+	fs.Parse(os.Args[2:])
+
+	if err := proxy.Run(ctx, proxy.Options{Port: *port}); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runRun(ctx context.Context) {
+	if len(os.Args) < 3 {
+		fmt.Fprintln(os.Stderr, "Error: missing or unknown run target")
+		fmt.Fprintln(os.Stderr)
+		printHelp(os.Stderr)
+		os.Exit(1)
+	}
+
+	switch os.Args[2] {
+	case "claude":
+		claude.Run(ctx, os.Args[3:], nil)
+	case "codex":
+		codex.Run(ctx, os.Args[3:], nil)
+	case "gemini":
+		gemini.Run(ctx, os.Args[3:], nil)
+	case "opencode":
+		opencode.Run(ctx, os.Args[3:], nil)
+	default:
+		fmt.Fprintln(os.Stderr, "Error: missing or unknown run target")
+		fmt.Fprintln(os.Stderr)
+		printHelp(os.Stderr)
+		os.Exit(1)
+	}
+}
+
+func runTUI(ctx context.Context, sessionID string) {
+	theme.Auto()
 
 	wd, err := os.Getwd()
 	if err != nil {
@@ -162,18 +169,13 @@ func main() {
 		c.Usage = s.State.Usage
 	}
 
-	application := codetui.New(ctx, c, sessionID)
-
-	if err := application.Run(); err != nil {
+	if err := codetui.New(ctx, c, sessionID).Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
 func runClaw(ctx context.Context) {
-	ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
-	defer stop()
-
 	cfg, cleanup, err := claw.DefaultConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -188,7 +190,6 @@ func runClaw(ctx context.Context) {
 		os.Exit(1)
 	}
 
-	// Replace CLI channel with TUI
 	cfg.Channels = []channel.Channel{clawtui.New(c)}
 
 	if err := c.Run(ctx); err != nil {

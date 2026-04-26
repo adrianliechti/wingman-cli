@@ -38,21 +38,20 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Send current messages on connect
 	messages := convertMessages(s.agent.Messages)
 	if len(messages) > 0 {
-		s.sendMessage(ServerMessage{Type: MsgMessages, Messages: messages})
+		s.sendMessage(MessagesEvent{Messages: messages})
 	}
 
 	// Send current usage
 	usage := s.agent.Usage
 	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
-		s.sendMessage(ServerMessage{
-			Type:         MsgUsage,
+		s.sendMessage(UsageEvent{
 			InputTokens:  usage.InputTokens,
 			OutputTokens: usage.OutputTokens,
 		})
 	}
 
 	// Send model info
-	s.sendMessage(ServerMessage{Type: MsgPhase, Phase: "idle"})
+	s.sendMessage(PhaseEvent{Phase: "idle"})
 
 	ctx := r.Context()
 
@@ -121,14 +120,14 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 		s.wsMu.Unlock()
 	}()
 
-	s.sendMessage(ServerMessage{Type: MsgPhase, Phase: "thinking"})
+	s.sendMessage(PhaseEvent{Phase: "thinking"})
 
 	for msg, err := range s.agent.Send(streamCtx, input) {
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
-				s.sendMessage(ServerMessage{Type: MsgError, Message: "Cancelled"})
+				s.sendMessage(ErrorEvent{Message: "Cancelled"})
 			} else {
-				s.sendMessage(ServerMessage{Type: MsgError, Message: err.Error()})
+				s.sendMessage(ErrorEvent{Message: err.Error()})
 			}
 			break
 		}
@@ -136,34 +135,37 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 		for _, c := range msg.Content {
 			switch {
 			case c.ToolCall != nil:
-				hint := extractToolHintFromArgs(c.ToolCall.Args)
-				s.sendMessage(ServerMessage{
-					Type: MsgToolCall,
+				s.sendMessage(ToolCallEvent{
 					ID:   c.ToolCall.ID,
 					Name: c.ToolCall.Name,
 					Args: c.ToolCall.Args,
-					Hint: hint,
+					Hint: extractToolHintFromArgs(c.ToolCall.Args),
 				})
-				s.sendMessage(ServerMessage{Type: MsgPhase, Phase: "tool_running"})
+				s.sendMessage(PhaseEvent{Phase: "tool_running"})
 
 			case c.ToolResult != nil:
-				s.sendMessage(ServerMessage{
-					Type:    MsgToolResult,
+				s.sendMessage(ToolResultEvent{
 					ID:      c.ToolResult.ID,
 					Name:    c.ToolResult.Name,
 					Content: c.ToolResult.Content,
 				})
 
+			case c.Reasoning != nil && c.Reasoning.Summary != "":
+				s.sendMessage(PhaseEvent{Phase: "thinking"})
+				s.sendMessage(ReasoningDeltaEvent{
+					ID:   c.Reasoning.ID,
+					Text: c.Reasoning.Summary,
+				})
+
 			case c.Text != "":
-				s.sendMessage(ServerMessage{Type: MsgPhase, Phase: "streaming"})
-				s.sendMessage(ServerMessage{Type: MsgTextDelta, Text: c.Text})
+				s.sendMessage(PhaseEvent{Phase: "streaming"})
+				s.sendMessage(TextDeltaEvent{Text: c.Text})
 			}
 		}
 
 		// Send usage updates
 		usage := s.agent.Usage
-		s.sendMessage(ServerMessage{
-			Type:         MsgUsage,
+		s.sendMessage(UsageEvent{
 			InputTokens:  usage.InputTokens,
 			OutputTokens: usage.OutputTokens,
 		})
@@ -178,19 +180,19 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 				commitMsg = "<unknown>"
 			}
 			if err := s.rewind.Commit(commitMsg); err == nil {
-				s.sendMessage(ServerMessage{Type: MsgCheckpointsChanged})
+				s.sendMessage(CheckpointsChangedEvent{})
 			}
 			// fsnotify will likely fire too, but push explicitly to avoid
 			// any race where the UI fetches before the watcher debounces.
-			s.sendMessage(ServerMessage{Type: MsgDiffsChanged})
-			s.sendMessage(ServerMessage{Type: MsgFilesChanged})
+			s.sendMessage(DiffsChangedEvent{})
+			s.sendMessage(FilesChangedEvent{})
 		}
 	default:
 	}
 
 	// Diagnostics most often change as a consequence of agent edits — nudge
 	// the panel so users see fresh problems without reopening the tab.
-	s.sendMessage(ServerMessage{Type: MsgDiagnosticsChanged})
+	s.sendMessage(DiagnosticsChangedEvent{})
 
 	// Save session and notify the sidebar so the new/updated entry shows up
 	// without waiting for the periodic poll.
@@ -199,11 +201,11 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 		Usage:    s.agent.Usage,
 	}
 	if err := session.Save(s.sessionsDir, s.sessionID, state); err == nil && len(state.Messages) > 0 {
-		s.sendMessage(ServerMessage{Type: MsgSessionsChanged})
+		s.sendMessage(SessionsChangedEvent{})
 	}
 
-	s.sendMessage(ServerMessage{Type: MsgDone})
-	s.sendMessage(ServerMessage{Type: MsgPhase, Phase: "idle"})
+	s.sendMessage(DoneEvent{})
+	s.sendMessage(PhaseEvent{Phase: "idle"})
 }
 
 // extractToolHintFromArgs extracts a display hint from tool arguments JSON.

@@ -130,20 +130,18 @@ export default function App() {
 				toolArgs?: string;
 				toolResult?: string;
 			}> = [];
-			let counter = 0;
 			for (const m of messages) {
 				for (const c of m.content) {
-					counter++;
 					if (c.text) {
 						restored.push({
-							id: String(counter),
+							id: crypto.randomUUID(),
 							type: m.role === "user" ? "user" : "assistant",
 							content: c.text,
 						});
 					}
 					if (c.tool_result) {
 						restored.push({
-							id: String(counter),
+							id: crypto.randomUUID(),
 							type: "tool",
 							content: "",
 							toolName: c.tool_result.name,

@@ -3,16 +3,25 @@
 version: '3'
 
 tasks:
-  ui:
-    desc: Build the web UI
-    dir: server/ui
+  generate:
+    desc: Build the web UI assets
     cmds:
-      - npm install
-      - npm run build
+      - go generate ./server/...
+
+  server:
+    desc: Generate the web UI and run the server
+    deps: [generate]
+    cmds:
+      - go run . server
+
+  agent:
+    desc: Run the agent TUI
+    cmds:
+      - go run .
 
   install:
     desc: Install wingman using go install
-    deps: [ui]
+    deps: [generate]
     cmds:
       - go build -o wingman . && mv wingman $(go env GOPATH)/bin/
 

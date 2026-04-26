@@ -112,7 +112,7 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		a.toolOutputExpanded = !a.toolOutputExpanded
 
 		if !a.showWelcome && !a.isStreaming() && !a.promptActive && !a.askActive && len(a.agent.Messages) > 0 {
-			a.renderChat(a.agent.Messages, "", "", "")
+			a.renderChat(a.agent.Messages)
 		}
 
 		a.updateInputHint()
@@ -436,7 +436,7 @@ func (a *App) resumeSession() {
 
 	// Re-render chat with restored messages
 	a.switchToChat()
-	a.renderChat(a.agent.Messages, "", "", "")
+	a.renderChat(a.agent.Messages)
 	a.updateStatusBar()
 
 	fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("Resumed session from %s", last.UpdatedAt.Format("Jan 2 15:04")), t.Green))
@@ -826,7 +826,7 @@ func (a *App) buildLayout() *tview.Flex {
 
 			// Re-render chat on resize to re-wrap content to new width
 			if !a.showWelcome && !a.promptActive && !a.askActive && len(a.agent.Messages) > 0 {
-				a.renderChat(a.agent.Messages, "", a.currentToolName, a.currentToolHint)
+				a.renderChat(a.agent.Messages)
 			}
 		}
 
@@ -1032,7 +1032,11 @@ func (a *App) updateInputHint() {
 
 // Chat rendering (inlined from ChatRenderer)
 
-func (a *App) renderChat(messages []agent.Message, streamingContent string, toolName string, toolHint string) {
+// renderChat redraws the chat view from committed messages plus the current
+// transient overlay (a.streamingReasoning / a.streamingText / a.currentTool*).
+// Callers don't pass streaming state — it's read straight from the App so any
+// redraw (resize, expand toggle, stream tick) reflects the same source of truth.
+func (a *App) renderChat(messages []agent.Message) {
 	a.chatView.Clear()
 
 	prevWasTool := false
@@ -1049,15 +1053,19 @@ func (a *App) renderChat(messages []agent.Message, streamingContent string, tool
 		prevWasTool = isTool
 	}
 
-	if streamingContent != "" {
+	if a.streamingReasoning != "" {
+		fmt.Fprint(a.chatView, a.formatReasoningProgress(a.streamingReasoning))
+	}
+
+	if a.streamingText != "" {
 		if prevWasTool {
 			fmt.Fprint(a.chatView, "\n")
 		}
-		fmt.Fprint(a.chatView, a.formatAssistantMessage(streamingContent))
+		fmt.Fprint(a.chatView, a.formatAssistantMessage(a.streamingText))
 	}
 
-	if toolName != "" && !a.isToolHidden(toolName) {
-		fmt.Fprint(a.chatView, a.formatToolProgress(toolName, toolHint))
+	if a.currentToolName != "" && !a.isToolHidden(a.currentToolName) {
+		fmt.Fprint(a.chatView, a.formatToolProgress(a.currentToolName, a.currentToolHint))
 	}
 
 	a.chatView.ScrollToEnd()
@@ -1097,6 +1105,16 @@ func (a *App) renderMessage(msg agent.Message) {
 
 		// Tool calls have no displayable content
 		if c.ToolCall != nil {
+			continue
+		}
+
+		// Reasoning summary (collapsed when expand is off, full when on)
+		if c.Reasoning != nil && c.Reasoning.Summary != "" {
+			if a.toolOutputExpanded {
+				fmt.Fprint(a.chatView, a.formatReasoning(c.Reasoning.Summary))
+			} else {
+				fmt.Fprint(a.chatView, a.formatReasoningCollapsed(c.Reasoning.Summary))
+			}
 			continue
 		}
 

@@ -31,6 +31,12 @@ export interface TextDeltaMessage {
 	text: string;
 }
 
+export interface ReasoningDeltaMessage {
+	type: "reasoning_delta";
+	id: string;
+	text: string;
+}
+
 export interface ToolCallMessage {
 	type: "tool_call";
 	id: string;
@@ -104,6 +110,7 @@ export interface DiagnosticsChangedMessage {
 
 export type ServerMessage =
 	| TextDeltaMessage
+	| ReasoningDeltaMessage
 	| ToolCallMessage
 	| ToolResultMessage
 	| PhaseMessage
@@ -129,6 +136,10 @@ export interface ConversationMessage {
 
 export interface ConversationContent {
 	text?: string;
+	reasoning?: {
+		id?: string;
+		summary?: string;
+	};
 	tool_call?: {
 		id: string;
 		name: string;

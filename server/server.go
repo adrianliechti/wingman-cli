@@ -25,6 +25,9 @@ import (
 	"github.com/coder/websocket"
 )
 
+//go:generate npm --prefix ui install
+//go:generate npm --prefix ui run build
+
 //go:embed static/*
 var staticFiles embed.FS
 
@@ -94,8 +97,8 @@ func (s *Server) Run(ctx context.Context) error {
 	// and push diffs_changed + files_changed so the panels refetch without polling.
 	go func() {
 		_ = s.watchWorkdir(ctx, s.agent.RootPath, func() {
-			s.sendMessage(ServerMessage{Type: MsgDiffsChanged})
-			s.sendMessage(ServerMessage{Type: MsgFilesChanged})
+			s.sendMessage(DiffsChangedEvent{})
+			s.sendMessage(FilesChangedEvent{})
 		})
 	}()
 
@@ -190,7 +193,10 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) sendMessage(msg ServerMessage) {
+// sendMessage marshals an event with its type field injected and writes it
+// to the active WebSocket. Field order in the resulting JSON is unspecified —
+// JSON consumers don't depend on it.
+func (s *Server) sendMessage(e ServerEvent) {
 	s.wsMu.Lock()
 	conn := s.wsConn
 	s.wsMu.Unlock()
@@ -199,7 +205,23 @@ func (s *Server) sendMessage(msg ServerMessage) {
 		return
 	}
 
-	data, err := json.Marshal(msg)
+	payload, err := json.Marshal(e)
+	if err != nil {
+		return
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		return
+	}
+
+	typeJSON, err := json.Marshal(e.serverEventType())
+	if err != nil {
+		return
+	}
+	fields["type"] = typeJSON
+
+	data, err := json.Marshal(fields)
 	if err != nil {
 		return
 	}
@@ -208,7 +230,7 @@ func (s *Server) sendMessage(msg ServerMessage) {
 }
 
 func (s *Server) askUser(ctx context.Context, question string) (string, error) {
-	s.sendMessage(ServerMessage{Type: MsgAsk, Question: question})
+	s.sendMessage(AskEvent{Question: question})
 
 	// Drain any stale response
 	select {
@@ -220,7 +242,7 @@ func (s *Server) askUser(ctx context.Context, question string) (string, error) {
 }
 
 func (s *Server) promptUser(ctx context.Context, prompt string) (bool, error) {
-	s.sendMessage(ServerMessage{Type: MsgPrompt, Question: prompt})
+	s.sendMessage(PromptEvent{Question: prompt})
 
 	// Drain any stale response
 	select {
@@ -244,6 +266,13 @@ func convertMessages(messages []agent.Message) []ConversationMessage {
 
 			if c.Text != "" {
 				cc.Text = c.Text
+			}
+
+			if c.Reasoning != nil && c.Reasoning.Summary != "" {
+				cc.Reasoning = &ConversationReasoning{
+					ID:      c.Reasoning.ID,
+					Summary: c.Reasoning.Summary,
+				}
 			}
 
 			if c.ToolCall != nil {
@@ -303,10 +332,10 @@ func (s *Server) restartRewind() {
 			}
 		}
 
-		s.sendMessage(ServerMessage{Type: MsgDiffsChanged})
-		s.sendMessage(ServerMessage{Type: MsgCheckpointsChanged})
-		s.sendMessage(ServerMessage{Type: MsgFilesChanged})
-		s.sendMessage(ServerMessage{Type: MsgDiagnosticsChanged})
+		s.sendMessage(DiffsChangedEvent{})
+		s.sendMessage(CheckpointsChangedEvent{})
+		s.sendMessage(FilesChangedEvent{})
+		s.sendMessage(DiagnosticsChangedEvent{})
 	}()
 }
 
@@ -338,7 +367,7 @@ func (s *Server) handleNewSession(w http.ResponseWriter, r *http.Request) {
 
 	s.sessionID = newSessionID()
 
-	s.sendMessage(ServerMessage{Type: MsgSessionsChanged})
+	s.sendMessage(SessionsChangedEvent{})
 
 	writeJSON(w, map[string]string{"id": s.sessionID})
 }
@@ -380,7 +409,7 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.sendMessage(ServerMessage{Type: MsgSessionsChanged})
+	s.sendMessage(SessionsChangedEvent{})
 
 	w.WriteHeader(http.StatusNoContent)
 }

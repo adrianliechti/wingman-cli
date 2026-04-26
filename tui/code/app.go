@@ -73,9 +73,13 @@ type App struct {
 	streamCancel context.CancelFunc
 	streamMu     sync.Mutex
 
-	// Current tool progress
-	currentToolName string
-	currentToolHint string
+	// Current streaming display state. Mutated from the streaming goroutine
+	// and read inside QueueUpdateDraw closures — same race-tolerant pattern
+	// used for currentToolName/Hint, since these are display-only.
+	currentToolName    string
+	currentToolHint    string
+	streamingText      string
+	streamingReasoning string
 
 	// LSP diagnostics tracker
 	lspTracker *lsp.DiagnosticTracker
@@ -246,7 +250,7 @@ func (a *App) Run() error {
 			// Render restored session (from --resume or /resume)
 			if messages := a.agent.Messages; len(messages) > 0 {
 				a.switchToChat()
-				a.renderChat(messages, "", "", "")
+				a.renderChat(messages)
 
 				usage := a.agent.Usage
 				a.inputTokens = usage.InputTokens

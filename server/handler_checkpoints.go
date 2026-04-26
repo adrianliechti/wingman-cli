@@ -60,7 +60,7 @@ func (s *Server) handleCheckpointRestore(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Working tree just changed; nudge the UI even though fsnotify will fire too.
-	s.sendMessage(ServerMessage{Type: MsgDiffsChanged})
+	s.sendMessage(DiffsChangedEvent{})
 
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -8,26 +8,9 @@ const (
 	MsgAskResponse    = "ask_response"
 )
 
-// Server -> Client message types
-const (
-	MsgTextDelta          = "text_delta"
-	MsgToolCall           = "tool_call"
-	MsgToolResult         = "tool_result"
-	MsgPhase              = "phase"
-	MsgPrompt             = "prompt"
-	MsgAsk                = "ask"
-	MsgError              = "error"
-	MsgDone               = "done"
-	MsgUsage              = "usage"
-	MsgMessages           = "messages"
-	MsgDiffsChanged        = "diffs_changed"
-	MsgCheckpointsChanged  = "checkpoints_changed"
-	MsgSessionsChanged     = "sessions_changed"
-	MsgFilesChanged        = "files_changed"
-	MsgDiagnosticsChanged  = "diagnostics_changed"
-)
-
 // ClientMessage is the envelope for all client-to-server WebSocket messages.
+// Inbound messages share one struct because the type isn't known until the
+// frame is unmarshaled.
 type ClientMessage struct {
 	Type     string   `json:"type"`
 	Text     string   `json:"text,omitempty"`
@@ -36,36 +19,103 @@ type ClientMessage struct {
 	Answer   string   `json:"answer,omitempty"`
 }
 
-// ServerMessage is the envelope for all server-to-client WebSocket messages.
-type ServerMessage struct {
-	Type string `json:"type"`
-
-	// text_delta
-	Text string `json:"text,omitempty"`
-
-	// tool_call / tool_result
-	ID      string `json:"id,omitempty"`
-	Name    string `json:"name,omitempty"`
-	Args    string `json:"args,omitempty"`
-	Hint    string `json:"hint,omitempty"`
-	Content string `json:"content,omitempty"`
-
-	// phase
-	Phase string `json:"phase,omitempty"`
-
-	// prompt / ask
-	Question string `json:"question,omitempty"`
-
-	// error
-	Message string `json:"message,omitempty"`
-
-	// usage
-	InputTokens  int64 `json:"input_tokens,omitempty"`
-	OutputTokens int64 `json:"output_tokens,omitempty"`
-
-	// messages (full conversation)
-	Messages []ConversationMessage `json:"messages,omitempty"`
+// ServerEvent is implemented by every outbound WebSocket event. sendMessage
+// emits the wire payload as {"type": <serverEventType>, ...struct fields}.
+type ServerEvent interface {
+	serverEventType() string
 }
+
+type TextDeltaEvent struct {
+	Text string `json:"text"`
+}
+
+func (TextDeltaEvent) serverEventType() string { return "text_delta" }
+
+type ReasoningDeltaEvent struct {
+	ID   string `json:"id"`
+	Text string `json:"text"`
+}
+
+func (ReasoningDeltaEvent) serverEventType() string { return "reasoning_delta" }
+
+type ToolCallEvent struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Args string `json:"args"`
+	Hint string `json:"hint,omitempty"`
+}
+
+func (ToolCallEvent) serverEventType() string { return "tool_call" }
+
+type ToolResultEvent struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Content string `json:"content"`
+}
+
+func (ToolResultEvent) serverEventType() string { return "tool_result" }
+
+type PhaseEvent struct {
+	Phase string `json:"phase"`
+	Hint  string `json:"hint,omitempty"`
+}
+
+func (PhaseEvent) serverEventType() string { return "phase" }
+
+type PromptEvent struct {
+	Question string `json:"question"`
+}
+
+func (PromptEvent) serverEventType() string { return "prompt" }
+
+type AskEvent struct {
+	Question string `json:"question"`
+}
+
+func (AskEvent) serverEventType() string { return "ask" }
+
+type ErrorEvent struct {
+	Message string `json:"message"`
+}
+
+func (ErrorEvent) serverEventType() string { return "error" }
+
+type DoneEvent struct{}
+
+func (DoneEvent) serverEventType() string { return "done" }
+
+type UsageEvent struct {
+	InputTokens  int64 `json:"input_tokens"`
+	OutputTokens int64 `json:"output_tokens"`
+}
+
+func (UsageEvent) serverEventType() string { return "usage" }
+
+type MessagesEvent struct {
+	Messages []ConversationMessage `json:"messages"`
+}
+
+func (MessagesEvent) serverEventType() string { return "messages" }
+
+type DiffsChangedEvent struct{}
+
+func (DiffsChangedEvent) serverEventType() string { return "diffs_changed" }
+
+type CheckpointsChangedEvent struct{}
+
+func (CheckpointsChangedEvent) serverEventType() string { return "checkpoints_changed" }
+
+type SessionsChangedEvent struct{}
+
+func (SessionsChangedEvent) serverEventType() string { return "sessions_changed" }
+
+type FilesChangedEvent struct{}
+
+func (FilesChangedEvent) serverEventType() string { return "files_changed" }
+
+type DiagnosticsChangedEvent struct{}
+
+func (DiagnosticsChangedEvent) serverEventType() string { return "diagnostics_changed" }
 
 // ConversationMessage is a simplified message for the REST /api/messages endpoint and WebSocket messages payload.
 type ConversationMessage struct {
@@ -74,9 +124,15 @@ type ConversationMessage struct {
 }
 
 type ConversationContent struct {
-	Text       string              `json:"text,omitempty"`
-	ToolCall   *ConversationTool   `json:"tool_call,omitempty"`
-	ToolResult *ConversationResult `json:"tool_result,omitempty"`
+	Text       string                 `json:"text,omitempty"`
+	Reasoning  *ConversationReasoning `json:"reasoning,omitempty"`
+	ToolCall   *ConversationTool      `json:"tool_call,omitempty"`
+	ToolResult *ConversationResult    `json:"tool_result,omitempty"`
+}
+
+type ConversationReasoning struct {
+	ID      string `json:"id,omitempty"`
+	Summary string `json:"summary,omitempty"`
 }
 
 type ConversationTool struct {
