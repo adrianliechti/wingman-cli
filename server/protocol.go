@@ -117,6 +117,10 @@ type DiagnosticsChangedEvent struct{}
 
 func (DiagnosticsChangedEvent) serverEventType() string { return "diagnostics_changed" }
 
+type CapabilitiesChangedEvent struct{}
+
+func (CapabilitiesChangedEvent) serverEventType() string { return "capabilities_changed" }
+
 // ConversationMessage is a simplified message for the REST /api/messages endpoint and WebSocket messages payload.
 type ConversationMessage struct {
 	Role    string                   `json:"role"`

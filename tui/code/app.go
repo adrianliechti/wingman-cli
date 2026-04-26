@@ -18,7 +18,6 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/hook/truncation"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
-	"github.com/adrianliechti/wingman-agent/pkg/rewind"
 	"github.com/adrianliechti/wingman-agent/pkg/session"
 	"github.com/adrianliechti/wingman-agent/pkg/tui"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/theme"
@@ -84,10 +83,6 @@ type App struct {
 	// LSP diagnostics tracker
 	lspTracker *lsp.DiagnosticTracker
 
-	// Rewind state
-	rewind      *rewind.Manager
-	rewindReady chan struct{}
-
 	// Mouse capture state (toggle to allow native terminal text selection)
 	mouseEnabled bool
 }
@@ -108,10 +103,9 @@ func New(ctx context.Context, agent *code.Agent, sessionID string) *App {
 
 		sessionID:   sessionID,
 		showWelcome: !hasMessages && os.Getenv("WINGMAN_CALLER") != "vscode",
-		phase:       PhasePreparing,
+		phase:       PhaseIdle,
 
-		lspTracker:  lsp.NewDiagnosticTracker(),
-		rewindReady: make(chan struct{}),
+		lspTracker: lsp.NewDiagnosticTracker(),
 
 		mouseEnabled: true,
 	}
@@ -164,18 +158,8 @@ func (a *App) saveSession() {
 }
 
 func (a *App) stop() {
-	// Shut down bridge, MCP, and LSP servers
+	// Shut down bridge, MCP, LSP, and rewind in one call.
 	a.agent.Close()
-
-	// Wait briefly for rewind to be ready, then cleanup
-	select {
-	case <-a.rewindReady:
-		if a.rewind != nil {
-			a.rewind.Cleanup()
-		}
-	default:
-		// Rewind not ready yet, nothing to cleanup
-	}
 
 	// Save session before stopping
 	a.saveSession()
@@ -223,42 +207,17 @@ func (a *App) Run() error {
 	a.pages.SetBackgroundColor(tcell.ColorDefault)
 	a.pages.AddPage("main", mainLayout, true, true)
 
-	// Show "Preparing..." while rewind initializes, then transition to idle
-	a.spinner.Start(PhasePreparing)
+	// Render restored session (from --resume or /resume) directly. The view
+	// is allowed to be mutated before app.Run() starts the event loop.
+	if messages := a.agent.Messages; len(messages) > 0 {
+		a.switchToChat()
+		a.renderChat(messages)
 
-	// Initialize rewind asynchronously (only in git repos)
-	go func() {
-		defer close(a.rewindReady)
-
-		workDir := a.agent.RootPath
-		gitDir := filepath.Join(workDir, ".git")
-
-		if _, err := os.Stat(gitDir); os.IsNotExist(err) {
-			return
-		}
-
-		if rm, err := rewind.New(workDir); err == nil {
-			a.rewind = rm
-		}
-	}()
-
-	go func() {
-		<-a.rewindReady
-		a.app.QueueUpdateDraw(func() {
-			a.setPhase(PhaseIdle)
-
-			// Render restored session (from --resume or /resume)
-			if messages := a.agent.Messages; len(messages) > 0 {
-				a.switchToChat()
-				a.renderChat(messages)
-
-				usage := a.agent.Usage
-				a.inputTokens = usage.InputTokens
-				a.outputTokens = usage.OutputTokens
-				a.updateStatusBar()
-			}
-		})
-	}()
+		usage := a.agent.Usage
+		a.inputTokens = usage.InputTokens
+		a.outputTokens = usage.OutputTokens
+		a.updateStatusBar()
+	}
 
 	root := &pasteInterceptRoot{
 		Primitive: a.pages,

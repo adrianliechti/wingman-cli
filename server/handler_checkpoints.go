@@ -5,19 +5,12 @@ import (
 )
 
 func (s *Server) handleCheckpoints(w http.ResponseWriter, r *http.Request) {
-	select {
-	case <-s.rewindReady:
-	default:
+	if s.agent.Rewind == nil {
 		writeJSON(w, []CheckpointEntry{})
 		return
 	}
 
-	if s.rewind == nil {
-		writeJSON(w, []CheckpointEntry{})
-		return
-	}
-
-	checkpoints, err := s.rewind.List()
+	checkpoints, err := s.agent.Rewind.List()
 	if err != nil {
 		writeJSON(w, []CheckpointEntry{})
 		return
@@ -42,19 +35,12 @@ func (s *Server) handleCheckpointRestore(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	select {
-	case <-s.rewindReady:
-	default:
-		http.Error(w, "rewind not ready", http.StatusServiceUnavailable)
-		return
-	}
-
-	if s.rewind == nil {
+	if s.agent.Rewind == nil {
 		http.Error(w, "rewind not available", http.StatusServiceUnavailable)
 		return
 	}
 
-	if err := s.rewind.Restore(hash); err != nil {
+	if err := s.agent.Rewind.Restore(hash); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

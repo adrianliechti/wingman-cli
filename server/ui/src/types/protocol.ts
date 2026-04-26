@@ -108,6 +108,10 @@ export interface DiagnosticsChangedMessage {
 	type: "diagnostics_changed";
 }
 
+export interface CapabilitiesChangedMessage {
+	type: "capabilities_changed";
+}
+
 export type ServerMessage =
 	| TextDeltaMessage
 	| ReasoningDeltaMessage
@@ -124,7 +128,8 @@ export type ServerMessage =
 	| CheckpointsChangedMessage
 	| SessionsChangedMessage
 	| FilesChangedMessage
-	| DiagnosticsChangedMessage;
+	| DiagnosticsChangedMessage
+	| CapabilitiesChangedMessage;
 
 // Shared types
 export type Phase = "idle" | "thinking" | "streaming" | "tool_running";

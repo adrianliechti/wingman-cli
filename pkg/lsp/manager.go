@@ -15,18 +15,23 @@ const maxRestarts = 3
 // Manager caches LSP sessions so servers are reused across tool invocations.
 type Manager struct {
 	workingDir string
+	enabled    bool
 	sessions   map[string]*Session // keyed by server command
 	restarts   map[string]int      // restart count per server command
 	mu         sync.Mutex
 
-	detection detectionResult // cached detection results
+	detection  detectionResult // cached detection results
 	detectOnce sync.Once
 }
 
-// NewManager creates a new LSP session manager.
-func NewManager(workingDir string) *Manager {
+// NewManager creates a new LSP session manager. When enabled is false,
+// detection is skipped (no source-tree walks, no servers spawned) and all
+// detect-driven methods return empty. WorkingDir still works, so callers
+// using it for path resolution stay valid.
+func NewManager(workingDir string, enabled bool) *Manager {
 	return &Manager{
 		workingDir: workingDir,
+		enabled:    enabled,
 		sessions:   make(map[string]*Session),
 		restarts:   make(map[string]int),
 	}
@@ -37,9 +42,14 @@ func (m *Manager) WorkingDir() string {
 	return m.workingDir
 }
 
-// detect returns cached detection results, running detection once.
+// detect returns cached detection results, running detection once. When the
+// manager is disabled (e.g. outside a git repo), returns an empty result
+// without ever walking the filesystem.
 func (m *Manager) detect() *detectionResult {
 	m.detectOnce.Do(func() {
+		if !m.enabled {
+			return
+		}
 		m.detection = detectAll(m.workingDir)
 	})
 	return &m.detection

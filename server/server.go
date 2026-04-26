@@ -13,13 +13,13 @@ import (
 	"sort"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
-	"github.com/adrianliechti/wingman-agent/pkg/rewind"
 	"github.com/adrianliechti/wingman-agent/pkg/session"
 
 	"github.com/coder/websocket"
@@ -37,9 +37,6 @@ type Server struct {
 	sessionID string
 
 	sessionsDir string
-
-	rewind      *rewind.Manager
-	rewindReady chan struct{}
 
 	// planMode toggles between the default agent system prompt and the
 	// planning-only prompt; protected by mu.
@@ -66,9 +63,8 @@ func New(agent *code.Agent, port int) *Server {
 
 		sessionsDir: sessionsDir,
 
-		rewindReady: make(chan struct{}),
-		askCh:       make(chan string, 1),
-		promptCh:    make(chan bool, 1),
+		askCh:    make(chan string, 1),
+		promptCh: make(chan bool, 1),
 	}
 }
 
@@ -90,17 +86,11 @@ func (s *Server) Run(ctx context.Context) error {
 	// takes effect on the next turn.
 	s.agent.Config.Instructions = s.currentInstructions
 
-	// Init rewind async
-	s.restartRewind()
-
-	// Watch the working directory for any file changes (terminal, IDE, agent)
-	// and push diffs_changed + files_changed so the panels refetch without polling.
-	go func() {
-		_ = s.watchWorkdir(ctx, s.agent.RootPath, func() {
-			s.sendMessage(DiffsChangedEvent{})
-			s.sendMessage(FilesChangedEvent{})
-		})
-	}()
+	// Poll for changes from outside the agent (terminal `rm`, IDE saves, etc.)
+	// so the FileTree and Diffs panels reflect them. Polling instead of
+	// fsnotify: zero FDs (kqueue's per-dir watcher cost was the original
+	// $HOME crash), one path everywhere, ≤2s latency — fine for this UI.
+	go s.pollFiles(ctx)
 
 	// Auto-select model
 	s.autoSelectModel(ctx)
@@ -119,7 +109,6 @@ func (s *Server) Run(ctx context.Context) error {
 
 	go func() {
 		<-sigCh
-		fmt.Fprintln(os.Stderr, "\nShutting down...")
 		cancel()
 		server.Close()
 	}()
@@ -135,15 +124,6 @@ func (s *Server) Run(ctx context.Context) error {
 
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
-	}
-
-	// Cleanup
-	select {
-	case <-s.rewindReady:
-		if s.rewind != nil {
-			s.rewind.Cleanup()
-		}
-	default:
 	}
 
 	return nil
@@ -170,6 +150,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/mode", s.handleSetMode)
 	mux.HandleFunc("GET /api/diagnostics", s.handleDiagnostics)
 	mux.HandleFunc("GET /api/skills", s.handleSkills)
+	mux.HandleFunc("GET /api/capabilities", s.handleCapabilities)
 
 	// WebSocket
 	mux.HandleFunc("/ws/chat", s.handleWebSocket)
@@ -300,45 +281,6 @@ func convertMessages(messages []agent.Message) []ConversationMessage {
 	return result
 }
 
-// restartRewind tears down any existing rewind manager and asynchronously
-// initializes a fresh one rooted at the current working directory. The fresh
-// rewindReady channel lets handlers wait for init without races.
-//
-// Once init finishes, the panels are nudged via diffs_changed +
-// checkpoints_changed so they replace any stale state from the previous
-// rewind manager (e.g. after a new session is started).
-func (s *Server) restartRewind() {
-	if s.rewindReady != nil {
-		select {
-		case <-s.rewindReady:
-			if s.rewind != nil {
-				s.rewind.Cleanup()
-				s.rewind = nil
-			}
-		default:
-		}
-	}
-
-	s.rewindReady = make(chan struct{})
-
-	go func() {
-		defer close(s.rewindReady)
-
-		workDir := s.agent.RootPath
-		gitDir := filepath.Join(workDir, ".git")
-		if _, err := os.Stat(gitDir); !os.IsNotExist(err) {
-			if rm, err := rewind.New(workDir); err == nil {
-				s.rewind = rm
-			}
-		}
-
-		s.sendMessage(DiffsChangedEvent{})
-		s.sendMessage(CheckpointsChangedEvent{})
-		s.sendMessage(FilesChangedEvent{})
-		s.sendMessage(DiagnosticsChangedEvent{})
-	}()
-}
-
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	sessions, err := session.List(s.sessionsDir)
 	if err != nil {
@@ -362,11 +304,16 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleNewSession(w http.ResponseWriter, r *http.Request) {
 	s.agent.Messages = nil
 	s.agent.Usage = agent.Usage{}
-
-	s.restartRewind()
-
 	s.sessionID = newSessionID()
 
+	// Re-baseline rewind for the new session and nudge every right-panel
+	// listing so it replaces stale state. capabilities_changed covers the
+	// case where the user ran `git init` between sessions.
+	s.agent.RestartRewind()
+	s.sendMessage(CapabilitiesChangedEvent{})
+	s.sendMessage(DiffsChangedEvent{})
+	s.sendMessage(CheckpointsChangedEvent{})
+	s.sendMessage(FilesChangedEvent{})
 	s.sendMessage(SessionsChangedEvent{})
 
 	writeJSON(w, map[string]string{"id": s.sessionID})
@@ -532,6 +479,57 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	})
 
 	writeJSON(w, result)
+}
+
+// pollFiles fires FilesChangedEvent on a fixed cadence so the FileTree
+// refetches and reflects external changes (e.g. `rm` from another terminal).
+// Also fires DiffsChangedEvent when rewind is active so the Diffs panel
+// recomputes against the live worktree.
+//
+// On each tick we also re-check whether the working dir's git status flipped
+// (typically: agent ran `git init`, or user `rm -rf .git`'d). When it does,
+// we rebuild rewind via the agent and broadcast capabilities_changed so the
+// web UI re-fetches /api/capabilities and shows/hides the right-panel tabs.
+//
+// sendMessage is a no-op when no client is connected, so the idle cost is
+// just one wakeup per tick.
+func (s *Server) pollFiles(ctx context.Context) {
+	const interval = 2 * time.Second
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if s.agent.IsGitRepo() != (s.agent.Rewind != nil) {
+				s.agent.RestartRewind()
+				s.sendMessage(CapabilitiesChangedEvent{})
+				s.sendMessage(CheckpointsChangedEvent{})
+			}
+
+			s.sendMessage(FilesChangedEvent{})
+			if s.agent.Rewind != nil {
+				s.sendMessage(DiffsChangedEvent{})
+			}
+		}
+	}
+}
+
+// handleCapabilities reports which features the working directory supports.
+// The web UI fetches this once on load to decide which tabs/panels to show.
+// In a non-git "scratch space" all the rewind-related surfaces (diffs,
+// checkpoints, diagnostics) are hidden because their backends don't run.
+func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
+	git := s.agent.Rewind != nil
+	writeJSON(w, map[string]bool{
+		"git":    git,
+		"rewind": git,
+		"lsp":    git,
+		"diffs":  git,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

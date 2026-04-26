@@ -9,7 +9,7 @@ import {
 	PanelRightOpen,
 	X,
 } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel";
 import { CheckpointsPanel } from "./components/CheckpointsPanel";
 import { DiffsPanel } from "./components/DiffsPanel";
@@ -19,6 +19,7 @@ import { FileTree } from "./components/FileTree";
 import { ProblemsPanel } from "./components/ProblemsPanel";
 import { PromptDialog } from "./components/PromptDialog";
 import { Sidebar } from "./components/Sidebar";
+import { useCapabilities } from "./hooks/useCapabilities";
 import { useWebSocket } from "./hooks/useWebSocket";
 
 interface CenterTab {
@@ -44,10 +45,21 @@ export default function App() {
 		setEntries,
 		subscribe,
 	} = useWebSocket();
+	const capabilities = useCapabilities(subscribe);
+	const showChanges = capabilities?.git ?? false;
+	const showProblems = capabilities?.lsp ?? false;
 	const [sessionId, setSessionId] = useState("");
 	const [rightTab, setRightTab] = useState<RightTab>("changes");
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 	const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
+
+	// In scratch mode the Changes tab doesn't exist, so pin to Files when
+	// capabilities arrive and reveal it isn't available.
+	useEffect(() => {
+		if (capabilities && !showChanges && rightTab === "changes") {
+			setRightTab("files");
+		}
+	}, [capabilities, showChanges, rightTab]);
 
 	// Center tabs: chat is always first, files are added dynamically
 	const [tabs, setTabs] = useState<CenterTab[]>([
@@ -295,12 +307,14 @@ export default function App() {
 				>
 					<div className="w-72 h-full flex flex-col bg-bg">
 						<div className="h-10 flex items-stretch shrink-0">
-							<RightTabButton
-								active={rightTab === "changes"}
-								onClick={() => setRightTab("changes")}
-							>
-								Changes
-							</RightTabButton>
+							{showChanges && (
+								<RightTabButton
+									active={rightTab === "changes"}
+									onClick={() => setRightTab("changes")}
+								>
+									Changes
+								</RightTabButton>
+							)}
 							<RightTabButton
 								active={rightTab === "files"}
 								onClick={() => setRightTab("files")}
@@ -311,7 +325,7 @@ export default function App() {
 						</div>
 						<div className="h-px bg-border-subtle shrink-0" />
 						<div className="flex-1 overflow-hidden">
-							{rightTab === "changes" ? (
+							{rightTab === "changes" && showChanges ? (
 								<div className="flex flex-col h-full">
 									<div className="flex-[3] min-h-0 overflow-hidden">
 										<DiffsPanel
@@ -330,13 +344,17 @@ export default function App() {
 									<div className="flex-[3] min-h-0 overflow-hidden flex flex-col">
 										<FileTree onFileSelect={openFile} subscribe={subscribe} />
 									</div>
-									<div className="h-px bg-border-subtle shrink-0" />
-									<div className="flex-[1] min-h-0 overflow-hidden">
-										<ProblemsPanel
-											onOpenFile={openFile}
-											subscribe={subscribe}
-										/>
-									</div>
+									{showProblems && (
+										<>
+											<div className="h-px bg-border-subtle shrink-0" />
+											<div className="flex-[1] min-h-0 overflow-hidden">
+												<ProblemsPanel
+													onOpenFile={openFile}
+													subscribe={subscribe}
+												/>
+											</div>
+										</>
+									)}
 								</div>
 							)}
 						</div>

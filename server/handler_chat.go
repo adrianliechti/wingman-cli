@@ -120,7 +120,19 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 		s.wsMu.Unlock()
 	}()
 
-	s.sendMessage(PhaseEvent{Phase: "thinking"})
+	// Track the last sent phase so we only emit transitions, not one frame
+	// per content chunk. The client just calls setPhase on each event, so
+	// repeats are pure noise.
+	currentPhase := ""
+	setPhase := func(p string) {
+		if p == currentPhase {
+			return
+		}
+		currentPhase = p
+		s.sendMessage(PhaseEvent{Phase: p})
+	}
+
+	setPhase("thinking")
 
 	for msg, err := range s.agent.Send(streamCtx, input) {
 		if err != nil {
@@ -141,7 +153,7 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 					Args: c.ToolCall.Args,
 					Hint: extractToolHintFromArgs(c.ToolCall.Args),
 				})
-				s.sendMessage(PhaseEvent{Phase: "tool_running"})
+				setPhase("tool_running")
 
 			case c.ToolResult != nil:
 				s.sendMessage(ToolResultEvent{
@@ -151,14 +163,14 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 				})
 
 			case c.Reasoning != nil && c.Reasoning.Summary != "":
-				s.sendMessage(PhaseEvent{Phase: "thinking"})
+				setPhase("thinking")
 				s.sendMessage(ReasoningDeltaEvent{
 					ID:   c.Reasoning.ID,
 					Text: c.Reasoning.Summary,
 				})
 
 			case c.Text != "":
-				s.sendMessage(PhaseEvent{Phase: "streaming"})
+				setPhase("streaming")
 				s.sendMessage(TextDeltaEvent{Text: c.Text})
 			}
 		}
@@ -171,28 +183,25 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 		})
 	}
 
-	// Commit to rewind
-	select {
-	case <-s.rewindReady:
-		if s.rewind != nil {
-			commitMsg := msg.Text
-			if commitMsg == "" {
-				commitMsg = "<unknown>"
-			}
-			if err := s.rewind.Commit(commitMsg); err == nil {
-				s.sendMessage(CheckpointsChangedEvent{})
-			}
-			// fsnotify will likely fire too, but push explicitly to avoid
-			// any race where the UI fetches before the watcher debounces.
-			s.sendMessage(DiffsChangedEvent{})
-			s.sendMessage(FilesChangedEvent{})
-		}
-	default:
-	}
+	// The agent likely touched files this turn — the FileTree refetches
+	// even in scratch mode, where there's no watcher to fire this for us.
+	s.sendMessage(FilesChangedEvent{})
 
-	// Diagnostics most often change as a consequence of agent edits — nudge
-	// the panel so users see fresh problems without reopening the tab.
-	s.sendMessage(DiagnosticsChangedEvent{})
+	// Project-mode signals: commit a checkpoint, refresh diffs against baseline,
+	// and nudge the diagnostics panel to refetch. Tied to rewind because the
+	// Changes/Problems panels in the UI are git-gated together — in scratch
+	// mode they're hidden and the events would have no subscribers.
+	if s.agent.Rewind != nil {
+		commitMsg := msg.Text
+		if commitMsg == "" {
+			commitMsg = "<unknown>"
+		}
+		if err := s.agent.Rewind.Commit(commitMsg); err == nil {
+			s.sendMessage(CheckpointsChangedEvent{})
+		}
+		s.sendMessage(DiffsChangedEvent{})
+		s.sendMessage(DiagnosticsChangedEvent{})
+	}
 
 	// Save session and notify the sidebar so the new/updated entry shows up
 	// without waiting for the periodic poll.
@@ -205,7 +214,7 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 	}
 
 	s.sendMessage(DoneEvent{})
-	s.sendMessage(PhaseEvent{Phase: "idle"})
+	setPhase("idle")
 }
 
 // extractToolHintFromArgs extracts a display hint from tool arguments JSON.

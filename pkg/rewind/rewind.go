@@ -34,12 +34,7 @@ type Manager struct {
 	worktree     *git.Worktree
 	gitDir       string
 	workingDir   string
-	userRepo     *git.Repository // user's actual .git, opened read-only for HEAD lookups
 	baselineHash plumbing.Hash
-	// firstVisibleHash is the oldest commit shown in List(). When the working
-	// tree was dirty at launch, the HEAD baseline commit lives below this and
-	// is hidden so the chain reads simply: "Uncommitted Work" → per-turn …
-	firstVisibleHash plumbing.Hash
 }
 
 // readThroughStorage is a Storer that delegates writes to a primary store and
@@ -85,7 +80,16 @@ func (s *readThroughStorage) EncodedObjectSize(h plumbing.Hash) (int64, error) {
 	return size, err
 }
 
+// New initializes a rewind manager for an existing git working tree. Callers
+// are expected to gate this on the working dir actually being a git repo —
+// any go-git error is propagated unchanged, so the caller can decide what to
+// do with it (typically: log and disable rewind).
 func New(workingDir string) (*Manager, error) {
+	userRepo, err := git.PlainOpen(workingDir)
+	if err != nil {
+		return nil, err
+	}
+
 	sessionID := fmt.Sprintf("%d", time.Now().UnixNano())
 	gitDir := filepath.Join(os.TempDir(), "wingman-rewind-"+sessionID)
 
@@ -98,19 +102,11 @@ func New(workingDir string) (*Manager, error) {
 
 	tempStorage := filesystem.NewStorage(gitDirFS, cache.NewObjectLRUDefault())
 
-	// Open the user's .git read-only, if it exists, so we can reference its
-	// objects via read-through without copying.
-	var userRepo *git.Repository
-	if r, err := git.PlainOpen(workingDir); err == nil {
-		userRepo = r
-	}
-
-	var rewindStorage storage.Storer = tempStorage
-	if userRepo != nil {
-		rewindStorage = &readThroughStorage{
-			Storer:    tempStorage,
-			secondary: userRepo.Storer,
-		}
+	// Read-through into the user's .git/objects so the HEAD tree is reachable
+	// without copying anything.
+	rewindStorage := &readThroughStorage{
+		Storer:    tempStorage,
+		secondary: userRepo.Storer,
 	}
 
 	repo, err := git.Init(rewindStorage, nil)
@@ -158,10 +154,9 @@ func New(workingDir string) (*Manager, error) {
 		worktree:   worktree,
 		gitDir:     gitDir,
 		workingDir: workingDir,
-		userRepo:   userRepo,
 	}
 
-	if err := m.initBaseline(); err != nil {
+	if err := m.initBaseline(userRepo); err != nil {
 		os.RemoveAll(gitDir)
 
 		return nil, fmt.Errorf("failed to create baseline commit: %w", err)
@@ -170,56 +165,24 @@ func New(workingDir string) (*Manager, error) {
 	return m, nil
 }
 
-// initBaseline creates the baseline commit for the rewind history.
-// Preferred: take the user's git HEAD as baseline (so pre-existing uncommitted
-// changes appear in the diff). If the working dir is not a git repo or has no
-// HEAD yet, fall back to snapshotting the current working tree.
-//
-// When HEAD is used and the working tree differs from it, a follow-up
-// "Uncommitted Work" checkpoint is created so the user's pre-existing edits
-// are preserved as a restorable point.
-func (m *Manager) initBaseline() error {
-	hash, ok := m.baselineFromUserHEAD()
-	if !ok {
-		if err := m.baselineFromWorkingTree(); err != nil {
-			return err
-		}
-		m.firstVisibleHash = m.baselineHash
-		return nil
+// initBaseline creates the baseline commit. Preferred path: take the user's
+// git HEAD tree as-is — no tree walk, just one object write referencing the
+// existing tree hash. Fallback: when the repo has no HEAD yet (fresh `git
+// init`, no commits), snapshot the current working tree so rewind can still
+// boot. Pre-existing uncommitted edits show up naturally in either case as a
+// live diff against the baseline.
+func (m *Manager) initBaseline(userRepo *git.Repository) error {
+	headRef, err := userRepo.Head()
+	if errors.Is(err, plumbing.ErrReferenceNotFound) {
+		return m.baselineFromWorkingTree()
 	}
-
-	m.baselineHash = hash
-	m.firstVisibleHash = hash
-
-	// If the working tree differs from HEAD, "Uncommitted Work" lands on top
-	// and becomes the new first-visible entry — hiding the bare HEAD baseline.
-	// On a clean tree m.commit is a no-op and HEAD stays at the baseline.
-	_ = m.commit("Uncommitted Work")
-	if headRef, err := m.repo.Head(); err == nil {
-		m.firstVisibleHash = headRef.Hash()
-	}
-	return nil
-}
-
-// baselineFromUserHEAD attempts to read the user's git HEAD and create a
-// baseline commit in our rewind store referencing the HEAD tree. Returns the
-// new commit hash and true on success.
-//
-// We don't copy the HEAD tree's objects — our store is wired up read-through
-// to the user's .git/objects, so referencing the tree hash is enough.
-func (m *Manager) baselineFromUserHEAD() (plumbing.Hash, bool) {
-	if m.userRepo == nil {
-		return plumbing.ZeroHash, false
-	}
-
-	headRef, err := m.userRepo.Head()
 	if err != nil {
-		return plumbing.ZeroHash, false
+		return fmt.Errorf("failed to read HEAD: %w", err)
 	}
 
-	headCommit, err := m.userRepo.CommitObject(headRef.Hash())
+	headCommit, err := userRepo.CommitObject(headRef.Hash())
 	if err != nil {
-		return plumbing.ZeroHash, false
+		return fmt.Errorf("failed to load HEAD commit: %w", err)
 	}
 
 	sig := object.Signature{Name: "wingman", Email: "wingman@local", When: time.Now()}
@@ -232,33 +195,35 @@ func (m *Manager) baselineFromUserHEAD() (plumbing.Hash, bool) {
 
 	obj := m.repo.Storer.NewEncodedObject()
 	if err := baselineCommit.Encode(obj); err != nil {
-		return plumbing.ZeroHash, false
+		return fmt.Errorf("failed to encode baseline: %w", err)
 	}
 
 	hash, err := m.repo.Storer.SetEncodedObject(obj)
 	if err != nil {
-		return plumbing.ZeroHash, false
+		return fmt.Errorf("failed to write baseline: %w", err)
 	}
 
 	branch := plumbing.NewBranchReferenceName("master")
 	if err := m.repo.Storer.SetReference(plumbing.NewHashReference(branch, hash)); err != nil {
-		return plumbing.ZeroHash, false
+		return fmt.Errorf("failed to set branch ref: %w", err)
 	}
 	if err := m.repo.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, branch)); err != nil {
-		return plumbing.ZeroHash, false
+		return fmt.Errorf("failed to set HEAD: %w", err)
 	}
 
-	return hash, true
+	m.baselineHash = hash
+	return nil
 }
 
-// baselineFromWorkingTree is the fallback baseline strategy when the user's
-// working dir is not a git repo, or has no HEAD yet. It snapshots whatever
-// is currently on disk.
+// baselineFromWorkingTree is the fallback used when the user's repo has no
+// HEAD yet (fresh `git init`). It snapshots whatever's on disk into a real
+// commit; the staging walk is bounded by the project size, which is fine
+// because the gate above (a real .git directory) means the user opted in.
 func (m *Manager) baselineFromWorkingTree() error {
 	m.worktree.Excludes = m.loadExcludePatterns()
 
 	if err := m.worktree.AddWithOptions(&git.AddOptions{All: true}); err != nil {
-		return fmt.Errorf("failed to add files: %w", err)
+		return fmt.Errorf("failed to stage baseline: %w", err)
 	}
 
 	hash, err := m.worktree.Commit("Session Start", &git.CommitOptions{
@@ -269,16 +234,13 @@ func (m *Manager) baselineFromWorkingTree() error {
 		},
 		AllowEmptyCommits: true,
 	})
-
 	if err != nil {
-		return fmt.Errorf("failed to commit: %w", err)
+		return fmt.Errorf("failed to commit baseline: %w", err)
 	}
 
 	m.baselineHash = hash
-
 	return nil
 }
-
 
 func (m *Manager) loadExcludePatterns() []gitignore.Pattern {
 	// In-tree patterns: .git/info/exclude and recursive .gitignore files.
@@ -330,7 +292,10 @@ func readXDGIgnore() []gitignore.Pattern {
 	return ps
 }
 
-func (m *Manager) commit(message string) error {
+func (m *Manager) Commit(message string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	// Cheap status check first: if nothing changed, skip the expensive
 	// AddWithOptions walk entirely. This is the common case for clean repos
 	// and dramatically cheaper than always staging.
@@ -362,13 +327,6 @@ func (m *Manager) commit(message string) error {
 	return nil
 }
 
-func (m *Manager) Commit(message string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	return m.commit(message)
-}
-
 func (m *Manager) List() ([]Checkpoint, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -394,17 +352,10 @@ func (m *Manager) List() ([]Checkpoint, error) {
 			Time:    c.Author.When,
 		})
 
-		// Stop after we've emitted the oldest user-visible checkpoint;
-		// anything below (e.g. the hidden HEAD baseline when "Uncommitted
-		// Work" exists) is implementation detail.
-		if !m.firstVisibleHash.IsZero() && c.Hash == m.firstVisibleHash {
-			return storer.ErrStop
-		}
-
 		return nil
 	})
 
-	if err != nil && err != storer.ErrStop {
+	if err != nil {
 		return nil, fmt.Errorf("failed to iterate commits: %w", err)
 	}
 
@@ -517,9 +468,13 @@ func (m *Manager) snapshotTree() (*object.Tree, error) {
 	return tree, nil
 }
 
-// DiffFromBaseline returns the diff between the baseline and the current working tree.
-// The right-hand side is taken from the live working tree (not HEAD), so changes from
-// any source — agent tools, the user's terminal, an external editor — are reflected.
+// DiffFromBaseline returns the diff between the baseline and the current working
+// tree. The right-hand side is taken from the live working tree (not HEAD), so
+// changes from any source — agent tools, the user's terminal, an external editor
+// — are reflected.
+//
+// Returns (nil, nil) when the working tree matches the baseline (no diff).
+// Errors are reserved for actual git failures so callers can distinguish.
 func (m *Manager) DiffFromBaseline() ([]FileDiff, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -550,10 +505,6 @@ func (m *Manager) DiffFromBaseline() ([]FileDiff, error) {
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute diff: %w", err)
-	}
-
-	if len(changes) == 0 {
-		return nil, errors.New("no changes from baseline")
 	}
 
 	var diffs []FileDiff
@@ -608,10 +559,6 @@ func (m *Manager) DiffFromBaseline() ([]FileDiff, error) {
 			Original: original,
 			Modified: modified,
 		})
-	}
-
-	if len(diffs) == 0 {
-		return nil, errors.New("no changes from baseline")
 	}
 
 	return diffs, nil

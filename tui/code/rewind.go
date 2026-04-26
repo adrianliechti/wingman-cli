@@ -9,19 +9,12 @@ import (
 func (a *App) showRewindPicker() {
 	t := theme.Default
 
-	select {
-	case <-a.rewindReady:
-	default:
-		fmt.Fprint(a.chatView, a.formatNotice("Rewind initializing...", t.Yellow))
+	if a.agent.Rewind == nil {
+		fmt.Fprint(a.chatView, a.formatNotice("Rewind not available outside a git repo", t.Yellow))
 		return
 	}
 
-	if a.rewind == nil {
-		fmt.Fprint(a.chatView, a.formatNotice("Rewind not available", t.Yellow))
-		return
-	}
-
-	checkpoints, err := a.rewind.List()
+	checkpoints, err := a.agent.Rewind.List()
 
 	if err != nil || len(checkpoints) == 0 {
 		fmt.Fprint(a.chatView, a.formatNotice("No checkpoints available", t.Yellow))
@@ -38,7 +31,7 @@ func (a *App) showRewindPicker() {
 	}
 
 	a.showPicker("Rewind to", items, "", func(item PickerItem) {
-		if err := a.rewind.Restore(item.ID); err != nil {
+		if err := a.agent.Rewind.Restore(item.ID); err != nil {
 			fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("Failed to restore: %v", err), t.Red))
 			return
 		}
@@ -48,13 +41,7 @@ func (a *App) showRewindPicker() {
 }
 
 func (a *App) commitRewind(message string) {
-	select {
-	case <-a.rewindReady:
-	default:
-		return // Rewind not ready yet
-	}
-
-	if a.rewind == nil {
+	if a.agent.Rewind == nil {
 		return
 	}
 
@@ -63,6 +50,6 @@ func (a *App) commitRewind(message string) {
 	}
 
 	go func() {
-		_ = a.rewind.Commit(message)
+		_ = a.agent.Rewind.Commit(message)
 	}()
 }

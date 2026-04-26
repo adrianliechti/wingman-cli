@@ -26,8 +26,20 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/code/prompt"
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 	"github.com/adrianliechti/wingman-agent/pkg/mcp"
+	"github.com/adrianliechti/wingman-agent/pkg/rewind"
 	"github.com/adrianliechti/wingman-agent/pkg/skill"
+
+	"github.com/go-git/go-git/v5"
 )
+
+// isGitRepo reports whether dir is the root of a real git working tree.
+// Used as the single project-mode gate for LSP detection and rewind init —
+// keeping the predicate in one place ensures both features agree on what
+// "this is a project" means.
+func isGitRepo(dir string) bool {
+	_, err := git.PlainOpen(dir)
+	return err == nil
+}
 
 //go:embed skills/*/SKILL.md
 var bundledFS embed.FS
@@ -51,6 +63,7 @@ type Agent struct {
 
 	MCP    *mcp.Manager
 	LSP    *lsp.Manager
+	Rewind *rewind.Manager
 	Bridge *bridge.Bridge
 
 	PlanMode bool
@@ -147,8 +160,20 @@ func New(workDir string, ui UI) (*Agent, error) {
 		subagent.Tools(agentCfg),
 	)
 
-	lspManager := lsp.NewManager(workDir)
-	lspTools := lsptool.NewTools(lspManager)
+	gitMode := isGitRepo(workDir)
+
+	lspManager := lsp.NewManager(workDir, gitMode)
+	var lspTools []tool.Tool
+	if gitMode {
+		lspTools = lsptool.NewTools(lspManager)
+	}
+
+	var rewindManager *rewind.Manager
+	if gitMode {
+		if rm, err := rewind.New(workDir); err == nil {
+			rewindManager = rm
+		}
+	}
 
 	mcpManager, _ := mcp.Load(filepath.Join(workDir, "mcp.json"))
 
@@ -162,8 +187,9 @@ func New(workDir string, ui UI) (*Agent, error) {
 
 		Skills: mergedSkills,
 
-		MCP: mcpManager,
-		LSP: lspManager,
+		MCP:    mcpManager,
+		LSP:    lspManager,
+		Rewind: rewindManager,
 
 		baseTools: baseTools,
 		lspTools:  lspTools,
@@ -213,6 +239,29 @@ func (a *Agent) tools() []tool.Tool {
 	return tools
 }
 
+// IsGitRepo reports whether the agent's working directory is currently a git
+// repo. Re-evaluated on each call so callers can react to `git init` (or
+// `rm -rf .git`) happening mid-session.
+func (a *Agent) IsGitRepo() bool {
+	return isGitRepo(a.RootPath)
+}
+
+// RestartRewind tears down the existing rewind manager (if any) and creates a
+// fresh one, re-baselining at the current state. Called both on /sessions/new
+// (so checkpoint history is scoped to one conversation) and from the file
+// poll when the working dir's git status flips. rewind.New propagates go-git
+// errors directly, so a non-git dir or any other failure leaves Rewind nil.
+func (a *Agent) RestartRewind() {
+	if a.Rewind != nil {
+		a.Rewind.Cleanup()
+		a.Rewind = nil
+	}
+
+	if rm, err := rewind.New(a.RootPath); err == nil {
+		a.Rewind = rm
+	}
+}
+
 func (a *Agent) Close() {
 	if a.Bridge != nil {
 		a.Bridge.Close()
@@ -224,6 +273,10 @@ func (a *Agent) Close() {
 
 	if a.LSP != nil {
 		a.LSP.Close()
+	}
+
+	if a.Rewind != nil {
+		a.Rewind.Cleanup()
 	}
 
 	if a.ScratchPath != "" {

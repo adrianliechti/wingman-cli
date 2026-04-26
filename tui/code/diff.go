@@ -15,19 +15,12 @@ import (
 func (a *App) showDiffView() {
 	t := theme.Default
 
-	select {
-	case <-a.rewindReady:
-	default:
-		fmt.Fprint(a.chatView, a.formatNotice("Diff not available (rewind initializing...)", t.Yellow))
+	if a.agent.Rewind == nil {
+		fmt.Fprint(a.chatView, a.formatNotice("Diff not available outside a git repo", t.Yellow))
 		return
 	}
 
-	if a.rewind == nil {
-		fmt.Fprint(a.chatView, a.formatNotice("Diff not available", t.Yellow))
-		return
-	}
-
-	diffs, err := a.rewind.DiffFromBaseline()
+	diffs, err := a.agent.Rewind.DiffFromBaseline()
 
 	if err != nil {
 		fmt.Fprint(a.chatView, a.formatNotice(fmt.Sprintf("%v", err), t.Yellow))
