@@ -9,7 +9,7 @@ import {
 	PanelRightOpen,
 	X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel";
 import { CheckpointsPanel } from "./components/CheckpointsPanel";
 import { DiffsPanel } from "./components/DiffsPanel";
@@ -74,20 +74,15 @@ export default function App() {
 	//   - flip on (agent ran `git init`) → Changes
 	//   - flip off (user `rm -rf .git`'d) → Files
 	// Only fires on actual flips so manual tab choices persist across reconnects.
-	const prevInGit = useRef<boolean | null>(null);
-	useEffect(() => {
-		if (!capabilities) return;
-		const prev = prevInGit.current;
-		prevInGit.current = inGitRepo;
-
-		if (prev === null) {
+	const [prevInGit, setPrevInGit] = useState<boolean | null>(null);
+	if (capabilities && prevInGit !== inGitRepo) {
+		setPrevInGit(inGitRepo);
+		if (prevInGit === null) {
 			if (!inGitRepo) setRightTab("files");
-			return;
-		}
-		if (prev !== inGitRepo) {
+		} else {
 			setRightTab(inGitRepo ? "changes" : "files");
 		}
-	}, [capabilities, inGitRepo]);
+	}
 
 	// Center tabs: chat is always first, files are added dynamically
 	const [tabs, setTabs] = useState<CenterTab[]>([

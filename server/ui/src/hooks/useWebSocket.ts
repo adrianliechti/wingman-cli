@@ -80,7 +80,7 @@ export function useWebSocket() {
 	// Stable ref for the message handler so the WebSocket effect doesn't re-run
 	const handleMessageRef = useRef<(msg: ServerMessage) => void>(() => {});
 
-	handleMessageRef.current = (msg: ServerMessage) => {
+	const handleMessage = (msg: ServerMessage) => {
 		for (const sub of subscribersRef.current) {
 			sub(msg);
 		}
@@ -242,6 +242,10 @@ export function useWebSocket() {
 		}
 	};
 
+	useEffect(() => {
+		handleMessageRef.current = handleMessage;
+	});
+
 	const send = useCallback((msg: ClientMessage) => {
 		if (wsRef.current?.readyState === WebSocket.OPEN) {
 			wsRef.current.send(JSON.stringify(msg));
@@ -280,12 +284,34 @@ export function useWebSocket() {
 	useEffect(() => {
 		let reconnectTimer: ReturnType<typeof setTimeout>;
 		let alive = true;
+		let cachedURL: string | null = null;
 
-		function connect() {
+		async function resolveURL(): Promise<string> {
+			if (cachedURL) return cachedURL;
+			try {
+				const r = await fetch("/api/ws");
+				if (r.ok) {
+					const d = (await r.json()) as { url?: string };
+					if (d.url) {
+						cachedURL = d.url;
+						return cachedURL;
+					}
+				}
+			} catch {
+				// fall through to default
+			}
+			const proto = location.protocol === "https:" ? "wss:" : "ws:";
+			cachedURL = `${proto}//${location.host}/ws`;
+			return cachedURL;
+		}
+
+		async function connect() {
 			if (!alive) return;
 
-			const proto = location.protocol === "https:" ? "wss:" : "ws:";
-			const ws = new WebSocket(`${proto}//${location.host}/ws/chat`);
+			const url = await resolveURL();
+			if (!alive) return;
+
+			const ws = new WebSocket(url);
 
 			ws.onopen = () => {
 				setConnected(true);

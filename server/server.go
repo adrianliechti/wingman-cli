@@ -31,10 +31,14 @@ import (
 //go:embed static/*
 var staticFiles embed.FS
 
+var StaticFS, _ = fs.Sub(staticFiles, "static")
+
 type Server struct {
 	agent     *code.Agent
 	port      int
 	sessionID string
+
+	mux *http.ServeMux
 
 	sessionsDir string
 
@@ -48,15 +52,21 @@ type Server struct {
 	wsConn       *websocket.Conn
 	streamCancel context.CancelFunc
 
+	// External WebSocket URL override. Set by embedders (the Wails desktop
+	// shell) when the WebSocket needs to be served from a different origin
+	// than the rest of the API — Wails' AssetServer doesn't support
+	// http.Hijacker, so /ws must come from a real TCP listener.
+	wsURL string
+
 	// Channels for ask/prompt relay
 	askCh    chan string
 	promptCh chan bool
 }
 
-func New(agent *code.Agent, port int) *Server {
+func New(ctx context.Context, agent *code.Agent, port int) *Server {
 	sessionsDir := filepath.Join(filepath.Dir(agent.MemoryPath), "sessions")
 
-	return &Server{
+	s := &Server{
 		agent:     agent,
 		port:      port,
 		sessionID: newSessionID(),
@@ -66,15 +76,6 @@ func New(agent *code.Agent, port int) *Server {
 		askCh:    make(chan string, 1),
 		promptCh: make(chan bool, 1),
 	}
-}
-
-func newSessionID() string {
-	return uuid.New().String()
-}
-
-func (s *Server) Run(ctx context.Context) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
 	// Workspace probe + Rewind/LSP setup. Up to 4s on a non-git directory
 	// that's too large; the browser opens after this completes so /api/
@@ -100,12 +101,49 @@ func (s *Server) Run(ctx context.Context) error {
 	// Auto-select model
 	s.autoSelectModel(ctx)
 
-	mux := http.NewServeMux()
-	s.registerRoutes(mux)
+	s.mux = http.NewServeMux()
+	s.registerRoutes(s.mux)
+
+	return s
+}
+
+func newSessionID() string {
+	return uuid.New().String()
+}
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mux.ServeHTTP(w, r)
+}
+
+func (s *Server) SetWebSocketURL(url string) {
+	s.wsMu.Lock()
+	s.wsURL = url
+	s.wsMu.Unlock()
+}
+
+func (s *Server) handleWebSocketURL(w http.ResponseWriter, r *http.Request) {
+	s.wsMu.Lock()
+	url := s.wsURL
+	s.wsMu.Unlock()
+
+	if url == "" {
+		proto := "ws"
+		if r.TLS != nil {
+			proto = "wss"
+		}
+		url = fmt.Sprintf("%s://%s/ws", proto, r.Host)
+	}
+
+	writeJSON(w, map[string]string{"url": url})
+}
+
+func (s *Server) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	server := &http.Server{
 		Addr:    fmt.Sprintf("localhost:%d", s.port),
-		Handler: mux,
+		Handler: s,
 	}
 
 	// Graceful shutdown
@@ -156,9 +194,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/diagnostics", s.handleDiagnostics)
 	mux.HandleFunc("GET /api/skills", s.handleSkills)
 	mux.HandleFunc("GET /api/capabilities", s.handleCapabilities)
+	mux.HandleFunc("GET /api/ws", s.handleWebSocketURL)
 
 	// WebSocket
-	mux.HandleFunc("/ws/chat", s.handleWebSocket)
+	mux.HandleFunc("/ws", s.handleWebSocket)
 
 	// Static files
 	staticFS, _ := fs.Sub(staticFiles, "static")

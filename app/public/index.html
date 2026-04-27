@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Wingman Agent</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+
+        --bg: #0a0a0a;
+        --bg-elevated: #181818;
+        --bg-hover: #1a1a1a;
+        --fg: #e0e0e0;
+        --fg-muted: #888888;
+        --border: #1e1e1e;
+        --border-strong: #333333;
+        --danger: #f87171;
+      }
+
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: #ffffff;
+          --bg-elevated: #f0f0f0;
+          --bg-hover: #ededed;
+          --fg: #1a1a1a;
+          --fg-muted: #555555;
+          --border: #e5e5e5;
+          --border-strong: #cccccc;
+          --danger: #dc2626;
+        }
+      }
+
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue",
+          Helvetica, Arial, sans-serif;
+        font-size: 13px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+
+      main {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1rem;
+        padding: 2rem;
+        text-align: center;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 1.5rem;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+      }
+
+      p {
+        margin: 0;
+        color: var(--fg-muted);
+      }
+
+      button {
+        font: inherit;
+        margin-top: 0.75rem;
+        padding: 0.55rem 1.1rem;
+        border-radius: 6px;
+        border: 1px solid var(--border-strong);
+        background: var(--bg-elevated);
+        color: var(--fg);
+        cursor: pointer;
+        transition:
+          background 0.12s,
+          border-color 0.12s;
+      }
+
+      button:hover:not(:disabled) {
+        background: var(--bg-hover);
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .error {
+        min-height: 1.2em;
+        margin-top: 0.25rem;
+        color: var(--danger);
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Wingman Agent</h1>
+      <p>Open a workspace folder to begin.</p>
+      <button id="open">Open Folder...</button>
+      <div class="error" id="error"></div>
+    </main>
+    <script>
+      const btn = document.getElementById("open");
+      const err = document.getElementById("error");
+
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        err.textContent = "";
+        try {
+          const path = await window.go.main.App.SelectFolder();
+          if (!path) {
+            btn.disabled = false;
+            return;
+          }
+          btn.textContent = "Loading...";
+          await window.go.main.App.OpenWorkspace(path);
+          window.location.reload();
+        } catch (e) {
+          err.textContent = String(e);
+          btn.disabled = false;
+          btn.textContent = "Open Folder...";
+        }
+      });
+    </script>
+  </body>
+</html>

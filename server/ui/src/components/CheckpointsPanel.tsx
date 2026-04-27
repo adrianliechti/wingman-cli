@@ -26,6 +26,7 @@ export function CheckpointsPanel({ visible, subscribe }: Props) {
 	}, []);
 
 	useEffect(() => {
+		// eslint-disable-next-line react-hooks/set-state-in-effect -- standard data-load on mount
 		load();
 	}, [load]);
 

@@ -23,7 +23,9 @@ interface TreeNode extends FileEntry {
 export function FileTree({ onFileSelect, subscribe }: Props) {
 	const [nodes, setNodes] = useState<TreeNode[]>([]);
 	const nodesRef = useRef(nodes);
-	nodesRef.current = nodes;
+	useEffect(() => {
+		nodesRef.current = nodes;
+	});
 
 	const loadDir = useCallback(async (dirPath: string): Promise<TreeNode[]> => {
 		const res = await fetch(

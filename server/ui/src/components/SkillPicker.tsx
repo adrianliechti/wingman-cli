@@ -36,9 +36,11 @@ export function SkillPicker({ query, onSelect, onClose }: Props) {
 		);
 	}, [skills, query]);
 
-	useEffect(() => {
+	const [prevQuery, setPrevQuery] = useState(query);
+	if (prevQuery !== query) {
+		setPrevQuery(query);
 		setActive(0);
-	}, [query]);
+	}
 
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {

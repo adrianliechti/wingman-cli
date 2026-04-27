@@ -20,7 +20,9 @@ export function FileTab({ path, line, subscribe, onDeleted }: Props) {
 	// Keep onDeleted in a ref so `load` stays stable and the WebSocket
 	// subscription doesn't tear down/re-subscribe on every render.
 	const onDeletedRef = useRef(onDeleted);
-	onDeletedRef.current = onDeleted;
+	useEffect(() => {
+		onDeletedRef.current = onDeleted;
+	});
 
 	const load = useCallback(async () => {
 		try {
@@ -44,6 +46,7 @@ export function FileTab({ path, line, subscribe, onDeleted }: Props) {
 	}, [path]);
 
 	useEffect(() => {
+		// eslint-disable-next-line react-hooks/set-state-in-effect -- standard data-load on path change
 		setLoading(true);
 		load();
 	}, [load]);
