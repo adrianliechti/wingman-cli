@@ -30,6 +30,23 @@ type App struct {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+
+	if s, err := loadSettings(); err == nil {
+		s.Apply()
+	}
+}
+
+func (a *App) GetSettings() (Settings, error) {
+	return loadSettings()
+}
+
+func (a *App) SaveSettings(s Settings) error {
+	if err := saveSettings(s); err != nil {
+		return err
+	}
+
+	s.Apply()
+	return nil
 }
 
 func (a *App) shutdown(ctx context.Context) {

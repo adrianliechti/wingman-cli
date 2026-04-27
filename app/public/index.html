@@ -100,6 +100,151 @@
         color: var(--danger);
         font-size: 12px;
       }
+
+      .settings-toggle {
+        position: fixed;
+        left: 12px;
+        bottom: 12px;
+        width: 32px;
+        height: 32px;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: none;
+        background: transparent;
+        color: var(--fg-muted);
+      }
+
+      .settings-toggle:hover:not(:disabled) {
+        color: var(--fg);
+        background: transparent;
+      }
+
+      .settings-toggle svg {
+        width: 16px;
+        height: 16px;
+      }
+
+      .drawer-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.4);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.15s;
+        z-index: 10;
+      }
+
+      .drawer-overlay.open {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      .drawer {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: min(380px, 100vw);
+        background: var(--bg);
+        border-right: 1px solid var(--border);
+        transform: translateX(-100%);
+        transition: transform 0.18s ease-out;
+        z-index: 11;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .drawer.open {
+        transform: translateX(0);
+      }
+
+      .drawer-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 1rem 1.25rem;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .drawer-header h2 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 500;
+      }
+
+      .drawer-close {
+        background: none;
+        border: none;
+        color: var(--fg-muted);
+        font-size: 18px;
+        line-height: 1;
+        cursor: pointer;
+        padding: 4px;
+        margin: 0;
+      }
+
+      .drawer-close:hover {
+        color: var(--fg);
+        background: none;
+      }
+
+      .drawer-body {
+        padding: 1rem 1.25rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.85rem;
+        overflow-y: auto;
+      }
+
+      .drawer-body label {
+        display: flex;
+        flex-direction: column;
+        gap: 0.3rem;
+        font-size: 12px;
+        color: var(--fg-muted);
+      }
+
+      .drawer-body input {
+        font: inherit;
+        font-size: 13px;
+        padding: 0.5rem 0.65rem;
+        border-radius: 6px;
+        border: 1px solid var(--border-strong);
+        background: var(--bg-elevated);
+        color: var(--fg);
+      }
+
+      .drawer-body input:focus {
+        outline: none;
+        border-color: var(--fg-muted);
+      }
+
+      .drawer-footer {
+        margin-top: auto;
+        padding: 1rem 1.25rem;
+        border-top: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+
+      .drawer-footer button {
+        margin: 0;
+      }
+
+      .drawer-status {
+        font-size: 12px;
+        color: var(--fg-muted);
+        flex: 1;
+        text-align: right;
+      }
+
+      .drawer-status.error {
+        color: var(--danger);
+      }
     </style>
   </head>
   <body>
@@ -109,26 +254,119 @@
       <button id="open">Open Folder...</button>
       <div class="error" id="error"></div>
     </main>
-    <script>
-      const btn = document.getElementById("open");
-      const err = document.getElementById("error");
 
-      btn.addEventListener("click", async () => {
-        btn.disabled = true;
-        err.textContent = "";
+    <button id="settings-toggle" class="settings-toggle" title="Settings" aria-label="Settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+      </svg>
+    </button>
+
+    <div id="overlay" class="drawer-overlay"></div>
+    <aside id="drawer" class="drawer" aria-hidden="true">
+      <div class="drawer-header">
+        <h2>Settings</h2>
+        <button id="drawer-close" class="drawer-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="drawer-body">
+        <label>
+          Wingman URL
+          <input id="url" type="url" placeholder="https://..." autocomplete="off" spellcheck="false" />
+        </label>
+        <label>
+          Wingman Token
+          <input id="token" type="password" placeholder="optional" autocomplete="off" spellcheck="false" />
+        </label>
+      </div>
+      <div class="drawer-footer">
+        <button id="save">Save</button>
+        <div id="drawer-status" class="drawer-status"></div>
+      </div>
+    </aside>
+
+    <script>
+      const openBtn = document.getElementById("open");
+      const errEl = document.getElementById("error");
+
+      const settingsToggle = document.getElementById("settings-toggle");
+      const drawer = document.getElementById("drawer");
+      const overlay = document.getElementById("overlay");
+      const drawerClose = document.getElementById("drawer-close");
+      const urlInput = document.getElementById("url");
+      const tokenInput = document.getElementById("token");
+      const saveBtn = document.getElementById("save");
+      const drawerStatus = document.getElementById("drawer-status");
+
+      function setDrawerStatus(msg, isError = false) {
+        drawerStatus.textContent = msg;
+        drawerStatus.classList.toggle("error", !!isError);
+      }
+
+      let settingsLoaded = false;
+      async function loadSettings() {
+        try {
+          const s = await window.go.main.App.GetSettings();
+          urlInput.value = s?.url || "";
+          tokenInput.value = s?.token || "";
+          settingsLoaded = true;
+        } catch (e) {
+          setDrawerStatus(String(e), true);
+        }
+      }
+
+      function openDrawer() {
+        if (!settingsLoaded) loadSettings();
+        drawer.classList.add("open");
+        overlay.classList.add("open");
+        drawer.setAttribute("aria-hidden", "false");
+        setDrawerStatus("");
+      }
+
+      function closeDrawer() {
+        drawer.classList.remove("open");
+        overlay.classList.remove("open");
+        drawer.setAttribute("aria-hidden", "true");
+      }
+
+      settingsToggle.addEventListener("click", openDrawer);
+      drawerClose.addEventListener("click", closeDrawer);
+      overlay.addEventListener("click", closeDrawer);
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") closeDrawer();
+      });
+
+      saveBtn.addEventListener("click", async () => {
+        saveBtn.disabled = true;
+        setDrawerStatus("");
+        try {
+          await window.go.main.App.SaveSettings({
+            url: urlInput.value.trim(),
+            token: tokenInput.value,
+          });
+          setDrawerStatus("Saved.");
+        } catch (e) {
+          setDrawerStatus(String(e), true);
+        } finally {
+          saveBtn.disabled = false;
+        }
+      });
+
+      openBtn.addEventListener("click", async () => {
+        openBtn.disabled = true;
+        errEl.textContent = "";
         try {
           const path = await window.go.main.App.SelectFolder();
           if (!path) {
-            btn.disabled = false;
+            openBtn.disabled = false;
             return;
           }
-          btn.textContent = "Loading...";
+          openBtn.textContent = "Loading...";
           await window.go.main.App.OpenWorkspace(path);
           window.location.reload();
         } catch (e) {
-          err.textContent = String(e);
-          btn.disabled = false;
-          btn.textContent = "Open Folder...";
+          errEl.textContent = String(e);
+          openBtn.disabled = false;
+          openBtn.textContent = "Open Folder...";
         }
       });
     </script>
