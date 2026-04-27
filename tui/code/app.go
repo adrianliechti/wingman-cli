@@ -18,7 +18,6 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/hook/truncation"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
-	"github.com/adrianliechti/wingman-agent/pkg/rewind"
 	"github.com/adrianliechti/wingman-agent/pkg/session"
 	"github.com/adrianliechti/wingman-agent/pkg/tui"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/theme"
@@ -84,10 +83,6 @@ type App struct {
 	// LSP diagnostics tracker
 	lspTracker *lsp.DiagnosticTracker
 
-	// Rewind state
-	rewind      *rewind.Manager
-	rewindReady chan struct{}
-
 	// Mouse capture state (toggle to allow native terminal text selection)
 	mouseEnabled bool
 }
@@ -108,10 +103,9 @@ func New(ctx context.Context, agent *code.Agent, sessionID string) *App {
 
 		sessionID:   sessionID,
 		showWelcome: !hasMessages && os.Getenv("WINGMAN_CALLER") != "vscode",
-		phase:       PhasePreparing,
+		phase:       PhaseIdle,
 
-		lspTracker:  lsp.NewDiagnosticTracker(),
-		rewindReady: make(chan struct{}),
+		lspTracker: lsp.NewDiagnosticTracker(),
 
 		mouseEnabled: true,
 	}
@@ -164,18 +158,8 @@ func (a *App) saveSession() {
 }
 
 func (a *App) stop() {
-	// Shut down bridge, MCP, and LSP servers
+	// Shut down bridge, MCP, LSP, and rewind in one call.
 	a.agent.Close()
-
-	// Wait briefly for rewind to be ready, then cleanup
-	select {
-	case <-a.rewindReady:
-		if a.rewind != nil {
-			a.rewind.Cleanup()
-		}
-	default:
-		// Rewind not ready yet, nothing to cleanup
-	}
 
 	// Save session before stopping
 	a.saveSession()
@@ -204,7 +188,20 @@ func (a *App) Run() error {
 	// Auto-select model if not configured
 	a.autoSelectModel()
 
+	mainLayout := a.buildLayout()
+	a.spinner = NewSpinner(a.app, a.inputHint)
+	a.pages = tview.NewPages()
+	a.pages.SetBackgroundColor(tcell.ColorDefault)
+	a.pages.AddPage("main", mainLayout, true, true)
+
+	// Show "Preparing..." while the workspace probe + Rewind/LSP boot in
+	// the background. On a small/git workspace this clears in milliseconds;
+	// on a big non-git directory it caps at agent.WarmUp's wall-clock budget.
+	a.setPhase(PhasePreparing)
+
 	go func() {
+		a.agent.WarmUp()
+
 		if err := a.agent.InitMCP(a.ctx); err != nil {
 			a.app.QueueUpdateDraw(func() {
 				a.showError("MCP initialization failed", err)
@@ -212,53 +209,30 @@ func (a *App) Run() error {
 		}
 
 		a.app.QueueUpdateDraw(func() {
+			a.setPhase(PhaseIdle)
+			if a.agent.Rewind == nil {
+				t := theme.Default
+				fmt.Fprint(a.chatView, a.formatNotice(
+					"Limited mode: working dir is too large for full features. Diffs, checkpoints, and code intelligence are disabled.",
+					t.Yellow,
+				))
+			}
 			a.updateStatusBar()
 			a.showMissingLSPHint()
 		})
 	}()
 
-	mainLayout := a.buildLayout()
-	a.spinner = NewSpinner(a.app, a.inputHint)
-	a.pages = tview.NewPages()
-	a.pages.SetBackgroundColor(tcell.ColorDefault)
-	a.pages.AddPage("main", mainLayout, true, true)
+	// Render restored session (from --resume or /resume) directly. The view
+	// is allowed to be mutated before app.Run() starts the event loop.
+	if messages := a.agent.Messages; len(messages) > 0 {
+		a.switchToChat()
+		a.renderChat(messages)
 
-	// Show "Preparing..." while rewind initializes, then transition to idle
-	a.spinner.Start(PhasePreparing)
-
-	// Initialize rewind asynchronously (only in git repos)
-	go func() {
-		defer close(a.rewindReady)
-
-		workDir := a.agent.RootPath
-		gitDir := filepath.Join(workDir, ".git")
-
-		if _, err := os.Stat(gitDir); os.IsNotExist(err) {
-			return
-		}
-
-		if rm, err := rewind.New(workDir); err == nil {
-			a.rewind = rm
-		}
-	}()
-
-	go func() {
-		<-a.rewindReady
-		a.app.QueueUpdateDraw(func() {
-			a.setPhase(PhaseIdle)
-
-			// Render restored session (from --resume or /resume)
-			if messages := a.agent.Messages; len(messages) > 0 {
-				a.switchToChat()
-				a.renderChat(messages)
-
-				usage := a.agent.Usage
-				a.inputTokens = usage.InputTokens
-				a.outputTokens = usage.OutputTokens
-				a.updateStatusBar()
-			}
-		})
-	}()
+		usage := a.agent.Usage
+		a.inputTokens = usage.InputTokens
+		a.outputTokens = usage.OutputTokens
+		a.updateStatusBar()
+	}
 
 	root := &pasteInterceptRoot{
 		Primitive: a.pages,
@@ -312,6 +286,10 @@ func (a *App) closeActiveModal() {
 }
 
 func (a *App) lspDiagnostics(ctx context.Context, path string) string {
+	if a.agent.LSP == nil {
+		return ""
+	}
+
 	absPath := path
 	if !filepath.IsAbs(absPath) {
 		absPath = filepath.Join(a.agent.LSP.WorkingDir(), path)
@@ -388,6 +366,11 @@ func (a *App) localLSPDiagnostics(ctx context.Context, absPath, path string) str
 }
 
 func (a *App) showMissingLSPHint() {
+	// LSP isn't initialized in unsupported workspaces — nothing to hint about.
+	if a.agent.LSP == nil {
+		return
+	}
+
 	// When bridge is connected, LSP comes from the IDE — no local servers needed.
 	if a.agent.Bridge != nil && a.agent.Bridge.IsConnected() {
 		return

@@ -19,11 +19,13 @@ type Manager struct {
 	restarts   map[string]int      // restart count per server command
 	mu         sync.Mutex
 
-	detection detectionResult // cached detection results
+	detection  detectionResult // cached detection results
 	detectOnce sync.Once
 }
 
-// NewManager creates a new LSP session manager.
+// NewManager creates a new LSP session manager. Callers should only
+// instantiate one when LSP is actually wanted for the workspace; outside
+// project mode they should keep the field nil.
 func NewManager(workingDir string) *Manager {
 	return &Manager{
 		workingDir: workingDir,

@@ -88,6 +88,11 @@ export interface MessagesMessage {
 	messages: ConversationMessage[];
 }
 
+export interface SessionMessage {
+	type: "session";
+	id: string;
+}
+
 export interface DiffsChangedMessage {
 	type: "diffs_changed";
 }
@@ -108,6 +113,10 @@ export interface DiagnosticsChangedMessage {
 	type: "diagnostics_changed";
 }
 
+export interface CapabilitiesChangedMessage {
+	type: "capabilities_changed";
+}
+
 export type ServerMessage =
 	| TextDeltaMessage
 	| ReasoningDeltaMessage
@@ -120,11 +129,13 @@ export type ServerMessage =
 	| DoneMessage
 	| UsageMessage
 	| MessagesMessage
+	| SessionMessage
 	| DiffsChangedMessage
 	| CheckpointsChangedMessage
 	| SessionsChangedMessage
 	| FilesChangedMessage
-	| DiagnosticsChangedMessage;
+	| DiagnosticsChangedMessage
+	| CapabilitiesChangedMessage;
 
 // Shared types
 export type Phase = "idle" | "thinking" | "streaming" | "tool_running";

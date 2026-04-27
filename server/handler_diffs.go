@@ -1,7 +1,9 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -9,21 +11,16 @@ import (
 )
 
 func (s *Server) handleDiffs(w http.ResponseWriter, r *http.Request) {
-	// Check if rewind is ready
-	select {
-	case <-s.rewindReady:
-	default:
-		http.Error(w, "rewind not ready", http.StatusServiceUnavailable)
-		return
-	}
-
-	if s.rewind == nil {
+	if s.agent.Rewind == nil {
 		writeJSON(w, []DiffEntry{})
 		return
 	}
 
-	diffs, err := s.rewind.DiffFromBaseline()
+	diffs, err := s.agent.Rewind.DiffFromBaseline()
 	if err != nil {
+		// Real git failure (corrupt baseline, snapshot failed, …). Surface it
+		// to stderr so it's actually visible; the panel still renders empty.
+		fmt.Fprintf(os.Stderr, "diffs: %v\n", err)
 		writeJSON(w, []DiffEntry{})
 		return
 	}

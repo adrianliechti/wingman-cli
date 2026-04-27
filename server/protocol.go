@@ -97,6 +97,12 @@ type MessagesEvent struct {
 
 func (MessagesEvent) serverEventType() string { return "messages" }
 
+type SessionEvent struct {
+	ID string `json:"id"`
+}
+
+func (SessionEvent) serverEventType() string { return "session" }
+
 type DiffsChangedEvent struct{}
 
 func (DiffsChangedEvent) serverEventType() string { return "diffs_changed" }
@@ -116,6 +122,10 @@ func (FilesChangedEvent) serverEventType() string { return "files_changed" }
 type DiagnosticsChangedEvent struct{}
 
 func (DiagnosticsChangedEvent) serverEventType() string { return "diagnostics_changed" }
+
+type CapabilitiesChangedEvent struct{}
+
+func (CapabilitiesChangedEvent) serverEventType() string { return "capabilities_changed" }
 
 // ConversationMessage is a simplified message for the REST /api/messages endpoint and WebSocket messages payload.
 type ConversationMessage struct {
