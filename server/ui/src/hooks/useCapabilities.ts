@@ -6,6 +6,7 @@ export interface Capabilities {
 	rewind: boolean;
 	lsp: boolean;
 	diffs: boolean;
+	notice?: string;
 }
 
 type Subscribe = (handler: (msg: ServerMessage) => void) => () => void;

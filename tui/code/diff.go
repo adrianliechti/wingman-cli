@@ -16,7 +16,7 @@ func (a *App) showDiffView() {
 	t := theme.Default
 
 	if a.agent.Rewind == nil {
-		fmt.Fprint(a.chatView, a.formatNotice("Diff not available outside a git repo", t.Yellow))
+		fmt.Fprint(a.chatView, a.formatNotice("Diff unavailable in this workspace", t.Yellow))
 		return
 	}
 

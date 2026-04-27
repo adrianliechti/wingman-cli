@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -41,6 +42,36 @@ func isGitRepo(dir string) bool {
 	return err == nil
 }
 
+// isSupportedWorkspace decides whether wingman's heavier features (rewind,
+// LSP, diffs panel) should run for this directory. A real git repo is
+// always supported. Otherwise we walk the tree with a wall-clock budget:
+// if it finishes in time the directory is small enough; if it doesn't,
+// classify as unsupported and let the UI fall back to chat + file
+// browsing. The walk runs in a goroutine so a slow readdir can't block
+// startup; the leftover walk drains harmlessly in the background.
+func isSupportedWorkspace(dir string) bool {
+	if isGitRepo(dir) {
+		return true
+	}
+
+	const budget = 4 * time.Second
+	done := make(chan struct{})
+
+	go func() {
+		filepath.WalkDir(dir, func(_ string, _ iofs.DirEntry, _ error) error {
+			return nil
+		})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return true
+	case <-time.After(budget):
+		return false
+	}
+}
+
 //go:embed skills/*/SKILL.md
 var bundledFS embed.FS
 
@@ -65,6 +96,17 @@ type Agent struct {
 	LSP    *lsp.Manager
 	Rewind *rewind.Manager
 	Bridge *bridge.Bridge
+
+	// Supported reports whether the working dir was small enough or
+	// project-shaped enough at startup to back rewind, LSP, and the diffs
+	// panel. False ⇒ chat + file browsing only; the UI surfaces a notice.
+	// Set by WarmUp; defaults to false until that completes.
+	Supported bool
+
+	// warmupDone is closed when WarmUp completes (success or otherwise) so
+	// callers can await its readiness without polling.
+	warmupOnce sync.Once
+	warmupDone chan struct{}
 
 	PlanMode bool
 
@@ -160,21 +202,6 @@ func New(workDir string, ui UI) (*Agent, error) {
 		subagent.Tools(agentCfg),
 	)
 
-	gitMode := isGitRepo(workDir)
-
-	lspManager := lsp.NewManager(workDir, gitMode)
-	var lspTools []tool.Tool
-	if gitMode {
-		lspTools = lsptool.NewTools(lspManager)
-	}
-
-	var rewindManager *rewind.Manager
-	if gitMode {
-		if rm, err := rewind.New(workDir); err == nil {
-			rewindManager = rm
-		}
-	}
-
 	mcpManager, _ := mcp.Load(filepath.Join(workDir, "mcp.json"))
 
 	a := &Agent{
@@ -187,17 +214,56 @@ func New(workDir string, ui UI) (*Agent, error) {
 
 		Skills: mergedSkills,
 
-		MCP:    mcpManager,
-		LSP:    lspManager,
-		Rewind: rewindManager,
+		MCP: mcpManager,
+
+		warmupDone: make(chan struct{}),
 
 		baseTools: baseTools,
-		lspTools:  lspTools,
 	}
 
 	agentCfg.Tools = a.tools
 
 	return a, nil
+}
+
+// WarmUp runs the slow workspace probe and initializes Rewind/LSP if the
+// directory is supported. Idempotent and safe to call from any goroutine —
+// the first call does the work, the rest wait on warmupDone. Callers that
+// want to gate on completion (e.g. server startup) can use WaitWarmUp.
+func (a *Agent) WarmUp() {
+	a.warmupOnce.Do(func() {
+		defer close(a.warmupDone)
+
+		supported := isSupportedWorkspace(a.RootPath)
+		gitMode := isGitRepo(a.RootPath)
+
+		var lspManager *lsp.Manager
+		var lspTools []tool.Tool
+		var rewindManager *rewind.Manager
+
+		if supported {
+			lspManager = lsp.NewManager(a.RootPath, gitMode)
+			if gitMode {
+				lspTools = lsptool.NewTools(lspManager)
+			}
+			// Sweep stale shadow repos from prior crashed sessions before
+			// starting a new one. Cheap and safe (mtime-gated).
+			rewind.CleanupOrphans()
+			rewindManager = rewind.New(a.RootPath)
+		}
+
+		a.mu.Lock()
+		a.Supported = supported
+		a.LSP = lspManager
+		a.lspTools = lspTools
+		a.Rewind = rewindManager
+		a.mu.Unlock()
+	})
+}
+
+// WaitWarmUp blocks until WarmUp has completed.
+func (a *Agent) WaitWarmUp() {
+	<-a.warmupDone
 }
 
 // InitMCP connects MCP servers, fetches their tools, and sets up the
@@ -246,38 +312,31 @@ func (a *Agent) IsGitRepo() bool {
 	return isGitRepo(a.RootPath)
 }
 
-// RestartRewind tears down the existing rewind manager (if any) and creates a
-// fresh one, re-baselining at the current state. Used on /sessions/new so
-// checkpoint history is scoped to one conversation. rewind.New propagates
-// go-git errors directly, so a non-git dir or any other failure leaves Rewind
-// nil. LSP is intentionally untouched — gopls/etc. are slow to spin up and
-// shouldn't churn on session boundaries.
+// RestartRewind tears down the existing rewind manager and creates a fresh
+// one, re-baselining at the current state. Used on /sessions/new so the
+// checkpoint history is scoped to one conversation. No-op when the
+// workspace doesn't support rewind. LSP is intentionally untouched —
+// gopls/etc. are slow to spin up and shouldn't churn on session boundaries.
 func (a *Agent) RestartRewind() {
+	if !a.Supported {
+		return
+	}
 	if a.Rewind != nil {
 		a.Rewind.Cleanup()
-		a.Rewind = nil
 	}
-
-	if rm, err := rewind.New(a.RootPath); err == nil {
-		a.Rewind = rm
-	}
+	a.Rewind = rewind.New(a.RootPath)
 }
 
-// SyncProjectMode rebuilds rewind and LSP when the working dir's git status
-// flips (e.g. agent ran `git init` in a scratch dir). The LSP manager caches
-// its source-tree detection in sync.Once, so we swap the whole manager
-// rather than toggling the flag in place. lspTools closures hold a reference
-// to the old manager and need to be recreated too.
+// SyncProjectMode rebuilds LSP when the working dir's git status flips
+// (typically: agent ran `git init` in a scratch dir). On an unsupported
+// workspace LSP stays nil — the gate is set at startup and `git init`
+// alone doesn't make a 1M-file home folder small enough.
 func (a *Agent) SyncProjectMode() {
-	gitMode := isGitRepo(a.RootPath)
+	if !a.Supported {
+		return
+	}
 
-	if a.Rewind != nil {
-		a.Rewind.Cleanup()
-		a.Rewind = nil
-	}
-	if rm, err := rewind.New(a.RootPath); err == nil {
-		a.Rewind = rm
-	}
+	gitMode := isGitRepo(a.RootPath)
 
 	a.mu.Lock()
 	oldLSP := a.LSP

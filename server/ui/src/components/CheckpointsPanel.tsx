@@ -72,7 +72,6 @@ export function CheckpointsPanel({ visible, subscribe }: Props) {
 				)}
 				{checkpoints.map((cp, i) => {
 					const isLatest = i === 0;
-					const isBaseline = i === checkpoints.length - 1;
 					return (
 						<div
 							key={cp.hash}
@@ -91,17 +90,15 @@ export function CheckpointsPanel({ visible, subscribe }: Props) {
 									{cp.time}
 								</span>
 							</div>
-							{!isBaseline && (
-								<button
-									type="button"
-									className="w-5 h-5 flex items-center justify-center rounded text-fg-dim hover:text-fg hover:bg-bg cursor-pointer transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-50"
-									onClick={() => restore(cp)}
-									disabled={restoring !== null}
-									title="Restore working tree to this checkpoint"
-								>
-									<Undo2 size={12} />
-								</button>
-							)}
+							<button
+								type="button"
+								className="w-5 h-5 flex items-center justify-center rounded text-fg-dim hover:text-fg hover:bg-bg cursor-pointer transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-50"
+								onClick={() => restore(cp)}
+								disabled={restoring !== null}
+								title="Restore working tree to this checkpoint"
+							>
+								<Undo2 size={12} />
+							</button>
 						</div>
 					);
 				})}

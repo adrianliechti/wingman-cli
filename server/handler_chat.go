@@ -35,6 +35,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		s.wsMu.Unlock()
 	}()
 
+	// Send current session id so the client can match it against sidebar
+	// entries (e.g. to detect when the user deletes the active session).
+	s.sendMessage(SessionEvent{ID: s.sessionID})
+
 	// Send current messages on connect
 	messages := convertMessages(s.agent.Messages)
 	if len(messages) > 0 {
@@ -187,19 +191,22 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 	// even in scratch mode, where there's no watcher to fire this for us.
 	s.sendMessage(FilesChangedEvent{})
 
-	// Project-mode signals: commit a checkpoint, refresh diffs against baseline,
-	// and nudge the diagnostics panel to refetch. Tied to rewind because the
-	// Changes/Problems panels in the UI are git-gated together — in scratch
-	// mode they're hidden and the events would have no subscribers.
+	// Refresh diffs and diagnostics on supported workspaces. The checkpoint
+	// commit walks the worktree and would block turn-end on a large repo,
+	// so run it in the background and announce once it lands.
 	if s.agent.Rewind != nil {
 		commitMsg := msg.Text
 		if commitMsg == "" {
 			commitMsg = "<unknown>"
 		}
-		if err := s.agent.Rewind.Commit(commitMsg); err == nil {
-			s.sendMessage(CheckpointsChangedEvent{})
-		}
+		go func() {
+			if err := s.agent.Rewind.Commit(commitMsg); err == nil {
+				s.sendMessage(CheckpointsChangedEvent{})
+			}
+		}()
 		s.sendMessage(DiffsChangedEvent{})
+	}
+	if s.agent.LSP != nil {
 		s.sendMessage(DiagnosticsChangedEvent{})
 	}
 

@@ -188,7 +188,20 @@ func (a *App) Run() error {
 	// Auto-select model if not configured
 	a.autoSelectModel()
 
+	mainLayout := a.buildLayout()
+	a.spinner = NewSpinner(a.app, a.inputHint)
+	a.pages = tview.NewPages()
+	a.pages.SetBackgroundColor(tcell.ColorDefault)
+	a.pages.AddPage("main", mainLayout, true, true)
+
+	// Show "Preparing..." while the workspace probe + Rewind/LSP boot in
+	// the background. On a small/git workspace this clears in milliseconds;
+	// on a big non-git directory it caps at agent.WarmUp's wall-clock budget.
+	a.setPhase(PhasePreparing)
+
 	go func() {
+		a.agent.WarmUp()
+
 		if err := a.agent.InitMCP(a.ctx); err != nil {
 			a.app.QueueUpdateDraw(func() {
 				a.showError("MCP initialization failed", err)
@@ -196,16 +209,18 @@ func (a *App) Run() error {
 		}
 
 		a.app.QueueUpdateDraw(func() {
+			a.setPhase(PhaseIdle)
+			if !a.agent.Supported {
+				t := theme.Default
+				fmt.Fprint(a.chatView, a.formatNotice(
+					"Limited mode: working dir is too large for full features. Diffs, checkpoints, and code intelligence are disabled.",
+					t.Yellow,
+				))
+			}
 			a.updateStatusBar()
 			a.showMissingLSPHint()
 		})
 	}()
-
-	mainLayout := a.buildLayout()
-	a.spinner = NewSpinner(a.app, a.inputHint)
-	a.pages = tview.NewPages()
-	a.pages.SetBackgroundColor(tcell.ColorDefault)
-	a.pages.AddPage("main", mainLayout, true, true)
 
 	// Render restored session (from --resume or /resume) directly. The view
 	// is allowed to be mutated before app.Run() starts the event loop.
@@ -271,6 +286,10 @@ func (a *App) closeActiveModal() {
 }
 
 func (a *App) lspDiagnostics(ctx context.Context, path string) string {
+	if a.agent.LSP == nil {
+		return ""
+	}
+
 	absPath := path
 	if !filepath.IsAbs(absPath) {
 		absPath = filepath.Join(a.agent.LSP.WorkingDir(), path)
@@ -347,6 +366,11 @@ func (a *App) localLSPDiagnostics(ctx context.Context, absPath, path string) str
 }
 
 func (a *App) showMissingLSPHint() {
+	// LSP isn't initialized in unsupported workspaces — nothing to hint about.
+	if a.agent.LSP == nil {
+		return
+	}
+
 	// When bridge is connected, LSP comes from the IDE — no local servers needed.
 	if a.agent.Bridge != nil && a.agent.Bridge.IsConnected() {
 		return

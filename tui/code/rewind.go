@@ -10,7 +10,7 @@ func (a *App) showRewindPicker() {
 	t := theme.Default
 
 	if a.agent.Rewind == nil {
-		fmt.Fprint(a.chatView, a.formatNotice("Rewind not available outside a git repo", t.Yellow))
+		fmt.Fprint(a.chatView, a.formatNotice("Rewind unavailable in this workspace", t.Yellow))
 		return
 	}
 

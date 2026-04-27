@@ -97,6 +97,12 @@ type MessagesEvent struct {
 
 func (MessagesEvent) serverEventType() string { return "messages" }
 
+type SessionEvent struct {
+	ID string `json:"id"`
+}
+
+func (SessionEvent) serverEventType() string { return "session" }
+
 type DiffsChangedEvent struct{}
 
 func (DiffsChangedEvent) serverEventType() string { return "diffs_changed" }

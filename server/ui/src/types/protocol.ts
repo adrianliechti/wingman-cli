@@ -88,6 +88,11 @@ export interface MessagesMessage {
 	messages: ConversationMessage[];
 }
 
+export interface SessionMessage {
+	type: "session";
+	id: string;
+}
+
 export interface DiffsChangedMessage {
 	type: "diffs_changed";
 }
@@ -124,6 +129,7 @@ export type ServerMessage =
 	| DoneMessage
 	| UsageMessage
 	| MessagesMessage
+	| SessionMessage
 	| DiffsChangedMessage
 	| CheckpointsChangedMessage
 	| SessionsChangedMessage

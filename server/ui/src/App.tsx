@@ -46,32 +46,48 @@ export default function App() {
 		subscribe,
 	} = useWebSocket();
 	const capabilities = useCapabilities(subscribe);
-	const showChanges = capabilities?.git ?? false;
+	// `diffs` controls whether the Changes tab is mounted at all (rewind is
+	// available everywhere now). `git` controls the *default* tab — in a
+	// non-git scratch dir there's nothing useful to show in Changes on first
+	// load, so fall through to Files.
+	const showChanges = capabilities?.diffs ?? false;
+	const inGitRepo = capabilities?.git ?? false;
 	const showProblems = capabilities?.lsp ?? false;
 	const [sessionId, setSessionId] = useState("");
 	const [rightTab, setRightTab] = useState<RightTab>("changes");
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 	const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
 
-	// Auto-switch the right-panel tab when capabilities flip:
-	//   - first load in scratch mode → Files (the default "changes" tab is hidden)
-	//   - flip on (e.g. agent ran `git init`) → Changes
-	//   - flip off (e.g. user `rm -rf .git`) → Files
+	// The server pushes its current session id on WS connect; mirror it locally
+	// so handlers like handleSessionDeleted can recognize the active session
+	// even before the user has switched/created one in the UI.
+	useEffect(() => {
+		return subscribe((msg) => {
+			if (msg.type === "session") {
+				setSessionId(msg.id);
+			}
+		});
+	}, [subscribe]);
+
+	// Auto-switch the right-panel tab on first load and on git-status flips:
+	//   - first load in scratch mode → Files (Changes is empty until edits)
+	//   - flip on (agent ran `git init`) → Changes
+	//   - flip off (user `rm -rf .git`'d) → Files
 	// Only fires on actual flips so manual tab choices persist across reconnects.
-	const prevShowChanges = useRef<boolean | null>(null);
+	const prevInGit = useRef<boolean | null>(null);
 	useEffect(() => {
 		if (!capabilities) return;
-		const prev = prevShowChanges.current;
-		prevShowChanges.current = showChanges;
+		const prev = prevInGit.current;
+		prevInGit.current = inGitRepo;
 
 		if (prev === null) {
-			if (!showChanges) setRightTab("files");
+			if (!inGitRepo) setRightTab("files");
 			return;
 		}
-		if (prev !== showChanges) {
-			setRightTab(showChanges ? "changes" : "files");
+		if (prev !== inGitRepo) {
+			setRightTab(inGitRepo ? "changes" : "files");
 		}
-	}, [capabilities, showChanges]);
+	}, [capabilities, inGitRepo]);
 
 	// Center tabs: chat is always first, files are added dynamically
 	const [tabs, setTabs] = useState<CenterTab[]>([
@@ -184,8 +200,24 @@ export default function App() {
 
 	const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
 
+	const [noticeDismissed, setNoticeDismissed] = useState(false);
+	const showNotice = !!capabilities?.notice && !noticeDismissed;
+
 	return (
 		<div className="relative flex flex-col h-screen bg-bg text-fg">
+			{showNotice && (
+				<div className="shrink-0 px-4 py-2 text-[12px] flex items-center gap-3 bg-yellow-500/10 border-b border-yellow-500/30 text-yellow-700 dark:text-yellow-300">
+					<span className="flex-1">{capabilities?.notice}</span>
+					<button
+						type="button"
+						onClick={() => setNoticeDismissed(true)}
+						className="opacity-70 hover:opacity-100 px-1"
+						aria-label="Dismiss"
+					>
+						×
+					</button>
+				</div>
+			)}
 			<div className="flex flex-1 overflow-hidden">
 				{/* Left Sidebar */}
 				<div

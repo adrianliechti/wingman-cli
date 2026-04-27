@@ -353,6 +353,9 @@ func (a *App) closeDiagnosticsView() {
 }
 
 func (a *App) collectDiagnostics(ctx context.Context) ([]fileDiagnostics, error) {
+	if a.agent.LSP == nil {
+		return nil, nil
+	}
 	if a.agent.Bridge != nil && a.agent.Bridge.IsConnected() {
 		return a.collectBridgeDiagnostics(ctx)
 	}

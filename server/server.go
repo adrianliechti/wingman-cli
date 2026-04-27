@@ -3,14 +3,17 @@ package server
 import (
 	"context"
 	"embed"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io/fs"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -75,6 +78,11 @@ func newSessionID() string {
 func (s *Server) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// Workspace probe + Rewind/LSP setup. Up to 4s on a non-git directory
+	// that's too large; the browser opens after this completes so /api/
+	// capabilities returns the correct state on first fetch.
+	s.agent.WarmUp()
 
 	// Init MCP
 	if err := s.agent.InitMCP(ctx); err != nil {
@@ -481,56 +489,137 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, result)
 }
 
-// pollFiles fires FilesChangedEvent on a fixed cadence so the FileTree
-// refetches and reflects external changes (e.g. `rm` from another terminal).
-// Also fires DiffsChangedEvent when rewind is active so the Diffs panel
-// recomputes against the live worktree.
+// pollFiles watches the working dir for external changes (terminal `rm`,
+// IDE saves, etc.) so the FileTree and Diffs panels stay current. Each tick:
 //
-// On each tick we also re-check whether the working dir's git status flipped
-// (typically: agent ran `git init`, or user `rm -rf .git`'d). When it does,
-// we rebuild rewind via the agent and broadcast capabilities_changed so the
-// web UI re-fetches /api/capabilities and shows/hides the right-panel tabs.
-//
-// sendMessage is a no-op when no client is connected, so the idle cost is
-// just one wakeup per tick.
+//  1. If no UI is connected, skip — the walk isn't free.
+//  2. If the git status flipped (`git init` / `rm -rf .git`), rebuild LSP and
+//     broadcast capabilities_changed so the right-panel tabs adjust.
+//  3. Compute a worktree fingerprint and emit FilesChanged + DiffsChanged
+//     only when it moves. Avoids two full server walks per tick on quiet
+//     repos (one for /api/files, one for /api/diffs' snapshotTree).
 func (s *Server) pollFiles(ctx context.Context) {
 	const interval = 2 * time.Second
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	prevGit := s.agent.IsGitRepo()
+	var prevFingerprint uint64
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if s.agent.IsGitRepo() != (s.agent.Rewind != nil) {
-				s.agent.SyncProjectMode()
-				s.sendMessage(CapabilitiesChangedEvent{})
-				s.sendMessage(CheckpointsChangedEvent{})
-				s.sendMessage(DiagnosticsChangedEvent{})
+			s.wsMu.Lock()
+			hasClient := s.wsConn != nil
+			s.wsMu.Unlock()
+			if !hasClient {
+				continue
 			}
 
-			s.sendMessage(FilesChangedEvent{})
-			if s.agent.Rewind != nil {
+			gitNow := s.agent.IsGitRepo()
+			if gitNow != prevGit {
+				s.agent.SyncProjectMode()
+				s.sendMessage(CapabilitiesChangedEvent{})
+				if s.agent.LSP != nil {
+					s.sendMessage(DiagnosticsChangedEvent{})
+				}
+				prevGit = gitNow
+			}
+
+			// On unsupported workspaces, skip the worktree fingerprint walk
+			// (would chew through a huge dir) and just nudge the file tree.
+			// The tree's per-dir fetches are cheap; expanded dirs refresh
+			// without scanning everything.
+			if s.agent.Rewind == nil {
+				s.sendMessage(FilesChangedEvent{})
+				continue
+			}
+
+			fp := s.worktreeFingerprint()
+			if fp != prevFingerprint {
+				s.sendMessage(FilesChangedEvent{})
 				s.sendMessage(DiffsChangedEvent{})
+				prevFingerprint = fp
 			}
 		}
 	}
 }
 
+// worktreeFingerprint produces a 64-bit digest of the working tree's visible
+// state — file path, mtime, size — used to gate the polling emits. Doesn't
+// hash file contents, so a `touch` will fire a refetch even though no diff
+// changes; that's fine, the client gets an empty diff back and renders the
+// same view. Respects the rewind manager's gitignore matcher and always
+// skips .git so packed-refs writes from the user's repo don't churn it.
+func (s *Server) worktreeFingerprint() uint64 {
+	h := fnv.New64a()
+
+	matcher := s.agent.Rewind.ExcludeMatcher()
+	root := s.agent.RootPath
+
+	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+
+		rel, err := filepath.Rel(root, path)
+		if err != nil || rel == "." {
+			return nil
+		}
+
+		if rel == ".git" || strings.HasPrefix(rel, ".git"+string(filepath.Separator)) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		components := strings.Split(rel, string(filepath.Separator))
+		if matcher != nil && matcher.Match(components, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if d.IsDir() {
+			return nil
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+
+		h.Write([]byte(rel))
+		binary.Write(h, binary.LittleEndian, info.ModTime().UnixNano())
+		binary.Write(h, binary.LittleEndian, info.Size())
+		return nil
+	})
+
+	return h.Sum64()
+}
+
 // handleCapabilities reports which features the working directory supports.
 // The web UI fetches this once on load to decide which tabs/panels to show.
-// In a non-git "scratch space" all the rewind-related surfaces (diffs,
-// checkpoints, diagnostics) are hidden because their backends don't run.
+// Rewind/diffs/LSP only run on "supported" workspaces (git repos or small
+// directories); on an unsupported dir (e.g. $HOME) those backends never
+// started and the UI surfaces `notice` as a banner so the user understands
+// why the right-panel tabs are missing.
 func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
-	git := s.agent.Rewind != nil
-	writeJSON(w, map[string]bool{
-		"git":    git,
-		"rewind": git,
-		"lsp":    git,
-		"diffs":  git,
-	})
+	caps := map[string]any{
+		"git":    s.agent.IsGitRepo(),
+		"lsp":    s.agent.LSP != nil,
+		"rewind": s.agent.Rewind != nil,
+		"diffs":  s.agent.Rewind != nil,
+	}
+	if !s.agent.Supported {
+		caps["notice"] = "This directory is too large for full features. Diffs, checkpoints, and code intelligence are disabled — chat and file browsing still work."
+	}
+	writeJSON(w, caps)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
