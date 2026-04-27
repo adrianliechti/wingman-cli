@@ -2,8 +2,11 @@ package rewind
 
 import (
 	"bufio"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/fnv"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -289,14 +292,9 @@ func (m *Manager) excludes() []gitignore.Pattern {
 	return m.excludesPattern
 }
 
-// ExcludeMatcher exposes a gitignore matcher built from the cached patterns
-// for callers outside the rewind package (e.g. the server's worktree
-// fingerprint walk). Returns an empty matcher if init hasn't completed or
-// failed, so callers don't have to nil-check.
-func (m *Manager) ExcludeMatcher() gitignore.Matcher {
-	if err := m.ready(); err != nil {
-		return gitignore.NewMatcher(nil)
-	}
+// excludeMatcher returns the cached matcher built from the same patterns as
+// excludes(). Used internally by Fingerprint to skip ignored entries.
+func (m *Manager) excludeMatcher() gitignore.Matcher {
 	m.excludesOnce.Do(m.computeExcludes)
 	return m.excludesMatcher
 }
@@ -472,6 +470,64 @@ func (m *Manager) Cleanup() {
 	if m.gitDir != "" {
 		os.RemoveAll(m.gitDir)
 	}
+}
+
+// Fingerprint returns a 64-bit digest of the worktree's visible state
+// (relative path, mtime, size for every non-ignored file). Used by the
+// server's polling loop to gate FilesChanged/DiffsChanged emits — when
+// the digest is unchanged we skip the events entirely. Always skips .git
+// and gitignored entries; doesn't hash content, so a `touch` will fire a
+// refetch even when no diff actually changed (the client just gets an
+// empty diff back).
+func (m *Manager) Fingerprint() uint64 {
+	if err := m.ready(); err != nil {
+		return 0
+	}
+
+	h := fnv.New64a()
+	matcher := m.excludeMatcher()
+
+	filepath.WalkDir(m.workingDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+
+		rel, err := filepath.Rel(m.workingDir, path)
+		if err != nil || rel == "." {
+			return nil
+		}
+
+		if rel == ".git" || strings.HasPrefix(rel, ".git"+string(filepath.Separator)) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		components := strings.Split(rel, string(filepath.Separator))
+		if matcher.Match(components, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if d.IsDir() {
+			return nil
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+
+		h.Write([]byte(rel))
+		binary.Write(h, binary.LittleEndian, info.ModTime().UnixNano())
+		binary.Write(h, binary.LittleEndian, info.Size())
+		return nil
+	})
+
+	return h.Sum64()
 }
 
 // FileStatus represents the status of a file in the diff

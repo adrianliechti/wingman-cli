@@ -3,7 +3,6 @@ import type { ServerMessage } from "../types/protocol";
 
 export interface Capabilities {
 	git: boolean;
-	rewind: boolean;
 	lsp: boolean;
 	diffs: boolean;
 	notice?: string;

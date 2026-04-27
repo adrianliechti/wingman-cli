@@ -210,7 +210,7 @@ func (a *App) Run() error {
 
 		a.app.QueueUpdateDraw(func() {
 			a.setPhase(PhaseIdle)
-			if !a.agent.Supported {
+			if a.agent.Rewind == nil {
 				t := theme.Default
 				fmt.Fprint(a.chatView, a.formatNotice(
 					"Limited mode: working dir is too large for full features. Diffs, checkpoints, and code intelligence are disabled.",

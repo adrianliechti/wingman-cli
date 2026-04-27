@@ -92,16 +92,16 @@ type Agent struct {
 
 	Skills []skill.Skill
 
-	MCP    *mcp.Manager
-	LSP    *lsp.Manager
+	MCP *mcp.Manager
+	// LSP is set by WarmUp when the workspace is a supported git repo;
+	// nil otherwise. Callers nil-check before use.
+	LSP *lsp.Manager
+	// Rewind is set by WarmUp when the workspace is supported (git repo or
+	// small enough to walk in time); nil otherwise. Rewind == nil is the
+	// canonical "unsupported workspace" signal — UI shows the limited-mode
+	// banner and hides the Changes/Problems tabs.
 	Rewind *rewind.Manager
 	Bridge *bridge.Bridge
-
-	// Supported reports whether the working dir was small enough or
-	// project-shaped enough at startup to back rewind, LSP, and the diffs
-	// panel. False ⇒ chat + file browsing only; the UI surfaces a notice.
-	// Set by WarmUp; defaults to false until that completes.
-	Supported bool
 
 	// warmupDone is closed when WarmUp completes (success or otherwise) so
 	// callers can await its readiness without polling.
@@ -230,33 +230,36 @@ func New(workDir string, ui UI) (*Agent, error) {
 // directory is supported. Idempotent and safe to call from any goroutine —
 // the first call does the work, the rest wait on warmupDone. Callers that
 // want to gate on completion (e.g. server startup) can use WaitWarmUp.
+//
+// Three resulting modes:
+//
+//   - supported git repo  → Rewind set, LSP set, lspTools set
+//   - supported scratch   → Rewind set, LSP nil, lspTools nil
+//   - unsupported (huge)  → Rewind nil, LSP nil; UI falls back to chat-only
 func (a *Agent) WarmUp() {
 	a.warmupOnce.Do(func() {
 		defer close(a.warmupDone)
 
-		supported := isSupportedWorkspace(a.RootPath)
-		gitMode := isGitRepo(a.RootPath)
+		if !isSupportedWorkspace(a.RootPath) {
+			return
+		}
+
+		// Sweep stale shadow repos from prior crashed sessions before
+		// starting a new one. Cheap and safe (mtime-gated).
+		rewind.CleanupOrphans()
+		rewindManager := rewind.New(a.RootPath)
 
 		var lspManager *lsp.Manager
 		var lspTools []tool.Tool
-		var rewindManager *rewind.Manager
-
-		if supported {
-			lspManager = lsp.NewManager(a.RootPath, gitMode)
-			if gitMode {
-				lspTools = lsptool.NewTools(lspManager)
-			}
-			// Sweep stale shadow repos from prior crashed sessions before
-			// starting a new one. Cheap and safe (mtime-gated).
-			rewind.CleanupOrphans()
-			rewindManager = rewind.New(a.RootPath)
+		if isGitRepo(a.RootPath) {
+			lspManager = lsp.NewManager(a.RootPath)
+			lspTools = lsptool.NewTools(lspManager)
 		}
 
 		a.mu.Lock()
-		a.Supported = supported
+		a.Rewind = rewindManager
 		a.LSP = lspManager
 		a.lspTools = lspTools
-		a.Rewind = rewindManager
 		a.mu.Unlock()
 	})
 }
@@ -314,39 +317,37 @@ func (a *Agent) IsGitRepo() bool {
 
 // RestartRewind tears down the existing rewind manager and creates a fresh
 // one, re-baselining at the current state. Used on /sessions/new so the
-// checkpoint history is scoped to one conversation. No-op when the
-// workspace doesn't support rewind. LSP is intentionally untouched —
+// checkpoint history is scoped to one conversation. No-op on unsupported
+// workspaces (Rewind == nil). LSP is intentionally untouched —
 // gopls/etc. are slow to spin up and shouldn't churn on session boundaries.
 func (a *Agent) RestartRewind() {
-	if !a.Supported {
+	if a.Rewind == nil {
 		return
 	}
-	if a.Rewind != nil {
-		a.Rewind.Cleanup()
-	}
+	a.Rewind.Cleanup()
 	a.Rewind = rewind.New(a.RootPath)
 }
 
 // SyncProjectMode rebuilds LSP when the working dir's git status flips
-// (typically: agent ran `git init` in a scratch dir). On an unsupported
-// workspace LSP stays nil — the gate is set at startup and `git init`
-// alone doesn't make a 1M-file home folder small enough.
+// (typically: agent ran `git init` in a scratch dir). No-op on unsupported
+// workspaces — `git init` alone doesn't make a 1M-file home folder small
+// enough to support full features.
 func (a *Agent) SyncProjectMode() {
-	if !a.Supported {
+	if a.Rewind == nil {
 		return
 	}
 
-	gitMode := isGitRepo(a.RootPath)
-
 	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	oldLSP := a.LSP
-	a.LSP = lsp.NewManager(a.RootPath, gitMode)
-	if gitMode {
+	if isGitRepo(a.RootPath) {
+		a.LSP = lsp.NewManager(a.RootPath)
 		a.lspTools = lsptool.NewTools(a.LSP)
 	} else {
+		a.LSP = nil
 		a.lspTools = nil
 	}
-	a.mu.Unlock()
 
 	if oldLSP != nil {
 		oldLSP.Close()
