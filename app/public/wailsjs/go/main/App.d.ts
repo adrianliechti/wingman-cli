@@ -4,7 +4,7 @@ import {main} from '../models';
 
 export function GetSettings():Promise<main.Settings>;
 
-export function OpenWorkspace(arg1:string):Promise<void>;
+export function OpenWorkspace(arg1:string):Promise<string>;
 
 export function SaveSettings(arg1:main.Settings):Promise<void>;
 

@@ -6,9 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
-	"sync/atomic"
+	"sync"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -23,9 +24,10 @@ import (
 var publicFS embed.FS
 
 type App struct {
-	ctx     context.Context
-	agent   *code.Agent
-	handler atomic.Pointer[http.Handler]
+	ctx context.Context
+
+	mu    sync.Mutex
+	agent *code.Agent
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -50,8 +52,12 @@ func (a *App) SaveSettings(s Settings) error {
 }
 
 func (a *App) shutdown(ctx context.Context) {
-	if a.agent != nil {
-		a.agent.Close()
+	a.mu.Lock()
+	agent := a.agent
+	a.mu.Unlock()
+
+	if agent != nil {
+		agent.Close()
 	}
 }
 
@@ -61,54 +67,51 @@ func (a *App) SelectFolder() (string, error) {
 	})
 }
 
-func (a *App) OpenWorkspace(path string) error {
+// OpenWorkspace boots the embedded server on a localhost TCP listener and
+// returns its URL. The frontend navigates the webview to that URL, leaving
+// the Wails AssetServer (which can't proxy WebSocket upgrades) out of the
+// hot path entirely.
+func (a *App) OpenWorkspace(path string) (string, error) {
 	if path == "" {
-		return errors.New("path is required")
+		return "", errors.New("path is required")
 	}
+
+	a.mu.Lock()
+	if a.agent != nil {
+		a.mu.Unlock()
+		return "", errors.New("workspace already open")
+	}
+	a.mu.Unlock()
 
 	c, err := code.New(path, nil)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	s := server.New(a.ctx, c, 0)
 
-	a.agent = c
-
-	// Wails' AssetServer doesn't support http.Hijacker, so WebSocket upgrades
-	// fail through it. Run a real TCP listener for the same handler and tell
-	// the server to advertise that URL via /api/ws. Plain HTTP/API keeps
-	// flowing through the AssetServer so cookies/origin stay on
-	// wails.localhost.
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return err
+		c.Close()
+		return "", err
 	}
-	go http.Serve(listener, s)
-	s.SetWebSocketURL(fmt.Sprintf("ws://%s/ws", listener.Addr().String()))
-
-	var h http.Handler = s
-	a.handler.Store(&h)
-
-	return nil
-}
-
-func (a *App) assetHandler() http.Handler {
-	startFS, _ := fs.Sub(publicFS, "public")
-	startServer := http.FileServer(http.FS(startFS))
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if hp := a.handler.Load(); hp != nil {
-			(*hp).ServeHTTP(w, r)
-			return
+	go func() {
+		if err := http.Serve(listener, s); err != nil && !errors.Is(err, net.ErrClosed) {
+			log.Printf("server listener: %v", err)
 		}
+	}()
 
-		startServer.ServeHTTP(w, r)
-	})
+	a.mu.Lock()
+	a.agent = c
+	a.mu.Unlock()
+
+	return fmt.Sprintf("http://%s", listener.Addr().String()), nil
 }
 
 func main() {
 	app := &App{}
+
+	startFS, _ := fs.Sub(publicFS, "public")
 
 	opts := &options.App{
 		Title: "Wingman Agent",
@@ -122,7 +125,7 @@ func main() {
 		Bind: []any{app},
 
 		AssetServer: &assetserver.Options{
-			Handler: app.assetHandler(),
+			Handler: http.FileServer(http.FS(startFS)),
 		},
 	}
 

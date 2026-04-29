@@ -52,12 +52,6 @@ type Server struct {
 	wsConn       *websocket.Conn
 	streamCancel context.CancelFunc
 
-	// External WebSocket URL override. Set by embedders (the Wails desktop
-	// shell) when the WebSocket needs to be served from a different origin
-	// than the rest of the API — Wails' AssetServer doesn't support
-	// http.Hijacker, so /ws must come from a real TCP listener.
-	wsURL string
-
 	// Channels for ask/prompt relay
 	askCh    chan string
 	promptCh chan bool
@@ -115,26 +109,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
-func (s *Server) SetWebSocketURL(url string) {
-	s.wsMu.Lock()
-	s.wsURL = url
-	s.wsMu.Unlock()
-}
-
 func (s *Server) handleWebSocketURL(w http.ResponseWriter, r *http.Request) {
-	s.wsMu.Lock()
-	url := s.wsURL
-	s.wsMu.Unlock()
-
-	if url == "" {
-		proto := "ws"
-		if r.TLS != nil {
-			proto = "wss"
-		}
-		url = fmt.Sprintf("%s://%s/ws", proto, r.Host)
+	proto := "ws"
+	if r.TLS != nil {
+		proto = "wss"
 	}
-
-	writeJSON(w, map[string]string{"url": url})
+	writeJSON(w, map[string]string{"url": fmt.Sprintf("%s://%s/ws", proto, r.Host)})
 }
 
 func (s *Server) Run(ctx context.Context) error {

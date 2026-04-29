@@ -71,11 +71,6 @@ func saveSettings(s Settings) error {
 }
 
 func (s Settings) Apply() {
-	if s.WingmanURL != "" {
-		os.Setenv("WINGMAN_URL", s.WingmanURL)
-	}
-
-	if s.WingmanToken != "" {
-		os.Setenv("WINGMAN_TOKEN", s.WingmanToken)
-	}
+	os.Setenv("WINGMAN_URL", s.WingmanURL)
+	os.Setenv("WINGMAN_TOKEN", s.WingmanToken)
 }
