@@ -358,14 +358,13 @@ export default function App() {
 								<div className="flex flex-col h-full">
 									<div className="flex-[3] min-h-0 overflow-hidden">
 										<DiffsPanel
-											visible={true}
 											onOpenDiff={openDiff}
 											subscribe={subscribe}
 										/>
 									</div>
 									<div className="h-px bg-border-subtle shrink-0" />
 									<div className="flex-[1] min-h-0 overflow-hidden">
-										<CheckpointsPanel visible={true} subscribe={subscribe} />
+										<CheckpointsPanel subscribe={subscribe} />
 									</div>
 								</div>
 							) : (

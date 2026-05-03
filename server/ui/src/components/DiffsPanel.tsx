@@ -2,12 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import type { DiffEntry, ServerMessage } from "../types/protocol";
 
 interface Props {
-	visible: boolean;
 	onOpenDiff?: (path: string) => void;
 	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 }
 
-export function DiffsPanel({ visible, onOpenDiff, subscribe }: Props) {
+export function DiffsPanel({ onOpenDiff, subscribe }: Props) {
 	const [diffs, setDiffs] = useState<DiffEntry[]>([]);
 
 	const loadDiffs = useCallback(async () => {
@@ -36,8 +35,6 @@ export function DiffsPanel({ visible, onOpenDiff, subscribe }: Props) {
 			}
 		});
 	}, [subscribe, loadDiffs]);
-
-	if (!visible) return null;
 
 	const statusLabels: Record<string, string> = {
 		added: "A",

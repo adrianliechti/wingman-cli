@@ -128,7 +128,7 @@ export function DiffTab({ path, subscribe, onDeleted }: Props) {
 	);
 }
 
-export function DiffView({ patch }: { patch: string }) {
+function DiffView({ patch }: { patch: string }) {
 	const lines = patch.split("\n");
 	let oldLine = 0;
 	let newLine = 0;

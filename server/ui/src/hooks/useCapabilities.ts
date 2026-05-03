@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ServerMessage } from "../types/protocol";
 
-export interface Capabilities {
+interface Capabilities {
 	git: boolean;
 	lsp: boolean;
 	diffs: boolean;

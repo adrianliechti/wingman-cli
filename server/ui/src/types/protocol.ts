@@ -1,20 +1,20 @@
 // Client -> Server
-export interface SendMessage {
+interface SendMessage {
 	type: "send";
 	text: string;
 	files?: string[];
 }
 
-export interface CancelMessage {
+interface CancelMessage {
 	type: "cancel";
 }
 
-export interface PromptResponseMessage {
+interface PromptResponseMessage {
 	type: "prompt_response";
 	approved: boolean;
 }
 
-export interface AskResponseMessage {
+interface AskResponseMessage {
 	type: "ask_response";
 	answer: string;
 }
@@ -26,18 +26,18 @@ export type ClientMessage =
 	| AskResponseMessage;
 
 // Server -> Client
-export interface TextDeltaMessage {
+interface TextDeltaMessage {
 	type: "text_delta";
 	text: string;
 }
 
-export interface ReasoningDeltaMessage {
+interface ReasoningDeltaMessage {
 	type: "reasoning_delta";
 	id: string;
 	text: string;
 }
 
-export interface ToolCallMessage {
+interface ToolCallMessage {
 	type: "tool_call";
 	id: string;
 	name: string;
@@ -45,76 +45,76 @@ export interface ToolCallMessage {
 	hint: string;
 }
 
-export interface ToolResultMessage {
+interface ToolResultMessage {
 	type: "tool_result";
 	id: string;
 	name: string;
 	content: string;
 }
 
-export interface PhaseMessage {
+interface PhaseMessage {
 	type: "phase";
 	phase: Phase;
 	hint?: string;
 }
 
-export interface PromptMessage {
+interface PromptMessage {
 	type: "prompt";
 	question: string;
 }
 
-export interface AskMessage {
+interface AskMessage {
 	type: "ask";
 	question: string;
 }
 
-export interface ErrorMessage {
+interface ErrorMessage {
 	type: "error";
 	message: string;
 }
 
-export interface DoneMessage {
+interface DoneMessage {
 	type: "done";
 }
 
-export interface UsageMessage {
+interface UsageMessage {
 	type: "usage";
 	input_tokens: number;
 	cached_tokens: number;
 	output_tokens: number;
 }
 
-export interface MessagesMessage {
+interface MessagesMessage {
 	type: "messages";
 	messages: ConversationMessage[];
 }
 
-export interface SessionMessage {
+interface SessionMessage {
 	type: "session";
 	id: string;
 }
 
-export interface DiffsChangedMessage {
+interface DiffsChangedMessage {
 	type: "diffs_changed";
 }
 
-export interface CheckpointsChangedMessage {
+interface CheckpointsChangedMessage {
 	type: "checkpoints_changed";
 }
 
-export interface SessionsChangedMessage {
+interface SessionsChangedMessage {
 	type: "sessions_changed";
 }
 
-export interface FilesChangedMessage {
+interface FilesChangedMessage {
 	type: "files_changed";
 }
 
-export interface DiagnosticsChangedMessage {
+interface DiagnosticsChangedMessage {
 	type: "diagnostics_changed";
 }
 
-export interface CapabilitiesChangedMessage {
+interface CapabilitiesChangedMessage {
 	type: "capabilities_changed";
 }
 
@@ -146,7 +146,7 @@ export interface ConversationMessage {
 	content: ConversationContent[];
 }
 
-export interface ConversationContent {
+interface ConversationContent {
 	text?: string;
 	reasoning?: {
 		id?: string;
