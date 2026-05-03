@@ -49,6 +49,10 @@ func ReadTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 			workingDir := root.Name()
 			expanded := expandHome(pathArg)
 
+			if isBinaryFile(expanded) {
+				return "", fmt.Errorf("cannot read %s: file appears to be binary (extension %q). Use the shell tool with an appropriate viewer if you really need to inspect it", pathArg, filepath.Ext(expanded))
+			}
+
 			limit := 0
 			offset := 0
 
