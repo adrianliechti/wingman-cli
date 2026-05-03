@@ -36,10 +36,10 @@ var sectionTemplates = []struct {
 	tmpl  *template.Template
 }{
 	{"Environment", template.Must(template.New("environment").Parse(sectionEnvironment))},
+	{"Memory", template.Must(template.New("memory").Parse(sectionMemory))},
 	{"Session Plan", template.Must(template.New("plan").Parse(sectionPlan))},
 	{"Skills", template.Must(template.New("skills").Parse(sectionSkills))},
 	{"Project Guidelines", template.Must(template.New("project").Parse(sectionProject))},
-	{"Memory", template.Must(template.New("memory").Parse(sectionMemory))},
 	{"Bridge", template.Must(template.New("bridge").Parse(sectionBridge))},
 }
 

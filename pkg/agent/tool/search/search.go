@@ -28,6 +28,7 @@ func Tools() []tool.Tool {
 	return []tool.Tool{{
 		Name:        "search_online",
 		Description: description,
+		Effect:      tool.StaticEffect(tool.EffectReadOnly),
 
 		Parameters: map[string]any{
 			"type": "object",

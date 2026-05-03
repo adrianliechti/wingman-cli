@@ -35,6 +35,7 @@ func Tools(cfg *agent.Config) []tool.Tool {
 	return []tool.Tool{{
 		Name:        "agent",
 		Description: description,
+		Effect:      tool.StaticEffect(tool.EffectMutates),
 
 		Parameters: map[string]any{
 			"type": "object",

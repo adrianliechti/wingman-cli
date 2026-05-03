@@ -2,8 +2,8 @@ package shell
 
 import "strings"
 
-// safeCommands is a list of read-only commands that don't require user confirmation
-var safeCommands = []string{
+// readOnlyCommands is a list of commands that are read-only by default.
+var readOnlyCommands = []string{
 	// Unix: Search & find
 	"rg",
 	"grep",
@@ -29,9 +29,7 @@ var safeCommands = []string{
 	"stat",
 	"wc",
 
-	// Unix: Text processing (read-only, piped usage)
-	"awk",
-	"sed",
+	// Unix: Text processing
 	"cut",
 	"sort",
 	"uniq",
@@ -53,12 +51,9 @@ var safeCommands = []string{
 
 	// Unix: System info
 	"echo",
-	"env",
 	"printenv",
 	"whoami",
-	"hostname",
 	"uname",
-	"date",
 	"uptime",
 	"df",
 	"du",
@@ -72,13 +67,6 @@ var safeCommands = []string{
 	// Unix: Help & documentation
 	"man",
 	"help",
-
-	// Version info commands
-	"gofmt",
-	"rustc",
-	"javac",
-	"ruby",
-	"php",
 
 	// Windows cmd.exe: Search & find
 	"findstr",
@@ -94,12 +82,11 @@ var safeCommands = []string{
 	// Windows cmd.exe: System info
 	"cd",
 	"set",
-	"time",
 	"ver",
 	"systeminfo",
 	"tasklist",
 
-	// PowerShell: Common read-only cmdlets (case-insensitive matching in isSafeCommand)
+	// PowerShell: Common read-only cmdlets (case-insensitive matching in IsReadOnlyCommand)
 	"Get-Content",
 	"Get-ChildItem",
 	"Get-Location",
@@ -158,17 +145,16 @@ var safeCommands = []string{
 	"dir", // Get-ChildItem (also Windows)
 }
 
-// safeSubcommands is a map of commands to their safe subcommands
-// These require checking both the command and its first argument
-var safeSubcommands = map[string][]string{
+// readOnlySubcommands is a map of commands to read-only subcommand prefixes.
+var readOnlySubcommands = map[string][]string{
 	// Go - read-only subcommands
-	"go": {"doc", "env", "fmt", "list", "version", "vet", "help"},
+	"go": {"doc", "list", "version", "help"},
 
 	// Git - read-only subcommands
-	"git": {"status", "log", "diff", "show", "branch", "tag", "remote", "config", "ls-files", "ls-tree", "rev-parse", "describe", "shortlog", "blame", "grep", "reflog", "stash list", "help", "version"},
+	"git": {"status", "log", "diff", "show", "branch", "tag", "remote", "ls-files", "ls-tree", "rev-parse", "describe", "shortlog", "blame", "grep", "reflog", "stash list", "help", "version"},
 
 	// GitHub CLI - read-only subcommands
-	"gh": {"status", "repo view", "pr list", "pr view", "pr status", "pr diff", "issue list", "issue view", "issue status", "gist list", "gist view", "release list", "release view", "run list", "run view", "workflow list", "workflow view", "api", "help", "version"},
+	"gh": {"status", "repo view", "pr list", "pr view", "pr status", "pr diff", "issue list", "issue view", "issue status", "gist list", "gist view", "release list", "release view", "run list", "run view", "workflow list", "workflow view", "help", "version"},
 
 	// npm - read-only subcommands
 	"npm": {"list", "ls", "ll", "la", "view", "info", "show", "outdated", "search", "help", "config list", "config get", "version", "explain", "why", "fund", "audit"},
@@ -183,11 +169,11 @@ var safeSubcommands = map[string][]string{
 	"bun": {"pm ls", "pm cache", "help", "version"},
 
 	// deno - read-only subcommands
-	"deno": {"info", "doc", "types", "help", "version", "eval"},
+	"deno": {"info", "doc", "types", "help", "version"},
 
 	// Python - read-only subcommands (version, help, etc.)
-	"python":  {"-V", "--version", "-h", "--help", "-m py_compile", "-c"},
-	"python3": {"-V", "--version", "-h", "--help", "-m py_compile", "-c"},
+	"python":  {"-V", "--version", "-h", "--help"},
+	"python3": {"-V", "--version", "-h", "--help"},
 
 	// pip - read-only subcommands
 	"pip":  {"list", "show", "freeze", "check", "config list", "config get", "help", "version", "--version"},
@@ -226,7 +212,7 @@ var safeSubcommands = map[string][]string{
 	"composer": {"show", "info", "search", "outdated", "licenses", "depends", "why", "prohibits", "why-not", "config list", "diagnose", "help", "list", "about", "--version", "-V"},
 
 	// Node - read-only
-	"node": {"-v", "--version", "-h", "--help", "-e", "--eval", "-p", "--print"},
+	"node": {"-v", "--version", "-h", "--help"},
 
 	// npx - generally safe for running local binaries
 	"npx": {"which", "--version", "-v"},
@@ -247,25 +233,25 @@ var safeSubcommands = map[string][]string{
 	"kustomize": {"build", "cfg", "version", "help"},
 
 	// Terraform/OpenTofu - read-only subcommands
-	"terraform": {"version", "providers", "state list", "state show", "output", "graph", "show", "validate", "fmt", "help", "-version", "-help"},
-	"tofu":      {"version", "providers", "state list", "state show", "output", "graph", "show", "validate", "fmt", "help", "-version", "-help"},
+	"terraform": {"version", "providers", "state list", "state show", "output", "graph", "show", "validate", "help", "-version", "-help"},
+	"tofu":      {"version", "providers", "state list", "state show", "output", "graph", "show", "validate", "help", "-version", "-help"},
 }
 
-var safeCommandSet = map[string]struct{}{}
-var safeSubcommandPrefixes = map[string][]string{}
+var readOnlyCommandSet = map[string]struct{}{}
+var readOnlySubcommandPrefixes = map[string][]string{}
 
 func init() {
-	for _, cmd := range safeCommands {
-		safeCommandSet[strings.ToLower(cmd)] = struct{}{}
+	for _, cmd := range readOnlyCommands {
+		readOnlyCommandSet[strings.ToLower(cmd)] = struct{}{}
 	}
 
-	for cmd, subs := range safeSubcommands {
+	for cmd, subs := range readOnlySubcommands {
 		cmdLower := strings.ToLower(cmd)
 		if len(subs) == 0 {
 			continue
 		}
 		for _, sub := range subs {
-			safeSubcommandPrefixes[cmdLower] = append(safeSubcommandPrefixes[cmdLower], strings.ToLower(sub))
+			readOnlySubcommandPrefixes[cmdLower] = append(readOnlySubcommandPrefixes[cmdLower], strings.ToLower(sub))
 		}
 	}
 }

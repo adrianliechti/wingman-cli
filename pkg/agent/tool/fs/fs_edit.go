@@ -11,7 +11,8 @@ import (
 
 func EditTool(root *os.Root) tool.Tool {
 	return tool.Tool{
-		Name: "edit",
+		Name:   "edit",
+		Effect: tool.StaticEffect(tool.EffectMutates),
 
 		Description: strings.Join([]string{
 			"Performs exact string replacements in files. This is the preferred tool for modifying existing files.",

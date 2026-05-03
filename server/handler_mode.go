@@ -32,8 +32,8 @@ func (s *Server) setMode(mode string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.planMode = mode == "plan"
-	// Keep the underlying agent's PlanMode in sync so any tool-layer
-	// enforcement (filesystem write restrictions, etc.) reads the same value.
+	// Keep the underlying agent's PlanMode in sync so prompt construction and
+	// mode-aware tool filtering read the same value.
 	s.agent.PlanMode = s.planMode
 }
 

@@ -26,6 +26,7 @@ func Tools(elicit *tool.Elicitation) []tool.Tool {
 	return []tool.Tool{{
 		Name:        "ask_user",
 		Description: description,
+		Effect:      tool.StaticEffect(tool.EffectReadOnly),
 
 		Parameters: map[string]any{
 			"type": "object",

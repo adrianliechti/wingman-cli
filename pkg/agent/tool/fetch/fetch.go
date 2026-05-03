@@ -29,7 +29,8 @@ func Tools() []tool.Tool {
 
 	return []tool.Tool{{
 		Name:        "fetch",
-		Description:     description,
+		Description: description,
+		Effect:      tool.StaticEffect(tool.EffectReadOnly),
 
 		Parameters: map[string]any{
 			"type": "object",

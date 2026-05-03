@@ -18,7 +18,8 @@ const DefaultFindLimit = 100
 
 func FindTool(root *os.Root) tool.Tool {
 	return tool.Tool{
-		Name: "find",
+		Name:   "find",
+		Effect: tool.StaticEffect(tool.EffectReadOnly),
 
 		Description: strings.Join([]string{
 			fmt.Sprintf("Find files by glob pattern. Returns paths sorted by modification time (newest first). Respects .gitignore. Default limit: %d.", DefaultFindLimit),

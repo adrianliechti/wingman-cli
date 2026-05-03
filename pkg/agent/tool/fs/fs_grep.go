@@ -26,7 +26,8 @@ const (
 
 func GrepTool(root *os.Root) tool.Tool {
 	return tool.Tool{
-		Name: "grep",
+		Name:   "grep",
+		Effect: tool.StaticEffect(tool.EffectReadOnly),
 
 		Description: strings.Join([]string{
 			fmt.Sprintf("Search file contents for a pattern. Respects .gitignore. Default limit: %d matches.", DefaultGrepLimit),

@@ -12,7 +12,8 @@ import (
 
 func WriteTool(root *os.Root) tool.Tool {
 	return tool.Tool{
-		Name: "write",
+		Name:   "write",
+		Effect: tool.StaticEffect(tool.EffectMutates),
 
 		Description: strings.Join([]string{
 			"Write content to a file. Creates the file and parent directories if they don't exist, overwrites if it does.",

@@ -305,7 +305,41 @@ func (a *Agent) tools() []tool.Tool {
 		tools = append(tools, a.lspTools...)
 	}
 
+	if a.PlanMode {
+		tools = planModeTools(tools)
+	}
+
 	return tools
+}
+
+func planModeTools(tools []tool.Tool) []tool.Tool {
+	filtered := make([]tool.Tool, 0, len(tools))
+
+	for _, t := range tools {
+		if t.Effect == nil {
+			continue
+		}
+
+		switch t.Effect(nil) {
+		case tool.EffectReadOnly:
+			filtered = append(filtered, t)
+		case tool.EffectDynamic:
+			t.Execute = planModeEffectExecute(t)
+			filtered = append(filtered, t)
+		}
+	}
+
+	return filtered
+}
+
+func planModeEffectExecute(t tool.Tool) func(context.Context, map[string]any) (string, error) {
+	return func(ctx context.Context, args map[string]any) (string, error) {
+		if t.Effect == nil || t.Effect(args) != tool.EffectReadOnly {
+			return "", fmt.Errorf("plan mode only allows read-only tool calls")
+		}
+
+		return t.Execute(ctx, args)
+	}
 }
 
 // IsGitRepo reports whether the agent's working directory is currently a git

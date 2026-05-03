@@ -16,7 +16,8 @@ import (
 // workspace and the allow-list is rejected.
 func ReadTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 	return tool.Tool{
-		Name: "read",
+		Name:   "read",
+		Effect: tool.StaticEffect(tool.EffectReadOnly),
 
 		Description: strings.Join([]string{
 			fmt.Sprintf("Read the contents of a file. Output includes line numbers. Truncated to %d lines or %dKB.", DefaultMaxLines, DefaultMaxBytes/1024),
