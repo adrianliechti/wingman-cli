@@ -61,8 +61,8 @@ func (c *Channel) Start(ctx context.Context, handler channel.MessageHandler) err
 			}
 
 			// Switch agent: /agent <name>
-			if strings.HasPrefix(text, "/agent ") {
-				name := strings.TrimSpace(strings.TrimPrefix(text, "/agent "))
+			if rest, ok := strings.CutPrefix(text, "/agent "); ok {
+				name := strings.TrimSpace(rest)
 				if name != "" {
 					c.chatID = "cli:" + name
 					fmt.Printf("Switched to agent: %s\n", name)

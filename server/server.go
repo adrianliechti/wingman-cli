@@ -332,6 +332,7 @@ func (s *Server) handleNewSession(w http.ResponseWriter, r *http.Request) {
 	s.sendMessage(CheckpointsChangedEvent{})
 	s.sendMessage(FilesChangedEvent{})
 	s.sendMessage(SessionsChangedEvent{})
+	s.sendMessage(UsageEvent{})
 
 	writeJSON(w, map[string]string{"id": s.sessionID})
 }
@@ -352,6 +353,11 @@ func (s *Server) handleLoadSession(w http.ResponseWriter, r *http.Request) {
 	s.agent.Messages = sess.State.Messages
 	s.agent.Usage = sess.State.Usage
 	s.sessionID = id
+	s.sendMessage(UsageEvent{
+		InputTokens:  s.agent.Usage.InputTokens,
+		CachedTokens: s.agent.Usage.CachedTokens,
+		OutputTokens: s.agent.Usage.OutputTokens,
+	})
 
 	messages := convertMessages(s.agent.Messages)
 	writeJSON(w, messages)

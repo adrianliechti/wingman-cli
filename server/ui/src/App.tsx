@@ -44,6 +44,7 @@ export default function App() {
 		respondAsk,
 		setEntries,
 		subscribe,
+		usage,
 	} = useWebSocket();
 	const capabilities = useCapabilities(subscribe);
 	// `diffs` controls whether the Changes tab is mounted at all (rewind is
@@ -272,6 +273,19 @@ export default function App() {
 							);
 						})}
 						<div className="flex-1" />
+						{(usage.inputTokens > 0 || usage.outputTokens > 0) && (
+							<div className="flex items-center px-3 text-[11px] text-fg-dim tabular-nums whitespace-nowrap">
+								{"\u2191"}
+								{formatTokens(usage.inputTokens)}
+								{usage.cachedTokens > 0 && (
+									<span className="ml-1">({formatTokens(usage.cachedTokens)} cached)</span>
+								)}
+								<span className="ml-2">
+									{"\u2193"}
+									{formatTokens(usage.outputTokens)}
+								</span>
+							</div>
+						)}
 						<button
 							type="button"
 							className="flex items-center justify-center w-10 h-10 text-fg-dim hover:text-fg-muted cursor-pointer transition-colors shrink-0"
@@ -393,6 +407,12 @@ export default function App() {
 			)}
 		</div>
 	);
+}
+
+function formatTokens(n: number): string {
+	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+	if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+	return String(n);
 }
 
 function RightTabButton({
