@@ -137,6 +137,7 @@ func (a *App) streamResponse(input []agent.Content) {
 		// Update token count during the loop so the statusbar stays current
 		usage := a.agent.Usage
 		a.inputTokens = usage.InputTokens
+		a.cachedTokens = usage.CachedTokens
 		a.outputTokens = usage.OutputTokens
 		a.app.QueueUpdateDraw(func() {
 			a.updateStatusBar()

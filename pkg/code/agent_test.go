@@ -2,9 +2,12 @@ package code
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/shell"
 )
@@ -88,5 +91,77 @@ func TestPlanModeShellRejectsMutatingSafeCommands(t *testing.T) {
 				t.Fatalf("command was not rejected with plan-mode error: %v", err)
 			}
 		})
+	}
+}
+
+func TestMemoryContextMessagesOnlyInjectChanges(t *testing.T) {
+	dir := t.TempDir()
+	a := &Agent{MemoryPath: dir}
+
+	if got := a.memoryContextMessages(); got != nil {
+		t.Fatalf("initial empty memory should not inject, got %#v", got)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, memoryFileName), []byte("remember this"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := a.memoryContextMessages()
+	if len(got) != 1 {
+		t.Fatalf("memory change should inject one message, got %#v", got)
+	}
+	if !got[0].Hidden || got[0].Role != agent.RoleUser {
+		t.Fatalf("memory context should be hidden user context, got %#v", got[0])
+	}
+	if got[0].Content[0].Text != memoryContextPrefix+"remember this" {
+		t.Fatalf("unexpected memory context: %q", got[0].Content[0].Text)
+	}
+
+	if got := a.memoryContextMessages(); got != nil {
+		t.Fatalf("unchanged memory should not inject, got %#v", got)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, memoryFileName), []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got = a.memoryContextMessages()
+	if len(got) != 1 {
+		t.Fatalf("cleared memory should inject one update, got %#v", got)
+	}
+	if !got[0].Hidden || got[0].Content[0].Text != memoryContextEmpty {
+		t.Fatalf("unexpected cleared-memory context: %#v", got[0])
+	}
+}
+
+func TestMemoryContextMessagesUsesSavedHiddenSnapshotOnResume(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, memoryFileName), []byte("remember this"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &Agent{
+		Agent:      &agent.Agent{},
+		MemoryPath: dir,
+	}
+	a.Messages = []agent.Message{{
+		Role:   agent.RoleUser,
+		Hidden: true,
+		Content: []agent.Content{{
+			Text: memoryContextPrefix + "remember this",
+		}},
+	}}
+
+	if got := a.memoryContextMessages(); got != nil {
+		t.Fatalf("unchanged saved memory snapshot should not reinject, got %#v", got)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, memoryFileName), []byte("changed"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := a.memoryContextMessages()
+	if len(got) != 1 || got[0].Content[0].Text != memoryContextPrefix+"changed" {
+		t.Fatalf("changed memory should inject new snapshot, got %#v", got)
 	}
 }

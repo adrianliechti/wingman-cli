@@ -5,14 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
-
-	"github.com/adrianliechti/wingman-agent/pkg/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/mcp"
 )
 
 func Tools(ctx context.Context, m *mcp.Manager) ([]tool.Tool, error) {
@@ -21,13 +21,25 @@ func Tools(ctx context.Context, m *mcp.Manager) ([]tool.Tool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	for serverName, session := range m.Sessions() {
+	sessions := m.Sessions()
+	names := make([]string, 0, len(sessions))
+	for name := range sessions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, serverName := range names {
+		session := sessions[serverName]
 		result, err := session.ListTools(ctx, nil)
 
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to list tools from MCP server %s: %v\n", serverName, err)
 			continue
 		}
+
+		sort.Slice(result.Tools, func(i, j int) bool {
+			return result.Tools[i].Name < result.Tools[j].Name
+		})
 
 		for _, mcpTool := range result.Tools {
 			t := convertTool(serverName, session, *mcpTool)

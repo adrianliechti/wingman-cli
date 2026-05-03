@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
-	
 )
 
 // Session represents a saved conversation session.
@@ -122,6 +121,10 @@ func Delete(sessionsDir string, id string) error {
 
 func extractTitle(messages []agent.Message) string {
 	for _, m := range messages {
+		if m.Hidden {
+			continue
+		}
+
 		if m.Role != "user" {
 			continue
 		}

@@ -32,7 +32,7 @@ func buildTurns(messages []agent.Message) []turn {
 
 	for i := range messages {
 		m := &messages[i]
-		if m.Role == agent.RoleSystem {
+		if m.Hidden || m.Role == agent.RoleSystem {
 			continue
 		}
 		if m.Role == agent.RoleUser {

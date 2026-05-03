@@ -404,6 +404,7 @@ func (a *App) clearChat() {
 	a.agent.Messages = nil
 	a.agent.Usage = agent.Usage{}
 	a.inputTokens = 0
+	a.cachedTokens = 0
 	a.outputTokens = 0
 	a.updateStatusBar()
 }
@@ -432,6 +433,7 @@ func (a *App) resumeSession() {
 	// Update token count from restored session
 	usage := a.agent.Usage
 	a.inputTokens = usage.InputTokens
+	a.cachedTokens = usage.CachedTokens
 	a.outputTokens = usage.OutputTokens
 
 	// Re-render chat with restored messages
@@ -877,7 +879,11 @@ func (a *App) updateStatusBar() {
 	var parts []string
 
 	if a.inputTokens > 0 || a.outputTokens > 0 {
-		parts = append(parts, fmt.Sprintf("[%s]↑%s ↓%s[-]", t.BrBlack, tui.FormatTokens(a.inputTokens), tui.FormatTokens(a.outputTokens)))
+		if a.cachedTokens > 0 {
+			parts = append(parts, fmt.Sprintf("[%s]↑%s (%s cached) ↓%s[-]", t.BrBlack, tui.FormatTokens(a.inputTokens), tui.FormatTokens(a.cachedTokens), tui.FormatTokens(a.outputTokens)))
+		} else {
+			parts = append(parts, fmt.Sprintf("[%s]↑%s ↓%s[-]", t.BrBlack, tui.FormatTokens(a.inputTokens), tui.FormatTokens(a.outputTokens)))
+		}
 	}
 
 	parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Cyan, code.ModelName(a.agent.Model())))
@@ -1031,7 +1037,6 @@ func (a *App) updateInputHint() {
 
 	a.inputHint.SetText(strings.Join(parts, "  "))
 }
-
 
 // Chat rendering (inlined from ChatRenderer)
 

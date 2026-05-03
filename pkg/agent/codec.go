@@ -223,6 +223,7 @@ func compactionEventToInput(item responses.ResponseCompactionItem) responses.Res
 func responseToUsage(r responses.Response) Usage {
 	return Usage{
 		InputTokens:  r.Usage.InputTokens,
+		CachedTokens: r.Usage.InputTokensDetails.CachedTokens,
 		OutputTokens: r.Usage.OutputTokens,
 	}
 }

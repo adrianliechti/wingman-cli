@@ -50,6 +50,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
 		s.sendMessage(UsageEvent{
 			InputTokens:  usage.InputTokens,
+			CachedTokens: usage.CachedTokens,
 			OutputTokens: usage.OutputTokens,
 		})
 	}
@@ -183,6 +184,7 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 		usage := s.agent.Usage
 		s.sendMessage(UsageEvent{
 			InputTokens:  usage.InputTokens,
+			CachedTokens: usage.CachedTokens,
 			OutputTokens: usage.OutputTokens,
 		})
 	}

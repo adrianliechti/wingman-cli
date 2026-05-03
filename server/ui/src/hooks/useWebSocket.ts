@@ -54,6 +54,7 @@ export function messagesToEntries(messages: ConversationMessage[]): ChatEntry[] 
 
 interface Usage {
 	inputTokens: number;
+	cachedTokens: number;
 	outputTokens: number;
 }
 
@@ -64,6 +65,7 @@ export function useWebSocket() {
 	const [entries, setEntries] = useState<ChatEntry[]>([]);
 	const [usage, setUsage] = useState<Usage>({
 		inputTokens: 0,
+		cachedTokens: 0,
 		outputTokens: 0,
 	});
 	const [prompt, setPrompt] = useState<{
@@ -245,6 +247,7 @@ export function useWebSocket() {
 			case "usage":
 				setUsage({
 					inputTokens: msg.input_tokens,
+					cachedTokens: msg.cached_tokens,
 					outputTokens: msg.output_tokens,
 				});
 				break;

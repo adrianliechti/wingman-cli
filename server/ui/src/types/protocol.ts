@@ -80,6 +80,7 @@ export interface DoneMessage {
 export interface UsageMessage {
 	type: "usage";
 	input_tokens: number;
+	cached_tokens: number;
 	output_tokens: number;
 }
 

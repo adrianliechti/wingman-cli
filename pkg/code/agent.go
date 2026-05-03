@@ -2,6 +2,7 @@ package code
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
 	"fmt"
 	iofs "io/fs"
@@ -114,7 +115,8 @@ type Agent struct {
 	mcpTools  []tool.Tool
 	lspTools  []tool.Tool
 
-	mu sync.Mutex
+	lastMemoryHash string
+	mu             sync.Mutex
 }
 
 func New(workDir string, ui UI) (*Agent, error) {
@@ -222,6 +224,7 @@ func New(workDir string, ui UI) (*Agent, error) {
 	}
 
 	agentCfg.Tools = a.tools
+	agentCfg.ContextMessages = a.memoryContextMessages
 
 	return a, nil
 }
@@ -419,8 +422,10 @@ func (a *Agent) Close() {
 // Memory and plan content
 
 const (
-	memoryFileName = "MEMORY.md"
-	memoryMaxBytes = 25 * 1024
+	memoryFileName      = "MEMORY.md"
+	memoryMaxBytes      = 25 * 1024
+	memoryContextPrefix = "Current MEMORY.md:\n\n"
+	memoryContextEmpty  = "MEMORY.md is currently empty."
 )
 
 func (a *Agent) MemoryContent() string {
@@ -446,6 +451,65 @@ func (a *Agent) MemoryContent() string {
 	return content
 }
 
+func (a *Agent) memoryContextMessages() []agent.Message {
+	content := a.MemoryContent()
+	messageText := ""
+	if content != "" {
+		messageText = memoryContextPrefix + content
+	}
+
+	sum := sha256.Sum256([]byte(content))
+	hash := string(sum[:])
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	prevHash := a.lastMemoryHash
+	if hash == a.lastMemoryHash {
+		return nil
+	}
+	a.lastMemoryHash = hash
+
+	if messageText == "" {
+		messageText = memoryContextEmpty
+		if prevHash == "" && a.latestMemoryContextText() == "" {
+			return nil
+		}
+	}
+
+	if prevHash == "" && a.latestMemoryContextText() == messageText {
+		return nil
+	}
+
+	return []agent.Message{{
+		Role:   agent.RoleUser,
+		Hidden: true,
+		Content: []agent.Content{{
+			Text: messageText,
+		}},
+	}}
+}
+
+func (a *Agent) latestMemoryContextText() string {
+	if a.Agent == nil {
+		return ""
+	}
+
+	for i := len(a.Messages) - 1; i >= 0; i-- {
+		m := a.Messages[i]
+		if !m.Hidden || m.Role != agent.RoleUser || len(m.Content) != 1 {
+			continue
+		}
+
+		text := m.Content[0].Text
+		if strings.HasPrefix(text, memoryContextPrefix) || text == memoryContextEmpty {
+			return text
+		}
+	}
+
+	return ""
+}
+
 // Instructions
 
 func BuildInstructions(data prompt.SectionData) string {
@@ -466,7 +530,6 @@ func (a *Agent) InstructionsData() prompt.SectionData {
 		Arch:                runtime.GOARCH,
 		WorkingDir:          a.RootPath,
 		MemoryDir:           a.MemoryPath,
-		MemoryContent:       a.MemoryContent(),
 		Skills:              skill.FormatForPrompt(a.Skills),
 		ProjectInstructions: ReadProjectInstructions(a.RootPath),
 	}

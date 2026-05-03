@@ -182,6 +182,7 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	usage := s.agent.Usage
 	writeJSON(w, map[string]int64{
 		"input_tokens":  usage.InputTokens,
+		"cached_tokens": usage.CachedTokens,
 		"output_tokens": usage.OutputTokens,
 	})
 }
@@ -250,6 +251,10 @@ func convertMessages(messages []agent.Message) []ConversationMessage {
 	var result []ConversationMessage
 
 	for _, m := range messages {
+		if m.Hidden {
+			continue
+		}
+
 		cm := ConversationMessage{
 			Role: string(m.Role),
 		}

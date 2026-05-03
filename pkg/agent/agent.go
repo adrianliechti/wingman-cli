@@ -36,11 +36,13 @@ func (a *Agent) Models(ctx context.Context) ([]ModelInfo, error) {
 }
 
 func (a *Agent) Send(ctx context.Context, input []Content) iter.Seq2[Message, error] {
+	a.appendContextMessages()
 	a.Messages = append(a.Messages, userMessage(input))
 
 	return func(yield func(Message, error) bool) {
 		for {
 			a.removeOrphanedToolMessages()
+			a.appendContextMessages()
 
 			model := ""
 			if a.Config.Model != nil {
@@ -83,6 +85,7 @@ func (a *Agent) Send(ctx context.Context, input []Content) iter.Seq2[Message, er
 			}
 
 			a.Usage.InputTokens += resp.usage.InputTokens
+			a.Usage.CachedTokens += resp.usage.CachedTokens
 			a.Usage.OutputTokens += resp.usage.OutputTokens
 			a.Messages = append(a.Messages, resp.messages...)
 
@@ -100,6 +103,14 @@ func (a *Agent) Send(ctx context.Context, input []Content) iter.Seq2[Message, er
 			}
 		}
 	}
+}
+
+func (a *Agent) appendContextMessages() {
+	if a.ContextMessages == nil {
+		return
+	}
+
+	a.Messages = append(a.Messages, a.ContextMessages()...)
 }
 
 func extractToolCalls(messages []Message) []ToolCall {

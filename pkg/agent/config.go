@@ -14,9 +14,10 @@ import (
 type Config struct {
 	client *openai.Client
 
-	Model        func() string
-	Tools        func() []tool.Tool
-	Instructions func() string
+	Model           func() string
+	Tools           func() []tool.Tool
+	Instructions    func() string
+	ContextMessages func() []Message
 
 	Hooks hook.Hooks
 }
