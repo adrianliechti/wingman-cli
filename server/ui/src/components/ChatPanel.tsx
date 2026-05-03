@@ -37,12 +37,6 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 		open: boolean;
 		tick: number;
 	} | null>(null);
-	const toggleExpandAll = useCallback(() => {
-		setExpandSignal((prev) => ({
-			open: prev ? !prev.open : true,
-			tick: (prev?.tick ?? 0) + 1,
-		}));
-	}, []);
 	const containerRef = useRef<HTMLDivElement>(null);
 	const contentRef = useRef<HTMLDivElement>(null);
 	const spacerRef = useRef<HTMLDivElement>(null);
@@ -69,7 +63,102 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 		el.scrollTop = top;
 	}, []);
 
+	// ── collapse anchor ──────────────────────────────────────────────────────
+	//
+	// Collapsing or expanding a turn's working area shifts everything below
+	// (and sometimes above) the affected node. Because the container has
+	// `overflow-anchor: none` to keep the streaming pin authoritative, the
+	// browser won't compensate — the visible content jumps. To stop that, the
+	// trigger sites snapshot a stable anchor element's screen position before
+	// the state change, and a layout effect after the commit re-applies that
+	// position by adjusting scrollTop. User and final-answer entries are the
+	// stable choices — they survive collapse/expand transitions.
+	const pendingAnchorRef = useRef<{ id: string; viewportTop: number } | null>(
+		null,
+	);
+
+	const captureAnchor = useCallback(() => {
+		const c = containerRef.current;
+		const content = contentRef.current;
+		if (!c || !content) return;
+		const turns = buildTurns(entries);
+		const stable = new Set<string>();
+		for (const t of turns) {
+			if (t.user) stable.add(t.user.id);
+			if (t.final) stable.add(t.final.id);
+		}
+		const cRect = c.getBoundingClientRect();
+		// Prefer a stable entry that intersects the viewport. If the viewport is
+		// currently filled by working entries that are about to disappear, fall
+		// back to the nearest stable entry below the viewport so content after
+		// the collapse does not jump upward.
+		let visible: { id: string; viewportTop: number } | null = null;
+		let below: { id: string; viewportTop: number } | null = null;
+		let above: { id: string; viewportTop: number } | null = null;
+		const els = content.querySelectorAll<HTMLElement>("[data-entry-id]");
+		for (const el of els) {
+			const id = el.dataset.entryId;
+			if (!id || !stable.has(id)) continue;
+			const rect = el.getBoundingClientRect();
+			const viewportTop = rect.top - cRect.top;
+			const viewportBottom = rect.bottom - cRect.top;
+			if (viewportBottom >= 0 && viewportTop <= cRect.height) {
+				visible = { id, viewportTop };
+				continue;
+			}
+			if (viewportTop > cRect.height) {
+				below = { id, viewportTop };
+				break;
+			}
+			above = { id, viewportTop };
+		}
+		pendingAnchorRef.current = visible ?? below ?? above;
+	}, [entries]);
+
+	const applyPendingAnchor = useCallback(() => {
+		const c = containerRef.current;
+		const content = contentRef.current;
+		if (!c || !content) return;
+		const a = pendingAnchorRef.current;
+		if (!a) return;
+		pendingAnchorRef.current = null;
+		const el = findEntryElement(content, a.id);
+		if (!el) return;
+		const cRect = c.getBoundingClientRect();
+		const newTop = el.getBoundingClientRect().top - cRect.top;
+		const delta = newTop - a.viewportTop;
+		if (Math.abs(delta) > 0.5) {
+			writeScrollTop(c, c.scrollTop + delta);
+		}
+	}, [writeScrollTop]);
+
+	const toggleExpandAll = useCallback(() => {
+		captureAnchor();
+		setExpandSignal((prev) => ({
+			open: prev ? !prev.open : true,
+			tick: (prev?.tick ?? 0) + 1,
+		}));
+	}, [captureAnchor]);
+
 	const isActive = phase !== "idle";
+
+	// Phase non-idle -> idle triggers the active turn's auto-collapse. If the
+	// user scrolled away from the pinned message during streaming, the working
+	// area is partly above the viewport and shrinking it would jump the visible
+	// content. Snapshot an anchor here (during render, before React commits the
+	// collapsed DOM) so the apply step can preserve it. When the user did not
+	// scroll, the pin keeps the user message at the top through the collapse
+	// and the natural layout is what we want — skip the capture in that case.
+	const prevPhaseRef = useRef(phase);
+	/* eslint-disable react-hooks/refs -- This is intentionally a pre-commit
+	   DOM snapshot for the phase-driven auto-collapse. Function components do
+	   not have a getSnapshotBeforeUpdate hook, and a layout effect would run
+	   after the working entries have already collapsed. */
+	if (prevPhaseRef.current !== "idle" && phase === "idle") {
+		if (userScrolledRef.current) captureAnchor();
+	}
+	prevPhaseRef.current = phase;
+	/* eslint-enable react-hooks/refs */
 
 	// Show the skill picker while the user is still typing the slash command
 	// (no whitespace yet — once they add a space we treat the rest as args).
@@ -99,9 +188,7 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 		if (submitPendingRef.current) {
 			const last = entries[entries.length - 1];
 			if (last?.type !== "user") return;
-			const userEl = content.querySelector(
-				`[data-entry-id="${last.id}"]`,
-			) as HTMLElement | null;
+			const userEl = findEntryElement(content, last.id);
 			if (!userEl) return;
 
 			submitPendingRef.current = false;
@@ -168,9 +255,7 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 		const onResize = () => {
 			const pin = pinRef.current;
 			if (!pin || userScrolledRef.current) return;
-			const userEl = content.querySelector(
-				`[data-entry-id="${pin.id}"]`,
-			) as HTMLElement | null;
+			const userEl = findEntryElement(content, pin.id);
 			if (!userEl) return;
 
 			const cRect = container.getBoundingClientRect();
@@ -300,6 +385,8 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 										isActive={isActive}
 										phase={phase}
 										expandSignal={expandSignal}
+										captureAnchor={captureAnchor}
+										applyPendingAnchor={applyPendingAnchor}
 									/>
 								);
 							});
@@ -508,16 +595,27 @@ function buildTurns(entries: ChatEntry[]): Turn[] {
 	return turns;
 }
 
+function findEntryElement(root: HTMLElement, id: string): HTMLElement | null {
+	for (const el of root.querySelectorAll<HTMLElement>("[data-entry-id]")) {
+		if (el.dataset.entryId === id) return el;
+	}
+	return null;
+}
+
 function TurnView({
 	turn,
 	isActive,
 	phase,
 	expandSignal,
+	captureAnchor,
+	applyPendingAnchor,
 }: {
 	turn: Turn;
 	isActive: boolean;
 	phase: Phase;
 	expandSignal: { open: boolean; tick: number } | null;
+	captureAnchor: () => void;
+	applyPendingAnchor: () => void;
 }) {
 	// Collapsed when: turn is finished AND has a final answer AND has working
 	// entries to hide. While the agent is still working (no final yet, or
@@ -538,8 +636,25 @@ function TurnView({
 	const signalWins = signalTick > (override?.tick ?? 0);
 	const effective = signalWins ? expandSignal?.open : override?.value;
 	const expanded = effective ?? !canCollapse;
-	const setExpanded = (value: boolean) =>
+	const setExpanded = (value: boolean) => {
+		// Snapshot pre-mutation scroll position so the apply effect below can
+		// keep the visible content stable across the per-turn collapse/expand.
+		captureAnchor();
 		setOverride({ value, tick: signalTick });
+	};
+
+	// After the working area's commit lands (auto-collapse, manual click, or
+	// expand-all signal), restore any pending anchor. Child effects run before
+	// the parent's, so this fires before ChatPanel's spacer-trim sees the new
+	// scrollTop. Skip the initial mount — only transitions matter.
+	const skipFirstRef = useRef(true);
+	useLayoutEffect(() => {
+		if (skipFirstRef.current) {
+			skipFirstRef.current = false;
+			return;
+		}
+		applyPendingAnchor();
+	}, [expanded, applyPendingAnchor]);
 
 	return (
 		<>
