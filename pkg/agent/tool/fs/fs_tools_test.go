@@ -749,6 +749,39 @@ func TestGrepTool(t *testing.T) {
 			t.Errorf("expected 'Hello' in results, got: %s", result)
 		}
 	})
+
+	t.Run("grep multiline pattern spanning lines", func(t *testing.T) {
+		os.WriteFile(filepath.Join(tmpDir, "multi.go"), []byte("type Foo struct {\n\tname string\n\tfield int\n}\n"), 0644)
+
+		// Without multiline this can't match across newlines.
+		result, err := grepTool.Execute(context.Background(), map[string]any{
+			"pattern":   `struct \{[\s\S]*?field`,
+			"path":      "multi.go",
+			"multiline": true,
+		})
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !strings.Contains(result, "multi.go") || !strings.Contains(result, "field") {
+			t.Errorf("expected multi.go and matched 'field' line, got: %s", result)
+		}
+
+		// Sanity: same pattern without multiline must NOT match.
+		nonMulti, err := grepTool.Execute(context.Background(), map[string]any{
+			"pattern": `struct \{[\s\S]*?field`,
+			"path":    "multi.go",
+		})
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !strings.Contains(nonMulti, "No matches") {
+			t.Errorf("non-multiline should not match across lines, got: %s", nonMulti)
+		}
+	})
 }
 
 func TestPathHandlingCrossplatform(t *testing.T) {

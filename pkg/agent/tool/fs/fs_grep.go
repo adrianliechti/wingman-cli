@@ -9,6 +9,7 @@ import (
 	pathpkg "path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
@@ -215,7 +216,7 @@ func GrepTool(root *os.Root) tool.Tool {
 
 			// If path is a file, search just that file
 			if !info.IsDir() {
-				matches := searchFileWithContext(fsys, searchPathFS, re, beforeContext, afterContext, headLimit+resultOffset)
+				matches := searchFileWithContext(fsys, searchPathFS, re, beforeContext, afterContext, headLimit+resultOffset, multiline)
 
 				if len(matches) == 0 {
 					return "No matches found", nil
@@ -277,7 +278,7 @@ func GrepTool(root *os.Root) tool.Tool {
 
 				// For files_with_matches mode, just check if file has any match
 				if outputMode == "files_with_matches" {
-					matches := searchFileWithContext(fsys, path, re, 0, 0, 1)
+					matches := searchFileWithContext(fsys, path, re, 0, 0, 1, multiline)
 					if len(matches) > 0 {
 						matchCount++
 
@@ -298,7 +299,7 @@ func GrepTool(root *os.Root) tool.Tool {
 
 				// For count mode, count all matches in file
 				if outputMode == "count" {
-					matches := searchFileWithContext(fsys, path, re, 0, 0, 10000)
+					matches := searchFileWithContext(fsys, path, re, 0, 0, 10000, multiline)
 					if len(matches) > 0 {
 						matchCount++
 
@@ -326,7 +327,7 @@ func GrepTool(root *os.Root) tool.Tool {
 					return filepath.SkipAll
 				}
 
-				matches := searchFileWithContext(fsys, path, re, beforeContext, afterContext, remaining)
+				matches := searchFileWithContext(fsys, path, re, beforeContext, afterContext, remaining, multiline)
 
 				for _, m := range matches {
 					matchCount++
@@ -406,7 +407,7 @@ func GrepTool(root *os.Root) tool.Tool {
 	}
 }
 
-func searchFileWithContext(fsys fs.FS, path string, re *regexp.Regexp, beforeContext, afterContext, limit int) []string {
+func searchFileWithContext(fsys fs.FS, path string, re *regexp.Regexp, beforeContext, afterContext, limit int, multiline bool) []string {
 	f, err := fsys.Open(path)
 
 	if err != nil {
@@ -434,10 +435,40 @@ func searchFileWithContext(fsys fs.FS, path string, re *regexp.Regexp, beforeCon
 	var results []string
 	matchedLines := make(map[int]bool)
 
-	// First pass: find all matching lines
-	for i, line := range lines {
-		if re.MatchString(line) {
-			matchedLines[i] = true
+	if multiline {
+		// In multiline mode the regex may span newlines, so we must run it
+		// against the joined file content rather than line-by-line. Each match
+		// is then mapped back to the line range it covers, and every line in
+		// that range is marked as matched so context formatting still works.
+		full := strings.Join(lines, "\n")
+
+		// lineStarts[i] = byte offset of the start of line i in `full`.
+		lineStarts := make([]int, len(lines))
+		offset := 0
+		for i, line := range lines {
+			lineStarts[i] = offset
+			offset += len(line) + 1 // +1 for the joining '\n'
+		}
+
+		for _, m := range re.FindAllStringIndex(full, -1) {
+			start, end := m[0], m[1]
+			startLine := max(0, sort.Search(len(lineStarts), func(i int) bool { return lineStarts[i] > start })-1)
+			// For zero-width matches, end equals start; clamp so we still mark the starting line.
+			endProbe := end
+			if endProbe > start {
+				endProbe = end - 1
+			}
+			endLine := max(startLine, sort.Search(len(lineStarts), func(i int) bool { return lineStarts[i] > endProbe })-1)
+			for i := startLine; i <= endLine; i++ {
+				matchedLines[i] = true
+			}
+		}
+	} else {
+		// First pass: find all matching lines
+		for i, line := range lines {
+			if re.MatchString(line) {
+				matchedLines[i] = true
+			}
 		}
 	}
 
