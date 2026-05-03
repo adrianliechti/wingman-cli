@@ -21,6 +21,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 	"github.com/adrianliechti/wingman-agent/pkg/session"
+	"github.com/adrianliechti/wingman-agent/pkg/system"
 
 	"github.com/coder/websocket"
 )
@@ -99,6 +100,12 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Auto-select model
 	s.autoSelectModel(ctx)
+
+	port, err := system.FreePort(s.port)
+	if err != nil {
+		return err
+	}
+	s.port = port
 
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)

@@ -69,7 +69,7 @@ func main() {
 
 func runServer(ctx context.Context) {
 	fs := flag.NewFlagSet("server", flag.ExitOnError)
-	port := fs.Int("port", 4242, "port to listen on")
+	port := fs.Int("port", 9000, "port to listen on")
 	fs.Parse(os.Args[2:])
 
 	wd, err := os.Getwd()
