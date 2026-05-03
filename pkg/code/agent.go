@@ -185,6 +185,8 @@ func New(workDir string, ui UI) (*Agent, error) {
 	// SKILL.md plus any bundled scripts/references), AND ~/.wingman/skills
 	// as a whole — bundled skills materialize into that tree on first
 	// invocation and need to be readable in the same session.
+	// Also allow the scratch dir: the truncation hook saves full tool
+	// outputs there, and its hint tells the model to `read` that path.
 	var allowedReadRoots []string
 	for _, s := range mergedSkills {
 		if s.Location != "" && filepath.IsAbs(s.Location) {
@@ -194,6 +196,7 @@ func New(workDir string, ui UI) (*Agent, error) {
 	if home, err := os.UserHomeDir(); err == nil {
 		allowedReadRoots = append(allowedReadRoots, filepath.Join(home, ".wingman", "skills"))
 	}
+	allowedReadRoots = append(allowedReadRoots, scratchDir)
 
 	baseTools := slices.Concat(
 		fs.Tools(root, allowedReadRoots...),

@@ -21,6 +21,7 @@ func Tools() []tool.Tool {
 		"",
 		"Usage:",
 		"- Use for current events, recent documentation, library versions, or anything time-sensitive.",
+		"- Skip this tool for stable facts (language syntax, well-known algorithms, settled APIs) — answer from your training instead.",
 		"- Provide clear, specific search queries for best results.",
 		"- Returns titles, URLs, and content snippets from search results.",
 	}, "\n")

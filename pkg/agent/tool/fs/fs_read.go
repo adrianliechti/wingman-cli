@@ -24,9 +24,10 @@ func ReadTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 			"",
 			"Usage:",
 			"- You must read a file before editing it.",
+			"- If you read this file earlier in the conversation and nothing has modified it since, the prior result is still current — refer to it instead of re-reading. Re-read only after `edit` or `write`, or when the user indicates external changes.",
 			"- For large files, use offset and limit to read in chunks. The output will tell you where to continue.",
 			"- Read multiple files in parallel by calling this tool multiple times in one response.",
-			"- Prefer `grep` to locate relevant code before reading entire files.",
+			"- Prefer `grep` to locate relevant code before reading entire files. Often a single `grep` returns enough context that no `read` is needed.",
 			"- When editing text from read output, preserve the exact indentation as shown AFTER the line number prefix. Never include line numbers in old_text.",
 		}, "\n"),
 

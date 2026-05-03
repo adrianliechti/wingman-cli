@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/hook/truncation"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 	"github.com/adrianliechti/wingman-agent/pkg/session"
@@ -91,6 +92,13 @@ func (s *Server) Run(ctx context.Context) error {
 	// — the agent invokes this lazily on every Send, so toggling plan mode
 	// takes effect on the next turn.
 	s.agent.Config.Instructions = s.currentInstructions
+
+	// Cap large tool outputs at the wire layer and save the full text to a
+	// scratch file so the model can `read` a specific range if it needs the
+	// elided middle. Same hook as the TUI uses (tui/code/app.go).
+	s.agent.Config.Hooks.PostToolUse = append(s.agent.Config.Hooks.PostToolUse,
+		truncation.New(truncation.DefaultMaxBytes, s.agent.ScratchPath),
+	)
 
 	// Poll for changes from outside the agent (terminal `rm`, IDE saves, etc.)
 	// so the FileTree and Diffs panels reflect them. Polling instead of

@@ -21,9 +21,11 @@ func EditTool(root *os.Root) tool.Tool {
 			"- You must use `read` at least once on a file before editing it.",
 			"- When editing text from read output, preserve the exact indentation (tabs/spaces) as shown AFTER the line number prefix. Never include the line number prefix in old_text or new_text.",
 			"- The edit will FAIL if old_text is not unique in the file. Either provide more surrounding context to make it unique, or use replace_all to change every occurrence.",
+			"- Use the smallest old_text that is uniquely identifying — usually 2-4 adjacent lines. Avoid pasting 10+ lines of context when less will work.",
 			"- Use replace_all for renaming variables, functions, or other identifiers across a file.",
 			"- ALWAYS prefer editing existing files over writing new ones.",
 			"- NEVER use the shell tool (sed, awk) for file edits — use this tool instead.",
+			"- After a successful edit, the diff in the result is authoritative. Do not re-read the file unless you need context the diff doesn't show.",
 		}, "\n"),
 
 		Parameters: map[string]any{

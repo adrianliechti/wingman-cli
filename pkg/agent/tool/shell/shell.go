@@ -37,6 +37,7 @@ func Tools(workDir string, elicit *tool.Elicitation) []tool.Tool {
 		"- For dependent commands, chain with && in a single call (on Windows PowerShell 5.1, use `; if ($?) {` instead since && is not supported).",
 		"- Use ; only when you need sequential execution but don't care if earlier commands fail.",
 		"- For git: prefer new commits over amending; never use --no-verify, --force, or -i (interactive) unless explicitly asked.",
+		"- If a pre-commit hook rejects a commit, the commit did NOT happen. Fix the issue, re-stage, and create a NEW commit — do not use --amend, which would silently rewrite the previous commit.",
 		"- If a command is long-running, increase the timeout instead of using sleep.",
 	}, "\n")
 

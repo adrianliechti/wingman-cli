@@ -25,11 +25,10 @@ func FindTool(root *os.Root) tool.Tool {
 			fmt.Sprintf("Find files by glob pattern. Returns paths sorted by modification time (newest first). Respects .gitignore. Default limit: %d.", DefaultFindLimit),
 			"",
 			"Usage:",
-			"- NEVER run find or ls -R via the shell — use this tool instead.",
+			"- Prefer this tool over shell `find` / `ls -R` for filename pattern discovery.",
+			"- Use `grep` (which lists matching files) when you're looking for content rather than filenames — it often replaces a separate `find` call.",
 			"- Supports glob patterns: \"**/*.go\", \"src/**/*.ts\", \"*.{js,jsx}\".",
 			"- Results are sorted newest-first, so recently changed files appear at the top.",
-			"- Use this to discover codebase structure before using grep or read.",
-			"- For searching text inside files, use `grep` instead.",
 		}, "\n"),
 
 		Parameters: map[string]any{

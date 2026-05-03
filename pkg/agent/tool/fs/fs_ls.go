@@ -17,11 +17,17 @@ func LsTool(root *os.Root) tool.Tool {
 		Name:   "ls",
 		Effect: tool.StaticEffect(tool.EffectReadOnly),
 
-		Description: fmt.Sprintf(
-			"List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to %d entries or %dKB (whichever is hit first).",
-			DefaultListLimit,
-			DefaultMaxBytes/1024,
-		),
+		Description: strings.Join([]string{
+			fmt.Sprintf(
+				"List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to %d entries or %dKB (whichever is hit first).",
+				DefaultListLimit,
+				DefaultMaxBytes/1024,
+			),
+			"",
+			"Usage:",
+			"- Prefer `find` or `grep` when looking for specific files or content — they're more targeted.",
+			"- Use `ls` only when you genuinely need to inspect a directory's immediate contents and don't yet know what's there.",
+		}, "\n"),
 
 		Parameters: map[string]any{
 			"type": "object",

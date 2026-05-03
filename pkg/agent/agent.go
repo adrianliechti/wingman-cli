@@ -42,7 +42,6 @@ func (a *Agent) Send(ctx context.Context, input []Content) iter.Seq2[Message, er
 	return func(yield func(Message, error) bool) {
 		for {
 			a.removeOrphanedToolMessages()
-			a.appendContextMessages()
 
 			model := ""
 			if a.Config.Model != nil {
