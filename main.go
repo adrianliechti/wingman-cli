@@ -20,6 +20,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/tui/proxy"
 
 	"github.com/adrianliechti/wingman-agent/tui/run/claude"
+	claudedesktop "github.com/adrianliechti/wingman-agent/tui/run/claude-desktop"
 	"github.com/adrianliechti/wingman-agent/tui/run/codex"
 	"github.com/adrianliechti/wingman-agent/tui/run/gemini"
 	"github.com/adrianliechti/wingman-agent/tui/run/opencode"
@@ -52,10 +53,8 @@ func main() {
 			return
 		}
 	case "run":
-		if os.Getenv("WINGMAN_URL") != "" {
-			runRun(ctx)
-			return
-		}
+		runRun(ctx)
+		return
 	case "--resume":
 		sessionID := "latest"
 		if len(os.Args) > 2 {
@@ -111,19 +110,28 @@ func runRun(ctx context.Context) {
 		os.Exit(1)
 	}
 
+	var err error
+
 	switch os.Args[2] {
 	case "claude":
-		claude.Run(ctx, os.Args[3:], nil)
+		err = claude.Run(ctx, os.Args[3:], nil)
+	case "claude-desktop":
+		err = claudedesktop.Run(ctx, os.Args[3:], nil)
 	case "codex":
-		codex.Run(ctx, os.Args[3:], nil)
+		err = codex.Run(ctx, os.Args[3:], nil)
 	case "gemini":
-		gemini.Run(ctx, os.Args[3:], nil)
+		err = gemini.Run(ctx, os.Args[3:], nil)
 	case "opencode":
-		opencode.Run(ctx, os.Args[3:], nil)
+		err = opencode.Run(ctx, os.Args[3:], nil)
 	default:
 		fmt.Fprintln(os.Stderr, "Error: missing or unknown run target")
 		fmt.Fprintln(os.Stderr)
 		printHelp(os.Stderr)
+		os.Exit(1)
+	}
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -206,10 +214,10 @@ Usage:
   wingman server [-port N]     Run the web UI server
   wingman claw                 Run the claw multi-agent runner
   wingman proxy [-port N]      Run the API proxy + dashboard (requires WINGMAN_URL)
-  wingman run <target> [args]  Run an external agent through wingman (requires WINGMAN_URL)
+  wingman run <target> [args]  Run an external agent through wingman
 
 Run targets:
-  claude, codex, gemini, opencode
+  claude, claude-desktop, codex, gemini, opencode
 
 Flags:
   --resume [id]   Resume the latest (or specified) saved session
