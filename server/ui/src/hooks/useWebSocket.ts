@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ClientMessage, Phase, ServerMessage } from "../types/protocol";
+import type {
+	ClientMessage,
+	ConversationMessage,
+	Phase,
+	ServerMessage,
+} from "../types/protocol";
 
 export interface ChatEntry {
 	id: string;
@@ -11,6 +16,40 @@ export interface ChatEntry {
 	toolResult?: string;
 	toolId?: string;
 	reasoningId?: string;
+}
+
+export function messagesToEntries(messages: ConversationMessage[]): ChatEntry[] {
+	const entries: ChatEntry[] = [];
+	for (const m of messages) {
+		for (const c of m.content) {
+			if (c.text) {
+				entries.push({
+					id: crypto.randomUUID(),
+					type: m.role === "user" ? "user" : "assistant",
+					content: c.text,
+				});
+			}
+			if (c.reasoning?.summary) {
+				entries.push({
+					id: crypto.randomUUID(),
+					type: "reasoning",
+					content: c.reasoning.summary,
+					reasoningId: c.reasoning.id,
+				});
+			}
+			if (c.tool_result) {
+				entries.push({
+					id: crypto.randomUUID(),
+					type: "tool",
+					content: "",
+					toolName: c.tool_result.name,
+					toolArgs: c.tool_result.args,
+					toolResult: c.tool_result.content,
+				});
+			}
+		}
+	}
+	return entries;
 }
 
 interface Usage {
@@ -86,37 +125,7 @@ export function useWebSocket() {
 		}
 		switch (msg.type) {
 			case "messages": {
-				const restored: ChatEntry[] = [];
-				for (const m of msg.messages) {
-					for (const c of m.content) {
-						if (c.text) {
-							restored.push({
-								id: nextId(),
-								type: m.role === "user" ? "user" : "assistant",
-								content: c.text,
-							});
-						}
-						if (c.reasoning?.summary) {
-							restored.push({
-								id: nextId(),
-								type: "reasoning",
-								content: c.reasoning.summary,
-								reasoningId: c.reasoning.id,
-							});
-						}
-						if (c.tool_result) {
-							restored.push({
-								id: nextId(),
-								type: "tool",
-								content: "",
-								toolName: c.tool_result.name,
-								toolArgs: c.tool_result.args,
-								toolResult: c.tool_result.content,
-							});
-						}
-					}
-				}
-				setEntries(restored);
+				setEntries(messagesToEntries(msg.messages));
 				break;
 			}
 

@@ -2,6 +2,7 @@ import { loader } from "@monaco-editor/react";
 import type * as Monaco from "monaco-editor";
 import { useEffect, useRef } from "react";
 import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { useColorScheme } from "../hooks/useColorScheme";
 import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
 
@@ -10,6 +11,7 @@ export function MarkdownContent({ text }: { text: string }) {
 
 	return (
 		<Markdown
+			remarkPlugins={[remarkGfm]}
 			components={{
 				code({ className, children }) {
 					const match = /language-(\w+)/.exec(className || "");
@@ -93,6 +95,38 @@ export function MarkdownContent({ text }: { text: string }) {
 				},
 				em({ children }) {
 					return <em className="text-fg-muted">{children}</em>;
+				},
+				table({ children }) {
+					return (
+						<div className="my-2 overflow-x-auto">
+							<table className="border-collapse text-[12px] text-fg-muted">
+								{children}
+							</table>
+						</div>
+					);
+				},
+				thead({ children }) {
+					return <thead className="text-fg">{children}</thead>;
+				},
+				tr({ children }) {
+					return (
+						<tr className="border-b border-border-subtle last:border-0">
+							{children}
+						</tr>
+					);
+				},
+				th({ children }) {
+					return (
+						<th className="px-2 py-1 text-left font-semibold align-top">
+							{children}
+						</th>
+					);
+				},
+				td({ children }) {
+					return <td className="px-2 py-1 align-top">{children}</td>;
+				},
+				del({ children }) {
+					return <del className="text-fg-dim">{children}</del>;
 				},
 			}}
 		>

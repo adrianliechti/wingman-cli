@@ -20,7 +20,7 @@ import { ProblemsPanel } from "./components/ProblemsPanel";
 import { PromptDialog } from "./components/PromptDialog";
 import { Sidebar } from "./components/Sidebar";
 import { useCapabilities } from "./hooks/useCapabilities";
-import { useWebSocket } from "./hooks/useWebSocket";
+import { messagesToEntries, useWebSocket } from "./hooks/useWebSocket";
 
 interface CenterTab {
 	id: string;
@@ -162,36 +162,7 @@ export default function App() {
 			const res = await fetch(`/api/sessions/${id}/load`, { method: "POST" });
 			if (!res.ok) return;
 			const messages = await res.json();
-			const restored: Array<{
-				id: string;
-				type: "user" | "assistant" | "tool" | "error";
-				content: string;
-				toolName?: string;
-				toolArgs?: string;
-				toolResult?: string;
-			}> = [];
-			for (const m of messages) {
-				for (const c of m.content) {
-					if (c.text) {
-						restored.push({
-							id: crypto.randomUUID(),
-							type: m.role === "user" ? "user" : "assistant",
-							content: c.text,
-						});
-					}
-					if (c.tool_result) {
-						restored.push({
-							id: crypto.randomUUID(),
-							type: "tool",
-							content: "",
-							toolName: c.tool_result.name,
-							toolArgs: c.tool_result.args,
-							toolResult: c.tool_result.content,
-						});
-					}
-				}
-			}
-			setEntries(restored);
+			setEntries(messagesToEntries(messages));
 			setSessionId(id);
 			setActiveTabId("chat");
 		},

@@ -31,6 +31,18 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 	const [input, setInput] = useState("");
 	const [files, setFiles] = useState<string[]>([]);
 	const [showPicker, setShowPicker] = useState(false);
+	// One-shot expand/collapse signal: bumping `tick` triggers each TurnView's
+	// override to snap to `open`. Per-turn clicks afterwards override again.
+	const [expandSignal, setExpandSignal] = useState<{
+		open: boolean;
+		tick: number;
+	} | null>(null);
+	const toggleExpandAll = useCallback(() => {
+		setExpandSignal((prev) => ({
+			open: prev ? !prev.open : true,
+			tick: (prev?.tick ?? 0) + 1,
+		}));
+	}, []);
 	const containerRef = useRef<HTMLDivElement>(null);
 	const contentRef = useRef<HTMLDivElement>(null);
 	const spacerRef = useRef<HTMLDivElement>(null);
@@ -244,6 +256,16 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 
 	return (
 		<div className="h-full relative overflow-hidden bg-bg">
+			{entries.length > 0 && (
+				<button
+					type="button"
+					onClick={toggleExpandAll}
+					className="absolute top-2 right-3 z-10 text-[11px] text-fg-dim hover:text-fg font-mono cursor-pointer px-1.5 py-0.5 rounded hover:bg-bg-hover"
+					title="Expand or collapse all turns"
+				>
+					{expandSignal?.open ? "collapse all" : "expand all"}
+				</button>
+			)}
 			<div
 				className="h-full overflow-y-auto pb-24 [overflow-anchor:none]"
 				ref={containerRef}
@@ -261,28 +283,27 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 					</div>
 				) : (
 					<div className="px-4 py-4" ref={contentRef}>
-						{entries.map((entry, idx) => {
-							const isLast = idx === entries.length - 1;
-							const isStreaming =
-								isLast &&
-								((phase === "streaming" &&
-									entry.type === "assistant") ||
-									(phase === "thinking" &&
-										entry.type === "reasoning"));
-							return (
-								<EntryView
-									key={entry.id}
-									entry={entry}
-									isStreaming={isStreaming}
-									hasFollowing={!isLast}
-								/>
-							);
-						})}
-						{phase !== "idle" &&
-							phase !== "streaming" &&
-							entries[entries.length - 1]?.type !== "reasoning" && (
-								<PhaseIndicator phase={phase} />
-							)}
+						{(() => {
+							// Split entries into turns: each turn is a user message followed by
+							// "working" entries (reasoning, tools, intermediate assistant text)
+							// and ending with the final assistant text (or error). When a turn
+							// is finished, the working section collapses to a single line so
+							// the chat history shows: user → [Worked] → final answer.
+							const turns = buildTurns(entries);
+							return turns.map((turn, idx) => {
+								const isLastTurn = idx === turns.length - 1;
+								const isActive = isLastTurn && phase !== "idle";
+								return (
+									<TurnView
+										key={turn.key}
+										turn={turn}
+										isActive={isActive}
+										phase={phase}
+										expandSignal={expandSignal}
+									/>
+								);
+							});
+						})()}
 					</div>
 				)}
 				{/* Spacer lives outside contentRef so writing its height doesn't
@@ -403,11 +424,9 @@ export function ChatPanel({ entries, phase, onSend, onCancel }: Props) {
 function EntryView({
 	entry,
 	isStreaming,
-	hasFollowing,
 }: {
 	entry: ChatEntry;
 	isStreaming: boolean;
-	hasFollowing: boolean;
 }) {
 	if (entry.type === "error") {
 		return (
@@ -419,18 +438,8 @@ function EntryView({
 		);
 	}
 
-	if (entry.type === "tool") {
-		return <ToolCallView entry={entry} />;
-	}
-
 	if (entry.type === "reasoning") {
-		return (
-			<ReasoningView
-				entry={entry}
-				isStreaming={isStreaming}
-				hasFollowing={hasFollowing}
-			/>
-		);
+		return <ReasoningView entry={entry} isStreaming={isStreaming} />;
 	}
 
 	const isUser = entry.type === "user";
@@ -456,10 +465,219 @@ function EntryView({
 	);
 }
 
+interface Turn {
+	key: string;
+	user: ChatEntry | null;
+	working: ChatEntry[];
+	final: ChatEntry | null;
+}
+
+// Split flat entries into turns: each turn is one user message + everything
+// the agent did before its next final answer. Reasoning, tool calls, and
+// intermediate assistant text all go into `working`; the last assistant or
+// error entry of the turn becomes `final`. This lets us render finished turns
+// as `user → [Worked] → final answer` and only blow open the working section
+// while a turn is in flight.
+function buildTurns(entries: ChatEntry[]): Turn[] {
+	const turns: Turn[] = [];
+	let counter = 0;
+
+	for (const e of entries) {
+		// Start a new turn on a user message, or on the first entry if history
+		// resumes mid-turn (no preceding user).
+		if (e.type === "user" || turns.length === 0) {
+			turns.push({
+				key: e.type === "user" ? e.id : `turn-${counter++}`,
+				user: e.type === "user" ? e : null,
+				working: [],
+				final: null,
+			});
+			if (e.type === "user") continue;
+		}
+		const t = turns[turns.length - 1];
+		if (e.type === "assistant" || e.type === "error") {
+			// New terminal entry — bump the previous final (if any) into working
+			// so only the latest assistant text is treated as "the answer".
+			if (t.final) t.working.push(t.final);
+			t.final = e;
+		} else {
+			t.working.push(e);
+		}
+	}
+
+	return turns;
+}
+
+function TurnView({
+	turn,
+	isActive,
+	phase,
+	expandSignal,
+}: {
+	turn: Turn;
+	isActive: boolean;
+	phase: Phase;
+	expandSignal: { open: boolean; tick: number } | null;
+}) {
+	// Collapsed when: turn is finished AND has a final answer AND has working
+	// entries to hide. While the agent is still working (no final yet, or
+	// phase !== idle), the working section stays open so the user can watch.
+	// User clicks pin an override.
+	const canCollapse =
+		!isActive && turn.final !== null && turn.working.length > 0;
+	// Override is bound to the signal tick it was set against. A later signal
+	// bump (tick > override.tick) supersedes the override; a click made after
+	// a signal stamps itself with that signal's tick so the *next* signal will
+	// supersede it. This makes "expand all" → "collapse one" → "expand all"
+	// behave the way users expect without an effect or store of per-turn state.
+	const [override, setOverride] = useState<{
+		value: boolean;
+		tick: number;
+	} | null>(null);
+	const signalTick = expandSignal?.tick ?? 0;
+	const signalWins = signalTick > (override?.tick ?? 0);
+	const effective = signalWins ? expandSignal?.open : override?.value;
+	const expanded = effective ?? !canCollapse;
+	const setExpanded = (value: boolean) =>
+		setOverride({ value, tick: signalTick });
+
+	return (
+		<>
+			{turn.user && <EntryView entry={turn.user} isStreaming={false} />}
+			{turn.working.length > 0 &&
+				(expanded ? (
+					<>
+						<WorkingExpanded
+							entries={turn.working}
+							isActive={isActive}
+							phase={phase}
+							canCollapse={canCollapse}
+							onCollapse={() => setExpanded(false)}
+						/>
+						{isActive &&
+							phase !== "streaming" &&
+							turn.working[turn.working.length - 1]?.type !==
+								"reasoning" && <PhaseIndicator phase={phase} />}
+					</>
+				) : (
+					<WorkingSummary
+						entries={turn.working}
+						onExpand={() => setExpanded(true)}
+					/>
+				))}
+			{turn.final && (
+				<EntryView
+					entry={turn.final}
+					isStreaming={
+						isActive &&
+						phase === "streaming" &&
+						turn.final.type === "assistant"
+					}
+				/>
+			)}
+			{/* Active turn with no final yet and no working: still show indicator */}
+			{isActive &&
+				turn.working.length === 0 &&
+				!turn.final &&
+				phase !== "streaming" && <PhaseIndicator phase={phase} />}
+		</>
+	);
+}
+
+// Renders the full working trail using the same tool-grouping pass as before,
+// plus a "collapse" affordance once the turn is finished.
+function WorkingExpanded({
+	entries,
+	isActive,
+	phase,
+	canCollapse,
+	onCollapse,
+}: {
+	entries: ChatEntry[];
+	isActive: boolean;
+	phase: Phase;
+	canCollapse: boolean;
+	onCollapse: () => void;
+}) {
+	const nodes: React.ReactNode[] = [];
+	let i = 0;
+	while (i < entries.length) {
+		const entry = entries[i];
+		if (entry.type === "tool") {
+			const start = i;
+			while (i < entries.length && entries[i].type === "tool") i++;
+			const slice = entries.slice(start, i);
+			const isTrailing = isActive && i === entries.length;
+			nodes.push(
+				<ToolGroupView
+					key={slice[0].id}
+					entries={slice}
+					isTrailing={isTrailing}
+					phase={phase}
+				/>,
+			);
+			continue;
+		}
+		const isLastWorking = i === entries.length - 1;
+		const isStreaming =
+			isActive &&
+			isLastWorking &&
+			phase === "thinking" &&
+			entry.type === "reasoning";
+		nodes.push(
+			<EntryView key={entry.id} entry={entry} isStreaming={isStreaming} />,
+		);
+		i++;
+	}
+
+	return (
+		<>
+			{nodes}
+			{canCollapse && (
+				<button
+					type="button"
+					onClick={onCollapse}
+					className="mb-4 -mt-2 ml-3 text-[11px] text-fg-dim hover:text-fg font-mono cursor-pointer"
+				>
+					collapse
+				</button>
+			)}
+		</>
+	);
+}
+
+function WorkingSummary({
+	entries,
+	onExpand,
+}: {
+	entries: ChatEntry[];
+	onExpand: () => void;
+}) {
+	const tools = entries.filter((e) => e.type === "tool").length;
+	const thoughts = entries.filter((e) => e.type === "reasoning").length;
+	const parts: string[] = [];
+	if (thoughts) parts.push(`${thoughts} thought${thoughts === 1 ? "" : "s"}`);
+	if (tools) parts.push(`${tools} tool${tools === 1 ? "" : "s"}`);
+	const summary = parts.length > 0 ? parts.join(", ") : "Worked";
+
+	return (
+		<div className="mb-4 border-l-2 border-purple pl-3">
+			<button
+				type="button"
+				onClick={onExpand}
+				className="flex items-center gap-2 py-0.5 cursor-pointer text-[12px]"
+			>
+				<ChevronRight size={12} className="text-fg-dim shrink-0" />
+				<span className="text-fg-dim font-mono text-[11px]">{summary}</span>
+			</button>
+		</div>
+	);
+}
+
 function PhaseIndicator({ phase }: { phase: Phase }) {
-	let label = "Thinking";
-	if (phase === "tool_running") label = "Running tool";
-	else if (phase === "streaming") label = "Streaming";
+	// Caller gates on phase !== "streaming", so the only labels reachable here
+	// are "thinking" and "tool_running".
+	const label = phase === "tool_running" ? "Working" : "Thinking";
 
 	return (
 		<div className="mb-4 pl-3">
@@ -484,19 +702,52 @@ function PhaseIndicator({ phase }: { phase: Phase }) {
 	);
 }
 
-function ToolCallView({ entry }: { entry: ChatEntry }) {
+function ToolGroupView({
+	entries,
+	isTrailing,
+	phase,
+}: {
+	entries: ChatEntry[];
+	isTrailing: boolean;
+	phase: Phase;
+}) {
+	return (
+		<div className="mb-4 border-l-2 border-purple pl-3">
+			{entries.map((entry, idx) => {
+				const isLastInGroup = idx === entries.length - 1;
+				const running =
+					isTrailing && isLastInGroup && phase !== "idle" && !entry.toolResult;
+				return <ToolRow key={entry.id} entry={entry} running={running} />;
+			})}
+		</div>
+	);
+}
+
+function ToolRow({
+	entry,
+	running,
+}: {
+	entry: ChatEntry;
+	running: boolean;
+}) {
 	const [expanded, setExpanded] = useState(false);
-	const hint = entry.toolHint || extractHint(entry.toolArgs);
+	const hint = entry.toolHint || extractHint(entry.toolArgs, entry.toolName);
 	const displayHint = hint ? truncate(hint, 80) : "";
 
 	return (
-		<div data-entry-id={entry.id} className="mb-4 border-l-2 border-purple pl-3">
+		<div data-entry-id={entry.id}>
 			<div
 				className="flex items-center gap-2 py-0.5 cursor-pointer text-[12px] transition-colors"
 				onClick={() => setExpanded(!expanded)}
 			>
 				<span className="text-fg-dim shrink-0 flex items-center">
-					{expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+					{running ? (
+						<LoaderCircle size={11} className="animate-spin" />
+					) : expanded ? (
+						<ChevronDown size={12} />
+					) : (
+						<ChevronRight size={12} />
+					)}
 				</span>
 				<span className="text-purple font-mono text-[11px] shrink-0">
 					{entry.toolName}
@@ -508,7 +759,7 @@ function ToolCallView({ entry }: { entry: ChatEntry }) {
 				)}
 			</div>
 			{expanded && (
-				<div className="mt-1 px-3 py-2 text-[11px] whitespace-pre-wrap break-all text-fg-dim bg-bg-surface rounded-md font-mono leading-relaxed">
+				<div className="mt-1 mb-1 px-3 py-2 text-[11px] whitespace-pre-wrap break-all text-fg-dim bg-bg-surface rounded-md font-mono leading-relaxed">
 					{truncate(entry.toolResult || "(no output)", 2000)}
 				</div>
 			)}
@@ -519,47 +770,34 @@ function ToolCallView({ entry }: { entry: ChatEntry }) {
 function ReasoningView({
 	entry,
 	isStreaming,
-	hasFollowing,
 }: {
 	entry: ChatEntry;
 	isStreaming: boolean;
-	hasFollowing: boolean;
 }) {
-	// Auto-expand while this is the active/last entry; auto-collapse once a
-	// later entry (tool call, assistant text, …) supersedes it. A user click
-	// pins their preference and overrides the auto behavior from then on.
-	const [override, setOverride] = useState<boolean | null>(null);
-	const expanded = override ?? !hasFollowing;
 	const summary = entry.content || "";
+	if (!summary) return null;
 
 	return (
 		<div data-entry-id={entry.id} className="mb-4 border-l-2 border-purple pl-3">
-			<button
-				type="button"
-				className="flex items-center gap-2 py-0.5 cursor-pointer text-[12px] transition-colors"
-				onClick={() => setOverride(!expanded)}
-			>
-				<span className="text-fg-dim shrink-0 flex items-center">
-					{expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-				</span>
-				<span className="text-purple font-mono text-[11px] shrink-0">
-					Thinking
-				</span>
-			</button>
-			{expanded && summary && (
-				<div className="mt-0.5 text-[11px] whitespace-pre-wrap break-words text-fg-dim font-mono leading-relaxed italic">
-					{summary}
-					{isStreaming && (
-						<span className="inline-block w-[5px] h-[10px] bg-fg-dim align-text-bottom ml-0.5 animate-[blink_1s_step-end_infinite]" />
-					)}
-				</div>
-			)}
+			<div className="text-[11px] whitespace-pre-wrap break-words text-fg-dim font-mono leading-relaxed italic">
+				{summary}
+				{isStreaming && (
+					<span className="inline-block w-[5px] h-[10px] bg-fg-dim align-text-bottom ml-0.5 animate-[blink_1s_step-end_infinite]" />
+				)}
+			</div>
 		</div>
 	);
 }
 
-function extractHint(argsJSON?: string): string {
-	if (!argsJSON) return "";
+// Mirror of pkg/tui/format.go: ExtractToolHint. The server pre-computes Hint
+// using the Go helper, so this only runs as a fallback (e.g. when args are
+// available but Hint isn't). Keep the rules identical.
+const FS_TOOLS = new Set(["read", "write", "edit", "ls", "find", "grep"]);
+const WORKING_DIR_TOOLS = new Set(["ls", "find", "grep"]);
+
+function extractHint(argsJSON?: string, toolName?: string): string {
+	const wdFallback = toolName && WORKING_DIR_TOOLS.has(toolName) ? "/" : "";
+	if (!argsJSON) return wdFallback;
 	try {
 		const args = JSON.parse(argsJSON);
 		for (const key of [
@@ -573,12 +811,23 @@ function extractHint(argsJSON?: string): string {
 			"url",
 			"name",
 		]) {
-			if (typeof args[key] === "string" && args[key]) return args[key];
+			const v = args[key];
+			if (typeof v !== "string" || !v) continue;
+			if ((key === "path" || key === "file") && toolName && FS_TOOLS.has(toolName)) {
+				return normalizeWorkspacePath(v);
+			}
+			return v;
 		}
 	} catch {
 		/* ignore */
 	}
-	return "";
+	return wdFallback;
+}
+
+function normalizeWorkspacePath(p: string): string {
+	if (p === "" || p === "." || p === "./") return "/";
+	if (p.startsWith("/") || p.startsWith("~")) return p;
+	return "/" + p;
 }
 
 function truncate(text: string, max: number): string {

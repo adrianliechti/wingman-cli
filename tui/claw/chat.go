@@ -66,7 +66,7 @@ func (t *TUI) writeFormatted(text string, isAssistant bool) {
 
 func (t *TUI) writeToolCall(tc *agent.ToolCall) {
 	th := theme.Default
-	hint := tui.ExtractToolHint(tc.Args)
+	hint := tui.ExtractToolHint(tc.Args, tc.Name)
 
 	if hint != "" {
 		hint = " " + hint

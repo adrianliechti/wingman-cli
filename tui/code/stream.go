@@ -95,7 +95,7 @@ func (a *App) streamResponse(input []agent.Content) {
 			switch {
 			case c.ToolCall != nil:
 				a.currentToolName = c.ToolCall.Name
-				a.currentToolHint = tui.ExtractToolHint(c.ToolCall.Args)
+				a.currentToolHint = tui.ExtractToolHint(c.ToolCall.Args, c.ToolCall.Name)
 				a.setPhase(PhaseToolRunning)
 				a.streamingText = ""
 				a.streamingReasoning = ""

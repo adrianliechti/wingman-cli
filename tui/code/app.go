@@ -60,7 +60,10 @@ type App struct {
 	promptMu           sync.Mutex
 	askActive          bool
 	askResponse        chan string
-	toolOutputExpanded bool
+	// 0 = summary (finished turns collapse to one line), 1 = list (per-entry
+	// one-liners), 2 = full (reasoning text + tool output expanded). Ctrl+E
+	// cycles through.
+	expandLevel int
 	inputTokens        int64
 	outputTokens       int64
 	chatWidth          int
