@@ -158,6 +158,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/model", s.handleModel)
 	mux.HandleFunc("GET /api/models", s.handleModels)
 	mux.HandleFunc("POST /api/model", s.handleSetModel)
+	mux.HandleFunc("GET /api/effort", s.handleEffort)
+	mux.HandleFunc("POST /api/effort", s.handleSetEffort)
 	mux.HandleFunc("GET /api/mode", s.handleMode)
 	mux.HandleFunc("POST /api/mode", s.handleSetMode)
 	mux.HandleFunc("GET /api/diagnostics", s.handleDiagnostics)
@@ -436,6 +438,41 @@ func (s *Server) handleSetModel(w http.ResponseWriter, r *http.Request) {
 	s.agent.Config.Model = func() string { return modelID }
 
 	writeJSON(w, map[string]string{"model": modelID})
+}
+
+func (s *Server) handleEffort(w http.ResponseWriter, r *http.Request) {
+	effort := ""
+	if s.agent.Config.Effort != nil {
+		effort = s.agent.Effort()
+	}
+	writeJSON(w, map[string]string{"effort": effort})
+}
+
+func (s *Server) handleSetEffort(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Effort string `json:"effort"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+
+	switch body.Effort {
+	case "", "auto":
+		s.agent.Config.Effort = nil
+		writeJSON(w, map[string]string{"effort": ""})
+		return
+	case "low", "medium", "high":
+	default:
+		http.Error(w, "effort must be auto, low, medium, or high", http.StatusBadRequest)
+		return
+	}
+
+	effort := body.Effort
+	s.agent.Config.Effort = func() string { return effort }
+
+	writeJSON(w, map[string]string{"effort": effort})
 }
 
 func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {

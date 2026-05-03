@@ -535,6 +535,12 @@ func (a *App) submitInput() {
 
 		return
 
+	case "/effort":
+		a.input.SetText("", true)
+		a.showEffortPicker()
+
+		return
+
 	case "/plan":
 		a.input.SetText("", true)
 		a.switchToChat()
@@ -906,6 +912,7 @@ func (a *App) builtinCommands() []slashCommand {
 	cmds := []slashCommand{
 		{"/help", "Show help"},
 		{"/model", "Select AI model"},
+		{"/effort", "Set reasoning effort"},
 		{"/plan", "Enter planning mode"},
 		{"/agent", "Return to execution mode"},
 		{"/problems", "Show problems"},

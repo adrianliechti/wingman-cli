@@ -49,6 +49,11 @@ func (a *Agent) Send(ctx context.Context, input []Content) iter.Seq2[Message, er
 				model = a.Model()
 			}
 
+			effort := ""
+			if a.Config.Effort != nil {
+				effort = a.Effort()
+			}
+
 			instructions := ""
 			if a.Instructions != nil {
 				instructions = a.Instructions()
@@ -61,6 +66,7 @@ func (a *Agent) Send(ctx context.Context, input []Content) iter.Seq2[Message, er
 
 			req := &request{
 				model:        model,
+				effort:       effort,
 				instructions: instructions,
 				messages:     a.Messages,
 				tools:        tools,

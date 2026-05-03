@@ -15,6 +15,7 @@ type Config struct {
 	client *openai.Client
 
 	Model           func() string
+	Effort          func() string
 	Tools           func() []tool.Tool
 	Instructions    func() string
 	ContextMessages func() []Message
@@ -27,6 +28,7 @@ func (c *Config) Derive() *Config {
 	return &Config{
 		client: c.client,
 		Model:  c.Model,
+		Effort: c.Effort,
 	}
 }
 

@@ -7,12 +7,14 @@ import (
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
+	"github.com/openai/openai-go/v3/shared"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
 type request struct {
 	model        string
+	effort       string
 	instructions string
 	messages     []Message
 	tools        []tool.Tool
@@ -47,6 +49,7 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 
 		Reasoning: responses.ReasoningParam{
 			Summary: responses.ReasoningSummaryAuto,
+			Effort:  shared.ReasoningEffort(r.effort),
 		},
 	})
 
