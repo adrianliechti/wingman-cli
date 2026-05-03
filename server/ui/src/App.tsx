@@ -20,7 +20,7 @@ import { ProblemsPanel } from "./components/ProblemsPanel";
 import { PromptDialog } from "./components/PromptDialog";
 import { Sidebar } from "./components/Sidebar";
 import { useCapabilities } from "./hooks/useCapabilities";
-import { useWebSocket } from "./hooks/useWebSocket";
+import { messagesToEntries, useWebSocket } from "./hooks/useWebSocket";
 
 interface CenterTab {
 	id: string;
@@ -44,6 +44,7 @@ export default function App() {
 		respondAsk,
 		setEntries,
 		subscribe,
+		usage,
 	} = useWebSocket();
 	const capabilities = useCapabilities(subscribe);
 	// `diffs` controls whether the Changes tab is mounted at all (rewind is
@@ -157,36 +158,7 @@ export default function App() {
 			const res = await fetch(`/api/sessions/${id}/load`, { method: "POST" });
 			if (!res.ok) return;
 			const messages = await res.json();
-			const restored: Array<{
-				id: string;
-				type: "user" | "assistant" | "tool" | "error";
-				content: string;
-				toolName?: string;
-				toolArgs?: string;
-				toolResult?: string;
-			}> = [];
-			for (const m of messages) {
-				for (const c of m.content) {
-					if (c.text) {
-						restored.push({
-							id: crypto.randomUUID(),
-							type: m.role === "user" ? "user" : "assistant",
-							content: c.text,
-						});
-					}
-					if (c.tool_result) {
-						restored.push({
-							id: crypto.randomUUID(),
-							type: "tool",
-							content: "",
-							toolName: c.tool_result.name,
-							toolArgs: c.tool_result.args,
-							toolResult: c.tool_result.content,
-						});
-					}
-				}
-			}
-			setEntries(restored);
+			setEntries(messagesToEntries(messages));
 			setSessionId(id);
 			setActiveTabId("chat");
 		},
@@ -296,6 +268,19 @@ export default function App() {
 							);
 						})}
 						<div className="flex-1" />
+						{(usage.inputTokens > 0 || usage.outputTokens > 0) && (
+							<div className="flex items-center px-3 text-[11px] text-fg-dim tabular-nums whitespace-nowrap">
+								{"\u2191"}
+								{formatTokens(usage.inputTokens)}
+								{usage.cachedTokens > 0 && (
+									<span className="ml-1">({formatTokens(usage.cachedTokens)} cached)</span>
+								)}
+								<span className="ml-2">
+									{"\u2193"}
+									{formatTokens(usage.outputTokens)}
+								</span>
+							</div>
+						)}
 						<button
 							type="button"
 							className="flex items-center justify-center w-10 h-10 text-fg-dim hover:text-fg-muted cursor-pointer transition-colors shrink-0"
@@ -368,14 +353,13 @@ export default function App() {
 								<div className="flex flex-col h-full">
 									<div className="flex-[3] min-h-0 overflow-hidden">
 										<DiffsPanel
-											visible={true}
 											onOpenDiff={openDiff}
 											subscribe={subscribe}
 										/>
 									</div>
 									<div className="h-px bg-border-subtle shrink-0" />
 									<div className="flex-[1] min-h-0 overflow-hidden">
-										<CheckpointsPanel visible={true} subscribe={subscribe} />
+										<CheckpointsPanel subscribe={subscribe} />
 									</div>
 								</div>
 							) : (
@@ -417,6 +401,12 @@ export default function App() {
 			)}
 		</div>
 	);
+}
+
+function formatTokens(n: number): string {
+	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+	if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+	return String(n);
 }
 
 function RightTabButton({

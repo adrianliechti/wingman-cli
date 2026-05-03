@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -24,12 +23,13 @@ func Tools(workDir string, elicit *tool.Elicitation) []tool.Tool {
 	description := strings.Join([]string{
 		fmt.Sprintf("Execute a shell command and return its output. Default timeout: %ds, max: 600s.", defaultTimeout),
 		"",
-		"IMPORTANT: Do NOT use this for file operations — use the dedicated tools instead:",
+		"IMPORTANT: Prefer dedicated tools for routine file operations:",
 		"- File search: `find` (NOT shell find/ls)",
 		"- Content search: `grep` (NOT shell grep/rg)",
 		"- Read files: `read` (NOT cat/head/tail)",
 		"- Edit files: `edit` (NOT sed/awk)",
 		"- Write files: `write` (NOT echo/cat with heredoc)",
+		"Use shell for build, test, run, package-manager, git, formatter, generator, and project commands.",
 		"",
 		"Usage:",
 		"- Always provide a brief description of what the command does.",
@@ -37,12 +37,14 @@ func Tools(workDir string, elicit *tool.Elicitation) []tool.Tool {
 		"- For dependent commands, chain with && in a single call (on Windows PowerShell 5.1, use `; if ($?) {` instead since && is not supported).",
 		"- Use ; only when you need sequential execution but don't care if earlier commands fail.",
 		"- For git: prefer new commits over amending; never use --no-verify, --force, or -i (interactive) unless explicitly asked.",
+		"- If a pre-commit hook rejects a commit, the commit did NOT happen. Fix the issue, re-stage, and create a NEW commit — do not use --amend, which would silently rewrite the previous commit.",
 		"- If a command is long-running, increase the timeout instead of using sleep.",
 	}, "\n")
 
 	return []tool.Tool{{
 		Name:        "shell",
 		Description: description,
+		Effect:      ClassifyEffect,
 
 		Parameters: map[string]any{
 			"type": "object",
@@ -73,157 +75,6 @@ func Tools(workDir string, elicit *tool.Elicitation) []tool.Tool {
 	}}
 }
 
-// isSafeCommand checks if the entire command (including pipes, chains, and subshells) is safe.
-func isSafeCommand(command string) bool {
-	command = strings.TrimSpace(command)
-
-	if command == "" {
-		return false
-	}
-
-	// Split on pipes, chains, and semicolons — every segment must be safe
-	segments := splitCommandSegments(command)
-
-	for _, seg := range segments {
-		if !isSingleCommandSafe(seg) {
-			return false
-		}
-	}
-
-	// Check for command substitution $(...) or `...` — treat as unsafe
-	if strings.Contains(command, "$(") || strings.Contains(command, "`") {
-		return false
-	}
-
-	return true
-}
-
-// splitCommandSegments splits a command string on |, &&, ||, and ; boundaries.
-// It respects quoted strings and parentheses.
-func splitCommandSegments(command string) []string {
-	var segments []string
-	var current strings.Builder
-
-	inSingle := false
-	inDouble := false
-	i := 0
-
-	for i < len(command) {
-		ch := command[i]
-
-		// Handle escape characters
-		if ch == '\\' && i+1 < len(command) && !inSingle {
-			current.WriteByte(ch)
-			i++
-			current.WriteByte(command[i])
-			i++
-			continue
-		}
-
-		// Handle quotes
-		if ch == '\'' && !inDouble {
-			inSingle = !inSingle
-			current.WriteByte(ch)
-			i++
-			continue
-		}
-
-		if ch == '"' && !inSingle {
-			inDouble = !inDouble
-			current.WriteByte(ch)
-			i++
-			continue
-		}
-
-		// Don't split inside quotes
-		if inSingle || inDouble {
-			current.WriteByte(ch)
-			i++
-			continue
-		}
-
-		// Check for && or ||
-		if i+1 < len(command) && ((ch == '&' && command[i+1] == '&') || (ch == '|' && command[i+1] == '|')) {
-			seg := strings.TrimSpace(current.String())
-			if seg != "" {
-				segments = append(segments, seg)
-			}
-			current.Reset()
-			i += 2
-			continue
-		}
-
-		// Check for pipe |
-		if ch == '|' {
-			seg := strings.TrimSpace(current.String())
-			if seg != "" {
-				segments = append(segments, seg)
-			}
-			current.Reset()
-			i++
-			continue
-		}
-
-		// Check for semicolon ;
-		if ch == ';' {
-			seg := strings.TrimSpace(current.String())
-			if seg != "" {
-				segments = append(segments, seg)
-			}
-			current.Reset()
-			i++
-			continue
-		}
-
-		current.WriteByte(ch)
-		i++
-	}
-
-	seg := strings.TrimSpace(current.String())
-	if seg != "" {
-		segments = append(segments, seg)
-	}
-
-	return segments
-}
-
-// isSingleCommandSafe checks if a single command (no pipes/chains) is safe.
-func isSingleCommandSafe(command string) bool {
-	command = strings.TrimSpace(command)
-
-	// Extract words from the command
-	words := strings.Fields(command)
-
-	if len(words) == 0 {
-		return false
-	}
-
-	cmd := strings.ToLower(filepath.Base(words[0]))
-	if _, ok := safeCommandSet[cmd]; ok {
-		return true
-	}
-
-	allowedSubcmds, hasSubcmds := safeSubcommandPrefixes[cmd]
-
-	if !hasSubcmds {
-		return false
-	}
-
-	if len(words) < 2 {
-		return false
-	}
-
-	restOfCommand := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(command, words[0])))
-
-	for _, subCmd := range allowedSubcmds {
-		if strings.HasPrefix(restOfCommand, subCmd) {
-			return true
-		}
-	}
-
-	return false
-}
-
 func executeShell(ctx context.Context, workDir string, elicit *tool.Elicitation, args map[string]any) (string, error) {
 	command, ok := args["command"].(string)
 
@@ -237,13 +88,12 @@ func executeShell(ctx context.Context, workDir string, elicit *tool.Elicitation,
 		timeout = int(t)
 	}
 
-	// Cap timeout at 600 seconds
 	if timeout > 600 {
 		timeout = 600
 	}
 
-	if elicit != nil && elicit.Confirm != nil && !isSafeCommand(command) {
-		approved, err := elicit.Confirm(ctx, "\u276f "+command)
+	if elicit != nil && elicit.Confirm != nil && ClassifyEffect(args) == tool.EffectDangerous {
+		approved, err := elicit.Confirm(ctx, "❯ "+command)
 
 		if err != nil {
 			return "", fmt.Errorf("failed to get user approval: %w", err)
@@ -263,36 +113,26 @@ func executeShell(ctx context.Context, workDir string, elicit *tool.Elicitation,
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 
-	err := cmd.Start()
-
-	if err != nil {
+	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("failed to start command: %w", err)
 	}
 
 	done := make(chan error, 1)
-
-	go func() {
-		done <- cmd.Wait()
-	}()
+	go func() { done <- cmd.Wait() }()
 
 	select {
 	case <-ctx.Done():
 		killProcessGroup(cmd)
-
 		return "", fmt.Errorf("command timed out after %d seconds", timeout)
 	case err := <-done:
 		truncated := truncateOutput(output.String())
 
 		if err != nil {
 			exitCode := -1
-
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				exitCode = exitErr.ExitCode()
 			}
-
 			truncated += fmt.Sprintf("\n\nCommand exited with code %d", exitCode)
-
-			return truncated, nil
 		}
 
 		return truncated, nil
@@ -326,8 +166,8 @@ func buildCommand(ctx context.Context, command, workingDir string) *exec.Cmd {
 	return cmd
 }
 
-// findPowerShell returns the path to PowerShell. Prefers pwsh (PowerShell 7+)
-// which supports && and || operators. Falls back to powershell (5.1).
+// findPowerShell prefers pwsh (PowerShell 7+, supports && and ||) and falls
+// back to powershell (5.1).
 func findPowerShell() string {
 	if ps, err := exec.LookPath("pwsh"); err == nil {
 		return ps
@@ -339,20 +179,16 @@ func truncateOutput(output string) string {
 	totalLines := strings.Count(output, "\n") + 1
 	totalBytes := len(output)
 
-	needsTruncation := totalLines > maxLines || totalBytes > maxBytes
-
-	if !needsTruncation {
+	if totalLines <= maxLines && totalBytes <= maxBytes {
 		return output
 	}
 
 	lines := strings.Split(output, "\n")
-
 	if len(lines) > maxLines {
 		lines = lines[len(lines)-maxLines:]
 	}
 
 	truncated := strings.Join(lines, "\n")
-
 	if len(truncated) > maxBytes {
 		truncated = truncated[len(truncated)-maxBytes:]
 	}

@@ -6,9 +6,13 @@ interface ModelInfo {
 	name: string;
 }
 
+const EFFORTS = ["auto", "low", "medium", "high"] as const;
+type Effort = (typeof EFFORTS)[number];
+
 export function ModelPicker() {
 	const [model, setModel] = useState("");
 	const [models, setModels] = useState<ModelInfo[]>([]);
+	const [effort, setEffort] = useState<Effort>("auto");
 	const [open, setOpen] = useState(false);
 	const popRef = useRef<HTMLDivElement>(null);
 	const btnRef = useRef<HTMLButtonElement>(null);
@@ -20,22 +24,31 @@ export function ModelPicker() {
 			.catch(() => {});
 	}, []);
 
-	// Fetch the curated model list on mount so the button can render the
-	// friendly name immediately (otherwise we'd briefly show the raw ID until
-	// the dropdown is first opened).
+	const applyEffort = useCallback((v: unknown) => {
+		if (v === "low" || v === "medium" || v === "high") {
+			setEffort(v);
+		} else {
+			setEffort("auto");
+		}
+	}, []);
+
 	useEffect(() => {
 		fetch("/api/model")
 			.then((r) => r.json())
 			.then((data) => setModel(data.model || ""))
 			.catch(() => {});
+		fetch("/api/effort")
+			.then((r) => r.json())
+			.then((data) => applyEffort(data.effort))
+			.catch(() => {});
 		loadModels();
-	}, [loadModels]);
+	}, [loadModels, applyEffort]);
 
 	const toggle = useCallback(() => {
 		setOpen((v) => !v);
 	}, []);
 
-	const select = useCallback((id: string) => {
+	const selectModel = useCallback((id: string) => {
 		fetch("/api/model", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -44,8 +57,21 @@ export function ModelPicker() {
 			.then((r) => r.json())
 			.then((data) => setModel(data.model || id))
 			.catch(() => {});
-		setOpen(false);
 	}, []);
+
+	const selectEffort = useCallback(
+		(value: Effort) => {
+			fetch("/api/effort", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ effort: value }),
+			})
+				.then((r) => r.json())
+				.then((data) => applyEffort(data.effort))
+				.catch(() => {});
+		},
+		[applyEffort],
+	);
 
 	useEffect(() => {
 		if (!open) return;
@@ -77,35 +103,61 @@ export function ModelPicker() {
 				ref={btnRef}
 				type="button"
 				onClick={toggle}
-				className="flex items-center gap-1 px-2 h-7 rounded text-[11.5px] text-fg-muted hover:text-fg hover:bg-bg-hover cursor-pointer transition-colors max-w-[220px]"
-				title={model}
+				className="flex items-center gap-1 px-2 h-7 rounded text-[11.5px] text-fg-muted hover:text-fg hover:bg-bg-hover cursor-pointer transition-colors max-w-[260px]"
+				title={`${model} · ${effort}`}
 			>
 				<Brain size={12} className="shrink-0" />
 				<span className="truncate">{currentName}</span>
+				{effort !== "auto" && (
+					<>
+						<span className="text-fg-dim">·</span>
+						<span className="capitalize text-fg-dim">{effort}</span>
+					</>
+				)}
 			</button>
 			{open && (
 				<div
 					ref={popRef}
-					className="absolute bottom-full mb-1 left-0 min-w-[220px] max-w-[360px] bg-bg-elevated/95 backdrop-blur-sm border border-border rounded-md shadow-xl py-1 max-h-[260px] overflow-y-auto z-50"
+					className="absolute bottom-full mb-1 left-0 min-w-[240px] max-w-[360px] bg-bg-elevated/95 backdrop-blur-sm border border-border rounded-md shadow-xl z-50"
 				>
-					{models.length === 0 ? (
-						<div className="px-3 py-2 text-[12px] text-fg-dim">Loading…</div>
-					) : (
-						models.map((m) => (
-							<button
-								type="button"
-								key={m.id}
-								className={`block w-full text-left px-3 py-1.5 text-[12px] cursor-pointer whitespace-nowrap transition-colors ${
-									m.id === model
-										? "text-fg bg-bg-active"
-										: "text-fg-muted hover:text-fg hover:bg-bg-hover"
-								}`}
-								onClick={() => select(m.id)}
-							>
-								{m.name}
-							</button>
-						))
-					)}
+					<div className="py-1 max-h-[260px] overflow-y-auto">
+						{models.length === 0 ? (
+							<div className="px-3 py-2 text-[12px] text-fg-dim">Loading…</div>
+						) : (
+							models.map((m) => (
+								<button
+									type="button"
+									key={m.id}
+									className={`block w-full text-left px-3 py-1.5 text-[12px] cursor-pointer whitespace-nowrap transition-colors ${
+										m.id === model
+											? "text-fg bg-bg-active"
+											: "text-fg-muted hover:text-fg hover:bg-bg-hover"
+									}`}
+									onClick={() => selectModel(m.id)}
+								>
+									{m.name}
+								</button>
+							))
+						)}
+					</div>
+					<div className="border-t border-border px-2 py-1.5">
+						<div className="flex rounded bg-bg overflow-hidden">
+							{EFFORTS.map((v) => (
+								<button
+									type="button"
+									key={v}
+									className={`flex-1 px-2 py-1 text-[11px] capitalize cursor-pointer transition-colors ${
+										v === effort
+											? "text-fg bg-bg-active"
+											: "text-fg-muted hover:text-fg hover:bg-bg-hover"
+									}`}
+									onClick={() => selectEffort(v)}
+								>
+									{v}
+								</button>
+							))}
+						</div>
+					</div>
 				</div>
 			)}
 		</div>

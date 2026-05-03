@@ -2,11 +2,13 @@ package fs
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // createTestRoot creates a test os.Root with a temporary directory
@@ -131,6 +133,23 @@ func TestReadTool(t *testing.T) {
 
 		if !strings.Contains(result, "line1") {
 			t.Errorf("expected content, got: %s", result)
+		}
+	})
+
+	t.Run("read rejects binary files", func(t *testing.T) {
+		// Create a fake "binary" file by extension. We shouldn't even try to read it.
+		os.WriteFile(filepath.Join(tmpDir, "logo.png"), []byte("\x89PNG\r\n\x1a\n"), 0644)
+
+		_, err := readTool.Execute(context.Background(), map[string]any{
+			"path": "logo.png",
+		})
+
+		if err == nil {
+			t.Fatal("expected error reading binary file, got nil")
+		}
+
+		if !strings.Contains(err.Error(), "binary") {
+			t.Errorf("expected 'binary' in error, got: %v", err)
 		}
 	})
 }
@@ -602,6 +621,48 @@ func TestFindTool(t *testing.T) {
 			t.Errorf("expected app.go, got: %s", result)
 		}
 	})
+
+	t.Run("find returns newest when results exceed limit", func(t *testing.T) {
+		// Regression test: walk must visit every match before sorting, otherwise
+		// "newest first" is just "newest among the first N walked" which depends
+		// on filesystem order. Create files where the newest live alphabetically
+		// last, then assert they survive a small limit.
+		newRoot, newTmp, newCleanup := createTestRoot(t)
+		defer newCleanup()
+
+		base := time.Now().Add(-1 * time.Hour)
+		// 20 files: aa.tmp ... at.tmp. Earlier letter = older.
+		for i := range 20 {
+			name := fmt.Sprintf("%c%c.tmp", 'a', 'a'+i)
+			p := filepath.Join(newTmp, name)
+			os.WriteFile(p, []byte("x"), 0644)
+			os.Chtimes(p, base.Add(time.Duration(i)*time.Minute), base.Add(time.Duration(i)*time.Minute))
+		}
+
+		result, err := FindTool(newRoot).Execute(context.Background(), map[string]any{
+			"pattern": "*.tmp",
+			"limit":   float64(3),
+		})
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// Newest 3 are the last three alphabetically: ar.tmp, as.tmp, at.tmp.
+		for _, want := range []string{"ar.tmp", "as.tmp", "at.tmp"} {
+			if !strings.Contains(result, want) {
+				t.Errorf("expected newest file %s in result, got: %s", want, result)
+			}
+		}
+		// Older files must be excluded.
+		if strings.Contains(result, "aa.tmp") || strings.Contains(result, "ab.tmp") {
+			t.Errorf("oldest files leaked in despite limit=3, got: %s", result)
+		}
+		// And the notice must surface that we truncated.
+		if !strings.Contains(result, "20 files found, showing newest 3") {
+			t.Errorf("expected truncation notice, got: %s", result)
+		}
+	})
 }
 
 func TestGrepTool(t *testing.T) {
@@ -747,6 +808,39 @@ func TestGrepTool(t *testing.T) {
 
 		if !strings.Contains(result, "Hello") {
 			t.Errorf("expected 'Hello' in results, got: %s", result)
+		}
+	})
+
+	t.Run("grep multiline pattern spanning lines", func(t *testing.T) {
+		os.WriteFile(filepath.Join(tmpDir, "multi.go"), []byte("type Foo struct {\n\tname string\n\tfield int\n}\n"), 0644)
+
+		// Without multiline this can't match across newlines.
+		result, err := grepTool.Execute(context.Background(), map[string]any{
+			"pattern":   `struct \{[\s\S]*?field`,
+			"path":      "multi.go",
+			"multiline": true,
+		})
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !strings.Contains(result, "multi.go") || !strings.Contains(result, "field") {
+			t.Errorf("expected multi.go and matched 'field' line, got: %s", result)
+		}
+
+		// Sanity: same pattern without multiline must NOT match.
+		nonMulti, err := grepTool.Execute(context.Background(), map[string]any{
+			"pattern": `struct \{[\s\S]*?field`,
+			"path":    "multi.go",
+		})
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !strings.Contains(nonMulti, "No matches") {
+			t.Errorf("non-multiline should not match across lines, got: %s", nonMulti)
 		}
 	})
 }

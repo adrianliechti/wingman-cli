@@ -16,6 +16,7 @@ type Message struct {
 	Role MessageRole `json:"role"`
 
 	Content []Content `json:"content"`
+	Hidden  bool      `json:"hidden,omitempty"`
 }
 
 type Content struct {
@@ -38,6 +39,7 @@ type File struct {
 
 type Usage struct {
 	InputTokens  int64 `json:"input_tokens"`
+	CachedTokens int64 `json:"cached_tokens"`
 	OutputTokens int64 `json:"output_tokens"`
 }
 

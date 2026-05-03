@@ -29,14 +29,29 @@ func FormatTokens(n int64) string {
 	return fmt.Sprintf("%d", n)
 }
 
+// fsTools take a `path` arg that is workspace-relative; we display it with a
+// leading "/" so it's visually distinct as a workspace path rather than a
+// loose identifier.
+var fsTools = map[string]bool{
+	"read": true, "write": true, "edit": true,
+	"ls": true, "find": true, "grep": true,
+}
+
+// workingDirTools default to the workspace root when their path arg is empty
+// or ".". They render as "/" in that case.
+var workingDirTools = map[string]bool{
+	"ls": true, "find": true, "grep": true,
+}
+
 // ExtractToolHint pulls a short display hint out of a tool's JSON args.
 // Prefers a "description" field; otherwise falls back to a priority list of
-// common keys. Returns "" if no usable string is found.
-func ExtractToolHint(argsJSON string) string {
+// common keys. For fs tools, paths are normalized to workspace-rooted form
+// ("pkg/code" → "/pkg/code", "." → "/"). toolName may be empty if unknown.
+func ExtractToolHint(argsJSON, toolName string) string {
 	var args map[string]any
 
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return ""
+		return wdFallback(toolName)
 	}
 
 	if desc, ok := args["description"]; ok {
@@ -57,12 +72,40 @@ func ExtractToolHint(argsJSON string) string {
 	}
 
 	for _, key := range hintKeys {
-		if val, ok := args[key]; ok {
-			if str, ok := val.(string); ok && str != "" {
-				return strings.Join(strings.Fields(str), " ")
-			}
+		val, ok := args[key]
+		if !ok {
+			continue
 		}
+		str, ok := val.(string)
+		if !ok || str == "" {
+			continue
+		}
+		normalized := strings.Join(strings.Fields(str), " ")
+		if (key == "path" || key == "file") && fsTools[toolName] {
+			normalized = NormalizeWorkspacePath(normalized)
+		}
+		return normalized
 	}
 
+	return wdFallback(toolName)
+}
+
+// NormalizeWorkspacePath rewrites a workspace-relative path so that it always
+// starts with "/". The cwd literals "." and "./" become "/". Already-absolute
+// paths (starting with "/" or "~") pass through unchanged.
+func NormalizeWorkspacePath(p string) string {
+	if p == "" || p == "." || p == "./" {
+		return "/"
+	}
+	if strings.HasPrefix(p, "/") || strings.HasPrefix(p, "~") {
+		return p
+	}
+	return "/" + p
+}
+
+func wdFallback(toolName string) string {
+	if workingDirTools[toolName] {
+		return "/"
+	}
 	return ""
 }

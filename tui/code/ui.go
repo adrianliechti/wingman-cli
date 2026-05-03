@@ -107,9 +107,9 @@ func (a *App) handleInput(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 
-	// Ctrl+E: toggle tool output expansion
+	// Ctrl+E: cycle through expand levels 0→1→2→0.
 	if event.Key() == tcell.KeyCtrlE && !a.hasActiveModal() {
-		a.toolOutputExpanded = !a.toolOutputExpanded
+		a.expandLevel = (a.expandLevel + 1) % 3
 
 		if !a.showWelcome && !a.isStreaming() && !a.promptActive && !a.askActive && len(a.agent.Messages) > 0 {
 			a.renderChat(a.agent.Messages)
@@ -404,6 +404,7 @@ func (a *App) clearChat() {
 	a.agent.Messages = nil
 	a.agent.Usage = agent.Usage{}
 	a.inputTokens = 0
+	a.cachedTokens = 0
 	a.outputTokens = 0
 	a.updateStatusBar()
 }
@@ -432,6 +433,7 @@ func (a *App) resumeSession() {
 	// Update token count from restored session
 	usage := a.agent.Usage
 	a.inputTokens = usage.InputTokens
+	a.cachedTokens = usage.CachedTokens
 	a.outputTokens = usage.OutputTokens
 
 	// Re-render chat with restored messages
@@ -530,6 +532,12 @@ func (a *App) submitInput() {
 	case "/models", "/model":
 		a.input.SetText("", true)
 		a.showModelPicker()
+
+		return
+
+	case "/effort":
+		a.input.SetText("", true)
+		a.showEffortPicker()
 
 		return
 
@@ -877,7 +885,11 @@ func (a *App) updateStatusBar() {
 	var parts []string
 
 	if a.inputTokens > 0 || a.outputTokens > 0 {
-		parts = append(parts, fmt.Sprintf("[%s]↑%s ↓%s[-]", t.BrBlack, tui.FormatTokens(a.inputTokens), tui.FormatTokens(a.outputTokens)))
+		if a.cachedTokens > 0 {
+			parts = append(parts, fmt.Sprintf("[%s]↑%s (%s cached) ↓%s[-]", t.BrBlack, tui.FormatTokens(a.inputTokens), tui.FormatTokens(a.cachedTokens), tui.FormatTokens(a.outputTokens)))
+		} else {
+			parts = append(parts, fmt.Sprintf("[%s]↑%s ↓%s[-]", t.BrBlack, tui.FormatTokens(a.inputTokens), tui.FormatTokens(a.outputTokens)))
+		}
 	}
 
 	parts = append(parts, fmt.Sprintf("[%s]%s[-]", t.Cyan, code.ModelName(a.agent.Model())))
@@ -900,6 +912,7 @@ func (a *App) builtinCommands() []slashCommand {
 	cmds := []slashCommand{
 		{"/help", "Show help"},
 		{"/model", "Select AI model"},
+		{"/effort", "Set reasoning effort"},
 		{"/plan", "Enter planning mode"},
 		{"/agent", "Return to execution mode"},
 		{"/problems", "Show problems"},
@@ -1006,7 +1019,10 @@ func (a *App) updateInputHint() {
 	}
 
 	expandLabel := "expand"
-	if a.toolOutputExpanded {
+	switch a.expandLevel {
+	case 1:
+		expandLabel = "expand more"
+	case 2:
 		expandLabel = "collapse"
 	}
 
@@ -1029,7 +1045,6 @@ func (a *App) updateInputHint() {
 	a.inputHint.SetText(strings.Join(parts, "  "))
 }
 
-
 // Chat rendering (inlined from ChatRenderer)
 
 // renderChat redraws the chat view from committed messages plus the current
@@ -1039,28 +1054,65 @@ func (a *App) updateInputHint() {
 func (a *App) renderChat(messages []agent.Message) {
 	a.chatView.Clear()
 
+	turns := buildTurns(messages)
 	prevWasTool := false
 
-	for _, msg := range messages {
-		isTool := isToolMessage(msg)
-
-		// Add separator between tool results and non-tool messages
-		if prevWasTool && !isTool {
+	separateFromTools := func() {
+		if prevWasTool {
 			fmt.Fprint(a.chatView, "\n")
+			prevWasTool = false
 		}
-
-		a.renderMessage(msg)
-		prevWasTool = isTool
 	}
 
+	for i, t := range turns {
+		isLast := i == len(turns)-1
+		active := isLast && a.isStreaming()
+
+		if t.user != nil {
+			separateFromTools()
+			a.renderMessage(*t.user)
+		}
+
+		// Finished turns collapse the working block to a one-line summary at
+		// expand level 0; level 1 expands them to per-entry one-liners; level
+		// 2 also expands reasoning text and tool output (handled inside
+		// renderMessage). The active turn always renders per-entry.
+		showSummary := !active && a.expandLevel == 0 && len(t.working) > 0
+		if showSummary {
+			separateFromTools()
+			fmt.Fprint(a.chatView, a.formatTurnSummary(&t))
+		} else {
+			for _, m := range t.working {
+				// Skip messages with no displayable content (e.g. assistant
+				// messages carrying only tool_calls). They emit nothing but
+				// would otherwise flip prevWasTool=false and force a blank
+				// separator before the next tool result group.
+				if !hasVisibleContent(m) {
+					continue
+				}
+				isTool := isToolMessage(m)
+				if prevWasTool && !isTool {
+					fmt.Fprint(a.chatView, "\n")
+				}
+				a.renderMessage(m)
+				prevWasTool = isTool
+			}
+		}
+
+		if t.final != nil {
+			separateFromTools()
+			a.renderMessage(*t.final)
+		}
+	}
+
+	// Live streaming overlay attaches to the active (last) turn.
 	if a.streamingReasoning != "" {
+		separateFromTools()
 		fmt.Fprint(a.chatView, a.formatReasoningProgress(a.streamingReasoning))
 	}
 
 	if a.streamingText != "" {
-		if prevWasTool {
-			fmt.Fprint(a.chatView, "\n")
-		}
+		separateFromTools()
 		fmt.Fprint(a.chatView, a.formatAssistantMessage(a.streamingText))
 	}
 
@@ -1080,6 +1132,25 @@ func isToolMessage(msg agent.Message) bool {
 	return false
 }
 
+// hasVisibleContent reports whether renderMessage would emit anything for msg.
+// Messages with only tool_call content (and nothing else) produce no output and
+// must be skipped, otherwise the prevWasTool separator wedges blank lines
+// between groups of consecutive tool results.
+func hasVisibleContent(msg agent.Message) bool {
+	for _, c := range msg.Content {
+		if c.ToolResult != nil {
+			return true
+		}
+		if c.Reasoning != nil && c.Reasoning.Summary != "" {
+			return true
+		}
+		if c.Text != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *App) renderMessage(msg agent.Message) {
 	for _, c := range msg.Content {
 		// Tool results
@@ -1088,9 +1159,9 @@ func (a *App) renderMessage(msg agent.Message) {
 				continue
 			}
 
-			hint := tui.ExtractToolHint(c.ToolResult.Args)
+			hint := tui.ExtractToolHint(c.ToolResult.Args, c.ToolResult.Name)
 
-			if a.toolOutputExpanded {
+			if a.expandLevel >= 2 {
 				output := c.ToolResult.Content
 				if len(output) > maxToolOutputLen {
 					output = output[:maxToolOutputLen] + "..."
@@ -1110,7 +1181,7 @@ func (a *App) renderMessage(msg agent.Message) {
 
 		// Reasoning summary (collapsed when expand is off, full when on)
 		if c.Reasoning != nil && c.Reasoning.Summary != "" {
-			if a.toolOutputExpanded {
+			if a.expandLevel >= 2 {
 				fmt.Fprint(a.chatView, a.formatReasoning(c.Reasoning.Summary))
 			} else {
 				fmt.Fprint(a.chatView, a.formatReasoningCollapsed(c.Reasoning.Summary))

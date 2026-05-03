@@ -14,21 +14,21 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
-const DefaultFindLimit = 1000
+const DefaultFindLimit = 100
 
 func FindTool(root *os.Root) tool.Tool {
 	return tool.Tool{
-		Name: "find",
+		Name:   "find",
+		Effect: tool.StaticEffect(tool.EffectReadOnly),
 
 		Description: strings.Join([]string{
 			fmt.Sprintf("Find files by glob pattern. Returns paths sorted by modification time (newest first). Respects .gitignore. Default limit: %d.", DefaultFindLimit),
 			"",
 			"Usage:",
-			"- NEVER run find or ls -R via the shell — use this tool instead.",
+			"- Prefer this tool over shell `find` / `ls -R` for filename pattern discovery.",
+			"- Use `grep` (which lists matching files) when you're looking for content rather than filenames — it often replaces a separate `find` call.",
 			"- Supports glob patterns: \"**/*.go\", \"src/**/*.ts\", \"*.{js,jsx}\".",
 			"- Results are sorted newest-first, so recently changed files appear at the top.",
-			"- Use this to discover codebase structure before using grep or read.",
-			"- For searching text inside files, use `grep` instead.",
 		}, "\n"),
 
 		Parameters: map[string]any{
@@ -36,7 +36,7 @@ func FindTool(root *os.Root) tool.Tool {
 			"properties": map[string]any{
 				"pattern": map[string]any{"type": "string", "description": "Glob pattern to match files (e.g., \"**/*.go\", \"src/**/*.ts\")"},
 				"path":    map[string]any{"type": "string", "description": "Directory to search in (defaults to working directory)"},
-				"limit":   map[string]any{"type": "integer", "description": "Maximum number of results to return (default: 1000)"},
+				"limit":   map[string]any{"type": "integer", "description": fmt.Sprintf("Maximum number of results to return (default: %d)", DefaultFindLimit)},
 			},
 			"required": []string{"pattern"},
 		},
@@ -87,16 +87,8 @@ func FindTool(root *os.Root) tool.Tool {
 				modTime time.Time
 			}
 			var results []fileResult
-			resultLimitReached := false
 
 			err = walkWorkspace(ctx, fsys, searchDirFS, func(path, relPath string) error {
-				// Collect more than limit to allow sorting, but cap at a reasonable number
-				if len(results) >= limit*2 {
-					resultLimitReached = true
-
-					return filepath.SkipAll
-				}
-
 				matched, err := doublestar.Match(pattern, relPath)
 
 				if err != nil {
@@ -121,17 +113,22 @@ func FindTool(root *os.Root) tool.Tool {
 				return "", fmt.Errorf("failed to search directory: %w", err)
 			}
 
-			if len(results) == 0 {
+			totalMatches := len(results)
+
+			if totalMatches == 0 {
 				return "No files found matching pattern", nil
 			}
 
-			// Sort by modification time (newest first)
+			// Sort by modification time (newest first). The walk visits every match
+			// before sorting so that the "newest" promise actually holds — a top-N
+			// from a partial walk would just be the newest among the first files
+			// visited, which depends on filesystem order.
 			sort.Slice(results, func(i, j int) bool {
 				return results[i].modTime.After(results[j].modTime)
 			})
 
-			// Apply limit
-			if len(results) > limit {
+			resultLimitReached := false
+			if totalMatches > limit {
 				results = results[:limit]
 				resultLimitReached = true
 			}
@@ -148,10 +145,11 @@ func FindTool(root *os.Root) tool.Tool {
 
 			var notices []string
 
-			notices = append(notices, fmt.Sprintf("%d files found in %dms", len(results), duration.Milliseconds()))
-
 			if resultLimitReached {
-				notices = append(notices, fmt.Sprintf("%d results limit reached — refine the pattern for more specific results", limit))
+				notices = append(notices, fmt.Sprintf("%d files found, showing newest %d in %dms", totalMatches, limit, duration.Milliseconds()))
+				notices = append(notices, "refine the pattern or raise limit for more results")
+			} else {
+				notices = append(notices, fmt.Sprintf("%d files found in %dms", totalMatches, duration.Milliseconds()))
 			}
 
 			if truncated {

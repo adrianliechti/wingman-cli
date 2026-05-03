@@ -6,11 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/session"
+	"github.com/adrianliechti/wingman-agent/pkg/tui"
 
 	"github.com/coder/websocket"
 )
@@ -50,6 +50,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
 		s.sendMessage(UsageEvent{
 			InputTokens:  usage.InputTokens,
+			CachedTokens: usage.CachedTokens,
 			OutputTokens: usage.OutputTokens,
 		})
 	}
@@ -155,7 +156,7 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 					ID:   c.ToolCall.ID,
 					Name: c.ToolCall.Name,
 					Args: c.ToolCall.Args,
-					Hint: extractToolHintFromArgs(c.ToolCall.Args),
+					Hint: tui.ExtractToolHint(c.ToolCall.Args, c.ToolCall.Name),
 				})
 				setPhase("tool_running")
 
@@ -183,6 +184,7 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 		usage := s.agent.Usage
 		s.sendMessage(UsageEvent{
 			InputTokens:  usage.InputTokens,
+			CachedTokens: usage.CachedTokens,
 			OutputTokens: usage.OutputTokens,
 		})
 	}
@@ -222,33 +224,6 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 
 	s.sendMessage(DoneEvent{})
 	setPhase("idle")
-}
-
-// extractToolHintFromArgs extracts a display hint from tool arguments JSON.
-func extractToolHintFromArgs(argsJSON string) string {
-	var args map[string]any
-
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return ""
-	}
-
-	if desc, ok := args["description"]; ok {
-		if str, ok := desc.(string); ok && str != "" {
-			return strings.Join(strings.Fields(str), " ")
-		}
-	}
-
-	hintKeys := []string{"query", "pattern", "command", "prompt", "path", "file", "url", "name"}
-
-	for _, key := range hintKeys {
-		if val, ok := args[key]; ok {
-			if str, ok := val.(string); ok && str != "" {
-				return strings.Join(strings.Fields(str), " ")
-			}
-		}
-	}
-
-	return ""
 }
 
 func (s *Server) autoSelectModel(ctx context.Context) {

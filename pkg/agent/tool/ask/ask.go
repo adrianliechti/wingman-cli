@@ -17,15 +17,16 @@ func Tools(elicit *tool.Elicitation) []tool.Tool {
 		"Ask the user a question and wait for their response. Use this when you need clarification or input to proceed.",
 		"",
 		"Usage:",
+		"- Asking blocks execution until the user replies. Always try a reasonable assumption first; ask only when being wrong would force a meaningful redo.",
 		"- Use when you need the user to make a decision between approaches.",
 		"- Use when requirements are ambiguous and different answers would change your approach.",
-		"- Prefer making reasonable assumptions over asking. Only ask when the answer materially affects your work.",
 		"- Do NOT use this for yes/no confirmations on tool execution -- those are handled automatically.",
 	}, "\n")
 
 	return []tool.Tool{{
 		Name:        "ask_user",
 		Description: description,
+		Effect:      tool.StaticEffect(tool.EffectReadOnly),
 
 		Parameters: map[string]any{
 			"type": "object",

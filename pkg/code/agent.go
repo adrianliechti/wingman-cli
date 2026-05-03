@@ -2,6 +2,7 @@ package code
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
 	"fmt"
 	iofs "io/fs"
@@ -114,7 +115,8 @@ type Agent struct {
 	mcpTools  []tool.Tool
 	lspTools  []tool.Tool
 
-	mu sync.Mutex
+	lastMemoryHash string
+	mu             sync.Mutex
 }
 
 func New(workDir string, ui UI) (*Agent, error) {
@@ -183,6 +185,8 @@ func New(workDir string, ui UI) (*Agent, error) {
 	// SKILL.md plus any bundled scripts/references), AND ~/.wingman/skills
 	// as a whole — bundled skills materialize into that tree on first
 	// invocation and need to be readable in the same session.
+	// Also allow the scratch dir: the truncation hook saves full tool
+	// outputs there, and its hint tells the model to `read` that path.
 	var allowedReadRoots []string
 	for _, s := range mergedSkills {
 		if s.Location != "" && filepath.IsAbs(s.Location) {
@@ -192,6 +196,7 @@ func New(workDir string, ui UI) (*Agent, error) {
 	if home, err := os.UserHomeDir(); err == nil {
 		allowedReadRoots = append(allowedReadRoots, filepath.Join(home, ".wingman", "skills"))
 	}
+	allowedReadRoots = append(allowedReadRoots, scratchDir)
 
 	baseTools := slices.Concat(
 		fs.Tools(root, allowedReadRoots...),
@@ -222,6 +227,7 @@ func New(workDir string, ui UI) (*Agent, error) {
 	}
 
 	agentCfg.Tools = a.tools
+	agentCfg.ContextMessages = a.memoryContextMessages
 
 	return a, nil
 }
@@ -305,7 +311,41 @@ func (a *Agent) tools() []tool.Tool {
 		tools = append(tools, a.lspTools...)
 	}
 
+	if a.PlanMode {
+		tools = planModeTools(tools)
+	}
+
 	return tools
+}
+
+func planModeTools(tools []tool.Tool) []tool.Tool {
+	filtered := make([]tool.Tool, 0, len(tools))
+
+	for _, t := range tools {
+		if t.Effect == nil {
+			continue
+		}
+
+		switch t.Effect(nil) {
+		case tool.EffectReadOnly:
+			filtered = append(filtered, t)
+		case tool.EffectDynamic:
+			t.Execute = planModeEffectExecute(t)
+			filtered = append(filtered, t)
+		}
+	}
+
+	return filtered
+}
+
+func planModeEffectExecute(t tool.Tool) func(context.Context, map[string]any) (string, error) {
+	return func(ctx context.Context, args map[string]any) (string, error) {
+		if t.Effect == nil || t.Effect(args) != tool.EffectReadOnly {
+			return "", fmt.Errorf("plan mode only allows read-only tool calls")
+		}
+
+		return t.Execute(ctx, args)
+	}
 }
 
 // IsGitRepo reports whether the agent's working directory is currently a git
@@ -385,8 +425,10 @@ func (a *Agent) Close() {
 // Memory and plan content
 
 const (
-	memoryFileName = "MEMORY.md"
-	memoryMaxBytes = 25 * 1024
+	memoryFileName      = "MEMORY.md"
+	memoryMaxBytes      = 25 * 1024
+	memoryContextPrefix = "Current MEMORY.md:\n\n"
+	memoryContextEmpty  = "MEMORY.md is currently empty."
 )
 
 func (a *Agent) MemoryContent() string {
@@ -412,6 +454,65 @@ func (a *Agent) MemoryContent() string {
 	return content
 }
 
+func (a *Agent) memoryContextMessages() []agent.Message {
+	content := a.MemoryContent()
+	messageText := ""
+	if content != "" {
+		messageText = memoryContextPrefix + content
+	}
+
+	sum := sha256.Sum256([]byte(content))
+	hash := string(sum[:])
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	prevHash := a.lastMemoryHash
+	if hash == a.lastMemoryHash {
+		return nil
+	}
+	a.lastMemoryHash = hash
+
+	if messageText == "" {
+		messageText = memoryContextEmpty
+		if prevHash == "" && a.latestMemoryContextText() == "" {
+			return nil
+		}
+	}
+
+	if prevHash == "" && a.latestMemoryContextText() == messageText {
+		return nil
+	}
+
+	return []agent.Message{{
+		Role:   agent.RoleUser,
+		Hidden: true,
+		Content: []agent.Content{{
+			Text: messageText,
+		}},
+	}}
+}
+
+func (a *Agent) latestMemoryContextText() string {
+	if a.Agent == nil {
+		return ""
+	}
+
+	for i := len(a.Messages) - 1; i >= 0; i-- {
+		m := a.Messages[i]
+		if !m.Hidden || m.Role != agent.RoleUser || len(m.Content) != 1 {
+			continue
+		}
+
+		text := m.Content[0].Text
+		if strings.HasPrefix(text, memoryContextPrefix) || text == memoryContextEmpty {
+			return text
+		}
+	}
+
+	return ""
+}
+
 // Instructions
 
 func BuildInstructions(data prompt.SectionData) string {
@@ -432,7 +533,6 @@ func (a *Agent) InstructionsData() prompt.SectionData {
 		Arch:                runtime.GOARCH,
 		WorkingDir:          a.RootPath,
 		MemoryDir:           a.MemoryPath,
-		MemoryContent:       a.MemoryContent(),
 		Skills:              skill.FormatForPrompt(a.Skills),
 		ProjectInstructions: ReadProjectInstructions(a.RootPath),
 	}

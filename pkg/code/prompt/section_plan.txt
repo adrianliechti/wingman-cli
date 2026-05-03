@@ -1,3 +1,3 @@
 {{- if .PlanMode -}}
-You are in planning mode. Focus on reading, exploring, and understanding the codebase. You may create or update plan files (e.g. PLAN.md) but do not modify project source code.
+You are in planning mode. Focus on reading, exploring, and understanding the codebase. Do not modify project source code or run mutating commands unless the user explicitly asks for that during planning.
 {{- end -}}

@@ -382,19 +382,23 @@ func (r *TviewRenderer) renderTable(w util.BufWriter, source []byte, node ast.No
 
 	// Render with proper padding
 	for rowIdx, row := range rows {
-		if isHeader[rowIdx] {
-			w.WriteString("[::b]")
-		}
-
 		for i, cell := range row {
 			if i > 0 {
-				fmt.Fprintf(w, " [%s]│[-] ", r.theme.BrBlack)
+				fmt.Fprintf(w, "[%s]│[-]", r.theme.BrBlack)
 			}
+
 			escaped := tview.Escape(cell)
-			w.WriteString(escaped)
-			// Pad to column width
+			w.WriteString(" ")
+
+			if isHeader[rowIdx] {
+				fmt.Fprintf(w, "[::b]%s[::-]", escaped)
+			} else {
+				w.WriteString(escaped)
+			}
+
+			// Right-pad to column width + 1 trailing space
 			if i < len(colWidths) {
-				padding := colWidths[i] - visibleLen(cell)
+				padding := colWidths[i] - visibleLen(cell) + 1
 
 				for range padding {
 					w.WriteString(" ")
@@ -402,10 +406,20 @@ func (r *TviewRenderer) renderTable(w util.BufWriter, source []byte, node ast.No
 			}
 		}
 
-		if isHeader[rowIdx] {
-			w.WriteString("[::-]")
-		}
 		w.WriteString("\n")
+
+		// Horizontal separator after the header row
+		if isHeader[rowIdx] {
+			for i, width := range colWidths {
+				if i > 0 {
+					fmt.Fprintf(w, "[%s]┼[-]", r.theme.BrBlack)
+				}
+
+				fmt.Fprintf(w, "[%s]%s[-]", r.theme.BrBlack, strings.Repeat("─", width+2))
+			}
+
+			w.WriteString("\n")
+		}
 	}
 
 	return ast.WalkSkipChildren, nil

@@ -265,8 +265,8 @@ func NextRun(t Task, now time.Time) time.Time {
 	sched := t.Schedule
 
 	// Interval: "every 15m"
-	if strings.HasPrefix(sched, "every ") {
-		d, err := time.ParseDuration(strings.TrimPrefix(sched, "every "))
+	if rest, ok := strings.CutPrefix(sched, "every "); ok {
+		d, err := time.ParseDuration(rest)
 		if err != nil {
 			return time.Time{}
 		}
@@ -311,8 +311,8 @@ func IsDue(t Task, now time.Time) bool {
 
 func validateSchedule(sched string) error {
 	// Interval
-	if strings.HasPrefix(sched, "every ") {
-		_, err := time.ParseDuration(strings.TrimPrefix(sched, "every "))
+	if rest, ok := strings.CutPrefix(sched, "every "); ok {
+		_, err := time.ParseDuration(rest)
 		if err != nil {
 			return fmt.Errorf("invalid interval %q: %w", sched, err)
 		}

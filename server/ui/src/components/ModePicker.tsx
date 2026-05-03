@@ -3,10 +3,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 type Mode = "agent" | "plan";
 
-interface Props {
-	onChange?: (mode: Mode) => void;
-}
-
 const options: { value: Mode; label: string; description: string }[] = [
 	{
 		value: "agent",
@@ -20,7 +16,7 @@ const options: { value: Mode; label: string; description: string }[] = [
 	},
 ];
 
-export function ModePicker({ onChange }: Props) {
+export function ModePicker() {
 	const [mode, setMode] = useState<Mode>("agent");
 	const [open, setOpen] = useState(false);
 	const popRef = useRef<HTMLDivElement>(null);
@@ -44,12 +40,11 @@ export function ModePicker({ onChange }: Props) {
 				.then((data) => {
 					const m: Mode = data.mode === "plan" ? "plan" : "agent";
 					setMode(m);
-					onChange?.(m);
 				})
 				.catch(() => {});
 			setOpen(false);
 		},
-		[onChange],
+		[],
 	);
 
 	useEffect(() => {

@@ -199,7 +199,7 @@ The LSP tool provides these operations:
 ## 🎨 Modes
 
 - **Agent Mode** — Full autonomous operation with tool execution
-- **Plan Mode** — Planning and analysis with write access limited to the session plan file
+- **Plan Mode** — Planning and analysis without project source edits
 
 Toggle between modes using `Tab` or the explicit `/plan` and `/agent` commands.
 
@@ -225,6 +225,7 @@ Toggle between modes using `Tab` or the explicit `/plan` and `/agent` commands.
 |---------|-------------|
 | `/help` | Show available commands and skills |
 | `/model` | Select AI model from available options |
+| `/effort` | Set reasoning effort (`auto`, `low`, `medium`, `high`) |
 | `/plan` | Enter planning mode |
 | `/agent` | Return to execution mode |
 | `/problems` | Show LSP diagnostics for the workspace |

@@ -63,6 +63,10 @@ func formatCodeBlock(code, lang string, t theme.Theme) string {
 
 	result.WriteString("\n")
 
+	if lang != "" {
+		fmt.Fprintf(&result, "  [%s]%s[-]\n", t.BrBlack, tview.Escape(lang))
+	}
+
 	for i, line := range lines {
 		fmt.Fprintf(&result, "  [%s]%3d[%s]│[-] %s\n", t.BrBlack, i+1, t.BrBlack, line)
 	}

@@ -51,22 +51,26 @@ type App struct {
 	sessionID string
 
 	// State
-	phase              AppPhase
-	currentMode        Mode
-	showWelcome        bool
-	activeModal        Modal
-	promptActive       bool
-	promptResponse     chan bool
-	promptMu           sync.Mutex
-	askActive          bool
-	askResponse        chan string
-	toolOutputExpanded bool
-	inputTokens        int64
-	outputTokens       int64
-	chatWidth          int
-	lastCompact        bool
-	pendingContent     []agent.Content
-	pendingFiles       []string
+	phase          AppPhase
+	currentMode    Mode
+	showWelcome    bool
+	activeModal    Modal
+	promptActive   bool
+	promptResponse chan bool
+	promptMu       sync.Mutex
+	askActive      bool
+	askResponse    chan string
+	// 0 = summary (finished turns collapse to one line), 1 = list (per-entry
+	// one-liners), 2 = full (reasoning text + tool output expanded). Ctrl+E
+	// cycles through.
+	expandLevel    int
+	inputTokens    int64
+	cachedTokens   int64
+	outputTokens   int64
+	chatWidth      int
+	lastCompact    bool
+	pendingContent []agent.Content
+	pendingFiles   []string
 
 	// Stream cancellation
 	streamCancel context.CancelFunc
@@ -176,7 +180,11 @@ func (a *App) stop() {
 	if len(a.agent.Messages) > 0 {
 		usage := a.agent.Usage
 		fmt.Fprintf(os.Stderr, "\n")
-		fmt.Fprintf(os.Stderr, "  Tokens: \u2191%s \u2193%s\n", tui.FormatTokens(usage.InputTokens), tui.FormatTokens(usage.OutputTokens))
+		if usage.CachedTokens > 0 {
+			fmt.Fprintf(os.Stderr, "  Tokens: \u2191%s (%s cached) \u2193%s\n", tui.FormatTokens(usage.InputTokens), tui.FormatTokens(usage.CachedTokens), tui.FormatTokens(usage.OutputTokens))
+		} else {
+			fmt.Fprintf(os.Stderr, "  Tokens: \u2191%s \u2193%s\n", tui.FormatTokens(usage.InputTokens), tui.FormatTokens(usage.OutputTokens))
+		}
 		fmt.Fprintf(os.Stderr, "  Resume: wingman --resume %s\n", a.sessionID)
 		fmt.Fprintf(os.Stderr, "\n")
 	}
@@ -230,6 +238,7 @@ func (a *App) Run() error {
 
 		usage := a.agent.Usage
 		a.inputTokens = usage.InputTokens
+		a.cachedTokens = usage.CachedTokens
 		a.outputTokens = usage.OutputTokens
 		a.updateStatusBar()
 	}

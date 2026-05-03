@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 interface Skill {
 	name: string;
 	description?: string;
-	when_to_use?: string;
 	arguments?: string[];
 }
 

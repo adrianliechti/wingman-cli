@@ -3,7 +3,7 @@ Skills are reusable prompts invoked by the user with `/skill-name [args]`. When 
 
 If a user's request clearly matches a skill's intended use but they did not use `/`, suggest the relevant slash command.
 
-For any skill that lists a `<location>`, you can use the standard `read` tool to inspect the full SKILL.md or any bundled resources next to it (`scripts/`, `references/`, `assets/`) before suggesting it. Paths beginning with `~/` are home-relative — pass them as-is to `read`.
+For any skill that lists a `<location>`, use the standard `read` tool to inspect the full SKILL.md or any bundled resources next to it (`scripts/`, `references/`, `assets/`) before using or suggesting it. Paths beginning with `~/` are home-relative -- pass them as-is to `read`.
 
 {{.Skills}}
 {{- end}}

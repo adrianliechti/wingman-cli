@@ -95,7 +95,7 @@ func (a *App) streamResponse(input []agent.Content) {
 			switch {
 			case c.ToolCall != nil:
 				a.currentToolName = c.ToolCall.Name
-				a.currentToolHint = tui.ExtractToolHint(c.ToolCall.Args)
+				a.currentToolHint = tui.ExtractToolHint(c.ToolCall.Args, c.ToolCall.Name)
 				a.setPhase(PhaseToolRunning)
 				a.streamingText = ""
 				a.streamingReasoning = ""
@@ -137,6 +137,7 @@ func (a *App) streamResponse(input []agent.Content) {
 		// Update token count during the loop so the statusbar stays current
 		usage := a.agent.Usage
 		a.inputTokens = usage.InputTokens
+		a.cachedTokens = usage.CachedTokens
 		a.outputTokens = usage.OutputTokens
 		a.app.QueueUpdateDraw(func() {
 			a.updateStatusBar()

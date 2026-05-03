@@ -31,7 +31,6 @@ var sectionProject string
 //go:embed section_bridge.txt
 var sectionBridge string
 
-
 var sectionTemplates = []struct {
 	title string
 	tmpl  *template.Template

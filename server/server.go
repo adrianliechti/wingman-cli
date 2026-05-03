@@ -18,9 +18,11 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/hook/truncation"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 	"github.com/adrianliechti/wingman-agent/pkg/session"
+	"github.com/adrianliechti/wingman-agent/pkg/system"
 
 	"github.com/coder/websocket"
 )
@@ -86,6 +88,13 @@ func New(ctx context.Context, agent *code.Agent, port int) *Server {
 	// takes effect on the next turn.
 	s.agent.Config.Instructions = s.currentInstructions
 
+	// Cap large tool outputs at the wire layer and save the full text to a
+	// scratch file so the model can `read` a specific range if it needs the
+	// elided middle. Same hook as the TUI uses (tui/code/app.go).
+	s.agent.Config.Hooks.PostToolUse = append(s.agent.Config.Hooks.PostToolUse,
+		truncation.New(truncation.DefaultMaxBytes, s.agent.ScratchPath),
+	)
+
 	// Poll for changes from outside the agent (terminal `rm`, IDE saves, etc.)
 	// so the FileTree and Diffs panels reflect them. Polling instead of
 	// fsnotify: zero FDs (kqueue's per-dir watcher cost was the original
@@ -120,6 +129,12 @@ func (s *Server) handleWebSocketURL(w http.ResponseWriter, r *http.Request) {
 func (s *Server) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	port, err := system.FreePort(s.port)
+	if err != nil {
+		return err
+	}
+	s.port = port
 
 	server := &http.Server{
 		Addr:    fmt.Sprintf("localhost:%d", s.port),
@@ -169,6 +184,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/model", s.handleModel)
 	mux.HandleFunc("GET /api/models", s.handleModels)
 	mux.HandleFunc("POST /api/model", s.handleSetModel)
+	mux.HandleFunc("GET /api/effort", s.handleEffort)
+	mux.HandleFunc("POST /api/effort", s.handleSetEffort)
 	mux.HandleFunc("GET /api/mode", s.handleMode)
 	mux.HandleFunc("POST /api/mode", s.handleSetMode)
 	mux.HandleFunc("GET /api/diagnostics", s.handleDiagnostics)
@@ -194,6 +211,7 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	usage := s.agent.Usage
 	writeJSON(w, map[string]int64{
 		"input_tokens":  usage.InputTokens,
+		"cached_tokens": usage.CachedTokens,
 		"output_tokens": usage.OutputTokens,
 	})
 }
@@ -262,6 +280,10 @@ func convertMessages(messages []agent.Message) []ConversationMessage {
 	var result []ConversationMessage
 
 	for _, m := range messages {
+		if m.Hidden {
+			continue
+		}
+
 		cm := ConversationMessage{
 			Role: string(m.Role),
 		}
@@ -339,6 +361,7 @@ func (s *Server) handleNewSession(w http.ResponseWriter, r *http.Request) {
 	s.sendMessage(CheckpointsChangedEvent{})
 	s.sendMessage(FilesChangedEvent{})
 	s.sendMessage(SessionsChangedEvent{})
+	s.sendMessage(UsageEvent{})
 
 	writeJSON(w, map[string]string{"id": s.sessionID})
 }
@@ -359,6 +382,11 @@ func (s *Server) handleLoadSession(w http.ResponseWriter, r *http.Request) {
 	s.agent.Messages = sess.State.Messages
 	s.agent.Usage = sess.State.Usage
 	s.sessionID = id
+	s.sendMessage(UsageEvent{
+		InputTokens:  s.agent.Usage.InputTokens,
+		CachedTokens: s.agent.Usage.CachedTokens,
+		OutputTokens: s.agent.Usage.OutputTokens,
+	})
 
 	messages := convertMessages(s.agent.Messages)
 	writeJSON(w, messages)
@@ -437,6 +465,41 @@ func (s *Server) handleSetModel(w http.ResponseWriter, r *http.Request) {
 	s.agent.Config.Model = func() string { return modelID }
 
 	writeJSON(w, map[string]string{"model": modelID})
+}
+
+func (s *Server) handleEffort(w http.ResponseWriter, r *http.Request) {
+	effort := ""
+	if s.agent.Config.Effort != nil {
+		effort = s.agent.Effort()
+	}
+	writeJSON(w, map[string]string{"effort": effort})
+}
+
+func (s *Server) handleSetEffort(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Effort string `json:"effort"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+
+	switch body.Effort {
+	case "", "auto":
+		s.agent.Config.Effort = nil
+		writeJSON(w, map[string]string{"effort": ""})
+		return
+	case "low", "medium", "high":
+	default:
+		http.Error(w, "effort must be auto, low, medium, or high", http.StatusBadRequest)
+		return
+	}
+
+	effort := body.Effort
+	s.agent.Config.Effort = func() string { return effort }
+
+	writeJSON(w, map[string]string{"effort": effort})
 }
 
 func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {

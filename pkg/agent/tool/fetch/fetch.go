@@ -25,11 +25,13 @@ func Tools() []tool.Tool {
 		"- The URL must be a fully-formed valid URL (e.g., https://example.com).",
 		"- Returns extracted text content from the page.",
 		"- Large responses are truncated to 100KB.",
+		"- Fetch fails for URLs that require authentication, are behind a paywall, or block automated access. If a fetch fails, do not retry the same URL — try a public mirror or `search_online` for an alternate source.",
 	}, "\n")
 
 	return []tool.Tool{{
 		Name:        "fetch",
-		Description:     description,
+		Description: description,
+		Effect:      tool.StaticEffect(tool.EffectReadOnly),
 
 		Parameters: map[string]any{
 			"type": "object",

@@ -3,11 +3,10 @@ import { useCallback, useEffect, useState } from "react";
 import type { CheckpointEntry, ServerMessage } from "../types/protocol";
 
 interface Props {
-	visible: boolean;
 	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 }
 
-export function CheckpointsPanel({ visible, subscribe }: Props) {
+export function CheckpointsPanel({ subscribe }: Props) {
 	const [checkpoints, setCheckpoints] = useState<CheckpointEntry[]>([]);
 	const [restoring, setRestoring] = useState<string | null>(null);
 
@@ -57,8 +56,6 @@ export function CheckpointsPanel({ visible, subscribe }: Props) {
 		},
 		[],
 	);
-
-	if (!visible) return null;
 
 	return (
 		<div className="flex flex-col h-full overflow-hidden bg-bg">

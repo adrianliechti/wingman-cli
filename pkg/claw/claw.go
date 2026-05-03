@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/hook/truncation"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/fs"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/mcp"
@@ -153,6 +154,16 @@ func (c *Claw) loadAgent(name string) (*managedAgent, error) {
 
 	cfg := c.config.AgentConfig.Derive()
 	cfg.Instructions = func() string { return c.buildInstructions(name) }
+
+	// Cap large tool outputs at the wire layer and save the full text under
+	// the workspace so the read tool's existing sandboxed root can reach it
+	// — the hook's hint tells the model to `read` the saved path to
+	// retrieve the elided middle.
+	scratchDir := filepath.Join(workDir, ".scratch")
+	_ = os.MkdirAll(scratchDir, 0755)
+	cfg.Hooks.PostToolUse = append(cfg.Hooks.PostToolUse,
+		truncation.New(truncation.DefaultMaxBytes, scratchDir),
+	)
 
 	// Build per-agent tools - collected into a slice that the closure references
 	agentTools := slices.Concat(

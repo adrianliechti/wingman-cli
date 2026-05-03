@@ -89,11 +89,10 @@ func sseData(body []byte) []string {
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 
-		if !strings.HasPrefix(line, "data: ") {
+		data, ok := strings.CutPrefix(line, "data: ")
+		if !ok {
 			continue
 		}
-
-		data := strings.TrimPrefix(line, "data: ")
 
 		if data == "[DONE]" {
 			continue

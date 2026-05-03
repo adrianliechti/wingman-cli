@@ -86,6 +86,7 @@ func (DoneEvent) serverEventType() string { return "done" }
 
 type UsageEvent struct {
 	InputTokens  int64 `json:"input_tokens"`
+	CachedTokens int64 `json:"cached_tokens"`
 	OutputTokens int64 `json:"output_tokens"`
 }
 
@@ -129,8 +130,8 @@ func (CapabilitiesChangedEvent) serverEventType() string { return "capabilities_
 
 // ConversationMessage is a simplified message for the REST /api/messages endpoint and WebSocket messages payload.
 type ConversationMessage struct {
-	Role    string                   `json:"role"`
-	Content []ConversationContent    `json:"content"`
+	Role    string                `json:"role"`
+	Content []ConversationContent `json:"content"`
 }
 
 type ConversationContent struct {

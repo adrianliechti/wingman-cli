@@ -110,6 +110,19 @@ func (t *TUI) updateStatusBar() {
 		return
 	}
 
+	if a.Usage.CachedTokens > 0 {
+		fmt.Fprintf(t.statusBar, "  [%s]\u2191%s (%s cached) \u2193%s[-] [%s]\u2503[-] [%s]%s[-] ",
+			th.BrBlack,
+			tui.FormatTokens(a.Usage.InputTokens),
+			tui.FormatTokens(a.Usage.CachedTokens),
+			tui.FormatTokens(a.Usage.OutputTokens),
+			th.BrBlack,
+			th.Cyan,
+			name,
+		)
+		return
+	}
+
 	fmt.Fprintf(t.statusBar, "  [%s]\u2191%s \u2193%s[-] [%s]\u2503[-] [%s]%s[-] ",
 		th.BrBlack,
 		tui.FormatTokens(a.Usage.InputTokens),

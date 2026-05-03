@@ -4,12 +4,28 @@ import (
 	"context"
 )
 
+type Effect string
+
+const (
+	EffectReadOnly  Effect = "read_only"
+	EffectMutates   Effect = "mutates"
+	EffectDangerous Effect = "dangerous"
+	EffectDynamic   Effect = "dynamic"
+)
+
+func StaticEffect(effect Effect) func(map[string]any) Effect {
+	return func(map[string]any) Effect {
+		return effect
+	}
+}
+
 type Tool struct {
 	Name        string
 	Description string
 	Parameters  map[string]any
 	Execute     func(ctx context.Context, args map[string]any) (string, error)
 	Hidden      bool
+	Effect      func(args map[string]any) Effect
 }
 
 // ToolCall describes a pending tool invocation.

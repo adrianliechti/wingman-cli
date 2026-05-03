@@ -2,8 +2,12 @@ package claude
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
 )
 
 func Run(ctx context.Context, args []string, options *Options) error {
@@ -12,7 +16,12 @@ func Run(ctx context.Context, args []string, options *Options) error {
 	}
 
 	if options.Path == "" {
-		options.Path = "claude"
+		path, err := findPath()
+		if err != nil {
+			return err
+		}
+
+		options.Path = path
 	}
 
 	if options.Env == nil {
@@ -48,6 +57,7 @@ func Run(ctx context.Context, args []string, options *Options) error {
 		"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY":      "1",
 		"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB":         "1",
 		"CLAUDE_CODE_SKIP_PROMPT_HISTORY":          "1",
+		"CLAUDE_CODE_ATTRIBUTION_HEADER":           "0",
 
 		// Disabled commands (not applicable in managed environment)
 		"DISABLE_AUTOUPDATER":                "1",
@@ -76,6 +86,14 @@ func Run(ctx context.Context, args []string, options *Options) error {
 		"CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1",
 	}
 
+	if cfg.SonnetModel != "" {
+		vars["CLAUDE_CODE_SUBAGENT_MODEL"] = cfg.SonnetModel
+	}
+
+	if cfg.ContextWindow > 0 {
+		vars["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = strconv.Itoa(cfg.ContextWindow)
+	}
+
 	env := options.Env
 
 	for k, v := range vars {
@@ -90,4 +108,27 @@ func Run(ctx context.Context, args []string, options *Options) error {
 	cmd.Stderr = os.Stderr
 
 	return cmd.Run()
+}
+
+func findPath() (string, error) {
+	if path, err := exec.LookPath("claude"); err == nil {
+		return path, nil
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	name := "claude"
+	if runtime.GOOS == "windows" {
+		name = "claude.exe"
+	}
+
+	path := filepath.Join(home, ".claude", "local", name)
+	if _, err := os.Stat(path); err != nil {
+		return "", fmt.Errorf("claude is not installed or not on PATH")
+	}
+
+	return path, nil
 }

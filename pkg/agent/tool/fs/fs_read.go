@@ -16,16 +16,18 @@ import (
 // workspace and the allow-list is rejected.
 func ReadTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 	return tool.Tool{
-		Name: "read",
+		Name:   "read",
+		Effect: tool.StaticEffect(tool.EffectReadOnly),
 
 		Description: strings.Join([]string{
 			fmt.Sprintf("Read the contents of a file. Output includes line numbers. Truncated to %d lines or %dKB.", DefaultMaxLines, DefaultMaxBytes/1024),
 			"",
 			"Usage:",
 			"- You must read a file before editing it.",
+			"- If you read this file earlier in the conversation and nothing has modified it since, the prior result is still current — refer to it instead of re-reading. Re-read only after `edit` or `write`, or when the user indicates external changes.",
 			"- For large files, use offset and limit to read in chunks. The output will tell you where to continue.",
 			"- Read multiple files in parallel by calling this tool multiple times in one response.",
-			"- Prefer `grep` to locate relevant code before reading entire files.",
+			"- Prefer `grep` to locate relevant code before reading entire files. Often a single `grep` returns enough context that no `read` is needed.",
 			"- When editing text from read output, preserve the exact indentation as shown AFTER the line number prefix. Never include line numbers in old_text.",
 		}, "\n"),
 
@@ -48,6 +50,10 @@ func ReadTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 
 			workingDir := root.Name()
 			expanded := expandHome(pathArg)
+
+			if isBinaryFile(expanded) {
+				return "", fmt.Errorf("cannot read %s: file appears to be binary (extension %q). Use the shell tool with an appropriate viewer if you really need to inspect it", pathArg, filepath.Ext(expanded))
+			}
 
 			limit := 0
 			offset := 0
