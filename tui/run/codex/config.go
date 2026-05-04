@@ -77,8 +77,11 @@ func NewConfig(ctx context.Context, options *Options) (*CodexConfig, error) {
 	}
 
 	cfg.Model = pick(
-		// Codex models
+		// ChatGPT models
+		"gpt-5.5",
 		"gpt-5.4",
+
+		// Codex models
 		"gpt-5.3-codex",
 		"gpt-5.2-codex",
 		"gpt-5.1-codex-max",
@@ -89,12 +92,10 @@ func NewConfig(ctx context.Context, options *Options) (*CodexConfig, error) {
 		"gpt-5.3-codex-spark",
 		"gpt-5.1-codex-mini",
 
-		// ChatGPT models
+		// Legacy ChatGPT models
 		"gpt-5.2",
 		"gpt-5.1",
 		"gpt-5",
-
-		// ChatGPT Mini models
 		"gpt-5-mini",
 	)
 

@@ -56,8 +56,11 @@ func Run(ctx context.Context, args []string, options *Options) error {
 		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
 		"CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY":      "1",
 		"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB":         "1",
+		"CLAUDE_CODE_MCP_ALLOWLIST_ENV":            "1",
 		"CLAUDE_CODE_SKIP_PROMPT_HISTORY":          "1",
 		"CLAUDE_CODE_ATTRIBUTION_HEADER":           "0",
+		"CLAUDE_CODE_HIDE_CWD":                     "1",
+		"CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST":     "1",
 
 		// Disabled commands (not applicable in managed environment)
 		"DISABLE_AUTOUPDATER":                "1",
@@ -71,11 +74,13 @@ func Run(ctx context.Context, args []string, options *Options) error {
 		"DISABLE_LOGOUT_COMMAND":             "1",
 
 		// Disabled features (security & cost control)
-		"CLAUDE_CODE_DISABLE_FAST_MODE":          "1",
-		"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS":   "1",
-		"CLAUDE_CODE_DISABLE_CRON":               "1",
-		"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
-		"CLAUDE_CODE_DISABLE_1M_CONTEXT":         "1",
+		"CLAUDE_CODE_DISABLE_FAST_MODE":             "1",
+		"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS":      "1",
+		"CLAUDE_CODE_DISABLE_CRON":                  "1",
+		"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS":    "1",
+		"CLAUDE_CODE_DISABLE_1M_CONTEXT":            "1",
+		"CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK": "1",
+		"CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP":    "1",
 
 		// UI & integration lockdown
 		"CLAUDE_CODE_HIDE_ACCOUNT_INFO":     "1",

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "Wingman Agent",
+  "outputfilename": "Wingman Agent",
+  "frontend:dir": "public",
+  "author": {
+    "name": "Adrian Liechti",
+    "email": "adrian@monobox.ch"
+  },
+  "info": {
+    "productName": "Wingman Agent"
+  }
+}

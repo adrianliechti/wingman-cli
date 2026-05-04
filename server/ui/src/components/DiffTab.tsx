@@ -19,7 +19,9 @@ export function DiffTab({ path, subscribe, onDeleted }: Props) {
 	// Ref so `load` stays stable across renders and the WebSocket subscription
 	// doesn't tear down/re-subscribe each time.
 	const onDeletedRef = useRef(onDeleted);
-	onDeletedRef.current = onDeleted;
+	useEffect(() => {
+		onDeletedRef.current = onDeleted;
+	});
 	// Track whether we've ever found a diff for this path. Closing the tab on a
 	// missing entry only makes sense after we've shown one — opening directly
 	// from a stale link should still render the "No changes" state.
@@ -51,6 +53,7 @@ export function DiffTab({ path, subscribe, onDeleted }: Props) {
 
 	useEffect(() => {
 		hadDiffRef.current = false;
+		// eslint-disable-next-line react-hooks/set-state-in-effect -- standard data-load on mount/path change
 		setLoading(true);
 		setError(null);
 		load();
@@ -128,57 +131,71 @@ export function DiffTab({ path, subscribe, onDeleted }: Props) {
 	);
 }
 
-function DiffView({ patch }: { patch: string }) {
+interface DiffRow {
+	cls: string;
+	oldNum: string | number;
+	newNum: string | number;
+	line: string;
+}
+
+function buildDiffRows(patch: string): DiffRow[] {
 	const lines = patch.split("\n");
+	const rows: DiffRow[] = [];
 	let oldLine = 0;
 	let newLine = 0;
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		let cls = "text-fg-muted";
+		let oldNum: string | number = "";
+		let newNum: string | number = "";
 
+		if (line.startsWith("@@")) {
+			const m = /@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+			if (m) {
+				oldLine = parseInt(m[1], 10);
+				newLine = parseInt(m[2], 10);
+			}
+			cls = "text-purple bg-[rgba(197,134,192,0.08)]";
+		} else if (
+			line.startsWith("+++") ||
+			line.startsWith("---") ||
+			line.startsWith("diff ") ||
+			line.startsWith("index ")
+		) {
+			cls = "text-fg-dim";
+		} else if (line.startsWith("+")) {
+			cls = "text-success bg-[rgba(78,201,176,0.1)]";
+			newNum = newLine++;
+		} else if (line.startsWith("-")) {
+			cls = "text-danger bg-[rgba(244,135,113,0.1)]";
+			oldNum = oldLine++;
+		} else if (line.length > 0 || i < lines.length - 1) {
+			oldNum = oldLine++;
+			newNum = newLine++;
+		}
+
+		rows.push({ cls, oldNum, newNum, line });
+	}
+	return rows;
+}
+
+export function DiffView({ patch }: { patch: string }) {
+	const rows = buildDiffRows(patch);
 	return (
 		<div className="font-mono text-[12px] leading-[1.55] py-2">
-			{lines.map((line, i) => {
-				let cls = "text-fg-muted";
-				let oldNum: string | number = "";
-				let newNum: string | number = "";
-
-				if (line.startsWith("@@")) {
-					const m = /@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
-					if (m) {
-						oldLine = parseInt(m[1], 10);
-						newLine = parseInt(m[2], 10);
-					}
-					cls = "text-purple bg-[rgba(197,134,192,0.08)]";
-				} else if (
-					line.startsWith("+++") ||
-					line.startsWith("---") ||
-					line.startsWith("diff ") ||
-					line.startsWith("index ")
-				) {
-					cls = "text-fg-dim";
-				} else if (line.startsWith("+")) {
-					cls = "text-success bg-[rgba(78,201,176,0.1)]";
-					newNum = newLine++;
-				} else if (line.startsWith("-")) {
-					cls = "text-danger bg-[rgba(244,135,113,0.1)]";
-					oldNum = oldLine++;
-				} else if (line.length > 0 || i < lines.length - 1) {
-					oldNum = oldLine++;
-					newNum = newLine++;
-				}
-
-				return (
-					<div key={i} className={`flex ${cls}`}>
-						<span className="w-10 shrink-0 text-right pr-1 text-fg-dim select-none">
-							{oldNum}
-						</span>
-						<span className="w-10 shrink-0 text-right pr-2 text-fg-dim select-none">
-							{newNum}
-						</span>
-						<span className="flex-1 whitespace-pre px-2 break-all">
-							{line || "\u00A0"}
-						</span>
-					</div>
-				);
-			})}
+			{rows.map((row, i) => (
+				<div key={i} className={`flex ${row.cls}`}>
+					<span className="w-10 shrink-0 text-right pr-1 text-fg-dim select-none">
+						{row.oldNum}
+					</span>
+					<span className="w-10 shrink-0 text-right pr-2 text-fg-dim select-none">
+						{row.newNum}
+					</span>
+					<span className="flex-1 whitespace-pre px-2 break-all">
+						{row.line || "\u00A0"}
+					</span>
+				</div>
+			))}
 		</div>
 	);
 }

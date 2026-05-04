@@ -7,6 +7,27 @@ export default defineConfig({
   build: {
     outDir: '../static',
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        entryFileNames: 'assets/[name].js',
+        chunkFileNames: (chunkInfo) => {
+          const id = chunkInfo.facadeModuleId || ''
+          if (/monaco-editor\/esm\/vs\/(basic-languages|language)\//.test(id)) {
+            return 'assets/lang/[name].js'
+          }
+          return 'assets/[name].js'
+        },
+        assetFileNames: 'assets/[name].[ext]',
+      },
+    },
+  },
+  worker: {
+    rollupOptions: {
+      output: {
+        entryFileNames: 'assets/workers/[name].js',
+        chunkFileNames: 'assets/workers/[name].js',
+      },
+    },
   },
   server: {
     proxy: {

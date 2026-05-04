@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Wingman Agent</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+
+        --bg: #0a0a0a;
+        --bg-elevated: #181818;
+        --bg-hover: #1a1a1a;
+        --fg: #e0e0e0;
+        --fg-muted: #888888;
+        --border: #1e1e1e;
+        --border-strong: #333333;
+        --danger: #f87171;
+      }
+
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: #ffffff;
+          --bg-elevated: #f0f0f0;
+          --bg-hover: #ededed;
+          --fg: #1a1a1a;
+          --fg-muted: #555555;
+          --border: #e5e5e5;
+          --border-strong: #cccccc;
+          --danger: #dc2626;
+        }
+      }
+
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue",
+          Helvetica, Arial, sans-serif;
+        font-size: 13px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+
+      main {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1rem;
+        padding: 2rem;
+        text-align: center;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 1.5rem;
+        font-weight: 500;
+        letter-spacing: -0.01em;
+      }
+
+      p {
+        margin: 0;
+        color: var(--fg-muted);
+      }
+
+      button {
+        font: inherit;
+        margin-top: 0.75rem;
+        padding: 0.55rem 1.1rem;
+        border-radius: 6px;
+        border: 1px solid var(--border-strong);
+        background: var(--bg-elevated);
+        color: var(--fg);
+        cursor: pointer;
+        transition:
+          background 0.12s,
+          border-color 0.12s;
+      }
+
+      button:hover:not(:disabled) {
+        background: var(--bg-hover);
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .error {
+        min-height: 1.2em;
+        margin-top: 0.25rem;
+        color: var(--danger);
+        font-size: 12px;
+      }
+
+      .settings-toggle {
+        position: fixed;
+        left: 12px;
+        bottom: 12px;
+        width: 32px;
+        height: 32px;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: none;
+        background: transparent;
+        color: var(--fg-muted);
+      }
+
+      .settings-toggle:hover:not(:disabled) {
+        color: var(--fg);
+        background: transparent;
+      }
+
+      .settings-toggle svg {
+        width: 16px;
+        height: 16px;
+      }
+
+      .drawer {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        max-height: 100vh;
+        width: min(380px, 100vw);
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--fg);
+        border: none;
+        border-right: 1px solid var(--border);
+      }
+
+      .drawer[open] {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .drawer::backdrop {
+        background: rgba(0, 0, 0, 0.4);
+      }
+
+      .drawer-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 1rem 1.25rem;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .drawer-header h2 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 500;
+      }
+
+      .drawer-close {
+        background: none;
+        border: none;
+        color: var(--fg-muted);
+        font-size: 18px;
+        line-height: 1;
+        cursor: pointer;
+        padding: 4px;
+        margin: 0;
+      }
+
+      .drawer-close:hover {
+        color: var(--fg);
+        background: none;
+      }
+
+      .drawer-body {
+        padding: 1rem 1.25rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.85rem;
+        overflow-y: auto;
+      }
+
+      .drawer-body label {
+        display: flex;
+        flex-direction: column;
+        gap: 0.3rem;
+        font-size: 12px;
+        color: var(--fg-muted);
+      }
+
+      .drawer-body input {
+        font: inherit;
+        font-size: 13px;
+        padding: 0.5rem 0.65rem;
+        border-radius: 6px;
+        border: 1px solid var(--border-strong);
+        background: var(--bg-elevated);
+        color: var(--fg);
+      }
+
+      .drawer-body input:focus {
+        outline: none;
+        border-color: var(--fg-muted);
+      }
+
+      .drawer-footer {
+        margin-top: auto;
+        padding: 1rem 1.25rem;
+        border-top: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+
+      .drawer-footer button {
+        margin: 0;
+      }
+
+      .drawer-status {
+        font-size: 12px;
+        color: var(--fg-muted);
+        flex: 1;
+        text-align: right;
+      }
+
+      .drawer-status.error {
+        color: var(--danger);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Wingman Agent</h1>
+      <p>Open a workspace folder to begin.</p>
+      <button id="open">Open Folder...</button>
+      <div class="error" id="error"></div>
+    </main>
+
+    <button id="settings-toggle" class="settings-toggle" title="Settings" aria-label="Settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+      </svg>
+    </button>
+
+    <dialog id="drawer" class="drawer">
+      <div class="drawer-header">
+        <h2>Settings</h2>
+        <button id="drawer-close" class="drawer-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="drawer-body">
+        <label>
+          Wingman URL
+          <input id="url" type="url" placeholder="https://..." autocomplete="off" spellcheck="false" />
+        </label>
+        <label>
+          Wingman Token
+          <input id="token" type="password" placeholder="optional" autocomplete="off" spellcheck="false" />
+        </label>
+      </div>
+      <div class="drawer-footer">
+        <button id="save">Save</button>
+        <div id="drawer-status" class="drawer-status"></div>
+      </div>
+    </dialog>
+
+    <script>
+      const openBtn = document.getElementById("open");
+      const errEl = document.getElementById("error");
+
+      const settingsToggle = document.getElementById("settings-toggle");
+      const drawer = document.getElementById("drawer");
+      const drawerClose = document.getElementById("drawer-close");
+      const urlInput = document.getElementById("url");
+      const tokenInput = document.getElementById("token");
+      const saveBtn = document.getElementById("save");
+      const drawerStatus = document.getElementById("drawer-status");
+
+      function setDrawerStatus(msg, isError = false) {
+        drawerStatus.textContent = msg;
+        drawerStatus.classList.toggle("error", !!isError);
+      }
+
+      let settingsLoaded = false;
+      async function loadSettings() {
+        try {
+          const s = await window.go.main.App.GetSettings();
+          urlInput.value = s?.url || "";
+          tokenInput.value = s?.token || "";
+          settingsLoaded = true;
+        } catch (e) {
+          setDrawerStatus(String(e), true);
+        }
+      }
+
+      settingsToggle.addEventListener("click", () => {
+        if (!settingsLoaded) loadSettings();
+        setDrawerStatus("");
+        drawer.showModal();
+      });
+      drawerClose.addEventListener("click", () => drawer.close());
+      drawer.addEventListener("click", (e) => {
+        if (e.target === drawer) drawer.close();
+      });
+
+      saveBtn.addEventListener("click", async () => {
+        saveBtn.disabled = true;
+        setDrawerStatus("");
+        try {
+          await window.go.main.App.SaveSettings({
+            url: urlInput.value.trim(),
+            token: tokenInput.value,
+          });
+          setDrawerStatus("Saved.");
+        } catch (e) {
+          setDrawerStatus(String(e), true);
+        } finally {
+          saveBtn.disabled = false;
+        }
+      });
+
+      openBtn.addEventListener("click", async () => {
+        openBtn.disabled = true;
+        errEl.textContent = "";
+        try {
+          const path = await window.go.main.App.SelectFolder();
+          if (!path) {
+            openBtn.disabled = false;
+            return;
+          }
+          openBtn.textContent = "Loading...";
+          const url = await window.go.main.App.OpenWorkspace(path);
+          window.location.href = url;
+        } catch (e) {
+          errEl.textContent = String(e);
+          openBtn.disabled = false;
+          openBtn.textContent = "Open Folder...";
+        }
+      });
+    </script>
+  </body>
+</html>

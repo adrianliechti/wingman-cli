@@ -3,14 +3,16 @@
 version: '3'
 
 tasks:
-  generate:
+  ui:
     desc: Build the web UI assets
+    dir: server/ui
     cmds:
-      - go generate ./server/...
+      - npm install
+      - npm run build
 
   server:
-    desc: Generate the web UI and run the server
-    deps: [generate]
+    desc: Run the server
+    deps: [ui]
     cmds:
       - go run . server
 
@@ -20,13 +22,15 @@ tasks:
       - go run .
 
   install:
-    desc: Install wingman using go install
-    deps: [generate]
+    desc: Install wingman to GOPATH/bin
+    deps: [ui]
     cmds:
-      - go build -o wingman . && mv wingman $(go env GOPATH)/bin/
+      - go install .
 
-  run:
-    desc: Install and run wingman
-    deps: [install]
+  app:
+    desc: Build and launch the Wails desktop app
+    deps: [ui]
+    dir: app
     cmds:
-      - $(go env GOPATH)/bin/wingman
+      - wails build
+      - open "build/bin/Wingman Agent.app"

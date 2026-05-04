@@ -37,6 +37,7 @@ export function Sidebar({
 	}, []);
 
 	useEffect(() => {
+		// eslint-disable-next-line react-hooks/set-state-in-effect -- standard data-load on mount
 		loadSessions();
 	}, [loadSessions]);
 
@@ -51,6 +52,7 @@ export function Sidebar({
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: reload when session changes
 	useEffect(() => {
+		// eslint-disable-next-line react-hooks/set-state-in-effect -- reload session list when active session changes
 		loadSessions();
 	}, [currentSessionId, loadSessions]);
 

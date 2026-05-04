@@ -44,11 +44,13 @@ func Run(ctx context.Context, args []string, options *Options) error {
 		"--config", "feedback.enabled=false",
 		"--config", "analytics.enabled=false",
 		"--config", "history.persistence=\"none\"",
+		"--config", "otel.exporter=\"none\"",
+		"--config", "otel.log_user_prompt=false",
 
 		// Disabled features (security & cost control)
 		"--config", "web_search=\"disabled\"",
-		"--config", "features.remote_models=false",
 		"--config", "features.apps=false",
+		"--config", "features.fast_mode=false",
 
 		// UI
 		"--config", "tui.show_tooltips=false",

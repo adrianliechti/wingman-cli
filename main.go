@@ -85,7 +85,7 @@ func runServer(ctx context.Context) {
 	}
 	defer c.Close()
 
-	if err := server.New(c, *port).Run(ctx); err != nil {
+	if err := server.New(ctx, c, *port).Run(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
