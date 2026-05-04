@@ -27,9 +27,6 @@ import (
 	"github.com/coder/websocket"
 )
 
-//go:generate npm --prefix ui install
-//go:generate npm --prefix ui run build
-
 //go:embed static/*
 var staticFiles embed.FS
 

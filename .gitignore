@@ -1,6 +1,5 @@
 dist/
 node_modules/
-server/static/
 
 .vscode/
 .idea/
