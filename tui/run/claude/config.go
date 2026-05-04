@@ -17,9 +17,10 @@ type ClaudeConfig struct {
 	BaseURL   string
 	AuthToken string
 
-	OpusModel     string
-	HaikuModel    string
-	SonnetModel   string
+	OpusModel   string
+	HaikuModel  string
+	SonnetModel string
+
 	ContextWindow int
 }
 
@@ -82,7 +83,6 @@ func NewConfig(ctx context.Context, options *Options) (*ClaudeConfig, error) {
 	cfg.HaikuModel = pick("claude-haiku-4-6", "claude-haiku-4-5")
 	cfg.SonnetModel = pick("claude-sonnet-4-6", "claude-sonnet-4-5")
 	cfg.OpusModel = pick("claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5")
-	cfg.ContextWindow = 200000
 
 	return cfg, nil
 }
