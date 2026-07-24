@@ -133,6 +133,7 @@ func TestSetModelAndEffortScopeToCurrentMode(t *testing.T) {
 
 func TestModelClass(t *testing.T) {
 	tests := map[string]code.ModelClass{
+		"claude-opus-5":     code.ModelClassLarge,
 		"claude-opus-4-8":   code.ModelClassLarge,
 		"gpt-5.6-sol":       code.ModelClassLarge,
 		"claude-fable-5":    code.ModelClassLarge,

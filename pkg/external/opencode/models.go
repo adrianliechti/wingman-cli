@@ -29,6 +29,7 @@ var candidates = []modelGroup{
 		name: "Wingman Claude Opus",
 
 		models: []modelEntry{
+			{id: "claude-opus-5", inputTokens: 1000000, outputTokens: 128000},
 			{id: "claude-opus-4-8", inputTokens: 1000000, outputTokens: 128000},
 			{id: "claude-opus-4-7", inputTokens: 1000000, outputTokens: 128000},
 			{id: "claude-opus-4-6", inputTokens: 200000, outputTokens: 128000},
