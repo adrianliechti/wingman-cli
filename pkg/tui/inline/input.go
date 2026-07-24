@@ -17,6 +17,7 @@ type inputReader struct {
 	buf     []byte
 	pasting bool
 	paste   strings.Builder
+	pasteCR bool
 }
 
 func startInput(r io.Reader, events chan<- Event, done <-chan struct{}) {
@@ -150,6 +151,25 @@ func (in *inputReader) process() {
 
 		in.buf = in.buf[1:]
 
+		// Pasted newlines vary by terminal and platform. Preserve CR, LF, and
+		// CRLF as one logical newline while bracketed paste mode is active.
+		if in.pasting {
+			switch b {
+			case '\r':
+				in.paste.WriteByte('\n')
+				in.pasteCR = true
+				continue
+			case '\n':
+				if !in.pasteCR {
+					in.paste.WriteByte('\n')
+				}
+				in.pasteCR = false
+				continue
+			default:
+				in.pasteCR = false
+			}
+		}
+
 		switch {
 		case b == 0x0d:
 			in.emit(KeyEvent{Key: KeyEnter})
@@ -229,8 +249,11 @@ func (in *inputReader) consumeEscape() {
 		in.consumeMouse(seq)
 		return
 	}
-
 	switch seq {
+	case "I":
+		in.emit(FocusEvent{Focused: true})
+	case "O":
+		in.emit(FocusEvent{Focused: false})
 	case "A":
 		in.emit(KeyEvent{Key: KeyUp})
 	case "B":
@@ -262,11 +285,13 @@ func (in *inputReader) consumeEscape() {
 	case "200~":
 		in.pasting = true
 		in.paste.Reset()
+		in.pasteCR = false
 	case "201~":
 		if in.pasting {
 			in.pasting = false
 			in.emit(PasteEvent{Text: in.paste.String()})
 			in.paste.Reset()
+			in.pasteCR = false
 		}
 	}
 }

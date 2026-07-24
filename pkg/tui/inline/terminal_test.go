@@ -148,3 +148,15 @@ func TestResizedForcesFullRepaint(t *testing.T) {
 		t.Fatalf("writes = %d, want full repaint of content rows", screen.writes)
 	}
 }
+
+func TestTerminalTitleAndBell(t *testing.T) {
+	var output strings.Builder
+	term := NewTerminal(WithIO(strings.NewReader(""), &output, func() (int, int) { return 40, 4 }))
+
+	term.SetTitle("Wingman\a\x1b — project")
+	term.Bell()
+
+	if got, want := output.String(), "\x1b]2;Wingman — project\x1b\\\a"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}

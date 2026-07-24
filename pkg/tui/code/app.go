@@ -43,6 +43,7 @@ type App struct {
 
 	spinnerFrame int
 	quitDeadline time.Time
+	termFocused  bool
 
 	// footerHint is a transient warning shown in the footer instead of the
 	// key hints; it clears on the next input action or when it expires.
@@ -154,6 +155,7 @@ func New(ctx context.Context, coderAgent *coder.Agent, sessionID string) *App {
 		editor:      NewEditor(),
 		turnCommits: map[string]string{},
 		follow:      true,
+		termFocused: true,
 	}
 
 	a.turns = code.NewTurnManager(tool.WithProgressSink(ctx, a.onToolProgress), coderAgent, a.handleTurnEvent)
@@ -444,6 +446,7 @@ func (a *App) Run() error {
 	}
 
 	a.term.EnterAlt()
+	a.term.SetTitle(a.terminalTitle())
 	a.term.EnableMouse(true)
 
 	a.agent.FetchModels(a.ctx)
@@ -778,6 +781,9 @@ func (a *App) isStreaming() bool {
 
 func (a *App) handleEvent(ev inline.Event) {
 	switch ev := ev.(type) {
+	case inline.FocusEvent:
+		a.termFocused = ev.Focused
+
 	case inline.ResizeEvent:
 		a.term.Resized(ev.Width, ev.Height)
 		a.rebuildChat()
@@ -802,6 +808,20 @@ func (a *App) handleEvent(ev inline.Event) {
 	}
 }
 
+func (a *App) terminalTitle() string {
+	project := filepath.Base(filepath.Clean(a.agent.Workspace().RootPath))
+	if project == "" || project == "." || project == string(filepath.Separator) {
+		return "Wingman"
+	}
+	return "Wingman — " + project
+}
+
+func (a *App) bellIfUnfocused() {
+	if !a.termFocused {
+		a.term.Bell()
+	}
+}
+
 func (a *App) handlePaste(text string) {
 	if a.overlay != nil {
 		return
@@ -817,7 +837,7 @@ func (a *App) handlePaste(text string) {
 		return
 	}
 
-	a.editor.Insert(strings.ReplaceAll(text, "\r\n", "\n"))
+	a.editor.Insert(text)
 	a.syncCommandPopup()
 }
 
@@ -1201,7 +1221,7 @@ func (a *App) pasteFromClipboard() {
 						continue
 					}
 
-					a.editor.Insert(c.Text)
+					a.editor.Insert(strings.ReplaceAll(c.Text, "\r\n", "\n"))
 					a.syncCommandPopup()
 				}
 			}

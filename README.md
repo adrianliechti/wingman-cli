@@ -229,10 +229,12 @@ Toggle between modes using `Tab` or the explicit `/plan` and `/agent` commands.
 | Shortcut | Action |
 |----------|--------|
 | `Enter` | Send message |
+| `Ctrl+J` | Insert a new line |
 | `Tab` | Toggle Agent/Plan mode (or autocomplete slash commands) |
 | `Shift+Tab` | Cycle through available models |
 | `@` | Open fuzzy file picker to add file context |
-| `Ctrl+V` / `Cmd+V` | Paste image or text from clipboard |
+| `Ctrl+V` | Paste image or text directly from the system clipboard |
+| `Cmd+V` / `Ctrl+Shift+V` | Paste text using the terminal's native shortcut |
 | `Ctrl+O` | Open the full transcript |
 | `Ctrl+Y` | Copy last assistant response to clipboard |
 | `Ctrl+L` | Clear chat history |

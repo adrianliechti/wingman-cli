@@ -322,6 +322,7 @@ func (a *App) finishTurn(sessionID, commit string, state code.TurnInputState, tu
 			case state == code.TurnInputCompleted:
 				if nextPhase == PhaseIdle {
 					a.flushTurnSeparator()
+					a.bellIfUnfocused()
 				}
 			case state == code.TurnInputCancelled || errors.Is(turnErr, context.Canceled):
 				a.flushToolGap()

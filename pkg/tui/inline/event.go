@@ -33,6 +33,11 @@ type PasteEvent struct {
 	Text string
 }
 
+// FocusEvent reports whether the terminal window gained or lost focus.
+type FocusEvent struct {
+	Focused bool
+}
+
 type MouseKind int
 
 const (

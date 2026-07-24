@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"unicode"
 
 	"golang.org/x/term"
 )
@@ -42,6 +43,15 @@ type Terminal struct {
 }
 
 type Option func(*Terminal)
+
+const (
+	enableBracketedPaste  = "\x1b[?2004h"
+	disableBracketedPaste = "\x1b[?2004l"
+	enableFocusReporting  = "\x1b[?1004h"
+	disableFocusReporting = "\x1b[?1004l"
+	saveWindowTitle       = "\x1b[22;0t"
+	restoreWindowTitle    = "\x1b[23;0t"
+)
 
 // WithIO replaces the terminal's reader/writer, disabling raw-mode handling —
 // used by tests.
@@ -99,7 +109,9 @@ func (t *Terminal) Start() error {
 	t.width, t.height = w, h
 	t.sizeMu.Unlock()
 
-	fmt.Fprint(t.out, "\x1b[?2004h")
+	// Bracketed paste keeps pasted newlines from being interpreted as submits;
+	// focus reporting lets the app notify only when it is in the background.
+	fmt.Fprint(t.out, saveWindowTitle+enableBracketedPaste+enableFocusReporting)
 
 	startInput(t.reader, t.events, t.done)
 	t.watchResize()
@@ -131,11 +143,10 @@ func (t *Terminal) Stop() {
 	t.EnableMouse(false)
 
 	if t.alt {
-		fmt.Fprint(t.out, "\x1b[?1049l")
-		t.alt = false
+		t.ExitAlt()
 	}
 
-	fmt.Fprint(t.out, "\x1b[?2004l\x1b[0m\x1b[?25h")
+	fmt.Fprint(t.out, disableFocusReporting+disableBracketedPaste+restoreWindowTitle+"\x1b[0m\x1b[?25h")
 
 	if t.in != nil && t.oldState != nil {
 		term.Restore(int(t.in.Fd()), t.oldState)
@@ -204,6 +215,23 @@ func (t *Terminal) ExitAlt() {
 	}
 	t.alt = false
 	fmt.Fprint(t.out, "\x1b[?1049l")
+}
+
+// SetTitle updates the terminal window title using OSC 2. Control characters
+// are stripped so workspace names cannot terminate or inject a sequence.
+func (t *Terminal) SetTitle(title string) {
+	title = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, title)
+	fmt.Fprint(t.out, "\x1b]2;"+title+"\x1b\\")
+}
+
+// Bell requests the terminal's configured audible or visual notification.
+func (t *Terminal) Bell() {
+	fmt.Fprint(t.out, "\a")
 }
 
 // RenderAlt draws a full-screen frame, rewriting only rows that changed
