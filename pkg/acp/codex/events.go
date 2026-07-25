@@ -18,10 +18,12 @@ type eventDispatcher struct {
 	sessionID acp.SessionId
 	done      chan turnCompleted
 
-	cmdOut          map[string]*strings.Builder
+	toolOut         map[string]*strings.Builder
 	seenReasoning   map[string]bool
 	guardianStarted map[string]bool
+	startedTools    map[string]bool
 	agentPhases     map[string]string
+	planText        map[string]string
 	lastGoal        string
 
 	mu      sync.Mutex
@@ -35,10 +37,12 @@ func newEventDispatcher(ctx context.Context, conn *acp.AgentSideConnection, sid 
 		conn:            conn,
 		sessionID:       sid,
 		done:            make(chan turnCompleted, 1),
-		cmdOut:          map[string]*strings.Builder{},
+		toolOut:         map[string]*strings.Builder{},
 		seenReasoning:   map[string]bool{},
 		guardianStarted: map[string]bool{},
+		startedTools:    map[string]bool{},
 		agentPhases:     map[string]string{},
+		planText:        map[string]string{},
 	}
 }
 
@@ -108,6 +112,18 @@ func (d *eventDispatcher) update(u acp.SessionUpdate) {
 		SessionId: d.sessionID,
 		Update:    u,
 	})
+}
+
+func (d *eventDispatcher) appendToolOut(itemID, text string) {
+	b := d.toolOut[itemID]
+	if b == nil {
+		b = &strings.Builder{}
+		d.toolOut[itemID] = b
+	}
+	b.WriteString(text)
+	d.update(acp.UpdateToolCall(acp.ToolCallId(itemID), acp.WithUpdateContent([]acp.ToolCallContent{
+		acp.ToolContent(acp.TextBlock(b.String())),
+	})))
 }
 
 func (d *eventDispatcher) handle(method string, params json.RawMessage) {
@@ -223,15 +239,25 @@ func (d *eventDispatcher) handle(method string, params json.RawMessage) {
 			Delta  string `json:"delta"`
 		}
 		if json.Unmarshal(params, &p) == nil && p.Delta != "" && p.ItemID != "" {
-			b := d.cmdOut[p.ItemID]
-			if b == nil {
-				b = &strings.Builder{}
-				d.cmdOut[p.ItemID] = b
-			}
-			b.WriteString(p.Delta)
-			d.update(acp.UpdateToolCall(acp.ToolCallId(p.ItemID), acp.WithUpdateContent([]acp.ToolCallContent{
-				acp.ToolContent(acp.TextBlock(b.String())),
-			})))
+			d.appendToolOut(p.ItemID, p.Delta)
+		}
+
+	case "item/mcpToolCall/progress":
+		var p struct {
+			ItemID  string `json:"itemId"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(params, &p) == nil && p.ItemID != "" && strings.TrimSpace(p.Message) != "" {
+			d.appendToolOut(p.ItemID, strings.TrimSpace(p.Message)+"\n")
+		}
+
+	case "item/plan/delta":
+		var p struct {
+			ItemID string `json:"itemId"`
+			Delta  string `json:"delta"`
+		}
+		if json.Unmarshal(params, &p) == nil && p.ItemID != "" && p.Delta != "" {
+			d.planText[p.ItemID] += p.Delta
 		}
 
 	case "thread/tokenUsage/updated":
@@ -405,6 +431,7 @@ func (d *eventDispatcher) handleItemStarted(params json.RawMessage) {
 
 	case "imageView":
 		if u, ok := imageViewToolCall(env.Item); ok {
+			d.startedTools[id] = true
 			d.update(u)
 		}
 
@@ -415,6 +442,15 @@ func (d *eventDispatcher) handleItemStarted(params json.RawMessage) {
 		if u, ok := collabStartToolCall(env.Item); ok {
 			d.update(u)
 		}
+
+	case "subAgentActivity":
+		if u, ok := subAgentStartToolCall(env.Item, acp.ToolCallStatusInProgress); ok {
+			d.startedTools[id] = true
+			d.update(u)
+		}
+
+	case "contextCompaction":
+		d.update(compactionStartToolCall(id))
 	}
 }
 
@@ -446,12 +482,12 @@ func (d *eventDispatcher) handleItemCompleted(params json.RawMessage) {
 		_ = json.Unmarshal(env.Item, &it)
 		opts := []acp.ToolCallUpdateOpt{acp.WithUpdateStatus(toolStatusFor(it.Status))}
 
-		if _, streamed := d.cmdOut[id]; !streamed && it.AggregatedOutput != nil && *it.AggregatedOutput != "" {
+		if _, streamed := d.toolOut[id]; !streamed && it.AggregatedOutput != nil && *it.AggregatedOutput != "" {
 			opts = append(opts, acp.WithUpdateContent([]acp.ToolCallContent{
 				acp.ToolContent(acp.TextBlock(*it.AggregatedOutput)),
 			}))
 		}
-		delete(d.cmdOut, id)
+		delete(d.toolOut, id)
 		d.update(acp.UpdateToolCall(acp.ToolCallId(id), opts...))
 
 	case "fileChange":
@@ -491,12 +527,19 @@ func (d *eventDispatcher) handleItemCompleted(params json.RawMessage) {
 		if out := mcpRawOutput(it.Result, it.Error); out != nil {
 			opts = append(opts, acp.WithUpdateRawOutput(out))
 		}
+		delete(d.toolOut, id)
 		d.update(acp.UpdateToolCall(acp.ToolCallId(id), opts...))
 
 	case "webSearch":
 		d.update(webSearchCompleteToolCall(env.Item))
 
-	// imageView is emitted once on item/started, so it has no completed case.
+	case "imageView":
+		if !d.startedTools[id] {
+			if u, ok := imageViewToolCall(env.Item); ok {
+				d.update(u)
+			}
+		}
+		delete(d.startedTools, id)
 
 	case "imageGeneration":
 		if u, ok := imageGenCompleteToolCall(env.Item); ok {
@@ -506,6 +549,42 @@ func (d *eventDispatcher) handleItemCompleted(params json.RawMessage) {
 	case "collabAgentToolCall":
 		if u, ok := collabCompleteToolCall(env.Item); ok {
 			d.update(u)
+		}
+
+	case "subAgentActivity":
+		if d.startedTools[id] {
+			delete(d.startedTools, id)
+			if u, ok := subAgentCompleteToolCall(env.Item); ok {
+				d.update(u)
+			}
+		} else if u, ok := subAgentStartToolCall(env.Item, acp.ToolCallStatusCompleted); ok {
+			d.update(u)
+		}
+
+	case "contextCompaction":
+		d.update(compactionCompleteToolCall(id))
+
+	case "plan":
+		var it struct {
+			Text string `json:"text"`
+		}
+		_ = json.Unmarshal(env.Item, &it)
+		text := it.Text
+		if text == "" {
+			text = d.planText[id]
+		}
+		delete(d.planText, id)
+		if text != "" {
+			d.update(acp.UpdateAgentMessageText("Plan:\n" + text))
+		}
+
+	case "exitedReviewMode":
+		var it struct {
+			Review string `json:"review"`
+		}
+		_ = json.Unmarshal(env.Item, &it)
+		if text := strings.TrimSpace(it.Review); text != "" {
+			d.update(acp.UpdateAgentMessageText(text + "\n\n"))
 		}
 
 	case "reasoning":

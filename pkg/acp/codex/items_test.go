@@ -86,6 +86,52 @@ func TestGuardianActionSummary(t *testing.T) {
 	}
 }
 
+func TestSubAgentTitle(t *testing.T) {
+	cases := map[string]string{
+		`{"kind":"started","agentPath":"agents/researcher"}`:    "Start subagent researcher",
+		`{"kind":"interacted","agentPath":"agents/researcher"}`: "Interact with subagent researcher",
+		`{"kind":"interrupted","agentPath":"researcher/"}`:      "Interrupt subagent researcher",
+		`{"kind":"started","agentPath":""}`:                     "Start subagent subagent",
+		`{"kind":"other","agentPath":"a/b/c"}`:                  "Subagent c",
+	}
+	for in, want := range cases {
+		var it subAgentItem
+		if err := json.Unmarshal([]byte(in), &it); err != nil {
+			t.Fatalf("unmarshal %s: %v", in, err)
+		}
+		if got := subAgentTitle(it); got != want {
+			t.Errorf("subAgentTitle(%s) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestSubAgentToolCalls(t *testing.T) {
+	raw := json.RawMessage(`{"id":"sa-1","agentThreadId":"t-2","agentPath":"agents/worker","kind":"started"}`)
+
+	start, ok := subAgentStartToolCall(raw, acp.ToolCallStatusInProgress)
+	if !ok || start.ToolCall == nil {
+		t.Fatalf("start = %#v, ok=%v", start, ok)
+	}
+	if start.ToolCall.Title != "Start subagent worker" || start.ToolCall.Status != acp.ToolCallStatusInProgress {
+		t.Errorf("start tool call = %#v", start.ToolCall)
+	}
+	if in, _ := start.ToolCall.RawInput.(map[string]any); in["agentThreadId"] != "t-2" || in["activityKind"] != "started" {
+		t.Errorf("rawInput = %#v", start.ToolCall.RawInput)
+	}
+
+	complete, ok := subAgentCompleteToolCall(raw)
+	if !ok || complete.ToolCallUpdate == nil {
+		t.Fatalf("complete = %#v, ok=%v", complete, ok)
+	}
+	if *complete.ToolCallUpdate.Status != acp.ToolCallStatusCompleted {
+		t.Errorf("complete status = %#v", complete.ToolCallUpdate.Status)
+	}
+
+	if _, ok := subAgentStartToolCall(json.RawMessage(`{"kind":"started"}`), acp.ToolCallStatusInProgress); ok {
+		t.Error("missing id should not produce a tool call")
+	}
+}
+
 func TestMcpRawOutput(t *testing.T) {
 	if out := mcpRawOutput([]byte(`null`), []byte(`null`)); out != nil {
 		t.Errorf("both null should be nil, got %v", out)

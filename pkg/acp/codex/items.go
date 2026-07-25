@@ -177,6 +177,85 @@ func collabCompleteToolCall(raw json.RawMessage) (acp.SessionUpdate, bool) {
 	return acp.UpdateToolCall(acp.ToolCallId(it.ID), opts...), true
 }
 
+// subAgentActivity -------------------------------------------------------------
+
+type subAgentItem struct {
+	ID            string `json:"id"`
+	AgentThreadID string `json:"agentThreadId"`
+	AgentPath     string `json:"agentPath"`
+	Kind          string `json:"kind"`
+}
+
+func subAgentName(path string) string {
+	parts := strings.Split(path, "/")
+	for i := len(parts) - 1; i >= 0; i-- {
+		if parts[i] != "" {
+			return parts[i]
+		}
+	}
+	return "subagent"
+}
+
+func subAgentTitle(it subAgentItem) string {
+	name := subAgentName(it.AgentPath)
+	switch it.Kind {
+	case "started":
+		return "Start subagent " + name
+	case "interacted":
+		return "Interact with subagent " + name
+	case "interrupted":
+		return "Interrupt subagent " + name
+	}
+	return "Subagent " + name
+}
+
+func subAgentRawInput(it subAgentItem) map[string]any {
+	return map[string]any{
+		"agentThreadId": it.AgentThreadID,
+		"agentPath":     it.AgentPath,
+		"activityKind":  it.Kind,
+	}
+}
+
+func subAgentStartToolCall(raw json.RawMessage, status acp.ToolCallStatus) (acp.SessionUpdate, bool) {
+	var it subAgentItem
+	if json.Unmarshal(raw, &it) != nil || it.ID == "" {
+		return acp.SessionUpdate{}, false
+	}
+	return acp.StartToolCall(acp.ToolCallId(it.ID), subAgentTitle(it),
+		acp.WithStartKind(acp.ToolKindOther),
+		acp.WithStartStatus(status),
+		acp.WithStartRawInput(subAgentRawInput(it)),
+	), true
+}
+
+func subAgentCompleteToolCall(raw json.RawMessage) (acp.SessionUpdate, bool) {
+	var it subAgentItem
+	if json.Unmarshal(raw, &it) != nil || it.ID == "" {
+		return acp.SessionUpdate{}, false
+	}
+	return acp.UpdateToolCall(acp.ToolCallId(it.ID),
+		acp.WithUpdateStatus(acp.ToolCallStatusCompleted),
+		acp.WithUpdateRawInput(subAgentRawInput(it)),
+	), true
+}
+
+// contextCompaction ------------------------------------------------------------
+
+func compactionStartToolCall(id string) acp.SessionUpdate {
+	return acp.StartToolCall(acp.ToolCallId(id), "Context compacting",
+		acp.WithStartKind(acp.ToolKindOther),
+		acp.WithStartStatus(acp.ToolCallStatusInProgress),
+	)
+}
+
+func compactionCompleteToolCall(id string) acp.SessionUpdate {
+	return acp.UpdateToolCall(acp.ToolCallId(id),
+		acp.WithUpdateTitle("Context compacted"),
+		acp.WithUpdateStatus(acp.ToolCallStatusCompleted),
+	)
+}
+
 // webSearch -------------------------------------------------------------------
 
 type webSearchItem struct {

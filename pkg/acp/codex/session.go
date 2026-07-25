@@ -345,6 +345,26 @@ func replayItem(send func(acp.SessionUpdate), raw json.RawMessage, toolOutputs m
 		if u, ok := collabStartToolCall(raw); ok {
 			send(u)
 		}
+
+	case "subAgentActivity":
+		if u, ok := subAgentStartToolCall(raw, acp.ToolCallStatusCompleted); ok {
+			send(u)
+		}
+
+	case "contextCompaction":
+		send(acp.StartToolCall(acp.ToolCallId(probe.ID), "Context compacted",
+			acp.WithStartKind(acp.ToolKindOther),
+			acp.WithStartStatus(acp.ToolCallStatusCompleted),
+		))
+
+	case "exitedReviewMode":
+		var it struct {
+			Review string `json:"review"`
+		}
+		_ = json.Unmarshal(raw, &it)
+		if text := strings.TrimSpace(it.Review); text != "" {
+			send(acp.UpdateAgentMessageText(text + "\n\n"))
+		}
 	}
 }
 
