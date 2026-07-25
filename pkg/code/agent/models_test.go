@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/adrianliechti/wingman-agent/pkg/code"
+	"github.com/adrianliechti/wingman-agent/pkg/model"
 )
 
 func upstreamAgent(ids ...string) *Agent {
@@ -132,25 +132,25 @@ func TestSetModelAndEffortScopeToCurrentMode(t *testing.T) {
 }
 
 func TestModelClass(t *testing.T) {
-	tests := map[string]code.ModelClass{
-		"claude-opus-5":     code.ModelClassLarge,
-		"claude-opus-4-8":   code.ModelClassLarge,
-		"gpt-5.6-sol":       code.ModelClassLarge,
-		"claude-fable-5":    code.ModelClassLarge,
-		"claude-sonnet-5":   code.ModelClassMedium,
-		"gpt-5.6-terra":     code.ModelClassMedium,
-		"gpt-5.3-codex":     code.ModelClassMedium,
-		"claude-haiku-4-5":  code.ModelClassSmall,
-		"gpt-5.6-luna":      code.ModelClassSmall,
-		"deepseek-v4-flash": code.ModelClassSmall,
+	tests := map[string]model.Class{
+		"claude-opus-5":     model.ClassLarge,
+		"claude-opus-4-8":   model.ClassLarge,
+		"gpt-5.6-sol":       model.ClassLarge,
+		"claude-fable-5":    model.ClassLarge,
+		"claude-sonnet-5":   model.ClassMedium,
+		"gpt-5.6-terra":     model.ClassMedium,
+		"gpt-5.3-codex":     model.ClassMedium,
+		"claude-haiku-4-5":  model.ClassSmall,
+		"gpt-5.6-luna":      model.ClassSmall,
+		"deepseek-v4-flash": model.ClassSmall,
 	}
 	for id, want := range tests {
-		if got := code.ModelClassOf(id); got != want {
+		if got := model.ClassOf(id); got != want {
 			t.Errorf("ModelClassOf(%q) = %d, want %d", id, got, want)
 		}
 	}
 
-	if code.ModelFamilyOf("claude-sonnet-5") != "claude" || code.ModelFamilyOf("gpt-5.6-sol") != "gpt" {
+	if model.Family("claude-sonnet-5") != "claude" || model.Family("gpt-5.6-sol") != "gpt" {
 		t.Fatal("ModelFamilyOf broken")
 	}
 }

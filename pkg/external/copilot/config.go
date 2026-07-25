@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/adrianliechti/wingman-agent/pkg/external"
+	"github.com/adrianliechti/wingman-agent/pkg/model"
 )
 
 type Options = external.Options
@@ -40,6 +41,11 @@ func NewConfig(ctx context.Context, options *Options) (*CopilotConfig, error) {
 
 	if len(models) > 0 {
 		cfg.Model = models[0]
+
+		if m, ok := model.Find(cfg.Model); ok {
+			cfg.MaxPromptTokens = m.InputTokens()
+			cfg.MaxOutputTokens = m.OutputTokens()
+		}
 	}
 
 	return cfg, nil

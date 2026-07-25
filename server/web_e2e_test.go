@@ -119,6 +119,46 @@ func (m *webE2EModel) handleSteer(w http.ResponseWriter, r *http.Request) {
 	emitE2ETextResponse(w, "msg_steer_2", "Steering applied")
 }
 
+func (m *webE2EModel) handleAsk(w http.ResponseWriter, body []byte) {
+	var req struct {
+		Input []map[string]any `json:"input"`
+	}
+	_ = json.Unmarshal(body, &req)
+	for _, item := range req.Input {
+		if item["type"] == "function_call_output" {
+			output, _ := item["output"].(string)
+			emitE2ETextResponse(w, "msg_ask_done", "You chose: "+strings.TrimSpace(output))
+			return
+		}
+	}
+
+	args, _ := json.Marshal(map[string]any{
+		"questions": []any{map[string]any{
+			"question": "Which color?",
+			"options": []any{
+				map[string]any{"label": "Ruby", "description": "warm"},
+				map[string]any{"label": "Azure", "description": "cool"},
+			},
+		}},
+	})
+	emitE2EEvent(w, map[string]any{
+		"type": "response.output_item.done", "sequence_number": 1, "output_index": 0,
+		"item": map[string]any{
+			"type": "function_call", "id": "fc_ask", "call_id": "call_ask",
+			"name": "elicit", "arguments": string(args), "status": "completed",
+		},
+	})
+	emitE2EEvent(w, map[string]any{
+		"type": "response.completed", "sequence_number": 2,
+		"response": map[string]any{
+			"usage": map[string]any{
+				"input_tokens": 3, "input_tokens_details": map[string]any{"cached_tokens": 0}, "output_tokens": 1,
+			},
+		},
+	})
+	fmt.Fprint(w, "data: [DONE]\n\n")
+}
+
 func (m *webE2EModel) handler(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/v1/models":
@@ -143,6 +183,8 @@ func (m *webE2EModel) handler(w http.ResponseWriter, r *http.Request) {
 			m.cancelOnce.Do(func() { close(m.cancelObserved) })
 		case strings.Contains(string(body), "initial request"):
 			m.handleSteer(w, r)
+		case strings.Contains(string(body), "pick a color"):
+			m.handleAsk(w, body)
 		default:
 			http.Error(w, "unknown e2e prompt", http.StatusBadRequest)
 		}

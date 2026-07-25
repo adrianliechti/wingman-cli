@@ -20,6 +20,8 @@ type session struct {
 	id  acp.SessionId
 	cwd string
 
+	formElicitation bool
+
 	mu             sync.Mutex
 	modelID        string
 	modelOverride  bool
@@ -203,6 +205,8 @@ func (s *session) ensureProc(conn *acp.AgentSideConnection, path string, env []s
 		models:          append([]ModelEntry(nil), models...),
 		tools:           toolUseCache{},
 		emitted:         newToolCallTracker(),
+		streamedMsgs:    map[string]bool{},
+		plan:            newTaskPlan(),
 		subagentParents: make(map[string]string),
 		results:         make(chan turnResult, 1),
 		dead:            make(chan struct{}),
@@ -230,16 +234,18 @@ func (s *session) spawnSigLocked() string {
 }
 
 type claudeProc struct {
-	cmd     *exec.Cmd
-	out     *streamWriter
-	stdin   io.Closer
-	sig     string
-	kill    context.CancelFunc
-	cwd     string
-	session *session
-	models  []ModelEntry
-	tools   toolUseCache
-	emitted *toolCallTracker
+	cmd          *exec.Cmd
+	out          *streamWriter
+	stdin        io.Closer
+	sig          string
+	kill         context.CancelFunc
+	cwd          string
+	session      *session
+	models       []ModelEntry
+	tools        toolUseCache
+	emitted      *toolCallTracker
+	streamedMsgs map[string]bool
+	plan         *taskPlan
 
 	turnMu          sync.Mutex
 	turnActive      bool
@@ -301,7 +307,9 @@ func (p *claudeProc) shutdown() {
 
 func (p *claudeProc) read(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, r io.Reader) {
 	defer close(p.dead)
-	app := &approver{ctx: ctx, conn: conn, sid: sid, out: p.out, cwd: p.cwd, emitted: p.emitted, parentForAgent: p.parentForAgent}
+	app := &approver{ctx: ctx, conn: conn, sid: sid, out: p.out, cwd: p.cwd, emitted: p.emitted, parentForAgent: p.parentForAgent,
+		askForm:   p.session.formElicitation,
+		applyMode: func(modeID string) { p.applyMode(ctx, conn, sid, modeID) }}
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
@@ -317,15 +325,18 @@ func (p *claudeProc) read(ctx context.Context, conn *acp.AgentSideConnection, si
 		}
 		switch env.Type {
 		case "stream_event":
-			if err := emitStreamEvent(ctx, conn, sid, env.Event); err != nil {
+			if env.ParentToolUseID != "" {
+				continue
+			}
+			if err := emitStreamEvent(ctx, conn, sid, env.Event, p.streamedMsgs); err != nil {
 				fmt.Fprintf(os.Stderr, "claude-acp: emit stream event: %v\n", err)
 			}
 		case "assistant":
-			if err := emitAssistant(ctx, conn, sid, env.Message, p.cwd, p.tools, p.emitted, true, env.ParentToolUseID); err != nil {
+			if err := emitAssistant(ctx, conn, sid, env.Message, p.cwd, p.tools, p.emitted, p.streamedMsgs, p.plan, env.ParentToolUseID); err != nil {
 				fmt.Fprintf(os.Stderr, "claude-acp: emit assistant: %v\n", err)
 			}
 		case "user":
-			if err := emitToolResults(ctx, conn, sid, env.Message, p.tools, env.ParentToolUseID); err != nil {
+			if err := emitToolResults(ctx, conn, sid, env.Message, p.tools, p.plan, env.ParentToolUseID); err != nil {
 				fmt.Fprintf(os.Stderr, "claude-acp: emit tool result: %v\n", err)
 			}
 		case "control_request":
@@ -380,6 +391,39 @@ func (p *claudeProc) handleSystem(ctx context.Context, conn *acp.AgentSideConnec
 			p.applyFallbackModel(ctx, conn, sid, env.FallbackModel)
 		}
 
+	case "status":
+		var text string
+		switch {
+		case env.Status == "compacting":
+			text = "Compacting context...\n\n"
+		case env.CompactResult == "success":
+			text = "Context compacted.\n\n"
+		case env.CompactResult == "failed":
+			text = "Compacting failed.\n\n"
+		}
+		if text != "" {
+			_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: acp.UpdateAgentMessageText(text)})
+		}
+
+	case "local_command_output":
+		var out string
+		if json.Unmarshal(env.Content, &out) == nil && strings.TrimSpace(out) != "" {
+			_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: acp.UpdateAgentMessageText(out)})
+		}
+
+	case "permission_denied":
+		if env.ToolUseID != "" {
+			msg := "Permission denied"
+			var detail string
+			if json.Unmarshal(env.Message, &detail) == nil && detail != "" {
+				msg = "Permission denied: " + detail
+			}
+			_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: acp.UpdateToolCall(acp.ToolCallId(env.ToolUseID),
+				acp.WithUpdateStatus(acp.ToolCallStatusFailed),
+				acp.WithUpdateContent([]acp.ToolCallContent{acp.ToolContent(acp.TextBlock(msg))}),
+			)})
+		}
+
 	case "task_started":
 		if env.TaskID != "" && env.ToolUseID != "" {
 			p.subagentMu.Lock()
@@ -420,6 +464,27 @@ func (p *claudeProc) applyFallbackModel(ctx context.Context, conn *acp.AgentSide
 		Update: acp.SessionUpdate{ConfigOptionUpdate: &acp.SessionConfigOptionUpdate{
 			SessionUpdate: "config_option_update",
 			ConfigOptions: buildConfigOptions(p.models, modelID, effort),
+		}},
+	})
+}
+
+func (p *claudeProc) applyMode(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, modeID string) {
+	if findMode(modeID) == nil {
+		return
+	}
+	p.session.mu.Lock()
+	changed := p.session.mode != modeID
+	p.session.mode = modeID
+	p.sig = p.session.spawnSigLocked()
+	p.session.mu.Unlock()
+	if !changed {
+		return
+	}
+	_ = conn.SessionUpdate(ctx, acp.SessionNotification{
+		SessionId: sid,
+		Update: acp.SessionUpdate{CurrentModeUpdate: &acp.SessionCurrentModeUpdate{
+			SessionUpdate: "current_mode_update",
+			CurrentModeId: acp.SessionModeId(modeID),
 		}},
 	})
 }
@@ -540,7 +605,7 @@ func (s *session) cliArgsLocked() []string {
 		"--include-partial-messages",
 		"--permission-prompt-tool", "stdio",
 
-		"--disallowed-tools", "AskUserQuestion",
+		"--settings", `{"disableRemoteControl":true}`,
 	}
 	switch {
 	case s.started:

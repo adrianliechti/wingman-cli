@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
-	"github.com/adrianliechti/wingman-agent/pkg/code"
+	"github.com/adrianliechti/wingman-agent/pkg/model"
 	"github.com/adrianliechti/wingman-agent/pkg/tui"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/ansi"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/theme"
@@ -110,7 +110,7 @@ func (a *App) footerLine(width int) string {
 	}
 
 	_, currentModel := a.agent.Models(a.sessionID)
-	right = append(right, dim(code.ModelName(currentModel)))
+	right = append(right, dim(model.Name(currentModel)))
 
 	if effort, _ := a.agent.Effort(a.sessionID); effort != "" && effort != "auto" {
 		right = append(right, dim(effort))

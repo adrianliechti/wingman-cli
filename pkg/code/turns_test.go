@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/model"
 )
 
 type turnManagerTestAgent struct {
@@ -50,7 +51,7 @@ func newTurnManagerTestAgent() *turnManagerTestAgent {
 
 func (a *turnManagerTestAgent) Name() string                                        { return "test" }
 func (a *turnManagerTestAgent) Workspace() *Workspace                               { return nil }
-func (a *turnManagerTestAgent) Models(string) ([]Model, string)                     { return nil, "" }
+func (a *turnManagerTestAgent) Models(string) ([]model.Model, string)               { return nil, "" }
 func (a *turnManagerTestAgent) SetModel(context.Context, string, string) error      { return nil }
 func (a *turnManagerTestAgent) Effort(string) (string, []string)                    { return "", nil }
 func (a *turnManagerTestAgent) SetEffort(context.Context, string, string) error     { return nil }

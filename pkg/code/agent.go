@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/model"
 )
 
 type SessionInfo struct {
@@ -25,7 +26,7 @@ type Agent interface {
 
 	Workspace() *Workspace
 
-	Models(sessionID string) (available []Model, current string)
+	Models(sessionID string) (available []model.Model, current string)
 
 	SetModel(ctx context.Context, sessionID, id string) error
 

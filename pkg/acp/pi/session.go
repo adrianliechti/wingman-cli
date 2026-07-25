@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -73,11 +74,13 @@ func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, pr
 	message, images := promptToPi(prompt)
 
 	t := &turn{
-		ctx:   turnCtx,
-		conn:  conn,
-		sess:  s,
-		done:  make(chan turnResult, 1),
-		tools: map[string]bool{},
+		ctx:       turnCtx,
+		conn:      conn,
+		sess:      s,
+		done:      make(chan turnResult, 1),
+		tools:     map[string]bool{},
+		mutations: map[string]bool{},
+		snapshots: map[string]fileSnapshot{},
 	}
 
 	s.proc.setHandler(t.handle)
@@ -108,7 +111,17 @@ type turn struct {
 
 	done chan turnResult
 
-	tools map[string]bool
+	tools     map[string]bool
+	mutations map[string]bool
+	snapshots map[string]fileSnapshot
+}
+
+// fileSnapshot captures a file's contents before pi's edit/write tools mutate
+// it, so tool completion can render a structured ACP diff — pi itself only
+// reports diffs as plain strings. oldText nil means the file didn't exist yet.
+type fileSnapshot struct {
+	path    string
+	oldText *string
 }
 
 func (t *turn) emit(u acp.SessionUpdate) {
@@ -244,7 +257,7 @@ func (t *turn) handleMessageUpdate(raw json.RawMessage) {
 		if locs := toolLocations(args, t.sess.cwd); len(locs) > 0 {
 			opts = append(opts, acp.WithStartLocations(locs))
 		}
-		t.emit(acp.StartToolCall(acp.ToolCallId(tc.ID), toolTitle(tc.Name), opts...))
+		t.emit(acp.StartToolCall(acp.ToolCallId(tc.ID), toolTitle(tc.Name, args), opts...))
 	}
 }
 
@@ -261,6 +274,7 @@ func (t *turn) handleToolStart(raw json.RawMessage) {
 	var args map[string]any
 	_ = json.Unmarshal(p.Args, &args)
 	locs := toolLocations(args, t.sess.cwd)
+	t.snapshotFileMutation(p.ToolName, p.ToolCallID, args, locs)
 
 	seen := t.tools[p.ToolCallID]
 	t.tools[p.ToolCallID] = true
@@ -276,11 +290,14 @@ func (t *turn) handleToolStart(raw json.RawMessage) {
 		if len(locs) > 0 {
 			opts = append(opts, acp.WithStartLocations(locs))
 		}
-		t.emit(acp.StartToolCall(acp.ToolCallId(p.ToolCallID), toolTitle(p.ToolName), opts...))
+		t.emit(acp.StartToolCall(acp.ToolCallId(p.ToolCallID), toolTitle(p.ToolName, args), opts...))
 		return
 	}
 
-	opts := []acp.ToolCallUpdateOpt{acp.WithUpdateStatus(acp.ToolCallStatusInProgress)}
+	opts := []acp.ToolCallUpdateOpt{
+		acp.WithUpdateStatus(acp.ToolCallStatusInProgress),
+		acp.WithUpdateTitle(toolTitle(p.ToolName, args)),
+	}
 	if args != nil {
 		opts = append(opts, acp.WithUpdateRawInput(args))
 	}
@@ -288,6 +305,31 @@ func (t *turn) handleToolStart(raw json.RawMessage) {
 		opts = append(opts, acp.WithUpdateLocations(locs))
 	}
 	t.emit(acp.UpdateToolCall(acp.ToolCallId(p.ToolCallID), opts...))
+}
+
+func (t *turn) snapshotFileMutation(toolName, toolCallID string, args map[string]any, locs []acp.ToolCallLocation) {
+	if toolName != "edit" && toolName != "write" {
+		return
+	}
+	t.mutations[toolCallID] = true
+	path := toolPath(args)
+	if path == "" {
+		return
+	}
+	snap := fileSnapshot{path: path}
+	if data, err := os.ReadFile(absPath(path, t.sess.cwd)); err == nil {
+		old := string(data)
+		snap.oldText = &old
+		if toolName == "edit" && len(locs) > 0 {
+			for _, needle := range editOldTexts(args) {
+				if line := findUniqueLine(old, needle); line != nil {
+					locs[0].Line = line
+					break
+				}
+			}
+		}
+	}
+	t.snapshots[toolCallID] = snap
 }
 
 func (t *turn) handleToolUpdate(raw json.RawMessage) {
@@ -301,8 +343,10 @@ func (t *turn) handleToolUpdate(raw json.RawMessage) {
 	t.ensureToolStarted(p.ToolCallID)
 
 	opts := []acp.ToolCallUpdateOpt{acp.WithUpdateStatus(acp.ToolCallStatusInProgress)}
-	if text := toolResultToText(p.PartialResult); text != "" {
-		opts = append(opts, acp.WithUpdateContent([]acp.ToolCallContent{acp.ToolContent(acp.TextBlock(text))}))
+	if !t.mutations[p.ToolCallID] {
+		if text := toolResultToText(p.PartialResult); text != "" {
+			opts = append(opts, acp.WithUpdateContent([]acp.ToolCallContent{acp.ToolContent(acp.TextBlock(text))}))
+		}
 	}
 	t.emit(acp.UpdateToolCall(acp.ToolCallId(p.ToolCallID), opts...))
 }
@@ -323,13 +367,35 @@ func (t *turn) handleToolEnd(raw json.RawMessage) {
 		status = acp.ToolCallStatusFailed
 	}
 
+	var content []acp.ToolCallContent
+	if snap, ok := t.snapshots[p.ToolCallID]; ok && !p.IsError {
+		if data, err := os.ReadFile(absPath(snap.path, t.sess.cwd)); err == nil {
+			newText := string(data)
+			if snap.oldText == nil || newText != *snap.oldText {
+				content = []acp.ToolCallContent{{Diff: &acp.ToolCallContentDiff{
+					Type:    "diff",
+					Path:    snap.path,
+					OldText: snap.oldText,
+					NewText: newText,
+				}}}
+			}
+		}
+	}
+	if content == nil {
+		if text := toolResultToText(p.Result); text != "" {
+			content = []acp.ToolCallContent{acp.ToolContent(acp.TextBlock(text))}
+		}
+	}
+
 	opts := []acp.ToolCallUpdateOpt{acp.WithUpdateStatus(status)}
-	if text := toolResultToText(p.Result); text != "" {
-		opts = append(opts, acp.WithUpdateContent([]acp.ToolCallContent{acp.ToolContent(acp.TextBlock(text))}))
+	if len(content) > 0 {
+		opts = append(opts, acp.WithUpdateContent(content))
 	}
 	t.emit(acp.UpdateToolCall(acp.ToolCallId(p.ToolCallID), opts...))
 
 	delete(t.tools, p.ToolCallID)
+	delete(t.mutations, p.ToolCallID)
+	delete(t.snapshots, p.ToolCallID)
 }
 
 func (t *turn) ensureToolStarted(id string) {
@@ -347,11 +413,12 @@ func (t *turn) ensureToolStarted(id string) {
 
 func (t *turn) handleExtensionUI(raw json.RawMessage) {
 	var p struct {
-		ID      string   `json:"id"`
-		Method  string   `json:"method"`
-		Title   string   `json:"title"`
-		Message string   `json:"message"`
-		Options []string `json:"options"`
+		ID         string   `json:"id"`
+		Method     string   `json:"method"`
+		Title      string   `json:"title"`
+		Message    string   `json:"message"`
+		NotifyType string   `json:"notifyType"`
+		Options    []string `json:"options"`
 	}
 	if json.Unmarshal(raw, &p) != nil || p.ID == "" {
 		return
@@ -371,7 +438,13 @@ func (t *turn) handleExtensionUI(raw json.RawMessage) {
 
 	case "notify":
 		if p.Message != "" {
-			t.emit(acp.UpdateAgentMessageText(p.Message + "\n\n"))
+			u := acp.UpdateAgentMessageText(p.Message + "\n\n")
+			level := p.NotifyType
+			if level == "" {
+				level = "info"
+			}
+			u.AgentMessageChunk.Meta = map[string]any{"piAcp": map[string]any{"notify": map[string]any{"level": level}}}
+			t.emit(u)
 		}
 		t.sess.proc.sendExtensionResponse(map[string]any{"id": p.ID, "cancelled": true})
 
@@ -498,11 +571,61 @@ func toolLocations(args map[string]any, cwd string) []acp.ToolCallLocation {
 	return []acp.ToolCallLocation{{Path: path}}
 }
 
-func toolTitle(name string) string {
+func toolTitle(name string, args map[string]any) string {
+	if name == "bash" {
+		for _, key := range []string{"command", "cmd"} {
+			if cmd, ok := args[key].(string); ok && strings.TrimSpace(cmd) != "" {
+				return cmd
+			}
+		}
+	}
 	if name == "" {
 		return "tool"
 	}
 	return name
+}
+
+func absPath(path, cwd string) string {
+	if filepath.IsAbs(path) || cwd == "" {
+		return path
+	}
+	return filepath.Join(cwd, path)
+}
+
+func editOldTexts(args map[string]any) []string {
+	var out []string
+	if s, ok := args["oldText"].(string); ok && s != "" {
+		out = append(out, s)
+	}
+	edits := args["edits"]
+	if s, ok := edits.(string); ok {
+		var arr []any
+		if json.Unmarshal([]byte(s), &arr) == nil {
+			edits = arr
+		}
+	}
+	if arr, ok := edits.([]any); ok {
+		for _, e := range arr {
+			if m, ok := e.(map[string]any); ok {
+				if s, ok := m["oldText"].(string); ok && s != "" {
+					out = append(out, s)
+				}
+			}
+		}
+	}
+	return out
+}
+
+func findUniqueLine(text, needle string) *int {
+	if needle == "" {
+		return nil
+	}
+	first := strings.Index(text, needle)
+	if first < 0 || strings.Contains(text[first+1:], needle) {
+		return nil
+	}
+	line := 1 + strings.Count(text[:first], "\n")
+	return &line
 }
 
 func toolKind(name string) acp.ToolKind {

@@ -28,6 +28,24 @@ test("runs a coding tool and renders its result", async ({ page }) => {
 	).toBeVisible();
 });
 
+test("renders an elicitation form and returns the chosen option", async ({
+	page,
+}) => {
+	const input = await composer(page);
+	await input.fill("pick a color");
+	await input.press("Enter");
+
+	await expect(page.getByText("Which color?").first()).toBeVisible();
+	const azure = page.getByRole("button", { name: /Azure/ });
+	await expect(azure).toBeVisible();
+	await expect(page.getByText("cool")).toBeVisible();
+	await azure.click();
+
+	await expect(
+		page.getByText("You chose: Azure", { exact: true }),
+	).toBeVisible();
+});
+
 test("cancels an active coding turn", async ({ page, request }) => {
 	const input = await composer(page);
 	await input.fill("cancel this request");

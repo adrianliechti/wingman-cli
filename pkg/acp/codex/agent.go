@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -319,6 +320,12 @@ func (a *Agent) UnstableDeleteSession(ctx context.Context, params acp.UnstableDe
 	}
 	_ = a.codex.threadUnsubscribe(ctx, threadUnsubscribeParams{ThreadID: string(params.SessionId)})
 	if err := a.codex.threadArchive(ctx, threadArchiveParams{ThreadID: string(params.SessionId)}); err != nil {
+		// ACP session/delete is idempotent: deleting an unknown or
+		// already-archived thread succeeds.
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "no rollout found") || strings.Contains(msg, "not found") {
+			return acp.UnstableDeleteSessionResponse{}, nil
+		}
 		return acp.UnstableDeleteSessionResponse{}, fmt.Errorf("thread/archive: %w", err)
 	}
 	return acp.UnstableDeleteSessionResponse{}, nil

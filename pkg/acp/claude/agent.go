@@ -37,8 +37,9 @@ type Options struct {
 type Agent struct {
 	conn *acp.AgentSideConnection
 
-	mu       sync.Mutex
-	sessions map[acp.SessionId]*session
+	mu              sync.Mutex
+	sessions        map[acp.SessionId]*session
+	formElicitation bool
 
 	defaultModel  string
 	defaultEffort string
@@ -89,6 +90,12 @@ func (a *Agent) Close() error {
 	return nil
 }
 
+func (a *Agent) supportsFormElicitation() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.formElicitation
+}
+
 func (a *Agent) lookup(id acp.SessionId) *session {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -129,7 +136,11 @@ func (a *Agent) sendAvailableCommands(id acp.SessionId) {
 	}()
 }
 
-func (a *Agent) Initialize(context.Context, acp.InitializeRequest) (acp.InitializeResponse, error) {
+func (a *Agent) Initialize(_ context.Context, params acp.InitializeRequest) (acp.InitializeResponse, error) {
+	a.mu.Lock()
+	a.formElicitation = params.ClientCapabilities.Elicitation != nil && params.ClientCapabilities.Elicitation.Form != nil
+	a.mu.Unlock()
+
 	title := "Claude (ACP)"
 	return acp.InitializeResponse{
 		ProtocolVersion: acp.ProtocolVersionNumber,
@@ -176,6 +187,7 @@ func (a *Agent) NewSession(ctx context.Context, params acp.NewSessionRequest) (a
 	a.ensureModels(ctx)
 	id := acp.SessionId(newUUID())
 	s := newSession(id, cwd, a.defaultModel, a.defaultEffort, additional)
+	s.formElicitation = a.supportsFormElicitation()
 	s.mcpServers = params.McpServers
 	a.mu.Lock()
 	a.sessions[id] = s
@@ -350,6 +362,7 @@ func (a *Agent) UnstableForkSession(_ context.Context, params acp.UnstableForkSe
 
 func (a *Agent) adoptSession(id acp.SessionId, cwd string, additionalDirs []string, mcpServers []acp.McpServer, resumeFrom string, fork bool) *session {
 	s := newSession(id, cwd, a.defaultModel, a.defaultEffort, additionalDirs)
+	s.formElicitation = a.supportsFormElicitation()
 	if resumeFrom != "" && (a.defaultModel == "" || a.defaultModel == "default") {
 		path := filepath.Join(projectDirFor(cwd), resumeFrom+".jsonl")
 		if live := scanSessionModel(path); live != "" {

@@ -262,6 +262,13 @@ func toolInfoFromToolUse(name string, rawInput json.RawMessage, cwd string) tool
 		}
 		return toolInfo{title: "Ready to code?", kind: acp.ToolKindSwitchMode, content: content}
 
+	case "AskUserQuestion":
+		title := "Asking for your input"
+		if qs := parseAskQuestions(rawInput); len(qs) > 0 {
+			title = qs[0].Question
+		}
+		return toolInfo{title: title, kind: acp.ToolKindOther}
+
 	default:
 		title := name
 		if title == "" {
@@ -335,6 +342,89 @@ func grepLabel(rawInput json.RawMessage) string {
 		label += " " + in.Path
 	}
 	return label
+}
+
+// taskPlan mirrors the CLI's TaskCreate/TaskUpdate task list as ACP plan
+// entries. The task id is only revealed in TaskCreate's result text
+// ("Task #1 created successfully: …"), so creates resolve in two steps.
+type taskPlan struct {
+	pending map[string]string
+	order   []string
+	tasks   map[string]*acp.PlanEntry
+}
+
+func newTaskPlan() *taskPlan {
+	return &taskPlan{pending: map[string]string{}, tasks: map[string]*acp.PlanEntry{}}
+}
+
+var taskIDPattern = regexp.MustCompile(`Task #([\w-]+)`)
+
+func (p *taskPlan) noteCreate(toolUseID string, input json.RawMessage) {
+	var in struct {
+		Subject string `json:"subject"`
+	}
+	_ = json.Unmarshal(input, &in)
+	if toolUseID != "" && in.Subject != "" {
+		p.pending[toolUseID] = in.Subject
+	}
+}
+
+func (p *taskPlan) completeCreate(toolUseID, resultText string) bool {
+	subject, ok := p.pending[toolUseID]
+	if !ok {
+		return false
+	}
+	delete(p.pending, toolUseID)
+	m := taskIDPattern.FindStringSubmatch(resultText)
+	if m == nil {
+		return false
+	}
+	id := m[1]
+	if _, exists := p.tasks[id]; !exists {
+		p.order = append(p.order, id)
+	}
+	p.tasks[id] = &acp.PlanEntry{Content: subject, Priority: acp.PlanEntryPriorityMedium, Status: acp.PlanEntryStatusPending}
+	return true
+}
+
+func (p *taskPlan) noteUpdate(input json.RawMessage) bool {
+	var in struct {
+		TaskID  string `json:"taskId"`
+		Status  string `json:"status"`
+		Subject string `json:"subject"`
+	}
+	_ = json.Unmarshal(input, &in)
+	entry, ok := p.tasks[in.TaskID]
+	if !ok {
+		return false
+	}
+	changed := false
+	if in.Subject != "" && in.Subject != entry.Content {
+		entry.Content = in.Subject
+		changed = true
+	}
+	var status acp.PlanEntryStatus
+	switch in.Status {
+	case "pending":
+		status = acp.PlanEntryStatusPending
+	case "in_progress":
+		status = acp.PlanEntryStatusInProgress
+	case "completed":
+		status = acp.PlanEntryStatusCompleted
+	}
+	if status != "" && status != entry.Status {
+		entry.Status = status
+		changed = true
+	}
+	return changed
+}
+
+func (p *taskPlan) entries() []acp.PlanEntry {
+	out := make([]acp.PlanEntry, 0, len(p.order))
+	for _, id := range p.order {
+		out = append(out, *p.tasks[id])
+	}
+	return out
 }
 
 func isPlanTool(name string) bool { return name == "TodoWrite" }

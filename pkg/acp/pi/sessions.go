@@ -71,6 +71,13 @@ func listSessionFiles(sessionsDir string) []sessionFileInfo {
 	return out
 }
 
+func canonicalPath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
+}
+
 func findSessionFile(sessionsDir, sessionID string) (sessionFileInfo, bool) {
 	for _, s := range listSessionFiles(sessionsDir) {
 		if s.ID == sessionID {
@@ -252,6 +259,7 @@ func replayMessages(send func(acp.SessionUpdate), data json.RawMessage) {
 			ToolName   string          `json:"toolName"`
 			ToolCallID string          `json:"toolCallId"`
 			IsError    bool            `json:"isError"`
+			Args       json.RawMessage `json:"args"`
 		}
 		if json.Unmarshal(raw, &m) != nil {
 			continue
@@ -281,7 +289,9 @@ func replayMessages(send func(acp.SessionUpdate), data json.RawMessage) {
 			if m.IsError {
 				status = acp.ToolCallStatusFailed
 			}
-			send(acp.StartToolCall(acp.ToolCallId(id), name,
+			var args map[string]any
+			_ = json.Unmarshal(m.Args, &args)
+			send(acp.StartToolCall(acp.ToolCallId(id), toolTitle(name, args),
 				acp.WithStartKind(toolKind(name)),
 				acp.WithStartStatus(status),
 			))

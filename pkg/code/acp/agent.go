@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -20,7 +21,9 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/pkg/acp"
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
+	"github.com/adrianliechti/wingman-agent/pkg/model"
 )
 
 type Agent struct {
@@ -42,7 +45,7 @@ type Agent struct {
 	ui   code.UI
 
 	configMu   sync.RWMutex
-	models     []code.Model
+	models     []model.Model
 	modelID    string
 	effortID   string
 	effortOpts []string
@@ -167,6 +170,9 @@ func New(ws *code.Workspace, def code.AgentDef) (*Agent, error) {
 				ReadTextFile:  true,
 				WriteTextFile: true,
 			},
+			Elicitation: &acpsdk.ElicitationCapabilities{
+				Form: &acpsdk.ElicitationFormCapabilities{},
+			},
 		},
 	})
 	if err != nil {
@@ -220,6 +226,9 @@ func NewInProcess(
 				ReadTextFile:  true,
 				WriteTextFile: true,
 			},
+			Elicitation: &acpsdk.ElicitationCapabilities{
+				Form: &acpsdk.ElicitationFormCapabilities{},
+			},
 		},
 	})
 	if err != nil {
@@ -233,7 +242,7 @@ func NewInProcess(
 func (a *Agent) Name() string               { return a.def.Name }
 func (a *Agent) Workspace() *code.Workspace { return a.workspace }
 
-func (a *Agent) Models(sessionID string) ([]code.Model, string) {
+func (a *Agent) Models(sessionID string) ([]model.Model, string) {
 	override := ""
 	if sess := a.session(sessionID); sess != nil {
 		sess.mu.Lock()
@@ -242,7 +251,7 @@ func (a *Agent) Models(sessionID string) ([]code.Model, string) {
 	}
 	a.configMu.RLock()
 	defer a.configMu.RUnlock()
-	out := make([]code.Model, len(a.models))
+	out := make([]model.Model, len(a.models))
 	copy(out, a.models)
 	if override != "" {
 		return out, override
@@ -930,6 +939,44 @@ func (a *Agent) RequestPermission(ctx context.Context, p acpsdk.RequestPermissio
 		return selected(p.Options[0].OptionId), nil
 	}
 
+	// Preferred: a strict single-choice elicitation so the user can pick any
+	// of the offered options (answers, always-allow scopes, selects) instead
+	// of a yes/no collapse.
+	names := make([]string, len(p.Options))
+	for i, o := range p.Options {
+		names[i] = o.Name
+	}
+	res, err := ui.Elicit(code.WithSessionID(ctx, string(p.SessionId)), tool.ElicitRequest{
+		Message: permissionMessage(p),
+		Fields: []tool.ElicitField{{
+			Name:     "choice",
+			Type:     "string",
+			Required: true,
+			Enum:     names,
+			Strict:   true,
+		}},
+	})
+	if err == nil {
+		switch res.Action {
+		case tool.ElicitAccept:
+			if choice, ok := res.Content["choice"].(string); ok {
+				for i := range p.Options {
+					if p.Options[i].Name == choice {
+						return selected(p.Options[i].OptionId), nil
+					}
+				}
+			}
+			return cancelled, nil
+		case tool.ElicitDecline:
+			if opt := pickPermissionOption(p.Options, false); opt != nil {
+				return selected(opt.OptionId), nil
+			}
+			return cancelled, nil
+		default:
+			return cancelled, nil
+		}
+	}
+
 	ok, err := ui.Confirm(code.WithSessionID(ctx, string(p.SessionId)), permissionMessage(p))
 	if err != nil {
 		return cancelled, nil
@@ -944,6 +991,148 @@ func (a *Agent) RequestPermission(ctx context.Context, p acpsdk.RequestPermissio
 		return selected(opt.OptionId), nil
 	}
 	return cancelled, nil
+}
+
+func (a *Agent) UnstableCreateElicitation(ctx context.Context, p acpsdk.UnstableCreateElicitationRequest) (acpsdk.UnstableCreateElicitationResponse, error) {
+	cancel := acpsdk.UnstableCreateElicitationResponse{Cancel: &acpsdk.UnstableCreateElicitationCancel{Action: "cancel"}}
+	if p.Form == nil {
+		return cancel, nil
+	}
+	ui := a.currentUI()
+	if ui == nil {
+		return acpsdk.UnstableCreateElicitationResponse{Decline: &acpsdk.UnstableCreateElicitationDecline{Action: "decline"}}, nil
+	}
+
+	// The SDK's form elicitation carries no session id, but the web UI
+	// routes prompts per session — attribute it to the session with the
+	// running turn.
+	if sid := a.activeSessionID(); sid != "" {
+		ctx = code.WithSessionID(ctx, sid)
+	}
+	res, err := ui.Elicit(ctx, tool.ElicitRequest{
+		Message: p.Form.Message,
+		Fields:  elicitFieldsFromSchema(p.Form.RequestedSchema),
+	})
+	if err != nil {
+		return cancel, nil
+	}
+	switch res.Action {
+	case tool.ElicitAccept:
+		content := res.Content
+		if content == nil {
+			content = map[string]any{}
+		}
+		return acpsdk.UnstableCreateElicitationResponse{Accept: &acpsdk.UnstableCreateElicitationAccept{Action: "accept", Content: content}}, nil
+	case tool.ElicitDecline:
+		return acpsdk.UnstableCreateElicitationResponse{Decline: &acpsdk.UnstableCreateElicitationDecline{Action: "decline"}}, nil
+	}
+	return cancel, nil
+}
+
+func (a *Agent) activeSessionID() string {
+	a.mu.Lock()
+	ids := make([]string, 0, len(a.sessions))
+	states := make([]*sessionState, 0, len(a.sessions))
+	for sid, sess := range a.sessions {
+		ids = append(ids, sid)
+		states = append(states, sess)
+	}
+	a.mu.Unlock()
+
+	if len(ids) == 1 {
+		return ids[0]
+	}
+	for i, sess := range states {
+		sess.mu.Lock()
+		inflight := sess.inflight != nil
+		sess.mu.Unlock()
+		if inflight {
+			return ids[i]
+		}
+	}
+	return ""
+}
+
+func elicitFieldsFromSchema(schema acpsdk.UnstableElicitationSchema) []tool.ElicitField {
+	names := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	required := map[string]bool{}
+	for _, r := range schema.Required {
+		required[r] = true
+	}
+
+	fields := make([]tool.ElicitField, 0, len(names))
+	for _, name := range names {
+		prop, _ := schema.Properties[name].(map[string]any)
+		f := tool.ElicitField{Name: name, Required: required[name]}
+		f.Title, _ = prop["title"].(string)
+		f.Description, _ = prop["description"].(string)
+		f.Default = prop["default"]
+
+		typ, _ := prop["type"].(string)
+		options := prop["oneOf"]
+		if typ == "array" {
+			f.Multiple = true
+			typ = "string"
+			if items, ok := prop["items"].(map[string]any); ok {
+				for _, key := range []string{"anyOf", "oneOf", "enum"} {
+					if v, ok := items[key]; ok {
+						options = v
+						break
+					}
+				}
+			}
+		}
+		if options == nil {
+			options = prop["enum"]
+		}
+		f.Type = typ
+
+		values, descriptions := elicitEnumOptions(options)
+		if len(values) > 0 {
+			f.Enum = values
+			f.EnumDescriptions = descriptions
+			f.Strict = true
+		}
+		fields = append(fields, f)
+	}
+	return fields
+}
+
+func elicitEnumOptions(v any) (values, descriptions []string) {
+	items, ok := v.([]any)
+	if !ok {
+		return nil, nil
+	}
+	hasDescription := false
+	for _, item := range items {
+		switch o := item.(type) {
+		case string:
+			values = append(values, o)
+			descriptions = append(descriptions, "")
+		case map[string]any:
+			value, _ := o["const"].(string)
+			if value == "" {
+				value, _ = o["title"].(string)
+			}
+			if value == "" {
+				continue
+			}
+			desc, _ := o["description"].(string)
+			values = append(values, value)
+			descriptions = append(descriptions, desc)
+			if desc != "" {
+				hasDescription = true
+			}
+		}
+	}
+	if !hasDescription {
+		descriptions = nil
+	}
+	return values, descriptions
 }
 
 func pickPermissionOption(opts []acpsdk.PermissionOption, allow bool) *acpsdk.PermissionOption {
@@ -1066,7 +1255,7 @@ func (a *Agent) refreshConfig(sess *sessionState, options []acpsdk.SessionConfig
 			a.models = a.models[:0]
 			if u := opt.Select.Options.Ungrouped; u != nil {
 				for _, v := range *u {
-					a.models = append(a.models, code.Model{ID: string(v.Value), Name: v.Name})
+					a.models = append(a.models, model.Model{ID: string(v.Value), Name: v.Name})
 				}
 			}
 			a.modelID = string(opt.Select.CurrentValue)

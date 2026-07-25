@@ -316,3 +316,150 @@ func TestResolveModelAlias(t *testing.T) {
 		t.Errorf("unrelated should be nil, got %v", m)
 	}
 }
+
+func TestToolKindForMatchesToolInfo(t *testing.T) {
+	for _, name := range []string{
+		"Read", "Glob", "Grep", "WebFetch", "WebSearch",
+		"Edit", "Write", "MultiEdit", "Bash", "Agent", "Task", "ExitPlanMode",
+	} {
+		info := toolInfoFromToolUse(name, json.RawMessage(`{}`), "/tmp")
+		if got := toolKindFor(name); got != info.kind {
+			t.Errorf("toolKindFor(%q) = %q, toolInfoFromToolUse kind = %q", name, got, info.kind)
+		}
+	}
+}
+
+func TestAlwaysAllowPermissions(t *testing.T) {
+	suggested := controlRequestBody{
+		ToolName:              "Bash",
+		PermissionSuggestions: json.RawMessage(`[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"npm test:*"}],"behavior":"allow","destination":"session"}]`),
+	}
+	perms, ok := alwaysAllowPermissions(suggested).([]any)
+	if !ok || len(perms) != 1 {
+		t.Fatalf("suggestions passthrough = %#v", perms)
+	}
+	rule, _ := perms[0].(map[string]any)
+	if rule["type"] != "addRules" {
+		t.Errorf("suggestion rule = %#v", rule)
+	}
+
+	fallback, ok := alwaysAllowPermissions(controlRequestBody{ToolName: "WebFetch"}).([]any)
+	if !ok || len(fallback) != 1 {
+		t.Fatalf("fallback = %#v", fallback)
+	}
+	rule, _ = fallback[0].(map[string]any)
+	if rule["behavior"] != "allow" || rule["destination"] != "session" {
+		t.Errorf("fallback rule = %#v", rule)
+	}
+
+	if got := alwaysAllowPermissions(controlRequestBody{}); got != nil {
+		t.Errorf("no tool name should yield nil, got %#v", got)
+	}
+}
+
+func TestTaskPlan(t *testing.T) {
+	p := newTaskPlan()
+
+	p.noteCreate("tu1", json.RawMessage(`{"subject":"first","description":"d","activeForm":"Doing first"}`))
+	if p.completeCreate("tu1", "Task #1 created successfully: first") != true {
+		t.Fatal("create #1 should register")
+	}
+	p.noteCreate("tu2", json.RawMessage(`{"subject":"second"}`))
+	if !p.completeCreate("tu2", "Task #2 created successfully: second") {
+		t.Fatal("create #2 should register")
+	}
+
+	entries := p.entries()
+	if len(entries) != 2 || entries[0].Content != "first" || entries[0].Status != acp.PlanEntryStatusPending {
+		t.Fatalf("entries after create = %#v", entries)
+	}
+
+	if !p.noteUpdate(json.RawMessage(`{"taskId":"1","status":"completed"}`)) {
+		t.Fatal("update #1 should change state")
+	}
+	if p.noteUpdate(json.RawMessage(`{"taskId":"1","status":"completed"}`)) {
+		t.Fatal("repeat update should be a no-op")
+	}
+	if p.noteUpdate(json.RawMessage(`{"taskId":"99","status":"completed"}`)) {
+		t.Fatal("unknown task id should be a no-op")
+	}
+	if entries := p.entries(); entries[0].Status != acp.PlanEntryStatusCompleted || entries[1].Status != acp.PlanEntryStatusPending {
+		t.Fatalf("entries after update = %#v", entries)
+	}
+
+	if p.completeCreate("tu-unknown", "Task #3 created successfully: x") {
+		t.Fatal("result without matching create should be a no-op")
+	}
+	p.noteCreate("tu3", json.RawMessage(`{"subject":"third"}`))
+	if p.completeCreate("tu3", "something went wrong") {
+		t.Fatal("unparseable result should not register")
+	}
+}
+
+func TestParseAskQuestions(t *testing.T) {
+	qs := parseAskQuestions(json.RawMessage(`{"questions":[
+		{"question":"Which color?","header":"Color","options":[{"label":"Red","description":"warm"},{"label":"Blue"}]},
+		{"question":"Pick letters","multiSelect":true,"options":["a","b"]},
+		{"question":"","options":["x"]},
+		{"question":"no options","options":[]}
+	]}`))
+	if len(qs) != 2 {
+		t.Fatalf("questions = %#v", qs)
+	}
+	if qs[0].Question != "Which color?" || len(qs[0].Options) != 2 || qs[0].Options[0].Label != "Red" || qs[0].Options[0].Description != "warm" {
+		t.Errorf("object options = %#v", qs[0])
+	}
+	if !qs[1].MultiSelect || len(qs[1].Options) != 2 || qs[1].Options[1].Label != "b" {
+		t.Errorf("string options = %#v", qs[1])
+	}
+	if got := parseAskQuestions(json.RawMessage(`{}`)); len(got) != 0 {
+		t.Errorf("empty input = %#v", got)
+	}
+}
+
+func TestAskElicitationSchema(t *testing.T) {
+	single := askElicitationSchema([]askQuestion{{
+		Question: "Which color?", Header: "Color",
+		Options: []askOption{{Label: "Red", Description: "warm"}, {Label: "Blue"}},
+	}})
+	field, _ := single.Properties["question_0"].(map[string]any)
+	if field["type"] != "string" || field["title"] != "Color" || field["description"] != nil {
+		t.Errorf("single field = %#v", field)
+	}
+	oneOf, _ := field["oneOf"].([]map[string]any)
+	if len(oneOf) != 2 || oneOf[0]["const"] != "Red" || oneOf[0]["description"] != "warm" {
+		t.Errorf("oneOf = %#v", oneOf)
+	}
+	if custom, _ := single.Properties["question_0_custom"].(map[string]any); custom["type"] != "string" {
+		t.Errorf("custom field = %#v", custom)
+	}
+
+	multi := askElicitationSchema([]askQuestion{
+		{Question: "Q1", MultiSelect: true, Options: []askOption{{Label: "a"}}},
+		{Question: "Q2", Options: []askOption{{Label: "x"}}},
+	})
+	f0, _ := multi.Properties["question_0"].(map[string]any)
+	if f0["type"] != "array" || f0["description"] != "Q1" {
+		t.Errorf("multiSelect field = %#v", f0)
+	}
+}
+
+func TestAskAnswersFromContent(t *testing.T) {
+	questions := []askQuestion{
+		{Question: "Q1", Options: []askOption{{Label: "a"}}},
+		{Question: "Q2", MultiSelect: true, Options: []askOption{{Label: "x"}, {Label: "y"}}},
+		{Question: "Q3", Options: []askOption{{Label: "z"}}},
+	}
+	answers := askAnswersFromContent(questions, map[string]any{
+		"question_0":        "a",
+		"question_1":        []any{"x", "y"},
+		"question_2":        "z",
+		"question_2_custom": " my own answer ",
+	})
+	if answers["Q1"] != "a" || answers["Q2"] != "x, y" || answers["Q3"] != "my own answer" {
+		t.Errorf("answers = %#v", answers)
+	}
+	if got := askAnswersFromContent(questions, map[string]any{}); len(got) != 0 {
+		t.Errorf("empty content = %#v", got)
+	}
+}

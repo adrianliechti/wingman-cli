@@ -46,7 +46,6 @@ func TestStripMarkerTags(t *testing.T) {
 
 	for _, in := range []string{
 		"<command-name>/model</command-name>",
-		"<local-command-stdout>out</local-command-stdout>",
 		"<local-command-stderr>err</local-command-stderr>",
 		"<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>opus</command-args>",
 	} {
@@ -55,14 +54,18 @@ func TestStripMarkerTags(t *testing.T) {
 		}
 	}
 
+	if got, ok := stripMarkerTags("<local-command-stdout>out</local-command-stdout>"); !ok || got != "out" {
+		t.Errorf("stdout payload = %q %v, want kept as %q", got, ok, "out")
+	}
+
 	mixed := "<command-name>/model</command-name>" +
 		"<local-command-stdout>Set model to opus</local-command-stdout>" +
-		"please continue"
+		"\nplease continue"
 	got, ok := stripMarkerTags(mixed)
 	if !ok {
 		t.Fatalf("expected mixed content to be kept")
 	}
-	if want := "please continue"; got != want {
+	if want := "Set model to opus\nplease continue"; got != want {
 		t.Errorf("stripMarkerTags mixed = %q, want %q", got, want)
 	}
 

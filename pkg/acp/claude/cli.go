@@ -48,7 +48,10 @@ type cliEnvelope struct {
 	Subtype            string          `json:"subtype,omitempty"`
 	Message            json.RawMessage `json:"message,omitempty"`
 	Event              json.RawMessage `json:"event,omitempty"`
+	Content            json.RawMessage `json:"content,omitempty"`
 	State              string          `json:"state,omitempty"`
+	Status             string          `json:"status,omitempty"`
+	CompactResult      string          `json:"compact_result,omitempty"`
 	SessionID          string          `json:"session_id,omitempty"`
 	OriginalModel      string          `json:"original_model,omitempty"`
 	FallbackModel      string          `json:"fallback_model,omitempty"`
@@ -64,7 +67,10 @@ type cliEnvelope struct {
 }
 
 type streamEvent struct {
-	Type  string `json:"type"`
+	Type    string `json:"type"`
+	Message struct {
+		ID string `json:"id"`
+	} `json:"message"`
 	Delta struct {
 		Type     string `json:"type"`
 		Text     string `json:"text,omitempty"`
@@ -73,6 +79,7 @@ type streamEvent struct {
 }
 
 type cliMessage struct {
+	ID      string        `json:"id"`
 	Content []cliMsgBlock `json:"content"`
 }
 
@@ -134,16 +141,19 @@ type cliImageSource struct {
 }
 
 type controlRequest struct {
-	RequestID string `json:"request_id"`
-	AgentID   string `json:"agent_id,omitempty"`
-	Request   struct {
-		Subtype     string          `json:"subtype"`
-		ToolName    string          `json:"tool_name"`
-		ToolUseID   string          `json:"tool_use_id"`
-		AgentID     string          `json:"agent_id,omitempty"`
-		Input       json.RawMessage `json:"input"`
-		Description string          `json:"description"`
-	} `json:"request"`
+	RequestID string             `json:"request_id"`
+	AgentID   string             `json:"agent_id,omitempty"`
+	Request   controlRequestBody `json:"request"`
+}
+
+type controlRequestBody struct {
+	Subtype               string          `json:"subtype"`
+	ToolName              string          `json:"tool_name"`
+	ToolUseID             string          `json:"tool_use_id"`
+	AgentID               string          `json:"agent_id,omitempty"`
+	Input                 json.RawMessage `json:"input"`
+	Description           string          `json:"description"`
+	PermissionSuggestions json.RawMessage `json:"permission_suggestions,omitempty"`
 }
 
 type controlResponse struct {

@@ -9,6 +9,7 @@ import (
 	"github.com/coder/acp-go-sdk"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 )
 
@@ -217,5 +218,145 @@ func TestSteerRequiresInflightTurn(t *testing.T) {
 	err := a.Steer(context.Background(), "session-1", code.TurnInput{ID: "input-1", Content: []agent.Content{{Text: "guide"}}})
 	if !errors.Is(err, code.ErrNoActiveTurn) {
 		t.Fatalf("steer error = %v", err)
+	}
+}
+
+type fakeUI struct {
+	elicit  func(tool.ElicitRequest) (tool.ElicitResult, error)
+	confirm func(string) (bool, error)
+}
+
+func (u *fakeUI) Elicit(_ context.Context, req tool.ElicitRequest) (tool.ElicitResult, error) {
+	if u.elicit == nil {
+		return tool.ElicitResult{}, errors.New("elicit unsupported")
+	}
+	return u.elicit(req)
+}
+
+func (u *fakeUI) Confirm(_ context.Context, message string) (bool, error) {
+	if u.confirm == nil {
+		return false, errors.New("confirm unsupported")
+	}
+	return u.confirm(message)
+}
+
+func TestElicitFieldsFromSchema(t *testing.T) {
+	schema := acp.UnstableElicitationSchema{
+		Type: acp.UnstableElicitationSchemaTypeObject,
+		Properties: map[string]any{
+			"question_0": map[string]any{
+				"type":  "string",
+				"title": "Color",
+				"oneOf": []any{
+					map[string]any{"const": "Red", "title": "Red", "description": "warm"},
+					map[string]any{"const": "Blue", "title": "Blue"},
+				},
+			},
+			"question_0_custom": map[string]any{"type": "string", "title": "Other"},
+			"question_1": map[string]any{
+				"type":        "array",
+				"description": "Pick letters",
+				"items":       map[string]any{"anyOf": []any{map[string]any{"const": "a"}, map[string]any{"const": "b"}}},
+			},
+		},
+		Required: []string{"question_0"},
+	}
+
+	fields := elicitFieldsFromSchema(schema)
+	if len(fields) != 3 {
+		t.Fatalf("fields = %#v", fields)
+	}
+	if fields[0].Name != "question_0" || !fields[0].Required || !fields[0].Strict ||
+		len(fields[0].Enum) != 2 || fields[0].Enum[0] != "Red" || fields[0].EnumDescriptions[0] != "warm" {
+		t.Errorf("enum field = %#v", fields[0])
+	}
+	if fields[1].Name != "question_0_custom" || fields[1].Strict || len(fields[1].Enum) != 0 {
+		t.Errorf("text field = %#v", fields[1])
+	}
+	if fields[2].Name != "question_1" || !fields[2].Multiple || len(fields[2].Enum) != 2 || fields[2].EnumDescriptions != nil {
+		t.Errorf("array field = %#v", fields[2])
+	}
+}
+
+func TestUnstableCreateElicitationFlow(t *testing.T) {
+	form := &acp.UnstableCreateElicitationForm{
+		Mode:    "form",
+		Message: "Which color?",
+		RequestedSchema: acp.UnstableElicitationSchema{
+			Type:       acp.UnstableElicitationSchemaTypeObject,
+			Properties: map[string]any{"question_0": map[string]any{"type": "string"}},
+		},
+	}
+
+	a := &Agent{}
+	resp, err := a.UnstableCreateElicitation(context.Background(), acp.UnstableCreateElicitationRequest{Form: form})
+	if err != nil || resp.Decline == nil {
+		t.Fatalf("headless should decline, got %#v err=%v", resp, err)
+	}
+
+	a.SetUI(&fakeUI{elicit: func(req tool.ElicitRequest) (tool.ElicitResult, error) {
+		if req.Message != "Which color?" || len(req.Fields) != 1 {
+			t.Errorf("request = %#v", req)
+		}
+		return tool.ElicitResult{Action: tool.ElicitAccept, Content: map[string]any{"question_0": "Blue"}}, nil
+	}})
+	resp, err = a.UnstableCreateElicitation(context.Background(), acp.UnstableCreateElicitationRequest{Form: form})
+	if err != nil || resp.Accept == nil || resp.Accept.Content["question_0"] != "Blue" {
+		t.Fatalf("accept = %#v err=%v", resp, err)
+	}
+
+	a.SetUI(&fakeUI{elicit: func(tool.ElicitRequest) (tool.ElicitResult, error) {
+		return tool.ElicitResult{Action: tool.ElicitDecline}, nil
+	}})
+	if resp, _ = a.UnstableCreateElicitation(context.Background(), acp.UnstableCreateElicitationRequest{Form: form}); resp.Decline == nil {
+		t.Fatalf("decline = %#v", resp)
+	}
+
+	a.SetUI(&fakeUI{})
+	if resp, _ = a.UnstableCreateElicitation(context.Background(), acp.UnstableCreateElicitationRequest{Form: form}); resp.Cancel == nil {
+		t.Fatalf("elicit error should cancel, got %#v", resp)
+	}
+}
+
+func TestRequestPermissionChoice(t *testing.T) {
+	req := acp.RequestPermissionRequest{
+		SessionId: "s1",
+		Options: []acp.PermissionOption{
+			{OptionId: "ask-0", Name: "Red", Kind: acp.PermissionOptionKindAllowOnce},
+			{OptionId: "ask-1", Name: "Blue", Kind: acp.PermissionOptionKindAllowOnce},
+			{OptionId: "ask-skip", Name: "Skip", Kind: acp.PermissionOptionKindRejectOnce},
+		},
+	}
+
+	a := &Agent{}
+	a.SetUI(&fakeUI{elicit: func(req tool.ElicitRequest) (tool.ElicitResult, error) {
+		if len(req.Fields) != 1 || !req.Fields[0].Strict || len(req.Fields[0].Enum) != 3 {
+			t.Errorf("choice field = %#v", req.Fields)
+		}
+		return tool.ElicitResult{Action: tool.ElicitAccept, Content: map[string]any{"choice": "Blue"}}, nil
+	}})
+	resp, err := a.RequestPermission(context.Background(), req)
+	if err != nil || resp.Outcome.Selected == nil || resp.Outcome.Selected.OptionId != "ask-1" {
+		t.Fatalf("choice outcome = %#v err=%v", resp, err)
+	}
+
+	a.SetUI(&fakeUI{elicit: func(tool.ElicitRequest) (tool.ElicitResult, error) {
+		return tool.ElicitResult{Action: tool.ElicitDecline}, nil
+	}})
+	resp, _ = a.RequestPermission(context.Background(), req)
+	if resp.Outcome.Selected == nil || resp.Outcome.Selected.OptionId != "ask-skip" {
+		t.Fatalf("decline should pick reject option, got %#v", resp)
+	}
+
+	a.SetUI(&fakeUI{confirm: func(string) (bool, error) { return true, nil }})
+	resp, _ = a.RequestPermission(context.Background(), req)
+	if resp.Outcome.Selected == nil || resp.Outcome.Selected.OptionId != "ask-0" {
+		t.Fatalf("confirm fallback should pick first allow, got %#v", resp)
+	}
+
+	a = &Agent{}
+	resp, _ = a.RequestPermission(context.Background(), req)
+	if resp.Outcome.Selected == nil || resp.Outcome.Selected.OptionId != "ask-0" {
+		t.Fatalf("headless should auto-pick first option, got %#v", resp)
 	}
 }

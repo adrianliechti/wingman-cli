@@ -32,6 +32,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/websearch"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/code/prompt"
+	"github.com/adrianliechti/wingman-agent/pkg/model"
 	"github.com/adrianliechti/wingman-agent/pkg/session"
 	skillpkg "github.com/adrianliechti/wingman-agent/pkg/skill"
 	"github.com/adrianliechti/wingman-agent/pkg/text"
@@ -142,23 +143,18 @@ func (a *Agent) currentUI() code.UI {
 	return a.ui
 }
 
-func (a *Agent) Models(sessionID string) ([]code.Model, string) {
+func (a *Agent) Models(sessionID string) ([]model.Model, string) {
 	return a.modelsFor(a.session(sessionID))
 }
 
-func (a *Agent) modelsFor(s *sessionState) ([]code.Model, string) {
+func (a *Agent) modelsFor(s *sessionState) ([]model.Model, string) {
 	a.modelMu.Lock()
 	defer a.modelMu.Unlock()
 	return a.modelsLocked(s)
 }
 
-func (a *Agent) modelsLocked(s *sessionState) ([]code.Model, string) {
-	available := make([]code.Model, 0, len(code.AvailableModels))
-	for _, m := range code.AvailableModels {
-		if a.upstreamModels == nil || a.upstreamModels[m.ID] {
-			available = append(available, m)
-		}
-	}
+func (a *Agent) modelsLocked(s *sessionState) ([]model.Model, string) {
+	available := model.Available(a.upstreamModels)
 
 	planMode := s != nil && s.planMode.Load()
 
@@ -178,14 +174,14 @@ func (a *Agent) modelsLocked(s *sessionState) ([]code.Model, string) {
 	}
 
 	if current == "" {
-		class := code.ModelClassMedium
+		class := model.ClassMedium
 		if planMode {
-			class = code.ModelClassLarge
+			class = model.ClassLarge
 		}
 		current = a.classModelLocked(class)
 	}
 
-	if len(available) > 0 && !slices.ContainsFunc(available, func(m code.Model) bool { return m.ID == current }) {
+	if len(available) > 0 && !slices.ContainsFunc(available, func(m model.Model) bool { return m.ID == current }) {
 		current = available[0].ID
 	}
 	return available, current
@@ -194,16 +190,13 @@ func (a *Agent) modelsLocked(s *sessionState) ([]code.Model, string) {
 // classModelLocked returns the first available model of the wanted class,
 // preferring the family of the medium (coding) pick so plan/code switches
 // keep encrypted reasoning replayable.
-func (a *Agent) classModelLocked(class code.ModelClass) string {
-	pick := func(class code.ModelClass, family string) string {
-		for _, m := range code.AvailableModels {
-			if a.upstreamModels != nil && !a.upstreamModels[m.ID] {
+func (a *Agent) classModelLocked(class model.Class) string {
+	pick := func(class model.Class, family string) string {
+		for _, m := range model.Available(a.upstreamModels) {
+			if m.Class != class {
 				continue
 			}
-			if code.ModelClassOf(m.ID) != class {
-				continue
-			}
-			if family != "" && code.ModelFamilyOf(m.ID) != family {
+			if family != "" && model.Family(m.ID) != family {
 				continue
 			}
 			return m.ID
@@ -212,8 +205,8 @@ func (a *Agent) classModelLocked(class code.ModelClass) string {
 	}
 
 	family := ""
-	if anchor := pick(code.ModelClassMedium, ""); anchor != "" {
-		family = code.ModelFamilyOf(anchor)
+	if anchor := pick(model.ClassMedium, ""); anchor != "" {
+		family = model.Family(anchor)
 	}
 
 	if id := pick(class, family); id != "" {
@@ -230,7 +223,7 @@ func (a *Agent) utilityModel() string {
 	if a.utilityModelID != "" {
 		return a.utilityModelID
 	}
-	return a.classModelLocked(code.ModelClassSmall)
+	return a.classModelLocked(model.ClassSmall)
 }
 
 // subagentRoleModel resolves the model roles the agent tool may launch
@@ -247,7 +240,7 @@ func (a *Agent) subagentRoleModel(s *sessionState, role string) (harness.ModelOp
 			id = s.planModelID
 		}
 		if id == "" {
-			id = a.classModelLocked(code.ModelClassLarge)
+			id = a.classModelLocked(model.ClassLarge)
 		}
 		a.modelMu.Unlock()
 	case "utility":
@@ -260,7 +253,7 @@ func (a *Agent) subagentRoleModel(s *sessionState, role string) (harness.ModelOp
 		return harness.ModelOption{}, false
 	}
 
-	lowest, highest := code.ModelEffortBounds(id)
+	lowest, highest := model.EffortBounds(id)
 	return harness.ModelOption{ID: id, MinEffort: lowest, MaxEffort: highest}, true
 }
 
@@ -319,7 +312,7 @@ func (a *Agent) effortFor(s *sessionState) string {
 			return a.planEffortID
 		}
 		// xhigh only where a large model backs it.
-		if _, current := a.modelsLocked(s); code.ModelClassOf(current) == code.ModelClassLarge {
+		if _, current := a.modelsLocked(s); model.ClassOf(current) == model.ClassLarge {
 			return "xhigh"
 		}
 		return "high"

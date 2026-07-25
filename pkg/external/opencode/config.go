@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/adrianliechti/wingman-agent/pkg/external"
+	"github.com/adrianliechti/wingman-agent/pkg/model"
 )
 
 type Options = external.Options
@@ -24,44 +25,24 @@ func NewConfig(ctx context.Context, options *Options) (string, error) {
 
 	models := make(map[string]any)
 
-	isSmall := func(name string) bool {
-		lower := strings.ToLower(name)
+	for _, m := range model.Available(available) {
+		models[m.ID] = map[string]any{
+			"name": m.Name,
 
-		for _, kw := range []string{"mini", "flash", "small", "haiku", "spark"} {
-			if strings.Contains(lower, kw) {
-				return true
-			}
+			"limit": map[string]any{
+				"context": m.ContextTokens(),
+				"output":  m.OutputTokens(),
+			},
 		}
 
-		return false
-	}
-
-	for _, g := range candidates {
-		for _, m := range g.models {
-			if !available[m.id] {
-				continue
+		if m.Class == model.ClassSmall {
+			if smallModel == "" {
+				smallModel = m.ID
 			}
-
-			models[m.id] = map[string]any{
-				"name": g.name,
-
-				"limit": map[string]any{
-					"context": m.inputTokens,
-					"output":  m.outputTokens,
-				},
+		} else {
+			if mainModel == "" {
+				mainModel = m.ID
 			}
-
-			if isSmall(g.name) {
-				if smallModel == "" {
-					smallModel = m.id
-				}
-			} else {
-				if mainModel == "" {
-					mainModel = m.id
-				}
-			}
-
-			break
 		}
 	}
 

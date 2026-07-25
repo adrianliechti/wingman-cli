@@ -16,6 +16,7 @@ type ClaudeConfig struct {
 	OpusModel   string
 	HaikuModel  string
 	SonnetModel string
+	FableModel  string
 }
 
 func NewConfig(ctx context.Context, options *Options) (*ClaudeConfig, error) {
@@ -56,5 +57,6 @@ func NewConfig(ctx context.Context, options *Options) (*ClaudeConfig, error) {
 		HaikuModel:  first(fast, "haiku"),
 		SonnetModel: first(defaults, "sonnet"),
 		OpusModel:   first(defaults, "opus"),
+		FableModel:  first(defaults, "fable"),
 	}, nil
 }

@@ -311,7 +311,7 @@ func streamHistory(ctx context.Context, conn *acp.AgentSideConnection, sid acp.S
 				return err
 			}
 		case "assistant":
-			if err := emitAssistant(ctx, conn, sid, env.Message, cwd, cache, nil, false, env.ParentToolUseID); err != nil {
+			if err := emitAssistant(ctx, conn, sid, env.Message, cwd, cache, nil, nil, nil, env.ParentToolUseID); err != nil {
 				return err
 			}
 		}
@@ -322,10 +322,13 @@ func streamHistory(ctx context.Context, conn *acp.AgentSideConnection, sid acp.S
 	return nil
 }
 
-var localCommandTagPattern = regexp.MustCompile(`(?s)<command-name>.*?</command-name>|<command-message>.*?</command-message>|<command-args>.*?</command-args>|<local-command-stdout>.*?</local-command-stdout>|<local-command-stderr>.*?</local-command-stderr>`)
+var localCommandStdoutPattern = regexp.MustCompile(`(?s)<local-command-stdout>(.*?)</local-command-stdout>`)
+
+var localCommandTagPattern = regexp.MustCompile(`(?s)<command-name>.*?</command-name>|<command-message>.*?</command-message>|<command-args>.*?</command-args>|<local-command-stderr>.*?</local-command-stderr>`)
 
 func stripMarkerTags(text string) (string, bool) {
-	stripped := localCommandTagPattern.ReplaceAllString(text, "")
+	stripped := localCommandStdoutPattern.ReplaceAllString(text, "$1")
+	stripped = localCommandTagPattern.ReplaceAllString(stripped, "")
 	if strings.TrimSpace(stripped) == "" {
 		return "", false
 	}
@@ -345,6 +348,9 @@ func replayUserMessage(ctx context.Context, conn *acp.AgentSideConnection, sid a
 
 	var s string
 	if err := json.Unmarshal(msg.Content, &s); err == nil {
+		if parentToolUseID != "" {
+			return nil
+		}
 		text, ok := stripMarkerTags(s)
 		if !ok {
 			return nil
@@ -362,6 +368,9 @@ func replayUserMessage(ctx context.Context, conn *acp.AgentSideConnection, sid a
 	for _, b := range blocks {
 		switch b.Type {
 		case "text":
+			if parentToolUseID != "" {
+				continue
+			}
 			text, ok := stripMarkerTags(b.Text)
 			if !ok {
 				continue

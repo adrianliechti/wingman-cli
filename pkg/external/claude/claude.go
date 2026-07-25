@@ -38,6 +38,7 @@ func BuildVars(cfg *ClaudeConfig) map[string]string {
 
 		"DISABLE_AUTOUPDATER":                "1",
 		"DISABLE_FEEDBACK_COMMAND":           "1",
+		"DISABLE_BUG_COMMAND":                "1",
 		"DISABLE_INSTALLATION_CHECKS":        "1",
 		"DISABLE_EXTRA_USAGE_COMMAND":        "1",
 		"DISABLE_UPGRADE_COMMAND":            "1",
@@ -54,7 +55,14 @@ func BuildVars(cfg *ClaudeConfig) map[string]string {
 		"CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK": "1",
 		"CLAUDE_CODE_DISABLE_LEGACY_MODEL_REMAP":    "1",
 
-		"CLAUDE_CODE_HIDE_ACCOUNT_INFO":     "1",
+		"DISABLE_PROMPT_CACHING": "1",
+		"DISABLE_COST_WARNINGS":  "1",
+
+		"CLAUDE_CODE_DISABLE_ARTIFACT":   "1",
+		"CLAUDE_CODE_DISABLE_AGENT_VIEW": "1",
+
+		"IS_DEMO": "1",
+
 		"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL": "1",
 
 		"ENABLE_CLAUDEAI_MCP_SERVERS": "false",
@@ -74,11 +82,19 @@ func BuildVars(cfg *ClaudeConfig) map[string]string {
 		vars["ANTHROPIC_DEFAULT_OPUS_MODEL"] = cfg.OpusModel
 	}
 
+	if cfg.FableModel != "" {
+		vars["ANTHROPIC_DEFAULT_FABLE_MODEL"] = cfg.FableModel
+	}
+
 	if cfg.SonnetModel != "" {
 		vars["CLAUDE_CODE_SUBAGENT_MODEL"] = cfg.SonnetModel
 	}
 
 	return vars
+}
+
+func BuildArgs() []string {
+	return []string{"--settings", `{"disableRemoteControl":true}`}
 }
 
 func BuildEnv(parent []string, cfg *ClaudeConfig) []string {
@@ -145,7 +161,7 @@ func Run(ctx context.Context, args []string, options *Options) error {
 		return err
 	}
 
-	cmd := exec.CommandContext(ctx, options.Path, args...)
+	cmd := exec.CommandContext(ctx, options.Path, append(BuildArgs(), args...)...)
 	cmd.Env = BuildEnv(options.Env, cfg)
 
 	cmd.Stdin = os.Stdin

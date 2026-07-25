@@ -9,12 +9,19 @@ import (
 	"github.com/coder/acp-go-sdk"
 )
 
-func emitStreamEvent(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, raw json.RawMessage) error {
+func emitStreamEvent(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, raw json.RawMessage, streamedMsgs map[string]bool) error {
 	if len(raw) == 0 {
 		return nil
 	}
 	var e streamEvent
-	if err := json.Unmarshal(raw, &e); err != nil || e.Type != "content_block_delta" {
+	if err := json.Unmarshal(raw, &e); err != nil {
+		return nil
+	}
+	if e.Type == "message_start" && e.Message.ID != "" && streamedMsgs != nil {
+		streamedMsgs[e.Message.ID] = true
+		return nil
+	}
+	if e.Type != "content_block_delta" {
 		return nil
 	}
 	var update acp.SessionUpdate
@@ -35,7 +42,12 @@ func emitStreamEvent(ctx context.Context, conn *acp.AgentSideConnection, sid acp
 	return conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: update})
 }
 
-func emitAssistant(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, raw json.RawMessage, cwd string, cache toolUseCache, tracker *toolCallTracker, streamed bool, parentToolUseID string) error {
+// emitAssistant renders a consolidated assistant message. Text and thinking
+// blocks are skipped when their message id was already delta-streamed
+// (streamedMsgs, live path) so they aren't emitted twice — but CLI-synthesized
+// messages such as local slash-command output never stream and must be
+// emitted here. streamedMsgs is nil on history replay, which never streams.
+func emitAssistant(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, raw json.RawMessage, cwd string, cache toolUseCache, tracker *toolCallTracker, streamedMsgs map[string]bool, plan *taskPlan, parentToolUseID string) error {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -43,22 +55,47 @@ func emitAssistant(ctx context.Context, conn *acp.AgentSideConnection, sid acp.S
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return fmt.Errorf("parse assistant message: %w", err)
 	}
+	streamed := streamedMsgs != nil && streamedMsgs[m.ID]
+	delete(streamedMsgs, m.ID)
 	for _, b := range m.Content {
 		var update acp.SessionUpdate
 		switch b.Type {
 		case "text":
-			if b.Text == "" || streamed {
+			if b.Text == "" || streamed || parentToolUseID != "" {
 				continue
 			}
-			update = acp.UpdateAgentMessageText(b.Text)
+			text := b.Text
+			if strings.Contains(text, "<local-command-") || strings.Contains(text, "<command-") {
+				stripped, ok := stripMarkerTags(text)
+				if !ok {
+					continue
+				}
+				text = stripped
+			}
+			update = acp.UpdateAgentMessageText(text)
 		case "thinking":
-			if b.Thinking == "" || streamed {
+			if b.Thinking == "" || streamed || parentToolUseID != "" {
 				continue
 			}
 			update = acp.UpdateAgentThoughtText(b.Thinking)
 		case "tool_use":
 			if cache != nil && b.ID != "" {
 				cache[b.ID] = b.Name
+			}
+			if plan != nil {
+				switch b.Name {
+				case "TaskCreate":
+					plan.noteCreate(b.ID, b.Input)
+				case "TaskUpdate":
+					if plan.noteUpdate(b.Input) {
+						if err := conn.SessionUpdate(ctx, acp.SessionNotification{
+							SessionId: sid,
+							Update:    acp.UpdatePlan(plan.entries()...),
+						}); err != nil {
+							return err
+						}
+					}
+				}
 			}
 			if isPlanTool(b.Name) {
 				entries, ok := planEntriesFromTodoWrite(b.Input)
@@ -112,7 +149,7 @@ func emitToolUseCall(ctx context.Context, conn *acp.AgentSideConnection, sid acp
 	return tracker.emit(b.ID, start, refine)
 }
 
-func emitToolResults(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, raw json.RawMessage, cache toolUseCache, parentToolUseID string) error {
+func emitToolResults(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, raw json.RawMessage, cache toolUseCache, plan *taskPlan, parentToolUseID string) error {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -121,10 +158,29 @@ func emitToolResults(ctx context.Context, conn *acp.AgentSideConnection, sid acp
 		return nil
 	}
 	for _, b := range m.Content {
+		if b.Type == "text" && parentToolUseID == "" && strings.Contains(b.Text, "<local-command-stdout>") {
+			if text, ok := stripMarkerTags(b.Text); ok {
+				if err := conn.SessionUpdate(ctx, acp.SessionNotification{
+					SessionId: sid,
+					Update:    acp.UpdateAgentMessageText(text),
+				}); err != nil {
+					return err
+				}
+			}
+			continue
+		}
 		if b.Type != "tool_result" || b.ToolUseID == "" {
 			continue
 		}
 		name := cache[b.ToolUseID]
+		if plan != nil && name == "TaskCreate" && plan.completeCreate(b.ToolUseID, extractToolResultText(b.Content)) {
+			if err := conn.SessionUpdate(ctx, acp.SessionNotification{
+				SessionId: sid,
+				Update:    acp.UpdatePlan(plan.entries()...),
+			}); err != nil {
+				return err
+			}
+		}
 		if isPlanTool(name) {
 			continue
 		}
@@ -275,14 +331,20 @@ func extractToolResultText(raw json.RawMessage) string {
 
 func toolKindFor(name string) acp.ToolKind {
 	switch name {
-	case "Read", "Glob", "Grep", "WebFetch", "WebSearch":
+	case "Read":
 		return acp.ToolKindRead
+	case "Glob", "Grep":
+		return acp.ToolKindSearch
+	case "WebFetch", "WebSearch":
+		return acp.ToolKindFetch
 	case "Edit", "Write", "MultiEdit", "NotebookEdit":
 		return acp.ToolKindEdit
 	case "Bash", "BashOutput", "KillShell":
 		return acp.ToolKindExecute
-	case "Task":
+	case "Agent", "Task":
 		return acp.ToolKindThink
+	case "ExitPlanMode":
+		return acp.ToolKindSwitchMode
 	}
 	return acp.ToolKindOther
 }

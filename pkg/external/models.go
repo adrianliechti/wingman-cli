@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/adrianliechti/wingman-agent/pkg/model"
+
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 )
@@ -91,71 +93,27 @@ func Models(ctx context.Context, options *Options, modelOpts *ModelOptions) ([]s
 		modelOpts = new(ModelOptions)
 	}
 
-	candidates := defaultModels
-
-	if modelOpts.Kind == ModelFast {
-		candidates = fastModels
-	}
-
 	var out []string
 
-	for _, id := range candidates {
-		if !available[id] {
+	for _, m := range model.Available(available) {
+		switch modelOpts.Kind {
+		case ModelFast:
+			if m.Class != model.ClassSmall {
+				continue
+			}
+
+		default:
+			if m.Class == model.ClassSmall {
+				continue
+			}
+		}
+
+		if modelOpts.Filter != nil && !modelOpts.Filter(m.ID) {
 			continue
 		}
 
-		if modelOpts.Filter != nil && !modelOpts.Filter(id) {
-			continue
-		}
-
-		out = append(out, id)
+		out = append(out, m.ID)
 	}
 
 	return out, nil
 }
-
-var (
-	defaultModels = []string{
-		"claude-sonnet-5",
-		"claude-sonnet-4-6",
-		"claude-sonnet-4-5",
-		"claude-opus-5",
-		"claude-opus-4-8",
-		"claude-opus-4-7",
-		"claude-opus-4-6",
-		"claude-opus-4-5",
-		"claude-fable-5",
-		"claude-mythos-5",
-
-		"gpt-5.6-sol",
-		"gpt-5.6-terra",
-		"gpt-5.5",
-		"gpt-5.4",
-		"gpt-5.3-codex",
-		"gpt-5.2-codex",
-		"gpt-5.1-codex-max",
-		"gpt-5.1-codex",
-		"gpt-5-codex",
-		"gpt-5.2",
-		"gpt-5.1",
-		"gpt-5",
-
-		"gemini-3.1-pro-preview",
-		"gemini-3-pro-preview",
-		"gemini-2.5-pro",
-	}
-
-	fastModels = []string{
-
-		"claude-haiku-4-6",
-		"claude-haiku-4-5",
-
-		"gpt-5.6-luna",
-		"gpt-5.3-codex-spark",
-		"gpt-5.1-codex-mini",
-		"gpt-5-mini",
-
-		"gemini-3-flash-preview",
-		"gemini-2.5-flash",
-	}
-)

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -74,8 +76,9 @@ func (a *Agent) Initialize(context.Context, acp.InitializeRequest) (acp.Initiali
 				EmbeddedContext: true,
 			},
 			SessionCapabilities: acp.SessionCapabilities{
-				Close: &acp.SessionCloseCapabilities{},
-				List:  a.listCapability(),
+				Close:  &acp.SessionCloseCapabilities{},
+				List:   a.listCapability(),
+				Delete: a.deleteCapability(),
 			},
 		},
 	}, nil
@@ -86,6 +89,27 @@ func (a *Agent) listCapability() *acp.SessionListCapabilities {
 		return nil
 	}
 	return &acp.SessionListCapabilities{}
+}
+
+func (a *Agent) deleteCapability() *acp.SessionDeleteCapabilities {
+	if a.opts.SessionsDir == "" {
+		return nil
+	}
+	return &acp.SessionDeleteCapabilities{}
+}
+
+// UnstableDeleteSession is idempotent per the ACP session/delete semantics:
+// deleting a session that does not exist (or is already gone) succeeds.
+func (a *Agent) UnstableDeleteSession(_ context.Context, params acp.UnstableDeleteSessionRequest) (acp.UnstableDeleteSessionResponse, error) {
+	a.disposeSession(params.SessionId)
+	if a.opts.SessionsDir != "" {
+		if file, ok := findSessionFile(a.opts.SessionsDir, string(params.SessionId)); ok {
+			if err := os.Remove(file.Path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return acp.UnstableDeleteSessionResponse{}, err
+			}
+		}
+	}
+	return acp.UnstableDeleteSessionResponse{}, nil
 }
 
 func (a *Agent) Authenticate(context.Context, acp.AuthenticateRequest) (acp.AuthenticateResponse, error) {
@@ -240,9 +264,12 @@ func (a *Agent) ListSessions(_ context.Context, params acp.ListSessionsRequest) 
 	all := listSessionFiles(a.opts.SessionsDir)
 
 	if params.Cwd != nil && *params.Cwd != "" {
+		// pi records its own symlink-resolved cwd (e.g. /private/var vs
+		// /var on macOS), so compare canonical forms.
+		want := canonicalPath(*params.Cwd)
 		filtered := all[:0]
 		for _, s := range all {
-			if s.Cwd == *params.Cwd {
+			if canonicalPath(s.Cwd) == want {
 				filtered = append(filtered, s)
 			}
 		}
