@@ -9,6 +9,7 @@ import {
 	PanelRightClose,
 	PanelRightOpen,
 	Plus,
+	SquareTerminal,
 	Wrench,
 	X,
 } from "lucide-react";
@@ -35,6 +36,7 @@ import { FileTab } from "./components/FileTab";
 import { FileTree } from "./components/FileTree";
 import { ProblemsPanel } from "./components/ProblemsPanel";
 import { TasksPanel } from "./components/TasksPanel";
+import { TerminalPanel } from "./components/TerminalPanel";
 import { BUILTIN_AGENT_ID } from "./components/AgentPicker";
 import { Sidebar } from "./components/Sidebar";
 import { useCapabilities } from "./hooks/useCapabilities";
@@ -64,6 +66,12 @@ const EMPTY_USAGE = {
 	lastInputTokens: 0,
 	contextWindow: 0,
 };
+
+const DEFAULT_TERMINAL_PERCENT = 30;
+
+const TERMINAL_SHORTCUT = /Mac|iPhone|iPad/.test(navigator.platform)
+	? "⌃⌥T"
+	: "Ctrl+Alt+T";
 
 const chatTabId = (sessionId: string) => `chat:${sessionId}`;
 
@@ -98,6 +106,7 @@ export default function App() {
 	const showChanges = capabilities?.diffs ?? false;
 	const showProblems = capabilities?.lsp ?? false;
 	const showAgents = capabilities?.tasks ?? false;
+	const showTerminal = capabilities?.terminal ?? false;
 	const [requestedRightTab, setRequestedRightTab] =
 		useState<RightTab>("changes");
 	const rightTab =
@@ -107,11 +116,18 @@ export default function App() {
 			: requestedRightTab;
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
 	const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
+	const [terminalCollapsed, setTerminalCollapsed] = useState(true);
+	const terminalSizeRef = useRef(0);
 	const leftPanelRef = usePanelRef();
 	const rightPanelRef = usePanelRef();
+	const terminalPanelRef = usePanelRef();
 	const { defaultLayout, onLayoutChanged } = useDefaultLayout({
 		id: "wingman-layout",
 	});
+	const {
+		defaultLayout: centerDefaultLayout,
+		onLayoutChanged: onCenterLayoutChanged,
+	} = useDefaultLayout({ id: "wingman-center-layout" });
 
 	const [tabs, setTabs] = useState<CenterTab[]>([draftChatTab()]);
 	const [activeTabId, setActiveTabId] = useState(chatTabId(""));
@@ -122,16 +138,42 @@ export default function App() {
 		nonce: number;
 	} | null>(null);
 
+	const toggleTerminal = useCallback(() => {
+		const panel = terminalPanelRef.current;
+		if (!panel) return;
+		if (!panel.isCollapsed()) {
+			panel.collapse();
+			return;
+		}
+		// A collapsed panel only grows to its minSize, so restore the last height
+		// (or the default) once it is expanded again.
+		panel.expand();
+		const target = terminalSizeRef.current || DEFAULT_TERMINAL_PERCENT;
+		requestAnimationFrame(() => panel.resize(`${target}%`));
+	}, [terminalPanelRef]);
+
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
 			if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
 				e.preventDefault();
 				setPaletteOpen((o) => !o);
+				return;
+			}
+			// Match on e.code: with Alt held macOS reports the composed character
+			// in e.key, and Backquote sits on a dead key in several EU layouts.
+			if (
+				e.ctrlKey &&
+				!e.metaKey &&
+				((e.altKey && e.code === "KeyT") ||
+					(!e.altKey && e.code === "Backquote"))
+			) {
+				e.preventDefault();
+				toggleTerminal();
 			}
 		};
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
-	}, []);
+	}, [toggleTerminal]);
 
 	const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
 	const sessionId =
@@ -534,6 +576,15 @@ export default function App() {
 				},
 			});
 		}
+		if (showTerminal) {
+			actions.push({
+				id: "toggle-terminal",
+				label: "Toggle terminal",
+				hint: TERMINAL_SHORTCUT,
+				icon: <SquareTerminal size={12} className="text-fg-dim shrink-0" />,
+				run: toggleTerminal,
+			});
+		}
 		actions.push({
 			id: "show-files",
 			label: "Show files",
@@ -558,8 +609,10 @@ export default function App() {
 	}, [
 		handleNewSession,
 		showChanges,
+		showTerminal,
 		leftPanelRef,
 		rightPanelRef,
+		toggleTerminal,
 		modes,
 		mode,
 		selectMode,
@@ -636,187 +689,241 @@ export default function App() {
 					minSize="320px"
 					className="flex flex-col overflow-hidden min-w-0 bg-bg"
 				>
-					<div className="h-10 flex items-stretch bg-bg shrink-0 overflow-x-auto">
-						<button
-							type="button"
-							className="self-center flex items-center justify-center w-8 h-8 ml-1 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
-							onClick={() => togglePanel(leftPanelRef.current)}
-							title={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+					<Group
+						orientation="vertical"
+						id="wingman-center-layout"
+						defaultLayout={centerDefaultLayout}
+						onLayoutChanged={onCenterLayoutChanged}
+						className="flex-1 overflow-hidden"
+					>
+						<Panel
+							id="workspace"
+							minSize="160px"
+							className="flex flex-col overflow-hidden min-h-0 bg-bg"
 						>
-							{sidebarCollapsed ? (
-								<PanelLeftOpen size={13} />
-							) : (
-								<PanelLeftClose size={13} />
-							)}
-						</button>
-						{sidebarCollapsed && canCreateNew && (
-							<button
-								type="button"
-								className="self-center flex items-center justify-center w-8 h-8 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
-								onClick={handleNewSession}
-								title="New session"
-							>
-								<Plus size={13} />
-							</button>
-						)}
-						{tabs.map((tab) => {
-							const active = tab.id === activeTabId;
-							const isDirty = dirtyTabs.has(tab.id);
-							const running =
-								tab.type === "chat" && tab.sessionId
-									? (sessions[tab.sessionId]?.phase ?? "idle") !== "idle"
-									: false;
-							const Icon =
-								tab.type === "chat"
-									? MessageSquare
-									: tab.type === "diff"
-										? GitCompare
-										: FileText;
-							const label = tab.type === "chat" ? chatTabLabel(tab) : tab.label;
-							return (
-								<div
-									key={tab.id}
-									className={`group relative flex items-center gap-1.5 px-3 cursor-pointer text-[12px] shrink-0 select-none transition-colors ${
-										active ? "text-fg" : "text-fg-dim hover:text-fg-muted"
-									}`}
-									onClick={() => activateTab(tab)}
+							<div className="h-10 flex items-stretch bg-bg shrink-0 overflow-x-auto">
+								<button
+									type="button"
+									className="self-center flex items-center justify-center w-8 h-8 ml-1 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
+									onClick={() => togglePanel(leftPanelRef.current)}
+									title={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
 								>
-									{active && (
-										<span className="absolute bottom-0 left-2 right-2 h-[2px] bg-accent rounded-full" />
+									{sidebarCollapsed ? (
+										<PanelLeftOpen size={13} />
+									) : (
+										<PanelLeftClose size={13} />
 									)}
-									<span className="w-3.5 h-3.5 flex items-center justify-center shrink-0">
-										{running ? (
-											<Loader2
-												size={13}
-												className="group-hover:hidden text-accent animate-spin"
-											/>
-										) : isDirty ? (
-											<span
-												className={`group-hover:hidden w-2 h-2 rounded-full ${active ? "bg-fg-muted" : "bg-fg-dim"}`}
-												aria-label="Unsaved changes"
-											/>
-										) : (
-											<Icon
-												size={13}
-												className={`group-hover:hidden ${active ? "text-fg-muted" : "text-fg-dim"}`}
+								</button>
+								{sidebarCollapsed && canCreateNew && (
+									<button
+										type="button"
+										className="self-center flex items-center justify-center w-8 h-8 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
+										onClick={handleNewSession}
+										title="New session"
+									>
+										<Plus size={13} />
+									</button>
+								)}
+								{tabs.map((tab) => {
+									const active = tab.id === activeTabId;
+									const isDirty = dirtyTabs.has(tab.id);
+									const running =
+										tab.type === "chat" && tab.sessionId
+											? (sessions[tab.sessionId]?.phase ?? "idle") !== "idle"
+											: false;
+									const Icon =
+										tab.type === "chat"
+											? MessageSquare
+											: tab.type === "diff"
+												? GitCompare
+												: FileText;
+									const label =
+										tab.type === "chat" ? chatTabLabel(tab) : tab.label;
+									return (
+										<div
+											key={tab.id}
+											className={`group relative flex items-center gap-1.5 px-3 cursor-pointer text-[12px] shrink-0 select-none transition-colors ${
+												active ? "text-fg" : "text-fg-dim hover:text-fg-muted"
+											}`}
+											onClick={() => activateTab(tab)}
+										>
+											{active && (
+												<span className="absolute bottom-0 left-2 right-2 h-[2px] bg-accent rounded-full" />
+											)}
+											<span className="w-3.5 h-3.5 flex items-center justify-center shrink-0">
+												{running ? (
+													<Loader2
+														size={13}
+														className="group-hover:hidden text-accent animate-spin"
+													/>
+												) : isDirty ? (
+													<span
+														className={`group-hover:hidden w-2 h-2 rounded-full ${active ? "bg-fg-muted" : "bg-fg-dim"}`}
+														aria-label="Unsaved changes"
+													/>
+												) : (
+													<Icon
+														size={13}
+														className={`group-hover:hidden ${active ? "text-fg-muted" : "text-fg-dim"}`}
+													/>
+												)}
+												<button
+													type="button"
+													className="hidden group-hover:flex w-3.5 h-3.5 items-center justify-center text-fg-dim hover:text-fg rounded transition-colors"
+													onClick={(e) => {
+														e.stopPropagation();
+														closeTab(tab.id);
+													}}
+													aria-label="Close tab"
+												>
+													<X size={11} />
+												</button>
+											</span>
+											<span className="truncate max-w-[200px]">{label}</span>
+										</div>
+									);
+								})}
+								<div className="flex-1" />
+								{(usage.inputTokens > 0 || outputTokens > 0) && (
+									<div className="flex items-center px-3 text-[11px] text-fg-dim tabular-nums whitespace-nowrap">
+										{"↑"}
+										{formatTokens(usage.inputTokens)}
+										{usage.cachedTokens > 0 && (
+											<span className="ml-1">
+												({formatTokens(usage.cachedTokens)} cached)
+											</span>
+										)}
+										<span className="ml-2">
+											{streamEstimate > 0 ? "↓~" : "↓"}
+											{formatTokens(outputTokens)}
+										</span>
+										{usage.contextWindow > 0 && usage.lastInputTokens > 0 && (
+											<ContextLeft
+												used={usage.lastInputTokens}
+												window={usage.contextWindow}
 											/>
 										)}
-										<button
-											type="button"
-											className="hidden group-hover:flex w-3.5 h-3.5 items-center justify-center text-fg-dim hover:text-fg rounded transition-colors"
-											onClick={(e) => {
-												e.stopPropagation();
-												closeTab(tab.id);
-											}}
-											aria-label="Close tab"
-										>
-											<X size={11} />
-										</button>
-									</span>
-									<span className="truncate max-w-[200px]">{label}</span>
-								</div>
-							);
-						})}
-						<div className="flex-1" />
-						{(usage.inputTokens > 0 || outputTokens > 0) && (
-							<div className="flex items-center px-3 text-[11px] text-fg-dim tabular-nums whitespace-nowrap">
-								{"↑"}
-								{formatTokens(usage.inputTokens)}
-								{usage.cachedTokens > 0 && (
-									<span className="ml-1">
-										({formatTokens(usage.cachedTokens)} cached)
-									</span>
+									</div>
 								)}
-								<span className="ml-2">
-									{streamEstimate > 0 ? "↓~" : "↓"}
-									{formatTokens(outputTokens)}
-								</span>
-								{usage.contextWindow > 0 && usage.lastInputTokens > 0 && (
-									<ContextLeft
-										used={usage.lastInputTokens}
-										window={usage.contextWindow}
+								{showTerminal && (
+									<button
+										type="button"
+										className={`self-center flex items-center justify-center w-8 h-8 rounded-md hover:bg-bg-hover cursor-pointer transition-colors shrink-0 ${
+											terminalCollapsed
+												? "text-fg-dim hover:text-fg-muted"
+												: "text-fg-muted"
+										}`}
+										onClick={() => togglePanel(terminalPanelRef.current)}
+										title={`${terminalCollapsed ? "Show" : "Hide"} terminal (${TERMINAL_SHORTCUT})`}
+									>
+										<SquareTerminal size={13} />
+									</button>
+								)}
+								<button
+									type="button"
+									className="self-center flex items-center justify-center w-8 h-8 mr-1 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
+									onClick={() => togglePanel(rightPanelRef.current)}
+									title={rightPanelCollapsed ? "Show panel" : "Hide panel"}
+								>
+									{rightPanelCollapsed ? (
+										<PanelRightOpen size={13} />
+									) : (
+										<PanelRightClose size={13} />
+									)}
+								</button>
+							</div>
+
+							<div className="h-px bg-border-subtle shrink-0" />
+
+							<div className="flex-1 overflow-hidden">
+								{activeTab.type === "chat" ? (
+									<ChatPanel
+										key={activeTab.id}
+										sessionId={activeTab.sessionId ?? ""}
+										entries={entries}
+										phase={phase}
+										modes={modes}
+										mode={mode}
+										onSelectMode={selectMode}
+										onSend={handleSend}
+										onCancel={handleCancel}
+										pendingInputs={pendingInputs}
+										queuePaused={queuePaused}
+										canSteer={canSteer}
+										onRemoveQueued={(id, state) => {
+											if (!sessionId) return;
+											if (state === "queued" || state === "sending") {
+												removeQueued(sessionId, id);
+											} else {
+												dismissPending(sessionId, id);
+											}
+										}}
+										onUpdateQueued={(id, text, files, images) =>
+											sessionId
+												? updateQueued(sessionId, id, text, files, images)
+												: false
+										}
+										onResumeQueue={() => {
+											if (sessionId) resumeQueue(sessionId);
+										}}
+										onClearQueue={() => {
+											if (sessionId) clearQueue(sessionId);
+										}}
+										loading={
+											sessionLoad.loading && sessionLoad.id === sessionId
+										}
+										loadError={
+											sessionLoad.id === sessionId ? sessionLoad.error : null
+										}
+										subscribe={subscribe}
+										prompt={prompt}
+										onPromptReply={handlePromptReply}
+										seed={composerSeed}
+										toolProgress={toolProgress}
+									/>
+								) : activeTab.type === "diff" && activeTab.path ? (
+									<DiffTab
+										path={activeTab.path}
+										sessionId={sessionId}
+										subscribe={subscribe}
+										onDeleted={() => closeTab(activeTab.id)}
+									/>
+								) : activeTab.path ? (
+									<FileTab
+										key={activeTab.id}
+										path={activeTab.path}
+										line={activeTab.line}
+										subscribe={subscribe}
+										onDeleted={() => closeTab(activeTab.id)}
+										onDirtyChange={(d) => setTabDirty(activeTab.id, d)}
+									/>
+								) : null}
+							</div>
+						</Panel>
+						{showTerminal && <VerticalResizeHandle />}
+						{showTerminal && (
+							<Panel
+								panelRef={terminalPanelRef}
+								id="terminal"
+								defaultSize="0px"
+								collapsible
+								collapsedSize="0px"
+								minSize="120px"
+								groupResizeBehavior="preserve-pixel-size"
+								onResize={({ inPixels }) =>
+									setTerminalCollapsed(inPixels === 0)
+								}
+								className="overflow-hidden"
+							>
+								{!terminalCollapsed && (
+									<TerminalPanel
+										onClose={() => terminalPanelRef.current?.collapse()}
+										subscribe={subscribe}
 									/>
 								)}
-							</div>
+							</Panel>
 						)}
-						<button
-							type="button"
-							className="self-center flex items-center justify-center w-8 h-8 mr-1 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
-							onClick={() => togglePanel(rightPanelRef.current)}
-							title={rightPanelCollapsed ? "Show panel" : "Hide panel"}
-						>
-							{rightPanelCollapsed ? (
-								<PanelRightOpen size={13} />
-							) : (
-								<PanelRightClose size={13} />
-							)}
-						</button>
-					</div>
-
-					<div className="h-px bg-border-subtle shrink-0" />
-
-					<div className="flex-1 overflow-hidden">
-						{activeTab.type === "chat" ? (
-							<ChatPanel
-								key={activeTab.id}
-								sessionId={activeTab.sessionId ?? ""}
-								entries={entries}
-								phase={phase}
-								modes={modes}
-								mode={mode}
-								onSelectMode={selectMode}
-								onSend={handleSend}
-								onCancel={handleCancel}
-								pendingInputs={pendingInputs}
-								queuePaused={queuePaused}
-								canSteer={canSteer}
-								onRemoveQueued={(id, state) => {
-									if (!sessionId) return;
-									if (state === "queued" || state === "sending") {
-										removeQueued(sessionId, id);
-									} else {
-										dismissPending(sessionId, id);
-									}
-								}}
-								onUpdateQueued={(id, text, files, images) =>
-									sessionId
-										? updateQueued(sessionId, id, text, files, images)
-										: false
-								}
-								onResumeQueue={() => {
-									if (sessionId) resumeQueue(sessionId);
-								}}
-								onClearQueue={() => {
-									if (sessionId) clearQueue(sessionId);
-								}}
-								loading={sessionLoad.loading && sessionLoad.id === sessionId}
-								loadError={
-									sessionLoad.id === sessionId ? sessionLoad.error : null
-								}
-								subscribe={subscribe}
-								prompt={prompt}
-								onPromptReply={handlePromptReply}
-								seed={composerSeed}
-								toolProgress={toolProgress}
-							/>
-						) : activeTab.type === "diff" && activeTab.path ? (
-							<DiffTab
-								path={activeTab.path}
-								sessionId={sessionId}
-								subscribe={subscribe}
-								onDeleted={() => closeTab(activeTab.id)}
-							/>
-						) : activeTab.path ? (
-							<FileTab
-								key={activeTab.id}
-								path={activeTab.path}
-								line={activeTab.line}
-								subscribe={subscribe}
-								onDeleted={() => closeTab(activeTab.id)}
-								onDirtyChange={(d) => setTabDirty(activeTab.id, d)}
-							/>
-						) : null}
-					</div>
+					</Group>
 				</Panel>
 				<ResizeHandle />
 
@@ -954,6 +1061,12 @@ function expandPanel(panel: PanelImperativeHandle | null) {
 function ResizeHandle() {
 	return (
 		<Separator className="w-px shrink-0 bg-border-subtle outline-none hover:bg-accent active:bg-accent transition-colors" />
+	);
+}
+
+function VerticalResizeHandle() {
+	return (
+		<Separator className="h-px shrink-0 bg-border-subtle outline-none hover:bg-accent active:bg-accent transition-colors" />
 	);
 }
 

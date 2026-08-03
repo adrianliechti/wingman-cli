@@ -55,6 +55,7 @@ const (
 	EvtTurnInput           = "turn_input"
 	EvtTurnQueue           = "turn_queue"
 	EvtTasksChanged        = "tasks_changed"
+	EvtTerminalsChanged    = "terminals_changed"
 )
 
 const (

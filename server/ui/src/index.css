@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "@xterm/xterm/css/xterm.css";
 
 /* Generate the Tailwind classes used inside Streamdown's compiled components. */
 @source "../node_modules/streamdown/dist/*.js";

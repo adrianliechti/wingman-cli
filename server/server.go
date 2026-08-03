@@ -29,6 +29,7 @@ import (
 	coder "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 	"github.com/adrianliechti/wingman-agent/pkg/system"
+	"github.com/adrianliechti/wingman-agent/pkg/terminal"
 	"github.com/adrianliechti/wingman-agent/pkg/watch"
 )
 
@@ -77,6 +78,8 @@ type Server struct {
 	taskPumpMu sync.Mutex
 	taskPumps  map[*task.Registry]bool
 
+	terminals *terminal.Manager
+
 	files           *watch.Monitor
 	prevGit         bool
 	prevFingerprint uint64
@@ -108,6 +111,9 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 		turnMeta:       map[string]map[string]ClientMessage{},
 		turnUsage:      map[string]agent.Usage{},
 	}
+
+	s.terminals = terminal.NewManager(ws.RootPath)
+	s.terminals.SetExitHandler(s.onTerminalExit)
 
 	wa := coder.New(ws, cfg, nil)
 	wa.SetUI(s)
@@ -157,6 +163,7 @@ func (s *Server) Close() {
 	if a != nil {
 		_ = a.Close()
 	}
+	s.terminals.Close()
 	s.workspace.Close()
 }
 
@@ -298,6 +305,13 @@ func (s *Server) registerRoutes(r chi.Router) {
 		r.Get("/agents", s.handleAgents)
 		r.Get("/agent", s.handleAgent)
 		r.Post("/agent", s.handleSetAgent)
+
+		r.Route("/terminals", func(r chi.Router) {
+			r.Get("/", s.handleTerminals)
+			r.Post("/", s.handleNewTerminal)
+			r.Delete("/{id}", s.handleDeleteTerminal)
+			r.HandleFunc("/{id}/ws", s.handleTerminalWebSocket)
+		})
 
 		r.Get("/diagnostics", s.handleDiagnostics)
 		r.Get("/skills", s.handleSkills)
@@ -715,10 +729,11 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, _ *http.Request) {
 	ws := s.workspace
 	_, isCoder := s.activeAgent().(*coder.Agent)
 	caps := map[string]any{
-		"git":   ws.IsGitRepo(),
-		"lsp":   ws.HasLSP(),
-		"diffs": ws.HasRewind(),
-		"tasks": isCoder,
+		"git":      ws.IsGitRepo(),
+		"lsp":      ws.HasLSP(),
+		"diffs":    ws.HasRewind(),
+		"tasks":    isCoder,
+		"terminal": terminal.Supported(),
 	}
 	if !ws.HasRewind() {
 		caps["notice"] = "This directory is too large for full features. Diffs, checkpoints, and code intelligence are disabled — chat and file browsing still work."
