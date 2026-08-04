@@ -59,6 +59,12 @@
 	--color-selection: rgba(255, 255, 255, 0.15);
 }
 
+/* xterm paints an opaque black viewport by default; let the panel background
+   (and therefore the app theme) show through instead. */
+.xterm .xterm-viewport {
+	background-color: transparent;
+}
+
 @media (prefers-color-scheme: light) {
 	:root {
 		--color-bg: #ffffff;

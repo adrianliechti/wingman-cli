@@ -2,9 +2,9 @@ package terminal
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"sync"
 )
@@ -25,6 +25,8 @@ var ErrUnsupported = errors.New("terminal sessions are not supported on this pla
 type Session struct {
 	id    string
 	title string
+	shell string
+	index int
 
 	cmd *exec.Cmd
 	pty *os.File
@@ -44,14 +46,14 @@ func Supported() bool {
 	return ptySupported
 }
 
-func newSession(id, title, dir string, cols, rows int) (*Session, error) {
+func newSession(id, shell, dir string, index, cols, rows int, onExit func(*Session)) (*Session, error) {
 	if !ptySupported {
 		return nil, ErrUnsupported
 	}
 
 	cols, rows = normalizeSize(cols, rows)
 
-	cmd := exec.Command(shellPath())
+	cmd := exec.Command(shell)
 	cmd.Dir = dir
 	cmd.Env = terminalEnv()
 
@@ -62,13 +64,16 @@ func newSession(id, title, dir string, cols, rows int) (*Session, error) {
 
 	s := &Session{
 		id:    id,
-		title: title,
+		title: sessionTitle(shellName(shell), index),
+		shell: shell,
+		index: index,
 
 		cmd: cmd,
 		pty: f,
 
-		done: make(chan struct{}),
-		subs: map[chan []byte]struct{}{},
+		done:   make(chan struct{}),
+		onExit: onExit,
+		subs:   map[chan []byte]struct{}{},
 
 		cols: cols,
 		rows: rows,
@@ -79,12 +84,23 @@ func newSession(id, title, dir string, cols, rows int) (*Session, error) {
 	return s, nil
 }
 
+func sessionTitle(name string, index int) string {
+	if index <= 1 {
+		return name
+	}
+	return fmt.Sprintf("%s %d", name, index)
+}
+
 func (s *Session) ID() string {
 	return s.id
 }
 
 func (s *Session) Title() string {
 	return s.title
+}
+
+func (s *Session) Shell() string {
+	return s.shell
 }
 
 func (s *Session) Size() (cols, rows int) {
@@ -240,19 +256,6 @@ func normalizeSize(cols, rows int) (int, int) {
 		rows = DefaultRows
 	}
 	return min(cols, 1000), min(rows, 1000)
-}
-
-func shellPath() string {
-	if runtime.GOOS == "windows" {
-		if ps, err := exec.LookPath("pwsh"); err == nil {
-			return ps
-		}
-		return "powershell"
-	}
-	if shell := os.Getenv("SHELL"); shell != "" {
-		return shell
-	}
-	return "/bin/sh"
 }
 
 func terminalEnv() []string {

@@ -104,7 +104,7 @@ export function TerminalView({ id, active, onExit }: Props) {
 		return () => window.clearTimeout(handle);
 	}, [active]);
 
-	return <div ref={hostRef} className="h-full w-full px-2 py-1" />;
+	return <div ref={hostRef} className="h-full w-full px-2 py-1 bg-bg" />;
 }
 
 function safeFit(fit: FitAddon) {

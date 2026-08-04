@@ -20,6 +20,7 @@ import {
 	type PanelImperativeHandle,
 	Separator,
 	useDefaultLayout,
+	useGroupRef,
 	usePanelRef,
 } from "react-resizable-panels";
 import { ChatPanel } from "./components/ChatPanel";
@@ -121,6 +122,7 @@ export default function App() {
 	const leftPanelRef = usePanelRef();
 	const rightPanelRef = usePanelRef();
 	const terminalPanelRef = usePanelRef();
+	const centerGroupRef = useGroupRef();
 	const { defaultLayout, onLayoutChanged } = useDefaultLayout({
 		id: "wingman-layout",
 	});
@@ -145,12 +147,14 @@ export default function App() {
 			panel.collapse();
 			return;
 		}
-		// A collapsed panel only grows to its minSize, so restore the last height
-		// (or the default) once it is expanded again.
-		panel.expand();
-		const target = terminalSizeRef.current || DEFAULT_TERMINAL_PERCENT;
-		requestAnimationFrame(() => panel.resize(`${target}%`));
-	}, [terminalPanelRef]);
+		// Expanding a collapsed panel only grows it to its minSize, so set the
+		// group layout directly to restore the last height (or the default).
+		const size = terminalSizeRef.current || DEFAULT_TERMINAL_PERCENT;
+		centerGroupRef.current?.setLayout({
+			workspace: 100 - size,
+			terminal: size,
+		});
+	}, [terminalPanelRef, centerGroupRef]);
 
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
@@ -691,6 +695,7 @@ export default function App() {
 				>
 					<Group
 						orientation="vertical"
+						groupRef={centerGroupRef}
 						id="wingman-center-layout"
 						defaultLayout={centerDefaultLayout}
 						onLayoutChanged={onCenterLayoutChanged}
@@ -813,7 +818,7 @@ export default function App() {
 												? "text-fg-dim hover:text-fg-muted"
 												: "text-fg-muted"
 										}`}
-										onClick={() => togglePanel(terminalPanelRef.current)}
+										onClick={toggleTerminal}
 										title={`${terminalCollapsed ? "Show" : "Hide"} terminal (${TERMINAL_SHORTCUT})`}
 									>
 										<SquareTerminal size={13} />
@@ -910,9 +915,10 @@ export default function App() {
 								collapsedSize="0px"
 								minSize="120px"
 								groupResizeBehavior="preserve-pixel-size"
-								onResize={({ inPixels }) =>
-									setTerminalCollapsed(inPixels === 0)
-								}
+								onResize={({ inPixels, asPercentage }) => {
+									setTerminalCollapsed(inPixels === 0);
+									if (inPixels > 0) terminalSizeRef.current = asPercentage;
+								}}
 								className="overflow-hidden"
 							>
 								{!terminalCollapsed && (

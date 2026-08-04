@@ -358,8 +358,14 @@ export interface TaskDetail extends TaskEntry {
 export interface TerminalEntry {
 	id: string;
 	title: string;
+	shell: string;
 	cols: number;
 	rows: number;
+}
+
+export interface ShellEntry {
+	id: string;
+	name: string;
 }
 
 export interface DiagnosticEntry {

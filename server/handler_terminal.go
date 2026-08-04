@@ -13,6 +13,7 @@ import (
 type TerminalEntry struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
+	Shell string `json:"shell"`
 	Cols  int    `json:"cols"`
 	Rows  int    `json:"rows"`
 }
@@ -29,6 +30,7 @@ func terminalEntry(s *terminal.Session) TerminalEntry {
 	return TerminalEntry{
 		ID:    s.ID(),
 		Title: s.Title(),
+		Shell: s.Shell(),
 		Cols:  cols,
 		Rows:  rows,
 	}
@@ -43,6 +45,14 @@ func (s *Server) handleTerminals(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, out)
 }
 
+func (s *Server) handleTerminalShells(w http.ResponseWriter, _ *http.Request) {
+	shells := terminal.Shells()
+	if shells == nil {
+		shells = []terminal.Shell{}
+	}
+	writeJSON(w, shells)
+}
+
 func (s *Server) handleNewTerminal(w http.ResponseWriter, r *http.Request) {
 	if !terminal.Supported() {
 		http.Error(w, "terminals are not supported on this platform", http.StatusNotImplemented)
@@ -50,12 +60,13 @@ func (s *Server) handleNewTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Cols int `json:"cols"`
-		Rows int `json:"rows"`
+		Shell string `json:"shell"`
+		Cols  int    `json:"cols"`
+		Rows  int    `json:"rows"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
-	t, err := s.terminals.Create(body.Cols, body.Rows)
+	t, err := s.terminals.Create(body.Shell, body.Cols, body.Rows)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

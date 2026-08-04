@@ -11,7 +11,6 @@ type Manager struct {
 	dir string
 
 	mu       sync.Mutex
-	seq      int
 	order    []string
 	sessions map[string]*Session
 
@@ -31,25 +30,44 @@ func (m *Manager) SetExitHandler(fn func(id string)) {
 	m.onExit = fn
 }
 
-func (m *Manager) Create(cols, rows int) (*Session, error) {
-	m.mu.Lock()
-	m.seq++
-	id := uuid.NewString()
-	title := fmt.Sprintf("Terminal %d", m.seq)
-	m.mu.Unlock()
+func (m *Manager) Create(shell string, cols, rows int) (*Session, error) {
+	resolved, ok := resolveShell(shell)
+	if !ok {
+		return nil, fmt.Errorf("unknown shell %q", shell)
+	}
 
-	s, err := newSession(id, title, m.dir, cols, rows)
+	// Held across the whole creation so two concurrent creates cannot pick the
+	// same index. handleExit may block on this lock meanwhile, which is fine.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	index := m.freeIndex(shellName(resolved))
+	s, err := newSession(uuid.NewString(), resolved, m.dir, index, cols, rows, m.handleExit)
+
 	if err != nil {
 		return nil, err
 	}
-	s.onExit = m.handleExit
 
-	m.mu.Lock()
-	m.sessions[id] = s
-	m.order = append(m.order, id)
-	m.mu.Unlock()
+	m.sessions[s.ID()] = s
+	m.order = append(m.order, s.ID())
 
 	return s, nil
+}
+
+// freeIndex returns the lowest index not in use by a live session of the same
+// shell, so closing a terminal frees its number for the next one.
+func (m *Manager) freeIndex(name string) int {
+	used := map[int]bool{}
+	for _, s := range m.sessions {
+		if shellName(s.Shell()) == name {
+			used[s.index] = true
+		}
+	}
+	for i := 1; ; i++ {
+		if !used[i] {
+			return i
+		}
+	}
 }
 
 func (m *Manager) Get(id string) *Session {
