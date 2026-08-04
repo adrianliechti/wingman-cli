@@ -1,7 +1,6 @@
 package terminal
 
 import (
-	"bufio"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,7 +14,11 @@ type Shell struct {
 	Name string `json:"name"`
 }
 
-var unixCandidates = []string{"zsh", "bash", "fish", "nu", "ksh", "dash", "sh"}
+// Shells worth offering next to the user's own $SHELL. /etc/shells is
+// deliberately not used as a source: it lists login shells, which on many
+// systems includes entries that make for a broken terminal (git-shell, rbash,
+// screen) alongside ones nobody picks on purpose (csh, dash, ksh).
+var unixCandidates = []string{"zsh", "bash", "fish", "pwsh", "nu"}
 
 var windowsCandidates = []string{"pwsh.exe", "powershell.exe", "cmd.exe"}
 
@@ -35,30 +38,24 @@ func Shells() []Shell {
 		if abs, err := filepath.Abs(resolved); err == nil {
 			resolved = abs
 		}
-		key := resolved
-		if runtime.GOOS == "windows" {
-			key = strings.ToLower(key)
-		}
-		if seen[key] {
+		// Deduplicated by name as well as by path: a second "bash" from another
+		// prefix is indistinguishable in the picker, and $SHELL is listed first
+		// so its variant is the one that wins.
+		name := shellName(resolved)
+		if seen[resolved] || seen[name] {
 			return
 		}
-		seen[key] = true
-		out = append(out, Shell{ID: resolved, Name: shellName(resolved)})
+		seen[resolved], seen[name] = true, true
+		out = append(out, Shell{ID: resolved, Name: name})
 	}
 
 	add(DefaultShell())
 
+	candidates := unixCandidates
 	if runtime.GOOS == "windows" {
-		for _, c := range windowsCandidates {
-			add(c)
-		}
-		return out
+		candidates = windowsCandidates
 	}
-
-	for _, path := range etcShells() {
-		add(path)
-	}
-	for _, c := range unixCandidates {
+	for _, c := range candidates {
 		add(c)
 	}
 	return out
@@ -104,23 +101,4 @@ func shellName(path string) string {
 		name = strings.TrimSuffix(strings.ToLower(name), ".exe")
 	}
 	return name
-}
-
-func etcShells() []string {
-	f, err := os.Open("/etc/shells")
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-
-	out := []string{}
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		out = append(out, line)
-	}
-	return out
 }

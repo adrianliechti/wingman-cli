@@ -7,9 +7,10 @@ interface Props {
 	id: string;
 	active: boolean;
 	onExit: (id: string) => void;
+	onTitle: (id: string, title: string) => void;
 }
 
-export function TerminalView({ id, active, onExit }: Props) {
+export function TerminalView({ id, active, onExit, onTitle }: Props) {
 	const hostRef = useRef<HTMLDivElement>(null);
 	const termRef = useRef<Terminal | null>(null);
 	const fitRef = useRef<FitAddon | null>(null);
@@ -17,6 +18,8 @@ export function TerminalView({ id, active, onExit }: Props) {
 
 	const exitRef = useRef(onExit);
 	exitRef.current = onExit;
+	const titleRef = useRef(onTitle);
+	titleRef.current = onTitle;
 
 	useEffect(() => {
 		const host = hostRef.current;
@@ -71,6 +74,11 @@ export function TerminalView({ id, active, onExit }: Props) {
 		const resizeSub = term.onResize(({ cols, rows }) =>
 			send({ type: "resize", cols, rows }),
 		);
+		// OSC 0/2 — shells and full-screen apps name their window this way. The
+		// scrollback replay re-emits the last one, so a reattach keeps the name.
+		const titleSub = term.onTitleChange((title) =>
+			titleRef.current(id, title.trim().slice(0, 80)),
+		);
 
 		const observer = new ResizeObserver(() => {
 			if (host.clientWidth === 0 || host.clientHeight === 0) return;
@@ -82,6 +90,7 @@ export function TerminalView({ id, active, onExit }: Props) {
 			observer.disconnect();
 			dataSub.dispose();
 			resizeSub.dispose();
+			titleSub.dispose();
 			ws.onmessage = null;
 			ws.close();
 			term.dispose();

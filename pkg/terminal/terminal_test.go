@@ -112,6 +112,14 @@ func TestShellsIncludeDefault(t *testing.T) {
 		t.Fatalf("default shell = %+v", shells[0])
 	}
 
+	names := map[string]bool{}
+	for _, s := range shells {
+		if names[s.Name] {
+			t.Fatalf("duplicate shell name %q in %+v", s.Name, shells)
+		}
+		names[s.Name] = true
+	}
+
 	if _, ok := resolveShell("definitely-not-a-shell"); ok {
 		t.Fatal("unknown shell accepted")
 	}
@@ -121,39 +129,15 @@ func TestShellsIncludeDefault(t *testing.T) {
 	}
 }
 
-func TestTitlesRecycleIndexes(t *testing.T) {
+func TestTitleDefaultsToShellName(t *testing.T) {
 	m := NewManager(t.TempDir())
 	defer m.Close()
 
-	first, err := m.Create("", 80, 24)
+	s, err := m.Create("", 80, 24)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := m.Create("", 80, 24)
-	if err != nil {
-		t.Fatal(err)
-	}
-	name := shellName(first.Shell())
-	if first.Title() != name || second.Title() != name+" 2" {
-		t.Fatalf("titles = %q, %q", first.Title(), second.Title())
-	}
-
-	m.Remove(first.ID())
-	third, err := m.Create("", 80, 24)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if third.Title() != name {
-		t.Fatalf("title after close = %q, want %q", third.Title(), name)
-	}
-
-	m.Remove(second.ID())
-	m.Remove(third.ID())
-	fourth, err := m.Create("", 80, 24)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fourth.Title() != name {
-		t.Fatalf("title after closing all = %q, want %q", fourth.Title(), name)
+	if want := shellName(s.Shell()); s.Title() != want {
+		t.Fatalf("title = %q, want %q", s.Title(), want)
 	}
 }

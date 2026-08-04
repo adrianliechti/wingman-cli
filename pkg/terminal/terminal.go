@@ -2,7 +2,6 @@ package terminal
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -26,7 +25,6 @@ type Session struct {
 	id    string
 	title string
 	shell string
-	index int
 
 	cmd *exec.Cmd
 	pty *os.File
@@ -46,7 +44,7 @@ func Supported() bool {
 	return ptySupported
 }
 
-func newSession(id, shell, dir string, index, cols, rows int, onExit func(*Session)) (*Session, error) {
+func newSession(id, shell, dir string, cols, rows int, onExit func(*Session)) (*Session, error) {
 	if !ptySupported {
 		return nil, ErrUnsupported
 	}
@@ -64,9 +62,8 @@ func newSession(id, shell, dir string, index, cols, rows int, onExit func(*Sessi
 
 	s := &Session{
 		id:    id,
-		title: sessionTitle(shellName(shell), index),
+		title: shellName(shell),
 		shell: shell,
-		index: index,
 
 		cmd: cmd,
 		pty: f,
@@ -82,13 +79,6 @@ func newSession(id, shell, dir string, index, cols, rows int, onExit func(*Sessi
 	go s.read()
 
 	return s, nil
-}
-
-func sessionTitle(name string, index int) string {
-	if index <= 1 {
-		return name
-	}
-	return fmt.Sprintf("%s %d", name, index)
 }
 
 func (s *Session) ID() string {

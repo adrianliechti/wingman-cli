@@ -21,6 +21,7 @@ interface Props {
 export function TerminalPanel({ onClose, subscribe }: Props) {
 	const [entries, setEntries] = useState<TerminalEntry[]>([]);
 	const [shells, setShells] = useState<ShellEntry[]>([]);
+	const [titles, setTitles] = useState<Record<string, string>>({});
 	const [activeId, setActiveId] = useState("");
 	const [error, setError] = useState<string | null>(null);
 
@@ -72,6 +73,12 @@ export function TerminalPanel({ onClose, subscribe }: Props) {
 		}
 	}, []);
 
+	const setTitle = useCallback((id: string, title: string) => {
+		setTitles((prev) =>
+			!title || prev[id] === title ? prev : { ...prev, [id]: title },
+		);
+	}, []);
+
 	const close = useCallback(
 		async (id: string) => {
 			try {
@@ -110,6 +117,7 @@ export function TerminalPanel({ onClose, subscribe }: Props) {
 				<div className="flex-1 min-w-0 flex items-stretch overflow-x-auto">
 					{entries.map((entry) => {
 						const active = entry.id === activeId;
+						const label = titles[entry.id] || entry.title;
 						return (
 							<div
 								key={entry.id}
@@ -117,6 +125,7 @@ export function TerminalPanel({ onClose, subscribe }: Props) {
 									active ? "text-fg" : "text-fg-dim hover:text-fg-muted"
 								}`}
 								onClick={() => setActiveId(entry.id)}
+								title={label}
 							>
 								{active && (
 									<span className="absolute bottom-0 left-2 right-2 h-[2px] bg-accent rounded-full" />
@@ -138,7 +147,7 @@ export function TerminalPanel({ onClose, subscribe }: Props) {
 										<X size={11} />
 									</button>
 								</span>
-								<span className="truncate max-w-[160px]">{entry.title}</span>
+								<span className="truncate max-w-[160px]">{label}</span>
 							</div>
 						);
 					})}
@@ -171,6 +180,7 @@ export function TerminalPanel({ onClose, subscribe }: Props) {
 							id={entry.id}
 							active={entry.id === activeId}
 							onExit={() => void reload()}
+							onTitle={setTitle}
 						/>
 					</div>
 				))}

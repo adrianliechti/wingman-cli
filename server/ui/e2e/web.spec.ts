@@ -103,6 +103,10 @@ test("runs a command in the terminal panel", async ({ page }) => {
 		{ timeout: 15_000 },
 	);
 
+	await page.keyboard.type("printf '\\033]0;e2e-title\\007'; sleep 3");
+	await page.keyboard.press("Enter");
+	await expect(page.getByTitle("e2e-title")).toBeVisible({ timeout: 15_000 });
+
 	const shellMenu = page.getByTitle("New terminal with another shell");
 	if (await shellMenu.count()) {
 		await shellMenu.click();

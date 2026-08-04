@@ -36,13 +36,12 @@ func (m *Manager) Create(shell string, cols, rows int) (*Session, error) {
 		return nil, fmt.Errorf("unknown shell %q", shell)
 	}
 
-	// Held across the whole creation so two concurrent creates cannot pick the
-	// same index. handleExit may block on this lock meanwhile, which is fine.
+	// Held across the whole creation so a shell that exits immediately cannot run
+	// handleExit before the session is registered.
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	index := m.freeIndex(shellName(resolved))
-	s, err := newSession(uuid.NewString(), resolved, m.dir, index, cols, rows, m.handleExit)
+	s, err := newSession(uuid.NewString(), resolved, m.dir, cols, rows, m.handleExit)
 
 	if err != nil {
 		return nil, err
@@ -52,22 +51,6 @@ func (m *Manager) Create(shell string, cols, rows int) (*Session, error) {
 	m.order = append(m.order, s.ID())
 
 	return s, nil
-}
-
-// freeIndex returns the lowest index not in use by a live session of the same
-// shell, so closing a terminal frees its number for the next one.
-func (m *Manager) freeIndex(name string) int {
-	used := map[int]bool{}
-	for _, s := range m.sessions {
-		if shellName(s.Shell()) == name {
-			used[s.index] = true
-		}
-	}
-	for i := 1; ; i++ {
-		if !used[i] {
-			return i
-		}
-	}
 }
 
 func (m *Manager) Get(id string) *Session {
