@@ -149,7 +149,7 @@ func emitToolUseCall(ctx context.Context, conn *acp.AgentSideConnection, sid acp
 	return tracker.emit(b.ID, start, refine)
 }
 
-func emitToolResults(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, raw json.RawMessage, cache toolUseCache, plan *taskPlan, parentToolUseID string) error {
+func emitToolResults(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, raw json.RawMessage, cache toolUseCache, tracker *toolCallTracker, plan *taskPlan, parentToolUseID string) error {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -182,6 +182,13 @@ func emitToolResults(ctx context.Context, conn *acp.AgentSideConnection, sid acp
 			}
 		}
 		if isPlanTool(name) {
+			continue
+		}
+		// A cancelled turn can drop the assistant message that announced this
+		// tool call while a late result still arrives. Never reference an id the
+		// ACP client has not seen, and remove completed ids so late progress
+		// heartbeats cannot reopen them.
+		if tracker != nil && !tracker.complete(b.ToolUseID) {
 			continue
 		}
 		status := acp.ToolCallStatusCompleted

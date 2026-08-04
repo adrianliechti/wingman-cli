@@ -101,9 +101,10 @@ func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, cc
 			app.handleNotification(method)
 			disp.handle(method, params)
 		},
-		onExecApproval: app.handleExec,
-		onFileApproval: app.handleFile,
-		onElicitation:  app.handleElicitation,
+		onExecApproval:        app.handleExec,
+		onFileApproval:        app.handleFile,
+		onPermissionsApproval: app.handlePermissions,
+		onElicitation:         app.handleElicitation,
 	})
 	defer cc.setThreadHandlers(threadID, nil)
 
@@ -144,9 +145,6 @@ func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, cc
 	case tc := <-disp.done:
 		if err := disp.getFailure(); err != nil {
 			return "", nil, err
-		}
-		if tc.Turn.Status == "interrupted" {
-			disp.update(acp.UpdateAgentMessageText("*Conversation interrupted*"))
 		}
 		return stopReasonFor(tc.Turn.Status), disp.getUsage(), nil
 	}
@@ -277,7 +275,7 @@ func replayItem(send func(acp.SessionUpdate), raw json.RawMessage, toolOutputs m
 		send(acp.StartToolCall(acp.ToolCallId(probe.ID), title,
 			acp.WithStartKind(acp.ToolKindExecute),
 			acp.WithStartStatus(toolStatusFor(it.Status)),
-			acp.WithStartRawInput(map[string]any{"command": it.Command, "cwd": it.Cwd}),
+			acp.WithStartRawInput(map[string]any{"command": title, "cwd": it.Cwd}),
 		))
 		replayToolText(send, probe.ID, it.Status, toolOutputs)
 

@@ -34,9 +34,15 @@ func (a *App) builtinCommands() []slashCommand {
 		{Name: "/plan", Desc: "Enter planning mode", Run: (*App).enterPlanMode},
 		{Name: "/agent", Desc: "Return to execution mode", Run: (*App).exitPlanMode},
 		{Name: "/problems", Desc: "Show problems", Run: (*App).showDiagnosticsView},
-		{Name: "/context", Desc: "Show context window usage", Run: (*App).showContextStats},
-		{Name: "/tasks", Desc: "Show background agents", Busy: true, Run: (*App).showTasks},
-		{Name: "/recap", Desc: "Summarize the session so far", Run: (*App).showRecap},
+	}
+	if _, ok := a.agent.(contextStatsProvider); ok {
+		cmds = append(cmds, slashCommand{Name: "/context", Desc: "Show context window usage", Run: (*App).showContextStats})
+	}
+	if _, ok := a.agent.(taskProvider); ok {
+		cmds = append(cmds, slashCommand{Name: "/tasks", Desc: "Show background agents", Busy: true, Run: (*App).showTasks})
+	}
+	if _, ok := a.agent.(recapProvider); ok {
+		cmds = append(cmds, slashCommand{Name: "/recap", Desc: "Summarize the session so far", Run: (*App).showRecap})
 	}
 
 	if a.agent.Workspace().HasRewind() {
@@ -328,7 +334,12 @@ func (a *App) showHelp() {
 func (a *App) showTasks() {
 	t := theme.Default
 
-	reg := a.agent.Tasks(a.sessionID)
+	provider, ok := a.agent.(taskProvider)
+	if !ok {
+		a.appendChat(cellNotice("Background agents are unavailable for this agent", t.Yellow, a.width()))
+		return
+	}
+	reg := provider.Tasks(a.sessionID)
 	if reg == nil {
 		a.appendChat(cellNotice("No background agents in this session", t.Yellow, a.width()))
 		return

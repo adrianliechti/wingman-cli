@@ -86,6 +86,7 @@ type turn struct {
 
 	mu                sync.Mutex
 	emitted           []agent.Message
+	lastContentKey    string
 	ignoreUserUpdates bool
 }
 
@@ -815,13 +816,17 @@ func (a *Agent) SessionUpdate(_ context.Context, n acpsdk.SessionNotification) e
 }
 
 func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpdate) (agent.Message, bool) {
-	emit := func(role agent.MessageRole, c agent.Content) agent.Message {
+	emit := func(role agent.MessageRole, c agent.Content, contentKey string) agent.Message {
 		t.mu.Lock()
 		if n := len(t.emitted); n > 0 && t.emitted[n-1].Role == role {
-			t.emitted[n-1].Content = append(t.emitted[n-1].Content, c)
+			contents := t.emitted[n-1].Content
+			if len(contents) == 0 || t.lastContentKey != contentKey || !mergeACPContent(&contents[len(contents)-1], c) {
+				t.emitted[n-1].Content = append(contents, c)
+			}
 		} else {
 			t.emitted = append(t.emitted, agent.Message{Role: role, Content: []agent.Content{c}})
 		}
+		t.lastContentKey = contentKey
 		t.mu.Unlock()
 		return agent.Message{Role: role, Content: []agent.Content{c}}
 	}
@@ -835,14 +840,22 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 		if text == "" {
 			return agent.Message{}, false
 		}
-		return emit(agent.RoleUser, agent.Content{Text: text}), true
+		id := ""
+		if u.UserMessageChunk.MessageId != nil {
+			id = *u.UserMessageChunk.MessageId
+		}
+		return emit(agent.RoleUser, agent.Content{Text: text}, "user:"+id), true
 
 	case u.AgentMessageChunk != nil:
 		text := blockText(u.AgentMessageChunk.Content)
 		if text == "" {
 			return agent.Message{}, false
 		}
-		return emit(agent.RoleAssistant, agent.Content{Text: text}), true
+		id := ""
+		if u.AgentMessageChunk.MessageId != nil {
+			id = *u.AgentMessageChunk.MessageId
+		}
+		return emit(agent.RoleAssistant, agent.Content{Text: text}, "agent:"+id), true
 
 	case u.AgentThoughtChunk != nil:
 		text := blockText(u.AgentThoughtChunk.Content)
@@ -853,13 +866,23 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 		if u.AgentThoughtChunk.MessageId != nil {
 			id = *u.AgentThoughtChunk.MessageId
 		}
-		return emit(agent.RoleAssistant, agent.Content{Reasoning: &agent.Reasoning{ID: id, Summary: text}}), true
+		return emit(agent.RoleAssistant, agent.Content{Reasoning: &agent.Reasoning{ID: id, Summary: text}}, "thought:"+id), true
 
 	case u.ToolCall != nil:
 		tc := u.ToolCall
 		args := rawValueToString(tc.RawInput)
 
 		name := tc.Title
+		// ACP titles are display strings, not stable tool identifiers. Preserve
+		// specialized tools such as MCP calls, but normalize command-bearing
+		// execute calls so Wingman's terminal renderer can show `$ <command>`.
+		if tc.Kind == acpsdk.ToolKindExecute {
+			if input, ok := tc.RawInput.(map[string]any); ok {
+				if command, _ := input["command"].(string); command != "" {
+					name = "shell"
+				}
+			}
+		}
 		if name == "" {
 			name = string(tc.Kind)
 		}
@@ -870,7 +893,7 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 			ID:   string(tc.ToolCallId),
 			Name: name,
 			Args: args,
-		}}), true
+		}}, ""), true
 
 	case u.ToolCallUpdate != nil:
 		tu := u.ToolCallUpdate
@@ -897,7 +920,7 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 			Name:    prior.name,
 			Args:    prior.args,
 			Content: body,
-		}}), true
+		}}, ""), true
 
 	case u.UsageUpdate != nil:
 		sess.mu.Lock()
@@ -905,6 +928,21 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 		sess.mu.Unlock()
 	}
 	return agent.Message{}, false
+}
+
+// mergeACPContent keeps transport chunks as deltas for the live stream while
+// storing them as one logical content block for transcript rendering. Without
+// this, a tokenized Codex response becomes one finalized TUI cell per token.
+func mergeACPContent(dst *agent.Content, src agent.Content) bool {
+	if dst.Text != "" && src.Text != "" {
+		dst.Text += src.Text
+		return true
+	}
+	if dst.Reasoning != nil && src.Reasoning != nil && dst.Reasoning.ID == src.Reasoning.ID {
+		dst.Reasoning.Summary += src.Reasoning.Summary
+		return true
+	}
+	return false
 }
 
 func (a *Agent) SetUI(ui code.UI) {
@@ -936,24 +974,35 @@ func (a *Agent) RequestPermission(ctx context.Context, p acpsdk.RequestPermissio
 
 	ui := a.currentUI()
 	if ui == nil {
-		return selected(p.Options[0].OptionId), nil
+		if opt := pickPermissionOption(p.Options, false); opt != nil {
+			return selected(opt.OptionId), nil
+		}
+		return cancelled, nil
 	}
 
 	// Preferred: a strict single-choice elicitation so the user can pick any
 	// of the offered options (answers, always-allow scopes, selects) instead
 	// of a yes/no collapse.
 	names := make([]string, len(p.Options))
+	descriptions := make([]string, len(p.Options))
+	hasDescription := false
 	for i, o := range p.Options {
 		names[i] = o.Name
+		descriptions[i] = permissionOptionDescription(o.Meta)
+		hasDescription = hasDescription || descriptions[i] != ""
+	}
+	if !hasDescription {
+		descriptions = nil
 	}
 	res, err := ui.Elicit(code.WithSessionID(ctx, string(p.SessionId)), tool.ElicitRequest{
 		Message: permissionMessage(p),
 		Fields: []tool.ElicitField{{
-			Name:     "choice",
-			Type:     "string",
-			Required: true,
-			Enum:     names,
-			Strict:   true,
+			Name:             "choice",
+			Type:             "string",
+			Required:         true,
+			Enum:             names,
+			EnumDescriptions: descriptions,
+			Strict:           true,
 		}},
 	})
 	if err == nil {
@@ -1071,6 +1120,14 @@ func elicitFieldsFromSchema(schema acpsdk.UnstableElicitationSchema) []tool.Elic
 		f.Title, _ = prop["title"].(string)
 		f.Description, _ = prop["description"].(string)
 		f.Default = prop["default"]
+		if meta, _ := prop["_meta"].(map[string]any); meta != nil {
+			if marker, _ := meta["_askUserQuestionCustomAnswer"].(map[string]any); marker != nil {
+				isCustom, _ := marker["isCustomAnswer"].(bool)
+				if isCustom {
+					f.CustomAnswerFor, _ = marker["questionId"].(string)
+				}
+			}
+		}
 
 		typ, _ := prop["type"].(string)
 		options := prop["oneOf"]
@@ -1148,6 +1205,35 @@ func pickPermissionOption(opts []acpsdk.PermissionOption, allow bool) *acpsdk.Pe
 		}
 	}
 	return nil
+}
+
+func permissionOptionDescription(meta map[string]any) string {
+	permission, _ := meta["permission"].(map[string]any)
+	if permission == nil {
+		return ""
+	}
+	var changes []any
+	switch value := permission["changes"].(type) {
+	case []any:
+		changes = value
+	case []map[string]any:
+		changes = make([]any, len(value))
+		for i := range value {
+			changes[i] = value[i]
+		}
+	}
+	seen := map[string]bool{}
+	var descriptions []string
+	for _, raw := range changes {
+		change, _ := raw.(map[string]any)
+		description, _ := change["description"].(string)
+		description = strings.TrimSpace(description)
+		if description != "" && !seen[description] {
+			seen[description] = true
+			descriptions = append(descriptions, description)
+		}
+	}
+	return strings.Join(descriptions, "; ")
 }
 
 func permissionMessage(p acpsdk.RequestPermissionRequest) string {

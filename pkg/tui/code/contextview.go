@@ -11,10 +11,16 @@ import (
 )
 
 func (a *App) showContextStats() {
+	provider, supported := a.agent.(contextStatsProvider)
+	if !supported {
+		a.appendChat(cellNotice("Context statistics are unavailable for this agent", theme.Default.Yellow, a.width()))
+		return
+	}
+
 	id := a.sessionID
 
 	go func() {
-		stats, ok := a.agent.ContextStats(id)
+		stats, ok := provider.ContextStats(id)
 
 		a.post(func() {
 			if a.sessionID != id {

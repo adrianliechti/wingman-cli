@@ -14,7 +14,6 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/task"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
-	coder "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/tui"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/ansi"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/clipboard"
@@ -27,7 +26,7 @@ var _ code.UI = (*App)(nil)
 
 type App struct {
 	ctx   context.Context
-	agent *coder.Agent
+	agent code.Agent
 	term  *inline.Terminal
 
 	queue    chan func()
@@ -134,7 +133,7 @@ type chatAnnotation struct {
 	render        func(width int) []string
 }
 
-func New(ctx context.Context, coderAgent *coder.Agent, sessionID string) *App {
+func New(ctx context.Context, coderAgent code.Agent, sessionID string) *App {
 	saveExecutablePath()
 
 	hasMessages := sessionID != "" && len(coderAgent.Messages(sessionID)) > 0
@@ -159,6 +158,7 @@ func New(ctx context.Context, coderAgent *coder.Agent, sessionID string) *App {
 	}
 
 	a.turns = code.NewTurnManager(tool.WithProgressSink(ctx, a.onToolProgress), coderAgent, a.handleTurnEvent)
+	setAgentUI(coderAgent, a)
 
 	return a
 }
@@ -179,13 +179,6 @@ func (a *App) onToolProgress(callID, text string) {
 // WithTerminal replaces the terminal, used by tests.
 func (a *App) WithTerminal(t *inline.Terminal) {
 	a.term = t
-}
-
-func (a *App) SetSessionID(id string) {
-	a.sessionMu.Lock()
-	a.sessionID = id
-	a.sessionEpoch++
-	a.sessionMu.Unlock()
 }
 
 // activateSession changes the session and resets all state that belongs to
@@ -221,7 +214,11 @@ func (a *App) startTaskPump() {
 	}
 
 	sessionID := a.sessionID
-	reg := a.agent.Tasks(sessionID)
+	provider, ok := a.agent.(taskProvider)
+	if !ok {
+		return
+	}
+	reg := provider.Tasks(sessionID)
 	if reg == nil {
 		return
 	}
@@ -371,8 +368,8 @@ func (a *App) setFooterHint(hint string) {
 }
 
 func (a *App) runningTaskCount() int {
-	if a.agent != nil {
-		return a.agent.RunningTaskCount()
+	if provider, ok := a.agent.(taskProvider); ok {
+		return provider.RunningTaskCount()
 	}
 	return 0
 }
@@ -437,7 +434,13 @@ func (a *App) confirmQuit() bool {
 }
 
 func (a *App) saveSession() {
-	_ = a.agent.Save(a.sessionID)
+	a.saveSessionID(a.sessionID)
+}
+
+func (a *App) saveSessionID(sessionID string) {
+	if saver, ok := a.agent.(sessionSaver); ok {
+		_ = saver.Save(sessionID)
+	}
 }
 
 func (a *App) Run() error {
@@ -449,7 +452,9 @@ func (a *App) Run() error {
 	a.term.SetTitle(a.terminalTitle())
 	a.term.EnableMouse(true)
 
-	a.agent.FetchModels(a.ctx)
+	if fetcher, ok := a.agent.(modelFetcher); ok {
+		fetcher.FetchModels(a.ctx)
+	}
 
 	a.setPhase(PhasePreparing)
 
@@ -553,7 +558,11 @@ func (a *App) shutdown() {
 		} else {
 			fmt.Fprintf(os.Stderr, "  Tokens: ↑%s ↓%s\n", tui.FormatTokens(usage.InputTokens), tui.FormatTokens(usage.OutputTokens))
 		}
-		fmt.Fprintf(os.Stderr, "  Resume: wingman --resume %s\n", a.sessionID)
+		if name := a.agent.Name(); name != "" && name != code.BuiltinAgentName {
+			fmt.Fprintf(os.Stderr, "  Resume: wingman --agent %s --resume %s\n", name, a.sessionID)
+		} else {
+			fmt.Fprintf(os.Stderr, "  Resume: wingman --resume %s\n", a.sessionID)
+		}
 		fmt.Fprintf(os.Stderr, "\n")
 	}
 }
@@ -1123,7 +1132,7 @@ func (a *App) resumeSession() {
 		return cellNotice(banner, t.Green, width)
 	})
 
-	if len(a.agent.Messages(a.sessionID)) > 0 {
+	if _, ok := a.agent.(recapProvider); ok && len(a.agent.Messages(a.sessionID)) > 0 {
 		a.showRecap()
 	}
 }
@@ -1131,6 +1140,12 @@ func (a *App) resumeSession() {
 // showRecap asynchronously summarizes the session and posts the result as a
 // notice-style cell; the session may keep working meanwhile.
 func (a *App) showRecap() {
+	provider, ok := a.agent.(recapProvider)
+	if !ok {
+		a.appendChat(cellNotice("Recap is unavailable for this agent", theme.Default.Yellow, a.width()))
+		return
+	}
+
 	id := a.sessionID
 
 	if len(a.agent.Messages(id)) == 0 {
@@ -1141,7 +1156,7 @@ func (a *App) showRecap() {
 	a.appendChat(cellNotice("Generating recap…", theme.Default.BrBlack, a.width()))
 
 	go func() {
-		recap, err := a.agent.Recap(a.ctx, id)
+		recap, err := provider.Recap(a.ctx, id)
 
 		a.post(func() {
 			if a.sessionID != id {
@@ -1236,7 +1251,11 @@ func (a *App) showError(title string, err error) {
 }
 
 func (a *App) isToolHidden(name string) bool {
-	for _, t := range a.agent.Tools(a.sessionID) {
+	provider, ok := a.agent.(toolProvider)
+	if !ok {
+		return false
+	}
+	for _, t := range provider.Tools(a.sessionID) {
 		if t.Name == name {
 			return t.Hidden
 		}

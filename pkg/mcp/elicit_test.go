@@ -22,6 +22,9 @@ func TestConvertElicitParams(t *testing.T) {
 				"note": map[string]any{
 					"type":    "string",
 					"default": "none",
+					"_meta": map[string]any{"_askUserQuestionCustomAnswer": map[string]any{
+						"questionId": "limit", "isCustomAnswer": true,
+					}},
 				},
 			},
 			"required": []any{"limit"},
@@ -47,7 +50,7 @@ func TestConvertElicitParams(t *testing.T) {
 	}
 
 	note := req.Fields[1]
-	if note.Strict || note.Default != "none" {
+	if note.Strict || note.Default != "none" || note.CustomAnswerFor != "limit" {
 		t.Fatalf("note field = %+v", note)
 	}
 }

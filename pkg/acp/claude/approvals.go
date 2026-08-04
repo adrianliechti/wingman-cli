@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,14 +42,40 @@ func (t *toolCallTracker) emit(id string, start, refine func() error) error {
 		return refine()
 	}
 	t.emitted[id] = true
-	return start()
+	if err := start(); err != nil {
+		delete(t.emitted, id)
+		return err
+	}
+	return nil
+}
+
+func (t *toolCallTracker) has(id string) bool {
+	if t == nil || id == "" {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.emitted[id]
+}
+
+func (t *toolCallTracker) complete(id string) bool {
+	if t == nil || id == "" {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.emitted[id] {
+		return false
+	}
+	delete(t.emitted, id)
+	return true
 }
 
 func permissionOptions() []acp.PermissionOption {
 	return []acp.PermissionOption{
 		{OptionId: optionAllowOnce, Name: "Allow Once", Kind: acp.PermissionOptionKindAllowOnce},
-		{OptionId: optionAllowAlways, Name: "Allow for Session", Kind: acp.PermissionOptionKindAllowAlways},
-		{OptionId: optionRejectOnce, Name: "Reject", Kind: acp.PermissionOptionKindRejectOnce},
+		{OptionId: optionAllowAlways, Name: "Always Allow", Kind: acp.PermissionOptionKindAllowAlways},
+		{OptionId: optionRejectOnce, Name: "Deny", Kind: acp.PermissionOptionKindRejectOnce},
 	}
 }
 
@@ -124,10 +151,16 @@ func (a *approver) handle(req controlRequest) {
 		tc.Content = []acp.ToolCallContent{acp.ToolContent(acp.TextBlock(req.Request.Description))}
 	}
 
+	options := permissionOptions()
+	for i := range options {
+		if options[i].OptionId == optionAllowAlways {
+			options[i].Meta = map[string]any{"permission": permissionMetadataForAlwaysAllow(req.Request)}
+		}
+	}
 	resp, err := a.conn.RequestPermission(a.ctx, acp.RequestPermissionRequest{
 		SessionId: a.sid,
 		ToolCall:  tc,
-		Options:   permissionOptions(),
+		Options:   options,
 	})
 	allow, always := false, false
 	if err == nil && resp.Outcome.Cancelled == nil && resp.Outcome.Selected != nil {
@@ -173,6 +206,116 @@ func alwaysAllowPermissions(req controlRequestBody) any {
 		"behavior":    "allow",
 		"destination": "session",
 	}}
+}
+
+func permissionMetadataForAlwaysAllow(req controlRequestBody) map[string]any {
+	updates, _ := alwaysAllowPermissions(req).([]any)
+	changes := make([]any, 0, len(updates))
+	for _, raw := range updates {
+		update, _ := raw.(map[string]any)
+		if update == nil {
+			continue
+		}
+		typ, _ := update["type"].(string)
+		destination, _ := update["destination"].(string)
+		lifetime := claudePermissionLifetime(destination)
+		switch typ {
+		case "addRules", "removeRules", "replaceRules":
+			operation := map[string]string{"addRules": "add", "removeRules": "remove", "replaceRules": "replace"}[typ]
+			behavior, _ := update["behavior"].(string)
+			var targets []any
+			var rendered []string
+			for _, rawRule := range anySlice(update["rules"]) {
+				rule, _ := rawRule.(map[string]any)
+				toolName, _ := rule["toolName"].(string)
+				if toolName == "" {
+					continue
+				}
+				target := map[string]any{"type": "tool", "toolName": toolName}
+				if ruleContent, _ := rule["ruleContent"].(string); ruleContent != "" {
+					target["matcher"] = map[string]any{"type": "provider_rule", "provider": "claudeCode", "value": ruleContent}
+					rendered = append(rendered, fmt.Sprintf("%s calls matching %s", toolName, ruleContent))
+				} else {
+					rendered = append(rendered, "all "+toolName+" calls")
+				}
+				targets = append(targets, target)
+			}
+			if len(targets) == 0 {
+				continue
+			}
+			verb := "Allow"
+			if operation == "remove" {
+				verb = "Remove " + behavior + " rules for"
+			} else if operation == "replace" {
+				verb = "Replace " + behavior + " rules with"
+			} else if behavior == "deny" {
+				verb = "Deny"
+			} else if behavior == "ask" {
+				verb = "Ask before"
+			}
+			changes = append(changes, map[string]any{
+				"type": "policy_rule", "operation": operation, "ruleBehavior": behavior,
+				"description": verb + " " + strings.Join(rendered, ", "), "lifetime": lifetime, "targets": targets,
+			})
+		case "addDirectories", "removeDirectories":
+			operation := "add"
+			verb := "Allow filesystem access under "
+			if typ == "removeDirectories" {
+				operation = "remove"
+				verb = "Remove additional filesystem access under "
+			}
+			paths := stringValues(update["directories"])
+			var targets []any
+			for _, path := range paths {
+				targets = append(targets, map[string]any{"type": "filesystem", "matcher": map[string]any{"type": "directory", "path": path}})
+			}
+			if len(paths) > 0 {
+				changes = append(changes, map[string]any{
+					"type": "policy_rule", "operation": operation, "ruleBehavior": "allow",
+					"description": verb + strings.Join(paths, ", "), "lifetime": lifetime, "targets": targets,
+				})
+			}
+		case "setMode":
+			mode, _ := update["mode"].(string)
+			changes = append(changes, map[string]any{
+				"type": "permission_mode", "operation": "set", "provider": "claudeCode", "mode": mode,
+				"description": "Set Claude Code permission mode to " + mode, "lifetime": lifetime,
+			})
+		}
+	}
+	return map[string]any{"version": 1, "changes": changes}
+}
+
+func claudePermissionLifetime(destination string) map[string]any {
+	switch destination {
+	case "session":
+		return map[string]any{"scope": "session"}
+	case "cliArg":
+		return map[string]any{"scope": "process", "storage": "cli_argument"}
+	case "userSettings":
+		return map[string]any{"scope": "persistent", "storage": "user"}
+	case "projectSettings":
+		return map[string]any{"scope": "persistent", "storage": "project"}
+	case "localSettings":
+		return map[string]any{"scope": "persistent", "storage": "project_local"}
+	default:
+		return map[string]any{"scope": "unknown"}
+	}
+}
+
+func anySlice(value any) []any {
+	values, _ := value.([]any)
+	return values
+}
+
+func stringValues(value any) []string {
+	var out []string
+	for _, value := range anySlice(value) {
+		if s, ok := value.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 type askOption struct {
@@ -275,6 +418,12 @@ func askElicitationSchema(questions []askQuestion) acp.UnstableElicitationSchema
 			"type":        "string",
 			"title":       "Other",
 			"description": "Type your own answer instead of choosing an option above (optional).",
+			"_meta": map[string]any{
+				"_askUserQuestionCustomAnswer": map[string]any{
+					"questionId":     askFieldKey(i),
+					"isCustomAnswer": true,
+				},
+			},
 		}
 	}
 	return acp.UnstableElicitationSchema{Type: acp.UnstableElicitationSchemaTypeObject, Properties: props}

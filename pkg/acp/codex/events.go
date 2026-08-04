@@ -384,7 +384,7 @@ func (d *eventDispatcher) handleItemStarted(params json.RawMessage) {
 		d.update(acp.StartToolCall(acp.ToolCallId(id), title,
 			acp.WithStartKind(acp.ToolKindExecute),
 			acp.WithStartStatus(acp.ToolCallStatusInProgress),
-			acp.WithStartRawInput(map[string]any{"command": it.Command, "cwd": it.Cwd}),
+			acp.WithStartRawInput(map[string]any{"command": title, "cwd": it.Cwd}),
 		))
 
 	case "fileChange":
@@ -837,10 +837,18 @@ var shellPrefixRe = regexp.MustCompile(`^(?:/bin/)?(?:bash|zsh|sh)\s+(?:-[lc]+\s
 
 func stripShellPrefix(cmd string) string {
 	c := strings.TrimSpace(cmd)
+	c = trimOuterCommandQuotes(c)
 	c = shellPrefixRe.ReplaceAllString(c, "")
+	return trimOuterCommandQuotes(strings.TrimSpace(c))
+}
 
-	if len(c) >= 2 && strings.HasPrefix(c, "'") && strings.HasSuffix(c, "'") {
-		c = c[1 : len(c)-1]
+func trimOuterCommandQuotes(command string) string {
+	if len(command) < 2 {
+		return command
 	}
-	return c
+	first, last := command[0], command[len(command)-1]
+	if (first == '\'' || first == '"') && last == first {
+		return command[1 : len(command)-1]
+	}
+	return command
 }

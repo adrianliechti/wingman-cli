@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 )
 
 func fatal(err error) {
@@ -18,7 +19,7 @@ func main() {
 	defer cancel()
 
 	if len(os.Args) < 2 {
-		runTUI(ctx, "")
+		runTUI(ctx, tuiOptions{Agent: "wingman"})
 		return
 	}
 
@@ -43,23 +44,53 @@ func main() {
 	case "run":
 		runRun(ctx)
 		return
-	case "--resume":
-		sessionID := "latest"
-		if len(os.Args) > 2 {
-			sessionID = os.Args[2]
+	case "--resume", "--agent", "-a":
+		opts, err := parseTUIArgs(os.Args[1:])
+		if err != nil {
+			fatal(err)
 		}
-		runTUI(ctx, sessionID)
+		runTUI(ctx, opts)
 		return
 	}
 
-	runTUI(ctx, "")
+	runTUI(ctx, tuiOptions{Agent: "wingman"})
+}
+
+func parseTUIArgs(args []string) (tuiOptions, error) {
+	opts := tuiOptions{Agent: "wingman"}
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--agent", "-a":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				return tuiOptions{}, fmt.Errorf("%s requires wingman, codex, or claude", args[i])
+			}
+			i++
+			opts.Agent = args[i]
+			if opts.Agent != "wingman" && opts.Agent != "codex" && opts.Agent != "claude" {
+				return tuiOptions{}, fmt.Errorf("unknown agent %q (choose wingman, codex, or claude)", opts.Agent)
+			}
+
+		case "--resume":
+			opts.SessionID = "latest"
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				opts.SessionID = args[i]
+			}
+
+		default:
+			return tuiOptions{}, fmt.Errorf("unknown TUI option %q", args[i])
+		}
+	}
+
+	return opts, nil
 }
 
 func printHelp(w io.Writer) {
 	fmt.Fprint(w, `wingman — AI coding agent
 
 Usage:
-  wingman [--resume [id]]      Launch the agent TUI
+  wingman [--agent name] [--resume [id]]  Launch the agent TUI
   wingman server [-port N] [-no-browser]  Run the web UI server
   wingman acp [target]         Run as an ACP stdio server (wingman | claude | codex | pi)
   wingman claw [--plain]      Run the claw multi-agent runner (TUI; plain REPL when piped or with --plain)
@@ -70,7 +101,8 @@ Run targets:
   claude, claude-desktop, codex, copilot, gemini, goose, junie, opencode, pi
 
 Flags:
-  --resume [id]   Resume the latest (or specified) saved session
-  --help, -h      Show this help
+  --agent, -a name  Use wingman, codex, or claude (default: wingman)
+  --resume [id]    Resume that agent's latest (or specified) session
+  --help, -h       Show this help
 `)
 }

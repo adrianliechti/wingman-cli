@@ -16,10 +16,7 @@ import (
 )
 
 func binPath() string {
-	if path, err := extclaude.BinPath(); err == nil {
-		return path
-	}
-	return "claude"
+	return extclaude.BinPath()
 }
 
 type Options struct {

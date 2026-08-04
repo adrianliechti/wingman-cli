@@ -205,6 +205,48 @@ func TestTUIE2EConfirmAndElicitPopups(t *testing.T) {
 	}
 }
 
+func TestTUIE2ECustomAnswerCompanion(t *testing.T) {
+	model := tuiModelServer(t)
+	defer model.Close()
+	t.Setenv("WINGMAN_URL", model.URL)
+	t.Setenv("WINGMAN_MODEL", "gpt-5.4")
+	t.Setenv("WINGMAN_CALLER", "e2e")
+
+	h := newTUIE2EHarness(t)
+	elicited := make(chan tool.ElicitResult, 1)
+	go func() {
+		res, _ := h.app.Elicit(context.Background(), tool.ElicitRequest{
+			Message: "pick a color",
+			Fields: []tool.ElicitField{
+				{Name: "question_0", Enum: []string{"red", "green"}, Strict: true},
+				{Name: "question_0_custom", Title: "Other", Description: "Type your own answer.", CustomAnswerFor: "question_0"},
+			},
+		})
+		elicited <- res
+	}()
+
+	waitForTUI(t, func() bool { return strings.Contains(h.output.Text(), "pick a color") })
+	if _, err := io.WriteString(h.input, "\x1b[B\x1b[B\r"); err != nil {
+		t.Fatal(err)
+	}
+	waitForTUI(t, func() bool { return strings.Contains(h.output.Text(), "Type your own answer.") })
+	if _, err := io.WriteString(h.input, "purple\r"); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case res := <-elicited:
+		if res.Action != tool.ElicitAccept || res.Content["question_0_custom"] != "purple" {
+			t.Fatalf("custom elicit result = %+v", res)
+		}
+		if _, exists := res.Content["question_0"]; exists {
+			t.Fatalf("custom answer should replace the enum answer: %+v", res.Content)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("custom elicitation did not resolve")
+	}
+}
+
 type tuiSteeringModel struct {
 	requests atomic.Int32
 	release  chan struct{}

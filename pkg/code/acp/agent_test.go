@@ -112,6 +112,84 @@ func TestTranslateUpdateSuppressesPromptUserEcho(t *testing.T) {
 	}
 }
 
+func TestTranslateUpdateCoalescesACPTextChunksForTranscript(t *testing.T) {
+	a := &Agent{}
+	sess := &sessionState{}
+	turn := &turn{}
+
+	for _, chunk := range []string{"Hi", "!", " What", " are", " we", " working", " on", " today", "?"} {
+		if msg, ok := a.translateUpdate(sess, turn, acp.UpdateAgentMessageText(chunk)); !ok || msg.Content[0].Text != chunk {
+			t.Fatalf("live chunk %q = %+v, ok=%v", chunk, msg, ok)
+		}
+	}
+	if len(turn.emitted) != 1 || len(turn.emitted[0].Content) != 1 {
+		t.Fatalf("persisted messages = %+v", turn.emitted)
+	}
+	if got := turn.emitted[0].Content[0].Text; got != "Hi! What are we working on today?" {
+		t.Fatalf("persisted text = %q", got)
+	}
+}
+
+func TestTranslateUpdateKeepsDistinctACPMessageIDsSeparate(t *testing.T) {
+	a := &Agent{}
+	sess := &sessionState{}
+	turn := &turn{}
+
+	for _, item := range []struct{ id, text string }{{"message-1", "First"}, {"message-2", "Second"}} {
+		update := acp.UpdateAgentMessageText(item.text)
+		update.AgentMessageChunk.MessageId = &item.id
+		a.translateUpdate(sess, turn, update)
+	}
+	if len(turn.emitted) != 1 || len(turn.emitted[0].Content) != 2 {
+		t.Fatalf("distinct ACP messages were merged: %+v", turn.emitted)
+	}
+}
+
+func TestTranslateUpdateCoalescesReasoningChunksByID(t *testing.T) {
+	a := &Agent{}
+	sess := &sessionState{}
+	turn := &turn{}
+	id := "reasoning-1"
+	for _, chunk := range []string{"first", " second"} {
+		update := acp.UpdateAgentThoughtText(chunk)
+		update.AgentThoughtChunk.MessageId = &id
+		if _, ok := a.translateUpdate(sess, turn, update); !ok {
+			t.Fatalf("reasoning chunk %q was dropped", chunk)
+		}
+	}
+	if len(turn.emitted) != 1 || len(turn.emitted[0].Content) != 1 || turn.emitted[0].Content[0].Reasoning.Summary != "first second" {
+		t.Fatalf("persisted reasoning = %+v", turn.emitted)
+	}
+}
+
+func TestTranslateUpdateKeepsToolBoundaryBetweenTextRuns(t *testing.T) {
+	a := &Agent{}
+	sess := &sessionState{toolCalls: map[string]toolCall{}}
+	turn := &turn{}
+
+	for _, chunk := range []string{"Let me", " check."} {
+		a.translateUpdate(sess, turn, acp.UpdateAgentMessageText(chunk))
+	}
+	id := acp.ToolCallId("call-1")
+	a.translateUpdate(sess, turn, acp.StartToolCall(id, "shell"))
+	a.translateUpdate(sess, turn, acp.UpdateToolCall(
+		id,
+		acp.WithUpdateStatus(acp.ToolCallStatusCompleted),
+		acp.WithUpdateContent([]acp.ToolCallContent{acp.ToolContent(acp.TextBlock("done"))}),
+	))
+	for _, chunk := range []string{"It", " works."} {
+		a.translateUpdate(sess, turn, acp.UpdateAgentMessageText(chunk))
+	}
+
+	if len(turn.emitted) != 1 || len(turn.emitted[0].Content) != 4 {
+		t.Fatalf("persisted content = %+v", turn.emitted)
+	}
+	content := turn.emitted[0].Content
+	if content[0].Text != "Let me check." || content[1].ToolCall == nil || content[2].ToolResult == nil || content[3].Text != "It works." {
+		t.Fatalf("tool boundary was not preserved: %+v", content)
+	}
+}
+
 func TestTranslateUpdateReleasesCompletedToolCall(t *testing.T) {
 	a := &Agent{}
 	sess := &sessionState{toolCalls: map[string]toolCall{}}
@@ -137,6 +215,27 @@ func TestTranslateUpdateReleasesCompletedToolCall(t *testing.T) {
 	}
 	if len(sess.toolCalls) != 0 {
 		t.Fatalf("completed tool call was retained: %+v", sess.toolCalls)
+	}
+}
+
+func TestTranslateUpdateNormalizesCommandToolForTerminalRenderer(t *testing.T) {
+	a := &Agent{}
+	sess := &sessionState{toolCalls: map[string]toolCall{}}
+	turn := &turn{}
+	id := acp.ToolCallId("command-1")
+	update := acp.StartToolCall(
+		id,
+		"sed -n '1,20p' README.md",
+		acp.WithStartKind(acp.ToolKindExecute),
+		acp.WithStartRawInput(map[string]any{"command": "sed -n '1,20p' README.md", "cwd": "/workspace"}),
+	)
+	msg, ok := a.translateUpdate(sess, turn, update)
+	if !ok || len(msg.Content) != 1 || msg.Content[0].ToolCall == nil {
+		t.Fatalf("translated command = %+v, ok=%v", msg, ok)
+	}
+	call := msg.Content[0].ToolCall
+	if call.Name != "shell" || !strings.Contains(call.Args, `"command":"sed -n '1,20p' README.md"`) {
+		t.Fatalf("normalized command = %+v", call)
 	}
 }
 
@@ -252,7 +351,12 @@ func TestElicitFieldsFromSchema(t *testing.T) {
 					map[string]any{"const": "Blue", "title": "Blue"},
 				},
 			},
-			"question_0_custom": map[string]any{"type": "string", "title": "Other"},
+			"question_0_custom": map[string]any{
+				"type": "string", "title": "Other",
+				"_meta": map[string]any{"_askUserQuestionCustomAnswer": map[string]any{
+					"questionId": "question_0", "isCustomAnswer": true,
+				}},
+			},
 			"question_1": map[string]any{
 				"type":        "array",
 				"description": "Pick letters",
@@ -270,7 +374,7 @@ func TestElicitFieldsFromSchema(t *testing.T) {
 		len(fields[0].Enum) != 2 || fields[0].Enum[0] != "Red" || fields[0].EnumDescriptions[0] != "warm" {
 		t.Errorf("enum field = %#v", fields[0])
 	}
-	if fields[1].Name != "question_0_custom" || fields[1].Strict || len(fields[1].Enum) != 0 {
+	if fields[1].Name != "question_0_custom" || fields[1].Strict || len(fields[1].Enum) != 0 || fields[1].CustomAnswerFor != "question_0" {
 		t.Errorf("text field = %#v", fields[1])
 	}
 	if fields[2].Name != "question_1" || !fields[2].Multiple || len(fields[2].Enum) != 2 || fields[2].EnumDescriptions != nil {
@@ -323,7 +427,11 @@ func TestRequestPermissionChoice(t *testing.T) {
 		SessionId: "s1",
 		Options: []acp.PermissionOption{
 			{OptionId: "ask-0", Name: "Red", Kind: acp.PermissionOptionKindAllowOnce},
-			{OptionId: "ask-1", Name: "Blue", Kind: acp.PermissionOptionKindAllowOnce},
+			{OptionId: "ask-1", Name: "Blue", Kind: acp.PermissionOptionKindAllowOnce, Meta: map[string]any{
+				"permission": map[string]any{"version": 1, "changes": []any{
+					map[string]any{"description": "Allow blue for this session"},
+				}},
+			}},
 			{OptionId: "ask-skip", Name: "Skip", Kind: acp.PermissionOptionKindRejectOnce},
 		},
 	}
@@ -332,6 +440,9 @@ func TestRequestPermissionChoice(t *testing.T) {
 	a.SetUI(&fakeUI{elicit: func(req tool.ElicitRequest) (tool.ElicitResult, error) {
 		if len(req.Fields) != 1 || !req.Fields[0].Strict || len(req.Fields[0].Enum) != 3 {
 			t.Errorf("choice field = %#v", req.Fields)
+		}
+		if got := req.Fields[0].EnumDescriptions; len(got) != 3 || got[1] != "Allow blue for this session" {
+			t.Errorf("choice descriptions = %#v", got)
 		}
 		return tool.ElicitResult{Action: tool.ElicitAccept, Content: map[string]any{"choice": "Blue"}}, nil
 	}})
@@ -356,7 +467,17 @@ func TestRequestPermissionChoice(t *testing.T) {
 
 	a = &Agent{}
 	resp, _ = a.RequestPermission(context.Background(), req)
-	if resp.Outcome.Selected == nil || resp.Outcome.Selected.OptionId != "ask-0" {
-		t.Fatalf("headless should auto-pick first option, got %#v", resp)
+	if resp.Outcome.Selected == nil || resp.Outcome.Selected.OptionId != "ask-skip" {
+		t.Fatalf("headless should choose the explicit reject option, got %#v", resp)
+	}
+}
+
+func TestRequestPermissionHeadlessCancelsWithoutRejectOption(t *testing.T) {
+	a := &Agent{}
+	resp, err := a.RequestPermission(context.Background(), acp.RequestPermissionRequest{
+		Options: []acp.PermissionOption{{OptionId: "allow", Name: "Allow", Kind: acp.PermissionOptionKindAllowOnce}},
+	})
+	if err != nil || resp.Outcome.Cancelled == nil {
+		t.Fatalf("headless permission response = %#v, err=%v", resp, err)
 	}
 }

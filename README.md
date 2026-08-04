@@ -77,6 +77,26 @@ export OPENAI_BASE_URL="https://your-api-endpoint/v1"
 wingman
 ```
 
+To use the Wingman terminal UI with an existing Codex or Claude subscription,
+sign in with the corresponding native CLI and select it at startup:
+
+```bash
+codex login
+wingman --agent codex
+
+claude auth login
+wingman --agent claude
+```
+
+These modes use the native CLI's active login and session storage rather than
+the Wingman/OpenAI-compatible API configuration above. They inherit the current
+shell environment unchanged, so unset API-key or alternate-provider variables
+if you want the native CLI to use its stored subscription login.
+
+The web UI's **Codex** and **Claude** agent-picker entries use the same native
+login path. The built-in **Wingman** entry continues to use the configured API
+backend.
+
 3. **Start chatting!** Ask Wingman to help with coding tasks:
 
 ```
@@ -89,6 +109,9 @@ wingman
 ```bash
 wingman --resume              # resume the most recent session
 wingman --resume <session-id> # resume a specific session
+
+wingman --agent codex --resume  # resume the latest native Codex session
+wingman --agent claude --resume # resume the latest native Claude session
 ```
 
 ## ⚙️ Configuration

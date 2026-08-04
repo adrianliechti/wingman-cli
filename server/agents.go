@@ -14,8 +14,8 @@ import (
 	acppi "github.com/adrianliechti/wingman-agent/pkg/acp/pi"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/code/acp"
-	"github.com/adrianliechti/wingman-agent/pkg/external/claude"
-	"github.com/adrianliechti/wingman-agent/pkg/external/codex"
+	extclaude "github.com/adrianliechti/wingman-agent/pkg/external/claude"
+	extcodex "github.com/adrianliechti/wingman-agent/pkg/external/codex"
 	extpi "github.com/adrianliechti/wingman-agent/pkg/external/pi"
 )
 
@@ -66,14 +66,14 @@ func (s *Server) availableAgents() []agentRegistration {
 func detectAgents() []agentRegistration {
 	var out []agentRegistration
 
-	if _, err := claude.FindPath(); err == nil {
+	if _, err := exec.LookPath(extclaude.BinPath()); err == nil {
 		out = append(out, agentRegistration{
 			ID:          "claude",
 			Name:        "Claude",
 			Constructor: claudeBackend,
 		})
 	}
-	if _, err := exec.LookPath("codex"); err == nil {
+	if _, err := exec.LookPath(extcodex.BinPath()); err == nil {
 		out = append(out, agentRegistration{
 			ID:          "codex",
 			Name:        "Codex",
@@ -116,15 +116,16 @@ func detectAgents() []agentRegistration {
 	return out
 }
 
-func claudeBackend(ctx context.Context, ws *code.Workspace) (code.Agent, error) {
-	cfg, err := claude.NewConfig(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("claude config: %w", err)
-	}
-	srv := acpclaude.New(acpclaude.Options{
-		Cwd: ws.RootPath,
-		Env: claude.BuildEnv(os.Environ(), cfg),
-	})
+func nativeClaudeOptions(root string, env []string) acpclaude.Options {
+	return acpclaude.Options{Cwd: root, Env: env}
+}
+
+func nativeCodexOptions(root string, env []string) acpcodex.Options {
+	return acpcodex.Options{Dir: root, Env: env}
+}
+
+func claudeBackend(_ context.Context, ws *code.Workspace) (code.Agent, error) {
+	srv := acpclaude.New(nativeClaudeOptions(ws.RootPath, os.Environ()))
 	return acp.NewInProcess(ws, "claude", srv, func(conn *acpsdk.AgentSideConnection) {
 		srv.SetAgentConnection(conn)
 	}, srv.Close)
@@ -158,15 +159,7 @@ func piBackend(ctx context.Context, ws *code.Workspace) (code.Agent, error) {
 }
 
 func codexBackend(ctx context.Context, ws *code.Workspace) (code.Agent, error) {
-	cfg, err := codex.NewConfig(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("codex config: %w", err)
-	}
-	srv, err := acpcodex.Spawn(ctx, acpcodex.Options{
-		Dir:       ws.RootPath,
-		Env:       codex.BuildEnv(os.Environ(), cfg),
-		ExtraArgs: codex.BuildArgs(cfg),
-	})
+	srv, err := acpcodex.Spawn(ctx, nativeCodexOptions(ws.RootPath, os.Environ()))
 	if err != nil {
 		return nil, fmt.Errorf("codex spawn: %w", err)
 	}

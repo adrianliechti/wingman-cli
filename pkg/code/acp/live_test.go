@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -14,7 +15,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
-	"github.com/adrianliechti/wingman-agent/pkg/external/claude"
+	extclaude "github.com/adrianliechti/wingman-agent/pkg/external/claude"
 )
 
 type scriptedUI struct {
@@ -48,8 +49,8 @@ func TestLiveWebPipelineAskUserQuestion(t *testing.T) {
 	if os.Getenv("CLAUDE_ACP_LIVE") == "" {
 		t.Skip("set CLAUDE_ACP_LIVE=1 to run the live web pipeline test")
 	}
-	path, err := claude.BinPath()
-	if err != nil {
+	path := extclaude.BinPath()
+	if _, err := exec.LookPath(path); err != nil {
 		t.Skipf("claude not found: %v", err)
 	}
 

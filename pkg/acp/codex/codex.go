@@ -14,10 +14,11 @@ type codexClient struct {
 }
 
 type threadHandlers struct {
-	onNotification func(method string, params json.RawMessage)
-	onExecApproval func(params execApprovalParams) execApprovalResponse
-	onFileApproval func(params fileApprovalParams) fileApprovalResponse
-	onElicitation  func(params elicitationParams) elicitationResponse
+	onNotification        func(method string, params json.RawMessage)
+	onExecApproval        func(params execApprovalParams) execApprovalResponse
+	onFileApproval        func(params fileApprovalParams) fileApprovalResponse
+	onPermissionsApproval func(params permissionsApprovalParams) permissionsApprovalResponse
+	onElicitation         func(params elicitationParams) elicitationResponse
 }
 
 func newCodexClient(rpc *rpcClient) *codexClient {
@@ -76,6 +77,15 @@ func (c *codexClient) dispatchRequest(_ context.Context, method string, params j
 			return h.onFileApproval(p), nil
 		}
 		return fileApprovalResponse{Decision: "cancel"}, nil
+	case "item/permissions/requestApproval":
+		var p permissionsApprovalParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, &rpcError{Code: -32602, Message: err.Error()}
+		}
+		if h := c.handlersFor(p.ThreadID); h != nil && h.onPermissionsApproval != nil {
+			return h.onPermissionsApproval(p), nil
+		}
+		return rejectPermissionsResponse(), nil
 	case "mcpServer/elicitation/request":
 		var p elicitationParams
 		if err := json.Unmarshal(params, &p); err != nil {
@@ -250,27 +260,58 @@ type threadArchiveParams struct {
 }
 
 type execApprovalParams struct {
-	ThreadID string `json:"threadId"`
-	TurnID   string `json:"turnId"`
-	ItemID   string `json:"itemId"`
-	Reason   string `json:"reason,omitempty"`
-	Command  string `json:"command,omitempty"`
-	Cwd      string `json:"cwd,omitempty"`
+	ThreadID                        string                   `json:"threadId"`
+	TurnID                          string                   `json:"turnId"`
+	ItemID                          string                   `json:"itemId"`
+	Reason                          string                   `json:"reason,omitempty"`
+	Command                         string                   `json:"command,omitempty"`
+	Cwd                             string                   `json:"cwd,omitempty"`
+	ProposedExecpolicyAmendment     []string                 `json:"proposedExecpolicyAmendment,omitempty"`
+	ProposedNetworkPolicyAmendments []networkPolicyAmendment `json:"proposedNetworkPolicyAmendments,omitempty"`
+	NetworkApprovalContext          *networkApprovalContext  `json:"networkApprovalContext,omitempty"`
 }
 
 type execApprovalResponse struct {
-	Decision string `json:"decision"`
+	Decision any `json:"decision"`
+}
+
+type networkApprovalContext struct {
+	Host     string `json:"host"`
+	Protocol string `json:"protocol,omitempty"`
+}
+
+type networkPolicyAmendment struct {
+	Host   string `json:"host"`
+	Action string `json:"action"`
 }
 
 type fileApprovalParams struct {
-	ThreadID string `json:"threadId"`
-	TurnID   string `json:"turnId"`
-	ItemID   string `json:"itemId"`
-	Reason   string `json:"reason,omitempty"`
+	ThreadID  string `json:"threadId"`
+	TurnID    string `json:"turnId"`
+	ItemID    string `json:"itemId"`
+	Reason    string `json:"reason,omitempty"`
+	GrantRoot string `json:"grantRoot,omitempty"`
 }
 
 type fileApprovalResponse struct {
 	Decision string `json:"decision"`
+}
+
+type permissionsApprovalParams struct {
+	ThreadID      string         `json:"threadId"`
+	TurnID        string         `json:"turnId"`
+	ItemID        string         `json:"itemId"`
+	EnvironmentID *string        `json:"environmentId,omitempty"`
+	StartedAtMs   int64          `json:"startedAtMs"`
+	Cwd           string         `json:"cwd"`
+	Reason        string         `json:"reason,omitempty"`
+	Permissions   map[string]any `json:"permissions"`
+}
+
+type permissionsApprovalResponse struct {
+	Permissions      map[string]any `json:"permissions"`
+	Scope            string         `json:"scope"`
+	StrictAutoReview bool           `json:"strictAutoReview"`
 }
 
 type elicitationParams struct {

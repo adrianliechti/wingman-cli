@@ -1,0 +1,119 @@
+package codex
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+
+	"github.com/coder/acp-go-sdk"
+)
+
+func TestCommandApprovalChoicesIncludePolicyAmendments(t *testing.T) {
+	p := execApprovalParams{
+		ProposedExecpolicyAmendment: []string{"npm", "install"},
+		ProposedNetworkPolicyAmendments: []networkPolicyAmendment{{
+			Host: "registry.npmjs.org", Action: "allow",
+		}},
+	}
+	choices := commandApprovalChoices(p)
+	if len(choices) != 5 {
+		t.Fatalf("choices = %#v", choices)
+	}
+
+	execChoice := choiceByID(t, choices, optionExecpolicyAmendment)
+	got, err := json.Marshal(execChoice.decision)
+	if err != nil || string(got) != `{"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["npm","install"]}}` {
+		t.Fatalf("execpolicy decision = %s, err=%v", got, err)
+	}
+	if execChoice.option.Kind != acp.PermissionOptionKindAllowAlways || permissionDescription(execChoice.option) != "Allow commands starting with npm install" {
+		t.Fatalf("execpolicy option = %#v", execChoice.option)
+	}
+
+	networkChoice := choiceByID(t, choices, "apply-network-policy-amendment:0")
+	got, err = json.Marshal(networkChoice.decision)
+	if err != nil || string(got) != `{"applyNetworkPolicyAmendment":{"network_policy_amendment":{"host":"registry.npmjs.org","action":"allow"}}}` {
+		t.Fatalf("network decision = %s, err=%v", got, err)
+	}
+}
+
+func TestFileApprovalChoiceDescribesGrantRoot(t *testing.T) {
+	choice := choiceByID(t, fileApprovalChoices(fileApprovalParams{GrantRoot: "/workspace/generated"}), optionAllowAlways)
+	if choice.option.Name != "Allow Root for Session" {
+		t.Fatalf("option name = %q", choice.option.Name)
+	}
+	if got := permissionDescription(choice.option); got != "Allow writes under /workspace/generated for this session" {
+		t.Fatalf("permission description = %q", got)
+	}
+}
+
+func TestPermissionsApprovalDispatchAndSafeFallback(t *testing.T) {
+	c := &codexClient{handlers: make(map[string]*threadHandlers)}
+	called := false
+	c.setThreadHandlers("thread-1", &threadHandlers{
+		onPermissionsApproval: func(p permissionsApprovalParams) permissionsApprovalResponse {
+			called = true
+			if p.ItemID != "permission-1" || p.Permissions["network"] == nil {
+				t.Fatalf("params = %#v", p)
+			}
+			return permissionsApprovalResponse{Permissions: grantedPermissions(p.Permissions), Scope: "session"}
+		},
+	})
+	params := json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","itemId":"permission-1","cwd":"/workspace","permissions":{"network":{"enabled":true}}}`)
+	result, rpcErr := c.dispatchRequest(context.Background(), "item/permissions/requestApproval", params)
+	if rpcErr != nil || !called {
+		t.Fatalf("dispatch result = %#v, rpcErr=%v, called=%v", result, rpcErr, called)
+	}
+	response := result.(permissionsApprovalResponse)
+	if response.Scope != "session" || response.Permissions["network"] == nil {
+		t.Fatalf("response = %#v", response)
+	}
+
+	params = json.RawMessage(`{"threadId":"unhandled","itemId":"permission-2","permissions":{"network":{"enabled":true}}}`)
+	result, rpcErr = c.dispatchRequest(context.Background(), "item/permissions/requestApproval", params)
+	response = result.(permissionsApprovalResponse)
+	if rpcErr != nil || response.Scope != "turn" || !response.StrictAutoReview || len(response.Permissions) != 0 {
+		t.Fatalf("unhandled response = %#v, rpcErr=%v", response, rpcErr)
+	}
+}
+
+func TestPermissionsGrantMetadata(t *testing.T) {
+	permissions := map[string]any{
+		"network": map[string]any{"enabled": true},
+		"fileSystem": map[string]any{
+			"read":  []any{"/workspace"},
+			"write": []any{"/workspace/tmp"},
+		},
+	}
+	changes := permissionGrantChanges(permissions, "session")
+	if len(changes) != 3 {
+		t.Fatalf("changes = %#v", changes)
+	}
+	if got := formatRequestedPermissions(permissions); got != "Network Access: true\n\nFile System Read Access: /workspace\n\nFile System Write Access: /workspace/tmp" {
+		t.Fatalf("formatted permissions = %q", got)
+	}
+	granted := grantedPermissions(map[string]any{"network": permissions["network"], "unknown": true})
+	if granted["network"] == nil || granted["unknown"] != nil {
+		t.Fatalf("granted permissions = %#v", granted)
+	}
+}
+
+func choiceByID(t *testing.T, choices []approvalChoice, id acp.PermissionOptionId) approvalChoice {
+	t.Helper()
+	for _, choice := range choices {
+		if choice.option.OptionId == id {
+			return choice
+		}
+	}
+	t.Fatalf("choice %q not found in %#v", id, choices)
+	return approvalChoice{}
+}
+
+func permissionDescription(option acp.PermissionOption) string {
+	permission, _ := option.Meta["permission"].(map[string]any)
+	changes, _ := permission["changes"].([]map[string]any)
+	if len(changes) == 0 {
+		return ""
+	}
+	description, _ := changes[0]["description"].(string)
+	return description
+}

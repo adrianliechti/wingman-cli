@@ -10,8 +10,8 @@ import (
 	acpcodex "github.com/adrianliechti/wingman-agent/pkg/acp/codex"
 	acppi "github.com/adrianliechti/wingman-agent/pkg/acp/pi"
 	acpserver "github.com/adrianliechti/wingman-agent/pkg/acp/server"
-	"github.com/adrianliechti/wingman-agent/pkg/external/claude"
-	"github.com/adrianliechti/wingman-agent/pkg/external/codex"
+	extclaude "github.com/adrianliechti/wingman-agent/pkg/external/claude"
+	extcodex "github.com/adrianliechti/wingman-agent/pkg/external/codex"
 	extpi "github.com/adrianliechti/wingman-agent/pkg/external/pi"
 )
 
@@ -50,7 +50,7 @@ func runACPClaude(ctx context.Context) {
 		fatal(err)
 	}
 
-	cfg, err := claude.NewConfig(ctx, nil)
+	cfg, err := extclaude.NewConfig(ctx, nil)
 	if err != nil {
 		fatal(err)
 	}
@@ -59,7 +59,7 @@ func runACPClaude(ctx context.Context) {
 		Model:  *model,
 		Effort: *effort,
 		Cwd:    cwd,
-		Env:    claude.BuildEnv(os.Environ(), cfg),
+		Env:    extclaude.BuildEnv(os.Environ(), cfg),
 	}
 
 	if err := acpclaude.Run(ctx, opts, os.Stdin, os.Stdout, acpLogger(*debug)); err != nil {
@@ -74,7 +74,7 @@ func runACPCodex(ctx context.Context) {
 	debug := fs.Bool("debug", false, "log JSON-RPC traffic to stderr")
 	fs.Parse(os.Args[3:])
 
-	cfg, err := codex.NewConfig(ctx, nil)
+	cfg, err := extcodex.NewConfig(ctx, nil)
 	if err != nil {
 		fatal(err)
 	}
@@ -82,8 +82,8 @@ func runACPCodex(ctx context.Context) {
 	opts := acpcodex.Options{
 		Model:     *model,
 		Effort:    *effort,
-		Env:       codex.BuildEnv(os.Environ(), cfg),
-		ExtraArgs: codex.BuildArgs(cfg),
+		Env:       extcodex.BuildEnv(os.Environ(), cfg),
+		ExtraArgs: extcodex.BuildArgs(cfg),
 	}
 
 	if err := acpcodex.Run(ctx, opts, os.Stdin, os.Stdout, acpLogger(*debug)); err != nil {

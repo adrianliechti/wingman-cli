@@ -208,6 +208,14 @@ func elicitationSchema(req tool.ElicitRequest) acpsdk.UnstableElicitationSchema 
 		if field.Default != nil {
 			property["default"] = field.Default
 		}
+		if field.CustomAnswerFor != "" {
+			property["_meta"] = map[string]any{
+				"_askUserQuestionCustomAnswer": map[string]any{
+					"questionId":     field.CustomAnswerFor,
+					"isCustomAnswer": true,
+				},
+			}
+		}
 		properties[field.Name] = property
 		if field.Required {
 			required = append(required, field.Name)
