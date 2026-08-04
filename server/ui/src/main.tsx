@@ -11,6 +11,14 @@ import "./devicon-slim.css";
 import "./index.css";
 import App from "./App.tsx";
 
+// monaco-editor declares MonacoEnvironment inside its own module, so the name
+// never reaches the global scope we assign it on.
+declare global {
+	interface Window {
+		MonacoEnvironment?: monaco.Environment;
+	}
+}
+
 self.MonacoEnvironment = {
 	getWorker(_workerId, label) {
 		if (label === "json") return new jsonWorker();

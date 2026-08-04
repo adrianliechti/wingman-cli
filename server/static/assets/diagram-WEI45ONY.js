@@ -11,7 +11,7 @@ import{n as e}from"./chunk-Y2CYZVJY.js";import{m as t}from"./src.js";import{D as
 			fill-opacity: ${t.curveOpacity};
 			stroke: ${i};
 		}
-		`}return n},`genIndexStyles`),V=e(e=>{let t=p(n(),s().themeVariables);return{themeVariables:t,radarOptions:p(t.radar,e)}},`buildRadarStyleOptions`),H={parser:A,db:O,renderer:z,styles:e(({radar:e}={})=>{let{themeVariables:t,radarOptions:n}=V(e);return`
+		`}return n},`genIndexStyles`),V=e(e=>{let t=n(),r=s(),i=p(t,r.themeVariables);return{themeVariables:i,radarOptions:p(i.radar,e)}},`buildRadarStyleOptions`),H={parser:A,db:O,renderer:z,styles:e(({radar:e}={})=>{let{themeVariables:t,radarOptions:n}=V(e);return`
 	.radarTitle {
 		font-size: ${t.fontSize};
 		color: ${t.titleColor};

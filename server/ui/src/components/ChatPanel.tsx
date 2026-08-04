@@ -248,7 +248,9 @@ export function ChatPanel({
 	prevPhaseRef.current = phase;
 
 	const skillToken = slashTokenAt(input, caret);
-	const tokenKey = skillToken ? `${skillToken.start}:${skillToken.query}` : null;
+	const tokenKey = skillToken
+		? `${skillToken.start}:${skillToken.query}`
+		: null;
 
 	const tokenOpen = !!skillToken;
 	useEffect(() => {
@@ -283,7 +285,10 @@ export function ChatPanel({
 		setPrevTokenKey(tokenKey);
 		setSkillActive(0);
 	}
-	const activeSkill = Math.min(skillActive, Math.max(0, skillMatches.length - 1));
+	const activeSkill = Math.min(
+		skillActive,
+		Math.max(0, skillMatches.length - 1),
+	);
 
 	const showSkills = skillMatches.length > 0 && tokenKey !== dismissedToken;
 
@@ -583,16 +588,19 @@ export function ChatPanel({
 		],
 	);
 
-	const editPendingInput = useCallback((item: PendingTurnInput) => {
-		setDraft(item.text);
-		setFiles(item.files);
-		setImages(
-			item.images.map((dataUrl) => ({ id: crypto.randomUUID(), dataUrl })),
-		);
-		setEditingQueueId(item.state === "queued" ? item.id : null);
-		setSendError(null);
-		textareaRef.current?.focus();
-	}, [setDraft]);
+	const editPendingInput = useCallback(
+		(item: PendingTurnInput) => {
+			setDraft(item.text);
+			setFiles(item.files);
+			setImages(
+				item.images.map((dataUrl) => ({ id: crypto.randomUUID(), dataUrl })),
+			);
+			setEditingQueueId(item.state === "queued" ? item.id : null);
+			setSendError(null);
+			textareaRef.current?.focus();
+		},
+		[setDraft],
+	);
 
 	const addFile = useCallback((path: string) => {
 		setFiles((prev) => (prev.includes(path) ? prev : [...prev, path]));

@@ -17,62 +17,62 @@ import{n as e}from"./chunk-Y2CYZVJY.js";import{m as t}from"./src.js";import{D as
         L ${n+20} ${r+30/2}
         L ${n+60} ${r+30/2}
         Z
-      `;e.append(`path`).attr(`d`,i).attr(`fill`,`white`).attr(`stroke`,s.componentStroke).attr(`stroke-width`,1),e.append(`text`).attr(`x`,n+60/2).attr(`y`,r+30/2+15).attr(`text-anchor`,`middle`).attr(`font-size`,10).attr(`fill`,s.axisTextColor).attr(`font-weight`,`bold`).text(t.name)})}},`draw`)},styles:e(({wardley:e}={})=>{let t=p(p(n(),s().themeVariables).wardley,e);return`
+      `;e.append(`path`).attr(`d`,i).attr(`fill`,`white`).attr(`stroke`,s.componentStroke).attr(`stroke-width`,1),e.append(`text`).attr(`x`,n+60/2).attr(`y`,r+30/2+15).attr(`text-anchor`,`middle`).attr(`font-size`,10).attr(`fill`,s.axisTextColor).attr(`font-weight`,`bold`).text(t.name)})}},`draw`)},styles:e(({wardley:e}={})=>{let t=n(),r=s(),i=p(t,r.themeVariables),a=p(i.wardley,e);return`
   .wardley-background {
-    fill: ${t.backgroundColor};
+    fill: ${a.backgroundColor};
   }
   .wardley-axes line, .wardley-axes path {
-    stroke: ${t.axisColor};
+    stroke: ${a.axisColor};
   }
   .wardley-axis-label {
-    fill: ${t.axisTextColor};
+    fill: ${a.axisTextColor};
   }
   .wardley-stage-label {
-    fill: ${t.axisTextColor};
+    fill: ${a.axisTextColor};
   }
   .wardley-grid line {
-    stroke: ${t.gridColor};
+    stroke: ${a.gridColor};
   }
   .wardley-node circle {
-    fill: ${t.componentFill};
-    stroke: ${t.componentStroke};
+    fill: ${a.componentFill};
+    stroke: ${a.componentStroke};
   }
   .wardley-node-label {
-    fill: ${t.componentLabelColor};
+    fill: ${a.componentLabelColor};
   }
   .wardley-link {
-    stroke: ${t.linkStroke};
+    stroke: ${a.linkStroke};
   }
   .wardley-link--dashed {
     stroke-dasharray: 4 4;
   }
   .wardley-link-label {
-    fill: ${t.axisTextColor};
+    fill: ${a.axisTextColor};
   }
   .wardley-trend line {
-    stroke: ${t.evolutionStroke};
+    stroke: ${a.evolutionStroke};
   }
   .wardley-annotation-line {
-    stroke: ${t.annotationStroke};
+    stroke: ${a.annotationStroke};
   }
   .wardley-annotation circle {
-    fill: ${t.annotationFill};
-    stroke: ${t.annotationStroke};
+    fill: ${a.annotationFill};
+    stroke: ${a.annotationStroke};
   }
   .wardley-annotation text {
-    fill: ${t.annotationTextColor};
+    fill: ${a.annotationTextColor};
   }
   .wardley-annotations-box rect {
-    fill: ${t.annotationFill};
-    stroke: ${t.annotationStroke};
+    fill: ${a.annotationFill};
+    stroke: ${a.annotationStroke};
   }
   .wardley-annotations-box text {
-    fill: ${t.annotationTextColor};
+    fill: ${a.annotationTextColor};
   }
   .wardley-pipeline-box {
-    stroke: ${t.componentStroke};
+    stroke: ${a.componentStroke};
   }
   .wardley-notes text {
-    fill: ${t.axisTextColor};
+    fill: ${a.axisTextColor};
   }
   `},`styles`)};export{G as diagram};

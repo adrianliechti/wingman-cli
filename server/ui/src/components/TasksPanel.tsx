@@ -124,7 +124,10 @@ export function TasksPanel({ sessionId, subscribe }: Props) {
 								onClick={() => toggle(t.id)}
 							>
 								{expanded ? (
-									<ChevronDown size={12} className="shrink-0 mt-0.5 text-fg-dim" />
+									<ChevronDown
+										size={12}
+										className="shrink-0 mt-0.5 text-fg-dim"
+									/>
 								) : (
 									<ChevronRight
 										size={12}
@@ -218,13 +221,24 @@ function TaskDetailView({ detail }: { detail: TaskDetail }) {
 function StatusIcon({ status }: { status: TaskEntry["status"] }) {
 	switch (status) {
 		case "running":
-			return <Loader2 size={12} className="shrink-0 mt-0.5 text-accent animate-spin" />;
+			return (
+				<Loader2
+					size={12}
+					className="shrink-0 mt-0.5 text-accent animate-spin"
+				/>
+			);
 		case "failed":
-			return <AlertCircle size={12} className="shrink-0 mt-0.5 text-danger/70" />;
+			return (
+				<AlertCircle size={12} className="shrink-0 mt-0.5 text-danger/70" />
+			);
 		case "stopped":
-			return <CircleSlash size={12} className="shrink-0 mt-0.5 text-warning/70" />;
+			return (
+				<CircleSlash size={12} className="shrink-0 mt-0.5 text-warning/70" />
+			);
 		default:
-			return <CircleCheck size={12} className="shrink-0 mt-0.5 text-success/70" />;
+			return (
+				<CircleCheck size={12} className="shrink-0 mt-0.5 text-success/70" />
+			);
 	}
 }
 
