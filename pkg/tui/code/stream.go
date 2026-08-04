@@ -68,6 +68,7 @@ func (a *App) syncMessages() {
 	a.inputTokens = usage.InputTokens
 	a.outputTokens = usage.OutputTokens
 	a.lastInputTokens = usage.LastInputTokens
+	a.contextWindow = usage.ContextWindow
 }
 
 func (a *App) formatMessageCells(msg agent.Message, width int) []string {
@@ -340,7 +341,7 @@ func (a *App) finishTurn(sessionID, commit string, state code.TurnInputState, tu
 
 	if state == code.TurnInputCompleted {
 		a.commitRewind(commit)
-		_ = a.agent.Save(sessionID)
+		a.saveSessionID(sessionID)
 	}
 }
 

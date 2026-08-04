@@ -12,7 +12,7 @@ const (
 	effortConfigID = "effort"
 )
 
-var thinkingLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh"}
+var fallbackThinkingLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
 
 const defaultThinkingLevel = "medium"
 
@@ -67,6 +67,27 @@ func parseState(data json.RawMessage) piState {
 	return s
 }
 
+func parseAvailableThinkingLevels(data json.RawMessage) []string {
+	var d struct {
+		Levels []string `json:"levels"`
+	}
+	if json.Unmarshal(data, &d) != nil {
+		return nil
+	}
+
+	out := make([]string, 0, len(d.Levels))
+	seen := make(map[string]bool, len(d.Levels))
+	for _, level := range d.Levels {
+		level = strings.TrimSpace(level)
+		if level == "" || seen[level] {
+			continue
+		}
+		seen[level] = true
+		out = append(out, level)
+	}
+	return out
+}
+
 func (s piState) currentModel() string {
 	if s.Model.Provider == "" || s.Model.ID == "" {
 		return ""
@@ -75,14 +96,14 @@ func (s piState) currentModel() string {
 }
 
 func (s piState) thinking() string {
-	if isThinkingLevel(s.ThinkingLevel) {
+	if s.ThinkingLevel != "" {
 		return s.ThinkingLevel
 	}
 	return defaultThinkingLevel
 }
 
-func isThinkingLevel(v string) bool {
-	for _, l := range thinkingLevels {
+func isThinkingLevel(levels []string, v string) bool {
+	for _, l := range levels {
 		if l == v {
 			return true
 		}
@@ -99,12 +120,14 @@ func findModel(models []modelEntry, id string) *modelEntry {
 	return nil
 }
 
-func buildConfigOptions(models []modelEntry, currentModel, thinking string) []acp.SessionConfigOption {
+func buildConfigOptions(models []modelEntry, currentModel string, thinkingLevels []string, thinking string) []acp.SessionConfigOption {
 	opts := make([]acp.SessionConfigOption, 0, 2)
 	if len(models) > 0 {
 		opts = append(opts, modelConfigOption(models, currentModel))
 	}
-	opts = append(opts, effortConfigOption(thinking))
+	if len(thinkingLevels) > 0 {
+		opts = append(opts, effortConfigOption(thinkingLevels, thinking))
+	}
 	return opts
 }
 
@@ -128,12 +151,12 @@ func modelConfigOption(models []modelEntry, currentID string) acp.SessionConfigO
 	return opt
 }
 
-func effortConfigOption(thinking string) acp.SessionConfigOption {
-	if !isThinkingLevel(thinking) {
-		thinking = defaultThinkingLevel
+func effortConfigOption(levels []string, thinking string) acp.SessionConfigOption {
+	if !isThinkingLevel(levels, thinking) {
+		thinking = levels[0]
 	}
-	ungrouped := make(acp.SessionConfigSelectOptionsUngrouped, 0, len(thinkingLevels))
-	for _, l := range thinkingLevels {
+	ungrouped := make(acp.SessionConfigSelectOptionsUngrouped, 0, len(levels))
+	for _, l := range levels {
 		ungrouped = append(ungrouped, acp.SessionConfigSelectOption{
 			Value: acp.SessionConfigValueId(l),
 			Name:  titleCase(l),

@@ -48,6 +48,19 @@ func TestParseState(t *testing.T) {
 	}
 }
 
+func TestParseAvailableThinkingLevels(t *testing.T) {
+	got := parseAvailableThinkingLevels(json.RawMessage(`{"levels":["off","high","max","high",""]}`))
+	want := []string{"off", "high", "max"}
+	if len(got) != len(want) {
+		t.Fatalf("levels = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("levels = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestToolResultToText(t *testing.T) {
 	cases := []struct {
 		name string
@@ -108,7 +121,7 @@ func TestToolKind(t *testing.T) {
 
 func TestBuildConfigOptions(t *testing.T) {
 	models := []modelEntry{{ID: "wingman/a", Name: "wingman/a"}}
-	opts := buildConfigOptions(models, "wingman/a", "high")
+	opts := buildConfigOptions(models, "wingman/a", []string{"off", "high", "max"}, "high")
 	if len(opts) != 2 {
 		t.Fatalf("expected model+effort options, got %d", len(opts))
 	}
@@ -123,7 +136,45 @@ func TestBuildConfigOptions(t *testing.T) {
 	}
 
 	// No models → only effort option.
-	if only := buildConfigOptions(nil, "", "medium"); len(only) != 1 || only[0].Select.Id != effortConfigID {
+	if only := buildConfigOptions(nil, "", []string{"off", "medium"}, "medium"); len(only) != 1 || only[0].Select.Id != effortConfigID {
 		t.Errorf("no-models config = %+v", only)
+	}
+
+	// A model with no thinking support should not expose a non-functional option.
+	if onlyModel := buildConfigOptions(models, "wingman/a", nil, "off"); len(onlyModel) != 1 || onlyModel[0].Select.Id != modelConfigID {
+		t.Errorf("no-thinking config = %+v", onlyModel)
+	}
+}
+
+func TestReplayMessagesPreservesRichConversation(t *testing.T) {
+	data := json.RawMessage(`{"messages":[
+		{"role":"user","content":[{"type":"text","text":"look"},{"type":"image","data":"AA==","mimeType":"image/png"}]},
+		{"role":"assistant","content":[{"type":"thinking","thinking":"reason"},{"type":"text","text":"done"},{"type":"toolCall","id":"call-1","name":"read","arguments":{"path":"a.txt"}}]},
+		{"role":"toolResult","toolCallId":"call-1","toolName":"read","content":[{"type":"text","text":"contents"}],"isError":false}
+	]}`)
+	var updates []acp.SessionUpdate
+	replayMessages(func(update acp.SessionUpdate) { updates = append(updates, update) }, data)
+
+	var userText, userImage, agentThought, agentText, toolStart, toolEnd bool
+	for _, update := range updates {
+		if chunk := update.UserMessageChunk; chunk != nil {
+			userText = userText || chunk.Content.Text != nil
+			userImage = userImage || chunk.Content.Image != nil
+		}
+		if chunk := update.AgentThoughtChunk; chunk != nil && chunk.Content.Text != nil {
+			agentThought = true
+		}
+		if chunk := update.AgentMessageChunk; chunk != nil && chunk.Content.Text != nil {
+			agentText = true
+		}
+		if update.ToolCall != nil {
+			toolStart = true
+		}
+		if update.ToolCallUpdate != nil {
+			toolEnd = true
+		}
+	}
+	if !userText || !userImage || !agentThought || !agentText || !toolStart || !toolEnd {
+		t.Fatalf("replay lost content: text=%v image=%v thought=%v agent=%v toolStart=%v toolEnd=%v", userText, userImage, agentThought, agentText, toolStart, toolEnd)
 	}
 }

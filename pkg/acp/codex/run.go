@@ -11,7 +11,7 @@ import (
 
 	"github.com/coder/acp-go-sdk"
 
-	extcodex "github.com/adrianliechti/wingman-agent/pkg/external/codex"
+	codexcli "github.com/adrianliechti/wingman-agent/pkg/external/codex"
 )
 
 type Options struct {
@@ -27,7 +27,7 @@ type Options struct {
 }
 
 func Spawn(ctx context.Context, opts Options) (*Agent, error) {
-	codexPath := extcodex.BinPath()
+	codexPath := codexcli.BinPath()
 
 	args := append(append([]string{}, opts.ExtraArgs...), "app-server")
 	cmd := exec.CommandContext(ctx, codexPath, args...)

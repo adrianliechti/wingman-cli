@@ -63,6 +63,8 @@ type Agent struct {
 	closed   bool
 }
 
+var _ code.Agent = (*Agent)(nil)
+
 type sessionState struct {
 	parent *Agent
 	aa     *harness.Agent

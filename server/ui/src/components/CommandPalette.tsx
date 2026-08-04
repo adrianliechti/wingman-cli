@@ -18,6 +18,7 @@ export interface PaletteSkill {
 	name: string;
 	description?: string;
 	arguments?: string[];
+	input_hint?: string;
 }
 
 interface SessionEntry {
@@ -71,7 +72,10 @@ export function CommandPalette({
 		: "/api";
 
 	useEffect(() => {
-		fetch("/api/skills")
+		const skillsURL = sessionId
+			? `/api/skills?session=${encodeURIComponent(sessionId)}`
+			: "/api/skills";
+		fetch(skillsURL)
 			.then((r) => (r.ok ? r.json() : []))
 			.then((data: PaletteSkill[]) => setSkills(data ?? []))
 			.catch(() => setSkills([]));
@@ -87,7 +91,7 @@ export function CommandPalette({
 			.then((r) => (r.ok ? r.json() : {}))
 			.then((data: { model?: string }) => setCurrentModel(data.model || ""))
 			.catch(() => {});
-	}, [apiBase]);
+	}, [apiBase, sessionId]);
 
 	useEffect(() => {
 		const q = query.trim();
@@ -149,7 +153,7 @@ export function CommandPalette({
 				key: `skill:${s.name}`,
 				group: "Skills",
 				label: `/${s.name}`,
-				hint: s.description,
+				hint: s.description || s.input_hint,
 				icon: <Sparkles size={12} className="text-fg-dim shrink-0" />,
 				run: () => onRunSkill(s),
 			});

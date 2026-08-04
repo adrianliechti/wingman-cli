@@ -81,12 +81,13 @@ func convertElicitParams(p *mcp.ElicitParams) (tool.ElicitRequest, error) {
 
 	var schema struct {
 		Properties map[string]struct {
-			Type        string   `json:"type"`
-			Title       string   `json:"title"`
-			Description string   `json:"description"`
-			Enum        []any    `json:"enum"`
-			EnumNames   []string `json:"enumNames"`
-			Default     any      `json:"default"`
+			Type        string         `json:"type"`
+			Title       string         `json:"title"`
+			Description string         `json:"description"`
+			Enum        []any          `json:"enum"`
+			EnumNames   []string       `json:"enumNames"`
+			Default     any            `json:"default"`
+			Meta        map[string]any `json:"_meta"`
 		} `json:"properties"`
 		Required []string `json:"required"`
 	}
@@ -131,6 +132,12 @@ func convertElicitParams(p *mcp.ElicitParams) (tool.ElicitRequest, error) {
 			Description: prop.Description,
 			Required:    required[name],
 			Default:     prop.Default,
+		}
+		if marker, _ := prop.Meta["_askUserQuestionCustomAnswer"].(map[string]any); marker != nil {
+			isCustom, _ := marker["isCustomAnswer"].(bool)
+			if isCustom {
+				field.CustomAnswerFor, _ = marker["questionId"].(string)
+			}
 		}
 
 		for _, value := range prop.Enum {

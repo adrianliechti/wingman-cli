@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"os"
-	"slices"
 
 	"golang.org/x/term"
 
@@ -13,7 +12,20 @@ import (
 	clawtui "github.com/adrianliechti/wingman-agent/pkg/tui/claw"
 )
 
-func runClaw(ctx context.Context) {
+func runClaw(ctx context.Context, args []string) {
+	var plain bool
+
+	fs := newFlags("wingman claw")
+	fs.Bool(&plain, "--plain", "plain REPL output (automatic when piped)")
+
+	if err := fs.Parse(args); err != nil {
+		fatal(err)
+	}
+
+	if !plain {
+		plain = !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd()))
+	}
+
 	cfg, cleanup, err := claw.DefaultConfig()
 	if err != nil {
 		fatal(err)
@@ -27,7 +39,7 @@ func runClaw(ctx context.Context) {
 	}
 	defer c.Close()
 
-	if clawPlainMode() {
+	if plain {
 		cfg.Channels = []channel.Channel{cli.New()}
 	} else {
 		cfg.Channels = []channel.Channel{clawtui.New(c)}
@@ -36,14 +48,4 @@ func runClaw(ctx context.Context) {
 	if err := c.Run(ctx); err != nil {
 		fatal(err)
 	}
-}
-
-func clawPlainMode() bool {
-	if len(os.Args) > 2 && slices.ContainsFunc(os.Args[2:], func(a string) bool {
-		return a == "-plain" || a == "--plain"
-	}) {
-		return true
-	}
-
-	return !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd()))
 }

@@ -14,7 +14,6 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/task"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
-	coder "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/tui"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/ansi"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/clipboard"
@@ -27,7 +26,7 @@ var _ code.UI = (*App)(nil)
 
 type App struct {
 	ctx   context.Context
-	agent *coder.Agent
+	agent code.Agent
 	term  *inline.Terminal
 
 	queue    chan func()
@@ -96,6 +95,7 @@ type App struct {
 	inputTokens     int64
 	outputTokens    int64
 	lastInputTokens int64
+	contextWindow   int64
 
 	pendingContent []agent.Content
 	pendingFiles   []string
@@ -134,7 +134,7 @@ type chatAnnotation struct {
 	render        func(width int) []string
 }
 
-func New(ctx context.Context, coderAgent *coder.Agent, sessionID string) *App {
+func New(ctx context.Context, coderAgent code.Agent, sessionID string) *App {
 	saveExecutablePath()
 
 	hasMessages := sessionID != "" && len(coderAgent.Messages(sessionID)) > 0
@@ -159,6 +159,7 @@ func New(ctx context.Context, coderAgent *coder.Agent, sessionID string) *App {
 	}
 
 	a.turns = code.NewTurnManager(tool.WithProgressSink(ctx, a.onToolProgress), coderAgent, a.handleTurnEvent)
+	setAgentUI(coderAgent, a)
 
 	return a
 }
@@ -179,13 +180,6 @@ func (a *App) onToolProgress(callID, text string) {
 // WithTerminal replaces the terminal, used by tests.
 func (a *App) WithTerminal(t *inline.Terminal) {
 	a.term = t
-}
-
-func (a *App) SetSessionID(id string) {
-	a.sessionMu.Lock()
-	a.sessionID = id
-	a.sessionEpoch++
-	a.sessionMu.Unlock()
 }
 
 // activateSession changes the session and resets all state that belongs to
@@ -221,7 +215,11 @@ func (a *App) startTaskPump() {
 	}
 
 	sessionID := a.sessionID
-	reg := a.agent.Tasks(sessionID)
+	provider, ok := a.agent.(taskProvider)
+	if !ok {
+		return
+	}
+	reg := provider.Tasks(sessionID)
 	if reg == nil {
 		return
 	}
@@ -371,8 +369,8 @@ func (a *App) setFooterHint(hint string) {
 }
 
 func (a *App) runningTaskCount() int {
-	if a.agent != nil {
-		return a.agent.RunningTaskCount()
+	if provider, ok := a.agent.(taskProvider); ok {
+		return provider.RunningTaskCount()
 	}
 	return 0
 }
@@ -437,7 +435,13 @@ func (a *App) confirmQuit() bool {
 }
 
 func (a *App) saveSession() {
-	_ = a.agent.Save(a.sessionID)
+	a.saveSessionID(a.sessionID)
+}
+
+func (a *App) saveSessionID(sessionID string) {
+	if saver, ok := a.agent.(sessionSaver); ok {
+		_ = saver.Save(sessionID)
+	}
 }
 
 func (a *App) Run() error {
@@ -449,7 +453,9 @@ func (a *App) Run() error {
 	a.term.SetTitle(a.terminalTitle())
 	a.term.EnableMouse(true)
 
-	a.agent.FetchModels(a.ctx)
+	if fetcher, ok := a.agent.(modelFetcher); ok {
+		fetcher.FetchModels(a.ctx)
+	}
 
 	a.setPhase(PhasePreparing)
 
@@ -479,6 +485,7 @@ func (a *App) Run() error {
 		a.inputTokens = usage.InputTokens
 		a.outputTokens = usage.OutputTokens
 		a.lastInputTokens = usage.LastInputTokens
+		a.contextWindow = usage.ContextWindow
 		a.syncMessages()
 	}
 
@@ -540,20 +547,27 @@ func (a *App) shutdown() {
 
 	a.turns.SetHandler(nil)
 	a.turns.Close()
-	a.agent.Close()
-	a.agent.Workspace().Close()
+	messages := a.agent.Messages(a.sessionID)
+	usage := a.agent.Usage(a.sessionID)
+	name := a.agent.Name()
+	workspace := a.agent.Workspace()
+	_ = a.agent.Close()
+	workspace.Close()
 
 	a.term.Stop()
 
-	if len(a.agent.Messages(a.sessionID)) > 0 {
-		usage := a.agent.Usage(a.sessionID)
+	if len(messages) > 0 {
 		fmt.Fprintf(os.Stderr, "\n")
 		if usage.CachedTokens > 0 {
 			fmt.Fprintf(os.Stderr, "  Tokens: ↑%s (%s cached) ↓%s\n", tui.FormatTokens(usage.InputTokens), tui.FormatTokens(usage.CachedTokens), tui.FormatTokens(usage.OutputTokens))
 		} else {
 			fmt.Fprintf(os.Stderr, "  Tokens: ↑%s ↓%s\n", tui.FormatTokens(usage.InputTokens), tui.FormatTokens(usage.OutputTokens))
 		}
-		fmt.Fprintf(os.Stderr, "  Resume: wingman --resume %s\n", a.sessionID)
+		if name != "" && name != code.BuiltinAgentName {
+			fmt.Fprintf(os.Stderr, "  Resume: wingman --agent %s --resume %s\n", name, a.sessionID)
+		} else {
+			fmt.Fprintf(os.Stderr, "  Resume: wingman --resume %s\n", a.sessionID)
+		}
 		fmt.Fprintf(os.Stderr, "\n")
 	}
 }
@@ -1080,6 +1094,7 @@ func (a *App) clearChat() {
 	a.inputTokens = 0
 	a.outputTokens = 0
 	a.lastInputTokens = 0
+	a.contextWindow = 0
 	a.chat = nil
 	a.chatScroll = 0
 	a.follow = true
@@ -1097,6 +1112,11 @@ func (a *App) resumeSession() {
 	}
 
 	last := sessions[0]
+	for _, candidate := range sessions[1:] {
+		if candidate.UpdatedAt.After(last.UpdatedAt) {
+			last = candidate
+		}
+	}
 	if err := a.agent.LoadSession(a.ctx, last.ID); err != nil {
 		a.appendChat(cellNotice(fmt.Sprintf("Failed to load session: %v", err), t.Red, a.width()))
 		return
@@ -1110,6 +1130,7 @@ func (a *App) resumeSession() {
 	a.inputTokens = usage.InputTokens
 	a.outputTokens = usage.OutputTokens
 	a.lastInputTokens = usage.LastInputTokens
+	a.contextWindow = usage.ContextWindow
 
 	a.showWelcome = false
 	a.chat = nil
@@ -1123,7 +1144,7 @@ func (a *App) resumeSession() {
 		return cellNotice(banner, t.Green, width)
 	})
 
-	if len(a.agent.Messages(a.sessionID)) > 0 {
+	if _, ok := a.agent.(recapProvider); ok && len(a.agent.Messages(a.sessionID)) > 0 {
 		a.showRecap()
 	}
 }
@@ -1131,6 +1152,12 @@ func (a *App) resumeSession() {
 // showRecap asynchronously summarizes the session and posts the result as a
 // notice-style cell; the session may keep working meanwhile.
 func (a *App) showRecap() {
+	provider, ok := a.agent.(recapProvider)
+	if !ok {
+		a.appendChat(cellNotice("Recap is unavailable for this agent", theme.Default.Yellow, a.width()))
+		return
+	}
+
 	id := a.sessionID
 
 	if len(a.agent.Messages(id)) == 0 {
@@ -1141,7 +1168,7 @@ func (a *App) showRecap() {
 	a.appendChat(cellNotice("Generating recap…", theme.Default.BrBlack, a.width()))
 
 	go func() {
-		recap, err := a.agent.Recap(a.ctx, id)
+		recap, err := provider.Recap(a.ctx, id)
 
 		a.post(func() {
 			if a.sessionID != id {
@@ -1236,7 +1263,11 @@ func (a *App) showError(title string, err error) {
 }
 
 func (a *App) isToolHidden(name string) bool {
-	for _, t := range a.agent.Tools(a.sessionID) {
+	provider, ok := a.agent.(toolProvider)
+	if !ok {
+		return false
+	}
+	for _, t := range provider.Tools(a.sessionID) {
 		if t.Name == name {
 			return t.Hidden
 		}

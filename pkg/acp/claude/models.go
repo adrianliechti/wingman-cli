@@ -176,6 +176,16 @@ func isValidEffort(m *ModelEntry, level string) bool {
 	return false
 }
 
+func normalizeSessionConfig(models []ModelEntry, modelID, effort string) (string, string) {
+	if m := resolveModel(models, modelID); m != nil {
+		modelID = m.ID
+		if !isValidEffort(m, effort) {
+			effort = "default"
+		}
+	}
+	return modelID, effort
+}
+
 func titleCase(s string) string {
 	if s == "" {
 		return s

@@ -135,13 +135,14 @@ func TestSearchTitle(t *testing.T) {
 
 func TestStripShellPrefix(t *testing.T) {
 	cases := map[string]string{
-		"/bin/zsh -c npm install":          "npm install",
-		"/bin/bash -lc npm install":        "npm install",
-		"zsh npm install":                  "npm install",
-		"sh -c ls -la":                     "ls -la",
-		"npm install":                      "npm install",
-		"/bin/bash -lc './tests.cmd -D=v'": "./tests.cmd -D=v",
-		"/bin/zsh -c 'echo hello'":         "echo hello",
+		"/bin/zsh -c npm install":                 "npm install",
+		"/bin/bash -lc npm install":               "npm install",
+		"zsh npm install":                         "npm install",
+		"sh -c ls -la":                            "ls -la",
+		"npm install":                             "npm install",
+		"/bin/bash -lc './tests.cmd -D=v'":        "./tests.cmd -D=v",
+		"/bin/zsh -c 'echo hello'":                "echo hello",
+		`"/bin/zsh -lc sed -n '1,20p' README.md"`: `sed -n '1,20p' README.md`,
 	}
 	for in, want := range cases {
 		if got := stripShellPrefix(in); got != want {

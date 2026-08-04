@@ -2,128 +2,215 @@ package main
 
 import (
 	"context"
-	"flag"
+	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
-	acpclaude "github.com/adrianliechti/wingman-agent/pkg/acp/claude"
-	acpcodex "github.com/adrianliechti/wingman-agent/pkg/acp/codex"
-	acppi "github.com/adrianliechti/wingman-agent/pkg/acp/pi"
-	acpserver "github.com/adrianliechti/wingman-agent/pkg/acp/server"
-	"github.com/adrianliechti/wingman-agent/pkg/external/claude"
-	"github.com/adrianliechti/wingman-agent/pkg/external/codex"
-	extpi "github.com/adrianliechti/wingman-agent/pkg/external/pi"
+	"github.com/adrianliechti/wingman-agent/pkg/acp/claude"
+	"github.com/adrianliechti/wingman-agent/pkg/acp/codex"
+	"github.com/adrianliechti/wingman-agent/pkg/acp/pi"
+	"github.com/adrianliechti/wingman-agent/pkg/acp/server"
+	claudecli "github.com/adrianliechti/wingman-agent/pkg/external/claude"
+	codexcli "github.com/adrianliechti/wingman-agent/pkg/external/codex"
+	picli "github.com/adrianliechti/wingman-agent/pkg/external/pi"
 )
 
-func runACP(ctx context.Context) {
+type acpBackend string
 
+const (
+	acpBackendNative  acpBackend = "native"
+	acpBackendWingman acpBackend = "wingman"
+)
+
+func parseACPBackend(value string) (acpBackend, error) {
+	switch acpBackend(strings.ToLower(strings.TrimSpace(value))) {
+	case acpBackendNative:
+		return acpBackendNative, nil
+	case acpBackendWingman:
+		return acpBackendWingman, nil
+	default:
+		return "", fmt.Errorf("unknown ACP backend %q (choose native or wingman)", value)
+	}
+}
+
+func printACPHelp() {
+	fmt.Fprint(os.Stdout, `Usage:
+  wingman acp [wingman]
+  wingman acp claude [--backend native|wingman] [--model ID] [--effort LEVEL]
+  wingman acp codex  [--backend native|wingman] [--model ID] [--effort LEVEL]
+  wingman acp pi     [--backend native|wingman]
+
+The native backend reuses the agent's existing configuration and login.
+The wingman backend routes model traffic through WINGMAN_URL (or localhost:4242).
+`)
+}
+
+func runACP(ctx context.Context, args []string) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
-	if len(os.Args) >= 3 {
-		switch os.Args[2] {
-		case "claude":
-			runACPClaude(ctx)
-			return
-		case "codex":
-			runACPCodex(ctx)
-			return
-		case "pi":
-			runACPPi(ctx)
-			return
+	target := "wingman"
+	if len(args) > 0 {
+		target = args[0]
+		args = args[1:]
+	}
+
+	switch target {
+	case "--help", "-h", "help":
+		printACPHelp()
+	case "wingman":
+		if len(args) > 0 {
+			if args[0] == "--help" || args[0] == "-h" {
+				printACPHelp()
+				return
+			}
+			fatal(fmt.Errorf("wingman acp wingman does not accept arguments"))
 		}
-	}
-
-	if err := acpserver.Run(ctx, os.Stdin, os.Stdout); err != nil {
-		fatal(err)
+		if err := server.Run(ctx, os.Stdin, os.Stdout); err != nil {
+			fatal(err)
+		}
+	case "claude":
+		runACPClaude(ctx, args)
+	case "codex":
+		runACPCodex(ctx, args)
+	case "pi":
+		runACPPi(ctx, args)
+	default:
+		fatal(fmt.Errorf("unknown ACP target %q (choose wingman, claude, codex, or pi)", target))
 	}
 }
 
-func runACPClaude(ctx context.Context) {
-	fs := flag.NewFlagSet("acp claude", flag.ExitOnError)
-	model := fs.String("model", "default", "default model id for new sessions")
-	effort := fs.String("effort", "", "default effort level (low|medium|high|xhigh|max)")
-	debug := fs.Bool("debug", false, "log JSON-RPC traffic to stderr")
-	fs.Parse(os.Args[3:])
+func runACPClaude(ctx context.Context, args []string) {
+	model := "default"
+	effort := ""
+	backendName := string(acpBackendNative)
+	debug := false
+
+	fs := newFlags("wingman acp claude")
+	fs.String(&model, "--model ID", "default model id for new sessions")
+	fs.String(&effort, "--effort LEVEL", "default effort level (validated for the selected model)")
+	fs.String(&backendName, "--backend NAME", "model backend (native|wingman)")
+	fs.Bool(&debug, "--debug", "log JSON-RPC traffic to stderr")
+
+	if err := fs.Parse(args); err != nil {
+		fatal(err)
+	}
+
+	backend, err := parseACPBackend(backendName)
+	if err != nil {
+		fatal(err)
+	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
 		fatal(err)
 	}
 
-	cfg, err := claude.NewConfig(ctx, nil)
-	if err != nil {
-		fatal(err)
-	}
-
-	opts := acpclaude.Options{
-		Model:  *model,
-		Effort: *effort,
+	opts := claude.Options{
+		Model:  model,
+		Effort: effort,
 		Cwd:    cwd,
-		Env:    claude.BuildEnv(os.Environ(), cfg),
+		Env:    os.Environ(),
+	}
+	if backend == acpBackendWingman {
+		cfg, err := claudecli.NewConfig(ctx, nil)
+		if err != nil {
+			fatal(err)
+		}
+		opts.Env = claudecli.BuildEnv(os.Environ(), cfg)
 	}
 
-	if err := acpclaude.Run(ctx, opts, os.Stdin, os.Stdout, acpLogger(*debug)); err != nil {
+	if err := claude.Run(ctx, opts, os.Stdin, os.Stdout, acpLogger(debug)); err != nil {
 		fatal(err)
 	}
 }
 
-func runACPCodex(ctx context.Context) {
-	fs := flag.NewFlagSet("acp codex", flag.ExitOnError)
-	model := fs.String("model", "default", "default model id for new sessions")
-	effort := fs.String("effort", "", "default reasoning effort (minimal|low|medium|high|xhigh)")
-	debug := fs.Bool("debug", false, "log JSON-RPC traffic to stderr")
-	fs.Parse(os.Args[3:])
+func runACPCodex(ctx context.Context, args []string) {
+	model := "default"
+	effort := ""
+	backendName := string(acpBackendNative)
+	debug := false
 
-	cfg, err := codex.NewConfig(ctx, nil)
+	fs := newFlags("wingman acp codex")
+	fs.String(&model, "--model ID", "default model id for new sessions")
+	fs.String(&effort, "--effort LEVEL", "default reasoning effort (validated for the selected model)")
+	fs.String(&backendName, "--backend NAME", "model backend (native|wingman)")
+	fs.Bool(&debug, "--debug", "log JSON-RPC traffic to stderr")
+
+	if err := fs.Parse(args); err != nil {
+		fatal(err)
+	}
+
+	backend, err := parseACPBackend(backendName)
 	if err != nil {
 		fatal(err)
 	}
 
-	opts := acpcodex.Options{
-		Model:     *model,
-		Effort:    *effort,
-		Env:       codex.BuildEnv(os.Environ(), cfg),
-		ExtraArgs: codex.BuildArgs(cfg),
+	opts := codex.Options{
+		Model:  model,
+		Effort: effort,
+		Env:    os.Environ(),
+	}
+	if backend == acpBackendWingman {
+		cfg, err := codexcli.NewConfig(ctx, nil)
+		if err != nil {
+			fatal(err)
+		}
+		opts.Env = codexcli.BuildEnv(os.Environ(), cfg)
+		opts.ExtraArgs = codexcli.BuildArgs(cfg)
 	}
 
-	if err := acpcodex.Run(ctx, opts, os.Stdin, os.Stdout, acpLogger(*debug)); err != nil {
+	if err := codex.Run(ctx, opts, os.Stdin, os.Stdout, acpLogger(debug)); err != nil {
 		fatal(err)
 	}
 }
 
-func runACPPi(ctx context.Context) {
-	fs := flag.NewFlagSet("acp pi", flag.ExitOnError)
-	debug := fs.Bool("debug", false, "log JSON-RPC traffic to stderr")
-	fs.Parse(os.Args[3:])
+func runACPPi(ctx context.Context, args []string) {
+	backendName := string(acpBackendNative)
+	debug := false
+
+	fs := newFlags("wingman acp pi")
+	fs.String(&backendName, "--backend NAME", "model backend (native|wingman)")
+	fs.Bool(&debug, "--debug", "log JSON-RPC traffic to stderr")
+
+	if err := fs.Parse(args); err != nil {
+		fatal(err)
+	}
+
+	backend, err := parseACPBackend(backendName)
+	if err != nil {
+		fatal(err)
+	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
 		fatal(err)
 	}
 
-	cfg, err := extpi.NewConfig(ctx, nil)
-	if err != nil {
-		fatal(err)
-	}
-
-	dir, err := extpi.ConfigDir()
-	if err != nil {
-		fatal(err)
-	}
-
-	if err := extpi.WriteModels(dir, cfg); err != nil {
-		fatal(err)
-	}
-
-	opts := acppi.Options{
-		Path:        extpi.BinPath(),
+	opts := pi.Options{
+		Path:        picli.BinPath(),
 		Dir:         cwd,
-		Env:         extpi.BuildEnv(os.Environ(), dir),
-		Args:        extpi.BuildArgs(cfg),
-		SessionsDir: extpi.SessionsDir(dir),
+		Env:         os.Environ(),
+		SessionsDir: picli.NativeSessionsDir(),
+	}
+	if backend == acpBackendWingman {
+		cfg, err := picli.NewConfig(ctx, nil)
+		if err != nil {
+			fatal(err)
+		}
+		dir, err := picli.ConfigDir()
+		if err != nil {
+			fatal(err)
+		}
+		if err := picli.WriteModels(dir, cfg); err != nil {
+			fatal(err)
+		}
+		opts.Env = picli.BuildEnv(os.Environ(), dir)
+		opts.Args = picli.BuildArgs(cfg)
+		opts.SessionsDir = picli.SessionsDir(dir)
 	}
 
-	if err := acppi.Run(ctx, opts, os.Stdin, os.Stdout, acpLogger(*debug)); err != nil {
+	if err := pi.Run(ctx, opts, os.Stdin, os.Stdout, acpLogger(debug)); err != nil {
 		fatal(err)
 	}
 }

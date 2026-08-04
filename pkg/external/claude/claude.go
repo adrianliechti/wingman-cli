@@ -11,12 +11,16 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/external"
 )
 
-func BinPath() (string, error) {
+func BinPath() string {
 	if path := external.LookupPath("claude", ""); path != "" {
-		return path, nil
+		return path
 	}
 
-	return FindPath()
+	if path, err := FindPath(); err == nil {
+		return path
+	}
+
+	return "claude"
 }
 
 func BuildVars(cfg *ClaudeConfig) map[string]string {
@@ -135,12 +139,7 @@ func Run(ctx context.Context, args []string, options *Options) error {
 	}
 
 	if options.Path == "" {
-		path, err := BinPath()
-		if err != nil {
-			return err
-		}
-
-		options.Path = path
+		options.Path = BinPath()
 	}
 
 	if options.Env == nil {

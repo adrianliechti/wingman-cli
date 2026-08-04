@@ -140,16 +140,26 @@ func (a *App) Elicit(ctx context.Context, req tool.ElicitRequest) (tool.ElicitRe
 
 	content := map[string]any{}
 
-	for i, field := range fields {
+	for i := 0; i < len(fields); i++ {
+		field := fields[i]
+		if field.CustomAnswerFor != "" {
+			continue
+		}
 		message := ""
 		if i == 0 {
 			message = req.Message
 		}
 
 		freeText := len(field.Enum) == 0 && field.Type != "boolean"
+		answerField := field
+		customField, hasCustom := customAnswerCompanion(fields, field.Name)
 
 		if !freeText {
-			value, action, err := a.elicitOptionsField(ctx, message, field, len(fields) > 1 && !bare)
+			choiceField := field
+			if hasCustom && len(choiceField.Enum) > 0 {
+				choiceField.Strict = false
+			}
+			value, action, err := a.elicitOptionsField(ctx, message, choiceField, len(fields) > 1 && !bare)
 			if err != nil {
 				return tool.ElicitResult{}, err
 			}
@@ -159,6 +169,9 @@ func (a *App) Elicit(ctx context.Context, req tool.ElicitRequest) (tool.ElicitRe
 				return tool.ElicitResult{Action: tool.ElicitDecline}, nil
 			case "other":
 				freeText = true
+				if hasCustom {
+					answerField = customField
+				}
 			default:
 				if !bare {
 					content[field.Name] = value
@@ -172,10 +185,10 @@ func (a *App) Elicit(ctx context.Context, req tool.ElicitRequest) (tool.ElicitRe
 			continue
 		}
 
-		prompt := formatElicitField(message, field, len(fields) > 1 && !bare)
+		prompt := formatElicitField(message, answerField, len(fields) > 1 && !bare)
 
 		for {
-			text, err := a.askLineLocked(ctx, prompt, elicitPlaceholder(field))
+			text, err := a.askLineLocked(ctx, prompt, elicitPlaceholder(answerField))
 			if err != nil {
 				return tool.ElicitResult{}, err
 			}
@@ -184,14 +197,14 @@ func (a *App) Elicit(ctx context.Context, req tool.ElicitRequest) (tool.ElicitRe
 				return tool.ElicitResult{Action: tool.ElicitDecline}, nil
 			}
 
-			value, ok := parseElicitValue(field, text)
+			value, ok := parseElicitValue(answerField, text)
 			if !ok {
-				prompt = fmt.Sprintf("Invalid %s — try again.", fieldKind(field))
+				prompt = fmt.Sprintf("Invalid %s — try again.", fieldKind(answerField))
 				continue
 			}
 
 			if !bare {
-				content[field.Name] = value
+				content[answerField.Name] = value
 			} else if accepted, _ := value.(bool); !accepted {
 				return tool.ElicitResult{Action: tool.ElicitDecline}, nil
 			}
@@ -200,6 +213,15 @@ func (a *App) Elicit(ctx context.Context, req tool.ElicitRequest) (tool.ElicitRe
 	}
 
 	return tool.ElicitResult{Action: tool.ElicitAccept, Content: content}, nil
+}
+
+func customAnswerCompanion(fields []tool.ElicitField, questionID string) (tool.ElicitField, bool) {
+	for _, field := range fields {
+		if field.CustomAnswerFor == questionID {
+			return field, true
+		}
+	}
+	return tool.ElicitField{}, false
 }
 
 // elicitOptionsField collects an enum or boolean answer through a selection

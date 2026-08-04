@@ -74,6 +74,11 @@ type ElicitField struct {
 	// a []string instead of a string. Never produced by the MCP bridge.
 	Multiple bool `json:"multiple,omitempty"`
 
+	// CustomAnswerFor marks this field as the free-text companion for another
+	// enum field. UIs can present it as that field's "Other" choice instead of
+	// asking an unconditional second question.
+	CustomAnswerFor string `json:"custom_answer_for,omitempty"`
+
 	Default any `json:"default,omitempty"`
 }
 

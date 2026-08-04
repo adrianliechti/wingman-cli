@@ -256,7 +256,10 @@ export function ChatPanel({
 	useEffect(() => {
 		if (!tokenOpen) return;
 		let cancelled = false;
-		fetch("/api/skills")
+		const skillsURL = sessionId
+			? `/api/skills?session=${encodeURIComponent(sessionId)}`
+			: "/api/skills";
+		fetch(skillsURL)
 			.then((r) => (r.ok ? r.json() : []))
 			.then((data: Skill[]) => {
 				if (!cancelled) setSkills(data);
@@ -267,7 +270,7 @@ export function ChatPanel({
 		return () => {
 			cancelled = true;
 		};
-	}, [tokenOpen]);
+	}, [tokenOpen, sessionId]);
 
 	const skillQuery = skillToken ? skillToken.query.toLowerCase() : null;
 	const skillMatches = useMemo(() => {
@@ -484,7 +487,8 @@ export function ChatPanel({
 
 			const end = wordEndAt(input, caret);
 			const whole = tok.start === 0 && end === input.length;
-			const hasArgs = !!s.arguments && s.arguments.length > 0;
+			const hasArgs =
+				(!!s.arguments && s.arguments.length > 0) || !!s.input_hint;
 
 			if (whole && !hasArgs) {
 				void handleSubmit(undefined, `/${s.name}`);

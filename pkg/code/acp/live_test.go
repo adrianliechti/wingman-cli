@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -10,11 +11,11 @@ import (
 
 	acpsdk "github.com/coder/acp-go-sdk"
 
-	acpclaude "github.com/adrianliechti/wingman-agent/pkg/acp/claude"
+	"github.com/adrianliechti/wingman-agent/pkg/acp/claude"
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
-	"github.com/adrianliechti/wingman-agent/pkg/external/claude"
+	claudecli "github.com/adrianliechti/wingman-agent/pkg/external/claude"
 )
 
 type scriptedUI struct {
@@ -40,16 +41,16 @@ func (u *scriptedUI) requests() []tool.ElicitRequest {
 	return append([]tool.ElicitRequest(nil), u.elicits...)
 }
 
-// TestLiveWebPipelineAskUserQuestion runs the exact in-process wiring the web
-// server uses for the claude agent (server/agents.go claudeBackend), with the
-// real CLI: AskUserQuestion must arrive at the code.UI as a translated form
-// elicitation, and the answer must round-trip back to the model.
+// TestLiveWebPipelineAskUserQuestion runs the exact in-process wiring the
+// shared agent registry uses for Claude, with the real CLI: AskUserQuestion
+// must arrive at the code.UI as a translated form elicitation, and the answer
+// must round-trip back to the model.
 func TestLiveWebPipelineAskUserQuestion(t *testing.T) {
 	if os.Getenv("CLAUDE_ACP_LIVE") == "" {
 		t.Skip("set CLAUDE_ACP_LIVE=1 to run the live web pipeline test")
 	}
-	path, err := claude.BinPath()
-	if err != nil {
+	path := claudecli.BinPath()
+	if _, err := exec.LookPath(path); err != nil {
 		t.Skipf("claude not found: %v", err)
 	}
 
@@ -59,8 +60,8 @@ func TestLiveWebPipelineAskUserQuestion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := acpclaude.New(acpclaude.Options{Path: path, Env: os.Environ(), Cwd: dir})
-	a, err := NewInProcess(ws, "claude", srv, func(conn *acpsdk.AgentSideConnection) {
+	srv := claude.New(claude.Options{Path: path, Env: os.Environ(), Cwd: dir})
+	a, err := NewInProcess(context.Background(), ws, "claude", srv, func(conn *acpsdk.AgentSideConnection) {
 		srv.SetAgentConnection(conn)
 	}, srv.Close)
 	if err != nil {

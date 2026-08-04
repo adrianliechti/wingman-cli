@@ -5,7 +5,7 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
-	coder "github.com/adrianliechti/wingman-agent/pkg/code/agent"
+	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 )
 
 func TestReleaseToolCellKeepsLiveCellUntilMatchingResult(t *testing.T) {
@@ -38,7 +38,7 @@ func TestActivateSessionResetsTurnState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a := &App{agent: coder.New(ws, &agent.Config{}, nil), sessionID: "old", sessionEpoch: 3}
+	a := &App{agent: codeagent.New(ws, &agent.Config{}, nil), sessionID: "old", sessionEpoch: 3}
 	a.phase.Store(int32(PhaseStreaming))
 	a.streamingText = "partial"
 	a.streamingReasoning = "thinking"

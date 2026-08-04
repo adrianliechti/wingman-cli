@@ -34,9 +34,15 @@ func (a *App) builtinCommands() []slashCommand {
 		{Name: "/plan", Desc: "Enter planning mode", Run: (*App).enterPlanMode},
 		{Name: "/agent", Desc: "Return to execution mode", Run: (*App).exitPlanMode},
 		{Name: "/problems", Desc: "Show problems", Run: (*App).showDiagnosticsView},
-		{Name: "/context", Desc: "Show context window usage", Run: (*App).showContextStats},
-		{Name: "/tasks", Desc: "Show background agents", Busy: true, Run: (*App).showTasks},
-		{Name: "/recap", Desc: "Summarize the session so far", Run: (*App).showRecap},
+	}
+	if _, ok := a.agent.(contextStatsProvider); ok {
+		cmds = append(cmds, slashCommand{Name: "/context", Desc: "Show context window usage", Run: (*App).showContextStats})
+	}
+	if _, ok := a.agent.(taskProvider); ok {
+		cmds = append(cmds, slashCommand{Name: "/tasks", Desc: "Show background agents", Busy: true, Run: (*App).showTasks})
+	}
+	if _, ok := a.agent.(recapProvider); ok {
+		cmds = append(cmds, slashCommand{Name: "/recap", Desc: "Summarize the session so far", Run: (*App).showRecap})
 	}
 
 	if a.agent.Workspace().HasRewind() {
@@ -86,8 +92,38 @@ func (a *App) skillCommands() []slashCommand {
 	return cmds
 }
 
+func (a *App) agentCommands() []slashCommand {
+	provider, ok := a.agent.(code.CommandProvider)
+	if !ok {
+		return nil
+	}
+	commands := provider.Commands(a.sessionID)
+	result := make([]slashCommand, 0, len(commands))
+	for _, command := range commands {
+		name := "/" + strings.TrimPrefix(command.Name, "/")
+		description := command.Description
+		if description == "" {
+			description = command.InputHint
+		}
+		result = append(result, slashCommand{Name: name, Desc: description})
+	}
+	return result
+}
+
 func (a *App) availableCommands() []slashCommand {
-	return append(a.builtinCommands(), a.skillCommands()...)
+	groups := [][]slashCommand{a.builtinCommands(), a.skillCommands(), a.agentCommands()}
+	seen := map[string]bool{}
+	var result []slashCommand
+	for _, group := range groups {
+		for _, command := range group {
+			if seen[command.Name] {
+				continue
+			}
+			seen[command.Name] = true
+			result = append(result, command)
+		}
+	}
+	return result
 }
 
 // slashToken returns the /command token the cursor sits in: the rune index
@@ -216,7 +252,7 @@ func (a *App) submitInput() {
 
 	skills := a.agent.Workspace().Skills
 
-	if name, _, ok := skill.ParseCommand(query); ok && skill.FindSkill(name, skills) == nil {
+	if name, _, ok := skill.ParseCommand(query); ok && skill.FindSkill(name, skills) == nil && !a.hasAgentCommand(name) {
 		a.editor.SetText("")
 		a.appendChat(cellNotice(fmt.Sprintf("Unknown command: /%s", name), theme.Default.Yellow, a.width()))
 		return
@@ -268,6 +304,15 @@ func (a *App) submitInput() {
 	a.submitAgentInput(input, displayText)
 }
 
+func (a *App) hasAgentCommand(name string) bool {
+	for _, command := range a.agentCommands() {
+		if strings.TrimPrefix(command.Name, "/") == name {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *App) submitAgentInput(input []agent.Content, echo string) {
 	id := uuid.NewString()
 	a.rememberTurn(id, input)
@@ -296,9 +341,10 @@ func (a *App) showHelp() {
 
 	builtinCmds := a.builtinCommands()
 	skillCmds := a.skillCommands()
+	agentCmds := a.agentCommands()
 
 	maxLen := 0
-	for _, cmd := range append(append([]slashCommand{}, builtinCmds...), skillCmds...) {
+	for _, cmd := range append(append(append([]slashCommand{}, builtinCmds...), skillCmds...), agentCmds...) {
 		if len(cmd.Name) > maxLen {
 			maxLen = len(cmd.Name)
 		}
@@ -319,6 +365,14 @@ func (a *App) showHelp() {
 			lines = append(lines, cellIndent+"  "+colored(t.Cyan, cmd.Name)+pad+"  "+dim(cmd.Desc))
 		}
 	}
+	if len(agentCmds) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, cellIndent+bold("agent commands"))
+		for _, cmd := range agentCmds {
+			pad := strings.Repeat(" ", maxLen-len(cmd.Name))
+			lines = append(lines, cellIndent+"  "+colored(t.Cyan, cmd.Name)+pad+"  "+dim(cmd.Desc))
+		}
+	}
 
 	lines = append(lines, "")
 
@@ -328,7 +382,12 @@ func (a *App) showHelp() {
 func (a *App) showTasks() {
 	t := theme.Default
 
-	reg := a.agent.Tasks(a.sessionID)
+	provider, ok := a.agent.(taskProvider)
+	if !ok {
+		a.appendChat(cellNotice("Background agents are unavailable for this agent", t.Yellow, a.width()))
+		return
+	}
+	reg := provider.Tasks(a.sessionID)
 	if reg == nil {
 		a.appendChat(cellNotice("No background agents in this session", t.Yellow, a.width()))
 		return

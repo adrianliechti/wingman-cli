@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/task"
+	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/model"
 	"github.com/adrianliechti/wingman-agent/pkg/tui"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/ansi"
@@ -68,8 +70,11 @@ func (a *App) contextLeftPercent() (int, bool) {
 		return 0, false
 	}
 
-	_, currentModel := a.agent.Models(a.sessionID)
-	window := int64(agent.ContextWindowFor(currentModel, false))
+	window := a.contextWindow
+	if window <= 0 {
+		_, currentModel := a.agent.Models(a.sessionID)
+		window = int64(agent.ContextWindowFor(currentModel, false))
+	}
 	if window <= 0 {
 		return 0, false
 	}
@@ -85,7 +90,11 @@ func (a *App) footerLine(width int) string {
 
 	var right []string
 
-	if reg := a.agent.Tasks(a.sessionID); reg != nil {
+	var reg *task.Registry
+	if provider, ok := a.agent.(taskProvider); ok {
+		reg = provider.Tasks(a.sessionID)
+	}
+	if reg != nil {
 		if running, _ := reg.Counts(); running == 1 {
 			right = append(right, colored(t.Cyan, "1 agent"))
 		} else if running > 1 {
@@ -118,6 +127,10 @@ func (a *App) footerLine(width int) string {
 
 	if a.currentMode == ModePlan {
 		right = append(right, colored(t.Yellow, "plan"))
+	}
+
+	if name := a.agent.Name(); name != "" && name != code.BuiltinAgentName {
+		right = append(right, dim(name))
 	}
 
 	rightText := strings.Join(right, dim(" · "))

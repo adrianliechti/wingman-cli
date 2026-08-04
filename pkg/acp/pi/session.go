@@ -16,14 +16,16 @@ import (
 )
 
 type session struct {
-	id   acp.SessionId
-	cwd  string
-	proc *process
+	id      acp.SessionId
+	cwd     string
+	proc    *process
+	cleanup func()
 
-	mu           sync.Mutex
-	models       []modelEntry
-	currentModel string
-	thinking     string
+	mu             sync.Mutex
+	models         []modelEntry
+	currentModel   string
+	thinkingLevels []string
+	thinking       string
 
 	cancelRequested atomic.Bool
 	cancelTurn      context.CancelFunc
@@ -36,7 +38,37 @@ func newSession(id acp.SessionId, cwd string, proc *process) *session {
 func (s *session) configOptions() []acp.SessionConfigOption {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return buildConfigOptions(s.models, s.currentModel, s.thinking)
+	return buildConfigOptions(s.models, s.currentModel, s.thinkingLevels, s.thinking)
+}
+
+func (s *session) refreshConfiguration(ctx context.Context) error {
+	stateData, err := s.proc.getState(ctx)
+	if err != nil {
+		return err
+	}
+	state := parseState(stateData)
+
+	levelsData, levelsErr := s.proc.getAvailableThinkingLevels(ctx)
+	levels := parseAvailableThinkingLevels(levelsData)
+	if levelsErr != nil || len(levels) == 0 {
+		levels = append([]string(nil), fallbackThinkingLevels...)
+	}
+
+	s.mu.Lock()
+	if current := state.currentModel(); current != "" {
+		s.currentModel = current
+	}
+	s.thinkingLevels = levels
+	s.thinking = state.thinking()
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *session) close() {
+	s.proc.dispose()
+	if s.cleanup != nil {
+		s.cleanup()
+	}
 }
 
 func (s *session) cancel() {
@@ -190,13 +222,13 @@ func (t *turn) handle(raw json.RawMessage) {
 	case "auto_retry_end":
 		t.emit(acp.UpdateAgentMessageText("Retry finished, resuming.\n\n"))
 
-	case "auto_compaction_start":
+	case "compaction_start":
 		t.emit(acp.UpdateAgentMessageText("Context nearing limit, running automatic compaction...\n\n"))
 
-	case "auto_compaction_end":
+	case "compaction_end":
 		t.emit(acp.UpdateAgentMessageText("Automatic compaction finished.\n\n"))
 
-	case "agent_end":
+	case "agent_settled":
 		reason := acp.StopReasonEndTurn
 		if t.sess.cancelRequested.Load() {
 			reason = acp.StopReasonCancelled
@@ -446,10 +478,15 @@ func (t *turn) handleExtensionUI(raw json.RawMessage) {
 			u.AgentMessageChunk.Meta = map[string]any{"piAcp": map[string]any{"notify": map[string]any{"level": level}}}
 			t.emit(u)
 		}
+
+	case "input", "editor":
+		// ACP has no free-form input primitive. Cancel dialog-style requests so
+		// the extension can continue instead of waiting forever.
 		t.sess.proc.sendExtensionResponse(map[string]any{"id": p.ID, "cancelled": true})
 
 	default:
-		t.sess.proc.sendExtensionResponse(map[string]any{"id": p.ID, "cancelled": true})
+		// setStatus, setWidget, setTitle, and set_editor_text are fire-and-forget
+		// in Pi RPC mode. Sending a response for them is a protocol violation.
 	}
 }
 

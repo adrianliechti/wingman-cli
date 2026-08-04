@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/coder/acp-go-sdk"
 )
@@ -20,15 +21,25 @@ type eventDispatcher struct {
 
 	toolOut         map[string]*strings.Builder
 	seenReasoning   map[string]bool
+	seenAgentText   map[string]bool
 	guardianStarted map[string]bool
 	startedTools    map[string]bool
 	agentPhases     map[string]string
 	planText        map[string]string
+	planEmitted     map[string]string
+	planEmittedAt   map[string]time.Time
 	lastGoal        string
+	planUpdates     bool
 
-	mu      sync.Mutex
-	failure error
-	usage   *acp.Usage
+	mu            sync.Mutex
+	failure       error
+	usage         *acp.Usage
+	completedPlan *completedPlan
+}
+
+type completedPlan struct {
+	itemID string
+	text   string
 }
 
 func newEventDispatcher(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId) *eventDispatcher {
@@ -39,10 +50,13 @@ func newEventDispatcher(ctx context.Context, conn *acp.AgentSideConnection, sid 
 		done:            make(chan turnCompleted, 1),
 		toolOut:         map[string]*strings.Builder{},
 		seenReasoning:   map[string]bool{},
+		seenAgentText:   map[string]bool{},
 		guardianStarted: map[string]bool{},
 		startedTools:    map[string]bool{},
 		agentPhases:     map[string]string{},
 		planText:        map[string]string{},
+		planEmitted:     map[string]string{},
+		planEmittedAt:   map[string]time.Time{},
 	}
 }
 
@@ -70,6 +84,20 @@ func (d *eventDispatcher) getFailure() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.failure
+}
+
+func (d *eventDispatcher) takeCompletedPlan() *completedPlan {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	plan := d.completedPlan
+	d.completedPlan = nil
+	return plan
+}
+
+func (d *eventDispatcher) setCompletedPlan(itemID, text string) {
+	d.mu.Lock()
+	d.completedPlan = &completedPlan{itemID: itemID, text: text}
+	d.mu.Unlock()
 }
 
 // isFatalTurnError reports whether a codex `error` notification represents an
@@ -134,6 +162,7 @@ func (d *eventDispatcher) handle(method string, params json.RawMessage) {
 			Delta  string `json:"delta"`
 		}
 		if json.Unmarshal(params, &p) == nil && p.Delta != "" {
+			d.seenAgentText[p.ItemID] = true
 			d.update(agentMessageUpdate(p.Delta, p.ItemID, d.agentPhases[p.ItemID]))
 		}
 
@@ -196,7 +225,9 @@ func (d *eventDispatcher) handle(method string, params json.RawMessage) {
 		}
 
 	case "turn/plan/updated":
-		d.handlePlanUpdated(params)
+		if d.planUpdates {
+			d.handlePlanUpdated(params)
+		}
 
 	case "error":
 		var p struct {
@@ -258,6 +289,12 @@ func (d *eventDispatcher) handle(method string, params json.RawMessage) {
 		}
 		if json.Unmarshal(params, &p) == nil && p.ItemID != "" && p.Delta != "" {
 			d.planText[p.ItemID] += p.Delta
+			if d.planUpdates {
+				now := time.Now()
+				if d.planEmitted[p.ItemID] == "" || now.Sub(d.planEmittedAt[p.ItemID]) >= 100*time.Millisecond {
+					d.emitMarkdownPlan(p.ItemID, d.planText[p.ItemID])
+				}
+			}
 		}
 
 	case "thread/tokenUsage/updated":
@@ -384,7 +421,7 @@ func (d *eventDispatcher) handleItemStarted(params json.RawMessage) {
 		d.update(acp.StartToolCall(acp.ToolCallId(id), title,
 			acp.WithStartKind(acp.ToolKindExecute),
 			acp.WithStartStatus(acp.ToolCallStatusInProgress),
-			acp.WithStartRawInput(map[string]any{"command": it.Command, "cwd": it.Cwd}),
+			acp.WithStartRawInput(map[string]any{"command": title, "cwd": it.Cwd}),
 		))
 
 	case "fileChange":
@@ -470,9 +507,15 @@ func (d *eventDispatcher) handleItemCompleted(params json.RawMessage) {
 	case "agentMessage":
 		var it struct {
 			Phase string `json:"phase"`
+			Text  string `json:"text"`
 		}
 		_ = json.Unmarshal(env.Item, &it)
 		d.agentPhases[id] = it.Phase
+		if !d.seenAgentText[id] && it.Text != "" {
+			d.update(agentMessageUpdate(it.Text, id, it.Phase))
+		}
+		delete(d.seenAgentText, id)
+		delete(d.agentPhases, id)
 
 	case "commandExecution":
 		var it struct {
@@ -575,8 +618,15 @@ func (d *eventDispatcher) handleItemCompleted(params json.RawMessage) {
 		}
 		delete(d.planText, id)
 		if text != "" {
-			d.update(acp.UpdateAgentMessageText("Plan:\n" + text))
+			if d.planUpdates {
+				d.emitMarkdownPlan(id, text)
+			} else {
+				d.update(acp.UpdateAgentMessageText("Plan:\n" + text))
+			}
+			d.setCompletedPlan(id, text)
 		}
+		delete(d.planEmitted, id)
+		delete(d.planEmittedAt, id)
 
 	case "exitedReviewMode":
 		var it struct {
@@ -601,6 +651,18 @@ func (d *eventDispatcher) handleItemCompleted(params json.RawMessage) {
 			d.update(acp.UpdateAgentThoughtText(text))
 		}
 	}
+}
+
+func (d *eventDispatcher) emitMarkdownPlan(itemID, text string) {
+	if text == "" || d.planEmitted[itemID] == text {
+		return
+	}
+	d.planEmitted[itemID] = text
+	d.planEmittedAt[itemID] = time.Now()
+	d.update(acp.SessionUpdate{PlanUpdate: &acp.SessionPlanUpdate{
+		SessionUpdate: "plan_update",
+		Plan:          acp.NewPlanUpdateContentMarkdown(acp.PlanId(itemID), text),
+	}})
 }
 
 func mcpRawOutput(result, mcpErr json.RawMessage) map[string]any {
@@ -837,10 +899,18 @@ var shellPrefixRe = regexp.MustCompile(`^(?:/bin/)?(?:bash|zsh|sh)\s+(?:-[lc]+\s
 
 func stripShellPrefix(cmd string) string {
 	c := strings.TrimSpace(cmd)
+	c = trimOuterCommandQuotes(c)
 	c = shellPrefixRe.ReplaceAllString(c, "")
+	return trimOuterCommandQuotes(strings.TrimSpace(c))
+}
 
-	if len(c) >= 2 && strings.HasPrefix(c, "'") && strings.HasSuffix(c, "'") {
-		c = c[1 : len(c)-1]
+func trimOuterCommandQuotes(command string) string {
+	if len(command) < 2 {
+		return command
 	}
-	return c
+	first, last := command[0], command[len(command)-1]
+	if (first == '\'' || first == '"') && last == first {
+		return command[1 : len(command)-1]
+	}
+	return command
 }

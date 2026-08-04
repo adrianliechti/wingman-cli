@@ -61,6 +61,10 @@ type cliEnvelope struct {
 	ParentToolUseID    string          `json:"parent_tool_use_id,omitempty"`
 	TaskID             string          `json:"task_id,omitempty"`
 	ToolUseID          string          `json:"tool_use_id,omitempty"`
+	ToolName           string          `json:"tool_name,omitempty"`
+	ElapsedTimeSeconds float64         `json:"elapsed_time_seconds,omitempty"`
+	SubagentType       string          `json:"subagent_type,omitempty"`
+	SubagentRetry      map[string]any  `json:"subagent_retry,omitempty"`
 	Patch              struct {
 		Status string `json:"status,omitempty"`
 	} `json:"patch,omitempty"`

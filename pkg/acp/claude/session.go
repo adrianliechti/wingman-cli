@@ -21,6 +21,7 @@ type session struct {
 	cwd string
 
 	formElicitation bool
+	planUpdates     bool
 
 	mu             sync.Mutex
 	modelID        string
@@ -194,6 +195,10 @@ func (s *session) ensureProc(conn *acp.AgentSideConnection, path string, env []s
 		return nil, fmt.Errorf("start claude: %w", err)
 	}
 
+	var plan *taskPlan
+	if s.planUpdates {
+		plan = newTaskPlan()
+	}
 	p := &claudeProc{
 		cmd:             cmd,
 		out:             &streamWriter{w: stdin},
@@ -206,7 +211,7 @@ func (s *session) ensureProc(conn *acp.AgentSideConnection, path string, env []s
 		tools:           toolUseCache{},
 		emitted:         newToolCallTracker(),
 		streamedMsgs:    map[string]bool{},
-		plan:            newTaskPlan(),
+		plan:            plan,
 		subagentParents: make(map[string]string),
 		results:         make(chan turnResult, 1),
 		dead:            make(chan struct{}),
@@ -336,9 +341,11 @@ func (p *claudeProc) read(ctx context.Context, conn *acp.AgentSideConnection, si
 				fmt.Fprintf(os.Stderr, "claude-acp: emit assistant: %v\n", err)
 			}
 		case "user":
-			if err := emitToolResults(ctx, conn, sid, env.Message, p.tools, p.plan, env.ParentToolUseID); err != nil {
+			if err := emitToolResults(ctx, conn, sid, env.Message, p.tools, p.emitted, p.plan, env.ParentToolUseID); err != nil {
 				fmt.Fprintf(os.Stderr, "claude-acp: emit tool result: %v\n", err)
 			}
+		case "tool_progress":
+			p.handleToolProgress(ctx, conn, sid, env)
 		case "control_request":
 			var req controlRequest
 			if json.Unmarshal(line, &req) == nil {
@@ -412,13 +419,17 @@ func (p *claudeProc) handleSystem(ctx context.Context, conn *acp.AgentSideConnec
 		}
 
 	case "permission_denied":
-		if env.ToolUseID != "" {
+		toolCallID := env.ToolUseID
+		if !p.emitted.has(toolCallID) {
+			toolCallID = env.ParentToolUseID
+		}
+		if p.emitted.has(toolCallID) {
 			msg := "Permission denied"
 			var detail string
 			if json.Unmarshal(env.Message, &detail) == nil && detail != "" {
 				msg = "Permission denied: " + detail
 			}
-			_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: acp.UpdateToolCall(acp.ToolCallId(env.ToolUseID),
+			_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: acp.UpdateToolCall(acp.ToolCallId(toolCallID),
 				acp.WithUpdateStatus(acp.ToolCallStatusFailed),
 				acp.WithUpdateContent([]acp.ToolCallContent{acp.ToolContent(acp.TextBlock(msg))}),
 			)})
@@ -441,6 +452,32 @@ func (p *claudeProc) handleSystem(ctx context.Context, conn *acp.AgentSideConnec
 			p.subagentMu.Unlock()
 		}
 	}
+}
+
+func (p *claudeProc) handleToolProgress(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, env cliEnvelope) {
+	toolCallID := env.ToolUseID
+	if !p.emitted.has(toolCallID) {
+		toolCallID = env.ParentToolUseID
+	}
+	if !p.emitted.has(toolCallID) {
+		return
+	}
+	name := env.ToolName
+	if name == "" {
+		name = p.tools[toolCallID]
+	}
+	update := acp.UpdateToolCall(acp.ToolCallId(toolCallID), acp.WithUpdateStatus(acp.ToolCallStatusInProgress))
+	claudeMeta := map[string]any{"toolName": name, "toolResponse": map[string]any{"elapsedTimeSeconds": env.ElapsedTimeSeconds}}
+	if env.SubagentType != "" {
+		claudeMeta["toolResponse"].(map[string]any)["subagentType"] = env.SubagentType
+	}
+	if env.SubagentRetry != nil {
+		claudeMeta["toolResponse"].(map[string]any)["subagentRetry"] = env.SubagentRetry
+	}
+	if update.ToolCallUpdate != nil {
+		update.ToolCallUpdate.Meta = map[string]any{"claudeCode": claudeMeta}
+	}
+	_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: update})
 }
 
 func (p *claudeProc) applyFallbackModel(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, fallback string) {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 )
 
 func fatal(err error) {
@@ -17,60 +18,82 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	if len(os.Args) < 2 {
-		runTUI(ctx, "")
+	args := os.Args[1:]
+
+	if len(args) == 0 {
+		runTUI(ctx, tuiOptions{Agent: "wingman"})
 		return
 	}
 
-	switch os.Args[1] {
+	switch args[0] {
 	case "--help", "-h", "help":
 		printHelp(os.Stdout)
-		return
 	case "server":
-		runServer(ctx)
-		return
+		runServer(ctx, args[1:])
 	case "acp":
-		runACP(ctx)
-		return
+		runACP(ctx, args[1:])
 	case "claw":
-		runClaw(ctx)
-		return
+		runClaw(ctx, args[1:])
 	case "proxy":
-		if os.Getenv("WINGMAN_URL") != "" {
-			runProxy(ctx)
-			return
-		}
+		runProxy(ctx, args[1:])
 	case "run":
-		runRun(ctx)
-		return
-	case "--resume":
-		sessionID := "latest"
-		if len(os.Args) > 2 {
-			sessionID = os.Args[2]
+		runRun(ctx, args[1:])
+	default:
+		if !strings.HasPrefix(args[0], "-") {
+			fatal(fmt.Errorf("unknown command %q (run 'wingman --help' for usage)", args[0]))
 		}
-		runTUI(ctx, sessionID)
-		return
+
+		opts, err := parseTUIArgs(args)
+
+		if err != nil {
+			fatal(err)
+		}
+
+		runTUI(ctx, opts)
+	}
+}
+
+func parseTUIArgs(args []string) (tuiOptions, error) {
+	opts := tuiOptions{Agent: "wingman"}
+
+	var latest bool
+
+	fs := newFlags("wingman")
+	fs.String(&opts.Agent, "--agent, -a name", "use wingman or any detected/configured agent")
+	fs.Bool(&latest, "--continue, -c", "resume the agent's latest session")
+	fs.String(&opts.SessionID, "--resume, -r ID", "resume the specified session")
+
+	if err := fs.Parse(args); err != nil {
+		return tuiOptions{}, err
 	}
 
-	runTUI(ctx, "")
+	if latest && opts.SessionID == "" {
+		opts.SessionID = "latest"
+	}
+
+	return opts, nil
 }
 
 func printHelp(w io.Writer) {
 	fmt.Fprint(w, `wingman — AI coding agent
 
 Usage:
-  wingman [--resume [id]]      Launch the agent TUI
-  wingman server [-port N] [-no-browser]  Run the web UI server
-  wingman acp [target]         Run as an ACP stdio server (wingman | claude | codex | pi)
-  wingman claw [--plain]      Run the claw multi-agent runner (TUI; plain REPL when piped or with --plain)
-  wingman proxy [-port N]      Run the API proxy + dashboard (requires WINGMAN_URL)
-  wingman run <target> [args]  Run an external agent through wingman
+  wingman [flags]               Launch the agent TUI
+  wingman server [flags]        Run the web UI server
+  wingman acp [target] [flags]  Run as an ACP stdio server (wingman | claude | codex | pi)
+  wingman claw [flags]          Run the claw multi-agent runner (TUI; plain REPL when piped)
+  wingman proxy [flags]         Run the API proxy + dashboard (requires WINGMAN_URL)
+  wingman run <target> [args]   Run an external agent through wingman
 
 Run targets:
   claude, claude-desktop, codex, copilot, gemini, goose, junie, opencode, pi
 
-Flags:
-  --resume [id]   Resume the latest (or specified) saved session
-  --help, -h      Show this help
+TUI flags:
+  --agent, -a name  Use wingman or any detected/configured agent (default: wingman)
+  --continue, -c    Resume the agent's latest session
+  --resume, -r ID   Resume the specified session
+  --help, -h        Show this help
+
+Run 'wingman <command> --help' for command flags.
 `)
 }

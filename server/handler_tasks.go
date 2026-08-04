@@ -11,7 +11,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/task"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
-	coder "github.com/adrianliechti/wingman-agent/pkg/code/agent"
+	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 )
 
 type TaskEntry struct {
@@ -37,7 +37,7 @@ func taskEntry(t *task.Task) TaskEntry {
 }
 
 func (s *Server) sessionTasks(sessionID string) *task.Registry {
-	ca, ok := s.activeAgent().(*coder.Agent)
+	ca, ok := s.activeAgent().(*codeagent.Agent)
 	if !ok {
 		return nil
 	}

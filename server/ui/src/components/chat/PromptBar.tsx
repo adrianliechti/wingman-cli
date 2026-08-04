@@ -15,6 +15,15 @@ function promptFieldValue(
 	return other ? [other] : picked;
 }
 
+function coercePromptValue(field: PromptField, value: string): unknown {
+	if (field.type === "boolean") return value === "true";
+	if (field.type === "number" || field.type === "integer") {
+		const number = Number(value);
+		return Number.isFinite(number) ? number : value;
+	}
+	return value;
+}
+
 export function PromptBar({
 	prompt,
 	onReply,
@@ -22,10 +31,21 @@ export function PromptBar({
 	prompt: PendingPrompt;
 	onReply: (reply: PromptReply) => void;
 }) {
-	const fields = useMemo(
+	const allFields = useMemo(
 		() => (prompt.kind === "ask" ? (prompt.fields ?? []) : []),
 		[prompt.kind, prompt.fields],
 	);
+	const fields = useMemo(
+		() => allFields.filter((field) => !field.custom_answer_for),
+		[allFields],
+	);
+	const customFields = useMemo(() => {
+		const result: Record<string, PromptField> = {};
+		for (const field of allFields) {
+			if (field.custom_answer_for) result[field.custom_answer_for] = field;
+		}
+		return result;
+	}, [allFields]);
 	const [selections, setSelections] = useState<Record<string, string[]>>(() => {
 		const init: Record<string, string[]> = {};
 		for (const f of fields) {
@@ -40,6 +60,9 @@ export function PromptBar({
 			if (f.default != null && !f.enum?.length) {
 				init[f.name] = String(f.default);
 			}
+		}
+		for (const [question, field] of Object.entries(customFields)) {
+			if (field.default != null) init[question] = String(field.default);
 		}
 		return init;
 	});
@@ -70,12 +93,18 @@ export function PromptBar({
 	const submit = useCallback(() => {
 		const content: Record<string, unknown> = {};
 		for (const f of fields) {
+			const other = (others[f.name] ?? "").trim();
+			const custom = customFields[f.name];
+			if (other && custom) {
+				content[custom.name] = coercePromptValue(custom, other);
+				continue;
+			}
 			const value = promptFieldValue(f, selections, others);
 			if (value.length === 0) continue;
-			content[f.name] = f.multiple ? value : value[0];
+			content[f.name] = f.multiple ? value : coercePromptValue(f, value[0]);
 		}
 		accept(content);
-	}, [fields, selections, others, accept]);
+	}, [fields, selections, others, customFields, accept]);
 
 	const [activeIdx, setActiveIdx] = useState(0);
 
@@ -134,8 +163,10 @@ export function PromptBar({
 		const f = fields[0];
 		if (!f) return;
 		const value = (others[f.name] ?? "").trim();
-		if (value) accept({ [f.name]: value });
-	}, [fields, others, accept]);
+		if (!value) return;
+		const target = customFields[f.name] ?? f;
+		accept({ [target.name]: coercePromptValue(target, value) });
+	}, [fields, others, customFields, accept]);
 
 	const declineButton = (
 		<button

@@ -146,6 +146,12 @@ func createTransport(server ServerConfig, dir string) (mcp.Transport, error) {
 	if server.Command != "" {
 		cmd := exec.Command(server.Command, server.Args...)
 		cmd.Dir = dir
+		if len(server.Env) > 0 {
+			cmd.Env = os.Environ()
+			for _, name := range slices.Sorted(maps.Keys(server.Env)) {
+				cmd.Env = append(cmd.Env, name+"="+server.Env[name])
+			}
+		}
 
 		return &mcp.CommandTransport{
 			Command: cmd,

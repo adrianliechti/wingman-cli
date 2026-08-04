@@ -432,6 +432,12 @@ func TestAskElicitationSchema(t *testing.T) {
 	}
 	if custom, _ := single.Properties["question_0_custom"].(map[string]any); custom["type"] != "string" {
 		t.Errorf("custom field = %#v", custom)
+	} else {
+		meta, _ := custom["_meta"].(map[string]any)
+		marker, _ := meta["_askUserQuestionCustomAnswer"].(map[string]any)
+		if marker["questionId"] != "question_0" || marker["isCustomAnswer"] != true {
+			t.Errorf("custom field marker = %#v", marker)
+		}
 	}
 
 	multi := askElicitationSchema([]askQuestion{

@@ -228,3 +228,48 @@ func TestAskUserQuestionInvalidInputDenies(t *testing.T) {
 		t.Fatalf("invalid input should deny, got %s", out.String())
 	}
 }
+
+func TestToolCallTrackerCompletesAndDropsFailedStarts(t *testing.T) {
+	tracker := newToolCallTracker()
+	starts, refinements := 0, 0
+	if err := tracker.emit("tool-1", func() error { starts++; return nil }, func() error { refinements++; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := tracker.emit("tool-1", func() error { starts++; return nil }, func() error { refinements++; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if starts != 1 || refinements != 1 || !tracker.has("tool-1") {
+		t.Fatalf("starts=%d refinements=%d active=%v", starts, refinements, tracker.has("tool-1"))
+	}
+	if !tracker.complete("tool-1") || tracker.has("tool-1") || tracker.complete("tool-1") {
+		t.Fatal("completed tool call should be removed exactly once")
+	}
+
+	sentinel := errors.New("send failed")
+	if err := tracker.emit("tool-2", func() error { return sentinel }, func() error { return nil }); !errors.Is(err, sentinel) {
+		t.Fatalf("start error = %v", err)
+	}
+	if tracker.has("tool-2") {
+		t.Fatal("failed tool-call start must not remain active")
+	}
+}
+
+func TestPermissionMetadataForAlwaysAllow(t *testing.T) {
+	req := controlRequestBody{
+		ToolName:              "Bash",
+		PermissionSuggestions: json.RawMessage(`[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"npm *"}],"behavior":"allow","destination":"projectSettings"}]`),
+	}
+	meta := permissionMetadataForAlwaysAllow(req)
+	changes, _ := meta["changes"].([]any)
+	if len(changes) != 1 {
+		t.Fatalf("metadata = %#v", meta)
+	}
+	change := changes[0].(map[string]any)
+	if change["description"] != "Allow Bash calls matching npm *" {
+		t.Fatalf("description = %q", change["description"])
+	}
+	lifetime := change["lifetime"].(map[string]any)
+	if lifetime["scope"] != "persistent" || lifetime["storage"] != "project" {
+		t.Fatalf("lifetime = %#v", lifetime)
+	}
+}

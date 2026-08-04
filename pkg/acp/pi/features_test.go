@@ -1,13 +1,76 @@
 package pi
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/coder/acp-go-sdk"
 )
+
+type bufferWriteCloser struct{ bytes.Buffer }
+
+func (b *bufferWriteCloser) Close() error { return nil }
+
+func TestTurnWaitsForAgentSettled(t *testing.T) {
+	turn := &turn{
+		sess: &session{},
+		done: make(chan turnResult, 1),
+	}
+	turn.handle(json.RawMessage(`{"type":"agent_end"}`))
+	select {
+	case <-turn.done:
+		t.Fatal("agent_end resolved the turn before Pi settled")
+	default:
+	}
+
+	turn.handle(json.RawMessage(`{"type":"agent_settled"}`))
+	select {
+	case result := <-turn.done:
+		if result.err != nil || result.stop != acp.StopReasonEndTurn {
+			t.Fatalf("settled result = %+v", result)
+		}
+	default:
+		t.Fatal("agent_settled did not resolve the turn")
+	}
+}
+
+func TestExtensionUIOnlyRespondsToDialogRequests(t *testing.T) {
+	writer := &bufferWriteCloser{}
+	proc := &process{stdin: writer, done: make(chan struct{})}
+	turn := &turn{sess: &session{proc: proc}}
+
+	turn.handleExtensionUI(json.RawMessage(`{"type":"extension_ui_request","id":"status","method":"setStatus"}`))
+	if writer.Len() != 0 {
+		t.Fatalf("fire-and-forget UI request received a response: %q", writer.String())
+	}
+
+	turn.handleExtensionUI(json.RawMessage(`{"type":"extension_ui_request","id":"input","method":"input"}`))
+	var response map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(writer.Bytes()), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["type"] != "extension_ui_response" || response["id"] != "input" || response["cancelled"] != true {
+		t.Fatalf("input fallback response = %#v", response)
+	}
+}
+
+func TestIdleExtensionDialogIsCancelled(t *testing.T) {
+	writer := &bufferWriteCloser{}
+	proc := &process{stdin: writer, done: make(chan struct{})}
+	proc.handleIdleEvent(json.RawMessage(`{"type":"extension_ui_request","id":"startup","method":"confirm"}`))
+
+	var response map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(writer.Bytes()), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["id"] != "startup" || response["cancelled"] != true {
+		t.Fatalf("startup dialog fallback = %#v", response)
+	}
+}
 
 func TestToolTitleBashCommand(t *testing.T) {
 	if got := toolTitle("bash", map[string]any{"command": "echo hi"}); got != "echo hi" {

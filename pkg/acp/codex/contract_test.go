@@ -51,7 +51,7 @@ func (s *contractAppServer) run() {
 
 func (s *contractAppServer) handle(msg rpcMessage) {
 	switch msg.Method {
-	case "initialize", "thread/unsubscribe", "thread/archive":
+	case "initialize", "thread/unsubscribe", "thread/archive", "thread/settings/update":
 		s.respond(msg, map[string]any{})
 	case "model/list":
 		s.respond(msg, map[string]any{"data": []any{map[string]any{

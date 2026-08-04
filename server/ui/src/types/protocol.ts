@@ -151,6 +151,7 @@ export interface PromptField {
 	enum_previews?: string[];
 	strict?: boolean;
 	multiple?: boolean;
+	custom_answer_for?: string;
 	default?: unknown;
 }
 

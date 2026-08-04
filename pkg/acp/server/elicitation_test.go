@@ -55,6 +55,20 @@ func TestElicitationSchemaUsesAnyOfForMultiSelect(t *testing.T) {
 	}
 }
 
+func TestElicitationSchemaPreservesCustomAnswerCompanion(t *testing.T) {
+	schema := elicitationSchema(tool.ElicitRequest{Fields: []tool.ElicitField{
+		{Name: "question_0", Enum: []string{"Red", "Blue"}, Strict: true},
+		{Name: "question_0_custom", CustomAnswerFor: "question_0"},
+	}})
+
+	property := schema.Properties["question_0_custom"].(map[string]any)
+	meta := property["_meta"].(map[string]any)
+	marker := meta["_askUserQuestionCustomAnswer"].(map[string]any)
+	if marker["questionId"] != "question_0" || marker["isCustomAnswer"] != true {
+		t.Fatalf("custom answer marker = %#v", marker)
+	}
+}
+
 func TestElicitationFallbackUsesDefaults(t *testing.T) {
 	result := elicitationFallback(tool.ElicitRequest{Fields: []tool.ElicitField{
 		{Name: "mode", Required: true, Default: "safe"},
