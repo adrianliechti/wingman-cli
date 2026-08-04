@@ -319,7 +319,7 @@ Wingman includes a web-based UI server — useful for IDE integrations or browse
 wingman server [--port 4242]
 ```
 
-This starts an HTTP server at `http://localhost:4242` with a React UI featuring a chat panel, file browser, diff viewer, checkpoint browser, diagnostics panel, and session management. The server uses WebSockets for real-time streaming.
+This starts an HTTP server at `http://localhost:4242` with a React UI featuring a chat panel, file browser, diff viewer, checkpoint browser, diagnostics panel, an integrated terminal (multiple xterm.js sessions, shell of your choice, `Ctrl+Alt+T`), and session management. The server uses WebSockets for real-time streaming.
 
 ## 🔀 Proxy Mode
 

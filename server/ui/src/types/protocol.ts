@@ -195,6 +195,10 @@ interface TasksChangedMessage {
 	session?: string;
 }
 
+interface TerminalsChangedMessage {
+	type: "terminals_changed";
+}
+
 interface CapabilitiesChangedMessage {
 	type: "capabilities_changed";
 }
@@ -271,7 +275,8 @@ export type ServerMessage =
 	| ModelChangedMessage
 	| TurnInputMessage
 	| TurnQueueMessage
-	| TasksChangedMessage;
+	| TasksChangedMessage
+	| TerminalsChangedMessage;
 
 export type Phase = "idle" | "thinking" | "streaming" | "tool_running";
 
@@ -348,6 +353,19 @@ export interface TaskEntry {
 export interface TaskDetail extends TaskEntry {
 	result?: string;
 	transcript: ConversationMessage[];
+}
+
+export interface TerminalEntry {
+	id: string;
+	title: string;
+	shell: string;
+	cols: number;
+	rows: number;
+}
+
+export interface ShellEntry {
+	id: string;
+	name: string;
 }
 
 export interface DiagnosticEntry {

@@ -85,3 +85,35 @@ test("steers an active turn without merging response boundaries", async ({
 	).toHaveCount(0);
 	await expect(page.getByText("Queue paused", { exact: true })).toHaveCount(0);
 });
+
+test("runs a command in the terminal panel", async ({ page }) => {
+	await composer(page);
+
+	await page.getByTitle(/Show terminal/).click();
+
+	const screen = page.locator(".xterm-screen");
+	await expect(screen).toBeVisible();
+	await screen.click();
+
+	await page.keyboard.type('echo term""-e2e-ok');
+	await page.keyboard.press("Enter");
+
+	await expect(page.locator(".xterm-rows").first()).toContainText(
+		"term-e2e-ok",
+		{ timeout: 15_000 },
+	);
+
+	await page.keyboard.type("printf '\\033]0;e2e-title\\007'; sleep 3");
+	await page.keyboard.press("Enter");
+	await expect(page.getByTitle("e2e-title")).toBeVisible({ timeout: 15_000 });
+
+	const shellMenu = page.getByTitle("New terminal with another shell");
+	if (await shellMenu.count()) {
+		await shellMenu.click();
+		await page.getByRole("button", { name: /default/ }).click();
+		await expect(page.locator(".xterm-screen")).toHaveCount(2);
+	}
+
+	await page.getByTitle("Hide terminal", { exact: true }).click();
+	await expect(page.locator(".xterm-screen")).toHaveCount(0);
+});

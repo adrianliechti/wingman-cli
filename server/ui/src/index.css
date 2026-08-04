@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "@xterm/xterm/css/xterm.css";
 
 /* Generate the Tailwind classes used inside Streamdown's compiled components. */
 @source "../node_modules/streamdown/dist/*.js";
@@ -56,6 +57,12 @@
 	--color-scrollbar-thumb: rgba(255, 255, 255, 0.08);
 	--color-scrollbar-thumb-hover: rgba(255, 255, 255, 0.15);
 	--color-selection: rgba(255, 255, 255, 0.15);
+}
+
+/* xterm paints an opaque black viewport by default; let the panel background
+   (and therefore the app theme) show through instead. */
+.xterm .xterm-viewport {
+	background-color: transparent;
 }
 
 @media (prefers-color-scheme: light) {

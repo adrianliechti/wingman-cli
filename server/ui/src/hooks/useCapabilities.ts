@@ -6,6 +6,7 @@ interface Capabilities {
 	lsp: boolean;
 	diffs: boolean;
 	tasks?: boolean;
+	terminal?: boolean;
 	notice?: string;
 }
 
