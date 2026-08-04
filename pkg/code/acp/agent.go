@@ -44,15 +44,22 @@ type Agent struct {
 	uiMu sync.RWMutex
 	ui   code.UI
 
-	configMu   sync.RWMutex
-	models     []model.Model
-	modelID    string
-	effortID   string
-	effortOpts []string
+	configMu      sync.RWMutex
+	models        []model.Model
+	modelID       string
+	modelOptID    string
+	modelDefault  string
+	effortID      string
+	effortOptID   string
+	effortDefault string
+	effortOpts    []string
 
 	mu       sync.Mutex
 	sessions map[string]*sessionState
+	pending  map[string][]acpsdk.SessionUpdate
 }
+
+var _ code.Agent = (*Agent)(nil)
 
 type sessionState struct {
 	parent *Agent
@@ -70,8 +77,16 @@ type sessionState struct {
 	modes  []code.Mode
 	modeID string
 
-	modelID  string
-	effortID string
+	models      []model.Model
+	modelID     string
+	modelOptID  string
+	effortID    string
+	effortOptID string
+	effortOpts  []string
+
+	commands  []code.Command
+	title     string
+	updatedAt time.Time
 }
 
 type toolCall struct {
@@ -80,6 +95,7 @@ type toolCall struct {
 }
 
 type turn struct {
+	ctx    context.Context
 	events chan event
 	done   chan struct{}
 	cancel context.CancelFunc
@@ -93,7 +109,7 @@ type turn struct {
 func (t *turn) messages() []agent.Message {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return append([]agent.Message(nil), t.emitted...)
+	return agent.CloneMessages(t.emitted)
 }
 
 func (s *sessionState) finalizeTurn(t *turn) {
@@ -120,7 +136,7 @@ const (
 	initTimeout    = 30 * time.Second
 )
 
-func New(ws *code.Workspace, def code.AgentDef) (*Agent, error) {
+func New(ctx context.Context, ws *code.Workspace, def code.AgentDef) (*Agent, error) {
 	if def.Command == "" {
 		return nil, fmt.Errorf("agent %q: empty command", def.Name)
 	}
@@ -155,6 +171,7 @@ func New(ws *code.Workspace, def code.AgentDef) (*Agent, error) {
 		cmd:       cmd,
 		stdin:     stdin,
 		sessions:  map[string]*sessionState{},
+		pending:   map[string][]acpsdk.SessionUpdate{},
 	}
 	a.conn = acpsdk.NewClientSideConnection(a, stdin, stdout)
 
@@ -162,20 +179,7 @@ func New(ws *code.Workspace, def code.AgentDef) (*Agent, error) {
 		Level: slog.LevelWarn,
 	})))
 
-	initCtx, cancel := context.WithTimeout(context.Background(), initTimeout)
-	defer cancel()
-	resp, err := a.conn.Initialize(initCtx, acpsdk.InitializeRequest{
-		ProtocolVersion: acpsdk.ProtocolVersionNumber,
-		ClientCapabilities: acpsdk.ClientCapabilities{
-			Fs: acpsdk.FileSystemCapabilities{
-				ReadTextFile:  true,
-				WriteTextFile: true,
-			},
-			Elicitation: &acpsdk.ElicitationCapabilities{
-				Form: &acpsdk.ElicitationFormCapabilities{},
-			},
-		},
-	})
+	resp, err := a.initialize(ctx)
 	if err != nil {
 		a.shutdown()
 		return nil, fmt.Errorf("agent %q: initialize: %w", def.Name, err)
@@ -185,6 +189,7 @@ func New(ws *code.Workspace, def code.AgentDef) (*Agent, error) {
 }
 
 func NewInProcess(
+	ctx context.Context,
 	ws *code.Workspace,
 	name string,
 	serverAgent acpsdk.Agent,
@@ -199,6 +204,7 @@ func NewInProcess(
 		def:       code.AgentDef{Name: name},
 		stdin:     clientW,
 		sessions:  map[string]*sessionState{},
+		pending:   map[string][]acpsdk.SessionUpdate{},
 		cleanup:   cleanup,
 	}
 	if s, ok := serverAgent.(interface {
@@ -218,10 +224,27 @@ func NewInProcess(
 		Level: slog.LevelWarn,
 	})))
 
-	initCtx, cancel := context.WithTimeout(context.Background(), initTimeout)
+	resp, err := a.initialize(ctx)
+	if err != nil {
+		a.shutdown()
+		return nil, fmt.Errorf("agent %q: initialize: %w", name, err)
+	}
+	a.caps = resp.AgentCapabilities
+	return a, nil
+}
+
+func (a *Agent) initialize(ctx context.Context) (acpsdk.InitializeResponse, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	initCtx, cancel := context.WithTimeout(ctx, initTimeout)
 	defer cancel()
+	title := "Wingman"
 	resp, err := a.conn.Initialize(initCtx, acpsdk.InitializeRequest{
 		ProtocolVersion: acpsdk.ProtocolVersionNumber,
+		ClientInfo: &acpsdk.Implementation{
+			Name: "wingman", Title: &title, Version: "0.1.0",
+		},
 		ClientCapabilities: acpsdk.ClientCapabilities{
 			Fs: acpsdk.FileSystemCapabilities{
 				ReadTextFile:  true,
@@ -233,65 +256,82 @@ func NewInProcess(
 		},
 	})
 	if err != nil {
-		a.shutdown()
-		return nil, fmt.Errorf("agent %q: initialize: %w", name, err)
+		return acpsdk.InitializeResponse{}, err
 	}
-	a.caps = resp.AgentCapabilities
-	return a, nil
+	if resp.ProtocolVersion != acpsdk.ProtocolVersionNumber {
+		return acpsdk.InitializeResponse{}, fmt.Errorf("unsupported ACP protocol version %d (want %d)", resp.ProtocolVersion, acpsdk.ProtocolVersionNumber)
+	}
+	return resp, nil
 }
 
 func (a *Agent) Name() string               { return a.def.Name }
 func (a *Agent) Workspace() *code.Workspace { return a.workspace }
 
 func (a *Agent) Models(sessionID string) ([]model.Model, string) {
-	override := ""
 	if sess := a.session(sessionID); sess != nil {
 		sess.mu.Lock()
-		override = sess.modelID
+		out := append([]model.Model(nil), sess.models...)
+		current := sess.modelID
 		sess.mu.Unlock()
+		return out, current
 	}
 	a.configMu.RLock()
 	defer a.configMu.RUnlock()
 	out := make([]model.Model, len(a.models))
 	copy(out, a.models)
-	if override != "" {
-		return out, override
+	if a.modelDefault != "" {
+		return out, a.modelDefault
 	}
 	return out, a.modelID
 }
 
 func (a *Agent) SetModel(ctx context.Context, sessionID, id string) error {
-	return a.setConfig(ctx, sessionID, modelConfigID, id, &a.modelID)
+	if sess := a.session(sessionID); sess != nil {
+		sess.mu.Lock()
+		optionID := sess.modelOptID
+		sess.mu.Unlock()
+		return a.setSessionConfig(ctx, sess, optionID, id)
+	}
+	a.configMu.Lock()
+	a.modelDefault = id
+	a.configMu.Unlock()
+	return nil
 }
 
 func (a *Agent) Effort(sessionID string) (string, []string) {
-	override := ""
 	if sess := a.session(sessionID); sess != nil {
 		sess.mu.Lock()
-		override = sess.effortID
+		current := sess.effortID
+		opts := append([]string(nil), sess.effortOpts...)
 		sess.mu.Unlock()
+		return current, opts
 	}
 	a.configMu.RLock()
 	defer a.configMu.RUnlock()
 	opts := make([]string, len(a.effortOpts))
 	copy(opts, a.effortOpts)
-	if override != "" {
-		return override, opts
+	if a.effortDefault != "" {
+		return a.effortDefault, opts
 	}
 	return a.effortID, opts
 }
 
 func (a *Agent) SetEffort(ctx context.Context, sessionID, value string) error {
-	return a.setConfig(ctx, sessionID, effortConfigID, value, &a.effortID)
+	if sess := a.session(sessionID); sess != nil {
+		sess.mu.Lock()
+		optionID := sess.effortOptID
+		sess.mu.Unlock()
+		return a.setSessionConfig(ctx, sess, optionID, value)
+	}
+	a.configMu.Lock()
+	a.effortDefault = value
+	a.configMu.Unlock()
+	return nil
 }
 
-func (a *Agent) setConfig(ctx context.Context, sessionID, configID, value string, defaultField *string) error {
-	sess := a.session(sessionID)
-	if sess == nil {
-		a.configMu.Lock()
-		*defaultField = value
-		a.configMu.Unlock()
-		return nil
+func (a *Agent) setSessionConfig(ctx context.Context, sess *sessionState, configID, value string) error {
+	if configID == "" {
+		return errors.ErrUnsupported
 	}
 	resp, err := a.conn.SetSessionConfigOption(ctx, acpsdk.SetSessionConfigOptionRequest{
 		ValueId: &acpsdk.SetSessionConfigOptionValueId{
@@ -304,6 +344,31 @@ func (a *Agent) setConfig(ctx context.Context, sessionID, configID, value string
 		return err
 	}
 	a.refreshConfig(sess, resp.ConfigOptions)
+	return nil
+}
+
+func (a *Agent) applySessionDefaults(ctx context.Context, sess *sessionState) error {
+	a.configMu.RLock()
+	modelID, effortID := a.modelDefault, a.effortDefault
+	a.configMu.RUnlock()
+
+	sess.mu.Lock()
+	currentModel, currentEffort := sess.modelID, sess.effortID
+	modelOptID, effortOptID := sess.modelOptID, sess.effortOptID
+	sess.mu.Unlock()
+	if modelID != "" && modelID != currentModel {
+		if err := a.setSessionConfig(ctx, sess, modelOptID, modelID); err != nil {
+			return fmt.Errorf("set default model: %w", err)
+		}
+	}
+	if effortID != "" && effortID != currentEffort {
+		sess.mu.Lock()
+		effortOptID = sess.effortOptID
+		sess.mu.Unlock()
+		if err := a.setSessionConfig(ctx, sess, effortOptID, effortID); err != nil {
+			return fmt.Errorf("set default effort: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -364,24 +429,45 @@ func (a *Agent) ListSessions(ctx context.Context) ([]code.SessionInfo, error) {
 		return nil, nil
 	}
 	cwd := a.workspace.RootPath
-	resp, err := a.conn.ListSessions(ctx, acpsdk.ListSessionsRequest{Cwd: &cwd})
-	if err != nil {
-		return nil, err
-	}
-	out := make([]code.SessionInfo, 0, len(resp.Sessions))
-	for _, s := range resp.Sessions {
-		info := code.SessionInfo{ID: string(s.SessionId)}
-		if s.Title != nil {
-			info.Title = *s.Title
+	var cursor *string
+	seen := map[string]bool{}
+	var out []code.SessionInfo
+	for {
+		resp, err := a.conn.ListSessions(ctx, acpsdk.ListSessionsRequest{Cwd: &cwd, Cursor: cursor})
+		if err != nil {
+			return nil, err
 		}
-		if s.UpdatedAt != nil {
-			if t, err := time.Parse(time.RFC3339, *s.UpdatedAt); err == nil {
-				info.UpdatedAt = t
+		for _, s := range resp.Sessions {
+			info := code.SessionInfo{ID: string(s.SessionId)}
+			if s.Title != nil {
+				info.Title = *s.Title
 			}
+			if s.UpdatedAt != nil {
+				if t, err := time.Parse(time.RFC3339, *s.UpdatedAt); err == nil {
+					info.UpdatedAt = t
+				}
+			}
+			if local := a.session(info.ID); local != nil {
+				local.mu.Lock()
+				if local.title != "" {
+					info.Title = local.title
+				}
+				if !local.updatedAt.IsZero() {
+					info.UpdatedAt = local.updatedAt
+				}
+				local.mu.Unlock()
+			}
+			out = append(out, info)
 		}
-		out = append(out, info)
+		if resp.NextCursor == nil || *resp.NextCursor == "" {
+			return out, nil
+		}
+		if seen[*resp.NextCursor] {
+			return nil, fmt.Errorf("agent returned repeated session cursor %q", *resp.NextCursor)
+		}
+		seen[*resp.NextCursor] = true
+		cursor = resp.NextCursor
 	}
-	return out, nil
 }
 
 func (a *Agent) NewSession(ctx context.Context) (string, error) {
@@ -404,7 +490,23 @@ func (a *Agent) NewSession(ctx context.Context) (string, error) {
 	sess.loaded = true
 	a.mu.Lock()
 	a.sessions[id] = sess
+	pending := a.pending[id]
+	delete(a.pending, id)
 	a.mu.Unlock()
+	for _, update := range pending {
+		a.applySessionStateUpdate(sess, update)
+	}
+	if err := a.applySessionDefaults(ctx, sess); err != nil {
+		a.mu.Lock()
+		delete(a.sessions, id)
+		a.mu.Unlock()
+		if a.caps.SessionCapabilities.Close != nil {
+			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+			_, _ = a.conn.CloseSession(closeCtx, acpsdk.CloseSessionRequest{SessionId: sess.id})
+			cancel()
+		}
+		return "", err
+	}
 	return id, nil
 }
 
@@ -419,7 +521,7 @@ func (a *Agent) LoadSession(ctx context.Context, id string) error {
 }
 
 func (a *Agent) LoadSessionStream(ctx context.Context, id string) iter.Seq2[[]agent.Message, error] {
-	if !a.caps.LoadSession {
+	if !a.caps.LoadSession && a.caps.SessionCapabilities.Resume == nil {
 		return func(yield func([]agent.Message, error) bool) {
 			yield(nil, errors.ErrUnsupported)
 		}
@@ -435,11 +537,16 @@ func (a *Agent) LoadSessionStream(ctx context.Context, id string) iter.Seq2[[]ag
 		}
 		a.sessions[id] = sess
 	}
+	pending := a.pending[id]
+	delete(a.pending, id)
 	a.mu.Unlock()
+	for _, update := range pending {
+		a.applySessionStateUpdate(sess, update)
+	}
 
 	sess.mu.Lock()
 	if sess.loaded {
-		snap := append([]agent.Message(nil), sess.messages...)
+		snap := agent.CloneMessages(sess.messages)
 		sess.mu.Unlock()
 		return func(yield func([]agent.Message, error) bool) {
 			yield(snap, nil)
@@ -450,6 +557,7 @@ func (a *Agent) LoadSessionStream(ctx context.Context, id string) iter.Seq2[[]ag
 	return func(yield func([]agent.Message, error) bool) {
 		loadCtx, cancel := context.WithCancel(ctx)
 		t := &turn{
+			ctx:    loadCtx,
 			events: make(chan event, 256),
 			done:   make(chan struct{}),
 			cancel: cancel,
@@ -488,7 +596,20 @@ func (a *Agent) LoadSessionStream(ctx context.Context, id string) iter.Seq2[[]ag
 
 		loadErrCh := make(chan error, 1)
 		go func() {
-			resp, err := a.conn.LoadSession(loadCtx, acpsdk.LoadSessionRequest{
+			if a.caps.LoadSession {
+				resp, err := a.conn.LoadSession(loadCtx, acpsdk.LoadSessionRequest{
+					SessionId:  acpsdk.SessionId(id),
+					Cwd:        a.workspace.RootPath,
+					McpServers: []acpsdk.McpServer{},
+				})
+				if err == nil {
+					a.refreshConfig(sess, resp.ConfigOptions)
+					sess.applyModes(resp.Modes)
+				}
+				loadErrCh <- err
+				return
+			}
+			resp, err := a.conn.ResumeSession(loadCtx, acpsdk.ResumeSessionRequest{
 				SessionId:  acpsdk.SessionId(id),
 				Cwd:        a.workspace.RootPath,
 				McpServers: []acpsdk.McpServer{},
@@ -537,12 +658,14 @@ func (a *Agent) DeleteSession(ctx context.Context, id string) error {
 	if !a.SupportsDelete() {
 		return errors.ErrUnsupported
 	}
-	a.mu.Lock()
-	delete(a.sessions, id)
-	a.mu.Unlock()
 	_, err := a.conn.UnstableDeleteSession(ctx, acpsdk.UnstableDeleteSessionRequest{
 		SessionId: acpsdk.SessionId(id),
 	})
+	if err == nil {
+		a.mu.Lock()
+		delete(a.sessions, id)
+		a.mu.Unlock()
+	}
 	return err
 }
 
@@ -553,9 +676,17 @@ func (a *Agent) Messages(id string) []agent.Message {
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	out := make([]agent.Message, len(sess.messages))
-	copy(out, sess.messages)
-	return out
+	return agent.CloneMessages(sess.messages)
+}
+
+func (a *Agent) Commands(id string) []code.Command {
+	sess := a.session(id)
+	if sess == nil {
+		return nil
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return append([]code.Command(nil), sess.commands...)
 }
 
 func (a *Agent) Usage(id string) agent.Usage {
@@ -588,6 +719,7 @@ func (a *Agent) Send(ctx context.Context, id string, input []agent.Content) (ite
 
 	sendCtx, cancel := context.WithCancel(ctx)
 	t := &turn{
+		ctx:               sendCtx,
 		events:            make(chan event, 256),
 		done:              make(chan struct{}),
 		cancel:            cancel,
@@ -614,9 +746,13 @@ func (a *Agent) Send(ctx context.Context, id string, input []agent.Content) (ite
 
 		if err == nil && resp.Usage != nil {
 			sess.mu.Lock()
+			lastInputTokens := sess.usage.LastInputTokens
+			contextWindow := sess.usage.ContextWindow
 			sess.usage = agent.Usage{
-				InputTokens:  int64(resp.Usage.InputTokens),
-				OutputTokens: int64(resp.Usage.OutputTokens),
+				InputTokens:     int64(resp.Usage.InputTokens),
+				OutputTokens:    int64(resp.Usage.OutputTokens),
+				LastInputTokens: lastInputTokens,
+				ContextWindow:   contextWindow,
 			}
 			if resp.Usage.CachedReadTokens != nil {
 				sess.usage.CachedTokens = int64(*resp.Usage.CachedReadTokens)
@@ -741,11 +877,11 @@ func (a *Agent) shutdown() {
 		a.mu.Unlock()
 
 		if a.caps.SessionCapabilities.Close != nil && len(sessions) > 0 {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			for _, sess := range sessions {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				_, _ = a.conn.CloseSession(ctx, acpsdk.CloseSessionRequest{SessionId: sess.id})
+				cancel()
 			}
-			cancel()
 		}
 
 		if a.stdin != nil {
@@ -781,7 +917,12 @@ func (a *Agent) shutdown() {
 
 func (a *Agent) SessionUpdate(_ context.Context, n acpsdk.SessionNotification) error {
 	if n.Update.ConfigOptionUpdate != nil {
-		a.refreshConfig(a.session(string(n.SessionId)), n.Update.ConfigOptionUpdate.ConfigOptions)
+		sess := a.session(string(n.SessionId))
+		if sess == nil {
+			a.rememberPendingUpdate(string(n.SessionId), n.Update)
+			return nil
+		}
+		a.refreshConfig(sess, n.Update.ConfigOptionUpdate.ConfigOptions)
 		return nil
 	}
 
@@ -790,12 +931,20 @@ func (a *Agent) SessionUpdate(_ context.Context, n acpsdk.SessionNotification) e
 			sess.mu.Lock()
 			sess.modeID = string(n.Update.CurrentModeUpdate.CurrentModeId)
 			sess.mu.Unlock()
+		} else {
+			a.rememberPendingUpdate(string(n.SessionId), n.Update)
 		}
 		return nil
 	}
 
 	sess := a.session(string(n.SessionId))
 	if sess == nil {
+		if isSessionStateUpdate(n.Update) {
+			a.rememberPendingUpdate(string(n.SessionId), n.Update)
+		}
+		return nil
+	}
+	if a.applySessionStateUpdate(sess, n.Update) {
 		return nil
 	}
 	sess.mu.Lock()
@@ -813,6 +962,77 @@ func (a *Agent) SessionUpdate(_ context.Context, n acpsdk.SessionNotification) e
 	case <-t.done:
 	}
 	return nil
+}
+
+func isSessionStateUpdate(update acpsdk.SessionUpdate) bool {
+	return update.ConfigOptionUpdate != nil || update.CurrentModeUpdate != nil ||
+		update.AvailableCommandsUpdate != nil || update.SessionInfoUpdate != nil || update.UsageUpdate != nil
+}
+
+func (a *Agent) rememberPendingUpdate(id string, update acpsdk.SessionUpdate) {
+	if id == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	updates, exists := a.pending[id]
+	if !exists && len(a.pending) >= 128 {
+		return
+	}
+	if len(updates) < 32 {
+		if a.pending == nil {
+			a.pending = make(map[string][]acpsdk.SessionUpdate)
+		}
+		a.pending[id] = append(updates, update)
+	}
+}
+
+func (a *Agent) applySessionStateUpdate(sess *sessionState, update acpsdk.SessionUpdate) bool {
+	if config := update.ConfigOptionUpdate; config != nil {
+		a.refreshConfig(sess, config.ConfigOptions)
+		return true
+	}
+	if mode := update.CurrentModeUpdate; mode != nil {
+		sess.mu.Lock()
+		sess.modeID = string(mode.CurrentModeId)
+		sess.mu.Unlock()
+		return true
+	}
+	if commandsUpdate := update.AvailableCommandsUpdate; commandsUpdate != nil {
+		commands := make([]code.Command, 0, len(commandsUpdate.AvailableCommands))
+		for _, command := range commandsUpdate.AvailableCommands {
+			item := code.Command{Name: command.Name, Description: command.Description}
+			if command.Input != nil && command.Input.Unstructured != nil {
+				item.InputHint = command.Input.Unstructured.Hint
+			}
+			commands = append(commands, item)
+		}
+		sess.mu.Lock()
+		sess.commands = commands
+		sess.mu.Unlock()
+		return true
+	}
+	if info := update.SessionInfoUpdate; info != nil {
+		sess.mu.Lock()
+		if info.Title != nil {
+			sess.title = *info.Title
+		}
+		if info.UpdatedAt != nil {
+			if parsed, err := time.Parse(time.RFC3339, *info.UpdatedAt); err == nil {
+				sess.updatedAt = parsed
+			}
+		}
+		sess.mu.Unlock()
+		return true
+	}
+	if usage := update.UsageUpdate; usage != nil {
+		sess.mu.Lock()
+		sess.usage.LastInputTokens = int64(usage.Used)
+		sess.usage.ContextWindow = int64(usage.Size)
+		sess.mu.Unlock()
+		return true
+	}
+	return false
 }
 
 func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpdate) (agent.Message, bool) {
@@ -897,15 +1117,27 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 
 	case u.ToolCallUpdate != nil:
 		tu := u.ToolCallUpdate
+		sess.toolCallsMu.Lock()
+		prior := sess.toolCalls[string(tu.ToolCallId)]
+		if prior.name == "" && tu.Title != nil && *tu.Title != "" {
+			prior.name = *tu.Title
+		}
+		if tu.RawInput != nil {
+			prior.args = rawValueToString(tu.RawInput)
+		}
+		sess.toolCalls[string(tu.ToolCallId)] = prior
+		sess.toolCallsMu.Unlock()
 		if tu.Status == nil {
+			a.reportToolProgress(t, tu)
 			return agent.Message{}, false
 		}
 		status := *tu.Status
 		if status != acpsdk.ToolCallStatusCompleted && status != acpsdk.ToolCallStatusFailed {
+			a.reportToolProgress(t, tu)
 			return agent.Message{}, false
 		}
 		sess.toolCallsMu.Lock()
-		prior := sess.toolCalls[string(tu.ToolCallId)]
+		prior = sess.toolCalls[string(tu.ToolCallId)]
 		delete(sess.toolCalls, string(tu.ToolCallId))
 		sess.toolCallsMu.Unlock()
 		body := toolCallContentText(tu.Content)
@@ -922,12 +1154,30 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 			Content: body,
 		}}, ""), true
 
-	case u.UsageUpdate != nil:
-		sess.mu.Lock()
-		sess.usage.InputTokens = int64(u.UsageUpdate.Used)
-		sess.mu.Unlock()
 	}
 	return agent.Message{}, false
+}
+
+func (a *Agent) reportToolProgress(t *turn, update *acpsdk.SessionToolCallUpdate) {
+	if t == nil || t.ctx == nil || update == nil {
+		return
+	}
+	text := ""
+	if update.Title != nil {
+		text = *update.Title
+	}
+	if text == "" {
+		text = toolCallContentText(update.Content)
+	}
+	if text == "" && update.RawOutput != nil {
+		text = rawValueToString(update.RawOutput)
+	}
+	if text == "" {
+		return
+	}
+	if progress := tool.Progress(tool.WithProgressCall(t.ctx, string(update.ToolCallId))); progress != nil {
+		progress(text)
+	}
 }
 
 // mergeACPContent keeps transport chunks as deltas for the live stream while
@@ -1260,7 +1510,9 @@ func (a *Agent) WriteTextFile(_ context.Context, p acpsdk.WriteTextFileRequest) 
 	if err != nil {
 		return acpsdk.WriteTextFileResponse{}, err
 	}
-	_ = os.MkdirAll(filepath.Dir(abs), 0o755)
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		return acpsdk.WriteTextFileResponse{}, err
+	}
 	return acpsdk.WriteTextFileResponse{}, os.WriteFile(abs, []byte(p.Content), 0o644)
 }
 
@@ -1296,16 +1548,7 @@ func (a *Agent) resolvePath(p string) (string, error) {
 	if !filepath.IsAbs(p) {
 		return "", fmt.Errorf("path must be absolute: %s", p)
 	}
-	clean := filepath.Clean(p)
-	root := filepath.Clean(a.workspace.RootPath)
-	rel, err := filepath.Rel(root, clean)
-	if err != nil {
-		return "", fmt.Errorf("path outside workspace: %s", p)
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path outside workspace: %s", p)
-	}
-	return clean, nil
+	return filepath.Clean(p), nil
 }
 
 func (a *Agent) CreateTerminal(context.Context, acpsdk.CreateTerminalRequest) (acpsdk.CreateTerminalResponse, error) {
@@ -1329,45 +1572,69 @@ func (a *Agent) refreshConfig(sess *sessionState, options []acpsdk.SessionConfig
 		return
 	}
 	modelID, effortID := "", ""
-	a.configMu.Lock()
-	a.effortID = ""
-	a.effortOpts = nil
+	modelOptID, effortOptID := "", ""
+	var models []model.Model
+	var effortOpts []string
 	for _, opt := range options {
 		if opt.Select == nil {
 			continue
 		}
-		switch string(opt.Select.Id) {
-		case modelConfigID:
-			a.models = a.models[:0]
-			if u := opt.Select.Options.Ungrouped; u != nil {
-				for _, v := range *u {
-					a.models = append(a.models, model.Model{ID: string(v.Value), Name: v.Name})
-				}
+		kind := ""
+		if opt.Select.Category != nil {
+			kind = string(*opt.Select.Category)
+		}
+		if kind == "" {
+			kind = string(opt.Select.Id)
+		}
+		values := sessionConfigValues(opt.Select.Options)
+		switch kind {
+		case string(acpsdk.SessionConfigOptionCategoryModel):
+			modelOptID = string(opt.Select.Id)
+			modelID = string(opt.Select.CurrentValue)
+			for _, v := range values {
+				models = append(models, model.Model{ID: string(v.Value), Name: v.Name})
 			}
-			a.modelID = string(opt.Select.CurrentValue)
-			modelID = a.modelID
-		case effortConfigID:
-			a.effortID = string(opt.Select.CurrentValue)
-			if u := opt.Select.Options.Ungrouped; u != nil {
-				for _, v := range *u {
-					a.effortOpts = append(a.effortOpts, string(v.Value))
-				}
+		case string(acpsdk.SessionConfigOptionCategoryThoughtLevel), effortConfigID:
+			effortOptID = string(opt.Select.Id)
+			effortID = string(opt.Select.CurrentValue)
+			for _, v := range values {
+				effortOpts = append(effortOpts, string(v.Value))
 			}
-			effortID = a.effortID
 		}
 	}
+	a.configMu.Lock()
+	a.models = models
+	a.modelID = modelID
+	a.modelOptID = modelOptID
+	a.effortID = effortID
+	a.effortOptID = effortOptID
+	a.effortOpts = effortOpts
 	a.configMu.Unlock()
 
 	if sess != nil {
 		sess.mu.Lock()
-		if modelID != "" {
-			sess.modelID = modelID
-		}
-		if effortID != "" {
-			sess.effortID = effortID
-		}
+		sess.models = append(sess.models[:0], models...)
+		sess.modelID = modelID
+		sess.modelOptID = modelOptID
+		sess.effortID = effortID
+		sess.effortOptID = effortOptID
+		sess.effortOpts = append(sess.effortOpts[:0], effortOpts...)
 		sess.mu.Unlock()
 	}
+}
+
+func sessionConfigValues(options acpsdk.SessionConfigSelectOptions) []acpsdk.SessionConfigSelectOption {
+	if options.Ungrouped != nil {
+		return append([]acpsdk.SessionConfigSelectOption(nil), (*options.Ungrouped)...)
+	}
+	if options.Grouped == nil {
+		return nil
+	}
+	var result []acpsdk.SessionConfigSelectOption
+	for _, group := range *options.Grouped {
+		result = append(result, group.Options...)
+	}
+	return result
 }
 
 func blockText(b acpsdk.ContentBlock) string {

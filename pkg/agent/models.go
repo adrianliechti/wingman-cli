@@ -49,6 +49,9 @@ type Usage struct {
 	// LastInputTokens is the input size of the most recent request — the
 	// current context occupancy, unlike the cumulative counters above.
 	LastInputTokens int64 `json:"last_input_tokens,omitempty"`
+	// ContextWindow is the provider-reported maximum context size when the
+	// transport supplies it directly.
+	ContextWindow int64 `json:"context_window,omitempty"`
 }
 
 type ToolCall struct {

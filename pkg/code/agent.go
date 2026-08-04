@@ -21,6 +21,12 @@ type Mode struct {
 	Description string
 }
 
+type Command struct {
+	Name        string
+	Description string
+	InputHint   string
+}
+
 type Agent interface {
 	Name() string
 
@@ -69,4 +75,10 @@ var (
 
 type SessionLoadStreamer interface {
 	LoadSessionStream(ctx context.Context, id string) iter.Seq2[[]agent.Message, error]
+}
+
+// CommandProvider exposes agent-defined slash commands for clients that can
+// present command discovery alongside their own local commands.
+type CommandProvider interface {
+	Commands(sessionID string) []Command
 }

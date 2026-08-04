@@ -10,8 +10,9 @@ import (
 
 func TestLiveSuite(t *testing.T) {
 	acptest.RunLive(t, acptest.LiveConfig{
-		Gate:   "PI_ACP_LIVE",
-		Binary: "pi",
+		Gate:          "PI_ACP_LIVE",
+		Binary:        "pi",
+		MCPHelperTest: "TestMCPServerHelper",
 		Factory: func(t *testing.T, path string) acptest.Agent {
 			opts := Options{Path: path, Env: os.Environ()}
 			// Standalone pi (no wingman env redirection) persists sessions
@@ -22,4 +23,8 @@ func TestLiveSuite(t *testing.T) {
 			return New(opts)
 		},
 	})
+}
+
+func TestMCPServerHelper(t *testing.T) {
+	acptest.MCPServerHelper(t)
 }

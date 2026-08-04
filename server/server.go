@@ -55,8 +55,12 @@ type Server struct {
 	config    *agent.Config
 
 	ctx     context.Context
+	cancel  context.CancelFunc
 	mux     chi.Router
 	handler http.Handler
+
+	closeOnce  sync.Once
+	background sync.WaitGroup
 
 	mu    sync.Mutex
 	agent code.Agent
@@ -90,6 +94,9 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 	if opts == nil {
 		opts = new(ServerOptions)
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	cfg, err := agent.DefaultConfig()
 	if err != nil {
@@ -99,12 +106,14 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 	if err != nil {
 		return nil, err
 	}
+	serverCtx, cancel := context.WithCancel(ctx)
 
 	s := &Server{
 		noBrowser:      opts.NoBrowser,
 		workspace:      ws,
 		config:         cfg,
-		ctx:            ctx,
+		ctx:            serverCtx,
+		cancel:         cancel,
 		phases:         map[string]string{},
 		wsConns:        map[*websocket.Conn]*wsClient{},
 		pendingPrompts: map[string]pendingPrompt{},
@@ -119,25 +128,34 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 	wa := codeagent.New(ws, cfg, nil)
 	wa.SetUI(s)
 	s.agent = wa
-	s.turns = code.NewTurnManager(tool.WithProgressSink(ctx, s.onToolProgress), wa, s.handleTurnEvent)
+	s.turns = code.NewTurnManager(tool.WithProgressSink(serverCtx, s.onToolProgress), wa, s.handleTurnEvent)
 
 	ws.WarmUp()
 
 	s.prevGit = ws.IsGitRepo()
 	s.files = watch.New(watch.Options{Active: s.hasClients}, s.checkWorkspace)
-	go s.files.Run(ctx)
-
+	s.background.Add(1)
 	go func() {
-		if err := ws.InitMCP(context.Background()); err != nil {
+		defer s.background.Done()
+		s.files.Run(serverCtx)
+	}()
+
+	s.background.Add(1)
+	go func() {
+		defer s.background.Done()
+		if err := ws.InitMCP(serverCtx); err != nil && serverCtx.Err() == nil {
 			fmt.Fprintf(os.Stderr, "MCP init warning: %v\n", err)
 		}
 	}()
 
+	s.background.Add(1)
 	go func() {
-		if w, ok := s.agent.(*codeagent.Agent); ok {
-			w.FetchModels(ctx)
-			s.broadcast(Frame{Type: EvtModelChanged})
+		defer s.background.Done()
+		wa.FetchModels(serverCtx)
+		if serverCtx.Err() != nil {
+			return
 		}
+		s.broadcast(Frame{Type: EvtModelChanged})
 	}()
 
 	s.mux = chi.NewRouter()
@@ -150,22 +168,28 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 }
 
 func (s *Server) Close() {
+	s.closeOnce.Do(func() {
+		if s.cancel != nil {
+			s.cancel()
+		}
 
-	s.mu.Lock()
-	a := s.agent
-	turns := s.turns
-	s.agent = nil
-	s.turns = nil
-	s.mu.Unlock()
-	if turns != nil {
-		turns.SetHandler(nil)
-		turns.Close()
-	}
-	if a != nil {
-		_ = a.Close()
-	}
-	s.terminals.Close()
-	s.workspace.Close()
+		s.mu.Lock()
+		a := s.agent
+		turns := s.turns
+		s.agent = nil
+		s.turns = nil
+		s.mu.Unlock()
+		if turns != nil {
+			turns.SetHandler(nil)
+			turns.Close()
+		}
+		if a != nil {
+			_ = a.Close()
+		}
+		s.background.Wait()
+		s.terminals.Close()
+		s.workspace.Close()
+	})
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -196,6 +220,9 @@ func (s *Server) swapAgent(next code.Agent) {
 	s.promptsMu.Lock()
 	s.confirmAll = map[string]bool{}
 	s.promptsMu.Unlock()
+	s.phasesMu.Lock()
+	s.phases = map[string]string{}
+	s.phasesMu.Unlock()
 	if prev != nil && prev != next {
 		_ = prev.Close()
 	}
@@ -467,8 +494,9 @@ func (s *Server) sendSessionSnapshot(sid string, messages []agent.Message, u age
 		OutputTokens: u.OutputTokens,
 
 		LastInputTokens: u.LastInputTokens,
+		ContextWindow:   u.ContextWindow,
 	}
-	if a := s.activeAgent(); a != nil && u.LastInputTokens > 0 {
+	if a := s.activeAgent(); a != nil && frame.ContextWindow <= 0 && u.LastInputTokens > 0 {
 		_, model := a.Models(sid)
 		frame.ContextWindow = int64(agent.ContextWindowFor(model, false))
 	}
@@ -483,9 +511,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	infos, err := a.ListSessions(r.Context())
 	if err != nil {
-
 		fmt.Fprintf(os.Stderr, "list sessions (%s): %v\n", a.Name(), err)
-		writeJSON(w, []SessionEntry{})
+		http.Error(w, fmt.Sprintf("list sessions: %v", err), http.StatusBadGateway)
 		return
 	}
 	out := make([]SessionEntry, 0, len(infos))

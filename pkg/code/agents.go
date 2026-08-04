@@ -2,8 +2,10 @@ package code
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const BuiltinAgentName = "wingman"
@@ -35,32 +37,39 @@ func HasAgentsConfig() bool {
 	return err == nil
 }
 
-func LoadAgents() []AgentDef {
+func LoadAgents() ([]AgentDef, error) {
 	path, err := agentsConfigPath()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("resolve agents config path: %w", err)
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read agents config %s: %w", path, err)
 	}
 
 	var defs []AgentDef
 	if err := json.Unmarshal(data, &defs); err != nil {
-		return nil
+		return nil, fmt.Errorf("parse agents config %s: %w", path, err)
 	}
 
 	out := make([]AgentDef, 0, len(defs))
-	for _, d := range defs {
-		if d.Name == "" || d.Command == "" {
-			continue
+	for i, d := range defs {
+		d.Name = strings.TrimSpace(d.Name)
+		d.Command = strings.TrimSpace(d.Command)
+		if d.Name == "" {
+			return nil, fmt.Errorf("agents config %s: entry %d has no name", path, i+1)
 		}
-		if d.Name == BuiltinAgentName {
-
+		if d.Command == "" {
+			return nil, fmt.Errorf("agents config %s: entry %d (%s) has no command", path, i+1, d.Name)
+		}
+		if strings.EqualFold(d.Name, BuiltinAgentName) {
 			continue
 		}
 		out = append(out, d)
 	}
-	return out
+	return out, nil
 }

@@ -107,16 +107,52 @@ func TestAvailableMergesConfiguredAndDetectedAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ids := registrationIDs(Available())
+	available, err := Available()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := registrationIDs(available)
 	if !slices.Contains(ids, "codex") || !slices.Contains(ids, "custom-acp") {
 		t.Fatalf("Available() = %q, want detected and configured agents", ids)
 	}
 	if slices.Contains(ids, "wingman") {
 		t.Fatalf("Available() = %q, configured agent shadowed the built-in name", ids)
 	}
-	for _, registration := range Available() {
+	for _, registration := range available {
 		if registration.ID == "codex" && registration.Name != "CODEX" {
 			t.Fatalf("configured codex did not replace detected codex: %#v", registration)
 		}
+	}
+}
+
+func TestAvailableReportsMalformedConfiguration(t *testing.T) {
+	home := t.TempDir()
+	setTestHome(t, home)
+	dir := filepath.Join(home, ".wingman")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "agents.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Available(); err == nil {
+		t.Fatal("Available() succeeded with malformed agents.json")
+	}
+}
+
+func TestAvailableReportsIncompleteEntries(t *testing.T) {
+	home := t.TempDir()
+	setTestHome(t, home)
+	dir := filepath.Join(home, ".wingman")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "agents.json"), []byte(`[{"name":"custom"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Available(); err == nil {
+		t.Fatal("Available() succeeded with an incomplete agent entry")
 	}
 }

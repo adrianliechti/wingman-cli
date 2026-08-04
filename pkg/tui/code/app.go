@@ -95,6 +95,7 @@ type App struct {
 	inputTokens     int64
 	outputTokens    int64
 	lastInputTokens int64
+	contextWindow   int64
 
 	pendingContent []agent.Content
 	pendingFiles   []string
@@ -484,6 +485,7 @@ func (a *App) Run() error {
 		a.inputTokens = usage.InputTokens
 		a.outputTokens = usage.OutputTokens
 		a.lastInputTokens = usage.LastInputTokens
+		a.contextWindow = usage.ContextWindow
 		a.syncMessages()
 	}
 
@@ -545,20 +547,23 @@ func (a *App) shutdown() {
 
 	a.turns.SetHandler(nil)
 	a.turns.Close()
-	a.agent.Close()
-	a.agent.Workspace().Close()
+	messages := a.agent.Messages(a.sessionID)
+	usage := a.agent.Usage(a.sessionID)
+	name := a.agent.Name()
+	workspace := a.agent.Workspace()
+	_ = a.agent.Close()
+	workspace.Close()
 
 	a.term.Stop()
 
-	if len(a.agent.Messages(a.sessionID)) > 0 {
-		usage := a.agent.Usage(a.sessionID)
+	if len(messages) > 0 {
 		fmt.Fprintf(os.Stderr, "\n")
 		if usage.CachedTokens > 0 {
 			fmt.Fprintf(os.Stderr, "  Tokens: ↑%s (%s cached) ↓%s\n", tui.FormatTokens(usage.InputTokens), tui.FormatTokens(usage.CachedTokens), tui.FormatTokens(usage.OutputTokens))
 		} else {
 			fmt.Fprintf(os.Stderr, "  Tokens: ↑%s ↓%s\n", tui.FormatTokens(usage.InputTokens), tui.FormatTokens(usage.OutputTokens))
 		}
-		if name := a.agent.Name(); name != "" && name != code.BuiltinAgentName {
+		if name != "" && name != code.BuiltinAgentName {
 			fmt.Fprintf(os.Stderr, "  Resume: wingman --agent %s --resume %s\n", name, a.sessionID)
 		} else {
 			fmt.Fprintf(os.Stderr, "  Resume: wingman --resume %s\n", a.sessionID)
@@ -1089,6 +1094,7 @@ func (a *App) clearChat() {
 	a.inputTokens = 0
 	a.outputTokens = 0
 	a.lastInputTokens = 0
+	a.contextWindow = 0
 	a.chat = nil
 	a.chatScroll = 0
 	a.follow = true
@@ -1106,6 +1112,11 @@ func (a *App) resumeSession() {
 	}
 
 	last := sessions[0]
+	for _, candidate := range sessions[1:] {
+		if candidate.UpdatedAt.After(last.UpdatedAt) {
+			last = candidate
+		}
+	}
 	if err := a.agent.LoadSession(a.ctx, last.ID); err != nil {
 		a.appendChat(cellNotice(fmt.Sprintf("Failed to load session: %v", err), t.Red, a.width()))
 		return
@@ -1119,6 +1130,7 @@ func (a *App) resumeSession() {
 	a.inputTokens = usage.InputTokens
 	a.outputTokens = usage.OutputTokens
 	a.lastInputTokens = usage.LastInputTokens
+	a.contextWindow = usage.ContextWindow
 
 	a.showWelcome = false
 	a.chat = nil

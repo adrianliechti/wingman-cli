@@ -7,6 +7,7 @@ type modelEntry struct {
 	Name         string
 	Description  string
 	EffortLevels []string
+	Default      bool
 }
 
 func modelsFromCodex(list []codexModel) []modelEntry {
@@ -28,6 +29,7 @@ func modelsFromCodex(list []codexModel) []modelEntry {
 			Name:         name,
 			Description:  m.Description,
 			EffortLevels: efforts,
+			Default:      m.IsDefault,
 		})
 	}
 	return out
@@ -42,17 +44,63 @@ func findModel(models []modelEntry, id string) *modelEntry {
 	return nil
 }
 
+func resolveModel(models []modelEntry, id string) *modelEntry {
+	if id != "" && id != "default" {
+		return findModel(models, id)
+	}
+	for i := range models {
+		if models[i].Default {
+			return &models[i]
+		}
+	}
+	return nil
+}
+
 const (
-	modelConfigID  = "model"
-	effortConfigID = "effort"
+	modelConfigID             = "model"
+	effortConfigID            = "effort"
+	collaborationModeConfigID = "collaboration_mode"
+
+	defaultCollaborationMode = "default"
+	planCollaborationMode    = "plan"
 )
 
-func buildConfigOptions(models []modelEntry, currentModelID, currentEffort string) []acp.SessionConfigOption {
+func buildConfigOptions(models []modelEntry, currentModelID, currentEffort, collaborationMode string) []acp.SessionConfigOption {
 	opts := []acp.SessionConfigOption{modelConfigOption(models, currentModelID)}
 	if effort := effortConfigOption(models, currentModelID, currentEffort); effort != nil {
 		opts = append(opts, *effort)
 	}
+	opts = append(opts, collaborationModeConfigOption(collaborationMode))
 	return opts
+}
+
+func collaborationModeConfigOption(current string) acp.SessionConfigOption {
+	if current != planCollaborationMode {
+		current = defaultCollaborationMode
+	}
+	ungrouped := acp.SessionConfigSelectOptionsUngrouped{
+		{Value: defaultCollaborationMode, Name: "Default"},
+		{
+			Value:       planCollaborationMode,
+			Name:        "Plan",
+			Description: acp.Ptr("Plan before making changes"),
+		},
+	}
+	opt := acp.NewSessionConfigOptionSelect(
+		acp.SessionConfigValueId(current),
+		acp.SessionConfigSelectOptions{Ungrouped: &ungrouped},
+	)
+	desc := "How Codex collaborates for subsequent turns"
+	category := acp.SessionConfigOptionCategory("_codex_collaboration_mode")
+	opt.Select.Id = collaborationModeConfigID
+	opt.Select.Name = "Collaboration mode"
+	opt.Select.Description = &desc
+	opt.Select.Category = &category
+	return opt
+}
+
+func isValidCollaborationMode(mode string) bool {
+	return mode == defaultCollaborationMode || mode == planCollaborationMode
 }
 
 func modelConfigOption(models []modelEntry, currentID string) acp.SessionConfigOption {
@@ -128,6 +176,16 @@ func isValidEffort(m *modelEntry, level string) bool {
 		}
 	}
 	return false
+}
+
+func normalizeSessionConfig(models []modelEntry, modelID, effort string) (string, string) {
+	if m := resolveModel(models, modelID); m != nil {
+		modelID = m.ID
+		if !isValidEffort(m, effort) {
+			effort = "default"
+		}
+	}
+	return modelID, effort
 }
 
 func titleCase(s string) string {

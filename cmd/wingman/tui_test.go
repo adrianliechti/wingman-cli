@@ -24,8 +24,13 @@ func TestParseTUIArgs(t *testing.T) {
 		},
 		{
 			name: "claude latest",
-			args: []string{"--agent", "claude", "--resume"},
+			args: []string{"--agent", "claude", "--continue"},
 			want: tuiOptions{Agent: "claude", SessionID: "latest"},
+		},
+		{
+			name: "short continue",
+			args: []string{"-c"},
+			want: tuiOptions{Agent: "wingman", SessionID: "latest"},
 		},
 		{
 			name: "specific codex session",

@@ -162,6 +162,22 @@ type threadUnsubscribeParams struct {
 	ThreadID string `json:"threadId"`
 }
 
+type threadSettingsUpdateParams struct {
+	ThreadID          string                 `json:"threadId"`
+	CollaborationMode codexCollaborationMode `json:"collaborationMode"`
+}
+
+type codexCollaborationMode struct {
+	Mode     string                    `json:"mode"`
+	Settings collaborationModeSettings `json:"settings"`
+}
+
+type collaborationModeSettings struct {
+	Model                 string  `json:"model"`
+	ReasoningEffort       *string `json:"reasoning_effort"`
+	DeveloperInstructions *string `json:"developer_instructions"`
+}
+
 type configReadParams struct {
 	IncludeLayers bool `json:"includeLayers"`
 }
@@ -370,6 +386,10 @@ func (c *codexClient) threadRead(ctx context.Context, p threadReadParams) (threa
 
 func (c *codexClient) threadUnsubscribe(ctx context.Context, p threadUnsubscribeParams) error {
 	return c.rpc.call(ctx, "thread/unsubscribe", p, nil)
+}
+
+func (c *codexClient) threadSettingsUpdate(ctx context.Context, p threadSettingsUpdateParams) error {
+	return c.rpc.call(ctx, "thread/settings/update", p, nil)
 }
 
 func (c *codexClient) configRead(ctx context.Context, p configReadParams) (configReadResponse, error) {

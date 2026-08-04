@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -47,20 +46,21 @@ The wingman backend routes model traffic through WINGMAN_URL (or localhost:4242)
 `)
 }
 
-func runACP(ctx context.Context) {
+func runACP(ctx context.Context, args []string) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
 	target := "wingman"
-	if len(os.Args) >= 3 {
-		target = os.Args[2]
+	if len(args) > 0 {
+		target = args[0]
+		args = args[1:]
 	}
 
 	switch target {
 	case "--help", "-h", "help":
 		printACPHelp()
 	case "wingman":
-		if len(os.Args) > 3 {
-			if os.Args[3] == "--help" || os.Args[3] == "-h" {
+		if len(args) > 0 {
+			if args[0] == "--help" || args[0] == "-h" {
 				printACPHelp()
 				return
 			}
@@ -70,24 +70,33 @@ func runACP(ctx context.Context) {
 			fatal(err)
 		}
 	case "claude":
-		runACPClaude(ctx)
+		runACPClaude(ctx, args)
 	case "codex":
-		runACPCodex(ctx)
+		runACPCodex(ctx, args)
 	case "pi":
-		runACPPi(ctx)
+		runACPPi(ctx, args)
 	default:
 		fatal(fmt.Errorf("unknown ACP target %q (choose wingman, claude, codex, or pi)", target))
 	}
 }
 
-func runACPClaude(ctx context.Context) {
-	fs := flag.NewFlagSet("acp claude", flag.ExitOnError)
-	model := fs.String("model", "default", "default model id for new sessions")
-	effort := fs.String("effort", "", "default effort level (low|medium|high|xhigh|max)")
-	backendFlag := fs.String("backend", string(acpBackendNative), "model backend (native|wingman)")
-	debug := fs.Bool("debug", false, "log JSON-RPC traffic to stderr")
-	fs.Parse(os.Args[3:])
-	backend, err := parseACPBackend(*backendFlag)
+func runACPClaude(ctx context.Context, args []string) {
+	model := "default"
+	effort := ""
+	backendName := string(acpBackendNative)
+	debug := false
+
+	fs := newFlags("wingman acp claude")
+	fs.String(&model, "--model ID", "default model id for new sessions")
+	fs.String(&effort, "--effort LEVEL", "default effort level (validated for the selected model)")
+	fs.String(&backendName, "--backend NAME", "model backend (native|wingman)")
+	fs.Bool(&debug, "--debug", "log JSON-RPC traffic to stderr")
+
+	if err := fs.Parse(args); err != nil {
+		fatal(err)
+	}
+
+	backend, err := parseACPBackend(backendName)
 	if err != nil {
 		fatal(err)
 	}
@@ -98,8 +107,8 @@ func runACPClaude(ctx context.Context) {
 	}
 
 	opts := claude.Options{
-		Model:  *model,
-		Effort: *effort,
+		Model:  model,
+		Effort: effort,
 		Cwd:    cwd,
 		Env:    os.Environ(),
 	}
@@ -111,26 +120,35 @@ func runACPClaude(ctx context.Context) {
 		opts.Env = claudecli.BuildEnv(os.Environ(), cfg)
 	}
 
-	if err := claude.Run(ctx, opts, os.Stdin, os.Stdout, acpLogger(*debug)); err != nil {
+	if err := claude.Run(ctx, opts, os.Stdin, os.Stdout, acpLogger(debug)); err != nil {
 		fatal(err)
 	}
 }
 
-func runACPCodex(ctx context.Context) {
-	fs := flag.NewFlagSet("acp codex", flag.ExitOnError)
-	model := fs.String("model", "default", "default model id for new sessions")
-	effort := fs.String("effort", "", "default reasoning effort (minimal|low|medium|high|xhigh)")
-	backendFlag := fs.String("backend", string(acpBackendNative), "model backend (native|wingman)")
-	debug := fs.Bool("debug", false, "log JSON-RPC traffic to stderr")
-	fs.Parse(os.Args[3:])
-	backend, err := parseACPBackend(*backendFlag)
+func runACPCodex(ctx context.Context, args []string) {
+	model := "default"
+	effort := ""
+	backendName := string(acpBackendNative)
+	debug := false
+
+	fs := newFlags("wingman acp codex")
+	fs.String(&model, "--model ID", "default model id for new sessions")
+	fs.String(&effort, "--effort LEVEL", "default reasoning effort (validated for the selected model)")
+	fs.String(&backendName, "--backend NAME", "model backend (native|wingman)")
+	fs.Bool(&debug, "--debug", "log JSON-RPC traffic to stderr")
+
+	if err := fs.Parse(args); err != nil {
+		fatal(err)
+	}
+
+	backend, err := parseACPBackend(backendName)
 	if err != nil {
 		fatal(err)
 	}
 
 	opts := codex.Options{
-		Model:  *model,
-		Effort: *effort,
+		Model:  model,
+		Effort: effort,
 		Env:    os.Environ(),
 	}
 	if backend == acpBackendWingman {
@@ -142,17 +160,24 @@ func runACPCodex(ctx context.Context) {
 		opts.ExtraArgs = codexcli.BuildArgs(cfg)
 	}
 
-	if err := codex.Run(ctx, opts, os.Stdin, os.Stdout, acpLogger(*debug)); err != nil {
+	if err := codex.Run(ctx, opts, os.Stdin, os.Stdout, acpLogger(debug)); err != nil {
 		fatal(err)
 	}
 }
 
-func runACPPi(ctx context.Context) {
-	fs := flag.NewFlagSet("acp pi", flag.ExitOnError)
-	backendFlag := fs.String("backend", string(acpBackendNative), "model backend (native|wingman)")
-	debug := fs.Bool("debug", false, "log JSON-RPC traffic to stderr")
-	fs.Parse(os.Args[3:])
-	backend, err := parseACPBackend(*backendFlag)
+func runACPPi(ctx context.Context, args []string) {
+	backendName := string(acpBackendNative)
+	debug := false
+
+	fs := newFlags("wingman acp pi")
+	fs.String(&backendName, "--backend NAME", "model backend (native|wingman)")
+	fs.Bool(&debug, "--debug", "log JSON-RPC traffic to stderr")
+
+	if err := fs.Parse(args); err != nil {
+		fatal(err)
+	}
+
+	backend, err := parseACPBackend(backendName)
 	if err != nil {
 		fatal(err)
 	}
@@ -185,7 +210,7 @@ func runACPPi(ctx context.Context) {
 		opts.SessionsDir = picli.SessionsDir(dir)
 	}
 
-	if err := pi.Run(ctx, opts, os.Stdin, os.Stdout, acpLogger(*debug)); err != nil {
+	if err := pi.Run(ctx, opts, os.Stdin, os.Stdout, acpLogger(debug)); err != nil {
 		fatal(err)
 	}
 }

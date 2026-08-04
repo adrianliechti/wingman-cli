@@ -113,12 +113,12 @@ configured API backend.
 
 4. **Resume a previous session:**
 ```bash
-wingman --resume              # resume the most recent session
+wingman --continue            # resume the most recent session
 wingman --resume <session-id> # resume a specific session
 
-wingman --agent codex --resume  # resume the latest native Codex session
-wingman --agent claude --resume # resume the latest native Claude session
-wingman --agent pi --resume     # resume the latest native Pi session
+wingman --agent codex --continue  # resume the latest native Codex session
+wingman --agent claude --continue # resume the latest native Claude session
+wingman --agent pi --continue     # resume the latest native Pi session
 ```
 
 ### Agent Modes

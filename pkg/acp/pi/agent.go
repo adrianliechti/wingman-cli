@@ -2,6 +2,7 @@ package pi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -56,7 +57,7 @@ func (a *Agent) Close() error {
 	a.sessions = map[acp.SessionId]*session{}
 	a.mu.Unlock()
 	for _, s := range sessions {
-		s.proc.dispose()
+		s.close()
 	}
 	return nil
 }
@@ -77,11 +78,19 @@ func (a *Agent) Initialize(context.Context, acp.InitializeRequest) (acp.Initiali
 			},
 			SessionCapabilities: acp.SessionCapabilities{
 				Close:  &acp.SessionCloseCapabilities{},
+				Fork:   a.forkCapability(),
 				List:   a.listCapability(),
 				Delete: a.deleteCapability(),
 			},
 		},
 	}, nil
+}
+
+func (a *Agent) forkCapability() *acp.SessionForkCapabilities {
+	if a.opts.SessionsDir == "" {
+		return nil
+	}
+	return &acp.SessionForkCapabilities{}
 }
 
 func (a *Agent) listCapability() *acp.SessionListCapabilities {
@@ -126,12 +135,7 @@ func (a *Agent) NewSession(ctx context.Context, params acp.NewSessionRequest) (a
 		return acp.NewSessionResponse{}, err
 	}
 
-	proc, err := spawn(spawnOptions{
-		Path: a.opts.Path,
-		Dir:  cwd,
-		Env:  a.opts.Env,
-		Args: a.opts.Args,
-	})
+	proc, bridge, err := a.spawnSessionProcess(ctx, cwd, nil, params.McpServers)
 	if err != nil {
 		return acp.NewSessionResponse{}, err
 	}
@@ -139,17 +143,20 @@ func (a *Agent) NewSession(ctx context.Context, params acp.NewSessionRequest) (a
 	modelsData, err := proc.getAvailableModels(ctx)
 	if err != nil {
 		proc.dispose()
+		bridge.cleanup()
 		return acp.NewSessionResponse{}, err
 	}
 	models := parseAvailableModels(modelsData)
 	if len(models) == 0 {
 		proc.dispose()
+		bridge.cleanup()
 		return acp.NewSessionResponse{}, acp.NewAuthRequired(nil)
 	}
 
 	stateData, err := proc.getState(ctx)
 	if err != nil {
 		proc.dispose()
+		bridge.cleanup()
 		return acp.NewSessionResponse{}, err
 	}
 	state := parseState(stateData)
@@ -160,9 +167,12 @@ func (a *Agent) NewSession(ctx context.Context, params acp.NewSessionRequest) (a
 	}
 
 	s := newSession(id, cwd, proc)
+	s.cleanup = bridge.cleanup
 	s.models = models
-	s.currentModel = state.currentModel()
-	s.thinking = state.thinking()
+	if err := s.refreshConfiguration(ctx); err != nil {
+		s.close()
+		return acp.NewSessionResponse{}, err
+	}
 
 	a.mu.Lock()
 	a.sessions[id] = s
@@ -217,20 +227,23 @@ func (a *Agent) SetSessionConfigOption(ctx context.Context, params acp.SetSessio
 		if err := s.proc.setModel(ctx, provider, modelID); err != nil {
 			return acp.SetSessionConfigOptionResponse{}, err
 		}
-		s.mu.Lock()
-		s.currentModel = value
-		s.mu.Unlock()
+		if err := s.refreshConfiguration(ctx); err != nil {
+			return acp.SetSessionConfigOptionResponse{}, err
+		}
 
 	case effortConfigID:
-		if !isThinkingLevel(value) {
+		s.mu.Lock()
+		valid := isThinkingLevel(s.thinkingLevels, value)
+		s.mu.Unlock()
+		if !valid {
 			return acp.SetSessionConfigOptionResponse{}, fmt.Errorf("unknown thinking level %q", value)
 		}
 		if err := s.proc.setThinkingLevel(ctx, value); err != nil {
 			return acp.SetSessionConfigOptionResponse{}, err
 		}
-		s.mu.Lock()
-		s.thinking = value
-		s.mu.Unlock()
+		if err := s.refreshConfiguration(ctx); err != nil {
+			return acp.SetSessionConfigOptionResponse{}, err
+		}
 
 	default:
 		return acp.SetSessionConfigOptionResponse{}, fmt.Errorf("unknown configId %q", v.ConfigId)
@@ -250,7 +263,7 @@ func (a *Agent) disposeSession(id acp.SessionId) {
 	delete(a.sessions, id)
 	a.mu.Unlock()
 	if s != nil {
-		s.proc.dispose()
+		s.close()
 	}
 }
 
@@ -321,7 +334,6 @@ func (a *Agent) LoadSession(ctx context.Context, params acp.LoadSessionRequest) 
 	if a.opts.SessionsDir == "" {
 		return acp.LoadSessionResponse{}, errors.ErrUnsupported
 	}
-
 	file, ok := findSessionFile(a.opts.SessionsDir, string(params.SessionId))
 	if !ok {
 		return acp.LoadSessionResponse{}, fmt.Errorf("unknown session %s", params.SessionId)
@@ -334,39 +346,31 @@ func (a *Agent) LoadSession(ctx context.Context, params acp.LoadSessionRequest) 
 
 	a.disposeSession(params.SessionId)
 
-	proc, err := spawn(spawnOptions{
-		Path: a.opts.Path,
-		Dir:  cwd,
-		Env:  a.opts.Env,
-		Args: append(append([]string{}, a.opts.Args...), "--session", file.Path),
-	})
+	proc, bridge, err := a.spawnSessionProcess(ctx, cwd, []string{"--session", file.Path}, params.McpServers)
 	if err != nil {
 		return acp.LoadSessionResponse{}, err
 	}
 
-	stateData, err := proc.getState(ctx)
-	if err != nil {
-		proc.dispose()
-		return acp.LoadSessionResponse{}, err
-	}
 	modelsData, err := proc.getAvailableModels(ctx)
 	if err != nil {
 		proc.dispose()
+		bridge.cleanup()
 		return acp.LoadSessionResponse{}, err
 	}
-	state := parseState(stateData)
 	models := parseAvailableModels(modelsData)
 	if len(models) == 0 {
 		proc.dispose()
+		bridge.cleanup()
 		return acp.LoadSessionResponse{}, acp.NewAuthRequired(nil)
 	}
 
 	s := newSession(params.SessionId, cwd, proc)
+	s.cleanup = bridge.cleanup
 	s.models = models
-	if cm := state.currentModel(); cm != "" {
-		s.currentModel = cm
+	if err := s.refreshConfiguration(ctx); err != nil {
+		s.close()
+		return acp.LoadSessionResponse{}, err
 	}
-	s.thinking = state.thinking()
 
 	a.mu.Lock()
 	a.sessions[params.SessionId] = s
@@ -380,4 +384,127 @@ func (a *Agent) LoadSession(ctx context.Context, params acp.LoadSessionRequest) 
 	}
 
 	return acp.LoadSessionResponse{ConfigOptions: s.configOptions()}, nil
+}
+
+func (a *Agent) spawnSessionProcess(ctx context.Context, cwd string, extraArgs []string, servers []acp.McpServer) (*process, *preparedMCPBridge, error) {
+	bridge, err := prepareMCPBridge(cwd, a.opts.Env, servers)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	args := append([]string(nil), a.opts.Args...)
+	args = append(args, extraArgs...)
+	args = append(args, bridge.args...)
+	proc, err := spawn(spawnOptions{Path: a.opts.Path, Dir: cwd, Env: bridge.env, Args: args})
+	if err != nil {
+		bridge.cleanup()
+		return nil, nil, err
+	}
+	if err := bridge.waitReady(ctx, proc); err != nil {
+		proc.dispose()
+		bridge.cleanup()
+		return nil, nil, err
+	}
+	return proc, bridge, nil
+}
+
+func (a *Agent) UnstableForkSession(ctx context.Context, params acp.UnstableForkSessionRequest) (acp.UnstableForkSessionResponse, error) {
+	if a.opts.SessionsDir == "" {
+		return acp.UnstableForkSessionResponse{}, errors.ErrUnsupported
+	}
+	file, ok := findSessionFile(a.opts.SessionsDir, string(params.SessionId))
+	if !ok {
+		return acp.UnstableForkSessionResponse{}, fmt.Errorf("unknown session %s", params.SessionId)
+	}
+	cwd, _, err := acpcommon.NormalizeSessionRoots(params.Cwd, nil)
+	if err != nil {
+		return acp.UnstableForkSessionResponse{}, err
+	}
+	servers, err := stableMCPServers(params.McpServers)
+	if err != nil {
+		return acp.UnstableForkSessionResponse{}, err
+	}
+
+	proc, bridge, err := a.spawnSessionProcess(ctx, cwd, []string{"--session", file.Path}, servers)
+	if err != nil {
+		return acp.UnstableForkSessionResponse{}, err
+	}
+	fail := func(err error) (acp.UnstableForkSessionResponse, error) {
+		proc.dispose()
+		bridge.cleanup()
+		return acp.UnstableForkSessionResponse{}, err
+	}
+
+	if err := bridge.resetReady(); err != nil {
+		return fail(err)
+	}
+	cloneData, err := proc.clone(ctx)
+	if err != nil {
+		return fail(err)
+	}
+	if err := bridge.waitReady(ctx, proc); err != nil {
+		return fail(err)
+	}
+	var cloneResult struct {
+		Cancelled bool `json:"cancelled"`
+	}
+	if json.Unmarshal(cloneData, &cloneResult) != nil {
+		return fail(errors.New("pi clone returned an invalid response"))
+	}
+	if cloneResult.Cancelled {
+		return fail(errors.New("pi clone was cancelled"))
+	}
+
+	modelsData, err := proc.getAvailableModels(ctx)
+	if err != nil {
+		return fail(err)
+	}
+	models := parseAvailableModels(modelsData)
+	if len(models) == 0 {
+		return fail(acp.NewAuthRequired(nil))
+	}
+	stateData, err := proc.getState(ctx)
+	if err != nil {
+		return fail(err)
+	}
+	state := parseState(stateData)
+	id := acp.SessionId(state.SessionID)
+	if id == "" || id == params.SessionId {
+		return fail(fmt.Errorf("pi clone returned invalid session id %q", id))
+	}
+
+	s := newSession(id, cwd, proc)
+	s.cleanup = bridge.cleanup
+	s.models = models
+	if err := s.refreshConfiguration(ctx); err != nil {
+		return fail(err)
+	}
+
+	a.mu.Lock()
+	a.sessions[id] = s
+	a.mu.Unlock()
+	return acp.UnstableForkSessionResponse{SessionId: id}, nil
+}
+
+func stableMCPServers(servers []acp.UnstableMcpServer) ([]acp.McpServer, error) {
+	out := make([]acp.McpServer, 0, len(servers))
+	for i, server := range servers {
+		count := 0
+		for _, present := range []bool{server.Stdio != nil, server.Http != nil, server.Sse != nil, server.Acp != nil} {
+			if present {
+				count++
+			}
+		}
+		if count != 1 {
+			return nil, fmt.Errorf("MCP server %d must specify exactly one transport", i+1)
+		}
+		if server.Stdio == nil {
+			return nil, fmt.Errorf("MCP server %d: only stdio transport is supported", i+1)
+		}
+		out = append(out, acp.McpServer{Stdio: server.Stdio})
+	}
+	if err := acpcommon.ValidateMCPServers(out, acp.McpCapabilities{}); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

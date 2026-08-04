@@ -31,7 +31,7 @@ type Registration struct {
 }
 
 func ID(name string) string {
-	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(name)), " ", "-")
+	return strings.Join(strings.Fields(strings.ToLower(name)), "-")
 }
 
 func nativeClaudeOptions(root string, env []string) claude.Options {
@@ -57,8 +57,8 @@ type inProcessAgent interface {
 	Close() error
 }
 
-func wrapInProcess(ws *code.Workspace, name string, srv inProcessAgent) (code.Agent, error) {
-	a, err := codeacp.NewInProcess(ws, name, srv, srv.SetAgentConnection, srv.Close)
+func wrapInProcess(ctx context.Context, ws *code.Workspace, name string, srv inProcessAgent) (code.Agent, error) {
+	a, err := codeacp.NewInProcess(ctx, ws, name, srv, srv.SetAgentConnection, srv.Close)
 	if err != nil {
 		_ = srv.Close()
 		return nil, err
@@ -72,9 +72,9 @@ func detected() []Registration {
 	if _, err := exec.LookPath(claudecli.BinPath()); err == nil {
 		out = append(out, Registration{
 			ID: "claude", Name: "Claude",
-			Constructor: func(_ context.Context, ws *code.Workspace) (code.Agent, error) {
+			Constructor: func(ctx context.Context, ws *code.Workspace) (code.Agent, error) {
 				srv := claude.New(nativeClaudeOptions(ws.RootPath, os.Environ()))
-				return wrapInProcess(ws, "claude", srv)
+				return wrapInProcess(ctx, ws, "claude", srv)
 			},
 		})
 	}
@@ -87,7 +87,7 @@ func detected() []Registration {
 				if err != nil {
 					return nil, fmt.Errorf("codex spawn: %w", err)
 				}
-				return wrapInProcess(ws, "codex", srv)
+				return wrapInProcess(ctx, ws, "codex", srv)
 			},
 		})
 	}
@@ -104,8 +104,8 @@ func detected() []Registration {
 		name := def.Name
 		out = append(out, Registration{
 			ID: ID(name), Name: name,
-			Constructor: func(_ context.Context, ws *code.Workspace) (code.Agent, error) {
-				return codeacp.New(ws, def)
+			Constructor: func(ctx context.Context, ws *code.Workspace) (code.Agent, error) {
+				return codeacp.New(ctx, ws, def)
 			},
 		})
 	}
@@ -113,9 +113,9 @@ func detected() []Registration {
 	if _, err := exec.LookPath(picli.BinPath()); err == nil {
 		out = append(out, Registration{
 			ID: "pi", Name: "Pi",
-			Constructor: func(_ context.Context, ws *code.Workspace) (code.Agent, error) {
+			Constructor: func(ctx context.Context, ws *code.Workspace) (code.Agent, error) {
 				srv := pi.New(nativePiOptions(ws.RootPath, os.Environ()))
-				return wrapInProcess(ws, "pi", srv)
+				return wrapInProcess(ctx, ws, "pi", srv)
 			},
 		})
 	}
@@ -123,8 +123,11 @@ func detected() []Registration {
 	return out
 }
 
-func configured() []Registration {
-	defs := code.LoadAgents()
+func configured() ([]Registration, error) {
+	defs, err := code.LoadAgents()
+	if err != nil {
+		return nil, err
+	}
 	out := make([]Registration, 0, len(defs))
 	for _, def := range defs {
 		id := ID(def.Name)
@@ -135,23 +138,27 @@ func configured() []Registration {
 		def.Name = id
 		out = append(out, Registration{
 			ID: id, Name: name,
-			Constructor: func(_ context.Context, ws *code.Workspace) (code.Agent, error) {
-				return codeacp.New(ws, def)
+			Constructor: func(ctx context.Context, ws *code.Workspace) (code.Agent, error) {
+				return codeacp.New(ctx, ws, def)
 			},
 		})
 	}
-	return out
+	return out, nil
 }
 
 // Available merges automatically detected agents with agents.json entries.
 // An explicitly configured entry replaces a detected entry with the same ID.
-func Available() []Registration {
+func Available() ([]Registration, error) {
 	out := detected()
 	index := make(map[string]int, len(out))
 	for i, r := range out {
 		index[r.ID] = i
 	}
-	for _, r := range configured() {
+	configured, err := configured()
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range configured {
 		if i, ok := index[r.ID]; ok {
 			out[i] = r
 			continue
@@ -159,7 +166,7 @@ func Available() []Registration {
 		index[r.ID] = len(out)
 		out = append(out, r)
 	}
-	return out
+	return out, nil
 }
 
 func names(registrations []Registration) []string {
@@ -170,7 +177,13 @@ func names(registrations []Registration) []string {
 	return names
 }
 
-func Names() []string { return names(Available()) }
+func Names() ([]string, error) {
+	available, err := Available()
+	if err != nil {
+		return nil, err
+	}
+	return names(available), nil
+}
 
 // New constructs the built-in agent or any detected/configured ACP agent.
 // builtinConfig lets long-lived hosts reuse their existing Wingman config.
@@ -187,7 +200,10 @@ func New(ctx context.Context, ws *code.Workspace, name string, builtinConfig *ag
 		return codeagent.New(ws, builtinConfig, nil), nil
 	}
 
-	available := Available()
+	available, err := Available()
+	if err != nil {
+		return nil, err
+	}
 	for _, r := range available {
 		if r.ID == name {
 			return r.Constructor(ctx, ws)

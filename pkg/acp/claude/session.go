@@ -21,6 +21,7 @@ type session struct {
 	cwd string
 
 	formElicitation bool
+	planUpdates     bool
 
 	mu             sync.Mutex
 	modelID        string
@@ -194,6 +195,10 @@ func (s *session) ensureProc(conn *acp.AgentSideConnection, path string, env []s
 		return nil, fmt.Errorf("start claude: %w", err)
 	}
 
+	var plan *taskPlan
+	if s.planUpdates {
+		plan = newTaskPlan()
+	}
 	p := &claudeProc{
 		cmd:             cmd,
 		out:             &streamWriter{w: stdin},
@@ -206,7 +211,7 @@ func (s *session) ensureProc(conn *acp.AgentSideConnection, path string, env []s
 		tools:           toolUseCache{},
 		emitted:         newToolCallTracker(),
 		streamedMsgs:    map[string]bool{},
-		plan:            newTaskPlan(),
+		plan:            plan,
 		subagentParents: make(map[string]string),
 		results:         make(chan turnResult, 1),
 		dead:            make(chan struct{}),

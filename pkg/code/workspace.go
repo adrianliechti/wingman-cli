@@ -171,20 +171,14 @@ func (w *Workspace) InitMCP(ctx context.Context) error {
 		return nil
 	}
 
-	if err := w.MCP.Connect(ctx); err != nil {
-		return err
-	}
-
-	mcpTools, err := toolmcp.Tools(ctx, w.MCP)
-	if err != nil {
-		return err
-	}
+	connectErr := w.MCP.Connect(ctx)
+	mcpTools, toolsErr := toolmcp.Tools(ctx, w.MCP)
 
 	w.mu.Lock()
 	w.mcpTools = mcpTools
 	w.mu.Unlock()
 
-	return nil
+	return errors.Join(connectErr, toolsErr)
 }
 
 func (w *Workspace) Close() {

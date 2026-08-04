@@ -97,7 +97,7 @@ func emitAssistant(ctx context.Context, conn *acp.AgentSideConnection, sid acp.S
 					}
 				}
 			}
-			if isPlanTool(b.Name) {
+			if plan != nil && isPlanTool(b.Name) {
 				entries, ok := planEntriesFromTodoWrite(b.Input)
 				if !ok {
 					continue
@@ -181,7 +181,7 @@ func emitToolResults(ctx context.Context, conn *acp.AgentSideConnection, sid acp
 				return err
 			}
 		}
-		if isPlanTool(name) {
+		if plan != nil && isPlanTool(name) {
 			continue
 		}
 		// A cancelled turn can drop the assistant message that announced this

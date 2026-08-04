@@ -5,6 +5,7 @@ export interface Skill {
 	name: string;
 	description?: string;
 	arguments?: string[];
+	input_hint?: string;
 }
 
 interface Props {
@@ -71,6 +72,11 @@ export function SkillPicker({
 									{s.arguments && s.arguments.length > 0 && (
 										<span className="text-[10.5px] text-fg-dim font-mono truncate">
 											{s.arguments.map((a) => `<${a}>`).join(" ")}
+										</span>
+									)}
+									{s.input_hint && (
+										<span className="text-[10.5px] text-fg-dim font-mono truncate">
+											{s.input_hint}
 										</span>
 									)}
 								</div>

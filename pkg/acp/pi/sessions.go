@@ -252,6 +252,7 @@ func replayMessages(send func(acp.SessionUpdate), data json.RawMessage) {
 		return
 	}
 
+	startedTools := make(map[string]bool)
 	for _, raw := range d.Messages {
 		var m struct {
 			Role       string          `json:"role"`
@@ -267,13 +268,51 @@ func replayMessages(send func(acp.SessionUpdate), data json.RawMessage) {
 
 		switch m.Role {
 		case "user":
-			if text := normalizePiText(m.Content); text != "" {
-				send(acp.UpdateUserMessage(acp.TextBlock(text)))
+			var text string
+			if json.Unmarshal(m.Content, &text) == nil {
+				if text != "" {
+					send(acp.UpdateUserMessage(acp.TextBlock(text)))
+				}
+				continue
+			}
+			for _, block := range parsePiMessageContent(m.Content) {
+				switch block.Type {
+				case "text":
+					if block.Text != "" {
+						send(acp.UpdateUserMessage(acp.TextBlock(block.Text)))
+					}
+				case "image":
+					if block.Data != "" {
+						send(acp.UpdateUserMessage(acp.ImageBlock(block.Data, block.MimeType)))
+					}
+				}
 			}
 
 		case "assistant":
-			if text := normalizePiText(m.Content); text != "" {
-				send(acp.UpdateAgentMessageText(text))
+			for _, block := range parsePiMessageContent(m.Content) {
+				switch block.Type {
+				case "text":
+					if block.Text != "" {
+						send(acp.UpdateAgentMessageText(block.Text))
+					}
+				case "thinking":
+					if block.Thinking != "" {
+						send(acp.UpdateAgentThoughtText(block.Thinking))
+					}
+				case "toolCall":
+					if block.ID == "" {
+						continue
+					}
+					startedTools[block.ID] = true
+					opts := []acp.ToolCallStartOpt{
+						acp.WithStartKind(toolKind(block.Name)),
+						acp.WithStartStatus(acp.ToolCallStatusPending),
+					}
+					if block.Arguments != nil {
+						opts = append(opts, acp.WithStartRawInput(block.Arguments))
+					}
+					send(acp.StartToolCall(acp.ToolCallId(block.ID), toolTitle(block.Name, block.Arguments), opts...))
+				}
 			}
 
 		case "toolResult":
@@ -291,15 +330,52 @@ func replayMessages(send func(acp.SessionUpdate), data json.RawMessage) {
 			}
 			var args map[string]any
 			_ = json.Unmarshal(m.Args, &args)
-			send(acp.StartToolCall(acp.ToolCallId(id), toolTitle(name, args),
-				acp.WithStartKind(toolKind(name)),
-				acp.WithStartStatus(status),
-			))
+			if !startedTools[id] {
+				send(acp.StartToolCall(acp.ToolCallId(id), toolTitle(name, args),
+					acp.WithStartKind(toolKind(name)),
+					acp.WithStartStatus(status),
+				))
+			}
 			opts := []acp.ToolCallUpdateOpt{acp.WithUpdateStatus(status)}
-			if text := toolResultToText(raw); text != "" {
-				opts = append(opts, acp.WithUpdateContent([]acp.ToolCallContent{acp.ToolContent(acp.TextBlock(text))}))
+			if content := piToolResultContent(m.Content); len(content) > 0 {
+				opts = append(opts, acp.WithUpdateContent(content))
 			}
 			send(acp.UpdateToolCall(acp.ToolCallId(id), opts...))
+			delete(startedTools, id)
 		}
 	}
+}
+
+type piMessageContent struct {
+	Type      string         `json:"type"`
+	Text      string         `json:"text"`
+	Thinking  string         `json:"thinking"`
+	Data      string         `json:"data"`
+	MimeType  string         `json:"mimeType"`
+	ID        string         `json:"id"`
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments"`
+}
+
+func parsePiMessageContent(content json.RawMessage) []piMessageContent {
+	var blocks []piMessageContent
+	_ = json.Unmarshal(content, &blocks)
+	return blocks
+}
+
+func piToolResultContent(content json.RawMessage) []acp.ToolCallContent {
+	var out []acp.ToolCallContent
+	for _, block := range parsePiMessageContent(content) {
+		switch block.Type {
+		case "text":
+			if block.Text != "" {
+				out = append(out, acp.ToolContent(acp.TextBlock(block.Text)))
+			}
+		case "image":
+			if block.Data != "" {
+				out = append(out, acp.ToolContent(acp.ImageBlock(block.Data, block.MimeType)))
+			}
+		}
+	}
+	return out
 }

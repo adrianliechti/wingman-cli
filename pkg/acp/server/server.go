@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/session"
 )
 
@@ -33,9 +35,10 @@ func Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		return err
 	}
 	s := &Server{
-		config:     cfg,
-		sessions:   map[acpsdk.SessionId]*sessionEntry{},
-		workspaces: map[string]*workspaceEntry{},
+		config:      cfg,
+		sessions:    map[acpsdk.SessionId]*sessionEntry{},
+		sessionDirs: map[acpsdk.SessionId]string{},
+		workspaces:  map[string]*workspaceEntry{},
 	}
 	s.conn = acpsdk.NewAgentSideConnection(s, out, in)
 	s.conn.SetLogger(slog.Default())
@@ -58,9 +61,10 @@ type Server struct {
 	conn   *acpsdk.AgentSideConnection
 	config *agent.Config
 
-	mu         sync.Mutex
-	sessions   map[acpsdk.SessionId]*sessionEntry
-	workspaces map[string]*workspaceEntry
+	mu          sync.Mutex
+	sessions    map[acpsdk.SessionId]*sessionEntry
+	sessionDirs map[acpsdk.SessionId]string
+	workspaces  map[string]*workspaceEntry
 
 	formElicitation atomic.Bool
 }
@@ -79,6 +83,7 @@ type workspaceEntry struct {
 	key   string
 	refs  int
 	ready chan struct{}
+	err   error
 }
 
 func (s *Server) Initialize(_ context.Context, params acpsdk.InitializeRequest) (acpsdk.InitializeResponse, error) {
@@ -98,6 +103,7 @@ func (s *Server) Initialize(_ context.Context, params acpsdk.InitializeRequest) 
 				List:   &acpsdk.SessionListCapabilities{},
 				Resume: &acpsdk.SessionResumeCapabilities{},
 				Close:  &acpsdk.SessionCloseCapabilities{},
+				Delete: &acpsdk.SessionDeleteCapabilities{},
 			},
 		},
 	}, nil
@@ -318,7 +324,7 @@ func (s *Server) NewSession(ctx context.Context, params acpsdk.NewSessionRequest
 	if err != nil {
 		return acpsdk.NewSessionResponse{}, err
 	}
-	w, err := s.acquireWorkspace(ctx, cwd)
+	w, err := s.acquireWorkspace(ctx, cwd, params.McpServers)
 	if err != nil {
 		return acpsdk.NewSessionResponse{}, err
 	}
@@ -338,9 +344,15 @@ func (s *Server) NewSession(ctx context.Context, params acpsdk.NewSessionRequest
 	}, nil
 }
 
-func (s *Server) acquireWorkspace(ctx context.Context, cwd string) (*workspaceEntry, error) {
+func (s *Server) acquireWorkspace(ctx context.Context, cwd string, requestedServers []acpsdk.McpServer) (*workspaceEntry, error) {
+	requested, err := requestedMCPConfig(requestedServers)
+	if err != nil {
+		return nil, err
+	}
+	key := workspaceKey(cwd, requested)
+
 	s.mu.Lock()
-	if w, ok := s.workspaces[cwd]; ok {
+	if w, ok := s.workspaces[key]; ok {
 		w.refs++
 		s.mu.Unlock()
 		return s.awaitWorkspace(ctx, w)
@@ -351,10 +363,17 @@ func (s *Server) acquireWorkspace(ctx context.Context, cwd string) (*workspaceEn
 	if err != nil {
 		return nil, err
 	}
+	if len(requested) > 0 {
+		if ws.MCP == nil {
+			ws.MCP = mcp.NewManager(&mcp.Config{Servers: map[string]mcp.ServerConfig{}})
+			ws.MCP.Dir = cwd
+		}
+		maps.Copy(ws.MCP.Servers, requested)
+	}
 	wa := codeagent.New(ws, s.config, s)
 
 	s.mu.Lock()
-	if existing, ok := s.workspaces[cwd]; ok {
+	if existing, ok := s.workspaces[key]; ok {
 
 		existing.refs++
 		s.mu.Unlock()
@@ -362,29 +381,81 @@ func (s *Server) acquireWorkspace(ctx context.Context, cwd string) (*workspaceEn
 		ws.Close()
 		return s.awaitWorkspace(ctx, existing)
 	}
-	w := &workspaceEntry{ws: ws, agent: wa, key: cwd, refs: 1, ready: make(chan struct{})}
-	s.workspaces[cwd] = w
+	w := &workspaceEntry{ws: ws, agent: wa, key: key, refs: 1, ready: make(chan struct{})}
+	s.workspaces[key] = w
 	s.mu.Unlock()
 
 	ws.WarmUp()
-	initCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-	if err := ws.InitMCP(initCtx); err != nil {
-		slog.Warn("workspace mcp init failed", "cwd", cwd, "err", err)
+	mcpCtx, cancelMCP := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	if err := ws.InitMCP(mcpCtx); err != nil {
+		missing := missingRequestedMCPServers(requested, ws.MCP.Sessions())
+		if len(missing) > 0 {
+			w.err = fmt.Errorf("initialize requested MCP servers %s: %w", strings.Join(missing, ", "), err)
+		} else {
+			slog.Warn("workspace mcp init failed", "cwd", cwd, "err", err)
+		}
 	}
-	wa.FetchModels(initCtx)
-	cancel()
+	cancelMCP()
+	if w.err == nil {
+		modelCtx, cancelModels := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		wa.FetchModels(modelCtx)
+		cancelModels()
+	}
 	close(w.ready)
 	return s.awaitWorkspace(ctx, w)
+}
+
+func requestedMCPConfig(servers []acpsdk.McpServer) (map[string]mcp.ServerConfig, error) {
+	if err := acp.ValidateMCPServers(servers, acpsdk.McpCapabilities{}); err != nil {
+		return nil, err
+	}
+	result := make(map[string]mcp.ServerConfig, len(servers))
+	for _, server := range servers {
+		stdio := server.Stdio
+		env := make(map[string]string, len(stdio.Env))
+		for _, item := range stdio.Env {
+			env[item.Name] = item.Value
+		}
+		result[stdio.Name] = mcp.ServerConfig{
+			Command: stdio.Command,
+			Args:    append([]string(nil), stdio.Args...),
+			Env:     env,
+		}
+	}
+	return result, nil
+}
+
+func workspaceKey(cwd string, requested map[string]mcp.ServerConfig) string {
+	if len(requested) == 0 {
+		return cwd
+	}
+	data, _ := json.Marshal(requested)
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%s\x00%x", cwd, sum)
 }
 
 func (s *Server) awaitWorkspace(ctx context.Context, w *workspaceEntry) (*workspaceEntry, error) {
 	select {
 	case <-w.ready:
+		if w.err != nil {
+			s.releaseWorkspace(w)
+			return nil, w.err
+		}
 		return w, nil
 	case <-ctx.Done():
 		s.releaseWorkspace(w)
 		return nil, ctx.Err()
 	}
+}
+
+func missingRequestedMCPServers[T any](requested map[string]mcp.ServerConfig, connected map[string]T) []string {
+	var missing []string
+	for _, name := range slices.Sorted(maps.Keys(requested)) {
+		if _, ok := connected[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	return missing
 }
 
 func (s *Server) releaseWorkspace(w *workspaceEntry) {
@@ -402,6 +473,10 @@ func (s *Server) releaseWorkspace(w *workspaceEntry) {
 
 func (s *Server) registerSession(id acpsdk.SessionId, w *workspaceEntry) {
 	s.mu.Lock()
+	if s.sessionDirs == nil {
+		s.sessionDirs = map[acpsdk.SessionId]string{}
+	}
+	s.sessionDirs[id] = w.agent.SessionsDir()
 	_, exists := s.sessions[id]
 	if !exists {
 		s.sessions[id] = &sessionEntry{id: id, agent: w.agent, workspace: w}
@@ -438,6 +513,48 @@ func (s *Server) CloseSession(_ context.Context, params acpsdk.CloseSessionReque
 	}
 	s.releaseWorkspace(sess.workspace)
 	return acpsdk.CloseSessionResponse{}, nil
+}
+
+// UnstableDeleteSession implements the stable session/delete wire method. The
+// v0.13.5 Go SDK still uses the Unstable prefix for its generated Go symbols.
+func (s *Server) UnstableDeleteSession(ctx context.Context, params acpsdk.UnstableDeleteSessionRequest) (acpsdk.UnstableDeleteSessionResponse, error) {
+	s.mu.Lock()
+	sess := s.sessions[params.SessionId]
+	dir := s.sessionDirs[params.SessionId]
+	removeWorkspaceRef := false
+	var cancel context.CancelFunc
+	if sess != nil && !sess.closing {
+		sess.closing = true
+		removeWorkspaceRef = true
+		cancel = sess.cancel
+		if cancel == nil {
+			delete(s.sessions, params.SessionId)
+		}
+	}
+	s.mu.Unlock()
+
+	var err error
+	if sess != nil {
+		// Removing the code-agent session first prevents an active prompt's
+		// deferred Save from recreating the session after deletion.
+		err = sess.agent.DeleteSession(ctx, string(params.SessionId))
+	} else if dir != "" {
+		err = session.Delete(dir, string(params.SessionId))
+	}
+	if cancel != nil {
+		cancel()
+	}
+	if removeWorkspaceRef {
+		s.releaseWorkspace(sess.workspace)
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return acpsdk.UnstableDeleteSessionResponse{}, err
+	}
+
+	s.mu.Lock()
+	delete(s.sessionDirs, params.SessionId)
+	s.mu.Unlock()
+	return acpsdk.UnstableDeleteSessionResponse{}, nil
 }
 
 func (s *Server) lookupSession(id acpsdk.SessionId) *sessionEntry {
@@ -597,11 +714,19 @@ func (s *Server) ListSessions(_ context.Context, params acpsdk.ListSessionsReque
 		}
 		out = append(out, info)
 	}
+	s.mu.Lock()
+	if s.sessionDirs == nil {
+		s.sessionDirs = map[acpsdk.SessionId]string{}
+	}
+	for _, info := range out {
+		s.sessionDirs[info.SessionId] = code.SessionsDir(cwd)
+	}
+	s.mu.Unlock()
 	return acpsdk.ListSessionsResponse{Sessions: out}, nil
 }
 
 func (s *Server) ResumeSession(ctx context.Context, params acpsdk.ResumeSessionRequest) (acpsdk.ResumeSessionResponse, error) {
-	w, _, err := s.loadAndAttach(ctx, params.Cwd, params.SessionId)
+	w, _, err := s.loadAndAttach(ctx, params.Cwd, params.SessionId, params.McpServers)
 	if err != nil {
 		return acpsdk.ResumeSessionResponse{}, err
 	}
@@ -615,7 +740,7 @@ func (s *Server) ResumeSession(ctx context.Context, params acpsdk.ResumeSessionR
 }
 
 func (s *Server) LoadSession(ctx context.Context, params acpsdk.LoadSessionRequest) (acpsdk.LoadSessionResponse, error) {
-	w, messages, err := s.loadAndAttach(ctx, params.Cwd, params.SessionId)
+	w, messages, err := s.loadAndAttach(ctx, params.Cwd, params.SessionId, params.McpServers)
 	if err != nil {
 		return acpsdk.LoadSessionResponse{}, err
 	}
@@ -629,12 +754,12 @@ func (s *Server) LoadSession(ctx context.Context, params acpsdk.LoadSessionReque
 	}, nil
 }
 
-func (s *Server) loadAndAttach(ctx context.Context, cwdParam string, id acpsdk.SessionId) (*workspaceEntry, []agent.Message, error) {
+func (s *Server) loadAndAttach(ctx context.Context, cwdParam string, id acpsdk.SessionId, servers []acpsdk.McpServer) (*workspaceEntry, []agent.Message, error) {
 	cwd, err := normalizeCwd(cwdParam)
 	if err != nil {
 		return nil, nil, err
 	}
-	w, err := s.acquireWorkspace(ctx, cwd)
+	w, err := s.acquireWorkspace(ctx, cwd, servers)
 	if err != nil {
 		return nil, nil, err
 	}

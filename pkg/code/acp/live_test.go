@@ -61,7 +61,7 @@ func TestLiveWebPipelineAskUserQuestion(t *testing.T) {
 	}
 
 	srv := claude.New(claude.Options{Path: path, Env: os.Environ(), Cwd: dir})
-	a, err := NewInProcess(ws, "claude", srv, func(conn *acpsdk.AgentSideConnection) {
+	a, err := NewInProcess(context.Background(), ws, "claude", srv, func(conn *acpsdk.AgentSideConnection) {
 		srv.SetAgentConnection(conn)
 	}, srv.Close)
 	if err != nil {

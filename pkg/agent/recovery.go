@@ -542,9 +542,9 @@ func (a *Agent) truncateMessagesForRecovery() {
 	a.stateMu.Lock()
 	if len(a.Messages) > minRecoveryMessagesToPreserve {
 		start := len(a.Messages) - minRecoveryMessagesToPreserve
-		trimmed := cloneMessages(a.Messages[start:])
+		trimmed := CloneMessages(a.Messages[start:])
 		if userIdx := lastVisibleUserIndex(a.Messages); userIdx >= 0 && userIdx < start {
-			trimmed = append(cloneMessages(a.Messages[userIdx:userIdx+1]), trimmed...)
+			trimmed = append(CloneMessages(a.Messages[userIdx:userIdx+1]), trimmed...)
 		}
 		a.Messages = trimmed
 		a.Revision++

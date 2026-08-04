@@ -68,6 +68,7 @@ func (a *App) syncMessages() {
 	a.inputTokens = usage.InputTokens
 	a.outputTokens = usage.OutputTokens
 	a.lastInputTokens = usage.LastInputTokens
+	a.contextWindow = usage.ContextWindow
 }
 
 func (a *App) formatMessageCells(msg agent.Message, width int) []string {

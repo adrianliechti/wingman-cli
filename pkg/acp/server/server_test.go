@@ -20,6 +20,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
+	"github.com/adrianliechti/wingman-agent/pkg/session"
 )
 
 type recordingClient struct {
@@ -150,6 +151,51 @@ func (*recordingClient) ReleaseTerminal(context.Context, acpsdk.ReleaseTerminalR
 
 func (*recordingClient) WaitForTerminalExit(context.Context, acpsdk.WaitForTerminalExitRequest) (acpsdk.WaitForTerminalExitResponse, error) {
 	return acpsdk.WaitForTerminalExitResponse{}, errors.ErrUnsupported
+}
+
+func TestACPDeleteListedSessionWithoutLoading(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cwd := t.TempDir()
+	dir := code.SessionsDir(cwd)
+	const id = "listed-session"
+	if err := session.Save(dir, id, agent.State{Messages: []agent.Message{{
+		Role: agent.RoleUser,
+		Content: []agent.Content{{
+			Text: "hello",
+		}},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &Server{
+		sessions:   map[acpsdk.SessionId]*sessionEntry{},
+		workspaces: map[string]*workspaceEntry{},
+	}
+	init, err := s.Initialize(context.Background(), acpsdk.InitializeRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if init.AgentCapabilities.SessionCapabilities.Delete == nil {
+		t.Fatal("session/delete is not advertised")
+	}
+	listed, err := s.ListSessions(context.Background(), acpsdk.ListSessionsRequest{Cwd: &cwd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Sessions) != 1 || listed.Sessions[0].SessionId != id {
+		t.Fatalf("listed sessions = %+v, want %q", listed.Sessions, id)
+	}
+
+	params := acpsdk.UnstableDeleteSessionRequest{SessionId: id}
+	if _, err := s.UnstableDeleteSession(context.Background(), params); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Load(dir, id); err == nil {
+		t.Fatal("deleted session is still loadable")
+	}
+	if _, err := s.UnstableDeleteSession(context.Background(), params); err != nil {
+		t.Fatalf("idempotent delete: %v", err)
+	}
 }
 
 func TestACPTaskTurnWritesFileAndReportsUsage(t *testing.T) {

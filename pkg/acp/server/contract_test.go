@@ -46,9 +46,10 @@ func newContractServer(t *testing.T) acptest.Agent {
 	}
 	return &contractServer{
 		Server: &Server{
-			config:     cfg,
-			sessions:   map[acpsdk.SessionId]*sessionEntry{},
-			workspaces: map[string]*workspaceEntry{},
+			config:      cfg,
+			sessions:    map[acpsdk.SessionId]*sessionEntry{},
+			sessionDirs: map[acpsdk.SessionId]string{},
+			workspaces:  map[string]*workspaceEntry{},
 		},
 		model: model,
 	}

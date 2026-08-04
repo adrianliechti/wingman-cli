@@ -37,6 +37,7 @@ type Agent struct {
 	mu              sync.Mutex
 	sessions        map[acp.SessionId]*session
 	formElicitation bool
+	planUpdates     bool
 
 	defaultModel  string
 	defaultEffort string
@@ -93,6 +94,12 @@ func (a *Agent) supportsFormElicitation() bool {
 	return a.formElicitation
 }
 
+func (a *Agent) supportsPlanUpdates() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.planUpdates
+}
+
 func (a *Agent) lookup(id acp.SessionId) *session {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -136,6 +143,7 @@ func (a *Agent) sendAvailableCommands(id acp.SessionId) {
 func (a *Agent) Initialize(_ context.Context, params acp.InitializeRequest) (acp.InitializeResponse, error) {
 	a.mu.Lock()
 	a.formElicitation = params.ClientCapabilities.Elicitation != nil && params.ClientCapabilities.Elicitation.Form != nil
+	a.planUpdates = params.ClientCapabilities.PlanCapabilities != nil
 	a.mu.Unlock()
 
 	title := "Claude (ACP)"
@@ -177,14 +185,19 @@ func (a *Agent) Logout(context.Context, acp.LogoutRequest) (acp.LogoutResponse, 
 }
 
 func (a *Agent) NewSession(ctx context.Context, params acp.NewSessionRequest) (acp.NewSessionResponse, error) {
+	if err := acpcommon.ValidateMCPServers(params.McpServers, acp.McpCapabilities{Http: true, Sse: true}); err != nil {
+		return acp.NewSessionResponse{}, err
+	}
 	cwd, additional, err := acpcommon.NormalizeSessionRoots(params.Cwd, params.AdditionalDirectories)
 	if err != nil {
 		return acp.NewSessionResponse{}, err
 	}
 	a.ensureModels(ctx)
 	id := acp.SessionId(newUUID())
-	s := newSession(id, cwd, a.defaultModel, a.defaultEffort, additional)
+	modelID, effort := normalizeSessionConfig(a.models, a.defaultModel, a.defaultEffort)
+	s := newSession(id, cwd, modelID, effort, additional)
 	s.formElicitation = a.supportsFormElicitation()
+	s.planUpdates = a.supportsPlanUpdates()
 	s.mcpServers = params.McpServers
 	a.mu.Lock()
 	a.sessions[id] = s
@@ -310,6 +323,9 @@ func (a *Agent) ListSessions(_ context.Context, params acp.ListSessionsRequest) 
 }
 
 func (a *Agent) ResumeSession(ctx context.Context, params acp.ResumeSessionRequest) (acp.ResumeSessionResponse, error) {
+	if err := acpcommon.ValidateMCPServers(params.McpServers, acp.McpCapabilities{Http: true, Sse: true}); err != nil {
+		return acp.ResumeSessionResponse{}, err
+	}
 	cwd, additional, err := acpcommon.NormalizeSessionRoots(params.Cwd, params.AdditionalDirectories)
 	if err != nil {
 		return acp.ResumeSessionResponse{}, err
@@ -327,6 +343,9 @@ func (a *Agent) ResumeSession(ctx context.Context, params acp.ResumeSessionReque
 }
 
 func (a *Agent) LoadSession(ctx context.Context, params acp.LoadSessionRequest) (acp.LoadSessionResponse, error) {
+	if err := acpcommon.ValidateMCPServers(params.McpServers, acp.McpCapabilities{Http: true, Sse: true}); err != nil {
+		return acp.LoadSessionResponse{}, err
+	}
 	cwd, additional, err := acpcommon.NormalizeSessionRoots(params.Cwd, params.AdditionalDirectories)
 	if err != nil {
 		return acp.LoadSessionResponse{}, err
@@ -358,8 +377,10 @@ func (a *Agent) UnstableForkSession(_ context.Context, params acp.UnstableForkSe
 }
 
 func (a *Agent) adoptSession(id acp.SessionId, cwd string, additionalDirs []string, mcpServers []acp.McpServer, resumeFrom string, fork bool) *session {
-	s := newSession(id, cwd, a.defaultModel, a.defaultEffort, additionalDirs)
+	modelID, effort := normalizeSessionConfig(a.models, a.defaultModel, a.defaultEffort)
+	s := newSession(id, cwd, modelID, effort, additionalDirs)
 	s.formElicitation = a.supportsFormElicitation()
+	s.planUpdates = a.supportsPlanUpdates()
 	if resumeFrom != "" && (a.defaultModel == "" || a.defaultModel == "default") {
 		path := filepath.Join(projectDirFor(cwd), resumeFrom+".jsonl")
 		if live := scanSessionModel(path); live != "" {
@@ -371,6 +392,7 @@ func (a *Agent) adoptSession(id acp.SessionId, cwd string, additionalDirs []stri
 			s.modelOverride = false
 		}
 	}
+	s.modelID, s.effort = normalizeSessionConfig(a.models, s.modelID, s.effort)
 	s.mcpServers = mcpServers
 	s.resumeFrom = resumeFrom
 	s.forkOnResume = fork

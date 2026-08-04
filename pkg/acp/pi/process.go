@@ -124,7 +124,26 @@ func (p *process) readLoop(stdout io.Reader) {
 			raw := make(json.RawMessage, len(line))
 			copy(raw, line)
 			h(raw)
+		} else {
+			p.handleIdleEvent(line)
 		}
+	}
+}
+
+func (p *process) handleIdleEvent(raw json.RawMessage) {
+	var event struct {
+		Type   string `json:"type"`
+		ID     string `json:"id"`
+		Method string `json:"method"`
+	}
+	if json.Unmarshal(raw, &event) != nil || event.Type != "extension_ui_request" || event.ID == "" {
+		return
+	}
+	switch event.Method {
+	case "confirm", "select", "input", "editor":
+		// Extension dialogs can occur during session_start, load, or clone when
+		// no ACP turn exists to surface them. Cancel so Pi never deadlocks.
+		p.sendExtensionResponse(map[string]any{"id": event.ID, "cancelled": true})
 	}
 }
 
@@ -222,6 +241,11 @@ func (p *process) getAvailableModels(ctx context.Context) (json.RawMessage, erro
 	return resp.Data, err
 }
 
+func (p *process) getAvailableThinkingLevels(ctx context.Context) (json.RawMessage, error) {
+	resp, err := p.request(ctx, map[string]any{"type": "get_available_thinking_levels"})
+	return resp.Data, err
+}
+
 func (p *process) setModel(ctx context.Context, provider, modelID string) error {
 	_, err := p.request(ctx, map[string]any{"type": "set_model", "provider": provider, "modelId": modelID})
 	return err
@@ -234,6 +258,11 @@ func (p *process) setThinkingLevel(ctx context.Context, level string) error {
 
 func (p *process) getMessages(ctx context.Context) (json.RawMessage, error) {
 	resp, err := p.request(ctx, map[string]any{"type": "get_messages"})
+	return resp.Data, err
+}
+
+func (p *process) clone(ctx context.Context) (json.RawMessage, error) {
+	resp, err := p.request(ctx, map[string]any{"type": "clone"})
 	return resp.Data, err
 }
 

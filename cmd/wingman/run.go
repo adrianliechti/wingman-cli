@@ -16,8 +16,8 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/external/pi"
 )
 
-func runRun(ctx context.Context) {
-	if len(os.Args) < 3 {
+func runRun(ctx context.Context, args []string) {
+	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "Error: missing or unknown run target")
 		fmt.Fprintln(os.Stderr)
 		printHelp(os.Stderr)
@@ -26,25 +26,25 @@ func runRun(ctx context.Context) {
 
 	var err error
 
-	switch os.Args[2] {
+	switch args[0] {
 	case "claude":
-		err = claude.Run(ctx, os.Args[3:], nil)
+		err = claude.Run(ctx, args[1:], nil)
 	case "claude-desktop":
-		err = claudedesktop.Run(ctx, os.Args[3:], nil)
+		err = claudedesktop.Run(ctx, args[1:], nil)
 	case "codex":
-		err = codex.Run(ctx, os.Args[3:], nil)
+		err = codex.Run(ctx, args[1:], nil)
 	case "copilot":
-		err = copilot.Run(ctx, os.Args[3:], nil)
+		err = copilot.Run(ctx, args[1:], nil)
 	case "gemini":
-		err = gemini.Run(ctx, os.Args[3:], nil)
+		err = gemini.Run(ctx, args[1:], nil)
 	case "goose":
-		err = goose.Run(ctx, os.Args[3:], nil)
+		err = goose.Run(ctx, args[1:], nil)
 	case "junie":
-		err = junie.Run(ctx, os.Args[3:], nil)
+		err = junie.Run(ctx, args[1:], nil)
 	case "opencode":
-		err = opencode.Run(ctx, os.Args[3:], nil)
+		err = opencode.Run(ctx, args[1:], nil)
 	case "pi":
-		err = pi.Run(ctx, os.Args[3:], nil)
+		err = pi.Run(ctx, args[1:], nil)
 	default:
 		fmt.Fprintln(os.Stderr, "Error: missing or unknown run target")
 		fmt.Fprintln(os.Stderr)

@@ -3,6 +3,8 @@ package acp
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -12,6 +14,30 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 )
+
+func TestTextFileCallbacksSupportAbsolutePaths(t *testing.T) {
+	base := t.TempDir()
+	workspaceDir := filepath.Join(base, "workspace")
+	outsideDir := filepath.Join(base, "outside")
+	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{workspace: &code.Workspace{RootPath: workspaceDir}}
+	nested := filepath.Join(outsideDir, "nested", "file.txt")
+	if _, err := a.WriteTextFile(context.Background(), acp.WriteTextFileRequest{Path: nested, Content: "inside"}); err != nil {
+		t.Fatalf("write absolute path outside cwd: %v", err)
+	}
+	resp, err := a.ReadTextFile(context.Background(), acp.ReadTextFileRequest{Path: nested})
+	if err != nil || resp.Content != "inside" {
+		t.Fatalf("read absolute path outside cwd = %q, %v", resp.Content, err)
+	}
+	if _, err := a.ReadTextFile(context.Background(), acp.ReadTextFileRequest{Path: "relative.txt"}); err == nil {
+		t.Fatal("relative path was accepted")
+	}
+}
 
 func TestToolCallContentTextRendersDiff(t *testing.T) {
 	old := "line one\nold line\nline three\n"

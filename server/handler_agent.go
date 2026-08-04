@@ -14,10 +14,15 @@ type AgentEntry struct {
 }
 
 func (s *Server) handleAgents(w http.ResponseWriter, _ *http.Request) {
+	available, err := agents.Available()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	result := []AgentEntry{
 		{ID: code.BuiltinAgentName, Name: "Wingman"},
 	}
-	for _, r := range agents.Available() {
+	for _, r := range available {
 		result = append(result, AgentEntry{ID: r.ID, Name: r.Name})
 	}
 	writeJSON(w, result)

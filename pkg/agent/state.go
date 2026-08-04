@@ -25,7 +25,7 @@ func (a *Agent) appendMessages(messages ...Message) {
 func (a *Agent) MessagesSnapshot() []Message {
 	a.stateMu.RLock()
 	defer a.stateMu.RUnlock()
-	return cloneMessages(a.Messages)
+	return CloneMessages(a.Messages)
 }
 
 // requestMessages takes a cheap, shallow snapshot for synchronous request
@@ -47,13 +47,15 @@ func (a *Agent) StateSnapshot() State {
 	a.stateMu.RLock()
 	defer a.stateMu.RUnlock()
 	return State{
-		Messages: cloneMessages(a.Messages),
+		Messages: CloneMessages(a.Messages),
 		Usage:    a.Usage,
 		Revision: a.Revision,
 	}
 }
 
-func cloneMessages(messages []Message) []Message {
+// CloneMessages returns a deep-enough copy for handing message snapshots to
+// callers while another goroutine may continue streaming into retained state.
+func CloneMessages(messages []Message) []Message {
 	out := make([]Message, len(messages))
 	for i, message := range messages {
 		out[i] = message
