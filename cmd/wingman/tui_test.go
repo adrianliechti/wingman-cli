@@ -47,14 +47,19 @@ func TestParseTUIArgs(t *testing.T) {
 	}
 }
 
-func TestParseTUIArgsRejectsInvalidAgent(t *testing.T) {
-	for _, args := range [][]string{
-		{"--agent"},
-		{"--agent", "gemini"},
-	} {
-		if _, err := parseTUIArgs(args); err == nil {
-			t.Fatalf("parseTUIArgs(%q) succeeded, want error", args)
-		}
+func TestParseTUIArgsRejectsMissingAgent(t *testing.T) {
+	if _, err := parseTUIArgs([]string{"--agent"}); err == nil {
+		t.Fatal("parseTUIArgs() succeeded without an agent name")
+	}
+}
+
+func TestParseTUIArgsAcceptsConfiguredAgentName(t *testing.T) {
+	got, err := parseTUIArgs([]string{"--agent", "custom-agent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Agent != "custom-agent" {
+		t.Fatalf("agent = %q, want custom-agent", got.Agent)
 	}
 }
 

@@ -19,9 +19,9 @@ const pathMarker = "__WINGMAN_PATH__"
 // launched from Finder/Dock on macOS (and some Linux desktops). launchd
 // hands the process a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin), so
 // CLIs installed via Homebrew, ~/.local/bin, etc. are invisible to
-// exec.LookPath — which is exactly how the codex/copilot/opencode agents
-// are detected (server/agents.go). We query the user's interactive login
-// shell for its real PATH and merge it into our environment.
+// exec.LookPath — which is how native ACP agents are detected by the shared
+// agent registry. We query the user's interactive login shell for its real
+// PATH and merge it into our environment.
 //
 // No-op on Windows. When launched from a terminal the shell PATH simply
 // matches what we already have, so merging is harmless.

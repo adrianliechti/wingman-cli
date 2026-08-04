@@ -7,7 +7,7 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
-	coder "github.com/adrianliechti/wingman-agent/pkg/code/agent"
+	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 )
 
 func TestThoughtCellsGetSurroundingBlankLines(t *testing.T) {
@@ -16,7 +16,7 @@ func TestThoughtCellsGetSurroundingBlankLines(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a := &App{agent: coder.New(ws, &agent.Config{}, nil)}
+	a := &App{agent: codeagent.New(ws, &agent.Config{}, nil)}
 
 	toolMsg := func(id string) agent.Message {
 		return agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{
@@ -82,7 +82,7 @@ func TestStreamTailFollowsWorkOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a := &App{agent: coder.New(ws, &agent.Config{}, nil), queue: make(chan func(), 64), quit: make(chan struct{})}
+	a := &App{agent: codeagent.New(ws, &agent.Config{}, nil), queue: make(chan func(), 64), quit: make(chan struct{})}
 
 	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{
 		{Text: "streamed answer"},
@@ -120,7 +120,7 @@ func TestWhitespaceOnlyTextRendersNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a := &App{agent: coder.New(ws, &agent.Config{}, nil)}
+	a := &App{agent: codeagent.New(ws, &agent.Config{}, nil)}
 
 	msg := agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{Text: "\n\n"}}}
 	if lines := a.formatMessageCells(msg, 80); len(lines) != 0 {
@@ -134,7 +134,7 @@ func TestAnnotationsSurviveChatRebuild(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a := &App{agent: coder.New(ws, &agent.Config{}, nil)}
+	a := &App{agent: codeagent.New(ws, &agent.Config{}, nil)}
 
 	a.annotations = append(a.annotations, chatAnnotation{
 		afterMessages: 0,

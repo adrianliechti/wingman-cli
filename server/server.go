@@ -26,7 +26,8 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/task"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
-	coder "github.com/adrianliechti/wingman-agent/pkg/code/agent"
+	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/code/agents"
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 	"github.com/adrianliechti/wingman-agent/pkg/system"
 	"github.com/adrianliechti/wingman-agent/pkg/terminal"
@@ -115,7 +116,7 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 	s.terminals = terminal.NewManager(ws.RootPath)
 	s.terminals.SetExitHandler(s.onTerminalExit)
 
-	wa := coder.New(ws, cfg, nil)
+	wa := codeagent.New(ws, cfg, nil)
 	wa.SetUI(s)
 	s.agent = wa
 	s.turns = code.NewTurnManager(tool.WithProgressSink(ctx, s.onToolProgress), wa, s.handleTurnEvent)
@@ -133,7 +134,7 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 	}()
 
 	go func() {
-		if w, ok := s.agent.(*coder.Agent); ok {
+		if w, ok := s.agent.(*codeagent.Agent); ok {
 			w.FetchModels(ctx)
 			s.broadcast(Frame{Type: EvtModelChanged})
 		}
@@ -728,7 +729,7 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCapabilities(w http.ResponseWriter, _ *http.Request) {
 	ws := s.workspace
-	_, isCoder := s.activeAgent().(*coder.Agent)
+	_, isCoder := s.activeAgent().(*codeagent.Agent)
 	caps := map[string]any{
 		"git":      ws.IsGitRepo(),
 		"lsp":      ws.HasLSP(),
@@ -837,24 +838,15 @@ func resolvePort(port int) (int, error) {
 }
 
 func (s *Server) constructBackend(name string) (code.Agent, error) {
-	if name == "" || name == code.BuiltinAgentName {
-		w := coder.New(s.workspace, s.config, nil)
-		w.SetUI(s)
-
+	a, err := agents.New(s.ctx, s.workspace, name, s.config)
+	if err != nil {
+		return nil, err
+	}
+	if us, ok := a.(interface{ SetUI(code.UI) }); ok {
+		us.SetUI(s)
+	}
+	if w, ok := a.(*codeagent.Agent); ok {
 		w.FetchModels(s.ctx)
-		return w, nil
 	}
-	for _, r := range s.availableAgents() {
-		if r.ID == name {
-			a, err := r.Constructor(s.ctx, s.workspace)
-			if err != nil {
-				return nil, err
-			}
-			if us, ok := a.(interface{ SetUI(code.UI) }); ok {
-				us.SetUI(s)
-			}
-			return a, nil
-		}
-	}
-	return nil, fmt.Errorf("unknown agent %q", name)
+	return a, nil
 }

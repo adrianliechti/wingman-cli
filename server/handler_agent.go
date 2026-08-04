@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/adrianliechti/wingman-agent/pkg/code"
+	"github.com/adrianliechti/wingman-agent/pkg/code/agents"
 )
 
 type AgentEntry struct {
@@ -16,7 +17,7 @@ func (s *Server) handleAgents(w http.ResponseWriter, _ *http.Request) {
 	result := []AgentEntry{
 		{ID: code.BuiltinAgentName, Name: "Wingman"},
 	}
-	for _, r := range s.availableAgents() {
+	for _, r := range agents.Available() {
 		result = append(result, AgentEntry{ID: r.ID, Name: r.Name})
 	}
 	writeJSON(w, result)

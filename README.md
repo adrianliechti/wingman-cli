@@ -77,8 +77,9 @@ export OPENAI_BASE_URL="https://your-api-endpoint/v1"
 wingman
 ```
 
-To use the Wingman terminal UI with an existing Codex or Claude subscription,
-sign in with the corresponding native CLI and select it at startup:
+To use the Wingman terminal UI with an existing native Codex, Claude, or Pi
+configuration (including subscription logins), sign in or configure the
+corresponding CLI and select it at startup:
 
 ```bash
 codex login
@@ -86,6 +87,8 @@ wingman --agent codex
 
 claude auth login
 wingman --agent claude
+
+wingman --agent pi
 ```
 
 These modes use the native CLI's active login and session storage rather than
@@ -93,9 +96,12 @@ the Wingman/OpenAI-compatible API configuration above. They inherit the current
 shell environment unchanged, so unset API-key or alternate-provider variables
 if you want the native CLI to use its stored subscription login.
 
-The web UI's **Codex** and **Claude** agent-picker entries use the same native
-login path. The built-in **Wingman** entry continues to use the configured API
-backend.
+The web UI uses the same agent registry and native login paths as the TUI.
+Detected Claude, Codex, Copilot, OpenCode, and Pi installations are offered in
+both. Additional ACP agents can be configured in `~/.wingman/agents.json`; they
+are merged with detected agents and replace a detected entry only when they use
+the same normalized name. The built-in **Wingman** entry continues to use the
+configured API backend.
 
 3. **Start chatting!** Ask Wingman to help with coding tasks:
 
@@ -112,7 +118,25 @@ wingman --resume <session-id> # resume a specific session
 
 wingman --agent codex --resume  # resume the latest native Codex session
 wingman --agent claude --resume # resume the latest native Claude session
+wingman --agent pi --resume     # resume the latest native Pi session
 ```
+
+### Agent Modes
+
+| Command | UI/protocol | Model backend |
+|---------|-------------|---------------|
+| `wingman` or `wingman --agent wingman` | TUI | Built-in Wingman configuration |
+| `wingman --agent <name>` | TUI | Native detected CLI/login, or the matching `agents.json` ACP command |
+| `wingman server` | Web UI with the same agent picker | Same shared registry and behavior as the TUI |
+| `wingman acp` or `wingman acp wingman` | Wingman over ACP stdio | Built-in Wingman configuration |
+| `wingman acp {claude,codex,pi}` | Native agent bridge over ACP stdio | Native CLI configuration/login |
+| `wingman acp {claude,codex,pi} --backend wingman` | Agent bridge over ACP stdio | Wingman backend via `WINGMAN_URL`, or a local proxy on port 4242 |
+| `wingman proxy` | Local OpenAI-compatible proxy/dashboard | Remote `WINGMAN_URL` (required) |
+| `wingman run <target>` | Wrapped external CLI | Wingman via `WINGMAN_URL`, or a local proxy on port 4242 |
+
+`wingman acp <target>` defaults to the native backend. This keeps subscription
+login and session behavior aligned with selecting the same agent in the TUI or
+Web UI; `--backend wingman` is the explicit opt-in to provider overrides.
 
 ## ⚙️ Configuration
 
@@ -339,10 +363,14 @@ Skills support argument placeholders (`${ARGUMENTS}`, `${1}`, named args) for pa
 Wingman includes a web-based UI server — useful for IDE integrations or browser-based access:
 
 ```bash
-wingman server [--port 4242]
+wingman server [--port 9000]
 ```
 
-This starts an HTTP server at `http://localhost:4242` with a React UI featuring a chat panel, file browser, diff viewer, checkpoint browser, diagnostics panel, an integrated terminal (multiple xterm.js sessions, shell of your choice, `Ctrl+Alt+T`), and session management. The server uses WebSockets for real-time streaming.
+This starts an HTTP server at `http://localhost:9000` (or another available
+port) with a React UI featuring a chat panel, file browser, diff viewer,
+checkpoint browser, diagnostics panel, an integrated terminal (multiple
+xterm.js sessions, shell of your choice, `Ctrl+Alt+T`), and session management.
+The server uses WebSockets for real-time streaming.
 
 ## 🔀 Proxy Mode
 
@@ -356,17 +384,25 @@ This starts a local OpenAI-compatible proxy server that forwards requests to you
 
 ## 🧩 CLI Wrappers
 
-When `WINGMAN_URL` is set, Wingman can launch other coding agents pre-configured to use your Wingman server as their backend:
+Wingman can launch other coding agents pre-configured to use a Wingman backend:
 
 ```bash
-wingman codex [args...]    # Launch OpenAI Codex CLI
-wingman claude [args...]   # Launch Claude Code
-wingman copilot [args...]  # Launch GitHub Copilot CLI
-wingman gemini [args...]   # Launch Gemini CLI
-wingman opencode [args...] # Launch OpenCode
+wingman run claude [args...]
+wingman run claude-desktop [args...]
+wingman run codex [args...]
+wingman run copilot [args...]
+wingman run gemini [args...]
+wingman run goose [args...]
+wingman run junie [args...]
+wingman run opencode [args...]
+wingman run pi [args...]
 ```
 
-Each wrapper automatically configures the target CLI tool with the correct endpoint and authentication.
+Each wrapper automatically configures the target CLI with the correct endpoint
+and authentication. It uses `WINGMAN_URL` when set; otherwise it expects a
+local Wingman proxy at `http://localhost:4242`. These wrappers are deliberately
+Wingman-backed and are separate from the native subscription-backed
+`wingman --agent <name>` modes.
 
 ## 🤖 Claw Mode
 

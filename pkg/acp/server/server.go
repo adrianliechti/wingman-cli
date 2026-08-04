@@ -19,11 +19,11 @@ import (
 	acpsdk "github.com/coder/acp-go-sdk"
 	"github.com/google/uuid"
 
-	acpcontent "github.com/adrianliechti/wingman-agent/pkg/acp"
+	"github.com/adrianliechti/wingman-agent/pkg/acp"
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
-	coder "github.com/adrianliechti/wingman-agent/pkg/code/agent"
+	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/session"
 )
 
@@ -67,7 +67,7 @@ type Server struct {
 
 type sessionEntry struct {
 	id        acpsdk.SessionId
-	agent     *coder.Agent
+	agent     *codeagent.Agent
 	workspace *workspaceEntry
 	cancel    context.CancelFunc
 	closing   bool
@@ -75,7 +75,7 @@ type sessionEntry struct {
 
 type workspaceEntry struct {
 	ws    *code.Workspace
-	agent *coder.Agent
+	agent *codeagent.Agent
 	key   string
 	refs  int
 	ready chan struct{}
@@ -351,7 +351,7 @@ func (s *Server) acquireWorkspace(ctx context.Context, cwd string) (*workspaceEn
 	if err != nil {
 		return nil, err
 	}
-	wa := coder.New(ws, s.config, s)
+	wa := codeagent.New(ws, s.config, s)
 
 	s.mu.Lock()
 	if existing, ok := s.workspaces[cwd]; ok {
@@ -414,7 +414,7 @@ func (s *Server) registerSession(id acpsdk.SessionId, w *workspaceEntry) {
 }
 
 func normalizeCwd(cwd string) (string, error) {
-	cwd, _, err := acpcontent.NormalizeSessionRoots(cwd, nil)
+	cwd, _, err := acp.NormalizeSessionRoots(cwd, nil)
 	return cwd, err
 }
 
@@ -514,7 +514,7 @@ func (s *Server) Prompt(ctx context.Context, params acpsdk.PromptRequest) (acpsd
 		})
 	}
 
-	stream, err := sess.agent.Send(ctx, string(sess.id), acpcontent.ContentFromBlocks(params.Prompt))
+	stream, err := sess.agent.Send(ctx, string(sess.id), acp.ContentFromBlocks(params.Prompt))
 	if err != nil {
 		return acpsdk.PromptResponse{}, err
 	}
@@ -740,7 +740,7 @@ func (s *Server) SetSessionMode(ctx context.Context, params acpsdk.SetSessionMod
 	return acpsdk.SetSessionModeResponse{}, nil
 }
 
-func modeState(a *coder.Agent, sid string) *acpsdk.SessionModeState {
+func modeState(a *codeagent.Agent, sid string) *acpsdk.SessionModeState {
 	modes, current := a.Modes(sid)
 	if len(modes) == 0 {
 		return nil
@@ -771,14 +771,14 @@ func parseRawInput(args string) any {
 	return args
 }
 
-func sessionConfigOptions(a *coder.Agent, sid string) []acpsdk.SessionConfigOption {
+func sessionConfigOptions(a *codeagent.Agent, sid string) []acpsdk.SessionConfigOption {
 	return []acpsdk.SessionConfigOption{
 		modelConfigOption(a, sid),
 		effortConfigOption(a, sid),
 	}
 }
 
-func modelConfigOption(a *coder.Agent, sid string) acpsdk.SessionConfigOption {
+func modelConfigOption(a *codeagent.Agent, sid string) acpsdk.SessionConfigOption {
 	available, current := a.Models(sid)
 	opts := make(acpsdk.SessionConfigSelectOptionsUngrouped, 0, len(available))
 	foundCurrent := false
@@ -807,7 +807,7 @@ func modelConfigOption(a *coder.Agent, sid string) acpsdk.SessionConfigOption {
 	}
 }
 
-func effortConfigOption(a *coder.Agent, sid string) acpsdk.SessionConfigOption {
+func effortConfigOption(a *codeagent.Agent, sid string) acpsdk.SessionConfigOption {
 	current, values := a.Effort(sid)
 	opts := make(acpsdk.SessionConfigSelectOptionsUngrouped, 0, len(values))
 	for _, v := range values {

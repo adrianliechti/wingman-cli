@@ -13,7 +13,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
-	coder "github.com/adrianliechti/wingman-agent/pkg/code/agent"
+	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 )
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -263,7 +263,7 @@ func (s *Server) finalizeTurn(sid, inputID string) {
 	}
 
 	saved := true
-	if w, ok := a.(*coder.Agent); ok {
+	if w, ok := a.(*codeagent.Agent); ok {
 		saved = w.Save(sid) == nil
 	}
 	if saved && len(a.Messages(sid)) > 0 {

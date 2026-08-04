@@ -37,10 +37,8 @@ func main() {
 		runClaw(ctx)
 		return
 	case "proxy":
-		if os.Getenv("WINGMAN_URL") != "" {
-			runProxy(ctx)
-			return
-		}
+		runProxy(ctx)
+		return
 	case "run":
 		runRun(ctx)
 		return
@@ -51,9 +49,9 @@ func main() {
 		}
 		runTUI(ctx, opts)
 		return
+	default:
+		fatal(fmt.Errorf("unknown command %q (run 'wingman --help' for usage)", os.Args[1]))
 	}
-
-	runTUI(ctx, tuiOptions{Agent: "wingman"})
 }
 
 func parseTUIArgs(args []string) (tuiOptions, error) {
@@ -63,13 +61,10 @@ func parseTUIArgs(args []string) (tuiOptions, error) {
 		switch args[i] {
 		case "--agent", "-a":
 			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
-				return tuiOptions{}, fmt.Errorf("%s requires wingman, codex, or claude", args[i])
+				return tuiOptions{}, fmt.Errorf("%s requires an agent name", args[i])
 			}
 			i++
 			opts.Agent = args[i]
-			if opts.Agent != "wingman" && opts.Agent != "codex" && opts.Agent != "claude" {
-				return tuiOptions{}, fmt.Errorf("unknown agent %q (choose wingman, codex, or claude)", opts.Agent)
-			}
 
 		case "--resume":
 			opts.SessionID = "latest"
@@ -101,7 +96,7 @@ Run targets:
   claude, claude-desktop, codex, copilot, gemini, goose, junie, opencode, pi
 
 Flags:
-  --agent, -a name  Use wingman, codex, or claude (default: wingman)
+  --agent, -a name  Use wingman or any detected/configured agent (default: wingman)
   --resume [id]    Resume that agent's latest (or specified) session
   --help, -h       Show this help
 `)

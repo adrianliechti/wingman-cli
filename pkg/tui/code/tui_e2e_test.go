@@ -17,7 +17,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
-	coder "github.com/adrianliechti/wingman-agent/pkg/code/agent"
+	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/ansi"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/inline"
 )
@@ -68,7 +68,7 @@ func (b *syncBuffer) Text() string {
 }
 
 type tuiE2EHarness struct {
-	agent     *coder.Agent
+	agent     *codeagent.Agent
 	app       *App
 	sessionID string
 	input     io.Writer
@@ -93,7 +93,7 @@ func newTUIE2EHarness(t *testing.T) *tuiE2EHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	codeAgent := coder.New(workspace, cfg, nil)
+	codeAgent := codeagent.New(workspace, cfg, nil)
 	sessionID, err := codeAgent.NewSession(ctx)
 	if err != nil {
 		t.Fatal(err)

@@ -36,6 +36,20 @@ func SessionsDir(configDir string) string {
 	return filepath.Join(configDir, "sessions")
 }
 
+// NativeSessionsDir returns the session directory used by an ordinary pi
+// installation, respecting PI_CODING_AGENT_DIR when it is configured.
+func NativeSessionsDir() string {
+	dir := os.Getenv("PI_CODING_AGENT_DIR")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		dir = filepath.Join(home, ".pi", "agent")
+	}
+	return SessionsDir(dir)
+}
+
 func Run(ctx context.Context, args []string, options *Options) error {
 	if options == nil {
 		options = new(Options)

@@ -12,11 +12,11 @@ import (
 
 	acpcommon "github.com/adrianliechti/wingman-agent/pkg/acp"
 
-	extclaude "github.com/adrianliechti/wingman-agent/pkg/external/claude"
+	claudecli "github.com/adrianliechti/wingman-agent/pkg/external/claude"
 )
 
 func binPath() string {
-	return extclaude.BinPath()
+	return claudecli.BinPath()
 }
 
 type Options struct {

@@ -2,18 +2,11 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"time"
 
-	acpsdk "github.com/coder/acp-go-sdk"
-
-	acpclaude "github.com/adrianliechti/wingman-agent/pkg/acp/claude"
-	acpcodex "github.com/adrianliechti/wingman-agent/pkg/acp/codex"
-	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
-	codeacp "github.com/adrianliechti/wingman-agent/pkg/code/acp"
-	coder "github.com/adrianliechti/wingman-agent/pkg/code/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/code/agents"
 	codetui "github.com/adrianliechti/wingman-agent/pkg/tui/code"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/theme"
 )
@@ -24,48 +17,7 @@ type tuiOptions struct {
 }
 
 func newTUIAgent(ctx context.Context, ws *code.Workspace, name string) (code.Agent, error) {
-	switch name {
-	case "", code.BuiltinAgentName:
-		cfg, err := agent.DefaultConfig()
-		if err != nil {
-			return nil, err
-		}
-		return coder.New(ws, cfg, nil), nil
-
-	case "codex":
-		srv, err := acpcodex.Spawn(ctx, acpcodex.Options{
-			Dir: ws.RootPath,
-			Env: os.Environ(),
-		})
-		if err != nil {
-			return nil, err
-		}
-		a, err := codeacp.NewInProcess(ws, name, srv, func(conn *acpsdk.AgentSideConnection) {
-			srv.SetAgentConnection(conn)
-		}, srv.Close)
-		if err != nil {
-			_ = srv.Close()
-			return nil, err
-		}
-		return a, nil
-
-	case "claude":
-		srv := acpclaude.New(acpclaude.Options{
-			Cwd: ws.RootPath,
-			Env: os.Environ(),
-		})
-		a, err := codeacp.NewInProcess(ws, name, srv, func(conn *acpsdk.AgentSideConnection) {
-			srv.SetAgentConnection(conn)
-		}, srv.Close)
-		if err != nil {
-			_ = srv.Close()
-			return nil, err
-		}
-		return a, nil
-
-	default:
-		return nil, fmt.Errorf("unknown agent %q (choose wingman, codex, or claude)", name)
-	}
+	return agents.New(ctx, ws, name, nil)
 }
 
 func latestSessionID(sessions []code.SessionInfo) string {
