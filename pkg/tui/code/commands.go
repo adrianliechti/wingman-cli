@@ -28,8 +28,7 @@ type slashCommand struct {
 func (a *App) builtinCommands() []slashCommand {
 	cmds := []slashCommand{
 		{Name: "/help", Desc: "Open command center", Busy: true, Run: (*App).showHelp},
-		{Name: "/model", Desc: "Select AI model", Run: (*App).showModelPicker},
-		{Name: "/effort", Desc: "Set reasoning effort", Run: (*App).showEffortPicker},
+		{Name: "/model", Desc: "Select AI model and effort", Run: (*App).showModelPicker},
 		{Name: "/plan", Desc: "Enter planning mode", Run: (*App).enterPlanMode},
 		{Name: "/agent", Desc: "Return to execution mode", Run: (*App).exitPlanMode},
 		{Name: "/problems", Desc: "Show problems", Busy: true, Run: (*App).showDiagnosticsView},
@@ -403,12 +402,13 @@ func (a *App) showModelPickerLevel(back bool) {
 		title = "commands › model"
 	}
 	popup := newPopup(kind, title, items, func(ids []string) {
-		if err := a.agent.SetModel(a.ctx, a.sessionID, ids[0]); err != nil {
+		modelID := ids[0]
+		if err := a.agent.SetModel(a.ctx, a.sessionID, modelID); err != nil {
 			a.showToast("Could not change model: "+err.Error(), theme.Default.Red)
 			return
 		}
-		a.showToast("Model: "+ids[0], theme.Default.Cyan)
 		a.invalidate()
+		a.showEffortPickerLevel(back)
 	})
 	if back {
 		popup.onCancel = a.showCommandCenter
@@ -420,14 +420,20 @@ func (a *App) showModelPickerLevel(back bool) {
 	a.popup = popup
 }
 
-func (a *App) showEffortPicker() {
-	a.showEffortPickerLevel(false)
-}
-
 func (a *App) showEffortPickerLevel(back bool) {
 	current, options := a.agent.Effort(a.sessionID)
 	if len(options) == 0 {
 		return
+	}
+	selected := current
+	if !slices.Contains(options, selected) {
+		selected = options[0]
+		for _, fallback := range []string{"default", "auto"} {
+			if slices.Contains(options, fallback) {
+				selected = fallback
+				break
+			}
+		}
 	}
 
 	items := make([]PopupItem, 0, len(options))
@@ -439,23 +445,20 @@ func (a *App) showEffortPickerLevel(back bool) {
 	title := "effort"
 	if back {
 		kind = popupPalette
-		title = "commands › effort"
+		title = "commands › model › effort"
 	}
 	popup := newPopup(kind, title, items, func(ids []string) {
 		if err := a.agent.SetEffort(a.ctx, a.sessionID, ids[0]); err != nil {
 			a.showToast("Could not change effort: "+err.Error(), theme.Default.Red)
 			return
 		}
-		a.showToast("Effort: "+ids[0], theme.Default.Cyan)
 		a.invalidate()
 	})
-	if back {
-		popup.onCancel = a.showCommandCenter
-	}
+	popup.onCancel = func() { a.showModelPickerLevel(back) }
 	for i := range popup.items {
-		popup.items[i].Checked = popup.items[i].ID == current
+		popup.items[i].Checked = popup.items[i].ID == selected
 	}
-	popup.SelectID(current)
+	popup.SelectID(selected)
 	a.popup = popup
 }
 

@@ -14,6 +14,7 @@ type uiTestAgent struct {
 	messages  []agent.Message
 	model     string
 	effort    string
+	efforts   []string
 	sessions  []wingmancode.SessionInfo
 }
 
@@ -23,6 +24,7 @@ func newUITestAgent(messages []agent.Message) *uiTestAgent {
 		messages:  messages,
 		model:     "gpt-5.6-sol",
 		effort:    "medium",
+		efforts:   []string{"low", "medium", "high"},
 	}
 }
 
@@ -36,7 +38,7 @@ func (a *uiTestAgent) SetModel(_ context.Context, _ string, value string) error 
 	return nil
 }
 func (a *uiTestAgent) Effort(string) (string, []string) {
-	return a.effort, []string{"low", "medium", "high"}
+	return a.effort, append([]string(nil), a.efforts...)
 }
 func (a *uiTestAgent) SetEffort(_ context.Context, _ string, value string) error {
 	a.effort = value

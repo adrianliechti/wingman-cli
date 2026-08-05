@@ -14,7 +14,7 @@ func builtinGroup(name string) string {
 		return "Workspace"
 	case "/resume", "/recap", "/clear", "/rewind":
 		return "Session"
-	case "/model", "/effort", "/plan", "/agent", "/tasks":
+	case "/model", "/plan", "/agent", "/tasks":
 		return "Agent"
 	default:
 		return "Application"
@@ -83,8 +83,6 @@ func (a *App) showCommandCenter() {
 		switch command.Name {
 		case "/model":
 			run = func() { a.showModelPickerLevel(true) }
-		case "/effort":
-			run = func() { a.showEffortPickerLevel(true) }
 		case "/resume":
 			run = func() { a.showSessionPicker(true) }
 		}

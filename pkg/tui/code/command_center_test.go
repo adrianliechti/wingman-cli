@@ -66,6 +66,61 @@ func TestCommandCenterRefreshesWhenBusyStateFlips(t *testing.T) {
 	}
 }
 
+func TestModelCommandSelectsModelThenEffort(t *testing.T) {
+	agent := newUITestAgent(nil)
+	a := &App{ctx: context.Background(), agent: agent, editor: NewEditor()}
+
+	a.showModelPicker()
+	if item, ok := a.popup.Current(); !ok || item.ID != agent.model || !item.Checked {
+		t.Fatalf("initial model selection = %+v, %v", item, ok)
+	}
+
+	a.handlePopupKey(inline.KeyEvent{Key: inline.KeyEnter})
+	if a.popup == nil || a.popup.title != "effort" {
+		t.Fatalf("model selection did not open effort step: %+v", a.popup)
+	}
+	if item, ok := a.popup.Current(); !ok || item.ID != "medium" || !item.Checked {
+		t.Fatalf("initial effort selection = %+v, %v", item, ok)
+	}
+
+	a.popup.SelectID("high")
+	a.handlePopupKey(inline.KeyEvent{Key: inline.KeyEnter})
+	if a.popup != nil {
+		t.Fatal("effort selection did not close the picker")
+	}
+	if agent.effort != "high" {
+		t.Fatalf("effort = %q, want high", agent.effort)
+	}
+	if a.toast != nil {
+		t.Fatalf("model flow showed an unnecessary toast: %+v", a.toast)
+	}
+}
+
+func TestModelCommandUsesDefaultEffortFallback(t *testing.T) {
+	agent := newUITestAgent(nil)
+	agent.effort = ""
+	agent.efforts = []string{"low", "default", "high"}
+	a := &App{ctx: context.Background(), agent: agent, editor: NewEditor()}
+
+	a.showModelPicker()
+	a.handlePopupKey(inline.KeyEvent{Key: inline.KeyEnter})
+
+	if item, ok := a.popup.Current(); !ok || item.ID != "default" || !item.Checked {
+		t.Fatalf("fallback effort selection = %+v, %v", item, ok)
+	}
+}
+
+func TestEffortIsNotAStandaloneBuiltinCommand(t *testing.T) {
+	a := &App{ctx: context.Background(), agent: newUITestAgent(nil), editor: NewEditor()}
+	if command := a.findBuiltin("/effort"); command != nil {
+		t.Fatalf("found removed command: %+v", command)
+	}
+	a.showCommandCenter()
+	if item := findPopupItem(a.popup, "builtin:/effort"); item != nil {
+		t.Fatalf("command center contains removed command: %+v", item)
+	}
+}
+
 func findPopupItem(p *Popup, id string) *PopupItem {
 	for i := range p.items {
 		if p.items[i].ID == id {
