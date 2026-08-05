@@ -20,7 +20,7 @@ Reject unknown flags instead of silently treating them as paths.
 1. Resolve the target path and count source files.
 2. If `<target>/THREAT_MODEL.md` exists, read its entry-points, trust-boundaries, and threats tables.
 3. If `--focus` was provided, use exactly those focus areas.
-4. If no threat model or `--focus` exists, do quick recon with a `code-explorer` agent: entry points, trust boundaries, source languages, frameworks, dangerous sinks, and 3-10 focus areas of the form `<subsystem> (<file/function>) -- <key operations>`.
+4. If no threat model or `--focus` exists, do quick recon with an `explore` agent: entry points, trust boundaries, source languages, frameworks, dangerous sinks, and 3-10 focus areas of the form `<subsystem> (<file/function>) -- <key operations>`.
 5. State the source-file count, assumed environment, trust boundary, and focus areas before scanning.
 
 If the target path has no source files, stop with a clear error.

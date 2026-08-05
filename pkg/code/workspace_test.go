@@ -290,14 +290,18 @@ func TestLoadBundledSkillsIncludesCoreWorkflows(t *testing.T) {
 	}
 
 	for _, name := range []string{
+		"architecture",
 		"code-review",
 		"commit",
+		"debug",
 		"feature-dev",
 		"init",
 		"memory",
 		"patch",
+		"pull-request",
 		"security-review",
 		"simplify",
+		"test",
 		"threat-model",
 		"triage",
 		"vuln-scan",

@@ -1,57 +1,64 @@
 ---
 name: code-review
-description: High-precision review of code changes for real bugs, security regressions, and explicit project-guideline violations, with independent verification before reporting.
-when-to-use: When the user wants feedback on local changes, a branch diff, or a PR before committing or merging.
+description: High-precision review of local changes, branch diffs, or pull requests for real bugs, silent failures, compatibility breaks, missing behavioral tests, security regressions, and explicit project-rule violations.
+when-to-use: When the user wants trustworthy feedback before committing or merging, including targeted review of tests, error handling, types, public contracts, or security.
 arguments: [ref]
 ---
 # Code Review
 
-Review the requested changes and report only findings you have verified are real. The goal is a short, trustworthy list a senior engineer would stand behind, not an exhaustive dump. A false positive costs more trust than a missed nitpick.
+Review the requested changes and report only findings independently verified as real. Optimize for a short list a senior engineer would act on, not exhaustive commentary. Do not edit files, post comments, add labels, or approve the change.
 
-## Phase 1: Gather context
+## Phase 1: Resolve the review scope
 
-1. `git diff` for unstaged and `git diff --cached` for staged changes. If a ref was provided: `git diff ${ref}`.
-2. `git status --short` to understand whether staged and unstaged changes are mixed.
-3. `git log --oneline -5` to learn commit and change conventions.
-4. Read root `AGENTS.md`/`CLAUDE.md` (if present) and any such files in directories the diff touches. These encode project-specific rules the review must check against.
+Use exactly one scope and state it:
 
-If the diff is empty, say so and stop.
+- No `${ref}`: review staged and unstaged changes against `HEAD`, including relevant untracked files.
+- Git ref: review the merge-base diff from `${ref}` to `HEAD`, plus worktree changes only if the user explicitly included them.
+- Pull request number or URL: use the repository's PR tooling to obtain metadata and the diff. Do not review a closed, draft, generated, or already-reviewed PR unless the user explicitly asks.
 
-## Phase 2: Find -- launch review agents in parallel
+Gather `git status --short`, the changed-file list, diff statistics, and the full diff. Read root and applicable nested `AGENTS.md`/`CLAUDE.md` files. Inspect nearby code, callers, tests, comments, and history only where they can establish a contract. If the diff is empty, say so and stop.
 
-Launch these as read-only agents concurrently in a single message. Give each the full diff, changed-file list, and relevant guideline files. Each agent returns candidate findings only: `file:line`, a one-line claim, and why it flagged it. Tell each: report anything with a plausible problem, but skip pure style nitpicks and pre-existing issues on lines this diff did not touch.
+Summarize the change's intent in one or two sentences before reviewing. If intent cannot be inferred from the request, diff, or PR description, state the uncertainty instead of inventing it.
 
-### Agent 1 -- Correctness (`code-reviewer`)
-Logic errors (inverted conditions, off-by-one, wrong operator); edge cases (nil/empty, boundaries, concurrency); error handling (swallowed errors, missing cleanup on error paths); resource leaks (files, connections, goroutines); race conditions on shared mutable state; API-contract violations (wrong types, ignored return values).
+## Phase 2: Find candidates
 
-### Agent 2 -- Quality & consistency (`code-reviewer`)
-Does the change follow the patterns in the surrounding code? Naming clarity; functions doing too much; inconsistent abstraction level; dead code (unused imports, unreachable branches, commented-out code); duplication that should reuse an existing helper.
+Launch the applicable read-only review agents concurrently. Give each the scope, intent, changed-file list, full diff, and relevant guideline paths. Ask for candidate findings as `file:line`, claim, concrete failure scenario, and evidence. Skip a specialist when the diff has no relevant surface.
 
-### Agent 3 -- Security (`security`)
-Input validation at trust boundaries; injection (SQL, command, XSS, template); secrets or PII in logs/responses; auth/authz gaps introduced by the change. Flag with a concrete data-flow story, not a category name. This is a light pass over the diff only. For a full audit with scan and triage artifacts, point the user to `/vuln-scan` then `/triage`.
+### Correctness and silent failures (`code-reviewer`)
 
-### Agent 4 -- Guideline & contract adherence (`code-reviewer`)
-For each rule in the gathered `AGENTS.md`/`CLAUDE.md`, check the diff complies. A finding here must quote the specific rule it violates. Skip rules that are guidance for *writing* code rather than reviewable invariants.
+Trace changed behavior through success and failure paths. Check boundaries, concurrency, cleanup, retries, partial writes, swallowed errors, misleading fallbacks, and errors that are logged but returned as success.
 
-### Agent 5 -- Historical and local-context check (`code-explorer`)
-Read git history and nearby comments for the changed files. Flag only issues where history or local comments reveal a concrete contract the diff violates.
+### Contracts, types, and compatibility (`code-reviewer`)
+
+Check public APIs, CLI flags and output, configuration, protocols, persisted data, migrations, serialization, and resumability. For new or changed types, ask whether invalid states remain representable and whether invariants are enforced at the boundary. A compatibility finding must name a concrete affected caller, consumer, or stored value.
+
+### Tests and behavioral coverage (`code-reviewer`)
+
+Check whether changed behavior is exercised at the right layer. Flag a test gap only when you can name a meaningful regression and the exact case that would catch it. Reject assertion-light tests, tests of mocks rather than behavior, and tests that merely restate static definitions.
+
+### Security (`security`)
+
+Check changed trust boundaries, authorization, injection sinks, secrets or PII exposure, unsafe parsing, and cryptographic misuse. Require a concrete attacker-controlled data flow. This is a diff review, not a full audit; suggest `/security-review` when broader coverage is warranted.
+
+### Project rules and local context (`code-reviewer` or `explore`)
+
+Check applicable instruction files, nearby comments, and relevant history. Quote the exact rule or contract. Do not turn writing guidance into a review finding unless the diff demonstrably violates it.
+
+Do not report formatting, naming preference, optional refactors, praise, or change size by itself. If a large diff mixes independent concerns or prevents reliable review, mention the smallest coherent split as a scope risk, not a bug.
 
 ## Phase 3: Verify -- confirm each candidate before it survives
 
-Collapse duplicates (same `file:line` + same issue). Then, for each remaining candidate, launch a skeptical `code-reviewer` verifier in parallel, one per candidate, with this brief:
+Collapse duplicates by root cause. For each remaining candidate, launch a fresh skeptical verifier in parallel. The finder must never verify its own claim. Give the verifier the diff and claim, but not the finder's reasoning:
 
-> Your default assumption is that this finding is WRONG. Re-read the cited code yourself; don't trust the summary. Confirm the problem is real, is reachable, and is on a line THIS diff introduced or changed. Reject it if: it's pre-existing, a linter/compiler/type-checker would catch it, it's intended behavior, it's a nitpick a senior engineer wouldn't raise, or a guideline finding doesn't map to an actual rule. End with exactly:
+> Default assumption: this finding is WRONG. Re-read the cited code and affected callers. Try to refute reachability, impact, and ownership by this diff. Reject it if it is pre-existing, intended, speculative, automatically caught before merge, or unsupported by the cited rule. End with exactly:
 > `VERDICT: real | false-positive`
 > `CONFIDENCE: 0-100`
 > `WHY: <one line citing file:line evidence>`
 
-Keep only findings with `VERDICT: real` and `CONFIDENCE >= 80`. Be willing to drop a plausible-but-unconfirmed finding rather than ship noise.
+Keep only `real` findings with confidence at least 80. Uncertainty is a rejection, not a lower-severity finding.
 
 ## Phase 4: Report
 
-Organize survivors by file with `file:line` references. For each:
-- **Severity**: error / warning / suggestion
-- **What**: the issue (and the rule it violates, for guideline findings)
-- **Fix**: the concrete change
+Lead with findings, ordered by severity, with `file:line` references. For each include the failure scenario, why this diff causes it, verifier confidence, and the smallest concrete fix. Then list verification gaps, if any.
 
-End with a one-line verdict: ready to merge, or needs work. If nothing survived verification, say so plainly — "No high-confidence issues found" is a valid and valuable result.
+End with `ready to merge` or `needs work`. If nothing survives, say `No high-confidence issues found` and do not manufacture suggestions.
