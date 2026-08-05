@@ -1,14 +1,12 @@
 ---
 name: security-review
-description: End-to-end read-only security audit that scans focus areas and adversarially verifies candidates so only high-confidence exploitable vulnerabilities are reported.
-when-to-use: When the user wants a concise security audit of a project or path. Use vuln-scan plus triage when the user wants durable JSON/markdown artifacts.
-arguments: [path]
+description: End-to-end read-only security audit that scans focus areas and adversarially verifies candidates so only high-confidence exploitable vulnerabilities are reported. Use when the user wants a concise security audit of a project or path; use vuln-scan plus triage when durable JSON or markdown artifacts are needed.
 ---
 # Security Review
 
 Find HIGH-CONFIDENCE, genuinely exploitable vulnerabilities — not a checklist of theoretical concerns. The discovery pass casts a wide net; a separate adversarial verification pass is what removes false positives. Every reported finding must survive a skeptic who started by assuming it was wrong.
 
-This is **read-only**. Spawn `security` agents for all scanning and verification. Never build, run, install, send requests, or probe the target. If a specific `${path}` was provided, scope everything to it. If the user asks for raw scanner output, backlog triage, or patch-ready artifacts, use `/vuln-scan` and `/triage` instead.
+This is **read-only**. Spawn `security` agents for all scanning and verification. Never build, run, install, send requests, or probe the target. If a specific `${ARGUMENTS}` path was provided, scope everything to it. If the user asks for raw scanner output, backlog triage, or patch-ready artifacts, use `/vuln-scan` and `/triage` instead.
 
 ## Phase 1: Scope
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -16,17 +17,16 @@ import (
 )
 
 type Skill struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
-	WhenToUse   string `yaml:"when-to-use"`
-
-	Arguments []string `yaml:"arguments"`
+	Name          string            `yaml:"name"`
+	Description   string            `yaml:"description"`
+	License       string            `yaml:"license"`
+	Compatibility string            `yaml:"compatibility"`
+	Metadata      map[string]string `yaml:"metadata"`
+	AllowedTools  string            `yaml:"allowed-tools"`
 
 	Location string `yaml:"-"`
 
 	Content string `yaml:"-"`
-
-	Raw string `yaml:"-"`
 
 	Bundled bool `yaml:"-"`
 }
@@ -56,22 +56,6 @@ func (s *Skill) ApplyArguments(content, args, skillDir string) string {
 		"ARGUMENTS":        args,
 		"SKILL_DIR":        skillDir,
 		"CLAUDE_SKILL_DIR": skillDir,
-	}
-	if len(s.Arguments) > 0 {
-		remaining := args
-		for i, name := range s.Arguments {
-			if remaining == "" {
-				lookup[name] = ""
-				continue
-			}
-			if i == len(s.Arguments)-1 {
-				lookup[name] = remaining
-			} else {
-				word, rest, _ := strings.Cut(strings.TrimSpace(remaining), " ")
-				lookup[name] = word
-				remaining = rest
-			}
-		}
 	}
 
 	matched := false
@@ -220,6 +204,17 @@ func discover(root string, dirs []string, relativeLocation bool) []Skill {
 }
 
 func LoadBundled(fsys fs.FS, root string) ([]Skill, error) {
+	return loadBundled(fsys, root, "")
+}
+
+// LoadBundledAt loads bundled skill metadata and assigns each skill the
+// corresponding directory beneath locationRoot. The caller owns copying the
+// complete resource tree to that location.
+func LoadBundledAt(fsys fs.FS, root, locationRoot string) ([]Skill, error) {
+	return loadBundled(fsys, root, locationRoot)
+}
+
+func loadBundled(fsys fs.FS, root, locationRoot string) ([]Skill, error) {
 	var skills []Skill
 
 	entries, err := fs.ReadDir(fsys, root)
@@ -232,7 +227,8 @@ func LoadBundled(fsys fs.FS, root string) ([]Skill, error) {
 			continue
 		}
 
-		skillPath := root + "/" + entry.Name() + "/SKILL.md"
+		skillRoot := path.Join(root, entry.Name())
+		skillPath := path.Join(skillRoot, "SKILL.md")
 
 		data, err := fs.ReadFile(fsys, skillPath)
 		if err != nil {
@@ -245,41 +241,14 @@ func LoadBundled(fsys fs.FS, root string) ([]Skill, error) {
 		}
 
 		skill.Content = content
-		skill.Raw = string(data)
 		skill.Bundled = true
+		if locationRoot != "" {
+			skill.Location = filepath.Join(locationRoot, entry.Name())
+		}
 		skills = append(skills, skill)
 	}
 
 	return skills, nil
-}
-
-func MaterializeBundled(s *Skill) (string, error) {
-	if !s.Bundled || s.Raw == "" {
-		return "", nil
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-
-	dir := filepath.Join(home, ".wingman", "skills", s.Name)
-	file := filepath.Join(dir, "SKILL.md")
-
-	if _, err := os.Stat(file); err == nil {
-		s.Location = dir
-		return dir, nil
-	}
-
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(file, []byte(s.Raw), 0644); err != nil {
-		return "", err
-	}
-
-	s.Location = dir
-	return dir, nil
 }
 
 func (s *Skill) AbsoluteDir(workDir string) string {
@@ -337,10 +306,6 @@ func FormatForPrompt(skills []Skill) string {
 		fmt.Fprint(&sb, "  <skill>\n")
 		fmt.Fprintf(&sb, "    <name>%s</name>\n", s.Name)
 		fmt.Fprintf(&sb, "    <description>%s</description>\n", s.Description)
-
-		if s.WhenToUse != "" {
-			fmt.Fprintf(&sb, "    <when-to-use>%s</when-to-use>\n", s.WhenToUse)
-		}
 
 		if s.Location != "" {
 			fmt.Fprintf(&sb, "    <location>%s/SKILL.md</location>\n", displayLocation(s.Location))

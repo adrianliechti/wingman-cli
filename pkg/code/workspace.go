@@ -29,7 +29,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/text"
 )
 
-//go:embed skills/*/SKILL.md
+//go:embed all:skills
 var bundledFS embed.FS
 
 const memoryMaxBytes = 25 * 1024
@@ -96,6 +96,12 @@ func NewWorkspace(workDir string) (*Workspace, error) {
 		root.Close()
 		return nil, fmt.Errorf("create scratch directory: %w", err)
 	}
+	bundled, err := loadBundledSkills(scratchDir)
+	if err != nil {
+		os.RemoveAll(scratchDir)
+		root.Close()
+		return nil, fmt.Errorf("load bundled skills: %w", err)
+	}
 
 	memoryDir := projectMemoryDir(workDir)
 	if err := os.MkdirAll(memoryDir, 0755); err != nil {
@@ -104,7 +110,6 @@ func NewWorkspace(workDir string) (*Workspace, error) {
 		return nil, fmt.Errorf("create memory directory: %w", err)
 	}
 
-	bundled := loadBundledSkills()
 	personal := skill.MustDiscoverPersonal()
 	discovered := skill.MustDiscover(workDir)
 	mergedSkills := skill.Merge(skill.Merge(bundled, personal), discovered)
@@ -622,7 +627,16 @@ func resolveWorktreeRoot(worktreeDir, gitFile string) string {
 	return ""
 }
 
-func loadBundledSkills() []skill.Skill {
-	skills, _ := skill.LoadBundled(bundledFS, "skills")
-	return skills
+func loadBundledSkills(scratchDir string) ([]skill.Skill, error) {
+	source, err := fs.Sub(bundledFS, "skills")
+	if err != nil {
+		return nil, err
+	}
+
+	destination := filepath.Join(scratchDir, "skills")
+	if err := os.CopyFS(destination, source); err != nil {
+		return nil, err
+	}
+
+	return skill.LoadBundledAt(source, ".", destination)
 }

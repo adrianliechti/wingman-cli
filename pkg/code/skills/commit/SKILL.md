@@ -1,8 +1,6 @@
 ---
 name: commit
-description: Create a focused git commit from the intended changes while preserving unrelated work, checking the exact staged diff, and matching the repository's message conventions.
-when-to-use: When the user asks to commit, save, or checkpoint completed local work without pushing or rewriting existing commits.
-arguments: [message]
+description: Create a focused git commit from the intended changes while preserving unrelated work, checking the exact staged diff, and matching the repository's message conventions. Use when the user asks to commit, save, or checkpoint completed local work without pushing or rewriting existing commits.
 ---
 # Commit Changes
 

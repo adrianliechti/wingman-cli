@@ -479,7 +479,7 @@ export function ChatPanel({
 	);
 
 	// selectSkill completes the slash token at the caret in place; only a lone
-	// leading command without declared arguments submits directly.
+	// leading command without an input hint submits directly.
 	const selectSkill = useCallback(
 		(s: Skill) => {
 			const tok = slashTokenAt(input, caret);
@@ -487,10 +487,9 @@ export function ChatPanel({
 
 			const end = wordEndAt(input, caret);
 			const whole = tok.start === 0 && end === input.length;
-			const hasArgs =
-				(!!s.arguments && s.arguments.length > 0) || !!s.input_hint;
+			const needsInput = !!s.input_hint;
 
-			if (whole && !hasArgs) {
+			if (whole && !needsInput) {
 				void handleSubmit(undefined, `/${s.name}`);
 				return;
 			}

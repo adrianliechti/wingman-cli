@@ -1,7 +1,6 @@
 ---
 name: vuln-scan
-description: Static source-code vulnerability scan that maps focus areas, fans out read-only security agents, and writes VULN-FINDINGS.json plus VULN-FINDINGS.md for triage.
-when-to-use: When asked to scan code for vulnerabilities, find security bugs, produce raw security findings, or run the first stage before triage.
+description: Static source-code vulnerability scan that maps focus areas, fans out read-only security agents, and writes VULN-FINDINGS.json plus VULN-FINDINGS.md for triage. Use when asked to scan code for vulnerabilities, find security bugs, produce raw security findings, or run the first stage before triage.
 ---
 # Vulnerability Scan
 

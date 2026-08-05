@@ -1,7 +1,6 @@
 ---
 name: simplify
-description: Behavior-preserving cleanup of recently changed code for reuse, clarity, consistency, and efficiency.
-when-to-use: After completing code changes, to clean up and improve code quality before committing.
+description: Behavior-preserving cleanup of recently changed code for reuse, clarity, consistency, and efficiency. Use after completing code changes to improve quality before committing.
 ---
 # Simplify: Code Review and Cleanup
 

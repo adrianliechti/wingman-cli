@@ -17,7 +17,6 @@ interface ModelInfo {
 export interface PaletteSkill {
 	name: string;
 	description?: string;
-	arguments?: string[];
 	input_hint?: string;
 }
 

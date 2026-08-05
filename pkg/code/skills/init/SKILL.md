@@ -1,7 +1,6 @@
 ---
 name: init
-description: "Create or refresh a concise AGENTS.md from verified repository evidence: instruction hierarchy, exact build and test commands, architecture boundaries, code conventions, and non-obvious operational constraints."
-when-to-use: When onboarding Wingman to a repository, fixing stale project guidance, or capturing durable conventions that future coding sessions must follow.
+description: "Create or refresh a concise AGENTS.md from verified repository evidence: instruction hierarchy, exact build and test commands, architecture boundaries, code conventions, and non-obvious operational constraints. Use when onboarding Wingman to a repository, fixing stale project guidance, or capturing durable conventions that future coding sessions must follow."
 ---
 # Initialize Project Guidelines
 

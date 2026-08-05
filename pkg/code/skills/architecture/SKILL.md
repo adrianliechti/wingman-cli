@@ -1,14 +1,12 @@
 ---
 name: architecture
-description: Design or evaluate a system, service, component, API, data model, or architecture decision using repository evidence, explicit constraints, concrete trade-offs, and a reviewable implementation blueprint.
-when-to-use: When the user asks how to architect a change, compare technical options, review a design, define boundaries or contracts, or write an architecture decision record without implementing it yet.
-arguments: [request]
+description: Design or evaluate a system, service, component, API, data model, or architecture decision using repository evidence, explicit constraints, concrete trade-offs, and a reviewable implementation blueprint. Use when the user asks how to architect a change, compare technical options, review a design, define boundaries or contracts, or write an architecture decision record without implementing it yet.
 ---
 # Architecture
 
 Produce a code-grounded design, not a generic best-practices essay. Stay read-only unless the user explicitly asks you to write an ADR or design document. Do not implement the design in this workflow.
 
-`${request}` is the decision or system to design. If empty, use the user's latest request.
+`${ARGUMENTS}` is the decision or system to design. If empty, use the user's latest request.
 
 ## Phase 1: Establish requirements
 

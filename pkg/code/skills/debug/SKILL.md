@@ -1,14 +1,12 @@
 ---
 name: debug
-description: Diagnose unexpected behavior by reproducing it, narrowing the failing path, testing competing hypotheses, and identifying the evidence-backed root cause; implement and verify a fix only when requested.
-when-to-use: When the user provides an error, failing test, stack trace, crash, regression, environment mismatch, performance anomaly, or behavior whose cause is not yet known.
-arguments: [problem]
+description: Diagnose unexpected behavior by reproducing it, narrowing the failing path, testing competing hypotheses, and identifying the evidence-backed root cause; implement and verify a fix only when requested. Use when the user provides an error, failing test, stack trace, crash, regression, environment mismatch, performance anomaly, or behavior whose cause is not yet known.
 ---
 # Debug
 
 Debug from evidence. Do not make speculative edits, silence the symptom, or change several variables at once. Diagnosis is read-only by default; if the user also asked to fix the problem, continue through remediation and verification.
 
-`${problem}` is the observed failure. If empty, use the user's latest description.
+`${ARGUMENTS}` is the observed failure. If empty, use the user's latest description.
 
 ## Phase 1: Define and reproduce
 

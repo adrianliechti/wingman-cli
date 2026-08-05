@@ -496,7 +496,7 @@ export default function App() {
 	const runSkill = useCallback(
 		(skill: PaletteSkill) => {
 			focusChat();
-			if ((skill.arguments && skill.arguments.length > 0) || skill.input_hint) {
+			if (skill.input_hint) {
 				setComposerSeed({ text: `/${skill.name} `, nonce: Date.now() });
 				return;
 			}

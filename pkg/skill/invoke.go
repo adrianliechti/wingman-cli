@@ -67,11 +67,13 @@ func (inv Invocation) Instructions(workDir string) (string, error) {
 		return "", err
 	}
 
-	if s.Bundled {
-		_, _ = MaterializeBundled(s)
+	skillDir := s.AbsoluteDir(workDir)
+	content = s.ApplyArguments(content, inv.Args, skillDir)
+
+	source := ""
+	if skillDir != "" {
+		source = fmt.Sprintf("\nSkill directory: %s. Resolve relative resources from this directory.", skillDir)
 	}
 
-	content = s.ApplyArguments(content, inv.Args, s.AbsoluteDir(workDir))
-
-	return fmt.Sprintf("<skill-instructions skill=%q>\nThe user invoked the /%s skill; follow these instructions for this request.\n\n%s\n</skill-instructions>", s.Name, s.Name, content), nil
+	return fmt.Sprintf("<skill-instructions skill=%q>\nThe user invoked the /%s skill; follow these instructions for this request.%s\n\n%s\n</skill-instructions>", s.Name, s.Name, source, content), nil
 }

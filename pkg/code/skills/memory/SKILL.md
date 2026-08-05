@@ -1,7 +1,6 @@
 ---
 name: memory
-description: Save durable facts to persistent per-project memory using the normal file tools.
-when-to-use: When the user shares a durable fact about themselves or their work; when correcting your approach or validating a non-obvious one; when asked to remember or forget something; when you suspect a relevant memory already exists.
+description: Save, revise, or remove durable facts in persistent per-project memory using the normal file tools. Use when the user asks to remember or forget something, shares durable facts or preferences, corrects the agent's approach, or when a relevant memory may already exist.
 ---
 # Memory
 

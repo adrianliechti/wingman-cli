@@ -1,8 +1,6 @@
 ---
 name: code-review
-description: High-precision review of local changes, branch diffs, or pull requests for real bugs, silent failures, compatibility breaks, missing behavioral tests, security regressions, and explicit project-rule violations.
-when-to-use: When the user wants trustworthy feedback before committing or merging, including targeted review of tests, error handling, types, public contracts, or security.
-arguments: [ref]
+description: High-precision review of local changes, branch diffs, or pull requests for real bugs, silent failures, compatibility breaks, missing behavioral tests, security regressions, and explicit project-rule violations. Use when the user wants trustworthy feedback before committing or merging, including targeted review of tests, error handling, types, public contracts, or security.
 ---
 # Code Review
 
@@ -12,8 +10,8 @@ Review the requested changes and report only findings independently verified as 
 
 Use exactly one scope and state it:
 
-- No `${ref}`: review staged and unstaged changes against `HEAD`, including relevant untracked files.
-- Git ref: review the merge-base diff from `${ref}` to `HEAD`, plus worktree changes only if the user explicitly included them.
+- No `${ARGUMENTS}`: review staged and unstaged changes against `HEAD`, including relevant untracked files.
+- Git ref: review the merge-base diff from `${ARGUMENTS}` to `HEAD`, plus worktree changes only if the user explicitly included them.
 - Pull request number or URL: use the repository's PR tooling to obtain metadata and the diff. Do not review a closed, draft, generated, or already-reviewed PR unless the user explicitly asks.
 
 Gather `git status --short`, the changed-file list, diff statistics, and the full diff. Read root and applicable nested `AGENTS.md`/`CLAUDE.md` files. Inspect nearby code, callers, tests, comments, and history only where they can establish a contract. If the diff is empty, say so and stop.

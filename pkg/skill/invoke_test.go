@@ -101,3 +101,16 @@ func TestInstructions(t *testing.T) {
 		t.Fatalf("missing preamble: %q", block)
 	}
 }
+
+func TestInstructionsIdentifySkillResourceDirectory(t *testing.T) {
+	dir := t.TempDir()
+	s := Skill{Name: "resourceful", Description: "uses resources", Content: "Read references/guide.md.", Location: dir}
+
+	block, err := (Invocation{Skill: &s}).Instructions("")
+	if err != nil {
+		t.Fatalf("Instructions: %v", err)
+	}
+	if !strings.Contains(block, "Skill directory: "+dir+". Resolve relative resources from this directory.") {
+		t.Fatalf("missing resource directory: %q", block)
+	}
+}

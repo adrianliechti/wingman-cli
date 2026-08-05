@@ -1,12 +1,10 @@
 ---
 name: test
-description: Design, add, repair, or run focused tests for a change or subsystem using the repository's existing test architecture, concrete behavioral risks, meaningful assertions, and proportionate verification.
-when-to-use: When the user asks what or how to test, requests regression or integration coverage, wants tests written or fixed, or needs confidence that changed behavior works beyond compilation.
-arguments: [scope]
+description: Design, add, repair, or run focused tests for a change or subsystem using the repository's existing test architecture, concrete behavioral risks, meaningful assertions, and proportionate verification. Use when the user asks what or how to test, requests regression or integration coverage, wants tests written or fixed, or needs confidence beyond compilation.
 ---
 # Test
 
-Use `${scope}` to identify the change, behavior, file, or subsystem. If empty, prefer the current diff and the user's latest request.
+Use `${ARGUMENTS}` to identify the change, behavior, file, or subsystem. If empty, prefer the current diff and the user's latest request.
 
 Choose the mode from the request:
 

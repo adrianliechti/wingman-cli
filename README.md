@@ -307,7 +307,7 @@ Skill slash commands (e.g. `/commit`, `/code-review`) also appear here — see *
 
 ## 🔧 Skills
 
-Skills are reusable, invocable workflows defined in `SKILL.md` files. Wingman discovers skills from these locations (later directories take priority):
+Skills are reusable, invocable workflows defined in `SKILL.md` files. Project skills override personal and bundled skills with the same name. Within each scope, the first listed directory wins:
 
 **Personal skills** (user-wide, across all projects):
 - `~/.agents/skills/<name>/SKILL.md`
@@ -321,11 +321,15 @@ Skills are reusable, invocable workflows defined in `SKILL.md` files. Wingman di
 - `.claude/skills/<name>/SKILL.md`
 - `.opencode/skills/<name>/SKILL.md`
 
-Project skills override personal skills with the same name, allowing per-project customization.
+This allows project-specific customization while keeping personal defaults reusable across repositories.
+
+Skill frontmatter follows the [Agent Skills specification](https://agentskills.io/specification): `name` and `description` are required; `license`, `compatibility`, `metadata`, and experimental `allowed-tools` are accepted. `allowed-tools` is descriptive metadata and never bypasses Wingman's normal tool approval policy.
 
 ### Bundled Skills
 
-Wingman ships with built-in skills that are available immediately via slash commands and are materialized to `~/.wingman/skills/` on first use so you can customize them:
+Wingman ships with built-in skills that are available immediately via slash commands. Their complete directories are copied to a managed temporary workspace snapshot, while a personal or project skill with the same name cleanly overrides the built-in:
+
+Existing `~/.wingman/skills/<name>` customizations from older Wingman versions remain personal overrides. Rename or remove one only when you want the current bundled skill to take precedence.
 
 | Skill | Description |
 |-------|-------------|
@@ -336,6 +340,7 @@ Wingman ships with built-in skills that are available immediately via slash comm
 | `/test` | Design, add, repair, or run focused behavioral tests |
 | `/commit` | Stage and commit changes with a well-crafted commit message |
 | `/pull-request` | Prepare, push, create, or update a reviewable pull request |
+| `/skill-creator` | Create or improve a focused skill with optional scripts and resources |
 | `/code-review` | Review code changes for correctness, style, and security |
 | `/simplify` | Review changed code for reuse, quality, and efficiency, then fix issues |
 | `/security-review` | Concise read-only security audit using parallel sub-agents |
@@ -360,7 +365,11 @@ Run tests with: `go test -cover ./...`
 
 Place this file at `.wingman/skills/run-tests/SKILL.md` and invoke it with `/run-tests`.
 
-Skills support argument placeholders (`${ARGUMENTS}`, `${1}`, named args) for parameterized workflows.
+Skills support argument placeholders (`${ARGUMENTS}`, `${1}`, `${2}`, and so on) for parameterized workflows.
+
+A skill may keep any supporting files next to `SKILL.md`. Common conventions are `references/` for selectively loaded guidance, `assets/` for files to copy or transform, `templates/` and `examples/` for reusable inputs, and `scripts/` for deterministic helpers. Wingman copies the complete directory tree for built-in skills, including dotfiles and underscore-prefixed resources.
+
+Scripts run through Wingman's normal shell command path and its approval policy. Wingman does not infer dependencies or automatically create a virtual environment, so a skill that needs Python packages should document a reproducible command such as `uv run`, a lockfile-backed environment, or explicit venv setup.
 
 ## 🤝 Custom Agents
 

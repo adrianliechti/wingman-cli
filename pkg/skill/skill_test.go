@@ -18,13 +18,15 @@ func TestDiscoverParsesSkillData(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(`---
 name: test-skill
 description: A test skill
-when-to-use: When testing
-arguments: [query, file]
+license: Apache-2.0
+compatibility: Requires git.
+metadata:
+  category: testing
+allowed-tools: Shell(git:*)
 ---
 # Test Skill
 
-Do the thing with ${ARGUMENTS}.
-Use ${query} to search in ${file}.`), 0644); err != nil {
+Do the thing with ${ARGUMENTS}.`), 0644); err != nil {
 		t.Fatalf("write skill: %v", err)
 	}
 
@@ -37,17 +39,17 @@ Use ${query} to search in ${file}.`), 0644); err != nil {
 	}
 
 	skill := skills[0]
-	if skill.Name != "test-skill" || skill.Description != "A test skill" || skill.WhenToUse != "When testing" {
+	if skill.Name != "test-skill" || skill.Description != "A test skill" {
 		t.Fatalf("skill metadata = %#v", skill)
 	}
-	if len(skill.Arguments) != 2 || skill.Arguments[0] != "query" || skill.Arguments[1] != "file" {
-		t.Fatalf("Arguments = %v, want [query file]", skill.Arguments)
+	if skill.License != "Apache-2.0" || skill.Compatibility != "Requires git." || skill.Metadata["category"] != "testing" || skill.AllowedTools != "Shell(git:*)" {
+		t.Fatalf("standard optional metadata = %#v", skill)
 	}
 	content, err := skill.GetContent(root)
 	if err != nil {
 		t.Fatalf("GetContent: %v", err)
 	}
-	if content != "# Test Skill\n\nDo the thing with ${ARGUMENTS}.\nUse ${query} to search in ${file}." {
+	if content != "# Test Skill\n\nDo the thing with ${ARGUMENTS}." {
 		t.Fatalf("unexpected content: %q", content)
 	}
 }
@@ -75,29 +77,13 @@ Content here.`), 0644); err != nil {
 }
 
 func TestApplyArguments(t *testing.T) {
-	s := Skill{
-		Arguments: []string{"query", "file"},
-	}
+	s := Skill{}
 
-	content := "Search for ${ARGUMENTS}. Use ${query} in ${file}."
+	content := "Search for ${ARGUMENTS}. First: ${1}. Second: ${2}."
 
 	result := s.ApplyArguments(content, "foo bar.go baz", "")
 
-	if result != "Search for foo bar.go baz. Use foo in bar.go baz." {
-		t.Errorf("got %q", result)
-	}
-}
-
-func TestApplyArguments_LastArgGetsRemainder(t *testing.T) {
-	s := Skill{
-		Arguments: []string{"message"},
-	}
-
-	content := "Commit: ${message}"
-
-	result := s.ApplyArguments(content, "fix the login bug", "")
-
-	if result != "Commit: fix the login bug" {
+	if result != "Search for foo bar.go baz. First: foo. Second: bar.go." {
 		t.Errorf("got %q", result)
 	}
 }
@@ -114,14 +100,12 @@ func TestApplyArguments_NoArgs(t *testing.T) {
 }
 
 func TestApplyArguments_Empty(t *testing.T) {
-	s := Skill{
-		Arguments: []string{"x"},
-	}
-	content := "Value: ${x}, all: ${ARGUMENTS}."
+	s := Skill{}
+	content := "First: ${1}, all: ${ARGUMENTS}."
 
 	result := s.ApplyArguments(content, "", "")
 
-	if result != "Value: , all: ." {
+	if result != "First: , all: ." {
 		t.Errorf("got %q", result)
 	}
 }
@@ -132,7 +116,6 @@ func TestLoadBundled(t *testing.T) {
 			Data: []byte(`---
 name: my-skill
 description: Does things
-when-to-use: Always
 ---
 # My Skill
 
@@ -140,6 +123,12 @@ Do the thing.`),
 		},
 		"skills/bad-skill/SKILL.md": &fstest.MapFile{
 			Data: []byte(`not valid frontmatter`),
+		},
+		"skills/my-skill/assets/example.txt": &fstest.MapFile{
+			Data: []byte("example asset\n"),
+		},
+		"skills/my-skill/references/guide.md": &fstest.MapFile{
+			Data: []byte("# Guide\n"),
 		},
 	}
 
@@ -161,6 +150,24 @@ Do the thing.`),
 	}
 	if s.Content != "# My Skill\n\nDo the thing." {
 		t.Errorf("Content = %q", s.Content)
+	}
+}
+
+func TestLoadBundledAtSetsResourceLocation(t *testing.T) {
+	fsys := fstest.MapFS{
+		"skills/my-skill/SKILL.md": &fstest.MapFile{Data: []byte(`---
+name: my-skill
+description: Does things
+---
+Do the thing.`)},
+	}
+
+	skills, err := LoadBundledAt(fsys, "skills", "/managed/skills")
+	if err != nil || len(skills) != 1 {
+		t.Fatalf("LoadBundledAt = %#v, %v", skills, err)
+	}
+	if got, want := skills[0].Location, filepath.Join("/managed/skills", "my-skill"); got != want {
+		t.Errorf("Location = %q, want %q", got, want)
 	}
 }
 
@@ -216,7 +223,7 @@ func TestMerge(t *testing.T) {
 
 func TestFormatForPrompt(t *testing.T) {
 	skills := []Skill{
-		{Name: "test", Description: "Test skill", WhenToUse: "When testing", Location: ".skills/test", Bundled: false},
+		{Name: "test", Description: "Test skill", Location: ".skills/test", Bundled: false},
 		{Name: "builtin", Description: "Built-in skill", Bundled: true},
 	}
 
@@ -224,9 +231,6 @@ func TestFormatForPrompt(t *testing.T) {
 
 	if !contains(result, "<name>test</name>") {
 		t.Error("expected test skill name")
-	}
-	if !contains(result, "<when-to-use>When testing</when-to-use>") {
-		t.Error("expected when-to-use for test skill")
 	}
 	if !contains(result, "<location>.skills/test/SKILL.md</location>") {
 		t.Error("expected location for file-based skill")

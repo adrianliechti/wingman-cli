@@ -1,7 +1,6 @@
 ---
 name: triage
-description: Verify, deduplicate, rank, and route raw security findings from VULN-FINDINGS.json, scanner output, or a markdown report, then write TRIAGE.json and TRIAGE.md.
-when-to-use: When asked to validate scanner output, prioritize vulnerabilities, reduce false positives, review a security backlog, or prepare findings for patching.
+description: Verify, deduplicate, rank, and route raw security findings from VULN-FINDINGS.json, scanner output, or a markdown report, then write TRIAGE.json and TRIAGE.md. Use when asked to validate scanner output, prioritize vulnerabilities, reduce false positives, review a security backlog, or prepare findings for patching.
 ---
 # Security Triage
 

@@ -9,11 +9,9 @@ import (
 )
 
 type SkillEntry struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description,omitempty"`
-	WhenToUse   string   `json:"when_to_use,omitempty"`
-	Arguments   []string `json:"arguments,omitempty"`
-	InputHint   string   `json:"input_hint,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	InputHint   string `json:"input_hint,omitempty"`
 }
 
 // skillBlocks expands the skills text invokes — a leading "/name args"
@@ -37,8 +35,7 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 		result = append(result, SkillEntry{
 			Name:        sk.Name,
 			Description: sk.Description,
-			WhenToUse:   sk.WhenToUse,
-			Arguments:   sk.Arguments,
+			InputHint:   "[optional arguments]",
 		})
 	}
 	if active := s.activeAgent(); active != nil {

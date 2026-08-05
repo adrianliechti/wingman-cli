@@ -1,14 +1,12 @@
 ---
 name: feature-dev
-description: Deliver a non-trivial feature by tracing the existing code, resolving material requirements, choosing one fitting architecture, implementing reviewable slices, and proving the behavior with focused tests.
-when-to-use: When a requested change spans components, changes behavior or contracts, introduces a new workflow, or would be risky to implement without first understanding local patterns.
-arguments: [request]
+description: Deliver a non-trivial feature by tracing the existing code, resolving material requirements, choosing one fitting architecture, implementing reviewable slices, and proving the behavior with focused tests. Use when a requested change spans components, changes behavior or contracts, introduces a new workflow, or would be risky to implement without first understanding local patterns.
 ---
 # Feature Development
 
 Deliver the feature end to end. Scale the process to the change: a focused feature may need one explorer and a compact blueprint; a cross-cutting feature may need several independent research passes. Do not add ceremony that does not reduce risk.
 
-`${request}` is the feature or change request. If it is empty, use the user's latest message.
+`${ARGUMENTS}` is the feature or change request. If it is empty, use the user's latest message.
 
 ## Phase 1: Establish scope and explore
 

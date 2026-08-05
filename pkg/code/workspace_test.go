@@ -12,6 +12,7 @@ import (
 	"github.com/go-git/go-git/v5"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/skill"
 )
 
 func TestProtectedLSPCallDoesNotHoldWorkspaceStateLock(t *testing.T) {
@@ -276,7 +277,11 @@ func TestMemoryContent_CacheInvalidatesOnFileChange(t *testing.T) {
 }
 
 func TestLoadBundledSkillsIncludesCoreWorkflows(t *testing.T) {
-	skills := loadBundledSkills()
+	scratch := t.TempDir()
+	skills, err := loadBundledSkills(scratch)
+	if err != nil {
+		t.Fatalf("loadBundledSkills: %v", err)
+	}
 
 	names := make(map[string]bool, len(skills))
 	for _, sk := range skills {
@@ -286,6 +291,16 @@ func TestLoadBundledSkillsIncludesCoreWorkflows(t *testing.T) {
 		}
 		if strings.TrimSpace(sk.Content) == "" {
 			t.Errorf("skill %q has empty content", sk.Name)
+		}
+		if sk.Name == "skill-creator" {
+			for _, resource := range []string{"assets/.gitignore", "assets/SKILL.template.md", "references/skill-format.md"} {
+				if _, err := os.Stat(filepath.Join(sk.Location, filepath.FromSlash(resource))); err != nil {
+					t.Errorf("skill-creator resource %q was not copied: %v", resource, err)
+				}
+			}
+			if !strings.HasPrefix(sk.Location, filepath.Join(scratch, "skills")+string(filepath.Separator)) {
+				t.Errorf("skill-creator location %q is outside managed scratch skills", sk.Location)
+			}
 		}
 	}
 
@@ -300,6 +315,7 @@ func TestLoadBundledSkillsIncludesCoreWorkflows(t *testing.T) {
 		"patch",
 		"pull-request",
 		"security-review",
+		"skill-creator",
 		"simplify",
 		"test",
 		"threat-model",
@@ -309,6 +325,37 @@ func TestLoadBundledSkillsIncludesCoreWorkflows(t *testing.T) {
 		if !names[name] {
 			t.Errorf("bundled skill %q was not loaded; got %v", name, names)
 		}
+	}
+}
+
+func TestPersonalSkillOverridesManagedBundledSnapshot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	personalDir := filepath.Join(home, ".wingman", "skills", "skill-creator")
+	if err := os.MkdirAll(personalDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(personalDir, "SKILL.md"), `---
+name: skill-creator
+description: Personal override
+---
+Use the personal workflow.`)
+
+	bundled, err := loadBundledSkills(t.TempDir())
+	if err != nil {
+		t.Fatalf("loadBundledSkills: %v", err)
+	}
+	personal, err := skill.DiscoverPersonal()
+	if err != nil {
+		t.Fatalf("DiscoverPersonal: %v", err)
+	}
+	merged := skill.Merge(bundled, personal)
+	override := skill.FindSkill("skill-creator", merged)
+	if override == nil || override.Bundled || override.Description != "Personal override" {
+		t.Fatalf("personal override was not selected: %#v", override)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".wingman", "skills", ".system")); !os.IsNotExist(err) {
+		t.Fatalf("bundled snapshot leaked into personal discovery root: %v", err)
 	}
 }
 

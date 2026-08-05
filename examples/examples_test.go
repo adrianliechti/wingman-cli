@@ -88,10 +88,7 @@ func TestSkillExamplesParse(t *testing.T) {
 	if !ok {
 		t.Fatalf("run-tests skill missing, got %v", byName)
 	}
-	if runTests.Description == "" || runTests.WhenToUse == "" || runTests.Content == "" {
+	if runTests.Description == "" || runTests.Content == "" {
 		t.Fatalf("run-tests = %+v", runTests)
-	}
-	if len(runTests.Arguments) != 1 || runTests.Arguments[0] != "package" {
-		t.Fatalf("run-tests arguments = %v", runTests.Arguments)
 	}
 }
