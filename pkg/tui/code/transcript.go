@@ -318,6 +318,15 @@ func (o *transcriptOverlay) jumpMatch(delta int) {
 	o.follow = false
 }
 
+func (o *transcriptOverlay) HandlePaste(text string) bool {
+	if !o.searching {
+		return false
+	}
+	o.query = appendPastedSearchQuery(o.query, text)
+	o.updateMatches(true)
+	return true
+}
+
 func (o *transcriptOverlay) toggleSelected() {
 	if o.selected < 0 || o.selected >= len(o.entries) {
 		return

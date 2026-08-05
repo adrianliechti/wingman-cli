@@ -4,7 +4,37 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
+
+	"github.com/adrianliechti/wingman-agent/pkg/tui/ansi"
 )
+
+func normalizePastedText(text string) string {
+	text = ansi.Strip(text)
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || !unicode.IsControl(r) {
+			return r
+		}
+		return -1
+	}, text)
+}
+
+func normalizePastedSearchQuery(text string) string {
+	return strings.Join(strings.Fields(normalizePastedText(text)), " ")
+}
+
+func appendPastedSearchQuery(current, pasted string) string {
+	pasted = normalizePastedSearchQuery(pasted)
+	if pasted == "" {
+		return current
+	}
+	if current != "" && strings.TrimRightFunc(current, unicode.IsSpace) == current {
+		current += " "
+	}
+	return current + pasted
+}
 
 // detectFilePaths returns the file paths in text, but only when the entire
 // paste is paths — a paste mixing prose and paths must stay text, not

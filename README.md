@@ -283,7 +283,7 @@ Toggle between modes using `Tab` or the explicit `/plan` and `/agent` commands.
 | `Ctrl+V` | Paste image or text directly from the system clipboard |
 | `Cmd+V` / `Ctrl+Shift+V` | Paste text using the terminal's native shortcut |
 | `Ctrl+O` | Open the searchable transcript inspector |
-| `Ctrl+Y` | Copy last assistant response to clipboard |
+| `Ctrl+Y` | Copy the complete last assistant response to clipboard |
 | `Ctrl+L` | Clear chat history |
 | `Escape` | Cancel stream, close modal, or clear input |
 | `Ctrl+C` | Cancel stream or clear input; press twice to exit |

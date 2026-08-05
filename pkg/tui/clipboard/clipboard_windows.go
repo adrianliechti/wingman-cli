@@ -27,24 +27,16 @@ func runPowerShell(script string, sta bool) ([]byte, error) {
 }
 
 func buildWriteTextCommand(text string) *exec.Cmd {
-	cmd := exec.Command("powershell.exe", buildPowerShellArgs(`Set-Clipboard -Value ([Console]::In.ReadToEnd())`, false)...)
+	cmd := exec.Command("powershell.exe", buildPowerShellArgs(`$ErrorActionPreference = 'Stop'; Set-Clipboard -Value ([Console]::In.ReadToEnd())`, false)...)
 	cmd.Stdin = strings.NewReader(text)
 
 	return cmd
 }
 
 func Read() ([]Content, error) {
-	var contents []Content
-
-	if text, err := readText(); err == nil && text != "" {
-		contents = append(contents, Content{Text: text})
-	}
-
-	if imageDataURL, err := readImage(); err == nil && imageDataURL != "" {
-		contents = append(contents, Content{Image: &imageDataURL})
-	}
-
-	return contents, nil
+	text, textErr := readText()
+	imageDataURL, imageErr := readImage()
+	return readContents(text, textErr, imageDataURL, imageErr)
 }
 
 func readText() (string, error) {
@@ -79,7 +71,7 @@ func readImage() (string, error) {
 	return "data:image/png;base64," + data, nil
 }
 
-func WriteText(text string) error {
+func writeNativeText(text string) error {
 	cmd := buildWriteTextCommand(text)
 
 	return cmd.Run()

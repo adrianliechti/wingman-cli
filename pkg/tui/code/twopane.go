@@ -134,6 +134,15 @@ func (o *twoPaneOverlay) handleSearchKey(ev inline.KeyEvent) {
 	}
 }
 
+func (o *twoPaneOverlay) HandlePaste(text string) bool {
+	if !o.searching {
+		return false
+	}
+	o.query = appendPastedSearchQuery(o.query, text)
+	o.applyFilter()
+	return true
+}
+
 func (o *twoPaneOverlay) HandleKey(ev inline.KeyEvent) bool {
 	if o.searching {
 		o.handleSearchKey(ev)

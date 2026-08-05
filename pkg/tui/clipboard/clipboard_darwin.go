@@ -11,17 +11,9 @@ import (
 )
 
 func Read() ([]Content, error) {
-	var contents []Content
-
-	if text, err := readText(); err == nil && text != "" {
-		contents = append(contents, Content{Text: text})
-	}
-
-	if imageDataURL, err := readImage(); err == nil && imageDataURL != "" {
-		contents = append(contents, Content{Image: &imageDataURL})
-	}
-
-	return contents, nil
+	text, textErr := readText()
+	imageDataURL, imageErr := readImage()
+	return readContents(text, textErr, imageDataURL, imageErr)
 }
 
 func readText() (string, error) {
@@ -38,7 +30,7 @@ func readImage() (string, error) {
 	tmpFile, err := os.CreateTemp("", "clipboard-*.png")
 
 	if err != nil {
-		return "", nil
+		return "", err
 	}
 	tmpPath := tmpFile.Name()
 	tmpFile.Close()
@@ -61,13 +53,19 @@ func readImage() (string, error) {
 
 	output, err := exec.Command("osascript", "-e", script).Output()
 
-	if err != nil || string(output) != "ok\n" {
+	if err != nil {
+		return "", err
+	}
+	if string(output) != "ok\n" {
 		return "", nil
 	}
 
 	data, err := os.ReadFile(tmpPath)
 
-	if err != nil || len(data) == 0 {
+	if err != nil {
+		return "", err
+	}
+	if len(data) == 0 {
 		return "", nil
 	}
 
@@ -76,7 +74,7 @@ func readImage() (string, error) {
 	return "data:image/png;base64," + encoded, nil
 }
 
-func WriteText(text string) error {
+func writeNativeText(text string) error {
 	cmd := exec.Command("pbcopy")
 	cmd.Stdin = strings.NewReader(text)
 

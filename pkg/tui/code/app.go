@@ -103,6 +103,11 @@ type App struct {
 	pendingContent []agent.Content
 	pendingFiles   []string
 
+	// Clipboard functions are injectable so UI behavior can be tested without
+	// reading from or writing to the host clipboard.
+	clipboardRead  func() ([]clipboard.Content, error)
+	clipboardWrite func(string) error
+
 	turns       *code.TurnManager
 	turnMu      sync.Mutex
 	turnCommits map[string]string
@@ -792,8 +797,7 @@ func (a *App) chatViewLines(width int) []string {
 	return view
 }
 
-// copySelection extracts the selected plain text and puts it on the
-// clipboard, silently.
+// copySelection extracts the selected plain text and puts it on the clipboard.
 func (a *App) copySelection() {
 	start, end := a.orderedSelection()
 	view := a.chatViewLines(a.width())
@@ -815,13 +819,9 @@ func (a *App) copySelection() {
 		return
 	}
 
-	go func() {
-		if err := clipboard.WriteText(text); err != nil {
-			a.post(func() {
-				a.appendChat(cellNotice(fmt.Sprintf("Clipboard copy failed: %v", err), theme.Default.Red, a.width()))
-			})
-		}
-	}()
+	if err := a.writeClipboardText(text); err != nil {
+		a.appendChat(cellNotice(fmt.Sprintf("Clipboard copy failed: %v", err), theme.Default.Red, a.width()))
+	}
 }
 
 // scrollChat adjusts the chat viewport; render() clamps and re-engages
@@ -886,11 +886,29 @@ func (a *App) bellIfUnfocused() {
 }
 
 func (a *App) handlePaste(text string) {
+	text = normalizePastedText(text)
+	if text == "" {
+		return
+	}
+
 	if a.overlay != nil {
+		if handler, ok := a.overlay.(interface{ HandlePaste(string) bool }); ok {
+			handler.HandlePaste(text)
+		}
 		return
 	}
 
 	a.disarmQuitGate()
+	if a.popup != nil && (a.popup.kind == popupList || a.popup.kind == popupPalette) {
+		if query := appendPastedSearchQuery(a.popup.query, text); query != a.popup.query {
+			a.popup.SetQuery(query)
+		}
+		return
+	}
+	if a.askActive {
+		a.editor.Insert(text)
+		return
+	}
 
 	paths := detectFilePaths(text, a.agent.Workspace().RootPath)
 	if len(paths) > 0 {
@@ -1211,79 +1229,104 @@ func (a *App) showRecap() {
 }
 
 func (a *App) copyTextToClipboard(text string) {
-	go func() {
-		err := clipboard.WriteText(text)
+	err := a.writeClipboardText(text)
+	message := "Copied to clipboard"
+	color := theme.Default.BrBlack
 
-		a.post(func() {
-			message := "Copied to clipboard"
-			color := theme.Default.BrBlack
+	if err != nil {
+		message = fmt.Sprintf("Clipboard copy failed: %v", err)
+		color = theme.Default.Red
+	}
 
-			if err != nil {
-				message = fmt.Sprintf("Clipboard copy failed: %v", err)
-				color = theme.Default.Red
-			}
-
-			a.showToast(message, color)
-		})
-	}()
+	a.showToast(message, color)
 }
 
 func (a *App) copyLastResponse() {
-	messages := a.agent.Messages(a.sessionID)
-
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == agent.RoleAssistant {
-			for _, c := range messages[i].Content {
-				if c.Text != "" {
-					a.copyTextToClipboard(c.Text)
-
-					return
-				}
-			}
-		}
+	text := lastAssistantText(a.agent.Messages(a.sessionID))
+	if text == "" {
+		a.showToast("No assistant response to copy", theme.Default.Yellow)
+		return
 	}
+	a.copyTextToClipboard(text)
 }
 
 func (a *App) pasteFromClipboard() {
 	go func() {
-		contents, err := clipboard.Read()
-
-		if err != nil || len(contents) == 0 {
-			return
-		}
+		contents, err := a.readClipboard()
 
 		a.post(func() {
-			beforeImages := a.countPendingImages()
-			beforeFiles := len(a.pendingFiles)
-			for _, c := range contents {
-				if c.Image != nil {
-					a.pendingContent = append(a.pendingContent, agent.Content{File: &agent.File{Data: *c.Image}})
-				}
-
-				if c.Text != "" {
-					paths := detectFilePaths(c.Text, a.agent.Workspace().RootPath)
-					if len(paths) > 0 {
-						for _, p := range paths {
-							a.addFileToContext(normalizeFilePath(p, a.agent.Workspace().RootPath))
-						}
-
-						continue
-					}
-
-					a.editor.Insert(strings.ReplaceAll(c.Text, "\r\n", "\n"))
-					a.syncCommandPopup()
-				}
-			}
-			added := a.countPendingImages() - beforeImages + len(a.pendingFiles) - beforeFiles
-			if added == 1 {
-				a.showToast("Attached 1 item", theme.Default.Cyan)
-			} else if added > 1 {
-				a.showToast(fmt.Sprintf("Attached %d items", added), theme.Default.Cyan)
-			}
-
-			a.invalidate()
+			a.applyClipboardContents(contents, err)
 		})
 	}()
+}
+
+func (a *App) readClipboard() ([]clipboard.Content, error) {
+	if a.clipboardRead != nil {
+		return a.clipboardRead()
+	}
+	return clipboard.Read()
+}
+
+func (a *App) writeClipboardText(text string) error {
+	if a.clipboardWrite != nil {
+		return a.clipboardWrite(text)
+	}
+	return clipboard.WriteText(text)
+}
+
+func (a *App) applyClipboardContents(contents []clipboard.Content, err error) {
+	if err != nil {
+		a.showToast(fmt.Sprintf("Clipboard paste failed: %v", err), theme.Default.Red)
+		return
+	}
+	if len(contents) == 0 {
+		a.showToast("Clipboard is empty", theme.Default.Yellow)
+		return
+	}
+
+	beforeImages := a.countPendingImages()
+	beforeFiles := len(a.pendingFiles)
+	for _, content := range contents {
+		if content.Image != nil && a.acceptsClipboardAttachments() {
+			a.pendingContent = append(a.pendingContent, agent.Content{File: &agent.File{Data: *content.Image}})
+		}
+		if content.Text != "" {
+			a.handlePaste(content.Text)
+		}
+	}
+
+	added := a.countPendingImages() - beforeImages + len(a.pendingFiles) - beforeFiles
+	if added == 1 {
+		a.showToast("Attached 1 item", theme.Default.Cyan)
+	} else if added > 1 {
+		a.showToast(fmt.Sprintf("Attached %d items", added), theme.Default.Cyan)
+	}
+	a.invalidate()
+}
+
+func (a *App) acceptsClipboardAttachments() bool {
+	if a.overlay != nil || a.askActive {
+		return false
+	}
+	return a.popup == nil || a.popup.kind == popupCommands || a.popup.kind == popupFiles
+}
+
+func lastAssistantText(messages []agent.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != agent.RoleAssistant || messages[i].Hidden {
+			continue
+		}
+		var text strings.Builder
+		for _, content := range messages[i].Content {
+			if !content.Hidden && content.Text != "" {
+				text.WriteString(content.Text)
+			}
+		}
+		if result := text.String(); strings.TrimSpace(result) != "" {
+			return result
+		}
+	}
+	return ""
 }
 
 func (a *App) showError(title string, err error) {
