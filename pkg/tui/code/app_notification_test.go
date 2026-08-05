@@ -3,8 +3,10 @@ package code
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/tui/inline"
+	"github.com/adrianliechti/wingman-agent/pkg/tui/theme"
 )
 
 func TestBellOnlyWhenTerminalIsUnfocused(t *testing.T) {
@@ -23,5 +25,18 @@ func TestBellOnlyWhenTerminalIsUnfocused(t *testing.T) {
 	a.bellIfUnfocused()
 	if got := output.String(); got != "\a" {
 		t.Fatalf("unfocused terminal output = %q, want bell", got)
+	}
+}
+
+func TestToastExpiresWithoutTouchingQuitHint(t *testing.T) {
+	a := &App{}
+	a.showToast("copied", theme.Default.Cyan)
+	a.footerHint = "press ctrl+c again"
+	a.expireToast(time.Now().Add(toastDuration + time.Second))
+	if a.toast != nil {
+		t.Fatal("toast did not expire")
+	}
+	if a.footerHint == "" {
+		t.Fatal("toast expiry cleared sticky quit hint")
 	}
 }

@@ -215,3 +215,79 @@ func TestResumeWithoutHookErrors(t *testing.T) {
 		t.Fatal("resume without a hook should error")
 	}
 }
+
+func TestAdoptRegistersFinishedRun(t *testing.T) {
+	r := task.NewRegistry()
+	defer r.Close()
+
+	adopted := r.Adopt("sync run", "explore", "the report", 3*time.Second)
+	if adopted == nil {
+		t.Fatal("adopt returned nil")
+	}
+	if adopted.Status() != task.StatusDone || adopted.Result() != "the report" {
+		t.Fatalf("status = %s, result = %q", adopted.Status(), adopted.Result())
+	}
+	if adopted.Seq() != 1 {
+		t.Fatalf("seq = %d, want 1", adopted.Seq())
+	}
+	if got := adopted.Elapsed().Round(time.Second); got != 3*time.Second {
+		t.Fatalf("elapsed = %s, want 3s", got)
+	}
+	if r.Get(adopted.ID) != adopted {
+		t.Fatal("adopted task not listed in registry")
+	}
+
+	select {
+	case ev := <-r.Events():
+		t.Fatalf("adoption must not emit an event, got %+v", ev)
+	default:
+	}
+
+	resumed := ""
+	adopted.SetResume(func(prompt string) error {
+		resumed = prompt
+		return nil
+	})
+	if err := adopted.Resume("follow up"); err != nil || resumed != "follow up" {
+		t.Fatalf("resume: err = %v, prompt = %q", err, resumed)
+	}
+}
+
+func TestAdoptRejectsClosedRegistry(t *testing.T) {
+	r := task.NewRegistry()
+	r.Close()
+
+	if r.Adopt("d", "explore", "out", time.Second) != nil {
+		t.Fatal("closed registry must not adopt")
+	}
+}
+
+func TestEventDeliveryEvictsOldest(t *testing.T) {
+	r := task.NewRegistry()
+	defer r.Close()
+
+	for i := range task.MaxPerSession + 1 {
+		r.Publish(task.Event{ID: string(rune('A' + i%26)), Seq: i})
+	}
+
+	first := waitEvent(t, r)
+	if first.Seq != 1 {
+		t.Fatalf("first buffered event seq = %d, want oldest evicted (seq 1 kept)", first.Seq)
+	}
+
+	drained := 1
+	for {
+		select {
+		case ev := <-r.Events():
+			drained++
+			if drained == task.MaxPerSession && ev.Seq != task.MaxPerSession {
+				t.Fatalf("last event seq = %d, want %d", ev.Seq, task.MaxPerSession)
+			}
+		default:
+			if drained != task.MaxPerSession {
+				t.Fatalf("drained %d events, want %d", drained, task.MaxPerSession)
+			}
+			return
+		}
+	}
+}

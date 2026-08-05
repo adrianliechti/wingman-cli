@@ -2,7 +2,6 @@ package code
 
 import (
 	"cmp"
-	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -28,15 +27,15 @@ type slashCommand struct {
 
 func (a *App) builtinCommands() []slashCommand {
 	cmds := []slashCommand{
-		{Name: "/help", Desc: "Show help", Run: (*App).showHelp},
+		{Name: "/help", Desc: "Open command center", Busy: true, Run: (*App).showHelp},
 		{Name: "/model", Desc: "Select AI model", Run: (*App).showModelPicker},
 		{Name: "/effort", Desc: "Set reasoning effort", Run: (*App).showEffortPicker},
 		{Name: "/plan", Desc: "Enter planning mode", Run: (*App).enterPlanMode},
 		{Name: "/agent", Desc: "Return to execution mode", Run: (*App).exitPlanMode},
-		{Name: "/problems", Desc: "Show problems", Run: (*App).showDiagnosticsView},
+		{Name: "/problems", Desc: "Show problems", Busy: true, Run: (*App).showDiagnosticsView},
 	}
 	if _, ok := a.agent.(contextStatsProvider); ok {
-		cmds = append(cmds, slashCommand{Name: "/context", Desc: "Show context window usage", Run: (*App).showContextStats})
+		cmds = append(cmds, slashCommand{Name: "/context", Desc: "Show context window usage", Busy: true, Run: (*App).showContextStats})
 	}
 	if _, ok := a.agent.(taskProvider); ok {
 		cmds = append(cmds, slashCommand{Name: "/tasks", Desc: "Show background agents", Busy: true, Run: (*App).showTasks})
@@ -47,13 +46,13 @@ func (a *App) builtinCommands() []slashCommand {
 
 	if a.agent.Workspace().HasRewind() {
 		cmds = append(cmds,
-			slashCommand{Name: "/diff", Desc: "Show changes from baseline", Run: (*App).showDiffView},
+			slashCommand{Name: "/diff", Desc: "Show changes from baseline", Busy: true, Run: (*App).showDiffView},
 			slashCommand{Name: "/rewind", Desc: "Restore to previous checkpoint", Run: (*App).showRewindPicker},
 		)
 	}
 
 	cmds = append(cmds,
-		slashCommand{Name: "/resume", Desc: "Resume last session", Run: (*App).resumeSession},
+		slashCommand{Name: "/resume", Desc: "Resume a previous session", Run: (*App).resumeSession},
 		slashCommand{Name: "/clear", Desc: "Clear chat history", Run: (*App).clearChat},
 		slashCommand{Name: "/quit", Desc: "Exit application", Busy: true, Run: func(a *App) {
 			if a.confirmQuit() {
@@ -337,46 +336,7 @@ func (a *App) submitAgentInput(input []agent.Content, echo string) {
 }
 
 func (a *App) showHelp() {
-	t := theme.Default
-
-	builtinCmds := a.builtinCommands()
-	skillCmds := a.skillCommands()
-	agentCmds := a.agentCommands()
-
-	maxLen := 0
-	for _, cmd := range append(append(append([]slashCommand{}, builtinCmds...), skillCmds...), agentCmds...) {
-		if len(cmd.Name) > maxLen {
-			maxLen = len(cmd.Name)
-		}
-	}
-
-	var lines []string
-	lines = append(lines, cellIndent+bold("commands"))
-	for _, cmd := range builtinCmds {
-		pad := strings.Repeat(" ", maxLen-len(cmd.Name))
-		lines = append(lines, cellIndent+"  "+colored(t.Cyan, cmd.Name)+pad+"  "+dim(cmd.Desc))
-	}
-
-	if len(skillCmds) > 0 {
-		lines = append(lines, "")
-		lines = append(lines, cellIndent+bold("skills"))
-		for _, cmd := range skillCmds {
-			pad := strings.Repeat(" ", maxLen-len(cmd.Name))
-			lines = append(lines, cellIndent+"  "+colored(t.Cyan, cmd.Name)+pad+"  "+dim(cmd.Desc))
-		}
-	}
-	if len(agentCmds) > 0 {
-		lines = append(lines, "")
-		lines = append(lines, cellIndent+bold("agent commands"))
-		for _, cmd := range agentCmds {
-			pad := strings.Repeat(" ", maxLen-len(cmd.Name))
-			lines = append(lines, cellIndent+"  "+colored(t.Cyan, cmd.Name)+pad+"  "+dim(cmd.Desc))
-		}
-	}
-
-	lines = append(lines, "")
-
-	a.appendChat(lines)
+	a.showCommandCenter()
 }
 
 func (a *App) showTasks() {
@@ -422,6 +382,10 @@ func (a *App) showTasks() {
 }
 
 func (a *App) showModelPicker() {
+	a.showModelPickerLevel(false)
+}
+
+func (a *App) showModelPickerLevel(back bool) {
 	available, current := a.agent.Models(a.sessionID)
 	if len(available) == 0 {
 		return
@@ -432,33 +396,35 @@ func (a *App) showModelPicker() {
 		items = append(items, PopupItem{ID: m.ID, Label: m.Name})
 	}
 
-	popup := newPopup(popupList, "model", items, func(ids []string) {
-		_ = a.agent.SetModel(a.ctx, a.sessionID, ids[0])
+	kind := popupList
+	title := "model"
+	if back {
+		kind = popupPalette
+		title = "commands › model"
+	}
+	popup := newPopup(kind, title, items, func(ids []string) {
+		if err := a.agent.SetModel(a.ctx, a.sessionID, ids[0]); err != nil {
+			a.showToast("Could not change model: "+err.Error(), theme.Default.Red)
+			return
+		}
+		a.showToast("Model: "+ids[0], theme.Default.Cyan)
 		a.invalidate()
 	})
+	if back {
+		popup.onCancel = a.showCommandCenter
+	}
+	for i := range popup.items {
+		popup.items[i].Checked = popup.items[i].ID == current
+	}
 	popup.SelectID(current)
 	a.popup = popup
 }
 
-func (a *App) cycleModel() {
-	sessionID := a.sessionID
-
-	go func() {
-		available, current := a.agent.Models(sessionID)
-		if len(available) <= 1 {
-			return
-		}
-		for i, m := range available {
-			if m.ID == current {
-				_ = a.agent.SetModel(context.Background(), sessionID, available[(i+1)%len(available)].ID)
-				break
-			}
-		}
-		a.post(a.invalidate)
-	}()
+func (a *App) showEffortPicker() {
+	a.showEffortPickerLevel(false)
 }
 
-func (a *App) showEffortPicker() {
+func (a *App) showEffortPickerLevel(back bool) {
 	current, options := a.agent.Effort(a.sessionID)
 	if len(options) == 0 {
 		return
@@ -469,10 +435,26 @@ func (a *App) showEffortPicker() {
 		items = append(items, PopupItem{ID: v, Label: v})
 	}
 
-	popup := newPopup(popupList, "effort", items, func(ids []string) {
-		_ = a.agent.SetEffort(a.ctx, a.sessionID, ids[0])
+	kind := popupList
+	title := "effort"
+	if back {
+		kind = popupPalette
+		title = "commands › effort"
+	}
+	popup := newPopup(kind, title, items, func(ids []string) {
+		if err := a.agent.SetEffort(a.ctx, a.sessionID, ids[0]); err != nil {
+			a.showToast("Could not change effort: "+err.Error(), theme.Default.Red)
+			return
+		}
+		a.showToast("Effort: "+ids[0], theme.Default.Cyan)
 		a.invalidate()
 	})
+	if back {
+		popup.onCancel = a.showCommandCenter
+	}
+	for i := range popup.items {
+		popup.items[i].Checked = popup.items[i].ID == current
+	}
 	popup.SelectID(current)
 	a.popup = popup
 }
@@ -523,17 +505,35 @@ func (a *App) showFilePicker() {
 				return
 			}
 
-			items := make([]PopupItem, len(files))
-			for i, f := range files {
-				items[i] = PopupItem{ID: f.Path, Label: f.Path}
+			var images []agent.Content
+			for _, content := range a.pendingContent {
+				if content.File != nil {
+					images = append(images, content)
+				}
 			}
 
-			popup := newPopup(popupList, "@ add files (space to mark, enter to add)", items, func(ids []string) {
-				for _, p := range ids {
-					a.addFileToContext(p)
-				}
+			items := make([]PopupItem, 0, len(images)+len(files))
+			for i := range images {
+				items = append(items, PopupItem{ID: fmt.Sprintf("image:%d", i), Label: fmt.Sprintf("image %d", i+1), Detail: "pasted image"})
+			}
+			for _, f := range files {
+				items = append(items, PopupItem{ID: contextFileID(f.Path), Label: f.Path, Detail: "workspace file"})
+			}
+
+			popup := newPopup(popupList, "context (space to mark, enter to apply)", items, func(ids []string) {
+				a.applyContextSelection(images, files, ids)
+				count := a.countPendingImages() + len(a.pendingFiles)
+				a.showToast(fmt.Sprintf("Context: %d attachment(s)", count), theme.Default.Cyan)
 			})
 			popup.multi = true
+			popup.acceptEmpty = true
+			popup.labelOnly = true
+			for i := range images {
+				popup.SetSelected(fmt.Sprintf("image:%d", i), true)
+			}
+			for _, path := range a.pendingFiles {
+				popup.SetSelected(contextFileID(path), true)
+			}
 			a.popup = popup
 			a.invalidate()
 		})

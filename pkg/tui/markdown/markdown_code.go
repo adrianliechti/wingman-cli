@@ -15,7 +15,7 @@ import (
 var (
 	chromaMu         sync.Mutex
 	chromaStyle      *chroma.Style
-	chromaStyleLight bool
+	chromaStyleTheme string
 )
 
 // codeStyle builds a chroma style from the active theme palette so code
@@ -26,7 +26,8 @@ func codeStyle() *chroma.Style {
 	chromaMu.Lock()
 	defer chromaMu.Unlock()
 
-	if chromaStyle != nil && chromaStyleLight == t.IsLight {
+	signature := t.Signature()
+	if chromaStyle != nil && chromaStyleTheme == signature {
 		return chromaStyle
 	}
 
@@ -58,7 +59,7 @@ func codeStyle() *chroma.Style {
 	}
 
 	chromaStyle = style
-	chromaStyleLight = t.IsLight
+	chromaStyleTheme = signature
 
 	return style
 }

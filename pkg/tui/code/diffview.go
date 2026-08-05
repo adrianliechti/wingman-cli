@@ -19,7 +19,7 @@ func (a *App) showDiffView() {
 	}
 
 	if len(diffs) == 0 {
-		a.appendChat(cellNotice("No changes", t.BrBlack, a.width()))
+		a.showToast("No changes from the session baseline", t.BrBlack)
 		return
 	}
 
@@ -63,8 +63,11 @@ func (a *App) showDiffView() {
 	content := func(i int) []string {
 		return strings.Split(markdown.HighlightDiff(diffs[i].Patch), "\n")
 	}
+	search := func(i int) string {
+		return diffs[i].Path + "\n" + diffs[i].Patch
+	}
 
-	a.openOverlay(newTwoPaneOverlay("changes", status, len(diffs), item, content))
+	a.openOverlay(newTwoPaneOverlay("changes", status, len(diffs), item, content, search))
 }
 
 func countDiffStats(patch string) (insertions, deletions int) {

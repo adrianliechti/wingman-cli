@@ -1,6 +1,8 @@
 package theme
 
 import (
+	"fmt"
+
 	"github.com/adrianliechti/wingman-agent/pkg/tui/ansi"
 )
 
@@ -36,6 +38,16 @@ type Theme struct {
 	BrMagenta  ansi.Color
 	BrCyan     ansi.Color
 	BrWhite    ansi.Color
+}
+
+// Signature identifies every palette value so render caches can detect when
+// the terminal-aware palette has been reinitialized.
+func (t Theme) Signature() string {
+	return fmt.Sprintf("%t:%06x:%06x:%06x:%06x:%06x:%06x:%06x:%06x:%06x:%06x:%06x:%06x:%06x:%06x:%06x:%06x:%06x:%06x:%06x:%06x",
+		t.IsLight, t.Background.Hex(), t.Foreground.Hex(), t.Selection.Hex(), t.Cursor.Hex(),
+		t.Black.Hex(), t.Red.Hex(), t.Green.Hex(), t.Yellow.Hex(), t.Blue.Hex(),
+		t.Magenta.Hex(), t.Cyan.Hex(), t.White.Hex(), t.BrBlack.Hex(), t.BrRed.Hex(),
+		t.BrGreen.Hex(), t.BrYellow.Hex(), t.BrBlue.Hex(), t.BrMagenta.Hex(), t.BrCyan.Hex(), t.BrWhite.Hex())
 }
 
 func SetDark() {

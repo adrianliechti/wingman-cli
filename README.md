@@ -18,7 +18,7 @@ A powerful AI-powered coding assistant that runs directly in your terminal. Wing
 - **Skills** — Define custom workflows using [Agent Skills](https://agentskills.io) format
 - **Image Support** — Paste images from clipboard for vision-capable models
 - **File Context** — Add files to context with `@` or drag-and-drop file paths
-- **Theme Detection** — Automatic light/dark theme based on terminal settings
+- **Automatic Colors** — Adapts the built-in palette to light or dark terminal backgrounds
 - **Session Management** — Conversations are saved automatically and can be resumed
 
 ## 📦 Installation
@@ -277,12 +277,12 @@ Toggle between modes using `Tab` or the explicit `/plan` and `/agent` commands.
 |----------|--------|
 | `Enter` | Send message |
 | `Ctrl+J` | Insert a new line |
+| `Ctrl+P` | Open the searchable command center |
 | `Tab` | Toggle Agent/Plan mode (or autocomplete slash commands) |
-| `Shift+Tab` | Cycle through available models |
 | `@` | Open fuzzy file picker to add file context |
 | `Ctrl+V` | Paste image or text directly from the system clipboard |
 | `Cmd+V` / `Ctrl+Shift+V` | Paste text using the terminal's native shortcut |
-| `Ctrl+O` | Open the full transcript |
+| `Ctrl+O` | Open the searchable transcript inspector |
 | `Ctrl+Y` | Copy last assistant response to clipboard |
 | `Ctrl+L` | Clear chat history |
 | `Escape` | Cancel stream, close modal, or clear input |
@@ -358,6 +358,25 @@ Place this file at `.wingman/skills/run-tests/SKILL.md` and invoke it with `/run
 
 Skills support argument placeholders (`${ARGUMENTS}`, `${1}`, named args) for parameterized workflows.
 
+## 🤝 Custom Agents
+
+Custom agent types extend the built-in sub-agent roster (`explore`, `code-reviewer`, `verification`, …) with your own specialists. Wingman discovers them from markdown files (first definition of a name wins, project before personal):
+
+- `.wingman/agents/*.md` / `.claude/agents/*.md` (project)
+- `~/.wingman/agents/*.md` / `~/.claude/agents/*.md` (personal)
+
+```markdown
+---
+name: db-expert
+description: Deep PostgreSQL schema and query analysis
+access: read-only
+---
+
+You are a PostgreSQL specialist. Inspect schemas, migrations, and queries...
+```
+
+The body becomes the agent's system prompt. `access` selects the toolset — `read-only` (search/read only), `verify` (read plus build/test commands), or `all` (default) — and an optional `model: plan` or `model: utility` picks the session's planning or utility model instead of inheriting. A custom definition with a built-in name replaces that built-in.
+
 ## 🖥️ Server Mode
 
 Wingman includes a web-based UI server — useful for IDE integrations or browser-based access:
@@ -370,7 +389,8 @@ This starts an HTTP server at `http://localhost:9000` (or another available
 port) with a React UI featuring a chat panel, file browser, diff viewer,
 checkpoint browser, diagnostics panel, an integrated terminal (multiple
 xterm.js sessions, shell of your choice, `Ctrl+Alt+T`), and session management.
-The server uses WebSockets for real-time streaming.
+`Ctrl+P` opens the command palette — same shortcut as the TUI command center
+(`Cmd/Ctrl+K` works too). The server uses WebSockets for real-time streaming.
 
 ## 🔀 Proxy Mode
 

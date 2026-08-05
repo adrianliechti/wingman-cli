@@ -1,7 +1,9 @@
 package code
 
 import (
+	"cmp"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/sahilm/fuzzy"
@@ -14,9 +16,15 @@ import (
 const popupMaxRows = 8
 
 type PopupItem struct {
-	ID     string
-	Label  string
-	Detail string
+	ID             string
+	Label          string
+	Detail         string
+	Group          string
+	Keywords       string
+	Shortcut       string
+	Checked        bool
+	Disabled       bool
+	DisabledReason string
 }
 
 type popupKind int
@@ -25,6 +33,7 @@ const (
 	popupCommands popupKind = iota
 	popupFiles
 	popupList
+	popupPalette
 )
 
 // Popup is the single list component behind slash-command completion, file
@@ -41,8 +50,11 @@ type Popup struct {
 	index    int
 	offset   int
 
-	multi    bool
-	selected map[string]bool
+	multi       bool
+	acceptEmpty bool
+	labelOnly   bool
+	selected    map[string]bool
+	maxRows     int
 
 	query    string
 	accepted bool
@@ -59,17 +71,28 @@ func newPopup(kind popupKind, title string, items []PopupItem, onAccept func(ids
 		items:    items,
 		selected: map[string]bool{},
 		onAccept: onAccept,
+		maxRows:  popupMaxRows,
 	}
 	p.SetQuery("")
 	return p
 }
 
-type popupSource []PopupItem
+type popupSource struct {
+	items     []PopupItem
+	labelOnly bool
+}
 
-func (s popupSource) String(i int) string { return s[i].Label }
-func (s popupSource) Len() int            { return len(s) }
+func (s popupSource) String(i int) string {
+	item := s.items[i]
+	if s.labelOnly {
+		return strings.Join([]string{item.Label, item.Keywords}, " ")
+	}
+	return strings.Join([]string{item.Label, item.Detail, item.Keywords, item.Group}, " ")
+}
+func (s popupSource) Len() int { return len(s.items) }
 
 func (p *Popup) SetQuery(query string) {
+	changed := query != p.query
 	p.query = query
 	p.filtered = p.filtered[:0]
 
@@ -85,13 +108,32 @@ func (p *Popup) SetQuery(query string) {
 			}
 		}
 	default:
-		for _, m := range fuzzy.FindFrom(query, popupSource(p.items)) {
+		for _, m := range fuzzy.FindFrom(query, popupSource{items: p.items, labelOnly: p.labelOnly}) {
 			p.filtered = append(p.filtered, m.Index)
+		}
+		if p.kind == popupPalette {
+			// Fuzzy results arrive in score order; regrouping keeps each
+			// group header rendering once while scores order items within.
+			rank := make(map[string]int, len(p.items))
+			for i, item := range p.items {
+				if _, ok := rank[item.Group]; !ok {
+					rank[item.Group] = i
+				}
+			}
+			slices.SortStableFunc(p.filtered, func(left, right int) int {
+				return cmp.Compare(rank[p.items[left].Group], rank[p.items[right].Group])
+			})
 		}
 	}
 
-	if p.index >= len(p.filtered) {
+	if changed || p.index < 0 || p.index >= len(p.filtered) {
 		p.index = 0
+		for i, idx := range p.filtered {
+			if !p.items[idx].Disabled {
+				p.index = i
+				break
+			}
+		}
 	}
 	p.offset = 0
 }
@@ -124,10 +166,10 @@ func (p *Popup) Current() (PopupItem, bool) {
 	return p.items[p.filtered[p.index]], true
 }
 
-func (p *Popup) accept() {
+func (p *Popup) accept() bool {
 	var ids []string
 
-	if p.multi && len(p.selected) > 0 {
+	if p.multi {
 		for _, idx := range p.filtered {
 			if p.selected[p.items[idx].ID] {
 				ids = append(ids, p.items[idx].ID)
@@ -146,15 +188,20 @@ func (p *Popup) accept() {
 			}
 		}
 	} else if item, ok := p.Current(); ok {
+		if item.Disabled {
+			return false
+		}
 		ids = []string{item.ID}
 	}
 
-	if len(ids) > 0 {
+	if len(ids) > 0 || p.acceptEmpty {
 		p.accepted = true
 		if p.onAccept != nil {
 			p.onAccept(ids)
 		}
+		return true
 	}
+	return false
 }
 
 func (p *Popup) acceptID(id string) {
@@ -180,14 +227,18 @@ func (p *Popup) HandleKey(ev inline.KeyEvent) (bool, bool) {
 		return true, false
 
 	case inline.KeyPgUp:
-		p.index -= popupMaxRows
+		p.index -= p.maxRows
 		if p.index < 0 {
 			p.index = 0
 		}
 		return true, false
 
 	case inline.KeyPgDn:
-		p.index += popupMaxRows
+		if len(p.filtered) == 0 {
+			p.index = 0
+			return true, false
+		}
+		p.index += p.maxRows
 		if p.index >= len(p.filtered) {
 			p.index = len(p.filtered) - 1
 		}
@@ -204,20 +255,18 @@ func (p *Popup) HandleKey(ev inline.KeyEvent) (bool, bool) {
 			return true, false
 		}
 		if p.kind == popupCommands {
-			p.accept()
-			return true, true
+			return true, p.accept()
 		}
 		return false, false
 
 	case inline.KeyEnter:
-		p.accept()
-		return true, true
+		return true, p.accept()
 
 	case inline.KeyEsc:
 		return true, true
 	}
 
-	if p.kind == popupList {
+	if p.kind == popupList || p.kind == popupPalette {
 		switch ev.Key {
 		case inline.KeyRune, inline.KeyBackspace:
 			if ev.Key == inline.KeyBackspace {
@@ -272,7 +321,10 @@ func (p *Popup) Render(width int) []string {
 		return lines
 	}
 
-	visible := popupMaxRows
+	visible := p.maxRows
+	if visible <= 0 {
+		visible = popupMaxRows
+	}
 	if p.index < p.offset {
 		p.offset = p.index
 	}
@@ -292,6 +344,15 @@ func (p *Popup) Render(width int) []string {
 
 	for i := p.offset; i < end; i++ {
 		item := p.items[p.filtered[i]]
+		if p.kind == popupPalette && item.Group != "" {
+			previousGroup := ""
+			if i > p.offset {
+				previousGroup = p.items[p.filtered[i-1]].Group
+			}
+			if i == p.offset || item.Group != previousGroup {
+				lines = append(lines, cellIndent+dim("  "+strings.ToUpper(item.Group)))
+			}
+		}
 
 		marker := "  "
 		if p.multi {
@@ -301,15 +362,30 @@ func (p *Popup) Render(width int) []string {
 			}
 		}
 
-		var line string
-		if i == p.index {
-			line = colored(t.Cyan, "→ ") + marker + fg(t.Cyan) + item.Label + ansi.Reset
-		} else {
-			line = "  " + marker + item.Label
+		check := ""
+		if item.Checked {
+			check = colored(t.Green, "✓ ")
 		}
 
-		if item.Detail != "" {
-			line += "  " + dim(item.Detail)
+		var line string
+		if i == p.index {
+			line = colored(t.Cyan, "→ ") + marker + check + fg(t.Cyan) + item.Label + ansi.Reset
+		} else {
+			line = "  " + marker + check + item.Label
+		}
+
+		detail := item.Detail
+		if item.Disabled && item.DisabledReason != "" {
+			detail = item.DisabledReason
+		}
+		if detail != "" {
+			line += "  " + dim(detail)
+		}
+		if item.Shortcut != "" {
+			line += "  " + dim(item.Shortcut)
+		}
+		if item.Disabled {
+			line = dim(ansi.Strip(line))
 		}
 
 		lines = append(lines, cellIndent+ansi.Truncate(line, inner, "…")+ansi.Reset)
@@ -317,6 +393,9 @@ func (p *Popup) Render(width int) []string {
 
 	if len(p.filtered) > visible {
 		lines = append(lines, cellIndent+dim(fmt.Sprintf("  (%d/%d)", p.index+1, len(p.filtered))))
+	}
+	if p.kind == popupPalette {
+		lines = append(lines, cellIndent+ansi.Truncate(dim("  ↑↓ navigate · enter open · esc back/close"), inner, "…"))
 	}
 
 	return lines

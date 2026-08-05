@@ -2,14 +2,11 @@ package code
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/task"
-	"github.com/adrianliechti/wingman-agent/pkg/code"
-	"github.com/adrianliechti/wingman-agent/pkg/model"
 	"github.com/adrianliechti/wingman-agent/pkg/tui"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/ansi"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/theme"
@@ -30,9 +27,9 @@ func formatElapsed(d time.Duration) string {
 	return fmt.Sprintf("%dh %02dm", secs/3600, (secs%3600)/60)
 }
 
-// statusLine renders the activity row above the composer; a blank line is
-// reserved when idle so the layout never jumps.
-func (a *App) statusLine(width int) string {
+// activityStatus renders transient model/tool state for the existing footer
+// row, keeping the composer rails stable while a turn runs.
+func (a *App) activityStatus() string {
 	t := theme.Default
 	phase := a.getPhase()
 
@@ -59,10 +56,10 @@ func (a *App) statusLine(width int) string {
 	line := colored(color, frame+" "+label)
 
 	if phase != PhasePreparing && !a.phaseStart.IsZero() {
-		line += " " + dim(fmt.Sprintf("(%s · esc to interrupt)", formatElapsed(time.Since(a.phaseStart))))
+		line += dim(" " + formatElapsed(time.Since(a.phaseStart)) + " · esc interrupt")
 	}
 
-	return cellIndent + ansi.Truncate(line, width-len(cellIndent), "…")
+	return line
 }
 
 func (a *App) contextLeftPercent() (int, bool) {
@@ -102,12 +99,13 @@ func (a *App) footerLine(width int) string {
 		}
 	}
 
-	if a.inputTokens > 0 || a.outputTokens > 0 {
+	showFreshUsage := a.getPhase() == PhaseIdle && time.Now().Before(a.usageVisibleUntil)
+	if showFreshUsage && (a.inputTokens > 0 || a.outputTokens > 0) {
 		tokens := fmt.Sprintf("↑%s ↓%s", tui.FormatTokens(a.inputTokens), tui.FormatTokens(a.outputTokens))
 		right = append(right, dim(tokens))
 	}
 
-	if left, ok := a.contextLeftPercent(); ok {
+	if left, ok := a.contextLeftPercent(); a.getPhase() == PhaseIdle && ok && (showFreshUsage || left <= 30) {
 		color := t.BrBlack
 		switch {
 		case left <= 10:
@@ -115,58 +113,41 @@ func (a *App) footerLine(width int) string {
 		case left <= 30:
 			color = t.Yellow
 		}
-		right = append(right, colored(color, fmt.Sprintf("%d%% left", left)))
-	}
-
-	_, currentModel := a.agent.Models(a.sessionID)
-	right = append(right, dim(model.Name(currentModel)))
-
-	if effort, _ := a.agent.Effort(a.sessionID); effort != "" && effort != "auto" {
-		right = append(right, dim(effort))
-	}
-
-	if a.currentMode == ModePlan {
-		right = append(right, colored(t.Yellow, "plan"))
-	}
-
-	if name := a.agent.Name(); name != "" && name != code.BuiltinAgentName {
-		right = append(right, dim(name))
+		context := fmt.Sprintf("%d%%", left)
+		right = append(right, colored(color, context))
 	}
 
 	rightText := strings.Join(right, dim(" · "))
+	withRight := func(left string) string {
+		gap := width - 2*len(cellIndent) - ansi.Width(left) - ansi.Width(rightText)
+		if gap >= 2 {
+			return cellIndent + left + strings.Repeat(" ", gap) + rightText
+		}
+		return cellIndent + ansi.Truncate(left, width-len(cellIndent), "…")
+	}
 
 	if a.footerHint != "" {
-		hint := colored(t.Yellow, a.footerHint)
-		gap := width - 2*len(cellIndent) - ansi.Width(hint) - ansi.Width(rightText)
-		if gap >= 2 {
-			return cellIndent + hint + strings.Repeat(" ", gap) + rightText
-		}
-		return cellIndent + ansi.Truncate(hint, width-len(cellIndent), "…")
+		return withRight(colored(t.Yellow, a.footerHint))
+	}
+
+	if a.toast != nil {
+		return withRight(colored(a.toast.color, a.toast.message))
+	}
+
+	if activity := a.activityStatus(); activity != "" {
+		return withRight(activity)
 	}
 
 	var left []string
-
-	if n := a.countPendingImages(); n == 1 {
-		left = append(left, colored(t.Cyan, "1 image"))
-	} else if n > 1 {
-		left = append(left, colored(t.Cyan, fmt.Sprintf("%d images", n)))
-	}
-
-	if len(a.pendingFiles) == 1 {
-		left = append(left, colored(t.Cyan, filepath.Base(a.pendingFiles[0])))
-	} else if len(a.pendingFiles) > 1 {
-		left = append(left, colored(t.Cyan, fmt.Sprintf("%d files", len(a.pendingFiles))))
-	}
 
 	hint := func(key, label string) string {
 		return dim(key) + " " + colored(t.Foreground, label)
 	}
 
 	hints := []string{
-		hint("/", "commands"),
+		hint("ctrl+p", "commands"),
 		hint("@", "files"),
 		hint("tab", "plan"),
-		hint("shift+tab", "model"),
 		hint("ctrl+o", "transcript"),
 	}
 

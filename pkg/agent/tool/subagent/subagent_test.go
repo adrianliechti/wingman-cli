@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -290,5 +291,93 @@ func TestTaskSendValidation(t *testing.T) {
 	}
 	if _, err := taskSend.Execute(t.Context(), map[string]any{"id": "x"}); err == nil {
 		t.Fatal("missing message should error")
+	}
+}
+
+func TestAgentToolSyncRunAdoptedForFollowUps(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{\"output\":[{\"type\":\"message\",\"id\":\"msg_1\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"sync report\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":1,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1}}}\n\ndata: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	t.Setenv("WINGMAN_URL", server.URL)
+	cfg, err := agent.DefaultConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reg := task.NewRegistry()
+	defer reg.Close()
+
+	byName := map[string]tool.Tool{}
+	for _, tl := range Tools(cfg, nil, reg) {
+		byName[tl.Name] = tl
+	}
+
+	out, err := byName["agent"].Execute(t.Context(), map[string]any{
+		"description": "d", "prompt": "p", "agent_type": "explore",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "sync report") {
+		t.Fatalf("result = %q", out)
+	}
+
+	m := regexp.MustCompile(`\(id (\S+) — task_send`).FindStringSubmatch(out)
+	if m == nil {
+		t.Fatalf("result missing follow-up id: %q", out)
+	}
+	id := m[1]
+
+	adopted := reg.Get(id)
+	if adopted == nil || adopted.Status() != task.StatusDone {
+		t.Fatalf("adopted task = %+v", adopted)
+	}
+	if len(adopted.PeekMessages()) == 0 {
+		t.Fatal("adopted task must expose its transcript")
+	}
+
+	if _, err := byName["task_send"].Execute(t.Context(), map[string]any{
+		"id": id, "message": "and one more thing",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case reply := <-reg.Events():
+		if reply.ID != id || reply.Seq != 2 || reply.Status != task.StatusDone {
+			t.Fatalf("reply = %+v", reply)
+		}
+		if strings.Count(reply.Result, "sync report") != 1 {
+			t.Fatalf("reply result = %q", reply.Result)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no reply event")
+	}
+}
+
+func TestAgentToolSyncRunWithoutRegistryOmitsFollowUpID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{\"output\":[{\"type\":\"message\",\"id\":\"msg_1\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"sync report\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":1,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1}}}\n\ndata: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	t.Setenv("WINGMAN_URL", server.URL)
+	cfg, err := agent.DefaultConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := Tools(cfg, nil, nil)[0].Execute(t.Context(), map[string]any{
+		"description": "d", "prompt": "p", "agent_type": "explore",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "task_send") {
+		t.Fatalf("no-registry result must not advertise task_send: %q", out)
 	}
 }

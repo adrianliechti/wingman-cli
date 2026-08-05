@@ -64,6 +64,10 @@ func (a *App) syncMessages() {
 		a.appendChat(lines)
 	}
 
+	a.refreshUsage()
+}
+
+func (a *App) refreshUsage() {
 	usage := a.agent.Usage(a.sessionID)
 	a.inputTokens = usage.InputTokens
 	a.outputTokens = usage.OutputTokens
@@ -318,11 +322,13 @@ func (a *App) finishTurn(sessionID, commit string, state code.TurnInputState, tu
 			a.clearStreamingState()
 			a.setPhase(nextPhase)
 			a.syncMessages()
+			a.refreshUsage()
 
 			switch {
 			case state == code.TurnInputCompleted:
 				if nextPhase == PhaseIdle {
 					a.flushTurnSeparator()
+					a.revealUsage(time.Now())
 					a.bellIfUnfocused()
 				}
 			case state == code.TurnInputCancelled || errors.Is(turnErr, context.Canceled):

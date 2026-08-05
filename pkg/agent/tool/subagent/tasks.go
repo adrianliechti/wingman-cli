@@ -14,7 +14,7 @@ func taskTools(tasks *task.Registry) []tool.Tool {
 	return []tool.Tool{
 		{
 			Name:        "task_output",
-			Description: "Check on background agents. Without `id`, lists all background agents of this session with their status. With `id`, returns that agent's status and, once finished, its full result. Results also arrive automatically as task notifications — use this to peek early or to re-read a result. Never call it in a loop to wait: keep working, the notification arrives on its own.",
+			Description: "Check on this session's agents, background and synchronous. Without `id`, lists them all with their status. With `id`, returns that agent's status and, once finished, its full result. Results also arrive automatically as task notifications — use this to peek early or to re-read a result. Never call it in a loop to wait: keep working, the notification arrives on its own.",
 			Effect:      tool.StaticEffect(tool.EffectReadOnly),
 			Hidden:      true,
 
@@ -53,7 +53,7 @@ func taskTools(tasks *task.Registry) []tool.Tool {
 		},
 		{
 			Name:        "task_send",
-			Description: "Send a follow-up message to a finished background agent. It resumes in the background with its full prior context — no re-briefing needed — and the reply arrives as a task notification. Use this instead of launching a fresh agent when the question builds on work an agent already did. Never use it to have an agent confirm its own findings — verification needs a fresh agent without the finder's context.",
+			Description: "Send a follow-up message to a finished agent — background or synchronous; every agent result carries its task id. It resumes in the background with its full prior context — no re-briefing needed — and the reply arrives as a task notification. Use this instead of launching a fresh agent when the question builds on work an agent already did. Never use it to have an agent confirm its own findings — verification needs a fresh agent without the finder's context.",
 			Effect:      tool.StaticEffect(tool.EffectMutates),
 
 			Parameters: map[string]any{

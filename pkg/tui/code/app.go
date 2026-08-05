@@ -43,10 +43,12 @@ type App struct {
 	spinnerFrame int
 	quitDeadline time.Time
 	termFocused  bool
+	wasStreaming bool
 
 	// footerHint is a transient warning shown in the footer instead of the
 	// key hints; it clears on the next input action or when it expires.
 	footerHint string
+	toast      *toast
 
 	currentMode Mode
 	showWelcome bool
@@ -92,10 +94,11 @@ type App struct {
 	askHeader    []string
 	askResponse  chan string
 
-	inputTokens     int64
-	outputTokens    int64
-	lastInputTokens int64
-	contextWindow   int64
+	inputTokens       int64
+	outputTokens      int64
+	lastInputTokens   int64
+	contextWindow     int64
+	usageVisibleUntil time.Time
 
 	pendingContent []agent.Content
 	pendingFiles   []string
@@ -119,6 +122,12 @@ type App struct {
 	streamingReasoning  string
 	reasoningID         string
 	reasoningPart       int
+}
+
+type toast struct {
+	message   string
+	color     ansi.Color
+	expiresAt time.Time
 }
 
 type pendingEchoItem struct {
@@ -197,6 +206,7 @@ func (a *App) activateSession(id string) {
 	a.flow = cellFlow{}
 	a.annotations = nil
 	a.resetTurnStats()
+	a.usageVisibleUntil = time.Time{}
 
 	a.startTaskPump()
 }
@@ -368,6 +378,38 @@ func (a *App) setFooterHint(hint string) {
 	a.invalidate()
 }
 
+const toastDuration = 2500 * time.Millisecond
+
+func (a *App) showToast(message string, color ansi.Color) {
+	a.toast = &toast{message: message, color: color, expiresAt: time.Now().Add(toastDuration)}
+	a.invalidate()
+}
+
+func (a *App) expireToast(now time.Time) {
+	if a.toast == nil || now.Before(a.toast.expiresAt) {
+		return
+	}
+	a.toast = nil
+	a.invalidate()
+}
+
+const usagePeekDuration = 4 * time.Second
+
+func (a *App) revealUsage(now time.Time) {
+	if a.inputTokens == 0 && a.outputTokens == 0 {
+		return
+	}
+	a.usageVisibleUntil = now.Add(usagePeekDuration)
+}
+
+func (a *App) expireUsage(now time.Time) {
+	if a.usageVisibleUntil.IsZero() || now.Before(a.usageVisibleUntil) {
+		return
+	}
+	a.usageVisibleUntil = time.Time{}
+	a.invalidate()
+}
+
 func (a *App) runningTaskCount() int {
 	if provider, ok := a.agent.(taskProvider); ok {
 		return provider.RunningTaskCount()
@@ -515,6 +557,8 @@ func (a *App) Run() error {
 
 		case now := <-ticker.C:
 			a.expireQuitGate(now)
+			a.expireToast(now)
+			a.expireUsage(now)
 			if a.getPhase() != PhaseIdle {
 				a.spinnerFrame++
 				a.invalidate()
@@ -532,6 +576,11 @@ func (a *App) Run() error {
 			default:
 			}
 			break
+		}
+
+		if busy := a.isStreaming(); busy != a.wasStreaming {
+			a.wasStreaming = busy
+			a.refreshCommandCenter()
 		}
 
 		if a.dirty {
@@ -845,8 +894,12 @@ func (a *App) handlePaste(text string) {
 
 	paths := detectFilePaths(text, a.agent.Workspace().RootPath)
 	if len(paths) > 0 {
+		before := len(a.pendingFiles)
 		for _, p := range paths {
 			a.addFileToContext(normalizeFilePath(p, a.agent.Workspace().RootPath))
+		}
+		if added := len(a.pendingFiles) - before; added > 0 {
+			a.showToast(fmt.Sprintf("Attached %d file(s)", added), theme.Default.Cyan)
 		}
 		return
 	}
@@ -924,17 +977,14 @@ func (a *App) handleKey(ev inline.KeyEvent) {
 		case 'v':
 			a.pasteFromClipboard()
 			return
+		case 'p':
+			a.showCommandCenter()
+			return
 		}
 
 	case inline.KeyTab:
 		if !a.isStreaming() && a.popup == nil {
 			a.toggleMode()
-			return
-		}
-
-	case inline.KeyBacktab:
-		if !a.isStreaming() {
-			a.cycleModel()
 			return
 		}
 
@@ -982,6 +1032,19 @@ func (a *App) handleKey(ev inline.KeyEvent) {
 // handlePopupKey routes keys to the active popup; returns true when consumed.
 func (a *App) handlePopupKey(ev inline.KeyEvent) bool {
 	popup := a.popup
+	if popup.kind == popupPalette {
+		if ev.Key == inline.KeyCtrl && ev.Rune == 'p' {
+			// Ctrl+P toggles the whole command center, even from a nested
+			// picker; Escape/empty Backspace retain breadcrumb behavior.
+			popup.onCancel = nil
+			a.closePopup()
+			return true
+		}
+		if ev.Key == inline.KeyBackspace && popup.query == "" {
+			a.closePopup()
+			return true
+		}
+	}
 
 	if popup.kind == popupCommands {
 		switch ev.Key {
@@ -1018,7 +1081,7 @@ func (a *App) handlePopupKey(ev inline.KeyEvent) bool {
 	}
 
 	consumed, closed := popup.HandleKey(ev)
-	if closed {
+	if closed && a.popup == popup {
 		a.closePopup()
 	}
 	return consumed
@@ -1103,50 +1166,7 @@ func (a *App) clearChat() {
 }
 
 func (a *App) resumeSession() {
-	t := theme.Default
-
-	sessions, err := a.agent.ListSessions(a.ctx)
-	if err != nil || len(sessions) == 0 {
-		a.appendChat(cellNotice("No sessions to resume", t.Yellow, a.width()))
-		return
-	}
-
-	last := sessions[0]
-	for _, candidate := range sessions[1:] {
-		if candidate.UpdatedAt.After(last.UpdatedAt) {
-			last = candidate
-		}
-	}
-	if err := a.agent.LoadSession(a.ctx, last.ID); err != nil {
-		a.appendChat(cellNotice(fmt.Sprintf("Failed to load session: %v", err), t.Red, a.width()))
-		return
-	}
-
-	a.turns.CancelAll(a.sessionID)
-	a.activateSession(last.ID)
-	a.clearPendingContent()
-
-	usage := a.agent.Usage(a.sessionID)
-	a.inputTokens = usage.InputTokens
-	a.outputTokens = usage.OutputTokens
-	a.lastInputTokens = usage.LastInputTokens
-	a.contextWindow = usage.ContextWindow
-
-	a.showWelcome = false
-	a.chat = nil
-	a.chatScroll = 0
-	a.follow = true
-	a.clearSelection()
-	a.syncMessages()
-
-	banner := fmt.Sprintf("Resumed session from %s", last.UpdatedAt.Format("Jan 2 15:04"))
-	a.appendAnnotation(func(width int) []string {
-		return cellNotice(banner, t.Green, width)
-	})
-
-	if _, ok := a.agent.(recapProvider); ok && len(a.agent.Messages(a.sessionID)) > 0 {
-		a.showRecap()
-	}
+	a.showSessionPicker(false)
 }
 
 // showRecap asynchronously summarizes the session and posts the result as a
@@ -1203,7 +1223,7 @@ func (a *App) copyTextToClipboard(text string) {
 				color = theme.Default.Red
 			}
 
-			a.appendChat(cellNotice(message, color, a.width()))
+			a.showToast(message, color)
 		})
 	}()
 }
@@ -1233,6 +1253,8 @@ func (a *App) pasteFromClipboard() {
 		}
 
 		a.post(func() {
+			beforeImages := a.countPendingImages()
+			beforeFiles := len(a.pendingFiles)
 			for _, c := range contents {
 				if c.Image != nil {
 					a.pendingContent = append(a.pendingContent, agent.Content{File: &agent.File{Data: *c.Image}})
@@ -1251,6 +1273,12 @@ func (a *App) pasteFromClipboard() {
 					a.editor.Insert(strings.ReplaceAll(c.Text, "\r\n", "\n"))
 					a.syncCommandPopup()
 				}
+			}
+			added := a.countPendingImages() - beforeImages + len(a.pendingFiles) - beforeFiles
+			if added == 1 {
+				a.showToast("Attached 1 item", theme.Default.Cyan)
+			} else if added > 1 {
+				a.showToast(fmt.Sprintf("Attached %d items", added), theme.Default.Cyan)
 			}
 
 			a.invalidate()

@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/adrianliechti/wingman-agent/pkg/code"
+	"github.com/adrianliechti/wingman-agent/pkg/model"
 	"github.com/adrianliechti/wingman-agent/pkg/tui"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/ansi"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/inline"
@@ -41,9 +43,62 @@ func (a *App) welcomeLines(width int) []string {
 	if home, err := os.UserHomeDir(); err == nil && home != "" && strings.HasPrefix(cwd, home) {
 		cwd = "~" + strings.TrimPrefix(cwd, home)
 	}
-	lines = append(lines, center(dim(cwd)))
+	lines = append(lines, center(dim(ansi.Truncate(cwd, max(10, width-4), "…"))))
 
 	return lines
+}
+
+func (a *App) composerChrome(width int) EditorChrome {
+	t := theme.Default
+	color := t.BrBlack
+	mode := ""
+	planMode := a.currentMode == ModePlan
+	if planMode {
+		color = t.Yellow
+		mode = colored(t.Yellow, "PLAN")
+	}
+	if a.promptActive || a.askActive {
+		color = t.Red
+		mode = colored(t.Red, "ANSWER")
+	}
+
+	var identity []string
+	_, currentModel := a.agent.Models(a.sessionID)
+	if currentModel != "" {
+		identity = append(identity, model.Name(currentModel))
+	}
+	if effort, _ := a.agent.Effort(a.sessionID); effort != "" && effort != "auto" {
+		identity = append(identity, effort)
+	}
+	if name := a.agent.Name(); name != "" && name != code.BuiltinAgentName {
+		if mode == "" {
+			mode = dim(name)
+		}
+	}
+
+	topLabel := ""
+	bottomLeft := mode
+	if planMode && !a.promptActive && !a.askActive {
+		topLabel = mode
+		bottomLeft = ""
+	}
+
+	identityLabel := strings.Join(identity, " · ")
+	identityStyle := ""
+	if identityLabel != "" {
+		identityStyle = dim(identityLabel)
+		if planMode {
+			identityStyle = colored(t.Yellow, identityLabel)
+		}
+	}
+
+	return EditorChrome{
+		TopLabel:    topLabel,
+		BottomLeft:  bottomLeft,
+		BottomRight: identityStyle,
+		TopColor:    color,
+		Attachments: a.attachmentLines(width),
+	}
 }
 
 // streamCells renders the in-flight turn tail shown below the committed chat,
@@ -91,7 +146,7 @@ func (a *App) streamCells(width int) []string {
 }
 
 // render paints the full-screen frame: scrollable chat on top, then queued
-// echoes, status row, composer, and popup or footer pinned at the bottom.
+// echoes, the status-rich composer, and popup or footer pinned at the bottom.
 func (a *App) render() {
 	width, height := a.term.Size()
 	if width <= 0 || height <= 0 {
@@ -103,11 +158,9 @@ func (a *App) render() {
 		return
 	}
 
-	t := theme.Default
-
-	// Selection mode: the popup is the only live element — the status
-	// spinner, composer, and footer would just be noise around it.
-	listPopup := a.popup != nil && a.popup.kind == popupList
+	// Selection mode: the popup is the only live element — the composer and
+	// footer would just be noise around it.
+	listPopup := a.popup != nil && (a.popup.kind == popupList || a.popup.kind == popupPalette)
 
 	// Bottom section, built first so the chat viewport gets the remainder.
 	var bottom []string
@@ -116,6 +169,11 @@ func (a *App) render() {
 	hasCursor := false
 
 	if listPopup {
+		if a.popup.kind == popupPalette {
+			a.popup.maxRows = max(3, min(10, height/3))
+		} else {
+			a.popup.maxRows = max(5, min(14, height/2))
+		}
 		bottom = append(bottom, "")
 		bottom = append(bottom, a.popup.Render(width)...)
 		bottom = append(bottom, "")
@@ -126,19 +184,8 @@ func (a *App) render() {
 			bottom = append([]string{dim("…")}, bottom[len(bottom)-height+1:]...)
 		}
 	} else {
-		bottom = append(bottom, a.statusLine(width))
-
 		if a.askActive && len(a.askHeader) > 0 {
 			bottom = append(bottom, a.askHeader...)
-		}
-
-		switch {
-		case a.promptActive || a.askActive:
-			a.editor.SetRuleColor(t.Red)
-		case a.currentMode == ModePlan:
-			a.editor.SetRuleColor(t.Yellow)
-		default:
-			a.editor.SetRuleColor(t.BrBlack)
 		}
 
 		maxEditorRows := height / 3
@@ -147,7 +194,7 @@ func (a *App) render() {
 		}
 
 		var editorLines []string
-		editorLines, cursor = a.editor.Render(width, maxEditorRows)
+		editorLines, cursor = a.editor.Render(width, maxEditorRows, a.composerChrome(width))
 		hasCursor = true
 		editorStart = len(bottom)
 		bottom = append(bottom, editorLines...)
@@ -233,15 +280,15 @@ func (a *App) render() {
 
 	frame = append(frame, bottom...)
 
-	// Scroll indicator on the status row when the newest content is
-	// off-screen.
+	// Scroll indicator on the row above the composer when the newest content
+	// is off-screen; full-width rows are truncated to keep it visible.
 	if hidden := maxScroll - a.chatScroll; !listPopup && !a.follow && hidden > 0 {
 		idx := chatRows + editorStart - 1
 		if idx >= 0 && idx < len(frame) {
 			indicator := dim(fmt.Sprintf("↓ %d more", hidden))
-			pad := width - ansi.Width(frame[idx]) - ansi.Width(indicator) - len(cellIndent)
-			if pad > 0 {
-				frame[idx] += strings.Repeat(" ", pad) + indicator
+			keep := width - ansi.Width(indicator) - 1
+			if keep > 0 {
+				frame[idx] = ansi.Pad(ansi.Truncate(frame[idx], keep, "…"), keep) + " " + indicator
 			}
 		}
 	}

@@ -158,7 +158,12 @@ export default function App() {
 
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
-			if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+			// Ctrl/Cmd+P matches the TUI command center (and suppresses the
+			// browser print dialog); Cmd+K stays as the web-app convention.
+			if (
+				(e.metaKey || e.ctrlKey) &&
+				["k", "p"].includes(e.key.toLowerCase())
+			) {
 				e.preventDefault();
 				setPaletteOpen((o) => !o);
 				return;

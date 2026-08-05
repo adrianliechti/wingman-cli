@@ -755,7 +755,7 @@ func (a *Agent) buildSession() *sessionState {
 		elicittool.Tools(elicit),
 		fetch.Tools(elicit, sessionCfg.Utility),
 		websearch.Tools(elicit),
-		subagent.Tools(sessionCfg, s.subagentContext, s.tasks),
+		subagent.Tools(sessionCfg, s.subagentContext, s.tasks, subagent.Discover(ws.RootPath)...),
 	)
 	return s
 }

@@ -25,6 +25,14 @@ type Editor struct {
 	scroll int
 }
 
+type EditorChrome struct {
+	TopLabel    string
+	BottomLeft  string
+	BottomRight string
+	TopColor    ansi.Color
+	Attachments []string
+}
+
 func NewEditor() *Editor {
 	return &Editor{
 		placeholder: "Ask anything...",
@@ -396,16 +404,47 @@ func runeWidth(r rune) int {
 
 // Render returns the editor lines (rules included) and the cursor position
 // relative to the returned block.
-func (e *Editor) Render(width, maxRows int) ([]string, inline.Pos) {
+func (e *Editor) Render(width, maxRows int, chrome EditorChrome) ([]string, inline.Pos) {
 	t := theme.Default
 	inner := width - 2*len(cellIndent) - 2
+	e.ruleColor = chrome.TopColor
 
-	rule := func(label string) string {
-		line := strings.Repeat("─", width-2*len(cellIndent))
-		if label != "" && len(label)+6 < width {
-			line = "─── " + label + " " + strings.Repeat("─", width-2*len(cellIndent)-6-ansi.Width(label))
+	rule := func(left, right string, leftDashes int) string {
+		ruleWidth := width - 2*len(cellIndent)
+		if ruleWidth < 1 {
+			ruleWidth = 1
 		}
-		return cellIndent + colored(e.ruleColor, line)
+		if left == "" && right == "" {
+			return cellIndent + colored(e.ruleColor, strings.Repeat("─", ruleWidth))
+		}
+
+		leftDashes = min(max(leftDashes, 1), ruleWidth)
+		leftPart := ""
+		leftWidth := 0
+		if left != "" {
+			maxLeft := ruleWidth - leftDashes - 2
+			if maxLeft < 1 {
+				left = ""
+			} else {
+				left = ansi.Truncate(left, maxLeft, "…")
+				leftPart = colored(e.ruleColor, strings.Repeat("─", leftDashes)) + " " + left + " "
+				leftWidth = leftDashes + 2 + ansi.Width(left)
+			}
+		}
+
+		rightPart := ""
+		rightWidth := 0
+		if right != "" {
+			maxRight := ruleWidth - leftWidth - 1
+			if maxRight >= 1 {
+				right = ansi.Truncate(right, maxRight, "…")
+				rightPart = " " + right
+				rightWidth = ansi.Width(right) + 1
+			}
+		}
+
+		middle := max(0, ruleWidth-leftWidth-rightWidth)
+		return cellIndent + leftPart + colored(e.ruleColor, strings.Repeat("─", middle)) + rightPart
 	}
 
 	rows := e.rows(inner)
@@ -421,7 +460,18 @@ func (e *Editor) Render(width, maxRows int) ([]string, inline.Pos) {
 	if maxRows < 3 {
 		maxRows = 3
 	}
-	visible := maxRows - 2
+	attachments := chrome.Attachments
+	if maxAttachments := max(0, maxRows-3); len(attachments) > maxAttachments {
+		attachments = attachments[:maxAttachments]
+	}
+	attachmentGap := 0
+	if len(attachments) > 0 && maxRows >= len(attachments)+4 {
+		attachmentGap = 1
+	}
+	visible := maxRows - 2 - len(attachments) - attachmentGap
+	if visible < 1 {
+		visible = 1
+	}
 
 	if cursorRow < e.scroll {
 		e.scroll = cursorRow
@@ -436,16 +486,22 @@ func (e *Editor) Render(width, maxRows int) ([]string, inline.Pos) {
 		e.scroll = 0
 	}
 
-	topLabel := ""
+	topLabel := chrome.TopLabel
 	if e.scroll > 0 {
-		topLabel = dimLabel(e.scroll, "↑")
+		if topLabel != "" {
+			topLabel += dim(" · ")
+		}
+		topLabel += dim(dimLabel(e.scroll, "↑"))
 	}
-	bottomLabel := ""
+	bottomLeft := chrome.BottomLeft
 	if hidden := len(rows) - e.scroll - visible; hidden > 0 {
-		bottomLabel = dimLabel(hidden, "↓")
+		if bottomLeft != "" {
+			bottomLeft += dim(" · ")
+		}
+		bottomLeft += dim(dimLabel(hidden, "↓"))
 	}
 
-	lines := []string{rule(topLabel)}
+	lines := []string{rule(topLabel, "", 3)}
 
 	end := e.scroll + visible
 	if end > len(rows) {
@@ -459,8 +515,12 @@ func (e *Editor) Render(width, maxRows int) ([]string, inline.Pos) {
 			lines = append(lines, cellIndent+" "+row.text)
 		}
 	}
+	if attachmentGap > 0 {
+		lines = append(lines, "")
+	}
+	lines = append(lines, attachments...)
 
-	lines = append(lines, rule(bottomLabel))
+	lines = append(lines, rule(bottomLeft, chrome.BottomRight, 1))
 
 	cursor := inline.Pos{
 		Row: 1 + cursorRow - e.scroll,

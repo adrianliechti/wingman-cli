@@ -1,6 +1,9 @@
 package code
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestSlashToken(t *testing.T) {
 	tests := []struct {
@@ -45,5 +48,24 @@ func TestEditorReplaceRange(t *testing.T) {
 	}
 	if e.cursor != 13 {
 		t.Fatalf("cursor = %d, want 13", e.cursor)
+	}
+}
+
+func TestApplyContextSelectionKeepsUnofferedAttachments(t *testing.T) {
+	a := &App{}
+	a.pendingFiles = []string{"/abs/outside.pdf", "src/main.go", ".env"}
+
+	files := []fileMatch{{Path: "src/main.go"}, {Path: "docs/readme.md"}}
+	ids := []string{
+		contextFileID("docs/readme.md"),
+		contextFileID("/abs/outside.pdf"),
+		contextFileID(".env"),
+	}
+
+	a.applyContextSelection(nil, files, ids)
+
+	want := []string{"docs/readme.md", "/abs/outside.pdf", ".env"}
+	if !slices.Equal(a.pendingFiles, want) {
+		t.Fatalf("pendingFiles = %v, want %v", a.pendingFiles, want)
 	}
 }

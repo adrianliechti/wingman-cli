@@ -152,6 +152,48 @@ func TestTUIE2ESendsAndRendersTurn(t *testing.T) {
 	}
 }
 
+func TestTUIE2ECommandCenterAndTranscriptSearch(t *testing.T) {
+	model := tuiModelServer(t)
+	defer model.Close()
+	t.Setenv("WINGMAN_URL", model.URL)
+	t.Setenv("WINGMAN_MODEL", "gpt-5.4")
+	t.Setenv("WINGMAN_CALLER", "e2e")
+
+	h := newTUIE2EHarness(t)
+	if _, err := io.WriteString(h.input, "\x10"); err != nil { // ctrl+p
+		t.Fatal(err)
+	}
+	waitForTUI(t, func() bool { return h.app.popup != nil && h.app.popup.kind == popupPalette })
+	if !strings.Contains(h.output.Text(), "commands") {
+		t.Fatal("command center was not rendered")
+	}
+	if _, err := io.WriteString(h.input, "\x10"); err != nil {
+		t.Fatal(err)
+	}
+	waitForTUI(t, func() bool { return h.app.popup == nil })
+
+	h.postText(t, "hello transcript")
+	waitForTUI(t, func() bool {
+		messages := h.agent.Messages(h.sessionID)
+		return len(messages) >= 2 && messages[len(messages)-1].Role == agent.RoleAssistant
+	})
+
+	if _, err := io.WriteString(h.input, "\x0f"); err != nil { // ctrl+o
+		t.Fatal(err)
+	}
+	waitForTUI(t, func() bool {
+		_, ok := h.app.overlay.(*transcriptOverlay)
+		return ok
+	})
+	if _, err := io.WriteString(h.input, "/reply\r"); err != nil {
+		t.Fatal(err)
+	}
+	waitForTUI(t, func() bool {
+		o, ok := h.app.overlay.(*transcriptOverlay)
+		return ok && o.query == "reply" && len(o.matches) == 1
+	})
+}
+
 func TestTUIE2EConfirmAndElicitPopups(t *testing.T) {
 	model := tuiModelServer(t)
 	defer model.Close()

@@ -219,9 +219,22 @@ func (r *Registry) Publish(ev Event) {
 	if closed {
 		return
 	}
-	select {
-	case r.events <- ev:
-	default:
+	r.send(ev)
+}
+
+// send delivers ev, evicting the oldest buffered event rather than dropping
+// the newest when the channel is full.
+func (r *Registry) send(ev Event) {
+	for {
+		select {
+		case r.events <- ev:
+			return
+		default:
+			select {
+			case <-r.events:
+			default:
+			}
+		}
 	}
 }
 
@@ -266,6 +279,33 @@ func (r *Registry) Launch(description, agentType string, run func(ctx context.Co
 	go r.execute(ctx, cancel, t, run)
 
 	return t, nil
+}
+
+// Adopt registers an already-finished run (a synchronous agent call) so it can
+// be inspected and resumed like a background task. It emits no event — the
+// result was already delivered inline. Returns nil when the registry is closed
+// or at capacity; the caller then skips follow-up support.
+func (r *Registry) Adopt(description, agentType, result string, elapsed time.Duration) *Task {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed || r.launched >= MaxPerSession {
+		return nil
+	}
+
+	now := time.Now()
+	t := &Task{
+		ID:          uuid.NewString()[:8],
+		Description: description,
+		AgentType:   agentType,
+		Started:     now.Add(-elapsed),
+		status:      StatusDone,
+		result:      result,
+		finished:    now,
+		seq:         1,
+	}
+	r.tasks = append(r.tasks, t)
+	r.launched++
+	return t
 }
 
 // Relaunch restarts a finished task with a new run — the task_send follow-up
@@ -353,10 +393,7 @@ func (r *Registry) execute(ctx context.Context, cancel context.CancelFunc, t *Ta
 	r.mu.Unlock()
 
 	if !closed {
-		select {
-		case r.events <- ev:
-		default:
-		}
+		r.send(ev)
 	}
 }
 

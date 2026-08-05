@@ -142,13 +142,6 @@ func (p *pager) Render(width, height int) []string {
 	return lines
 }
 
-// transcriptOverlay shows the full session with nothing truncated,
-// Claude-style: opened and closed with ctrl+o.
-type transcriptOverlay struct {
-	pager  pager
-	height int
-}
-
 // transcriptLines renders committed messages with nothing truncated. A nil
 // isToolHidden shows every tool result.
 func transcriptLines(messages []agent.Message, width int, isToolHidden func(string) bool) []string {
@@ -187,47 +180,6 @@ func transcriptLines(messages []agent.Message, width int, isToolHidden func(stri
 	}
 
 	return lines
-}
-
-func (a *App) showTranscript() {
-	width := a.width()
-
-	lines := transcriptLines(a.agent.Messages(a.sessionID), width, a.isToolHidden)
-
-	_, _, _, streamingText, streamingReasoning := a.snapshotStreamState()
-	if streamingReasoning != "" {
-		lines = append(lines, cellReasoning(streamingReasoning, width, true)...)
-	}
-	if streamingText != "" {
-		lines = append(lines, cellAssistant(streamingText, width, theme.Default.BrBlack)...)
-	}
-
-	o := &transcriptOverlay{
-		pager: pager{
-			title: "transcript",
-			lines: lines,
-			hints: dim("↑↓/jk/wheel scroll · g/G top/bottom · ctrl+o close"),
-		},
-	}
-	o.pager.offset = len(lines)
-
-	a.openOverlay(o)
-}
-
-func (o *transcriptOverlay) HandleKey(ev inline.KeyEvent) bool {
-	if ev.Key == inline.KeyCtrl && ev.Rune == 'o' {
-		return true
-	}
-	return o.pager.HandleKey(ev, o.height)
-}
-
-func (o *transcriptOverlay) HandleMouse(ev inline.MouseEvent) {
-	o.pager.HandleMouse(ev, o.height)
-}
-
-func (o *transcriptOverlay) Render(width, height int) []string {
-	o.height = height
-	return o.pager.Render(width, height)
 }
 
 // taskOverlay is a live window onto a background agent's transcript: while

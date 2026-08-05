@@ -13,7 +13,7 @@ import (
 func (a *App) showContextStats() {
 	provider, supported := a.agent.(contextStatsProvider)
 	if !supported {
-		a.appendChat(cellNotice("Context statistics are unavailable for this agent", theme.Default.Yellow, a.width()))
+		a.showToast("Context statistics are unavailable for this agent", theme.Default.Yellow)
 		return
 	}
 
@@ -27,7 +27,7 @@ func (a *App) showContextStats() {
 				return
 			}
 			if !ok {
-				a.appendChat(cellNotice("No active session", theme.Default.Yellow, a.width()))
+				a.showToast("No active session", theme.Default.Yellow)
 			} else {
 				a.appendChat(cellContextStats(stats, a.width()))
 			}

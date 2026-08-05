@@ -40,7 +40,7 @@ func (a *App) showDiagnosticsOverlay(files []fileDiagnostics, collectErr error) 
 	}
 
 	if len(files) == 0 {
-		a.appendChat(cellNotice("No diagnostics found", t.BrBlack, a.width()))
+		a.showToast("No diagnostics found", t.BrBlack)
 		a.invalidate()
 		return
 	}
@@ -102,8 +102,15 @@ func (a *App) showDiagnosticsOverlay(files []fileDiagnostics, collectErr error) 
 
 		return lines
 	}
+	search := func(i int) string {
+		text := files[i].Path
+		for _, diagnostic := range files[i].Diagnostics {
+			text += "\n" + diagnostic.Source + " " + diagnostic.Message
+		}
+		return text
+	}
 
-	a.openOverlay(newTwoPaneOverlay("problems", status, len(files), item, content))
+	a.openOverlay(newTwoPaneOverlay("problems", status, len(files), item, content, search))
 }
 
 func (a *App) collectDiagnostics(ctx context.Context) ([]fileDiagnostics, error) {

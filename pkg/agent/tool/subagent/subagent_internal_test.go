@@ -273,14 +273,14 @@ func TestApplyModelOverrides(t *testing.T) {
 		},
 	}
 
-	if err := applyModelOverrides(cfg, map[string]any{}); err != nil {
+	if err := applyModelOverrides(cfg, map[string]any{}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Model() != "session-model" || cfg.Effort() != "medium" {
 		t.Fatal("empty args must inherit session model and effort")
 	}
 
-	if err := applyModelOverrides(cfg, map[string]any{"model": "utility", "effort": "LOW"}); err != nil {
+	if err := applyModelOverrides(cfg, map[string]any{"model": "utility", "effort": "LOW"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Model() != "gpt-small" {
@@ -290,14 +290,14 @@ func TestApplyModelOverrides(t *testing.T) {
 		t.Fatalf("effort = %q", cfg.Effort())
 	}
 
-	if err := applyModelOverrides(cfg, map[string]any{"model": "utility", "effort": "max"}); err != nil {
+	if err := applyModelOverrides(cfg, map[string]any{"model": "utility", "effort": "max"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Effort() != "xhigh" {
 		t.Fatalf("effort = %q, want max clamped to the model ceiling", cfg.Effort())
 	}
 
-	if err := applyModelOverrides(cfg, map[string]any{"model": "plan", "effort": "max"}); err != nil {
+	if err := applyModelOverrides(cfg, map[string]any{"model": "plan", "effort": "max"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Model() != "large-model" {
@@ -307,14 +307,14 @@ func TestApplyModelOverrides(t *testing.T) {
 		t.Fatalf("effort = %q, want unclamped on unbounded model", cfg.Effort())
 	}
 
-	if err := applyModelOverrides(cfg, map[string]any{"model": "claude-haiku-4-5"}); err == nil {
+	if err := applyModelOverrides(cfg, map[string]any{"model": "claude-haiku-4-5"}, ""); err == nil {
 		t.Fatal("concrete model ids must be rejected")
 	}
-	if err := applyModelOverrides(cfg, map[string]any{"effort": "extreme"}); err == nil {
+	if err := applyModelOverrides(cfg, map[string]any{"effort": "extreme"}, ""); err == nil {
 		t.Fatal("unknown effort must error")
 	}
 
-	if err := applyModelOverrides(cfg, map[string]any{"effort": "max"}); err != nil {
+	if err := applyModelOverrides(cfg, map[string]any{"effort": "max"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Effort() != "xhigh" {
@@ -322,7 +322,7 @@ func TestApplyModelOverrides(t *testing.T) {
 	}
 
 	cfg.Effort = func() string { return "max" }
-	if err := applyModelOverrides(cfg, map[string]any{"model": "utility"}); err != nil {
+	if err := applyModelOverrides(cfg, map[string]any{"model": "utility"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Effort() != "xhigh" {
@@ -331,7 +331,7 @@ func TestApplyModelOverrides(t *testing.T) {
 
 	cfg.Model = func() string { return "session-model" }
 	cfg.SubagentModel = nil
-	if err := applyModelOverrides(cfg, map[string]any{"model": "plan", "effort": "max"}); err != nil {
+	if err := applyModelOverrides(cfg, map[string]any{"model": "plan", "effort": "max"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Model() != "session-model" {

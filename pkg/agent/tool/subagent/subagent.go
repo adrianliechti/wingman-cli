@@ -19,6 +19,8 @@ type subagentType struct {
 	Instructions        string
 	AllowTool           func(tool.Tool) bool
 	WrapDynamicReadOnly bool
+	ReadOnly            bool
+	Model               string
 }
 
 const generalPurposeInstructions = `You are an agent performing a specific delegated task. Complete only the assigned scope. Unless the task explicitly asks you to edit files, stay read-only. Search broadly when you do not know where something lives, then narrow down. Prefer editing existing files over creating new files, and never create documentation files unless explicitly requested. Lead with findings or changes made, grouped by file when relevant, using file:line references. State assumptions and verification gaps at the end, not at the start. Reply in <=200 words unless the task explicitly asks for more. Do not explain your process.`
@@ -46,6 +48,7 @@ var subagentTypes = map[string]subagentType{
 		Instructions:        exploreInstructions,
 		AllowTool:           allowReadOnlyTool,
 		WrapDynamicReadOnly: true,
+		ReadOnly:            true,
 	},
 	"verification": {
 		Instructions: verificationInstructions,
@@ -55,16 +58,19 @@ var subagentTypes = map[string]subagentType{
 		Instructions:        securityInstructions,
 		AllowTool:           allowReadOnlyTool,
 		WrapDynamicReadOnly: true,
+		ReadOnly:            true,
 	},
 	"code-architect": {
 		Instructions:        codeArchitectInstructions,
 		AllowTool:           allowReadOnlyTool,
 		WrapDynamicReadOnly: true,
+		ReadOnly:            true,
 	},
 	"code-reviewer": {
 		Instructions:        codeReviewerInstructions,
 		AllowTool:           allowReadOnlyTool,
 		WrapDynamicReadOnly: true,
+		ReadOnly:            true,
 	},
 	"code-simplifier": {
 		Instructions: codeSimplifierInstructions,
@@ -76,43 +82,76 @@ var subagentTypes = map[string]subagentType{
 	},
 }
 
-var availableTypes = []string{
-	"general-purpose",
-	"explore",
-	"verification",
-	"security",
-	"code-architect",
-	"code-reviewer",
-	"code-simplifier",
-	"test-engineer",
+var builtinOrder = []struct{ name, blurb string }{
+	{"general-purpose", "scoped multi-step research or implementation."},
+	{"explore", "read-only codebase research — broad searches, subsystem mapping, feature tracing."},
+	{"verification", "runs builds/tests/executions to verify an implementation."},
+	{"security", "read-only audit for exploitable vulnerabilities."},
+	{"code-architect", "read-only implementation blueprint for a larger feature."},
+	{"code-reviewer", "read-only high-precision review — bugs, security, guideline violations."},
+	{"code-simplifier", "behavior-preserving cleanup of recently changed code."},
+	{"test-engineer", "designs and adds tests using the project's conventions."},
 }
 
-func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry) []tool.Tool {
+func mergeTypes(custom []Definition) (types map[string]subagentType, names []string, blurbs []string) {
+	types = make(map[string]subagentType, len(subagentTypes)+len(custom))
+
+	overrides := make(map[string]Definition, len(custom))
+	for _, d := range custom {
+		name := strings.ToLower(d.Name)
+		if _, ok := overrides[name]; !ok {
+			overrides[name] = d
+		}
+	}
+
+	for _, b := range builtinOrder {
+		names = append(names, b.name)
+		if d, ok := overrides[b.name]; ok {
+			types[b.name] = d.subagentType()
+			blurbs = append(blurbs, "- "+b.name+": "+d.Description)
+			continue
+		}
+		types[b.name] = subagentTypes[b.name]
+		blurbs = append(blurbs, "- "+b.name+": "+b.blurb)
+	}
+
+	for _, d := range custom {
+		name := strings.ToLower(d.Name)
+		if _, ok := types[name]; ok {
+			continue
+		}
+		types[name] = d.subagentType()
+		names = append(names, name)
+		blurbs = append(blurbs, "- "+name+": "+d.Description)
+	}
+
+	return types, names, blurbs
+}
+
+func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry, custom ...Definition) []tool.Tool {
+	types, names, blurbs := mergeTypes(custom)
+
 	lines := []string{
-		"Launch a subagent for a bounded task. It runs in a separate context with a filtered toolset and returns one final report; it does not see your conversation, and its intermediate output (file dumps, logs, test runs) never enters your context — only the report does.",
+		"Launch a subagent for a bounded task. It runs in a separate context with a filtered toolset and returns one final report; it does not see your conversation, and its intermediate output (file dumps, logs, test runs) never enters your context — only the report does. The report is delivered to you, not the user — relay what matters in your response.",
 		"",
 		"Agent types:",
-		"- general-purpose: scoped multi-step research or implementation.",
-		"- explore: read-only codebase research — broad searches, subsystem mapping, feature tracing.",
-		"- verification: runs builds/tests/executions to verify an implementation.",
-		"- security: read-only audit for exploitable vulnerabilities.",
-		"- code-architect: read-only implementation blueprint for a larger feature.",
-		"- code-reviewer: read-only high-precision review — bugs, security, guideline violations.",
-		"- code-simplifier: behavior-preserving cleanup of recently changed code.",
-		"- test-engineer: designs and adds tests using the project's conventions.",
+	}
+	lines = append(lines, blurbs...)
+	lines = append(lines,
 		"",
 		"Write a self-contained prompt: goal, relevant paths/symbols, allowed edit scope, expected output shape. Pick the narrowest fitting type. Don't delegate a single known lookup (use `read`/`grep`/`glob` directly) or synthesis of results you already hold.",
 		"",
 		"Keep finding and verifying separated: an agent that produced findings never checks them itself. To validate claims — another agent's or your own — launch a fresh agent per claim, prompted to refute the claim rather than confirm it, and pass it only the claim, not the reasoning behind it; the claim is verified when an honest refutation attempt fails, and an uncertain verdict counts as refuted. For a claim that can fail in more than one way, prefer a few verifiers with distinct lenses (correctness, security, does-it-reproduce) over one generalist.",
 		"",
 		"By default the agent inherits your model and reasoning effort — almost always correct. Override `model` or `effort` only when a different tier clearly fits: `utility` (or lower effort) for mechanical, low-risk sweeps; `plan` (or higher effort) for the hardest verification, review, or architecture work.",
-	}
+	)
 
 	if tasks != nil {
 		lines = append(lines,
 			"",
 			"Set `background: true` to launch the agent in the background and keep working: the call returns immediately with a task id, and the result arrives later as a task notification. Prefer background for research or verification you can overlap with other work, and launch several to cover independent areas in parallel. Keep the critical path yourself: if your very next step depends on the result, run the agent synchronously instead of waiting idle. While one runs, never invent or assume its result and don't start work that overlaps its scope. Use `task_output` to check on tasks, `task_stop` to cancel one, and `task_send` to ask a finished agent follow-ups with its context intact.",
 			"Editing agent types may also run in the background, but give each a file scope disjoint from files you plan to touch: concurrent edits to the same file fail and force a re-read, and prefer `edit` over `write` for any file a background agent might change. Tell each editing agent it is not alone in the tree — it must leave changes outside its scope alone, even ones that look wrong.",
+			"Synchronous runs are kept too: their result ends with a task id, and `task_send` continues that agent later with its context intact.",
 		)
 	}
 
@@ -124,7 +163,7 @@ func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry)
 		"agent_type": map[string]any{
 			"type":        "string",
 			"description": "Agent type to use. Must be one of the available agent types.",
-			"enum":        availableTypes,
+			"enum":        names,
 		},
 		"schema": map[string]any{
 			"type":        "object",
@@ -152,7 +191,7 @@ func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry)
 	agentTools := []tool.Tool{{
 		Name:        "agent",
 		Description: description,
-		Effect:      classifyEffect,
+		Effect:      effectClassifier(types),
 		Timeout:     20 * time.Minute,
 
 		Parameters: map[string]any{
@@ -183,9 +222,9 @@ func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry)
 			}
 			subagentName = strings.ToLower(strings.TrimSpace(subagentName))
 
-			typ, ok := subagentTypes[subagentName]
+			typ, ok := types[subagentName]
 			if !ok {
-				return "", fmt.Errorf("unknown agent_type %q (available: %s)", subagentName, strings.Join(availableTypes, ", "))
+				return "", fmt.Errorf("unknown agent_type %q (available: %s)", subagentName, strings.Join(names, ", "))
 			}
 
 			instructions := typ.Instructions
@@ -211,7 +250,7 @@ func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry)
 			subcfg := cfg.Derive()
 			subcfg.Instructions = func() string { return instructions }
 
-			if err := applyModelOverrides(subcfg, args); err != nil {
+			if err := applyModelOverrides(subcfg, args, typ.Model); err != nil {
 				return "", err
 			}
 
@@ -326,7 +365,21 @@ func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry)
 				return fmt.Sprintf("Launched background agent %s (%s: %s). Continue with other work — the result arrives as a task notification when it finishes. Never assume or invent its result, and don't start work that overlaps its scope. Check on it with task_output, cancel it with task_stop, or ask it follow-ups later with task_send.", t.ID, subagentName, description), nil
 			}
 
-			return runTurn(ctx, nil, prompt)
+			started := time.Now()
+			out, err := runTurn(ctx, nil, prompt)
+			if err != nil || tasks == nil {
+				return out, err
+			}
+			if t := tasks.Adopt(description, subagentName, out, time.Since(started)); t != nil {
+				t.SetPeek(sub.MessagesSnapshot)
+				t.SetResume(func(followUp string) error {
+					return tasks.Relaunch(t, func(execCtx context.Context, tk *task.Task) (string, error) {
+						return runTurn(execCtx, tk, followUp)
+					})
+				})
+				out += fmt.Sprintf("\n(id %s — task_send continues this agent with its context intact)", t.ID)
+			}
+			return out, nil
 		},
 	}}
 
@@ -349,26 +402,27 @@ func clampEffort(level string, target agent.ModelOption) string {
 	return level
 }
 
-func applyModelOverrides(cfg *agent.Config, args map[string]any) error {
+func applyModelOverrides(cfg *agent.Config, args map[string]any, defaultRole string) error {
 	resolve := cfg.SubagentModel
 
 	var target agent.ModelOption
 
+	role := defaultRole
 	if model, _ := args["model"].(string); strings.TrimSpace(model) != "" {
-		role := strings.ToLower(strings.TrimSpace(model))
+		role = strings.ToLower(strings.TrimSpace(model))
 		switch role {
 		case "plan", "utility":
 		default:
 			return fmt.Errorf("unknown model role %q (use plan or utility, or omit to inherit)", role)
 		}
+	}
 
-		// An unresolvable role keeps the inherited model: the role is a
-		// preference, not a contract, and the session model always works.
-		if resolve != nil {
-			if opt, ok := resolve(role); ok && opt.ID != "" {
-				target = opt
-				cfg.Model = func() string { return opt.ID }
-			}
+	// An unresolvable role keeps the inherited model: the role is a
+	// preference, not a contract, and the session model always works.
+	if role != "" && resolve != nil {
+		if opt, ok := resolve(role); ok && opt.ID != "" {
+			target = opt
+			cfg.Model = func() string { return opt.ID }
 		}
 	}
 
@@ -547,23 +601,23 @@ func finalText(messages []agent.Message) string {
 	return b.String()
 }
 
-func classifyEffect(args map[string]any) tool.Effect {
-	if args == nil {
-		return tool.EffectDynamic
-	}
+func effectClassifier(types map[string]subagentType) func(map[string]any) tool.Effect {
+	return func(args map[string]any) tool.Effect {
+		if args == nil {
+			return tool.EffectDynamic
+		}
 
-	subagentName, ok := args["agent_type"].(string)
-	if !ok || strings.TrimSpace(subagentName) == "" {
-		return tool.EffectDynamic
-	}
-	subagentName = strings.ToLower(strings.TrimSpace(subagentName))
+		subagentName, ok := args["agent_type"].(string)
+		if !ok || strings.TrimSpace(subagentName) == "" {
+			return tool.EffectDynamic
+		}
 
-	switch subagentName {
-	case "explore", "security", "code-architect", "code-reviewer":
-		return tool.EffectReadOnly
-	}
+		if typ, ok := types[strings.ToLower(strings.TrimSpace(subagentName))]; ok && typ.ReadOnly {
+			return tool.EffectReadOnly
+		}
 
-	return tool.EffectMutates
+		return tool.EffectMutates
+	}
 }
 
 func toolsForType(tools []tool.Tool, typ subagentType) []tool.Tool {
