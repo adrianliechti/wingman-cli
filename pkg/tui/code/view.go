@@ -5,7 +5,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/model"
 	"github.com/adrianliechti/wingman-agent/pkg/tui"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/ansi"
@@ -70,12 +69,6 @@ func (a *App) composerChrome(width int) EditorChrome {
 	if effort, _ := a.agent.Effort(a.sessionID); effort != "" && effort != "auto" {
 		identity = append(identity, effort)
 	}
-	if name := a.agent.Name(); name != "" && name != code.BuiltinAgentName {
-		if mode == "" {
-			mode = dim(name)
-		}
-	}
-
 	topLabel := ""
 	bottomLeft := mode
 	if planMode && !a.promptActive && !a.askActive {

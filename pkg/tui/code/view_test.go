@@ -11,13 +11,19 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/tui/theme"
 )
 
+type namedUITestAgent struct{ *uiTestAgent }
+
+func (a *namedUITestAgent) Name() string { return "codex" }
+
 func TestComposerMovesIdentityToBottomRail(t *testing.T) {
-	a := &App{agent: newUITestAgent(nil), sessionID: "session", editor: NewEditor()}
+	a := &App{agent: &namedUITestAgent{newUITestAgent(nil)}, sessionID: "session", editor: NewEditor()}
 
 	normal, _ := a.editor.Render(64, 5, a.composerChrome(64))
 	normalPlain := ansi.Strip(strings.Join(normal, "\n"))
-	if strings.Contains(normalPlain, "AGENT") {
-		t.Fatalf("normal composer still shows AGENT: %q", normalPlain)
+	for _, unwanted := range []string{"AGENT", "codex"} {
+		if strings.Contains(normalPlain, unwanted) {
+			t.Fatalf("normal composer still shows %s: %q", unwanted, normalPlain)
+		}
 	}
 	bottom := ansi.Strip(normal[len(normal)-1])
 	for _, want := range []string{"GPT 5.6 Sol", "medium"} {
