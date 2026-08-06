@@ -94,39 +94,40 @@ func (a *App) composerChrome(width int) EditorChrome {
 	}
 }
 
-// streamCells renders the in-flight turn tail shown below the committed chat,
-// in the order the work happened: the live tool cell, then streamed text,
-// then the newest thought — a tool call clears both text and reasoning, and a
-// text delta clears reasoning, so whatever coexists arrived in that order.
+// streamCells renders the in-flight turn tail shown below the committed chat.
+// Displaced snapshots keep earlier thoughts, messages, and tools visible while
+// ACP waits until turn completion to commit the complete transcript.
 // Spacing follows the same cellFlow rules as committed cells (on a copy of
 // the state), so nothing shifts when the turn finalizes.
 func (a *App) streamCells(width int) []string {
-	toolName, toolHint, toolProgress, streamingText, streamingReasoning := a.snapshotStreamState()
+	snapshots := a.snapshotStreamState()
 
 	flow := a.flow
 	var lines []string
 
-	if toolName != "" && !a.isToolHidden(toolName) {
-		cell := cellToolProgress(toolName, toolHint, toolProgress, width)
-		if flow.beforeTool(len(cell) > 1) {
-			lines = append(lines, "")
+	for _, snapshot := range snapshots {
+		if snapshot.toolName != "" && !a.isToolHidden(snapshot.toolName) {
+			cell := cellToolProgress(snapshot.toolName, snapshot.toolHint, snapshot.toolProgress, width)
+			if flow.beforeTool(len(cell) > 1) {
+				lines = append(lines, "")
+			}
+			lines = append(lines, cell...)
 		}
-		lines = append(lines, cell...)
-	}
 
-	if strings.TrimSpace(streamingText) != "" {
-		if flow.gap() {
-			lines = append(lines, "")
+		if strings.TrimSpace(snapshot.text) != "" {
+			if flow.gap() {
+				lines = append(lines, "")
+			}
+			lines = append(lines, cellAssistant(snapshot.text, width, theme.Default.BrBlack)...)
 		}
-		lines = append(lines, cellAssistant(streamingText, width, theme.Default.BrBlack)...)
-	}
 
-	if streamingReasoning != "" {
-		cell := cellReasoning(streamingReasoning, width, false)
-		if flow.beforeThought(len(cell) > 1) {
-			lines = append(lines, "")
+		if snapshot.reasoning != "" {
+			cell := cellReasoning(snapshot.reasoning, width, false)
+			if flow.beforeThought(len(cell) > 1) {
+				lines = append(lines, "")
+			}
+			lines = append(lines, cell...)
 		}
-		lines = append(lines, cell...)
 	}
 
 	// While the spinner or a pinned prompt is visible the tail always ends

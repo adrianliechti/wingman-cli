@@ -1,6 +1,7 @@
 package code
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
@@ -29,6 +30,20 @@ func TestReleaseToolCellKeepsLiveCellUntilMatchingResult(t *testing.T) {
 	a.releaseToolCell(&agent.ToolResult{Name: "read"})
 	if a.currentToolName != "" {
 		t.Fatal("live cell not released by name fallback")
+	}
+}
+
+func TestPendingEchoDistinguishesSteeredFromQueuedInput(t *testing.T) {
+	a := &App{pendingEcho: []pendingEchoItem{
+		{ID: "steered", Text: "change direction", State: code.TurnInputSteered},
+		{ID: "queued", Text: "do this next", State: code.TurnInputQueued},
+	}}
+	view := strings.Join(a.chatViewLines(100), "\n")
+	if !strings.Contains(view, "change direction (steered)") {
+		t.Fatalf("accepted steer is not identified: %q", view)
+	}
+	if !strings.Contains(view, "do this next (queued)") {
+		t.Fatalf("queued follow-up is not identified: %q", view)
 	}
 }
 

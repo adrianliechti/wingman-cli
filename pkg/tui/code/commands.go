@@ -324,10 +324,10 @@ func (a *App) submitAgentInput(input []agent.Content, echo string) {
 		return
 	}
 
-	// Only inputs waiting behind an active turn get a preview; an input that
-	// starts immediately commits within a frame and a preview would flicker.
+	// Inputs accepted into an active turn or queued behind it get a preview; an
+	// input that starts immediately commits within a frame and would flicker.
 	if echo != "" && (snap.State == code.TurnInputQueued || snap.State == code.TurnInputSteered) {
-		a.pendingEcho = append(a.pendingEcho, pendingEchoItem{ID: id, Text: echo})
+		a.pendingEcho = append(a.pendingEcho, pendingEchoItem{ID: id, Text: echo, State: snap.State})
 	}
 
 	a.syncMessages()

@@ -114,6 +114,47 @@ func TestStreamTailFollowsWorkOrder(t *testing.T) {
 	}
 }
 
+func TestStreamTailRetainsIntermediateACPCells(t *testing.T) {
+	a := &App{queue: make(chan func(), 64), quit: make(chan struct{})}
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{
+		{Reasoning: &agent.Reasoning{ID: "reason-1", Summary: "checking the repository"}},
+	}})
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{
+		{Reasoning: &agent.Reasoning{ID: "reason-2", Summary: "choosing the relevant file"}},
+	}})
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{
+		{Text: "I found the relevant path."},
+	}})
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{
+		{ToolCall: &agent.ToolCall{ID: "call-1", Name: "read", Args: `{"path":"one.go"}`}},
+	}})
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{
+		{ToolResult: &agent.ToolResult{ID: "call-1", Name: "read", Content: "ok"}},
+	}})
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{
+		{ToolCall: &agent.ToolCall{ID: "call-2", Name: "read", Args: `{"path":"two.go"}`}},
+	}})
+
+	tail := a.streamCells(100)
+	joined := strings.Join(tail, "\n")
+	for _, want := range []string{"checking the repository", "choosing the relevant file", "I found the relevant path.", "one.go", "two.go"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("live turn lost %q: %q", want, tail)
+		}
+	}
+	if strings.Index(joined, "checking the repository") > strings.Index(joined, "choosing the relevant file") ||
+		strings.Index(joined, "choosing the relevant file") > strings.Index(joined, "I found the relevant path.") ||
+		strings.Index(joined, "I found the relevant path.") > strings.Index(joined, "one.go") ||
+		strings.Index(joined, "one.go") > strings.Index(joined, "two.go") {
+		t.Errorf("live cells are out of event order: %q", tail)
+	}
+
+	a.clearStreamingState()
+	if tail := a.streamCells(100); len(tail) != 0 {
+		t.Fatalf("completed turn retained live history: %q", tail)
+	}
+}
+
 func TestWhitespaceOnlyTextRendersNothing(t *testing.T) {
 	ws, err := code.NewWorkspace(t.TempDir())
 	if err != nil {

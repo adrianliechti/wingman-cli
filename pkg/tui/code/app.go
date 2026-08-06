@@ -127,6 +127,18 @@ type App struct {
 	streamingReasoning  string
 	reasoningID         string
 	reasoningPart       int
+	streamHistory       []streamSnapshot
+}
+
+// streamSnapshot is a piece of an in-flight turn that has been displaced by
+// newer work. ACP commits the complete transcript only when the turn ends, so
+// the TUI keeps these snapshots visible until committed history replaces them.
+type streamSnapshot struct {
+	toolName     string
+	toolHint     string
+	toolProgress string
+	text         string
+	reasoning    string
 }
 
 type toast struct {
@@ -136,8 +148,9 @@ type toast struct {
 }
 
 type pendingEchoItem struct {
-	ID   string
-	Text string
+	ID    string
+	Text  string
+	State code.TurnInputState
 }
 
 // chatAnnotation is a chat cell that is not derived from the message history
@@ -768,7 +781,7 @@ func (a *App) orderedSelection() (selPos, selPos) {
 	return a.selAnchor, a.selHead
 }
 
-// removePendingEcho drops the queued-input preview for id.
+// removePendingEcho drops the in-flight input preview for id.
 func (a *App) removePendingEcho(id string) {
 	for i, item := range a.pendingEcho {
 		if item.ID == id {
@@ -779,8 +792,7 @@ func (a *App) removePendingEcho(id string) {
 }
 
 // chatViewLines composes the scrollable chat content: committed cells, the
-// live streaming tail, and previews of inputs still queued behind the active
-// turn.
+// live streaming tail, and previews of queued or steered inputs.
 func (a *App) chatViewLines(width int) []string {
 	view := a.chat
 
@@ -790,7 +802,11 @@ func (a *App) chatViewLines(width int) []string {
 		view = append(append([]string(nil), a.chat...), stream...)
 		for _, item := range a.pendingEcho {
 			text := markdown.Sanitize(strings.ReplaceAll(item.Text, "\n", " "))
-			view = append(view, cellIndent+dim(ansi.Truncate("› "+text, width-10, "…")+" (queued)"))
+			state := "queued"
+			if item.State == code.TurnInputSteered {
+				state = "steered"
+			}
+			view = append(view, cellIndent+dim(ansi.Truncate("› "+text, width-10, "…")+" ("+state+")"))
 		}
 	}
 

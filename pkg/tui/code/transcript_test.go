@@ -122,13 +122,13 @@ func TestTranscriptLiveTailOrderAndVanishedSelection(t *testing.T) {
 	o.buildEntries()
 
 	last := len(o.entries) - 1
-	if o.entries[last-1].key != "live:text" || o.entries[last].key != "live:reasoning" {
+	if o.entries[last-1].key != "live:0:text" || o.entries[last].key != "live:0:reasoning" {
 		t.Fatalf("live tail = %q, %q; want text before reasoning", o.entries[last-1].key, o.entries[last].key)
 	}
 
 	o.moveSelection(-1)
 	o.moveSelection(1)
-	if o.follow || o.entries[o.selected].key != "live:reasoning" {
+	if o.follow || o.entries[o.selected].key != "live:0:reasoning" {
 		t.Fatalf("setup: follow=%v key=%q", o.follow, o.entries[o.selected].key)
 	}
 
