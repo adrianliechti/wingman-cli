@@ -8,6 +8,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/tui/ansi"
 )
 
 func TestThoughtCellsGetSurroundingBlankLines(t *testing.T) {
@@ -147,6 +148,15 @@ func TestStreamTailRetainsIntermediateACPCells(t *testing.T) {
 		strings.Index(joined, "I found the relevant path.") > strings.Index(joined, "one.go") ||
 		strings.Index(joined, "one.go") > strings.Index(joined, "two.go") {
 		t.Errorf("live cells are out of event order: %q", tail)
+	}
+	for _, line := range tail {
+		plain := ansi.Strip(line)
+		if strings.Contains(plain, "one.go") && strings.Contains(plain, " …") {
+			t.Errorf("completed ACP tool still looks active: %q", plain)
+		}
+		if strings.Contains(plain, "two.go") && !strings.Contains(plain, " …") {
+			t.Errorf("active ACP tool lost its running marker: %q", plain)
+		}
 	}
 
 	a.clearStreamingState()

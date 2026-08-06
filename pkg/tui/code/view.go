@@ -107,7 +107,7 @@ func (a *App) streamCells(width int) []string {
 
 	for _, snapshot := range snapshots {
 		if snapshot.toolName != "" && !a.isToolHidden(snapshot.toolName) {
-			cell := cellToolProgress(snapshot.toolName, snapshot.toolHint, snapshot.toolProgress, width)
+			cell := snapshot.toolLines(width, false)
 			if flow.beforeTool(len(cell) > 1) {
 				lines = append(lines, "")
 			}

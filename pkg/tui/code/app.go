@@ -118,27 +118,25 @@ type App struct {
 	renderLast    atomic.Int64
 	dirty         bool
 
-	streamStateMu       sync.Mutex
-	currentToolID       string
-	currentToolName     string
-	currentToolHint     string
-	currentToolProgress string
-	streamingText       string
-	streamingReasoning  string
-	reasoningID         string
-	reasoningPart       int
-	streamHistory       []streamSnapshot
+	streamStateMu sync.Mutex
+	streamCurrent streamSnapshot
+	streamHistory []streamSnapshot
 }
 
-// streamSnapshot is a piece of an in-flight turn that has been displaced by
-// newer work. ACP commits the complete transcript only when the turn ends, so
-// the TUI keeps these snapshots visible until committed history replaces them.
+// streamSnapshot is one ordered piece of an in-flight turn. ACP commits the
+// complete transcript only when the turn ends, so displaced snapshots remain
+// visible until committed history replaces them.
 type streamSnapshot struct {
-	toolName     string
-	toolHint     string
-	toolProgress string
-	text         string
-	reasoning    string
+	toolID        string
+	toolName      string
+	toolArgs      string
+	toolHint      string
+	toolProgress  string
+	toolResult    *agent.ToolResult
+	text          string
+	reasoning     string
+	reasoningID   string
+	reasoningPart int
 }
 
 type toast struct {
@@ -191,17 +189,27 @@ func New(ctx context.Context, coderAgent code.Agent, sessionID string) *App {
 	return a
 }
 
-// onToolProgress receives live status text from a running tool call; text for
-// anything but the currently displayed call is dropped.
+// onToolProgress receives live status text for active current or archived
+// tool calls. Archived calls occur when ACP runs tools in parallel.
 func (a *App) onToolProgress(callID, text string) {
 	a.streamStateMu.Lock()
-	if callID != a.currentToolID {
-		a.streamStateMu.Unlock()
-		return
+	updated := false
+	if callID == a.streamCurrent.toolID && a.streamCurrent.toolResult == nil {
+		a.streamCurrent.toolProgress = text
+		updated = true
+	} else {
+		for i := len(a.streamHistory) - 1; i >= 0; i-- {
+			if callID == a.streamHistory[i].toolID && a.streamHistory[i].toolResult == nil {
+				a.streamHistory[i].toolProgress = text
+				updated = true
+				break
+			}
+		}
 	}
-	a.currentToolProgress = text
 	a.streamStateMu.Unlock()
-	a.requestRender()
+	if updated {
+		a.requestRender()
+	}
 }
 
 // WithTerminal replaces the terminal, used by tests.

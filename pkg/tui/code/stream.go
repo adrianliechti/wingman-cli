@@ -142,66 +142,107 @@ func (a *App) removePendingEchoText(text string) {
 // the chat.
 func (a *App) releaseToolCell(result *agent.ToolResult) {
 	a.streamStateMu.Lock()
-	match := a.currentToolName != "" &&
-		((result.ID != "" && result.ID == a.currentToolID) ||
-			(a.currentToolID == "" && result.Name == a.currentToolName))
-	if match {
-		a.currentToolID = ""
-		a.currentToolName = ""
-		a.currentToolHint = ""
-		a.currentToolProgress = ""
+	if a.streamCurrent.matchesTool(result) {
+		a.streamCurrent.clearTool()
+	} else {
+		for i := len(a.streamHistory) - 1; i >= 0; i-- {
+			if !a.streamHistory[i].matchesTool(result) {
+				continue
+			}
+			a.streamHistory[i].clearTool()
+			if a.streamHistory[i].empty() {
+				a.streamHistory = append(a.streamHistory[:i], a.streamHistory[i+1:]...)
+			}
+			break
+		}
 	}
 	a.streamStateMu.Unlock()
+}
+
+func (snapshot streamSnapshot) matchesTool(result *agent.ToolResult) bool {
+	return snapshot.toolName != "" &&
+		((result.ID != "" && result.ID == snapshot.toolID) ||
+			(snapshot.toolID == "" && result.Name == snapshot.toolName))
+}
+
+func (snapshot *streamSnapshot) clearTool() {
+	snapshot.toolID = ""
+	snapshot.toolName = ""
+	snapshot.toolArgs = ""
+	snapshot.toolHint = ""
+	snapshot.toolProgress = ""
+	snapshot.toolResult = nil
+}
+
+func (snapshot streamSnapshot) empty() bool {
+	return snapshot.toolName == "" && strings.TrimSpace(snapshot.text) == "" && snapshot.reasoning == ""
+}
+
+func (snapshot streamSnapshot) toolLines(width int, expanded bool) []string {
+	if snapshot.toolResult != nil {
+		return cellTool(snapshot.toolResult, width, expanded)
+	}
+	return cellToolProgress(snapshot.toolName, snapshot.toolHint, snapshot.toolProgress, width)
+}
+
+func (snapshot streamSnapshot) toolText() string {
+	if snapshot.toolResult != nil {
+		result := snapshot.toolResult
+		return result.Name + " " + tool.ExtractHint(result.Args, result.Name) + "\n" + result.Content
+	}
+	return snapshot.toolName + " " + snapshot.toolHint + "\n" + snapshot.toolProgress
 }
 
 func (a *App) clearStreamingState() {
 	a.streamStateMu.Lock()
+	a.streamCurrent = streamSnapshot{}
 	a.streamHistory = nil
-	a.streamingText = ""
-	a.streamingReasoning = ""
-	a.currentToolID = ""
-	a.currentToolName = ""
-	a.currentToolHint = ""
-	a.currentToolProgress = ""
-	a.reasoningID = ""
-	a.reasoningPart = 0
 	a.streamStateMu.Unlock()
 }
 
-func (a *App) currentStreamSnapshotLocked() streamSnapshot {
-	return streamSnapshot{
-		toolName:     a.currentToolName,
-		toolHint:     a.currentToolHint,
-		toolProgress: a.currentToolProgress,
-		text:         a.streamingText,
-		reasoning:    a.streamingReasoning,
-	}
-}
-
 func (a *App) archiveStreamStateLocked() {
-	snapshot := a.currentStreamSnapshotLocked()
-	if snapshot.toolName != "" || strings.TrimSpace(snapshot.text) != "" || snapshot.reasoning != "" {
-		a.streamHistory = append(a.streamHistory, snapshot)
+	if !a.streamCurrent.empty() {
+		a.streamHistory = append(a.streamHistory, a.streamCurrent)
 	}
-	a.currentToolID = ""
-	a.currentToolName = ""
-	a.currentToolHint = ""
-	a.currentToolProgress = ""
-	a.streamingText = ""
-	a.streamingReasoning = ""
-	a.reasoningID = ""
-	a.reasoningPart = 0
+	a.streamCurrent = streamSnapshot{}
 }
 
 func (a *App) snapshotStreamState() []streamSnapshot {
 	a.streamStateMu.Lock()
 	defer a.streamStateMu.Unlock()
 	snapshots := append([]streamSnapshot(nil), a.streamHistory...)
-	current := a.currentStreamSnapshotLocked()
-	if current.toolName != "" || strings.TrimSpace(current.text) != "" || current.reasoning != "" {
-		snapshots = append(snapshots, current)
+	if !a.streamCurrent.empty() {
+		snapshots = append(snapshots, a.streamCurrent)
 	}
 	return snapshots
+}
+
+func (a *App) completeToolStateLocked(result *agent.ToolResult) {
+	if a.streamCurrent.matchesTool(result) {
+		a.streamCurrent.completeTool(result)
+		a.archiveStreamStateLocked()
+		return
+	}
+	for i := len(a.streamHistory) - 1; i >= 0; i-- {
+		if a.streamHistory[i].matchesTool(result) {
+			a.streamHistory[i].completeTool(result)
+			return
+		}
+	}
+}
+
+func (snapshot *streamSnapshot) completeTool(result *agent.ToolResult) {
+	completed := *result
+	if completed.ID == "" {
+		completed.ID = snapshot.toolID
+	}
+	if completed.Name == "" {
+		completed.Name = snapshot.toolName
+	}
+	if completed.Args == "" {
+		completed.Args = snapshot.toolArgs
+	}
+	snapshot.toolResult = &completed
 }
 
 const renderInterval = 40 * time.Millisecond
@@ -274,23 +315,17 @@ func (a *App) handleStreamMessage(msg agent.Message) {
 			hint := tool.ExtractHint(c.ToolCall.Args, c.ToolCall.Name)
 			a.streamStateMu.Lock()
 			a.archiveStreamStateLocked()
-			a.currentToolID = c.ToolCall.ID
-			a.currentToolName = c.ToolCall.Name
-			a.currentToolHint = hint
+			a.streamCurrent.toolID = c.ToolCall.ID
+			a.streamCurrent.toolName = c.ToolCall.Name
+			a.streamCurrent.toolArgs = c.ToolCall.Args
+			a.streamCurrent.toolHint = hint
 			a.streamStateMu.Unlock()
 			a.queuePhase(PhaseToolRunning)
 			a.requestRender()
 
 		case c.ToolResult != nil:
 			a.streamStateMu.Lock()
-			match := a.currentToolName != "" &&
-				((c.ToolResult.ID != "" && c.ToolResult.ID == a.currentToolID) ||
-					(a.currentToolID == "" && c.ToolResult.Name == a.currentToolName))
-			if match {
-				// Move the completed live cell into the in-flight history. The
-				// committed result replaces it atomically when the turn finishes.
-				a.archiveStreamStateLocked()
-			}
+			a.completeToolStateLocked(c.ToolResult)
 			a.streamStateMu.Unlock()
 			a.requestRender()
 
@@ -299,15 +334,15 @@ func (a *App) handleStreamMessage(msg agent.Message) {
 				a.queuePhase(PhaseThinking)
 			}
 			a.streamStateMu.Lock()
-			if a.streamingReasoning != "" && c.Reasoning.ID != a.reasoningID {
+			if a.streamCurrent.reasoning != "" && c.Reasoning.ID != a.streamCurrent.reasoningID {
 				a.archiveStreamStateLocked()
 			}
-			if a.streamingReasoning != "" && c.Reasoning.Part != a.reasoningPart {
-				a.streamingReasoning += "\n\n"
+			if a.streamCurrent.reasoning != "" && c.Reasoning.Part != a.streamCurrent.reasoningPart {
+				a.streamCurrent.reasoning += "\n\n"
 			}
-			a.streamingReasoning += c.Reasoning.Summary
-			a.reasoningID = c.Reasoning.ID
-			a.reasoningPart = c.Reasoning.Part
+			a.streamCurrent.reasoning += c.Reasoning.Summary
+			a.streamCurrent.reasoningID = c.Reasoning.ID
+			a.streamCurrent.reasoningPart = c.Reasoning.Part
 			a.streamStateMu.Unlock()
 			a.requestRender()
 
@@ -316,10 +351,10 @@ func (a *App) handleStreamMessage(msg agent.Message) {
 				a.queuePhase(PhaseStreaming)
 			}
 			a.streamStateMu.Lock()
-			if a.streamingReasoning != "" {
+			if a.streamCurrent.reasoning != "" {
 				a.archiveStreamStateLocked()
 			}
-			a.streamingText += c.Text
+			a.streamCurrent.text += c.Text
 			a.streamStateMu.Unlock()
 			a.requestRender()
 		}

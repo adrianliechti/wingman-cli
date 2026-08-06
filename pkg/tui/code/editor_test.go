@@ -36,3 +36,18 @@ func TestEditorChromeStaysWithinBounds(t *testing.T) {
 		t.Fatalf("composer still shows the manage hint: %q", lines)
 	}
 }
+
+func TestEditorTextUsesChatContentInset(t *testing.T) {
+	editor := NewEditor()
+	editor.SetText("draft text")
+	lines, cursor := editor.Render(10, 5, EditorChrome{})
+	if got := ansi.Strip(lines[1]); !strings.HasPrefix(got, "❯ draft") {
+		t.Fatalf("editor text is not aligned with chat content: %q", got)
+	}
+	if got := ansi.Strip(lines[2]); !strings.HasPrefix(got, "  text") {
+		t.Fatalf("wrapped editor text lost its continuation inset: %q", got)
+	}
+	if cursor.Col != 2+len("text") {
+		t.Fatalf("cursor column = %d, want %d", cursor.Col, 2+len("text"))
+	}
+}

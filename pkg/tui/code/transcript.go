@@ -169,12 +169,15 @@ func (o *transcriptOverlay) buildEntries() {
 	for i, snapshot := range o.app.snapshotStreamState() {
 		prefix := fmt.Sprintf("live:%d", i)
 		if snapshot.toolName != "" && !o.app.isToolHidden(snapshot.toolName) {
-			name, hint, progress := snapshot.toolName, snapshot.toolHint, snapshot.toolProgress
+			live := snapshot
+			kind := transcriptLiveTool
+			if snapshot.toolResult != nil {
+				kind = transcriptTool
+			}
 			entries = append(entries, transcriptEntry{
-				key: prefix + ":tool", kind: transcriptLiveTool, selectable: true,
-				raw: name + " " + hint + "\n" + progress,
-				render: func(width int, _ bool) []string {
-					return cellToolProgress(name, hint, progress, width)
+				key: prefix + ":tool", kind: kind, selectable: true, raw: snapshot.toolText(),
+				render: func(width int, expanded bool) []string {
+					return live.toolLines(width, expanded)
 				},
 			})
 		}

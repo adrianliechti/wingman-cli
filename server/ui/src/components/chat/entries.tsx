@@ -132,7 +132,8 @@ export const ToolGroupView = memo(function ToolGroupView({
 	return (
 		<div className="mb-4">
 			{entries.map((entry) => {
-				const running = isTrailing && phase !== "idle" && !entry.toolResult;
+				const running =
+					isTrailing && phase !== "idle" && entry.toolResult === undefined;
 				if (entry.toolName === "todo") {
 					return <TodoRow key={entry.id} entry={entry} />;
 				}

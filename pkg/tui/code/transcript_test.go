@@ -115,8 +115,7 @@ func TestTranscriptLiveTailOrderAndVanishedSelection(t *testing.T) {
 		{Role: agent.RoleAssistant, Content: []agent.Content{{Text: "answer one"}}},
 	}
 	a := &App{ctx: context.Background(), agent: newUITestAgent(messages), sessionID: "session"}
-	a.streamingText = "partial answer"
-	a.streamingReasoning = "weighing options"
+	a.streamCurrent = streamSnapshot{text: "partial answer", reasoning: "weighing options"}
 
 	o := &transcriptOverlay{app: a, selected: -1, follow: true, expanded: map[string]bool{}, cache: map[string]transcriptCache{}}
 	o.buildEntries()
@@ -132,10 +131,7 @@ func TestTranscriptLiveTailOrderAndVanishedSelection(t *testing.T) {
 		t.Fatalf("setup: follow=%v key=%q", o.follow, o.entries[o.selected].key)
 	}
 
-	a.streamingText = ""
-	a.streamingReasoning = ""
-	a.currentToolName = "shell"
-	a.currentToolHint = "ls"
+	a.streamCurrent = streamSnapshot{toolName: "shell", toolHint: "ls"}
 	o.buildEntries()
 
 	if o.selected != o.lastSelectable() {
