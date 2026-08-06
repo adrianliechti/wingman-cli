@@ -165,33 +165,40 @@ func (o *transcriptOverlay) buildEntries() {
 	}
 	annotations(len(messages))
 
-	// Live cells keep the same order as the chat tail in streamCells: tool,
-	// then streamed text, then the newest thought.
-	toolName, toolHint, toolProgress, streamingText, streamingReasoning := o.app.snapshotStreamState()
-	if toolName != "" && !o.app.isToolHidden(toolName) {
-		entries = append(entries, transcriptEntry{
-			key: "live:tool:" + toolName + ":" + toolHint, kind: transcriptLiveTool, selectable: true,
-			raw: toolName + " " + toolHint + "\n" + toolProgress,
-			render: func(width int, _ bool) []string {
-				return cellToolProgress(toolName, toolHint, toolProgress, width)
-			},
-		})
-	}
-	if streamingText != "" {
-		entries = append(entries, transcriptEntry{
-			key: "live:text", kind: transcriptAssistant, raw: streamingText, selectable: true,
-			render: func(width int, _ bool) []string {
-				return cellAssistant(streamingText, width, theme.Default.BrBlack)
-			},
-		})
-	}
-	if streamingReasoning != "" {
-		entries = append(entries, transcriptEntry{
-			key: "live:reasoning", kind: transcriptReasoning, raw: streamingReasoning, selectable: true,
-			render: func(width int, expanded bool) []string {
-				return cellReasoning(streamingReasoning, width, expanded)
-			},
-		})
+	// Live cells mirror every in-flight snapshot in the chat tail.
+	for i, snapshot := range o.app.snapshotStreamState() {
+		prefix := fmt.Sprintf("live:%d", i)
+		if snapshot.toolName != "" && !o.app.isToolHidden(snapshot.toolName) {
+			live := snapshot
+			kind := transcriptLiveTool
+			if snapshot.toolResult != nil {
+				kind = transcriptTool
+			}
+			entries = append(entries, transcriptEntry{
+				key: prefix + ":tool", kind: kind, selectable: true, raw: snapshot.toolText(),
+				render: func(width int, expanded bool) []string {
+					return live.toolLines(width, expanded)
+				},
+			})
+		}
+		if snapshot.text != "" {
+			streamingText := snapshot.text
+			entries = append(entries, transcriptEntry{
+				key: prefix + ":text", kind: transcriptAssistant, raw: streamingText, selectable: true,
+				render: func(width int, _ bool) []string {
+					return cellAssistant(streamingText, width, theme.Default.BrBlack)
+				},
+			})
+		}
+		if snapshot.reasoning != "" {
+			streamingReasoning := snapshot.reasoning
+			entries = append(entries, transcriptEntry{
+				key: prefix + ":reasoning", kind: transcriptReasoning, raw: streamingReasoning, selectable: true,
+				render: func(width int, expanded bool) []string {
+					return cellReasoning(streamingReasoning, width, expanded)
+				},
+			})
+		}
 	}
 
 	o.entries = entries

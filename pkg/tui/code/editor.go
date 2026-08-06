@@ -33,6 +33,8 @@ type EditorChrome struct {
 	Attachments []string
 }
 
+const editorInset = 2
+
 func NewEditor() *Editor {
 	return &Editor{
 		placeholder: "Ask anything...",
@@ -406,7 +408,9 @@ func runeWidth(r rune) int {
 // relative to the returned block.
 func (e *Editor) Render(width, maxRows int, chrome EditorChrome) ([]string, inline.Pos) {
 	t := theme.Default
-	inner := width - 2*len(cellIndent) - 2
+	inner := width - 2*len(cellIndent) - 2*editorInset
+	continuationPrefix := cellIndent + strings.Repeat(" ", editorInset)
+	promptPrefix := cellIndent + colored(chrome.TopColor, "❯ ")
 	e.ruleColor = chrome.TopColor
 
 	rule := func(left, right string, leftDashes int) string {
@@ -509,10 +513,14 @@ func (e *Editor) Render(width, maxRows int, chrome EditorChrome) ([]string, inli
 	}
 
 	if len(e.value) == 0 {
-		lines = append(lines, cellIndent+" "+fg(t.BrBlack)+e.placeholder+ansi.Reset)
+		lines = append(lines, promptPrefix+fg(t.BrBlack)+e.placeholder+ansi.Reset)
 	} else {
-		for _, row := range rows[e.scroll:end] {
-			lines = append(lines, cellIndent+" "+row.text)
+		for i, row := range rows[e.scroll:end] {
+			prefix := continuationPrefix
+			if e.scroll+i == 0 {
+				prefix = promptPrefix
+			}
+			lines = append(lines, prefix+row.text)
 		}
 	}
 	if attachmentGap > 0 {
@@ -524,7 +532,7 @@ func (e *Editor) Render(width, maxRows int, chrome EditorChrome) ([]string, inli
 
 	cursor := inline.Pos{
 		Row: 1 + cursorRow - e.scroll,
-		Col: len(cellIndent) + 1 + cursorCol,
+		Col: len(cellIndent) + editorInset + cursorCol,
 	}
 
 	return lines, cursor

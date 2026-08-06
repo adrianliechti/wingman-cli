@@ -115,27 +115,23 @@ func TestTranscriptLiveTailOrderAndVanishedSelection(t *testing.T) {
 		{Role: agent.RoleAssistant, Content: []agent.Content{{Text: "answer one"}}},
 	}
 	a := &App{ctx: context.Background(), agent: newUITestAgent(messages), sessionID: "session"}
-	a.streamingText = "partial answer"
-	a.streamingReasoning = "weighing options"
+	a.streamCurrent = streamSnapshot{text: "partial answer", reasoning: "weighing options"}
 
 	o := &transcriptOverlay{app: a, selected: -1, follow: true, expanded: map[string]bool{}, cache: map[string]transcriptCache{}}
 	o.buildEntries()
 
 	last := len(o.entries) - 1
-	if o.entries[last-1].key != "live:text" || o.entries[last].key != "live:reasoning" {
+	if o.entries[last-1].key != "live:0:text" || o.entries[last].key != "live:0:reasoning" {
 		t.Fatalf("live tail = %q, %q; want text before reasoning", o.entries[last-1].key, o.entries[last].key)
 	}
 
 	o.moveSelection(-1)
 	o.moveSelection(1)
-	if o.follow || o.entries[o.selected].key != "live:reasoning" {
+	if o.follow || o.entries[o.selected].key != "live:0:reasoning" {
 		t.Fatalf("setup: follow=%v key=%q", o.follow, o.entries[o.selected].key)
 	}
 
-	a.streamingText = ""
-	a.streamingReasoning = ""
-	a.currentToolName = "shell"
-	a.currentToolHint = "ls"
+	a.streamCurrent = streamSnapshot{toolName: "shell", toolHint: "ls"}
 	o.buildEntries()
 
 	if o.selected != o.lastSelectable() {

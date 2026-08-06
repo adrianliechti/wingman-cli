@@ -118,15 +118,25 @@ type App struct {
 	renderLast    atomic.Int64
 	dirty         bool
 
-	streamStateMu       sync.Mutex
-	currentToolID       string
-	currentToolName     string
-	currentToolHint     string
-	currentToolProgress string
-	streamingText       string
-	streamingReasoning  string
-	reasoningID         string
-	reasoningPart       int
+	streamStateMu sync.Mutex
+	streamCurrent streamSnapshot
+	streamHistory []streamSnapshot
+}
+
+// streamSnapshot is one ordered piece of an in-flight turn. ACP commits the
+// complete transcript only when the turn ends, so displaced snapshots remain
+// visible until committed history replaces them.
+type streamSnapshot struct {
+	toolID        string
+	toolName      string
+	toolArgs      string
+	toolHint      string
+	toolProgress  string
+	toolResult    *agent.ToolResult
+	text          string
+	reasoning     string
+	reasoningID   string
+	reasoningPart int
 }
 
 type toast struct {
@@ -136,8 +146,9 @@ type toast struct {
 }
 
 type pendingEchoItem struct {
-	ID   string
-	Text string
+	ID    string
+	Text  string
+	State code.TurnInputState
 }
 
 // chatAnnotation is a chat cell that is not derived from the message history
@@ -178,17 +189,27 @@ func New(ctx context.Context, coderAgent code.Agent, sessionID string) *App {
 	return a
 }
 
-// onToolProgress receives live status text from a running tool call; text for
-// anything but the currently displayed call is dropped.
+// onToolProgress receives live status text for active current or archived
+// tool calls. Archived calls occur when ACP runs tools in parallel.
 func (a *App) onToolProgress(callID, text string) {
 	a.streamStateMu.Lock()
-	if callID != a.currentToolID {
-		a.streamStateMu.Unlock()
-		return
+	updated := false
+	if callID == a.streamCurrent.toolID && a.streamCurrent.toolResult == nil {
+		a.streamCurrent.toolProgress = text
+		updated = true
+	} else {
+		for i := len(a.streamHistory) - 1; i >= 0; i-- {
+			if callID == a.streamHistory[i].toolID && a.streamHistory[i].toolResult == nil {
+				a.streamHistory[i].toolProgress = text
+				updated = true
+				break
+			}
+		}
 	}
-	a.currentToolProgress = text
 	a.streamStateMu.Unlock()
-	a.requestRender()
+	if updated {
+		a.requestRender()
+	}
 }
 
 // WithTerminal replaces the terminal, used by tests.
@@ -768,7 +789,7 @@ func (a *App) orderedSelection() (selPos, selPos) {
 	return a.selAnchor, a.selHead
 }
 
-// removePendingEcho drops the queued-input preview for id.
+// removePendingEcho drops the in-flight input preview for id.
 func (a *App) removePendingEcho(id string) {
 	for i, item := range a.pendingEcho {
 		if item.ID == id {
@@ -779,8 +800,7 @@ func (a *App) removePendingEcho(id string) {
 }
 
 // chatViewLines composes the scrollable chat content: committed cells, the
-// live streaming tail, and previews of inputs still queued behind the active
-// turn.
+// live streaming tail, and previews of queued or steered inputs.
 func (a *App) chatViewLines(width int) []string {
 	view := a.chat
 
@@ -790,7 +810,11 @@ func (a *App) chatViewLines(width int) []string {
 		view = append(append([]string(nil), a.chat...), stream...)
 		for _, item := range a.pendingEcho {
 			text := markdown.Sanitize(strings.ReplaceAll(item.Text, "\n", " "))
-			view = append(view, cellIndent+dim(ansi.Truncate("› "+text, width-10, "…")+" (queued)"))
+			state := "queued"
+			if item.State == code.TurnInputSteered {
+				state = "steered"
+			}
+			view = append(view, cellIndent+dim(ansi.Truncate("› "+text, width-10, "…")+" ("+state+")"))
 		}
 	}
 
