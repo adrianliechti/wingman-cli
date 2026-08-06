@@ -21,10 +21,10 @@ import (
 	graphtool "github.com/adrianliechti/wingman-agent/pkg/agent/tool/graph"
 	lsptool "github.com/adrianliechti/wingman-agent/pkg/agent/tool/lsp"
 	toolmcp "github.com/adrianliechti/wingman-agent/pkg/agent/tool/mcp"
+	"github.com/adrianliechti/wingman-agent/pkg/changes"
 	"github.com/adrianliechti/wingman-agent/pkg/graph"
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 	"github.com/adrianliechti/wingman-agent/pkg/mcp"
-	"github.com/adrianliechti/wingman-agent/pkg/rewind"
 	"github.com/adrianliechti/wingman-agent/pkg/skill"
 	"github.com/adrianliechti/wingman-agent/pkg/text"
 )
@@ -60,9 +60,9 @@ type Workspace struct {
 
 	MCP *mcp.Manager
 
-	LSP    *lsp.Manager
-	Rewind *rewind.Manager
-	Graph  *graph.Engine
+	LSP     *lsp.Manager
+	Changes *changes.Manager
+	Graph   *graph.Engine
 
 	warmupOnce sync.Once
 
@@ -131,16 +131,12 @@ func NewWorkspace(workDir string) (*Workspace, error) {
 
 func (w *Workspace) WarmUp() {
 	w.warmupOnce.Do(func() {
-		if !isSupportedWorkspace(w.RootPath) {
-			return
-		}
-
-		rewind.CleanupOrphans()
-		rewindManager := rewind.New(w.RootPath)
+		nativeGit := isGitRepo(w.RootPath)
+		changesManager := changes.New(w.RootPath, w.nextShadowGitDir(), nativeGit)
 
 		var lspManager *lsp.Manager
 		var lspTools []tool.Tool
-		if isGitRepo(w.RootPath) {
+		if nativeGit {
 			lspManager = lsp.NewManager(w.RootPath)
 			lspTools = lsptool.NewTools(lspManager)
 		}
@@ -158,10 +154,10 @@ func (w *Workspace) WarmUp() {
 			if lspManager != nil {
 				lspManager.Close()
 			}
-			rewindManager.Cleanup()
+			changesManager.Close()
 			return
 		}
-		w.Rewind = rewindManager
+		w.Changes = changesManager
 		w.LSP = lspManager
 		w.lspTools = lspTools
 		w.Graph = graphEngine
@@ -198,13 +194,13 @@ func (w *Workspace) Close() {
 	mcpManager := w.MCP
 	lspManager := w.LSP
 	retiredLSP := w.retiredLSP
-	rewindManager := w.Rewind
+	changesManager := w.Changes
 	root := w.Root
 	scratchPath := w.ScratchPath
 	w.MCP = nil
 	w.LSP = nil
 	w.retiredLSP = nil
-	w.Rewind = nil
+	w.Changes = nil
 	w.Graph = nil
 	w.mcpTools = nil
 	w.lspTools = nil
@@ -221,8 +217,8 @@ func (w *Workspace) Close() {
 	if mcpManager != nil {
 		mcpManager.Close()
 	}
-	if rewindManager != nil {
-		rewindManager.Cleanup()
+	if changesManager != nil {
+		changesManager.Close()
 	}
 	if scratchPath != "" {
 		os.RemoveAll(scratchPath)
@@ -236,24 +232,27 @@ func (w *Workspace) IsGitRepo() bool { return isGitRepo(w.RootPath) }
 
 func (w *Workspace) SyncProjectMode() {
 	w.mu.RLock()
-	available := !w.closed && w.Rewind != nil
+	available := !w.closed && w.Changes != nil
 	w.mu.RUnlock()
 	if !available {
 		return
 	}
 
+	nativeGit := isGitRepo(w.RootPath)
+	nextChanges := changes.New(w.RootPath, w.nextShadowGitDir(), nativeGit)
 	var nextLSP *lsp.Manager
 	var nextTools []tool.Tool
-	if isGitRepo(w.RootPath) {
+	if nativeGit {
 		nextLSP = lsp.NewManager(w.RootPath)
 		nextTools = w.protectLSPTools(lsptool.NewTools(nextLSP))
 	}
 
 	w.lspLifeMu.Lock()
 	w.mu.Lock()
-	if w.closed || w.Rewind == nil {
+	if w.closed || w.Changes == nil {
 		w.mu.Unlock()
 		w.lspLifeMu.Unlock()
+		nextChanges.Close()
 		if nextLSP != nil {
 			nextLSP.Close()
 		}
@@ -262,10 +261,13 @@ func (w *Workspace) SyncProjectMode() {
 	if w.LSP != nil {
 		w.retiredLSP = append(w.retiredLSP, w.LSP)
 	}
+	previousChanges := w.Changes
+	w.Changes = nextChanges
 	w.LSP = nextLSP
 	w.lspTools = nextTools
 	w.mu.Unlock()
 	w.lspLifeMu.Unlock()
+	previousChanges.Close()
 }
 
 func (w *Workspace) Diagnostics(ctx context.Context) map[string][]lsp.Diagnostic {
@@ -296,40 +298,122 @@ func (w *Workspace) protectLSPTools(tools []tool.Tool) []tool.Tool {
 	return protected
 }
 
-func (w *Workspace) Commit(msg string) error {
+func (w *Workspace) Diffs(ctx context.Context) ([]changes.FileDiff, error) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	if w.Rewind == nil {
-		return nil
-	}
-	return w.Rewind.Commit(msg)
-}
-
-func (w *Workspace) Diffs() ([]rewind.FileDiff, error) {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-	if w.Rewind == nil {
+	if w.Changes == nil {
 		return nil, nil
 	}
-	return w.Rewind.DiffFromBaseline()
+	return w.Changes.Diffs(ctx)
 }
 
-func (w *Workspace) Checkpoints() ([]rewind.Checkpoint, error) {
+func (w *Workspace) Diff(ctx context.Context, path string, layer changes.DiffLayer) (changes.FileDiff, error) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	if w.Rewind == nil {
-		return nil, nil
+	if w.Changes == nil {
+		return changes.FileDiff{}, errors.New("change tracking is not available")
 	}
-	return w.Rewind.List()
+	return w.Changes.Diff(ctx, path, layer)
 }
 
-func (w *Workspace) Restore(hash string) error {
+func (w *Workspace) RevertChange(ctx context.Context, path string) error {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	if w.Rewind == nil {
-		return errors.New("checkpoint tracking is not available for this workspace")
+	if w.Changes == nil {
+		return errors.New("change tracking is not available")
 	}
-	return w.Rewind.Restore(hash)
+	return w.Changes.Revert(ctx, path)
+}
+
+func (w *Workspace) HasNativeGit() bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.Changes != nil && w.Changes.IsNativeGit()
+}
+
+func (w *Workspace) GitStatus(ctx context.Context) (changes.GitStatus, error) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.Changes == nil {
+		return changes.GitStatus{}, changes.ErrNotGitRepository
+	}
+	return w.Changes.GitStatus(ctx)
+}
+
+func (w *Workspace) GitBranches(ctx context.Context, refresh bool) ([]changes.GitBranch, string, error) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.Changes == nil {
+		return nil, "", changes.ErrNotGitRepository
+	}
+	return w.Changes.Branches(ctx, refresh)
+}
+
+func (w *Workspace) GitCreateBranch(ctx context.Context, name string) error {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.Changes == nil {
+		return changes.ErrNotGitRepository
+	}
+	return w.Changes.CreateBranch(ctx, name)
+}
+
+func (w *Workspace) GitCheckoutBranch(ctx context.Context, name, remote string) error {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.Changes == nil {
+		return changes.ErrNotGitRepository
+	}
+	return w.Changes.CheckoutBranch(ctx, name, remote)
+}
+
+func (w *Workspace) GitStage(ctx context.Context, paths []string) error {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.Changes == nil {
+		return changes.ErrNotGitRepository
+	}
+	return w.Changes.Stage(ctx, paths)
+}
+
+func (w *Workspace) GitUnstage(ctx context.Context, paths []string) error {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.Changes == nil {
+		return changes.ErrNotGitRepository
+	}
+	return w.Changes.Unstage(ctx, paths)
+}
+
+func (w *Workspace) GitCommit(ctx context.Context, message string) (string, error) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.Changes == nil {
+		return "", changes.ErrNotGitRepository
+	}
+	return w.Changes.Commit(ctx, message)
+}
+
+func (w *Workspace) GitPull(ctx context.Context) (string, error) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.Changes == nil {
+		return "", changes.ErrNotGitRepository
+	}
+	return w.Changes.Pull(ctx)
+}
+
+func (w *Workspace) GitPush(ctx context.Context) (string, error) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.Changes == nil {
+		return "", changes.ErrNotGitRepository
+	}
+	return w.Changes.Push(ctx)
+}
+
+func (w *Workspace) nextShadowGitDir() string {
+	return filepath.Join(w.ScratchPath, "changes-"+uuid.NewString()+".git")
 }
 
 func (w *Workspace) MemoryContent() string {
@@ -454,80 +538,31 @@ func (w *Workspace) HasLSP() bool {
 	return w.LSP != nil
 }
 
-func (w *Workspace) HasRewind() bool {
+func (w *Workspace) HasChanges() bool {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	return w.Rewind != nil
+	return w.Changes != nil
 }
 
-func (w *Workspace) RewindFingerprint() uint64 {
+func (w *Workspace) ChangesFingerprint(ctx context.Context) uint64 {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	if w.Rewind == nil {
+	if w.Changes == nil {
 		return 0
 	}
-	return w.Rewind.Fingerprint()
+	return w.Changes.Fingerprint(ctx)
 }
 
 func isGitRepo(dir string) bool {
-	_, err := git.PlainOpen(dir)
-	return err == nil
-}
-
-var (
-	workspaceMaxEntries = 200_000
-	workspaceMaxBytes   = int64(2 << 30)
-	workspaceWalkBudget = 4 * time.Second
-)
-
-func isSupportedWorkspace(dir string) bool {
-	if isGitRepo(dir) {
-		return true
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), workspaceWalkBudget)
-	defer cancel()
-
-	tooLarge := errors.New("workspace too large")
-
-	result := make(chan bool, 1)
-	go func() {
-		var entries int
-		var size int64
-
-		err := filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			if err != nil {
-				return nil
-			}
-
-			entries++
-			if entries > workspaceMaxEntries {
-				return tooLarge
-			}
-
-			if !d.IsDir() {
-				if info, err := d.Info(); err == nil {
-					size += info.Size()
-					if size > workspaceMaxBytes {
-						return tooLarge
-					}
-				}
-			}
-
-			return nil
-		})
-		result <- err == nil
-	}()
-
-	select {
-	case ok := <-result:
-		return ok
-	case <-ctx.Done():
+	repo, err := git.PlainOpenWithOptions(dir, &git.PlainOpenOptions{
+		DetectDotGit:          true,
+		EnableDotGitCommonDir: true,
+	})
+	if err != nil {
 		return false
 	}
+	_, err = repo.Worktree()
+	return err == nil
 }
 
 func projectKey(workingDir string) string {

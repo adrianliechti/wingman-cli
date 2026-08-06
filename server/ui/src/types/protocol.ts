@@ -170,11 +170,6 @@ interface PromptCancelMessage {
 	prompt_id: string;
 }
 
-interface CheckpointsChangedMessage {
-	type: "checkpoints_changed";
-	session?: string;
-}
-
 interface SessionsChangedMessage {
 	type: "sessions_changed";
 }
@@ -266,7 +261,6 @@ export type ServerMessage =
 	| ErrorMessage
 	| PromptMessage
 	| PromptCancelMessage
-	| CheckpointsChangedMessage
 	| SessionsChangedMessage
 	| DiffsChangedMessage
 	| FilesChangedMessage
@@ -335,10 +329,36 @@ export interface DiffEntry {
 	language?: string;
 }
 
-export interface CheckpointEntry {
-	hash: string;
-	message: string;
-	time: string;
+export type DiffLayer = "staged" | "unstaged";
+
+export interface GitFileStatus {
+	path: string;
+	original_path?: string;
+	index_status?: string;
+	worktree_status?: string;
+	staged: boolean;
+	changed: boolean;
+	conflict?: boolean;
+}
+
+export interface GitStatus {
+	branch: string;
+	upstream?: string;
+	ahead: number;
+	behind: number;
+	has_remote: boolean;
+	files: GitFileStatus[];
+}
+
+export interface GitBranch {
+	name: string;
+	remote?: string;
+	current?: boolean;
+}
+
+export interface GitBranches {
+	branches: GitBranch[];
+	warning?: string;
 }
 
 export interface TaskEntry {

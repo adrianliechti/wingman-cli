@@ -32,6 +32,7 @@ func (a *App) builtinCommands() []slashCommand {
 		{Name: "/plan", Desc: "Enter planning mode", Run: (*App).enterPlanMode},
 		{Name: "/agent", Desc: "Return to execution mode", Run: (*App).exitPlanMode},
 		{Name: "/problems", Desc: "Show problems", Busy: true, Run: (*App).showDiagnosticsView},
+		{Name: "/diff", Desc: "Show working tree changes", Busy: true, Run: (*App).showDiffView},
 	}
 	if _, ok := a.agent.(contextStatsProvider); ok {
 		cmds = append(cmds, slashCommand{Name: "/context", Desc: "Show context window usage", Busy: true, Run: (*App).showContextStats})
@@ -41,13 +42,6 @@ func (a *App) builtinCommands() []slashCommand {
 	}
 	if _, ok := a.agent.(recapProvider); ok {
 		cmds = append(cmds, slashCommand{Name: "/recap", Desc: "Summarize the session so far", Run: (*App).showRecap})
-	}
-
-	if a.agent.Workspace().HasRewind() {
-		cmds = append(cmds,
-			slashCommand{Name: "/diff", Desc: "Show changes from baseline", Busy: true, Run: (*App).showDiffView},
-			slashCommand{Name: "/rewind", Desc: "Restore to previous checkpoint", Run: (*App).showRewindPicker},
-		)
 	}
 
 	cmds = append(cmds,
@@ -313,21 +307,28 @@ func (a *App) hasAgentCommand(name string) bool {
 
 func (a *App) submitAgentInput(input []agent.Content, echo string) {
 	id := uuid.NewString()
-	a.rememberTurn(id, input)
 
 	snap, err := a.turns.Submit(a.ctx, a.sessionID, code.TurnInput{
 		ID: id, Content: input, Intent: code.TurnInputSteer,
 	})
 	if err != nil {
-		a.takeTurnCommit(id)
 		a.appendChat(cellNotice(fmt.Sprintf("Could not submit turn: %v", err), theme.Default.Red, a.width()))
 		return
 	}
 
-	// Inputs accepted into an active turn or queued behind it get a preview; an
-	// input that starts immediately commits within a frame and would flicker.
-	if echo != "" && (snap.State == code.TurnInputQueued || snap.State == code.TurnInputSteered) {
-		a.pendingEcho = append(a.pendingEcho, pendingEchoItem{ID: id, Text: echo, State: snap.State})
+	// A native steer is already part of the active turn. Put it into the live
+	// transcript at the point where it was accepted so later model output
+	// appears beneath it. Only inputs still waiting for a turn remain previews
+	// at the bottom of the chat.
+	if echo != "" {
+		switch snap.State {
+		case code.TurnInputSteered:
+			a.appendLiveUserEcho(echo)
+		case code.TurnInputQueued:
+			a.pendingEchoMu.Lock()
+			a.pendingEcho = append(a.pendingEcho, pendingEchoItem{ID: id, Text: echo, State: snap.State})
+			a.pendingEchoMu.Unlock()
+		}
 	}
 
 	a.syncMessages()
@@ -460,43 +461,6 @@ func (a *App) showEffortPickerLevel(back bool) {
 	}
 	popup.SelectID(selected)
 	a.popup = popup
-}
-
-func (a *App) showRewindPicker() {
-	t := theme.Default
-
-	checkpoints, err := a.agent.Workspace().Checkpoints()
-	if err != nil {
-		a.appendChat(cellNotice("Rewind unavailable in this workspace", t.Yellow, a.width()))
-		return
-	}
-	if len(checkpoints) == 0 {
-		a.appendChat(cellNotice("No checkpoints available", t.Yellow, a.width()))
-		return
-	}
-
-	items := make([]PopupItem, len(checkpoints))
-	for i, cp := range checkpoints {
-		items[i] = PopupItem{
-			ID:     cp.Hash,
-			Label:  cp.Time.Format("15:04:05"),
-			Detail: cp.Message,
-		}
-	}
-
-	a.popup = newPopup(popupList, "rewind to", items, func(ids []string) {
-		var label string
-		for _, item := range items {
-			if item.ID == ids[0] {
-				label = item.Label + " - " + item.Detail
-			}
-		}
-		if err := a.agent.Workspace().Restore(ids[0]); err != nil {
-			a.appendChat(cellNotice(fmt.Sprintf("Failed to restore: %v", err), t.Red, a.width()))
-			return
-		}
-		a.appendChat(cellNotice(fmt.Sprintf("Restored to: %s", label), t.Green, a.width()))
-	})
 }
 
 func (a *App) showFilePicker() {

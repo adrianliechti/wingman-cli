@@ -84,7 +84,8 @@ type App struct {
 	turnBase  int
 	turnStart time.Time
 
-	pendingEcho []pendingEchoItem
+	pendingEchoMu sync.Mutex
+	pendingEcho   []pendingEchoItem
 
 	elicitMu     sync.Mutex
 	promptActive bool
@@ -108,9 +109,7 @@ type App struct {
 	clipboardRead  func() ([]clipboard.Content, error)
 	clipboardWrite func(string) error
 
-	turns       *code.TurnManager
-	turnMu      sync.Mutex
-	turnCommits map[string]string
+	turns *code.TurnManager
 
 	taskPumpStop chan struct{}
 
@@ -127,6 +126,7 @@ type App struct {
 // complete transcript only when the turn ends, so displaced snapshots remain
 // visible until committed history replaces them.
 type streamSnapshot struct {
+	userText      string
 	toolID        string
 	toolName      string
 	toolArgs      string
@@ -178,7 +178,6 @@ func New(ctx context.Context, coderAgent code.Agent, sessionID string) *App {
 		showWelcome:  !hasMessages && os.Getenv("WINGMAN_CALLER") != "vscode",
 
 		editor:      NewEditor(),
-		turnCommits: map[string]string{},
 		follow:      true,
 		termFocused: true,
 	}
@@ -325,7 +324,6 @@ func (a *App) deliverTaskResults(sessionID string, batch []task.Event) {
 
 	first := batch[0]
 	id := fmt.Sprintf("task-%s-%d", first.ID, first.Seq)
-	a.rememberTurn(id, []agent.Content{{Text: "background agents: " + strings.Join(labels, ", ")}})
 
 	_, err := a.turns.Submit(a.ctx, sessionID, code.TurnInput{
 		ID:     id,
@@ -336,7 +334,6 @@ func (a *App) deliverTaskResults(sessionID string, batch []task.Event) {
 		}},
 	})
 	if err != nil {
-		a.takeTurnCommit(id)
 		a.post(func() {
 			if a.sessionID != sessionID {
 				return
@@ -538,12 +535,6 @@ func (a *App) Run() error {
 
 		a.post(func() {
 			a.setPhase(PhaseIdle)
-			if !a.agent.Workspace().HasRewind() {
-				a.appendChat(cellNotice(
-					"Limited mode: working dir is too large for full features. Diffs, checkpoints, and code intelligence are disabled.",
-					theme.Default.Yellow, a.width(),
-				))
-			}
 			a.invalidate()
 		})
 	}()
@@ -791,6 +782,8 @@ func (a *App) orderedSelection() (selPos, selPos) {
 
 // removePendingEcho drops the in-flight input preview for id.
 func (a *App) removePendingEcho(id string) {
+	a.pendingEchoMu.Lock()
+	defer a.pendingEchoMu.Unlock()
 	for i, item := range a.pendingEcho {
 		if item.ID == id {
 			a.pendingEcho = append(a.pendingEcho[:i], a.pendingEcho[i+1:]...)
@@ -799,16 +792,38 @@ func (a *App) removePendingEcho(id string) {
 	}
 }
 
+// promotePendingEcho moves a queued input into the ordered live transcript
+// when its turn becomes active.
+func (a *App) promotePendingEcho(id string) {
+	a.pendingEchoMu.Lock()
+	text := ""
+	for i, item := range a.pendingEcho {
+		if item.ID == id {
+			text = item.Text
+			a.pendingEcho = append(a.pendingEcho[:i], a.pendingEcho[i+1:]...)
+			break
+		}
+	}
+	a.pendingEchoMu.Unlock()
+
+	if text != "" {
+		a.appendLiveUserEcho(text)
+	}
+}
+
 // chatViewLines composes the scrollable chat content: committed cells, the
-// live streaming tail, and previews of queued or steered inputs.
+// live streaming tail, and previews of inputs still waiting in the queue.
 func (a *App) chatViewLines(width int) []string {
 	view := a.chat
 
 	stream := a.streamCells(width)
+	a.pendingEchoMu.Lock()
+	pending := append([]pendingEchoItem(nil), a.pendingEcho...)
+	a.pendingEchoMu.Unlock()
 
-	if len(stream) > 0 || len(a.pendingEcho) > 0 {
+	if len(stream) > 0 || len(pending) > 0 {
 		view = append(append([]string(nil), a.chat...), stream...)
-		for _, item := range a.pendingEcho {
+		for _, item := range pending {
 			text := markdown.Sanitize(strings.ReplaceAll(item.Text, "\n", " "))
 			state := "queued"
 			if item.State == code.TurnInputSteered {

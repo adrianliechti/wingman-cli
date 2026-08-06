@@ -72,17 +72,44 @@ func TestParallelArchivedToolReceivesProgressAndCompletion(t *testing.T) {
 	}
 }
 
-func TestPendingEchoDistinguishesSteeredFromQueuedInput(t *testing.T) {
+func TestAcceptedSteerMovesIntoOrderedLiveTranscript(t *testing.T) {
 	a := &App{pendingEcho: []pendingEchoItem{
-		{ID: "steered", Text: "change direction", State: code.TurnInputSteered},
 		{ID: "queued", Text: "do this next", State: code.TurnInputQueued},
 	}}
+	a.streamCurrent = streamSnapshot{text: "answer before steer"}
+	a.appendLiveUserEcho("change direction")
+	a.streamCurrent.text = "answer after steer"
+
 	view := strings.Join(a.chatViewLines(100), "\n")
-	if !strings.Contains(view, "change direction (steered)") {
-		t.Fatalf("accepted steer is not identified: %q", view)
+	before := strings.Index(view, "answer before steer")
+	steer := strings.Index(view, "change direction")
+	after := strings.Index(view, "answer after steer")
+	if before < 0 || steer <= before || after <= steer {
+		t.Fatalf("accepted steer is not ordered in the live transcript: %q", view)
+	}
+	if strings.Contains(view, "change direction (steered)") {
+		t.Fatalf("accepted steer remained a bottom preview: %q", view)
 	}
 	if !strings.Contains(view, "do this next (queued)") {
 		t.Fatalf("queued follow-up is not identified: %q", view)
+	}
+}
+
+func TestQueuedEchoMovesIntoTranscriptWhenTurnBecomesActive(t *testing.T) {
+	a := &App{pendingEcho: []pendingEchoItem{
+		{ID: "follow-up", Text: "do this now", State: code.TurnInputQueued},
+	}}
+	a.promotePendingEcho("follow-up")
+	a.streamCurrent.text = "new answer"
+
+	view := strings.Join(a.chatViewLines(100), "\n")
+	user := strings.Index(view, "do this now")
+	answer := strings.Index(view, "new answer")
+	if user < 0 || answer <= user {
+		t.Fatalf("active follow-up is not ordered before its answer: %q", view)
+	}
+	if strings.Contains(view, "do this now (queued)") {
+		t.Fatalf("active follow-up remained a bottom preview: %q", view)
 	}
 }
 

@@ -228,7 +228,7 @@ func (s *Server) handleTurnEvent(ev code.TurnEvent) {
 	}
 
 	if ev.Executed {
-		s.finalizeTurn(ev.SessionID, ev.InputID)
+		s.finalizeTurn(ev.SessionID)
 	}
 	if ev.State == code.TurnInputCompleted || ev.State == code.TurnInputCancelled || ev.State == code.TurnInputFailed {
 		s.deleteTurnMeta(ev.SessionID, ev.InputID)
@@ -236,7 +236,7 @@ func (s *Server) handleTurnEvent(ev code.TurnEvent) {
 	s.sendTurnSnapshot(ev.SessionID)
 }
 
-func (s *Server) finalizeTurn(sid, inputID string) {
+func (s *Server) finalizeTurn(sid string) {
 	a := s.activeAgent()
 	if a == nil {
 		return
@@ -246,18 +246,6 @@ func (s *Server) finalizeTurn(sid, inputID string) {
 	ws := s.workspace
 	s.flushFiles()
 
-	if ws.HasRewind() {
-		meta, _ := s.getTurnMeta(sid, inputID)
-		commitMsg := meta.Text
-		if commitMsg == "" {
-			commitMsg = "<unknown>"
-		}
-		go func() {
-			if err := ws.Commit(commitMsg); err == nil {
-				s.broadcast(Frame{Type: EvtCheckpointsChanged})
-			}
-		}()
-	}
 	if ws.HasLSP() {
 		s.broadcast(Frame{Type: EvtDiagnosticsChanged})
 	}

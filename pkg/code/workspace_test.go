@@ -2,7 +2,6 @@ package code
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -381,55 +380,16 @@ func TestProjectKey_NonGitDirUsesRawPath(t *testing.T) {
 	}
 }
 
-func TestIsSupportedWorkspace_SmallDir(t *testing.T) {
-	dir := t.TempDir()
-	mustWrite(t, filepath.Join(dir, "a.txt"), "hello")
-
-	if !isSupportedWorkspace(dir) {
-		t.Fatal("small dir should be supported")
-	}
-}
-
-func TestIsSupportedWorkspace_TooManyEntries(t *testing.T) {
-	dir := t.TempDir()
-	for i := range 20 {
-		mustWrite(t, filepath.Join(dir, fmt.Sprintf("f%d.txt", i)), "x")
-	}
-
-	prev := workspaceMaxEntries
-	workspaceMaxEntries = 10
-	defer func() { workspaceMaxEntries = prev }()
-
-	if isSupportedWorkspace(dir) {
-		t.Fatal("dir over entry limit should be unsupported")
-	}
-}
-
-func TestIsSupportedWorkspace_TooManyBytes(t *testing.T) {
-	dir := t.TempDir()
-	mustWrite(t, filepath.Join(dir, "big.bin"), strings.Repeat("x", 1024))
-
-	prev := workspaceMaxBytes
-	workspaceMaxBytes = 512
-	defer func() { workspaceMaxBytes = prev }()
-
-	if isSupportedWorkspace(dir) {
-		t.Fatal("dir over byte limit should be unsupported")
-	}
-}
-
-func TestIsSupportedWorkspace_GitRepoAlwaysSupported(t *testing.T) {
+func TestIsGitRepoDiscoversParent(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := git.PlainInit(dir, false); err != nil {
 		t.Fatal(err)
 	}
-	mustWrite(t, filepath.Join(dir, "big.bin"), strings.Repeat("x", 1024))
-
-	prev := workspaceMaxBytes
-	workspaceMaxBytes = 512
-	defer func() { workspaceMaxBytes = prev }()
-
-	if !isSupportedWorkspace(dir) {
-		t.Fatal("git repo should always be supported")
+	subdir := filepath.Join(dir, "nested", "workspace")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !isGitRepo(subdir) {
+		t.Fatal("repository subdirectory was not detected")
 	}
 }

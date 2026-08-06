@@ -2,16 +2,23 @@ import { DiffEditor } from "@monaco-editor/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useColorScheme } from "../hooks/useColorScheme";
 import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
-import type { DiffEntry, ServerMessage } from "../types/protocol";
+import type { DiffEntry, DiffLayer, ServerMessage } from "../types/protocol";
 
 interface Props {
 	path: string;
+	layer?: DiffLayer;
 	sessionId: string;
 	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 	onDeleted?: () => void;
 }
 
-export function DiffTab({ path, sessionId, subscribe, onDeleted }: Props) {
+export function DiffTab({
+	path,
+	layer,
+	sessionId,
+	subscribe,
+	onDeleted,
+}: Props) {
 	const [diff, setDiff] = useState<DiffEntry | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
@@ -25,8 +32,10 @@ export function DiffTab({ path, sessionId, subscribe, onDeleted }: Props) {
 
 	const load = useCallback(async () => {
 		try {
-			const qs = sessionId ? `?session=${encodeURIComponent(sessionId)}` : "";
-			const res = await fetch(`/api/diffs${qs}`);
+			const params = new URLSearchParams({ path });
+			if (layer) params.set("layer", layer);
+			if (sessionId) params.set("session", sessionId);
+			const res = await fetch(`/api/diffs?${params.toString()}`);
 			if (!res.ok) {
 				setError("failed to load diffs");
 				setLoading(false);
@@ -46,7 +55,7 @@ export function DiffTab({ path, sessionId, subscribe, onDeleted }: Props) {
 			setError(String(e));
 			setLoading(false);
 		}
-	}, [path, sessionId]);
+	}, [path, layer, sessionId]);
 
 	useEffect(() => {
 		hadDiffRef.current = false;

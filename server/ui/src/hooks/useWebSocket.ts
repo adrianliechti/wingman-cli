@@ -29,7 +29,7 @@ export interface PromptReply {
 
 export interface ChatEntry {
 	id: string;
-	type: "user" | "assistant" | "tool" | "reasoning" | "error";
+	type: "user" | "assistant" | "tool" | "reasoning";
 	content: string;
 	images?: string[];
 	files?: string[];
@@ -139,6 +139,7 @@ interface Usage {
 export interface SessionState {
 	id: string;
 	entries: ChatEntry[];
+	error: string | null;
 	phase: Phase;
 	usage: Usage;
 	prompt: PendingPrompt | null;
@@ -170,6 +171,7 @@ function emptySession(id: string): SessionState {
 	return {
 		id,
 		entries: [],
+		error: null,
 		phase: "idle",
 		usage: EMPTY_USAGE,
 		prompt: null,
@@ -447,6 +449,7 @@ export function useWebSocket() {
 					[sid]: {
 						id: sid,
 						entries: messagesToEntries(msg.messages ?? []),
+						error: prev[sid]?.error ?? null,
 						phase: msg.phase ?? "idle",
 						usage: {
 							inputTokens: msg.input_tokens ?? 0,
@@ -584,10 +587,7 @@ export function useWebSocket() {
 				finalizeReasoning(sid);
 				updateSession(sid, (sess) => ({
 					...sess,
-					entries: [
-						...sess.entries,
-						{ id: nextId(), type: "error", content: msg.message },
-					],
+					error: msg.message,
 				}));
 				break;
 			}
@@ -723,6 +723,7 @@ export function useWebSocket() {
 			}
 			updateSession(sessionId, (sess) => ({
 				...sess,
+				error: null,
 				pendingInputs: upsertPending(sess.pendingInputs, {
 					id,
 					state: "sending",
@@ -788,6 +789,15 @@ export function useWebSocket() {
 				...sess,
 				pendingInputs: sess.pendingInputs.filter((input) => input.id !== id),
 			}));
+		},
+		[updateSession],
+	);
+
+	const dismissError = useCallback(
+		(sessionId: string) => {
+			updateSession(sessionId, (sess) =>
+				sess.error ? { ...sess, error: null } : sess,
+			);
 		},
 		[updateSession],
 	);
@@ -883,7 +893,6 @@ export function useWebSocket() {
 				);
 				for (const sub of subscribersRef.current) {
 					sub({ type: "diffs_changed" });
-					sub({ type: "checkpoints_changed" });
 					sub({ type: "sessions_changed" });
 					sub({ type: "files_changed" });
 					sub({ type: "diagnostics_changed" });
@@ -949,6 +958,7 @@ export function useWebSocket() {
 		resumeQueue,
 		clearQueue,
 		dismissPending,
+		dismissError,
 		respondPrompt,
 		removeSession,
 		clearSessions,

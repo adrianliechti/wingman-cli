@@ -222,8 +222,7 @@ func (a *App) handleSelectFolder(w http.ResponseWriter, r *http.Request) {
 
 // shutdown bounds the teardown so a slow component (LSP shutdown
 // handshakes, MCP subprocesses) can't hang app quit. Kill signals are
-// issued before the waits we abandon, and orphaned rewind dirs are
-// reclaimed by CleanupOrphans on the next start.
+// issued before the waits we abandon.
 func (a *App) shutdown() {
 	a.mu.Lock()
 	srv := a.server

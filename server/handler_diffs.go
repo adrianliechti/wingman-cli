@@ -2,33 +2,59 @@ package server
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/adrianliechti/wingman-agent/pkg/rewind"
+	"github.com/adrianliechti/wingman-agent/pkg/changes"
 )
 
 func (s *Server) handleDiffs(w http.ResponseWriter, r *http.Request) {
-	diffs, err := s.workspace.Diffs()
-	if err != nil {
-
-		if !errors.Is(err, rewind.ErrClosed) {
-			fmt.Fprintf(os.Stderr, "diffs: %v\n", err)
+	onlyPath := r.URL.Query().Get("path")
+	if onlyPath != "" {
+		rel, ok := s.workspaceRel(onlyPath)
+		if !ok {
+			http.Error(w, "invalid path", http.StatusBadRequest)
+			return
 		}
-		writeJSON(w, []DiffEntry{})
+		onlyPath = filepath.ToSlash(rel)
+	}
+	layer := changes.DiffLayer(r.URL.Query().Get("layer"))
+	if layer != changes.DiffCombined && layer != changes.DiffStaged && layer != changes.DiffUnstaged {
+		http.Error(w, "invalid diff layer", http.StatusBadRequest)
+		return
+	}
+
+	var diffs []changes.FileDiff
+	var err error
+	if onlyPath != "" && layer != changes.DiffCombined {
+		var diff changes.FileDiff
+		diff, err = s.workspace.Diff(r.Context(), onlyPath, layer)
+		if err == nil {
+			diffs = []changes.FileDiff{diff}
+		}
+	} else {
+		diffs, err = s.workspace.Diffs(r.Context())
+	}
+	if err != nil {
+		if errors.Is(err, changes.ErrNoDiff) {
+			writeJSON(w, []DiffEntry{})
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	result := []DiffEntry{}
 	for _, d := range diffs {
+		if onlyPath != "" && d.Path != onlyPath {
+			continue
+		}
 		status := "modified"
 		switch d.Status {
-		case rewind.StatusAdded:
+		case changes.StatusAdded:
 			status = "added"
-		case rewind.StatusDeleted:
+		case changes.StatusDeleted:
 			status = "deleted"
 		}
 
@@ -53,47 +79,12 @@ func (s *Server) handleDiffRevert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	canonical := filepath.ToSlash(rel)
-
-	diffs, err := s.workspace.Diffs()
-	if err != nil {
+	if err := s.workspace.RevertChange(r.Context(), canonical); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	var match *rewind.FileDiff
-	for i := range diffs {
-		if diffs[i].Path == canonical {
-			match = &diffs[i]
-			break
-		}
-	}
-	if match == nil {
-		http.Error(w, "no diff for path", http.StatusNotFound)
-		return
-	}
-
-	root := s.workspace.Root
-
-	switch match.Status {
-	case rewind.StatusAdded:
-		if err := root.Remove(rel); err != nil && !os.IsNotExist(err) {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	case rewind.StatusModified, rewind.StatusDeleted:
-		if dir := filepath.Dir(rel); dir != "." && dir != "" {
-			if err := root.MkdirAll(dir, 0o755); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
-		if err := root.WriteFile(rel, []byte(match.Original), 0o644); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
-
 	s.flushFiles()
-
+	s.broadcast(Frame{Type: EvtDiffsChanged})
 	w.WriteHeader(http.StatusNoContent)
 }

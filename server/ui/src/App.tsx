@@ -30,7 +30,6 @@ import {
 	type PaletteSkill,
 } from "./components/CommandPalette";
 import type { ModeOption } from "./components/ModePicker";
-import { CheckpointsPanel } from "./components/CheckpointsPanel";
 import { DiffsPanel } from "./components/DiffsPanel";
 import { DiffTab } from "./components/DiffTab";
 import { FileTab } from "./components/FileTab";
@@ -46,13 +45,14 @@ import {
 	type PromptReply,
 	useWebSocket,
 } from "./hooks/useWebSocket";
-import type { TurnInputIntent } from "./types/protocol";
+import type { DiffLayer, TurnInputIntent } from "./types/protocol";
 
 interface CenterTab {
 	id: string;
 	type: "chat" | "file" | "diff";
 	label: string;
 	path?: string;
+	diffLayer?: DiffLayer;
 	line?: number;
 	sessionId?: string;
 }
@@ -98,6 +98,7 @@ export default function App() {
 		resumeQueue,
 		clearQueue,
 		dismissPending,
+		dismissError,
 		respondPrompt,
 		removeSession,
 		clearSessions,
@@ -190,6 +191,7 @@ export default function App() {
 
 	const activeSession = sessionId ? sessions[sessionId] : undefined;
 	const entries = activeSession?.entries ?? EMPTY_ENTRIES;
+	const sessionError = activeSession?.error ?? null;
 	const phase = activeSession?.phase ?? "idle";
 	const usage = activeSession?.usage ?? EMPTY_USAGE;
 	const prompt = activeSession?.prompt ?? null;
@@ -293,14 +295,23 @@ export default function App() {
 	);
 
 	const openDiff = useCallback(
-		(path: string) => {
-			const existing = tabs.find((t) => t.type === "diff" && t.path === path);
+		(path: string, layer?: DiffLayer) => {
+			const existing = tabs.find(
+				(t) => t.type === "diff" && t.path === path && t.diffLayer === layer,
+			);
 			if (existing) {
 				setActiveTabId(existing.id);
 				return;
 			}
-			const label = path.split("/").pop() || path;
-			const tab: CenterTab = { id: `diff:${path}`, type: "diff", label, path };
+			const fileName = path.split("/").pop() || path;
+			const label = layer ? `${fileName} · ${layer}` : fileName;
+			const tab: CenterTab = {
+				id: `diff:${layer ?? "combined"}:${path}`,
+				type: "diff",
+				label,
+				path,
+				diffLayer: layer,
+			};
 			setTabs((prev) => [...prev, tab]);
 			setActiveTabId(tab.id);
 		},
@@ -885,6 +896,10 @@ export default function App() {
 										loadError={
 											sessionLoad.id === sessionId ? sessionLoad.error : null
 										}
+										error={sessionError}
+										onDismissError={() => {
+											if (sessionId) dismissError(sessionId);
+										}}
 										subscribe={subscribe}
 										prompt={prompt}
 										onPromptReply={handlePromptReply}
@@ -894,6 +909,7 @@ export default function App() {
 								) : activeTab.type === "diff" && activeTab.path ? (
 									<DiffTab
 										path={activeTab.path}
+										layer={activeTab.diffLayer}
 										sessionId={sessionId}
 										subscribe={subscribe}
 										onDeleted={() => closeTab(activeTab.id)}
@@ -980,23 +996,13 @@ export default function App() {
 							{rightTab === "agents" && showAgents ? (
 								<TasksPanel sessionId={sessionId} subscribe={subscribe} />
 							) : rightTab === "changes" && showChanges ? (
-								<div className="flex flex-col h-full">
-									<div className="flex-[3] min-h-0 overflow-hidden">
-										<DiffsPanel
-											sessionId={sessionId}
-											onOpenDiff={openDiff}
-											onOpenFile={openFile}
-											subscribe={subscribe}
-										/>
-									</div>
-									<div className="h-px bg-border-subtle shrink-0" />
-									<div className="flex-[1] min-h-0 overflow-hidden">
-										<CheckpointsPanel
-											sessionId={sessionId}
-											subscribe={subscribe}
-										/>
-									</div>
-								</div>
+								<DiffsPanel
+									sessionId={sessionId}
+									git={capabilities?.git ?? false}
+									onOpenDiff={openDiff}
+									onOpenFile={openFile}
+									subscribe={subscribe}
+								/>
 							) : (
 								<div className="flex flex-col h-full">
 									<div className="flex-[3] min-h-0 overflow-hidden flex flex-col">

@@ -130,6 +130,8 @@ func (a *App) formatMessageCells(msg agent.Message, width int) []string {
 }
 
 func (a *App) removePendingEchoText(text string) {
+	a.pendingEchoMu.Lock()
+	defer a.pendingEchoMu.Unlock()
 	for i, item := range a.pendingEcho {
 		if item.Text == text {
 			a.pendingEcho = append(a.pendingEcho[:i], a.pendingEcho[i+1:]...)
@@ -175,7 +177,7 @@ func (snapshot *streamSnapshot) clearTool() {
 }
 
 func (snapshot streamSnapshot) empty() bool {
-	return snapshot.toolName == "" && strings.TrimSpace(snapshot.text) == "" && snapshot.reasoning == ""
+	return snapshot.userText == "" && snapshot.toolName == "" && strings.TrimSpace(snapshot.text) == "" && snapshot.reasoning == ""
 }
 
 func (snapshot streamSnapshot) toolLines(width int, expanded bool) []string {
@@ -205,6 +207,16 @@ func (a *App) archiveStreamStateLocked() {
 		a.streamHistory = append(a.streamHistory, a.streamCurrent)
 	}
 	a.streamCurrent = streamSnapshot{}
+}
+
+// appendLiveUserEcho inserts an input being processed into the ordered live
+// tail. ACP commits the full turn only when it completes, so this snapshot is
+// replaced by the persisted user message during finishTurn.
+func (a *App) appendLiveUserEcho(text string) {
+	a.streamStateMu.Lock()
+	a.archiveStreamStateLocked()
+	a.streamHistory = append(a.streamHistory, streamSnapshot{userText: text})
+	a.streamStateMu.Unlock()
 }
 
 func (a *App) snapshotStreamState() []streamSnapshot {
@@ -295,15 +307,17 @@ func (a *App) handleTurnEvent(ev code.TurnEvent) {
 	switch ev.State {
 	case code.TurnInputActive:
 		a.withCurrentSession(ev.SessionID, func() {
+			// TurnManager emits Active synchronously before Agent.Send starts,
+			// preserving the user cell ahead of any output from this turn.
+			a.promotePendingEcho(ev.InputID)
 			a.queuePhase(PhaseThinking)
 		})
 	case code.TurnInputCompleted, code.TurnInputCancelled, code.TurnInputFailed:
-		commit := a.takeTurnCommit(ev.InputID)
 		a.post(func() {
 			a.removePendingEcho(ev.InputID)
 		})
 		if ev.Executed {
-			a.finishTurn(ev.SessionID, commit, ev.State, ev.Err)
+			a.finishTurn(ev.SessionID, ev.State, ev.Err)
 		}
 	}
 }
@@ -361,7 +375,7 @@ func (a *App) handleStreamMessage(msg agent.Message) {
 	}
 }
 
-func (a *App) finishTurn(sessionID, commit string, state code.TurnInputState, turnErr error) {
+func (a *App) finishTurn(sessionID string, state code.TurnInputState, turnErr error) {
 	t := theme.Default
 
 	a.sessionMu.Lock()
@@ -412,7 +426,6 @@ func (a *App) finishTurn(sessionID, commit string, state code.TurnInputState, tu
 	}
 
 	if state == code.TurnInputCompleted {
-		a.commitRewind(commit)
 		a.saveSessionID(sessionID)
 	}
 }
@@ -479,35 +492,4 @@ func (a *App) resetTurnStats() {
 	a.turnBase = len(a.agent.Messages(a.sessionID))
 	a.turnStart = time.Time{}
 	a.phaseStart = time.Time{}
-}
-
-func (a *App) rememberTurn(id string, input []agent.Content) {
-	commit := "<unknown>"
-	for _, c := range input {
-		if c.Text != "" {
-			commit = c.Text
-			break
-		}
-	}
-	a.turnMu.Lock()
-	a.turnCommits[id] = commit
-	a.turnMu.Unlock()
-}
-
-func (a *App) takeTurnCommit(id string) string {
-	a.turnMu.Lock()
-	commit := a.turnCommits[id]
-	delete(a.turnCommits, id)
-	a.turnMu.Unlock()
-	return commit
-}
-
-func (a *App) commitRewind(message string) {
-	if runes := []rune(message); len(runes) > 50 {
-		message = string(runes[:50])
-	}
-
-	go func() {
-		_ = a.agent.Workspace().Commit(message)
-	}()
 }

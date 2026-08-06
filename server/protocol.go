@@ -46,7 +46,6 @@ const (
 	EvtPromptCancel        = "prompt_cancel"
 	EvtFilesChanged        = "files_changed"
 	EvtDiffsChanged        = "diffs_changed"
-	EvtCheckpointsChanged  = "checkpoints_changed"
 	EvtSessionsChanged     = "sessions_changed"
 	EvtDiagnosticsChanged  = "diagnostics_changed"
 	EvtCapabilitiesChanged = "capabilities_changed"
@@ -169,12 +168,6 @@ type DiffEntry struct {
 	Original string `json:"original,omitempty"`
 	Modified string `json:"modified,omitempty"`
 	Language string `json:"language,omitempty"`
-}
-
-type CheckpointEntry struct {
-	Hash    string `json:"hash"`
-	Message string `json:"message"`
-	Time    string `json:"time"`
 }
 
 type SessionEntry struct {

@@ -37,7 +37,7 @@ const (
 )
 
 // Popup is the single list component behind slash-command completion, file
-// mentions, and the model/effort/rewind pickers. It renders below the
+// mentions and the model/effort pickers. It renders below the
 // composer. Standalone pickers (popupList) capture all input; the other kinds
 // filter as the user types in the editor.
 type Popup struct {

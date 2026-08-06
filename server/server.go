@@ -300,9 +300,16 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Post("/revert", s.handleDiffRevert)
 		})
 
-		r.Route("/checkpoints", func(r chi.Router) {
-			r.Get("/", s.handleCheckpoints)
-			r.Post("/{hash}/restore", s.handleCheckpointRestore)
+		r.Route("/git", func(r chi.Router) {
+			r.Get("/status", s.handleGitStatus)
+			r.Get("/branches", s.handleGitBranches)
+			r.Post("/branches", s.handleGitCreateBranch)
+			r.Post("/checkout", s.handleGitCheckoutBranch)
+			r.Post("/stage", s.handleGitStage)
+			r.Post("/unstage", s.handleGitUnstage)
+			r.Post("/commit", s.handleGitCommit)
+			r.Post("/pull", s.handleGitPull)
+			r.Post("/push", s.handleGitPush)
 		})
 
 		r.Route("/sessions", func(r chi.Router) {
@@ -758,14 +765,11 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, _ *http.Request) {
 	ws := s.workspace
 	_, isCoder := s.activeAgent().(*codeagent.Agent)
 	caps := map[string]any{
-		"git":      ws.IsGitRepo(),
 		"lsp":      ws.HasLSP(),
-		"diffs":    ws.HasRewind(),
+		"diffs":    ws.HasChanges(),
+		"git":      ws.HasNativeGit(),
 		"tasks":    isCoder,
 		"terminal": terminal.Supported(),
-	}
-	if !ws.HasRewind() {
-		caps["notice"] = "This directory is too large for full features. Diffs, checkpoints, and code intelligence are disabled — chat and file browsing still work."
 	}
 	writeJSON(w, caps)
 }
@@ -777,10 +781,6 @@ func (s *Server) hasClients() bool {
 }
 
 func (s *Server) flushFiles() {
-	if !s.workspace.HasRewind() {
-		s.broadcast(Frame{Type: EvtFilesChanged})
-		return
-	}
 	s.files.Flush()
 }
 
@@ -797,10 +797,10 @@ func (s *Server) checkWorkspace() {
 		s.prevGit = gitNow
 	}
 
-	if !ws.HasRewind() {
+	if !ws.HasChanges() {
 		return
 	}
-	fp := ws.RewindFingerprint()
+	fp := ws.ChangesFingerprint(s.ctx)
 	if fp != s.prevFingerprint {
 		s.prevFingerprint = fp
 		s.broadcast(Frame{Type: EvtFilesChanged})

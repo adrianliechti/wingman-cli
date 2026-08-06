@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/adrianliechti/wingman-agent/pkg/rewind"
+	"github.com/adrianliechti/wingman-agent/pkg/changes"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/markdown"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/theme"
 )
@@ -12,14 +12,14 @@ import (
 func (a *App) showDiffView() {
 	t := theme.Default
 
-	diffs, err := a.agent.Workspace().Diffs()
+	diffs, err := a.agent.Workspace().Diffs(a.ctx)
 	if err != nil {
 		a.appendChat(cellNotice(fmt.Sprintf("%v", err), t.Yellow, a.width()))
 		return
 	}
 
 	if len(diffs) == 0 {
-		a.showToast("No changes from the session baseline", t.BrBlack)
+		a.showToast("Working tree clean", t.BrBlack)
 		return
 	}
 
@@ -41,11 +41,11 @@ func (a *App) showDiffView() {
 		icon := "●"
 
 		switch diff.Status {
-		case rewind.StatusAdded:
+		case changes.StatusAdded:
 			statusColor = t.Green
-		case rewind.StatusModified:
+		case changes.StatusModified:
 			statusColor = t.Yellow
-		case rewind.StatusDeleted:
+		case changes.StatusDeleted:
 			statusColor = t.Red
 		default:
 			icon = "○"

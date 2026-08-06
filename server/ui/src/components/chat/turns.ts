@@ -26,7 +26,7 @@ export function buildTurns(entries: ChatEntry[]): Turn[] {
 			t.working.push(t.final);
 			t.final = null;
 		}
-		if (e.type === "assistant" || e.type === "error") {
+		if (e.type === "assistant") {
 			t.final = e;
 		} else {
 			t.working.push(e);

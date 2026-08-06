@@ -14,7 +14,7 @@ A powerful AI-powered coding assistant that runs directly in your terminal. Wing
 - **LSP Integration** — Code intelligence via auto-detected language servers (definitions, references, diagnostics, call hierarchy, and more)
 - **MCP Support** — Extend functionality with Model Context Protocol servers
 - **Multi-Model Support** — Works with any [OpenResponses API](https://www.openresponses.org) compatible endpoint with auto-selection
-- **Rewind & Diff** — Checkpoint-based undo with visual diff viewer
+- **Changes** — Git-backed working tree changes with a visual diff viewer
 - **Skills** — Define custom workflows using [Agent Skills](https://agentskills.io) format
 - **Image Support** — Paste images from clipboard for vision-capable models
 - **File Context** — Add files to context with `@` or drag-and-drop file paths
@@ -297,8 +297,7 @@ Toggle between modes using `Tab` or the explicit `/plan` and `/agent` commands.
 | `/plan` | Enter planning mode |
 | `/agent` | Return to execution mode |
 | `/problems` | Show LSP diagnostics for the workspace |
-| `/diff` | Show changes from session baseline (requires git) |
-| `/rewind` | Restore to a previous checkpoint (requires git) |
+| `/diff` | Show working tree changes |
 | `/resume` | Resume the most recent saved session |
 | `/clear` | Clear chat history |
 | `/quit` | Exit application |
@@ -400,7 +399,7 @@ wingman server [--port 9000]
 
 This starts an HTTP server at `http://localhost:9000` (or another available
 port) with a React UI featuring a chat panel, file browser, diff viewer,
-checkpoint browser, diagnostics panel, an integrated terminal (multiple
+diagnostics panel, an integrated terminal (multiple
 xterm.js sessions, shell of your choice, `Ctrl+Alt+T`), and session management.
 `Ctrl+P` opens the command palette — same shortcut as the TUI command center
 (`Cmd/Ctrl+K` works too). The server uses WebSockets for real-time streaming.

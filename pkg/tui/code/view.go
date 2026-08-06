@@ -106,6 +106,17 @@ func (a *App) streamCells(width int) []string {
 	var lines []string
 
 	for _, snapshot := range snapshots {
+		if snapshot.userText != "" {
+			if flow.gap() {
+				lines = append(lines, "")
+			}
+			if isCommandEcho(snapshot.userText) {
+				lines = append(lines, cellCommand(snapshot.userText, width)...)
+			} else {
+				lines = append(lines, cellUser(snapshot.userText, width)...)
+			}
+		}
+
 		if snapshot.toolName != "" && !a.isToolHidden(snapshot.toolName) {
 			cell := snapshot.toolLines(width, false)
 			if flow.beforeTool(len(cell) > 1) {
@@ -139,8 +150,9 @@ func (a *App) streamCells(width int) []string {
 	return lines
 }
 
-// render paints the full-screen frame: scrollable chat on top, then queued
-// echoes, the status-rich composer, and popup or footer pinned at the bottom.
+// render paints the full-screen frame: scrollable chat on top, then the
+// status-rich composer and popup or footer pinned at the bottom. Queued input
+// previews live at the tail of the scrollable chat until their turns start.
 func (a *App) render() {
 	width, height := a.term.Size()
 	if width <= 0 || height <= 0 {

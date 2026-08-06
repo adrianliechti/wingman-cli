@@ -168,6 +168,18 @@ func (o *transcriptOverlay) buildEntries() {
 	// Live cells mirror every in-flight snapshot in the chat tail.
 	for i, snapshot := range o.app.snapshotStreamState() {
 		prefix := fmt.Sprintf("live:%d", i)
+		if snapshot.userText != "" {
+			text := snapshot.userText
+			entries = append(entries, transcriptEntry{
+				key: prefix + ":user", kind: transcriptUser, raw: text, selectable: true,
+				render: func(width int, _ bool) []string {
+					if isCommandEcho(text) {
+						return cellCommand(text, width)
+					}
+					return cellUser(text, width)
+				},
+			})
+		}
 		if snapshot.toolName != "" && !o.app.isToolHidden(snapshot.toolName) {
 			live := snapshot
 			kind := transcriptLiveTool

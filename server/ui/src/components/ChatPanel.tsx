@@ -63,6 +63,8 @@ interface Props {
 	onClearQueue?: () => void;
 	loading?: boolean;
 	loadError?: string | null;
+	error?: string | null;
+	onDismissError?: () => void;
 	subscribe?: (
 		handler: (msg: import("../types/protocol").ServerMessage) => void,
 	) => () => void;
@@ -120,6 +122,8 @@ export function ChatPanel({
 	onClearQueue,
 	loading,
 	loadError,
+	error,
+	onDismissError,
 	subscribe,
 	prompt,
 	onPromptReply,
@@ -137,6 +141,7 @@ export function ChatPanel({
 	const [showPicker, setShowPicker] = useState(false);
 	const [submitting, setSubmitting] = useState(false);
 	const [sendError, setSendError] = useState<string | null>(null);
+	const inputError = sendError ?? error;
 	const [editingQueueId, setEditingQueueId] = useState<string | null>(null);
 	const containerRef = useRef<HTMLDivElement>(null);
 	const contentRef = useRef<HTMLDivElement>(null);
@@ -774,9 +779,20 @@ export function ChatPanel({
 							onClear={onClearQueue}
 						/>
 					)}
-					{sendError && (
-						<div className="mb-1.5 px-2 py-1 rounded border border-danger/40 bg-danger/5 text-[11px] text-danger">
-							{sendError}
+					{inputError && (
+						<div className="mb-1.5 flex items-start gap-2 rounded border border-danger/40 bg-danger/5 px-2 py-1 text-[11px] text-danger">
+							<span className="min-w-0 flex-1 break-words">{inputError}</span>
+							<button
+								type="button"
+								className="shrink-0 opacity-70 hover:opacity-100"
+								onClick={() => {
+									setSendError(null);
+									onDismissError?.();
+								}}
+								aria-label="Dismiss error"
+							>
+								<X size={12} />
+							</button>
 						</div>
 					)}
 					{prompt && onPromptReply ? (

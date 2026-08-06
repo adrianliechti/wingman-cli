@@ -19,19 +19,6 @@ export const EntryView = memo(function EntryView({
 	entry: ChatEntry;
 	isStreaming: boolean;
 }) {
-	if (entry.type === "error") {
-		return (
-			<div
-				data-entry-id={entry.id}
-				className="mb-4 border-l-2 border-danger pl-3"
-			>
-				<div className="text-[13px] leading-relaxed text-danger break-words">
-					{entry.content}
-				</div>
-			</div>
-		);
-	}
-
 	if (entry.type === "reasoning") {
 		return <ReasoningView entry={entry} isStreaming={isStreaming} />;
 	}
