@@ -18,6 +18,8 @@ type Manager struct {
 	workingDir string
 	sessions   map[string]*Session
 	restarts   map[string]int
+	warming    map[string]bool
+	closed     bool
 	mu         sync.Mutex
 
 	roots      []projectRoot
@@ -29,6 +31,7 @@ func NewManager(workingDir string) *Manager {
 		workingDir: workingDir,
 		sessions:   make(map[string]*Session),
 		restarts:   make(map[string]int),
+		warming:    make(map[string]bool),
 	}
 }
 
@@ -99,6 +102,10 @@ func (m *Manager) GetSessionByServer(ctx context.Context, server Server) (*Sessi
 	key := server.Command
 
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("LSP manager is closed")
+	}
 	if session, ok := m.sessions[key]; ok {
 		if session.IsAlive() {
 			m.mu.Unlock()
@@ -121,6 +128,11 @@ func (m *Manager) GetSessionByServer(ctx context.Context, server Server) (*Sessi
 
 		m.mu.Lock()
 
+		if m.closed {
+			m.mu.Unlock()
+			newSession.Close()
+			return nil, fmt.Errorf("LSP manager is closed")
+		}
 		if existing, ok := m.sessions[key]; ok && existing.IsAlive() {
 			m.mu.Unlock()
 			newSession.Close()
@@ -148,6 +160,11 @@ func (m *Manager) GetSessionByServer(ctx context.Context, server Server) (*Sessi
 
 	m.mu.Lock()
 
+	if m.closed {
+		m.mu.Unlock()
+		session.Close()
+		return nil, fmt.Errorf("LSP manager is closed")
+	}
 	if existing, ok := m.sessions[key]; ok && existing.IsAlive() {
 		m.mu.Unlock()
 		session.Close()
@@ -159,9 +176,110 @@ func (m *Manager) GetSessionByServer(ctx context.Context, server Server) (*Sessi
 	return session, nil
 }
 
+func (m *Manager) ActiveSession(filePath string) (*Session, bool) {
+	server := m.FindServer(filePath)
+	if server == nil {
+		return nil, false
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if session, ok := m.sessions[server.Command]; ok && session.IsAlive() {
+		return session, true
+	}
+	return nil, false
+}
+
+func (m *Manager) WarmUpServers() {
+	go func() {
+		for _, server := range m.DetectServers() {
+			m.warmUp(server)
+		}
+	}()
+}
+
+func (m *Manager) warmUp(server Server) {
+	m.mu.Lock()
+	if m.closed || m.warming[server.Command] {
+		m.mu.Unlock()
+		return
+	}
+	m.warming[server.Command] = true
+	m.mu.Unlock()
+
+	go func() {
+		defer func() {
+			m.mu.Lock()
+			delete(m.warming, server.Command)
+			m.mu.Unlock()
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*startupTimeout)
+		defer cancel()
+		m.GetSessionByServer(ctx, server)
+	}()
+}
+
+// PostEditDiagnostics reports current errors in an edited file, for attaching
+// to edit/write tool results. It never cold-starts a server synchronously: if
+// none is running yet it warms one up in the background and returns "".
+func (m *Manager) PostEditDiagnostics(ctx context.Context, path string) string {
+	server := m.FindServer(path)
+	if server == nil {
+		return ""
+	}
+
+	session, ok := m.ActiveSession(path)
+	if !ok {
+		m.warmUp(*server)
+		return ""
+	}
+
+	uri, err := session.OpenDocument(ctx, path)
+	if err != nil {
+		return ""
+	}
+
+	diags, known := session.WaitForDiagnostics(ctx, uri, 2*time.Second)
+	if !known {
+		return ""
+	}
+
+	var errs []Diagnostic
+	for _, diag := range diags {
+		if diag.Severity == DiagnosticSeverityError || diag.Severity == 0 {
+			errs = append(errs, diag)
+		}
+	}
+	if len(errs) == 0 {
+		return ""
+	}
+
+	displayPath := relPath(m.workingDir, path)
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "lsp diagnostics for %s (%s):\n", displayPath, severitySummary(errs))
+
+	shown := errs
+	if len(shown) > 10 {
+		shown = shown[:10]
+	}
+	for _, diag := range shown {
+		fmt.Fprintf(&sb, "  %s\n", formatDiagnosticLine(displayPath, diag))
+	}
+	if len(errs) > len(shown) {
+		fmt.Fprintf(&sb, "  ... and %d more\n", len(errs)-len(shown))
+	}
+
+	return strings.TrimRight(sb.String(), "\n")
+}
+
 func (m *Manager) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	m.closed = true
 
 	for key, session := range m.sessions {
 		session.Close()
@@ -244,8 +362,12 @@ func (m *Manager) WorkspaceDiagnostics(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("no LSP servers detected in workspace")
 	}
 
-	var sb strings.Builder
-	totalDiags := 0
+	type fileDiagnostic struct {
+		path string
+		diag Diagnostic
+	}
+
+	var all []fileDiagnostic
 	checkedFiles := 0
 	totalFiles := 0
 	unknownFiles := 0
@@ -271,8 +393,7 @@ func (m *Manager) WorkspaceDiagnostics(ctx context.Context) (string, error) {
 
 			displayPath := relPath(m.workingDir, file)
 			for _, diag := range diags {
-				totalDiags++
-				fmt.Fprintf(&sb, "  %s\n", formatDiagnosticLine(displayPath, diag))
+				all = append(all, fileDiagnostic{path: displayPath, diag: diag})
 			}
 		}
 	}
@@ -291,11 +412,27 @@ func (m *Manager) WorkspaceDiagnostics(ctx context.Context) (string, error) {
 	}
 	coverage := "Coverage: " + strings.Join(notes, "; ")
 
-	if totalDiags == 0 {
+	if len(all) == 0 {
 		return "No workspace diagnostics found\n" + coverage, nil
 	}
 
-	return fmt.Sprintf("Workspace Diagnostics (%d found):\n%s%s", totalDiags, sb.String(), coverage), nil
+	slices.SortStableFunc(all, func(a, b fileDiagnostic) int {
+		return severityRank(a.diag.Severity) - severityRank(b.diag.Severity)
+	})
+
+	diags := make([]Diagnostic, len(all))
+	for i, fd := range all {
+		diags[i] = fd.diag
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Workspace Diagnostics (%d found: %s):\n", len(all), severitySummary(diags))
+	for _, fd := range all {
+		fmt.Fprintf(&sb, "  %s\n", formatDiagnosticLine(fd.path, fd.diag))
+	}
+	sb.WriteString(coverage)
+
+	return sb.String(), nil
 }
 
 func (m *Manager) WorkspaceSymbols(ctx context.Context, query string) (string, error) {

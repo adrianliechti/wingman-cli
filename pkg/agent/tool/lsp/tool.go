@@ -26,7 +26,7 @@ func lspTool(manager *lsp.Manager) tool.Tool {
 			"- documentSymbol `file_path`: symbols in one file.",
 			"- workspaceSymbol `query`: symbols across the repo.",
 			"- diagnostics: errors/warnings for `file_path`, or a bounded workspace scan if omitted (slower; output states how many files were checked).",
-			"Errors if no language server is configured for the file type.",
+			"The first request per language may take a few seconds while the server starts and indexes. Errors if no language server is configured for the file type.",
 		}, "\n"),
 		Effect: tool.StaticEffect(tool.EffectReadOnly),
 		Parameters: map[string]any{
@@ -53,10 +53,12 @@ func lspTool(manager *lsp.Manager) tool.Tool {
 				},
 				"line": map[string]any{
 					"type":        "integer",
+					"minimum":     1,
 					"description": "1-based line (as in read/grep). Pair with `column`, or with `symbol` to pick an occurrence on that line.",
 				},
 				"column": map[string]any{
 					"type":        "integer",
+					"minimum":     1,
 					"description": "1-based column within the line. Requires `line`.",
 				},
 				"symbol": map[string]any{

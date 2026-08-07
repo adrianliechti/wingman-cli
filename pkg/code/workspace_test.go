@@ -93,6 +93,29 @@ func waitForMCPToolNames(t *testing.T, w *Workspace, want ...string) {
 	}
 }
 
+func TestWithEditDiagnosticsWrapsOnlyEditAndWrite(t *testing.T) {
+	w := &Workspace{RootPath: t.TempDir()}
+
+	execute := func(ctx context.Context, args map[string]any) (string, error) {
+		return "diff output", nil
+	}
+	tools := w.WithEditDiagnostics([]tool.Tool{
+		{Name: "edit", Execute: execute},
+		{Name: "write", Execute: execute},
+		{Name: "read", Execute: execute},
+	})
+
+	for _, tl := range tools {
+		out, err := tl.Execute(context.Background(), map[string]any{"file_path": "main.go"})
+		if err != nil {
+			t.Fatalf("%s: %v", tl.Name, err)
+		}
+		if out != "diff output" {
+			t.Fatalf("%s output = %q, want passthrough with no LSP manager", tl.Name, out)
+		}
+	}
+}
+
 func TestProtectedLSPCallDoesNotHoldWorkspaceStateLock(t *testing.T) {
 	w := &Workspace{}
 	started := make(chan struct{})

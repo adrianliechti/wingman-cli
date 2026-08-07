@@ -3,6 +3,7 @@ package lsp
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -313,13 +314,69 @@ func formatDiagnosticLine(displayPath string, diag Diagnostic) string {
 	return fmt.Sprintf("%s:%d:%d %s: %s%s", displayPath, diag.Range.Start.Line+1, diag.Range.Start.Character+1, DiagnosticSeverityName(diag.Severity), source, diag.Message)
 }
 
+func severityRank(severity int) int {
+	switch severity {
+	case DiagnosticSeverityError:
+		return 0
+	case DiagnosticSeverityWarning:
+		return 1
+	case DiagnosticSeverityInformation:
+		return 2
+	case DiagnosticSeverityHint:
+		return 3
+	default:
+		return 4
+	}
+}
+
+func severitySummary(diagnostics []Diagnostic) string {
+	counts := make(map[int]int)
+	for _, diag := range diagnostics {
+		counts[diag.Severity]++
+	}
+
+	var parts []string
+	add := func(severity int, singular, plural string) {
+		n := counts[severity]
+		delete(counts, severity)
+		if n == 0 {
+			return
+		}
+		label := plural
+		if n == 1 {
+			label = singular
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", n, label))
+	}
+
+	add(DiagnosticSeverityError, "error", "errors")
+	add(DiagnosticSeverityWarning, "warning", "warnings")
+	add(DiagnosticSeverityInformation, "info", "info")
+	add(DiagnosticSeverityHint, "hint", "hints")
+
+	other := 0
+	for _, n := range counts {
+		other += n
+	}
+	if other > 0 {
+		parts = append(parts, fmt.Sprintf("%d other", other))
+	}
+
+	return strings.Join(parts, ", ")
+}
+
 func FormatDiagnostics(diagnostics []Diagnostic, filePath string, workingDir string) string {
+	sorted := slices.Clone(diagnostics)
+	slices.SortStableFunc(sorted, func(a, b Diagnostic) int {
+		return severityRank(a.Severity) - severityRank(b.Severity)
+	})
+
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Diagnostics (%d found):\n", len(diagnostics))
+	fmt.Fprintf(&sb, "Diagnostics (%d found: %s):\n", len(sorted), severitySummary(sorted))
 
 	displayPath := relPath(workingDir, filePath)
 
-	for _, diag := range diagnostics {
+	for _, diag := range sorted {
 		fmt.Fprintf(&sb, "  %s\n", formatDiagnosticLine(displayPath, diag))
 	}
 

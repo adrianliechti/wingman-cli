@@ -53,6 +53,13 @@ func TestNewToolsExposesSingleLSPTool(t *testing.T) {
 		t.Fatal("expected symbol parameter")
 	}
 
+	for _, key := range []string{"line", "column"} {
+		param := props[key].(map[string]any)
+		if minimum, ok := param["minimum"].(int); !ok || minimum != 1 {
+			t.Fatalf("%s minimum = %#v, want 1", key, param["minimum"])
+		}
+	}
+
 	required := lspTool.Parameters["required"].([]string)
 	if !slices.Equal(required, []string{"operation"}) {
 		t.Fatalf("required = %#v, want [operation]", required)

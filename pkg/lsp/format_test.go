@@ -10,6 +10,11 @@ import (
 func TestFormatDiagnostics(t *testing.T) {
 	diags := []Diagnostic{
 		{
+			Range:    Range{Start: Position{Line: 12, Character: 0}},
+			Severity: DiagnosticSeverityHint,
+			Message:  "could simplify",
+		},
+		{
 			Range:    Range{Start: Position{Line: 4, Character: 10}},
 			Severity: DiagnosticSeverityError,
 			Source:   "compiler",
@@ -24,23 +29,24 @@ func TestFormatDiagnostics(t *testing.T) {
 
 	result := FormatDiagnostics(diags, "/home/user/project/main.go", "/home/user/project")
 
-	if !strings.Contains(result, "Diagnostics (2 found)") {
-		t.Error("expected header with count")
+	if !strings.Contains(result, "Diagnostics (3 found: 1 error, 1 warning, 1 hint):") {
+		t.Errorf("expected header with severity counts, got: %q", result)
 	}
 	if !strings.Contains(result, "main.go:5:11") {
-		t.Error("expected 1-based line:col for first diagnostic")
-	}
-	if !strings.Contains(result, "Error") {
-		t.Error("expected Error severity")
+		t.Error("expected 1-based line:col for error diagnostic")
 	}
 	if !strings.Contains(result, "[compiler]") {
 		t.Error("expected source tag")
 	}
 	if !strings.Contains(result, "main.go:13:1") {
-		t.Error("expected 1-based line:col for second diagnostic")
+		t.Error("expected 1-based line:col for warning diagnostic")
 	}
-	if !strings.Contains(result, "Warning") {
-		t.Error("expected Warning severity")
+
+	errIdx := strings.Index(result, "Error")
+	warnIdx := strings.Index(result, "Warning")
+	hintIdx := strings.Index(result, "Hint")
+	if errIdx == -1 || warnIdx == -1 || hintIdx == -1 || !(errIdx < warnIdx && warnIdx < hintIdx) {
+		t.Errorf("expected severity ordering error < warning < hint, got: %q", result)
 	}
 }
 

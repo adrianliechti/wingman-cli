@@ -744,11 +744,11 @@ func (a *Agent) buildSession() *sessionState {
 	go s.watchFileChanges()
 
 	s.baseTools = slices.Concat(
-		fs.Tools(ws.Root, &fs.Options{
+		ws.WithEditDiagnostics(fs.Tools(ws.Root, &fs.Options{
 			AllowedReadRoots:  allowedReadRoots,
 			AllowedWriteRoots: allowedWriteRoots,
 			Freshness:         s.freshness,
-		}),
+		})),
 		shell.Tools(ws.RootPath, elicit, approvals),
 		shell.ExecTools(s.execManager, ws.RootPath, elicit, approvals),
 		todo.Tools(),

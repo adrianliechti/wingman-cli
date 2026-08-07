@@ -168,6 +168,10 @@ func (w *Workspace) WarmUp() {
 		w.graphTools = graphTools
 		w.mu.Unlock()
 		w.lspLifeMu.Unlock()
+
+		if lspManager != nil {
+			lspManager.WarmUpServers()
+		}
 	})
 }
 
@@ -367,6 +371,10 @@ func (w *Workspace) SyncProjectMode() {
 	w.mu.Unlock()
 	w.lspLifeMu.Unlock()
 	previousChanges.Close()
+
+	if nextLSP != nil {
+		nextLSP.WarmUpServers()
+	}
 }
 
 func (w *Workspace) Diagnostics(ctx context.Context) map[string][]lsp.Diagnostic {
@@ -379,6 +387,51 @@ func (w *Workspace) Diagnostics(ctx context.Context) map[string][]lsp.Diagnostic
 		return nil
 	}
 	return manager.CollectAllDiagnostics(ctx)
+}
+
+func (w *Workspace) WithEditDiagnostics(tools []tool.Tool) []tool.Tool {
+	wrapped := append([]tool.Tool(nil), tools...)
+	for i := range wrapped {
+		if wrapped[i].Name != "edit" && wrapped[i].Name != "write" {
+			continue
+		}
+		execute := wrapped[i].Execute
+		if execute == nil {
+			continue
+		}
+		wrapped[i].Execute = func(ctx context.Context, args map[string]any) (string, error) {
+			out, err := execute(ctx, args)
+			if err != nil {
+				return out, err
+			}
+			path, _ := args["file_path"].(string)
+			if note := w.postEditDiagnostics(ctx, path); note != "" {
+				out += "\n\n" + note
+			}
+			return out, nil
+		}
+	}
+	return wrapped
+}
+
+func (w *Workspace) postEditDiagnostics(ctx context.Context, path string) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(w.RootPath, path)
+	}
+
+	w.lspLifeMu.RLock()
+	defer w.lspLifeMu.RUnlock()
+	w.mu.RLock()
+	manager := w.LSP
+	w.mu.RUnlock()
+	if manager == nil {
+		return ""
+	}
+
+	return manager.PostEditDiagnostics(ctx, path)
 }
 
 func (w *Workspace) protectLSPTools(tools []tool.Tool) []tool.Tool {

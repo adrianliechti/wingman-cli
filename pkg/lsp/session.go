@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/lsp/jsonrpc2"
@@ -25,12 +24,11 @@ type Session struct {
 	workingDir string
 	cancelFunc context.CancelFunc
 
-	docVersion int64
-
-	mu         sync.Mutex
-	openedDocs map[string]uint64
-	pushDiags  map[string][]Diagnostic
-	pushSeen   map[string]bool
+	mu          sync.Mutex
+	openedDocs  map[string]uint64
+	docVersions map[string]int
+	pushDiags   map[string][]Diagnostic
+	pushSeen    map[string]bool
 }
 
 const startupTimeout = 30 * time.Second
@@ -68,9 +66,10 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 		rootURI:    FileURI(workingDir),
 		workingDir: workingDir,
 		cancelFunc: cancel,
-		openedDocs: make(map[string]uint64),
-		pushDiags:  make(map[string][]Diagnostic),
-		pushSeen:   make(map[string]bool),
+		openedDocs:  make(map[string]uint64),
+		docVersions: make(map[string]int),
+		pushDiags:   make(map[string][]Diagnostic),
+		pushSeen:    make(map[string]bool),
 	}
 
 	framer := jsonrpc2.HeaderFramer()
@@ -84,8 +83,10 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 					var params PublishDiagnosticsParams
 					if err := json.Unmarshal(req.Params, &params); err == nil {
 						session.mu.Lock()
-						session.pushDiags[params.URI] = params.Diagnostics
-						session.pushSeen[params.URI] = true
+						if params.Version == 0 || params.Version >= session.docVersions[params.URI] {
+							session.pushDiags[params.URI] = params.Diagnostics
+							session.pushSeen[params.URI] = true
+						}
 						session.mu.Unlock()
 					}
 					return nil, nil
@@ -198,10 +199,17 @@ func (s *Session) OpenDocument(ctx context.Context, filePath string) (string, er
 			return uri, nil
 		}
 
+		s.mu.Lock()
+		version := s.docVersions[uri] + 1
+		s.docVersions[uri] = version
+		delete(s.pushDiags, uri)
+		delete(s.pushSeen, uri)
+		s.mu.Unlock()
+
 		changeParams := DidChangeTextDocumentParams{
 			TextDocument: VersionedTextDocumentIdentifier{
 				URI:     uri,
-				Version: int(atomic.AddInt64(&s.docVersion, 1)),
+				Version: version,
 			},
 			ContentChanges: []TextDocumentContentChangeEvent{{Text: string(content)}},
 		}
@@ -236,6 +244,7 @@ func (s *Session) OpenDocument(ctx context.Context, filePath string) (string, er
 
 	s.mu.Lock()
 	s.openedDocs[uri] = sum
+	s.docVersions[uri] = 1
 	s.mu.Unlock()
 
 	return uri, nil

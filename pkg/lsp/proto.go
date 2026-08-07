@@ -83,6 +83,7 @@ type DidSaveTextDocumentParams struct {
 
 type PublishDiagnosticsParams struct {
 	URI         string       `json:"uri"`
+	Version     int          `json:"version,omitempty"`
 	Diagnostics []Diagnostic `json:"diagnostics"`
 }
 
