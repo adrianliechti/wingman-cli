@@ -1302,10 +1302,14 @@ func (a *Agent) UnstableCreateElicitation(ctx context.Context, p acpsdk.Unstable
 		return acpsdk.UnstableCreateElicitationResponse{Decline: &acpsdk.UnstableCreateElicitationDecline{Action: "decline"}}, nil
 	}
 
-	// The SDK's form elicitation carries no session id, but the web UI
-	// routes prompts per session — attribute it to the session with the
-	// running turn.
-	if sid := a.activeSessionID(); sid != "" {
+	// acp-go-sdk v0.13.5 does not expose top-level session scope for form
+	// elicitations. Native adapters preserve it as metadata; use that exact
+	// scope before falling back to the only active turn.
+	sid := elicitationSessionID(p.Form.Meta)
+	if sid == "" || a.session(sid) == nil {
+		sid = a.activeSessionID()
+	}
+	if sid != "" {
 		ctx = code.WithSessionID(ctx, sid)
 	}
 	res, err := ui.Elicit(ctx, tool.ElicitRequest{
@@ -1326,6 +1330,11 @@ func (a *Agent) UnstableCreateElicitation(ctx context.Context, p acpsdk.Unstable
 		return acpsdk.UnstableCreateElicitationResponse{Decline: &acpsdk.UnstableCreateElicitationDecline{Action: "decline"}}, nil
 	}
 	return cancel, nil
+}
+
+func elicitationSessionID(meta map[string]any) string {
+	sid, _ := meta["sessionId"].(string)
+	return sid
 }
 
 func (a *Agent) activeSessionID() string {

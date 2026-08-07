@@ -26,6 +26,13 @@ type session struct {
 	additionalDirectories []string
 	currentTurnID         string
 	cancelTurn            context.CancelFunc
+	interruptPending      bool
+	interruptIssued       bool
+}
+
+type turnStartResult struct {
+	response turnStartResponse
+	err      error
 }
 
 func newSession(id acp.SessionId, model, effort string, additionalDirectories []string) *session {
@@ -40,13 +47,19 @@ func (s *session) interrupt(ctx context.Context, cc *codexClient) {
 	s.mu.Lock()
 	turnID := s.currentTurnID
 	cancel := s.cancelTurn
+	if cancel != nil && turnID == "" {
+		s.interruptPending = true
+	}
+	if turnID != "" {
+		s.interruptIssued = true
+	}
 	s.mu.Unlock()
 
-	if turnID != "" {
-		_ = cc.turnInterrupt(ctx, turnInterruptParams{ThreadID: string(s.id), TurnID: turnID})
-	}
 	if cancel != nil {
 		cancel()
+	}
+	if turnID != "" {
+		_ = cc.turnInterrupt(ctx, turnInterruptParams{ThreadID: string(s.id), TurnID: turnID})
 	}
 }
 
@@ -91,6 +104,8 @@ func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, cc
 
 	s.mu.Lock()
 	s.cancelTurn = cancel
+	s.interruptPending = false
+	s.interruptIssued = false
 	model := s.modelID
 	effort := s.effort
 	mode := modeFor(s.mode)
@@ -101,11 +116,14 @@ func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, cc
 		s.mu.Lock()
 		s.currentTurnID = ""
 		s.cancelTurn = nil
+		s.interruptPending = false
+		s.interruptIssued = false
 		s.mu.Unlock()
 	}()
 
 	disp := newEventDispatcher(turnCtx, conn, s.id)
 	disp.planUpdates = clientCapabilities.PlanCapabilities != nil
+	defer flushPendingPlans(ctx, disp)
 	app := newApprover(turnCtx, conn, s.id, clientCapabilities)
 	cc.setThreadHandlers(threadID, &threadHandlers{
 		onNotification: func(method string, params json.RawMessage) {
@@ -133,16 +151,44 @@ func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, cc
 			params.Effort = effort
 		}
 
-		resp, err := cc.turnStart(turnCtx, params)
-		if err != nil {
-			return turnCompleted{}, fmt.Errorf("turn/start: %w", err)
+		startCtx, cancelStart := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		started := make(chan turnStartResult, 1)
+		go func() {
+			resp, err := cc.turnStart(startCtx, params)
+			started <- turnStartResult{response: resp, err: err}
+		}()
+
+		var result turnStartResult
+		select {
+		case result = <-started:
+			cancelStart()
+		case <-turnCtx.Done():
+			go interruptLateStartedTurn(cc, threadID, started, cancelStart)
+			return turnCompleted{}, turnCtx.Err()
 		}
+		if result.err != nil {
+			return turnCompleted{}, fmt.Errorf("turn/start: %w", result.err)
+		}
+		resp := result.response
 		s.mu.Lock()
-		s.currentTurnID = resp.Turn.ID
+		interruptPending := s.interruptPending
+		if !interruptPending {
+			s.currentTurnID = resp.Turn.ID
+		}
 		s.mu.Unlock()
+		if interruptPending || turnCtx.Err() != nil {
+			go interruptTurnSoon(cc, threadID, resp.Turn.ID)
+			return turnCompleted{}, context.Canceled
+		}
 
 		select {
 		case <-turnCtx.Done():
+			s.mu.Lock()
+			interruptIssued := s.interruptIssued
+			s.mu.Unlock()
+			if !interruptIssued {
+				go interruptTurnSoon(cc, threadID, resp.Turn.ID)
+			}
 			return turnCompleted{}, turnCtx.Err()
 		case tc := <-disp.done:
 			s.mu.Lock()
@@ -192,6 +238,29 @@ func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, cc
 		return "", nil, err
 	}
 	return stopReasonFor(tc.Turn.Status), disp.getUsage(), nil
+}
+
+func interruptLateStartedTurn(cc *codexClient, threadID string, started <-chan turnStartResult, cancelStart context.CancelFunc) {
+	defer cancelStart()
+	result := <-started
+	if result.err == nil {
+		interruptTurnSoon(cc, threadID, result.response.Turn.ID)
+	}
+}
+
+func interruptTurnSoon(cc *codexClient, threadID, turnID string) {
+	if turnID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = cc.turnInterrupt(ctx, turnInterruptParams{ThreadID: threadID, TurnID: turnID})
+}
+
+func flushPendingPlans(ctx context.Context, disp *eventDispatcher) {
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	disp.flushPendingPlanUpdates(cleanup)
 }
 
 func requestPlanImplementation(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, plan *completedPlan) bool {

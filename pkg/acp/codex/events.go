@@ -30,6 +30,7 @@ type eventDispatcher struct {
 	planEmittedAt   map[string]time.Time
 	lastGoal        string
 	planUpdates     bool
+	planMu          sync.Mutex
 
 	mu            sync.Mutex
 	failure       error
@@ -133,10 +134,14 @@ func isFatalTurnError(info json.RawMessage) bool {
 }
 
 func (d *eventDispatcher) update(u acp.SessionUpdate) {
-	if d.ctx.Err() != nil {
+	d.updateWithContext(d.ctx, u)
+}
+
+func (d *eventDispatcher) updateWithContext(ctx context.Context, u acp.SessionUpdate) {
+	if ctx.Err() != nil {
 		return
 	}
-	_ = d.conn.SessionUpdate(d.ctx, acp.SessionNotification{
+	_ = d.conn.SessionUpdate(ctx, acp.SessionNotification{
 		SessionId: d.sessionID,
 		Update:    u,
 	})
@@ -288,12 +293,13 @@ func (d *eventDispatcher) handle(method string, params json.RawMessage) {
 			Delta  string `json:"delta"`
 		}
 		if json.Unmarshal(params, &p) == nil && p.ItemID != "" && p.Delta != "" {
+			d.planMu.Lock()
 			d.planText[p.ItemID] += p.Delta
-			if d.planUpdates {
-				now := time.Now()
-				if d.planEmitted[p.ItemID] == "" || now.Sub(d.planEmittedAt[p.ItemID]) >= 100*time.Millisecond {
-					d.emitMarkdownPlan(p.ItemID, d.planText[p.ItemID])
-				}
+			text := d.planText[p.ItemID]
+			emit := d.planUpdates && (d.planEmitted[p.ItemID] == "" || time.Since(d.planEmittedAt[p.ItemID]) >= 100*time.Millisecond)
+			d.planMu.Unlock()
+			if emit {
+				d.emitMarkdownPlan(d.ctx, p.ItemID, text)
 			}
 		}
 
@@ -341,6 +347,7 @@ func (d *eventDispatcher) handle(method string, params json.RawMessage) {
 	case "turn/completed":
 		var tc turnCompleted
 		if json.Unmarshal(params, &tc) == nil {
+			d.flushPendingPlanUpdates(d.ctx)
 			select {
 			case d.done <- tc:
 			default:
@@ -612,21 +619,25 @@ func (d *eventDispatcher) handleItemCompleted(params json.RawMessage) {
 			Text string `json:"text"`
 		}
 		_ = json.Unmarshal(env.Item, &it)
+		d.planMu.Lock()
 		text := it.Text
 		if text == "" {
 			text = d.planText[id]
 		}
 		delete(d.planText, id)
+		d.planMu.Unlock()
 		if text != "" {
 			if d.planUpdates {
-				d.emitMarkdownPlan(id, text)
+				d.emitMarkdownPlan(d.ctx, id, text)
 			} else {
 				d.update(acp.UpdateAgentMessageText("Plan:\n" + text))
 			}
 			d.setCompletedPlan(id, text)
 		}
+		d.planMu.Lock()
 		delete(d.planEmitted, id)
 		delete(d.planEmittedAt, id)
+		d.planMu.Unlock()
 
 	case "exitedReviewMode":
 		var it struct {
@@ -653,16 +664,37 @@ func (d *eventDispatcher) handleItemCompleted(params json.RawMessage) {
 	}
 }
 
-func (d *eventDispatcher) emitMarkdownPlan(itemID, text string) {
-	if text == "" || d.planEmitted[itemID] == text {
+func (d *eventDispatcher) emitMarkdownPlan(ctx context.Context, itemID, text string) {
+	if text == "" {
+		return
+	}
+	d.planMu.Lock()
+	if d.planEmitted[itemID] == text {
+		d.planMu.Unlock()
 		return
 	}
 	d.planEmitted[itemID] = text
 	d.planEmittedAt[itemID] = time.Now()
-	d.update(acp.SessionUpdate{PlanUpdate: &acp.SessionPlanUpdate{
+	d.planMu.Unlock()
+	d.updateWithContext(ctx, acp.SessionUpdate{PlanUpdate: &acp.SessionPlanUpdate{
 		SessionUpdate: "plan_update",
 		Plan:          acp.NewPlanUpdateContentMarkdown(acp.PlanId(itemID), text),
 	}})
+}
+
+func (d *eventDispatcher) flushPendingPlanUpdates(ctx context.Context) {
+	if !d.planUpdates {
+		return
+	}
+	d.planMu.Lock()
+	pending := make(map[string]string, len(d.planText))
+	for itemID, text := range d.planText {
+		pending[itemID] = text
+	}
+	d.planMu.Unlock()
+	for itemID, text := range pending {
+		d.emitMarkdownPlan(ctx, itemID, text)
+	}
 }
 
 func mcpRawOutput(result, mcpErr json.RawMessage) map[string]any {

@@ -33,6 +33,19 @@ type recordingClient struct {
 	updates       chan struct{}
 }
 
+func TestClassifyPromptStreamError(t *testing.T) {
+	reason, err := classifyPromptStreamError(context.Canceled)
+	if err != nil || reason != acpsdk.StopReasonCancelled {
+		t.Fatalf("cancelled stream = %q, %v", reason, err)
+	}
+
+	want := errors.New("model stream failed")
+	reason, err = classifyPromptStreamError(want)
+	if !errors.Is(err, want) || reason != "" {
+		t.Fatalf("failed stream = %q, %v", reason, err)
+	}
+}
+
 func (c *recordingClient) RequestPermission(_ context.Context, p acpsdk.RequestPermissionRequest) (acpsdk.RequestPermissionResponse, error) {
 	c.mu.Lock()
 	c.permissionIDs = append(c.permissionIDs, p.ToolCall.ToolCallId)

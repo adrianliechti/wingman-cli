@@ -310,9 +310,15 @@ func (a *Agent) Steer(ctx context.Context, sessionID acp.SessionId, prompt []acp
 
 func (a *Agent) Cancel(ctx context.Context, params acp.CancelNotification) error {
 	if s := a.lookup(params.SessionId); s != nil {
-		s.interrupt(ctx, a.codex)
+		a.interruptSession(ctx, s)
 	}
 	return nil
+}
+
+func (a *Agent) interruptSession(ctx context.Context, s *session) {
+	interruptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	s.interrupt(interruptCtx, a.codex)
 }
 
 func (a *Agent) SetSessionMode(_ context.Context, params acp.SetSessionModeRequest) (acp.SetSessionModeResponse, error) {
@@ -410,7 +416,7 @@ func (a *Agent) CloseSession(ctx context.Context, params acp.CloseSessionRequest
 	delete(a.sessions, params.SessionId)
 	a.mu.Unlock()
 	if s != nil {
-		s.interrupt(context.Background(), a.codex)
+		a.interruptSession(ctx, s)
 	}
 	_ = a.codex.threadUnsubscribe(ctx, threadUnsubscribeParams{ThreadID: string(params.SessionId)})
 	return acp.CloseSessionResponse{}, nil
@@ -422,7 +428,7 @@ func (a *Agent) UnstableDeleteSession(ctx context.Context, params acp.UnstableDe
 	delete(a.sessions, params.SessionId)
 	a.mu.Unlock()
 	if s != nil {
-		s.interrupt(ctx, a.codex)
+		a.interruptSession(ctx, s)
 	}
 	_ = a.codex.threadUnsubscribe(ctx, threadUnsubscribeParams{ThreadID: string(params.SessionId)})
 	if err := a.codex.threadArchive(ctx, threadArchiveParams{ThreadID: string(params.SessionId)}); err != nil {

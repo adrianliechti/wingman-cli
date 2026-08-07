@@ -347,11 +347,15 @@ func TestSteerRequiresInflightTurn(t *testing.T) {
 }
 
 type fakeUI struct {
-	elicit  func(tool.ElicitRequest) (tool.ElicitResult, error)
-	confirm func(string) (bool, error)
+	elicit        func(tool.ElicitRequest) (tool.ElicitResult, error)
+	elicitContext func(context.Context, tool.ElicitRequest) (tool.ElicitResult, error)
+	confirm       func(string) (bool, error)
 }
 
-func (u *fakeUI) Elicit(_ context.Context, req tool.ElicitRequest) (tool.ElicitResult, error) {
+func (u *fakeUI) Elicit(ctx context.Context, req tool.ElicitRequest) (tool.ElicitResult, error) {
+	if u.elicitContext != nil {
+		return u.elicitContext(ctx, req)
+	}
 	if u.elicit == nil {
 		return tool.ElicitResult{}, errors.New("elicit unsupported")
 	}
@@ -445,6 +449,34 @@ func TestUnstableCreateElicitationFlow(t *testing.T) {
 	a.SetUI(&fakeUI{})
 	if resp, _ = a.UnstableCreateElicitation(context.Background(), acp.UnstableCreateElicitationRequest{Form: form}); resp.Cancel == nil {
 		t.Fatalf("elicit error should cancel, got %#v", resp)
+	}
+}
+
+func TestFormElicitationUsesMetadataSessionWithConcurrentTurns(t *testing.T) {
+	a := &Agent{sessions: map[string]*sessionState{
+		"session-1": {id: "session-1", inflight: &turn{}},
+		"session-2": {id: "session-2", inflight: &turn{}},
+	}}
+	seen := ""
+	a.SetUI(&fakeUI{elicitContext: func(ctx context.Context, _ tool.ElicitRequest) (tool.ElicitResult, error) {
+		seen = code.SessionIDFromContext(ctx)
+		return tool.ElicitResult{Action: tool.ElicitDecline}, nil
+	}})
+
+	form := &acp.UnstableCreateElicitationForm{
+		Meta:    map[string]any{"sessionId": "session-2"},
+		Mode:    "form",
+		Message: "Choose",
+		RequestedSchema: acp.UnstableElicitationSchema{
+			Type:       acp.UnstableElicitationSchemaTypeObject,
+			Properties: map[string]any{},
+		},
+	}
+	if _, err := a.UnstableCreateElicitation(context.Background(), acp.UnstableCreateElicitationRequest{Form: form}); err != nil {
+		t.Fatal(err)
+	}
+	if seen != "session-2" {
+		t.Fatalf("elicitation session = %q, want session-2", seen)
 	}
 }
 

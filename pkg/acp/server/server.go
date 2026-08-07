@@ -637,17 +637,24 @@ func (s *Server) Prompt(ctx context.Context, params acpsdk.PromptRequest) (acpsd
 	}
 	for msg, err := range stream {
 		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				return promptResponse(sess, acpsdk.StopReasonCancelled, params.MessageId), nil
+			reason, streamErr := classifyPromptStreamError(err)
+			if streamErr != nil {
+				return acpsdk.PromptResponse{}, streamErr
 			}
-			notify(acpsdk.UpdateAgentMessageText("error: " + err.Error()))
-			return promptResponse(sess, acpsdk.StopReasonEndTurn, params.MessageId), nil
+			return promptResponse(sess, reason, params.MessageId), nil
 		}
 		for _, c := range msg.Content {
 			notifyContent(notify, agent.RoleAssistant, c)
 		}
 	}
 	return promptResponse(sess, acpsdk.StopReasonEndTurn, params.MessageId), nil
+}
+
+func classifyPromptStreamError(err error) (acpsdk.StopReason, error) {
+	if errors.Is(err, context.Canceled) {
+		return acpsdk.StopReasonCancelled, nil
+	}
+	return "", err
 }
 
 func promptResponse(sess *sessionEntry, reason acpsdk.StopReason, messageID *string) acpsdk.PromptResponse {
