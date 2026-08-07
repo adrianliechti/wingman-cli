@@ -53,6 +53,14 @@ type Import struct {
 	ToModule string `json:"to,omitempty"`
 }
 
+// CoverageIssue records a source file that discovery found but the structural
+// index could not fully process. Content search still scans these files and
+// returns their hits as raw matches.
+type CoverageIssue struct {
+	File   string `json:"file"`
+	Reason string `json:"reason"`
+}
+
 func kindFromTag(tagKind string) (Kind, bool) {
 	switch tagKind {
 	case "definition.function":

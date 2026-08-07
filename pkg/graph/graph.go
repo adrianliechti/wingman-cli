@@ -109,16 +109,32 @@ func sortedKeys(set map[string]bool) []string {
 }
 
 type SearchOpts struct {
-	Query string
-	Kind  Kind
-	File  string
-	Limit int
+	Query  string
+	Kind   Kind
+	File   string
+	Limit  int
+	Offset int
+}
+
+type SearchResult struct {
+	Nodes   []*Node `json:"nodes"`
+	Total   int     `json:"total"`
+	Offset  int     `json:"offset"`
+	HasMore bool    `json:"has_more"`
 }
 
 func (g *Graph) search(opts SearchOpts) []*Node {
+	return g.searchPage(opts).Nodes
+}
+
+func (g *Graph) searchPage(opts SearchOpts) SearchResult {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 50
+	}
+	offset := opts.Offset
+	if offset < 0 {
+		offset = 0
 	}
 
 	var rx *regexp.Regexp
@@ -159,14 +175,20 @@ func (g *Graph) search(opts SearchOpts) []*Node {
 		return out[i].node.File < out[j].node.File
 	})
 
-	if len(out) > limit {
-		out = out[:limit]
+	total := len(out)
+	if offset > total {
+		offset = total
 	}
-	nodes := make([]*Node, len(out))
-	for i, s := range out {
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	page := out[offset:end]
+	nodes := make([]*Node, len(page))
+	for i, s := range page {
 		nodes[i] = s.node
 	}
-	return nodes
+	return SearchResult{Nodes: nodes, Total: total, Offset: offset, HasMore: end < total}
 }
 
 func (g *Graph) matchScore(n *Node, qLower string, qTokens []string, rx *regexp.Regexp) int {

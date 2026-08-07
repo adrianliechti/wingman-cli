@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ func graphTool(engine *graph.Engine) tool.Tool {
 			"Code knowledge graph (tree-sitter, many languages): definitions and their call/type/import links. Use instead of grep/read loops to find symbols and follow relationships; auto-builds on first use. With a language server, prefer `lsp` for precise definitions/references/types.",
 			"Operations (each uses the field in backticks):",
 			"- search `query`: definitions by name, word tokens (\"update client\" finds UpdateCloudClient), or regex — ranked by relevance; optional `kind`, `file`.",
+			"- search_content `pattern`: literal source search enriched with containing definitions, match lines, and graph rank; deduplicates repeated lines in one symbol and preserves raw hits outside definitions. Set `regex` for RE2 syntax; optional `file`, `glob`, `ignore_case`.",
 			"- trace `symbol`: call paths; `direction` callees (default) or callers; optional `target`, `file`.",
 			"- find_similar `symbol`: functions resembling it (shared callees + name).",
 			"- hierarchy `symbol`: super/sub types and implementers.",
@@ -42,12 +44,30 @@ func graphTool(engine *graph.Engine) tool.Tool {
 			"properties": map[string]any{
 				"operation": map[string]any{
 					"type":        "string",
-					"enum":        []string{"index", "status", "search", "trace", "architecture", "dead_code", "changes", "deps", "hierarchy", "snippet", "tests", "co_changes", "find_similar"},
+					"enum":        []string{"index", "status", "search", "search_content", "trace", "architecture", "dead_code", "changes", "deps", "hierarchy", "snippet", "tests", "co_changes", "find_similar"},
 					"description": "Which operation to run.",
 				},
 				"query": map[string]any{
 					"type":        "string",
 					"description": "search: symbol name, space-separated word tokens, or regex (case-insensitive); results ranked by match quality, kind, and callers.",
+				},
+				"pattern": map[string]any{
+					"type":        "string",
+					"description": "search_content: literal text to find in source files, or an RE2 expression when regex=true.",
+				},
+				"regex": map[string]any{
+					"type":        "boolean",
+					"description": "search_content: interpret pattern as an RE2 regular expression; defaults to false (literal).",
+					"default":     false,
+				},
+				"ignore_case": map[string]any{
+					"type":        "boolean",
+					"description": "search_content: case-insensitive matching.",
+					"default":     false,
+				},
+				"glob": map[string]any{
+					"type":        "string",
+					"description": "search_content: optional source-file glob, e.g. `*.go` or `pkg/**/*.go`.",
 				},
 				"symbol": map[string]any{
 					"type":        "string",
@@ -69,7 +89,7 @@ func graphTool(engine *graph.Engine) tool.Tool {
 				},
 				"file": map[string]any{
 					"type":        "string",
-					"description": "deps: target module/dir/file. co_changes: exact repo-relative path. search/trace/snippet/hierarchy/tests/find_similar: optional path-substring filter.",
+					"description": "deps: target module/dir/file. co_changes: exact repo-relative path. search/search_content/trace/snippet/hierarchy/tests/find_similar: optional path-substring filter.",
 				},
 				"since": map[string]any{
 					"type":        "string",
@@ -81,7 +101,12 @@ func graphTool(engine *graph.Engine) tool.Tool {
 				},
 				"limit": map[string]any{
 					"type":        "integer",
-					"description": "max results — search (default 50), dead_code (100), co_changes/find_similar (15).",
+					"description": "max results — search (default 50), search_content (10), dead_code (100), co_changes/find_similar (15).",
+				},
+				"offset": map[string]any{
+					"type":        "integer",
+					"description": "search/search_content: skip the first N ranked results for pagination.",
+					"default":     0,
 				},
 			},
 			"required":             []string{"operation"},
@@ -96,31 +121,66 @@ func graphTool(engine *graph.Engine) tool.Tool {
 				if err != nil {
 					return "", err
 				}
-				return fmt.Sprintf("Indexed %d files: %d definitions, %d call edges%s.",
-					status.Files, status.Nodes, status.Edges, edgeBreakdown(engine.EdgeStats())), nil
+				return fmt.Sprintf("Indexed %d source files: %d definitions, %d call edges%s.%s",
+					status.Files, status.Nodes, status.Edges, edgeBreakdown(engine.EdgeStats()), formatCoverage(status.Skipped)), nil
 
 			case "status":
 				st := engine.StatusOrLoad()
 				if !st.Indexed {
 					return "Not indexed yet. Run operation \"index\" (or any query auto-builds it).", nil
 				}
-				return fmt.Sprintf("Indexed at %s: %d files, %d definitions, %d call edges%s.",
-					st.IndexedAt.Format(time.RFC3339), st.Files, st.Nodes, st.Edges, edgeBreakdown(engine.EdgeStats())), nil
+				freshness := "fresh"
+				if engine.IsStale(ctx) {
+					freshness = "stale — the next graph query will refresh it"
+				}
+				return fmt.Sprintf("Indexed at %s (%s): %d source files, %d definitions, %d call edges%s.%s",
+					st.IndexedAt.Format(time.RFC3339), freshness, st.Files, st.Nodes, st.Edges, edgeBreakdown(engine.EdgeStats()), formatCoverage(st.Skipped)), nil
 
 			case "search":
 				query, _ := args["query"].(string)
-				limit, _ := tool.IntArg(args, "limit")
-				opts := graph.SearchOpts{
-					Query: query,
-					Kind:  graph.Kind(strings.TrimSpace(stringArg(args, "kind"))),
-					File:  stringArg(args, "file"),
-					Limit: limit,
-				}
-				nodes, err := engine.Search(ctx, opts)
+				limit, _, err := tool.NonNegIntArg(args, "limit")
 				if err != nil {
 					return "", err
 				}
-				return formatNodes(nodes), nil
+				offset, _, err := tool.NonNegIntArg(args, "offset")
+				if err != nil {
+					return "", err
+				}
+				opts := graph.SearchOpts{
+					Query:  query,
+					Kind:   graph.Kind(strings.TrimSpace(stringArg(args, "kind"))),
+					File:   stringArg(args, "file"),
+					Limit:  limit,
+					Offset: offset,
+				}
+				res, err := engine.SearchPage(ctx, opts)
+				if err != nil {
+					return "", err
+				}
+				return formatSearchResult(res), nil
+
+			case "search_content":
+				limit, _, err := tool.NonNegIntArg(args, "limit")
+				if err != nil {
+					return "", err
+				}
+				offset, _, err := tool.NonNegIntArg(args, "offset")
+				if err != nil {
+					return "", err
+				}
+				res, err := engine.SearchContent(ctx, graph.ContentSearchOpts{
+					Pattern:    stringArg(args, "pattern"),
+					Regex:      boolArg(args, "regex"),
+					IgnoreCase: boolArg(args, "ignore_case"),
+					File:       stringArg(args, "file"),
+					Glob:       stringArg(args, "glob"),
+					Limit:      limit,
+					Offset:     offset,
+				})
+				if err != nil {
+					return "", err
+				}
+				return formatContentSearch(res), nil
 
 			case "trace":
 				symbol := strings.TrimSpace(stringArg(args, "symbol"))
@@ -233,7 +293,7 @@ func graphTool(engine *graph.Engine) tool.Tool {
 				return formatSimilar(res), nil
 
 			default:
-				return "", fmt.Errorf("operation must be one of: index, status, search, trace, architecture, dead_code, changes, deps, hierarchy, snippet, tests, co_changes, find_similar")
+				return "", fmt.Errorf("operation must be one of: index, status, search, search_content, trace, architecture, dead_code, changes, deps, hierarchy, snippet, tests, co_changes, find_similar")
 			}
 		},
 	}
@@ -244,6 +304,11 @@ func stringArg(args map[string]any, key string) string {
 	return s
 }
 
+func boolArg(args map[string]any, key string) bool {
+	b, _ := args[key].(bool)
+	return b
+}
+
 func edgeBreakdown(stats map[graph.Provenance]int) string {
 	lsp := stats[graph.ViaLSP]
 	name := stats[graph.ViaName]
@@ -252,6 +317,26 @@ func edgeBreakdown(stats map[graph.Provenance]int) string {
 		return ""
 	}
 	return fmt.Sprintf(" (%d precise, %d name, %d ambiguous)", lsp, name, amb)
+}
+
+func formatCoverage(skipped []graph.CoverageIssue) string {
+	if len(skipped) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\nCoverage: %d source file(s) could not be structurally indexed", len(skipped))
+	shown := skipped
+	if len(shown) > 5 {
+		shown = shown[:5]
+	}
+	for _, issue := range shown {
+		fmt.Fprintf(&b, "\n- %s (%s)", issue.File, issue.Reason)
+	}
+	if len(skipped) > len(shown) {
+		fmt.Fprintf(&b, "\n- … and %d more", len(skipped)-len(shown))
+	}
+	b.WriteString("\nContent search still scans these files and reports unmatched lines as raw hits.")
+	return b.String()
 }
 
 // maxListItems caps how many entries any single rendered list shows, so a
@@ -272,6 +357,56 @@ func formatNodes(nodes []*graph.Node) string {
 	for _, n := range nodes {
 		fmt.Fprintf(&b, "- %s\n", nodeLabel(n))
 	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func formatSearchResult(res graph.SearchResult) string {
+	if res.Total == 0 {
+		return "No matching symbols."
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Showing %d of %d symbol(s) (offset %d):\n", len(res.Nodes), res.Total, res.Offset)
+	for _, n := range res.Nodes {
+		fmt.Fprintf(&b, "- %s\n", nodeLabel(n))
+	}
+	if res.HasMore {
+		fmt.Fprintf(&b, "\nMore results available; call again with `offset=%d`.", res.Offset+len(res.Nodes))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func formatContentSearch(res graph.ContentSearchResult) string {
+	if res.TotalResults == 0 && res.TotalRawResults == 0 {
+		return "No matching source lines."
+	}
+	var b strings.Builder
+	if res.TotalResults > 0 {
+		fmt.Fprintf(&b, "Showing %d of %d containing symbol(s) (offset %d):\n", len(res.Hits), res.TotalResults, res.Offset)
+		for _, hit := range res.Hits {
+			lines := make([]string, len(hit.MatchLines))
+			for i, line := range hit.MatchLines {
+				lines[i] = strconv.Itoa(line)
+			}
+			fmt.Fprintf(&b, "- %s — matches %s; %d caller(s), %d callee(s)\n",
+				nodeLabel(hit.Node), strings.Join(lines, ","), hit.Callers, hit.Callees)
+		}
+		if res.HasMore {
+			fmt.Fprintf(&b, "\nMore symbols available; call again with `offset=%d`.\n", res.Offset+len(res.Hits))
+		}
+	}
+	if len(res.Raw) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "Raw matches outside indexed definitions (%d of %d):\n", len(res.Raw), res.TotalRawResults)
+		for _, hit := range res.Raw {
+			fmt.Fprintf(&b, "- %s:%d: %s\n", hit.File, hit.Line, hit.Content)
+		}
+		if res.RawHasMore {
+			b.WriteString("- … more raw matches omitted; narrow with `file` or `glob`\n")
+		}
+	}
+	fmt.Fprintf(&b, "\nTotal matching source lines: %d.", res.TotalLineHits)
 	return strings.TrimRight(b.String(), "\n")
 }
 

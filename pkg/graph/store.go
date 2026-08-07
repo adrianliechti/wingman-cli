@@ -12,12 +12,14 @@ import (
 // nodes instead of by ID strings repeated twice per edge — on large repos the
 // edge list otherwise dwarfs everything else.
 type snapshot struct {
-	Version   int                 `json:"version"`
-	IndexedAt time.Time           `json:"indexed_at"`
-	Files     map[string]fileMeta `json:"files"`
-	Nodes     []*Node             `json:"nodes"`
-	Edges     []edgeRec           `json:"edges"`
-	Imports   []*Import           `json:"imports,omitempty"`
+	Version      int                 `json:"version"`
+	IndexedAt    time.Time           `json:"indexed_at"`
+	Files        map[string]fileMeta `json:"files"`
+	IndexedFiles int                 `json:"indexed_files"`
+	Skipped      []CoverageIssue     `json:"skipped,omitempty"`
+	Nodes        []*Node             `json:"nodes"`
+	Edges        []edgeRec           `json:"edges"`
+	Imports      []*Import           `json:"imports,omitempty"`
 }
 
 type edgeRec struct {
@@ -27,20 +29,20 @@ type edgeRec struct {
 	Via  Provenance `json:"v,omitempty"`
 }
 
-const snapshotVersion = 3
+const snapshotVersion = 4
 
-func loadSnapshot(path string) (*Graph, map[string]fileMeta, time.Time, error) {
+func loadSnapshot(path string) (*Graph, map[string]fileMeta, int, []CoverageIssue, time.Time, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, nil, time.Time{}, err
+		return nil, nil, 0, nil, time.Time{}, err
 	}
 
 	var snap snapshot
 	if err := json.Unmarshal(data, &snap); err != nil {
-		return nil, nil, time.Time{}, err
+		return nil, nil, 0, nil, time.Time{}, err
 	}
 	if snap.Version != snapshotVersion {
-		return nil, nil, time.Time{}, os.ErrNotExist
+		return nil, nil, 0, nil, time.Time{}, os.ErrNotExist
 	}
 
 	g := &Graph{Nodes: snap.Nodes, Imports: snap.Imports}
@@ -57,10 +59,10 @@ func loadSnapshot(path string) (*Graph, map[string]fileMeta, time.Time, error) {
 		})
 	}
 	g.build()
-	return g, snap.Files, snap.IndexedAt, nil
+	return g, snap.Files, snap.IndexedFiles, snap.Skipped, snap.IndexedAt, nil
 }
 
-func saveSnapshot(path string, g *Graph, files map[string]fileMeta, indexedAt time.Time) error {
+func saveSnapshot(path string, g *Graph, files map[string]fileMeta, indexedFiles int, skipped []CoverageIssue, indexedAt time.Time) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -81,12 +83,14 @@ func saveSnapshot(path string, g *Graph, files map[string]fileMeta, indexedAt ti
 	}
 
 	snap := snapshot{
-		Version:   snapshotVersion,
-		IndexedAt: indexedAt,
-		Files:     files,
-		Nodes:     g.Nodes,
-		Edges:     edges,
-		Imports:   g.Imports,
+		Version:      snapshotVersion,
+		IndexedAt:    indexedAt,
+		Files:        files,
+		IndexedFiles: indexedFiles,
+		Skipped:      skipped,
+		Nodes:        g.Nodes,
+		Edges:        edges,
+		Imports:      g.Imports,
 	}
 
 	data, err := json.Marshal(snap)

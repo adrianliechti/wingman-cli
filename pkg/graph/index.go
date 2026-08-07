@@ -51,9 +51,10 @@ type fileMeta struct {
 }
 
 type indexStats struct {
-	Files int
-	Nodes int
-	Edges int
+	Files   int
+	Nodes   int
+	Edges   int
+	Skipped []CoverageIssue
 }
 
 type indexRef struct {
@@ -72,6 +73,7 @@ type fileResult struct {
 	nodes   []*Node
 	refs    []indexRef
 	imports []rawImport
+	issue   *CoverageIssue
 }
 
 func indexRepo(ctx context.Context, root string, resolver CallResolver) (*Graph, map[string]fileMeta, indexStats, error) {
@@ -85,11 +87,23 @@ func indexRepo(ctx context.Context, root string, resolver CallResolver) (*Graph,
 		return nil, nil, indexStats{}, err
 	}
 
+	// Keep metadata for every discovered source file, including files whose
+	// structure could not be extracted. It drives cache freshness and lets
+	// content search preserve raw hits from graph coverage gaps.
 	files := make(map[string]fileMeta, len(results))
 	var nodes []*Node
 	var refs []indexRef
+	var skipped []CoverageIssue
+	indexedFiles := 0
 	for _, r := range results {
-		files[r.rel] = r.meta
+		if r.meta.Size >= 0 {
+			files[r.rel] = r.meta
+		}
+		if r.issue != nil {
+			skipped = append(skipped, *r.issue)
+			continue
+		}
+		indexedFiles++
 		nodes = append(nodes, r.nodes...)
 		refs = append(refs, r.refs...)
 	}
@@ -165,7 +179,8 @@ func indexRepo(ctx context.Context, root string, resolver CallResolver) (*Graph,
 
 	g.build()
 
-	stats := indexStats{Files: len(files), Nodes: len(g.Nodes), Edges: len(g.Edges)}
+	sort.Slice(skipped, func(i, j int) bool { return skipped[i].File < skipped[j].File })
+	stats := indexStats{Files: indexedFiles, Nodes: len(g.Nodes), Edges: len(g.Edges), Skipped: skipped}
 	return g, files, stats, nil
 }
 
@@ -280,47 +295,57 @@ func (ex *extractor) tagger(entry *grammars.LangEntry) *ts.Tagger {
 }
 
 func (ex *extractor) processFile(root, absPath string) *fileResult {
-	entry := grammars.DetectLanguage(filepath.Base(absPath))
-	if entry == nil {
-		return nil
-	}
-	tagger := ex.tagger(entry)
-	if tagger == nil {
-		return nil
-	}
-
-	info, err := os.Stat(absPath)
-	if err != nil || info.Size() == 0 || info.Size() > maxFileBytes {
-		return nil
-	}
-	src, err := os.ReadFile(absPath)
-	if err != nil || looksMinified(src) {
-		return nil
-	}
-
-	tree, err := ex.parser(entry).Parse(src)
-	if err != nil {
-		return nil
-	}
-	defer tree.Release()
-	rn := tree.RootNode()
-	if rn == nil {
-		return nil
-	}
-
 	rel, err := filepath.Rel(root, absPath)
 	if err != nil {
 		rel = absPath
 	}
 	rel = filepath.ToSlash(rel)
+	res := &fileResult{rel: rel, meta: fileMeta{Size: -1}}
+	fail := func(reason string) *fileResult {
+		res.issue = &CoverageIssue{File: rel, Reason: reason}
+		return res
+	}
+
+	entry := grammars.DetectLanguage(filepath.Base(absPath))
+	if entry == nil {
+		return fail("unsupported_language")
+	}
+	tagger := ex.tagger(entry)
+	if tagger == nil {
+		return fail("no_tags_query")
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return fail("stat_failed")
+	}
+	res.meta = fileMeta{MTime: info.ModTime().UnixNano(), Size: info.Size()}
+	if info.Size() == 0 {
+		return fail("empty")
+	}
+	if info.Size() > maxFileBytes {
+		return fail("oversized")
+	}
+	src, err := os.ReadFile(absPath)
+	if err != nil {
+		return fail("read_failed")
+	}
+	if looksMinified(src) {
+		return fail("minified")
+	}
+
+	tree, err := ex.parser(entry).Parse(src)
+	if err != nil {
+		return fail("parse_failed")
+	}
+	defer tree.Release()
+	rn := tree.RootNode()
+	if rn == nil {
+		return fail("empty_syntax_tree")
+	}
 
 	li := newLineIndex(src)
 	tags := tagger.TagTree(tree)
-
-	res := &fileResult{
-		rel:  rel,
-		meta: fileMeta{MTime: info.ModTime().UnixNano(), Size: info.Size()},
-	}
 
 	type defSpan struct {
 		id    string

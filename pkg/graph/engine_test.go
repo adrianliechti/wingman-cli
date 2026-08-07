@@ -85,6 +85,55 @@ func TestIndexAndSearch(t *testing.T) {
 	}
 }
 
+func TestSearchPagination(t *testing.T) {
+	e := newTestEngine(t)
+	ctx := context.Background()
+	if _, err := e.Index(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := e.SearchPage(ctx, SearchOpts{Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Nodes) != 2 || first.Total <= len(first.Nodes) || !first.HasMore {
+		t.Fatalf("unexpected first page: %+v", first)
+	}
+	second, err := e.SearchPage(ctx, SearchOpts{Limit: 2, Offset: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Nodes) == 0 || second.Offset != 2 {
+		t.Fatalf("unexpected second page: %+v", second)
+	}
+	if first.Nodes[0].ID == second.Nodes[0].ID || first.Nodes[1].ID == second.Nodes[0].ID {
+		t.Fatalf("pagination repeated a result: first=%v second=%v", first.Nodes, second.Nodes)
+	}
+}
+
+func TestSearchRefreshesStaleCache(t *testing.T) {
+	e := newTestEngine(t)
+	ctx := context.Background()
+	if _, err := e.Index(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, e.root, "added.go", "package main\n\nfunc freshlyAdded() {}\n")
+	if !e.IsStale(ctx) {
+		t.Fatal("expected new source file to make graph stale")
+	}
+	got, err := e.Search(ctx, SearchOpts{Query: "freshlyAdded"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Name != "freshlyAdded" {
+		t.Fatalf("stale graph did not refresh: %+v", got)
+	}
+	if e.IsStale(ctx) {
+		t.Fatal("graph remained stale after query refresh")
+	}
+}
+
 func TestTraceCallPath(t *testing.T) {
 	e := newTestEngine(t)
 	ctx := context.Background()

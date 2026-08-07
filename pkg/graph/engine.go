@@ -22,10 +22,12 @@ type Engine struct {
 
 	buildMu sync.Mutex
 
-	mu        sync.RWMutex
-	graph     *Graph
-	files     map[string]fileMeta
-	indexedAt time.Time
+	mu           sync.RWMutex
+	graph        *Graph
+	files        map[string]fileMeta
+	indexedFiles int
+	skipped      []CoverageIssue
+	indexedAt    time.Time
 }
 
 type Option func(*Engine)
@@ -48,6 +50,7 @@ type Status struct {
 	Files     int
 	Nodes     int
 	Edges     int
+	Skipped   []CoverageIssue
 }
 
 func (e *Engine) Status() Status {
@@ -59,9 +62,10 @@ func (e *Engine) Status() Status {
 	return Status{
 		Indexed:   true,
 		IndexedAt: e.indexedAt,
-		Files:     len(e.files),
+		Files:     e.indexedFiles,
 		Nodes:     len(e.graph.Nodes),
 		Edges:     len(e.graph.Edges),
+		Skipped:   append([]CoverageIssue(nil), e.skipped...),
 	}
 }
 
@@ -95,7 +99,7 @@ func (e *Engine) tryLoadCache() *Graph {
 		return g
 	}
 
-	loaded, files, at, err := loadSnapshot(e.cachePath)
+	loaded, files, indexedFiles, skipped, at, err := loadSnapshot(e.cachePath)
 	if err != nil {
 		return nil
 	}
@@ -105,6 +109,8 @@ func (e *Engine) tryLoadCache() *Graph {
 	if e.graph == nil {
 		e.graph = loaded
 		e.files = files
+		e.indexedFiles = indexedFiles
+		e.skipped = skipped
 		e.indexedAt = at
 	}
 	return e.graph
@@ -143,7 +149,7 @@ func (e *Engine) Index(ctx context.Context) (Status, error) {
 }
 
 func (e *Engine) indexLocked(ctx context.Context) (Status, error) {
-	g, files, _, err := indexRepo(ctx, e.root, e.resolver)
+	g, files, stats, err := indexRepo(ctx, e.root, e.resolver)
 	if err != nil {
 		return Status{}, err
 	}
@@ -153,18 +159,20 @@ func (e *Engine) indexLocked(ctx context.Context) (Status, error) {
 	e.mu.Lock()
 	e.graph = g
 	e.files = files
+	e.indexedFiles = stats.Files
+	e.skipped = stats.Skipped
 	e.indexedAt = now
 	e.mu.Unlock()
 
 	if e.cachePath != "" {
-		_ = saveSnapshot(e.cachePath, g, files, now)
+		_ = saveSnapshot(e.cachePath, g, files, stats.Files, stats.Skipped, now)
 	}
 
 	return e.Status(), nil
 }
 
 func (e *Engine) ensureIndexed(ctx context.Context) (*Graph, error) {
-	if g := e.tryLoadCache(); g != nil {
+	if g := e.tryLoadCache(); g != nil && !e.IsStale(ctx) {
 		return g, nil
 	}
 
@@ -174,7 +182,7 @@ func (e *Engine) ensureIndexed(ctx context.Context) (*Graph, error) {
 	e.mu.RLock()
 	g := e.graph
 	e.mu.RUnlock()
-	if g != nil {
+	if g != nil && !e.IsStale(ctx) {
 		return g, nil
 	}
 
@@ -188,14 +196,56 @@ func (e *Engine) ensureIndexed(ctx context.Context) (*Graph, error) {
 	return g, nil
 }
 
+// IsStale reports whether the cached graph's discovered source-file set or
+// any file's size/mtime differs from the workspace. A false result when no
+// graph exists means "not indexed", not "fresh".
+func (e *Engine) IsStale(ctx context.Context) bool {
+	if e.tryLoadCache() == nil {
+		return false
+	}
+
+	e.mu.RLock()
+	files := make(map[string]fileMeta, len(e.files))
+	for name, meta := range e.files {
+		files[name] = meta
+	}
+	e.mu.RUnlock()
+
+	paths, err := collectFiles(ctx, e.root)
+	if err != nil || len(paths) != len(files) {
+		return true
+	}
+	for _, abs := range paths {
+		rel, err := filepath.Rel(e.root, abs)
+		if err != nil {
+			return true
+		}
+		rel = filepath.ToSlash(rel)
+		want, ok := files[rel]
+		if !ok {
+			return true
+		}
+		info, err := os.Stat(abs)
+		if err != nil || want.Size != info.Size() || want.MTime != info.ModTime().UnixNano() {
+			return true
+		}
+	}
+	return false
+}
+
 func (e *Engine) Search(ctx context.Context, opts SearchOpts) ([]*Node, error) {
+	res, err := e.SearchPage(ctx, opts)
+	return res.Nodes, err
+}
+
+func (e *Engine) SearchPage(ctx context.Context, opts SearchOpts) (SearchResult, error) {
 	g, err := e.ensureIndexed(ctx)
 	if err != nil {
-		return nil, err
+		return SearchResult{}, err
 	}
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return g.search(opts), nil
+	return g.searchPage(opts), nil
 }
 
 type TraceResult struct {

@@ -27,7 +27,7 @@ func TestBenchIndex(t *testing.T) {
 	indexed := time.Since(start)
 
 	cache := filepath.Join(t.TempDir(), "graph.json")
-	if err := saveSnapshot(cache, g, files, time.Now()); err != nil {
+	if err := saveSnapshot(cache, g, files, stats.Files, stats.Skipped, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	fi, _ := os.Stat(cache)
