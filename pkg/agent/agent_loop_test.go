@@ -49,10 +49,12 @@ func TestSendLimitsRunawayToolCallRounds(t *testing.T) {
 	})
 
 	var executions atomic.Int64
+	var toolSnapshots atomic.Int64
 	a := &Agent{Config: &Config{
 		client:   &client,
 		MaxTurns: 3,
 		Tools: func() []tool.Tool {
+			toolSnapshots.Add(1)
 			return []tool.Tool{{
 				Name: "loop",
 				Execute: func(context.Context, map[string]any) (string, error) {
@@ -82,6 +84,9 @@ func TestSendLimitsRunawayToolCallRounds(t *testing.T) {
 	}
 	if got := executions.Load(); got != 3 {
 		t.Fatalf("tool executions = %d, want 3", got)
+	}
+	if got := toolSnapshots.Load(); got != 1 {
+		t.Fatalf("tool snapshots = %d, want 1 per run", got)
 	}
 }
 

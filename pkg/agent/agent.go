@@ -117,6 +117,11 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 		maxTurns = DefaultMaxTurns
 	}
 
+	var tools []tool.Tool
+	if a.Tools != nil {
+		tools = a.Tools()
+	}
+
 	return func(yield func(Message, error) bool) {
 
 		defer func() {
@@ -152,11 +157,6 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 			instructions := ""
 			if a.Instructions != nil {
 				instructions = a.Instructions()
-			}
-
-			var tools []tool.Tool
-			if a.Tools != nil {
-				tools = a.Tools()
 			}
 
 			req := &request{

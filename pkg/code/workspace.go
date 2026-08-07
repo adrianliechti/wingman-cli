@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -66,11 +67,14 @@ type Workspace struct {
 
 	warmupOnce sync.Once
 
-	mu         sync.RWMutex
-	closed     bool
-	mcpTools   []tool.Tool
-	lspTools   []tool.Tool
-	graphTools []tool.Tool
+	mu               sync.RWMutex
+	closed           bool
+	mcpToolsByServer map[string][]tool.Tool
+	lspTools         []tool.Tool
+	graphTools       []tool.Tool
+
+	mcpCatalogMu     sync.Mutex
+	mcpRefreshCancel context.CancelFunc
 
 	// LSP calls may include server startup and network round-trips. Keep their
 	// lifetime lock separate from workspace state so a pending manager swap or
@@ -168,18 +172,105 @@ func (w *Workspace) WarmUp() {
 }
 
 func (w *Workspace) InitMCP(ctx context.Context) error {
-	if w.MCP == nil {
+	w.mu.RLock()
+	manager := w.MCP
+	closed := w.closed
+	w.mu.RUnlock()
+	if manager == nil || closed {
 		return nil
 	}
 
-	connectErr := w.MCP.Connect(ctx)
-	mcpTools, toolsErr := toolmcp.Tools(ctx, w.MCP)
+	w.mcpCatalogMu.Lock()
+	defer w.mcpCatalogMu.Unlock()
+	w.startMCPToolRefreshes(manager)
+	connectErr := manager.Connect(ctx)
+
+	sessions := manager.Sessions()
+	toolsByServer := make(map[string][]tool.Tool)
+	toolsErrs := []error{connectErr}
+	for _, serverName := range slices.Sorted(maps.Keys(sessions)) {
+		session := sessions[serverName]
+		tools, err := toolmcp.ToolsForServer(ctx, serverName, session)
+		if err != nil {
+			toolsErrs = append(toolsErrs, fmt.Errorf("list MCP tools from %s: %w", serverName, err))
+			continue
+		}
+		toolsByServer[serverName] = tools
+	}
 
 	w.mu.Lock()
-	w.mcpTools = mcpTools
+	if !w.closed {
+		w.mcpToolsByServer = toolsByServer
+	}
 	w.mu.Unlock()
+	return errors.Join(toolsErrs...)
+}
 
-	return errors.Join(connectErr, toolsErr)
+func (w *Workspace) startMCPToolRefreshes(manager *mcp.Manager) {
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		return
+	}
+	if w.mcpRefreshCancel != nil {
+		w.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	w.mcpRefreshCancel = cancel
+	manager.SetToolListChangedHandler(func(serverName string) {
+		w.scheduleMCPToolRefresh(ctx, manager, serverName)
+	})
+	w.mu.Unlock()
+}
+
+func (w *Workspace) scheduleMCPToolRefresh(ctx context.Context, manager *mcp.Manager, serverName string) {
+	if ctx == nil {
+		return
+	}
+	go w.refreshMCPServerTools(ctx, manager, serverName)
+}
+
+func (w *Workspace) refreshMCPServerTools(ctx context.Context, manager *mcp.Manager, serverName string) {
+	w.mcpCatalogMu.Lock()
+	defer w.mcpCatalogMu.Unlock()
+	if ctx.Err() != nil {
+		return
+	}
+
+	session := manager.Session(serverName)
+	if session == nil {
+		return
+	}
+
+	tools, err := toolmcp.ToolsForServer(ctx, serverName, session)
+	if err != nil {
+		if ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to refresh tools from MCP server %s: %v\n", serverName, err)
+		}
+		return
+	}
+	if manager.Session(serverName) != session {
+		return
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return
+	}
+	if w.mcpToolsByServer == nil {
+		w.mcpToolsByServer = make(map[string][]tool.Tool)
+	}
+	w.mcpToolsByServer[serverName] = tools
+}
+
+func flattenMCPTools(byServer map[string][]tool.Tool) []tool.Tool {
+	var tools []tool.Tool
+	for _, serverName := range slices.Sorted(maps.Keys(byServer)) {
+		tools = append(tools, byServer[serverName]...)
+	}
+	return tools
 }
 
 func (w *Workspace) Close() {
@@ -197,15 +288,23 @@ func (w *Workspace) Close() {
 	changesManager := w.Changes
 	root := w.Root
 	scratchPath := w.ScratchPath
+	mcpRefreshCancel := w.mcpRefreshCancel
 	w.MCP = nil
 	w.LSP = nil
 	w.retiredLSP = nil
 	w.Changes = nil
 	w.Graph = nil
-	w.mcpTools = nil
+	w.mcpToolsByServer = nil
+	w.mcpRefreshCancel = nil
 	w.lspTools = nil
 	w.graphTools = nil
 	w.mu.Unlock()
+	if mcpManager != nil {
+		mcpManager.SetToolListChangedHandler(nil)
+	}
+	if mcpRefreshCancel != nil {
+		mcpRefreshCancel()
+	}
 	if lspManager != nil {
 		lspManager.Close()
 	}
@@ -526,7 +625,7 @@ func splitFrontmatter(text string) (fm, body string, ok bool) {
 func (w *Workspace) ManagedTools() (mcpTools, lspTools, graphTools []tool.Tool) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	mcpTools = append([]tool.Tool(nil), w.mcpTools...)
+	mcpTools = flattenMCPTools(w.mcpToolsByServer)
 	lspTools = append([]tool.Tool(nil), w.lspTools...)
 	graphTools = append([]tool.Tool(nil), w.graphTools...)
 	return

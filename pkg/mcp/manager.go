@@ -23,9 +23,13 @@ type Manager struct {
 
 	elicit atomic.Pointer[ElicitFunc]
 
+	toolListChanged atomic.Pointer[ToolListChangedFunc]
+
 	mu       sync.RWMutex
 	sessions map[string]*mcp.ClientSession
 }
+
+type ToolListChangedFunc func(serverName string)
 
 func NewManager(cfg *Config) *Manager {
 	return &Manager{
@@ -94,6 +98,14 @@ func (m *Manager) AddSession(name string, session *mcp.ClientSession) {
 	m.sessions[name] = session
 }
 
+func (m *Manager) SetToolListChangedHandler(handler ToolListChangedFunc) {
+	if handler == nil {
+		m.toolListChanged.Store(nil)
+		return
+	}
+	m.toolListChanged.Store(&handler)
+}
+
 func (m *Manager) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -112,13 +124,14 @@ func (m *Manager) Sessions() map[string]*mcp.ClientSession {
 	return result
 }
 
+func (m *Manager) Session(name string) *mcp.ClientSession {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.sessions[name]
+}
+
 func (m *Manager) connect(ctx context.Context, name string, server ServerConfig) error {
-	client := mcp.NewClient(&mcp.Implementation{
-		Name:    "wingman",
-		Version: "1.0.0",
-	}, &mcp.ClientOptions{
-		ElicitationHandler: m.handleElicitation,
-	})
+	client := m.newClient(name)
 
 	transport, err := createTransport(server, m.Dir)
 
@@ -140,6 +153,20 @@ func (m *Manager) connect(ctx context.Context, name string, server ServerConfig)
 	m.mu.Unlock()
 
 	return nil
+}
+
+func (m *Manager) newClient(name string) *mcp.Client {
+	return mcp.NewClient(&mcp.Implementation{
+		Name:    "wingman",
+		Version: "1.0.0",
+	}, &mcp.ClientOptions{
+		ElicitationHandler: m.handleElicitation,
+		ToolListChangedHandler: func(context.Context, *mcp.ToolListChangedRequest) {
+			if handler := m.toolListChanged.Load(); handler != nil {
+				(*handler)(name)
+			}
+		},
+	})
 }
 
 func createTransport(server ServerConfig, dir string) (mcp.Transport, error) {

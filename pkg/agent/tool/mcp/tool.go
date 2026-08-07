@@ -31,28 +31,41 @@ const (
 func Tools(ctx context.Context, m *mcp.Manager) ([]tool.Tool, error) {
 	var tools []tool.Tool
 
-	ctx, cancel := context.WithTimeout(ctx, listToolsTimeout)
-	defer cancel()
-
 	sessions := m.Sessions()
 
 	for _, serverName := range slices.Sorted(maps.Keys(sessions)) {
 		session := sessions[serverName]
-		result, err := session.ListTools(ctx, nil)
+		serverTools, err := ToolsForServer(ctx, serverName, session)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to list tools from MCP server %s: %v\n", serverName, err)
 			continue
 		}
-
-		slices.SortFunc(result.Tools, func(a, b *sdkmcp.Tool) int {
-			return cmp.Compare(a.Name, b.Name)
-		})
-
-		for _, mcpTool := range result.Tools {
-			tools = append(tools, convertTool(serverName, session, *mcpTool))
-		}
+		tools = append(tools, serverTools...)
 	}
 
+	return tools, nil
+}
+
+func ToolsForServer(ctx context.Context, serverName string, session *sdkmcp.ClientSession) ([]tool.Tool, error) {
+	ctx, cancel := context.WithTimeout(ctx, listToolsTimeout)
+	defer cancel()
+
+	var listed []*sdkmcp.Tool
+	for mcpTool, err := range session.Tools(ctx, nil) {
+		if err != nil {
+			return nil, err
+		}
+		listed = append(listed, mcpTool)
+	}
+
+	slices.SortFunc(listed, func(a, b *sdkmcp.Tool) int {
+		return cmp.Compare(a.Name, b.Name)
+	})
+
+	tools := make([]tool.Tool, 0, len(listed))
+	for _, mcpTool := range listed {
+		tools = append(tools, convertTool(serverName, session, *mcpTool))
+	}
 	return tools, nil
 }
 

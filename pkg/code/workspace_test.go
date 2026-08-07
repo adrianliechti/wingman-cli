@@ -4,15 +4,94 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-git/go-git/v5"
+	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	wingmcp "github.com/adrianliechti/wingman-agent/pkg/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/skill"
 )
+
+func TestWorkspaceRefreshesMCPToolsAfterListChanged(t *testing.T) {
+	server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "test", Version: "1.0.0"}, nil)
+	addTestMCPTool(server, "first")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	clientTransport, serverTransport := sdkmcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "test-client", Version: "1.0.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manager := wingmcp.NewManager(&wingmcp.Config{Servers: map[string]wingmcp.ServerConfig{}})
+	manager.AddSession("dynamic", clientSession)
+	w := &Workspace{MCP: manager}
+	defer w.Close()
+
+	if err := w.InitMCP(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	initial, _, _ := w.ManagedTools()
+	if got := mcpToolNames(initial); !slices.Equal(got, []string{"dynamic_first"}) {
+		t.Fatalf("initial MCP tools = %v", got)
+	}
+
+	addTestMCPTool(server, "second")
+	w.scheduleMCPToolRefresh(context.Background(), manager, "dynamic")
+	waitForMCPToolNames(t, w, "dynamic_first", "dynamic_second")
+
+	if got := mcpToolNames(initial); !slices.Equal(got, []string{"dynamic_first"}) {
+		t.Fatalf("captured tool snapshot changed in place: %v", got)
+	}
+
+	server.RemoveTools("first")
+	w.scheduleMCPToolRefresh(context.Background(), manager, "dynamic")
+	waitForMCPToolNames(t, w, "dynamic_second")
+}
+
+func addTestMCPTool(server *sdkmcp.Server, name string) {
+	sdkmcp.AddTool(server, &sdkmcp.Tool{Name: name},
+		func(context.Context, *sdkmcp.CallToolRequest, struct{}) (*sdkmcp.CallToolResult, any, error) {
+			return &sdkmcp.CallToolResult{}, nil, nil
+		})
+}
+
+func mcpToolNames(tools []tool.Tool) []string {
+	names := make([]string, len(tools))
+	for i, tool := range tools {
+		names[i] = tool.Name
+	}
+	return names
+}
+
+func waitForMCPToolNames(t *testing.T, w *Workspace, want ...string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		tools, _, _ := w.ManagedTools()
+		got := mcpToolNames(tools)
+		if slices.Equal(got, want) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("MCP tools = %v, want %v", got, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
 
 func TestProtectedLSPCallDoesNotHoldWorkspaceStateLock(t *testing.T) {
 	w := &Workspace{}
