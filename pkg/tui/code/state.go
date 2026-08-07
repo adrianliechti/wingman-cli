@@ -9,10 +9,3 @@ const (
 	PhaseStreaming
 	PhaseToolRunning
 )
-
-type Mode int
-
-const (
-	ModeAgent Mode = iota
-	ModePlan
-)

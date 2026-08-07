@@ -13,6 +13,9 @@ var Instructions string
 //go:embed mode_plan.txt
 var Planning string
 
+//go:embed mode_unattended.txt
+var Unattended string
+
 //go:embed section_environment.txt
 var sectionEnvironment string
 
@@ -45,6 +48,7 @@ var dynamicTemplates = []namedTemplate{tmplEnvironment}
 
 type SectionData struct {
 	PlanMode            bool
+	UnattendedMode      bool
 	Date                string
 	OS                  string
 	Arch                string

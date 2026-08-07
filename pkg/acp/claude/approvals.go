@@ -176,7 +176,7 @@ func (a *approver) handle(req controlRequest) {
 	var perms any
 	switch {
 	case name == "ExitPlanMode":
-		perms = []any{map[string]any{"type": "setMode", "mode": defaultModeID, "destination": "session"}}
+		perms = []any{map[string]any{"type": "setMode", "mode": exitPlanPermissionMode, "destination": "session"}}
 	case always:
 		perms = alwaysAllowPermissions(req.Request)
 	}
@@ -526,6 +526,7 @@ func (a *approver) askViaElicitation(req controlRequest, questions []askQuestion
 			Message:         askMessage(questions),
 			Mode:            "form",
 			RequestedSchema: askElicitationSchema(questions),
+			Meta:            map[string]any{"sessionId": string(a.sid)},
 		},
 	})
 	if err != nil {

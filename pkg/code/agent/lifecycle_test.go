@@ -2,7 +2,11 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
+
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/code"
 )
 
 func TestConfirmWithoutUIFailsClosed(t *testing.T) {
@@ -30,5 +34,49 @@ func TestClosedAgentRejectsNewSession(t *testing.T) {
 	a := &Agent{closed: true}
 	if _, err := a.NewSession(context.Background()); err == nil {
 		t.Fatal("closed agent created a session")
+	}
+}
+
+func TestUnattendedApprovesAndResolvesPromptsWithoutUI(t *testing.T) {
+	s := &sessionState{}
+	s.mode = modeUnattended
+	a := &Agent{sessions: map[string]*sessionState{"s1": s}}
+	ctx := code.WithSessionID(context.Background(), "s1")
+
+	allowed, err := a.confirm(ctx, "edit a file?")
+	if err != nil || !allowed {
+		t.Fatalf("unattended confirmation = %v, %v", allowed, err)
+	}
+	res, err := a.elicit(ctx, tool.ElicitRequest{Fields: []tool.ElicitField{{
+		Name: "choice", Required: true, Enum: []string{"Recommended", "Alternative"},
+	}}})
+	if err != nil || res.Action != tool.ElicitAccept || res.Content["choice"] != "Recommended" {
+		t.Fatalf("unattended elicitation = %#v, %v", res, err)
+	}
+	res, err = a.elicit(ctx, tool.ElicitRequest{Fields: []tool.ElicitField{{
+		Name: "detail", Required: true, Type: "string",
+	}}})
+	if err != nil || res.Action != tool.ElicitDecline {
+		t.Fatalf("required free-text elicitation = %#v, %v", res, err)
+	}
+}
+
+func TestUnattendedModeOwnsToolsAndInstructions(t *testing.T) {
+	s := &sessionState{
+		parent: &Agent{workspace: &code.Workspace{}},
+		baseTools: []tool.Tool{
+			{Name: "elicit"},
+			{Name: "read"},
+		},
+	}
+	s.mode = modeUnattended
+
+	tools := s.tools()
+	if len(tools) != 1 || tools[0].Name != "read" {
+		t.Fatalf("unattended tools = %#v, want read without elicit", tools)
+	}
+	instructions := BuildInstructions(s.instructionsData())
+	if !strings.Contains(instructions, "Work unattended") || !strings.Contains(instructions, "Do not ask the user") {
+		t.Fatalf("unattended instructions missing policy: %q", instructions)
 	}
 }

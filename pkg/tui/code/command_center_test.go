@@ -121,6 +121,17 @@ func TestEffortIsNotAStandaloneBuiltinCommand(t *testing.T) {
 	}
 }
 
+func TestCommandCenterShowsAgentModes(t *testing.T) {
+	a := &App{ctx: context.Background(), agent: newUITestAgent(nil), editor: NewEditor()}
+	a.showCommandCenter()
+	if item := findPopupItem(a.popup, "builtin:/unattended"); item == nil || item.Group != "Agent" || item.Shortcut != "shift+tab" || item.Checked {
+		t.Fatalf("unattended mode command = %+v", item)
+	}
+	if agentItem := findPopupItem(a.popup, "builtin:/agent"); agentItem == nil || agentItem.Shortcut != "tab" || !agentItem.Checked {
+		t.Fatalf("current agent mode command = %+v", agentItem)
+	}
+}
+
 func findPopupItem(p *Popup, id string) *PopupItem {
 	for i := range p.items {
 		if p.items[i].ID == id {

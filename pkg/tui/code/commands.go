@@ -29,11 +29,19 @@ func (a *App) builtinCommands() []slashCommand {
 	cmds := []slashCommand{
 		{Name: "/help", Desc: "Open command center", Busy: true, Run: (*App).showHelp},
 		{Name: "/model", Desc: "Select AI model and effort", Run: (*App).showModelPicker},
-		{Name: "/plan", Desc: "Enter planning mode", Run: (*App).enterPlanMode},
-		{Name: "/agent", Desc: "Return to execution mode", Run: (*App).exitPlanMode},
-		{Name: "/problems", Desc: "Show problems", Busy: true, Run: (*App).showDiagnosticsView},
-		{Name: "/diff", Desc: "Show working tree changes", Busy: true, Run: (*App).showDiffView},
 	}
+	modes, _ := a.agent.Modes(a.sessionID)
+	for _, mode := range modes {
+		cmds = append(cmds, slashCommand{
+			Name: "/" + mode.ID,
+			Desc: mode.Description,
+			Run:  func(a *App) { a.setMode(mode.ID) },
+		})
+	}
+	cmds = append(cmds,
+		slashCommand{Name: "/problems", Desc: "Show problems", Busy: true, Run: (*App).showDiagnosticsView},
+		slashCommand{Name: "/diff", Desc: "Show working tree changes", Busy: true, Run: (*App).showDiffView},
+	)
 	if _, ok := a.agent.(contextStatsProvider); ok {
 		cmds = append(cmds, slashCommand{Name: "/context", Desc: "Show context window usage", Busy: true, Run: (*App).showContextStats})
 	}

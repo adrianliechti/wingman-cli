@@ -50,7 +50,6 @@ type App struct {
 	footerHint string
 	toast      *toast
 
-	currentMode Mode
 	showWelcome bool
 
 	editor  *Editor
@@ -1041,7 +1040,13 @@ func (a *App) handleKey(ev inline.KeyEvent) {
 
 	case inline.KeyTab:
 		if !a.isStreaming() && a.popup == nil {
-			a.toggleMode()
+			a.togglePlanMode()
+			return
+		}
+
+	case inline.KeyBacktab:
+		if !a.isStreaming() && a.popup == nil {
+			a.toggleUnattendedMode()
 			return
 		}
 
@@ -1386,29 +1391,35 @@ func (a *App) isToolHidden(name string) bool {
 	return false
 }
 
-func (a *App) toggleMode() {
-	if a.currentMode == ModeAgent {
-		a.enterPlanMode()
-		return
-	}
-
-	a.exitPlanMode()
+func (a *App) currentMode() string {
+	_, current := a.agent.Modes(a.sessionID)
+	return current
 }
 
-func (a *App) enterPlanMode() {
-	if a.currentMode == ModePlan {
-		return
+func (a *App) togglePlanMode() {
+	if a.currentMode() == code.PlanModeID {
+		a.setMode(code.AgentModeID)
+	} else {
+		a.setMode(code.PlanModeID)
 	}
-
-	_ = a.agent.SetMode(a.ctx, a.sessionID, "plan")
-	a.currentMode = ModePlan
 }
 
-func (a *App) exitPlanMode() {
-	if a.currentMode == ModeAgent {
+func (a *App) toggleUnattendedMode() {
+	if a.currentMode() == code.UnattendedModeID {
+		a.setMode(code.AgentModeID)
+	} else {
+		a.setMode(code.UnattendedModeID)
+	}
+}
+
+func (a *App) setMode(modeID string) {
+	_, current := a.agent.Modes(a.sessionID)
+	if current == modeID {
 		return
 	}
-
-	_ = a.agent.SetMode(a.ctx, a.sessionID, "agent")
-	a.currentMode = ModeAgent
+	if err := a.agent.SetMode(a.ctx, a.sessionID, modeID); err != nil {
+		a.showToast("Could not change mode: "+err.Error(), theme.Default.Red)
+		return
+	}
+	a.invalidate()
 }

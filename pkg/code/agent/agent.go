@@ -74,7 +74,7 @@ type sessionState struct {
 	effortID     string
 	planEffortID string
 
-	planMode    atomic.Bool
+	mode        sessionMode
 	baseTools   []tool.Tool
 	execManager *shell.ExecManager
 	tasks       *task.Registry
@@ -94,6 +94,14 @@ type sessionState struct {
 	cancelGen uint64
 	closed    bool
 }
+
+type sessionMode string
+
+const (
+	modeAgent      sessionMode = code.AgentModeID
+	modePlan       sessionMode = code.PlanModeID
+	modeUnattended sessionMode = code.UnattendedModeID
+)
 
 func New(ws *code.Workspace, cfg *harness.Config, ui code.UI) *Agent {
 	a := &Agent{
@@ -158,7 +166,7 @@ func (a *Agent) modelsFor(s *sessionState) ([]model.Model, string) {
 func (a *Agent) modelsLocked(s *sessionState) ([]model.Model, string) {
 	available := model.Available(a.upstreamModels)
 
-	planMode := s != nil && s.planMode.Load()
+	planMode := s != nil && s.mode == modePlan
 
 	// Model choices are role-scoped: plan mode never inherits the coding
 	// model — an unset plan model selects a large one automatically.
@@ -264,7 +272,7 @@ func (a *Agent) subagentRoleModel(s *sessionState, role string) (harness.ModelOp
 func (a *Agent) SetModel(_ context.Context, sessionID, id string) error {
 	s := a.session(sessionID)
 	a.modelMu.Lock()
-	if s != nil && s.planMode.Load() {
+	if s != nil && s.mode == modePlan {
 		a.planModelID = id
 		s.planModelID = id
 	} else {
@@ -306,7 +314,7 @@ func (a *Agent) effortFor(s *sessionState) string {
 	defer a.modelMu.Unlock()
 	// Effort choices are role-scoped like models: plan mode never inherits
 	// the coding effort.
-	if s != nil && s.planMode.Load() {
+	if s != nil && s.mode == modePlan {
 		if s.planEffortID != "" {
 			return s.planEffortID
 		}
@@ -339,7 +347,7 @@ func (a *Agent) SetEffort(_ context.Context, sessionID, value string) error {
 	}
 	s := a.session(sessionID)
 	a.modelMu.Lock()
-	if s != nil && s.planMode.Load() {
+	if s != nil && s.mode == modePlan {
 		a.planEffortID = value
 		s.planEffortID = value
 	} else {
@@ -590,32 +598,35 @@ func (a *Agent) Close() error {
 }
 
 var wingmanModes = []code.Mode{
-	{ID: "agent", Name: "Agent", Description: "Read, edit, and run commands without asking."},
-	{ID: "plan", Name: "Plan", Description: "Read-only — proposes a plan, doesn't edit code."},
+	{ID: code.AgentModeID, Name: "Agent", Description: "Works interactively and asks before risky actions or consequential decisions."},
+	{ID: code.PlanModeID, Name: "Plan", Description: "Read-only — proposes a plan, doesn't edit code."},
+	code.UnattendedMode(),
 }
 
 func (a *Agent) Modes(sessionID string) ([]code.Mode, string) {
 	out := make([]code.Mode, len(wingmanModes))
 	copy(out, wingmanModes)
-	current := "agent"
-	if s := a.session(sessionID); s != nil && s.planMode.Load() {
-		current = "plan"
+	current := code.AgentModeID
+	if s := a.session(sessionID); s != nil {
+		current = string(s.mode)
 	}
 	return out, current
 }
 
 func (a *Agent) SetMode(_ context.Context, sessionID, modeID string) error {
-	var plan bool
+	var mode sessionMode
 	switch modeID {
-	case "agent":
-		plan = false
-	case "plan":
-		plan = true
+	case code.AgentModeID:
+		mode = modeAgent
+	case code.PlanModeID:
+		mode = modePlan
+	case code.UnattendedModeID:
+		mode = modeUnattended
 	default:
 		return fmt.Errorf("unknown mode %q", modeID)
 	}
 	if s := a.session(sessionID); s != nil {
-		s.planMode.Store(plan)
+		s.mode = mode
 	}
 	return nil
 }
@@ -633,6 +644,7 @@ func (a *Agent) buildSession() *sessionState {
 	s := &sessionState{
 		parent: a,
 		aa:     &harness.Agent{Config: sessionCfg},
+		mode:   modeAgent,
 	}
 	sessionCfg.Tools = s.tools
 	sessionCfg.Instructions = s.instructions
@@ -822,19 +834,27 @@ func (a *Agent) promptContext(ctx context.Context) context.Context {
 }
 
 func (a *Agent) elicit(ctx context.Context, req tool.ElicitRequest) (tool.ElicitResult, error) {
+	ctx = a.promptContext(ctx)
+	if s := a.session(code.SessionIDFromContext(ctx)); s != nil && s.mode == modeUnattended {
+		return code.UnattendedElicitation(req), nil
+	}
 	ui := a.currentUI()
 	if ui == nil {
 		return tool.ElicitResult{Action: tool.ElicitCancel}, nil
 	}
-	return ui.Elicit(a.promptContext(ctx), req)
+	return ui.Elicit(ctx, req)
 }
 
 func (a *Agent) confirm(ctx context.Context, message string) (bool, error) {
+	ctx = a.promptContext(ctx)
+	if s := a.session(code.SessionIDFromContext(ctx)); s != nil && s.mode == modeUnattended {
+		return true, nil
+	}
 	ui := a.currentUI()
 	if ui == nil {
 		return false, nil
 	}
-	return ui.Confirm(a.promptContext(ctx), message)
+	return ui.Confirm(ctx, message)
 }
 
 func (s *sessionState) beginSend(ctx context.Context, input []harness.Content, cancel context.CancelFunc) (iter.Seq2[harness.Message, error], uint64, error) {
@@ -982,8 +1002,11 @@ func (s *sessionState) tools() []tool.Tool {
 	tools = append(tools, mcpTools...)
 	tools = append(tools, lspTools...)
 	tools = append(tools, graphTools...)
-	if s.planMode.Load() {
+	switch s.mode {
+	case modePlan:
 		tools = planModeTools(tools)
+	case modeUnattended:
+		tools = slices.DeleteFunc(tools, func(t tool.Tool) bool { return t.Name == "elicit" })
 	}
 	slices.SortStableFunc(tools, func(a, b tool.Tool) int { return cmp.Compare(a.Name, b.Name) })
 	return tools
@@ -1027,6 +1050,8 @@ func BuildInstructions(data prompt.SectionData) string {
 	base := prompt.Instructions
 	if data.PlanMode {
 		base = prompt.Planning
+	} else if data.UnattendedMode {
+		base += "\n\n" + prompt.Unattended
 	}
 	return prompt.BuildInstructions(base, data)
 }
@@ -1034,7 +1059,8 @@ func BuildInstructions(data prompt.SectionData) string {
 func (s *sessionState) instructionsData() prompt.SectionData {
 	ws := s.parent.workspace
 	return prompt.SectionData{
-		PlanMode:            s.planMode.Load(),
+		PlanMode:            s.mode == modePlan,
+		UnattendedMode:      s.mode == modeUnattended,
 		Date:                time.Now().Format("January 2, 2006"),
 		OS:                  runtime.GOOS,
 		Arch:                runtime.GOARCH,

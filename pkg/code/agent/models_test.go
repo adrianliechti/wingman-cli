@@ -23,7 +23,7 @@ func TestModelSelectionByRole(t *testing.T) {
 		t.Fatalf("code model = %q, want claude-sonnet-5", current)
 	}
 
-	s.planMode.Store(true)
+	s.mode = modePlan
 	if _, current := a.modelsFor(s); current != "claude-opus-4-8" {
 		t.Fatalf("plan model = %q, want claude-opus-4-8", current)
 	}
@@ -43,7 +43,7 @@ func TestModelSelectionRoleScoped(t *testing.T) {
 	}
 
 	// The coding choice must not leak into plan mode: plan picks large.
-	s.planMode.Store(true)
+	s.mode = modePlan
 	if _, current := a.modelsFor(s); current != "claude-opus-4-8" {
 		t.Fatalf("plan model = %q, want claude-opus-4-8", current)
 	}
@@ -62,7 +62,7 @@ func TestModelSelectionCrossFamilyFallback(t *testing.T) {
 	if _, current := g.modelsFor(s); current != "gpt-5.6-terra" {
 		t.Fatalf("code model = %q, want gpt-5.6-terra", current)
 	}
-	s.planMode.Store(true)
+	s.mode = modePlan
 	if _, current := g.modelsFor(s); current != "gpt-5.6-sol" {
 		t.Fatalf("plan model = %q, want gpt-5.6-sol", current)
 	}
@@ -76,7 +76,7 @@ func TestEffortDefaultsByRole(t *testing.T) {
 		t.Fatalf("code effort = %q, want high", got)
 	}
 
-	s.planMode.Store(true)
+	s.mode = modePlan
 	if got := a.effortFor(s); got != "xhigh" {
 		t.Fatalf("plan effort = %q, want xhigh", got)
 	}
@@ -87,7 +87,7 @@ func TestEffortDefaultsByRole(t *testing.T) {
 		t.Fatalf("plan effort = %q, want xhigh despite code effort", got)
 	}
 
-	s.planMode.Store(false)
+	s.mode = modeAgent
 	if got := a.effortFor(s); got != "medium" {
 		t.Fatalf("code effort = %q, want medium", got)
 	}
@@ -107,7 +107,7 @@ func TestSetModelAndEffortScopeToCurrentMode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s.planMode.Store(true)
+	s.mode = modePlan
 	if err := a.SetModel(ctx, "sid", "claude-fable-5"); err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestSetModelAndEffortScopeToCurrentMode(t *testing.T) {
 		t.Fatalf("plan effort = %q, want max", got)
 	}
 
-	s.planMode.Store(false)
+	s.mode = modeAgent
 	if _, current := a.modelsFor(s); current != "claude-sonnet-5" {
 		t.Fatalf("code model = %q, want claude-sonnet-5", current)
 	}
@@ -165,7 +165,7 @@ func TestModelEnvOverridesByRole(t *testing.T) {
 		t.Fatalf("code model = %q, want claude-sonnet-5", current)
 	}
 
-	s.planMode.Store(true)
+	s.mode = modePlan
 	if _, current := a.modelsFor(s); current != "claude-fable-5" {
 		t.Fatalf("plan model = %q, want claude-fable-5", current)
 	}
@@ -189,7 +189,7 @@ func TestPlanEffortOverride(t *testing.T) {
 		t.Fatalf("code effort = %q, want high", got)
 	}
 
-	s.planMode.Store(true)
+	s.mode = modePlan
 	if got := a.effortFor(s); got != "max" {
 		t.Fatalf("plan effort = %q, want max", got)
 	}

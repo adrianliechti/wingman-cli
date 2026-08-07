@@ -379,9 +379,7 @@ func (a *Agent) Modes(sessionID string) ([]code.Mode, string) {
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	out := make([]code.Mode, len(sess.modes))
-	copy(out, sess.modes)
-	return out, sess.modeID
+	return append([]code.Mode(nil), sess.modes...), sess.modeID
 }
 
 func (a *Agent) SetMode(ctx context.Context, sessionID, modeID string) error {
@@ -1221,6 +1219,17 @@ func (a *Agent) RequestPermission(ctx context.Context, p acpsdk.RequestPermissio
 			},
 		}
 	}
+	if sess := a.session(string(p.SessionId)); sess != nil {
+		sess.mu.Lock()
+		unattended := sess.modeID == code.UnattendedModeID
+		sess.mu.Unlock()
+		if unattended {
+			if opt := pickPermissionOption(p.Options, true); opt != nil {
+				return selected(opt.OptionId), nil
+			}
+			return cancelled, nil
+		}
+	}
 
 	ui := a.currentUI()
 	if ui == nil {
@@ -1297,11 +1306,6 @@ func (a *Agent) UnstableCreateElicitation(ctx context.Context, p acpsdk.Unstable
 	if p.Form == nil {
 		return cancel, nil
 	}
-	ui := a.currentUI()
-	if ui == nil {
-		return acpsdk.UnstableCreateElicitationResponse{Decline: &acpsdk.UnstableCreateElicitationDecline{Action: "decline"}}, nil
-	}
-
 	// acp-go-sdk v0.13.5 does not expose top-level session scope for form
 	// elicitations. Native adapters preserve it as metadata; use that exact
 	// scope before falling back to the only active turn.
@@ -1312,24 +1316,42 @@ func (a *Agent) UnstableCreateElicitation(ctx context.Context, p acpsdk.Unstable
 	if sid != "" {
 		ctx = code.WithSessionID(ctx, sid)
 	}
-	res, err := ui.Elicit(ctx, tool.ElicitRequest{
+	req := tool.ElicitRequest{
 		Message: p.Form.Message,
 		Fields:  elicitFieldsFromSchema(p.Form.RequestedSchema),
-	})
+	}
+	if sess := a.session(sid); sess != nil {
+		sess.mu.Lock()
+		unattended := sess.modeID == code.UnattendedModeID
+		sess.mu.Unlock()
+		if unattended {
+			return elicitationResponse(code.UnattendedElicitation(req)), nil
+		}
+	}
+
+	ui := a.currentUI()
+	if ui == nil {
+		return acpsdk.UnstableCreateElicitationResponse{Decline: &acpsdk.UnstableCreateElicitationDecline{Action: "decline"}}, nil
+	}
+	res, err := ui.Elicit(ctx, req)
 	if err != nil {
 		return cancel, nil
 	}
+	return elicitationResponse(res), nil
+}
+
+func elicitationResponse(res tool.ElicitResult) acpsdk.UnstableCreateElicitationResponse {
 	switch res.Action {
 	case tool.ElicitAccept:
 		content := res.Content
 		if content == nil {
 			content = map[string]any{}
 		}
-		return acpsdk.UnstableCreateElicitationResponse{Accept: &acpsdk.UnstableCreateElicitationAccept{Action: "accept", Content: content}}, nil
+		return acpsdk.UnstableCreateElicitationResponse{Accept: &acpsdk.UnstableCreateElicitationAccept{Action: "accept", Content: content}}
 	case tool.ElicitDecline:
-		return acpsdk.UnstableCreateElicitationResponse{Decline: &acpsdk.UnstableCreateElicitationDecline{Action: "decline"}}, nil
+		return acpsdk.UnstableCreateElicitationResponse{Decline: &acpsdk.UnstableCreateElicitationDecline{Action: "decline"}}
 	}
-	return cancel, nil
+	return acpsdk.UnstableCreateElicitationResponse{Cancel: &acpsdk.UnstableCreateElicitationCancel{Action: "cancel"}}
 }
 
 func elicitationSessionID(meta map[string]any) string {

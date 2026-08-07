@@ -670,11 +670,11 @@ func (s *session) cliArgsLocked() []string {
 	if s.effort != "" && s.effort != "default" {
 		args = append(args, "--effort", s.effort)
 	}
-	mode := s.mode
-	if mode == "" {
-		mode = defaultModeID
+	mode := findMode(s.mode)
+	if mode == nil {
+		mode = findMode(defaultModeID)
 	}
-	args = append(args, "--permission-mode", mode)
+	args = append(args, "--permission-mode", mode.permissionMode)
 	return args
 }
 

@@ -110,7 +110,7 @@ func TestModesPerSession(t *testing.T) {
 	add("b", "code", "plan")
 
 	if modes, cur := a.Modes("a"); cur != "plan" || len(modes) != 2 {
-		t.Fatalf("session a = (%v, %q), want 2 modes current plan", modes, cur)
+		t.Fatalf("session a = (%v, %q), want provider modes, current plan", modes, cur)
 	}
 	if _, cur := a.Modes("b"); cur != "code" {
 		t.Fatalf("session b current = %q, want code", cur)
@@ -537,5 +537,43 @@ func TestRequestPermissionHeadlessCancelsWithoutRejectOption(t *testing.T) {
 	})
 	if err != nil || resp.Outcome.Cancelled == nil {
 		t.Fatalf("headless permission response = %#v, err=%v", resp, err)
+	}
+}
+
+func TestUnattendedSelectsAllowOnceWithoutUI(t *testing.T) {
+	a := &Agent{sessions: map[string]*sessionState{
+		"s1": {modeID: code.UnattendedModeID},
+	}}
+	resp, err := a.RequestPermission(context.Background(), acp.RequestPermissionRequest{
+		SessionId: "s1",
+		Options: []acp.PermissionOption{
+			{OptionId: "once", Name: "Allow Once", Kind: acp.PermissionOptionKindAllowOnce},
+			{OptionId: "always", Name: "Always Allow", Kind: acp.PermissionOptionKindAllowAlways},
+			{OptionId: "deny", Name: "Deny", Kind: acp.PermissionOptionKindRejectOnce},
+		},
+	})
+	if err != nil || resp.Outcome.Selected == nil || resp.Outcome.Selected.OptionId != "once" {
+		t.Fatalf("unattended permission = %#v, err=%v", resp, err)
+	}
+}
+
+func TestUnattendedResolvesFormWithoutUI(t *testing.T) {
+	a := &Agent{sessions: map[string]*sessionState{
+		"s1": {id: "s1", modeID: code.UnattendedModeID},
+	}}
+	resp, err := a.UnstableCreateElicitation(context.Background(), acp.UnstableCreateElicitationRequest{Form: &acp.UnstableCreateElicitationForm{
+		Meta:    map[string]any{"sessionId": "s1"},
+		Mode:    "form",
+		Message: "Choose a color",
+		RequestedSchema: acp.UnstableElicitationSchema{
+			Type: acp.UnstableElicitationSchemaTypeObject,
+			Properties: map[string]any{
+				"color": map[string]any{"type": "string", "enum": []any{"Blue", "Red"}},
+			},
+			Required: []string{"color"},
+		},
+	}})
+	if err != nil || resp.Accept == nil || resp.Accept.Content["color"] != "Blue" {
+		t.Fatalf("unattended elicitation = %#v, err=%v", resp, err)
 	}
 }

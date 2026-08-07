@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/model"
 	"github.com/adrianliechti/wingman-agent/pkg/tui"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/ansi"
@@ -50,15 +51,20 @@ func (a *App) welcomeLines(width int) []string {
 func (a *App) composerChrome(width int) EditorChrome {
 	t := theme.Default
 	color := t.BrBlack
-	mode := ""
-	planMode := a.currentMode == ModePlan
+	modeLabel := ""
+	currentMode := a.currentMode()
+	planMode := currentMode == code.PlanModeID
+	unattendedMode := currentMode == code.UnattendedModeID
 	if planMode {
 		color = t.Yellow
-		mode = colored(t.Yellow, "PLAN")
+		modeLabel = colored(t.Yellow, "PLAN")
+	}
+	if unattendedMode {
+		color = t.Red
 	}
 	if a.promptActive || a.askActive {
 		color = t.Red
-		mode = colored(t.Red, "ANSWER")
+		modeLabel = colored(t.Red, "ANSWER")
 	}
 
 	var identity []string
@@ -70,9 +76,9 @@ func (a *App) composerChrome(width int) EditorChrome {
 		identity = append(identity, effort)
 	}
 	topLabel := ""
-	bottomLeft := mode
+	bottomLeft := modeLabel
 	if planMode && !a.promptActive && !a.askActive {
-		topLabel = mode
+		topLabel = modeLabel
 		bottomLeft = ""
 	}
 
@@ -82,6 +88,8 @@ func (a *App) composerChrome(width int) EditorChrome {
 		identityStyle = dim(identityLabel)
 		if planMode {
 			identityStyle = colored(t.Yellow, identityLabel)
+		} else if unattendedMode {
+			identityStyle = colored(t.Red, identityLabel)
 		}
 	}
 

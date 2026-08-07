@@ -7,6 +7,7 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/task"
+	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/tui"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/ansi"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/theme"
@@ -151,7 +152,8 @@ func (a *App) footerLine(width int) string {
 		hint("ctrl+o", "transcript"),
 	}
 
-	if a.currentMode == ModePlan {
+	_, current := a.agent.Modes(a.sessionID)
+	if current == code.PlanModeID {
 		hints[2] = hint("tab", "agent")
 	}
 

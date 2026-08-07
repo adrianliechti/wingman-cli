@@ -35,7 +35,7 @@ func TestComposerMovesIdentityToBottomRail(t *testing.T) {
 		t.Fatalf("model identity is not aligned to the right edge: %q", bottom)
 	}
 
-	a.currentMode = ModePlan
+	a.agent.(*namedUITestAgent).mode = "plan"
 	planChrome := a.composerChrome(64)
 	plan, _ := a.editor.Render(64, 5, planChrome)
 	planTop := ansi.Strip(plan[0])
@@ -51,6 +51,12 @@ func TestComposerMovesIdentityToBottomRail(t *testing.T) {
 	}
 	if want := colored(theme.Default.Yellow, "GPT 5.6 Sol · medium"); planChrome.BottomRight != want {
 		t.Fatalf("plan identity is not yellow: %q", planChrome.BottomRight)
+	}
+
+	a.agent.(*namedUITestAgent).mode = "unattended"
+	unattendedChrome := a.composerChrome(64)
+	if unattendedChrome.TopColor != theme.Default.Red || unattendedChrome.TopLabel != "" || unattendedChrome.BottomLeft != "" {
+		t.Fatalf("unattended composer should be red without a label: %+v", unattendedChrome)
 	}
 }
 

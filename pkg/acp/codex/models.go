@@ -211,13 +211,6 @@ type sessionMode struct {
 
 var sessionModes = []sessionMode{
 	{
-		id:             "read-only",
-		name:           "Read-only",
-		description:    "Read files only. Editing or running commands needs approval.",
-		approvalPolicy: "on-request",
-		sandboxPolicy:  map[string]any{"type": "readOnly", "networkAccess": false},
-	},
-	{
 		id:             "agent",
 		name:           "Agent",
 		description:    "Read and edit files and run commands. Asks before acting outside the workspace.",
@@ -231,9 +224,16 @@ var sessionModes = []sessionMode{
 		},
 	},
 	{
-		id:             "agent-full-access",
-		name:           "Full Access",
-		description:    "Edit files anywhere and run commands with network access, without asking.",
+		id:             "plan",
+		name:           "Plan",
+		description:    "Read-only — proposes a plan, doesn't edit code.",
+		approvalPolicy: "on-request",
+		sandboxPolicy:  map[string]any{"type": "readOnly", "networkAccess": false},
+	},
+	{
+		id:             "unattended",
+		name:           "Unattended",
+		description:    "Runs with full access and without permission prompts.",
 		approvalPolicy: "never",
 		sandboxPolicy:  map[string]any{"type": "dangerFullAccess"},
 	},

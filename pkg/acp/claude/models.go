@@ -197,19 +197,21 @@ func titleCase(s string) string {
 	return string(out)
 }
 
-const defaultModeID = "default"
+const defaultModeID = "agent"
+
+const exitPlanPermissionMode = "acceptEdits"
 
 type sessionMode struct {
-	id          string
-	name        string
-	description string
+	id             string
+	name           string
+	description    string
+	permissionMode string
 }
 
 var sessionModes = []sessionMode{
-	{id: "default", name: "Agent", description: "Asks before editing files or running commands."},
-	{id: "acceptEdits", name: "Accept Edits", description: "Auto-accepts file edits; asks before running commands."},
-	{id: "plan", name: "Plan", description: "Read-only — proposes a plan, doesn't edit code."},
-	{id: "bypassPermissions", name: "Full Access", description: "Edit files and run commands without asking."},
+	{id: "agent", name: "Agent", description: "Auto-accepts file edits and asks before other risky actions.", permissionMode: "acceptEdits"},
+	{id: "plan", name: "Plan", description: "Read-only — proposes a plan, doesn't edit code.", permissionMode: "plan"},
+	{id: "unattended", name: "Unattended", description: "Runs with full access and without permission prompts.", permissionMode: "bypassPermissions"},
 }
 
 func findMode(id string) *sessionMode {

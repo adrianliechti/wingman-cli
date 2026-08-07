@@ -27,6 +27,7 @@ type askClient struct {
 	formContent map[string]any
 	formDecline bool
 	formCancel  bool
+	formSession string
 }
 
 func (c *askClient) RequestPermission(_ context.Context, p acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
@@ -51,6 +52,9 @@ func (c *askClient) RequestPermission(_ context.Context, p acp.RequestPermission
 func (c *askClient) UnstableCreateElicitation(_ context.Context, req acp.UnstableCreateElicitationRequest) (acp.UnstableCreateElicitationResponse, error) {
 	c.mu.Lock()
 	c.formCalls++
+	if req.Form != nil {
+		c.formSession, _ = req.Form.Meta["sessionId"].(string)
+	}
 	c.mu.Unlock()
 	switch {
 	case c.formErr != nil:
@@ -141,6 +145,9 @@ func TestAskUserQuestionFormTier(t *testing.T) {
 	}
 	if perm, form := c.calls(); form != 1 || perm != 0 {
 		t.Errorf("calls: form=%d perm=%d, want form only", form, perm)
+	}
+	if c.formSession != "test" {
+		t.Errorf("elicitation session metadata = %q, want test", c.formSession)
 	}
 }
 

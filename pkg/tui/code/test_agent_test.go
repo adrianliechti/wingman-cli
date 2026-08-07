@@ -15,6 +15,7 @@ type uiTestAgent struct {
 	model     string
 	effort    string
 	efforts   []string
+	mode      string
 	sessions  []wingmancode.SessionInfo
 }
 
@@ -25,6 +26,7 @@ func newUITestAgent(messages []agent.Message) *uiTestAgent {
 		model:     "gpt-5.6-sol",
 		effort:    "medium",
 		efforts:   []string{"low", "medium", "high"},
+		mode:      "agent",
 	}
 }
 
@@ -44,8 +46,17 @@ func (a *uiTestAgent) SetEffort(_ context.Context, _ string, value string) error
 	a.effort = value
 	return nil
 }
-func (a *uiTestAgent) Modes(string) ([]wingmancode.Mode, string)     { return nil, "agent" }
-func (a *uiTestAgent) SetMode(context.Context, string, string) error { return nil }
+func (a *uiTestAgent) Modes(string) ([]wingmancode.Mode, string) {
+	return []wingmancode.Mode{
+		{ID: "agent", Name: "Agent"},
+		{ID: "plan", Name: "Plan"},
+		wingmancode.UnattendedMode(),
+	}, a.mode
+}
+func (a *uiTestAgent) SetMode(_ context.Context, _, mode string) error {
+	a.mode = mode
+	return nil
+}
 func (a *uiTestAgent) ListSessions(context.Context) ([]wingmancode.SessionInfo, error) {
 	return a.sessions, nil
 }

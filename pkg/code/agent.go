@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/model"
 )
 
@@ -19,6 +20,45 @@ type Mode struct {
 	ID          string
 	Name        string
 	Description string
+}
+
+const (
+	AgentModeID      = "agent"
+	PlanModeID       = "plan"
+	UnattendedModeID = "unattended"
+)
+
+func UnattendedMode() Mode {
+	return Mode{
+		ID:          UnattendedModeID,
+		Name:        "Unattended",
+		Description: "Auto-approves actions and makes reasonable assumptions instead of asking.",
+	}
+}
+
+// UnattendedElicitation resolves questions without UI. Defaults win, followed
+// by the first (recommended) option; required free-text questions are declined
+// rather than answered with fabricated input.
+func UnattendedElicitation(req tool.ElicitRequest) tool.ElicitResult {
+	content := map[string]any{}
+	for _, field := range req.Fields {
+		if field.CustomAnswerFor != "" {
+			continue
+		}
+		switch {
+		case field.Default != nil:
+			content[field.Name] = field.Default
+		case len(field.Enum) > 0 && field.Multiple:
+			content[field.Name] = []string{field.Enum[0]}
+		case len(field.Enum) > 0:
+			content[field.Name] = field.Enum[0]
+		case field.Type == "boolean":
+			content[field.Name] = true
+		case field.Required:
+			return tool.ElicitResult{Action: tool.ElicitDecline}
+		}
+	}
+	return tool.ElicitResult{Action: tool.ElicitAccept, Content: content}
 }
 
 type Command struct {

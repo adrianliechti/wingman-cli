@@ -146,12 +146,12 @@ func TestLiveExitPlanModeSwitchesMode(t *testing.T) {
 	}
 	found := false
 	for _, m := range modes {
-		if m == "default" {
+		if m == "agent" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("current_mode_update notifications = %v, want one with \"default\"", modes)
+		t.Errorf("current_mode_update notifications = %v, want one with \"agent\"", modes)
 	}
 }
 

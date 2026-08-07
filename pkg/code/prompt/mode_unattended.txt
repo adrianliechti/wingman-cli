@@ -1,0 +1,3 @@
+# Unattended mode
+
+Work unattended. Do not ask the user questions or request confirmation. Make reasonable assumptions, choose the safest viable default when choices are ambiguous, and continue. Actions that normally require approval are automatically approved by the harness; this does not relax any authorization or safety boundary.

@@ -14,7 +14,7 @@ func builtinGroup(name string) string {
 		return "Workspace"
 	case "/resume", "/recap", "/clear":
 		return "Session"
-	case "/model", "/plan", "/agent", "/tasks":
+	case "/model", "/agent", "/plan", "/unattended", "/tasks":
 		return "Agent"
 	default:
 		return "Application"
@@ -23,8 +23,10 @@ func builtinGroup(name string) string {
 
 func builtinShortcut(name string) string {
 	switch name {
-	case "/plan", "/agent":
+	case "/agent", "/plan":
 		return "tab"
+	case "/unattended":
+		return "shift+tab"
 	case "/clear":
 		return "ctrl+l"
 	case "/quit":
@@ -38,6 +40,7 @@ func (a *App) showCommandCenter() {
 	runs := map[string]func(){}
 	var items []PopupItem
 	busy := a.isStreaming()
+	_, currentMode := a.agent.Modes(a.sessionID)
 
 	add := func(item PopupItem, run func()) {
 		items = append(items, item)
@@ -73,10 +76,8 @@ func (a *App) showCommandCenter() {
 			DisabledReason: "available when the current turn finishes",
 		}
 		switch command.Name {
-		case "/plan":
-			item.Checked = a.currentMode == ModePlan
-		case "/agent":
-			item.Checked = a.currentMode == ModeAgent
+		case "/agent", "/plan", "/unattended":
+			item.Checked = strings.TrimPrefix(command.Name, "/") == currentMode
 		}
 
 		run := func() { command.Run(a) }
