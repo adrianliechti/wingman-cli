@@ -210,7 +210,7 @@ func (s *session) ensureProc(conn *acp.AgentSideConnection, path string, env []s
 		models:          append([]ModelEntry(nil), models...),
 		tools:           toolUseCache{},
 		emitted:         newToolCallTracker(),
-		streamedMsgs:    map[string]bool{},
+		streamedContent: &streamedBlockTracker{},
 		plan:            plan,
 		subagentParents: make(map[string]string),
 		results:         make(chan turnResult, 1),
@@ -239,18 +239,18 @@ func (s *session) spawnSigLocked() string {
 }
 
 type claudeProc struct {
-	cmd          *exec.Cmd
-	out          *streamWriter
-	stdin        io.Closer
-	sig          string
-	kill         context.CancelFunc
-	cwd          string
-	session      *session
-	models       []ModelEntry
-	tools        toolUseCache
-	emitted      *toolCallTracker
-	streamedMsgs map[string]bool
-	plan         *taskPlan
+	cmd             *exec.Cmd
+	out             *streamWriter
+	stdin           io.Closer
+	sig             string
+	kill            context.CancelFunc
+	cwd             string
+	session         *session
+	models          []ModelEntry
+	tools           toolUseCache
+	emitted         *toolCallTracker
+	streamedContent *streamedBlockTracker
+	plan            *taskPlan
 
 	turnMu          sync.Mutex
 	turnActive      bool
@@ -333,11 +333,11 @@ func (p *claudeProc) read(ctx context.Context, conn *acp.AgentSideConnection, si
 			if env.ParentToolUseID != "" {
 				continue
 			}
-			if err := emitStreamEvent(ctx, conn, sid, env.Event, p.streamedMsgs); err != nil {
+			if err := emitStreamEvent(ctx, conn, sid, env.Event, p.streamedContent); err != nil {
 				fmt.Fprintf(os.Stderr, "claude-acp: emit stream event: %v\n", err)
 			}
 		case "assistant":
-			if err := emitAssistant(ctx, conn, sid, env.Message, p.cwd, p.tools, p.emitted, p.streamedMsgs, p.plan, env.ParentToolUseID); err != nil {
+			if err := emitAssistant(ctx, conn, sid, env.Message, p.cwd, p.tools, p.emitted, p.streamedContent, p.plan, env.ParentToolUseID); err != nil {
 				fmt.Fprintf(os.Stderr, "claude-acp: emit assistant: %v\n", err)
 			}
 		case "user":

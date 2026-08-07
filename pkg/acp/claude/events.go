@@ -9,7 +9,83 @@ import (
 	"github.com/coder/acp-go-sdk"
 )
 
-func emitStreamEvent(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, raw json.RawMessage, streamedMsgs map[string]bool) error {
+type streamedBlock struct {
+	index int
+	kind  string
+	text  string
+}
+
+// streamedBlockTracker records the text and thinking that reached the client
+// through live deltas. Claude's consolidated assistant message repeats those
+// blocks, but its message id is not stable across every gateway, so content is
+// the reliable correlation key.
+type streamedBlockTracker struct {
+	blocks []streamedBlock
+}
+
+func (t *streamedBlockTracker) reset() {
+	if t != nil {
+		t.blocks = t.blocks[:0]
+	}
+}
+
+func (t *streamedBlockTracker) append(index int, kind, text string) {
+	if t == nil || text == "" {
+		return
+	}
+	if n := len(t.blocks); n > 0 && t.blocks[n-1].index == index && t.blocks[n-1].kind == kind {
+		t.blocks[n-1].text += text
+		return
+	}
+	t.blocks = append(t.blocks, streamedBlock{index: index, kind: kind, text: text})
+}
+
+// consume removes the prefix of each assembled block that was already sent as
+// deltas. A partial stream therefore emits only its missing tail, while a block
+// that never streamed is preserved in full.
+func (t *streamedBlockTracker) consume(content []cliMsgBlock) []cliMsgBlock {
+	if t == nil {
+		return content
+	}
+	defer t.reset()
+
+	kept := make([]cliMsgBlock, 0, len(content))
+	streamPos := 0
+	for _, block := range content {
+		kind, full := "", ""
+		switch block.Type {
+		case "text":
+			kind, full = "text", block.Text
+		case "thinking":
+			kind, full = "thinking", block.Thinking
+		default:
+			kept = append(kept, block)
+			continue
+		}
+		if full == "" {
+			continue
+		}
+		if streamPos < len(t.blocks) {
+			streamed := t.blocks[streamPos]
+			if streamed.kind == kind && streamed.text != "" && strings.HasPrefix(full, streamed.text) {
+				streamPos++
+				remainder := strings.TrimPrefix(full, streamed.text)
+				if remainder == "" {
+					continue
+				}
+				if kind == "text" {
+					block.Text = remainder
+				} else {
+					block.Thinking = remainder
+				}
+			}
+		}
+		kept = append(kept, block)
+	}
+	return kept
+}
+
+func emitStreamEvent(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, raw json.RawMessage, streamed *streamedBlockTracker) error {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -17,8 +93,8 @@ func emitStreamEvent(ctx context.Context, conn *acp.AgentSideConnection, sid acp
 	if err := json.Unmarshal(raw, &e); err != nil {
 		return nil
 	}
-	if e.Type == "message_start" && e.Message.ID != "" && streamedMsgs != nil {
-		streamedMsgs[e.Message.ID] = true
+	if e.Type == "message_start" {
+		streamed.reset()
 		return nil
 	}
 	if e.Type != "content_block_delta" {
@@ -30,11 +106,13 @@ func emitStreamEvent(ctx context.Context, conn *acp.AgentSideConnection, sid acp
 		if e.Delta.Text == "" {
 			return nil
 		}
+		streamed.append(e.Index, "text", e.Delta.Text)
 		update = acp.UpdateAgentMessageText(e.Delta.Text)
 	case "thinking_delta":
 		if e.Delta.Thinking == "" {
 			return nil
 		}
+		streamed.append(e.Index, "thinking", e.Delta.Thinking)
 		update = acp.UpdateAgentThoughtText(e.Delta.Thinking)
 	default:
 		return nil
@@ -42,12 +120,10 @@ func emitStreamEvent(ctx context.Context, conn *acp.AgentSideConnection, sid acp
 	return conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: update})
 }
 
-// emitAssistant renders a consolidated assistant message. Text and thinking
-// blocks are skipped when their message id was already delta-streamed
-// (streamedMsgs, live path) so they aren't emitted twice — but CLI-synthesized
-// messages such as local slash-command output never stream and must be
-// emitted here. streamedMsgs is nil on history replay, which never streams.
-func emitAssistant(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, raw json.RawMessage, cwd string, cache toolUseCache, tracker *toolCallTracker, streamedMsgs map[string]bool, plan *taskPlan, parentToolUseID string) error {
+// emitAssistant renders a consolidated assistant message. Blocks already sent
+// as live deltas are removed by content, while unstreamed blocks and partial
+// tails are still emitted. streamed is nil on history replay.
+func emitAssistant(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, raw json.RawMessage, cwd string, cache toolUseCache, tracker *toolCallTracker, streamed *streamedBlockTracker, plan *taskPlan, parentToolUseID string) error {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -55,13 +131,15 @@ func emitAssistant(ctx context.Context, conn *acp.AgentSideConnection, sid acp.S
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return fmt.Errorf("parse assistant message: %w", err)
 	}
-	streamed := streamedMsgs != nil && streamedMsgs[m.ID]
-	delete(streamedMsgs, m.ID)
-	for _, b := range m.Content {
+	content := m.Content
+	if parentToolUseID == "" {
+		content = streamed.consume(content)
+	}
+	for _, b := range content {
 		var update acp.SessionUpdate
 		switch b.Type {
 		case "text":
-			if b.Text == "" || streamed || parentToolUseID != "" {
+			if b.Text == "" || parentToolUseID != "" {
 				continue
 			}
 			text := b.Text
@@ -74,7 +152,7 @@ func emitAssistant(ctx context.Context, conn *acp.AgentSideConnection, sid acp.S
 			}
 			update = acp.UpdateAgentMessageText(text)
 		case "thinking":
-			if b.Thinking == "" || streamed || parentToolUseID != "" {
+			if b.Thinking == "" || parentToolUseID != "" {
 				continue
 			}
 			update = acp.UpdateAgentThoughtText(b.Thinking)

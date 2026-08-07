@@ -72,6 +72,7 @@ type cliEnvelope struct {
 
 type streamEvent struct {
 	Type    string `json:"type"`
+	Index   int    `json:"index"`
 	Message struct {
 		ID string `json:"id"`
 	} `json:"message"`
