@@ -30,6 +30,7 @@ type Session struct {
 	mu         sync.Mutex
 	openedDocs map[string]uint64
 	pushDiags  map[string][]Diagnostic
+	pushSeen   map[string]bool
 }
 
 const startupTimeout = 30 * time.Second
@@ -69,6 +70,7 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 		cancelFunc: cancel,
 		openedDocs: make(map[string]uint64),
 		pushDiags:  make(map[string][]Diagnostic),
+		pushSeen:   make(map[string]bool),
 	}
 
 	framer := jsonrpc2.HeaderFramer()
@@ -83,6 +85,7 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 					if err := json.Unmarshal(req.Params, &params); err == nil {
 						session.mu.Lock()
 						session.pushDiags[params.URI] = params.Diagnostics
+						session.pushSeen[params.URI] = true
 						session.mu.Unlock()
 					}
 					return nil, nil
@@ -239,17 +242,23 @@ func (s *Session) OpenDocument(ctx context.Context, filePath string) (string, er
 }
 
 func (s *Session) PushDiagnostics(uri string) []Diagnostic {
-	s.mu.Lock()
-	diags := s.pushDiags[uri]
-	s.mu.Unlock()
+	diags, _ := s.pushedDiagnostics(uri)
 	return diags
 }
 
-func (s *Session) CollectDiagnostics(ctx context.Context, uri string) []Diagnostic {
-	if diags := s.PushDiagnostics(uri); len(diags) > 0 {
-		return diags
-	}
+func (s *Session) pushedDiagnostics(uri string) ([]Diagnostic, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pushDiags[uri], s.pushSeen[uri]
+}
 
+func (s *Session) PushSeen(uri string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pushSeen[uri]
+}
+
+func (s *Session) pullDiagnostics(ctx context.Context, uri string) ([]Diagnostic, bool) {
 	params := DocumentDiagnosticParams{
 		TextDocument: TextDocumentIdentifier{URI: uri},
 	}
@@ -259,44 +268,74 @@ func (s *Session) CollectDiagnostics(ctx context.Context, uri string) []Diagnost
 
 	var result json.RawMessage
 	if err := s.CallAndAwait(callCtx, "textDocument/diagnostic", params, &result); err != nil || result == nil || string(result) == "null" {
-		return nil
+		return nil, false
 	}
 
 	var report FullDocumentDiagnosticReport
-	if err := json.Unmarshal(result, &report); err == nil && len(report.Items) > 0 {
-		return report.Items
+	if err := json.Unmarshal(result, &report); err == nil && report.Kind != "" {
+		return report.Items, true
 	}
 
 	var diagnostics []Diagnostic
 	if err := json.Unmarshal(result, &diagnostics); err == nil {
-		return diagnostics
+		return diagnostics, true
 	}
 
-	return nil
+	return nil, false
 }
 
-func (s *Session) WaitForDiagnostics(ctx context.Context, uri string) []Diagnostic {
-	if diags := s.CollectDiagnostics(ctx, uri); len(diags) > 0 {
-		return diags
+// DiagnosticsState reports the diagnostics for uri and whether the server has
+// actually produced a result: known=false means the server neither published
+// nor answered a pull request, so "no diagnostics" cannot be concluded.
+func (s *Session) DiagnosticsState(ctx context.Context, uri string) ([]Diagnostic, bool) {
+	pushed, seen := s.pushedDiagnostics(uri)
+	if seen && len(pushed) > 0 {
+		return pushed, true
 	}
+
+	if diags, ok := s.pullDiagnostics(ctx, uri); ok {
+		return diags, true
+	}
+
+	if seen {
+		return pushed, true
+	}
+
+	return nil, false
+}
+
+func (s *Session) CollectDiagnostics(ctx context.Context, uri string) []Diagnostic {
+	diags, _ := s.DiagnosticsState(ctx, uri)
+	return diags
+}
+
+func (s *Session) WaitForDiagnostics(ctx context.Context, uri string, timeout time.Duration) ([]Diagnostic, bool) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
 
 	ticker := time.NewTicker(300 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
+		if diags, known := s.DiagnosticsState(ctx, uri); known {
+			return diags, true
+		}
+
 		select {
 		case <-ctx.Done():
-			return nil
+			return nil, false
+		case <-deadline.C:
+			return nil, false
 		case <-ticker.C:
-			if diags := s.CollectDiagnostics(ctx, uri); len(diags) > 0 {
-				return diags
-			}
 		}
 	}
 }
 
 func (s *Session) Diagnostics(ctx context.Context, uri string, filePath string) (string, error) {
-	diags := s.CollectDiagnostics(ctx, uri)
+	diags, known := s.WaitForDiagnostics(ctx, uri, 3*time.Second)
+	if !known {
+		return "No diagnostics data: the language server did not report results for this file (it may still be analyzing or not support diagnostics). Do not treat this as a clean result.", nil
+	}
 	if len(diags) == 0 {
 		return "No diagnostics found", nil
 	}
@@ -305,7 +344,26 @@ func (s *Session) Diagnostics(ctx context.Context, uri string, filePath string) 
 }
 
 func (s *Session) Definition(ctx context.Context, uri string, line, column int) (string, error) {
-	return s.locationOp(ctx, "textDocument/definition", "Definition", uri, line, column)
+	params := TextDocumentPositionParams{
+		TextDocument: TextDocumentIdentifier{URI: uri},
+		Position:     Position{Line: line, Character: column},
+	}
+
+	var result json.RawMessage
+	if err := s.CallAndAwait(ctx, "textDocument/definition", params, &result); err != nil {
+		return "", err
+	}
+
+	locations, err := parseLocationResponse(result)
+	if err != nil {
+		return "", err
+	}
+
+	if len(locations) == 0 {
+		return "No definition found", nil
+	}
+
+	return formatDefinitions(locations, s.workingDir), nil
 }
 
 type DefLocation struct {
@@ -415,19 +473,124 @@ func (s *Session) DocumentSymbols(ctx context.Context, uri string, filePath stri
 	return "No symbols found", nil
 }
 
-func (s *Session) CallHierarchy(ctx context.Context, uri string, line, column int, incoming bool) (string, error) {
-	items, err := s.prepareCallHierarchyItems(ctx, uri, line, column)
-	if err != nil || len(items) == 0 {
-		return "No call hierarchy item found at this position", nil
-	}
-
-	if incoming {
-		return s.incomingCalls(ctx, items[0])
-	}
-	return s.outgoingCalls(ctx, items[0])
+type symbolCandidate struct {
+	name      string
+	qualified string
+	position  Position
 }
 
-func (s *Session) PrepareCallHierarchy(ctx context.Context, uri string, line, column int) (string, error) {
+func (s *Session) SymbolPosition(ctx context.Context, uri string, name string) (Position, bool) {
+	params := DocumentSymbolParams{
+		TextDocument: TextDocumentIdentifier{URI: uri},
+	}
+
+	var result json.RawMessage
+	if err := s.CallAndAwait(ctx, "textDocument/documentSymbol", params, &result); err != nil {
+		return Position{}, false
+	}
+
+	if result == nil || string(result) == "null" {
+		return Position{}, false
+	}
+
+	var candidates []symbolCandidate
+
+	var symInfos []SymbolInformation
+	if err := json.Unmarshal(result, &symInfos); err == nil && len(symInfos) > 0 && symInfos[0].Location.URI != "" {
+		for _, sym := range symInfos {
+			candidates = append(candidates, symbolCandidate{name: sym.Name, qualified: sym.Name, position: sym.Location.Range.Start})
+		}
+	} else {
+		var docSymbols []DocumentSymbol
+		if err := json.Unmarshal(result, &docSymbols); err == nil {
+			collectSymbolCandidates(docSymbols, "", &candidates)
+		}
+	}
+
+	matched, ok := matchSymbol(candidates, name)
+	if !ok {
+		return Position{}, false
+	}
+
+	return snapToIdentifier(uriToPath(uri), matched), true
+}
+
+// snapToIdentifier adjusts a candidate position to the symbol's name token:
+// SymbolInformation ranges start at the declaration keyword, which servers
+// reject as "no identifier" for position-based requests.
+func snapToIdentifier(path string, matched symbolCandidate) Position {
+	pos := matched.position
+
+	lines, err := readLines(path)
+	if err != nil || pos.Line < 0 || pos.Line >= len(lines) {
+		return pos
+	}
+
+	text := lines[pos.Line]
+	leaf := symbolLeaf(matched.name)
+	if idx := findWordInLineFrom(text, leaf, runeColFromUTF16(text, pos.Character)); idx >= 0 {
+		pos.Character = utf16ColFromRune(text, idx)
+	}
+
+	return pos
+}
+
+func collectSymbolCandidates(symbols []DocumentSymbol, prefix string, out *[]symbolCandidate) {
+	for _, sym := range symbols {
+		qualified := sym.Name
+		if prefix != "" {
+			qualified = prefix + "." + sym.Name
+		}
+		*out = append(*out, symbolCandidate{name: sym.Name, qualified: qualified, position: sym.SelectionRange.Start})
+		collectSymbolCandidates(sym.Children, qualified, out)
+	}
+}
+
+func matchSymbol(candidates []symbolCandidate, query string) (symbolCandidate, bool) {
+	for _, c := range candidates {
+		if c.name == query || c.qualified == query {
+			return c, true
+		}
+	}
+
+	if strings.Contains(query, ".") {
+		normalized := normalizeSymbol(query)
+		for _, c := range candidates {
+			if strings.HasSuffix(normalizeSymbol(c.qualified), normalized) || strings.HasSuffix(normalizeSymbol(c.name), normalized) {
+				return c, true
+			}
+		}
+	}
+
+	leaf := symbolLeaf(query)
+	for _, c := range candidates {
+		if symbolLeaf(c.name) == leaf {
+			return c, true
+		}
+	}
+
+	return symbolCandidate{}, false
+}
+
+func symbolLeaf(name string) string {
+	name = strings.TrimSuffix(name, "()")
+	if idx := strings.LastIndex(name, "."); idx >= 0 {
+		name = name[idx+1:]
+	}
+	return strings.Trim(name, "*()")
+}
+
+func normalizeSymbol(name string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '(', ')', '*', ' ':
+			return -1
+		}
+		return r
+	}, name)
+}
+
+func (s *Session) CallHierarchy(ctx context.Context, uri string, line, column int, incoming bool) (string, error) {
 	items, err := s.prepareCallHierarchyItems(ctx, uri, line, column)
 	if err != nil {
 		return "", err
@@ -437,7 +600,21 @@ func (s *Session) PrepareCallHierarchy(ctx context.Context, uri string, line, co
 		return "No call hierarchy item found at this position", nil
 	}
 
-	return formatCallHierarchyItems(items, s.workingDir), nil
+	var out string
+	if incoming {
+		out, err = s.incomingCalls(ctx, items[0])
+	} else {
+		out, err = s.outgoingCalls(ctx, items[0])
+	}
+	if err != nil {
+		return "", err
+	}
+
+	if len(items) > 1 {
+		out += fmt.Sprintf("(%d call hierarchy items at this position; showing calls for %s)\n", len(items), items[0].Name)
+	}
+
+	return out, nil
 }
 
 func (s *Session) prepareCallHierarchyItems(ctx context.Context, uri string, line, column int) ([]CallHierarchyItem, error) {

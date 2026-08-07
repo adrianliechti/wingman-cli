@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 )
 
 const maxRestarts = 3
@@ -168,6 +169,53 @@ func (m *Manager) Close() {
 	}
 }
 
+func (m *Manager) openDiscoveredFiles(ctx context.Context, session *Session, languages []string) ([]string, []string, int) {
+	files, total := discoverSourceFiles(m.workingDir, languages, 50)
+
+	opened := make([]string, 0, len(files))
+	uris := make([]string, 0, len(files))
+	for _, file := range files {
+		uri, err := session.OpenDocument(ctx, file)
+		if err != nil {
+			continue
+		}
+		opened = append(opened, file)
+		uris = append(uris, uri)
+	}
+
+	waitForPushedDiagnostics(ctx, session, uris, 5*time.Second)
+
+	return opened, uris, total
+}
+
+func waitForPushedDiagnostics(ctx context.Context, session *Session, uris []string, timeout time.Duration) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		pending := 0
+		for _, uri := range uris {
+			if !session.PushSeen(uri) {
+				pending++
+			}
+		}
+		if pending == 0 {
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline.C:
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
 func (m *Manager) CollectAllDiagnostics(ctx context.Context) map[string][]Diagnostic {
 	servers := m.DetectServers()
 	result := make(map[string][]Diagnostic)
@@ -178,13 +226,9 @@ func (m *Manager) CollectAllDiagnostics(ctx context.Context) map[string][]Diagno
 			continue
 		}
 
-		for _, file := range discoverSourceFiles(m.workingDir, server.Languages, 50) {
-			uri, err := session.OpenDocument(ctx, file)
-			if err != nil {
-				continue
-			}
-
-			diags := session.CollectDiagnostics(ctx, uri)
+		files, uris, _ := m.openDiscoveredFiles(ctx, session, server.Languages)
+		for i, file := range files {
+			diags := session.CollectDiagnostics(ctx, uris[i])
 			if len(diags) > 0 {
 				result[file] = diags
 			}
@@ -202,37 +246,56 @@ func (m *Manager) WorkspaceDiagnostics(ctx context.Context) (string, error) {
 
 	var sb strings.Builder
 	totalDiags := 0
+	checkedFiles := 0
+	totalFiles := 0
+	unknownFiles := 0
+	var unavailable []string
 
 	for _, server := range servers {
 		session, err := m.GetSessionByServer(ctx, server)
 		if err != nil {
+			unavailable = append(unavailable, server.Name)
 			continue
 		}
 
-		for _, file := range discoverSourceFiles(m.workingDir, server.Languages, 50) {
-			uri, err := session.OpenDocument(ctx, file)
-			if err != nil {
-				continue
-			}
+		files, uris, total := m.openDiscoveredFiles(ctx, session, server.Languages)
+		checkedFiles += len(files)
+		totalFiles += total
 
-			diags := session.CollectDiagnostics(ctx, uri)
-			if len(diags) == 0 {
+		for i, file := range files {
+			diags, known := session.DiagnosticsState(ctx, uris[i])
+			if !known {
+				unknownFiles++
 				continue
 			}
 
 			displayPath := relPath(m.workingDir, file)
 			for _, diag := range diags {
 				totalDiags++
-				fmt.Fprintf(&sb, "  %s:%d:%d %s: %s\n", displayPath, diag.Range.Start.Line+1, diag.Range.Start.Character+1, DiagnosticSeverityName(diag.Severity), diag.Message)
+				fmt.Fprintf(&sb, "  %s\n", formatDiagnosticLine(displayPath, diag))
 			}
 		}
 	}
 
+	var notes []string
+	if totalFiles > checkedFiles {
+		notes = append(notes, fmt.Sprintf("checked %d of %d source files; results are partial", checkedFiles, totalFiles))
+	} else {
+		notes = append(notes, fmt.Sprintf("checked %d source files", checkedFiles))
+	}
+	if unknownFiles > 0 {
+		notes = append(notes, fmt.Sprintf("%d files returned no data", unknownFiles))
+	}
+	if len(unavailable) > 0 {
+		notes = append(notes, "server unavailable: "+strings.Join(unavailable, ", "))
+	}
+	coverage := "Coverage: " + strings.Join(notes, "; ")
+
 	if totalDiags == 0 {
-		return "No workspace diagnostics found", nil
+		return "No workspace diagnostics found\n" + coverage, nil
 	}
 
-	return fmt.Sprintf("Workspace Diagnostics (%d found):\n%s", totalDiags, sb.String()), nil
+	return fmt.Sprintf("Workspace Diagnostics (%d found):\n%s%s", totalDiags, sb.String(), coverage), nil
 }
 
 func (m *Manager) WorkspaceSymbols(ctx context.Context, query string) (string, error) {
@@ -287,13 +350,16 @@ var skippedDiscoveryDirs = map[string]bool{
 	"dist":         true,
 }
 
-func discoverSourceFiles(workingDir string, extensions []string, maxFiles int) []string {
+func discoverSourceFiles(workingDir string, extensions []string, maxFiles int) ([]string, int) {
+	const countLimit = 2000
+
 	extSet := make(map[string]bool, len(extensions))
 	for _, ext := range extensions {
 		extSet["."+ext] = true
 	}
 
 	var files []string
+	total := 0
 	filepath.WalkDir(workingDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -308,8 +374,11 @@ func discoverSourceFiles(workingDir string, extensions []string, maxFiles int) [
 		}
 
 		if extSet[filepath.Ext(path)] {
-			files = append(files, path)
-			if len(files) >= maxFiles {
+			total++
+			if len(files) < maxFiles {
+				files = append(files, path)
+			}
+			if total >= countLimit {
 				return filepath.SkipAll
 			}
 		}
@@ -317,5 +386,5 @@ func discoverSourceFiles(workingDir string, extensions []string, maxFiles int) [
 		return nil
 	})
 
-	return files
+	return files, total
 }

@@ -29,20 +29,28 @@ func TestNewToolsExposesSingleLSPTool(t *testing.T) {
 
 	for _, want := range []string{
 		"diagnostics",
-		"workspaceDiagnostics",
 		"goToDefinition",
 		"findReferences",
 		"hover",
 		"documentSymbol",
 		"workspaceSymbol",
 		"goToImplementation",
-		"prepareCallHierarchy",
 		"incomingCalls",
 		"outgoingCalls",
 	} {
 		if !slices.Contains(enums, want) {
 			t.Fatalf("operation enum missing %q: %#v", want, enums)
 		}
+	}
+
+	for _, removed := range []string{"workspaceDiagnostics", "prepareCallHierarchy"} {
+		if slices.Contains(enums, removed) {
+			t.Fatalf("operation enum should not contain %q: %#v", removed, enums)
+		}
+	}
+
+	if _, ok := props["symbol"]; !ok {
+		t.Fatal("expected symbol parameter")
 	}
 
 	required := lspTool.Parameters["required"].([]string)
@@ -93,6 +101,77 @@ func TestLSPToolRejectsFractionalPositionInput(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "line must be a positive 1-based integer") {
 		t.Fatalf("expected line validation error, got: %v", err)
+	}
+}
+
+func TestLSPToolRequiresPositionOrSymbol(t *testing.T) {
+	manager := newTestManager(t)
+	lspTool := NewTools(manager)[0]
+
+	_, err := lspTool.Execute(context.Background(), map[string]any{
+		"operation": "hover",
+		"file_path": "main.go",
+	})
+	if err == nil || !strings.Contains(err.Error(), "position required") {
+		t.Fatalf("expected position required error, got: %v", err)
+	}
+
+	_, err = lspTool.Execute(context.Background(), map[string]any{
+		"operation": "hover",
+		"file_path": "main.go",
+		"line":      1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "column must be a positive 1-based integer") {
+		t.Fatalf("expected column error, got: %v", err)
+	}
+
+	_, err = lspTool.Execute(context.Background(), map[string]any{
+		"operation": "hover",
+		"file_path": "main.go",
+		"column":    3,
+	})
+	if err == nil || !strings.Contains(err.Error(), "line must be a positive 1-based integer") {
+		t.Fatalf("expected line error, got: %v", err)
+	}
+}
+
+func TestLSPToolResolvesSymbolOnLine(t *testing.T) {
+	manager := newTestManager(t)
+	lspTool := NewTools(manager)[0]
+
+	_, err := lspTool.Execute(context.Background(), map[string]any{
+		"operation": "hover",
+		"file_path": "main.go",
+		"line":      1,
+		"symbol":    "missing",
+	})
+	if err == nil || !strings.Contains(err.Error(), `symbol "missing" not found on line 1`) {
+		t.Fatalf("expected symbol-not-on-line error, got: %v", err)
+	}
+
+	_, err = lspTool.Execute(context.Background(), map[string]any{
+		"operation": "hover",
+		"file_path": "main.go",
+		"line":      1,
+		"symbol":    "main",
+	})
+	if err == nil || !strings.Contains(err.Error(), "no LSP server found") {
+		t.Fatalf("expected symbol to resolve and fail at session, got: %v", err)
+	}
+}
+
+func TestLSPToolRejectsOutOfRangeLine(t *testing.T) {
+	manager := newTestManager(t)
+	lspTool := NewTools(manager)[0]
+
+	_, err := lspTool.Execute(context.Background(), map[string]any{
+		"operation": "hover",
+		"file_path": "main.go",
+		"line":      99,
+		"column":    1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "out of range") {
+		t.Fatalf("expected out of range error, got: %v", err)
 	}
 }
 
