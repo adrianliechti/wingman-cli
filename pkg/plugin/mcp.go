@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/url"
@@ -43,12 +44,27 @@ var (
 // error disables MCP for the plugin; per-server problems are returned as notes
 // and skip only that entry.
 func parseMCP(content []byte, manifestSchema, root, dataDir string) (map[string]mcp.ServerConfig, []string, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(content, &raw); err != nil {
+		return nil, nil, fmt.Errorf("parse mcp.json: %w", err)
+	}
+	serversValue, ok := raw["mcpServers"]
+	if !ok || !isObject(serversValue) {
+		return nil, nil, fmt.Errorf("mcp.json field %q is required and must be an object", "mcpServers")
+	}
+
 	var file mcpFile
 
 	decoder := json.NewDecoder(bytes.NewReader(content))
 	decoder.DisallowUnknownFields()
 
 	if err := decoder.Decode(&file); err != nil {
+		return nil, nil, fmt.Errorf("parse mcp.json: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return nil, nil, fmt.Errorf("parse mcp.json: trailing JSON value")
+		}
 		return nil, nil, fmt.Errorf("parse mcp.json: %w", err)
 	}
 

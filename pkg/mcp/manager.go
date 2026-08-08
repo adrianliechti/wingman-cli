@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	wingmanhttp "github.com/adrianliechti/wingman-agent/pkg/httpclient"
 )
 
 type Manager struct {
@@ -193,11 +195,10 @@ func createTransport(server ServerConfig, dir string) (mcp.Transport, error) {
 		httpClient := http.DefaultClient
 
 		if len(server.Headers) > 0 {
-			httpClient = &http.Client{
-				Transport: &headerTransport{
-					base:    http.DefaultTransport,
-					headers: server.Headers,
-				},
+			var err error
+			httpClient, err = wingmanhttp.WithOriginHeaders(http.DefaultClient, server.URL, server.Headers)
+			if err != nil {
+				return nil, err
 			}
 		}
 

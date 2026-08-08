@@ -66,6 +66,35 @@ func TestHTTPNon2xxIsNonBlocking(t *testing.T) {
 	}
 }
 
+func TestHTTPHeadersAreScopedToConfiguredOrigin(t *testing.T) {
+	var requests []*http.Request
+	withHTTPTransport(t, func(request *http.Request) (*http.Response, error) {
+		requests = append(requests, request)
+		if len(requests) == 1 {
+			redirect := response(http.StatusTemporaryRedirect, "")
+			redirect.Header.Set("Location", "https://other.test/hook")
+			redirect.Request = request
+			return redirect, nil
+		}
+		return response(http.StatusNoContent, ""), nil
+	})
+	cfg := configFor("PreToolUse", "Bash", Handler{
+		Type:    "http",
+		URL:     "https://hooks.test/pre",
+		Headers: map[string]string{"Authorization": "plugin-secret", "X-Plugin": "demo"},
+	})
+	_, _ = cfg.Build(t.TempDir(), nil).PreToolUse[0](context.Background(), tool.ToolCall{Name: "shell"})
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d, want redirect followed", len(requests))
+	}
+	if requests[0].Header.Get("Authorization") != "plugin-secret" || requests[0].Header.Get("X-Plugin") != "demo" {
+		t.Fatalf("configured-origin headers = %#v", requests[0].Header)
+	}
+	if requests[1].Header.Get("Authorization") != "" || requests[1].Header.Get("X-Plugin") != "" {
+		t.Fatalf("cross-origin headers leaked: %#v", requests[1].Header)
+	}
+}
+
 func TestMatchingHTTPHandlersRunConcurrently(t *testing.T) {
 	entered := make(chan struct{}, 2)
 	release := make(chan struct{})

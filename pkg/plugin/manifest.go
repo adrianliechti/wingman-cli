@@ -90,9 +90,20 @@ func parseManifest(data []byte) (Manifest, []string, error) {
 		return Manifest{}, notes, err
 	}
 
-	for _, namespace := range slices.Sorted(maps.Keys(manifest.Extensions)) {
-		if !isObject(manifest.Extensions[namespace]) {
-			return Manifest{}, notes, fmt.Errorf("extension %q must be an object", namespace)
+	for _, field := range []string{"version", "description", "author", "homepage", "repository", "license", "keywords"} {
+		if value, ok := raw[field]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return Manifest{}, notes, fmt.Errorf("manifest field %q must use its declared type when present", field)
+		}
+	}
+	if authorValue, ok := raw["author"]; ok && isObject(authorValue) {
+		var author map[string]json.RawMessage
+		if err := json.Unmarshal(authorValue, &author); err != nil {
+			return Manifest{}, notes, fmt.Errorf("parse plugin.json author: %w", err)
+		}
+		for _, field := range []string{"name", "email", "url"} {
+			if value, ok := author[field]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				return Manifest{}, notes, fmt.Errorf("manifest field %q must be a string when present", "author."+field)
+			}
 		}
 	}
 

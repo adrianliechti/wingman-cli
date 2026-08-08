@@ -3,6 +3,7 @@ package skill_test
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -43,7 +44,7 @@ Do the thing with ${ARGUMENTS}.`), 0644); err != nil {
 	if skill.Name != "test-skill" || skill.Description != "A test skill" {
 		t.Fatalf("skill metadata = %#v", skill)
 	}
-	if skill.License != "Apache-2.0" || skill.Compatibility != "Requires git." || skill.Metadata["category"] != "testing" || skill.AllowedTools != "Shell(git:*)" {
+	if skill.License != "Apache-2.0" || skill.Compatibility != "Requires git." || skill.Metadata["category"] != "testing" || !reflect.DeepEqual(skill.AllowedTools, []string{"Shell(git:*)"}) {
 		t.Fatalf("standard optional metadata = %#v", skill)
 	}
 	content, err := skill.GetContent(root)
@@ -74,6 +75,50 @@ Content here.`), 0644); err != nil {
 	}
 	if len(skills) != 0 {
 		t.Fatalf("expected invalid skill to be skipped, got %#v", skills)
+	}
+}
+
+func TestCodexOpenAIMetadataDisablesOnlyImplicitInvocation(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "manual-review")
+	if err := os.MkdirAll(filepath.Join(skillDir, "agents"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: manual-review\ndescription: Review on request.\n---\nReview now."), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "agents", "openai.yaml"), []byte("policy:\n  allow_implicit_invocation: false\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	skills := LoadDirRecursiveCodex(root)
+	if len(skills) != 1 || skills[0].AllowImplicitInvocation == nil || *skills[0].AllowImplicitInvocation || !skills[0].DisableModelInvocation {
+		t.Fatalf("Codex metadata not applied: %#v", skills)
+	}
+	if prompt := FormatForPrompt(skills); prompt != "" {
+		t.Fatalf("manual skill leaked into model prompt: %q", prompt)
+	}
+	if found := FindSkill("manual-review", skills); found == nil {
+		t.Fatal("explicit invocation must remain available")
+	}
+}
+
+func TestCodexOpenAIMetadataFailsOpen(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "review")
+	if err := os.MkdirAll(filepath.Join(skillDir, "agents"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: review\ndescription: Review changes.\n---\nReview."), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "agents", "openai.yaml"), []byte("policy: [invalid"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	skills := LoadDirRecursiveCodex(root)
+	if len(skills) != 1 || skills[0].DisableModelInvocation {
+		t.Fatalf("malformed optional metadata hid skill: %#v", skills)
 	}
 }
 
@@ -249,6 +294,34 @@ func TestFormatForPrompt_Empty(t *testing.T) {
 	}
 }
 
+func TestFormatForPromptEscapesXMLAndStaysWithinBudget(t *testing.T) {
+	skills := []Skill{{
+		Name:        `a&b`,
+		Description: `<unsafe> & "quoted"`,
+		Location:    `.agents/skills/a&b`,
+	}}
+	for i := 0; i < 20; i++ {
+		skills = append(skills, Skill{Name: "large-" + strings.Repeat("x", i), Description: strings.Repeat("z", 1024)})
+	}
+	result := FormatForPrompt(skills)
+	if strings.Contains(result, "<unsafe>") || !strings.Contains(result, "a&amp;b") || !strings.Contains(result, "&lt;unsafe&gt;") {
+		t.Fatalf("prompt was not XML escaped: %q", result)
+	}
+	if len(result) > 8000 || !strings.HasSuffix(result, "</available_skills>") {
+		t.Fatalf("prompt length = %d or document is incomplete", len(result))
+	}
+}
+
+func TestFormatForPromptHidesManualOnlyClaudeSkill(t *testing.T) {
+	result := FormatForPrompt([]Skill{
+		{Name: "manual", Description: "manual", DisableModelInvocation: true},
+		{Name: "automatic", Description: "automatic"},
+	})
+	if strings.Contains(result, "manual</name>") || !strings.Contains(result, "automatic</name>") {
+		t.Fatalf("prompt = %q", result)
+	}
+}
+
 func writeSkill(t *testing.T, dir, name, description string) {
 	t.Helper()
 
@@ -355,6 +428,109 @@ func TestLoadDirEnforcesAgentSkillsLengthLimits(t *testing.T) {
 
 	if skills := LoadDir(root); len(skills) != 0 {
 		t.Fatalf("skills = %#v, want over-limit skills skipped", skills)
+	}
+}
+
+func TestLoadDirRejectsEmptyAgentSkillsCompatibility(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "empty-compatibility")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: empty-compatibility\ndescription: valid\ncompatibility: ''\n---\nbody"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if skills := LoadDir(root); len(skills) != 0 {
+		t.Fatalf("skills = %#v, want explicit empty compatibility rejected", skills)
+	}
+}
+
+func TestLoadDirRecursiveClaudeAcceptsOptionalFrontmatter(t *testing.T) {
+	root := t.TempDir()
+	plain := filepath.Join(root, "plain")
+	advanced := filepath.Join(root, "advanced")
+	if err := os.MkdirAll(plain, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(advanced, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(plain, "SKILL.md"), []byte("---\n---\n# Plain\n\nFirst useful paragraph.\n\nMore detail."), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(advanced, "SKILL.md"), []byte(`---
+name: friendly-display-name
+description: Base description.
+when_to_use: Use for reviews.
+allowed-tools: [Read, Grep]
+disallowed-tools: Write, Bash(git push *)
+arguments: target mode
+disable-model-invocation: ON
+user-invocable: 0
+background: no
+metadata:
+  ui:
+    color: blue
+---
+Review $target in $mode mode.`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	skills := LoadDirRecursiveClaude(root)
+	if len(skills) != 2 {
+		t.Fatalf("skills = %#v", skills)
+	}
+	advancedSkill := FindSkill("advanced", skills)
+	if advancedSkill == nil || advancedSkill.DisplayName != "friendly-display-name" || advancedSkill.Description != "Base description. Use for reviews." || len(advancedSkill.AllowedTools) != 2 || !reflect.DeepEqual(advancedSkill.DisallowedTools, []string{"Write", "Bash(git push *)"}) || advancedSkill.ClaudeMetadata["ui"] == nil || !advancedSkill.DisableModelInvocation || advancedSkill.UserInvocable == nil || *advancedSkill.UserInvocable || advancedSkill.Background == nil || *advancedSkill.Background {
+		t.Fatalf("advanced skill = %#v", advancedSkill)
+	}
+	if got := advancedSkill.ApplyArguments("Review $target in $mode mode; first $0, second $1.", `"pkg/plugin api" strict`, root); got != "Review pkg/plugin api in strict mode; first pkg/plugin api, second strict." {
+		t.Fatalf("named arguments = %q", got)
+	}
+	if got := advancedSkill.ApplyArguments(`Missing $2; literal \$1.00; doubled \\$0.`, "first", root); got != `Missing $2; literal $1.00; doubled \\first.` {
+		t.Fatalf("Claude argument edge cases = %q", got)
+	}
+	plainSkill := FindSkill("plain", skills)
+	if plainSkill == nil || plainSkill.Description != "First useful paragraph." {
+		t.Fatalf("plain skill = %#v", plainSkill)
+	}
+}
+
+func TestDiscoverLoadsAgentSkillsFromWorkingDirectoryToRepoRoot(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	workDir := filepath.Join(repo, "src", "nested")
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeSkill(t, filepath.Join(repo, ".agents", "skills", "root-skill"), "root-skill", "from repo root")
+	writeSkill(t, filepath.Join(repo, "src", ".agents", "skills", "near-skill"), "near-skill", "from parent")
+	skills, err := Discover(workDir)
+	if err != nil || FindSkill("root-skill", skills) == nil || FindSkill("near-skill", skills) == nil {
+		t.Fatalf("skills = %#v, err = %v", skills, err)
+	}
+}
+
+func TestDiscoverLoadsClaudeSkillsFromWorkingDirectoryToRepoRoot(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	workDir := filepath.Join(repo, "src", "nested")
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(repo, ".claude", "skills", "root-claude")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\ndescription: Claude root skill.\n---\nbody"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	skills, err := Discover(workDir)
+	if err != nil || FindSkill("root-claude", skills) == nil {
+		t.Fatalf("skills = %#v, err = %v", skills, err)
 	}
 }
 

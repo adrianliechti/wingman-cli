@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/hook"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
@@ -190,8 +191,27 @@ func TestCodexAsyncCommandHookIsParsedButSkipped(t *testing.T) {
 	if _, err := cfg.Build(dir, nil).PreToolUse[0](context.Background(), tool.ToolCall{Name: "shell"}); err != nil {
 		t.Fatal(err)
 	}
+	time.Sleep(50 * time.Millisecond)
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("Codex-compatible async hook unexpectedly ran: %v", err)
+		t.Fatalf("async hook ran unexpectedly: %v", err)
+	}
+}
+
+func TestClaudeExecFormCommandExpandsPluginEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "result")
+	cfg := configFor("PreToolUse", "Bash", Handler{
+		Type:    "command",
+		Command: "sh",
+		Args:    []string{"-c", `printf '%s' "$1" > "$2"`, "hook", "${CLAUDE_PLUGIN_ROOT}", marker},
+	})
+	hooks := cfg.BuildWithOptions(dir, BuildOptions{Environment: map[string]string{"CLAUDE_PLUGIN_ROOT": "/plugins/demo"}})
+	if _, err := hooks.PreToolUse[0](context.Background(), tool.ToolCall{Name: "shell"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil || string(data) != "/plugins/demo" {
+		t.Fatalf("result = %q, err = %v", data, err)
 	}
 }
 

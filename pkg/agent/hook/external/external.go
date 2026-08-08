@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"regexp"
 	"runtime"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/hook"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/shell"
+	wingmanhttp "github.com/adrianliechti/wingman-agent/pkg/httpclient"
 )
 
 const (
@@ -85,11 +87,14 @@ type MatcherGroup struct {
 type Handler struct {
 	Type                   string            `json:"type"`
 	Command                string            `json:"command,omitempty"`
+	Args                   []string          `json:"args,omitempty"`
 	CommandWindows         string            `json:"commandWindows,omitempty"`
 	CommandWindowsSnake    string            `json:"command_windows,omitempty"`
 	Server                 string            `json:"server,omitempty"`
 	Tool                   string            `json:"tool,omitempty"`
 	Input                  map[string]any    `json:"input,omitempty"`
+	Prompt                 string            `json:"prompt,omitempty"`
+	Model                  string            `json:"model,omitempty"`
 	URL                    string            `json:"url,omitempty"`
 	Headers                map[string]string `json:"headers,omitempty"`
 	AllowedEnvVars         []string          `json:"allowedEnvVars,omitempty"`
@@ -309,9 +314,7 @@ func runEvent(ctx context.Context, workDir string, options BuildOptions, event s
 				order++
 				continue
 			}
-			if !handler.Async {
-				selected = append(selected, selectedHandler{configuredOrder: order, handler: handler})
-			}
+			selected = append(selected, selectedHandler{configuredOrder: order, handler: handler})
 			order++
 		}
 	}
@@ -322,16 +325,26 @@ func runEvent(ctx context.Context, workDir string, options BuildOptions, event s
 	if err != nil {
 		return nil
 	}
-	ch := make(chan runResult, len(selected))
+	var synchronous []selectedHandler
 	for _, selected := range selected {
+		if selected.handler.Async {
+			// Codex accepts this field but its documented runtime does not yet
+			// execute async hooks. Skip it instead of implying stronger delivery,
+			// cancellation, or output semantics than Wingman can guarantee.
+			continue
+		}
+		synchronous = append(synchronous, selected)
+	}
+	ch := make(chan runResult, len(synchronous))
+	for _, selected := range synchronous {
 		go func() {
 			result := selected.handler.run(ctx, workDir, event, input, options.Environment)
 			result.configuredOrder = selected.configuredOrder
 			ch <- result
 		}()
 	}
-	results := make([]runResult, 0, len(selected))
-	for completionOrder := range len(selected) {
+	results := make([]runResult, 0, len(synchronous))
+	for completionOrder := range len(synchronous) {
 		result := <-ch
 		result.completionOrder = completionOrder
 		results = append(results, result)
@@ -363,7 +376,17 @@ func (h Handler) run(ctx context.Context, workDir, event string, input []byte, e
 			command = h.CommandWindowsSnake
 		}
 	}
-	cmd := shell.Command(ctx, command, workDir)
+	var cmd *exec.Cmd
+	if len(h.Args) > 0 {
+		args := make([]string, len(h.Args))
+		for i, arg := range h.Args {
+			args[i] = expandHookEnvironment(arg, environment)
+		}
+		cmd = exec.CommandContext(ctx, expandHookEnvironment(command, environment), args...)
+		cmd.Dir = workDir
+	} else {
+		cmd = shell.Command(ctx, command, workDir)
+	}
 	if len(environment) > 0 {
 		cmd.Env = mergedEnvironment(os.Environ(), environment)
 	}
@@ -377,6 +400,18 @@ func (h Handler) run(ctx context.Context, workDir, event string, input []byte, e
 		exitCode = cmd.ProcessState.ExitCode()
 	}
 	return runResult{exitCode: exitCode, stdout: limit(stdout.String()), stderr: limit(stderr.String()), err: nonExitError(err)}
+}
+
+var hookEnvironmentPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+func expandHookEnvironment(value string, environment map[string]string) string {
+	return hookEnvironmentPattern.ReplaceAllStringFunc(value, func(match string) string {
+		name := hookEnvironmentPattern.FindStringSubmatch(match)[1]
+		if replacement, ok := environment[name]; ok {
+			return replacement
+		}
+		return match
+	})
 }
 
 func mergedEnvironment(base []string, overrides map[string]string) []string {
@@ -416,15 +451,20 @@ func (h Handler) post(ctx context.Context, input []byte) runResult {
 	for _, name := range h.AllowedEnvVars {
 		allowed[name] = true
 	}
+	headers := make(map[string]string, len(h.Headers))
 	for name, value := range h.Headers {
-		req.Header.Set(name, os.Expand(value, func(key string) string {
+		headers[name] = os.Expand(value, func(key string) string {
 			if allowed[key] {
 				return os.Getenv(key)
 			}
 			return ""
-		}))
+		})
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client, err := wingmanhttp.WithOriginHeaders(http.DefaultClient, h.URL, headers)
+	if err != nil {
+		return runResult{exitCode: -1, err: err}
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return runResult{exitCode: -1, err: err}
 	}

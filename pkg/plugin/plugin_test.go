@@ -157,7 +157,6 @@ func TestLoadRejectsBadManifests(t *testing.T) {
 		"double period":        `{"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", "name": "de..mo"}`,
 		"wrong type":           `{"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", "name": "demo", "keywords": "a"}`,
 		"unknown author field": `{"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", "name": "demo", "author": {"handle": "x"}}`,
-		"non-object extension": `{"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", "name": "demo", "extensions": {"com.example": 1}}`,
 		"not json":             `nope`,
 	}
 
@@ -192,6 +191,41 @@ func TestLoadAcceptsFullManifest(t *testing.T) {
 
 	if p.Name != "acme.tools" || p.Manifest.Version != "1.2.0" || p.Manifest.Author.Email != "a@example.com" {
 		t.Fatalf("manifest = %#v", p.Manifest)
+	}
+}
+
+func TestLoadIgnoresUnsupportedExtensionValues(t *testing.T) {
+	p, notes := mustLoad(t, map[string]string{
+		"plugin.json": `{
+  "$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name":"demo",
+  "extensions":{"com.example.flag":true,"org.example.count":3}
+}`,
+	})
+	if p.Name != "demo" || len(notes) != 0 {
+		t.Fatalf("plugin = %#v, notes = %v", p, notes)
+	}
+}
+
+func TestLoadRejectsNullOptionalManifestFields(t *testing.T) {
+	for _, field := range []string{"version", "description", "author", "homepage", "repository", "license", "keywords"} {
+		t.Run(field, func(t *testing.T) {
+			manifest := `{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"demo","` + field + `":null}`
+			if _, _, err := load(t, map[string]string{"plugin.json": manifest}); err == nil {
+				t.Fatalf("null %s was accepted", field)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsNullAuthorFields(t *testing.T) {
+	for _, field := range []string{"name", "email", "url"} {
+		t.Run(field, func(t *testing.T) {
+			manifest := `{"$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json","name":"demo","author":{"` + field + `":null}}`
+			if _, _, err := load(t, map[string]string{"plugin.json": manifest}); err == nil || !strings.Contains(err.Error(), "author."+field) {
+				t.Fatalf("error = %v", err)
+			}
+		})
 	}
 }
 
@@ -265,6 +299,20 @@ func TestLoadDisablesMCPOnUnknownTopLevelField(t *testing.T) {
 
 	if !hasNote(notes, "disabling MCP") {
 		t.Fatalf("notes = %v", notes)
+	}
+}
+
+func TestLoadDisablesPortableMCPWithoutServerObject(t *testing.T) {
+	for name, body := range map[string]string{
+		"missing": `{"$schema":"https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"}`,
+		"null":    `{"$schema":"https://agent-plugins.org/schemas/1.0.0/mcp.schema.json","mcpServers":null}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			p, notes := mustLoad(t, map[string]string{"plugin.json": validManifest, "mcp.json": body})
+			if len(p.Servers) != 0 || !hasNote(notes, "required and must be an object") {
+				t.Fatalf("servers = %#v, notes = %v", p.Servers, notes)
+			}
+		})
 	}
 }
 
@@ -515,6 +563,23 @@ func TestLoadAcceptsSymlinkResolvingInsideRoot(t *testing.T) {
 	}
 }
 
+func TestLoadAcceptsMCPFileSymlinkResolvingInsideRoot(t *testing.T) {
+	root := writePlugin(t, map[string]string{
+		"plugin.json": validManifest,
+		"config/portable.json": `{
+  "$schema":"https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers":{"remote":{"type":"streamable-http","url":"https://example.test/mcp"}}
+}`,
+	})
+	if err := os.Symlink(filepath.Join(root, "config", "portable.json"), filepath.Join(root, "mcp.json")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	p, notes, err := Load(root, t.TempDir())
+	if err != nil || len(p.Servers) != 1 || len(notes) != 0 {
+		t.Fatalf("servers = %#v, notes = %v, err = %v", p.Servers, notes, err)
+	}
+}
+
 func TestSSEServerKeepsItsTransport(t *testing.T) {
 	p, _ := mustLoad(t, map[string]string{
 		"plugin.json": validManifest,
@@ -554,6 +619,65 @@ Deploy it.`,
 	}
 	if _, err := os.Stat(p.Data); err != nil {
 		t.Fatalf("plugin data directory = %q: %v", p.Data, err)
+	}
+}
+
+func TestLoadCodexPluginRootSkillAndDefaultMCP(t *testing.T) {
+	p, notes := mustLoad(t, map[string]string{
+		".codex-plugin/plugin.json": `{"name":"codex-demo"}`,
+		"skills/SKILL.md": `---
+name: sample
+description: Root skill accepted by Codex
+---
+Use it.`,
+		".mcp.json": `{"mcpServers":{
+  "docs":{"type":"http","url":"https://docs.example/mcp","headers":{"X-Plugin":"demo"}},
+  "local":{"command":"node","args":["${PLUGIN_ROOT}/server.js"],"cwd":"scripts"}
+}}`,
+		"scripts/.keep": "",
+	})
+	if len(notes) != 0 {
+		t.Fatalf("notes = %v", notes)
+	}
+	if len(p.Skills) != 1 || p.Skills[0].Name != "sample" {
+		t.Fatalf("skills = %#v", p.Skills)
+	}
+	if p.Servers["docs"].Transport != "streamable-http" || p.Servers["docs"].Headers["X-Plugin"] != "demo" {
+		t.Fatalf("docs server = %#v", p.Servers["docs"])
+	}
+	local := p.Servers["local"]
+	if len(local.Args) != 1 || local.Args[0] != p.Root+"/server.js" || local.Dir != filepath.Join(p.Root, "scripts") {
+		t.Fatalf("local server = %#v", local)
+	}
+}
+
+func TestLoadCodexPluginDeclaredMCPForms(t *testing.T) {
+	tests := map[string]struct {
+		declaration string
+		files       map[string]string
+	}{
+		"path": {
+			declaration: `"./config/custom.json"`,
+			files: map[string]string{
+				"config/custom.json": `{"mcpServers":{"custom":{"type":"sse","url":"https://example.test/sse"}}}`,
+				".mcp.json":          `{"mcpServers":{"default":{"url":"https://ignored.test/mcp"}}}`,
+			},
+		},
+		"inline": {
+			declaration: `{"inline":{"type":"http","url":"https://example.test/mcp"}}`,
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			files := map[string]string{".codex-plugin/plugin.json": `{"name":"demo","mcpServers":` + test.declaration + `}`}
+			for path, content := range test.files {
+				files[path] = content
+			}
+			p, notes := mustLoad(t, files)
+			if len(notes) != 0 || len(p.Servers) != 1 {
+				t.Fatalf("servers = %#v, notes = %v", p.Servers, notes)
+			}
+		})
 	}
 }
 
@@ -633,8 +757,152 @@ func TestLoadClaudePluginInlineEventMap(t *testing.T) {
 }`,
 	})
 
-	if len(notes) != 0 || p.Hooks.RuleCount() != 2 {
+	if p.Format != ClaudePluginFormat || len(notes) != 0 || p.Hooks.RuleCount() != 2 {
 		t.Fatalf("hooks = %#v, notes = %v", p.Hooks, notes)
+	}
+}
+
+func TestLoadClaudePluginUsesPermissiveSkillProfile(t *testing.T) {
+	p, notes := mustLoad(t, map[string]string{
+		".claude-plugin/plugin.json": `{"name":"claude-demo"}`,
+		"skills/review/SKILL.md": `---
+when_to_use: Use after editing code.
+allowed-tools: [Read, Grep]
+arguments: [target]
+disable-model-invocation: true
+---
+# Review
+
+Review $target carefully.`,
+	})
+	if len(notes) != 0 || len(p.Skills) != 1 {
+		t.Fatalf("skills = %#v, notes = %v", p.Skills, notes)
+	}
+	sk := p.Skills[0]
+	if sk.Name != "review" || !sk.DisableModelInvocation || len(sk.AllowedTools) != 2 || sk.Description != "Review $target carefully. Use after editing code." {
+		t.Fatalf("skill = %#v", sk)
+	}
+	content, err := sk.GetContent("")
+	if err != nil || content != "# Review\n\nReview $target carefully." {
+		t.Fatalf("content = %q, err = %v", content, err)
+	}
+	if got := sk.ApplyArguments(content, "pkg/plugin", p.Root); !strings.Contains(got, "Review pkg/plugin carefully.") {
+		t.Fatalf("arguments were not expanded: %q", got)
+	}
+}
+
+func TestLoadClaudePluginFrontmatterNameControlsCommand(t *testing.T) {
+	p, notes := mustLoad(t, map[string]string{
+		".claude-plugin/plugin.json": `{"name":"claude-demo"}`,
+		"skills/review/SKILL.md":     "---\nname: fancy-review\ndescription: review\n---\nbody",
+	})
+	if len(notes) != 0 || len(p.Skills) != 1 || p.Skills[0].Name != "fancy-review" || p.Skills[0].Qualified() != "claude-demo:fancy-review" {
+		t.Fatalf("skills = %#v, notes = %v", p.Skills, notes)
+	}
+}
+
+func TestLoadClaudePluginAddsCustomSkillsToDefaults(t *testing.T) {
+	p, notes := mustLoad(t, map[string]string{
+		".claude-plugin/plugin.json":    `{"name":"claude-demo","skills":"./custom-skills"}`,
+		"skills/default/SKILL.md":       "---\ndescription: default\n---\ndefault body",
+		"custom-skills/custom/SKILL.md": "---\ndescription: custom\n---\ncustom body",
+	})
+	if len(notes) != 0 || len(p.Skills) != 2 || p.Skills[0].Name != "default" || p.Skills[1].Name != "custom" {
+		t.Fatalf("skills = %#v, notes = %v", p.Skills, notes)
+	}
+}
+
+func TestLoadClaudeSingleSkillPlugin(t *testing.T) {
+	p, notes := mustLoad(t, map[string]string{
+		".claude-plugin/plugin.json": `{"name":"claude-demo"}`,
+		"SKILL.md":                   "---\nname: root-command\ndescription: root skill\n---\nroot body",
+	})
+	if len(notes) != 0 || len(p.Skills) != 1 || p.Skills[0].Name != "root-command" {
+		t.Fatalf("skills = %#v, notes = %v", p.Skills, notes)
+	}
+}
+
+func TestLoadManifestlessClaudePlugin(t *testing.T) {
+	p, notes := mustLoad(t, map[string]string{
+		"skills/hello/SKILL.md": "---\ndescription: says hello\n---\nhello",
+		"hooks/hooks.json":      `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"true"}]}]}}`,
+	})
+	if p.Format != ClaudePluginFormat || len(notes) != 0 || len(p.Skills) != 1 || p.Hooks.RuleCount() != 1 {
+		t.Fatalf("plugin = %#v, notes = %v", p, notes)
+	}
+}
+
+func TestLoadClaudePluginMergesDeclaredMCPFiles(t *testing.T) {
+	t.Setenv("CLAUDE_PLUGIN_TOKEN", "secret")
+	p, notes := mustLoad(t, map[string]string{
+		".claude-plugin/plugin.json": `{"name":"claude-demo","mcpServers":["./mcp/one.json","./mcp/two.json"]}`,
+		"mcp/one.json":               `{"mcpServers":{"one":{"command":"node","args":["${CLAUDE_PLUGIN_ROOT}/one.js"],"env":{"TOKEN":"${CLAUDE_PLUGIN_TOKEN}"}}}}`,
+		"mcp/two.json":               `{"mcpServers":{"two":{"type":"http","url":"https://example.test/${CLAUDE_PLUGIN_TOKEN}","headers":{"Authorization":"Bearer ${CLAUDE_PLUGIN_TOKEN}"}}}}`,
+	})
+	if len(notes) != 0 || len(p.Servers) != 2 {
+		t.Fatalf("servers = %#v, notes = %v", p.Servers, notes)
+	}
+	if p.Servers["one"].Env["TOKEN"] != "secret" || p.Servers["one"].Args[0] != p.Root+"/one.js" {
+		t.Fatalf("stdio server = %#v", p.Servers["one"])
+	}
+	if p.Servers["two"].URL != "https://example.test/secret" || p.Servers["two"].Headers["Authorization"] != "Bearer secret" {
+		t.Fatalf("HTTP server = %#v", p.Servers["two"])
+	}
+}
+
+func TestLoadClaudeMCPUsesEnvironmentDefaults(t *testing.T) {
+	p, notes := mustLoad(t, map[string]string{
+		".claude-plugin/plugin.json": `{"name":"claude-demo"}`,
+		".mcp.json":                  `{"mcpServers":{"remote":{"type":"http","url":"${MISSING_MCP_URL:-https://example.test/mcp}"}}}`,
+	})
+	if len(notes) != 0 || p.Servers["remote"].URL != "https://example.test/mcp" {
+		t.Fatalf("servers = %#v, notes = %v", p.Servers, notes)
+	}
+}
+
+func TestLoadClaudeMCPRequiresRemoteType(t *testing.T) {
+	p, notes := mustLoad(t, map[string]string{
+		".claude-plugin/plugin.json": `{"name":"claude-demo"}`,
+		".mcp.json":                  `{"mcpServers":{"remote":{"url":"https://example.test/mcp"}}}`,
+	})
+	if len(p.Servers) != 0 || !hasNote(notes, "needs type") {
+		t.Fatalf("servers = %#v, notes = %v", p.Servers, notes)
+	}
+}
+
+func TestLoadNativeMCPSkipsUnsupportedBehaviorFields(t *testing.T) {
+	p, notes := mustLoad(t, map[string]string{
+		".codex-plugin/plugin.json": `{"name":"demo"}`,
+		".mcp.json":                 `{"mcpServers":{"secure":{"type":"http","url":"https://example.test/mcp","oauth":{"clientId":"demo"}}}}`,
+	})
+	if len(p.Servers) != 0 || !hasNote(notes, `unsupported field "oauth"`) {
+		t.Fatalf("servers = %#v, notes = %v", p.Servers, notes)
+	}
+}
+
+func TestLoadAgentPluginDoesNotImplicitlyEnableNativeHooks(t *testing.T) {
+	p, notes := mustLoad(t, map[string]string{
+		"plugin.json":      validManifest,
+		"hooks/hooks.json": `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"false"}]}]}}`,
+	})
+	if len(notes) != 0 || p.Hooks.RuleCount() != 0 {
+		t.Fatalf("hooks = %#v, notes = %v", p.Hooks, notes)
+	}
+}
+
+func TestExplicitInvalidHooksNeverFallBackToDefault(t *testing.T) {
+	p, notes := mustLoad(t, map[string]string{
+		".codex-plugin/plugin.json": `{"name":"demo","hooks":"./hooks/missing.json"}`,
+		"hooks/hooks.json":          `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"false"}]}]}}`,
+	})
+	if p.Hooks.RuleCount() != 0 || !hasNote(notes, "missing.json") {
+		t.Fatalf("hooks = %#v, notes = %v", p.Hooks, notes)
+	}
+}
+
+func TestCursorManifestIsNotAPlugin(t *testing.T) {
+	if _, _, err := load(t, map[string]string{".cursor-plugin/plugin.json": `{"name":"cursor"}`}); err == nil {
+		t.Fatal("Cursor manifest unexpectedly loaded")
 	}
 }
 
