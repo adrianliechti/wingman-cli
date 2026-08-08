@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -63,6 +64,10 @@ func (s *Server) ensureTaskPump(sessionID string) {
 	}
 	s.taskPumps[reg] = true
 	s.taskPumpMu.Unlock()
+	serverCtx := s.ctx
+	if serverCtx == nil {
+		serverCtx = context.Background()
+	}
 
 	go func() {
 		defer func() {
@@ -73,7 +78,7 @@ func (s *Server) ensureTaskPump(sessionID string) {
 
 		for {
 			select {
-			case <-s.ctx.Done():
+			case <-serverCtx.Done():
 				return
 			case <-reg.Done():
 				return

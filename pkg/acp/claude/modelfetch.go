@@ -5,28 +5,26 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"time"
 
 	"github.com/coder/acp-go-sdk"
 )
 
-func fetchModels(ctx context.Context, path, dir string, env []string) ([]ModelEntry, []acp.AvailableCommand, error) {
+func (a *Agent) fetchModels(ctx context.Context) ([]ModelEntry, []acp.AvailableCommand, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, path,
+	cmd := exec.CommandContext(ctx, a.path,
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--verbose",
 	)
-	cmd.Dir = dir
-	if env != nil {
-		cmd.Env = env
+	cmd.Dir = a.defaultCwd
+	if a.env != nil {
+		cmd.Env = a.env
 	}
-	cmd.Stderr = os.Stderr
-
+	cmd.Stderr = a.stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, nil, fmt.Errorf("stdin pipe: %w", err)

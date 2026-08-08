@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"sync"
 
@@ -25,10 +27,11 @@ type Options struct {
 	Effort string
 
 	Cwd string
-
 	Env []string
 
 	Path string
+
+	Stderr io.Writer
 }
 
 type Agent struct {
@@ -44,6 +47,7 @@ type Agent struct {
 	defaultCwd    string
 	env           []string
 	path          string
+	stderr        io.Writer
 
 	modelsMu     sync.Mutex
 	modelsLoaded bool
@@ -62,6 +66,10 @@ func New(opts Options) *Agent {
 	if path == "" {
 		path = binPath()
 	}
+	stderr := opts.Stderr
+	if stderr == nil {
+		stderr = os.Stderr
+	}
 	return &Agent{
 		sessions:      make(map[acp.SessionId]*session),
 		defaultModel:  model,
@@ -69,6 +77,7 @@ func New(opts Options) *Agent {
 		defaultCwd:    opts.Cwd,
 		env:           opts.Env,
 		path:          path,
+		stderr:        stderr,
 	}
 }
 
@@ -112,7 +121,7 @@ func (a *Agent) ensureModels(ctx context.Context) {
 	if a.modelsLoaded {
 		return
 	}
-	models, commands, err := fetchModels(ctx, a.path, a.defaultCwd, a.env)
+	models, commands, err := a.fetchModels(ctx)
 	if err != nil {
 		return
 	}
@@ -195,9 +204,7 @@ func (a *Agent) NewSession(ctx context.Context, params acp.NewSessionRequest) (a
 	a.ensureModels(ctx)
 	id := acp.SessionId(newUUID())
 	modelID, effort := normalizeSessionConfig(a.models, a.defaultModel, a.defaultEffort)
-	s := newSession(id, cwd, modelID, effort, additional)
-	s.formElicitation = a.supportsFormElicitation()
-	s.planUpdates = a.supportsPlanUpdates()
+	s := a.newSession(id, cwd, modelID, effort, additional)
 	s.mcpServers = params.McpServers
 	a.mu.Lock()
 	a.sessions[id] = s
@@ -216,7 +223,7 @@ func (a *Agent) Prompt(ctx context.Context, params acp.PromptRequest) (acp.Promp
 	if s == nil {
 		return acp.PromptResponse{}, fmt.Errorf("session %s not found", params.SessionId)
 	}
-	stop, usage, err := s.runTurn(ctx, a.conn, a.path, a.env, a.models, params.Prompt)
+	stop, usage, err := s.runTurn(ctx, params.Prompt)
 	if err != nil {
 		return acp.PromptResponse{}, err
 	}
@@ -378,9 +385,7 @@ func (a *Agent) UnstableForkSession(_ context.Context, params acp.UnstableForkSe
 
 func (a *Agent) adoptSession(id acp.SessionId, cwd string, additionalDirs []string, mcpServers []acp.McpServer, resumeFrom string, fork bool) *session {
 	modelID, effort := normalizeSessionConfig(a.models, a.defaultModel, a.defaultEffort)
-	s := newSession(id, cwd, modelID, effort, additionalDirs)
-	s.formElicitation = a.supportsFormElicitation()
-	s.planUpdates = a.supportsPlanUpdates()
+	s := a.newSession(id, cwd, modelID, effort, additionalDirs)
 	if resumeFrom != "" && (a.defaultModel == "" || a.defaultModel == "default") {
 		path := filepath.Join(projectDirFor(cwd), resumeFrom+".jsonl")
 		if live := scanSessionModel(path); live != "" {

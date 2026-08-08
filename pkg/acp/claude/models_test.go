@@ -33,9 +33,9 @@ func TestSessionModesExposeNormalizedModes(t *testing.T) {
 }
 
 func TestModesMapToClaudePermissionModes(t *testing.T) {
-	s := newSession("session", "/workspace", "default", "default", nil)
+	s := New(Options{}).newSession("session", "/workspace", "default", "default", nil)
 	for _, test := range []struct{ mode, permission string }{
-		{"agent", "acceptEdits"},
+		{"agent", "auto"},
 		{"plan", "plan"},
 		{"unattended", "bypassPermissions"},
 	} {

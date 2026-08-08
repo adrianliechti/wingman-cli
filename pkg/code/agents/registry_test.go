@@ -2,6 +2,7 @@ package agents
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -49,6 +50,9 @@ func TestNativeOptionsPreserveEnvironmentWithoutProviderOverrides(t *testing.T) 
 	if claude.Cwd != "/workspace" || !slices.Equal(claude.Env, env) {
 		t.Fatalf("nativeClaudeOptions() = %#v", claude)
 	}
+	if claude.Stderr != io.Discard {
+		t.Fatalf("nativeClaudeOptions().Stderr = %T, want io.Discard", claude.Stderr)
+	}
 
 	codex := nativeCodexOptions("/workspace", env)
 	if codex.Dir != "/workspace" || !slices.Equal(codex.Env, env) {
@@ -57,10 +61,16 @@ func TestNativeOptionsPreserveEnvironmentWithoutProviderOverrides(t *testing.T) 
 	if len(codex.ExtraArgs) != 0 {
 		t.Fatalf("nativeCodexOptions().ExtraArgs = %q, want no provider overrides", codex.ExtraArgs)
 	}
+	if codex.Stderr != io.Discard {
+		t.Fatalf("nativeCodexOptions().Stderr = %T, want io.Discard", codex.Stderr)
+	}
 
 	pi := nativePiOptions("/workspace", env)
 	if pi.Dir != "/workspace" || !slices.Equal(pi.Env, env) || len(pi.Args) != 0 {
 		t.Fatalf("nativePiOptions() = %#v", pi)
+	}
+	if pi.Stderr != io.Discard {
+		t.Fatalf("nativePiOptions().Stderr = %T, want io.Discard", pi.Stderr)
 	}
 }
 

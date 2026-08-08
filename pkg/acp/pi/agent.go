@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"strconv"
@@ -22,6 +23,8 @@ type Options struct {
 	Dir  string
 	Env  []string
 	Args []string
+
+	Stderr io.Writer
 
 	SessionsDir string
 }
@@ -395,7 +398,7 @@ func (a *Agent) spawnSessionProcess(ctx context.Context, cwd string, extraArgs [
 	args := append([]string(nil), a.opts.Args...)
 	args = append(args, extraArgs...)
 	args = append(args, bridge.args...)
-	proc, err := spawn(spawnOptions{Path: a.opts.Path, Dir: cwd, Env: bridge.env, Args: args})
+	proc, err := spawn(spawnOptions{Path: a.opts.Path, Dir: cwd, Env: bridge.env, Args: args, Stderr: a.opts.Stderr})
 	if err != nil {
 		bridge.cleanup()
 		return nil, nil, err

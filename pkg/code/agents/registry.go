@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -35,11 +36,11 @@ func ID(name string) string {
 }
 
 func nativeClaudeOptions(root string, env []string) claude.Options {
-	return claude.Options{Cwd: root, Env: env}
+	return claude.Options{Cwd: root, Env: env, Stderr: io.Discard}
 }
 
 func nativeCodexOptions(root string, env []string) codex.Options {
-	return codex.Options{Dir: root, Env: env}
+	return codex.Options{Dir: root, Env: env, Stderr: io.Discard}
 }
 
 func nativePiOptions(root string, env []string) pi.Options {
@@ -47,6 +48,7 @@ func nativePiOptions(root string, env []string) pi.Options {
 		Path:        picli.BinPath(),
 		Dir:         root,
 		Env:         env,
+		Stderr:      io.Discard,
 		SessionsDir: picli.NativeSessionsDir(),
 	}
 }

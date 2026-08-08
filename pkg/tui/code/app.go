@@ -379,9 +379,14 @@ func saveExecutablePath() {
 
 // post schedules fn on the UI loop from any goroutine.
 func (a *App) post(fn func()) {
+	var contextDone <-chan struct{}
+	if a.ctx != nil {
+		contextDone = a.ctx.Done()
+	}
 	select {
 	case a.queue <- fn:
 	case <-a.quit:
+	case <-contextDone:
 	}
 }
 

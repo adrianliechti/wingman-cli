@@ -199,7 +199,7 @@ func titleCase(s string) string {
 
 const defaultModeID = "agent"
 
-const exitPlanPermissionMode = "acceptEdits"
+const exitPlanPermissionMode = "auto"
 
 type sessionMode struct {
 	id             string
@@ -209,7 +209,7 @@ type sessionMode struct {
 }
 
 var sessionModes = []sessionMode{
-	{id: "agent", name: "Agent", description: "Auto-accepts file edits and asks before other risky actions.", permissionMode: "acceptEdits"},
+	{id: "agent", name: "Agent", description: "Runs routine actions automatically with background safety checks.", permissionMode: "auto"},
 	{id: "plan", name: "Plan", description: "Read-only — proposes a plan, doesn't edit code.", permissionMode: "plan"},
 	{id: "unattended", name: "Unattended", description: "Runs with full access and without permission prompts.", permissionMode: "bypassPermissions"},
 }

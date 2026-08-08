@@ -18,10 +18,11 @@ import (
 var errProcessClosed = errors.New("pi process closed")
 
 type spawnOptions struct {
-	Path string
-	Dir  string
-	Env  []string
-	Args []string
+	Path   string
+	Dir    string
+	Env    []string
+	Args   []string
+	Stderr io.Writer
 }
 
 type rpcResponse struct {
@@ -55,7 +56,10 @@ func spawn(opts spawnOptions) (*process, error) {
 
 	cmd := exec.Command(path, args...)
 	cmd.Dir = opts.Dir
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = opts.Stderr
+	if cmd.Stderr == nil {
+		cmd.Stderr = os.Stderr
+	}
 	if opts.Env != nil {
 		cmd.Env = opts.Env
 	}

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -17,11 +16,9 @@ import (
 )
 
 type session struct {
-	id  acp.SessionId
-	cwd string
-
-	formElicitation bool
-	planUpdates     bool
+	id    acp.SessionId
+	cwd   string
+	agent *Agent
 
 	mu             sync.Mutex
 	modelID        string
@@ -38,10 +35,11 @@ type session struct {
 	proc           *claudeProc
 }
 
-func newSession(id acp.SessionId, cwd, model, effort string, additionalDirs []string) *session {
+func (a *Agent) newSession(id acp.SessionId, cwd, model, effort string, additionalDirs []string) *session {
 	return &session{
 		id:             id,
 		cwd:            cwd,
+		agent:          a,
 		modelID:        model,
 		modelOverride:  model != "" && model != "default",
 		effort:         effort,
@@ -73,8 +71,8 @@ func (s *session) close() {
 	}
 }
 
-func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, path string, env []string, models []ModelEntry, prompt []acp.ContentBlock) (acp.StopReason, *acp.Usage, error) {
-	p, err := s.ensureProc(conn, path, env, models)
+func (s *session) runTurn(ctx context.Context, prompt []acp.ContentBlock) (acp.StopReason, *acp.Usage, error) {
+	p, err := s.ensureProc()
 	if err != nil {
 		return "", nil, err
 	}
@@ -114,7 +112,7 @@ func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, pa
 			s.dropProc(p)
 			return "", nil, r.err
 		}
-		s.pushTitleUpdate(ctx, conn)
+		s.pushTitleUpdate(ctx)
 		return r.stop, r.usage, nil
 	case <-p.dead:
 		s.dropProc(p)
@@ -127,7 +125,7 @@ func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, pa
 // for it — it's regenerated in the background and persisted to the session's
 // JSONL file — so we read it back at turn end, the same point a new title
 // would have landed, and only notify when it actually changed.
-func (s *session) pushTitleUpdate(ctx context.Context, conn *acp.AgentSideConnection) {
+func (s *session) pushTitleUpdate(ctx context.Context) {
 	dir := projectDirFor(s.cwd)
 	if dir == "" {
 		return
@@ -149,7 +147,7 @@ func (s *session) pushTitleUpdate(ctx context.Context, conn *acp.AgentSideConnec
 
 	t := title
 	updatedAt := time.Now().UTC().Format(time.RFC3339)
-	_ = conn.SessionUpdate(ctx, acp.SessionNotification{
+	_ = s.agent.conn.SessionUpdate(ctx, acp.SessionNotification{
 		SessionId: s.id,
 		Update: acp.SessionUpdate{SessionInfoUpdate: &acp.SessionSessionInfoUpdate{
 			SessionUpdate: "session_info_update",
@@ -159,7 +157,8 @@ func (s *session) pushTitleUpdate(ctx context.Context, conn *acp.AgentSideConnec
 	})
 }
 
-func (s *session) ensureProc(conn *acp.AgentSideConnection, path string, env []string, models []ModelEntry) (*claudeProc, error) {
+func (s *session) ensureProc() (*claudeProc, error) {
+	a := s.agent
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -174,12 +173,12 @@ func (s *session) ensureProc(conn *acp.AgentSideConnection, path string, env []s
 
 	args := s.cliArgsLocked()
 	procCtx, kill := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(procCtx, path, args...)
+	cmd := exec.CommandContext(procCtx, a.path, args...)
 	cmd.Dir = s.cwd
-	if env != nil {
-		cmd.Env = env
+	if a.env != nil {
+		cmd.Env = a.env
 	}
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = a.stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		kill()
@@ -196,7 +195,7 @@ func (s *session) ensureProc(conn *acp.AgentSideConnection, path string, env []s
 	}
 
 	var plan *taskPlan
-	if s.planUpdates {
+	if a.supportsPlanUpdates() {
 		plan = newTaskPlan()
 	}
 	p := &claudeProc{
@@ -207,7 +206,7 @@ func (s *session) ensureProc(conn *acp.AgentSideConnection, path string, env []s
 		kill:            kill,
 		cwd:             s.cwd,
 		session:         s,
-		models:          append([]ModelEntry(nil), models...),
+		models:          append([]ModelEntry(nil), a.models...),
 		tools:           toolUseCache{},
 		emitted:         newToolCallTracker(),
 		streamedContent: &streamedBlockTracker{},
@@ -216,7 +215,7 @@ func (s *session) ensureProc(conn *acp.AgentSideConnection, path string, env []s
 		results:         make(chan turnResult, 1),
 		dead:            make(chan struct{}),
 	}
-	go p.read(procCtx, conn, s.id, stdout)
+	go p.read(procCtx, a.conn, s.id, stdout)
 
 	s.started = true
 	s.resumeFrom = ""
@@ -312,8 +311,9 @@ func (p *claudeProc) shutdown() {
 
 func (p *claudeProc) read(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, r io.Reader) {
 	defer close(p.dead)
+	stderr := p.session.agent.stderr
 	app := &approver{ctx: ctx, conn: conn, sid: sid, out: p.out, cwd: p.cwd, emitted: p.emitted, parentForAgent: p.parentForAgent,
-		askForm:   p.session.formElicitation,
+		askForm:   p.session.agent.supportsFormElicitation(),
 		applyMode: func(modeID string) { p.applyMode(ctx, conn, sid, modeID) }}
 
 	scanner := bufio.NewScanner(r)
@@ -325,7 +325,7 @@ func (p *claudeProc) read(ctx context.Context, conn *acp.AgentSideConnection, si
 		}
 		var env cliEnvelope
 		if err := json.Unmarshal(line, &env); err != nil {
-			fmt.Fprintf(os.Stderr, "claude-acp: skipping non-JSON line: %s\n", line)
+			fmt.Fprintf(stderr, "claude-acp: skipping non-JSON line: %s\n", line)
 			continue
 		}
 		switch env.Type {
@@ -334,15 +334,15 @@ func (p *claudeProc) read(ctx context.Context, conn *acp.AgentSideConnection, si
 				continue
 			}
 			if err := emitStreamEvent(ctx, conn, sid, env.Event, p.streamedContent); err != nil {
-				fmt.Fprintf(os.Stderr, "claude-acp: emit stream event: %v\n", err)
+				fmt.Fprintf(stderr, "claude-acp: emit stream event: %v\n", err)
 			}
 		case "assistant":
 			if err := emitAssistant(ctx, conn, sid, env.Message, p.cwd, p.tools, p.emitted, p.streamedContent, p.plan, env.ParentToolUseID); err != nil {
-				fmt.Fprintf(os.Stderr, "claude-acp: emit assistant: %v\n", err)
+				fmt.Fprintf(stderr, "claude-acp: emit assistant: %v\n", err)
 			}
 		case "user":
 			if err := emitToolResults(ctx, conn, sid, env.Message, p.tools, p.emitted, p.plan, env.ParentToolUseID); err != nil {
-				fmt.Fprintf(os.Stderr, "claude-acp: emit tool result: %v\n", err)
+				fmt.Fprintf(stderr, "claude-acp: emit tool result: %v\n", err)
 			}
 		case "tool_progress":
 			p.handleToolProgress(ctx, conn, sid, env)

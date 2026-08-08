@@ -1,10 +1,30 @@
 package code
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/tui/inline"
 )
+
+func TestPostReturnsWhenContextIsDoneAndQueueIsFull(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	a := &App{ctx: ctx, queue: make(chan func(), 1), quit: make(chan struct{})}
+	a.queue <- func() {}
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		a.post(func() {})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("post remained blocked after context cancellation")
+	}
+}
 
 func quitTestApp() *App {
 	return &App{

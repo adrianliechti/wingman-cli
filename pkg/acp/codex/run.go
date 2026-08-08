@@ -20,10 +20,11 @@ type Options struct {
 	Effort string
 
 	Dir string
-
 	Env []string
 
 	ExtraArgs []string
+
+	Stderr io.Writer
 }
 
 func Spawn(ctx context.Context, opts Options) (*Agent, error) {
@@ -32,7 +33,10 @@ func Spawn(ctx context.Context, opts Options) (*Agent, error) {
 	args := append(append([]string{}, opts.ExtraArgs...), "app-server")
 	cmd := exec.CommandContext(ctx, codexPath, args...)
 	cmd.Dir = opts.Dir
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = opts.Stderr
+	if cmd.Stderr == nil {
+		cmd.Stderr = os.Stderr
+	}
 	if opts.Env != nil {
 		cmd.Env = opts.Env
 	}

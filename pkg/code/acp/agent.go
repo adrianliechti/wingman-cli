@@ -148,7 +148,7 @@ func New(ctx context.Context, ws *code.Workspace, def code.AgentDef) (*Agent, er
 	for k, v := range def.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = io.Discard
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -175,7 +175,7 @@ func New(ctx context.Context, ws *code.Workspace, def code.AgentDef) (*Agent, er
 	}
 	a.conn = acpsdk.NewClientSideConnection(a, stdin, stdout)
 
-	a.conn.SetLogger(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+	a.conn.SetLogger(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
 		Level: slog.LevelWarn,
 	})))
 
@@ -220,7 +220,7 @@ func NewInProcess(
 	a.serverDone = srvConn.Done()
 
 	a.conn = acpsdk.NewClientSideConnection(a, clientW, clientR)
-	a.conn.SetLogger(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+	a.conn.SetLogger(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
 		Level: slog.LevelWarn,
 	})))
 
