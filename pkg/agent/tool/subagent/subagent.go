@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/google/uuid"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/hook"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/task"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
@@ -204,6 +206,7 @@ func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry,
 		},
 
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			agentID := uuid.NewString()
 			description, ok := args["description"].(string)
 
 			if !ok || strings.TrimSpace(description) == "" {
@@ -231,6 +234,12 @@ func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry,
 			if sharedContext != nil {
 				if c := strings.TrimSpace(sharedContext()); c != "" {
 					instructions += "\n\n" + c
+				}
+			}
+			for _, h := range cfg.Hooks.SubagentStart {
+				outcome, err := h(ctx, agentID, subagentName)
+				if err == nil && len(outcome.AdditionalContext) > 0 {
+					instructions += "\n\n" + strings.Join(outcome.AdditionalContext, "\n\n")
 				}
 			}
 
@@ -276,24 +285,61 @@ func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry,
 			// each task_send follow-up. Usage is reported as this turn's delta —
 			// the cumulative snapshot would double-bill resumed agents.
 			runTurn := func(execCtx context.Context, tk *task.Task, input string) (string, error) {
+				runtime := hook.RuntimeFromContext(execCtx)
+				runtime.AgentID = agentID
+				runtime.AgentType = subagentName
+				execCtx = hook.WithRuntime(execCtx, runtime)
 				started := time.Now()
 				before := sub.UsageSnapshot()
 				startIdx := len(sub.MessagesSnapshot())
 
-				var runErr error
-				stream, err := sub.Send(execCtx, []agent.Content{{Text: input}})
-				if err != nil {
-					runErr = err
-				} else {
+				runOnce := func(prompt string) error {
+					stream, err := sub.Send(execCtx, []agent.Content{{Text: prompt}})
+					if err != nil {
+						return err
+					}
 					for msg, err := range stream {
 						if err != nil {
-							runErr = err
-							break
+							return err
 						}
 						if tk != nil {
 							updateTaskActivity(tk, msg)
 						}
 					}
+					return nil
+				}
+
+				runErr := runOnce(input)
+				stopHookActive := false
+				for runErr == nil && len(cfg.Hooks.SubagentStop) > 0 {
+					runMessages := sub.MessagesSnapshot()
+					if startIdx <= len(runMessages) {
+						runMessages = runMessages[startIdx:]
+					}
+					lastMessage := strings.TrimSpace(finalText(runMessages))
+					var stopOutcome hook.Outcome
+					for _, h := range cfg.Hooks.SubagentStop {
+						out, err := h(execCtx, agentID, subagentName, lastMessage, stopHookActive)
+						if err != nil {
+							continue
+						}
+						if out.Stop {
+							stopOutcome = out
+							break
+						}
+						if out.Block && !stopOutcome.Block {
+							stopOutcome = out
+						}
+					}
+					if stopOutcome.Stop || !stopOutcome.Block {
+						break
+					}
+					stopHookActive = true
+					reason := stopOutcome.Reason
+					if reason == "" {
+						reason = "A SubagentStop hook requested another pass."
+					}
+					runErr = runOnce(reason)
 				}
 
 				usage := sub.UsageSnapshot()
@@ -316,34 +362,27 @@ func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry,
 
 				text := strings.TrimSpace(finalText(runMessages))
 
-				finish := func(out string) (string, error) {
-					for _, h := range cfg.Hooks.SubagentStop {
-						h(execCtx, subagentName, out)
-					}
-					return out, nil
-				}
-
 				if runErr != nil {
 					if text == "" {
 						return "", fmt.Errorf("agent error: %w", runErr)
 					}
-					return finish(fmt.Sprintf("Agent aborted before finishing (%v). Last output before the abort — treat as incomplete:\n\n%s%s", runErr, text, trailer))
+					return fmt.Sprintf("Agent aborted before finishing (%v). Last output before the abort — treat as incomplete:\n\n%s%s", runErr, text, trailer), nil
 				}
 
 				if collector != nil {
 					if payload := collector.take(); payload != "" {
-						return finish(payload + trailer)
+						return payload + trailer, nil
 					}
 					if text == "" {
-						return finish("Sub-agent completed without calling report and produced no output." + trailer)
+						return "Sub-agent completed without calling report and produced no output." + trailer, nil
 					}
-					return finish("Sub-agent completed without calling report; unstructured output follows:\n\n" + text + trailer)
+					return "Sub-agent completed without calling report; unstructured output follows:\n\n" + text + trailer, nil
 				}
 
 				if text == "" {
-					return finish("Sub-agent completed but produced no output." + trailer)
+					return "Sub-agent completed but produced no output." + trailer, nil
 				}
-				return finish(text + trailer)
+				return text + trailer, nil
 			}
 
 			if background, _ := args["background"].(bool); background {
