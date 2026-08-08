@@ -123,20 +123,29 @@ func Load(paths ...string) (*Config, error) {
 			}
 			continue
 		}
-		var parsed Config
-		decoder := json.NewDecoder(bytes.NewReader(data))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&parsed); err != nil {
-			errs = append(errs, fmt.Errorf("parse %s: %w", path, err))
+		parsed, err := Parse(path, data)
+		if err != nil {
+			errs = append(errs, err)
 			continue
 		}
-		if err := parsed.validate(); err != nil {
-			errs = append(errs, fmt.Errorf("parse %s: %w", path, err))
-			continue
-		}
-		cfg.merge(parsed)
+		cfg.Merge(parsed)
 	}
 	return cfg, errors.Join(errs...)
+}
+
+// Parse reads one named hooks.json document. The name is used only in errors,
+// which also makes this suitable for inline plugin hook declarations.
+func Parse(name string, data []byte) (*Config, error) {
+	var parsed Config
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&parsed); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", name, err)
+	}
+	if err := parsed.validate(); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", name, err)
+	}
+	return &parsed, nil
 }
 
 func (c *Config) validate() error {
@@ -188,6 +197,14 @@ func (c *Config) merge(other Config) {
 	c.Hooks.Stop = append(c.Hooks.Stop, other.Hooks.Stop...)
 }
 
+// Merge appends another hook source while preserving source order.
+func (c *Config) Merge(other *Config) {
+	if c == nil || other == nil {
+		return
+	}
+	c.merge(*other)
+}
+
 type namedGroups struct {
 	name   string
 	groups []MatcherGroup
@@ -213,39 +230,53 @@ func (c *Config) allEvents() []namedGroups {
 // handlers within a Codex event can execute concurrently and aggregate their
 // decisions before the agent continues.
 func (c *Config) Build(workDir string, gate *Gate) hook.Hooks {
+	return c.BuildWithOptions(workDir, BuildOptions{Gate: gate})
+}
+
+// BuildOptions supplies source-specific trust and environment settings.
+type BuildOptions struct {
+	Gate        *Gate
+	Environment map[string]string
+}
+
+// BuildWithOptions compiles hooks and injects source-specific environment
+// variables into command handlers. HTTP handlers intentionally do not inherit
+// these values into headers unless the process environment explicitly exposes
+// them through allowedEnvVars.
+func (c *Config) BuildWithOptions(workDir string, options BuildOptions) hook.Hooks {
 	var built hook.Hooks
 	if len(c.Hooks.PreToolUse) > 0 {
-		built.PreToolUse = append(built.PreToolUse, c.preToolUse(workDir, gate))
+		built.PreToolUse = append(built.PreToolUse, c.preToolUse(workDir, options))
 	}
 	if len(c.Hooks.PermissionRequest) > 0 {
-		built.PermissionRequest = append(built.PermissionRequest, c.permissionRequest(workDir, gate))
+		built.PermissionRequest = append(built.PermissionRequest, c.permissionRequest(workDir, options))
 	}
 	if len(c.Hooks.PostToolUse) > 0 {
-		built.PostToolUse = append(built.PostToolUse, c.postToolUse(workDir, gate))
+		built.PostToolUse = append(built.PostToolUse, c.postToolUse(workDir, options))
 	}
 	if len(c.Hooks.UserPromptSubmit) > 0 {
-		built.UserPromptSubmit = append(built.UserPromptSubmit, c.userPromptSubmit(workDir, gate))
+		built.UserPromptSubmit = append(built.UserPromptSubmit, c.userPromptSubmit(workDir, options))
 	}
 	if len(c.Hooks.SessionStart) > 0 {
-		built.SessionStart = append(built.SessionStart, c.sessionStart(workDir, gate))
+		built.SessionStart = append(built.SessionStart, c.sessionStart(workDir, options))
 	}
 	if len(c.Hooks.SessionEnd) > 0 {
-		built.SessionEnd = append(built.SessionEnd, c.sessionEnd(workDir, gate))
+		built.SessionEnd = append(built.SessionEnd, c.sessionEnd(workDir, options))
 	}
 	if len(c.Hooks.SubagentStart) > 0 {
-		built.SubagentStart = append(built.SubagentStart, c.subagentStart(workDir, gate))
+		built.SubagentStart = append(built.SubagentStart, c.subagentStart(workDir, options))
 	}
 	if len(c.Hooks.SubagentStop) > 0 {
-		built.SubagentStop = append(built.SubagentStop, c.subagentStop(workDir, gate))
+		built.SubagentStop = append(built.SubagentStop, c.subagentStop(workDir, options))
 	}
 	if len(c.Hooks.PreCompact) > 0 {
-		built.PreCompact = append(built.PreCompact, c.preCompact(workDir, gate))
+		built.PreCompact = append(built.PreCompact, c.preCompact(workDir, options))
 	}
 	if len(c.Hooks.PostCompact) > 0 {
-		built.PostCompact = append(built.PostCompact, c.postCompact(workDir, gate))
+		built.PostCompact = append(built.PostCompact, c.postCompact(workDir, options))
 	}
 	if len(c.Hooks.Stop) > 0 {
-		built.Stop = append(built.Stop, c.stop(workDir, gate))
+		built.Stop = append(built.Stop, c.stop(workDir, options))
 	}
 	return built
 }
@@ -264,7 +295,7 @@ type runResult struct {
 	err             error
 }
 
-func runEvent(ctx context.Context, workDir string, gate *Gate, event string, groups []MatcherGroup, matcherInputs []string, payload map[string]any) []runResult {
+func runEvent(ctx context.Context, workDir string, options BuildOptions, event string, groups []MatcherGroup, matcherInputs []string, payload map[string]any) []runResult {
 	var selected []selectedHandler
 	order := 0
 	for _, group := range groups {
@@ -284,7 +315,7 @@ func runEvent(ctx context.Context, workDir string, gate *Gate, event string, gro
 			order++
 		}
 	}
-	if len(selected) == 0 || !gate.Allowed(ctx) {
+	if len(selected) == 0 || !options.Gate.Allowed(ctx) {
 		return nil
 	}
 	input, err := json.Marshal(payload)
@@ -294,7 +325,7 @@ func runEvent(ctx context.Context, workDir string, gate *Gate, event string, gro
 	ch := make(chan runResult, len(selected))
 	for _, selected := range selected {
 		go func() {
-			result := selected.handler.run(ctx, workDir, event, input)
+			result := selected.handler.run(ctx, workDir, event, input, options.Environment)
 			result.configuredOrder = selected.configuredOrder
 			ch <- result
 		}()
@@ -308,7 +339,7 @@ func runEvent(ctx context.Context, workDir string, gate *Gate, event string, gro
 	return results
 }
 
-func (h Handler) run(ctx context.Context, workDir, event string, input []byte) runResult {
+func (h Handler) run(ctx context.Context, workDir, event string, input []byte, environment map[string]string) runResult {
 	timeoutSeconds := h.Timeout
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = defaultTimeout
@@ -333,6 +364,9 @@ func (h Handler) run(ctx context.Context, workDir, event string, input []byte) r
 		}
 	}
 	cmd := shell.Command(ctx, command, workDir)
+	if len(environment) > 0 {
+		cmd.Env = mergedEnvironment(os.Environ(), environment)
+	}
 	cmd.Stdin = bytes.NewReader(input)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -343,6 +377,33 @@ func (h Handler) run(ctx context.Context, workDir, event string, input []byte) r
 		exitCode = cmd.ProcessState.ExitCode()
 	}
 	return runResult{exitCode: exitCode, stdout: limit(stdout.String()), stderr: limit(stderr.String()), err: nonExitError(err)}
+}
+
+func mergedEnvironment(base []string, overrides map[string]string) []string {
+	environment := append([]string(nil), base...)
+	for name, value := range overrides {
+		prefix := name + "="
+		replaced := false
+		for i, entry := range environment {
+			entryName, _, _ := strings.Cut(entry, "=")
+			if sameEnvironmentName(entryName, name) {
+				environment[i] = prefix + value
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			environment = append(environment, prefix+value)
+		}
+	}
+	return environment
+}
+
+func sameEnvironmentName(left, right string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
 }
 
 func (h Handler) post(ctx context.Context, input []byte) runResult {
@@ -647,108 +708,108 @@ func restoreToolInput(call tool.ToolCall, updated json.RawMessage) json.RawMessa
 	return restored
 }
 
-func (c *Config) preToolUse(workDir string, gate *Gate) hook.PreToolUse {
+func (c *Config) preToolUse(workDir string, options BuildOptions) hook.PreToolUse {
 	return func(ctx context.Context, call tool.ToolCall) (hook.PreToolUseOutcome, error) {
 		name, input, aliases := toolWire(call)
 		payload := commonPayload(ctx, "PreToolUse", workDir)
 		addSubagent(payload, hook.RuntimeFromContext(ctx))
 		payload["tool_name"], payload["tool_input"], payload["tool_use_id"] = name, input, call.ID
-		parsed := aggregate("PreToolUse", runEvent(ctx, workDir, gate, "PreToolUse", c.Hooks.PreToolUse, aliases, payload))
+		parsed := aggregate("PreToolUse", runEvent(ctx, workDir, options, "PreToolUse", c.Hooks.PreToolUse, aliases, payload))
 		return hook.PreToolUseOutcome{Outcome: parsed.Outcome, UpdatedInput: restoreToolInput(call, parsed.updatedInput)}, nil
 	}
 }
 
-func (c *Config) permissionRequest(workDir string, gate *Gate) hook.PermissionRequest {
+func (c *Config) permissionRequest(workDir string, options BuildOptions) hook.PermissionRequest {
 	return func(ctx context.Context, call tool.ToolCall) (hook.PermissionRequestOutcome, error) {
 		name, input, aliases := toolWire(call)
 		payload := commonPayload(ctx, "PermissionRequest", workDir)
 		addSubagent(payload, hook.RuntimeFromContext(ctx))
 		payload["tool_name"], payload["tool_input"] = name, input
-		return aggregate("PermissionRequest", runEvent(ctx, workDir, gate, "PermissionRequest", c.Hooks.PermissionRequest, aliases, payload)).permission, nil
+		return aggregate("PermissionRequest", runEvent(ctx, workDir, options, "PermissionRequest", c.Hooks.PermissionRequest, aliases, payload)).permission, nil
 	}
 }
 
-func (c *Config) postToolUse(workDir string, gate *Gate) hook.PostToolUse {
+func (c *Config) postToolUse(workDir string, options BuildOptions) hook.PostToolUse {
 	return func(ctx context.Context, call tool.ToolCall, result string) (hook.Outcome, error) {
 		name, input, aliases := toolWire(call)
 		payload := commonPayload(ctx, "PostToolUse", workDir)
 		addSubagent(payload, hook.RuntimeFromContext(ctx))
 		payload["tool_name"], payload["tool_input"], payload["tool_use_id"], payload["tool_response"] = name, input, call.ID, result
-		return aggregate("PostToolUse", runEvent(ctx, workDir, gate, "PostToolUse", c.Hooks.PostToolUse, aliases, payload)).Outcome, nil
+		return aggregate("PostToolUse", runEvent(ctx, workDir, options, "PostToolUse", c.Hooks.PostToolUse, aliases, payload)).Outcome, nil
 	}
 }
 
-func (c *Config) userPromptSubmit(workDir string, gate *Gate) hook.UserPromptSubmit {
+func (c *Config) userPromptSubmit(workDir string, options BuildOptions) hook.UserPromptSubmit {
 	return func(ctx context.Context, prompt string) (hook.Outcome, error) {
 		payload := commonPayload(ctx, "UserPromptSubmit", workDir)
 		addSubagent(payload, hook.RuntimeFromContext(ctx))
 		payload["prompt"] = prompt
-		return aggregate("UserPromptSubmit", runEvent(ctx, workDir, gate, "UserPromptSubmit", c.Hooks.UserPromptSubmit, nil, payload)).Outcome, nil
+		return aggregate("UserPromptSubmit", runEvent(ctx, workDir, options, "UserPromptSubmit", c.Hooks.UserPromptSubmit, nil, payload)).Outcome, nil
 	}
 }
 
-func (c *Config) sessionStart(workDir string, gate *Gate) hook.SessionStart {
+func (c *Config) sessionStart(workDir string, options BuildOptions) hook.SessionStart {
 	return func(ctx context.Context, source string) (hook.Outcome, error) {
 		payload := commonPayload(ctx, "SessionStart", workDir)
 		delete(payload, "turn_id")
 		payload["source"] = source
-		return aggregate("SessionStart", runEvent(ctx, workDir, gate, "SessionStart", c.Hooks.SessionStart, []string{source}, payload)).Outcome, nil
+		return aggregate("SessionStart", runEvent(ctx, workDir, options, "SessionStart", c.Hooks.SessionStart, []string{source}, payload)).Outcome, nil
 	}
 }
 
-func (c *Config) sessionEnd(workDir string, gate *Gate) hook.SessionEnd {
+func (c *Config) sessionEnd(workDir string, options BuildOptions) hook.SessionEnd {
 	return func(ctx context.Context, reason string) {
 		payload := commonPayload(ctx, "SessionEnd", workDir)
 		delete(payload, "turn_id")
 		delete(payload, "model")
 		delete(payload, "permission_mode")
 		payload["reason"] = reason
-		runEvent(ctx, workDir, gate, "SessionEnd", c.Hooks.SessionEnd, []string{reason}, payload)
+		runEvent(ctx, workDir, options, "SessionEnd", c.Hooks.SessionEnd, []string{reason}, payload)
 	}
 }
 
-func (c *Config) subagentStart(workDir string, gate *Gate) hook.SubagentStart {
+func (c *Config) subagentStart(workDir string, options BuildOptions) hook.SubagentStart {
 	return func(ctx context.Context, agentID, agentType string) (hook.Outcome, error) {
 		payload := commonPayload(ctx, "SubagentStart", workDir)
 		payload["agent_id"], payload["agent_type"] = agentID, agentType
-		return aggregate("SubagentStart", runEvent(ctx, workDir, gate, "SubagentStart", c.Hooks.SubagentStart, []string{agentType}, payload)).Outcome, nil
+		return aggregate("SubagentStart", runEvent(ctx, workDir, options, "SubagentStart", c.Hooks.SubagentStart, []string{agentType}, payload)).Outcome, nil
 	}
 }
 
-func (c *Config) subagentStop(workDir string, gate *Gate) hook.SubagentStop {
+func (c *Config) subagentStop(workDir string, options BuildOptions) hook.SubagentStop {
 	return func(ctx context.Context, agentID, agentType, result string, active bool) (hook.Outcome, error) {
 		payload := commonPayload(ctx, "SubagentStop", workDir)
 		payload["agent_id"], payload["agent_type"] = agentID, agentType
 		payload["agent_transcript_path"], payload["stop_hook_active"], payload["last_assistant_message"] = nil, active, result
-		return aggregate("SubagentStop", runEvent(ctx, workDir, gate, "SubagentStop", c.Hooks.SubagentStop, []string{agentType}, payload)).Outcome, nil
+		return aggregate("SubagentStop", runEvent(ctx, workDir, options, "SubagentStop", c.Hooks.SubagentStop, []string{agentType}, payload)).Outcome, nil
 	}
 }
 
-func (c *Config) preCompact(workDir string, gate *Gate) hook.PreCompact {
+func (c *Config) preCompact(workDir string, options BuildOptions) hook.PreCompact {
 	return func(ctx context.Context, trigger string) (hook.Outcome, error) {
 		payload := commonPayload(ctx, "PreCompact", workDir)
 		delete(payload, "permission_mode")
 		addSubagent(payload, hook.RuntimeFromContext(ctx))
 		payload["trigger"] = trigger
-		return aggregate("PreCompact", runEvent(ctx, workDir, gate, "PreCompact", c.Hooks.PreCompact, []string{trigger}, payload)).Outcome, nil
+		return aggregate("PreCompact", runEvent(ctx, workDir, options, "PreCompact", c.Hooks.PreCompact, []string{trigger}, payload)).Outcome, nil
 	}
 }
 
-func (c *Config) postCompact(workDir string, gate *Gate) hook.PostCompact {
+func (c *Config) postCompact(workDir string, options BuildOptions) hook.PostCompact {
 	return func(ctx context.Context, trigger string) (hook.Outcome, error) {
 		payload := commonPayload(ctx, "PostCompact", workDir)
 		delete(payload, "permission_mode")
 		addSubagent(payload, hook.RuntimeFromContext(ctx))
 		payload["trigger"] = trigger
-		return aggregate("PostCompact", runEvent(ctx, workDir, gate, "PostCompact", c.Hooks.PostCompact, []string{trigger}, payload)).Outcome, nil
+		return aggregate("PostCompact", runEvent(ctx, workDir, options, "PostCompact", c.Hooks.PostCompact, []string{trigger}, payload)).Outcome, nil
 	}
 }
 
-func (c *Config) stop(workDir string, gate *Gate) hook.Stop {
+func (c *Config) stop(workDir string, options BuildOptions) hook.Stop {
 	return func(ctx context.Context, lastAssistantMessage string, active bool) (hook.Outcome, error) {
 		payload := commonPayload(ctx, "Stop", workDir)
 		payload["stop_hook_active"], payload["last_assistant_message"] = active, nullable(lastAssistantMessage)
-		return aggregate("Stop", runEvent(ctx, workDir, gate, "Stop", c.Hooks.Stop, nil, payload)).Outcome, nil
+		return aggregate("Stop", runEvent(ctx, workDir, options, "Stop", c.Hooks.Stop, nil, payload)).Outcome, nil
 	}
 }
 

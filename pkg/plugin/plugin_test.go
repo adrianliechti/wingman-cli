@@ -528,3 +528,130 @@ func TestSSEServerKeepsItsTransport(t *testing.T) {
 		t.Fatalf("transport = %q, want sse", server.Transport)
 	}
 }
+
+func TestLoadCodexPluginDefaultHooksAndRecursiveSkills(t *testing.T) {
+	p, notes := mustLoad(t, map[string]string{
+		".codex-plugin/plugin.json": `{"name":"codex-demo"}`,
+		"hooks/hooks.json":          `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"true"}]}]}}`,
+		"skills/group/deploy/SKILL.md": `---
+name: deploy
+description: Deploy the service
+---
+Deploy it.`,
+	})
+
+	if len(notes) != 0 {
+		t.Fatalf("notes = %v", notes)
+	}
+	if p.Format != CodexPluginFormat || p.Name != "codex-demo" {
+		t.Fatalf("plugin = %#v", p)
+	}
+	if p.Hooks == nil || p.Hooks.RuleCount() != 1 {
+		t.Fatalf("hooks = %#v", p.Hooks)
+	}
+	if len(p.Skills) != 1 || p.Skills[0].Name != "deploy" {
+		t.Fatalf("skills = %#v", p.Skills)
+	}
+	if _, err := os.Stat(p.Data); err != nil {
+		t.Fatalf("plugin data directory = %q: %v", p.Data, err)
+	}
+}
+
+func TestLoadCodexPluginHookDeclarationForms(t *testing.T) {
+	tests := map[string]string{
+		"path":        `"./hooks/one.json"`,
+		"paths":       `["./hooks/one.json","./hooks/two.json"]`,
+		"inline":      `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"true"}]}]}}`,
+		"inline list": `[{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"true"}]}]}},{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"true"}]}]}}]`,
+	}
+
+	for name, declaration := range tests {
+		t.Run(name, func(t *testing.T) {
+			p, notes := mustLoad(t, map[string]string{
+				".codex-plugin/plugin.json": `{"name":"demo","hooks":` + declaration + `}`,
+				"hooks/hooks.json":          `{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"false"}]}]}}`,
+				"hooks/one.json":            `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"true"}]}]}}`,
+				"hooks/two.json":            `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"true"}]}]}}`,
+			})
+			if len(notes) != 0 {
+				t.Fatalf("notes = %v", notes)
+			}
+			want := 1
+			if name == "paths" || name == "inline list" {
+				want = 2
+			}
+			if p.Hooks.RuleCount() != want {
+				t.Fatalf("hook rules = %d, want %d", p.Hooks.RuleCount(), want)
+			}
+			if len(p.Hooks.Hooks.PreToolUse) != 0 {
+				t.Fatal("manifest hooks must replace the default hooks/hooks.json")
+			}
+		})
+	}
+}
+
+func TestLoadAgentPluginComOpenAIHooksExtension(t *testing.T) {
+	p, notes := mustLoad(t, map[string]string{
+		"plugin.json": `{
+  "$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name":"portable-demo",
+  "extensions":{
+    "com.openai":{
+      "hooks":{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"true"}]}]}}
+    }
+  }
+}`,
+		"hooks/hooks.json": `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"false"}]}]}}`,
+	})
+
+	if len(notes) != 0 {
+		t.Fatalf("notes = %v", notes)
+	}
+	if p.Format != AgentPluginFormat || p.Hooks.RuleCount() != 1 || len(p.Hooks.Hooks.SessionStart) != 1 {
+		t.Fatalf("plugin hooks = %#v", p.Hooks)
+	}
+}
+
+func TestLoadCodexPluginRejectsEscapingHookPath(t *testing.T) {
+	p, notes := mustLoad(t, map[string]string{
+		".codex-plugin/plugin.json": `{"name":"demo","hooks":"./hooks/../../outside.json"}`,
+	})
+
+	if p.Hooks.RuleCount() != 0 || !hasNote(notes, "must not contain ..") {
+		t.Fatalf("hooks = %#v, notes = %v", p.Hooks, notes)
+	}
+}
+
+func TestLoadClaudePluginInlineEventMap(t *testing.T) {
+	p, notes := mustLoad(t, map[string]string{
+		".claude-plugin/plugin.json": `{
+  "name":"claude-demo",
+  "hooks":{
+    "SessionStart":[{"hooks":[{"type":"command","command":"true"}]}],
+    "UserPromptSubmit":[{"hooks":[{"type":"command","command":"true"}]}]
+  }
+}`,
+	})
+
+	if len(notes) != 0 || p.Hooks.RuleCount() != 2 {
+		t.Fatalf("hooks = %#v, notes = %v", p.Hooks, notes)
+	}
+}
+
+func TestLoadCodexPluginReportsMissingDeclaredHookFile(t *testing.T) {
+	p, notes := mustLoad(t, map[string]string{
+		".codex-plugin/plugin.json": `{"name":"demo","hooks":"./hooks/missing.json"}`,
+	})
+	if p.Hooks.RuleCount() != 0 || !hasNote(notes, "missing.json") {
+		t.Fatalf("hooks = %#v, notes = %v", p.Hooks, notes)
+	}
+}
+
+func TestLoadRejectsLegacyNameEscapingDataRoot(t *testing.T) {
+	_, _, err := load(t, map[string]string{
+		".codex-plugin/plugin.json": `{"name":"../escape"}`,
+	})
+	if err == nil || !strings.Contains(err.Error(), "escapes the plugin data root") {
+		t.Fatalf("error = %v", err)
+	}
+}

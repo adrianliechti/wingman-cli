@@ -1,7 +1,6 @@
 package skill
 
 import (
-	"bufio"
 	"fmt"
 	"io/fs"
 	"os"
@@ -166,7 +165,17 @@ func MustDiscoverPersonal() []Skill {
 // LoadDir loads every skill directly beneath dir, one level deep. Locations are
 // absolute and parse failures are reported and skipped.
 func LoadDir(dir string) []Skill {
-	matches, err := doublestar.Glob(os.DirFS(dir), "*/SKILL.md")
+	return loadDir(dir, "*/SKILL.md")
+}
+
+// LoadDirRecursive loads skills at any depth beneath dir. Codex uses this for
+// legacy plugin manifests, while portable Agent Plugins use direct children.
+func LoadDirRecursive(dir string) []Skill {
+	return loadDir(dir, "**/SKILL.md")
+}
+
+func loadDir(dir, pattern string) []Skill {
+	matches, err := doublestar.Glob(os.DirFS(dir), pattern)
 	if err != nil {
 		return nil
 	}
@@ -252,6 +261,9 @@ func loadBundled(fsys fs.FS, root, locationRoot string) ([]Skill, error) {
 
 		skill, content, err := parseSkillData(string(data))
 		if err != nil {
+			continue
+		}
+		if skill.Name != entry.Name() {
 			continue
 		}
 
@@ -374,56 +386,67 @@ func parseSkillFile(path string) (Skill, error) {
 	}
 
 	skill, _, err := parseSkillData(string(data))
-	return skill, err
+	if err != nil {
+		return Skill{}, err
+	}
+	if skill.Name != filepath.Base(filepath.Dir(path)) {
+		return Skill{}, fmt.Errorf("skill name %q must match parent directory %q", skill.Name, filepath.Base(filepath.Dir(path)))
+	}
+	return skill, nil
 }
 
 func parseSkillData(data string) (Skill, string, error) {
-	scanner := bufio.NewScanner(strings.NewReader(data))
-
-	var inFrontmatter bool
-	var frontmatter strings.Builder
-	var content strings.Builder
-	var pastFrontmatter bool
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		if line == "---" {
-			if !inFrontmatter && !pastFrontmatter {
-				inFrontmatter = true
-				continue
-			}
-			if inFrontmatter {
-				inFrontmatter = false
-				pastFrontmatter = true
-				continue
-			}
-		}
-
-		if inFrontmatter {
-			frontmatter.WriteString(line)
-			frontmatter.WriteString("\n")
-		} else if pastFrontmatter {
-			content.WriteString(line)
-			content.WriteString("\n")
+	lines := strings.Split(strings.ReplaceAll(data, "\r\n", "\n"), "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		return Skill{}, "", fmt.Errorf("missing YAML frontmatter delimited by ---")
+	}
+	closing := -1
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			closing = i
+			break
 		}
 	}
-
-	if err := scanner.Err(); err != nil {
-		return Skill{}, "", err
+	if closing < 0 {
+		return Skill{}, "", fmt.Errorf("missing closing YAML frontmatter delimiter")
 	}
 
 	var skill Skill
-
-	if err := yaml.Load([]byte(frontmatter.String()), &skill); err != nil {
+	if err := yaml.Load([]byte(strings.Join(lines[1:closing], "\n")), &skill); err != nil {
 		return Skill{}, "", fmt.Errorf("failed to parse frontmatter: %w", err)
 	}
-
-	if skill.Name == "" || skill.Description == "" {
-		return Skill{}, "", fmt.Errorf("skill missing required fields")
+	if err := validateSkill(skill); err != nil {
+		return Skill{}, "", err
 	}
+	return skill, strings.TrimSpace(strings.Join(lines[closing+1:], "\n")), nil
+}
 
-	return skill, strings.TrimSpace(content.String()), nil
+func validateSkill(skill Skill) error {
+	if skill.Name == "" {
+		return fmt.Errorf("skill missing required field name")
+	}
+	if len([]rune(skill.Name)) > 64 {
+		return fmt.Errorf("skill name exceeds 64 characters")
+	}
+	if strings.HasPrefix(skill.Name, "-") || strings.HasSuffix(skill.Name, "-") || strings.Contains(skill.Name, "--") {
+		return fmt.Errorf("skill name %q is not valid kebab-case", skill.Name)
+	}
+	for _, r := range skill.Name {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return fmt.Errorf("skill name %q may only use lowercase letters, digits, and hyphens", skill.Name)
+		}
+	}
+	description := strings.TrimSpace(skill.Description)
+	if description == "" {
+		return fmt.Errorf("skill missing required field description")
+	}
+	if len([]rune(description)) > 1024 {
+		return fmt.Errorf("skill description exceeds 1024 characters")
+	}
+	if skill.Compatibility != "" && len([]rune(skill.Compatibility)) > 500 {
+		return fmt.Errorf("skill compatibility exceeds 500 characters")
+	}
+	return nil
 }
 
 func readSkillContent(path string) (string, error) {

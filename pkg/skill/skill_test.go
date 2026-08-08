@@ -3,6 +3,7 @@ package skill_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -323,6 +324,37 @@ func TestMergeDropsShadowedNonPluginSkill(t *testing.T) {
 
 	if len(merged) != 1 || merged[0].Description != "project" {
 		t.Fatalf("merged = %#v, want only the project skill", merged)
+	}
+}
+
+func TestLoadDirEnforcesAgentSkillsNameAndDirectoryRules(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "right-name"), "other-name", "mismatch")
+	writeSkill(t, filepath.Join(root, "Bad-Name"), "Bad-Name", "uppercase")
+	writeSkill(t, filepath.Join(root, "double--hyphen"), "double--hyphen", "repeated separator")
+	writeSkill(t, filepath.Join(root, "valid-skill"), "valid-skill", "valid")
+
+	skills := LoadDir(root)
+	if len(skills) != 1 || skills[0].Name != "valid-skill" {
+		t.Fatalf("skills = %#v, want only the Agent Skills-conformant entry", skills)
+	}
+}
+
+func TestLoadDirEnforcesAgentSkillsLengthLimits(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "long-description"), "long-description", strings.Repeat("x", 1025))
+
+	dir := filepath.Join(root, "long-compatibility")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	data := "---\nname: long-compatibility\ndescription: valid\ncompatibility: " + strings.Repeat("x", 501) + "\n---\nbody"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(data), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if skills := LoadDir(root); len(skills) != 0 {
+		t.Fatalf("skills = %#v, want over-limit skills skipped", skills)
 	}
 }
 

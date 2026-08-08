@@ -250,6 +250,27 @@ func TestSessionStartMatcherAndPayload(t *testing.T) {
 	}
 }
 
+func TestBuildOptionsInjectPluginEnvironment(t *testing.T) {
+	cfg := configFor("SessionStart", "", Handler{
+		Type:    "command",
+		Command: `printf '%s|%s|%s|%s' "$PLUGIN_ROOT" "$PLUGIN_DATA" "$CLAUDE_PLUGIN_ROOT" "$CLAUDE_PLUGIN_DATA"`,
+	})
+	hooks := cfg.BuildWithOptions(t.TempDir(), BuildOptions{Environment: map[string]string{
+		"PLUGIN_ROOT":        "/plugins/demo",
+		"PLUGIN_DATA":        "/data/demo",
+		"CLAUDE_PLUGIN_ROOT": "/plugins/demo",
+		"CLAUDE_PLUGIN_DATA": "/data/demo",
+	}})
+	outcome, err := hooks.SessionStart[0](context.Background(), "startup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "/plugins/demo|/data/demo|/plugins/demo|/data/demo"
+	if len(outcome.AdditionalContext) != 1 || outcome.AdditionalContext[0] != want {
+		t.Fatalf("context = %#v, want %q", outcome.AdditionalContext, want)
+	}
+}
+
 func configFor(event, matcher string, handler Handler) *Config {
 	group := []MatcherGroup{{Matcher: matcher, Hooks: []Handler{handler}}}
 	cfg := &Config{}

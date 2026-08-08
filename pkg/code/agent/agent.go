@@ -693,6 +693,25 @@ func (a *Agent) buildSession() *sessionState {
 
 	sessionCfg.Hooks.Append(globalHooks.Build(ws.RootPath, nil))
 	sessionCfg.Hooks.Append(workspaceHooks.Build(ws.RootPath, workspaceGate))
+	for i := range ws.Plugins {
+		p := &ws.Plugins[i]
+		if p.Hooks == nil || p.Hooks.RuleCount() == 0 {
+			continue
+		}
+		pluginGate := &external.Gate{
+			Confirm: elicit.Confirm,
+			Message: fmt.Sprintf("Run %d hook rule(s) from plugin %q at %s?", p.Hooks.RuleCount(), p.Name, p.Root),
+		}
+		sessionCfg.Hooks.Append(p.Hooks.BuildWithOptions(ws.RootPath, external.BuildOptions{
+			Gate: pluginGate,
+			Environment: map[string]string{
+				"PLUGIN_ROOT":        p.Root,
+				"PLUGIN_DATA":        p.Data,
+				"CLAUDE_PLUGIN_ROOT": p.Root,
+				"CLAUDE_PLUGIN_DATA": p.Data,
+			},
+		}))
+	}
 	sessionCfg.Hooks.PostToolUse = append(sessionCfg.Hooks.PostToolUse,
 		truncation.New(ws.ScratchPath),
 	)

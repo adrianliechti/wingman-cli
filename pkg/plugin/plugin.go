@@ -1,6 +1,6 @@
-// Package plugin implements an Agent Plugins v1.0.0 client: it loads plugin
-// directories, validates their manifests, and exposes the skills and MCP
-// servers they contribute.
+// Package plugin implements Agent Plugins v1.0.0 plus Codex/Claude manifest
+// compatibility. It loads plugin directories and exposes their skills, MCP
+// servers, and lifecycle hooks.
 //
 // https://agent-plugins.org
 package plugin
@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/adrianliechti/wingman-agent/pkg/agent/hook/external"
 	"github.com/adrianliechti/wingman-agent/pkg/layout"
 	"github.com/adrianliechti/wingman-agent/pkg/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/skill"
@@ -25,9 +26,11 @@ type Plugin struct {
 	Data string
 
 	Manifest Manifest
+	Format   string
 
 	Skills  []skill.Skill
 	Servers map[string]mcp.ServerConfig
+	Hooks   *external.Config
 }
 
 // Diagnostic reports something a plugin got wrong that did not stop the rest of
@@ -84,7 +87,7 @@ func discover(root, dataRoot string, plugins []Plugin, diagnostics []Diagnostic,
 	for _, name := range names {
 		dir := filepath.Join(root, name)
 
-		if _, err := os.Stat(filepath.Join(dir, "plugin.json")); err != nil {
+		if !hasPluginManifest(dir) {
 			continue
 		}
 
@@ -123,83 +126,87 @@ func Load(dir, dataRoot string) (*Plugin, []string, error) {
 		return nil, nil, err
 	}
 
-	manifestPath := filepath.Join(root, "plugin.json")
-
-	resolvedManifest, err := resolvePath(manifestPath)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if !contains(root, resolvedManifest) {
-		return nil, nil, fmt.Errorf("plugin.json resolves outside the plugin root")
-	}
-
-	content, err := os.ReadFile(resolvedManifest)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	manifest, notes, err := parseManifest(content)
+	resolved, notes, err := loadResolvedManifest(root)
 	if err != nil {
 		return nil, notes, err
 	}
+	manifest := resolved.Manifest
 
 	p := &Plugin{
 		Name:     manifest.Name,
 		Root:     root,
 		Manifest: manifest,
+		Format:   resolved.Format,
 	}
 
 	if dataRoot != "" {
-		p.Data = filepath.Join(dataRoot, manifest.Name)
-
-		// Containment compares resolved paths, so the data root has to be
-		// resolved too or a symlinked ancestor makes every ${PLUGIN_DATA} path
-		// look like an escape.
-		if resolved, err := resolvePath(p.Data); err == nil {
-			p.Data = resolved
+		resolvedDataRoot, err := resolvePath(dataRoot)
+		if err != nil {
+			return nil, notes, fmt.Errorf("resolve plugin data root: %w", err)
+		}
+		p.Data, err = resolvePath(filepath.Join(resolvedDataRoot, manifest.Name))
+		if err != nil {
+			return nil, notes, fmt.Errorf("resolve plugin data directory: %w", err)
+		}
+		if !contains(resolvedDataRoot, p.Data) {
+			return nil, notes, fmt.Errorf("plugin name %q escapes the plugin data root", manifest.Name)
 		}
 	}
 
-	skills, skillNotes := loadSkills(root, manifest.Name)
+	skills, skillNotes := loadSkills(root, manifest.Name, resolved.Skills, resolved.Format == CodexPluginFormat)
 	p.Skills = skills
 	notes = append(notes, skillNotes...)
 
-	servers, serverNotes := loadServers(p)
-	p.Servers = servers
-	notes = append(notes, serverNotes...)
+	if resolved.Format == AgentPluginFormat {
+		servers, serverNotes := loadServers(p)
+		p.Servers = servers
+		notes = append(notes, serverNotes...)
+	}
+
+	hooks, hookNotes := loadHooks(root, resolved)
+	p.Hooks = hooks
+	notes = append(notes, hookNotes...)
+	if hooks.RuleCount() > 0 && p.Data != "" {
+		if err := os.MkdirAll(p.Data, 0755); err != nil {
+			notes = append(notes, fmt.Sprintf("disabling hooks: create data directory: %v", err))
+			p.Hooks = &external.Config{}
+		}
+	}
 
 	return p, notes, nil
 }
 
-func loadSkills(root, name string) ([]skill.Skill, []string) {
-	dir := filepath.Join(root, "skills")
-
-	info, err := os.Stat(dir)
-
-	if err != nil {
-		return nil, nil
-	}
-
-	if !info.IsDir() {
-		return nil, []string{"skills is not a directory"}
-	}
-
+func loadSkills(root, name string, declared []string, recursive bool) ([]skill.Skill, []string) {
 	var notes []string
 	var skills []skill.Skill
-
-	for _, sk := range skill.LoadDir(dir) {
-		resolved, err := resolvePath(sk.Location)
-
-		if err != nil || !contains(root, resolved) {
-			notes = append(notes, fmt.Sprintf("skipping skill %q: resolves outside the plugin root", sk.Name))
+	for _, value := range declared {
+		dir, err := resolveManifestPath(root, "skills", value)
+		if err != nil {
+			notes = append(notes, "skipping skills: "+err.Error())
 			continue
 		}
-
-		sk.Location = resolved
-		sk.Plugin = name
-
-		skills = append(skills, sk)
+		info, err := os.Stat(dir)
+		if err != nil {
+			continue
+		}
+		if !info.IsDir() {
+			notes = append(notes, fmt.Sprintf("%s is not a directory", value))
+			continue
+		}
+		loaded := skill.LoadDir(dir)
+		if recursive {
+			loaded = skill.LoadDirRecursive(dir)
+		}
+		for _, sk := range loaded {
+			resolved, err := resolvePath(sk.Location)
+			if err != nil || !contains(root, resolved) {
+				notes = append(notes, fmt.Sprintf("skipping skill %q: resolves outside the plugin root", sk.Name))
+				continue
+			}
+			sk.Location = resolved
+			sk.Plugin = name
+			skills = append(skills, sk)
+		}
 	}
 
 	return skills, notes
