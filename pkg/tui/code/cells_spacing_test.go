@@ -194,7 +194,7 @@ func TestAnnotationsSurviveChatRebuild(t *testing.T) {
 		},
 	})
 
-	lines := a.restoreChatLines(80)
+	lines := a.restoreChatLines(a.agent.Messages(a.sessionID), 80)
 
 	if !slices.ContainsFunc(lines, func(l string) bool { return strings.Contains(l, "resumed banner") }) {
 		t.Fatalf("annotation dropped on rebuild: %q", lines)

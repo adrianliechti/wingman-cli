@@ -16,6 +16,7 @@ type turnManagerTestAgent struct {
 	mu sync.Mutex
 
 	starts     chan string
+	sessionIDs chan string
 	releases   chan struct{}
 	cancels    int
 	steers     []string
@@ -45,7 +46,7 @@ func (a *blockingSteerAgent) Steer(ctx context.Context, sessionID string, input 
 
 func newTurnManagerTestAgent() *turnManagerTestAgent {
 	return &turnManagerTestAgent{
-		starts: make(chan string, 16), releases: make(chan struct{}, 16),
+		starts: make(chan string, 16), sessionIDs: make(chan string, 16), releases: make(chan struct{}, 16),
 	}
 }
 
@@ -72,6 +73,10 @@ func (a *turnManagerTestAgent) Send(ctx context.Context, _ string, input []agent
 	}
 	return func(yield func(agent.Message, error) bool) {
 		a.starts <- text
+		a.sessionIDs <- SessionIDFromContext(ctx)
+		if text == "reset" {
+			agent.EmitStreamEvent(ctx, agent.StreamEventReset)
+		}
 		select {
 		case <-ctx.Done():
 			yield(agent.Message{}, ctx.Err())
@@ -80,6 +85,48 @@ func (a *turnManagerTestAgent) Send(ctx context.Context, _ string, input []agent
 		}
 		yield(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{Text: "done " + text}}}, nil)
 	}, nil
+}
+
+func TestTurnManagerInstallsSessionIDOnRunContext(t *testing.T) {
+	a := newTurnManagerTestAgent()
+	m := NewTurnManager(context.Background(), a, nil)
+	defer m.Close()
+
+	if _, err := m.Submit(context.Background(), "session-1", turnInput("1", "context", TurnInputFollowUp)); err != nil {
+		t.Fatal(err)
+	}
+	waitValue(t, a.starts)
+	if got := waitValue(t, a.sessionIDs); got != "session-1" {
+		t.Fatalf("session ID = %q, want session-1", got)
+	}
+	a.releases <- struct{}{}
+}
+
+func TestTurnManagerForwardsStreamLifecycleEvents(t *testing.T) {
+	a := newTurnManagerTestAgent()
+	events := make(chan TurnEvent, 32)
+	m := NewTurnManager(context.Background(), a, func(ev TurnEvent) { events <- ev })
+	defer m.Close()
+
+	if _, err := m.Submit(context.Background(), "s", turnInput("1", "reset", TurnInputFollowUp)); err != nil {
+		t.Fatal(err)
+	}
+	waitValue(t, a.starts)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case ev := <-events:
+			if ev.StreamEvent == agent.StreamEventReset {
+				if ev.SessionID != "s" || ev.InputID != "1" || ev.Message != nil {
+					t.Fatalf("stream event metadata = %+v", ev)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for stream reset event")
+		}
+	}
 }
 
 func (a *turnManagerTestAgent) Cancel(string) {

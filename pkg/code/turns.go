@@ -203,7 +203,7 @@ func (m *TurnManager) runSession(sessionID string, s *managedTurnSession) {
 			s.mu.Unlock()
 			return
 		}
-		runCtx, cancel := context.WithCancel(m.ctx)
+		runCtx, cancel := context.WithCancel(WithSessionID(m.ctx, sessionID))
 		s.cancel = cancel
 		cancelBeforeStart := s.cancelRequested
 		s.mu.Unlock()
@@ -263,6 +263,14 @@ func (m *TurnManager) executeInput(ctx context.Context, sessionID string, item *
 			err = fmt.Errorf("agent turn panicked: %v", recovered)
 		}
 	}()
+	ctx = agent.WithStreamEventHandlers(ctx, agent.StreamEventHandlers{
+		Reset: func() {
+			m.emit(TurnEvent{SessionID: sessionID, InputID: item.input.ID, StreamEvent: agent.StreamEventReset})
+		},
+		Commit: func() {
+			m.emit(TurnEvent{SessionID: sessionID, InputID: item.input.ID, StreamEvent: agent.StreamEventCommit})
+		},
+	})
 	stream, err := m.agent.Send(ctx, sessionID, item.input.Content)
 	if err != nil {
 		return err

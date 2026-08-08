@@ -155,6 +155,17 @@ func (c *Claw) runScheduledTask(ctx context.Context, name string, ma *managedAge
 	ctx, cancel := context.WithTimeout(ctx, runTimeout)
 	defer cancel()
 
+	var buf strings.Builder
+	var tw *turnText
+	resetOutput := func() {
+		buf.Reset()
+		tw = &turnText{sink: func(s string) { buf.WriteString(s) }}
+	}
+	resetOutput()
+	ctx = agent.WithStreamEventHandlers(ctx, agent.StreamEventHandlers{
+		Reset: resetOutput,
+	})
+
 	stream, err := ma.agent.Send(ctx, []agent.Content{{Text: prompt}})
 	if err != nil {
 		log.Printf("scheduler %s: could not start turn: %v", name, err)
@@ -166,10 +177,6 @@ func (c *Claw) runScheduledTask(ctx context.Context, name string, ma *managedAge
 			ma.agent.Messages = ma.agent.Messages[:checkpoint]
 		}
 	}
-
-	var buf strings.Builder
-
-	tw := &turnText{sink: func(s string) { buf.WriteString(s) }}
 
 	for msg, err := range stream {
 		if err != nil {

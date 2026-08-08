@@ -199,6 +199,10 @@ type Registry struct {
 }
 
 func NewRegistry() *Registry {
+	// Background tasks deliberately do not inherit the foreground turn's
+	// progress or stream lifecycle callbacks: their output is represented by
+	// Task activity/results, and sub-agent retries install their own local reset
+	// handler around the buffered run.
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Registry{
 		ctx:    ctx,

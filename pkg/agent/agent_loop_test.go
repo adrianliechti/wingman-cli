@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -142,6 +143,75 @@ func TestCompleteRetriesTransientTerminalFailureAfterOutput(t *testing.T) {
 	}
 	if !isRecoverableError(err) {
 		t.Fatalf("error = %v, want recoverable transient failure", err)
+	}
+}
+
+func TestSendResetsVisibleOutputBeforeRetry(t *testing.T) {
+	var requests atomic.Int64
+	client := streamingTestClient(func(*http.Request) string {
+		if requests.Add(1) == 1 {
+			return "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"failed partial\"}\n\ndata: {\"type\":\"response.failed\",\"sequence_number\":2,\"response\":{\"error\":{\"code\":\"server_error\",\"message\":\"try again\"}}}\n\n"
+		}
+		return "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"msg_2\",\"output_index\":0,\"content_index\":0,\"delta\":\"final answer\"}\n\ndata: {\"type\":\"response.completed\",\"sequence_number\":2,\"response\":{\"output\":[{\"type\":\"message\",\"id\":\"msg_2\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"final answer\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":1,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1}}}\n\n"
+	})
+
+	a := &Agent{Config: &Config{client: &client}}
+	var events []string
+	ctx := WithStreamEventHandlers(context.Background(), StreamEventHandlers{
+		Reset:  func() { events = append(events, "reset") },
+		Commit: func() { events = append(events, "commit") },
+	})
+	stream, err := a.Send(ctx, []Content{{Text: "start"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for msg, err := range stream {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(msg.Content) > 0 {
+			events = append(events, msg.Content[0].Text)
+		}
+	}
+
+	want := []string{"failed partial", "reset", "final answer", "commit"}
+	if !slices.Equal(events, want) {
+		t.Fatalf("stream events = %q, want %q", events, want)
+	}
+	if messages := a.MessagesSnapshot(); len(messages) != 2 || messages[1].Content[0].Text != "final answer" {
+		t.Fatalf("retained messages contain failed attempt: %+v", messages)
+	}
+}
+
+func TestSendDoesNotRetryVisibleOutputWithoutResetCapability(t *testing.T) {
+	var requests atomic.Int64
+	client := streamingTestClient(func(*http.Request) string {
+		requests.Add(1)
+		return "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"partial\"}\n\ndata: {\"type\":\"response.failed\",\"sequence_number\":2,\"response\":{\"error\":{\"code\":\"server_error\",\"message\":\"try again\"}}}\n\n"
+	})
+
+	a := &Agent{Config: &Config{client: &client}}
+	ctx := WithStreamEventHandlers(context.Background(), StreamEventHandlers{
+		// A handler for another lifecycle event must not imply reset support.
+		Commit: func() {},
+	})
+	stream, err := a.Send(ctx, []Content{{Text: "start"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text string
+	var streamErr error
+	for msg, err := range stream {
+		if err != nil {
+			streamErr = err
+			continue
+		}
+		if len(msg.Content) > 0 {
+			text += msg.Content[0].Text
+		}
+	}
+	if streamErr == nil || text != "partial" || requests.Load() != 1 {
+		t.Fatalf("text=%q requests=%d err=%v", text, requests.Load(), streamErr)
 	}
 }
 

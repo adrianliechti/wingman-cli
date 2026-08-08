@@ -165,6 +165,16 @@ func (s *Server) handleSend(ctx context.Context, msg ClientMessage) {
 }
 
 func (s *Server) handleTurnEvent(ev code.TurnEvent) {
+	if ev.StreamEvent != 0 {
+		switch ev.StreamEvent {
+		case agent.StreamEventReset:
+			s.sendSession(ev.SessionID, Frame{Type: EvtStreamReset})
+		case agent.StreamEventCommit:
+			s.sendSession(ev.SessionID, Frame{Type: EvtStreamCommit})
+		}
+		return
+	}
+
 	if ev.Message != nil {
 		for _, c := range ev.Message.Content {
 			switch {
@@ -199,7 +209,7 @@ func (s *Server) handleTurnEvent(ev code.TurnEvent) {
 
 			case c.Text != "":
 				s.setSessionPhase(ev.SessionID, "streaming")
-				s.sendSession(ev.SessionID, Frame{Type: EvtTextDelta, Text: c.Text})
+				s.sendSession(ev.SessionID, Frame{Type: EvtTextDelta, ID: c.TextID, Text: c.Text})
 			}
 		}
 		s.sendUsageIfChanged(ev.SessionID)

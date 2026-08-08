@@ -31,6 +31,8 @@ export interface ChatEntry {
 	id: string;
 	type: "user" | "assistant" | "tool" | "reasoning";
 	content: string;
+	// Stable source identity; id above is the local React/rendering identity.
+	messageId?: string;
 	images?: string[];
 	files?: string[];
 	inputId?: string;
@@ -78,6 +80,7 @@ export function messagesToEntries(
 					id: `t-${mi}-${ci}`,
 					type: "assistant",
 					content: c.text,
+					messageId: c.text_id,
 				});
 			}
 			if (c.reasoning?.summary) {
@@ -238,35 +241,109 @@ function ensureUserEntry(
 }
 
 interface StreamRefs {
-	streamingId: string;
-	streamingContent: string;
+	textEntryId: string;
+	textMessageId: string;
+	textContent: string;
 	reasoningEntryId: string;
 	reasoningId: string;
 	reasoningPart: number;
 	reasoningContent: string;
+	liveEntryIds: Set<string>;
+	attemptEntryIds: Set<string>;
 }
 
 function emptyStreamRefs(): StreamRefs {
 	return {
-		streamingId: "",
-		streamingContent: "",
+		textEntryId: "",
+		textMessageId: "",
+		textContent: "",
 		reasoningEntryId: "",
 		reasoningId: "",
 		reasoningPart: 0,
 		reasoningContent: "",
+		liveEntryIds: new Set(),
+		attemptEntryIds: new Set(),
 	};
+}
+
+function reconcileSnapshotEntries(
+	snapshotEntries: ChatEntry[],
+	previousEntries: ChatEntry[],
+	liveEntryIds: ReadonlySet<string>,
+): { entries: ChatEntry[]; remaining: Set<string> } {
+	const live = previousEntries.filter((entry) => liveEntryIds.has(entry.id));
+	const remaining = new Set<string>();
+	const entries = [...snapshotEntries];
+	const tailStart = entries.findLastIndex((entry) => entry.type === "user");
+	const committedTail = entries.slice(Math.max(tailStart, 0));
+
+	for (const entry of live) {
+		let represented = false;
+		if (entry.type === "tool" && entry.toolId) {
+			const tailIdx = committedTail.findLastIndex(
+				(candidate) =>
+					candidate.type === "tool" && candidate.toolId === entry.toolId,
+			);
+			if (tailIdx >= 0) {
+				const idx = Math.max(tailStart, 0) + tailIdx;
+				if (
+					entry.toolResult !== undefined &&
+					entries[idx].toolResult === undefined
+				) {
+					entries[idx] = { ...entries[idx], toolResult: entry.toolResult };
+				}
+				represented = true;
+			}
+		} else if (entry.type === "reasoning") {
+			represented = committedTail.some(
+				(candidate) =>
+					candidate.type === "reasoning" &&
+					((entry.reasoningId && candidate.reasoningId === entry.reasoningId) ||
+						candidate.content === entry.content),
+			);
+		} else if (entry.type === "assistant") {
+			represented = committedTail.some(
+				(candidate) =>
+					candidate.type === "assistant" &&
+					((entry.messageId && candidate.messageId === entry.messageId) ||
+						candidate.content === entry.content),
+			);
+		}
+
+		if (!represented) {
+			entries.push(entry);
+			remaining.add(entry.id);
+		}
+	}
+
+	return { entries, remaining };
 }
 
 export function useWebSocket() {
 	const wsRef = useRef<WebSocket | null>(null);
 	const [connected, setConnected] = useState(false);
-	const [sessions, setSessions] = useState<Record<string, SessionState>>({});
+	const [sessions, setSessionsState] = useState<Record<string, SessionState>>(
+		{},
+	);
 	const [toolProgress, setToolProgress] = useState<Record<string, string>>({});
 
 	const sessionsSnapshotRef = useRef(sessions);
-	useEffect(() => {
-		sessionsSnapshotRef.current = sessions;
-	}, [sessions]);
+	// Compute eagerly and pass React a value: updater functions may be invoked
+	// more than once in StrictMode, while this projection must run exactly once.
+	const commitSessions = useCallback(
+		(
+			fn: (
+				sessions: Record<string, SessionState>,
+			) => Record<string, SessionState>,
+		) => {
+			const previous = sessionsSnapshotRef.current;
+			const next = fn(previous);
+			if (next === previous) return;
+			sessionsSnapshotRef.current = next;
+			setSessionsState(next);
+		},
+		[],
+	);
 	const hasSession = useCallback(
 		(id: string) => id in sessionsSnapshotRef.current,
 		[],
@@ -298,7 +375,7 @@ export function useWebSocket() {
 
 	const updateSession = useCallback(
 		(id: string, fn: (s: SessionState) => SessionState) => {
-			setSessions((prev) => {
+			commitSessions((prev) => {
 				const existing = prev[id];
 				const base = existing ?? emptySession(id);
 				const updated = fn(base);
@@ -306,7 +383,7 @@ export function useWebSocket() {
 				return { ...prev, [id]: updated };
 			});
 		},
-		[],
+		[commitSessions],
 	);
 
 	const flushStreamSession = useCallback(
@@ -316,10 +393,11 @@ export function useWebSocket() {
 			if (!s) return;
 
 			const streaming =
-				s.streamingId && s.streamingContent
+				s.textEntryId && s.textContent
 					? {
-							id: s.streamingId,
-							content: s.streamingContent,
+							id: s.textEntryId,
+							messageId: s.textMessageId,
+							content: s.textContent,
 						}
 					: null;
 			const reasoning =
@@ -371,6 +449,7 @@ export function useWebSocket() {
 						id: streaming.id,
 						type: "assistant",
 						content: streaming.content,
+						messageId: streaming.messageId,
 					});
 				}
 
@@ -399,7 +478,7 @@ export function useWebSocket() {
 	const flushActiveStream = useCallback(
 		(id: string) => {
 			const s = streamRefs.current[id];
-			if (!s?.streamingId && !s?.reasoningEntryId) return;
+			if (!s?.textEntryId && !s?.reasoningEntryId) return;
 			flushStreamSession(id);
 		},
 		[flushStreamSession],
@@ -407,8 +486,9 @@ export function useWebSocket() {
 
 	const finalizeStreaming = (id: string) => {
 		const s = getStream(id);
-		s.streamingId = "";
-		s.streamingContent = "";
+		s.textEntryId = "";
+		s.textMessageId = "";
+		s.textContent = "";
 	};
 
 	const finalizeReasoning = (id: string) => {
@@ -422,6 +502,8 @@ export function useWebSocket() {
 	const handleMessageRef = useRef<(msg: ServerMessage) => void>(() => {});
 
 	const handleMessage = (msg: ServerMessage) => {
+		const sid = "session" in msg ? msg.session : undefined;
+
 		for (const sub of subscribersRef.current) {
 			sub(msg);
 		}
@@ -437,18 +519,40 @@ export function useWebSocket() {
 			return;
 		}
 
-		const sid = "session" in msg ? msg.session : undefined;
 		if (!sid) return;
 
 		switch (msg.type) {
 			case "session_state": {
+				flushActiveStream(sid);
 				pendingFlushSessions.current.delete(sid);
-				streamRefs.current[sid] = emptyStreamRefs();
-				setSessions((prev) => ({
+				const snapshotEntries = messagesToEntries(msg.messages ?? []);
+				const stream = getStream(sid);
+				const previous = sessionsSnapshotRef.current[sid];
+				const { entries, remaining } = reconcileSnapshotEntries(
+					snapshotEntries,
+					previous?.entries ?? [],
+					stream.liveEntryIds,
+				);
+
+				stream.liveEntryIds = remaining;
+				stream.attemptEntryIds = new Set(
+					Array.from(stream.attemptEntryIds).filter((id) => remaining.has(id)),
+				);
+				if (stream.textEntryId && !remaining.has(stream.textEntryId)) {
+					finalizeStreaming(sid);
+				}
+				if (
+					stream.reasoningEntryId &&
+					!remaining.has(stream.reasoningEntryId)
+				) {
+					finalizeReasoning(sid);
+				}
+
+				commitSessions((prev) => ({
 					...prev,
 					[sid]: {
 						id: sid,
-						entries: messagesToEntries(msg.messages ?? []),
+						entries,
 						error: prev[sid]?.error ?? null,
 						phase: msg.phase ?? "idle",
 						usage: {
@@ -473,18 +577,30 @@ export function useWebSocket() {
 				}
 				finalizeReasoning(sid);
 				const s = getStream(sid);
-				let entryId = s.streamingId;
+				if (
+					s.textEntryId &&
+					msg.id &&
+					s.textMessageId &&
+					msg.id !== s.textMessageId
+				) {
+					flushStreamSession(sid);
+					finalizeStreaming(sid);
+				}
+				let entryId = s.textEntryId;
 				if (!entryId) {
 					entryId = nextId();
-					s.streamingId = entryId;
+					s.textEntryId = entryId;
+					s.textMessageId = msg.id ?? "";
+					s.liveEntryIds.add(entryId);
+					s.attemptEntryIds.add(entryId);
 				}
-				s.streamingContent += msg.text;
+				s.textContent += msg.text;
 				scheduleStreamFlush(sid);
 				break;
 			}
 
 			case "reasoning_delta": {
-				if (streamRefs.current[sid]?.streamingId) {
+				if (streamRefs.current[sid]?.textEntryId) {
 					flushStreamSession(sid);
 				}
 				finalizeStreaming(sid);
@@ -498,6 +614,8 @@ export function useWebSocket() {
 					entryId = nextId();
 					s.reasoningEntryId = entryId;
 					s.reasoningId = msg.id;
+					s.liveEntryIds.add(entryId);
+					s.attemptEntryIds.add(entryId);
 				}
 				const part = msg.part ?? 0;
 				if (s.reasoningContent && part !== s.reasoningPart) {
@@ -513,21 +631,40 @@ export function useWebSocket() {
 				flushActiveStream(sid);
 				finalizeStreaming(sid);
 				finalizeReasoning(sid);
-				updateSession(sid, (sess) => ({
-					...sess,
-					entries: [
-						...sess.entries,
-						{
-							id: nextId(),
-							type: "tool",
-							content: "",
-							toolId: msg.id,
+				const stream = getStream(sid);
+				updateSession(sid, (sess) => {
+					const idx = sess.entries.findLastIndex(
+						(entry) => entry.type === "tool" && entry.toolId === msg.id,
+					);
+					if (idx >= 0) {
+						const entries = [...sess.entries];
+						entries[idx] = {
+							...entries[idx],
 							toolName: msg.name,
 							toolArgs: msg.args,
 							toolHint: msg.hint,
-						},
-					],
-				}));
+						};
+						stream.liveEntryIds.add(entries[idx].id);
+						return { ...sess, entries };
+					}
+					const id = nextId();
+					stream.liveEntryIds.add(id);
+					return {
+						...sess,
+						entries: [
+							...sess.entries,
+							{
+								id,
+								type: "tool",
+								content: "",
+								toolId: msg.id,
+								toolName: msg.name,
+								toolArgs: msg.args,
+								toolHint: msg.hint,
+							},
+						],
+					};
+				});
 				break;
 			}
 
@@ -550,12 +687,14 @@ export function useWebSocket() {
 									e.toolResult === undefined,
 							);
 					if (idx < 0) {
+						const id = nextId();
+						getStream(sid).liveEntryIds.add(id);
 						return {
 							...sess,
 							entries: [
 								...sess.entries,
 								{
-									id: nextId(),
+									id,
 									type: "tool",
 									content: "",
 									toolId: msg.id,
@@ -572,11 +711,36 @@ export function useWebSocket() {
 				break;
 			}
 
+			case "stream_reset": {
+				flushActiveStream(sid);
+				const stream = getStream(sid);
+				const failed = new Set(stream.attemptEntryIds);
+				updateSession(sid, (sess) => ({
+					...sess,
+					entries: sess.entries.filter((entry) => !failed.has(entry.id)),
+				}));
+				for (const id of failed) stream.liveEntryIds.delete(id);
+				stream.attemptEntryIds.clear();
+				finalizeStreaming(sid);
+				finalizeReasoning(sid);
+				break;
+			}
+
+			case "stream_commit":
+				flushActiveStream(sid);
+				getStream(sid).attemptEntryIds.clear();
+				finalizeStreaming(sid);
+				finalizeReasoning(sid);
+				break;
+
 			case "phase":
 				if (msg.phase === "idle") {
 					flushActiveStream(sid);
 					finalizeStreaming(sid);
 					finalizeReasoning(sid);
+					const stream = getStream(sid);
+					stream.liveEntryIds.clear();
+					stream.attemptEntryIds.clear();
 				}
 				updateSession(sid, (sess) => ({ ...sess, phase: msg.phase }));
 				break;
@@ -585,6 +749,9 @@ export function useWebSocket() {
 				flushActiveStream(sid);
 				finalizeStreaming(sid);
 				finalizeReasoning(sid);
+				const stream = getStream(sid);
+				stream.liveEntryIds.clear();
+				stream.attemptEntryIds.clear();
 				updateSession(sid, (sess) => ({
 					...sess,
 					error: msg.message,
@@ -828,22 +995,25 @@ export function useWebSocket() {
 		[send, updateSession],
 	);
 
-	const removeSession = useCallback((sessionId: string) => {
-		setSessions((prev) => {
-			if (!(sessionId in prev)) return prev;
-			const rest = { ...prev };
-			delete rest[sessionId];
-			return rest;
-		});
-		delete streamRefs.current[sessionId];
-		pendingFlushSessions.current.delete(sessionId);
-	}, []);
+	const removeSession = useCallback(
+		(sessionId: string) => {
+			commitSessions((prev) => {
+				if (!(sessionId in prev)) return prev;
+				const rest = { ...prev };
+				delete rest[sessionId];
+				return rest;
+			});
+			delete streamRefs.current[sessionId];
+			pendingFlushSessions.current.delete(sessionId);
+		},
+		[commitSessions],
+	);
 
 	const clearSessions = useCallback(() => {
-		setSessions({});
+		commitSessions(() => ({}));
 		streamRefs.current = {};
 		pendingFlushSessions.current.clear();
-	}, []);
+	}, [commitSessions]);
 
 	useEffect(() => {
 		return () => {
@@ -903,7 +1073,7 @@ export function useWebSocket() {
 			ws.onclose = () => {
 				setConnected(false);
 				wsRef.current = null;
-				setSessions((prev) => {
+				commitSessions((prev) => {
 					const next: Record<string, SessionState> = {};
 					for (const [id, sess] of Object.entries(prev)) {
 						next[id] = {
@@ -944,7 +1114,7 @@ export function useWebSocket() {
 			clearTimeout(reconnectTimer);
 			wsRef.current?.close();
 		};
-	}, []);
+	}, [commitSessions]);
 
 	return {
 		connected,

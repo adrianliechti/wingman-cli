@@ -1,13 +1,158 @@
 package code
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/tui/ansi"
+	"github.com/adrianliechti/wingman-agent/pkg/tui/inline"
 )
+
+func newStreamTestApp(messages []agent.Message) (*App, *uiTestAgent) {
+	testAgent := newUITestAgent(messages)
+	return &App{
+		ctx: context.Background(), agent: testAgent, sessionID: "session",
+		term: inline.NewTerminal(), queue: make(chan func(), 64), quit: make(chan struct{}),
+	}, testAgent
+}
+
+func TestSyncMessagesReconcilesNativeCommittedStream(t *testing.T) {
+	a, testAgent := newStreamTestApp(nil)
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		Reasoning: &agent.Reasoning{ID: "reason-1", Summary: "planning the edit"},
+	}}})
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		Text: "Let me inspect the file.",
+	}}})
+
+	testAgent.messages = append(testAgent.messages, agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{
+		{Reasoning: &agent.Reasoning{ID: "reason-1", Summary: "planning the edit"}},
+		{Text: "Let me inspect the file."},
+		{ToolCall: &agent.ToolCall{ID: "call-1", Name: "read", Args: `{"path":"main.go"}`}},
+	}})
+	a.syncMessages()
+
+	if tail := ansi.Strip(strings.Join(a.streamCells(100), "\n")); strings.Contains(tail, "planning the edit") || strings.Contains(tail, "Let me inspect the file.") {
+		t.Fatalf("committed response remained in live tail: %q", tail)
+	}
+
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		ToolCall: &agent.ToolCall{ID: "call-1", Name: "read", Args: `{"path":"main.go"}`},
+	}}})
+	result := &agent.ToolResult{ID: "call-1", Name: "read", Args: `{"path":"main.go"}`, Content: "package main"}
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{ToolResult: result}}})
+	testAgent.messages = append(testAgent.messages, agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{ToolResult: result}}})
+	a.syncMessages()
+
+	out := ansi.Strip(strings.Join(a.chatViewLines(100), "\n"))
+	if count := strings.Count(out, "Let me inspect the file."); count != 1 {
+		t.Fatalf("assistant response rendered %d times: %q", count, out)
+	}
+	if count := strings.Count(out, "planning the edit"); count != 1 {
+		t.Fatalf("reasoning rendered %d times: %q", count, out)
+	}
+	if textAt, toolAt := strings.Index(out, "Let me inspect the file."), strings.Index(out, "main.go"); textAt < 0 || toolAt <= textAt {
+		t.Fatalf("tool result is not after its response: %q", out)
+	}
+}
+
+func TestSyncMessagesRebuildsRewrittenHistory(t *testing.T) {
+	a, testAgent := newStreamTestApp([]agent.Message{{Role: agent.RoleUser, Content: []agent.Content{{Text: "old history"}}}})
+	a.syncMessages()
+
+	testAgent.messages = []agent.Message{{Role: agent.RoleUser, Content: []agent.Content{{Text: "compacted history"}}}}
+	testAgent.revision++
+	a.syncMessages()
+
+	out := ansi.Strip(strings.Join(a.chatViewLines(100), "\n"))
+	if strings.Contains(out, "old history") || strings.Count(out, "compacted history") != 1 {
+		t.Fatalf("history rewrite was appended instead of rebuilt: %q", out)
+	}
+}
+
+func TestSyncMessagesSkipsUnchangedHistoryClone(t *testing.T) {
+	a, testAgent := newStreamTestApp([]agent.Message{{Role: agent.RoleUser, Content: []agent.Content{{Text: "hello"}}}})
+	a.syncMessages()
+	if testAgent.snapshots != 1 {
+		t.Fatalf("initial history snapshots = %d, want 1", testAgent.snapshots)
+	}
+
+	a.syncMessages()
+	if testAgent.snapshots != 1 {
+		t.Fatalf("unchanged history was cloned again: snapshots = %d", testAgent.snapshots)
+	}
+
+	testAgent.messages = append(testAgent.messages, agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{Text: "answer"}}})
+	a.syncMessages()
+	if testAgent.snapshots != 2 {
+		t.Fatalf("appended history was not cloned: snapshots = %d", testAgent.snapshots)
+	}
+}
+
+func TestStreamResetDropsOnlyFailedAttemptOutput(t *testing.T) {
+	a, _ := newStreamTestApp(nil)
+	a.appendLiveUserEcho("keep this guidance")
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{Text: "failed partial"}}})
+	a.handleTurnEvent(code.TurnEvent{SessionID: "session", StreamEvent: agent.StreamEventReset})
+
+	tail := ansi.Strip(strings.Join(a.streamCells(100), "\n"))
+	if strings.Contains(tail, "failed partial") || !strings.Contains(tail, "keep this guidance") {
+		t.Fatalf("retry reset removed the wrong live content: %q", tail)
+	}
+}
+
+func TestStreamResetPreservesCommittedEarlierRound(t *testing.T) {
+	a, _ := newStreamTestApp(nil)
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		Text: "accepted output", TextID: "message-1",
+	}}})
+	a.handleTurnEvent(code.TurnEvent{SessionID: "session", StreamEvent: agent.StreamEventCommit})
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		Text: "failed output", TextID: "message-2",
+	}}})
+	a.handleTurnEvent(code.TurnEvent{SessionID: "session", StreamEvent: agent.StreamEventReset})
+
+	tail := ansi.Strip(strings.Join(a.streamCells(100), "\n"))
+	if !strings.Contains(tail, "accepted output") || strings.Contains(tail, "failed output") {
+		t.Fatalf("retry reset crossed the committed attempt boundary: %q", tail)
+	}
+}
+
+func TestStreamCommitStartsFreshTextCell(t *testing.T) {
+	a, _ := newStreamTestApp(nil)
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		Text: "first", TextID: "message-1",
+	}}})
+	a.handleTurnEvent(code.TurnEvent{SessionID: "session", StreamEvent: agent.StreamEventCommit})
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		Text: "second", TextID: "message-1",
+	}}})
+
+	snapshots := a.snapshotStreamState()
+	if len(snapshots) != 2 || snapshots[0].text != "first" || snapshots[1].text != "second" {
+		t.Fatalf("commit did not split text cells: %+v", snapshots)
+	}
+}
+
+func TestCommittedTextReconcilesByMessageID(t *testing.T) {
+	a, testAgent := newStreamTestApp(nil)
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		Text: "partial rendering", TextID: "message-1",
+	}}})
+	testAgent.messages = append(testAgent.messages, agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		Text: "authoritative retained text", TextID: "message-1",
+	}}})
+	a.syncMessages()
+
+	out := ansi.Strip(strings.Join(a.chatViewLines(100), "\n"))
+	if strings.Contains(out, "partial rendering") || strings.Count(out, "authoritative retained text") != 1 {
+		t.Fatalf("stable text ID did not reconcile live and retained content: %q", out)
+	}
+}
 
 func TestReleaseToolCellKeepsLiveCellUntilMatchingResult(t *testing.T) {
 	a := &App{}
@@ -56,7 +201,7 @@ func TestParallelArchivedToolReceivesProgressAndCompletion(t *testing.T) {
 		ToolCall: &agent.ToolCall{ID: "call-2", Name: "read", Args: `{"path":"two.go"}`},
 	}}})
 
-	a.onToolProgress("call-1", "halfway")
+	a.onToolProgress(context.Background(), "call-1", "halfway")
 	if len(a.streamHistory) != 1 || a.streamHistory[0].toolProgress != "halfway" {
 		t.Fatalf("archived tool progress was lost: %+v", a.streamHistory)
 	}

@@ -20,7 +20,11 @@ type Message struct {
 }
 
 type Content struct {
-	Text    string `json:"text,omitempty"`
+	Text string `json:"text,omitempty"`
+	// TextID is source-local identity used to reconcile streamed and retained
+	// UI content. It is metadata, not a provider payload to replay in requests.
+	TextID string `json:"text_id,omitempty"`
+
 	Refusal string `json:"refusal,omitempty"`
 
 	// Hidden marks injected context (e.g. background-task notifications) that

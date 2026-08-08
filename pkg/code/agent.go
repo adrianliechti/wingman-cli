@@ -117,6 +117,33 @@ type SessionLoadStreamer interface {
 	LoadSessionStream(ctx context.Context, id string) iter.Seq2[[]agent.Message, error]
 }
 
+// HistorySnapshot is an atomic view of a session's retained messages. Revision
+// changes only when existing history is rewritten (for example by compaction),
+// not when messages are appended normally.
+type HistorySnapshot struct {
+	Messages []agent.Message
+	Revision uint64
+}
+
+// HistorySnapshotProvider lets UIs distinguish an append from a history
+// rewrite. Agents without rewrite behavior may continue to expose Messages.
+type HistorySnapshotProvider interface {
+	HistorySnapshot(sessionID string) HistorySnapshot
+}
+
+// HistoryVersion is a cheap discriminator for retained history. Revision
+// changes on rewrites; MessageCount changes on ordinary appends.
+type HistoryVersion struct {
+	Revision     uint64
+	MessageCount int
+}
+
+// HistoryVersionProvider lets polling UIs avoid cloning a complete history
+// snapshot when neither its length nor rewrite revision changed.
+type HistoryVersionProvider interface {
+	HistoryVersion(sessionID string) HistoryVersion
+}
+
 // CommandProvider exposes agent-defined slash commands for clients that can
 // present command discovery alongside their own local commands.
 type CommandProvider interface {

@@ -88,6 +88,32 @@ func TestToolCallContentTextPlainText(t *testing.T) {
 	}
 }
 
+func TestHistoryProvidersReturnVersionedClone(t *testing.T) {
+	const sessionID = "session"
+	a := &Agent{sessions: map[string]*sessionState{
+		sessionID: {
+			messages: []agent.Message{{
+				Role:    agent.RoleAssistant,
+				Content: []agent.Content{{Text: "original"}},
+			}},
+		},
+	}}
+
+	version := a.HistoryVersion(sessionID)
+	if version.Revision != 0 || version.MessageCount != 1 {
+		t.Fatalf("history version = %#v, want revision 0 and message count 1", version)
+	}
+
+	snapshot := a.HistorySnapshot(sessionID)
+	if snapshot.Revision != 0 || len(snapshot.Messages) != 1 {
+		t.Fatalf("history snapshot = %#v, want revision 0 and one message", snapshot)
+	}
+	snapshot.Messages[0].Content[0].Text = "mutated clone"
+	if got := a.Messages(sessionID)[0].Content[0].Text; got != "original" {
+		t.Fatalf("snapshot mutation changed retained history to %q", got)
+	}
+}
+
 func modeState(modes ...string) *acp.SessionModeState {
 	avail := make([]acp.SessionMode, 0, len(modes))
 	for _, m := range modes {
@@ -168,6 +194,11 @@ func TestTranslateUpdateKeepsDistinctACPMessageIDsSeparate(t *testing.T) {
 	}
 	if len(turn.emitted) != 1 || len(turn.emitted[0].Content) != 2 {
 		t.Fatalf("distinct ACP messages were merged: %+v", turn.emitted)
+	}
+	for i, want := range []string{"message-1", "message-2"} {
+		if got := turn.emitted[0].Content[i].TextID; got != want {
+			t.Fatalf("content %d text ID = %q, want %q", i, got, want)
+		}
 	}
 }
 

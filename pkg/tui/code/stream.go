@@ -43,10 +43,29 @@ func (a *App) queuePhase(phase AppPhase) {
 
 // syncMessages flushes newly committed messages to scrollback.
 func (a *App) syncMessages() {
-	messages := a.agent.Messages(a.sessionID)
+	if provider, ok := a.agent.(code.HistoryVersionProvider); ok && a.historyRevisionSet {
+		version := provider.HistoryVersion(a.sessionID)
+		if version.Revision == a.historyRevision && version.MessageCount == a.printed {
+			return
+		}
+	}
+
+	messages, revision, versioned := a.historySnapshot()
+	if versioned {
+		if a.historyRevisionSet && revision != a.historyRevision {
+			a.historyRevision = revision
+			a.rebuildChatFrom(messages)
+			a.refreshUsage()
+			return
+		}
+		a.historyRevision = revision
+		a.historyRevisionSet = true
+	}
 
 	if a.printed > len(messages) {
-		a.printed = 0
+		a.rebuildChatFrom(messages)
+		a.refreshUsage()
+		return
 	}
 	if a.printed == len(messages) {
 		return
@@ -56,6 +75,7 @@ func (a *App) syncMessages() {
 	var lines []string
 
 	for i := a.printed; i < len(messages); i++ {
+		a.reconcileCommittedMessage(messages[i])
 		lines = append(lines, a.formatMessageCells(messages[i], width)...)
 	}
 	a.printed = len(messages)
@@ -65,6 +85,14 @@ func (a *App) syncMessages() {
 	}
 
 	a.refreshUsage()
+}
+
+func (a *App) historySnapshot() ([]agent.Message, uint64, bool) {
+	if provider, ok := a.agent.(code.HistorySnapshotProvider); ok {
+		snapshot := provider.HistorySnapshot(a.sessionID)
+		return snapshot.Messages, snapshot.Revision, true
+	}
+	return a.agent.Messages(a.sessionID), 0, false
 }
 
 func (a *App) refreshUsage() {
@@ -144,6 +172,11 @@ func (a *App) removePendingEchoText(text string) {
 // the chat.
 func (a *App) releaseToolCell(result *agent.ToolResult) {
 	a.streamStateMu.Lock()
+	a.releaseToolCellLocked(result)
+	a.streamStateMu.Unlock()
+}
+
+func (a *App) releaseToolCellLocked(result *agent.ToolResult) {
 	if a.streamCurrent.matchesTool(result) {
 		a.streamCurrent.clearTool()
 	} else {
@@ -158,7 +191,165 @@ func (a *App) releaseToolCell(result *agent.ToolResult) {
 			break
 		}
 	}
+}
+
+// reconcileCommittedMessage removes only live cells now represented by the
+// retained transcript. Native sessions commit between tool rounds, while ACP
+// sessions may not commit until the turn ends, so reconciliation is content-
+// based rather than tied to turn phase.
+func (a *App) reconcileCommittedMessage(msg agent.Message) {
+	if msg.Hidden || msg.Role == agent.RoleSystem {
+		return
+	}
+
+	a.streamStateMu.Lock()
+	defer a.streamStateMu.Unlock()
+
+	type assistantPart struct{ id, text string }
+	var assistantText []assistantPart
+	for _, content := range msg.Content {
+		if content.Hidden {
+			continue
+		}
+		switch {
+		case content.ToolResult != nil:
+			a.releaseToolCellLocked(content.ToolResult)
+		case content.Reasoning != nil && content.Reasoning.Summary != "":
+			a.releaseReasoningLocked(content.Reasoning)
+		case strings.TrimSpace(content.Text) != "":
+			if msg.Role == agent.RoleUser {
+				a.releaseUserTextLocked(content.Text)
+			} else if msg.Role == agent.RoleAssistant {
+				assistantText = append(assistantText, assistantPart{content.TextID, content.Text})
+			}
+		}
+	}
+	if len(assistantText) > 0 {
+		var combined strings.Builder
+		sameID := true
+		for _, part := range assistantText {
+			combined.WriteString(part.text)
+			sameID = sameID && part.id == assistantText[0].id
+		}
+		if !sameID || !a.releaseAssistantTextLocked(assistantText[0].id, combined.String()) {
+			for _, part := range assistantText {
+				a.releaseAssistantTextLocked(part.id, part.text)
+			}
+		}
+	}
+	a.compactStreamHistoryLocked()
+}
+
+func (a *App) reconcileCurrentTurn(messages []agent.Message) {
+	start := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		message := messages[i]
+		if message.Role == agent.RoleUser && !message.Hidden {
+			start = i
+			break
+		}
+	}
+	for _, message := range messages[start:] {
+		a.reconcileCommittedMessage(message)
+	}
+}
+
+func (a *App) releaseReasoningLocked(reasoning *agent.Reasoning) {
+	match := func(snapshot *streamSnapshot) bool {
+		if snapshot.reasoning == "" {
+			return false
+		}
+		if reasoning.ID != "" && snapshot.reasoningID != "" {
+			return reasoning.ID == snapshot.reasoningID
+		}
+		return snapshot.reasoning == reasoning.Summary
+	}
+	a.releaseStreamFieldLocked(match, func(snapshot *streamSnapshot) {
+		snapshot.reasoning = ""
+		snapshot.reasoningID = ""
+		snapshot.reasoningPart = 0
+		snapshot.retryAttempt = false
+	})
+}
+
+func (a *App) releaseAssistantTextLocked(id, text string) bool {
+	return a.releaseStreamFieldLocked(
+		func(snapshot *streamSnapshot) bool {
+			if id != "" && snapshot.textID != "" {
+				return id == snapshot.textID
+			}
+			return snapshot.text == text
+		},
+		func(snapshot *streamSnapshot) {
+			snapshot.text = ""
+			snapshot.textID = ""
+			snapshot.retryAttempt = false
+		},
+	)
+}
+
+func (a *App) releaseUserTextLocked(text string) {
+	a.releaseStreamFieldLocked(
+		func(snapshot *streamSnapshot) bool { return snapshot.userText == text },
+		func(snapshot *streamSnapshot) { snapshot.userText = "" },
+	)
+}
+
+func (a *App) releaseStreamFieldLocked(match func(*streamSnapshot) bool, clear func(*streamSnapshot)) bool {
+	for i := range a.streamHistory {
+		if match(&a.streamHistory[i]) {
+			clear(&a.streamHistory[i])
+			return true
+		}
+	}
+	if match(&a.streamCurrent) {
+		clear(&a.streamCurrent)
+		return true
+	}
+	return false
+}
+
+func (a *App) compactStreamHistoryLocked() {
+	out := a.streamHistory[:0]
+	for _, snapshot := range a.streamHistory {
+		if !snapshot.empty() {
+			out = append(out, snapshot)
+		}
+	}
+	a.streamHistory = out
+}
+
+func (a *App) resetFailedStreamAttempt() {
+	a.streamStateMu.Lock()
+	for i := range a.streamHistory {
+		if a.streamHistory[i].retryAttempt {
+			a.clearRetryableOutputLocked(&a.streamHistory[i])
+		}
+	}
+	if a.streamCurrent.retryAttempt {
+		a.clearRetryableOutputLocked(&a.streamCurrent)
+	}
+	a.compactStreamHistoryLocked()
 	a.streamStateMu.Unlock()
+}
+
+func (a *App) commitStreamAttempt() {
+	a.streamStateMu.Lock()
+	for i := range a.streamHistory {
+		a.streamHistory[i].retryAttempt = false
+	}
+	a.streamCurrent.retryAttempt = false
+	a.archiveStreamStateLocked()
+	a.streamStateMu.Unlock()
+}
+
+func (a *App) clearRetryableOutputLocked(snapshot *streamSnapshot) {
+	snapshot.text = ""
+	snapshot.textID = ""
+	snapshot.reasoning = ""
+	snapshot.reasoningID = ""
+	snapshot.reasoningPart = 0
+	snapshot.retryAttempt = false
 }
 
 func (snapshot streamSnapshot) matchesTool(result *agent.ToolResult) bool {
@@ -294,6 +485,20 @@ func (a *App) handleTurnEvent(ev code.TurnEvent) {
 		}
 	}()
 
+	if ev.StreamEvent != 0 {
+		a.withCurrentSession(ev.SessionID, func() {
+			switch ev.StreamEvent {
+			case agent.StreamEventReset:
+				a.resetFailedStreamAttempt()
+				a.queuePhase(PhaseThinking)
+				a.requestRender()
+			case agent.StreamEventCommit:
+				a.commitStreamAttempt()
+			}
+		})
+		return
+	}
+
 	if ev.Message != nil {
 		a.withCurrentSession(ev.SessionID, func() {
 			a.handleStreamMessage(*ev.Message)
@@ -354,6 +559,7 @@ func (a *App) handleStreamMessage(msg agent.Message) {
 			a.streamCurrent.reasoning += c.Reasoning.Summary
 			a.streamCurrent.reasoningID = c.Reasoning.ID
 			a.streamCurrent.reasoningPart = c.Reasoning.Part
+			a.streamCurrent.retryAttempt = true
 			a.streamStateMu.Unlock()
 			a.requestRender()
 
@@ -362,10 +568,13 @@ func (a *App) handleStreamMessage(msg agent.Message) {
 				a.queuePhase(PhaseStreaming)
 			}
 			a.streamStateMu.Lock()
-			if a.streamCurrent.reasoning != "" {
+			if a.streamCurrent.reasoning != "" ||
+				(a.streamCurrent.text != "" && c.TextID != "" && a.streamCurrent.textID != "" && c.TextID != a.streamCurrent.textID) {
 				a.archiveStreamStateLocked()
 			}
 			a.streamCurrent.text += c.Text
+			a.streamCurrent.textID = c.TextID
+			a.streamCurrent.retryAttempt = true
 			a.streamStateMu.Unlock()
 			a.requestRender()
 		}

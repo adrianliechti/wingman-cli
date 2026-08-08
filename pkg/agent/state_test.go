@@ -27,3 +27,11 @@ func TestStateSnapshotIsIndependent(t *testing.T) {
 		t.Fatalf("snapshot state = %+v, agent usage = %+v", snapshot, a.Usage)
 	}
 }
+
+func TestStateVersionDoesNotCloneHistory(t *testing.T) {
+	a := &Agent{Messages: []Message{{Role: RoleUser}}, Revision: 3}
+	messageCount, revision := a.StateVersion()
+	if messageCount != 1 || revision != 3 {
+		t.Fatalf("state version = (%d, %d), want (1, 3)", messageCount, revision)
+	}
+}

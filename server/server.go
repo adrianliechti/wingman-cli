@@ -75,6 +75,7 @@ type Server struct {
 
 	wsMu    sync.Mutex
 	wsConns map[*websocket.Conn]*wsClient
+	sendMu  sync.Mutex
 
 	promptsMu      sync.Mutex
 	pendingPrompts map[string]pendingPrompt
@@ -222,8 +223,10 @@ func (s *Server) swapAgent(next code.Agent) {
 	}
 }
 
-func (s *Server) onToolProgress(callID, text string) {
-	s.broadcast(Frame{Type: EvtToolProgress, ID: callID, Text: text})
+func (s *Server) onToolProgress(ctx context.Context, callID, text string) {
+	if sid := code.SessionIDFromContext(ctx); sid != "" {
+		s.sendSession(sid, Frame{Type: EvtToolProgress, ID: callID, Text: text})
+	}
 }
 
 func (s *Server) activeRuntime() (code.Agent, *code.TurnManager) {
@@ -456,6 +459,8 @@ func (c *wsClient) run() {
 }
 
 func (s *Server) send(f Frame) {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
 	data, err := json.Marshal(f)
 	if err != nil {
 		return
@@ -561,11 +566,12 @@ func (s *Server) handleLoadSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	loadCtx := code.WithSessionID(s.ctx, id)
 	var err error
 	if loader, ok := a.(code.SessionLoadStreamer); ok {
-		err = s.streamLoad(loader, id)
+		err = s.streamLoad(loadCtx, loader, id)
 	} else {
-		err = a.LoadSession(s.ctx, id)
+		err = a.LoadSession(loadCtx, id)
 	}
 	if err != nil {
 		if errors.Is(err, errors.ErrUnsupported) {
@@ -580,11 +586,11 @@ func (s *Server) handleLoadSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) streamLoad(loader code.SessionLoadStreamer, id string) error {
+func (s *Server) streamLoad(ctx context.Context, loader code.SessionLoadStreamer, id string) error {
 	a := s.activeAgent()
 	const minInterval = 150 * time.Millisecond
 	var last time.Time
-	for msgs, err := range loader.LoadSessionStream(s.ctx, id) {
+	for msgs, err := range loader.LoadSessionStream(ctx, id) {
 		if err != nil {
 			return err
 		}
@@ -816,6 +822,7 @@ func convertMessages(messages []agent.Message) []ConversationMessage {
 			cc := ConversationContent{}
 			if c.Text != "" {
 				cc.Text = c.Text
+				cc.TextID = c.TextID
 			}
 			if c.File != nil && c.File.Data != "" {
 				cc.Image = &ConversationImage{Data: c.File.Data, Name: c.File.Name}

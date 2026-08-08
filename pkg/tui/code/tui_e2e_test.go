@@ -152,6 +152,67 @@ func TestTUIE2ESendsAndRendersTurn(t *testing.T) {
 	}
 }
 
+type tuiToolRoundModel struct {
+	requests atomic.Int32
+}
+
+func (m *tuiToolRoundModel) handler(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/v1/models":
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"object":"list","data":[{"id":"gpt-5.4","object":"model"}]}`)
+	case "/v1/responses":
+		w.Header().Set("Content-Type", "text/event-stream")
+		if m.requests.Add(1) == 1 {
+			fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"msg_before\",\"output_index\":0,\"content_index\":0,\"delta\":\"Before tool.\"}\n\n")
+			fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"sequence_number\":2,\"response\":{\"output\":[{\"type\":\"message\",\"id\":\"msg_before\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"Before tool.\",\"annotations\":[]}]},{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"glob\",\"arguments\":\"{\\\"pattern\\\":\\\"*\\\"}\",\"status\":\"completed\"}],\"usage\":{\"input_tokens\":2,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":2}}}\n\n")
+			return
+		}
+		fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"msg_after\",\"output_index\":0,\"content_index\":0,\"delta\":\"After tool.\"}\n\n")
+		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"sequence_number\":2,\"response\":{\"output\":[{\"type\":\"message\",\"id\":\"msg_after\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"After tool.\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":4,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":2}}}\n\n")
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func TestTUIE2ENativeToolRoundKeepsOrder(t *testing.T) {
+	model := &tuiToolRoundModel{}
+	modelServer := httptest.NewServer(http.HandlerFunc(model.handler))
+	defer modelServer.Close()
+	t.Setenv("WINGMAN_URL", modelServer.URL)
+	t.Setenv("WINGMAN_MODEL", "gpt-5.4")
+	t.Setenv("WINGMAN_CALLER", "e2e")
+
+	h := newTUIE2EHarness(t)
+	h.postText(t, "run a tool")
+	waitForTUI(t, func() bool {
+		messages := h.agent.Messages(h.sessionID)
+		return h.app.getPhase() == PhaseIdle && len(messages) >= 4 && strings.Contains(finalMessageText(messages), "After tool.")
+	})
+
+	transcript := ansi.Strip(strings.Join(h.app.chatViewLines(100), "\n"))
+	beforeAt := strings.Index(transcript, "Before tool.")
+	toolAt := strings.Index(transcript, "glob *")
+	afterAt := strings.Index(transcript, "After tool.")
+	if beforeAt < 0 || toolAt <= beforeAt || afterAt <= toolAt {
+		t.Fatalf("native tool round is out of order: %q", transcript)
+	}
+	if strings.Count(transcript, "Before tool.") != 1 || strings.Count(transcript, "After tool.") != 1 {
+		t.Fatalf("native tool round contains duplicated assistant text: %q", transcript)
+	}
+}
+
+func finalMessageText(messages []agent.Message) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	var text strings.Builder
+	for _, content := range messages[len(messages)-1].Content {
+		text.WriteString(content.Text)
+	}
+	return text.String()
+}
+
 func TestTUIE2ECommandCenterAndTranscriptSearch(t *testing.T) {
 	model := tuiModelServer(t)
 	defer model.Close()

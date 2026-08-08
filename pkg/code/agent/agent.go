@@ -496,6 +496,24 @@ func (a *Agent) Messages(id string) []harness.Message {
 	return s.aa.MessagesSnapshot()
 }
 
+func (a *Agent) HistorySnapshot(id string) code.HistorySnapshot {
+	s := a.session(id)
+	if s == nil {
+		return code.HistorySnapshot{}
+	}
+	state := s.aa.StateSnapshot()
+	return code.HistorySnapshot{Messages: state.Messages, Revision: state.Revision}
+}
+
+func (a *Agent) HistoryVersion(id string) code.HistoryVersion {
+	s := a.session(id)
+	if s == nil {
+		return code.HistoryVersion{}
+	}
+	messageCount, revision := s.aa.StateVersion()
+	return code.HistoryVersion{Revision: revision, MessageCount: messageCount}
+}
+
 func (a *Agent) Recap(ctx context.Context, id string) (string, error) {
 	s := a.session(id)
 	if s == nil {

@@ -53,6 +53,13 @@ func (a *Agent) StateSnapshot() State {
 	}
 }
 
+// StateVersion returns retained-history metadata without cloning messages.
+func (a *Agent) StateVersion() (messageCount int, revision uint64) {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return len(a.Messages), a.Revision
+}
+
 // CloneMessages returns a deep-enough copy for handing message snapshots to
 // callers while another goroutine may continue streaming into retained state.
 func CloneMessages(messages []Message) []Message {

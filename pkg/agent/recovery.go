@@ -47,6 +47,16 @@ func isRecoverableError(err error) bool {
 	return streamErr != nil
 }
 
+func streamOutputStarted(err error) bool {
+	if streamErr, ok := errors.AsType[*streamFailure](err); ok {
+		return streamErr.outputStarted
+	}
+	if responseErr, ok := errors.AsType[*responseFailure](err); ok {
+		return responseErr.outputStarted
+	}
+	return false
+}
+
 var contextOverflowMarkers = []string{
 	"context length",
 	"context_length",
@@ -262,6 +272,7 @@ func (a *Agent) trimStaleToolResults() int {
 	}
 
 	freed := 0
+	rewritten := false
 
 	for i := range a.Messages[:cut] {
 		m := a.Messages[i]
@@ -293,6 +304,7 @@ func (a *Agent) trimStaleToolResults() int {
 		if !changed {
 			continue
 		}
+		rewritten = true
 
 		if imageDropped {
 			for j := range content {
@@ -307,7 +319,7 @@ func (a *Agent) trimStaleToolResults() int {
 		a.Messages[i].Content = content
 	}
 
-	if freed > 0 {
+	if rewritten {
 		a.Revision++
 	}
 	return freed

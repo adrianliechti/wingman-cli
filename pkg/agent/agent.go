@@ -198,6 +198,11 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 				if errors.Is(err, errYieldStopped) || ctx.Err() != nil || !isRecoverableError(err) {
 					break
 				}
+				if streamOutputStarted(err) && !EmitStreamEvent(ctx, StreamEventReset) {
+					// Retrying would duplicate already-visible deltas for consumers
+					// whose stream protocol cannot retract a failed attempt.
+					break
+				}
 
 				if isContextOverflowError(err) {
 					if outcome := a.runPreCompact(ctx, "auto"); outcome.Stop {
@@ -251,6 +256,7 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 			}
 			a.Messages = append(a.Messages, resp.messages...)
 			a.stateMu.Unlock()
+			EmitStreamEvent(ctx, StreamEventCommit)
 
 			calls := extractToolCalls(resp.messages)
 

@@ -74,9 +74,11 @@ type App struct {
 	lastMaxScroll int
 	lastTopPad    int
 
-	printed     int
-	flow        cellFlow
-	annotations []chatAnnotation
+	printed            int
+	flow               cellFlow
+	annotations        []chatAnnotation
+	historyRevision    uint64
+	historyRevisionSet bool
 
 	// turnBase is the message count already covered by earlier separators;
 	// turn work is derived from the history beyond it, so replaying the chat
@@ -134,9 +136,11 @@ type streamSnapshot struct {
 	toolProgress  string
 	toolResult    *agent.ToolResult
 	text          string
+	textID        string
 	reasoning     string
 	reasoningID   string
 	reasoningPart int
+	retryAttempt  bool
 }
 
 type toast struct {
@@ -190,7 +194,7 @@ func New(ctx context.Context, coderAgent code.Agent, sessionID string) *App {
 
 // onToolProgress receives live status text for active current or archived
 // tool calls. Archived calls occur when ACP runs tools in parallel.
-func (a *App) onToolProgress(callID, text string) {
+func (a *App) onToolProgress(_ context.Context, callID, text string) {
 	a.streamStateMu.Lock()
 	updated := false
 	if callID == a.streamCurrent.toolID && a.streamCurrent.toolResult == nil {
@@ -230,6 +234,8 @@ func (a *App) activateSession(id string) {
 	a.printed = 0
 	a.flow = cellFlow{}
 	a.annotations = nil
+	a.historyRevision = 0
+	a.historyRevisionSet = false
 	a.resetTurnStats()
 	a.usageVisibleUntil = time.Time{}
 
@@ -670,9 +676,7 @@ func (a *App) appendAnnotation(render func(width int) []string) {
 
 // restoreChatLines renders the full message history with annotations
 // interleaved at their recorded positions.
-func (a *App) restoreChatLines(width int) []string {
-	messages := a.agent.Messages(a.sessionID)
-
+func (a *App) restoreChatLines(messages []agent.Message, width int) []string {
 	var lines []string
 
 	emit := func(ann chatAnnotation) {
@@ -705,12 +709,22 @@ func (a *App) restoreChatLines(width int) []string {
 // rebuildChat re-renders the whole chat buffer from the message history, used
 // on resize and when toggling verbose rendering.
 func (a *App) rebuildChat() {
+	messages, revision, versioned := a.historySnapshot()
+	if versioned {
+		a.historyRevision = revision
+		a.historyRevisionSet = true
+	}
+	a.rebuildChatFrom(messages)
+}
+
+func (a *App) rebuildChatFrom(messages []agent.Message) {
+	a.reconcileCurrentTurn(messages)
 	a.chat = nil
 	a.printed = 0
 	a.flow = cellFlow{}
 	a.clearSelection()
 
-	if lines := a.restoreChatLines(a.width()); len(lines) > 0 {
+	if lines := a.restoreChatLines(messages, a.width()); len(lines) > 0 {
 		a.appendChat(lines)
 	}
 

@@ -138,7 +138,7 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 		case responses.ResponseTextDeltaEvent:
 			msg := Message{
 				Role:    RoleAssistant,
-				Content: []Content{{Text: e.Delta}},
+				Content: []Content{{Text: e.Delta, TextID: e.ItemID}},
 			}
 
 			if !yield(msg, nil) {

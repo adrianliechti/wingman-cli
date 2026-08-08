@@ -327,6 +327,9 @@ func (c *Claw) Send(ctx context.Context, msg channel.Message) iter.Seq2[agent.Me
 		ctx, cancel := context.WithTimeout(ctx, runTimeout)
 		defer cancel()
 
+		// Channel messages cannot retract content already delivered to the user.
+		// Deliberately leave Reset unsupported so visible output is never retried
+		// and duplicated.
 		turn, err := ma.agent.Send(ctx, []agent.Content{{Text: frameMessage(msg)}})
 		if err != nil {
 			yield(agent.Message{}, err)

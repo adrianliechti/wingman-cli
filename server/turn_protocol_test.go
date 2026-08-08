@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 )
 
@@ -77,5 +78,22 @@ func TestSnapshotHasActive(t *testing.T) {
 	}
 	if !snapshotHasActive(code.TurnSnapshot{Inputs: []code.TurnInputSnapshot{{State: code.TurnInputActive}}}) {
 		t.Fatal("active snapshot reported idle")
+	}
+}
+
+func TestConvertMessagesPreservesAssistantTextIdentity(t *testing.T) {
+	messages := convertMessages([]agent.Message{{
+		Role: agent.RoleAssistant,
+		Content: []agent.Content{{
+			Text:   "answer",
+			TextID: "message-1",
+		}},
+	}})
+
+	if len(messages) != 1 || len(messages[0].Content) != 1 {
+		t.Fatalf("messages = %+v", messages)
+	}
+	if got := messages[0].Content[0]; got.Text != "answer" || got.TextID != "message-1" {
+		t.Fatalf("content = %+v", got)
 	}
 }
