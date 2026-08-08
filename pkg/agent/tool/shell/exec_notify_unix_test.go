@@ -13,7 +13,7 @@ func TestExecExitNotifiesBackgroundedSession(t *testing.T) {
 	m := NewExecManager(func(e ExecExit) { events <- e })
 	defer m.Close()
 
-	tools := ExecTools(m, t.TempDir(), nil, nil)
+	tools := ExecTools(m, t.TempDir(), nil, nil, nil)
 
 	out, err := tools[0].Execute(t.Context(), map[string]any{
 		"command":     "sleep 0.2; echo done",
@@ -48,7 +48,7 @@ func TestExecExitInlineDeliverySuppressesNotification(t *testing.T) {
 	m := NewExecManager(func(e ExecExit) { events <- e })
 	defer m.Close()
 
-	tools := ExecTools(m, t.TempDir(), nil, nil)
+	tools := ExecTools(m, t.TempDir(), nil, nil, nil)
 
 	if _, err := tools[0].Execute(t.Context(), map[string]any{
 		"command": "sleep 0.2; echo done",

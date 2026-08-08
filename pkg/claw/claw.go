@@ -247,7 +247,7 @@ func (c *Claw) loadAgent(name string) (*managedAgent, error) {
 
 	agentTools := slices.Concat(
 		fs.Tools(root, &fs.Options{AllowedReadRoots: []string{scratchDir}}),
-		shell.Tools(workDir, nil, nil),
+		shell.Tools(workDir, nil, nil, nil),
 		c.config.Tools,
 		c.mcpTools,
 		schedule.Tools(c.config.Memory.AgentDir(name)),

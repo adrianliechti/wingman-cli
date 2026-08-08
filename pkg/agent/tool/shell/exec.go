@@ -275,7 +275,7 @@ func (s *execSession) exitNotice() string {
 	return "Command completed"
 }
 
-func ExecTools(manager *ExecManager, workDir string, elicit *tool.Elicitation, appr *Approvals) []tool.Tool {
+func ExecTools(manager *ExecManager, workDir string, extraWritableRoots []string, elicit *tool.Elicitation, appr *Approvals) []tool.Tool {
 	if appr == nil {
 		appr = NewApprovals()
 	}
@@ -328,7 +328,7 @@ func ExecTools(manager *ExecManager, workDir string, elicit *tool.Elicitation, a
 			},
 
 			Execute: func(ctx context.Context, args map[string]any) (string, error) {
-				return executeExecCommand(ctx, manager, workDir, elicit, appr, args)
+				return executeExecCommand(ctx, manager, workDir, extraWritableRoots, elicit, appr, args)
 			},
 		},
 		{
@@ -358,7 +358,7 @@ func ExecTools(manager *ExecManager, workDir string, elicit *tool.Elicitation, a
 	}
 }
 
-func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, elicit *tool.Elicitation, appr *Approvals, args map[string]any) (string, error) {
+func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, extraWritableRoots []string, elicit *tool.Elicitation, appr *Approvals, args map[string]any) (string, error) {
 	command, ok := args["command"].(string)
 
 	if !ok || command == "" {
@@ -392,7 +392,11 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, eli
 
 	sctx, cancel := context.WithCancel(context.Background())
 
-	cmd := buildCommand(sctx, command, dir)
+	cmd, err := buildCommand(sctx, command, dir, sandboxOptions{WorkspaceDir: workDir, ExtraWritableRoots: extraWritableRoots})
+	if err != nil {
+		cancel()
+		return "", err
+	}
 	cmd.Env = append(cmd.Env, "NO_COLOR=1", "PAGER=cat", "GIT_PAGER=cat")
 
 	description, _ := args["description"].(string)

@@ -10,7 +10,7 @@ import (
 )
 
 func TestShellToolSchemaWindows(t *testing.T) {
-	shellTool := Tools(`C:\`, nil, nil)[0]
+	shellTool := Tools(`C:\`, nil, nil, nil)[0]
 	if shellTool.Name != "shell" {
 		t.Fatalf("tool name = %q, want shell", shellTool.Name)
 	}

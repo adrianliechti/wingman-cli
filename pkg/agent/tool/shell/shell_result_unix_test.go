@@ -11,7 +11,7 @@ import (
 )
 
 func TestShellReportsEmptyOutput(t *testing.T) {
-	shellTool := Tools(t.TempDir(), nil, nil)[0]
+	shellTool := Tools(t.TempDir(), nil, nil, nil)[0]
 
 	result, err := shellTool.Execute(context.Background(), map[string]any{"command": "true"})
 	if err != nil {
@@ -29,7 +29,7 @@ func TestShellWorkdir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	shellTool := Tools(workDir, nil, nil)[0]
+	shellTool := Tools(workDir, nil, nil, nil)[0]
 
 	result, err := shellTool.Execute(context.Background(), map[string]any{"command": "pwd", "workdir": "sub"})
 	if err != nil {

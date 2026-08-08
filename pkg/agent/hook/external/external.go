@@ -393,15 +393,18 @@ func (h Handler) run(ctx context.Context, workDir, event string, input []byte, e
 			command = h.CommandWindowsSnake
 		}
 	}
-	cmd := shell.Command(ctx, command, workDir)
+	cmd, err := shell.Command(ctx, command, workDir)
+	if err != nil {
+		return runResult{err: err}
+	}
 	if len(environment) > 0 {
-		cmd.Env = mergedEnvironment(os.Environ(), environment)
+		cmd.Env = mergedEnvironment(cmd.Env, environment)
 	}
 	cmd.Stdin = bytes.NewReader(input)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	exitCode := -1
 	if cmd.ProcessState != nil {
 		exitCode = cmd.ProcessState.ExitCode()

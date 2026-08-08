@@ -4,8 +4,12 @@ package shell_test
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	. "github.com/adrianliechti/wingman-agent/pkg/agent/tool/shell"
 
@@ -282,7 +286,7 @@ func TestShellElicitationOnlyPromptsForDangerousCommands(t *testing.T) {
 			return false, nil
 		},
 	}
-	shellTool := Tools(workDir, elicit, nil)[0]
+	shellTool := Tools(workDir, nil, elicit, nil)[0]
 
 	if _, err := shellTool.Execute(ctx, map[string]any{"command": "printf hi > out.txt"}); err != nil {
 		t.Fatalf("benign mutating command failed: %v", err)
@@ -315,7 +319,7 @@ func TestShellApprovalRememberedForSession(t *testing.T) {
 			return true, nil
 		},
 	}
-	shellTool := Tools(workDir, elicit, nil)[0]
+	shellTool := Tools(workDir, nil, elicit, nil)[0]
 
 	for range 2 {
 		if _, err := shellTool.Execute(ctx, map[string]any{"command": "rm -rf missing-dir"}); err != nil {
@@ -344,7 +348,7 @@ func TestShellApprovalDistinguishesQuotedWhitespace(t *testing.T) {
 			return true, nil
 		},
 	}
-	shellTool := Tools(t.TempDir(), elicit, nil)[0]
+	shellTool := Tools(t.TempDir(), nil, elicit, nil)[0]
 
 	shellTool.Execute(ctx, map[string]any{"command": `rm -rf "missing a  b"`})
 	shellTool.Execute(ctx, map[string]any{"command": `rm -rf "missing a b"`})
@@ -352,4 +356,64 @@ func TestShellApprovalDistinguishesQuotedWhitespace(t *testing.T) {
 	if confirmCalls != 2 {
 		t.Fatalf("whitespace-distinct commands prompted %d times, want 2", confirmCalls)
 	}
+}
+
+// TestShellSandboxEscalationRetriesWithoutSandbox exercises the full
+// shell-tool escalation path: a command denied by the workspace sandbox
+// should prompt for approval and, once approved, retry without the sandbox.
+// The command creates, verifies, and removes its own marker file entirely
+// within the (possibly escalated) subprocess so the test never needs
+// filesystem access outside the workspace itself.
+func TestShellSandboxEscalationRetriesWithoutSandbox(t *testing.T) {
+	if os.Getenv("WINGMAN_SANDBOX_ACTIVE") == "1" {
+		t.Skip("already running under an inherited native sandbox; escalation cannot lift it")
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("WINGMAN_SANDBOX", "workspace")
+
+	ctx := context.Background()
+	workDir := t.TempDir()
+	confirmCalls := 0
+	var lastPrompt string
+
+	elicit := &tool.Elicitation{
+		Confirm: func(ctx context.Context, message string) (bool, error) {
+			confirmCalls++
+			lastPrompt = message
+			return true, nil
+		},
+	}
+	shellTool := Tools(workDir, nil, elicit, nil)[0]
+
+	outside := filepath.Join(home, fmt.Sprintf(".wingman-escalation-test-%d-%d", os.Getpid(), time.Now().UnixNano()))
+	command := "touch " + shellQuote(outside) + " && test -f " + shellQuote(outside) + " && rm -f " + shellQuote(outside)
+
+	result, err := shellTool.Execute(ctx, map[string]any{"command": command})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if confirmCalls != 1 {
+		t.Fatalf("confirm called %d times, want 1; result = %q", confirmCalls, result)
+	}
+	if !strings.Contains(lastPrompt, "Blocked by the workspace sandbox") {
+		t.Fatalf("prompt = %q, missing escalation wording", lastPrompt)
+	}
+
+	if strings.Contains(strings.ToLower(result), "operation not permitted") ||
+		strings.Contains(strings.ToLower(result), "permission denied") {
+		t.Skipf("retry still denied, likely by an ambient host sandbox this test itself runs under: %q", result)
+	}
+	if !strings.Contains(result, "retried without the workspace sandbox after approval") {
+		t.Fatalf("result missing escalation note: %q", result)
+	}
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }

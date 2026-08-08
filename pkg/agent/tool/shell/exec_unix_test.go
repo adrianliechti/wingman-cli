@@ -15,7 +15,7 @@ func TestExecCommandCompletes(t *testing.T) {
 	m := NewExecManager(nil)
 	defer m.Close()
 
-	out, err := executeExecCommand(context.Background(), m, t.TempDir(), nil, NewApprovals(), map[string]any{
+	out, err := executeExecCommand(context.Background(), m, t.TempDir(), nil, nil, NewApprovals(), map[string]any{
 		"command": "echo hello",
 	})
 	if err != nil {
@@ -36,7 +36,7 @@ func TestExecCommandExitCode(t *testing.T) {
 	m := NewExecManager(nil)
 	defer m.Close()
 
-	out, err := executeExecCommand(context.Background(), m, t.TempDir(), nil, NewApprovals(), map[string]any{
+	out, err := executeExecCommand(context.Background(), m, t.TempDir(), nil, nil, NewApprovals(), map[string]any{
 		"command": "exit 3",
 	})
 	if err != nil {
@@ -53,7 +53,7 @@ func TestExecCommandBackgroundPollKill(t *testing.T) {
 
 	ctx := context.Background()
 
-	out, err := executeExecCommand(ctx, m, t.TempDir(), nil, NewApprovals(), map[string]any{
+	out, err := executeExecCommand(ctx, m, t.TempDir(), nil, nil, NewApprovals(), map[string]any{
 		"command": "echo started; sleep 30",
 		"wait":    1,
 	})
@@ -91,7 +91,7 @@ func TestExecSessionStdin(t *testing.T) {
 
 	ctx := context.Background()
 
-	out, err := executeExecCommand(ctx, m, t.TempDir(), nil, NewApprovals(), map[string]any{
+	out, err := executeExecCommand(ctx, m, t.TempDir(), nil, nil, NewApprovals(), map[string]any{
 		"command": "cat",
 		"wait":    1,
 	})
@@ -125,7 +125,7 @@ func TestExecCommandTTY(t *testing.T) {
 
 	ctx := context.Background()
 
-	out, err := executeExecCommand(ctx, m, t.TempDir(), nil, NewApprovals(), map[string]any{
+	out, err := executeExecCommand(ctx, m, t.TempDir(), nil, nil, NewApprovals(), map[string]any{
 		"command": "[ -t 0 ] && echo isatty || echo notty",
 		"tty":     true,
 	})
@@ -136,7 +136,7 @@ func TestExecCommandTTY(t *testing.T) {
 		t.Fatalf("tty output = %q", out)
 	}
 
-	out, err = executeExecCommand(ctx, m, t.TempDir(), nil, NewApprovals(), map[string]any{
+	out, err = executeExecCommand(ctx, m, t.TempDir(), nil, nil, NewApprovals(), map[string]any{
 		"command": "[ -t 0 ] && echo isatty || echo notty",
 	})
 	if err != nil {
@@ -153,7 +153,7 @@ func TestExecSessionTTYStdinEOF(t *testing.T) {
 
 	ctx := context.Background()
 
-	out, err := executeExecCommand(ctx, m, t.TempDir(), nil, NewApprovals(), map[string]any{
+	out, err := executeExecCommand(ctx, m, t.TempDir(), nil, nil, NewApprovals(), map[string]any{
 		"command": "cat",
 		"tty":     true,
 		"wait":    1,
@@ -197,7 +197,7 @@ func TestExecSessionDangerousInputConfirmed(t *testing.T) {
 	}
 	appr := NewApprovals()
 
-	out, err := executeExecCommand(ctx, m, t.TempDir(), elicit, appr, map[string]any{
+	out, err := executeExecCommand(ctx, m, t.TempDir(), nil, elicit, appr, map[string]any{
 		"command": "cat",
 		"wait":    1,
 	})
@@ -230,7 +230,7 @@ func TestExecSessionCtrlCInterruptsPipeSession(t *testing.T) {
 
 	ctx := context.Background()
 
-	out, err := executeExecCommand(ctx, m, t.TempDir(), nil, NewApprovals(), map[string]any{
+	out, err := executeExecCommand(ctx, m, t.TempDir(), nil, nil, NewApprovals(), map[string]any{
 		"command": "sleep 30",
 		"wait":    1,
 	})

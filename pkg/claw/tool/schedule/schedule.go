@@ -423,7 +423,11 @@ func RunGate(ctx context.Context, dir, script string) (bool, string) {
 	ctx, cancel := context.WithTimeout(ctx, gateTimeout)
 	defer cancel()
 
-	out, err := shell.Command(ctx, script, dir).CombinedOutput()
+	cmd, err := shell.Command(ctx, script, dir)
+	if err != nil {
+		return true, fmt.Sprintf("pre-check script failed (%v); fix the script or remove it from the task.", err)
+	}
+	out, err := cmd.CombinedOutput()
 
 	output := strings.TrimSpace(string(out))
 	if len(output) > gateMaxOutput {

@@ -167,9 +167,27 @@ Web UI; `--backend wingman` is the explicit opt-in to provider overrides.
 
 | Variable | Description |
 |----------|-------------|
-| `WINGMAN_SANDBOX` | `off` lifts the workspace path restriction from the file tools |
+| `WINGMAN_SANDBOX` | `workspace` adds an experimental OS sandbox around shell commands; `off` lifts the workspace restriction from file tools |
 | `WINGMAN_ELICITATION` | Headless (ACP) sessions: `accept` or `cancel` answers elicitation prompts automatically |
 | `WINGMAN_<AGENT>_PATH` | Path override for an external agent binary (e.g. `WINGMAN_CODEX_PATH`) |
+
+With `WINGMAN_SANDBOX=workspace`, `shell`, `exec_command`, and other callers of
+Wingman's shared shell runner execute through bubblewrap on Linux or
+`/usr/bin/sandbox-exec` on macOS. The host filesystem remains readable, but
+writes are limited to the workspace, the project memory directory, and OS
+temporary directories. Network access remains enabled. This is filesystem
+write isolation, not complete containment: network access and local Unix
+sockets can still expose indirect host capabilities. Linux requires `bwrap` on
+`PATH`; sandboxed execution fails closed when the platform backend is
+unavailable. When Wingman itself runs in a container, that container must
+permit user/PID namespaces and a fresh `/proc` mount. Windows is not yet
+supported. An unset value preserves the existing file-tool-only path boundary.
+
+A command the sandbox denies (its output looks like a permission or read-only
+filesystem error, not an ordinary failure) prompts for approval to retry it
+without the sandbox, once per distinct command and directory; declining
+leaves the original denial in place. With no confirmation gate configured,
+there is no prompt to answer, so the sandbox boundary always holds.
 
 ### Project Configuration
 

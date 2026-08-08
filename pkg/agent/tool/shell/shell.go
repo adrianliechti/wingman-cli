@@ -114,7 +114,7 @@ func safetyGuardLine(elicit *tool.Elicitation) string {
 	return "- Safety guard: routine mutating commands run directly, but destructive or privilege-escalating commands require user confirmation first. An approved command re-runs without re-asking for the rest of the session."
 }
 
-func Tools(workDir string, elicit *tool.Elicitation, appr *Approvals) []tool.Tool {
+func Tools(workDir string, extraWritableRoots []string, elicit *tool.Elicitation, appr *Approvals) []tool.Tool {
 	if appr == nil {
 		appr = NewApprovals()
 	}
@@ -150,12 +150,12 @@ func Tools(workDir string, elicit *tool.Elicitation, appr *Approvals) []tool.Too
 		},
 
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
-			return executeShell(ctx, workDir, elicit, appr, args)
+			return executeShell(ctx, workDir, extraWritableRoots, elicit, appr, args)
 		},
 	}}
 }
 
-func executeShell(ctx context.Context, workDir string, elicit *tool.Elicitation, appr *Approvals, args map[string]any) (string, error) {
+func executeShell(ctx context.Context, workDir string, extraWritableRoots []string, elicit *tool.Elicitation, appr *Approvals, args map[string]any) (string, error) {
 	command, ok := args["command"].(string)
 
 	if !ok || command == "" {
@@ -189,8 +189,42 @@ func executeShell(ctx context.Context, workDir string, elicit *tool.Elicitation,
 	ctx, cancel := context.WithTimeoutCause(ctx, time.Duration(timeout)*time.Second, errCommandTimeout)
 	defer cancel()
 
-	cmd := buildCommand(ctx, command, dir)
+	opts := sandboxOptions{WorkspaceDir: workDir, ExtraWritableRoots: extraWritableRoots}
 
+	cmd, err := buildCommand(ctx, command, dir, opts)
+	if err != nil {
+		return "", err
+	}
+
+	result, runErr, elapsed := runShellCommand(ctx, cmd)
+
+	sandboxNote := ""
+	if workspaceSandboxEnabled() && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok && isLikelySandboxDenied(exitErr.ExitCode(), result) {
+			approved, cerr := confirmSandboxEscalation(ctx, elicit, appr, command, approvalWorkdir(workDir, dir))
+			if cerr != nil {
+				return "", cerr
+			}
+			if approved {
+				retryOpts := opts
+				retryOpts.Unsandboxed = true
+
+				retryCmd, rerr := buildCommand(ctx, command, dir, retryOpts)
+				if rerr != nil {
+					return "", rerr
+				}
+				result, runErr, elapsed = runShellCommand(ctx, retryCmd)
+				sandboxNote = "\n\n(retried without the workspace sandbox after approval)"
+			}
+		}
+	}
+
+	return formatShellResult(ctx, timeout, result, runErr, elapsed) + sandboxNote, nil
+}
+
+// runShellCommand executes cmd, wiring its combined output through the same
+// progress reporting and sanitization the shell tool always applies.
+func runShellCommand(ctx context.Context, cmd *exec.Cmd) (string, error, time.Duration) {
 	output := &progressBuffer{report: tool.Progress(ctx)}
 	cmd.Stdout = output
 	cmd.Stderr = output
@@ -198,17 +232,23 @@ func executeShell(ctx context.Context, workDir string, elicit *tool.Elicitation,
 	started := time.Now()
 	runErr := cmd.Run()
 	elapsed := time.Since(started)
-	result := sanitizeOutput(output.result())
 
+	return sanitizeOutput(output.result()), runErr, elapsed
+}
+
+// formatShellResult turns a command's outcome into the text returned to the
+// model: a timeout notice, an exit-code/failure notice, or the plain output
+// on success.
+func formatShellResult(ctx context.Context, timeout int, result string, runErr error, elapsed time.Duration) string {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		notice := fmt.Sprintf("Command timed out after %d seconds", timeout)
 		if !errors.Is(context.Cause(ctx), errCommandTimeout) {
 			notice = "Command aborted: the tool call deadline expired before the command finished"
 		}
 		if result == "" {
-			return notice, nil
+			return notice
 		}
-		return result + "\n\n" + notice, nil
+		return result + "\n\n" + notice
 	}
 
 	if runErr != nil {
@@ -219,20 +259,18 @@ func executeShell(ctx context.Context, workDir string, elicit *tool.Elicitation,
 			notice = fmt.Sprintf("Command failed to run: %v", runErr)
 		}
 		if result == "" {
-			result = notice
-		} else {
-			result += "\n\n" + notice
+			return notice
 		}
-		return result, nil
+		return result + "\n\n" + notice
 	}
 
 	if result == "" {
-		return fmt.Sprintf("(command completed with no output%s)", wallTimeNote(elapsed)), nil
+		return fmt.Sprintf("(command completed with no output%s)", wallTimeNote(elapsed))
 	}
 	if note := wallTimeNote(elapsed); note != "" {
 		result += fmt.Sprintf("\n\n(completed%s)", note)
 	}
-	return result, nil
+	return result
 }
 
 // wallTimeNote reports the runtime for slow commands only — it helps the
@@ -270,30 +308,62 @@ func resolveWorkdir(workDir string, args map[string]any) (string, error) {
 	if err != nil || !info.IsDir() {
 		return "", fmt.Errorf("workdir %q is not an accessible directory", value)
 	}
+	if workspaceSandboxEnabled() && !pathWithin(workDir, value) {
+		return "", fmt.Errorf("workdir %q is outside sandbox workspace %q", value, workDir)
+	}
 
 	return value, nil
 }
 
 // Command builds an *exec.Cmd that runs a script with the same
 // interpreter the shell tool uses on this platform.
-func Command(ctx context.Context, command, workingDir string) *exec.Cmd {
-	return buildCommand(ctx, command, workingDir)
+func Command(ctx context.Context, command, workingDir string) (*exec.Cmd, error) {
+	return buildCommand(ctx, command, workingDir, sandboxOptions{WorkspaceDir: workingDir})
 }
 
-func buildCommand(ctx context.Context, command, workingDir string) *exec.Cmd {
+// sandboxOptions configures how buildCommand runs a command relative to the
+// workspace sandbox, kept as a struct instead of positional parameters since
+// callers (the shell tool, its escalation retry, exec_command) each need a
+// different subset.
+type sandboxOptions struct {
+	// WorkspaceDir is the sandbox boundary commands may write within.
+	WorkspaceDir string
+	// ExtraWritableRoots grants additional writable directories outside the
+	// workspace, e.g. the project memory directory.
+	ExtraWritableRoots []string
+	// Unsandboxed skips sandboxing even when WINGMAN_SANDBOX is set — used to
+	// retry a command the sandbox denied after the user approves running it
+	// unconfined.
+	Unsandboxed bool
+}
+
+func buildCommand(ctx context.Context, command, workingDir string, opts sandboxOptions) (*exec.Cmd, error) {
 	var cmd *exec.Cmd
+	sandboxed := false
 
 	if runtime.GOOS == "windows" {
 		ps := findPowerShell()
 
 		wrapped := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + command
+		if workspaceSandboxEnabled() && !opts.Unsandboxed {
+			return nil, fmt.Errorf("workspace shell sandbox is not supported on Windows")
+		}
 		cmd = exec.CommandContext(ctx, ps, "-NoProfile", "-NoLogo", "-NonInteractive", "-Command", wrapped)
 	} else {
 		shell := os.Getenv("SHELL")
 		if shell == "" {
 			shell = "/bin/sh"
 		}
-		cmd = exec.CommandContext(ctx, shell, "-c", command)
+		if workspaceSandboxEnabled() && !opts.Unsandboxed {
+			var err error
+			cmd, err = buildSandboxedCommand(ctx, shell, command, workingDir, opts)
+			if err != nil {
+				return nil, err
+			}
+			sandboxed = true
+		} else {
+			cmd = exec.CommandContext(ctx, shell, "-c", command)
+		}
 	}
 
 	cmd.Dir = workingDir
@@ -301,12 +371,15 @@ func buildCommand(ctx context.Context, command, workingDir string) *exec.Cmd {
 		"GIT_EDITOR=true",
 		"WINGMAN=1",
 	)
+	if sandboxed {
+		cmd.Env = append(cmd.Env, workspaceSandboxActiveEnv+"=1")
+	}
 
 	setupProcessGroup(cmd)
 
 	cmd.Cancel = func() error { return killProcessGroup(cmd) }
 
-	return cmd
+	return cmd, nil
 }
 
 func findPowerShell() string {
