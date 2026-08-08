@@ -10,8 +10,8 @@ Review the requested changes and report only findings independently verified as 
 
 Use exactly one scope and state it:
 
-- No `${ARGUMENTS}`: review staged and unstaged changes against `HEAD`, including relevant untracked files.
-- Git ref: review the merge-base diff from `${ARGUMENTS}` to `HEAD`, plus worktree changes only if the user explicitly included them.
+- Empty `$ARGUMENTS`: review staged and unstaged changes against `HEAD`, including relevant untracked files.
+- Git ref in `$ARGUMENTS`: review the merge-base diff from that ref to `HEAD`, plus worktree changes only if the user explicitly included them.
 - Pull request number or URL: use the repository's PR tooling to obtain metadata and the diff. Do not review a closed, draft, generated, or already-reviewed PR unless the user explicitly asks.
 
 Gather `git status --short`, the changed-file list, diff statistics, and the full diff. Read root and applicable nested `AGENTS.md`/`CLAUDE.md` files. Inspect nearby code, callers, tests, comments, and history only where they can establish a contract. If the diff is empty, say so and stop.

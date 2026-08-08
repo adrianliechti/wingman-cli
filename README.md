@@ -16,6 +16,7 @@ A powerful AI-powered coding assistant that runs directly in your terminal. Wing
 - **Multi-Model Support** — Works with any [OpenResponses API](https://www.openresponses.org) compatible endpoint with auto-selection
 - **Changes** — Git-backed working tree changes with a visual diff viewer
 - **Skills** — Define custom workflows using [Agent Skills](https://agentskills.io) format
+- **Plugins** — Install skills, MCP servers, and lifecycle hooks from Agent Plugins and Codex/Claude-compatible packages
 - **Image Support** — Paste images from clipboard for vision-capable models
 - **File Context** — Add files to context with `@` or drag-and-drop file paths
 - **Automatic Colors** — Adapts the built-in palette to light or dark terminal backgrounds
@@ -306,21 +307,19 @@ Skill slash commands (e.g. `/commit`, `/code-review`) also appear here — see *
 
 ## 🔧 Skills
 
-Skills are reusable, invocable workflows defined in `SKILL.md` files. Project skills override personal and bundled skills with the same name. Within each scope, the first listed directory wins:
-
-**Personal skills** (user-wide, across all projects):
-- `~/.agents/skills/<name>/SKILL.md`
-- `~/.wingman/skills/<name>/SKILL.md`
-- `~/.claude/skills/<name>/SKILL.md`
-- `~/.config/opencode/skills/<name>/SKILL.md`
+Skills are reusable, invocable workflows defined in `SKILL.md` files. Project skills override personal, plugin, and bundled skills with the same name. Within each scope, the first listed directory wins:
 
 **Project skills** (scoped to the current repo):
-- `.agents/skills/<name>/SKILL.md`
 - `.wingman/skills/<name>/SKILL.md`
+- `.agents/skills/<name>/SKILL.md`
 - `.claude/skills/<name>/SKILL.md`
-- `.opencode/skills/<name>/SKILL.md`
 
-This allows project-specific customization while keeping personal defaults reusable across repositories.
+**Personal skills** (user-wide, across all projects):
+- `~/.wingman/skills/<name>/SKILL.md`
+- `~/.agents/skills/<name>/SKILL.md`
+- `~/.claude/skills/<name>/SKILL.md`
+
+This allows project-specific customization while keeping personal defaults reusable across repositories. Wingman uses the same directory order and the same first-wins rule for skills, [plugins](#-plugins), and [custom agents](#-custom-agents), and reports every shadowed entry on startup so a silently ignored file is visible.
 
 Skill frontmatter follows the [Agent Skills specification](https://agentskills.io/specification): `name` and `description` are required; `license`, `compatibility`, `metadata`, and experimental `allowed-tools` are accepted. `allowed-tools` is descriptive metadata and never bypasses Wingman's normal tool approval policy.
 
@@ -363,19 +362,119 @@ Run tests with: `go test -cover ./...`
 ```
 
 Place this file at `.wingman/skills/run-tests/SKILL.md` and invoke it with `/run-tests`.
-
-Skills support argument placeholders (`${ARGUMENTS}`, `${1}`, `${2}`, and so on) for parameterized workflows.
+Wingman supports Claude-style skill arguments: `$ARGUMENTS`, zero-based `$ARGUMENTS[N]`, and `$N`; non-empty arguments are appended as `ARGUMENTS: <value>` when no argument placeholder is present. The optional Claude extensions `arguments` (a space-separated string or string list) and `argument-hint` enable named positional substitutions such as `$component` and display `/skill [component]` hints in the UI. `${SKILL_DIR}` and `${PROJECT_DIR}` provide neutral directory variables, with `${CLAUDE_SKILL_DIR}` and `${CLAUDE_PROJECT_DIR}` accepted as compatibility aliases. The two extra frontmatter fields are intentionally non-portable and therefore rejected in Agent Plugin skills.
 
 A skill may keep any supporting files next to `SKILL.md`. Common conventions are `references/` for selectively loaded guidance, `assets/` for files to copy or transform, `templates/` and `examples/` for reusable inputs, and `scripts/` for deterministic helpers. Wingman copies the complete directory tree for built-in skills, including dotfiles and underscore-prefixed resources.
 
 Scripts run through Wingman's normal shell command path and its approval policy. Wingman does not infer dependencies or automatically create a virtual environment, so a skill that needs Python packages should document a reproducible command such as `uv run`, a lockfile-backed environment, or explicit venv setup.
 
+A ready-to-copy resource-backed skill with metadata, named arguments, directory variables, a reference, and a helper script lives in [`examples/skills/run-tests`](examples/skills/run-tests).
+
+## 🪝 Hooks
+
+Wingman loads Codex-format hooks from `~/.codex/hooks.json`, `<project>/.codex/hooks.json`, and enabled plugins. It supports the Codex lifecycle events and JSON input/output decision protocol; matching command hooks run concurrently. Project and plugin hooks require a one-time confirmation in each session before their first matching command runs.
+
+Command handlers are Codex-compatible. Wingman additionally supports Claude-style `type: "http"` handlers using the same JSON request and response body as command hooks. The HTTP extension requires explicit `allowedEnvVars` for environment interpolation in headers.
+
+See the [Codex hooks reference](https://learn.chatgpt.com/docs/hooks) for the configuration shape. Wingman intentionally does not load the former Wingman-specific flat hook format.
+
+## 🧩 Plugins
+
+A plugin bundles skills, MCP servers, and optional lifecycle hooks. Wingman implements the portable [Agent Plugins specification](https://agent-plugins.org) v1.0.0.
+
+Drop a plugin directory into any of these, project before personal, first name wins:
+
+- `.wingman/plugins/<name>/`, `.agents/plugins/<name>/`, `.claude/plugins/<name>/` (project)
+- `~/.wingman/plugins/<name>/`, `~/.agents/plugins/<name>/`, `~/.claude/plugins/<name>/` (personal)
+
+A portable Agent Plugin starts with a `plugin.json` manifest and two standard component types. A complete package can also carry resources and client-owned extensions such as hooks:
+
+```text
+release-tools/
+├── plugin.json                        # required manifest
+├── mcp.json                           # MCP servers this plugin provides
+├── hooks/
+│   └── hooks.json                     # declared through extensions.com.openai
+├── scripts/
+│   └── release-context.sh             # hook helper
+├── templates/
+│   └── changelog.md                   # shared plugin resource
+├── skills/
+│   └── release-check/
+│       ├── SKILL.md                   # one skill per immediate subdirectory
+│       └── references/
+│           └── release-policy.md      # skill-local resource
+```
+
+```json
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "release-tools",
+  "version": "1.0.0",
+  "description": "Release checklist skill plus the MCP servers it needs"
+}
+```
+
+`name` must be lowercase alphanumerics, hyphens, and periods. A manifest that violates the schema is rejected and reported. As explicit non-fatal exceptions, unknown top-level fields and a non-object `extensions` value are reported and ignored; unknown reverse-domain extension namespaces remain opaque.
+
+Only `plugin.json` is a plugin manifest. Native `.codex-plugin`, `.claude-plugin`, and `.cursor-plugin` manifests are not loaded. Skills are read only from immediate subdirectories of `skills/`, and MCP servers only from `mcp.json`, as defined by the portable specification. Every loaded `SKILL.md` is validated against the Agent Skills name, directory-name, description, compatibility, and frontmatter constraints.
+
+### Plugin hooks
+
+A plugin can supply a Codex hook declaration under the client-owned `extensions.com.openai.hooks` field. Wingman accepts a single `./` path, an array of paths, an inline hooks object, or an array of inline objects. Manifest paths must remain inside the resolved plugin root. `com.openai` is a namespaced Agent Plugins extension defined by Codex, not a portable Agent Plugins core field; no hook file is loaded implicitly.
+
+Plugin hook commands receive `PLUGIN_ROOT` and `PLUGIN_DATA`. The plugin data directory is created before hooks run. Plugin hooks are untrusted code: Wingman asks once per session before the first matching hook from each plugin executes.
+
+### Plugin MCP servers
+
+`mcp.json` uses the portable Agent Plugins format, which is stricter than Wingman's own `mcp.json`: every server declares its `type` explicitly, and `command` must be a bare executable name or a `./` path inside the plugin.
+
+```json
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "changelog": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@example/changelog-mcp", "--cache", "${PLUGIN_DATA}/cache"],
+      "env": { "CHANGELOG_TEMPLATE": "${PLUGIN_ROOT}/templates/changelog.md" },
+      "cwd": "${PLUGIN_DATA}"
+    },
+    "release-api": {
+      "type": "streamable-http",
+      "url": "https://releases.example.com/mcp"
+    }
+  }
+}
+```
+
+Two variables are expanded in `args`, `env` values, and `cwd`, and are set in every plugin subprocess:
+
+| Variable | Points at | Use for |
+|----------|-----------|---------|
+| `PLUGIN_ROOT` | the plugin directory | bundled scripts, binaries, templates |
+| `PLUGIN_DATA` | `~/.wingman/plugin-data/<name>` (personal) or the project's state directory | caches, installed dependencies, generated files — survives plugin updates |
+
+Remote servers must use HTTPS unless they point at loopback, and must not carry credentials in `headers`, which are visible package data rather than a secret store.
+
+### Precedence and conflicts
+
+Plugin components join the same namespaces as your own configuration, and your configuration always wins:
+
+- **Skills** — a plugin skill is invoked by its plain name (`/release-check`) and also as `<plugin>:<skill>` (`/release-tools:release-check`). If a personal or project skill takes the plain name, the qualified form still reaches the plugin's copy.
+- **MCP servers** — plugin servers sit below `~/.wingman/mcp.json` and `./mcp.json`, so a server you configure yourself replaces the plugin's entry of the same name.
+- **Duplicate endpoints** — servers configured identically across any source are collapsed to one connection, so the same tools are not offered twice under different names. Any difference in headers, arguments, or environment keeps both.
+
+Component failures never take down the rest of a plugin: an unreadable `mcp.json` still leaves its skills loaded, and one invalid server entry skips only itself. Everything skipped is reported on startup.
+
+A ready-to-copy plugin lives in [`examples/plugins/release-tools`](examples/plugins/release-tools).
+
 ## 🤝 Custom Agents
 
 Custom agent types extend the built-in sub-agent roster (`explore`, `code-reviewer`, `verification`, …) with your own specialists. Wingman discovers them from markdown files (first definition of a name wins, project before personal):
 
-- `.wingman/agents/*.md` / `.claude/agents/*.md` (project)
-- `~/.wingman/agents/*.md` / `~/.claude/agents/*.md` (personal)
+- `.wingman/agents/*.md`, `.agents/agents/*.md`, `.claude/agents/*.md` (project)
+- `~/.wingman/agents/*.md`, `~/.agents/agents/*.md`, `~/.claude/agents/*.md` (personal)
 
 ```markdown
 ---

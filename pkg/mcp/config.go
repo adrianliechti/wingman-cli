@@ -20,6 +20,10 @@ type ServerConfig struct {
 	Env     map[string]string `json:"env,omitempty"`
 
 	Headers map[string]string `json:"headers,omitempty"`
+
+	// Dir overrides the manager-wide working directory for this server alone.
+	// Plugin-provided servers run in their own package or data directory.
+	Dir string `json:"-"`
 }
 
 func loadConfig(path string) (*Config, error) {

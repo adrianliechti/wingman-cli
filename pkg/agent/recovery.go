@@ -314,7 +314,7 @@ func (a *Agent) trimStaleToolResults() int {
 	return freed
 }
 
-func (a *Agent) compactMessages(ctx context.Context, truncateOnFailure bool) {
+func (a *Agent) compactMessages(ctx context.Context, truncateOnFailure bool) bool {
 	messages := a.requestMessages()
 	summaryMessages, recentMessages := splitMessagesForRecoverySummary(messages)
 
@@ -330,7 +330,7 @@ func (a *Agent) compactMessages(ctx context.Context, truncateOnFailure bool) {
 		if truncateOnFailure {
 			a.truncateMessagesForRecovery()
 		}
-		return
+		return false
 	}
 
 	compacted := append([]Message{{
@@ -343,6 +343,7 @@ func (a *Agent) compactMessages(ctx context.Context, truncateOnFailure bool) {
 	a.Revision++
 	a.stateMu.Unlock()
 	a.removeOrphanedToolMessages()
+	return true
 }
 
 const maxSummarizeBytes = 100 * 1024

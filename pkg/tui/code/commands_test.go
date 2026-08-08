@@ -1,8 +1,12 @@
 package code
 
 import (
+	"context"
 	"slices"
 	"testing"
+
+	"github.com/adrianliechti/wingman-agent/pkg/skill"
+	"github.com/adrianliechti/wingman-agent/pkg/tui/inline"
 )
 
 func TestSlashToken(t *testing.T) {
@@ -48,6 +52,41 @@ func TestEditorReplaceRange(t *testing.T) {
 	}
 	if e.cursor != 13 {
 		t.Fatalf("cursor = %d, want 13", e.cursor)
+	}
+}
+
+func TestSlashCommandLabelIncludesArgumentHint(t *testing.T) {
+	command := slashCommand{Name: "/migrate", Hint: "[component] [from] [to]"}
+	if got := command.Label(); got != "/migrate [component] [from] [to]" {
+		t.Fatalf("Label = %q", got)
+	}
+	if command.Name != "/migrate" {
+		t.Fatalf("command identity changed to %q", command.Name)
+	}
+}
+
+func TestHintedSkillCompletionShowsAndWaitsForArguments(t *testing.T) {
+	agent := newUITestAgent(nil)
+	agent.workspace.Skills = []skill.Skill{{
+		Name:        "migrate",
+		Description: "Migrate a component.",
+		Arguments:   []string{"component", "from", "to"},
+	}}
+	a := &App{ctx: context.Background(), agent: agent, editor: NewEditor()}
+	a.editor.SetText("/mig")
+	a.syncCommandPopup()
+
+	item, ok := a.popup.Current()
+	if !ok || item.ID != "/migrate" || item.Label != "/migrate [component] [from] [to]" {
+		t.Fatalf("popup item = %+v, %v", item, ok)
+	}
+
+	a.handlePopupKey(inline.KeyEvent{Key: inline.KeyEnter})
+	if got := a.editor.Text(); got != "/migrate " {
+		t.Fatalf("editor text = %q, want command ready for arguments", got)
+	}
+	if a.popup != nil {
+		t.Fatal("command popup remained open")
 	}
 }
 

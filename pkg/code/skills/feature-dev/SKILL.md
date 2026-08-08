@@ -6,7 +6,9 @@ description: Deliver a non-trivial feature by tracing the existing code, resolvi
 
 Deliver the feature end to end. Scale the process to the change: a focused feature may need one explorer and a compact blueprint; a cross-cutting feature may need several independent research passes. Do not add ceremony that does not reduce risk.
 
-`${ARGUMENTS}` is the feature or change request. If it is empty, use the user's latest message.
+Implement the following feature or change. If no invocation argument follows, use the user's latest request:
+
+$ARGUMENTS
 
 ## Phase 1: Establish scope and explore
 

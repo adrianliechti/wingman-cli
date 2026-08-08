@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/subagent"
 	"github.com/adrianliechti/wingman-agent/pkg/mcp"
+	"github.com/adrianliechti/wingman-agent/pkg/plugin"
 	"github.com/adrianliechti/wingman-agent/pkg/skill"
 )
 
@@ -63,6 +66,71 @@ func TestAgentExamplesParse(t *testing.T) {
 	}
 }
 
+func TestPluginExamplesLoad(t *testing.T) {
+	paths, err := filepath.Glob(filepath.Join("plugins", "*"))
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("no plugin examples found: %v", err)
+	}
+
+	for _, path := range paths {
+		p, notes, err := plugin.Load(path, t.TempDir())
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if len(notes) != 0 {
+			t.Fatalf("%s: %v", path, notes)
+		}
+
+		if len(p.Skills) == 0 {
+			t.Fatalf("%s: no skills discovered", path)
+		}
+		if len(p.Servers) == 0 {
+			t.Fatalf("%s: no MCP servers discovered", path)
+		}
+		if p.Hooks.RuleCount() == 0 {
+			t.Fatalf("%s: no plugin hooks discovered", path)
+		}
+
+		for _, sk := range p.Skills {
+			if sk.Plugin != p.Name || sk.Qualified() != p.Name+":"+sk.Name {
+				t.Fatalf("%s: plugin skill is not qualified: %+v", path, sk)
+			}
+			if !sk.Portable() {
+				t.Fatalf("%s: plugin skill uses non-portable frontmatter: %+v", path, sk)
+			}
+		}
+
+		if p.Name == "release-tools" {
+			assertReleaseToolsPlugin(t, p)
+		}
+	}
+}
+
+func assertReleaseToolsPlugin(t *testing.T, p *plugin.Plugin) {
+	t.Helper()
+
+	wantTransports := map[string]string{
+		"changelog":           "stdio",
+		"release-api":         "streamable-http",
+		"legacy-release-feed": "sse",
+	}
+	for name, transport := range wantTransports {
+		server, ok := p.Servers[name]
+		if !ok || server.Transport != transport {
+			t.Fatalf("release-tools server %q = %+v, want transport %q", name, server, transport)
+		}
+	}
+
+	stdio := p.Servers["changelog"]
+	joinedArgs := strings.Join(stdio.Args, " ")
+	if !strings.Contains(joinedArgs, p.Data) || stdio.Dir != p.Data {
+		t.Fatalf("PLUGIN_DATA was not expanded in stdio server: %+v", stdio)
+	}
+	if !strings.Contains(stdio.Env["CHANGELOG_TEMPLATE"], p.Root) {
+		t.Fatalf("PLUGIN_ROOT was not expanded in stdio server: %+v", stdio)
+	}
+}
+
 func TestSkillExamplesParse(t *testing.T) {
 	skills, err := skill.LoadBundled(os.DirFS("."), "skills")
 	if err != nil {
@@ -90,5 +158,43 @@ func TestSkillExamplesParse(t *testing.T) {
 	}
 	if runTests.Description == "" || runTests.Content == "" {
 		t.Fatalf("run-tests = %+v", runTests)
+	}
+	if runTests.Portable() || !reflect.DeepEqual(runTests.Arguments, []string{"package"}) {
+		t.Fatalf("run-tests named arguments = %+v", runTests)
+	}
+	if runTests.InvocationHint() != "[package-or-./...]" {
+		t.Fatalf("run-tests hint = %q", runTests.InvocationHint())
+	}
+	if runTests.License == "" || runTests.Compatibility == "" || len(runTests.Metadata) == 0 || len(runTests.AllowedTools) == 0 {
+		t.Fatalf("run-tests optional metadata = %+v", runTests)
+	}
+
+	loaded, err := skill.LoadFile(filepath.Join("skills", "run-tests", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	projectDir, err := filepath.Abs(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := (skill.Invocation{Skill: &loaded, Args: "./pkg/skill"}).Instructions(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(block, "${SKILL_DIR}") || strings.Contains(block, "${PROJECT_DIR}") || strings.Contains(block, "$package") || strings.Contains(block, "$ARGUMENTS") {
+		t.Fatalf("run-tests substitutions were not rendered: %s", block)
+	}
+	if !strings.Contains(block, filepath.Join(projectDir, "skills", "run-tests", "scripts", "run.sh")) || !strings.Contains(block, "./pkg/skill") {
+		t.Fatalf("run-tests rendered instructions miss paths or arguments: %s", block)
+	}
+
+	for _, resource := range []string{
+		filepath.Join("skills", "run-tests", "references", "reporting.md"),
+		filepath.Join("skills", "run-tests", "scripts", "run.sh"),
+	} {
+		if info, err := os.Stat(resource); err != nil || !info.Mode().IsRegular() {
+			t.Fatalf("skill resource %s is missing or not a regular file: %v", resource, err)
+		}
 	}
 }

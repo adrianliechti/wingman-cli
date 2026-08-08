@@ -393,6 +393,12 @@ func TestLoadBundledSkillsIncludesCoreWorkflows(t *testing.T) {
 		if strings.TrimSpace(sk.Content) == "" {
 			t.Errorf("skill %q has empty content", sk.Name)
 		}
+		switch sk.Name {
+		case "architecture", "code-review", "commit", "debug", "feature-dev", "patch", "pull-request", "security-review", "test", "threat-model", "triage", "vuln-scan":
+			if !strings.Contains(sk.Content, "$ARGUMENTS") {
+				t.Errorf("argument-taking skill %q does not expose Claude-compatible $ARGUMENTS", sk.Name)
+			}
+		}
 		if sk.Name == "skill-creator" {
 			for _, resource := range []string{"assets/.gitignore", "assets/SKILL.template.md", "references/skill-format.md"} {
 				if _, err := os.Stat(filepath.Join(sk.Location, filepath.FromSlash(resource))); err != nil {
@@ -457,6 +463,155 @@ Use the personal workflow.`)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".wingman", "skills", ".system")); !os.IsNotExist(err) {
 		t.Fatalf("bundled snapshot leaked into personal discovery root: %v", err)
+	}
+}
+
+func TestNewWorkspaceLoadsPluginComponents(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	work := t.TempDir()
+
+	pluginDir := filepath.Join(work, ".wingman", "plugins", "reports")
+	if err := os.MkdirAll(filepath.Join(pluginDir, "skills", "summarize"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	mustWrite(t, filepath.Join(pluginDir, "plugin.json"), `{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "reports"
+}`)
+	mustWrite(t, filepath.Join(pluginDir, "skills", "summarize", "SKILL.md"), `---
+name: summarize
+description: Summarize a report
+---
+Summarize it.`)
+	mustWrite(t, filepath.Join(pluginDir, "mcp.json"), `{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "reporting": {"type": "streamable-http", "url": "https://reports.example/mcp"}
+  }
+}`)
+
+	ws, err := NewWorkspace(work)
+	if err != nil {
+		t.Fatalf("NewWorkspace: %v", err)
+	}
+	defer ws.Close()
+
+	if len(ws.Plugins) != 1 || ws.Plugins[0].Name != "reports" {
+		t.Fatalf("plugins = %#v", ws.Plugins)
+	}
+
+	summarize := skill.FindSkill("summarize", ws.Skills)
+	if summarize == nil || summarize.Plugin != "reports" {
+		t.Fatalf("plugin skill was not merged: %#v", summarize)
+	}
+
+	if skill.FindSkill("reports:summarize", ws.Skills) == nil {
+		t.Fatalf("qualified plugin skill is not resolvable")
+	}
+
+	if ws.MCP == nil {
+		t.Fatalf("plugin MCP server did not create a manager")
+	}
+
+	if server, ok := ws.MCP.Servers["reporting"]; !ok || server.URL != "https://reports.example/mcp" {
+		t.Fatalf("servers = %#v", ws.MCP.Servers)
+	}
+
+	prompt := skill.FormatForPrompt(ws.Skills)
+	if !strings.Contains(prompt, "<name>reports:summarize</name>") {
+		t.Fatalf("plugin skill is not advertised to the model:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, filepath.ToSlash(summarize.Location)+"/SKILL.md") {
+		t.Fatalf("plugin skill location is not advertised:\n%s", prompt)
+	}
+	if !filepath.IsAbs(summarize.Location) {
+		t.Fatalf("plugin skill location %q must be absolute so the file tools can read it", summarize.Location)
+	}
+}
+
+func TestNewWorkspaceProjectConfigOverridesPluginServer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	work := t.TempDir()
+
+	pluginDir := filepath.Join(work, ".wingman", "plugins", "reports")
+	if err := os.MkdirAll(pluginDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	mustWrite(t, filepath.Join(pluginDir, "plugin.json"), `{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "reports"
+}`)
+	mustWrite(t, filepath.Join(pluginDir, "mcp.json"), `{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "reporting": {"type": "streamable-http", "url": "https://plugin.example/mcp"}
+  }
+}`)
+	mustWrite(t, filepath.Join(work, "mcp.json"), `{
+  "mcpServers": {
+    "reporting": {"url": "https://project.example/mcp"}
+  }
+}`)
+
+	ws, err := NewWorkspace(work)
+	if err != nil {
+		t.Fatalf("NewWorkspace: %v", err)
+	}
+	defer ws.Close()
+
+	if server := ws.MCP.Servers["reporting"]; server.URL != "https://project.example/mcp" {
+		t.Fatalf("server = %#v, want the project config to win", server)
+	}
+}
+
+func TestNewWorkspaceDedupesPluginServerMatchingProjectConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	work := t.TempDir()
+
+	pluginDir := filepath.Join(work, ".wingman", "plugins", "reports")
+	if err := os.MkdirAll(pluginDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	mustWrite(t, filepath.Join(pluginDir, "plugin.json"), `{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "reports"
+}`)
+	mustWrite(t, filepath.Join(pluginDir, "mcp.json"), `{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "from-plugin": {"type": "streamable-http", "url": "https://same.example/mcp"}
+  }
+}`)
+	mustWrite(t, filepath.Join(work, "mcp.json"), `{
+  "mcpServers": {
+    "from-project": {"url": "https://same.example/mcp"}
+  }
+}`)
+
+	ws, err := NewWorkspace(work)
+	if err != nil {
+		t.Fatalf("NewWorkspace: %v", err)
+	}
+	defer ws.Close()
+
+	if len(ws.MCP.Servers) != 1 {
+		t.Fatalf("servers = %#v, want the duplicate endpoint collapsed", ws.MCP.Servers)
+	}
+
+	if _, ok := ws.MCP.Servers["from-project"]; !ok {
+		t.Fatalf("servers = %#v, want the configured name kept", ws.MCP.Servers)
 	}
 }
 

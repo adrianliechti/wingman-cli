@@ -19,8 +19,8 @@ Create a git commit for the current changes.
    - Do NOT commit files that likely contain secrets (.env, credentials, etc.)
 7. Create the commit. Do not push or amend.
 
-${ARGUMENTS}
+Message hint: $ARGUMENTS
 
-If the user provided a message hint above, incorporate it into the commit message.
+If that hint is non-empty, incorporate it into the commit message.
 
 If a hook modifies files, review the modifications and restage only intended paths before retrying. If a hook fails on an in-scope issue, fix it and retry the new commit; never bypass hooks or amend an existing commit. Report the commit hash, subject, and paths committed.

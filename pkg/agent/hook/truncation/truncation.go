@@ -33,16 +33,17 @@ func budgetFor(name string) int {
 }
 
 func New(scratchDir string) hook.PostToolUse {
-	return func(_ context.Context, call tool.ToolCall, result string) (string, error) {
+	return func(_ context.Context, call tool.ToolCall, result string) (hook.Outcome, error) {
 		if tool.IsImageResult(result) {
-			return result, nil
+			return hook.Outcome{}, nil
 		}
 		budget := budgetFor(call.Name)
 		if len(result) <= budget {
-			return result, nil
+			return hook.Outcome{}, nil
 		}
 		path := writeScratch(scratchDir, call.Name, result)
-		return formatPersisted(result, path), nil
+		updated := formatPersisted(result, path)
+		return hook.Outcome{UpdatedResult: &updated}, nil
 	}
 }
 

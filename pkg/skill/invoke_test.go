@@ -1,31 +1,32 @@
 package skill_test
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
 	. "github.com/adrianliechti/wingman-agent/pkg/skill"
 )
 
-func TestParseCommand(t *testing.T) {
+func TestParseSlashCommand(t *testing.T) {
 	tests := []struct {
 		text     string
 		wantName string
-		wantArgs string
 		wantOK   bool
 	}{
-		{"/simplify", "simplify", "", true},
-		{"/simplify keep the api", "simplify", "keep the api", true},
-		{"/simplify\nkeep the api", "simplify", "keep the api", true},
-		{"/", "", "", true},
-		{"no command", "", "", false},
+		{"/simplify", "simplify", true},
+		{"/simplify keep the api", "simplify", true},
+		{"/simplify\nkeep the api", "simplify", true},
+		{"/", "", true},
+		{"$simplify keep the api", "", false},
+		{"no command", "", false},
 	}
 
 	for _, tt := range tests {
-		name, args, ok := ParseCommand(tt.text)
-		if name != tt.wantName || args != tt.wantArgs || ok != tt.wantOK {
-			t.Errorf("ParseCommand(%q) = (%q, %q, %v), want (%q, %q, %v)",
-				tt.text, name, args, ok, tt.wantName, tt.wantArgs, tt.wantOK)
+		name, ok := ParseSlashCommand(tt.text)
+		if name != tt.wantName || ok != tt.wantOK {
+			t.Errorf("ParseSlashCommand(%q) = (%q, %v), want (%q, %v)",
+				tt.text, name, ok, tt.wantName, tt.wantOK)
 		}
 	}
 }
@@ -37,23 +38,24 @@ func TestInvocations(t *testing.T) {
 	}
 
 	tests := []struct {
-		text     string
-		want     []string
-		wantArgs string
+		text string
+		want []string
 	}{
-		{"/simplify keep the api", []string{"simplify"}, "keep the api"},
-		{"/simplify then /code-review it", []string{"simplify"}, "then /code-review it"},
-		{"/simplify\nmultiline args", []string{"simplify"}, "multiline args"},
-		{"please /simplify this function", []string{"simplify"}, ""},
-		{"run /simplify then /code-review it", []string{"simplify", "code-review"}, ""},
-		{"/simplify and /simplify again", []string{"simplify"}, "and /simplify again"},
-		{"case /Simplify matches", []string{"simplify"}, ""},
-		{"end with /code-review.", []string{"code-review"}, ""},
-		{"/unknown but /simplify still counts", []string{"simplify"}, ""},
-		{"look at /Users/adrian/simplify", nil, ""},
-		{"see https://example.com/simplify", nil, ""},
-		{"path/simplify is not a mention", nil, ""},
-		{"no mention at all", nil, ""},
+		{"/simplify keep the api", []string{"simplify"}},
+		{"/simplify then /code-review it", []string{"simplify", "code-review"}},
+		{"/simplify\nmultiline context", []string{"simplify"}},
+		{"please /simplify this function", []string{"simplify"}},
+		{"please $simplify this function", []string{"simplify"}},
+		{"run /simplify then /code-review it", []string{"simplify", "code-review"}},
+		{"/simplify and /simplify again", []string{"simplify"}},
+		{"/simplify /code-review src/api.go", []string{"simplify", "code-review"}},
+		{"case /Simplify matches", []string{"simplify"}},
+		{"end with /code-review.", []string{"code-review"}},
+		{"/unknown but /simplify still counts", []string{"simplify"}},
+		{"look at /Users/adrian/simplify", nil},
+		{"see https://example.com/simplify", nil},
+		{"path/simplify is not a mention", nil},
+		{"no mention at all", nil},
 	}
 
 	for _, tt := range tests {
@@ -70,9 +72,6 @@ func TestInvocations(t *testing.T) {
 				t.Fatalf("Invocations(%q) = %v, want %v", tt.text, names, tt.want)
 			}
 		}
-		if len(invs) > 0 && invs[0].Args != tt.wantArgs {
-			t.Fatalf("Invocations(%q) args = %q, want %q", tt.text, invs[0].Args, tt.wantArgs)
-		}
 	}
 }
 
@@ -80,10 +79,10 @@ func TestInstructions(t *testing.T) {
 	s := Skill{
 		Name:        "greet",
 		Description: "greets",
-		Content:     "Say hello to $ARGUMENTS!",
+		Content:     "Greet the audience identified in the user's message.",
 	}
 
-	block, err := Invocation{Skill: &s, Args: "the team"}.Instructions("")
+	block, err := Invocation{Skill: &s}.Instructions("")
 	if err != nil {
 		t.Fatalf("Instructions: %v", err)
 	}
@@ -94,23 +93,45 @@ func TestInstructions(t *testing.T) {
 	if !strings.HasSuffix(block, "</skill-instructions>") {
 		t.Fatalf("missing closing tag: %q", block)
 	}
-	if !strings.Contains(block, "Say hello to the team!") {
-		t.Fatalf("arguments not applied: %q", block)
+	if !strings.Contains(block, "Greet the audience identified in the user's message.") {
+		t.Fatalf("instructions missing: %q", block)
 	}
-	if !strings.Contains(block, "invoked the /greet skill") {
+	if !strings.Contains(block, "invoked the greet skill") {
 		t.Fatalf("missing preamble: %q", block)
 	}
 }
 
-func TestInstructionsIdentifySkillResourceDirectory(t *testing.T) {
-	dir := t.TempDir()
-	s := Skill{Name: "resourceful", Description: "uses resources", Content: "Read references/guide.md.", Location: dir}
+func TestStackedSlashSkillsShareTrailingArguments(t *testing.T) {
+	skills := []Skill{{Name: "write-tests"}, {Name: "fix-issue"}}
+	invs := Invocations(`/write-tests /fix-issue "123 456"`, skills)
+	if len(invs) != 2 {
+		t.Fatalf("invocations = %#v", invs)
+	}
+	for _, inv := range invs {
+		if inv.Args != `"123 456"` {
+			t.Fatalf("%s args = %q", inv.Skill.Name, inv.Args)
+		}
+	}
+}
 
-	block, err := (Invocation{Skill: &s}).Instructions("")
+func TestInstructionsIdentifySkillResourceDirectory(t *testing.T) {
+	projectDir := t.TempDir()
+	skillDir := filepath.Join(projectDir, ".agents", "skills", "resourceful")
+	s := Skill{
+		Name:        "resourceful",
+		Description: "uses resources",
+		Content:     "Read ${SKILL_DIR}/references/guide.md from ${PROJECT_DIR}. Claude aliases: ${CLAUDE_SKILL_DIR} ${CLAUDE_PROJECT_DIR}.",
+		Location:    skillDir,
+	}
+
+	block, err := (Invocation{Skill: &s}).Instructions(projectDir)
 	if err != nil {
 		t.Fatalf("Instructions: %v", err)
 	}
-	if !strings.Contains(block, "Skill directory: "+dir+". Resolve relative resources from this directory.") {
+	if !strings.Contains(block, "Skill directory: "+skillDir+". Resolve relative resources from this directory.") {
 		t.Fatalf("missing resource directory: %q", block)
+	}
+	if !strings.Contains(block, "Read "+skillDir+"/references/guide.md from "+projectDir+". Claude aliases: "+skillDir+" "+projectDir+".") {
+		t.Fatalf("directory substitutions missing: %q", block)
 	}
 }

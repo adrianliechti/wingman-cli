@@ -6,7 +6,7 @@ description: Verify, deduplicate, rank, and route raw security findings from VUL
 
 Turn raw security findings into a short list of verified, ranked, owned issues. Prefer `VULN-FINDINGS.json` from `/vuln-scan`, but accept a JSON file, JSONL file, directory of reports, or markdown report.
 
-Arguments: `${ARGUMENTS}`. Parse them yourself:
+Arguments: `$ARGUMENTS`. Parse them yourself:
 - first positional: findings path (required);
 - `--repo PATH`: target repository/source root (default from findings `target`, else `.`);
 - `--votes N`: independent verifier votes per candidate (default 3; use an odd number);
@@ -17,7 +17,7 @@ Do not build, run, install, fuzz, send requests, or use the network. Verificatio
 
 ## Phase 0: Parse inputs
 
-Parse `${ARGUMENTS}`. If no findings path was provided, ask for one. Infer repo path from `--repo`, then from the findings target when present; otherwise use `.` and state that assumption. Reject unknown flags instead of silently treating them as paths.
+Parse `$ARGUMENTS`. If no findings path was provided, ask for one. Infer repo path from `--repo`, then from the findings target when present; otherwise use `.` and state that assumption. Reject unknown flags instead of silently treating them as paths.
 
 Recognized fields:
 

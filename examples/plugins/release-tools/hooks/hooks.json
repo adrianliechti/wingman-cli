@@ -1,0 +1,18 @@
+{
+  "description": "Add the release plugin's bundled resource locations to new sessions",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$PLUGIN_ROOT/scripts/release-context.sh\"",
+            "timeout": 5,
+            "statusMessage": "Loading release tooling context"
+          }
+        ]
+      }
+    ]
+  }
+}

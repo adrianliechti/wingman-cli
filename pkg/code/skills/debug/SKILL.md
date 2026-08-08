@@ -6,7 +6,9 @@ description: Diagnose unexpected behavior by reproducing it, narrowing the faili
 
 Debug from evidence. Do not make speculative edits, silence the symptom, or change several variables at once. Diagnosis is read-only by default; if the user also asked to fix the problem, continue through remediation and verification.
 
-`${ARGUMENTS}` is the observed failure. If empty, use the user's latest description.
+Debug the following observed failure. If no invocation argument follows, use the user's latest description:
+
+$ARGUMENTS
 
 ## Phase 1: Define and reproduce
 
