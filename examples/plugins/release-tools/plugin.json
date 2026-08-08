@@ -1,0 +1,14 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "release-tools",
+  "version": "1.0.0",
+  "description": "Release checklist skill plus the MCP servers it needs",
+  "author": {
+    "name": "Example Author",
+    "url": "https://example.com"
+  },
+  "homepage": "https://example.com/release-tools",
+  "repository": "https://github.com/example/release-tools",
+  "license": "MIT",
+  "keywords": ["release", "checklist"]
+}

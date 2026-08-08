@@ -248,6 +248,84 @@ func TestFormatForPrompt_Empty(t *testing.T) {
 	}
 }
 
+func writeSkill(t *testing.T, dir, name, description string) {
+	t.Helper()
+
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+
+	body := "---\nname: " + name + "\ndescription: " + description + "\n---\n# " + name + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0644); err != nil {
+		t.Fatalf("write skill %s: %v", dir, err)
+	}
+}
+
+func TestDiscoverPrefersWingmanOverAgentsAndClaude(t *testing.T) {
+	root := t.TempDir()
+
+	writeSkill(t, filepath.Join(root, ".claude", "skills", "deploy"), "deploy", "from claude")
+	writeSkill(t, filepath.Join(root, ".agents", "skills", "deploy"), "deploy", "from agents")
+	writeSkill(t, filepath.Join(root, ".wingman", "skills", "deploy"), "deploy", "from wingman")
+
+	skills, err := Discover(root)
+	if err != nil {
+		t.Fatalf("Discover error: %v", err)
+	}
+	if len(skills) != 1 {
+		t.Fatalf("skills = %#v, want exactly one", skills)
+	}
+	if skills[0].Description != "from wingman" {
+		t.Fatalf("winner = %q, want the .wingman copy", skills[0].Description)
+	}
+}
+
+func TestDiscoverIgnoresOpencode(t *testing.T) {
+	root := t.TempDir()
+
+	writeSkill(t, filepath.Join(root, ".opencode", "skills", "legacy"), "legacy", "from opencode")
+
+	skills, err := Discover(root)
+	if err != nil {
+		t.Fatalf("Discover error: %v", err)
+	}
+	if len(skills) != 0 {
+		t.Fatalf("skills = %#v, want none", skills)
+	}
+}
+
+func TestMergeKeepsShadowedPluginSkillQualified(t *testing.T) {
+	plugin := []Skill{{Name: "deploy", Description: "from plugin", Plugin: "ops"}}
+	project := []Skill{{Name: "deploy", Description: "from project"}}
+
+	merged := Merge(plugin, project)
+
+	if len(merged) != 2 {
+		t.Fatalf("merged = %#v, want both entries", merged)
+	}
+
+	bare := FindSkill("deploy", merged)
+	if bare == nil || bare.Description != "from project" {
+		t.Fatalf("bare lookup = %#v, want the project skill", bare)
+	}
+
+	qualified := FindSkill("ops:deploy", merged)
+	if qualified == nil || qualified.Description != "from plugin" {
+		t.Fatalf("qualified lookup = %#v, want the plugin skill", qualified)
+	}
+}
+
+func TestMergeDropsShadowedNonPluginSkill(t *testing.T) {
+	bundled := []Skill{{Name: "commit", Description: "bundled"}}
+	project := []Skill{{Name: "commit", Description: "project"}}
+
+	merged := Merge(bundled, project)
+
+	if len(merged) != 1 || merged[0].Description != "project" {
+		t.Fatalf("merged = %#v, want only the project skill", merged)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) > 0 && len(substr) > 0 && s != substr && indexOf(s, substr) >= 0
 }

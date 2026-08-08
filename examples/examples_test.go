@@ -9,6 +9,7 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/subagent"
 	"github.com/adrianliechti/wingman-agent/pkg/mcp"
+	"github.com/adrianliechti/wingman-agent/pkg/plugin"
 	"github.com/adrianliechti/wingman-agent/pkg/skill"
 )
 
@@ -60,6 +61,30 @@ func TestAgentExamplesParse(t *testing.T) {
 	}
 	if def := defs["release-verifier"]; def.Access != "verify" || def.Model != "utility" {
 		t.Fatalf("release-verifier = %+v", def)
+	}
+}
+
+func TestPluginExamplesLoad(t *testing.T) {
+	paths, err := filepath.Glob(filepath.Join("plugins", "*"))
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("no plugin examples found: %v", err)
+	}
+
+	for _, path := range paths {
+		p, notes, err := plugin.Load(path, t.TempDir())
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if len(notes) != 0 {
+			t.Fatalf("%s: %v", path, notes)
+		}
+
+		if len(p.Skills) == 0 {
+			t.Fatalf("%s: no skills discovered", path)
+		}
+		if len(p.Servers) == 0 {
+			t.Fatalf("%s: no MCP servers discovered", path)
+		}
 	}
 }
 

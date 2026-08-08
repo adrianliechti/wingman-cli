@@ -11,6 +11,7 @@ __pycache__/
 .env
 .env.*
 mcp.json
+!examples/**/mcp.json
 
 bench/.venv/
 bench/.uv-cache/

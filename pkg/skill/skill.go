@@ -14,6 +14,8 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	"go.yaml.in/yaml/v4"
+
+	"github.com/adrianliechti/wingman-agent/pkg/layout"
 )
 
 type Skill struct {
@@ -29,6 +31,19 @@ type Skill struct {
 	Content string `yaml:"-"`
 
 	Bundled bool `yaml:"-"`
+
+	Plugin string `yaml:"-"`
+}
+
+// Qualified returns the plugin-scoped name "<plugin>:<skill>", or the bare name
+// for skills that did not come from a plugin. It keeps a plugin skill reachable
+// when a same-named skill from a higher-precedence source shadows it.
+func (s *Skill) Qualified() string {
+	if s.Plugin == "" {
+		return s.Name
+	}
+
+	return s.Plugin + ":" + s.Name
 }
 
 func (s *Skill) GetContent(workingDir string) (string, error) {
@@ -131,30 +146,16 @@ func atoi(s string) int {
 	return n
 }
 
-var skillDirs = []string{
-	".agents/skills",
-	".wingman/skills",
-	".claude/skills",
-	".opencode/skills",
-}
-
-var personalSkillRoots = []string{
-	".agents/skills",
-	".wingman/skills",
-	".claude/skills",
-	".config/opencode/skills",
-}
-
 func Discover(root string) ([]Skill, error) {
-	return discover(root, skillDirs, true), nil
+	return discover(layout.ProjectRoots(root, "skills"), root), nil
 }
 
 func DiscoverPersonal() ([]Skill, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	if _, err := os.UserHomeDir(); err != nil {
 		return nil, err
 	}
-	return discover(home, personalSkillRoots, false), nil
+
+	return discover(layout.PersonalRoots("skills"), ""), nil
 }
 
 func MustDiscoverPersonal() []Skill {
@@ -162,39 +163,53 @@ func MustDiscoverPersonal() []Skill {
 	return skills
 }
 
-func discover(root string, dirs []string, relativeLocation bool) []Skill {
-	var skills []Skill
-	seen := make(map[string]bool)
+// LoadDir loads every skill directly beneath dir, one level deep. Locations are
+// absolute and parse failures are reported and skipped.
+func LoadDir(dir string) []Skill {
+	matches, err := doublestar.Glob(os.DirFS(dir), "*/SKILL.md")
+	if err != nil {
+		return nil
+	}
 
-	for _, dir := range dirs {
-		skillDir := filepath.Join(root, dir)
-		matches, err := doublestar.Glob(os.DirFS(skillDir), "*/SKILL.md")
+	slices.Sort(matches)
+
+	var skills []Skill
+
+	for _, match := range matches {
+		skillFile := filepath.Join(dir, match)
+
+		sk, err := parseSkillFile(skillFile)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "skill: skipped %s: %v\n", skillFile, err)
 			continue
 		}
 
-		slices.Sort(matches)
+		sk.Location = filepath.Dir(skillFile)
+		skills = append(skills, sk)
+	}
 
-		for _, match := range matches {
-			skillFile := filepath.Join(skillDir, match)
-			sk, err := parseSkillFile(skillFile)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "skill: skipped %s: %v\n", skillFile, err)
+	return skills
+}
+
+func discover(dirs []string, relativeTo string) []Skill {
+	var skills []Skill
+	seen := make(map[string]string)
+
+	for _, dir := range dirs {
+		for _, sk := range LoadDir(dir) {
+			key := strings.ToLower(sk.Name)
+
+			if winner, ok := seen[key]; ok {
+				fmt.Fprintf(os.Stderr, "skill: %s in %s is shadowed by %s\n", sk.Name, sk.Location, winner)
 				continue
 			}
+			seen[key] = sk.Location
 
-			if seen[strings.ToLower(sk.Name)] {
-				continue
-			}
-			seen[strings.ToLower(sk.Name)] = true
-
-			location := filepath.Dir(skillFile)
-			if relativeLocation {
-				if rel, err := filepath.Rel(root, location); err == nil {
-					location = rel
+			if relativeTo != "" {
+				if rel, err := filepath.Rel(relativeTo, sk.Location); err == nil {
+					sk.Location = rel
 				}
 			}
-			sk.Location = location
 
 			skills = append(skills, sk)
 		}
@@ -261,8 +276,21 @@ func (s *Skill) AbsoluteDir(workDir string) string {
 	return filepath.Join(workDir, s.Location)
 }
 
+// FindSkill resolves either a bare skill name or a "<plugin>:<skill>" name. A
+// qualified query never falls back to a bare match, so it always reaches the
+// plugin's own skill even when another source shadows the bare name.
 func FindSkill(name string, skills []Skill) *Skill {
 	lower := strings.ToLower(name)
+
+	if strings.Contains(lower, ":") {
+		for i := range skills {
+			if strings.ToLower(skills[i].Qualified()) == lower {
+				return &skills[i]
+			}
+		}
+		return nil
+	}
+
 	for i := range skills {
 		if strings.ToLower(skills[i].Name) == lower {
 			return &skills[i]
@@ -276,21 +304,28 @@ func MustDiscover(root string) []Skill {
 	return skills
 }
 
+// Merge layers discovered skills over bundled ones by name. A shadowed plugin
+// skill is kept, but moved behind the winner so only its qualified name
+// resolves; anything else that loses its name is dropped.
 func Merge(bundled, discovered []Skill) []Skill {
 	overrides := make(map[string]bool)
 	for _, s := range discovered {
 		overrides[strings.ToLower(s.Name)] = true
 	}
 
-	var result []Skill
+	var result, shadowed []Skill
+
 	for _, s := range bundled {
-		if !overrides[strings.ToLower(s.Name)] {
+		switch {
+		case !overrides[strings.ToLower(s.Name)]:
 			result = append(result, s)
+		case s.Plugin != "":
+			shadowed = append(shadowed, s)
 		}
 	}
 
 	result = append(result, discovered...)
-	return result
+	return append(result, shadowed...)
 }
 
 func FormatForPrompt(skills []Skill) string {
@@ -304,7 +339,7 @@ func FormatForPrompt(skills []Skill) string {
 		count++
 
 		fmt.Fprint(&sb, "  <skill>\n")
-		fmt.Fprintf(&sb, "    <name>%s</name>\n", s.Name)
+		fmt.Fprintf(&sb, "    <name>%s</name>\n", s.Qualified())
 		fmt.Fprintf(&sb, "    <description>%s</description>\n", s.Description)
 
 		if s.Location != "" {

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "changelog": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@example/changelog-mcp", "--cache", "${PLUGIN_DATA}/cache"],
+      "env": {
+        "CHANGELOG_TEMPLATE": "${PLUGIN_ROOT}/templates/changelog.md"
+      },
+      "cwd": "${PLUGIN_DATA}"
+    },
+    "release-api": {
+      "type": "streamable-http",
+      "url": "https://releases.example.com/mcp",
+      "headers": {
+        "X-Tenant": "public"
+      }
+    }
+  }
+}

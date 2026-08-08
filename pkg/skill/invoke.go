@@ -11,7 +11,9 @@ type Invocation struct {
 	Args  string
 }
 
-var inlinePattern = regexp.MustCompile(`(^|\s)/([A-Za-z0-9][A-Za-z0-9_-]*)`)
+// A qualified "<plugin>:<skill>" mention is tried first; the bare alternative
+// deliberately excludes dots so a sentence-final "/deploy." still resolves.
+var inlinePattern = regexp.MustCompile(`(^|\s)/([A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*:[A-Za-z0-9][A-Za-z0-9_-]*|[A-Za-z0-9][A-Za-z0-9_-]*)`)
 
 // ParseCommand splits a leading "/name args" invocation; args keep their
 // original spacing and may span lines.
@@ -45,7 +47,7 @@ func Invocations(text string, skills []Skill) []Invocation {
 		if s == nil {
 			continue
 		}
-		key := strings.ToLower(s.Name)
+		key := strings.ToLower(s.Qualified())
 		if seen[key] {
 			continue
 		}
@@ -75,5 +77,7 @@ func (inv Invocation) Instructions(workDir string) (string, error) {
 		source = fmt.Sprintf("\nSkill directory: %s. Resolve relative resources from this directory.", skillDir)
 	}
 
-	return fmt.Sprintf("<skill-instructions skill=%q>\nThe user invoked the /%s skill; follow these instructions for this request.%s\n\n%s\n</skill-instructions>", s.Name, s.Name, source, content), nil
+	name := s.Qualified()
+
+	return fmt.Sprintf("<skill-instructions skill=%q>\nThe user invoked the /%s skill; follow these instructions for this request.%s\n\n%s\n</skill-instructions>", name, name, source, content), nil
 }

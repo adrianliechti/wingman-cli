@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"go.yaml.in/yaml/v4"
+
+	"github.com/adrianliechti/wingman-agent/pkg/layout"
 )
 
 // Definition is a user-provided agent type: a markdown file whose frontmatter
@@ -24,11 +26,6 @@ type Definition struct {
 	Model        string
 }
 
-var definitionDirs = []string{
-	filepath.Join(".wingman", "agents"),
-	filepath.Join(".claude", "agents"),
-}
-
 var definitionName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
 // Discover loads agent definitions from the project and the user's home
@@ -36,23 +33,16 @@ var definitionName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 // personal ones.
 func Discover(workDir string) []Definition {
 	var defs []Definition
-	seen := map[string]bool{}
+	seen := map[string]string{}
 
-	roots := []string{workDir}
-	if home, err := os.UserHomeDir(); err == nil {
-		roots = append(roots, home)
-	}
-
-	for _, root := range roots {
-		for _, dir := range definitionDirs {
-			defs = appendDefinitions(defs, seen, filepath.Join(root, dir))
-		}
+	for _, dir := range layout.Roots(workDir, "agents") {
+		defs = appendDefinitions(defs, seen, dir)
 	}
 
 	return defs
 }
 
-func appendDefinitions(defs []Definition, seen map[string]bool, dir string) []Definition {
+func appendDefinitions(defs []Definition, seen map[string]string, dir string) []Definition {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return defs
@@ -81,10 +71,11 @@ func appendDefinitions(defs []Definition, seen map[string]bool, dir string) []De
 			continue
 		}
 
-		if seen[def.Name] {
+		if winner, ok := seen[def.Name]; ok {
+			fmt.Fprintf(os.Stderr, "agent: %s in %s is shadowed by %s\n", def.Name, path, winner)
 			continue
 		}
-		seen[def.Name] = true
+		seen[def.Name] = path
 
 		defs = append(defs, def)
 	}

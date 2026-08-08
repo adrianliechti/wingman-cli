@@ -26,6 +26,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/graph"
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 	"github.com/adrianliechti/wingman-agent/pkg/mcp"
+	"github.com/adrianliechti/wingman-agent/pkg/plugin"
 	"github.com/adrianliechti/wingman-agent/pkg/skill"
 	"github.com/adrianliechti/wingman-agent/pkg/text"
 )
@@ -58,6 +59,8 @@ type Workspace struct {
 	ScratchPath string
 
 	Skills []skill.Skill
+
+	Plugins []plugin.Plugin
 
 	MCP *mcp.Manager
 
@@ -114,14 +117,17 @@ func NewWorkspace(workDir string) (*Workspace, error) {
 		return nil, fmt.Errorf("create memory directory: %w", err)
 	}
 
+	plugins, diagnostics := plugin.Discover(workDir, projectPluginDataDir(workDir), personalPluginDataDir())
+	for _, diagnostic := range diagnostics {
+		fmt.Fprintf(os.Stderr, "plugin: %s\n", diagnostic)
+	}
+
 	personal := skill.MustDiscoverPersonal()
 	discovered := skill.MustDiscover(workDir)
-	mergedSkills := skill.Merge(skill.Merge(bundled, personal), discovered)
+	mergedSkills := skill.Merge(skill.Merge(skill.Merge(bundled, plugin.Skills(plugins)), personal), discovered)
+	reportShadowedPluginSkills(mergedSkills)
 
-	mcpManager, _ := mcp.Load(globalMCPConfigPath(), filepath.Join(workDir, "mcp.json"))
-	if mcpManager != nil {
-		mcpManager.Dir = workDir
-	}
+	mcpManager := loadMCP(workDir, plugins)
 
 	return &Workspace{
 		Root:        root,
@@ -129,8 +135,59 @@ func NewWorkspace(workDir string) (*Workspace, error) {
 		MemoryPath:  memoryDir,
 		ScratchPath: scratchDir,
 		Skills:      mergedSkills,
+		Plugins:     plugins,
 		MCP:         mcpManager,
 	}, nil
+}
+
+// loadMCP layers the project and global configs over the servers plugins
+// contribute, then drops entries that duplicate an endpoint already configured
+// so its tools are not offered twice.
+func loadMCP(workDir string, plugins []plugin.Plugin) *mcp.Manager {
+	servers, diagnostics := plugin.Servers(plugins)
+	for _, diagnostic := range diagnostics {
+		fmt.Fprintf(os.Stderr, "plugin: %s\n", diagnostic)
+	}
+
+	manager, _ := mcp.Load(globalMCPConfigPath(), filepath.Join(workDir, "mcp.json"))
+
+	if manager == nil {
+		if len(servers) == 0 {
+			return nil
+		}
+
+		manager = mcp.NewManager(&mcp.Config{Servers: map[string]mcp.ServerConfig{}})
+	}
+
+	configured := slices.Sorted(maps.Keys(manager.Servers))
+
+	for _, name := range slices.Sorted(maps.Keys(servers)) {
+		if _, ok := manager.Servers[name]; ok {
+			fmt.Fprintf(os.Stderr, "plugin: MCP server %q is shadowed by your own configuration\n", name)
+			continue
+		}
+
+		manager.Servers[name] = servers[name]
+	}
+
+	for _, note := range mcp.Dedup(manager.Servers, configured) {
+		fmt.Fprintf(os.Stderr, "mcp: %s\n", note)
+	}
+
+	manager.Dir = workDir
+	return manager
+}
+
+func reportShadowedPluginSkills(skills []skill.Skill) {
+	for i := range skills {
+		if skills[i].Plugin == "" {
+			continue
+		}
+
+		if winner := skill.FindSkill(skills[i].Name, skills); winner != &skills[i] {
+			fmt.Fprintf(os.Stderr, "plugin: skill %q is shadowed; invoke it as /%s\n", skills[i].Name, skills[i].Qualified())
+		}
+	}
 }
 
 func (w *Workspace) WarmUp() {
@@ -756,6 +813,21 @@ func projectMemoryDir(workingDir string) string {
 
 func projectGraphDir(workingDir string) string {
 	return filepath.Join(filepath.Dir(projectMemoryDir(workingDir)), "graph")
+}
+
+// projectPluginDataDir holds PLUGIN_DATA for plugins installed in the project,
+// alongside that project's other state so it survives plugin updates.
+func projectPluginDataDir(workingDir string) string {
+	return filepath.Join(filepath.Dir(projectMemoryDir(workingDir)), "plugin-data")
+}
+
+func personalPluginDataDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+
+	return filepath.Join(home, ".wingman", "plugin-data")
 }
 
 func SessionsDir(workingDir string) string {

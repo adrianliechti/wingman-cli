@@ -77,8 +77,18 @@ func (a *App) findBuiltin(query string) *slashCommand {
 
 func (a *App) skillCommands() []slashCommand {
 	var cmds []slashCommand
-	for _, s := range a.agent.Workspace().Skills {
-		cmds = append(cmds, slashCommand{Name: "/" + s.Name, Desc: s.Description})
+	skills := a.agent.Workspace().Skills
+	for i := range skills {
+		s := &skills[i]
+
+		// A plugin skill whose bare name lost to another source is only
+		// reachable qualified, so offer the name that actually works.
+		name := s.Name
+		if s.Plugin != "" && skill.FindSkill(s.Name, skills) != s {
+			name = s.Qualified()
+		}
+
+		cmds = append(cmds, slashCommand{Name: "/" + name, Desc: s.Description})
 	}
 	slices.SortStableFunc(cmds, func(a, b slashCommand) int {
 		if a.Name == "/init" {
