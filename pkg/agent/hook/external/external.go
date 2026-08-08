@@ -9,9 +9,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
+	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/hook"
@@ -20,12 +21,12 @@ import (
 )
 
 const (
-	defaultTimeout = 30
-	maxHookOutput  = 16 * 1024
+	defaultTimeout    = 600
+	sessionEndTimeout = 1
+	maxHookOutput     = 16 * 1024
 )
 
-// Gate defers a yes/no decision (e.g. "trust this workspace's hooks?") until
-// the first hook actually fires, then remembers it for the session.
+// Gate defers a workspace trust decision until the first matching hook fires.
 type Gate struct {
 	Confirm func(ctx context.Context, message string) (bool, error)
 	Message string
@@ -39,359 +40,721 @@ func (g *Gate) Allowed(ctx context.Context) bool {
 	if g == nil {
 		return true
 	}
-
 	g.mu.Lock()
 	defer g.mu.Unlock()
-
 	if g.decided {
 		return g.allowed
 	}
 	g.decided = true
-
 	if g.Confirm == nil {
 		g.allowed = true
 		return true
 	}
-
 	ok, err := g.Confirm(ctx, g.Message)
 	g.allowed = ok && err == nil
 	return g.allowed
 }
 
+// Config is the Codex hooks.json shape. HTTP is a Wingman extension whose
+// request and successful response bodies use the same wire schema as command
+// hooks.
 type Config struct {
-	PreToolUse       []Rule `json:"preToolUse,omitempty"`
-	PostToolUse      []Rule `json:"postToolUse,omitempty"`
-	UserPromptSubmit []Rule `json:"userPromptSubmit,omitempty"`
-	SessionStart     []Rule `json:"sessionStart,omitempty"`
-	SessionEnd       []Rule `json:"sessionEnd,omitempty"`
-	SubagentStop     []Rule `json:"subagentStop,omitempty"`
-	PreCompact       []Rule `json:"preCompact,omitempty"`
+	Description string `json:"description,omitempty"`
+	Hooks       Events `json:"hooks"`
 }
 
-type Rule struct {
-	Matcher string `json:"matcher,omitempty"`
-	Command string `json:"command,omitempty"`
-	URL     string `json:"url,omitempty"`
-	Timeout int    `json:"timeout,omitempty"`
-	Once    bool   `json:"once,omitempty"`
+type Events struct {
+	PreToolUse        []MatcherGroup `json:"PreToolUse,omitempty"`
+	PermissionRequest []MatcherGroup `json:"PermissionRequest,omitempty"`
+	PostToolUse       []MatcherGroup `json:"PostToolUse,omitempty"`
+	PreCompact        []MatcherGroup `json:"PreCompact,omitempty"`
+	PostCompact       []MatcherGroup `json:"PostCompact,omitempty"`
+	SessionStart      []MatcherGroup `json:"SessionStart,omitempty"`
+	SessionEnd        []MatcherGroup `json:"SessionEnd,omitempty"`
+	UserPromptSubmit  []MatcherGroup `json:"UserPromptSubmit,omitempty"`
+	SubagentStart     []MatcherGroup `json:"SubagentStart,omitempty"`
+	SubagentStop      []MatcherGroup `json:"SubagentStop,omitempty"`
+	Stop              []MatcherGroup `json:"Stop,omitempty"`
 }
 
-func (r Rule) empty() bool {
-	return r.Command == "" && r.URL == ""
+type MatcherGroup struct {
+	Matcher string    `json:"matcher,omitempty"`
+	Hooks   []Handler `json:"hooks"`
 }
 
-// RuleCount reports how many hook rules the config carries, used for the
-// workspace trust prompt.
+type Handler struct {
+	Type                   string            `json:"type"`
+	Command                string            `json:"command,omitempty"`
+	CommandWindows         string            `json:"commandWindows,omitempty"`
+	CommandWindowsSnake    string            `json:"command_windows,omitempty"`
+	Server                 string            `json:"server,omitempty"`
+	Tool                   string            `json:"tool,omitempty"`
+	Input                  map[string]any    `json:"input,omitempty"`
+	URL                    string            `json:"url,omitempty"`
+	Headers                map[string]string `json:"headers,omitempty"`
+	AllowedEnvVars         []string          `json:"allowedEnvVars,omitempty"`
+	Timeout                int               `json:"timeout,omitempty"`
+	Async                  bool              `json:"async,omitempty"`
+	StatusMessage          string            `json:"statusMessage,omitempty"`
+	AdditionalContextLimit *int              `json:"additionalContextLimit,omitempty"`
+}
+
 func (c *Config) RuleCount() int {
-	return len(c.PreToolUse) + len(c.PostToolUse) + len(c.UserPromptSubmit) +
-		len(c.SessionStart) + len(c.SessionEnd) + len(c.SubagentStop) + len(c.PreCompact)
+	total := 0
+	for _, groups := range c.allEvents() {
+		for _, group := range groups.groups {
+			total += len(group.Hooks)
+		}
+	}
+	return total
 }
 
 func Load(paths ...string) (*Config, error) {
 	cfg := &Config{}
 	var errs []error
-
 	for _, path := range paths {
 		if path == "" {
 			continue
 		}
-
 		data, err := os.ReadFile(path)
 		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				errs = append(errs, fmt.Errorf("read %s: %w", path, err))
+			}
 			continue
 		}
-
-		var c Config
-		if err := json.Unmarshal(data, &c); err != nil {
+		var parsed Config
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&parsed); err != nil {
 			errs = append(errs, fmt.Errorf("parse %s: %w", path, err))
 			continue
 		}
-
-		cfg.PreToolUse = append(cfg.PreToolUse, c.PreToolUse...)
-		cfg.PostToolUse = append(cfg.PostToolUse, c.PostToolUse...)
-		cfg.UserPromptSubmit = append(cfg.UserPromptSubmit, c.UserPromptSubmit...)
-		cfg.SessionStart = append(cfg.SessionStart, c.SessionStart...)
-		cfg.SessionEnd = append(cfg.SessionEnd, c.SessionEnd...)
-		cfg.SubagentStop = append(cfg.SubagentStop, c.SubagentStop...)
-		cfg.PreCompact = append(cfg.PreCompact, c.PreCompact...)
+		if err := parsed.validate(); err != nil {
+			errs = append(errs, fmt.Errorf("parse %s: %w", path, err))
+			continue
+		}
+		cfg.merge(parsed)
 	}
-
 	return cfg, errors.Join(errs...)
 }
 
-func (c *Config) PreHooks(workDir string, gate *Gate) []hook.PreToolUse {
-	var hooks []hook.PreToolUse
-
-	for _, rule := range c.PreToolUse {
-		if rule.empty() {
-			continue
-		}
-		fire := rule.limiter()
-
-		hooks = append(hooks, func(ctx context.Context, call tool.ToolCall) (string, error) {
-			if !rule.matches(call.Name) || !fire() || !gate.Allowed(ctx) {
-				return "", nil
+func (c *Config) validate() error {
+	for _, event := range c.allEvents() {
+		for groupIndex, group := range event.groups {
+			if !validMatcher(group.Matcher) {
+				return fmt.Errorf("%s matcher group %d has invalid regex %q", event.name, groupIndex, group.Matcher)
 			}
-
-			out, err := rule.run(ctx, workDir, payload{Event: "pre_tool_use", ToolName: call.Name, Args: rawArgs(call)})
-			if err != nil {
-				if out == "" {
-					out = err.Error()
+			for handlerIndex, handler := range group.Hooks {
+				switch handler.Type {
+				case "command":
+					if handler.Command == "" {
+						return fmt.Errorf("%s handler %d:%d has no command", event.name, groupIndex, handlerIndex)
+					}
+				case "http":
+					if handler.URL == "" {
+						return fmt.Errorf("%s handler %d:%d has no url", event.name, groupIndex, handlerIndex)
+					}
+				case "mcp_tool":
+					if handler.Server == "" || handler.Tool == "" {
+						return fmt.Errorf("%s handler %d:%d has an incomplete mcp_tool target", event.name, groupIndex, handlerIndex)
+					}
+				case "prompt", "agent":
+					// Codex accepts these reserved handler shapes but does not run
+					// them yet. Keep parsing compatible and skip them below.
+				default:
+					return fmt.Errorf("%s handler %d:%d has unsupported type %q", event.name, groupIndex, handlerIndex, handler.Type)
 				}
-				return fmt.Sprintf("blocked by pre-tool hook (%s): %s", rule.name(), out), nil
 			}
-
-			return "", nil
-		})
+		}
 	}
-
-	return hooks
+	return nil
 }
 
-func (c *Config) PostHooks(workDir string, gate *Gate) []hook.PostToolUse {
-	var hooks []hook.PostToolUse
+func (c *Config) merge(other Config) {
+	if c.Description == "" {
+		c.Description = other.Description
+	}
+	c.Hooks.PreToolUse = append(c.Hooks.PreToolUse, other.Hooks.PreToolUse...)
+	c.Hooks.PermissionRequest = append(c.Hooks.PermissionRequest, other.Hooks.PermissionRequest...)
+	c.Hooks.PostToolUse = append(c.Hooks.PostToolUse, other.Hooks.PostToolUse...)
+	c.Hooks.PreCompact = append(c.Hooks.PreCompact, other.Hooks.PreCompact...)
+	c.Hooks.PostCompact = append(c.Hooks.PostCompact, other.Hooks.PostCompact...)
+	c.Hooks.SessionStart = append(c.Hooks.SessionStart, other.Hooks.SessionStart...)
+	c.Hooks.SessionEnd = append(c.Hooks.SessionEnd, other.Hooks.SessionEnd...)
+	c.Hooks.UserPromptSubmit = append(c.Hooks.UserPromptSubmit, other.Hooks.UserPromptSubmit...)
+	c.Hooks.SubagentStart = append(c.Hooks.SubagentStart, other.Hooks.SubagentStart...)
+	c.Hooks.SubagentStop = append(c.Hooks.SubagentStop, other.Hooks.SubagentStop...)
+	c.Hooks.Stop = append(c.Hooks.Stop, other.Hooks.Stop...)
+}
 
-	for _, rule := range c.PostToolUse {
-		if rule.empty() {
+type namedGroups struct {
+	name   string
+	groups []MatcherGroup
+}
+
+func (c *Config) allEvents() []namedGroups {
+	return []namedGroups{
+		{"PreToolUse", c.Hooks.PreToolUse},
+		{"PermissionRequest", c.Hooks.PermissionRequest},
+		{"PostToolUse", c.Hooks.PostToolUse},
+		{"PreCompact", c.Hooks.PreCompact},
+		{"PostCompact", c.Hooks.PostCompact},
+		{"SessionStart", c.Hooks.SessionStart},
+		{"SessionEnd", c.Hooks.SessionEnd},
+		{"UserPromptSubmit", c.Hooks.UserPromptSubmit},
+		{"SubagentStart", c.Hooks.SubagentStart},
+		{"SubagentStop", c.Hooks.SubagentStop},
+		{"Stop", c.Hooks.Stop},
+	}
+}
+
+// Build compiles all matching handlers for each event into one native hook so
+// handlers within a Codex event can execute concurrently and aggregate their
+// decisions before the agent continues.
+func (c *Config) Build(workDir string, gate *Gate) hook.Hooks {
+	var built hook.Hooks
+	if len(c.Hooks.PreToolUse) > 0 {
+		built.PreToolUse = append(built.PreToolUse, c.preToolUse(workDir, gate))
+	}
+	if len(c.Hooks.PermissionRequest) > 0 {
+		built.PermissionRequest = append(built.PermissionRequest, c.permissionRequest(workDir, gate))
+	}
+	if len(c.Hooks.PostToolUse) > 0 {
+		built.PostToolUse = append(built.PostToolUse, c.postToolUse(workDir, gate))
+	}
+	if len(c.Hooks.UserPromptSubmit) > 0 {
+		built.UserPromptSubmit = append(built.UserPromptSubmit, c.userPromptSubmit(workDir, gate))
+	}
+	if len(c.Hooks.SessionStart) > 0 {
+		built.SessionStart = append(built.SessionStart, c.sessionStart(workDir, gate))
+	}
+	if len(c.Hooks.SessionEnd) > 0 {
+		built.SessionEnd = append(built.SessionEnd, c.sessionEnd(workDir, gate))
+	}
+	if len(c.Hooks.SubagentStart) > 0 {
+		built.SubagentStart = append(built.SubagentStart, c.subagentStart(workDir, gate))
+	}
+	if len(c.Hooks.SubagentStop) > 0 {
+		built.SubagentStop = append(built.SubagentStop, c.subagentStop(workDir, gate))
+	}
+	if len(c.Hooks.PreCompact) > 0 {
+		built.PreCompact = append(built.PreCompact, c.preCompact(workDir, gate))
+	}
+	if len(c.Hooks.PostCompact) > 0 {
+		built.PostCompact = append(built.PostCompact, c.postCompact(workDir, gate))
+	}
+	if len(c.Hooks.Stop) > 0 {
+		built.Stop = append(built.Stop, c.stop(workDir, gate))
+	}
+	return built
+}
+
+type selectedHandler struct {
+	configuredOrder int
+	handler         Handler
+}
+
+type runResult struct {
+	configuredOrder int
+	completionOrder int
+	exitCode        int
+	stdout          string
+	stderr          string
+	err             error
+}
+
+func runEvent(ctx context.Context, workDir string, gate *Gate, event string, groups []MatcherGroup, matcherInputs []string, payload map[string]any) []runResult {
+	var selected []selectedHandler
+	order := 0
+	for _, group := range groups {
+		matcherIgnored := event == "UserPromptSubmit" || event == "Stop"
+		if !matcherIgnored && !groupMatches(group.Matcher, matcherInputs) {
+			order += len(group.Hooks)
 			continue
 		}
-		fire := rule.limiter()
-
-		hooks = append(hooks, func(ctx context.Context, call tool.ToolCall, result string) (string, error) {
-			if !rule.matches(call.Name) || tool.IsImageResult(result) || !fire() || !gate.Allowed(ctx) {
-				return result, nil
+		for _, handler := range group.Hooks {
+			if handler.Type != "command" && handler.Type != "http" {
+				order++
+				continue
 			}
-
-			out, err := rule.run(ctx, workDir, payload{Event: "post_tool_use", ToolName: call.Name, Args: rawArgs(call), Result: result})
-			if err != nil || out == "" {
-				return result, nil
+			if !handler.Async {
+				selected = append(selected, selectedHandler{configuredOrder: order, handler: handler})
 			}
-
-			if len(out) > maxHookOutput {
-				out = out[:maxHookOutput] + "\n[hook output truncated]"
-			}
-			return result + "\n\n<hook-output>\n" + out + "\n</hook-output>", nil
-		})
-	}
-
-	return hooks
-}
-
-func (c *Config) PromptHooks(workDir string, gate *Gate) []hook.UserPromptSubmit {
-	var hooks []hook.UserPromptSubmit
-
-	for _, rule := range c.UserPromptSubmit {
-		if rule.empty() {
-			continue
+			order++
 		}
-		fire := rule.limiter()
-
-		hooks = append(hooks, func(ctx context.Context, prompt string) (string, error) {
-			if !fire() || !gate.Allowed(ctx) {
-				return "", nil
-			}
-
-			out, err := rule.run(ctx, workDir, payload{Event: "user_prompt_submit", Prompt: prompt})
-			if err != nil {
-				if out == "" {
-					out = err.Error()
-				}
-				return "", fmt.Errorf("blocked by prompt hook (%s): %s", rule.name(), out)
-			}
-
-			return out, nil
-		})
 	}
-
-	return hooks
+	if len(selected) == 0 || !gate.Allowed(ctx) {
+		return nil
+	}
+	input, err := json.Marshal(payload)
+	if err != nil {
+		return nil
+	}
+	ch := make(chan runResult, len(selected))
+	for _, selected := range selected {
+		go func() {
+			result := selected.handler.run(ctx, workDir, event, input)
+			result.configuredOrder = selected.configuredOrder
+			ch <- result
+		}()
+	}
+	results := make([]runResult, 0, len(selected))
+	for completionOrder := range len(selected) {
+		result := <-ch
+		result.completionOrder = completionOrder
+		results = append(results, result)
+	}
+	return results
 }
 
-func (c *Config) StartHooks(workDir string, gate *Gate) []hook.SessionStart {
-	var hooks []hook.SessionStart
-
-	for _, rule := range c.SessionStart {
-		if rule.empty() {
-			continue
+func (h Handler) run(ctx context.Context, workDir, event string, input []byte) runResult {
+	timeoutSeconds := h.Timeout
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = defaultTimeout
+		if event == "SessionEnd" {
+			timeoutSeconds = sessionEndTimeout
 		}
-		fire := rule.limiter()
-
-		hooks = append(hooks, func(ctx context.Context) (string, error) {
-			if !fire() || !gate.Allowed(ctx) {
-				return "", nil
-			}
-
-			out, err := rule.run(ctx, workDir, payload{Event: "session_start"})
-			if err != nil {
-				return "", nil
-			}
-			return out, nil
-		})
 	}
-
-	return hooks
-}
-
-func (c *Config) EndHooks(workDir string, gate *Gate) []hook.SessionEnd {
-	var hooks []hook.SessionEnd
-
-	for _, rule := range c.SessionEnd {
-		if rule.empty() {
-			continue
+	if event == "SessionEnd" && timeoutSeconds > 3 {
+		timeoutSeconds = 3
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
+	defer cancel()
+	if h.Type == "http" {
+		return h.post(ctx, input)
+	}
+	command := h.Command
+	if runtime.GOOS == "windows" {
+		if h.CommandWindows != "" {
+			command = h.CommandWindows
+		} else if h.CommandWindowsSnake != "" {
+			command = h.CommandWindowsSnake
 		}
-		fire := rule.limiter()
-
-		hooks = append(hooks, func(ctx context.Context) {
-			if !fire() || !gate.Allowed(ctx) {
-				return
-			}
-			rule.run(ctx, workDir, payload{Event: "session_end"})
-		})
 	}
-
-	return hooks
+	cmd := shell.Command(ctx, command, workDir)
+	cmd.Stdin = bytes.NewReader(input)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	exitCode := -1
+	if cmd.ProcessState != nil {
+		exitCode = cmd.ProcessState.ExitCode()
+	}
+	return runResult{exitCode: exitCode, stdout: limit(stdout.String()), stderr: limit(stderr.String()), err: nonExitError(err)}
 }
 
-func (c *Config) SubagentHooks(workDir string, gate *Gate) []hook.SubagentStop {
-	var hooks []hook.SubagentStop
-
-	for _, rule := range c.SubagentStop {
-		if rule.empty() {
-			continue
-		}
-		fire := rule.limiter()
-
-		hooks = append(hooks, func(ctx context.Context, agentType, result string) {
-			if !rule.matches(agentType) || !fire() || !gate.Allowed(ctx) {
-				return
-			}
-			rule.run(ctx, workDir, payload{Event: "subagent_stop", AgentType: agentType, Result: result})
-		})
+func (h Handler) post(ctx context.Context, input []byte) runResult {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.URL, bytes.NewReader(input))
+	if err != nil {
+		return runResult{exitCode: -1, err: err}
 	}
-
-	return hooks
+	req.Header.Set("Content-Type", "application/json")
+	allowed := make(map[string]bool, len(h.AllowedEnvVars))
+	for _, name := range h.AllowedEnvVars {
+		allowed[name] = true
+	}
+	for name, value := range h.Headers {
+		req.Header.Set(name, os.Expand(value, func(key string) string {
+			if allowed[key] {
+				return os.Getenv(key)
+			}
+			return ""
+		}))
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return runResult{exitCode: -1, err: err}
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxHookOutput+1))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return runResult{exitCode: -1, stdout: limit(string(body)), err: fmt.Errorf("hook endpoint returned %s", resp.Status)}
+	}
+	return runResult{exitCode: 0, stdout: limit(string(body))}
 }
 
-func (c *Config) CompactHooks(workDir string, gate *Gate) []hook.PreCompact {
-	var hooks []hook.PreCompact
-
-	for _, rule := range c.PreCompact {
-		if rule.empty() {
-			continue
-		}
-		fire := rule.limiter()
-
-		hooks = append(hooks, func(ctx context.Context) error {
-			if !fire() || !gate.Allowed(ctx) {
-				return nil
-			}
-
-			out, err := rule.run(ctx, workDir, payload{Event: "pre_compact"})
-			if err != nil {
-				if out == "" {
-					out = err.Error()
-				}
-				return fmt.Errorf("compaction blocked by hook (%s): %s", rule.name(), out)
-			}
-			return nil
-		})
+func nonExitError(err error) error {
+	if err == nil {
+		return nil
 	}
-
-	return hooks
+	var exitError interface{ ExitCode() int }
+	if errors.As(err, &exitError) {
+		return nil
+	}
+	return err
 }
 
-func (r Rule) matches(name string) bool {
-	matcher := strings.TrimSpace(r.Matcher)
+func limit(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= maxHookOutput {
+		return value
+	}
+	return value[:maxHookOutput] + "\n[hook output truncated]"
+}
+
+func validMatcher(matcher string) bool {
+	if matcher == "" || matcher == "*" || exactMatcher(matcher) {
+		return true
+	}
+	_, err := regexp.Compile(matcher)
+	return err == nil
+}
+
+func groupMatches(matcher string, inputs []string) bool {
 	if matcher == "" || matcher == "*" {
 		return true
 	}
-	for part := range strings.SplitSeq(matcher, ",") {
-		if strings.TrimSpace(part) == name {
+	if exactMatcher(matcher) {
+		for _, candidate := range strings.Split(matcher, "|") {
+			for _, input := range inputs {
+				if candidate == input {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	re, err := regexp.Compile(matcher)
+	if err != nil {
+		return false
+	}
+	for _, input := range inputs {
+		if re.MatchString(input) {
 			return true
 		}
 	}
 	return false
 }
 
-// name identifies the rule in messages shown to the user or model.
-func (r Rule) name() string {
-	if r.Command != "" {
-		return r.Command
+func exactMatcher(matcher string) bool {
+	for _, char := range matcher {
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '_' && char != '|' {
+			return false
+		}
 	}
-	return r.URL
+	return true
 }
 
-// limiter returns a firing guard honoring Once for this built hook instance.
-func (r Rule) limiter() func() bool {
-	if !r.Once {
-		return func() bool { return true }
-	}
-	var fired atomic.Bool
-	return func() bool { return fired.CompareAndSwap(false, true) }
+type wireOutput struct {
+	Continue           *bool              `json:"continue,omitempty"`
+	StopReason         string             `json:"stopReason,omitempty"`
+	SuppressOutput     bool               `json:"suppressOutput,omitempty"`
+	SystemMessage      string             `json:"systemMessage,omitempty"`
+	Decision           string             `json:"decision,omitempty"`
+	Reason             string             `json:"reason,omitempty"`
+	HookSpecificOutput hookSpecificOutput `json:"hookSpecificOutput,omitempty"`
 }
 
-func (r Rule) run(ctx context.Context, workDir string, p payload) (string, error) {
-	timeout := r.Timeout
-	if timeout <= 0 {
-		timeout = defaultTimeout
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
-	defer cancel()
-
-	input, _ := json.Marshal(p)
-
-	if r.URL != "" {
-		return r.post(ctx, input)
-	}
-
-	cmd := shell.Command(ctx, r.Command, workDir)
-	cmd.Stdin = bytes.NewReader(input)
-
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-
-	err := cmd.Run()
-	return strings.TrimSpace(out.String()), err
+type hookSpecificOutput struct {
+	HookEventName            string              `json:"hookEventName"`
+	PermissionDecision       string              `json:"permissionDecision,omitempty"`
+	PermissionDecisionReason string              `json:"permissionDecisionReason,omitempty"`
+	UpdatedInput             json.RawMessage     `json:"updatedInput,omitempty"`
+	AdditionalContext        string              `json:"additionalContext,omitempty"`
+	Decision                 *permissionDecision `json:"decision,omitempty"`
 }
 
-// post delivers the payload to an HTTP hook. The response body plays the role
-// of the command's stdout; a non-2xx status is a hook failure (which blocks
-// for pre-tool, prompt, and compact hooks).
-func (r Rule) post(ctx context.Context, input []byte) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.URL, bytes.NewReader(input))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxHookOutput))
-	out := strings.TrimSpace(string(body))
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return out, fmt.Errorf("hook endpoint returned %s", resp.Status)
-	}
-	return out, nil
+type permissionDecision struct {
+	Behavior string `json:"behavior"`
+	Message  string `json:"message,omitempty"`
 }
 
-type payload struct {
-	Event     string          `json:"event"`
-	ToolName  string          `json:"tool_name,omitempty"`
-	Args      json.RawMessage `json:"args,omitempty"`
-	Result    string          `json:"result,omitempty"`
-	Prompt    string          `json:"prompt,omitempty"`
-	AgentType string          `json:"agent_type,omitempty"`
+type parsedResult struct {
+	hook.Outcome
+	updatedInput json.RawMessage
+	permission   hook.PermissionRequestOutcome
 }
 
-func rawArgs(call tool.ToolCall) json.RawMessage {
-	if json.Valid([]byte(call.Args)) {
-		return json.RawMessage(call.Args)
+func parseResult(event string, result runResult) parsedResult {
+	if result.err != nil {
+		return parsedResult{}
 	}
-	return nil
+	if result.exitCode == 2 {
+		reason := strings.TrimSpace(result.stderr)
+		if reason == "" {
+			return parsedResult{}
+		}
+		switch event {
+		case "PreToolUse", "PostToolUse", "UserPromptSubmit", "SubagentStop", "Stop":
+			return parsedResult{Outcome: hook.Outcome{Block: true, Reason: reason}}
+		case "PermissionRequest":
+			return parsedResult{permission: hook.PermissionRequestOutcome{Behavior: hook.PermissionDeny, Message: reason}}
+		}
+		return parsedResult{}
+	}
+	if result.exitCode != 0 || result.stdout == "" {
+		return parsedResult{}
+	}
+	var output wireOutput
+	decoder := json.NewDecoder(strings.NewReader(result.stdout))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&output); err != nil {
+		if event == "SessionStart" || event == "SubagentStart" || event == "UserPromptSubmit" {
+			if !strings.HasPrefix(strings.TrimSpace(result.stdout), "{") && !strings.HasPrefix(strings.TrimSpace(result.stdout), "[") {
+				return parsedResult{Outcome: hook.Outcome{AdditionalContext: []string{result.stdout}}}
+			}
+		}
+		return parsedResult{}
+	}
+	specific := output.HookSpecificOutput
+	hasSpecific := specific.HookEventName != "" ||
+		specific.PermissionDecision != "" ||
+		specific.PermissionDecisionReason != "" ||
+		len(specific.UpdatedInput) > 0 ||
+		specific.AdditionalContext != "" ||
+		specific.Decision != nil
+	if hasSpecific && specific.HookEventName != event {
+		return parsedResult{}
+	}
+	parsed := parsedResult{}
+	if output.Continue != nil && !*output.Continue {
+		switch event {
+		case "PreToolUse", "PermissionRequest", "SubagentStart":
+		default:
+			parsed.Stop = true
+			parsed.Reason = strings.TrimSpace(output.StopReason)
+		}
+	}
+	if context := strings.TrimSpace(output.HookSpecificOutput.AdditionalContext); context != "" {
+		parsed.AdditionalContext = append(parsed.AdditionalContext, context)
+	}
+	switch event {
+	case "PreToolUse":
+		if output.HookSpecificOutput.PermissionDecision == "deny" {
+			parsed.Block = true
+			parsed.Reason = strings.TrimSpace(output.HookSpecificOutput.PermissionDecisionReason)
+		} else if output.Decision == "block" {
+			parsed.Block = true
+			parsed.Reason = strings.TrimSpace(output.Reason)
+		} else if output.HookSpecificOutput.PermissionDecision == "allow" && len(output.HookSpecificOutput.UpdatedInput) > 0 {
+			parsed.updatedInput = output.HookSpecificOutput.UpdatedInput
+		}
+	case "PermissionRequest":
+		if decision := output.HookSpecificOutput.Decision; decision != nil {
+			switch decision.Behavior {
+			case "allow":
+				parsed.permission.Behavior = hook.PermissionAllow
+			case "deny":
+				parsed.permission = hook.PermissionRequestOutcome{Behavior: hook.PermissionDeny, Message: strings.TrimSpace(decision.Message)}
+			}
+		}
+	case "PostToolUse", "UserPromptSubmit", "SubagentStop", "Stop":
+		if output.Decision == "block" && strings.TrimSpace(output.Reason) != "" {
+			parsed.Block = true
+			parsed.Reason = strings.TrimSpace(output.Reason)
+		}
+	}
+	return parsed
+}
+
+func aggregate(event string, results []runResult) parsedResult {
+	var combined parsedResult
+	latestRewrite := -1
+	for _, result := range results {
+		parsed := parseResult(event, result)
+		combined.AdditionalContext = append(combined.AdditionalContext, parsed.AdditionalContext...)
+		if parsed.Stop && !combined.Stop {
+			combined.Stop = true
+			combined.Reason = parsed.Reason
+		}
+		if parsed.Block && !combined.Block {
+			combined.Block = true
+			combined.Reason = parsed.Reason
+		}
+		if len(parsed.updatedInput) > 0 && result.completionOrder > latestRewrite {
+			latestRewrite = result.completionOrder
+			combined.updatedInput = parsed.updatedInput
+		}
+		if parsed.permission.Behavior == hook.PermissionDeny {
+			combined.permission = parsed.permission
+		} else if parsed.permission.Behavior == hook.PermissionAllow && combined.permission.Behavior == hook.PermissionUndecided {
+			combined.permission = parsed.permission
+		}
+	}
+	if combined.Block {
+		combined.updatedInput = nil
+	}
+	return combined
+}
+
+func commonPayload(ctx context.Context, event, workDir string) map[string]any {
+	runtime := hook.RuntimeFromContext(ctx)
+	if runtime.CWD == "" {
+		runtime.CWD = workDir
+	}
+	transcript := any(nil)
+	if runtime.TranscriptPath != "" {
+		transcript = runtime.TranscriptPath
+	}
+	return map[string]any{
+		"session_id":      runtime.SessionID,
+		"turn_id":         runtime.TurnID,
+		"transcript_path": transcript,
+		"cwd":             runtime.CWD,
+		"hook_event_name": event,
+		"model":           runtime.Model,
+		"permission_mode": runtime.PermissionMode,
+	}
+}
+
+func addSubagent(payload map[string]any, runtime hook.Runtime) {
+	if runtime.AgentID != "" {
+		payload["agent_id"] = runtime.AgentID
+		payload["agent_type"] = runtime.AgentType
+	}
+}
+
+func toolWire(call tool.ToolCall) (string, map[string]any, []string) {
+	input := map[string]any{}
+	_ = json.Unmarshal([]byte(call.Args), &input)
+	name := call.Name
+	aliases := []string{call.Name}
+	switch call.Name {
+	case "shell":
+		name = "Bash"
+	case "exec_command":
+		name = "Bash"
+		if command, ok := input["cmd"]; ok {
+			input["command"] = command
+			delete(input, "cmd")
+		}
+	case "write":
+		name = "Write"
+	case "edit":
+		name = "Edit"
+	case "agent":
+		name = "Agent"
+	}
+	aliases = append(aliases, name)
+	return name, input, aliases
+}
+
+func restoreToolInput(call tool.ToolCall, updated json.RawMessage) json.RawMessage {
+	if call.Name != "exec_command" {
+		return updated
+	}
+	var input map[string]any
+	if json.Unmarshal(updated, &input) != nil {
+		return updated
+	}
+	if command, ok := input["command"]; ok {
+		input["cmd"] = command
+		delete(input, "command")
+	}
+	restored, _ := json.Marshal(input)
+	return restored
+}
+
+func (c *Config) preToolUse(workDir string, gate *Gate) hook.PreToolUse {
+	return func(ctx context.Context, call tool.ToolCall) (hook.PreToolUseOutcome, error) {
+		name, input, aliases := toolWire(call)
+		payload := commonPayload(ctx, "PreToolUse", workDir)
+		addSubagent(payload, hook.RuntimeFromContext(ctx))
+		payload["tool_name"], payload["tool_input"], payload["tool_use_id"] = name, input, call.ID
+		parsed := aggregate("PreToolUse", runEvent(ctx, workDir, gate, "PreToolUse", c.Hooks.PreToolUse, aliases, payload))
+		return hook.PreToolUseOutcome{Outcome: parsed.Outcome, UpdatedInput: restoreToolInput(call, parsed.updatedInput)}, nil
+	}
+}
+
+func (c *Config) permissionRequest(workDir string, gate *Gate) hook.PermissionRequest {
+	return func(ctx context.Context, call tool.ToolCall) (hook.PermissionRequestOutcome, error) {
+		name, input, aliases := toolWire(call)
+		payload := commonPayload(ctx, "PermissionRequest", workDir)
+		addSubagent(payload, hook.RuntimeFromContext(ctx))
+		payload["tool_name"], payload["tool_input"] = name, input
+		return aggregate("PermissionRequest", runEvent(ctx, workDir, gate, "PermissionRequest", c.Hooks.PermissionRequest, aliases, payload)).permission, nil
+	}
+}
+
+func (c *Config) postToolUse(workDir string, gate *Gate) hook.PostToolUse {
+	return func(ctx context.Context, call tool.ToolCall, result string) (hook.Outcome, error) {
+		name, input, aliases := toolWire(call)
+		payload := commonPayload(ctx, "PostToolUse", workDir)
+		addSubagent(payload, hook.RuntimeFromContext(ctx))
+		payload["tool_name"], payload["tool_input"], payload["tool_use_id"], payload["tool_response"] = name, input, call.ID, result
+		return aggregate("PostToolUse", runEvent(ctx, workDir, gate, "PostToolUse", c.Hooks.PostToolUse, aliases, payload)).Outcome, nil
+	}
+}
+
+func (c *Config) userPromptSubmit(workDir string, gate *Gate) hook.UserPromptSubmit {
+	return func(ctx context.Context, prompt string) (hook.Outcome, error) {
+		payload := commonPayload(ctx, "UserPromptSubmit", workDir)
+		addSubagent(payload, hook.RuntimeFromContext(ctx))
+		payload["prompt"] = prompt
+		return aggregate("UserPromptSubmit", runEvent(ctx, workDir, gate, "UserPromptSubmit", c.Hooks.UserPromptSubmit, nil, payload)).Outcome, nil
+	}
+}
+
+func (c *Config) sessionStart(workDir string, gate *Gate) hook.SessionStart {
+	return func(ctx context.Context, source string) (hook.Outcome, error) {
+		payload := commonPayload(ctx, "SessionStart", workDir)
+		delete(payload, "turn_id")
+		payload["source"] = source
+		return aggregate("SessionStart", runEvent(ctx, workDir, gate, "SessionStart", c.Hooks.SessionStart, []string{source}, payload)).Outcome, nil
+	}
+}
+
+func (c *Config) sessionEnd(workDir string, gate *Gate) hook.SessionEnd {
+	return func(ctx context.Context, reason string) {
+		payload := commonPayload(ctx, "SessionEnd", workDir)
+		delete(payload, "turn_id")
+		delete(payload, "model")
+		delete(payload, "permission_mode")
+		payload["reason"] = reason
+		runEvent(ctx, workDir, gate, "SessionEnd", c.Hooks.SessionEnd, []string{reason}, payload)
+	}
+}
+
+func (c *Config) subagentStart(workDir string, gate *Gate) hook.SubagentStart {
+	return func(ctx context.Context, agentID, agentType string) (hook.Outcome, error) {
+		payload := commonPayload(ctx, "SubagentStart", workDir)
+		payload["agent_id"], payload["agent_type"] = agentID, agentType
+		return aggregate("SubagentStart", runEvent(ctx, workDir, gate, "SubagentStart", c.Hooks.SubagentStart, []string{agentType}, payload)).Outcome, nil
+	}
+}
+
+func (c *Config) subagentStop(workDir string, gate *Gate) hook.SubagentStop {
+	return func(ctx context.Context, agentID, agentType, result string, active bool) (hook.Outcome, error) {
+		payload := commonPayload(ctx, "SubagentStop", workDir)
+		payload["agent_id"], payload["agent_type"] = agentID, agentType
+		payload["agent_transcript_path"], payload["stop_hook_active"], payload["last_assistant_message"] = nil, active, result
+		return aggregate("SubagentStop", runEvent(ctx, workDir, gate, "SubagentStop", c.Hooks.SubagentStop, []string{agentType}, payload)).Outcome, nil
+	}
+}
+
+func (c *Config) preCompact(workDir string, gate *Gate) hook.PreCompact {
+	return func(ctx context.Context, trigger string) (hook.Outcome, error) {
+		payload := commonPayload(ctx, "PreCompact", workDir)
+		delete(payload, "permission_mode")
+		addSubagent(payload, hook.RuntimeFromContext(ctx))
+		payload["trigger"] = trigger
+		return aggregate("PreCompact", runEvent(ctx, workDir, gate, "PreCompact", c.Hooks.PreCompact, []string{trigger}, payload)).Outcome, nil
+	}
+}
+
+func (c *Config) postCompact(workDir string, gate *Gate) hook.PostCompact {
+	return func(ctx context.Context, trigger string) (hook.Outcome, error) {
+		payload := commonPayload(ctx, "PostCompact", workDir)
+		delete(payload, "permission_mode")
+		addSubagent(payload, hook.RuntimeFromContext(ctx))
+		payload["trigger"] = trigger
+		return aggregate("PostCompact", runEvent(ctx, workDir, gate, "PostCompact", c.Hooks.PostCompact, []string{trigger}, payload)).Outcome, nil
+	}
+}
+
+func (c *Config) stop(workDir string, gate *Gate) hook.Stop {
+	return func(ctx context.Context, lastAssistantMessage string, active bool) (hook.Outcome, error) {
+		payload := commonPayload(ctx, "Stop", workDir)
+		payload["stop_hook_active"], payload["last_assistant_message"] = active, nullable(lastAssistantMessage)
+		return aggregate("Stop", runEvent(ctx, workDir, gate, "Stop", c.Hooks.Stop, nil, payload)).Outcome, nil
+	}
+}
+
+func nullable(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }

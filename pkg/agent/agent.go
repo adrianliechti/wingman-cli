@@ -10,6 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/adrianliechti/wingman-agent/pkg/agent/hook"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
@@ -79,6 +82,31 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 	a.running = true
 	a.queueMu.Unlock()
 
+	runtime := hook.RuntimeFromContext(ctx)
+	runtime.TurnID = uuid.NewString()
+	if runtime.Model == "" && a.Config.Model != nil {
+		runtime.Model = a.Model()
+	}
+	ctx = hook.WithRuntime(ctx, runtime)
+
+	var sessionStartOutcome hook.Outcome
+	a.startOnce.Do(func() {
+		source := runtime.StartSource
+		if source == "" {
+			source = "startup"
+		}
+		sessionStartOutcome = a.runSessionStartHooks(ctx, source)
+	})
+	if sessionStartOutcome.Stop {
+		a.queueMu.Lock()
+		a.running = false
+		a.queueMu.Unlock()
+		if sessionStartOutcome.Reason == "" {
+			sessionStartOutcome.Reason = "session stopped by hook"
+		}
+		return nil, errors.New(sessionStartOutcome.Reason)
+	}
+
 	var hookContext []string
 
 	for _, h := range a.Hooks.UserPromptSubmit {
@@ -89,22 +117,17 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 			a.queueMu.Unlock()
 			return nil, err
 		}
-		if out != "" {
-			hookContext = append(hookContext, out)
-		}
-	}
-
-	a.startOnce.Do(func() {
-		var parts []string
-		for _, h := range a.Hooks.SessionStart {
-			if out, err := h(ctx); err == nil && out != "" {
-				parts = append(parts, out)
+		if out.Block || out.Stop {
+			a.queueMu.Lock()
+			a.running = false
+			a.queueMu.Unlock()
+			if out.Reason == "" {
+				out.Reason = "prompt blocked by hook"
 			}
+			return nil, errors.New(out.Reason)
 		}
-		if len(parts) > 0 {
-			a.appendMessages(hiddenContextMessage(strings.Join(parts, "\n\n")))
-		}
-	})
+		hookContext = append(hookContext, out.AdditionalContext...)
+	}
 
 	a.appendMessages(userMessage(input))
 
@@ -133,6 +156,7 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 
 		turns := 0
 		cutoffNotified := false
+		stopHookActive := false
 		for {
 			if maxTurns > 0 && turns >= maxTurns {
 				yield(Message{}, ErrMaxTurnsExceeded)
@@ -176,7 +200,20 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 				}
 
 				if isContextOverflowError(err) {
-					a.compactMessages(ctx, true)
+					if outcome := a.runPreCompact(ctx, "auto"); outcome.Stop {
+						a.endRun()
+						return
+					}
+					if a.compactMessages(ctx, true) {
+						if outcome := a.runPostCompact(ctx, "auto"); outcome.Stop {
+							a.endRun()
+							return
+						}
+						if outcome := a.runSessionStartHooks(ctx, "compact"); outcome.Stop {
+							a.endRun()
+							return
+						}
+					}
 					req.messages = a.requestMessages()
 				} else {
 					// The SDK already retried transport errors with backoff; this
@@ -245,6 +282,18 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 			queued := a.pendingInput
 			a.pendingInput = nil
 			if len(queued) == 0 && len(calls) == 0 && !resumeAfterCutoff {
+				a.queueMu.Unlock()
+				outcome := a.runStopHooks(ctx, assistantText(resp.messages), stopHookActive)
+				if outcome.Block && !outcome.Stop {
+					stopHookActive = true
+					reason := outcome.Reason
+					if reason == "" {
+						reason = "A Stop hook requested another pass."
+					}
+					a.appendMessages(hiddenContextMessage(reason))
+					continue
+				}
+				a.queueMu.Lock()
 				a.running = false
 				a.queueMu.Unlock()
 				return
@@ -267,21 +316,85 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 			// token) cannot cover the overshoot. The reserve leaves headroom to
 			// re-measure real usage next turn.
 			if overshoot := a.compactionOvershoot(model, resp.usage.InputTokens); overshoot > 0 {
-				if int64(a.trimStaleToolResults()/4) < overshoot && a.preCompactAllowed(ctx) {
-					a.compactMessages(ctx, false)
+				if int64(a.trimStaleToolResults()/4) < overshoot {
+					if outcome := a.runPreCompact(ctx, "auto"); outcome.Stop {
+						a.endRun()
+						return
+					}
+					if a.compactMessages(ctx, false) {
+						if outcome := a.runPostCompact(ctx, "auto"); outcome.Stop {
+							a.endRun()
+							return
+						}
+						if outcome := a.runSessionStartHooks(ctx, "compact"); outcome.Stop {
+							a.endRun()
+							return
+						}
+					}
 				}
 			}
 		}
 	}, nil
 }
 
-func (a *Agent) preCompactAllowed(ctx context.Context) bool {
+func (a *Agent) runPreCompact(ctx context.Context, trigger string) hook.Outcome {
+	var combined hook.Outcome
 	for _, h := range a.Hooks.PreCompact {
-		if err := h(ctx); err != nil {
-			return false
+		outcome, err := h(ctx, trigger)
+		if err == nil && outcome.Stop && !combined.Stop {
+			combined = outcome
 		}
 	}
-	return true
+	return combined
+}
+
+func (a *Agent) runPostCompact(ctx context.Context, trigger string) hook.Outcome {
+	var combined hook.Outcome
+	for _, h := range a.Hooks.PostCompact {
+		outcome, err := h(ctx, trigger)
+		if err == nil && outcome.Stop && !combined.Stop {
+			combined = outcome
+		}
+	}
+	return combined
+}
+
+func (a *Agent) runSessionStartHooks(ctx context.Context, source string) hook.Outcome {
+	var combined hook.Outcome
+	var parts []string
+	for _, h := range a.Hooks.SessionStart {
+		outcome, err := h(ctx, source)
+		if err != nil {
+			continue
+		}
+		parts = append(parts, outcome.AdditionalContext...)
+		if outcome.Stop && !combined.Stop {
+			combined = outcome
+		}
+	}
+	if len(parts) > 0 {
+		a.appendMessages(hiddenContextMessage(strings.Join(parts, "\n\n")))
+	}
+	return combined
+}
+
+func (a *Agent) runStopHooks(ctx context.Context, lastAssistantMessage string, active bool) hook.Outcome {
+	var combined hook.Outcome
+	for _, h := range a.Hooks.Stop {
+		outcome, err := h(ctx, lastAssistantMessage, active)
+		if err != nil {
+			continue
+		}
+		if outcome.Stop && !combined.Stop {
+			combined.Stop = true
+			combined.Reason = outcome.Reason
+		}
+		if outcome.Block && !combined.Block {
+			combined.Block = true
+			combined.Reason = outcome.Reason
+		}
+	}
+	return combined
 }
 
 func contentText(input []Content) string {
@@ -289,6 +402,21 @@ func contentText(input []Content) string {
 	for _, c := range input {
 		if c.Text != "" {
 			parts = append(parts, c.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func assistantText(messages []Message) string {
+	var parts []string
+	for _, message := range messages {
+		if message.Role != RoleAssistant {
+			continue
+		}
+		for _, content := range message.Content {
+			if content.Text != "" {
+				parts = append(parts, content.Text)
+			}
 		}
 	}
 	return strings.Join(parts, "\n")
@@ -536,34 +664,58 @@ func (a *Agent) runSingleToolCall(ctx context.Context, tc ToolCall, tools []tool
 	hc := tool.ToolCall{ID: tc.ID, Name: tc.Name, Args: tc.Args}
 
 	var result string
+	var hookContext []string
 
 	for _, h := range a.Hooks.PreToolUse {
-		r, err := h(ctx, hc)
+		outcome, err := h(ctx, hc)
 
 		if err != nil {
 			result = fmt.Sprintf("error: %v", err)
 			break
 		}
-
-		if r != "" {
-			result = r
+		hookContext = append(hookContext, outcome.AdditionalContext...)
+		if len(outcome.UpdatedInput) > 0 && json.Valid(outcome.UpdatedInput) {
+			hc.Args = string(outcome.UpdatedInput)
+			tc.Args = hc.Args
+		}
+		if outcome.Block || outcome.Stop {
+			reason := outcome.Reason
+			if reason == "" {
+				reason = "tool call blocked by hook"
+			}
+			result = "error: " + reason
 			break
 		}
 	}
 
 	if result == "" {
-		result = a.executeTool(ctx, tc, t, timeout, started)
+		result = a.executeTool(hook.WithToolCall(ctx, hc), tc, t, timeout, started)
 	}
 
 	for _, h := range a.Hooks.PostToolUse {
-		r, err := h(ctx, hc, result)
+		outcome, err := h(ctx, hc, result)
 
 		if err != nil {
 			result = fmt.Sprintf("error: %v", err)
 			break
 		}
-
-		result = r
+		if outcome.UpdatedResult != nil {
+			result = *outcome.UpdatedResult
+		}
+		hookContext = append(hookContext, outcome.AdditionalContext...)
+		if outcome.Block || outcome.Stop {
+			reason := outcome.Reason
+			if reason == "" {
+				reason = "agentic loop stopped by post-tool hook"
+			}
+			// Codex replaces the completed tool result with hook feedback. The
+			// side effect has already happened, but the original output must not
+			// continue into the next model request.
+			result = reason
+		}
+	}
+	if len(hookContext) > 0 && !tool.IsImageResult(result) {
+		result += "\n\n<hook-context>\n" + strings.Join(hookContext, "\n\n") + "\n</hook-context>"
 	}
 
 	return result

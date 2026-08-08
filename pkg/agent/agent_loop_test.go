@@ -304,9 +304,9 @@ func TestToolTimeoutIncludesPreHooks(t *testing.T) {
 	a := &Agent{Config: &Config{
 		ToolTimeout: 10 * time.Millisecond,
 		Hooks: hook.Hooks{PreToolUse: []hook.PreToolUse{
-			func(ctx context.Context, _ tool.ToolCall) (string, error) {
+			func(ctx context.Context, _ tool.ToolCall) (hook.PreToolUseOutcome, error) {
 				<-ctx.Done()
-				return "", nil
+				return hook.PreToolUseOutcome{}, nil
 			},
 		}},
 	}}
@@ -318,6 +318,57 @@ func TestToolTimeoutIncludesPreHooks(t *testing.T) {
 	}})
 	if !strings.Contains(got, "10ms time limit") {
 		t.Fatalf("result = %q", got)
+	}
+}
+
+func TestCodexLifecycleRunsSessionStartBeforePromptSubmit(t *testing.T) {
+	var order []string
+	a := &Agent{Config: &Config{Hooks: hook.Hooks{
+		SessionStart: []hook.SessionStart{func(context.Context, string) (hook.Outcome, error) {
+			order = append(order, "SessionStart")
+			return hook.Outcome{}, nil
+		}},
+		UserPromptSubmit: []hook.UserPromptSubmit{func(context.Context, string) (hook.Outcome, error) {
+			order = append(order, "UserPromptSubmit")
+			return hook.Outcome{}, nil
+		}},
+	}}}
+	if _, err := a.Send(context.Background(), []Content{{Text: "hello"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(order, ","); got != "SessionStart,UserPromptSubmit" {
+		t.Fatalf("hook order = %q", got)
+	}
+}
+
+func TestCodexSessionStartContinueFalseStopsFirstTurn(t *testing.T) {
+	a := &Agent{Config: &Config{Hooks: hook.Hooks{
+		SessionStart: []hook.SessionStart{func(context.Context, string) (hook.Outcome, error) {
+			return hook.Outcome{Stop: true, Reason: "maintenance"}, nil
+		}},
+	}}}
+	if _, err := a.Send(context.Background(), []Content{{Text: "hello"}}); err == nil || err.Error() != "maintenance" {
+		t.Fatalf("Send error = %v, want maintenance", err)
+	}
+	if a.Running() {
+		t.Fatal("agent remained running after SessionStart stopped it")
+	}
+}
+
+func TestCodexPostToolBlockReplacesOriginalResult(t *testing.T) {
+	a := &Agent{Config: &Config{Hooks: hook.Hooks{
+		PostToolUse: []hook.PostToolUse{func(context.Context, tool.ToolCall, string) (hook.Outcome, error) {
+			return hook.Outcome{Block: true, Reason: "review the generated files"}, nil
+		}},
+	}}}
+	got := a.runSingleToolCall(context.Background(), ToolCall{Name: "build"}, []tool.Tool{{
+		Name: "build",
+		Execute: func(context.Context, map[string]any) (string, error) {
+			return "original output that must be hidden", nil
+		},
+	}})
+	if got != "review the generated files" {
+		t.Fatalf("tool result = %q", got)
 	}
 }
 

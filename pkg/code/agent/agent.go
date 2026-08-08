@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	harness "github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/hook"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/hook/external"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/hook/truncation"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/task"
@@ -89,10 +90,11 @@ type sessionState struct {
 	projectInstructionsCache  string
 	projectInstructionsMtimes map[string]time.Time
 
-	cancelMu  sync.Mutex
-	cancelFn  context.CancelFunc
-	cancelGen uint64
-	closed    bool
+	cancelMu    sync.Mutex
+	cancelFn    context.CancelFunc
+	cancelGen   uint64
+	closed      bool
+	startSource string
 }
 
 type sessionMode string
@@ -387,6 +389,7 @@ func (a *Agent) NewSession(_ context.Context) (string, error) {
 	id := uuid.NewString()
 	s := a.buildSession()
 	s.aa.CacheKey = id
+	s.startSource = "startup"
 	a.mu.Lock()
 	if a.closed {
 		a.mu.Unlock()
@@ -416,6 +419,7 @@ func (a *Agent) LoadSession(_ context.Context, id string) error {
 	}
 	s := a.buildSession()
 	s.aa.CacheKey = id
+	s.startSource = "resume"
 	s.aa.Messages = saved.State.Messages
 	s.aa.Usage = saved.State.Usage
 
@@ -663,7 +667,7 @@ func (a *Agent) buildSession() *sessionState {
 	ws := a.workspace
 
 	globalHooks, globalErr := external.Load(userHooksConfigPath())
-	workspaceHooksPath := filepath.Join(ws.RootPath, "hooks.json")
+	workspaceHooksPath := filepath.Join(ws.RootPath, ".codex", "hooks.json")
 	workspaceHooks, workspaceErr := external.Load(workspaceHooksPath)
 
 	// Fail closed: a hook config the user wrote but that no longer parses must
@@ -671,7 +675,9 @@ func (a *Agent) buildSession() *sessionState {
 	if err := errors.Join(globalErr, workspaceErr); err != nil {
 		message := fmt.Sprintf("hook configuration is invalid; fix or remove it to unblock tools: %v", err)
 		sessionCfg.Hooks.PreToolUse = append(sessionCfg.Hooks.PreToolUse,
-			func(context.Context, tool.ToolCall) (string, error) { return message, nil },
+			func(context.Context, tool.ToolCall) (hook.PreToolUseOutcome, error) {
+				return hook.PreToolUseOutcome{Outcome: hook.Outcome{Block: true, Reason: message}}, nil
+			},
 		)
 	}
 
@@ -685,24 +691,11 @@ func (a *Agent) buildSession() *sessionState {
 		}
 	}
 
-	sessionCfg.Hooks.PreToolUse = append(sessionCfg.Hooks.PreToolUse, globalHooks.PreHooks(ws.RootPath, nil)...)
-	sessionCfg.Hooks.PreToolUse = append(sessionCfg.Hooks.PreToolUse, workspaceHooks.PreHooks(ws.RootPath, workspaceGate)...)
+	sessionCfg.Hooks.Append(globalHooks.Build(ws.RootPath, nil))
+	sessionCfg.Hooks.Append(workspaceHooks.Build(ws.RootPath, workspaceGate))
 	sessionCfg.Hooks.PostToolUse = append(sessionCfg.Hooks.PostToolUse,
 		truncation.New(ws.ScratchPath),
 	)
-	sessionCfg.Hooks.PostToolUse = append(sessionCfg.Hooks.PostToolUse, globalHooks.PostHooks(ws.RootPath, nil)...)
-	sessionCfg.Hooks.PostToolUse = append(sessionCfg.Hooks.PostToolUse, workspaceHooks.PostHooks(ws.RootPath, workspaceGate)...)
-
-	for _, cfg := range []struct {
-		hooks *external.Config
-		gate  *external.Gate
-	}{{globalHooks, nil}, {workspaceHooks, workspaceGate}} {
-		sessionCfg.Hooks.UserPromptSubmit = append(sessionCfg.Hooks.UserPromptSubmit, cfg.hooks.PromptHooks(ws.RootPath, cfg.gate)...)
-		sessionCfg.Hooks.SessionStart = append(sessionCfg.Hooks.SessionStart, cfg.hooks.StartHooks(ws.RootPath, cfg.gate)...)
-		sessionCfg.Hooks.SessionEnd = append(sessionCfg.Hooks.SessionEnd, cfg.hooks.EndHooks(ws.RootPath, cfg.gate)...)
-		sessionCfg.Hooks.SubagentStop = append(sessionCfg.Hooks.SubagentStop, cfg.hooks.SubagentHooks(ws.RootPath, cfg.gate)...)
-		sessionCfg.Hooks.PreCompact = append(sessionCfg.Hooks.PreCompact, cfg.hooks.CompactHooks(ws.RootPath, cfg.gate)...)
-	}
 
 	var allowedReadRoots []string
 	for _, sk := range ws.Skills {
@@ -747,9 +740,13 @@ func (a *Agent) buildSession() *sessionState {
 	approvals := shell.NewApprovals()
 
 	sessionCfg.Hooks.UserPromptSubmit = append(sessionCfg.Hooks.UserPromptSubmit,
-		func(context.Context, string) (string, error) {
+		func(context.Context, string) (hook.Outcome, error) {
 			s.sweepFileChanges()
-			return formatFileChangeNotice(s.takeFileChanges()), nil
+			notice := formatFileChangeNotice(s.takeFileChanges())
+			if notice == "" {
+				return hook.Outcome{}, nil
+			}
+			return hook.Outcome{AdditionalContext: []string{notice}}, nil
 		},
 	)
 
@@ -812,7 +809,7 @@ func userHooksConfigPath() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".wingman", "hooks.json")
+	return filepath.Join(home, ".codex", "hooks.json")
 }
 
 func (a *Agent) promptContext(ctx context.Context) context.Context {
@@ -847,8 +844,28 @@ func (a *Agent) elicit(ctx context.Context, req tool.ElicitRequest) (tool.Elicit
 
 func (a *Agent) confirm(ctx context.Context, message string) (bool, error) {
 	ctx = a.promptContext(ctx)
-	if s := a.session(code.SessionIDFromContext(ctx)); s != nil && s.mode == modeUnattended {
-		return true, nil
+	if s := a.session(code.SessionIDFromContext(ctx)); s != nil {
+		if call, ok := hook.ToolCallFromContext(ctx); ok {
+			allowed := false
+			for _, run := range s.aa.Hooks.PermissionRequest {
+				outcome, err := run(ctx, call)
+				if err != nil {
+					continue
+				}
+				switch outcome.Behavior {
+				case hook.PermissionDeny:
+					return false, nil
+				case hook.PermissionAllow:
+					allowed = true
+				}
+			}
+			if allowed {
+				return true, nil
+			}
+		}
+		if s.mode == modeUnattended {
+			return true, nil
+		}
 	}
 	ui := a.currentUI()
 	if ui == nil {
@@ -863,6 +880,20 @@ func (s *sessionState) beginSend(ctx context.Context, input []harness.Content, c
 		s.cancelMu.Unlock()
 		return nil, 0, errors.New("session is closed")
 	}
+	permissionMode := "default"
+	switch s.mode {
+	case modePlan:
+		permissionMode = "plan"
+	case modeUnattended:
+		permissionMode = "bypassPermissions"
+	}
+	ctx = hook.WithRuntime(ctx, hook.Runtime{
+		SessionID:      s.aa.CacheKey,
+		CWD:            s.parent.workspace.RootPath,
+		Model:          s.aa.Model(),
+		PermissionMode: permissionMode,
+		StartSource:    s.startSource,
+	})
 	stream, err := s.aa.Send(ctx, input)
 	if err != nil {
 		s.cancelMu.Unlock()
@@ -921,8 +952,14 @@ func (s *sessionState) close() {
 	if hooks := s.aa.Hooks.SessionEnd; len(hooks) > 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		ctx = hook.WithRuntime(ctx, hook.Runtime{
+			SessionID:      s.aa.CacheKey,
+			CWD:            s.parent.workspace.RootPath,
+			Model:          s.aa.Model(),
+			PermissionMode: "default",
+		})
 		for _, h := range hooks {
-			h(ctx)
+			h(ctx, "other")
 		}
 	}
 }
