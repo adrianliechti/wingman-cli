@@ -156,17 +156,8 @@ func (e *Engine) SearchContent(ctx context.Context, opts ContentSearchOpts) (Con
 	if limit <= 0 {
 		limit = defaultContentLimit
 	}
-	offset := opts.Offset
-	if offset < 0 {
-		offset = 0
-	}
-	if offset > total {
-		offset = total
-	}
-	end := offset + limit
-	if end > total {
-		end = total
-	}
+	offset := min(max(opts.Offset, 0), total)
+	end := min(offset+limit, total)
 
 	return ContentSearchResult{
 		Hits:            hits[offset:end],

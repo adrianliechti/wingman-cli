@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -747,17 +748,11 @@ func (a *App) handleMouse(ev inline.MouseEvent) {
 		if !a.selecting {
 			return
 		}
-		row := ev.Y - 1
-		if row < 0 {
-			row = 0
-		}
+		row := max(ev.Y-1, 0)
 		if row >= a.lastChatRows {
 			row = a.lastChatRows - 1
 		}
-		line := a.chatScroll + row - a.lastTopPad
-		if line < 0 {
-			line = 0
-		}
+		line := max(a.chatScroll+row-a.lastTopPad, 0)
 		a.selHead = selPos{Line: line, Col: ev.X - 1}
 		a.selActive = true
 		a.invalidate()
@@ -1369,12 +1364,12 @@ func (a *App) acceptsClipboardAttachments() bool {
 }
 
 func lastAssistantText(messages []agent.Message) string {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role != agent.RoleAssistant || messages[i].Hidden {
+	for _, message := range slices.Backward(messages) {
+		if message.Role != agent.RoleAssistant || message.Hidden {
 			continue
 		}
 		var text strings.Builder
-		for _, content := range messages[i].Content {
+		for _, content := range message.Content {
 			if !content.Hidden && content.Text != "" {
 				text.WriteString(content.Text)
 			}

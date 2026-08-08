@@ -2,6 +2,7 @@ package fs
 
 import (
 	"context"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -79,9 +80,7 @@ func (f *Freshness) Changed() []string {
 
 	f.mu.Lock()
 	states := make(map[string]fileState, len(f.states))
-	for k, v := range f.states {
-		states[k] = v
-	}
+	maps.Copy(states, f.states)
 	f.mu.Unlock()
 
 	var changed []string

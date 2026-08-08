@@ -39,10 +39,7 @@ type pager struct {
 }
 
 func (p *pager) contentRows(height int) int {
-	rows := height - 3
-	if rows < 0 {
-		rows = 0
-	}
+	rows := max(height-3, 0)
 	return rows
 }
 
@@ -113,19 +110,13 @@ func (p *pager) Render(width, height int) []string {
 	}
 
 	head := cellIndent + bold(p.title)
-	ruleWidth := width - 2*len(cellIndent)
-	if ruleWidth < 10 {
-		ruleWidth = 10
-	}
+	ruleWidth := max(width-2*len(cellIndent), 10)
 	pct := fmt.Sprintf(" %d%% ", percent)
 	rule := strings.Repeat("─", ruleWidth-ansi.Width(pct)-2) + pct + "──"
 
 	lines := []string{head, cellIndent + colored(t.BrBlack, rule)}
 
-	end := p.offset + rows
-	if end > len(p.lines) {
-		end = len(p.lines)
-	}
+	end := min(p.offset+rows, len(p.lines))
 
 	// Lines were wrapped at open time; a narrower terminal since then must
 	// not leak over-wide lines into the renderer.

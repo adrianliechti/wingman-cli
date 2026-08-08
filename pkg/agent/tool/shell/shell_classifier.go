@@ -2,6 +2,7 @@ package shell
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -58,10 +59,8 @@ func IsDangerousCommand(command string) bool {
 			if i > 0 && isDownloadCommand(segments[i-1]) {
 				return true
 			}
-			for _, sub := range extractCommandSubstitutions(seg) {
-				if isDownloadCommand(sub) {
-					return true
-				}
+			if slices.ContainsFunc(extractCommandSubstitutions(seg), isDownloadCommand) {
+				return true
 			}
 		}
 	}
@@ -359,12 +358,7 @@ func hasShellCommandSubstitution(command string) bool {
 }
 
 func hasDangerousCommandSubstitution(command string) bool {
-	for _, sub := range extractCommandSubstitutions(command) {
-		if IsDangerousCommand(sub) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(extractCommandSubstitutions(command), IsDangerousCommand)
 }
 
 func extractCommandSubstitutions(command string) []string {
@@ -1052,11 +1046,11 @@ func isDangerousSingleCommand(command string) bool {
 		}
 		return false
 	case "cp", "mv", "install":
-		for i := len(args) - 1; i >= 0; i-- {
-			if strings.HasPrefix(args[i], "-") {
+		for _, arg := range slices.Backward(args) {
+			if strings.HasPrefix(arg, "-") {
 				continue
 			}
-			return isProtectedRedirectTarget(args[i])
+			return isProtectedRedirectTarget(arg)
 		}
 		return false
 	case "git":
@@ -1091,8 +1085,8 @@ func trapAction(rest string) string {
 		}
 		return rest[1:]
 	}
-	if i := strings.IndexByte(rest, ' '); i >= 0 {
-		return rest[:i]
+	if before, _, ok := strings.Cut(rest, " "); ok {
+		return before
 	}
 	return rest
 }
@@ -1378,10 +1372,8 @@ func isShellInterpreter(command string) bool {
 
 func hasAnyArg(args []string, values ...string) bool {
 	for _, arg := range args {
-		for _, value := range values {
-			if arg == value {
-				return true
-			}
+		if slices.Contains(values, arg) {
+			return true
 		}
 	}
 	return false

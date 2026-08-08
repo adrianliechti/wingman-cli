@@ -131,6 +131,43 @@ func TestSetModelAndEffortScopeToCurrentMode(t *testing.T) {
 	}
 }
 
+func TestSetModelResetsEffort(t *testing.T) {
+	a := upstreamAgent("claude-sonnet-5", "gpt-5.6-terra", "claude-opus-4-8")
+	s := &sessionState{}
+	a.sessions["sid"] = s
+	ctx := context.Background()
+
+	if err := a.SetEffort(ctx, "sid", "max"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := a.Effort("sid"); got != "max" {
+		t.Fatalf("effort = %q, want max", got)
+	}
+
+	if err := a.SetModel(ctx, "sid", "gpt-5.6-terra"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := a.Effort("sid"); got != "auto" {
+		t.Fatalf("effort after model switch = %q, want auto (model default)", got)
+	}
+
+	// Plan mode keeps its own effort: switching the plan model resets only the
+	// plan effort, back to the large-model plan default.
+	s.mode = modePlan
+	if err := a.SetEffort(ctx, "sid", "low"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SetModel(ctx, "sid", "claude-opus-4-8"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := a.Effort("sid"); got != "auto" {
+		t.Fatalf("plan effort after switch = %q, want auto", got)
+	}
+	if got := a.effortFor(s); got != "xhigh" {
+		t.Fatalf("plan effort default = %q, want xhigh", got)
+	}
+}
+
 func TestModelClass(t *testing.T) {
 	tests := map[string]model.Class{
 		"claude-opus-5":     model.ClassLarge,

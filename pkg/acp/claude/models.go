@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/coder/acp-go-sdk"
@@ -74,8 +75,8 @@ func resolveResumedModel(models []ModelEntry, live string) *ModelEntry {
 
 func canonicalModelID(id string) string {
 	s := strings.ToLower(strings.TrimSpace(id))
-	if strings.HasSuffix(s, "-1m") {
-		s = strings.TrimSuffix(s, "-1m") + "[1m]"
+	if base, ok := strings.CutSuffix(s, "-1m"); ok {
+		s = base + "[1m]"
 	}
 	return s
 }
@@ -168,12 +169,7 @@ func isValidEffort(m *ModelEntry, level string) bool {
 	if level == "" || level == "default" {
 		return true
 	}
-	for _, l := range m.EffortLevels {
-		if l == level {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(m.EffortLevels, level)
 }
 
 func normalizeSessionConfig(models []ModelEntry, modelID, effort string) (string, string) {

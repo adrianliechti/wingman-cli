@@ -265,10 +265,7 @@ func (a *App) requestRender() {
 		return
 	}
 
-	delay := renderInterval - time.Duration(time.Now().UnixNano()-a.renderLast.Load())
-	if delay < 0 {
-		delay = 0
-	}
+	delay := max(renderInterval-time.Duration(time.Now().UnixNano()-a.renderLast.Load()), 0)
 
 	time.AfterFunc(delay, func() {
 		a.post(func() {

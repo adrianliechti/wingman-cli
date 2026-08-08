@@ -134,29 +134,23 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 
 	s.prevGit = ws.IsGitRepo()
 	s.files = watch.New(watch.Options{Active: s.hasClients}, s.checkWorkspace)
-	s.background.Add(1)
-	go func() {
-		defer s.background.Done()
+	s.background.Go(func() {
 		s.files.Run(serverCtx)
-	}()
+	})
 
-	s.background.Add(1)
-	go func() {
-		defer s.background.Done()
+	s.background.Go(func() {
 		if err := ws.InitMCP(serverCtx); err != nil && serverCtx.Err() == nil {
 			fmt.Fprintf(os.Stderr, "MCP init warning: %v\n", err)
 		}
-	}()
+	})
 
-	s.background.Add(1)
-	go func() {
-		defer s.background.Done()
+	s.background.Go(func() {
 		wa.FetchModels(serverCtx)
 		if serverCtx.Err() != nil {
 			return
 		}
 		s.broadcast(Frame{Type: EvtModelChanged})
-	}()
+	})
 
 	s.mux = chi.NewRouter()
 	s.registerRoutes(s.mux)

@@ -1,7 +1,6 @@
 package watch
 
 import (
-	"context"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -24,8 +23,7 @@ func TestNotifyThrottles(t *testing.T) {
 	m := New(Options{MinInterval: 300 * time.Millisecond, Fallback: time.Hour}, func() {
 		checks.Add(1)
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go m.Run(ctx)
 
 	m.Notify()
@@ -51,8 +49,7 @@ func TestFlushBypassesThrottle(t *testing.T) {
 	m := New(Options{MinInterval: time.Hour, Fallback: time.Hour}, func() {
 		checks.Add(1)
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go m.Run(ctx)
 
 	m.Flush()
@@ -67,8 +64,7 @@ func TestFlushInterruptsThrottleWait(t *testing.T) {
 	m := New(Options{MinInterval: time.Hour, Fallback: time.Hour}, func() {
 		checks.Add(1)
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go m.Run(ctx)
 
 	m.Flush()
@@ -89,8 +85,7 @@ func TestInactiveDropsSignals(t *testing.T) {
 	}, func() {
 		checks.Add(1)
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	go m.Run(ctx)
 
 	m.Notify()

@@ -414,10 +414,7 @@ func (e *Editor) Render(width, maxRows int, chrome EditorChrome) ([]string, inli
 	e.ruleColor = chrome.TopColor
 
 	rule := func(left, right string, leftDashes int) string {
-		ruleWidth := width - 2*len(cellIndent)
-		if ruleWidth < 1 {
-			ruleWidth = 1
-		}
+		ruleWidth := max(width-2*len(cellIndent), 1)
 		if left == "" && right == "" {
 			return cellIndent + colored(e.ruleColor, strings.Repeat("─", ruleWidth))
 		}
@@ -472,10 +469,7 @@ func (e *Editor) Render(width, maxRows int, chrome EditorChrome) ([]string, inli
 	if len(attachments) > 0 && maxRows >= len(attachments)+4 {
 		attachmentGap = 1
 	}
-	visible := maxRows - 2 - len(attachments) - attachmentGap
-	if visible < 1 {
-		visible = 1
-	}
+	visible := max(maxRows-2-len(attachments)-attachmentGap, 1)
 
 	if cursorRow < e.scroll {
 		e.scroll = cursorRow
@@ -507,10 +501,7 @@ func (e *Editor) Render(width, maxRows int, chrome EditorChrome) ([]string, inli
 
 	lines := []string{rule(topLabel, "", 3)}
 
-	end := e.scroll + visible
-	if end > len(rows) {
-		end = len(rows)
-	}
+	end := min(e.scroll+visible, len(rows))
 
 	if len(e.value) == 0 {
 		lines = append(lines, promptPrefix+fg(t.BrBlack)+e.placeholder+ansi.Reset)

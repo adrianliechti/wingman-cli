@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 
@@ -368,9 +369,7 @@ func (a *approver) handleElicitation(p elicitationParams) elicitationResponse {
 
 func (a *approver) elicitationMeta(meta map[string]any) map[string]any {
 	out := make(map[string]any, len(meta)+1)
-	for key, value := range meta {
-		out[key] = value
-	}
+	maps.Copy(out, meta)
 	// acp-go-sdk v0.13.5 does not yet expose the request's top-level session
 	// scope. Preserve it in metadata until the generated type catches up.
 	out["sessionId"] = string(a.sessionID)

@@ -1561,10 +1561,7 @@ func (a *Agent) ReadTextFile(_ context.Context, p acpsdk.ReadTextFileRequest) (a
 		lines := strings.Split(content, "\n")
 		start := 0
 		if p.Line != nil && *p.Line > 0 {
-			start = *p.Line - 1
-			if start > len(lines) {
-				start = len(lines)
-			}
+			start = min(*p.Line-1, len(lines))
 		}
 		end := len(lines)
 		if p.Limit != nil && *p.Limit > 0 && start+*p.Limit < end {
@@ -1716,7 +1713,7 @@ func diffBlockText(d *acpsdk.ToolCallContentDiff) string {
 		case diffmatchpatch.DiffDelete:
 			prefix = "-"
 		}
-		for _, ln := range strings.Split(strings.TrimSuffix(df.Text, "\n"), "\n") {
+		for ln := range strings.SplitSeq(strings.TrimSuffix(df.Text, "\n"), "\n") {
 			b.WriteString(prefix)
 			b.WriteString(ln)
 			b.WriteByte('\n')

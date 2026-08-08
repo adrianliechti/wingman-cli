@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -114,12 +115,7 @@ func TestAgentToolClassifiesEffectByAgentType(t *testing.T) {
 }
 
 func contains(values []string, want string) bool {
-	for _, v := range values {
-		if v == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, want)
 }
 
 func TestAgentToolBackgroundValidation(t *testing.T) {

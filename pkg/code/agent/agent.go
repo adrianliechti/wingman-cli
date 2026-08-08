@@ -274,13 +274,20 @@ func (a *Agent) subagentRoleModel(s *sessionState, role string) (harness.ModelOp
 func (a *Agent) SetModel(_ context.Context, sessionID, id string) error {
 	s := a.session(sessionID)
 	a.modelMu.Lock()
+	// Switching models resets the reasoning effort to the new model's default:
+	// a level the previous model allowed (e.g. "max") may exceed what this one
+	// supports, so drop back to the default instead of carrying it over.
 	if s != nil && s.mode == modePlan {
 		a.planModelID = id
+		a.planEffortID = ""
 		s.planModelID = id
+		s.planEffortID = ""
 	} else {
 		a.modelID = id
+		a.effortID = ""
 		if s != nil {
 			s.modelID = id
+			s.effortID = ""
 		}
 	}
 	a.modelMu.Unlock()
@@ -304,7 +311,20 @@ func (a *Agent) FetchModels(ctx context.Context) {
 var effortValues = []string{"auto", "none", "low", "medium", "high", "xhigh", "max"}
 
 func (a *Agent) Effort(sessionID string) (string, []string) {
-	current := a.effortFor(a.session(sessionID))
+	s := a.session(sessionID)
+	a.modelMu.Lock()
+	var current string
+	if s != nil && s.mode == modePlan {
+		current = s.planEffortID
+		if current == "" {
+			current = a.planEffortID
+		}
+	} else if s != nil && s.effortID != "" {
+		current = s.effortID
+	} else {
+		current = a.effortID
+	}
+	a.modelMu.Unlock()
 	if current == "" {
 		current = "auto"
 	}
@@ -1164,8 +1184,8 @@ func findProjectInstructions(wd string) []projectInstructionsEntry {
 	// Root-level guidance first, most-specific (closest to wd) last, so the
 	// deeper file reads as overriding the general one.
 	var found []projectInstructionsEntry
-	for i := len(groups) - 1; i >= 0; i-- {
-		found = append(found, groups[i]...)
+	for _, group := range slices.Backward(groups) {
+		found = append(found, group...)
 	}
 	return found
 }

@@ -211,7 +211,7 @@ func credentialInput(endpoint *transport.Endpoint, cfg gitCredentialConfig) stri
 func parseCredential(output []byte) (gitCredential, bool) {
 	credential := gitCredential{}
 	quit := false
-	for _, line := range strings.Split(string(output), "\n") {
+	for line := range strings.SplitSeq(string(output), "\n") {
 		key, value, ok := strings.Cut(strings.TrimSuffix(line, "\r"), "=")
 		if !ok {
 			continue

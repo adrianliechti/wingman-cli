@@ -93,7 +93,7 @@ func (s *Server) Initialize(_ context.Context, params acpsdk.InitializeRequest) 
 		ProtocolVersion: acpsdk.ProtocolVersionNumber,
 		AgentInfo: &acpsdk.Implementation{
 			Name:    "wingman-agent",
-			Title:   acpsdk.Ptr("Wingman Agent"),
+			Title:   new("Wingman Agent"),
 			Version: "0.1.0",
 		},
 		AgentCapabilities: acpsdk.AgentCapabilities{
@@ -284,7 +284,7 @@ func (s *Server) Confirm(ctx context.Context, message string) (bool, error) {
 		SessionId: acpsdk.SessionId(sid),
 		ToolCall: acpsdk.ToolCallUpdate{
 			ToolCallId: toolCallID,
-			Title:      acpsdk.Ptr(message),
+			Title:      new(message),
 			Kind:       acpsdk.Ptr(acpsdk.ToolKindOther),
 			Status:     acpsdk.Ptr(acpsdk.ToolCallStatusPending),
 		},

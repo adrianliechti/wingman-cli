@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -222,12 +223,7 @@ func resolveResultURL(href string) string {
 }
 
 func hasClass(n *html.Node, class string) bool {
-	for _, c := range strings.Fields(attr(n, "class")) {
-		if c == class {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(strings.Fields(attr(n, "class")), class)
 }
 
 func attr(n *html.Node, name string) string {

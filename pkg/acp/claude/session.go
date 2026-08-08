@@ -365,6 +365,9 @@ func (p *claudeProc) read(ctx context.Context, conn *acp.AgentSideConnection, si
 			p.handleSystem(ctx, conn, sid, env)
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(stderr, "claude-acp: scan error: %v\n", err)
+	}
 }
 
 func (p *claudeProc) handleSystem(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, env cliEnvelope) {

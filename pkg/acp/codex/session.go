@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"path"
 	"strings"
 	"sync"
@@ -283,7 +284,7 @@ func requestPlanImplementation(ctx context.Context, conn *acp.AgentSideConnectio
 		SessionId: sid,
 		ToolCall: acp.ToolCallUpdate{
 			ToolCallId: id,
-			Title:      acp.Ptr("Implement this plan?"),
+			Title:      new("Implement this plan?"),
 			Kind:       acp.Ptr(acp.ToolKindSwitchMode),
 			Status:     acp.Ptr(acp.ToolCallStatusPending),
 			RawInput:   map[string]any{"plan": plan.text},
@@ -320,9 +321,7 @@ func sandboxPolicyWithRoots(policy any, roots []string) any {
 		return policy
 	}
 	copy := make(map[string]any, len(original))
-	for key, value := range original {
-		copy[key] = value
-	}
+	maps.Copy(copy, original)
 	copy["writableRoots"] = append([]string(nil), roots...)
 	return copy
 }

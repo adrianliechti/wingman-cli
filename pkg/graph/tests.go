@@ -7,7 +7,7 @@ import "strings"
 // JS/TS `*.test.*`/`*.spec.*`, and `test`/`spec` directories).
 func isTestFile(path string) bool {
 	p := strings.ToLower(path)
-	for _, seg := range strings.Split(p, "/") {
+	for seg := range strings.SplitSeq(p, "/") {
 		switch seg {
 		case "test", "tests", "__tests__", "spec", "specs":
 			return true

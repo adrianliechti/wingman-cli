@@ -94,8 +94,7 @@ func toWireError(err error) *WireError {
 		return err
 	}
 	result := &WireError{Message: err.Error()}
-	var wrapped *WireError
-	if errors.As(err, &wrapped) {
+	if wrapped, ok := errors.AsType[*WireError](err); ok {
 
 		result.Code = wrapped.Code
 	}

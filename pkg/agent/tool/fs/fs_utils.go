@@ -9,6 +9,7 @@ import (
 	pathpkg "path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -63,10 +64,8 @@ func ensurePathInWorkspaceFS(pathArg, workingDir, action string) (string, error)
 }
 
 func matchAllowedRoot(absPath string, allowedRoots []string) (rootClean, sub string, ok bool) {
-	for _, r := range allowedRoots {
-		if r == "*" {
-			return cleanPath(absPath), "", true
-		}
+	if slices.Contains(allowedRoots, "*") {
+		return cleanPath(absPath), "", true
 	}
 
 	if rootClean, sub, ok = matchAllowedRootLiteral(cleanPath(absPath), allowedRoots); ok {

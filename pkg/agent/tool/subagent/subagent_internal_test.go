@@ -2,6 +2,7 @@ package subagent
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -200,12 +201,7 @@ func toolNames(tools []tool.Tool) []string {
 }
 
 func containsName(names []string, want string) bool {
-	for _, n := range names {
-		if n == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(names, want)
 }
 
 func TestReportCollectorValidatesSchema(t *testing.T) {

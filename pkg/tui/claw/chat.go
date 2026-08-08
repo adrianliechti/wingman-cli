@@ -46,7 +46,7 @@ func formatChatMessage(text string, isAssistant bool, width int) []string {
 
 	if isAssistant {
 		content = strings.TrimRight(markdown.Render(content), "\n")
-		for _, line := range strings.Split(content, "\n") {
+		for line := range strings.SplitSeq(content, "\n") {
 			for _, wl := range markdown.WrapLine(line, width-len(indent)) {
 				lines = append(lines, indent+wl)
 			}

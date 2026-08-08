@@ -97,7 +97,7 @@ func (a *Agent) Initialize(ctx context.Context, req acp.InitializeRequest) (acp.
 		ProtocolVersion: acp.ProtocolVersionNumber,
 		AgentInfo: &acp.Implementation{
 			Name:    "codex-acp",
-			Title:   acp.Ptr("Codex (ACP)"),
+			Title:   new("Codex (ACP)"),
 			Version: "0.1.0",
 		},
 		AgentCapabilities: acp.AgentCapabilities{

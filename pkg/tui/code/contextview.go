@@ -165,7 +165,7 @@ func contextGrid(categories []contextCategory, current, window int64) []string {
 	}
 
 	var rows []string
-	for r := 0; r < contextGridRows; r++ {
+	for r := range contextGridRows {
 		rows = append(rows, strings.Join(cells[r*contextGridCols:(r+1)*contextGridCols], " "))
 	}
 	return rows

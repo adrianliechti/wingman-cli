@@ -176,13 +176,7 @@ func (p *Popup) accept() bool {
 			}
 		}
 		for id := range p.selected {
-			found := false
-			for _, have := range ids {
-				if have == id {
-					found = true
-					break
-				}
-			}
+			found := slices.Contains(ids, id)
 			if !found {
 				ids = append(ids, id)
 			}
@@ -332,15 +326,9 @@ func (p *Popup) Render(width int) []string {
 		p.offset = p.index - visible + 1
 	}
 
-	end := p.offset + visible
-	if end > len(p.filtered) {
-		end = len(p.filtered)
-	}
+	end := min(p.offset+visible, len(p.filtered))
 
-	inner := width - len(cellIndent)
-	if inner < 20 {
-		inner = 20
-	}
+	inner := max(width-len(cellIndent), 20)
 
 	for i := p.offset; i < end; i++ {
 		item := p.items[p.filtered[i]]

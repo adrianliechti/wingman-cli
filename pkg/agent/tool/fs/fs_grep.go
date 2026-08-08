@@ -477,12 +477,12 @@ func validGrepOutputMode(mode string) bool {
 
 func splitGrepGlobs(glob string) []string {
 	var patterns []string
-	for _, field := range strings.Fields(glob) {
+	for field := range strings.FieldsSeq(glob) {
 		if strings.Contains(field, "{") && strings.Contains(field, "}") {
 			patterns = append(patterns, field)
 			continue
 		}
-		for _, part := range strings.Split(field, ",") {
+		for part := range strings.SplitSeq(field, ",") {
 			if part = strings.TrimSpace(part); part != "" {
 				patterns = append(patterns, part)
 			}
@@ -579,12 +579,18 @@ func countFileMatches(fsys fs.FS, path string, re *regexp.Regexp, multiline bool
 			first = false
 			b.Write(scanner.Bytes())
 		}
+		if err := scanner.Err(); err != nil && !errors.Is(err, bufio.ErrTooLong) {
+			return 0
+		}
 		return len(re.FindAllStringIndex(b.String(), -1))
 	}
 
 	count := 0
 	for scanner.Scan() {
 		count += len(re.FindAllIndex(scanner.Bytes(), -1))
+	}
+	if err := scanner.Err(); err != nil && !errors.Is(err, bufio.ErrTooLong) {
+		return 0
 	}
 	return count
 }

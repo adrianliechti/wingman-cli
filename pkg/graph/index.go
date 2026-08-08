@@ -213,10 +213,7 @@ func collectFiles(ctx context.Context, root string) ([]string, error) {
 }
 
 func parseFiles(ctx context.Context, root string, paths []string) ([]*fileResult, error) {
-	workers := runtime.GOMAXPROCS(0)
-	if workers > len(paths) {
-		workers = len(paths)
-	}
+	workers := min(runtime.GOMAXPROCS(0), len(paths))
 	if workers < 1 {
 		return nil, nil
 	}
@@ -225,10 +222,8 @@ func parseFiles(ctx context.Context, root string, paths []string) ([]*fileResult
 	var next atomic.Int64
 	var wg sync.WaitGroup
 
-	for w := 0; w < workers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range workers {
+		wg.Go(func() {
 			ex := newExtractor()
 			for ctx.Err() == nil {
 				i := int(next.Add(1) - 1)
@@ -237,7 +232,7 @@ func parseFiles(ctx context.Context, root string, paths []string) ([]*fileResult
 				}
 				results[i] = ex.processFile(root, paths[i])
 			}
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -423,7 +418,7 @@ func (ex *extractor) processFile(root, absPath string) *fileResult {
 func looksMinified(src []byte) bool {
 	const maxLine = 2000
 	last := -1
-	for i := 0; i < len(src); i++ {
+	for i := range src {
 		if src[i] == '\n' {
 			if i-last-1 > maxLine {
 				return true
@@ -441,7 +436,7 @@ type lineIndex struct {
 
 func newLineIndex(src []byte) *lineIndex {
 	starts := []uint32{0}
-	for i := 0; i < len(src); i++ {
+	for i := range src {
 		if src[i] == '\n' {
 			starts = append(starts, uint32(i+1))
 		}

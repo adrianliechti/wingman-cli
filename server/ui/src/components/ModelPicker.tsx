@@ -18,8 +18,11 @@ export function ModelPicker({ sessionId, subscribe }: Props) {
 	const [effort, setEffort] = useState("auto");
 	const [effortOptions, setEffortOptions] = useState<string[]>([]);
 	const [open, setOpen] = useState(false);
+	const [dragPct, setDragPct] = useState<number | null>(null);
+	const [dragging, setDragging] = useState(false);
 	const popRef = useRef<HTMLDivElement>(null);
 	const btnRef = useRef<HTMLButtonElement>(null);
+	const trackRef = useRef<HTMLDivElement>(null);
 
 	const applyEffort = useCallback((v: unknown) => {
 		if (typeof v === "string" && v !== "") {
@@ -137,7 +140,64 @@ export function ModelPicker({ sessionId, subscribe }: Props) {
 		[defaultEffort, efforts],
 	);
 	const stepIndex = Math.max(0, steps.indexOf(effort));
-	const effortLabel = stepIndex === 0 ? "Auto" : effort;
+	const pct =
+		dragPct ?? (steps.length > 1 ? (stepIndex / (steps.length - 1)) * 100 : 0);
+	const previewIndex =
+		steps.length > 1 ? Math.round((pct / 100) * (steps.length - 1)) : 0;
+	const knobLabel = previewIndex === 0 ? "Auto" : steps[previewIndex];
+
+	const commit = useCallback(
+		(index: number) => {
+			const value = steps[index];
+			if (value !== undefined && value !== effort) selectEffort(value);
+		},
+		[steps, effort, selectEffort],
+	);
+
+	const handlePointerDown = useCallback(
+		(e: React.PointerEvent) => {
+			const track = trackRef.current;
+			if (!track || steps.length < 2) return;
+			const rect = track.getBoundingClientRect();
+			const toPct = (clientX: number) =>
+				Math.min(100, Math.max(0, ((clientX - rect.left) / rect.width) * 100));
+			setDragging(true);
+			setDragPct(toPct(e.clientX));
+			const onMove = (ev: PointerEvent) => setDragPct(toPct(ev.clientX));
+			const onUp = (ev: PointerEvent) => {
+				window.removeEventListener("pointermove", onMove);
+				window.removeEventListener("pointerup", onUp);
+				const finalPct = toPct(ev.clientX);
+				const index = Math.round((finalPct / 100) * (steps.length - 1));
+				setDragging(false);
+				setDragPct(null);
+				commit(index);
+			};
+			window.addEventListener("pointermove", onMove);
+			window.addEventListener("pointerup", onUp);
+		},
+		[steps, commit],
+	);
+
+	const handleKeyDown = useCallback(
+		(e: React.KeyboardEvent) => {
+			let index = stepIndex;
+			if (e.key === "ArrowLeft" || e.key === "ArrowDown") {
+				index = Math.max(0, stepIndex - 1);
+			} else if (e.key === "ArrowRight" || e.key === "ArrowUp") {
+				index = Math.min(steps.length - 1, stepIndex + 1);
+			} else if (e.key === "Home") {
+				index = 0;
+			} else if (e.key === "End") {
+				index = steps.length - 1;
+			} else {
+				return;
+			}
+			e.preventDefault();
+			commit(index);
+		},
+		[stepIndex, steps, commit],
+	);
 
 	if (!model) return null;
 
@@ -185,32 +245,44 @@ export function ModelPicker({ sessionId, subscribe }: Props) {
 						)}
 					</div>
 					{efforts.length > 0 && (
-						<div
-							className="flex items-center gap-2.5 border-t border-border px-3 h-8"
-							title="Reasoning effort"
-						>
-							<div className="relative flex items-center flex-1 h-4">
-								<div className="absolute inset-x-[5px] flex justify-between pointer-events-none">
-									{steps.map((v) => (
+						<div className="border-t border-border px-3 h-9 flex items-center">
+							<div
+								ref={trackRef}
+								onPointerDown={handlePointerDown}
+								className="relative flex-1 h-6 flex items-center cursor-pointer touch-none"
+							>
+								<div className="absolute inset-x-0 h-[2px] rounded-full bg-bg-active" />
+								<div
+									className="absolute left-0 h-[2px] rounded-full bg-fg-muted/70"
+									style={{ width: `${pct}%` }}
+								/>
+								<div className="absolute inset-0 flex items-center justify-between pointer-events-none">
+									{steps.map((v, i) => (
 										<span
 											key={v}
-											className="w-[3px] h-[3px] rounded-full bg-fg-dim/50"
+											className={`w-[3px] h-[3px] rounded-full transition-colors ${
+												i <= previewIndex ? "bg-fg-muted/70" : "bg-fg-dim/40"
+											}`}
 										/>
 									))}
 								</div>
-								<input
-									type="range"
-									min={0}
-									max={steps.length - 1}
-									step={1}
-									value={stepIndex}
-									onChange={(e) => selectEffort(steps[Number(e.target.value)])}
-									className="effort-slider relative w-full"
-								/>
+								<div
+									role="slider"
+									tabIndex={0}
+									aria-label="Reasoning effort"
+									aria-valuemin={0}
+									aria-valuemax={steps.length - 1}
+									aria-valuenow={previewIndex}
+									aria-valuetext={knobLabel}
+									onKeyDown={handleKeyDown}
+									className={`absolute top-1/2 flex items-center justify-center h-5 px-1.5 rounded-[5px] bg-fg text-bg text-[10px] font-semibold capitalize leading-none whitespace-nowrap shadow-sm cursor-grab active:cursor-grabbing ${
+										dragging ? "" : "transition-[left] duration-150 ease-out"
+									}`}
+									style={{ left: `${pct}%`, transform: `translate(-${pct}%, -50%)` }}
+								>
+									{knobLabel}
+								</div>
 							</div>
-							<span className="text-[11px] text-fg-muted capitalize min-w-[42px] text-right">
-								{effortLabel}
-							</span>
 						</div>
 					)}
 				</div>

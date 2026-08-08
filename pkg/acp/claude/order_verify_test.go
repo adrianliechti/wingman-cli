@@ -80,7 +80,7 @@ func TestLiveToolCallOrdering(t *testing.T) {
 		t.Fatalf("new session: %v", err)
 	}
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		name := string(rune('a' + i))
 		if _, err := cc.Prompt(ctx, acp.PromptRequest{
 			SessionId: ns.SessionId,

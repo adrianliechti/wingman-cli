@@ -175,7 +175,7 @@ func changedNewLines(oldText, newText string) []int {
 		case diffmatchpatch.DiffEqual:
 			lineNo += n
 		case diffmatchpatch.DiffInsert:
-			for i := 0; i < n; i++ {
+			for range n {
 				lineNo++
 				changed = append(changed, lineNo)
 			}

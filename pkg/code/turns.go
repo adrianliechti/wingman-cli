@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"sync"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
@@ -445,9 +446,7 @@ func (m *TurnManager) Close() {
 	m.cancel()
 	m.mu.Lock()
 	sessions := make(map[string]*managedTurnSession, len(m.sessions))
-	for id, s := range m.sessions {
-		sessions[id] = s
-	}
+	maps.Copy(sessions, m.sessions)
 	m.mu.Unlock()
 	for id, s := range sessions {
 		s.mu.Lock()

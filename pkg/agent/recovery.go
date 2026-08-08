@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/openai/openai-go/v3"
@@ -20,8 +21,7 @@ func isRecoverableError(err error) bool {
 	var streamErr *streamFailure
 	errors.As(err, &streamErr)
 
-	var responseErr *responseFailure
-	if errors.As(err, &responseErr) {
+	if responseErr, ok := errors.AsType[*responseFailure](err); ok {
 		switch responseErr.code {
 		case string(responses.ResponseErrorCodeServerError),
 			string(responses.ResponseErrorCodeRateLimitExceeded),
@@ -32,8 +32,7 @@ func isRecoverableError(err error) bool {
 		}
 	}
 
-	var apiErr *openai.Error
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*openai.Error](err); ok {
 		switch apiErr.StatusCode {
 		case 408, 409, 429:
 			return true
@@ -254,12 +253,12 @@ func (a *Agent) trimStaleToolResults() int {
 
 	cut := 0
 	total := 0
-	for i := len(a.Messages) - 1; i >= 0; i-- {
+	for i, v := range slices.Backward(a.Messages) {
 		if total > trimProtectBytes && len(a.Messages)-i > trimProtectMessages {
 			cut = i + 1
 			break
 		}
-		total += messageBytes(a.Messages[i])
+		total += messageBytes(v)
 	}
 
 	freed := 0
@@ -376,8 +375,8 @@ func splitMessagesForRecoverySummary(messages []Message) ([]Message, []Message) 
 }
 
 func lastVisibleUserIndex(messages []Message) int {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == RoleUser && !messages[i].Hidden {
+	for i, message := range slices.Backward(messages) {
+		if message.Role == RoleUser && !message.Hidden {
 			return i
 		}
 	}
@@ -494,9 +493,9 @@ func recoverySummaryTranscript(messages []Message) string {
 	var chunks []string
 	total := 0
 
-	for i := len(messages) - 1; i >= 0; i-- {
+	for _, m := range slices.Backward(messages) {
 		var mb strings.Builder
-		m := messages[i]
+
 		for _, c := range m.Content {
 			if c.Text != "" {
 				fmt.Fprintf(&mb, "[%s]: %s\n\n", m.Role, text.TruncateHead(c.Text, 2000))
@@ -532,8 +531,8 @@ func recoverySummaryTranscript(messages []Message) string {
 	}
 
 	var sb strings.Builder
-	for i := len(chunks) - 1; i >= 0; i-- {
-		sb.WriteString(chunks[i])
+	for _, chunk := range slices.Backward(chunks) {
+		sb.WriteString(chunk)
 	}
 
 	return sb.String()

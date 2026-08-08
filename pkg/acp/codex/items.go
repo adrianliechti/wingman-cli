@@ -3,6 +3,7 @@ package codex
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/coder/acp-go-sdk"
@@ -75,7 +76,7 @@ func imageGenContent(it imageGenItem) []acp.ToolCallContent {
 	if strings.TrimSpace(it.Result) != "" {
 		img := acp.ImageBlock(it.Result, "image/png")
 		if it.SavedPath != "" && img.Image != nil {
-			img.Image.Uri = acp.Ptr(it.SavedPath)
+			img.Image.Uri = new(it.SavedPath)
 		}
 		content = append(content, acp.ToolContent(img))
 	}
@@ -188,9 +189,9 @@ type subAgentItem struct {
 
 func subAgentName(path string) string {
 	parts := strings.Split(path, "/")
-	for i := len(parts) - 1; i >= 0; i-- {
-		if parts[i] != "" {
-			return parts[i]
+	for _, part := range slices.Backward(parts) {
+		if part != "" {
+			return part
 		}
 	}
 	return "subagent"

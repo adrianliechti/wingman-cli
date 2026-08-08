@@ -34,7 +34,7 @@ type ConnectionOptions struct {
 }
 
 type Connection struct {
-	seq int64
+	seq atomic.Int64
 
 	stateMu sync.Mutex
 	state   inFlightState
@@ -234,7 +234,7 @@ func (c *Connection) Notify(ctx context.Context, method string, params any) (err
 
 func (c *Connection) Call(ctx context.Context, method string, params any) *AsyncCall {
 
-	id := Int64ID(atomic.AddInt64(&c.seq, 1))
+	id := Int64ID(c.seq.Add(1))
 
 	ac := &AsyncCall{
 		id:    id,

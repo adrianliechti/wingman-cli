@@ -26,7 +26,7 @@ export const EntryView = memo(function EntryView({
 	const isUser = entry.type === "user";
 
 	return (
-		<div data-entry-id={entry.id} className="mb-4">
+		<div data-entry-id={entry.id} className="mb-4 select-text">
 			<div
 				className={`border-l-2 ${isUser ? "border-success" : "border-purple"} pl-3 text-[12px] leading-[1.7] break-words min-w-0 font-mono`}
 			>
@@ -95,7 +95,7 @@ const ReasoningView = memo(function ReasoningView({
 	return (
 		<div
 			data-entry-id={entry.id}
-			className="mb-4 border-l-2 border-purple pl-3"
+			className="mb-4 border-l-2 border-purple pl-3 select-text"
 		>
 			<div className="text-[11px] whitespace-pre-wrap break-words text-fg-dim font-mono leading-relaxed italic">
 				{summary}

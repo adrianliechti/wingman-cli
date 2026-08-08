@@ -403,13 +403,13 @@ func extractToolResultText(raw json.RawMessage) string {
 	}
 	var blocks []cliMsgBlock
 	if err := json.Unmarshal(raw, &blocks); err == nil {
-		out := ""
+		var out strings.Builder
 		for _, blk := range blocks {
 			if blk.Type == "text" {
-				out += blk.Text
+				out.WriteString(blk.Text)
 			}
 		}
-		return out
+		return out.String()
 	}
 	return string(raw)
 }

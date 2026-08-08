@@ -230,16 +230,17 @@ func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry,
 				return "", fmt.Errorf("unknown agent_type %q (available: %s)", subagentName, strings.Join(names, ", "))
 			}
 
-			instructions := typ.Instructions
+			var instructions strings.Builder
+			instructions.WriteString(typ.Instructions)
 			if sharedContext != nil {
 				if c := strings.TrimSpace(sharedContext()); c != "" {
-					instructions += "\n\n" + c
+					instructions.WriteString("\n\n" + c)
 				}
 			}
 			for _, h := range cfg.Hooks.SubagentStart {
 				outcome, err := h(ctx, agentID, subagentName)
 				if err == nil && len(outcome.AdditionalContext) > 0 {
-					instructions += "\n\n" + strings.Join(outcome.AdditionalContext, "\n\n")
+					instructions.WriteString("\n\n" + strings.Join(outcome.AdditionalContext, "\n\n"))
 				}
 			}
 
@@ -253,11 +254,11 @@ func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry,
 				if collector, err = newReportCollector(schemaMap); err != nil {
 					return "", fmt.Errorf("invalid schema: %w", err)
 				}
-				instructions += "\n\nDeliver your final result by calling the `report` tool exactly once; its `result` argument must match the provided JSON schema. Prose output outside `report` is not the deliverable."
+				instructions.WriteString("\n\nDeliver your final result by calling the `report` tool exactly once; its `result` argument must match the provided JSON schema. Prose output outside `report` is not the deliverable.")
 			}
 
 			subcfg := cfg.Derive()
-			subcfg.Instructions = func() string { return instructions }
+			subcfg.Instructions = func() string { return instructions.String() }
 
 			if err := applyModelOverrides(subcfg, args, typ.Model); err != nil {
 				return "", err

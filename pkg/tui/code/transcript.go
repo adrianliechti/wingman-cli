@@ -2,6 +2,7 @@ package code
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -247,8 +248,8 @@ func (o *transcriptOverlay) firstSelectable() int {
 }
 
 func (o *transcriptOverlay) lastSelectable() int {
-	for i := len(o.entries) - 1; i >= 0; i-- {
-		if o.entries[i].selectable {
+	for i, v := range slices.Backward(o.entries) {
+		if v.selectable {
 			return i
 		}
 	}

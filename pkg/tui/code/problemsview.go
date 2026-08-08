@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
@@ -103,11 +104,12 @@ func (a *App) showDiagnosticsOverlay(files []fileDiagnostics, collectErr error) 
 		return lines
 	}
 	search := func(i int) string {
-		text := files[i].Path
+		var text strings.Builder
+		text.WriteString(files[i].Path)
 		for _, diagnostic := range files[i].Diagnostics {
-			text += "\n" + diagnostic.Source + " " + diagnostic.Message
+			text.WriteString("\n" + diagnostic.Source + " " + diagnostic.Message)
 		}
-		return text
+		return text.String()
 	}
 
 	a.openOverlay(newTwoPaneOverlay("problems", status, len(files), item, content, search))

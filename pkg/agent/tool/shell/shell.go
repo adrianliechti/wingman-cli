@@ -212,9 +212,8 @@ func executeShell(ctx context.Context, workDir string, elicit *tool.Elicitation,
 	}
 
 	if runErr != nil {
-		var exitErr *exec.ExitError
 		notice := ""
-		if errors.As(runErr, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
 			notice = fmt.Sprintf("Command exited with code %d%s", exitErr.ExitCode(), wallTimeNote(elapsed))
 		} else {
 			notice = fmt.Sprintf("Command failed to run: %v", runErr)

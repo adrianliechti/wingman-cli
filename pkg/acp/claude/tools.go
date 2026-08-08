@@ -151,7 +151,7 @@ func toolInfoFromToolUse(name string, rawInput json.RawMessage, cwd string) tool
 			if line == 0 {
 				line = 1
 			}
-			locations = []acp.ToolCallLocation{{Path: in.FilePath, Line: acp.Ptr(line)}}
+			locations = []acp.ToolCallLocation{{Path: in.FilePath, Line: new(line)}}
 		}
 		return toolInfo{title: "Read " + display + span, kind: acp.ToolKindRead, locations: locations}
 

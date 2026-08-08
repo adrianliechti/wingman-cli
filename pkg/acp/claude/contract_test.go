@@ -3,6 +3,7 @@ package claude
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,6 +91,9 @@ func runClaudeContractHelper() {
 			pendingCancel = false
 			writeClaudeResult()
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "claude-contract-helper: scan error: %v\n", err)
 	}
 }
 

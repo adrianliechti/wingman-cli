@@ -28,13 +28,10 @@ func colored(c ansi.Color, text string) string {
 // indentWrap wraps styled text and prefixes every line with the standard cell
 // indent.
 func indentWrap(text string, width int) []string {
-	inner := width - len(cellIndent)
-	if inner < 10 {
-		inner = 10
-	}
+	inner := max(width-len(cellIndent), 10)
 
 	var lines []string
-	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(text, "\n"), "\n") {
 		for _, wl := range ansi.Wrap(line, inner) {
 			lines = append(lines, cellIndent+wl)
 		}
@@ -44,15 +41,12 @@ func indentWrap(text string, width int) []string {
 
 // continuationWrap renders tool output lines under a `└` gutter.
 func continuationWrap(text string, width int, colorize func(string) string) []string {
-	inner := width - len(cellIndent) - 4
-	if inner < 10 {
-		inner = 10
-	}
+	inner := max(width-len(cellIndent)-4, 10)
 
 	var lines []string
 	first := true
 
-	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(text, "\n"), "\n") {
 		wrapped := ansi.Wrap(colorize(line), inner)
 		for _, wl := range wrapped {
 			if first {

@@ -2,6 +2,7 @@ package pi
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 
 	"github.com/coder/acp-go-sdk"
@@ -103,12 +104,7 @@ func (s piState) thinking() string {
 }
 
 func isThinkingLevel(levels []string, v string) bool {
-	for _, l := range levels {
-		if l == v {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(levels, v)
 }
 
 func findModel(models []modelEntry, id string) *modelEntry {

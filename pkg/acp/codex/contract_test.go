@@ -3,7 +3,9 @@ package codex
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -46,6 +48,9 @@ func (s *contractAppServer) run() {
 			continue
 		}
 		s.handle(msg)
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "codex-contract-server: scan error: %v\n", err)
 	}
 }
 

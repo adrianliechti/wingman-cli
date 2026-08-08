@@ -118,7 +118,7 @@ func Wrap(text string, width int) []string {
 
 	var lines []string
 
-	for _, raw := range strings.Split(text, "\n") {
+	for raw := range strings.SplitSeq(text, "\n") {
 		lines = append(lines, wrapLine(raw, width)...)
 	}
 
@@ -219,10 +219,7 @@ func Truncate(text string, width int, tail string) string {
 	}
 
 	tailWidth := Width(tail)
-	budget := width - tailWidth
-	if budget < 0 {
-		budget = 0
-	}
+	budget := max(width-tailWidth, 0)
 
 	p := &parser{}
 	p.feed(text)

@@ -153,10 +153,7 @@ func (t *TUI) render() {
 		taskRows = 3
 	}
 
-	chatRows := height - taskRows - 1 - 2
-	if chatRows < 3 {
-		chatRows = 3
-	}
+	chatRows := max(height-taskRows-1-2, 3)
 
 	// Left column: agents list.
 	left := make([]string, height)
@@ -205,14 +202,8 @@ func (t *TUI) render() {
 		t.chatScroll = len(t.chatLines)
 	}
 
-	start := t.chatScroll - chatRows
-	if start > len(t.chatLines)-chatRows {
-		start = len(t.chatLines) - chatRows
-	}
-	if start < 0 {
-		start = 0
-	}
-	for i := 0; i < chatRows; i++ {
+	start := max(min(t.chatScroll-chatRows, len(t.chatLines)-chatRows), 0)
+	for i := range chatRows {
 		if start+i < len(t.chatLines) {
 			right = append(right, t.chatLines[start+i])
 		} else {
@@ -237,7 +228,7 @@ func (t *TUI) render() {
 
 	// Merge columns.
 	frame := make([]string, height)
-	for i := 0; i < height; i++ {
+	for i := range height {
 		l := ""
 		if i < len(left) {
 			l = left[i]
@@ -275,10 +266,7 @@ func (t *TUI) statusLine(width int) string {
 	parts = append(parts, ansi.Fg(th.Cyan)+name+ansi.Reset)
 
 	text := strings.Join(parts, dim(" · "))
-	gap := width - ansi.Width(text) - 2
-	if gap < 0 {
-		gap = 0
-	}
+	gap := max(width-ansi.Width(text)-2, 0)
 
 	return strings.Repeat(" ", gap) + text
 }

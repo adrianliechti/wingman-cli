@@ -67,7 +67,7 @@ type cliEnvelope struct {
 	SubagentRetry      map[string]any  `json:"subagent_retry,omitempty"`
 	Patch              struct {
 		Status string `json:"status,omitempty"`
-	} `json:"patch,omitempty"`
+	} `json:"patch"`
 }
 
 type streamEvent struct {

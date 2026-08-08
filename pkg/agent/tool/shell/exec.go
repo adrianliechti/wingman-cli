@@ -264,8 +264,7 @@ func (s *execSession) exited() bool {
 
 func (s *execSession) exitNotice() string {
 	if s.exitErr != nil {
-		var exitErr *exec.ExitError
-		if errors.As(s.exitErr, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](s.exitErr); ok {
 			if code := exitErr.ExitCode(); code >= 0 {
 				return fmt.Sprintf("Command exited with code %d", code)
 			}

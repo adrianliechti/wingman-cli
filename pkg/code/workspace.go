@@ -724,12 +724,12 @@ func splitFrontmatter(text string) (fm, body string, ok bool) {
 	if !found {
 		return "", "", false
 	}
-	end := strings.Index(rest, "\n---")
-	if end < 0 {
+	before, after, ok := strings.Cut(rest, "\n---")
+	if !ok {
 		return "", "", false
 	}
-	body = strings.TrimLeft(rest[end+len("\n---"):], "\r\n")
-	return rest[:end], body, true
+	body = strings.TrimLeft(after, "\r\n")
+	return before, body, true
 }
 
 func (w *Workspace) ManagedTools() (mcpTools, lspTools, graphTools []tool.Tool) {

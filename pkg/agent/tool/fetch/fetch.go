@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -253,10 +254,5 @@ func isHTML(contentType string, body []byte) bool {
 
 func isBinary(body []byte) bool {
 	limit := min(len(body), 8192)
-	for _, b := range body[:limit] {
-		if b == 0 {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(body[:limit], 0)
 }

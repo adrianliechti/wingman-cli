@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -206,9 +207,7 @@ func (e *Engine) IsStale(ctx context.Context) bool {
 
 	e.mu.RLock()
 	files := make(map[string]fileMeta, len(e.files))
-	for name, meta := range e.files {
-		files[name] = meta
-	}
+	maps.Copy(files, e.files)
 	e.mu.RUnlock()
 
 	paths, err := collectFiles(ctx, e.root)

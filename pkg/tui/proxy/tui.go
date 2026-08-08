@@ -326,10 +326,7 @@ func (a *App) startLines(width, height int) []string {
 		logoWidth = len("wingman")
 	}
 
-	indent := (width - logoWidth) / 2
-	if indent < 0 {
-		indent = 0
-	}
+	indent := max((width-logoWidth)/2, 0)
 	at := func(text string) string {
 		return strings.Repeat(" ", indent) + text
 	}
@@ -353,10 +350,7 @@ func (a *App) startLines(width, height int) []string {
 	block = append(block, at(ansi.Fg(t.Green)+"export OPENAI_BASE_URL=http://"+a.p.Addr+"/v1"+ansi.Reset))
 	block = append(block, at(ansi.Fg(t.Green)+"export OPENAI_API_KEY=any-value"+ansi.Reset))
 
-	pad := (height - 1 - len(block)) / 2
-	if pad < 0 {
-		pad = 0
-	}
+	pad := max((height-1-len(block))/2, 0)
 
 	lines := make([]string, pad)
 	lines = append(lines, block...)
@@ -370,10 +364,7 @@ func (a *App) startLines(width, height int) []string {
 
 // listStart returns the first visible row index for the current selection.
 func (a *App) listStart(height int) int {
-	rows := height - listHeaderRows
-	if rows < 1 {
-		rows = 1
-	}
+	rows := max(height-listHeaderRows, 1)
 	if a.selected >= rows {
 		return a.selected - rows + 1
 	}
@@ -388,10 +379,7 @@ func (a *App) listLines(width, height int) []string {
 		a.selected = max(0, len(entries)-1)
 	}
 
-	pathWidth := width - 8 - 7 - 5 - 7 - 22 - 7 - 7 - 9*2
-	if pathWidth < 12 {
-		pathWidth = 12
-	}
+	pathWidth := max(width-8-7-5-7-22-7-7-9*2, 12)
 
 	format := func(time_, method, path, status, dur, model, in, out string) string {
 		return " " + ansi.Pad(time_, 8) + " " + ansi.Pad(method, 6) + " " +
@@ -462,10 +450,7 @@ func (a *App) detailPageLines(width, height int) []string {
 	}
 
 	pct := fmt.Sprintf(" %d%% ", percent)
-	ruleWidth := width - 2
-	if ruleWidth < 10 {
-		ruleWidth = 10
-	}
+	ruleWidth := max(width-2, 10)
 	rule := strings.Repeat("─", max(1, ruleWidth-ansi.Width(pct)-2)) + pct + "──"
 
 	lines := []string{
@@ -473,14 +458,8 @@ func (a *App) detailPageLines(width, height int) []string {
 		" " + dim(rule),
 	}
 
-	end := a.detailScroll + rows
-	if end > len(a.detailLines) {
-		end = len(a.detailLines)
-	}
-	start := a.detailScroll
-	if start > end {
-		start = end
-	}
+	end := min(a.detailScroll+rows, len(a.detailLines))
+	start := min(a.detailScroll, end)
 
 	lines = append(lines, a.detailLines[start:end]...)
 
@@ -585,7 +564,7 @@ func requestURLPathText(u *url.URL) string {
 
 func highlightLines(text, lang string) []string {
 	var lines []string
-	for _, line := range strings.Split(strings.TrimRight(markdown.Highlight(text, lang), "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(markdown.Highlight(text, lang), "\n"), "\n") {
 		lines = append(lines, " "+strings.ReplaceAll(line, "\t", "  "))
 	}
 	return lines

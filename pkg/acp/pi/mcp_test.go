@@ -35,8 +35,8 @@ func TestPrepareMCPBridgeConfiguresStdioServers(t *testing.T) {
 
 	var configPath string
 	for _, value := range bridge.env {
-		if strings.HasPrefix(value, mcpConfigEnv+"=") {
-			configPath = strings.TrimPrefix(value, mcpConfigEnv+"=")
+		if after, ok := strings.CutPrefix(value, mcpConfigEnv+"="); ok {
+			configPath = after
 		}
 	}
 	if configPath == "" {

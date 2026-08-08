@@ -114,6 +114,7 @@ body {
 	overflow: hidden;
 	-webkit-font-smoothing: antialiased;
 	-moz-osx-font-smoothing: grayscale;
+	user-select: none;
 }
 
 /* Minimal scrollbars */
@@ -135,36 +136,6 @@ body {
 
 ::selection {
 	background: var(--color-selection);
-}
-
-.effort-slider {
-	appearance: none;
-	height: 3px;
-	border-radius: 9999px;
-	background: var(--color-bg-active);
-	outline: none;
-	cursor: pointer;
-}
-.effort-slider::-webkit-slider-thumb {
-	appearance: none;
-	width: 11px;
-	height: 11px;
-	border-radius: 9999px;
-	background: var(--color-fg-muted);
-	transition: background 0.15s;
-}
-.effort-slider::-webkit-slider-thumb:hover {
-	background: var(--color-fg);
-}
-.effort-slider::-moz-range-thumb {
-	width: 11px;
-	height: 11px;
-	border: none;
-	border-radius: 9999px;
-	background: var(--color-fg-muted);
-}
-.effort-slider::-moz-range-thumb:hover {
-	background: var(--color-fg);
 }
 
 /* Markdown lists: custom markers instead of native list-style so bullets and

@@ -336,7 +336,7 @@ func TestFormatForPromptEscapesXMLAndStaysWithinBudget(t *testing.T) {
 		Description: `<unsafe> & "quoted"`,
 		Location:    `.agents/skills/a&b`,
 	}}
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		skills = append(skills, Skill{Name: "large-" + strings.Repeat("x", i), Description: strings.Repeat("z", 1024)})
 	}
 	result := FormatForPrompt(skills)

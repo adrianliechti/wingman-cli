@@ -70,7 +70,7 @@ func (a *Agent) Initialize(context.Context, acp.InitializeRequest) (acp.Initiali
 		ProtocolVersion: acp.ProtocolVersionNumber,
 		AgentInfo: &acp.Implementation{
 			Name:    "pi-acp",
-			Title:   acp.Ptr("Pi (ACP)"),
+			Title:   new("Pi (ACP)"),
 			Version: "0.1.0",
 		},
 		AgentCapabilities: acp.AgentCapabilities{
@@ -301,10 +301,7 @@ func (a *Agent) ListSessions(_ context.Context, params acp.ListSessionsRequest) 
 	if offset > len(all) {
 		offset = len(all)
 	}
-	end := offset + sessionPageSize
-	if end > len(all) {
-		end = len(all)
-	}
+	end := min(offset+sessionPageSize, len(all))
 
 	sessions := make([]acp.SessionInfo, 0, end-offset)
 	for _, s := range all[offset:end] {

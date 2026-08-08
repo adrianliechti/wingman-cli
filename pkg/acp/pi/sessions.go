@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -110,10 +111,7 @@ func readTail(path string, n int64) string {
 	if err != nil {
 		return ""
 	}
-	start := st.Size() - n
-	if start < 0 {
-		start = 0
-	}
+	start := max(st.Size()-n, 0)
 	if _, err := f.Seek(start, 0); err != nil {
 		return ""
 	}
@@ -141,8 +139,8 @@ func parseSessionHeader(line string) (id, cwd string, ok bool) {
 
 func pickTitleFromTail(tail string) string {
 	lines := strings.Split(tail, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
+	for _, line := range slices.Backward(lines) {
+		line := strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
@@ -159,8 +157,8 @@ func pickTitleFromTail(tail string) string {
 
 func pickUpdatedAtFromTail(tail string) string {
 	lines := strings.Split(tail, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
+	for _, line := range slices.Backward(lines) {
+		line := strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}

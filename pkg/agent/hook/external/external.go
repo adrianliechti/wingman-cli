@@ -11,6 +11,7 @@ import (
 	"os"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -502,11 +503,9 @@ func groupMatches(matcher string, inputs []string) bool {
 		return true
 	}
 	if exactMatcher(matcher) {
-		for _, candidate := range strings.Split(matcher, "|") {
-			for _, input := range inputs {
-				if candidate == input {
-					return true
-				}
+		for candidate := range strings.SplitSeq(matcher, "|") {
+			if slices.Contains(inputs, candidate) {
+				return true
 			}
 		}
 		return false
@@ -515,12 +514,7 @@ func groupMatches(matcher string, inputs []string) bool {
 	if err != nil {
 		return false
 	}
-	for _, input := range inputs {
-		if re.MatchString(input) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(inputs, re.MatchString)
 }
 
 func exactMatcher(matcher string) bool {

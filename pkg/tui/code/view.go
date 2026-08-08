@@ -17,10 +17,7 @@ func (a *App) welcomeLines(width int) []string {
 	t := theme.Default
 
 	center := func(text string) string {
-		pad := (width - ansi.Width(text)) / 2
-		if pad < 0 {
-			pad = 0
-		}
+		pad := max((width-ansi.Width(text))/2, 0)
 		return strings.Repeat(" ", pad) + text
 	}
 
@@ -202,10 +199,7 @@ func (a *App) render() {
 			bottom = append(bottom, a.askHeader...)
 		}
 
-		maxEditorRows := height / 3
-		if maxEditorRows < 5 {
-			maxEditorRows = 5
-		}
+		maxEditorRows := max(height/3, 5)
 
 		var editorLines []string
 		editorLines, cursor = a.editor.Render(width, maxEditorRows, a.composerChrome(width))
@@ -228,10 +222,7 @@ func (a *App) render() {
 		editorStart -= drop
 	}
 
-	chatRows := height - len(bottom)
-	if chatRows < 0 {
-		chatRows = 0
-	}
+	chatRows := max(height-len(bottom), 0)
 	a.lastChatRows = chatRows
 
 	view := a.chatViewLines(width)
@@ -239,16 +230,13 @@ func (a *App) render() {
 	if a.showWelcome && len(view) == 0 {
 		welcome := a.welcomeLines(width)
 		pad := (chatRows - len(welcome)) / 2
-		for i := 0; i < pad; i++ {
+		for range pad {
 			view = append(view, "")
 		}
 		view = append(view, welcome...)
 	}
 
-	maxScroll := len(view) - chatRows
-	if maxScroll < 0 {
-		maxScroll = 0
-	}
+	maxScroll := max(len(view)-chatRows, 0)
 	a.lastMaxScroll = maxScroll
 
 	if a.follow || a.chatScroll >= maxScroll {
@@ -268,7 +256,7 @@ func (a *App) render() {
 
 	frame := make([]string, 0, height)
 
-	for i := 0; i < chatRows; i++ {
+	for i := range chatRows {
 		idx := a.chatScroll + i - topPad
 		line := ""
 		if idx >= 0 && idx < len(view) {

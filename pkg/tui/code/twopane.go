@@ -291,7 +291,7 @@ func (o *twoPaneOverlay) renderHeader(width int, detail bool) []string {
 	title := bold(o.title)
 	if detail {
 		if index := o.sourceIndex(); index >= 0 && o.searchText != nil {
-			label := strings.SplitN(o.searchText(index), "\n", 2)[0]
+			label, _, _ := strings.Cut(o.searchText(index), "\n")
 			title += dim(" › ") + ansi.Truncate(label, max(10, width/2), "…")
 		}
 	} else {
@@ -332,7 +332,7 @@ func (o *twoPaneOverlay) renderWide(width, height, rows int) []string {
 	o.listOffset = max(0, o.listOffset)
 
 	lines := o.renderHeader(width, false)
-	for row := 0; row < rows; row++ {
+	for row := range rows {
 		var left, right string
 		position := o.listOffset + row
 		if position >= 0 && position < len(o.filtered) {
@@ -376,7 +376,7 @@ func (o *twoPaneOverlay) renderNarrow(width, height, rows int) []string {
 			o.listOffset = o.selected - rows + 1
 		}
 		o.listOffset = max(0, o.listOffset)
-		for row := 0; row < rows; row++ {
+		for row := range rows {
 			position := o.listOffset + row
 			line := ""
 			if position >= 0 && position < len(o.filtered) {
@@ -395,7 +395,7 @@ func (o *twoPaneOverlay) renderNarrow(width, height, rows int) []string {
 		return lines[:min(len(lines), height)]
 	}
 
-	for row := 0; row < rows; row++ {
+	for row := range rows {
 		line := ""
 		if index := o.detailOffset + row; index < len(o.detail) {
 			line = o.detail[index]

@@ -62,8 +62,8 @@ func (t *TUI) refreshTasks() {
 }
 
 func humanSchedule(sched string) string {
-	if strings.HasPrefix(sched, "every ") {
-		d, err := time.ParseDuration(strings.TrimPrefix(sched, "every "))
+	if after, ok := strings.CutPrefix(sched, "every "); ok {
+		d, err := time.ParseDuration(after)
 		if err != nil {
 			return sched
 		}

@@ -1,6 +1,10 @@
 package codex
 
-import "github.com/coder/acp-go-sdk"
+import (
+	"slices"
+
+	"github.com/coder/acp-go-sdk"
+)
 
 type modelEntry struct {
 	ID           string
@@ -83,7 +87,7 @@ func collaborationModeConfigOption(current string) acp.SessionConfigOption {
 		{
 			Value:       planCollaborationMode,
 			Name:        "Plan",
-			Description: acp.Ptr("Plan before making changes"),
+			Description: new("Plan before making changes"),
 		},
 	}
 	opt := acp.NewSessionConfigOptionSelect(
@@ -170,12 +174,7 @@ func isValidEffort(m *modelEntry, level string) bool {
 	if level == "" || level == "default" {
 		return true
 	}
-	for _, l := range m.EffortLevels {
-		if l == level {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(m.EffortLevels, level)
 }
 
 func normalizeSessionConfig(models []modelEntry, modelID, effort string) (string, string) {

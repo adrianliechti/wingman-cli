@@ -65,7 +65,7 @@ func TestRecoverySummaryOutputRequiresActualText(t *testing.T) {
 
 func toolRoundMessages(n, resultBytes int) []Message {
 	var messages []Message
-	for i := 0; i < n; i++ {
+	for range n {
 		messages = append(messages,
 			Message{Role: RoleAssistant, Content: []Content{{ToolCall: &ToolCall{ID: "c", Name: "shell", Args: "{}"}}}},
 			Message{Role: RoleAssistant, Content: []Content{{ToolResult: &ToolResult{ID: "c", Name: "shell", Content: strings.Repeat("x", resultBytes)}}}},
@@ -121,7 +121,7 @@ func TestSplitRecoverySummarySmallTailUsesLastUserMessage(t *testing.T) {
 
 func TestSplitRecoverySummaryCountsFileContent(t *testing.T) {
 	messages := []Message{{Role: RoleUser, Content: []Content{{Text: "task"}}}}
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		messages = append(messages, Message{Role: RoleAssistant, Content: []Content{{File: &File{Data: strings.Repeat("a", 8*1024)}}}})
 	}
 

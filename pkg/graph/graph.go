@@ -132,10 +132,7 @@ func (g *Graph) searchPage(opts SearchOpts) SearchResult {
 	if limit <= 0 {
 		limit = 50
 	}
-	offset := opts.Offset
-	if offset < 0 {
-		offset = 0
-	}
+	offset := max(opts.Offset, 0)
 
 	var rx *regexp.Regexp
 	if opts.Query != "" {
@@ -179,10 +176,7 @@ func (g *Graph) searchPage(opts SearchOpts) SearchResult {
 	if offset > total {
 		offset = total
 	}
-	end := offset + limit
-	if end > total {
-		end = total
-	}
+	end := min(offset+limit, total)
 	page := out[offset:end]
 	nodes := make([]*Node, len(page))
 	for i, s := range page {

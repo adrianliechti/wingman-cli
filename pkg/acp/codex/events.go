@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"strings"
 	"sync"
@@ -688,9 +689,7 @@ func (d *eventDispatcher) flushPendingPlanUpdates(ctx context.Context) {
 	}
 	d.planMu.Lock()
 	pending := make(map[string]string, len(d.planText))
-	for itemID, text := range d.planText {
-		pending[itemID] = text
-	}
+	maps.Copy(pending, d.planText)
 	d.planMu.Unlock()
 	for itemID, text := range pending {
 		d.emitMarkdownPlan(ctx, itemID, text)
@@ -902,7 +901,7 @@ func isUnifiedDiff(s string) bool {
 func splitUnifiedDiff(diff string) (oldText, newText string) {
 	var oldLines, newLines []string
 	inHunk := false
-	for _, line := range strings.Split(diff, "\n") {
+	for line := range strings.SplitSeq(diff, "\n") {
 		switch {
 		case strings.HasPrefix(line, "@@"):
 			inHunk = true

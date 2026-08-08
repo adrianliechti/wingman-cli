@@ -66,7 +66,7 @@ type historyHeader struct {
 	Type    string               `json:"type"`
 	AITitle string               `json:"aiTitle,omitempty"`
 	Cwd     string               `json:"cwd,omitempty"`
-	Message historyHeaderMessage `json:"message,omitempty"`
+	Message historyHeaderMessage `json:"message"`
 }
 
 type historyHeaderMessage struct {
@@ -91,6 +91,7 @@ func scanSessionModel(path string) string {
 			model = h.Message.Model
 		}
 	}
+	_ = scanner.Err()
 	return model
 }
 
@@ -235,6 +236,7 @@ func scanSessionMetadata(path string) (title, cwd string) {
 			}
 		}
 	}
+	_ = scanner.Err()
 	if latestAITitle != "" {
 		return latestAITitle, cwd
 	}

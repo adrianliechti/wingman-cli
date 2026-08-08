@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	pathpkg "path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
@@ -172,10 +173,8 @@ func (a *App) applyContextSelection(images []agent.Content, files []fileMatch, i
 }
 
 func (a *App) addFileToContext(path string) error {
-	for _, existing := range a.pendingFiles {
-		if existing == path {
-			return nil
-		}
+	if slices.Contains(a.pendingFiles, path) {
+		return nil
 	}
 	a.pendingFiles = append(a.pendingFiles, path)
 
@@ -195,7 +194,7 @@ func (a *App) attachmentLines(width int) []string {
 	}
 
 	var labels []string
-	for i := 0; i < images; i++ {
+	for i := range images {
 		labels = append(labels, fmt.Sprintf("image %d", i+1))
 	}
 	for _, path := range a.pendingFiles {

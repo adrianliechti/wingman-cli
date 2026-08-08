@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/hook/external"
@@ -88,10 +89,8 @@ func resolveManifestPath(root, field, value string) (string, error) {
 		return "", fmt.Errorf("%s path %q must start with ./ and use portable separators", field, value)
 	}
 	if strings.Contains(strings.TrimPrefix(value, "./"), "..") {
-		for _, component := range strings.Split(strings.TrimPrefix(value, "./"), "/") {
-			if component == ".." {
-				return "", fmt.Errorf("%s path %q must not contain ..", field, value)
-			}
+		if slices.Contains(strings.Split(strings.TrimPrefix(value, "./"), "/"), "..") {
+			return "", fmt.Errorf("%s path %q must not contain ..", field, value)
 		}
 	}
 	resolved, err := resolvePath(filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(value, "./"))))

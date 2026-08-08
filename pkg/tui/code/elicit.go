@@ -418,7 +418,7 @@ func parseElicitValue(field tool.ElicitField, text string) (any, bool) {
 
 	if field.Multiple && len(field.Enum) > 0 {
 		picks := make([]string, 0, 4)
-		for _, part := range strings.Split(text, ",") {
+		for part := range strings.SplitSeq(text, ",") {
 			part = strings.TrimSpace(part)
 			if part == "" {
 				continue

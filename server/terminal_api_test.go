@@ -17,8 +17,7 @@ import (
 func TestTerminalAPI(t *testing.T) {
 	t.Setenv("WINGMAN_URL", "http://localhost:1")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	app, err := New(ctx, t.TempDir(), &ServerOptions{NoBrowser: true})
 	if err != nil {
