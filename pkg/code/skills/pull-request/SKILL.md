@@ -6,7 +6,7 @@ description: Prepare, push, create, or update a pull request from the current wo
 
 Turn the intended local work into a reviewable pull request. This workflow may create a branch, commit intended changes, push that branch, and create or update its pull request. Never force-push, merge, approve, add labels, or post review comments unless separately requested.
 
-`${ARGUMENTS}` is an optional title or intent hint.
+Treat `$ARGUMENTS` as an optional title or intent hint.
 
 ## Phase 1: Inspect
 
@@ -27,7 +27,7 @@ Review public APIs, CLI behavior, configuration, persisted data, migrations, doc
 
 ## Phase 3: Prepare git history
 
-If on the default branch with uncommitted intended work, create a concise descriptive branch. Stage explicit paths only and inspect `git diff --cached`. Commit using the repository's message style, incorporating `${ARGUMENTS}` when useful. Preserve existing commits and staged work; never amend or rewrite history.
+If on the default branch with uncommitted intended work, create a concise descriptive branch. Stage explicit paths only and inspect `git diff --cached`. Commit using the repository's message style, incorporating `$ARGUMENTS` when useful. Preserve existing commits and staged work; never amend or rewrite history.
 
 If there is nothing new to commit, continue only when the branch already contains commits absent from the base. Push with upstream tracking. Never use a force option.
 

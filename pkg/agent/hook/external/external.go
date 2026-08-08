@@ -9,9 +9,9 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -87,7 +87,6 @@ type MatcherGroup struct {
 type Handler struct {
 	Type                   string            `json:"type"`
 	Command                string            `json:"command,omitempty"`
-	Args                   []string          `json:"args,omitempty"`
 	CommandWindows         string            `json:"commandWindows,omitempty"`
 	CommandWindowsSnake    string            `json:"command_windows,omitempty"`
 	Server                 string            `json:"server,omitempty"`
@@ -98,7 +97,7 @@ type Handler struct {
 	URL                    string            `json:"url,omitempty"`
 	Headers                map[string]string `json:"headers,omitempty"`
 	AllowedEnvVars         []string          `json:"allowedEnvVars,omitempty"`
-	Timeout                int               `json:"timeout,omitempty"`
+	Timeout                *int              `json:"timeout,omitempty"`
 	Async                  bool              `json:"async,omitempty"`
 	StatusMessage          string            `json:"statusMessage,omitempty"`
 	AdditionalContextLimit *int              `json:"additionalContextLimit,omitempty"`
@@ -147,6 +146,12 @@ func Parse(name string, data []byte) (*Config, error) {
 	if err := decoder.Decode(&parsed); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", name, err)
 	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("parse %s: trailing JSON value", name)
+		}
+		return nil, fmt.Errorf("parse %s: %w", name, err)
+	}
 	if err := parsed.validate(); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", name, err)
 	}
@@ -160,6 +165,12 @@ func (c *Config) validate() error {
 				return fmt.Errorf("%s matcher group %d has invalid regex %q", event.name, groupIndex, group.Matcher)
 			}
 			for handlerIndex, handler := range group.Hooks {
+				if handler.Timeout != nil && *handler.Timeout < 0 {
+					return fmt.Errorf("%s handler %d:%d has a negative timeout", event.name, groupIndex, handlerIndex)
+				}
+				if handler.AdditionalContextLimit != nil && *handler.AdditionalContextLimit < 0 {
+					return fmt.Errorf("%s handler %d:%d has a negative additionalContextLimit", event.name, groupIndex, handlerIndex)
+				}
 				switch handler.Type {
 				case "command":
 					if handler.Command == "" {
@@ -328,9 +339,9 @@ func runEvent(ctx context.Context, workDir string, options BuildOptions, event s
 	var synchronous []selectedHandler
 	for _, selected := range selected {
 		if selected.handler.Async {
-			// Codex accepts this field but its documented runtime does not yet
-			// execute async hooks. Skip it instead of implying stronger delivery,
-			// cancellation, or output semantics than Wingman can guarantee.
+			// The released Codex runtime parses this field but does not execute
+			// async hooks yet. Avoid partial semantics that discard completion
+			// output or outlive session teardown differently from Codex.
 			continue
 		}
 		synchronous = append(synchronous, selected)
@@ -349,16 +360,21 @@ func runEvent(ctx context.Context, workDir string, options BuildOptions, event s
 		result.completionOrder = completionOrder
 		results = append(results, result)
 	}
+	// Codex reports and aggregates in configured order even though handlers run
+	// concurrently. completionOrder remains attached for rewrite arbitration.
+	sort.SliceStable(results, func(i, j int) bool {
+		return results[i].configuredOrder < results[j].configuredOrder
+	})
 	return results
 }
 
 func (h Handler) run(ctx context.Context, workDir, event string, input []byte, environment map[string]string) runResult {
-	timeoutSeconds := h.Timeout
-	if timeoutSeconds <= 0 {
-		timeoutSeconds = defaultTimeout
-		if event == "SessionEnd" {
-			timeoutSeconds = sessionEndTimeout
-		}
+	timeoutSeconds := defaultTimeout
+	if event == "SessionEnd" {
+		timeoutSeconds = sessionEndTimeout
+	}
+	if h.Timeout != nil {
+		timeoutSeconds = max(*h.Timeout, 1)
 	}
 	if event == "SessionEnd" && timeoutSeconds > 3 {
 		timeoutSeconds = 3
@@ -376,17 +392,7 @@ func (h Handler) run(ctx context.Context, workDir, event string, input []byte, e
 			command = h.CommandWindowsSnake
 		}
 	}
-	var cmd *exec.Cmd
-	if len(h.Args) > 0 {
-		args := make([]string, len(h.Args))
-		for i, arg := range h.Args {
-			args[i] = expandHookEnvironment(arg, environment)
-		}
-		cmd = exec.CommandContext(ctx, expandHookEnvironment(command, environment), args...)
-		cmd.Dir = workDir
-	} else {
-		cmd = shell.Command(ctx, command, workDir)
-	}
+	cmd := shell.Command(ctx, command, workDir)
 	if len(environment) > 0 {
 		cmd.Env = mergedEnvironment(os.Environ(), environment)
 	}
@@ -400,18 +406,6 @@ func (h Handler) run(ctx context.Context, workDir, event string, input []byte, e
 		exitCode = cmd.ProcessState.ExitCode()
 	}
 	return runResult{exitCode: exitCode, stdout: limit(stdout.String()), stderr: limit(stderr.String()), err: nonExitError(err)}
-}
-
-var hookEnvironmentPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
-
-func expandHookEnvironment(value string, environment map[string]string) string {
-	return hookEnvironmentPattern.ReplaceAllStringFunc(value, func(match string) string {
-		name := hookEnvironmentPattern.FindStringSubmatch(match)[1]
-		if replacement, ok := environment[name]; ok {
-			return replacement
-		}
-		return match
-	})
 }
 
 func mergedEnvironment(base []string, overrides map[string]string) []string {
@@ -539,27 +533,27 @@ func exactMatcher(matcher string) bool {
 }
 
 type wireOutput struct {
-	Continue           *bool              `json:"continue,omitempty"`
-	StopReason         string             `json:"stopReason,omitempty"`
-	SuppressOutput     bool               `json:"suppressOutput,omitempty"`
-	SystemMessage      string             `json:"systemMessage,omitempty"`
-	Decision           string             `json:"decision,omitempty"`
-	Reason             string             `json:"reason,omitempty"`
-	HookSpecificOutput hookSpecificOutput `json:"hookSpecificOutput,omitempty"`
+	Continue           *bool               `json:"continue,omitempty"`
+	StopReason         *string             `json:"stopReason,omitempty"`
+	SuppressOutput     bool                `json:"suppressOutput,omitempty"`
+	SystemMessage      *string             `json:"systemMessage,omitempty"`
+	Decision           *string             `json:"decision,omitempty"`
+	Reason             *string             `json:"reason,omitempty"`
+	HookSpecificOutput *hookSpecificOutput `json:"hookSpecificOutput,omitempty"`
 }
 
 type hookSpecificOutput struct {
 	HookEventName            string              `json:"hookEventName"`
-	PermissionDecision       string              `json:"permissionDecision,omitempty"`
-	PermissionDecisionReason string              `json:"permissionDecisionReason,omitempty"`
+	PermissionDecision       *string             `json:"permissionDecision,omitempty"`
+	PermissionDecisionReason *string             `json:"permissionDecisionReason,omitempty"`
 	UpdatedInput             json.RawMessage     `json:"updatedInput,omitempty"`
-	AdditionalContext        string              `json:"additionalContext,omitempty"`
+	AdditionalContext        *string             `json:"additionalContext,omitempty"`
 	Decision                 *permissionDecision `json:"decision,omitempty"`
 }
 
 type permissionDecision struct {
-	Behavior string `json:"behavior"`
-	Message  string `json:"message,omitempty"`
+	Behavior string  `json:"behavior"`
+	Message  *string `json:"message,omitempty"`
 }
 
 type parsedResult struct {
@@ -599,55 +593,151 @@ func parseResult(event string, result runResult) parsedResult {
 		}
 		return parsedResult{}
 	}
-	specific := output.HookSpecificOutput
-	hasSpecific := specific.HookEventName != "" ||
-		specific.PermissionDecision != "" ||
-		specific.PermissionDecisionReason != "" ||
-		len(specific.UpdatedInput) > 0 ||
-		specific.AdditionalContext != "" ||
-		specific.Decision != nil
-	if hasSpecific && specific.HookEventName != event {
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return parsedResult{}
 	}
+	if !validWireOutput(event, output) {
+		return parsedResult{}
+	}
+	specific := output.HookSpecificOutput
 	parsed := parsedResult{}
 	if output.Continue != nil && !*output.Continue {
 		switch event {
 		case "PreToolUse", "PermissionRequest", "SubagentStart":
 		default:
 			parsed.Stop = true
-			parsed.Reason = strings.TrimSpace(output.StopReason)
+			if output.StopReason != nil {
+				parsed.Reason = strings.TrimSpace(*output.StopReason)
+			}
 		}
 	}
-	if context := strings.TrimSpace(output.HookSpecificOutput.AdditionalContext); context != "" {
-		parsed.AdditionalContext = append(parsed.AdditionalContext, context)
+	if specific != nil && specific.AdditionalContext != nil {
+		if context := strings.TrimSpace(*specific.AdditionalContext); context != "" {
+			parsed.AdditionalContext = append(parsed.AdditionalContext, context)
+		}
 	}
 	switch event {
 	case "PreToolUse":
-		if output.HookSpecificOutput.PermissionDecision == "deny" {
+		if specific != nil && specific.PermissionDecision != nil && *specific.PermissionDecision == "deny" {
 			parsed.Block = true
-			parsed.Reason = strings.TrimSpace(output.HookSpecificOutput.PermissionDecisionReason)
-		} else if output.Decision == "block" {
+			parsed.Reason = strings.TrimSpace(*specific.PermissionDecisionReason)
+		} else if output.Decision != nil && *output.Decision == "block" {
 			parsed.Block = true
-			parsed.Reason = strings.TrimSpace(output.Reason)
-		} else if output.HookSpecificOutput.PermissionDecision == "allow" && len(output.HookSpecificOutput.UpdatedInput) > 0 {
-			parsed.updatedInput = output.HookSpecificOutput.UpdatedInput
+			parsed.Reason = strings.TrimSpace(*output.Reason)
+		} else if specific != nil && specific.PermissionDecision != nil && *specific.PermissionDecision == "allow" {
+			parsed.updatedInput = specific.UpdatedInput
 		}
 	case "PermissionRequest":
-		if decision := output.HookSpecificOutput.Decision; decision != nil {
+		if decision := specific.Decision; decision != nil {
 			switch decision.Behavior {
 			case "allow":
 				parsed.permission.Behavior = hook.PermissionAllow
 			case "deny":
-				parsed.permission = hook.PermissionRequestOutcome{Behavior: hook.PermissionDeny, Message: strings.TrimSpace(decision.Message)}
+				message := "PermissionRequest hook denied approval"
+				if decision.Message != nil && strings.TrimSpace(*decision.Message) != "" {
+					message = strings.TrimSpace(*decision.Message)
+				}
+				parsed.permission = hook.PermissionRequestOutcome{Behavior: hook.PermissionDeny, Message: message}
 			}
 		}
 	case "PostToolUse", "UserPromptSubmit", "SubagentStop", "Stop":
-		if output.Decision == "block" && strings.TrimSpace(output.Reason) != "" {
+		if !parsed.Stop && output.Decision != nil && *output.Decision == "block" {
 			parsed.Block = true
-			parsed.Reason = strings.TrimSpace(output.Reason)
+			parsed.Reason = strings.TrimSpace(*output.Reason)
 		}
 	}
 	return parsed
+}
+
+// validWireOutput applies Codex's event-specific output schemas and semantic
+// checks while retaining one small shared decoder.
+func validWireOutput(event string, output wireOutput) bool {
+	specific := output.HookSpecificOutput
+	if specific != nil && specific.HookEventName != event {
+		return false
+	}
+	continueProcessing := output.Continue == nil || *output.Continue
+	unsupportedControl := !continueProcessing || output.StopReason != nil || output.SuppressOutput
+	hasPermissionFields := specific != nil && (specific.PermissionDecision != nil ||
+		specific.PermissionDecisionReason != nil || len(specific.UpdatedInput) > 0)
+	hasPermissionRequestDecision := specific != nil && specific.Decision != nil
+	hasContext := specific != nil && specific.AdditionalContext != nil
+
+	switch event {
+	case "PreToolUse":
+		if unsupportedControl || hasPermissionRequestDecision {
+			return false
+		}
+		if hasPermissionFields {
+			if specific.PermissionDecision == nil {
+				return false
+			}
+			switch *specific.PermissionDecision {
+			case "allow":
+				return len(specific.UpdatedInput) > 0
+			case "deny":
+				return len(specific.UpdatedInput) == 0 && specific.PermissionDecisionReason != nil && strings.TrimSpace(*specific.PermissionDecisionReason) != ""
+			default:
+				return false
+			}
+		}
+		if output.Decision == nil {
+			return output.Reason == nil
+		}
+		return *output.Decision == "block" && output.Reason != nil && strings.TrimSpace(*output.Reason) != ""
+
+	case "PermissionRequest":
+		if unsupportedControl || output.Decision != nil || output.Reason != nil || hasPermissionFields || hasContext || specific == nil || specific.Decision == nil {
+			return false
+		}
+		return specific.Decision.Behavior == "allow" || specific.Decision.Behavior == "deny"
+
+	case "PostToolUse":
+		if hasPermissionFields || hasPermissionRequestDecision {
+			return false
+		}
+		if !continueProcessing {
+			return output.Decision == nil || *output.Decision == "block"
+		}
+		if output.SuppressOutput {
+			return false
+		}
+		if output.Decision == nil {
+			return output.Reason == nil
+		}
+		return *output.Decision == "block" && output.Reason != nil && strings.TrimSpace(*output.Reason) != ""
+
+	case "UserPromptSubmit":
+		if hasPermissionFields || hasPermissionRequestDecision {
+			return false
+		}
+		if !continueProcessing {
+			return output.Decision == nil || *output.Decision == "block"
+		}
+		if output.Decision == nil {
+			return true
+		}
+		return *output.Decision == "block" && output.Reason != nil && strings.TrimSpace(*output.Reason) != ""
+
+	case "SessionStart", "SubagentStart":
+		return output.Decision == nil && output.Reason == nil && !hasPermissionFields && !hasPermissionRequestDecision
+
+	case "Stop", "SubagentStop":
+		if specific != nil {
+			return false
+		}
+		if !continueProcessing {
+			return output.Decision == nil || *output.Decision == "block"
+		}
+		if output.Decision == nil {
+			return specific == nil && output.Decision == nil
+		}
+		return *output.Decision == "block" && output.Reason != nil && strings.TrimSpace(*output.Reason) != ""
+
+	case "PreCompact", "PostCompact":
+		return specific == nil && output.Decision == nil && output.Reason == nil
+	}
+	return false
 }
 
 func aggregate(event string, results []runResult) parsedResult {
@@ -721,12 +811,12 @@ func toolWire(call tool.ToolCall) (string, map[string]any, []string) {
 			input["command"] = command
 			delete(input, "cmd")
 		}
-	case "write":
-		name = "Write"
-	case "edit":
-		name = "Edit"
 	case "agent":
 		name = "Agent"
+	case "write":
+		aliases = append(aliases, "Write", "apply_patch")
+	case "edit":
+		aliases = append(aliases, "Edit", "apply_patch")
 	}
 	aliases = append(aliases, name)
 	return name, input, aliases

@@ -362,12 +362,13 @@ Run tests with: `go test -cover ./...`
 ```
 
 Place this file at `.wingman/skills/run-tests/SKILL.md` and invoke it with `/run-tests`.
-
-Skills support argument placeholders (`${ARGUMENTS}`, `${1}`, `${2}`, and so on) for parameterized workflows.
+Wingman supports Claude-style skill arguments: `$ARGUMENTS`, zero-based `$ARGUMENTS[N]`, and `$N`; non-empty arguments are appended as `ARGUMENTS: <value>` when no argument placeholder is present. The optional Claude extensions `arguments` (a space-separated string or string list) and `argument-hint` enable named positional substitutions such as `$component` and display `/skill [component]` hints in the UI. `${SKILL_DIR}` and `${PROJECT_DIR}` provide neutral directory variables, with `${CLAUDE_SKILL_DIR}` and `${CLAUDE_PROJECT_DIR}` accepted as compatibility aliases. The two extra frontmatter fields are intentionally non-portable and therefore rejected in Agent Plugin skills.
 
 A skill may keep any supporting files next to `SKILL.md`. Common conventions are `references/` for selectively loaded guidance, `assets/` for files to copy or transform, `templates/` and `examples/` for reusable inputs, and `scripts/` for deterministic helpers. Wingman copies the complete directory tree for built-in skills, including dotfiles and underscore-prefixed resources.
 
 Scripts run through Wingman's normal shell command path and its approval policy. Wingman does not infer dependencies or automatically create a virtual environment, so a skill that needs Python packages should document a reproducible command such as `uv run`, a lockfile-backed environment, or explicit venv setup.
+
+A ready-to-copy resource-backed skill with metadata, named arguments, directory variables, a reference, and a helper script lives in [`examples/skills/run-tests`](examples/skills/run-tests).
 
 ## 🪝 Hooks
 
@@ -379,22 +380,30 @@ See the [Codex hooks reference](https://learn.chatgpt.com/docs/hooks) for the co
 
 ## 🧩 Plugins
 
-A plugin bundles skills, MCP servers, and optional lifecycle hooks. Wingman implements the portable [Agent Plugins specification](https://agent-plugins.org) v1.0.0 and also loads Codex/Claude-compatible plugin manifests.
+A plugin bundles skills, MCP servers, and optional lifecycle hooks. Wingman implements the portable [Agent Plugins specification](https://agent-plugins.org) v1.0.0.
 
 Drop a plugin directory into any of these, project before personal, first name wins:
 
 - `.wingman/plugins/<name>/`, `.agents/plugins/<name>/`, `.claude/plugins/<name>/` (project)
 - `~/.wingman/plugins/<name>/`, `~/.agents/plugins/<name>/`, `~/.claude/plugins/<name>/` (personal)
 
-A portable Agent Plugin is a directory with a `plugin.json` manifest and two standard component types:
+A portable Agent Plugin starts with a `plugin.json` manifest and two standard component types. A complete package can also carry resources and client-owned extensions such as hooks:
 
 ```text
 release-tools/
 ├── plugin.json                        # required manifest
+├── mcp.json                           # MCP servers this plugin provides
+├── hooks/
+│   └── hooks.json                     # declared through extensions.com.openai
+├── scripts/
+│   └── release-context.sh             # hook helper
+├── templates/
+│   └── changelog.md                   # shared plugin resource
 ├── skills/
 │   └── release-check/
-│       └── SKILL.md                   # one skill per immediate subdirectory
-└── mcp.json                           # MCP servers this plugin provides
+│       ├── SKILL.md                   # one skill per immediate subdirectory
+│       └── references/
+│           └── release-policy.md      # skill-local resource
 ```
 
 ```json
@@ -406,17 +415,15 @@ release-tools/
 }
 ```
 
-`name` must be lowercase alphanumerics, hyphens, and periods. A manifest that violates the schema is rejected and reported; an unknown top-level field is reported and ignored so a plugin written for another client still loads.
+`name` must be lowercase alphanumerics, hyphens, and periods. A manifest that violates the schema is rejected and reported. As explicit non-fatal exceptions, unknown top-level fields and a non-object `extensions` value are reported and ignored; unknown reverse-domain extension namespaces remain opaque.
 
-Wingman also recognizes `.codex-plugin/plugin.json`, `.claude-plugin/plugin.json`, and `.cursor-plugin/plugin.json`, in that order. These compatibility manifests can declare `skills` and `hooks` paths relative to the plugin root. Codex-style plugins use recursive skill discovery; portable Agent Plugins use only immediate children of `skills/`, as required by the portable specification. Every loaded `SKILL.md` is validated against the Agent Skills name, directory-name, description, compatibility, and frontmatter constraints.
+Only `plugin.json` is a plugin manifest. Native `.codex-plugin`, `.claude-plugin`, and `.cursor-plugin` manifests are not loaded. Skills are read only from immediate subdirectories of `skills/`, and MCP servers only from `mcp.json`, as defined by the portable specification. Every loaded `SKILL.md` is validated against the Agent Skills name, directory-name, description, compatibility, and frontmatter constraints.
 
 ### Plugin hooks
 
-Codex/Claude-compatible plugins can put hooks in `hooks/hooks.json` or declare `hooks` in their compatibility manifest. Wingman accepts a single `./` path, an array of paths, an inline hooks object, or an array of inline objects. Manifest paths must remain inside the resolved plugin root.
+A plugin can supply a Codex hook declaration under the client-owned `extensions.com.openai.hooks` field. Wingman accepts a single `./` path, an array of paths, an inline hooks object, or an array of inline objects. Manifest paths must remain inside the resolved plugin root. `com.openai` is a namespaced Agent Plugins extension defined by Codex, not a portable Agent Plugins core field; no hook file is loaded implicitly.
 
-A portable Agent Plugin keeps its closed top-level schema and can supply the same Codex hook declaration under the client-owned `extensions.com.openai` object. Wingman also reads a `.codex-plugin/plugin.json` compatibility overlay when that extension is absent. `com.openai` is a Codex convention, not a portable Agent Plugins field.
-
-Plugin hook commands receive `PLUGIN_ROOT`, `PLUGIN_DATA`, `CLAUDE_PLUGIN_ROOT`, and `CLAUDE_PLUGIN_DATA`. The plugin data directory is created before hooks run. Plugin hooks are untrusted code: Wingman asks once per session before the first matching hook from each plugin executes.
+Plugin hook commands receive `PLUGIN_ROOT` and `PLUGIN_DATA`. The plugin data directory is created before hooks run. Plugin hooks are untrusted code: Wingman asks once per session before the first matching hook from each plugin executes.
 
 ### Plugin MCP servers
 

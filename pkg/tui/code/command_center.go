@@ -93,7 +93,7 @@ func (a *App) showCommandCenter() {
 	for _, cmd := range a.skillCommands() {
 		command := cmd
 		add(PopupItem{
-			ID: "skill:" + command.Name, Label: command.Name, Detail: command.Desc,
+			ID: "skill:" + command.Name, Label: command.Label(), Detail: command.Desc,
 			Group: "Skills", Keywords: "workflow skill", Disabled: busy,
 			DisabledReason: "available when the current turn finishes",
 		}, func() { a.insertPaletteCommand(command.Name) })

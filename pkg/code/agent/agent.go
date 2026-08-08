@@ -705,10 +705,8 @@ func (a *Agent) buildSession() *sessionState {
 		sessionCfg.Hooks.Append(p.Hooks.BuildWithOptions(ws.RootPath, external.BuildOptions{
 			Gate: pluginGate,
 			Environment: map[string]string{
-				"PLUGIN_ROOT":        p.Root,
-				"PLUGIN_DATA":        p.Data,
-				"CLAUDE_PLUGIN_ROOT": p.Root,
-				"CLAUDE_PLUGIN_DATA": p.Data,
+				"PLUGIN_ROOT": p.Root,
+				"PLUGIN_DATA": p.Data,
 			},
 		}))
 	}

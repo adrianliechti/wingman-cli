@@ -2,9 +2,9 @@ package skill
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
-	"unicode"
 )
 
 type Invocation struct {
@@ -16,40 +16,37 @@ type Invocation struct {
 // deliberately excludes dots so a sentence-final "/deploy." still resolves.
 var inlinePattern = regexp.MustCompile(`(^|\s)(?:/|\$)([A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*:[A-Za-z0-9][A-Za-z0-9_-]*|[A-Za-z0-9][A-Za-z0-9_-]*)`)
 
-// ParseCommand splits a leading "/name args" or Codex "$name args"
-// invocation; args keep their
-// original spacing and may span lines.
-func ParseCommand(text string) (string, string, bool) {
-	if !strings.HasPrefix(text, "/") && !strings.HasPrefix(text, "$") {
-		return "", "", false
+// ParseSlashCommand returns the name of a leading Wingman slash command.
+func ParseSlashCommand(text string) (string, bool) {
+	if !strings.HasPrefix(text, "/") {
+		return "", false
 	}
 	rest := text[1:]
 	if i := strings.IndexAny(rest, " \t\n"); i >= 0 {
-		return rest[:i], rest[i+1:], true
+		return rest[:i], true
 	}
-	return rest, "", true
+	return rest, true
 }
 
-// Invocations returns every skill text invokes: the whole text as a leading
-// "/name args" command, or /name mentions anywhere inside it, deduplicated in
-// order of first appearance. A mention only counts when the slash starts a
+// Invocations returns every /skill or Codex $skill mention, deduplicated in
+// order of first appearance. A mention only counts when its sigil starts a
 // word, so paths and URLs never match.
 func Invocations(text string, skills []Skill) []Invocation {
-	if invocations, ok := stackedInvocations(text, skills); ok {
-		return invocations
-	}
-	if name, args, ok := ParseCommand(text); ok {
-		if s := FindSkill(name, skills); userCanInvoke(s) {
-			return []Invocation{{Skill: s, Args: args}}
-		}
-	}
-
 	var invs []Invocation
 	seen := make(map[string]bool)
 
+	// Claude-style leading slash invocations may be stacked. The text after the
+	// last recognized leading skill is passed unchanged to each stacked skill.
+	leading, args := leadingInvocations(text, skills)
+	for _, s := range leading {
+		key := strings.ToLower(s.Qualified())
+		seen[key] = true
+		invs = append(invs, Invocation{Skill: s, Args: args})
+	}
+
 	for _, m := range inlinePattern.FindAllStringSubmatch(text, -1) {
 		s := FindSkill(m[2], skills)
-		if !userCanInvoke(s) {
+		if s == nil {
 			continue
 		}
 		key := strings.ToLower(s.Qualified())
@@ -63,44 +60,34 @@ func Invocations(text string, skills []Skill) []Invocation {
 	return invs
 }
 
-func stackedInvocations(text string, skills []Skill) ([]Invocation, bool) {
-	if !strings.HasPrefix(text, "/") {
-		return nil, false
-	}
-	rest := text
-	var invocations []Invocation
-	for len(invocations) < 6 && strings.HasPrefix(rest, "/") {
-		end := strings.IndexFunc(rest, unicode.IsSpace)
-		if end < 0 {
-			end = len(rest)
+func leadingInvocations(text string, skills []Skill) ([]*Skill, string) {
+	const maxStacked = 6
+	position := 0
+	var leading []*Skill
+
+	for len(leading) < maxStacked && position < len(text) && text[position] == '/' {
+		end := position + 1
+		for end < len(text) && !strings.ContainsRune(" \t\r\n", rune(text[end])) {
+			end++
 		}
-		name := rest[1:end]
-		found := FindSkill(name, skills)
-		if !userCanInvoke(found) {
+		s := FindSkill(text[position+1:end], skills)
+		if s == nil {
 			break
 		}
-		invocations = append(invocations, Invocation{Skill: found})
-		rest = strings.TrimLeftFunc(rest[end:], unicode.IsSpace)
-		if found.Context == "fork" {
-			break
+		leading = append(leading, s)
+		position = end
+		for position < len(text) && strings.ContainsRune(" \t\r\n", rune(text[position])) {
+			position++
 		}
 	}
-	if len(invocations) == 0 {
-		return nil, false
+	if len(leading) == 0 {
+		return nil, ""
 	}
-	for i := range invocations {
-		invocations[i].Args = rest
-	}
-	return invocations, true
+	return leading, text[position:]
 }
 
-func userCanInvoke(skill *Skill) bool {
-	return skill != nil && (skill.UserInvocable == nil || *skill.UserInvocable)
-}
-
-// Instructions loads and expands the invoked skill into the
-// <skill-instructions> block that is attached (hidden) to the message
-// invoking it.
+// Instructions loads the invoked skill into the <skill-instructions> block
+// attached (hidden) to the message invoking it.
 func (inv Invocation) Instructions(workDir string) (string, error) {
 	s := inv.Skill
 
@@ -109,9 +96,14 @@ func (inv Invocation) Instructions(workDir string) (string, error) {
 		return "", err
 	}
 
-	skillDir := s.AbsoluteDir(workDir)
-	content = s.applyArguments(content, inv.Args, skillDir, workDir)
-
+	projectDir := workDir
+	if projectDir != "" {
+		if absolute, err := filepath.Abs(projectDir); err == nil {
+			projectDir = absolute
+		}
+	}
+	skillDir := s.AbsoluteDir(projectDir)
+	content = s.ApplySubstitutions(content, inv.Args, skillDir, projectDir)
 	source := ""
 	if skillDir != "" {
 		source = fmt.Sprintf("\nSkill directory: %s. Resolve relative resources from this directory.", skillDir)
@@ -119,5 +111,5 @@ func (inv Invocation) Instructions(workDir string) (string, error) {
 
 	name := s.Qualified()
 
-	return fmt.Sprintf("<skill-instructions skill=%q>\nThe user invoked the /%s skill; follow these instructions for this request.%s\n\n%s\n</skill-instructions>", name, name, source, content), nil
+	return fmt.Sprintf("<skill-instructions skill=%q>\nThe user invoked the %s skill; follow these instructions for this request.%s\n\n%s\n</skill-instructions>", name, name, source, content), nil
 }

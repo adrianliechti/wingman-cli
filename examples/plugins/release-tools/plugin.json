@@ -10,5 +10,10 @@
   "homepage": "https://example.com/release-tools",
   "repository": "https://github.com/example/release-tools",
   "license": "MIT",
-  "keywords": ["release", "checklist"]
+  "keywords": ["release", "checklist"],
+  "extensions": {
+    "com.openai": {
+      "hooks": "./hooks/hooks.json"
+    }
+  }
 }

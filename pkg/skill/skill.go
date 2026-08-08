@@ -8,41 +8,21 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
-	"slices"
 	"strconv"
 	"strings"
-	"unicode"
 
-	"github.com/bmatcuk/doublestar/v4"
 	"go.yaml.in/yaml/v4"
 )
 
 type Skill struct {
-	Name            string            `yaml:"name"`
-	DisplayName     string            `yaml:"-"`
-	Description     string            `yaml:"description"`
-	License         string            `yaml:"license"`
-	Compatibility   string            `yaml:"compatibility"`
-	Metadata        map[string]string `yaml:"metadata"`
-	ClaudeMetadata  map[string]any    `yaml:"-"`
-	AllowedTools    []string          `yaml:"allowed-tools"`
-	DisallowedTools []string          `yaml:"disallowed-tools"`
-
-	WhenToUse               string   `yaml:"when_to_use"`
-	ArgumentHint            string   `yaml:"argument-hint"`
-	Arguments               []string `yaml:"arguments"`
-	DisableModelInvocation  bool     `yaml:"disable-model-invocation"`
-	AllowImplicitInvocation *bool    `yaml:"-"`
-	UserInvocable           *bool    `yaml:"user-invocable"`
-	Model                   string   `yaml:"model"`
-	Effort                  string   `yaml:"effort"`
-	Context                 string   `yaml:"context"`
-	Agent                   string   `yaml:"agent"`
-	Background              *bool    `yaml:"background"`
-	Paths                   []string `yaml:"paths"`
-	Shell                   string   `yaml:"shell"`
-	Hooks                   any      `yaml:"hooks"`
+	Name          string            `yaml:"name"`
+	Description   string            `yaml:"description"`
+	License       string            `yaml:"license"`
+	Compatibility string            `yaml:"compatibility"`
+	Metadata      map[string]string `yaml:"metadata"`
+	AllowedTools  []string          `yaml:"allowed-tools"`
+	Arguments     []string          `yaml:"-"`
+	ArgumentHint  string            `yaml:"-"`
 
 	Location string `yaml:"-"`
 
@@ -52,17 +32,8 @@ type Skill struct {
 
 	Plugin string `yaml:"-"`
 
-	profile Profile `yaml:"-"`
+	nonPortableFrontmatter bool
 }
-
-// Profile selects the frontmatter contract used by a skill source.
-type Profile uint8
-
-const (
-	AgentSkillsProfile Profile = iota
-	CodexSkillsProfile
-	ClaudeSkillsProfile
-)
 
 // Qualified returns the plugin-scoped name "<plugin>:<skill>", or the bare name
 // for skills that did not come from a plugin. It keeps a plugin skill reachable
@@ -73,6 +44,24 @@ func (s *Skill) Qualified() string {
 	}
 
 	return s.Plugin + ":" + s.Name
+}
+
+// InvocationHint returns the explicit Claude-compatible argument hint or a
+// neutral hint derived from the declared positional argument names.
+func (s *Skill) InvocationHint() string {
+	if hint := strings.TrimSpace(s.ArgumentHint); hint != "" {
+		return hint
+	}
+	parts := make([]string, 0, len(s.Arguments))
+	for _, name := range s.Arguments {
+		parts = append(parts, "["+name+"]")
+	}
+	return strings.Join(parts, " ")
+}
+
+// Portable reports whether the skill frontmatter uses only Agent Skills fields.
+func (s *Skill) Portable() bool {
+	return !s.nonPortableFrontmatter
 }
 
 func (s *Skill) GetContent(workingDir string) (string, error) {
@@ -90,246 +79,211 @@ func (s *Skill) GetContent(workingDir string) (string, error) {
 	} else {
 		path = filepath.Join(workingDir, s.Location, "SKILL.md")
 	}
-	return readSkillContent(path, s.profile)
+	return readSkillContent(path)
 }
 
-func (s *Skill) ApplyArguments(content, args, skillDir string) string {
-	return s.applyArguments(content, args, skillDir, "")
-}
+// ApplySubstitutions renders Wingman's body-only skill extensions. The neutral
+// directory variables have Claude-compatible aliases; argument behavior follows
+// Claude Code, including zero-based indexed arguments and fallback appending.
+func (s *Skill) ApplySubstitutions(content, args, skillDir, projectDir string) string {
+	content = strings.NewReplacer(
+		"${SKILL_DIR}", skillDir,
+		"${PROJECT_DIR}", projectDir,
+		"${CLAUDE_SKILL_DIR}", skillDir,
+		"${CLAUDE_PROJECT_DIR}", projectDir,
+	).Replace(content)
 
-func (s *Skill) applyArguments(content, args, skillDir, projectDir string) string {
-	if s.profile == ClaudeSkillsProfile {
-		content = s.protectEscapedArguments(content)
-	}
-	fields := strings.Fields(args)
-	if s.profile == ClaudeSkillsProfile {
-		fields = splitShellArguments(args)
-	}
-
-	lookup := map[string]string{
-		"ARGUMENTS":         args,
-		"SKILL_DIR":         skillDir,
-		"CLAUDE_SKILL_DIR":  skillDir,
-		"CLAUDE_SKILL_NAME": s.Name,
-	}
-	if projectDir != "" {
-		lookup["CLAUDE_PROJECT_DIR"] = projectDir
-	}
-	for i, name := range s.Arguments {
-		if name != "" {
-			lookup[name] = resolveArgument(fields, i)
+	fields := splitArguments(args)
+	named := make(map[string]string, len(s.Arguments))
+	for index, name := range s.Arguments {
+		if index < len(fields) {
+			named[name] = fields[index]
+		} else {
+			named[name] = ""
 		}
 	}
-
+	var rendered strings.Builder
 	matched := false
-	resolve := func(name string) (string, bool) {
-		if v, ok := lookup[name]; ok {
-			return v, true
-		}
-		return "", false
-	}
-	resolveIdx := func(idx int) (string, bool) {
-		if idx >= 0 && idx < len(fields) {
-			return fields[idx], true
-		}
-		return "", false
-	}
 
-	content = indexedPattern.ReplaceAllStringFunc(content, func(m string) string {
-		sub := indexedPattern.FindStringSubmatch(m)
-		if sub[1] != "ARGUMENTS" {
-			return m
+	for index := 0; index < len(content); {
+		if content[index] != '$' {
+			rendered.WriteByte(content[index])
+			index++
+			continue
 		}
-		idx := atoi(sub[2])
+
+		end, replacement, ok := argumentToken(content, index, args, fields, named)
+		if !ok {
+			rendered.WriteByte(content[index])
+			index++
+			continue
+		}
+
+		backslashes := 0
+		for cursor := index - 1; cursor >= 0 && content[cursor] == '\\'; cursor-- {
+			backslashes++
+		}
+		if backslashes == 1 {
+			value := rendered.String()
+			rendered.Reset()
+			rendered.WriteString(strings.TrimSuffix(value, `\`))
+			rendered.WriteString(content[index:end])
+			index = end
+			continue
+		}
+
 		matched = true
-		if value, ok := resolveIdx(idx); ok {
-			return value
-		}
-		if s.profile == ClaudeSkillsProfile {
-			return m
-		}
-		return ""
-	})
-
-	content = bracedPattern.ReplaceAllStringFunc(content, func(m string) string {
-		name := bracedPattern.FindStringSubmatch(m)[1]
-		if i, ok := s.numericArgument(name); ok {
-			matched = true
-			if value, exists := resolveIdx(i); exists {
-				return value
-			}
-			if s.profile == ClaudeSkillsProfile {
-				return m
-			}
-			return ""
-		}
-		if v, ok := resolve(name); ok {
-			matched = true
-			return v
-		}
-		return m
-	})
-
-	content = barePattern.ReplaceAllStringFunc(content, func(m string) string {
-		sub := barePattern.FindStringSubmatch(m)
-		name, boundary := sub[1], sub[2]
-		if i, ok := s.numericArgument(name); ok {
-			matched = true
-			if value, exists := resolveIdx(i); exists {
-				return value + boundary
-			}
-			if s.profile == ClaudeSkillsProfile {
-				return m
-			}
-			return boundary
-		}
-		if v, ok := resolve(name); ok {
-			matched = true
-			return v + boundary
-		}
-		return m
-	})
+		rendered.WriteString(replacement)
+		index = end
+	}
 
 	if !matched && args != "" {
-		content = content + "\n\nARGUMENTS: " + args
+		rendered.WriteString("\n\nARGUMENTS: ")
+		rendered.WriteString(args)
 	}
-	if s.profile == ClaudeSkillsProfile {
-		content = strings.ReplaceAll(content, escapedArgumentSentinel, "$")
-	}
-
-	return content
+	return rendered.String()
 }
 
-const escapedArgumentSentinel = "\x00wingman-escaped-argument\x00"
-
-func (s *Skill) protectEscapedArguments(content string) string {
-	result := make([]byte, 0, len(content))
-	for i := 0; i < len(content); i++ {
-		if content[i] == '$' && s.isClaudeArgumentToken(content[i:]) {
-			backslashes := 0
-			for j := len(result) - 1; j >= 0 && result[j] == '\\'; j-- {
-				backslashes++
+func argumentToken(content string, start int, all string, fields []string, named map[string]string) (int, string, bool) {
+	const arguments = "$ARGUMENTS"
+	if strings.HasPrefix(content[start:], arguments) {
+		end := start + len(arguments)
+		if end < len(content) && content[end] == '[' {
+			close := strings.IndexByte(content[end+1:], ']')
+			if close < 0 {
+				return 0, "", false
 			}
-			if backslashes%2 == 1 {
-				result = result[:len(result)-1]
-				result = append(result, escapedArgumentSentinel...)
-				continue
+			close += end + 1
+			position, ok := decimalIndex(content[end+1 : close])
+			if !ok {
+				return 0, "", false
 			}
+			if position >= len(fields) {
+				return close + 1, content[start : close+1], true
+			}
+			return close + 1, fields[position], true
 		}
-		result = append(result, content[i])
+		if end < len(content) && (isNameByte(content[end]) || content[end] == '[') {
+			return 0, "", false
+		}
+		return end, all, true
 	}
-	return string(result)
+
+	end := start + 1
+	for end < len(content) && content[end] >= '0' && content[end] <= '9' {
+		end++
+	}
+	if end == start+1 {
+		end = start + 1
+		for end < len(content) && isArgumentNameByte(content[end]) {
+			end++
+		}
+		if end == start+1 {
+			return 0, "", false
+		}
+		replacement, ok := named[content[start+1:end]]
+		if !ok {
+			return 0, "", false
+		}
+		return end, replacement, true
+	}
+	position, ok := decimalIndex(content[start+1 : end])
+	if !ok {
+		return end, content[start:end], true
+	}
+	if position >= len(fields) {
+		return end, content[start:end], true
+	}
+	return end, fields[position], true
 }
 
-func (s *Skill) isClaudeArgumentToken(value string) bool {
-	if sub := indexedPattern.FindStringSubmatch(value); len(sub) > 0 && strings.HasPrefix(value, sub[0]) {
-		return sub[1] == "ARGUMENTS"
-	}
-	if sub := bracedPattern.FindStringSubmatch(value); len(sub) > 0 && strings.HasPrefix(value, sub[0]) {
-		return s.isArgumentName(sub[1])
-	}
-	if sub := barePattern.FindStringSubmatch(value); len(sub) > 0 && strings.HasPrefix(value, sub[0]) {
-		return s.isArgumentName(sub[1])
-	}
-	return false
+func isArgumentNameByte(value byte) bool {
+	return isNameByte(value) || value == '-'
 }
 
-func (s *Skill) isArgumentName(name string) bool {
-	if name == "ARGUMENTS" {
-		return true
-	}
-	if _, ok := s.numericArgument(name); ok {
-		return true
-	}
-	return slices.Contains(s.Arguments, name)
+func isArgumentNameStart(value byte) bool {
+	return value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z' || value == '_'
 }
 
-func (s *Skill) numericArgument(value string) (int, bool) {
-	index, err := strconv.Atoi(value)
-	if err != nil {
+func decimalIndex(value string) (int, bool) {
+	if value == "" {
 		return 0, false
 	}
-	if s.profile == ClaudeSkillsProfile {
-		return index, index >= 0
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return 0, false
+		}
 	}
-	return index - 1, index > 0
+	result, err := strconv.Atoi(value)
+	return result, err == nil
 }
 
-func splitShellArguments(value string) []string {
-	var result []string
-	var current strings.Builder
-	var quote rune
+func isNameByte(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= '0' && value <= '9' || value == '_'
+}
+
+func splitArguments(value string) []string {
+	var fields []string
+	var field strings.Builder
+	quote := byte(0)
 	escaped := false
 	started := false
 	flush := func() {
 		if started {
-			result = append(result, current.String())
-			current.Reset()
+			fields = append(fields, field.String())
+			field.Reset()
 			started = false
 		}
 	}
-	for _, r := range value {
-		switch {
-		case escaped:
-			current.WriteRune(r)
-			escaped = false
+
+	for index := 0; index < len(value); index++ {
+		char := value[index]
+		if escaped {
+			field.WriteByte(char)
 			started = true
-		case r == '\\' && quote != '\'':
+			escaped = false
+			continue
+		}
+		if char == '\\' && quote != '\'' {
 			escaped = true
 			started = true
-		case quote != 0:
-			if r == quote {
+			continue
+		}
+		if quote != 0 {
+			if char == quote {
 				quote = 0
 			} else {
-				current.WriteRune(r)
+				field.WriteByte(char)
 			}
 			started = true
-		case r == '\'' || r == '"':
-			quote = r
-			started = true
-		case unicode.IsSpace(r):
-			flush()
-		default:
-			current.WriteRune(r)
-			started = true
+			continue
 		}
+		if char == '\'' || char == '"' {
+			quote = char
+			started = true
+			continue
+		}
+		if char == ' ' || char == '\t' || char == '\n' || char == '\r' {
+			flush()
+			continue
+		}
+		field.WriteByte(char)
+		started = true
 	}
 	if escaped {
-		current.WriteRune('\\')
+		field.WriteByte('\\')
 	}
 	flush()
-	return result
-}
-
-func resolveArgument(fields []string, index int) string {
-	if index >= 0 && index < len(fields) {
-		return fields[index]
-	}
-	return ""
-}
-
-var (
-	indexedPattern = regexp.MustCompile(`\$\{?([A-Za-z_][A-Za-z0-9_]*)\[(\d+)\]\}?`)
-	bracedPattern  = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*|\d+)\}`)
-
-	barePattern = regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*|\d+)([^A-Za-z0-9_\[]|$)`)
-)
-
-func atoi(s string) int {
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		return 0
-	}
-	return n
+	return fields
 }
 
 func Discover(root string) ([]Skill, error) {
-	sources := []skillSource{{filepath.Join(root, ".wingman", "skills"), AgentSkillsProfile}}
+	sources := []string{filepath.Join(root, ".wingman", "skills")}
 	for _, dir := range skillDirsThroughRepo(root, ".agents") {
-		sources = append(sources, skillSource{dir, AgentSkillsProfile})
+		sources = append(sources, dir)
 	}
 	for _, dir := range skillDirsThroughRepo(root, ".claude") {
-		sources = append(sources, skillSource{dir, ClaudeSkillsProfile})
+		sources = append(sources, dir)
 	}
 	return discover(sources, root), nil
 }
@@ -340,10 +294,10 @@ func DiscoverPersonal() ([]Skill, error) {
 	}
 
 	home, _ := os.UserHomeDir()
-	return discover([]skillSource{
-		{filepath.Join(home, ".wingman", "skills"), AgentSkillsProfile},
-		{filepath.Join(home, ".agents", "skills"), AgentSkillsProfile},
-		{filepath.Join(home, ".claude", "skills"), ClaudeSkillsProfile},
+	return discover([]string{
+		filepath.Join(home, ".wingman", "skills"),
+		filepath.Join(home, ".agents", "skills"),
+		filepath.Join(home, ".claude", "skills"),
 	}, ""), nil
 }
 
@@ -352,82 +306,67 @@ func MustDiscoverPersonal() []Skill {
 	return skills
 }
 
-// LoadDir loads every skill directly beneath dir, one level deep. Locations are
-// absolute and parse failures are reported and skipped.
+// LoadDir loads skills beneath dir. Directories without SKILL.md are grouping
+// directories and are traversed recursively; a skill directory is a leaf so
+// supporting resources below it cannot be mistaken for additional skills.
+// Symlinked directories are followed once, with their resolved paths used to
+// prevent cycles.
 func LoadDir(dir string) []Skill {
-	return loadDir(dir, "*/SKILL.md", AgentSkillsProfile)
-}
-
-// LoadDirRecursive loads skills at any depth beneath dir. Codex uses this for
-// legacy plugin manifests, while portable Agent Plugins use direct children.
-func LoadDirRecursive(dir string) []Skill {
-	return loadDir(dir, "**/SKILL.md", AgentSkillsProfile)
-}
-
-// LoadDirRecursiveCodex accepts an Agent Skills document at the declared root
-// itself as well as nested skill directories, matching Codex plugin loading.
-func LoadDirRecursiveCodex(dir string) []Skill {
-	return loadDir(dir, "**/SKILL.md", CodexSkillsProfile)
-}
-
-// LoadDirRecursiveClaude loads Claude-compatible skills, whose frontmatter is
-// intentionally more permissive than the Agent Skills specification.
-func LoadDirRecursiveClaude(dir string) []Skill {
-	return loadDir(dir, "**/SKILL.md", ClaudeSkillsProfile)
-}
-
-// LoadClaudeFile loads Claude's single-skill plugin form, where SKILL.md sits
-// at the plugin root and its optional name controls invocation.
-func LoadClaudeFile(path string) (Skill, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return Skill{}, err
-	}
-	skill, _, err := parseSkillDataProfile(string(data), ClaudeSkillsProfile)
-	if err != nil {
-		return Skill{}, err
-	}
-	if skill.Name == "" {
-		skill.Name = filepath.Base(filepath.Dir(path))
-	}
-	if err := validateClaudeName(skill.Name); err != nil {
-		return Skill{}, err
-	}
-	skill.DisplayName = skill.Name
-	skill.Location = filepath.Dir(path)
-	skill.profile = ClaudeSkillsProfile
-	return skill, nil
-}
-
-func loadDir(dir, pattern string, profile Profile) []Skill {
-	matches, err := doublestar.Glob(os.DirFS(dir), pattern)
-	if err != nil {
-		return nil
-	}
-
-	slices.Sort(matches)
-
 	var skills []Skill
+	visited := make(map[string]bool)
 
-	for _, match := range matches {
-		skillFile := filepath.Join(dir, match)
-
-		sk, err := parseSkillFileProfile(skillFile, profile)
+	var walk func(string)
+	walk = func(current string) {
+		resolved, err := filepath.EvalSymlinks(current)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "skill: skipped %s: %v\n", skillFile, err)
-			continue
+			return
+		}
+		resolved, err = filepath.Abs(resolved)
+		if err != nil || visited[resolved] {
+			return
+		}
+		info, err := os.Stat(resolved)
+		if err != nil || !info.IsDir() {
+			return
+		}
+		visited[resolved] = true
+
+		skillFile := filepath.Join(current, "SKILL.md")
+		if info, err := os.Stat(skillFile); err == nil && info.Mode().IsRegular() {
+			sk, err := LoadFile(skillFile)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "skill: skipped %s: %v\n", skillFile, err)
+				return
+			}
+			skills = append(skills, sk)
+			return
 		}
 
-		sk.Location = filepath.Dir(skillFile)
-		skills = append(skills, sk)
+		entries, err := os.ReadDir(current)
+		if err != nil {
+			return
+		}
+		for _, entry := range entries {
+			child := filepath.Join(current, entry.Name())
+			if info, err := os.Stat(child); err == nil && info.IsDir() {
+				walk(child)
+			}
+		}
 	}
+
+	walk(dir)
 
 	return skills
 }
 
-type skillSource struct {
-	dir     string
-	profile Profile
+// LoadFile parses one SKILL.md and records its containing directory.
+func LoadFile(path string) (Skill, error) {
+	skill, err := parseSkillFile(path)
+	if err != nil {
+		return Skill{}, err
+	}
+	skill.Location = filepath.Dir(path)
+	return skill, nil
 }
 
 func skillDirsThroughRepo(root, configDir string) []string {
@@ -452,12 +391,12 @@ func skillDirsThroughRepo(root, configDir string) []string {
 	return dirs
 }
 
-func discover(sources []skillSource, relativeTo string) []Skill {
+func discover(sources []string, relativeTo string) []Skill {
 	var skills []Skill
 	seen := make(map[string]string)
 
 	for _, source := range sources {
-		for _, sk := range loadDir(source.dir, "*/SKILL.md", source.profile) {
+		for _, sk := range LoadDir(source) {
 			key := strings.ToLower(sk.Name)
 
 			if winner, ok := seen[key]; ok {
@@ -594,20 +533,16 @@ func Merge(bundled, discovered []Skill) []Skill {
 
 func FormatForPrompt(skills []Skill) string {
 	const maxPromptBytes = 8000
-	active := make([]Skill, 0, len(skills))
 	maxDescription := 0
 	for _, s := range skills {
-		if s.DisableModelInvocation {
-			continue
-		}
-		active = append(active, s)
 		if length := len([]rune(s.Description)); length > maxDescription {
 			maxDescription = length
 		}
 	}
-	if len(active) == 0 {
+	if len(skills) == 0 {
 		return ""
 	}
+	active := skills
 
 	if prompt := renderPromptSkills(active, maxDescription); len(prompt) <= maxPromptBytes {
 		return prompt
@@ -676,90 +611,23 @@ func displayLocation(loc string) string {
 }
 
 func parseSkillFile(path string) (Skill, error) {
-	return parseSkillFileProfile(path, AgentSkillsProfile)
-}
-
-func parseSkillFileProfile(path string, profile Profile) (Skill, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Skill{}, err
 	}
 
-	skill, _, err := parseSkillDataProfile(string(data), profile)
+	skill, _, err := parseSkillData(string(data))
 	if err != nil {
 		return Skill{}, err
 	}
 	directoryName := filepath.Base(filepath.Dir(path))
-	if profile == ClaudeSkillsProfile {
-		skill.DisplayName = skill.Name
-		skill.Name = directoryName
-		if err := validateClaudeName(skill.Name); err != nil {
-			return Skill{}, err
-		}
-		skill.profile = profile
-		return skill, nil
-	}
-	loadCodexMetadata(&skill, filepath.Dir(path))
-	if profile == AgentSkillsProfile && skill.Name != directoryName {
+	if skill.Name != directoryName {
 		return Skill{}, fmt.Errorf("skill name %q must match parent directory %q", skill.Name, filepath.Base(filepath.Dir(path)))
 	}
 	return skill, nil
 }
 
-// loadCodexMetadata applies the one agents/openai.yaml setting that affects
-// Wingman's runtime behavior. Codex treats this file as optional metadata and
-// fails open when it is absent or malformed, so a bad decoration never hides
-// an otherwise valid Agent Skill.
-func loadCodexMetadata(skill *Skill, skillDir string) {
-	content, err := os.ReadFile(filepath.Join(skillDir, "agents", "openai.yaml"))
-	if err != nil {
-		return
-	}
-	var metadata struct {
-		Policy struct {
-			AllowImplicitInvocation *bool `yaml:"allow_implicit_invocation"`
-		} `yaml:"policy"`
-	}
-	if err := yaml.Load(content, &metadata); err != nil {
-		return
-	}
-	skill.AllowImplicitInvocation = metadata.Policy.AllowImplicitInvocation
-	if skill.AllowImplicitInvocation != nil && !*skill.AllowImplicitInvocation {
-		skill.DisableModelInvocation = true
-	}
-}
-
 func parseSkillData(data string) (Skill, string, error) {
-	return parseSkillDataProfile(data, AgentSkillsProfile)
-}
-
-type skillFrontmatter struct {
-	Name          *string        `yaml:"name"`
-	Description   *string        `yaml:"description"`
-	License       string         `yaml:"license"`
-	Compatibility *string        `yaml:"compatibility"`
-	Metadata      map[string]any `yaml:"metadata"`
-	AllowedTools  any            `yaml:"allowed-tools"`
-}
-
-type claudeFrontmatter struct {
-	WhenToUse              string `yaml:"when_to_use"`
-	ArgumentHint           string `yaml:"argument-hint"`
-	Arguments              any    `yaml:"arguments"`
-	DisableModelInvocation any    `yaml:"disable-model-invocation"`
-	UserInvocable          any    `yaml:"user-invocable"`
-	DisallowedTools        any    `yaml:"disallowed-tools"`
-	Model                  string `yaml:"model"`
-	Effort                 string `yaml:"effort"`
-	Context                string `yaml:"context"`
-	Agent                  string `yaml:"agent"`
-	Background             any    `yaml:"background"`
-	Paths                  any    `yaml:"paths"`
-	Shell                  string `yaml:"shell"`
-	Hooks                  any    `yaml:"hooks"`
-}
-
-func parseSkillDataProfile(data string, profile Profile) (Skill, string, error) {
 	lines := strings.Split(strings.ReplaceAll(data, "\r\n", "\n"), "\n")
 	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
 		return Skill{}, "", fmt.Errorf("missing YAML frontmatter delimited by ---")
@@ -777,77 +645,53 @@ func parseSkillDataProfile(data string, profile Profile) (Skill, string, error) 
 
 	frontmatter := []byte(strings.Join(lines[1:closing], "\n"))
 	var raw skillFrontmatter
-	var claude claudeFrontmatter
 	var present map[string]any
 	if len(bytes.TrimSpace(frontmatter)) > 0 {
 		if err := yaml.Load(frontmatter, &raw); err != nil {
 			return Skill{}, "", fmt.Errorf("failed to parse frontmatter: %w", err)
-		}
-		if profile == ClaudeSkillsProfile {
-			if err := yaml.Load(frontmatter, &claude); err != nil {
-				return Skill{}, "", fmt.Errorf("failed to parse Claude frontmatter: %w", err)
-			}
 		}
 		if err := yaml.Load(frontmatter, &present); err != nil {
 			return Skill{}, "", fmt.Errorf("failed to parse frontmatter: %w", err)
 		}
 	}
 	content := strings.TrimSpace(strings.Join(lines[closing+1:], "\n"))
-	skill, err := normalizeSkill(raw, claude, present, content, profile)
+	skill, err := normalizeSkill(raw, present)
 	if err != nil {
 		return Skill{}, "", err
 	}
 	return skill, content, nil
 }
 
-func normalizeSkill(raw skillFrontmatter, claude claudeFrontmatter, present map[string]any, content string, profile Profile) (Skill, error) {
-	skill := Skill{
-		License:      raw.License,
-		WhenToUse:    strings.TrimSpace(claude.WhenToUse),
-		ArgumentHint: claude.ArgumentHint,
-		Model:        claude.Model,
-		Effort:       claude.Effort,
-		Context:      claude.Context,
-		Agent:        claude.Agent,
-		Shell:        claude.Shell,
-		Hooks:        claude.Hooks,
-		profile:      profile,
-	}
-	var err error
-	if profile == ClaudeSkillsProfile {
-		if disabled, boolErr := flexibleBool(claude.DisableModelInvocation); boolErr != nil {
-			return Skill{}, fmt.Errorf("disable-model-invocation: %w", boolErr)
-		} else if disabled != nil {
-			skill.DisableModelInvocation = *disabled
-		}
-		if skill.UserInvocable, err = flexibleBool(claude.UserInvocable); err != nil {
-			return Skill{}, fmt.Errorf("user-invocable: %w", err)
-		}
-		if skill.Background, err = flexibleBool(claude.Background); err != nil {
-			return Skill{}, fmt.Errorf("background: %w", err)
-		}
-		if skill.Paths, err = stringList(claude.Paths); err != nil {
-			return Skill{}, fmt.Errorf("paths: %w", err)
-		}
-		if text, ok := claude.Paths.(string); ok {
-			skill.Paths = splitCommaList(text)
-		}
-		if skill.Shell != "" && skill.Shell != "bash" && skill.Shell != "powershell" {
-			return Skill{}, fmt.Errorf("shell must be bash or powershell")
+type skillFrontmatter struct {
+	Name          *string        `yaml:"name"`
+	Description   *string        `yaml:"description"`
+	License       *string        `yaml:"license"`
+	Compatibility *string        `yaml:"compatibility"`
+	Metadata      map[string]any `yaml:"metadata"`
+	AllowedTools  any            `yaml:"allowed-tools"`
+	Arguments     any            `yaml:"arguments"`
+	ArgumentHint  *string        `yaml:"argument-hint"`
+}
+
+func normalizeSkill(raw skillFrontmatter, present map[string]any) (Skill, error) {
+	skill := Skill{}
+	for name := range present {
+		switch name {
+		case "name", "description", "license", "compatibility", "metadata", "allowed-tools", "arguments", "argument-hint":
+		default:
+			return Skill{}, fmt.Errorf("unsupported Agent Skills frontmatter field %q", name)
 		}
 	}
 	skill.Metadata = make(map[string]string)
+	if value, ok := present["metadata"]; ok && value == nil {
+		return Skill{}, fmt.Errorf("skill metadata must be a mapping")
+	}
 	for name, value := range raw.Metadata {
 		if text, ok := value.(string); ok {
 			skill.Metadata[name] = text
 			continue
 		}
-		if profile != ClaudeSkillsProfile {
-			return Skill{}, fmt.Errorf("skill metadata value %q must be a string", name)
-		}
-	}
-	if profile == ClaudeSkillsProfile {
-		skill.ClaudeMetadata = raw.Metadata
+		return Skill{}, fmt.Errorf("skill metadata value %q must be a string", name)
 	}
 	if raw.Name != nil {
 		skill.Name = strings.TrimSpace(*raw.Name)
@@ -855,51 +699,49 @@ func normalizeSkill(raw skillFrontmatter, claude claudeFrontmatter, present map[
 	if raw.Description != nil {
 		skill.Description = strings.TrimSpace(*raw.Description)
 	}
+	if raw.License != nil {
+		skill.License = strings.TrimSpace(*raw.License)
+	}
 	if raw.Compatibility != nil {
 		skill.Compatibility = strings.TrimSpace(*raw.Compatibility)
 	}
-	if skill.AllowedTools, err = stringList(raw.AllowedTools); err != nil {
-		return Skill{}, fmt.Errorf("allowed-tools: %w", err)
-	}
-	if profile != ClaudeSkillsProfile {
-		if _, ok := raw.AllowedTools.(string); raw.AllowedTools != nil && !ok {
+	if raw.AllowedTools != nil {
+		allowed, ok := raw.AllowedTools.(string)
+		if !ok {
 			return Skill{}, fmt.Errorf("allowed-tools must be a string in an Agent Skill")
 		}
-	} else {
-		if text, ok := raw.AllowedTools.(string); ok {
-			skill.AllowedTools = splitToolRules(text)
-		}
-		if skill.DisallowedTools, err = stringList(claude.DisallowedTools); err != nil {
-			return Skill{}, fmt.Errorf("disallowed-tools: %w", err)
-		}
-		if text, ok := claude.DisallowedTools.(string); ok {
-			skill.DisallowedTools = splitToolRules(text)
-		}
-		if skill.Arguments, err = argumentNames(claude.Arguments); err != nil {
-			return Skill{}, fmt.Errorf("arguments: %w", err)
-		}
+		skill.AllowedTools = strings.Fields(allowed)
 	}
-
-	if profile == ClaudeSkillsProfile {
-		if skill.Description == "" {
-			skill.Description = firstParagraph(content)
+	if raw.Arguments != nil {
+		arguments, err := parseNamedArguments(raw.Arguments)
+		if err != nil {
+			return Skill{}, err
 		}
-		if skill.WhenToUse != "" {
-			if skill.Description != "" {
-				skill.Description += " "
-			}
-			skill.Description += skill.WhenToUse
-		}
-		skill.Description = truncateRunes(skill.Description, 1536)
-		if skill.Name != "" {
-			if err := validateClaudeName(skill.Name); err != nil {
-				return Skill{}, err
-			}
-		}
-		return skill, nil
+		skill.Arguments = arguments
+	}
+	if raw.ArgumentHint != nil {
+		skill.ArgumentHint = strings.TrimSpace(*raw.ArgumentHint)
+	}
+	if _, ok := present["arguments"]; ok {
+		skill.nonPortableFrontmatter = true
+	}
+	if _, ok := present["argument-hint"]; ok {
+		skill.nonPortableFrontmatter = true
 	}
 	if _, ok := present["compatibility"]; ok && raw.Compatibility == nil {
 		return Skill{}, fmt.Errorf("skill compatibility must be a string")
+	}
+	if _, ok := present["license"]; ok && raw.License == nil {
+		return Skill{}, fmt.Errorf("skill license must be a string")
+	}
+	if _, ok := present["allowed-tools"]; ok && raw.AllowedTools == nil {
+		return Skill{}, fmt.Errorf("allowed-tools must be a string in an Agent Skill")
+	}
+	if _, ok := present["arguments"]; ok && raw.Arguments == nil {
+		return Skill{}, fmt.Errorf("skill arguments must be a string or list of strings")
+	}
+	if _, ok := present["argument-hint"]; ok && raw.ArgumentHint == nil {
+		return Skill{}, fmt.Errorf("skill argument-hint must be a string")
 	}
 	if err := validateSkill(skill, present); err != nil {
 		return Skill{}, err
@@ -907,141 +749,40 @@ func normalizeSkill(raw skillFrontmatter, claude claudeFrontmatter, present map[
 	return skill, nil
 }
 
-func stringList(value any) ([]string, error) {
+func parseNamedArguments(value any) ([]string, error) {
+	var arguments []string
 	switch value := value.(type) {
-	case nil:
-		return nil, nil
 	case string:
-		return []string{value}, nil
+		arguments = strings.Fields(value)
 	case []any:
-		result := make([]string, len(value))
-		for i, item := range value {
-			text, ok := item.(string)
+		arguments = make([]string, 0, len(value))
+		for _, item := range value {
+			name, ok := item.(string)
 			if !ok {
-				return nil, fmt.Errorf("must be a string or list of strings")
+				return nil, fmt.Errorf("skill arguments must be a string or list of strings")
 			}
-			result[i] = text
-		}
-		return result, nil
-	default:
-		return nil, fmt.Errorf("must be a string or list of strings")
-	}
-}
-
-func argumentNames(value any) ([]string, error) {
-	if text, ok := value.(string); ok {
-		return strings.Fields(text), nil
-	}
-	return stringList(value)
-}
-
-func splitCommaList(value string) []string {
-	var result []string
-	for item := range strings.SplitSeq(value, ",") {
-		if item = strings.TrimSpace(item); item != "" {
-			result = append(result, item)
-		}
-	}
-	return result
-}
-
-func splitToolRules(value string) []string {
-	var result []string
-	var current strings.Builder
-	depth := 0
-	flush := func() {
-		if rule := strings.TrimSpace(current.String()); rule != "" {
-			result = append(result, rule)
-		}
-		current.Reset()
-	}
-	for _, r := range value {
-		switch {
-		case r == '(':
-			depth++
-			current.WriteRune(r)
-		case r == ')' && depth > 0:
-			depth--
-			current.WriteRune(r)
-		case depth == 0 && (unicode.IsSpace(r) || r == ','):
-			flush()
-		default:
-			current.WriteRune(r)
-		}
-	}
-	flush()
-	return result
-}
-
-func flexibleBool(value any) (*bool, error) {
-	if value == nil {
-		return nil, nil
-	}
-	var result bool
-	switch value := value.(type) {
-	case bool:
-		result = value
-	case int:
-		if value != 0 && value != 1 {
-			return nil, fmt.Errorf("must be a boolean")
-		}
-		result = value == 1
-	case string:
-		switch strings.ToLower(strings.TrimSpace(value)) {
-		case "true", "yes", "on", "1":
-			result = true
-		case "false", "no", "off", "0":
-			result = false
-		default:
-			return nil, fmt.Errorf("must be a boolean")
+			arguments = append(arguments, strings.TrimSpace(name))
 		}
 	default:
-		return nil, fmt.Errorf("must be a boolean")
+		return nil, fmt.Errorf("skill arguments must be a string or list of strings")
 	}
-	return &result, nil
-}
 
-func truncateRunes(value string, limit int) string {
-	runes := []rune(value)
-	if len(runes) <= limit {
-		return value
-	}
-	return string(runes[:limit])
-}
-
-func validateClaudeName(name string) error {
-	if len([]rune(name)) > 64 {
-		return fmt.Errorf("Claude skill name exceeds 64 characters")
-	}
-	if name == "" || strings.HasPrefix(name, "-") || strings.HasSuffix(name, "-") || strings.Contains(name, "--") {
-		return fmt.Errorf("Claude skill name %q is not valid kebab-case", name)
-	}
-	for _, r := range name {
-		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
-			return fmt.Errorf("Claude skill name %q may only use lowercase letters, digits, and hyphens", name)
+	seen := make(map[string]bool, len(arguments))
+	for _, name := range arguments {
+		if name == "" || name == "ARGUMENTS" || !isArgumentNameStart(name[0]) {
+			return nil, fmt.Errorf("skill argument name %q is invalid", name)
 		}
-	}
-	return nil
-}
-
-func firstParagraph(content string) string {
-	var lines []string
-	started := false
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			if started {
-				break
+		for index := 1; index < len(name); index++ {
+			if !isArgumentNameByte(name[index]) {
+				return nil, fmt.Errorf("skill argument name %q is invalid", name)
 			}
-			continue
 		}
-		if !started && strings.HasPrefix(line, "#") {
-			continue
+		if seen[name] {
+			return nil, fmt.Errorf("skill argument name %q is duplicated", name)
 		}
-		started = true
-		lines = append(lines, line)
+		seen[name] = true
 	}
-	return strings.Join(lines, " ")
+	return arguments, nil
 }
 
 func validateSkill(skill Skill, present map[string]any) error {
@@ -1077,12 +818,12 @@ func validateSkill(skill Skill, present map[string]any) error {
 	return nil
 }
 
-func readSkillContent(path string, profile Profile) (string, error) {
+func readSkillContent(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
 
-	_, content, err := parseSkillDataProfile(string(data), profile)
+	_, content, err := parseSkillData(string(data))
 	return content, err
 }

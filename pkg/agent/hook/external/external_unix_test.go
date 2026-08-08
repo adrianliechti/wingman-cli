@@ -46,8 +46,22 @@ func TestLoadCodexHooksJSONShape(t *testing.T) {
 		t.Fatalf("config = %+v", cfg)
 	}
 	handler := cfg.Hooks.PreToolUse[0].Hooks[0]
-	if handler.Type != "command" || handler.Timeout != 10 || handler.AdditionalContextLimit == nil || *handler.AdditionalContextLimit != 4096 {
+	if handler.Type != "command" || handler.Timeout == nil || *handler.Timeout != 10 || handler.AdditionalContextLimit == nil || *handler.AdditionalContextLimit != 4096 {
 		t.Fatalf("handler = %+v", handler)
+	}
+}
+
+func TestLoadRejectsTrailingJSONAndNegativeLimits(t *testing.T) {
+	for name, data := range map[string]string{
+		"trailing": `{"hooks":{}} {}`,
+		"timeout":  `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"true","timeout":-1}]}]}}`,
+		"context":  `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"true","additionalContextLimit":-1}]}]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Parse(name, []byte(data)); err == nil {
+				t.Fatal("Parse succeeded")
+			}
+		})
 	}
 }
 
@@ -102,6 +116,26 @@ func TestCodexMatcherSemantics(t *testing.T) {
 	for _, test := range tests {
 		if got := groupMatches(test.matcher, test.input); got != test.want {
 			t.Errorf("groupMatches(%q, %q) = %v, want %v", test.matcher, test.input, got, test.want)
+		}
+	}
+}
+
+func TestCodexApplyPatchMatcherAliases(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		want []string
+	}{
+		{"write", []string{"write", "Write", "apply_patch"}},
+		{"edit", []string{"edit", "Edit", "apply_patch"}},
+	} {
+		name, _, aliases := toolWire(tool.ToolCall{Name: test.name})
+		if name != test.name {
+			t.Errorf("toolWire(%q) name = %q", test.name, name)
+		}
+		for _, matcher := range test.want {
+			if !groupMatches("^"+matcher+"$", aliases) {
+				t.Errorf("toolWire(%q) aliases %q do not match %q", test.name, aliases, matcher)
+			}
 		}
 	}
 }
@@ -180,6 +214,56 @@ func TestStructuredOutputRequiresMatchingCodexEventName(t *testing.T) {
 	}
 }
 
+func TestCodexOutputValidationFailsOpenForInvalidControlCombinations(t *testing.T) {
+	tests := []string{
+		`{"continue":false,"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"must not apply"}}`,
+		`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":""}}`,
+		`{"decision":"approve"}`,
+	}
+	for _, stdout := range tests {
+		parsed := parseResult("PreToolUse", runResult{exitCode: 0, stdout: stdout})
+		if parsed.Block || parsed.Stop || len(parsed.updatedInput) != 0 {
+			t.Fatalf("invalid output %s was applied: %+v", stdout, parsed)
+		}
+	}
+}
+
+func TestCodexContinueFalseTakesPrecedenceForStoppableEvents(t *testing.T) {
+	for _, test := range []struct {
+		event  string
+		stdout string
+	}{
+		{"PostToolUse", `{"continue":false,"suppressOutput":true}`},
+		{"UserPromptSubmit", `{"continue":false,"decision":"block"}`},
+		{"Stop", `{"continue":false,"decision":"block"}`},
+	} {
+		parsed := parseResult(test.event, runResult{exitCode: 0, stdout: test.stdout})
+		if !parsed.Stop || parsed.Block {
+			t.Errorf("%s output was not treated as stop: %+v", test.event, parsed)
+		}
+	}
+}
+
+func TestCodexConcurrentAggregationUsesConfiguredOrderAndLatestCompletedRewrite(t *testing.T) {
+	first := Handler{Type: "command", Command: `sleep 0.05; printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":"first"},"additionalContext":"first"}}'`}
+	second := Handler{Type: "command", Command: `printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":"second"},"additionalContext":"second"}}'`}
+	cfg := &Config{Hooks: Events{PreToolUse: []MatcherGroup{{Matcher: "Bash", Hooks: []Handler{first, second}}}}}
+	outcome, err := cfg.Build(t.TempDir(), nil).PreToolUse[0](context.Background(), tool.ToolCall{Name: "shell", Args: `{"command":"original"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(outcome.AdditionalContext, ","); got != "first,second" {
+		t.Fatalf("additional context order = %q, want configured order", got)
+	}
+	var updated map[string]any
+	if err := json.Unmarshal(outcome.UpdatedInput, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated["command"] != "first" {
+		t.Fatalf("updated input = %#v, want last-completed rewrite", updated)
+	}
+}
+
 func TestCodexAsyncCommandHookIsParsedButSkipped(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "done")
@@ -194,24 +278,6 @@ func TestCodexAsyncCommandHookIsParsedButSkipped(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("async hook ran unexpectedly: %v", err)
-	}
-}
-
-func TestClaudeExecFormCommandExpandsPluginEnvironment(t *testing.T) {
-	dir := t.TempDir()
-	marker := filepath.Join(dir, "result")
-	cfg := configFor("PreToolUse", "Bash", Handler{
-		Type:    "command",
-		Command: "sh",
-		Args:    []string{"-c", `printf '%s' "$1" > "$2"`, "hook", "${CLAUDE_PLUGIN_ROOT}", marker},
-	})
-	hooks := cfg.BuildWithOptions(dir, BuildOptions{Environment: map[string]string{"CLAUDE_PLUGIN_ROOT": "/plugins/demo"}})
-	if _, err := hooks.PreToolUse[0](context.Background(), tool.ToolCall{Name: "shell"}); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(marker)
-	if err != nil || string(data) != "/plugins/demo" {
-		t.Fatalf("result = %q, err = %v", data, err)
 	}
 }
 
@@ -273,19 +339,17 @@ func TestSessionStartMatcherAndPayload(t *testing.T) {
 func TestBuildOptionsInjectPluginEnvironment(t *testing.T) {
 	cfg := configFor("SessionStart", "", Handler{
 		Type:    "command",
-		Command: `printf '%s|%s|%s|%s' "$PLUGIN_ROOT" "$PLUGIN_DATA" "$CLAUDE_PLUGIN_ROOT" "$CLAUDE_PLUGIN_DATA"`,
+		Command: `printf '%s|%s' "$PLUGIN_ROOT" "$PLUGIN_DATA"`,
 	})
 	hooks := cfg.BuildWithOptions(t.TempDir(), BuildOptions{Environment: map[string]string{
-		"PLUGIN_ROOT":        "/plugins/demo",
-		"PLUGIN_DATA":        "/data/demo",
-		"CLAUDE_PLUGIN_ROOT": "/plugins/demo",
-		"CLAUDE_PLUGIN_DATA": "/data/demo",
+		"PLUGIN_ROOT": "/plugins/demo",
+		"PLUGIN_DATA": "/data/demo",
 	}})
 	outcome, err := hooks.SessionStart[0](context.Background(), "startup")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "/plugins/demo|/data/demo|/plugins/demo|/data/demo"
+	want := "/plugins/demo|/data/demo"
 	if len(outcome.AdditionalContext) != 1 || outcome.AdditionalContext[0] != want {
 		t.Fatalf("context = %#v, want %q", outcome.AdditionalContext, want)
 	}

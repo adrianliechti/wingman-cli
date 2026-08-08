@@ -6,7 +6,7 @@ description: End-to-end read-only security audit that scans focus areas and adve
 
 Find HIGH-CONFIDENCE, genuinely exploitable vulnerabilities — not a checklist of theoretical concerns. The discovery pass casts a wide net; a separate adversarial verification pass is what removes false positives. Every reported finding must survive a skeptic who started by assuming it was wrong.
 
-This is **read-only**. Spawn `security` agents for all scanning and verification. Never build, run, install, send requests, or probe the target. If a specific `${ARGUMENTS}` path was provided, scope everything to it. If the user asks for raw scanner output, backlog triage, or patch-ready artifacts, use `/vuln-scan` and `/triage` instead.
+This is **read-only**. Spawn `security` agents for all scanning and verification. Never build, run, install, send requests, or probe the target. If `$ARGUMENTS` contains a path, scope everything to it. If the user asks for raw scanner output, backlog triage, or patch-ready artifacts, use `/vuln-scan` and `/triage` instead.
 
 ## Phase 1: Scope
 

@@ -1122,11 +1122,19 @@ func (a *App) handlePopupKey(ev inline.KeyEvent) bool {
 			return true
 		case inline.KeyEnter:
 			// A lone leading command completes and submits in one press;
-			// elsewhere Enter completes the token, and submits once there is
-			// nothing left to complete.
+			// hinted skills complete with a trailing space so the user can enter
+			// their arguments. Elsewhere Enter completes the token, and submits
+			// once there is nothing left to complete.
 			if a.cmdTokenStart == 0 && a.editor.cursor == len(a.editor.value) {
-				if item, ok := popup.Current(); ok && a.editor.Text() != item.ID {
-					a.editor.SetText(item.ID)
+				if item, ok := popup.Current(); ok {
+					if a.commandHint(item.ID) != "" {
+						a.editor.SetText(item.ID + " ")
+						a.closePopup()
+						return true
+					}
+					if a.editor.Text() != item.ID {
+						a.editor.SetText(item.ID)
+					}
 				}
 				a.closePopup()
 				a.submitInput()

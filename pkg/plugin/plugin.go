@@ -1,6 +1,5 @@
-// Package plugin implements Agent Plugins v1.0.0 plus Codex/Claude manifest
-// compatibility. It loads plugin directories and exposes their skills, MCP
-// servers, and lifecycle hooks.
+// Package plugin implements Agent Plugins v1.0.0. It loads plugin directories
+// and exposes their skills, MCP servers, and namespaced lifecycle hooks.
 //
 // https://agent-plugins.org
 package plugin
@@ -26,7 +25,6 @@ type Plugin struct {
 	Data string
 
 	Manifest Manifest
-	Format   Format
 
 	Skills  []skill.Skill
 	Servers map[string]mcp.ServerConfig
@@ -58,18 +56,18 @@ func Discover(workDir, projectData, personalData string) ([]Plugin, []Diagnostic
 
 	seen := make(map[string]string)
 
-	for index, root := range layout.ProjectRoots(workDir, "plugins") {
-		plugins, diagnostics = discover(root, projectData, plugins, diagnostics, seen, index == len(layout.Dirs)-1)
+	for _, root := range layout.ProjectRoots(workDir, "plugins") {
+		plugins, diagnostics = discover(root, projectData, plugins, diagnostics, seen)
 	}
 
-	for index, root := range layout.PersonalRoots("plugins") {
-		plugins, diagnostics = discover(root, personalData, plugins, diagnostics, seen, index == len(layout.Dirs)-1)
+	for _, root := range layout.PersonalRoots("plugins") {
+		plugins, diagnostics = discover(root, personalData, plugins, diagnostics, seen)
 	}
 
 	return plugins, diagnostics
 }
 
-func discover(root, dataRoot string, plugins []Plugin, diagnostics []Diagnostic, seen map[string]string, allowManifestlessClaude bool) ([]Plugin, []Diagnostic) {
+func discover(root, dataRoot string, plugins []Plugin, diagnostics []Diagnostic, seen map[string]string) ([]Plugin, []Diagnostic) {
 	entries, err := os.ReadDir(root)
 
 	if err != nil {
@@ -87,11 +85,11 @@ func discover(root, dataRoot string, plugins []Plugin, diagnostics []Diagnostic,
 	for _, name := range names {
 		dir := filepath.Join(root, name)
 
-		if !hasPluginManifest(dir, allowManifestlessClaude) {
+		if !hasPluginManifest(dir) {
 			continue
 		}
 
-		p, notes, err := loadPlugin(dir, dataRoot, allowManifestlessClaude)
+		p, notes, err := loadPlugin(dir, dataRoot)
 
 		for _, note := range notes {
 			diagnostics = append(diagnostics, Diagnostic{Path: dir, Message: note})
@@ -121,16 +119,16 @@ func discover(root, dataRoot string, plugins []Plugin, diagnostics []Diagnostic,
 // is unusable; a component that fails to load is reported and skipped so the
 // remaining components still work.
 func Load(dir, dataRoot string) (*Plugin, []string, error) {
-	return loadPlugin(dir, dataRoot, true)
+	return loadPlugin(dir, dataRoot)
 }
 
-func loadPlugin(dir, dataRoot string, allowManifestlessClaude bool) (*Plugin, []string, error) {
+func loadPlugin(dir, dataRoot string) (*Plugin, []string, error) {
 	root, err := resolvePath(dir)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	resolved, notes, err := loadResolvedManifest(root, allowManifestlessClaude)
+	resolved, notes, err := loadResolvedManifest(root)
 	if err != nil {
 		return nil, notes, err
 	}
@@ -140,7 +138,6 @@ func loadPlugin(dir, dataRoot string, allowManifestlessClaude bool) (*Plugin, []
 		Name:     manifest.Name,
 		Root:     root,
 		Manifest: manifest,
-		Format:   resolved.Format,
 	}
 
 	if dataRoot != "" {
@@ -157,30 +154,13 @@ func loadPlugin(dir, dataRoot string, allowManifestlessClaude bool) (*Plugin, []
 		}
 	}
 
-	skills, skillNotes := loadSkills(root, manifest.Name, resolved.Skills, resolved.Format)
-	if resolved.Format == ClaudePluginFormat && resolved.RootSkill {
-		if _, err := os.Stat(filepath.Join(root, "skills")); os.IsNotExist(err) {
-			rootSkill, loadErr := skill.LoadClaudeFile(filepath.Join(root, "SKILL.md"))
-			if loadErr == nil {
-				rootSkill.Plugin = manifest.Name
-				skills = append(skills, rootSkill)
-			} else if !os.IsNotExist(loadErr) {
-				skillNotes = append(skillNotes, "skipping root skill: "+loadErr.Error())
-			}
-		}
-	}
+	skills, skillNotes := loadSkills(root, manifest.Name)
 	p.Skills = skills
 	notes = append(notes, skillNotes...)
 
-	if resolved.Format == AgentPluginFormat {
-		servers, serverNotes := loadServers(p)
-		p.Servers = servers
-		notes = append(notes, serverNotes...)
-	} else {
-		servers, serverNotes := loadNativeServers(p, resolved)
-		p.Servers = servers
-		notes = append(notes, serverNotes...)
-	}
+	servers, serverNotes := loadServers(p)
+	p.Servers = servers
+	notes = append(notes, serverNotes...)
 
 	hooks, hookNotes := loadHooks(root, resolved)
 	p.Hooks = hooks
@@ -195,45 +175,66 @@ func loadPlugin(dir, dataRoot string, allowManifestlessClaude bool) (*Plugin, []
 	return p, notes, nil
 }
 
-func loadSkills(root, name string, declared []string, format Format) ([]skill.Skill, []string) {
+func loadSkills(root, name string) ([]skill.Skill, []string) {
 	var notes []string
 	var skills []skill.Skill
-	for _, value := range declared {
-		dir, err := resolveManifestPath(root, "skills", value)
-		if err != nil {
-			notes = append(notes, "skipping skills: "+err.Error())
+	dir, err := resolveManifestPath(root, "skills", "./skills")
+	if err != nil {
+		return nil, []string{"skipping skills: " + err.Error()}
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, []string{"skipping skills: " + err.Error()}
+	}
+	if !info.IsDir() {
+		return nil, []string{"skills is not a directory"}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, []string{"skipping skills: " + err.Error()}
+	}
+	for _, entry := range entries {
+		skillDir := filepath.Join(dir, entry.Name())
+		dirInfo, statErr := os.Stat(skillDir)
+		if statErr != nil || !dirInfo.IsDir() {
 			continue
 		}
-		info, err := os.Stat(dir)
-		if err != nil {
+
+		skillFile := filepath.Join(skillDir, "SKILL.md")
+		fileInfo, statErr := os.Stat(skillFile)
+		if os.IsNotExist(statErr) {
 			continue
 		}
-		if !info.IsDir() {
-			notes = append(notes, fmt.Sprintf("%s is not a directory", value))
+		if statErr != nil || !fileInfo.Mode().IsRegular() {
+			notes = append(notes, fmt.Sprintf("skipping skill %q: SKILL.md is not a regular file", entry.Name()))
 			continue
 		}
-		var loaded []skill.Skill
-		switch format {
-		case CodexPluginFormat:
-			loaded = skill.LoadDirRecursiveCodex(dir)
-		case ClaudePluginFormat:
-			loaded = skill.LoadDirRecursiveClaude(dir)
-		default:
-			loaded = skill.LoadDir(dir)
+		resolvedFile, resolveErr := resolvePath(skillFile)
+		if resolveErr != nil || !contains(root, resolvedFile) {
+			notes = append(notes, fmt.Sprintf("skipping skill %q: SKILL.md resolves outside the plugin root", entry.Name()))
+			continue
 		}
-		for _, sk := range loaded {
-			if format == ClaudePluginFormat && sk.DisplayName != "" {
-				sk.Name = sk.DisplayName
-			}
-			resolved, err := resolvePath(sk.Location)
-			if err != nil || !contains(root, resolved) {
-				notes = append(notes, fmt.Sprintf("skipping skill %q: resolves outside the plugin root", sk.Name))
-				continue
-			}
-			sk.Location = resolved
-			sk.Plugin = name
-			skills = append(skills, sk)
+
+		sk, loadErr := skill.LoadFile(skillFile)
+		if loadErr != nil {
+			notes = append(notes, fmt.Sprintf("skipping skill %q: %v", entry.Name(), loadErr))
+			continue
 		}
+		if !sk.Portable() {
+			notes = append(notes, fmt.Sprintf("skipping skill %q: plugin skills must use portable Agent Skills frontmatter", entry.Name()))
+			continue
+		}
+		resolvedDir, resolveErr := resolvePath(skillDir)
+		if resolveErr != nil || !contains(root, resolvedDir) {
+			notes = append(notes, fmt.Sprintf("skipping skill %q: resolves outside the plugin root", sk.Name))
+			continue
+		}
+		sk.Location = resolvedDir
+		sk.Plugin = name
+		skills = append(skills, sk)
 	}
 
 	return skills, notes
@@ -261,10 +262,6 @@ func loadServers(p *Plugin) (map[string]mcp.ServerConfig, []string) {
 	content, err := os.ReadFile(resolved)
 	if err != nil {
 		return nil, []string{fmt.Sprintf("disabling MCP: %v", err)}
-	}
-
-	if p.Data == "" {
-		return nil, []string{"disabling MCP: no data directory available"}
 	}
 
 	servers, notes, err := parseMCP(content, p.Manifest.Schema, p.Root, p.Data)

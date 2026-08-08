@@ -16,6 +16,10 @@
       "headers": {
         "X-Tenant": "public"
       }
+    },
+    "legacy-release-feed": {
+      "type": "sse",
+      "url": "https://releases.example.com/events"
     }
   }
 }

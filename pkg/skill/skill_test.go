@@ -28,7 +28,7 @@ allowed-tools: Shell(git:*)
 ---
 # Test Skill
 
-Do the thing with ${ARGUMENTS}.`), 0644); err != nil {
+Do the thing.`), 0644); err != nil {
 		t.Fatalf("write skill: %v", err)
 	}
 
@@ -51,7 +51,7 @@ Do the thing with ${ARGUMENTS}.`), 0644); err != nil {
 	if err != nil {
 		t.Fatalf("GetContent: %v", err)
 	}
-	if content != "# Test Skill\n\nDo the thing with ${ARGUMENTS}." {
+	if content != "# Test Skill\n\nDo the thing." {
 		t.Fatalf("unexpected content: %q", content)
 	}
 }
@@ -78,81 +78,117 @@ Content here.`), 0644); err != nil {
 	}
 }
 
-func TestCodexOpenAIMetadataDisablesOnlyImplicitInvocation(t *testing.T) {
+func TestDiscoverFindsSkillsBelowGroupingDirectories(t *testing.T) {
 	root := t.TempDir()
-	skillDir := filepath.Join(root, "manual-review")
-	if err := os.MkdirAll(filepath.Join(skillDir, "agents"), 0755); err != nil {
+	skillDir := filepath.Join(root, ".agents", "skills", "team", "frontend", "reviews", "accessibility")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: manual-review\ndescription: Review on request.\n---\nReview now."), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: accessibility\ndescription: Review frontend accessibility.\n---\nReview the UI."), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(skillDir, "agents", "openai.yaml"), []byte("policy:\n  allow_implicit_invocation: false\n"), 0644); err != nil {
+	// A nested SKILL.md is a resource of accessibility, not another discovered
+	// skill, because the first skill directory is a discovery boundary.
+	resourceDir := filepath.Join(skillDir, "examples", "nested")
+	if err := os.MkdirAll(resourceDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(resourceDir, "SKILL.md"), []byte("---\nname: nested\ndescription: Must not be discovered.\n---\nNo."), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	skills := LoadDirRecursiveCodex(root)
-	if len(skills) != 1 || skills[0].AllowImplicitInvocation == nil || *skills[0].AllowImplicitInvocation || !skills[0].DisableModelInvocation {
-		t.Fatalf("Codex metadata not applied: %#v", skills)
+	skills, err := Discover(root)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if prompt := FormatForPrompt(skills); prompt != "" {
-		t.Fatalf("manual skill leaked into model prompt: %q", prompt)
-	}
-	if found := FindSkill("manual-review", skills); found == nil {
-		t.Fatal("explicit invocation must remain available")
+	if len(skills) != 1 || skills[0].Name != "accessibility" {
+		t.Fatalf("skills = %#v, want grouped accessibility skill only", skills)
 	}
 }
 
-func TestCodexOpenAIMetadataFailsOpen(t *testing.T) {
-	root := t.TempDir()
-	skillDir := filepath.Join(root, "review")
-	if err := os.MkdirAll(filepath.Join(skillDir, "agents"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: review\ndescription: Review changes.\n---\nReview."), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(skillDir, "agents", "openai.yaml"), []byte("policy: [invalid"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	skills := LoadDirRecursiveCodex(root)
-	if len(skills) != 1 || skills[0].DisableModelInvocation {
-		t.Fatalf("malformed optional metadata hid skill: %#v", skills)
-	}
-}
-
-func TestApplyArguments(t *testing.T) {
+func TestClaudeArgumentSubstitution(t *testing.T) {
 	s := Skill{}
-
-	content := "Search for ${ARGUMENTS}. First: ${1}. Second: ${2}."
-
-	result := s.ApplyArguments(content, "foo bar.go baz", "")
-
-	if result != "Search for foo bar.go baz. First: foo. Second: bar.go." {
-		t.Errorf("got %q", result)
+	content := `All: $ARGUMENTS; first: $ARGUMENTS[0]; second: $1; missing: $3; huge: $999999999999999999999999999; escaped: \$0; doubled: \\$0`
+	got := s.ApplySubstitutions(content, `"hello world" second`, "", "")
+	want := `All: "hello world" second; first: hello world; second: second; missing: $3; huge: $999999999999999999999999999; escaped: $0; doubled: \\hello world`
+	if got != want {
+		t.Fatalf("ApplySubstitutions = %q, want %q", got, want)
 	}
 }
 
-func TestApplyArguments_NoArgs(t *testing.T) {
-	s := Skill{}
-	content := "No args: ${ARGUMENTS}."
-
-	result := s.ApplyArguments(content, "hello world", "")
-
-	if result != "No args: hello world." {
-		t.Errorf("got %q", result)
+func TestClaudeArgumentsAreAppendedWhenNoPlaceholderExists(t *testing.T) {
+	got := (&Skill{}).ApplySubstitutions("Do the work.", "src/api", "", "")
+	if got != "Do the work.\n\nARGUMENTS: src/api" {
+		t.Fatalf("ApplySubstitutions = %q", got)
 	}
 }
 
-func TestApplyArguments_Empty(t *testing.T) {
-	s := Skill{}
-	content := "First: ${1}, all: ${ARGUMENTS}."
+func TestSkillDirectorySubstitutionsHaveNeutralAndClaudeNames(t *testing.T) {
+	content := `${SKILL_DIR}|${PROJECT_DIR}|${CLAUDE_SKILL_DIR}|${CLAUDE_PROJECT_DIR}`
+	got := (&Skill{}).ApplySubstitutions(content, "", "/skills/review", "/workspace")
+	want := `/skills/review|/workspace|/skills/review|/workspace`
+	if got != want {
+		t.Fatalf("ApplySubstitutions = %q, want %q", got, want)
+	}
+}
 
-	result := s.ApplyArguments(content, "", "")
+func TestClaudeNamedArgumentsAndDerivedHint(t *testing.T) {
+	s := Skill{Arguments: []string{"component", "from", "to"}}
+	content := `Migrate $component from $from to $to; missing: $missing; escaped: \$component.`
+	got := s.ApplySubstitutions(content, `"Search Bar" React`, "", "")
+	want := `Migrate Search Bar from React to ; missing: $missing; escaped: $component.`
+	if got != want {
+		t.Fatalf("ApplySubstitutions = %q, want %q", got, want)
+	}
+	if hint := s.InvocationHint(); hint != "[component] [from] [to]" {
+		t.Fatalf("InvocationHint = %q", hint)
+	}
+}
 
-	if result != "First: , all: ." {
-		t.Errorf("got %q", result)
+func TestClaudeArgumentFrontmatterStringListAndExplicitHint(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		arguments string
+		want      []string
+	}{
+		{"string", "component from to", []string{"component", "from", "to"}},
+		{"list", "[component, from, to]", []string{"component", "from", "to"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, "migrate")
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			data := "---\nname: migrate\ndescription: Migrate a component.\narguments: " + test.arguments + "\nargument-hint: <component> <source> <target>\n---\nMigrate $component."
+			if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(data), 0644); err != nil {
+				t.Fatal(err)
+			}
+			skills := LoadDir(root)
+			if len(skills) != 1 || !reflect.DeepEqual(skills[0].Arguments, test.want) {
+				t.Fatalf("skills = %#v", skills)
+			}
+			if skills[0].InvocationHint() != "<component> <source> <target>" || skills[0].Portable() {
+				t.Fatalf("Claude extension metadata = %#v", skills[0])
+			}
+		})
+	}
+}
+
+func TestClaudeNamedArgumentsRejectInvalidNames(t *testing.T) {
+	for _, arguments := range []string{"[ARGUMENTS]", "[1st]", "[two words]", "[same, same]"} {
+		root := t.TempDir()
+		dir := filepath.Join(root, "invalid")
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		data := "---\nname: invalid\ndescription: Invalid arguments.\narguments: " + arguments + "\n---\nbody"
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(data), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if skills := LoadDir(root); len(skills) != 0 {
+			t.Fatalf("arguments %q accepted: %#v", arguments, skills)
+		}
 	}
 }
 
@@ -312,16 +348,6 @@ func TestFormatForPromptEscapesXMLAndStaysWithinBudget(t *testing.T) {
 	}
 }
 
-func TestFormatForPromptHidesManualOnlyClaudeSkill(t *testing.T) {
-	result := FormatForPrompt([]Skill{
-		{Name: "manual", Description: "manual", DisableModelInvocation: true},
-		{Name: "automatic", Description: "automatic"},
-	})
-	if strings.Contains(result, "manual</name>") || !strings.Contains(result, "automatic</name>") {
-		t.Fatalf("prompt = %q", result)
-	}
-}
-
 func writeSkill(t *testing.T, dir, name, description string) {
 	t.Helper()
 
@@ -445,53 +471,36 @@ func TestLoadDirRejectsEmptyAgentSkillsCompatibility(t *testing.T) {
 	}
 }
 
-func TestLoadDirRecursiveClaudeAcceptsOptionalFrontmatter(t *testing.T) {
+func TestLoadDirRejectsNullAgentSkillsOptionalFields(t *testing.T) {
+	for _, field := range []string{"license", "compatibility", "metadata", "allowed-tools"} {
+		t.Run(field, func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, "null-field")
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			data := "---\nname: null-field\ndescription: valid\n" + field + ": null\n---\nbody"
+			if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(data), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if skills := LoadDir(root); len(skills) != 0 {
+				t.Fatalf("skills = %#v, want null %s rejected", skills, field)
+			}
+		})
+	}
+}
+
+func TestLoadDirRejectsProprietaryClaudeFrontmatter(t *testing.T) {
 	root := t.TempDir()
-	plain := filepath.Join(root, "plain")
-	advanced := filepath.Join(root, "advanced")
-	if err := os.MkdirAll(plain, 0755); err != nil {
+	dir := filepath.Join(root, "review")
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(advanced, 0755); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: review\ndescription: Review code.\nuser-invocable: false\n---\nbody"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(plain, "SKILL.md"), []byte("---\n---\n# Plain\n\nFirst useful paragraph.\n\nMore detail."), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(advanced, "SKILL.md"), []byte(`---
-name: friendly-display-name
-description: Base description.
-when_to_use: Use for reviews.
-allowed-tools: [Read, Grep]
-disallowed-tools: Write, Bash(git push *)
-arguments: target mode
-disable-model-invocation: ON
-user-invocable: 0
-background: no
-metadata:
-  ui:
-    color: blue
----
-Review $target in $mode mode.`), 0644); err != nil {
-		t.Fatal(err)
-	}
-	skills := LoadDirRecursiveClaude(root)
-	if len(skills) != 2 {
-		t.Fatalf("skills = %#v", skills)
-	}
-	advancedSkill := FindSkill("advanced", skills)
-	if advancedSkill == nil || advancedSkill.DisplayName != "friendly-display-name" || advancedSkill.Description != "Base description. Use for reviews." || len(advancedSkill.AllowedTools) != 2 || !reflect.DeepEqual(advancedSkill.DisallowedTools, []string{"Write", "Bash(git push *)"}) || advancedSkill.ClaudeMetadata["ui"] == nil || !advancedSkill.DisableModelInvocation || advancedSkill.UserInvocable == nil || *advancedSkill.UserInvocable || advancedSkill.Background == nil || *advancedSkill.Background {
-		t.Fatalf("advanced skill = %#v", advancedSkill)
-	}
-	if got := advancedSkill.ApplyArguments("Review $target in $mode mode; first $0, second $1.", `"pkg/plugin api" strict`, root); got != "Review pkg/plugin api in strict mode; first pkg/plugin api, second strict." {
-		t.Fatalf("named arguments = %q", got)
-	}
-	if got := advancedSkill.ApplyArguments(`Missing $2; literal \$1.00; doubled \\$0.`, "first", root); got != `Missing $2; literal $1.00; doubled \\first.` {
-		t.Fatalf("Claude argument edge cases = %q", got)
-	}
-	plainSkill := FindSkill("plain", skills)
-	if plainSkill == nil || plainSkill.Description != "First useful paragraph." {
-		t.Fatalf("plain skill = %#v", plainSkill)
+	if skills := LoadDir(root); len(skills) != 0 {
+		t.Fatalf("skills = %#v, want proprietary frontmatter rejected", skills)
 	}
 }
 
@@ -512,7 +521,7 @@ func TestDiscoverLoadsAgentSkillsFromWorkingDirectoryToRepoRoot(t *testing.T) {
 	}
 }
 
-func TestDiscoverLoadsClaudeSkillsFromWorkingDirectoryToRepoRoot(t *testing.T) {
+func TestDiscoverLoadsStandardSkillsFromClaudeLocationToRepoRoot(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.Mkdir(filepath.Join(repo, ".git"), 0755); err != nil {
 		t.Fatal(err)
@@ -525,7 +534,7 @@ func TestDiscoverLoadsClaudeSkillsFromWorkingDirectoryToRepoRoot(t *testing.T) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\ndescription: Claude root skill.\n---\nbody"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: root-claude\ndescription: Standard skill in Claude's location.\n---\nbody"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	skills, err := Discover(workDir)

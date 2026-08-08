@@ -8,7 +8,7 @@ A threat model answers "what could go wrong with this system, who would do it, a
 
 **Litmus test:** if patching one line makes an entry disappear, it was a vulnerability, not a threat. "Attacker achieves RCE via untrusted media parsing" is a threat; "`dr_wav.h:412` doesn't bounds-check `chunk_size`" is a vulnerability. This skill produces threats; vulnerabilities appear only as *evidence* that raises a threat's likelihood.
 
-**Read-only except for the output file.** Read source, git history, and any vuln reports the user supplies; write only `<path>/THREAT_MODEL.md`. Do not build, run, or fuzz. Use `explore` and `security` agents for the research swarm. Default `${ARGUMENTS}` to the current directory.
+**Read-only except for the output file.** Read source, git history, and any vuln reports the user supplies; write only `<path>/THREAT_MODEL.md`. Do not build, run, or fuzz. Use `explore` and `security` agents for the research swarm. Default `$ARGUMENTS` to the current directory.
 
 ## Step 1 — Pick a mode
 
@@ -41,4 +41,4 @@ Write `<path>/THREAT_MODEL.md` with these sections so downstream skills can pars
 
 ## Step 4 — Hand back
 
-Tell the user: the path written, the top 5 threats by impact × likelihood (id + one line each), and the open questions. Next step: `security-review ${ARGUMENTS}` will use the entry-points and threats tables to focus its scan.
+Tell the user: the path written, the top 5 threats by impact × likelihood (id + one line each), and the open questions. Next step: `/security-review $ARGUMENTS` will use the entry-points and threats tables to focus its scan.

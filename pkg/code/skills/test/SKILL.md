@@ -4,7 +4,7 @@ description: Design, add, repair, or run focused tests for a change or subsystem
 ---
 # Test
 
-Use `${ARGUMENTS}` to identify the change, behavior, file, or subsystem. If empty, prefer the current diff and the user's latest request.
+Use `$ARGUMENTS` to identify the change, behavior, file, or subsystem. If empty, prefer the current diff and the user's latest request.
 
 Choose the mode from the request:
 

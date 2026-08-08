@@ -6,109 +6,30 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/hook/external"
 )
 
-const (
-	AgentPluginFormat  Format = "agent-plugin"
-	CodexPluginFormat  Format = "codex-plugin"
-	ClaudePluginFormat Format = "claude-plugin"
-
-	// Codex defines this client-owned Agent Plugins extension namespace in
-	// core-plugins/src/agent_plugin_manifest.rs. It is not part of the portable
-	// Agent Plugins v1 schema.
-	codexExtensionNamespace = "com.openai"
-)
-
-var legacyManifestPaths = []string{
-	".codex-plugin/plugin.json",
-	".claude-plugin/plugin.json",
-}
-
-// Format identifies the compatibility profile used to load a plugin. Native
-// Codex and Claude packages deliberately stay distinct because their skill and
-// component conventions are not interchangeable.
-type Format string
+// Codex defines this client-owned Agent Plugins extension namespace in
+// core-plugins/src/agent_plugin_manifest.rs. It is not part of the portable
+// Agent Plugins v1 schema.
+const codexExtensionNamespace = "com.openai"
 
 type resolvedManifest struct {
 	Manifest     Manifest
-	Format       Format
 	Path         string
-	Skills       []string
-	RootSkill    bool
-	MCP          json.RawMessage
-	MCPPresent   bool
 	Hooks        json.RawMessage
 	HooksPresent bool
-	DefaultHooks bool
 }
 
-type legacyManifest struct {
-	Name        string          `json:"name"`
-	Version     string          `json:"version,omitempty"`
-	Description string          `json:"description,omitempty"`
-	Keywords    []string        `json:"keywords,omitempty"`
-	Skills      json.RawMessage `json:"skills,omitempty"`
-	MCPServers  json.RawMessage `json:"mcpServers,omitempty"`
-	Hooks       json.RawMessage `json:"hooks,omitempty"`
+func hasPluginManifest(root string) bool {
+	_, err := os.Lstat(filepath.Join(root, "plugin.json"))
+	return err == nil
 }
 
-func hasPluginManifest(root string, allowManifestlessClaude bool) bool {
-	_, err := findManifest(root)
-	return err == nil || (allowManifestlessClaude && hasClaudeComponents(root))
-}
-
-func hasClaudeComponents(root string) bool {
-	for _, relative := range []string{"SKILL.md", "skills", "agents", "hooks/hooks.json", ".mcp.json"} {
-		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(relative))); err == nil {
-			return true
-		}
-	}
-	return false
-}
-
-func findManifest(root string) (string, error) {
-	portable := filepath.Join(root, "plugin.json")
-	portableExists := false
-	if data, err := os.ReadFile(portable); err == nil {
-		portableExists = true
-		var header struct {
-			Schema string `json:"$schema"`
-		}
-		if json.Unmarshal(data, &header) == nil && strings.HasPrefix(header.Schema, "https://agent-plugins.org/schemas/") {
-			return portable, nil
-		}
-	}
-	for _, relative := range legacyManifestPaths {
-		candidate := filepath.Join(root, filepath.FromSlash(relative))
-		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
-			return candidate, nil
-		}
-	}
-	if portableExists {
-		return portable, nil
-	}
-	return "", os.ErrNotExist
-}
-
-func loadResolvedManifest(root string, allowManifestlessClaude bool) (resolvedManifest, []string, error) {
-	manifestPath, err := findManifest(root)
-	if err != nil {
-		if allowManifestlessClaude && hasClaudeComponents(root) {
-			return resolvedManifest{
-				Manifest:     Manifest{Name: filepath.Base(root)},
-				Format:       ClaudePluginFormat,
-				Path:         root,
-				Skills:       []string{"./skills"},
-				RootSkill:    true,
-				DefaultHooks: true,
-			}, nil, nil
-		}
-		return resolvedManifest{}, nil, fmt.Errorf("plugin manifest not found")
-	}
+func loadResolvedManifest(root string) (resolvedManifest, []string, error) {
+	manifestPath := filepath.Join(root, "plugin.json")
 	resolvedPath, err := resolvePath(manifestPath)
 	if err != nil {
 		return resolvedManifest{}, nil, err
@@ -121,84 +42,21 @@ func loadResolvedManifest(root string, allowManifestlessClaude bool) (resolvedMa
 		return resolvedManifest{}, nil, err
 	}
 
-	if filepath.Clean(manifestPath) == filepath.Join(root, "plugin.json") {
-		manifest, notes, err := parseManifest(content)
-		if err != nil {
-			return resolvedManifest{}, notes, err
-		}
-		resolved := resolvedManifest{
-			Manifest: manifest,
-			Format:   AgentPluginFormat,
-			Path:     resolvedPath,
-			Skills:   []string{"./skills"},
-		}
-		if extension, ok := manifest.Extensions[codexExtensionNamespace]; ok {
-			resolved.Hooks, resolved.HooksPresent, err = hookDeclaration(extension)
-			if err != nil {
-				notes = append(notes, "ignoring invalid com.openai hooks: "+err.Error())
-			}
-			return resolved, notes, nil
-		}
-		overlay := filepath.Join(root, ".codex-plugin", "plugin.json")
-		if _, inspectErr := os.Lstat(overlay); inspectErr == nil {
-			resolvedOverlay, resolveErr := resolveExistingFile(root, overlay)
-			if resolveErr != nil {
-				notes = append(notes, "ignoring .codex-plugin overlay: "+resolveErr.Error())
-			} else if overlayContent, readErr := os.ReadFile(resolvedOverlay); readErr != nil {
-				notes = append(notes, "ignoring .codex-plugin overlay: "+readErr.Error())
-			} else {
-				resolved.Hooks, resolved.HooksPresent, err = hookDeclaration(overlayContent)
-				if err != nil {
-					notes = append(notes, "ignoring invalid .codex-plugin hooks: "+err.Error())
-				}
-			}
-		} else if !os.IsNotExist(inspectErr) {
-			notes = append(notes, "ignoring .codex-plugin overlay: "+inspectErr.Error())
-		}
-		return resolved, notes, nil
-	}
-
-	var legacy legacyManifest
-	if err := json.Unmarshal(content, &legacy); err != nil {
-		return resolvedManifest{}, nil, fmt.Errorf("parse %s: %w", manifestPath, err)
-	}
-	name := strings.TrimSpace(legacy.Name)
-	if name == "" {
-		name = filepath.Base(root)
-	}
-	format := CodexPluginFormat
-	if filepath.Clean(manifestPath) == filepath.Join(root, ".claude-plugin", "plugin.json") {
-		format = ClaudePluginFormat
+	manifest, notes, err := parseManifest(content)
+	if err != nil {
+		return resolvedManifest{}, notes, err
 	}
 	resolved := resolvedManifest{
-		Manifest: Manifest{
-			Name:        name,
-			Version:     strings.TrimSpace(legacy.Version),
-			Description: strings.TrimSpace(legacy.Description),
-			Keywords:    legacy.Keywords,
-		},
-		Format:       format,
-		Path:         resolvedPath,
-		MCP:          legacy.MCPServers,
-		MCPPresent:   len(bytes.TrimSpace(legacy.MCPServers)) > 0,
-		Hooks:        legacy.Hooks,
-		HooksPresent: len(bytes.TrimSpace(legacy.Hooks)) > 0,
-		DefaultHooks: true,
+		Manifest: manifest,
+		Path:     resolvedPath,
 	}
-	resolved.Skills, err = manifestPaths(legacy.Skills)
-	if err != nil {
-		return resolvedManifest{}, nil, fmt.Errorf("parse %s skills: %w", manifestPath, err)
-	}
-	if format == ClaudePluginFormat {
-		declared := len(bytes.TrimSpace(legacy.Skills)) > 0
-		if !slices.Contains(resolved.Skills, "./skills") {
-			resolved.Skills = append([]string{"./skills"}, resolved.Skills...)
+	if extension, ok := manifest.Extensions[codexExtensionNamespace]; ok {
+		resolved.Hooks, resolved.HooksPresent, err = hookDeclaration(extension)
+		if err != nil {
+			notes = append(notes, "ignoring invalid com.openai hooks: "+err.Error())
 		}
-		resolved.RootSkill = !declared
-	} else if len(resolved.Skills) == 0 {
-		resolved.Skills = []string{"./skills"}
 	}
-	return resolved, nil, nil
+	return resolved, notes, nil
 }
 
 func hookDeclaration(data []byte) (json.RawMessage, bool, error) {
@@ -250,9 +108,6 @@ func loadHooks(root string, manifest resolvedManifest) (*external.Config, []stri
 	config := &external.Config{}
 	var notes []string
 	if !manifest.HooksPresent {
-		if manifest.DefaultHooks {
-			return loadDefaultHooks(root)
-		}
 		return config, nil
 	}
 
@@ -304,27 +159,5 @@ func loadHooks(root string, manifest resolvedManifest) (*external.Config, []stri
 }
 
 func parseInlineHooks(name string, raw json.RawMessage) (*external.Config, error) {
-	parsed, err := external.Parse(name, raw)
-	if err == nil {
-		return parsed, nil
-	}
-	// Claude plugin manifests place the event map directly in their `hooks`
-	// field; Codex inline manifests use a complete {"hooks": {...}} document.
-	// Accept both without changing the standalone hooks.json schema.
-	wrapped, marshalErr := json.Marshal(map[string]json.RawMessage{"hooks": raw})
-	if marshalErr != nil {
-		return nil, err
-	}
-	if claude, claudeErr := external.Parse(name, wrapped); claudeErr == nil {
-		return claude, nil
-	}
-	return nil, err
-}
-
-func loadDefaultHooks(root string) (*external.Config, []string) {
-	config, err := external.Load(filepath.Join(root, "hooks", "hooks.json"))
-	if err != nil {
-		return &external.Config{}, []string{"disabling hooks: " + err.Error()}
-	}
-	return config, nil
+	return external.Parse(name, raw)
 }

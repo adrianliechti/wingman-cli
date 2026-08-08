@@ -140,6 +140,10 @@ func parseMCPServer(raw json.RawMessage, root, data string) (mcp.ServerConfig, e
 }
 
 func stdioServer(server mcpServer, root, data string) (mcp.ServerConfig, error) {
+	if data == "" {
+		return mcp.ServerConfig{}, fmt.Errorf("PLUGIN_DATA is unavailable")
+	}
+
 	command := server.Command
 
 	switch {

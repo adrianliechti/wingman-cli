@@ -15,6 +15,10 @@ The directory and `name` must match. Use 1–64 lowercase ASCII letters, digits,
 
 The optional standard fields are `license`, `compatibility`, `metadata`, and `allowed-tools`. Keep `compatibility` at most 500 characters and metadata keys and values as strings. `allowed-tools` is experimental and does not bypass the host's normal tool approval policy.
 
+For a Wingman or Claude Code skill that does not need to remain portable, `arguments` may be a space-separated string or list of positional names, and `argument-hint` may override the hint displayed beside the slash command. A declaration such as `arguments: [component, source, target]` exposes `$component`, `$source`, and `$target` in the body and displays `[component] [source] [target]` when no explicit hint is supplied. Do not use these fields in an Agent Plugin skill: the plugin specification requires its skills to conform to portable Agent Skills frontmatter.
+
+Body substitutions are `$ARGUMENTS`, `$ARGUMENTS[N]`, `$N`, and declared `$name` arguments. `${SKILL_DIR}` and `${PROJECT_DIR}` resolve directories; the Claude-compatible `${CLAUDE_SKILL_DIR}` and `${CLAUDE_PROJECT_DIR}` names are aliases.
+
 ## Resource layout
 
 ```text

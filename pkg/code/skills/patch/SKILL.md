@@ -6,11 +6,11 @@ description: Generate minimal, behavior-preserving fixes for verified security f
 
 Produce the smallest correct fix for each confirmed vulnerability. A patch that breaks legitimate input, changes unrelated behavior, or papers over the symptom is worse than no patch. Fix the root cause, change as little as possible, and prove the fix before claiming it.
 
-`${ARGUMENTS}` is preferably `TRIAGE.json` or `TRIAGE.md` from `/triage`. It may also be a `SECURITY-FINDINGS.md` from `/security-review`, or a single described verified finding. **Only patch confirmed, verified findings.** If handed raw scanner output, stop and point the user at `/triage` first.
+`$ARGUMENTS` is preferably `TRIAGE.json` or `TRIAGE.md` from `/triage`. It may also be a `SECURITY-FINDINGS.md` from `/security-review`, or a single described verified finding. **Only patch confirmed, verified findings.** If handed raw scanner output, stop and point the user at `/triage` first.
 
 ## Step 1 -- Load and order
 
-Read `${ARGUMENTS}`. Take confirmed findings, highest severity first. For each, note the `file:line`, root cause, exploit scenario, and recommended fix from triage. Group findings that share a root cause, such as one vulnerable helper called from many sites. Fix the shared cause once rather than each call site.
+Read `$ARGUMENTS`. Take confirmed findings, highest severity first. For each, note the `file:line`, root cause, exploit scenario, and recommended fix from triage. Group findings that share a root cause, such as one vulnerable helper called from many sites. Fix the shared cause once rather than each call site.
 
 ## Step 2 -- Understand before editing
 

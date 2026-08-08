@@ -6,7 +6,9 @@ description: Design or evaluate a system, service, component, API, data model, o
 
 Produce a code-grounded design, not a generic best-practices essay. Stay read-only unless the user explicitly asks you to write an ADR or design document. Do not implement the design in this workflow.
 
-`${ARGUMENTS}` is the decision or system to design. If empty, use the user's latest request.
+Design the following decision or system. If no invocation argument follows, use the user's latest request:
+
+$ARGUMENTS
 
 ## Phase 1: Establish requirements
 

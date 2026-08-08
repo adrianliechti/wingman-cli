@@ -19,10 +19,18 @@ import (
 type slashCommand struct {
 	Name string
 	Desc string
+	Hint string
 
 	// Busy marks commands that stay usable while a turn is running.
 	Busy bool
 	Run  func(a *App)
+}
+
+func (c slashCommand) Label() string {
+	if c.Hint == "" {
+		return c.Name
+	}
+	return c.Name + " " + c.Hint
 }
 
 func (a *App) builtinCommands() []slashCommand {
@@ -88,7 +96,7 @@ func (a *App) skillCommands() []slashCommand {
 			name = s.Qualified()
 		}
 
-		cmds = append(cmds, slashCommand{Name: "/" + name, Desc: s.Description})
+		cmds = append(cmds, slashCommand{Name: "/" + name, Desc: s.Description, Hint: s.InvocationHint()})
 	}
 	slices.SortStableFunc(cmds, func(a, b slashCommand) int {
 		if a.Name == "/init" {
@@ -134,6 +142,15 @@ func (a *App) availableCommands() []slashCommand {
 		}
 	}
 	return result
+}
+
+func (a *App) commandHint(name string) string {
+	for _, command := range a.availableCommands() {
+		if command.Name == name {
+			return command.Hint
+		}
+	}
+	return ""
 }
 
 // slashToken returns the /command token the cursor sits in: the rune index
@@ -188,7 +205,7 @@ func (a *App) syncCommandPopup() {
 
 		var items []PopupItem
 		for _, cmd := range cmds {
-			items = append(items, PopupItem{ID: cmd.Name, Label: cmd.Name, Detail: cmd.Desc})
+			items = append(items, PopupItem{ID: cmd.Name, Label: cmd.Label(), Detail: cmd.Desc})
 		}
 		a.popup = newPopup(popupCommands, "", items, nil)
 		a.cmdPopupInline = inline
@@ -225,6 +242,8 @@ func (a *App) completeCommand(id string) bool {
 		} else {
 			insert += " "
 		}
+	} else if a.commandHint(id) != "" {
+		insert += " "
 	}
 
 	changed := advance > 0 || insert != string(a.editor.value[start:end])
@@ -262,7 +281,7 @@ func (a *App) submitInput() {
 
 	skills := a.agent.Workspace().Skills
 
-	if name, _, ok := skill.ParseCommand(query); ok && skill.FindSkill(name, skills) == nil && !a.hasAgentCommand(name) {
+	if name, ok := skill.ParseSlashCommand(query); ok && skill.FindSkill(name, skills) == nil && !a.hasAgentCommand(name) {
 		a.editor.SetText("")
 		a.appendChat(cellNotice(fmt.Sprintf("Unknown command: /%s", name), theme.Default.Yellow, a.width()))
 		return

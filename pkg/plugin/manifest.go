@@ -41,9 +41,9 @@ var manifestFields = []string{
 	"keywords", "extensions",
 }
 
-// parseManifest validates plugin.json against the closed schema. An unknown
-// top-level field and a non-object "extensions" are reported and ignored; every
-// other violation rejects the plugin.
+// parseManifest validates plugin.json against the closed schema. Per the
+// specification's explicit non-fatal exceptions, an unknown top-level field or
+// non-object "extensions" value is reported and ignored.
 func parseManifest(data []byte) (Manifest, []string, error) {
 	var raw map[string]json.RawMessage
 
@@ -52,14 +52,12 @@ func parseManifest(data []byte) (Manifest, []string, error) {
 	}
 
 	var notes []string
-
 	for _, field := range slices.Sorted(maps.Keys(raw)) {
 		if !slices.Contains(manifestFields, field) {
 			notes = append(notes, fmt.Sprintf("ignoring unknown manifest field %q", field))
 			delete(raw, field)
 		}
 	}
-
 	if extensions, ok := raw["extensions"]; ok && !isObject(extensions) {
 		notes = append(notes, "ignoring non-object \"extensions\" field")
 		delete(raw, "extensions")
