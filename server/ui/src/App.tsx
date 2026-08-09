@@ -1,7 +1,9 @@
 import {
 	Compass,
+	Code2,
 	FileText,
 	GitCompare,
+	Globe2,
 	Loader2,
 	MessageSquare,
 	PanelLeftClose,
@@ -109,13 +111,7 @@ export default function App() {
 	const showProblems = capabilities?.lsp ?? false;
 	const showAgents = capabilities?.tasks ?? false;
 	const showTerminal = capabilities?.terminal ?? false;
-	const [requestedRightTab, setRequestedRightTab] =
-		useState<RightTab>("changes");
-	const rightTab =
-		(requestedRightTab === "changes" && !showChanges) ||
-		(requestedRightTab === "agents" && !showAgents)
-			? "files"
-			: requestedRightTab;
+	const [requestedRightTab, setRequestedRightTab] = useState<RightTab>("files");
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
 	const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
 	const [terminalCollapsed, setTerminalCollapsed] = useState(true);
@@ -134,6 +130,9 @@ export default function App() {
 
 	const [tabs, setTabs] = useState<CenterTab[]>([draftChatTab()]);
 	const [activeTabId, setActiveTabId] = useState(chatTabId(""));
+	const [fileViews, setFileViews] = useState<
+		Record<string, "code" | "preview">
+	>({});
 	const [currentSessionId, setCurrentSessionId] = useState("");
 	const [paletteOpen, setPaletteOpen] = useState(false);
 	const [composerSeed, setComposerSeed] = useState<{
@@ -186,8 +185,16 @@ export default function App() {
 	}, [toggleTerminal]);
 
 	const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
+	const activeIsHtml =
+		activeTab.type === "file" && /\.html?$/i.test(activeTab.path ?? "");
+	const activeFileView = fileViews[activeTab.id] ?? "code";
 	const sessionId =
 		activeTab.type === "chat" ? (activeTab.sessionId ?? "") : currentSessionId;
+	const rightTab =
+		(requestedRightTab === "changes" && !showChanges) ||
+		(requestedRightTab === "agents" && !showAgents)
+			? "files"
+			: requestedRightTab;
 
 	const activeSession = sessionId ? sessions[sessionId] : undefined;
 	const entries = activeSession?.entries ?? EMPTY_ENTRIES;
@@ -327,6 +334,12 @@ export default function App() {
 				if (!next.some((t) => t.type === "chat")) {
 					next = [draftChatTab(), ...next];
 				}
+				return next;
+			});
+			setFileViews((prev) => {
+				if (!(id in prev)) return prev;
+				const next = { ...prev };
+				delete next[id];
 				return next;
 			});
 			if (activeTabId === id) {
@@ -826,6 +839,39 @@ export default function App() {
 										)}
 									</div>
 								)}
+								{activeIsHtml && (
+									<button
+										type="button"
+										className={`self-center flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-bg-hover ${
+											activeFileView === "preview"
+												? "text-fg-muted"
+												: "text-fg-dim hover:text-fg-muted"
+										}`}
+										onClick={() =>
+											setFileViews((prev) => ({
+												...prev,
+												[activeTab.id]:
+													activeFileView === "preview" ? "code" : "preview",
+											}))
+										}
+										title={
+											activeFileView === "preview"
+												? "Show code editor"
+												: "Show browser preview"
+										}
+										aria-label={
+											activeFileView === "preview"
+												? "Show code editor"
+												: "Show browser preview"
+										}
+									>
+										{activeFileView === "preview" ? (
+											<Code2 size={13} />
+										) : (
+											<Globe2 size={13} />
+										)}
+									</button>
+								)}
 								{showTerminal && (
 									<button
 										type="button"
@@ -922,6 +968,7 @@ export default function App() {
 										subscribe={subscribe}
 										onDeleted={() => closeTab(activeTab.id)}
 										onDirtyChange={(d) => setTabDirty(activeTab.id, d)}
+										view={fileViews[activeTab.id] ?? "code"}
 									/>
 								) : null}
 							</div>
@@ -967,6 +1014,12 @@ export default function App() {
 				>
 					<div className="h-full flex flex-col bg-bg">
 						<div className="h-10 flex items-stretch shrink-0">
+							<RightTabButton
+								active={rightTab === "files"}
+								onClick={() => setRequestedRightTab("files")}
+							>
+								Files
+							</RightTabButton>
 							{showChanges && (
 								<RightTabButton
 									active={rightTab === "changes"}
@@ -975,12 +1028,6 @@ export default function App() {
 									Changes
 								</RightTabButton>
 							)}
-							<RightTabButton
-								active={rightTab === "files"}
-								onClick={() => setRequestedRightTab("files")}
-							>
-								Files
-							</RightTabButton>
 							{showAgents && (
 								<RightTabButton
 									active={rightTab === "agents"}

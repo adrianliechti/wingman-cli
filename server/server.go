@@ -85,6 +85,7 @@ type Server struct {
 	taskPumps  map[*task.Registry]bool
 
 	terminals *terminal.Manager
+	preview   *filePreviewServer
 
 	files           *watch.Monitor
 	prevGit         bool
@@ -125,6 +126,12 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 
 	s.terminals = terminal.NewManager(ws.RootPath)
 	s.terminals.SetExitHandler(s.onTerminalExit)
+	s.preview, err = newFilePreviewServer(ws.Root)
+	if err != nil {
+		cancel()
+		ws.Close()
+		return nil, err
+	}
 
 	wa := codeagent.New(ws, cfg, nil)
 	wa.SetUI(s)
@@ -182,6 +189,7 @@ func (s *Server) Close() {
 			_ = a.Close()
 		}
 		s.background.Wait()
+		s.preview.Close()
 		s.terminals.Close()
 		s.workspace.Close()
 	})
@@ -287,6 +295,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Get("/read", s.handleFileRead)
 			r.Get("/search", s.handleFilesSearch)
 			r.Get("/download", s.handleFileDownload)
+			r.Get("/preview", s.handleFilePreview)
 			r.Post("/rename", s.handleFileRename)
 			r.Post("/copy", s.handleFileCopy)
 			r.Post("/write", s.handleFileWrite)
