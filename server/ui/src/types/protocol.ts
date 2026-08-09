@@ -397,7 +397,19 @@ export interface DiagnosticEntry {
 	path: string;
 	line: number;
 	column: number;
+	end_line?: number;
+	end_column?: number;
 	severity: "error" | "warning" | "info";
 	message: string;
 	source?: string;
+}
+
+export interface WorkspaceDiagnostics {
+	diagnostics: DiagnosticEntry[];
+	checked_files: number;
+	discovered_files: number;
+	discovery_truncated: boolean;
+	unknown_files: number;
+	unavailable_servers: string[];
+	analyzing: boolean;
 }

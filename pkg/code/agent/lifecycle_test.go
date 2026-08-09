@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -39,7 +40,7 @@ func TestClosedAgentRejectsNewSession(t *testing.T) {
 
 func TestUnattendedApprovesAndResolvesPromptsWithoutUI(t *testing.T) {
 	s := &sessionState{}
-	s.mode = modeUnattended
+	s.setMode(modeUnattended)
 	a := &Agent{sessions: map[string]*sessionState{"s1": s}}
 	ctx := code.WithSessionID(context.Background(), "s1")
 
@@ -61,6 +62,39 @@ func TestUnattendedApprovesAndResolvesPromptsWithoutUI(t *testing.T) {
 	}
 }
 
+func TestModeSwitchReachesToolsWhileCatalogStaysPinned(t *testing.T) {
+	s := &sessionState{
+		parent: &Agent{workspace: &code.Workspace{}},
+		baseTools: []tool.Tool{
+			{Name: "elicit"},
+			{Name: "read"},
+		},
+	}
+	s.setMode(modeAgent)
+	s.turnTools.Store([]tool.Tool{{Name: "mcp_search"}})
+
+	has := func(name string) bool {
+		return slices.ContainsFunc(s.tools(), func(t tool.Tool) bool { return t.Name == name })
+	}
+
+	if !has("elicit") || !has("mcp_search") {
+		t.Fatalf("agent mode tools = %#v", s.tools())
+	}
+
+	s.setMode(modeUnattended)
+	if has("elicit") {
+		t.Fatalf("mode switch did not reach the tool set mid-turn: %#v", s.tools())
+	}
+	if !has("mcp_search") {
+		t.Fatalf("pinned catalog lost mid-turn: %#v", s.tools())
+	}
+
+	s.clearCancel(s.cancelGen)
+	if has("mcp_search") {
+		t.Fatalf("catalog stayed pinned after the turn: %#v", s.tools())
+	}
+}
+
 func TestUnattendedModeOwnsToolsAndInstructions(t *testing.T) {
 	s := &sessionState{
 		parent: &Agent{workspace: &code.Workspace{}},
@@ -69,7 +103,7 @@ func TestUnattendedModeOwnsToolsAndInstructions(t *testing.T) {
 			{Name: "read"},
 		},
 	}
-	s.mode = modeUnattended
+	s.setMode(modeUnattended)
 
 	tools := s.tools()
 	if len(tools) != 1 || tools[0].Name != "read" {

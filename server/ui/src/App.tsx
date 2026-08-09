@@ -62,11 +62,14 @@ interface CenterTab {
 	path?: string;
 	diffLayer?: DiffLayer;
 	line?: number;
+	column?: number;
+	navigationKey?: number;
+	external?: boolean;
 	sessionId?: string;
 	terminalId?: string;
 }
 
-type RightTab = "changes" | "files" | "agents";
+type RightTab = "changes" | "files" | "problems" | "agents";
 
 const EMPTY_ENTRIES: never[] = [];
 const EMPTY_USAGE = {
@@ -258,6 +261,7 @@ export default function App() {
 		activeTab.type === "chat" ? (activeTab.sessionId ?? "") : currentSessionId;
 	const rightTab =
 		(requestedRightTab === "changes" && !showChanges) ||
+		(requestedRightTab === "problems" && !showProblems) ||
 		(requestedRightTab === "agents" && !showAgents)
 			? "files"
 			: requestedRightTab;
@@ -342,12 +346,21 @@ export default function App() {
 	);
 
 	const openFile = useCallback(
-		(path: string, line?: number) => {
+		(path: string, line?: number, column?: number, external?: boolean) => {
 			const existing = tabs.find((t) => t.type === "file" && t.path === path);
 			if (existing) {
 				if (line) {
 					setTabs((prev) =>
-						prev.map((t) => (t.id === existing.id ? { ...t, line } : t)),
+						prev.map((t) =>
+							t.id === existing.id
+								? {
+										...t,
+										line,
+										column,
+										navigationKey: (t.navigationKey ?? 0) + 1,
+									}
+								: t,
+						),
 					);
 				}
 				setActiveTabId(existing.id);
@@ -360,6 +373,9 @@ export default function App() {
 				label,
 				path,
 				line,
+				column,
+				navigationKey: line ? 1 : undefined,
+				external: external || undefined,
 			};
 			setTabs((prev) => [...prev, tab]);
 			setActiveTabId(tab.id);
@@ -1037,9 +1053,13 @@ export default function App() {
 									key={activeTab.id}
 									path={activeTab.path}
 									line={activeTab.line}
+									column={activeTab.column}
+									navigationKey={activeTab.navigationKey}
+									external={activeTab.external}
 									subscribe={subscribe}
 									onDeleted={() => closeTab(activeTab.id)}
 									onDirtyChange={(d) => setTabDirty(activeTab.id, d)}
+									onOpenFile={openFile}
 									view={fileViews[activeTab.id] ?? "code"}
 								/>
 							) : null}
@@ -1075,6 +1095,14 @@ export default function App() {
 									Changes
 								</RightTabButton>
 							)}
+							{showProblems && (
+								<RightTabButton
+									active={rightTab === "problems"}
+									onClick={() => setRequestedRightTab("problems")}
+								>
+									Problems
+								</RightTabButton>
+							)}
 							{showAgents && (
 								<RightTabButton
 									active={rightTab === "agents"}
@@ -1097,22 +1125,11 @@ export default function App() {
 									onOpenFile={openFile}
 									subscribe={subscribe}
 								/>
+							) : rightTab === "problems" && showProblems ? (
+								<ProblemsPanel onOpenFile={openFile} subscribe={subscribe} />
 							) : (
-								<div className="flex flex-col h-full">
-									<div className="flex-[3] min-h-0 overflow-hidden flex flex-col">
-										<FileTree onFileSelect={openFile} subscribe={subscribe} />
-									</div>
-									{showProblems && (
-										<>
-											<div className="h-px bg-border-subtle shrink-0" />
-											<div className="flex-[1] min-h-0 overflow-hidden">
-												<ProblemsPanel
-													onOpenFile={openFile}
-													subscribe={subscribe}
-												/>
-											</div>
-										</>
-									)}
+								<div className="h-full flex flex-col overflow-hidden">
+									<FileTree onFileSelect={openFile} subscribe={subscribe} />
 								</div>
 							)}
 						</div>

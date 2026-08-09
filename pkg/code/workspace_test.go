@@ -17,6 +17,19 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/skill"
 )
 
+func TestWarmUpCreatesLSPManagerOutsideGitRepository(t *testing.T) {
+	w, err := NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	w.WarmUp()
+	if w.LSP == nil {
+		t.Fatal("LSP manager was not created")
+	}
+}
+
 func TestWorkspaceRefreshesMCPToolsAfterListChanged(t *testing.T) {
 	server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "test", Version: "1.0.0"}, nil)
 	addTestMCPTool(server, "first")

@@ -80,12 +80,9 @@ type Workspace struct {
 	mcpRefreshCancel context.CancelFunc
 
 	// LSP calls may include server startup and network round-trips. Keep their
-	// lifetime lock separate from workspace state so a pending manager swap or
-	// close does not block unrelated workspace readers. Replaced managers stay
-	// alive for tools captured before a project-mode change and close with the
-	// workspace.
-	lspLifeMu  sync.RWMutex
-	retiredLSP []*lsp.Manager
+	// lifetime lock separate from workspace state so close does not block
+	// unrelated workspace readers.
+	lspLifeMu sync.RWMutex
 
 	memoryMu          sync.Mutex
 	memoryCache       string
@@ -195,12 +192,8 @@ func (w *Workspace) WarmUp() {
 		nativeGit := isGitRepo(w.RootPath)
 		changesManager := changes.New(w.RootPath, w.nextShadowGitDir(), nativeGit)
 
-		var lspManager *lsp.Manager
-		var lspTools []tool.Tool
-		if nativeGit {
-			lspManager = lsp.NewManager(w.RootPath)
-			lspTools = lsptool.NewTools(lspManager)
-		}
+		lspManager := lsp.NewManager(w.RootPath)
+		lspTools := lsptool.NewTools(lspManager)
 
 		graphEngine := graph.New(w.RootPath, filepath.Join(projectGraphDir(w.RootPath), "graph.json"), graph.WithResolver(&lspResolver{ws: w}))
 		graphTools := graphtool.NewTools(graphEngine)
@@ -345,14 +338,12 @@ func (w *Workspace) Close() {
 	w.closed = true
 	mcpManager := w.MCP
 	lspManager := w.LSP
-	retiredLSP := w.retiredLSP
 	changesManager := w.Changes
 	root := w.Root
 	scratchPath := w.ScratchPath
 	mcpRefreshCancel := w.mcpRefreshCancel
 	w.MCP = nil
 	w.LSP = nil
-	w.retiredLSP = nil
 	w.Changes = nil
 	w.Graph = nil
 	w.mcpToolsByServer = nil
@@ -368,9 +359,6 @@ func (w *Workspace) Close() {
 	}
 	if lspManager != nil {
 		lspManager.Close()
-	}
-	for _, manager := range retiredLSP {
-		manager.Close()
 	}
 	w.lspLifeMu.Unlock()
 
@@ -400,50 +388,146 @@ func (w *Workspace) SyncProjectMode() {
 
 	nativeGit := isGitRepo(w.RootPath)
 	nextChanges := changes.New(w.RootPath, w.nextShadowGitDir(), nativeGit)
-	var nextLSP *lsp.Manager
-	var nextTools []tool.Tool
-	if nativeGit {
-		nextLSP = lsp.NewManager(w.RootPath)
-		nextTools = w.protectLSPTools(lsptool.NewTools(nextLSP))
-	}
 
-	w.lspLifeMu.Lock()
 	w.mu.Lock()
 	if w.closed || w.Changes == nil {
 		w.mu.Unlock()
-		w.lspLifeMu.Unlock()
 		nextChanges.Close()
-		if nextLSP != nil {
-			nextLSP.Close()
-		}
 		return
-	}
-	if w.LSP != nil {
-		w.retiredLSP = append(w.retiredLSP, w.LSP)
 	}
 	previousChanges := w.Changes
 	w.Changes = nextChanges
-	w.LSP = nextLSP
-	w.lspTools = nextTools
 	w.mu.Unlock()
-	w.lspLifeMu.Unlock()
 	previousChanges.Close()
-
-	if nextLSP != nil {
-		nextLSP.WarmUpServers()
-	}
 }
 
-func (w *Workspace) Diagnostics(ctx context.Context) map[string][]lsp.Diagnostic {
+// lspManager returns the LSP manager; callers must hold lspLifeMu for the
+// duration of any call into it.
+func (w *Workspace) lspManager() *lsp.Manager {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.LSP
+}
+
+// withLSPDocument runs fn against the session owning filePath after syncing the
+// document, holding the LSP lifetime lock for the duration of the call.
+func (w *Workspace) withLSPDocument(ctx context.Context, filePath string, content *string, fn func(*lsp.Session, string) error) error {
 	w.lspLifeMu.RLock()
 	defer w.lspLifeMu.RUnlock()
-	w.mu.RLock()
-	manager := w.LSP
-	w.mu.RUnlock()
+
+	manager := w.lspManager()
 	if manager == nil {
-		return nil
+		return fmt.Errorf("language server unavailable")
+	}
+
+	session, err := manager.GetSession(ctx, filePath)
+	if err != nil {
+		return err
+	}
+	uri, err := syncEditorDocument(ctx, session, filePath, content)
+	if err != nil {
+		return err
+	}
+	return fn(session, uri)
+}
+
+func (w *Workspace) Diagnostics(ctx context.Context) lsp.WorkspaceDiagnosticsReport {
+	w.lspLifeMu.RLock()
+	defer w.lspLifeMu.RUnlock()
+
+	manager := w.lspManager()
+	if manager == nil {
+		return lsp.WorkspaceDiagnosticsReport{}
 	}
 	return manager.CollectAllDiagnostics(ctx)
+}
+
+// FileDiagnostics returns diagnostics for one disk file or in-memory editor
+// buffer. The boolean is false when the server has not produced a result yet.
+func (w *Workspace) FileDiagnostics(ctx context.Context, filePath string, content *string) ([]lsp.Diagnostic, bool, error) {
+	var diagnostics []lsp.Diagnostic
+	var known bool
+	err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
+		diagnostics, known = session.WaitForDiagnostics(ctx, uri, 2*time.Second)
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return diagnostics, known, nil
+}
+
+// DefinitionLocations resolves a position in a disk file or in-memory editor
+// buffer using the language server associated with the file.
+func (w *Workspace) DefinitionLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.DefLocation, error) {
+	return w.locationRequest(ctx, filePath, content, func(session *lsp.Session, uri string) ([]lsp.DefLocation, error) {
+		return session.DefinitionLocations(ctx, uri, line, column)
+	})
+}
+
+func (w *Workspace) TypeDefinitionLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.DefLocation, error) {
+	return w.locationRequest(ctx, filePath, content, func(session *lsp.Session, uri string) ([]lsp.DefLocation, error) {
+		return session.TypeDefinitionLocations(ctx, uri, line, column)
+	})
+}
+
+func (w *Workspace) ImplementationLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.DefLocation, error) {
+	return w.locationRequest(ctx, filePath, content, func(session *lsp.Session, uri string) ([]lsp.DefLocation, error) {
+		return session.ImplementationLocations(ctx, uri, line, column)
+	})
+}
+
+func (w *Workspace) ReferenceLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.DefLocation, error) {
+	return w.locationRequest(ctx, filePath, content, func(session *lsp.Session, uri string) ([]lsp.DefLocation, error) {
+		return session.ReferenceLocations(ctx, uri, line, column)
+	})
+}
+
+func (w *Workspace) locationRequest(ctx context.Context, filePath string, content *string, request func(*lsp.Session, string) ([]lsp.DefLocation, error)) ([]lsp.DefLocation, error) {
+	var locations []lsp.DefLocation
+	err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
+		var err error
+		locations, err = request(session, uri)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return locations, nil
+}
+
+func (w *Workspace) HoverInformation(ctx context.Context, filePath string, content *string, line, column int) (string, error) {
+	var contents string
+	err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
+		var err error
+		contents, err = session.HoverInformation(ctx, uri, line, column)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return contents, nil
+}
+
+func (w *Workspace) DocumentSymbolItems(ctx context.Context, filePath string, content *string) ([]lsp.DocumentSymbol, []lsp.SymbolInformation, error) {
+	var docSymbols []lsp.DocumentSymbol
+	var symInfos []lsp.SymbolInformation
+	err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
+		var err error
+		docSymbols, symInfos, err = session.DocumentSymbolItems(ctx, uri)
+		return err
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return docSymbols, symInfos, nil
+}
+
+func syncEditorDocument(ctx context.Context, session *lsp.Session, filePath string, content *string) (string, error) {
+	if content != nil {
+		return session.SyncDocument(ctx, filePath, *content)
+	}
+	return session.OpenDocument(ctx, filePath)
 }
 
 func (w *Workspace) WithEditDiagnostics(tools []tool.Tool) []tool.Tool {
@@ -481,9 +565,8 @@ func (w *Workspace) postEditDiagnostics(ctx context.Context, path string) string
 
 	w.lspLifeMu.RLock()
 	defer w.lspLifeMu.RUnlock()
-	w.mu.RLock()
-	manager := w.LSP
-	w.mu.RUnlock()
+
+	manager := w.lspManager()
 	if manager == nil {
 		return ""
 	}
@@ -742,9 +825,11 @@ func (w *Workspace) ManagedTools() (mcpTools, lspTools, graphTools []tool.Tool) 
 }
 
 func (w *Workspace) HasLSP() bool {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-	return w.LSP != nil
+	w.lspLifeMu.RLock()
+	defer w.lspLifeMu.RUnlock()
+
+	manager := w.lspManager()
+	return manager != nil && len(manager.DetectServers()) > 0
 }
 
 func (w *Workspace) HasChanges() bool {

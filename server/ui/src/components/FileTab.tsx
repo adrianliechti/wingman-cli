@@ -1,33 +1,54 @@
-import Editor, { type Monaco } from "@monaco-editor/react";
+import Editor, { type OnMount } from "@monaco-editor/react";
 import { FileDigit } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useColorScheme } from "../hooks/useColorScheme";
+import {
+	createMonacoLSPBridge,
+	type MonacoLSPBridge,
+	revealEditorPosition,
+} from "../monacoLsp";
 import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
 import type { FileContent, ServerMessage } from "../types/protocol";
 
 interface Props {
 	path: string;
 	line?: number;
+	column?: number;
+	navigationKey?: number;
+	external?: boolean;
 	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 	onDeleted?: () => void;
 	onDirtyChange?: (dirty: boolean) => void;
+	onOpenFile?: (
+		path: string,
+		line: number,
+		column: number,
+		external?: boolean,
+	) => void;
 	view?: "code" | "preview";
 }
 
 export function FileTab({
 	path,
 	line,
+	column,
+	navigationKey,
+	external = false,
 	subscribe,
 	onDeleted,
 	onDirtyChange,
+	onOpenFile,
 	view = "code",
 }: Props) {
 	const [file, setFile] = useState<FileContent | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [value, setValue] = useState("");
-	const [saving, setSaving] = useState(false);
 	const [previewRevision, setPreviewRevision] = useState(0);
-	const monacoRef = useRef<Monaco | null>(null);
+	const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
+	const lspBridgeRef = useRef<MonacoLSPBridge | null>(null);
+	const loadControllerRef = useRef<AbortController | null>(null);
+	const diagnosticsEventTimerRef = useRef<number | null>(null);
+	const savingRef = useRef(false);
 	const scheme = useColorScheme();
 
 	const onDeletedRef = useRef(onDeleted);
@@ -58,11 +79,52 @@ export function FileTab({
 		return () => onDirtyChangeRef.current?.(false);
 	}, []);
 
+	const onOpenFileRef = useRef(onOpenFile);
+	useEffect(() => {
+		onOpenFileRef.current = onOpenFile;
+	});
+
+	useEffect(() => {
+		const editor = editorRef.current;
+		if (!editor || !line || line < 1) return;
+		revealEditorPosition(editor, line, column);
+	}, [line, column, navigationKey]);
+
+	useEffect(() => {
+		return () => {
+			loadControllerRef.current?.abort();
+			if (diagnosticsEventTimerRef.current !== null) {
+				window.clearTimeout(diagnosticsEventTimerRef.current);
+			}
+			lspBridgeRef.current?.dispose();
+			lspBridgeRef.current = null;
+			editorRef.current = null;
+		};
+	}, []);
+
+	const loadDiagnostics = useCallback(async () => {
+		await lspBridgeRef.current?.refreshDiagnostics();
+	}, []);
+
+	useEffect(() => {
+		if (!file || file.binary || !editorRef.current) return;
+		const timer = window.setTimeout(
+			() => void loadDiagnostics(),
+			dirty ? 600 : 0,
+		);
+		return () => window.clearTimeout(timer);
+	}, [file, value, dirty, loadDiagnostics]);
+
 	const load = useCallback(async () => {
+		loadControllerRef.current?.abort();
+		const controller = new AbortController();
+		loadControllerRef.current = controller;
 		try {
 			const res = await fetch(
-				`/api/files/read?path=${encodeURIComponent(path)}`,
+				`${external ? "/api/lsp/file" : "/api/files/read"}?path=${encodeURIComponent(path)}`,
+				{ signal: controller.signal },
 			);
+			if (controller.signal.aborted) return;
 			if (res.status === 404) {
 				onDeletedRef.current?.();
 				return;
@@ -72,13 +134,23 @@ export function FileTab({
 				return;
 			}
 			const data: FileContent = await res.json();
+			if (fileRef.current && dirtyRef.current) return;
 			setFile(data);
 			setValue(data.content ?? "");
 			setLoading(false);
-		} catch {
-			setLoading(false);
+		} catch (error) {
+			if (
+				loadControllerRef.current === controller &&
+				!(error instanceof DOMException && error.name === "AbortError")
+			) {
+				setLoading(false);
+			}
+		} finally {
+			if (loadControllerRef.current === controller) {
+				loadControllerRef.current = null;
+			}
 		}
-	}, [path]);
+	}, [path, external]);
 
 	useEffect(() => {
 		setLoading(true);
@@ -87,21 +159,36 @@ export function FileTab({
 
 	useEffect(() => {
 		if (!subscribe) return;
-		return subscribe((msg) => {
+		const unsubscribe = subscribe((msg) => {
 			if (msg.type === "files_changed") {
 				setPreviewRevision((revision) => revision + 1);
 				if (dirtyRef.current) return;
 				load();
+			} else if (msg.type === "diagnostics_changed") {
+				if (diagnosticsEventTimerRef.current !== null) {
+					window.clearTimeout(diagnosticsEventTimerRef.current);
+				}
+				diagnosticsEventTimerRef.current = window.setTimeout(() => {
+					diagnosticsEventTimerRef.current = null;
+					void loadDiagnostics();
+				}, 200);
 			}
 		});
-	}, [subscribe, load]);
+		return () => {
+			unsubscribe();
+			if (diagnosticsEventTimerRef.current !== null) {
+				window.clearTimeout(diagnosticsEventTimerRef.current);
+				diagnosticsEventTimerRef.current = null;
+			}
+		};
+	}, [subscribe, load, loadDiagnostics]);
 
 	const save = useCallback(async () => {
 		const f = fileRef.current;
-		if (!f || f.binary || saving) return;
+		if (!f || f.binary || savingRef.current) return;
 		const content = valueRef.current;
 		if (content === (f.content ?? "")) return;
-		setSaving(true);
+		savingRef.current = true;
 		try {
 			const res = await fetch("/api/files/write", {
 				method: "POST",
@@ -113,9 +200,9 @@ export function FileTab({
 			}
 		} catch {
 		} finally {
-			setSaving(false);
+			savingRef.current = false;
 		}
-	}, [saving]);
+	}, []);
 
 	if (loading) {
 		return (
@@ -139,7 +226,6 @@ export function FileTab({
 
 	const isHtml = file.language === "html" || /\.html?$/i.test(file.path);
 	const previewSrc = `/api/files/preview?path=${encodeURIComponent(file.path)}`;
-
 	return (
 		<div className="h-full min-h-0">
 			{isHtml && view === "preview" ? (
@@ -154,26 +240,57 @@ export function FileTab({
 			) : (
 				<Editor
 					height="100%"
+					path={`/${file.path}`}
 					language={file.language || undefined}
 					value={value}
 					theme={wingmanThemeName(scheme)}
 					beforeMount={(monaco) => {
-						monacoRef.current = monaco;
 						defineWingmanThemes(monaco);
 					}}
 					onMount={(editor, monaco) => {
-						if (line && line > 0) {
-							editor.revealLineInCenter(line);
-							editor.setPosition({ lineNumber: line, column: 1 });
+						editorRef.current = editor;
+						lspBridgeRef.current?.dispose();
+						if (!external) {
+							lspBridgeRef.current = createMonacoLSPBridge({
+								monaco,
+								editor,
+								file,
+								getDirtyContent: () =>
+									dirtyRef.current ? valueRef.current : undefined,
+								onOpenFile: (
+									targetPath,
+									targetLine,
+									targetColumn,
+									targetExternal,
+								) =>
+									onOpenFileRef.current?.(
+										targetPath,
+										targetLine,
+										targetColumn,
+										targetExternal,
+									),
+							});
+							void loadDiagnostics();
+							editor.addCommand(
+								monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
+								() => {
+									void save();
+								},
+							);
 						}
-						editor.addCommand(
-							monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
-							() => {
-								void save();
-							},
-						);
+						revealEditorPosition(editor, line, column);
 					}}
-					onChange={(v) => setValue(v ?? "")}
+					onChange={(v) => {
+						loadControllerRef.current?.abort();
+						const nextValue = v ?? "";
+						valueRef.current = nextValue;
+						const currentFile = fileRef.current;
+						dirtyRef.current =
+							currentFile !== null &&
+							!currentFile.binary &&
+							nextValue !== (currentFile.content ?? "");
+						setValue(nextValue);
+					}}
 					options={{
 						minimap: { enabled: false },
 						fontSize: 12,
@@ -182,6 +299,7 @@ export function FileTab({
 						wordWrap: "on",
 						renderWhitespace: "none",
 						padding: { top: 8 },
+						readOnly: external,
 					}}
 				/>
 			)}

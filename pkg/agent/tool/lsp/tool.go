@@ -94,11 +94,7 @@ func lspTool(manager *lsp.Manager) tool.Tool {
 
 				if lookup != "" {
 					var ok bool
-					pos, ok = session.SymbolPosition(ctx, uri, lookup)
-					if !ok {
-						pos, ok = lsp.PositionOfSymbol(path, symbolLeaf(lookup))
-					}
-					if !ok {
+					if pos, ok = session.SymbolPosition(ctx, uri, lookup); !ok {
 						return "", fmt.Errorf("symbol %q not found in %s", lookup, path)
 					}
 				}
@@ -208,13 +204,6 @@ func optionalPositiveInt(args map[string]any, key string) (int, bool, error) {
 	}
 
 	return value, true, nil
-}
-
-func symbolLeaf(symbol string) string {
-	if idx := strings.LastIndex(symbol, "."); idx >= 0 {
-		return symbol[idx+1:]
-	}
-	return symbol
 }
 
 func requiredFileArg(workingDir string, args map[string]any, key string) (string, error) {

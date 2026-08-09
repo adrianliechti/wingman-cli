@@ -12,6 +12,11 @@ import (
 func (a *App) showDiffView() {
 	t := theme.Default
 
+	if !a.agent.Workspace().HasChanges() {
+		a.showToast("Change tracking is still starting", t.Yellow)
+		return
+	}
+
 	diffs, err := a.agent.Workspace().Diffs(a.ctx)
 	if err != nil {
 		a.appendChat(cellNotice(fmt.Sprintf("%v", err), t.Yellow, a.width()))

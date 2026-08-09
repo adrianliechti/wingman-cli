@@ -75,8 +75,11 @@ type sessionState struct {
 	effortID     string
 	planEffortID string
 
-	mode        sessionMode
+	// mode is switchable while a turn is running, so it is read from the turn
+	// goroutine and written from the UI one.
+	mode        atomic.Value // sessionMode
 	baseTools   []tool.Tool
+	turnTools   atomic.Value // []tool.Tool, pinned for the running turn
 	execManager *shell.ExecManager
 	tasks       *task.Registry
 
@@ -104,6 +107,17 @@ const (
 	modePlan       sessionMode = code.PlanModeID
 	modeUnattended sessionMode = code.UnattendedModeID
 )
+
+func (s *sessionState) currentMode() sessionMode {
+	if mode, ok := s.mode.Load().(sessionMode); ok && mode != "" {
+		return mode
+	}
+	return modeAgent
+}
+
+func (s *sessionState) setMode(mode sessionMode) {
+	s.mode.Store(mode)
+}
 
 func New(ws *code.Workspace, cfg *harness.Config, ui code.UI) *Agent {
 	a := &Agent{
@@ -168,7 +182,7 @@ func (a *Agent) modelsFor(s *sessionState) ([]model.Model, string) {
 func (a *Agent) modelsLocked(s *sessionState) ([]model.Model, string) {
 	available := model.Available(a.upstreamModels)
 
-	planMode := s != nil && s.mode == modePlan
+	planMode := s != nil && s.currentMode() == modePlan
 
 	// Model choices are role-scoped: plan mode never inherits the coding
 	// model — an unset plan model selects a large one automatically.
@@ -277,7 +291,7 @@ func (a *Agent) SetModel(_ context.Context, sessionID, id string) error {
 	// Switching models resets the reasoning effort to the new model's default:
 	// a level the previous model allowed (e.g. "max") may exceed what this one
 	// supports, so drop back to the default instead of carrying it over.
-	if s != nil && s.mode == modePlan {
+	if s != nil && s.currentMode() == modePlan {
 		a.planModelID = id
 		a.planEffortID = ""
 		s.planModelID = id
@@ -314,7 +328,7 @@ func (a *Agent) Effort(sessionID string) (string, []string) {
 	s := a.session(sessionID)
 	a.modelMu.Lock()
 	var current string
-	if s != nil && s.mode == modePlan {
+	if s != nil && s.currentMode() == modePlan {
 		current = s.planEffortID
 		if current == "" {
 			current = a.planEffortID
@@ -336,7 +350,7 @@ func (a *Agent) effortFor(s *sessionState) string {
 	defer a.modelMu.Unlock()
 	// Effort choices are role-scoped like models: plan mode never inherits
 	// the coding effort.
-	if s != nil && s.mode == modePlan {
+	if s != nil && s.currentMode() == modePlan {
 		if s.planEffortID != "" {
 			return s.planEffortID
 		}
@@ -369,7 +383,7 @@ func (a *Agent) SetEffort(_ context.Context, sessionID, value string) error {
 	}
 	s := a.session(sessionID)
 	a.modelMu.Lock()
-	if s != nil && s.mode == modePlan {
+	if s != nil && s.currentMode() == modePlan {
 		a.planEffortID = value
 		s.planEffortID = value
 	} else {
@@ -650,7 +664,7 @@ func (a *Agent) Modes(sessionID string) ([]code.Mode, string) {
 	copy(out, wingmanModes)
 	current := code.AgentModeID
 	if s := a.session(sessionID); s != nil {
-		current = string(s.mode)
+		current = string(s.currentMode())
 	}
 	return out, current
 }
@@ -668,7 +682,7 @@ func (a *Agent) SetMode(_ context.Context, sessionID, modeID string) error {
 		return fmt.Errorf("unknown mode %q", modeID)
 	}
 	if s := a.session(sessionID); s != nil {
-		s.mode = mode
+		s.setMode(mode)
 	}
 	return nil
 }
@@ -686,8 +700,8 @@ func (a *Agent) buildSession() *sessionState {
 	s := &sessionState{
 		parent: a,
 		aa:     &harness.Agent{Config: sessionCfg},
-		mode:   modeAgent,
 	}
+	s.setMode(modeAgent)
 	sessionCfg.Tools = s.tools
 	sessionCfg.Instructions = s.instructions
 	sessionCfg.Model = func() string {
@@ -887,7 +901,7 @@ func (a *Agent) promptContext(ctx context.Context) context.Context {
 
 func (a *Agent) elicit(ctx context.Context, req tool.ElicitRequest) (tool.ElicitResult, error) {
 	ctx = a.promptContext(ctx)
-	if s := a.session(code.SessionIDFromContext(ctx)); s != nil && s.mode == modeUnattended {
+	if s := a.session(code.SessionIDFromContext(ctx)); s != nil && s.currentMode() == modeUnattended {
 		return code.UnattendedElicitation(req), nil
 	}
 	ui := a.currentUI()
@@ -918,7 +932,7 @@ func (a *Agent) confirm(ctx context.Context, message string) (bool, error) {
 				return true, nil
 			}
 		}
-		if s.mode == modeUnattended {
+		if s.currentMode() == modeUnattended {
 			return true, nil
 		}
 	}
@@ -930,13 +944,17 @@ func (a *Agent) confirm(ctx context.Context, message string) (bool, error) {
 }
 
 func (s *sessionState) beginSend(ctx context.Context, input []harness.Content, cancel context.CancelFunc) (iter.Seq2[harness.Message, error], uint64, error) {
+	catalog := collectManagedTools(s.parent.workspace)
+
 	s.cancelMu.Lock()
 	if s.closed {
 		s.cancelMu.Unlock()
 		return nil, 0, errors.New("session is closed")
 	}
+	s.turnTools.Store(catalog)
+
 	permissionMode := "default"
-	switch s.mode {
+	switch s.currentMode() {
 	case modePlan:
 		permissionMode = "plan"
 	case modeUnattended:
@@ -971,10 +989,14 @@ func (s *sessionState) beginSend(ctx context.Context, input []harness.Content, c
 
 func (s *sessionState) clearCancel(gen uint64) {
 	s.cancelMu.Lock()
-	if s.cancelGen == gen {
+	last := s.cancelGen == gen
+	if last {
 		s.cancelFn = nil
 	}
 	s.cancelMu.Unlock()
+	if last {
+		s.turnTools.Store([]tool.Tool(nil))
+	}
 }
 
 func (s *sessionState) cancel() {
@@ -1090,11 +1112,8 @@ func formatFileChangeNotice(paths []string) string {
 
 func (s *sessionState) tools() []tool.Tool {
 	tools := append([]tool.Tool{}, s.baseTools...)
-	mcpTools, lspTools, graphTools := s.parent.workspace.ManagedTools()
-	tools = append(tools, mcpTools...)
-	tools = append(tools, lspTools...)
-	tools = append(tools, graphTools...)
-	switch s.mode {
+	tools = append(tools, s.managedTools()...)
+	switch s.currentMode() {
 	case modePlan:
 		tools = planModeTools(tools)
 	case modeUnattended:
@@ -1102,6 +1121,22 @@ func (s *sessionState) tools() []tool.Tool {
 	}
 	slices.SortStableFunc(tools, func(a, b tool.Tool) int { return cmp.Compare(a.Name, b.Name) })
 	return tools
+}
+
+// managedTools stays pinned for the length of a turn: the harness asks for the
+// tool set once per round so a mode switch lands mid-turn, and an MCP
+// tools/list_changed arriving between rounds must not reshape the catalog under
+// the running turn.
+func (s *sessionState) managedTools() []tool.Tool {
+	if pinned, ok := s.turnTools.Load().([]tool.Tool); ok && pinned != nil {
+		return pinned
+	}
+	return collectManagedTools(s.parent.workspace)
+}
+
+func collectManagedTools(ws *code.Workspace) []tool.Tool {
+	mcpTools, lspTools, graphTools := ws.ManagedTools()
+	return slices.Concat(mcpTools, lspTools, graphTools)
 }
 
 func planModeTools(tools []tool.Tool) []tool.Tool {
@@ -1151,8 +1186,8 @@ func BuildInstructions(data prompt.SectionData) string {
 func (s *sessionState) instructionsData() prompt.SectionData {
 	ws := s.parent.workspace
 	return prompt.SectionData{
-		PlanMode:            s.mode == modePlan,
-		UnattendedMode:      s.mode == modeUnattended,
+		PlanMode:            s.currentMode() == modePlan,
+		UnattendedMode:      s.currentMode() == modeUnattended,
 		Date:                time.Now().Format("January 2, 2006"),
 		OS:                  runtime.GOOS,
 		Arch:                runtime.GOARCH,
