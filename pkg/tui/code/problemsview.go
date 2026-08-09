@@ -22,26 +22,34 @@ type fileDiagnostics struct {
 
 func (a *App) showDiagnosticsView() {
 	go func() {
-		ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
+		ctx, cancel := context.WithTimeout(a.ctx, 30*time.Second)
 		defer cancel()
 
-		files, err := a.collectDiagnostics(ctx)
+		files, report, err := a.collectDiagnostics(ctx)
 
 		a.post(func() {
-			a.showDiagnosticsOverlay(files, err)
+			a.showDiagnosticsOverlay(files, report, err)
 		})
 	}()
 }
 
-func (a *App) showDiagnosticsOverlay(files []fileDiagnostics, collectErr error) {
+func (a *App) showDiagnosticsOverlay(files []fileDiagnostics, report lsp.WorkspaceDiagnosticsReport, collectErr error) {
 	t := theme.Default
+	coverage, partial := diagnosticsCoverage(report)
+	partial = partial || collectErr != nil
 
 	if collectErr != nil {
-		a.appendChat(cellError("Diagnostics failed", collectErr.Error(), a.width()))
+		a.appendChat(cellError("Diagnostics incomplete", collectErr.Error(), a.width()))
 	}
 
 	if len(files) == 0 {
-		a.showToast("No diagnostics found", t.BrBlack)
+		message := "No diagnostics found"
+		color := t.BrBlack
+		if partial {
+			message = "No reported diagnostics · " + coverage
+			color = t.Yellow
+		}
+		a.showToast(message, color)
 		a.invalidate()
 		return
 	}
@@ -54,7 +62,10 @@ func (a *App) showDiagnosticsOverlay(files []fileDiagnostics, collectErr error) 
 
 	status := dim(fmt.Sprintf("%d file(s)", len(files))) + "  " +
 		colored(t.Red, fmt.Sprintf("%d errors", totalErrors)) + "  " +
-		colored(t.Yellow, fmt.Sprintf("%d warnings", totalWarnings))
+		colored(t.Yellow, fmt.Sprintf("%d warnings", totalWarnings)) + "  " + dim(coverage)
+	if partial {
+		status += "  " + colored(t.Yellow, "partial")
+	}
 
 	item := func(selected bool, i int) string {
 		f := files[i]
@@ -115,7 +126,7 @@ func (a *App) showDiagnosticsOverlay(files []fileDiagnostics, collectErr error) 
 	a.openOverlay(newTwoPaneOverlay("problems", status, len(files), item, content, search))
 }
 
-func (a *App) collectDiagnostics(ctx context.Context) ([]fileDiagnostics, error) {
+func (a *App) collectDiagnostics(ctx context.Context) ([]fileDiagnostics, lsp.WorkspaceDiagnosticsReport, error) {
 	workDir := a.agent.Workspace().RootPath
 	var files []fileDiagnostics
 
@@ -146,7 +157,23 @@ func (a *App) collectDiagnostics(ctx context.Context) ([]fileDiagnostics, error)
 		return cmp.Compare(a.Path, b.Path)
 	})
 
-	return files, nil
+	return files, report, ctx.Err()
+}
+
+func diagnosticsCoverage(report lsp.WorkspaceDiagnosticsReport) (string, bool) {
+	total := fmt.Sprintf("%d", report.DiscoveredFiles)
+	if report.DiscoveryTruncated {
+		total += "+"
+	}
+	coverage := fmt.Sprintf("checked %d/%s files", report.CheckedFiles, total)
+	partial := report.CheckedFiles < report.DiscoveredFiles || report.DiscoveryTruncated || report.UnknownFiles > 0 || len(report.UnavailableServers) > 0
+	if report.UnknownFiles > 0 {
+		coverage += fmt.Sprintf(", %d unknown", report.UnknownFiles)
+	}
+	if len(report.UnavailableServers) > 0 {
+		coverage += ", unavailable: " + strings.Join(report.UnavailableServers, ", ")
+	}
+	return coverage, partial
 }
 
 func relPath(base, path string) string {

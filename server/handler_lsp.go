@@ -207,17 +207,25 @@ func (s *Server) handleLSPLocations(w http.ResponseWriter, r *http.Request, requ
 		return
 	}
 	result := make([]lspLocationItem, 0, len(locations))
+	seen := make(map[lspLocationItem]bool)
 	for _, location := range locations {
+		if location.Path == "" || location.Line < 0 || location.Column < 0 {
+			continue
+		}
 		targetRel, err := filepath.Rel(s.workspace.RootPath, location.Path)
 		if err != nil || targetRel == ".." || filepath.IsAbs(targetRel) ||
 			strings.HasPrefix(targetRel, ".."+string(filepath.Separator)) {
 			continue
 		}
-		result = append(result, lspLocationItem{
+		item := lspLocationItem{
 			Path:   filepath.ToSlash(targetRel),
 			Line:   location.Line + 1,
 			Column: location.Column + 1,
-		})
+		}
+		if !seen[item] {
+			seen[item] = true
+			result = append(result, item)
+		}
 	}
 	writeJSON(w, result)
 }

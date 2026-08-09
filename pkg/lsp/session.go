@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/lsp/jsonrpc2"
@@ -32,6 +33,8 @@ type Session struct {
 	pushDiags   map[string][]Diagnostic
 	pushSeen    map[string]bool
 	pullDiags   bool
+	alive       atomic.Bool
+	closeOnce   sync.Once
 }
 
 const startupTimeout = 30 * time.Second
@@ -75,12 +78,16 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 		pushDiags:   make(map[string][]Diagnostic),
 		pushSeen:    make(map[string]bool),
 	}
+	session.alive.Store(true)
 
 	framer := jsonrpc2.HeaderFramer()
 	conn := jsonrpc2.NewConnection(connCtx, jsonrpc2.ConnectionConfig{
 		Reader: framer.Reader(stdout),
 		Writer: framer.Writer(stdin),
 		Closer: &cmdCloser{cmd: cmd, stdin: stdin, stdout: stdout},
+		OnDone: func() {
+			session.alive.Store(false)
+		},
 		Bind: func(c *jsonrpc2.Connection) jsonrpc2.Handler {
 			return jsonrpc2.HandlerFunc(func(ctx context.Context, req *jsonrpc2.Request) (any, error) {
 				if req.Method == "textDocument/publishDiagnostics" {
@@ -105,9 +112,8 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 	defer initCancel()
 
 	if err := session.initialize(initCtx); err != nil {
+		_ = conn.Close()
 		cancel()
-		cmd.Process.Kill()
-		cmd.Wait()
 		return nil, fmt.Errorf("initialize: %w", err)
 	}
 
@@ -115,7 +121,7 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 }
 
 func (s *Session) IsAlive() bool {
-	return s.cmd.ProcessState == nil
+	return s.alive.Load()
 }
 
 func (s *Session) OpenedDocURIs() []string {
@@ -130,13 +136,16 @@ func (s *Session) OpenedDocURIs() []string {
 }
 
 func (s *Session) Close() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	s.closeOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 
-	call := s.conn.Call(ctx, "shutdown", nil)
-	call.Await(ctx, nil)
-	s.conn.Notify(ctx, "exit", nil)
-	s.cancelFunc()
+		call := s.conn.Call(ctx, "shutdown", nil)
+		_ = s.awaitCall(ctx, call, nil)
+		_ = s.conn.Notify(ctx, "exit", nil)
+		_ = s.conn.Close()
+		s.cancelFunc()
+	})
 }
 
 func (s *Session) CallAndAwait(ctx context.Context, method string, params any, result any) error {
@@ -144,7 +153,7 @@ func (s *Session) CallAndAwait(ctx context.Context, method string, params any, r
 
 	for attempt := range maxRetries {
 		call := s.conn.Call(ctx, method, params)
-		err = call.Await(ctx, result)
+		err = s.awaitCall(ctx, call, result)
 		if err == nil || !isTransientError(err) {
 			return err
 		}
@@ -157,6 +166,14 @@ func (s *Session) CallAndAwait(ctx context.Context, method string, params any, r
 		}
 	}
 
+	return err
+}
+
+func (s *Session) awaitCall(ctx context.Context, call *jsonrpc2.AsyncCall, result any) error {
+	err := call.Await(ctx, result)
+	if err != nil && ctx.Err() != nil && !call.IsReady() {
+		s.conn.Retire(call, ctx.Err())
+	}
 	return err
 }
 
@@ -743,7 +760,7 @@ func (s *Session) initialize(ctx context.Context) error {
 
 	var result InitializeResult
 	call := s.conn.Call(ctx, "initialize", params)
-	if err := call.Await(ctx, &result); err != nil {
+	if err := s.awaitCall(ctx, call, &result); err != nil {
 		return err
 	}
 	s.pullDiags = diagnosticProviderEnabled(result.Capabilities.DiagnosticProvider)

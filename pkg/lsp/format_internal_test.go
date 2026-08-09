@@ -1,12 +1,65 @@
 package lsp
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestFindProjectUsesDeepestMatchingRoot(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "web")
+	projects := []projectRoot{
+		{Dir: root, Server: Server{Command: "gopls", Args: []string{"serve"}, Languages: []string{"go"}}},
+		{Dir: nested, Server: Server{Command: "gopls", Args: []string{"serve"}, Languages: []string{"go"}}},
+	}
+
+	project := findProject(projects, filepath.Join(nested, "MAIN.GO"))
+	if project == nil || project.Dir != nested {
+		t.Fatalf("findProject = %+v, want nested project %q", project, nested)
+	}
+}
+
+func TestProjectKeyIncludesServerArguments(t *testing.T) {
+	dir := t.TempDir()
+	left := projectRoot{Dir: dir, Server: Server{Command: "server", Args: []string{"--stdio"}}}
+	right := projectRoot{Dir: dir, Server: Server{Command: "server", Args: []string{"lsp", "--stdio"}}}
+	if projectKey(left) == projectKey(right) {
+		t.Fatal("project keys should differ when server arguments differ")
+	}
+}
+
+func TestDiscoverSourceFilesAssignsNestedProjectOnce(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "web")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(root, "main.go"), filepath.Join(nested, "app.go")} {
+		if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	server := Server{Command: "gopls", Args: []string{"serve"}, Languages: []string{"go"}}
+	projects := []projectRoot{{Dir: root, Server: server}, {Dir: nested, Server: server}}
+	for _, project := range projects {
+		projectID := projectKey(project)
+		files, total, truncated := discoverSourceFilesMatching(context.Background(), project.Dir, project.Server.Languages, 50, func(path string) bool {
+			owner := findProject(projects, path)
+			return owner != nil && projectKey(*owner) == projectID
+		})
+		if truncated || total != 1 || len(files) != 1 {
+			t.Fatalf("project %q: files=%v total=%d truncated=%v, want one file", project.Dir, files, total, truncated)
+		}
+		if filepath.Dir(files[0]) != project.Dir {
+			t.Fatalf("project %q received file %q owned by another root", project.Dir, files[0])
+		}
+	}
+}
 
 func TestFormatLocationsIncludesSourceText(t *testing.T) {
 	dir := t.TempDir()

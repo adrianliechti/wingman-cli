@@ -174,3 +174,58 @@ func TestTypeScriptLanguageIDs(t *testing.T) {
 		t.Fatalf("Go language ID = %q, want go", got)
 	}
 }
+
+func TestScanWorkspaceEntriesSkipsIgnoredContents(t *testing.T) {
+	root := t.TempDir()
+	ignored := filepath.Join(root, "node_modules", "pkg")
+	if err := os.MkdirAll(ignored, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ignored, "package.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries := scanWorkspaceEntries(root)
+	foundRootMarker := false
+	for _, entry := range entries {
+		if entry.path == filepath.Join(root, "package.json") {
+			foundRootMarker = true
+		}
+		if isSubPath(filepath.Join(root, "node_modules"), entry.path) && entry.path != filepath.Join(root, "node_modules") {
+			t.Fatalf("ignored directory contents were scanned: %q", entry.path)
+		}
+	}
+	if !foundRootMarker {
+		t.Fatal("root project marker was not scanned")
+	}
+}
+
+func TestScanWorkspaceEntriesKeepsHiddenDirectoryMarker(t *testing.T) {
+	root := t.TempDir()
+	marker := filepath.Join(root, ".metals")
+	if err := os.Mkdir(marker, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, entry := range scanWorkspaceEntries(root) {
+		if entry.path == marker && entry.isDir {
+			return
+		}
+	}
+	t.Fatalf("hidden directory marker %q was not recorded", marker)
+}
+
+func TestHasRequiredEntryMatchesFilesOnly(t *testing.T) {
+	root := t.TempDir()
+	entries := []workspaceEntry{{path: filepath.Join(root, "component.vue"), name: "component.vue", isDir: true}}
+	if hasRequiredEntry(entries, root, []string{"*.vue"}) {
+		t.Fatal("directory should not satisfy a source-file requirement")
+	}
+	entries = append(entries, workspaceEntry{path: filepath.Join(root, "src", "component.vue"), name: "component.vue"})
+	if !hasRequiredEntry(entries, root, []string{"*.vue"}) {
+		t.Fatal("nested source file should satisfy requirement")
+	}
+}

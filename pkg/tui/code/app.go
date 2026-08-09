@@ -1053,13 +1053,13 @@ func (a *App) handleKey(ev inline.KeyEvent) {
 		}
 
 	case inline.KeyTab:
-		if !a.isStreaming() && a.popup == nil {
+		if a.popup == nil {
 			a.togglePlanMode()
 			return
 		}
 
 	case inline.KeyBacktab:
-		if !a.isStreaming() && a.popup == nil {
+		if a.popup == nil {
 			a.toggleUnattendedMode()
 			return
 		}

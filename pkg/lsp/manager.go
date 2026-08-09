@@ -22,6 +22,7 @@ const (
 type Manager struct {
 	workingDir string
 	sessions   map[string]*Session
+	starting   map[string]*sessionStart
 	restarts   map[string]int
 	warming    map[string]bool
 	closed     bool
@@ -32,12 +33,19 @@ type Manager struct {
 	detectedAt time.Time
 }
 
+type sessionStart struct {
+	done    chan struct{}
+	session *Session
+	err     error
+}
+
 const detectionCacheTTL = 30 * time.Second
 
 func NewManager(workingDir string) *Manager {
 	return &Manager{
 		workingDir: workingDir,
 		sessions:   make(map[string]*Session),
+		starting:   make(map[string]*sessionStart),
 		restarts:   make(map[string]int),
 		warming:    make(map[string]bool),
 	}
@@ -67,7 +75,11 @@ func (m *Manager) FindServer(filePath string) *Server {
 }
 
 func (m *Manager) findProject(filePath string) *projectRoot {
-	ext := strings.TrimPrefix(filepath.Ext(filePath), ".")
+	return findProject(m.detect(), filePath)
+}
+
+func findProject(projects []projectRoot, filePath string) *projectRoot {
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(filePath), "."))
 	if ext == "" {
 		return nil
 	}
@@ -76,7 +88,7 @@ func (m *Manager) findProject(filePath string) *projectRoot {
 	var best *projectRoot
 	bestLen := -1
 
-	for _, root := range m.detect() {
+	for _, root := range projects {
 		if !isSubPath(root.Dir, dir) {
 			continue
 		}
@@ -99,10 +111,11 @@ func (m *Manager) DetectServers() []Server {
 	seen := make(map[string]bool)
 
 	for _, root := range m.detect() {
-		if seen[root.Server.Command] {
+		key := serverKey(root.Server)
+		if seen[key] {
 			continue
 		}
-		seen[root.Server.Command] = true
+		seen[key] = true
 		servers = append(servers, root.Server)
 	}
 
@@ -125,7 +138,11 @@ func (m *Manager) projects() []projectRoot {
 }
 
 func projectKey(project projectRoot) string {
-	return filepath.Clean(project.Dir) + "\x00" + project.Server.Command
+	return filepath.Clean(project.Dir) + "\x00" + serverKey(project.Server)
+}
+
+func serverKey(server Server) string {
+	return server.Command + "\x00" + strings.Join(server.Args, "\x00")
 }
 
 func (m *Manager) GetSession(ctx context.Context, filePath string) (*Session, error) {
@@ -146,73 +163,73 @@ func (m *Manager) getSession(ctx context.Context, project projectRoot) (*Session
 		m.mu.Unlock()
 		return nil, fmt.Errorf("LSP manager is closed")
 	}
-	if session, ok := m.sessions[key]; ok {
-		if session.IsAlive() {
-			m.mu.Unlock()
-			return session, nil
-		}
-
-		openedURIs := session.OpenedDocURIs()
-		restartCount := m.restarts[key]
-		delete(m.sessions, key)
+	if session := m.sessions[key]; session != nil && session.IsAlive() {
 		m.mu.Unlock()
+		return session, nil
+	}
+	if start := m.starting[key]; start != nil {
+		m.mu.Unlock()
+		select {
+		case <-start.done:
+			return start.session, start.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 
+	var openedURIs []string
+	restartCount := m.restarts[key]
+	restarting := false
+	if previous := m.sessions[key]; previous != nil {
+		openedURIs = previous.OpenedDocURIs()
+		delete(m.sessions, key)
+		restarting = true
 		if restartCount >= maxRestarts {
+			m.mu.Unlock()
 			return nil, fmt.Errorf("LSP server %s crashed %d times, not restarting", server.Name, restartCount)
 		}
-
-		newSession, err := connect(ctx, project.Dir, server)
-		if err != nil {
-			return nil, fmt.Errorf("restart %s: %w", server.Name, err)
-		}
-
-		m.mu.Lock()
-
-		if m.closed {
-			m.mu.Unlock()
-			newSession.Close()
-			return nil, fmt.Errorf("LSP manager is closed")
-		}
-		if existing, ok := m.sessions[key]; ok && existing.IsAlive() {
-			m.mu.Unlock()
-			newSession.Close()
-			return existing, nil
-		}
-		m.sessions[key] = newSession
-		m.restarts[key] = restartCount + 1
-		m.mu.Unlock()
-
-		for _, uri := range openedURIs {
-			path := uriToPath(uri)
-			if path != "" {
-				newSession.OpenDocument(ctx, path)
-			}
-		}
-
-		return newSession, nil
 	}
+	start := &sessionStart{done: make(chan struct{})}
+	m.starting[key] = start
 	m.mu.Unlock()
 
 	session, err := connect(ctx, project.Dir, server)
-	if err != nil {
-		return nil, err
+	if err != nil && restarting {
+		err = fmt.Errorf("restart %s: %w", server.Name, err)
+	}
+	if err == nil {
+		for _, uri := range openedURIs {
+			if path := uriToPath(uri); path != "" {
+				_, _ = session.OpenDocument(ctx, path)
+			}
+		}
 	}
 
 	m.mu.Lock()
-
 	if m.closed {
-		m.mu.Unlock()
-		session.Close()
-		return nil, fmt.Errorf("LSP manager is closed")
+		err = fmt.Errorf("LSP manager is closed")
 	}
-	if existing, ok := m.sessions[key]; ok && existing.IsAlive() {
-		m.mu.Unlock()
-		session.Close()
-		return existing, nil
+	if err == nil {
+		m.sessions[key] = session
+		if restarting {
+			m.restarts[key] = restartCount + 1
+		}
 	}
-	m.sessions[key] = session
+	start.session = session
+	start.err = err
+	if err != nil {
+		start.session = nil
+	}
+	delete(m.starting, key)
+	close(start.done)
 	m.mu.Unlock()
 
+	if err != nil {
+		if session != nil {
+			session.Close()
+		}
+		return nil, err
+	}
 	return session, nil
 }
 
@@ -318,22 +335,32 @@ func (m *Manager) PostEditDiagnostics(ctx context.Context, path string) string {
 
 func (m *Manager) Close() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	m.closed = true
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		sessions = append(sessions, session)
+	}
+	clear(m.sessions)
+	m.mu.Unlock()
 
-	for key, session := range m.sessions {
+	for _, session := range sessions {
 		session.Close()
-		delete(m.sessions, key)
 	}
 }
 
-func (m *Manager) openDiscoveredFiles(ctx context.Context, project projectRoot, session *Session) ([]string, []string, int, bool) {
-	files, total, truncated := discoverSourceFiles(project.Dir, project.Server.Languages, workspaceDiagnosticsMaxFiles)
+func (m *Manager) openDiscoveredFiles(ctx context.Context, project projectRoot, projects []projectRoot, session *Session) ([]string, []string, int, bool) {
+	projectID := projectKey(project)
+	files, total, truncated := discoverSourceFilesMatching(ctx, project.Dir, project.Server.Languages, workspaceDiagnosticsMaxFiles, func(path string) bool {
+		owner := findProject(projects, path)
+		return owner != nil && projectKey(*owner) == projectID
+	})
 
 	opened := make([]string, 0, len(files))
 	uris := make([]string, 0, len(files))
 	for _, file := range files {
+		if ctx.Err() != nil {
+			break
+		}
 		uri, err := session.OpenDocument(ctx, file)
 		if err != nil {
 			continue
@@ -389,15 +416,20 @@ type WorkspaceDiagnosticsReport struct {
 
 func (m *Manager) CollectAllDiagnostics(ctx context.Context) WorkspaceDiagnosticsReport {
 	report := WorkspaceDiagnosticsReport{Diagnostics: make(map[string][]Diagnostic)}
+	projects := m.projects()
+	unavailable := make(map[string]bool)
 
-	for _, project := range m.projects() {
+	for _, project := range projects {
+		if ctx.Err() != nil {
+			break
+		}
 		session, err := m.getSession(ctx, project)
 		if err != nil {
-			report.UnavailableServers = append(report.UnavailableServers, project.Server.Name)
+			unavailable[m.projectLabel(project)] = true
 			continue
 		}
 
-		files, uris, total, truncated := m.openDiscoveredFiles(ctx, project, session)
+		files, uris, total, truncated := m.openDiscoveredFiles(ctx, project, projects, session)
 		report.CheckedFiles += len(files)
 		report.DiscoveredFiles += total
 		report.DiscoveryTruncated = report.DiscoveryTruncated || truncated
@@ -413,8 +445,20 @@ func (m *Manager) CollectAllDiagnostics(ctx context.Context) WorkspaceDiagnostic
 			}
 		}
 	}
+	for name := range unavailable {
+		report.UnavailableServers = append(report.UnavailableServers, name)
+	}
+	slices.Sort(report.UnavailableServers)
 
 	return report
+}
+
+func (m *Manager) projectLabel(project projectRoot) string {
+	rel := relPath(m.workingDir, project.Dir)
+	if rel == "." {
+		return project.Server.Name
+	}
+	return fmt.Sprintf("%s (%s)", project.Server.Name, rel)
 }
 
 type diagnosticState struct {
@@ -566,15 +610,22 @@ var skippedDiscoveryDirs = map[string]bool{
 }
 
 func discoverSourceFiles(workingDir string, extensions []string, maxFiles int) ([]string, int, bool) {
+	return discoverSourceFilesMatching(context.Background(), workingDir, extensions, maxFiles, nil)
+}
+
+func discoverSourceFilesMatching(ctx context.Context, workingDir string, extensions []string, maxFiles int, include func(string) bool) ([]string, int, bool) {
 	extSet := make(map[string]bool, len(extensions))
 	for _, ext := range extensions {
-		extSet["."+ext] = true
+		extSet["."+strings.ToLower(ext)] = true
 	}
 
 	var files []string
 	total := 0
 	truncated := false
 	filepath.WalkDir(workingDir, func(path string, d fs.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			return filepath.SkipAll
+		}
 		if err != nil {
 			return nil
 		}
@@ -587,7 +638,7 @@ func discoverSourceFiles(workingDir string, extensions []string, maxFiles int) (
 			return nil
 		}
 
-		if extSet[filepath.Ext(path)] {
+		if extSet[strings.ToLower(filepath.Ext(path))] && (include == nil || include(path)) {
 			total++
 			if total > sourceDiscoveryCountLimit {
 				total = sourceDiscoveryCountLimit

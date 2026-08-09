@@ -102,37 +102,50 @@ export function createMonacoLSPBridge({
 				definitionPaths.set(uri.toString(), location.path);
 			}
 
-			const loadedPaths = await Promise.all(
-				Array.from(targetURIs, async ([targetPath, uri]) => {
-					if (targetPath === file.path) return targetPath;
-					const fileResponse = await fetch(
-						`/api/files/read?path=${encodeURIComponent(targetPath)}`,
-						{ signal },
-					);
-					if (!fileResponse.ok || disposed || token.isCancellationRequested)
-						return null;
-					const targetFile = (await fileResponse.json()) as FileContent;
-					if (targetFile.binary || targetFile.content === undefined)
-						return null;
+			async function loadTargetModel(
+				targetPath: string,
+				uri: MonacoTypes.Uri,
+			): Promise<string | null> {
+				if (targetPath === file.path) return targetPath;
+				const fileResponse = await fetch(
+					`/api/files/read?path=${encodeURIComponent(targetPath)}`,
+					{ signal },
+				);
+				if (!fileResponse.ok || disposed || token.isCancellationRequested)
+					return null;
+				const targetFile = (await fileResponse.json()) as FileContent;
+				if (targetFile.binary || targetFile.content === undefined) return null;
 
-					const key = uri.toString();
-					let targetModel = monaco.editor.getModel(uri);
-					if (!targetModel) {
-						targetModel = monaco.editor.createModel(
-							targetFile.content,
-							targetFile.language || undefined,
-							uri,
-						);
-						ownedModels.set(key, targetModel);
-					} else if (
-						ownedModels.has(key) &&
-						targetModel.getValue() !== targetFile.content
-					) {
-						targetModel.setValue(targetFile.content);
-					}
-					return targetPath;
-				}),
-			);
+				const key = uri.toString();
+				let targetModel = monaco.editor.getModel(uri);
+				if (!targetModel) {
+					targetModel = monaco.editor.createModel(
+						targetFile.content,
+						targetFile.language || undefined,
+						uri,
+					);
+					ownedModels.set(key, targetModel);
+				} else if (
+					ownedModels.has(key) &&
+					targetModel.getValue() !== targetFile.content
+				) {
+					targetModel.setValue(targetFile.content);
+				}
+				return targetPath;
+			}
+
+			const targets = Array.from(targetURIs);
+			const loadedPaths: Array<string | null> = [];
+			for (let index = 0; index < targets.length; index += 8) {
+				loadedPaths.push(
+					...(await Promise.all(
+						targets
+							.slice(index, index + 8)
+							.map(([targetPath, uri]) => loadTargetModel(targetPath, uri)),
+					)),
+				);
+				if (disposed || token.isCancellationRequested) return;
+			}
 			if (disposed || token.isCancellationRequested) return;
 
 			const availablePaths = new Set(
@@ -366,11 +379,16 @@ function wordRange(
 	model: MonacoTypes.editor.ITextModel,
 	position: MonacoTypes.Position,
 ): MonacoTypes.IRange {
+	const word = model.getWordAtPosition(position);
+	const startColumn = word?.startColumn ?? position.column;
+	const endColumn =
+		word?.endColumn ??
+		Math.min(position.column + 1, model.getLineMaxColumn(position.lineNumber));
 	return {
 		startLineNumber: position.lineNumber,
-		startColumn: position.column,
+		startColumn,
 		endLineNumber: position.lineNumber,
-		endColumn: model.getWordAtPosition(position)?.endColumn ?? position.column,
+		endColumn,
 	};
 }
 

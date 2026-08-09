@@ -36,10 +36,12 @@ export function FileTab({
 	const [file, setFile] = useState<FileContent | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [value, setValue] = useState("");
-	const [saving, setSaving] = useState(false);
 	const [previewRevision, setPreviewRevision] = useState(0);
 	const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
 	const lspBridgeRef = useRef<MonacoLSPBridge | null>(null);
+	const loadControllerRef = useRef<AbortController | null>(null);
+	const diagnosticsEventTimerRef = useRef<number | null>(null);
+	const savingRef = useRef(false);
 	const scheme = useColorScheme();
 
 	const onDeletedRef = useRef(onDeleted);
@@ -83,6 +85,10 @@ export function FileTab({
 
 	useEffect(() => {
 		return () => {
+			loadControllerRef.current?.abort();
+			if (diagnosticsEventTimerRef.current !== null) {
+				window.clearTimeout(diagnosticsEventTimerRef.current);
+			}
 			lspBridgeRef.current?.dispose();
 			lspBridgeRef.current = null;
 			editorRef.current = null;
@@ -103,10 +109,15 @@ export function FileTab({
 	}, [file, value, dirty, loadDiagnostics]);
 
 	const load = useCallback(async () => {
+		loadControllerRef.current?.abort();
+		const controller = new AbortController();
+		loadControllerRef.current = controller;
 		try {
 			const res = await fetch(
 				`/api/files/read?path=${encodeURIComponent(path)}`,
+				{ signal: controller.signal },
 			);
+			if (controller.signal.aborted) return;
 			if (res.status === 404) {
 				onDeletedRef.current?.();
 				return;
@@ -116,11 +127,21 @@ export function FileTab({
 				return;
 			}
 			const data: FileContent = await res.json();
+			if (fileRef.current && dirtyRef.current) return;
 			setFile(data);
 			setValue(data.content ?? "");
 			setLoading(false);
-		} catch {
-			setLoading(false);
+		} catch (error) {
+			if (
+				loadControllerRef.current === controller &&
+				!(error instanceof DOMException && error.name === "AbortError")
+			) {
+				setLoading(false);
+			}
+		} finally {
+			if (loadControllerRef.current === controller) {
+				loadControllerRef.current = null;
+			}
 		}
 	}, [path]);
 
@@ -131,23 +152,36 @@ export function FileTab({
 
 	useEffect(() => {
 		if (!subscribe) return;
-		return subscribe((msg) => {
+		const unsubscribe = subscribe((msg) => {
 			if (msg.type === "files_changed") {
 				setPreviewRevision((revision) => revision + 1);
 				if (dirtyRef.current) return;
 				load();
 			} else if (msg.type === "diagnostics_changed") {
-				void loadDiagnostics();
+				if (diagnosticsEventTimerRef.current !== null) {
+					window.clearTimeout(diagnosticsEventTimerRef.current);
+				}
+				diagnosticsEventTimerRef.current = window.setTimeout(() => {
+					diagnosticsEventTimerRef.current = null;
+					void loadDiagnostics();
+				}, 200);
 			}
 		});
+		return () => {
+			unsubscribe();
+			if (diagnosticsEventTimerRef.current !== null) {
+				window.clearTimeout(diagnosticsEventTimerRef.current);
+				diagnosticsEventTimerRef.current = null;
+			}
+		};
 	}, [subscribe, load, loadDiagnostics]);
 
 	const save = useCallback(async () => {
 		const f = fileRef.current;
-		if (!f || f.binary || saving) return;
+		if (!f || f.binary || savingRef.current) return;
 		const content = valueRef.current;
 		if (content === (f.content ?? "")) return;
-		setSaving(true);
+		savingRef.current = true;
 		try {
 			const res = await fetch("/api/files/write", {
 				method: "POST",
@@ -159,9 +193,9 @@ export function FileTab({
 			}
 		} catch {
 		} finally {
-			setSaving(false);
+			savingRef.current = false;
 		}
-	}, [saving]);
+	}, []);
 
 	if (loading) {
 		return (
@@ -227,7 +261,17 @@ export function FileTab({
 							},
 						);
 					}}
-					onChange={(v) => setValue(v ?? "")}
+					onChange={(v) => {
+						loadControllerRef.current?.abort();
+						const nextValue = v ?? "";
+						valueRef.current = nextValue;
+						const currentFile = fileRef.current;
+						dirtyRef.current =
+							currentFile !== null &&
+							!currentFile.binary &&
+							nextValue !== (currentFile.content ?? "");
+						setValue(nextValue);
+					}}
 					options={{
 						minimap: { enabled: false },
 						fontSize: 12,

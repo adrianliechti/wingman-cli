@@ -15,25 +15,43 @@ export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
 	const [diagnostics, setDiagnostics] = useState<DiagnosticEntry[]>([]);
 	const [coverage, setCoverage] = useState<WorkspaceDiagnostics | null>(null);
 	const [loading, setLoading] = useState(false);
+	const [error, setError] = useState<string | null>(null);
 	const requestRef = useRef<AbortController | null>(null);
+	const refreshTimerRef = useRef<number | null>(null);
 
 	const load = useCallback(async () => {
+		if (refreshTimerRef.current !== null) {
+			window.clearTimeout(refreshTimerRef.current);
+			refreshTimerRef.current = null;
+		}
 		requestRef.current?.abort();
 		const controller = new AbortController();
 		requestRef.current = controller;
 		setLoading(true);
+		setError(null);
 		try {
 			const res = await fetch("/api/lsp/diagnostics", {
 				signal: controller.signal,
 			});
+			if (controller.signal.aborted) return;
 			if (!res.ok) {
+				setError(`Refresh failed (${res.status})`);
 				return;
 			}
 			const data = (await res.json()) as WorkspaceDiagnostics;
 			if (controller.signal.aborted) return;
 			setCoverage(data);
 			setDiagnostics(data.diagnostics);
-		} catch {
+		} catch (requestError) {
+			if (
+				requestRef.current === controller &&
+				!(
+					requestError instanceof DOMException &&
+					requestError.name === "AbortError"
+				)
+			) {
+				setError("Refresh failed");
+			}
 		} finally {
 			if (requestRef.current === controller) {
 				requestRef.current = null;
@@ -44,16 +62,34 @@ export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
 
 	useEffect(() => {
 		void load();
-		return () => requestRef.current?.abort();
+		return () => {
+			requestRef.current?.abort();
+			if (refreshTimerRef.current !== null) {
+				window.clearTimeout(refreshTimerRef.current);
+			}
+		};
 	}, [load]);
 
 	useEffect(() => {
 		if (!subscribe) return;
-		return subscribe((msg) => {
+		const unsubscribe = subscribe((msg) => {
 			if (msg.type === "diagnostics_changed") {
-				void load();
+				if (refreshTimerRef.current !== null) {
+					window.clearTimeout(refreshTimerRef.current);
+				}
+				refreshTimerRef.current = window.setTimeout(() => {
+					refreshTimerRef.current = null;
+					void load();
+				}, 250);
 			}
 		});
+		return () => {
+			unsubscribe();
+			if (refreshTimerRef.current !== null) {
+				window.clearTimeout(refreshTimerRef.current);
+				refreshTimerRef.current = null;
+			}
+		};
 	}, [subscribe, load]);
 
 	const SeverityIcon = ({ severity }: { severity: string }) => {
@@ -104,6 +140,12 @@ export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
 				</button>
 			</div>
 			<div className="overflow-y-auto flex-1 px-1 pb-2">
+				{error && (
+					<div className="mx-2 mb-1 px-2 py-1.5 rounded bg-danger/5 text-[10px] text-danger/80">
+						{error}
+						{coverage ? "; showing the last successful result." : "."}
+					</div>
+				)}
 				{incomplete && coverage && (
 					<div className="mx-2 mb-1 px-2 py-1.5 rounded bg-warning/5 text-[10px] text-fg-dim">
 						Results are partial
@@ -117,7 +159,11 @@ export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
 				)}
 				{diagnostics.length === 0 && !loading && (
 					<div className="px-3 py-6 text-[11px] text-fg-dim text-center">
-						{incomplete ? "No reported problems" : "No problems detected"}
+						{error && !coverage
+							? "Diagnostics unavailable"
+							: incomplete
+								? "No reported problems"
+								: "No problems detected"}
 					</div>
 				)}
 				{diagnostics.length === 0 && loading && (

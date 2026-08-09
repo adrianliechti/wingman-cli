@@ -86,8 +86,8 @@ func TestSendLimitsRunawayToolCallRounds(t *testing.T) {
 	if got := executions.Load(); got != 3 {
 		t.Fatalf("tool executions = %d, want 3", got)
 	}
-	if got := toolSnapshots.Load(); got != 1 {
-		t.Fatalf("tool snapshots = %d, want 1 per run", got)
+	if got := toolSnapshots.Load(); got != 3 {
+		t.Fatalf("tool snapshots = %d, want 1 per round", got)
 	}
 }
 

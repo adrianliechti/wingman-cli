@@ -45,3 +45,18 @@ func TestBacktabTogglesUnattendedAndAgent(t *testing.T) {
 		t.Fatalf("second Shift+Tab mode = %q, want agent", agent.mode)
 	}
 }
+
+func TestModeTogglesDuringRunningTurn(t *testing.T) {
+	agent := newUITestAgent(nil)
+	a := &App{ctx: context.Background(), agent: agent, editor: NewEditor()}
+	a.phase.Store(int32(PhaseToolRunning))
+
+	a.handleKey(inline.KeyEvent{Key: inline.KeyBacktab})
+	if agent.mode != "unattended" {
+		t.Fatalf("Shift+Tab mode while streaming = %q, want unattended", agent.mode)
+	}
+	a.handleKey(inline.KeyEvent{Key: inline.KeyTab})
+	if agent.mode != "plan" {
+		t.Fatalf("Tab mode while streaming = %q, want plan", agent.mode)
+	}
+}

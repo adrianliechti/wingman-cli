@@ -7,12 +7,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/bmatcuk/doublestar/v4"
 )
 
 type projectRoot struct {
@@ -43,20 +42,6 @@ var projectBinDirs = []string{
 	filepath.Join(".venv", "Scripts"),
 	filepath.Join("venv", "Scripts"),
 	filepath.Join("vendor", "bin"),
-}
-
-func hasFileMatching(fsys fs.FS, relDir string, patterns []string) bool {
-	prefix := ""
-	if relDir != "" && relDir != "." {
-		prefix = filepath.ToSlash(relDir) + "/"
-	}
-	for _, pat := range patterns {
-		matches, err := doublestar.Glob(fsys, prefix+"**/"+pat)
-		if err == nil && len(matches) > 0 {
-			return true
-		}
-	}
-	return false
 }
 
 func resolveCommand(dir, workingDir, command string) string {
@@ -209,64 +194,76 @@ func serverVersionSupported(server Server, command string) bool {
 func detectAll(workingDir string) []projectRoot {
 	var roots []projectRoot
 	seen := make(map[string]bool)
-	resolveCache := make(map[string]string)
-
-	fsys := filteredFS{root: workingDir}
+	globalCommandCache := make(map[string]string)
+	versionCache := make(map[string]bool)
+	entries := scanWorkspaceEntries(workingDir)
+	entrySet := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		entrySet[filepath.Clean(entry.path)] = true
+	}
 
 	for _, pt := range knownProjects {
+		projectDirs := make(map[string]bool)
 		for _, marker := range pt.Markers {
-			matches, err := doublestar.Glob(fsys, "**/"+marker)
-			if err != nil {
+			for _, entry := range entries {
+				if !matchesName(marker, entry.name) {
+					continue
+				}
+				projectDirs[filepath.Dir(entry.path)] = true
+			}
+		}
+
+		dirs := make([]string, 0, len(projectDirs))
+		for dir := range projectDirs {
+			dirs = append(dirs, dir)
+		}
+		slices.Sort(dirs)
+		for _, dir := range dirs {
+			if excludedEntry(entrySet, dir, pt.Excludes) {
 				continue
 			}
 
-			for _, match := range matches {
-				dir := filepath.Join(workingDir, filepath.Dir(match))
+			if len(pt.Requires) > 0 && !hasRequiredEntry(entries, dir, pt.Requires) {
+				continue
+			}
 
-				if excluded(dir, pt.Excludes) {
+			for _, candidate := range pt.Servers {
+				key := dir + "\x00" + serverKey(candidate)
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+
+				path := resolveCommand(dir, workingDir, candidate.Command)
+				if path == "" {
+					var cached bool
+					path, cached = globalCommandCache[candidate.Command]
+					if !cached {
+						if _, err := exec.LookPath(candidate.Command); err == nil {
+							path = candidate.Command
+						} else {
+							path = resolveUserCommand(candidate.Command)
+						}
+						globalCommandCache[candidate.Command] = path
+					}
+				}
+				if path == "" {
+					continue
+				}
+				versionKey := path + "\x00" + strconv.Itoa(candidate.MinimumMajorVersion)
+				supported, checked := versionCache[versionKey]
+				if !checked {
+					supported = serverVersionSupported(candidate, path)
+					versionCache[versionKey] = supported
+				}
+				if !supported {
 					continue
 				}
 
-				if len(pt.Requires) > 0 {
-					relDir, err := filepath.Rel(workingDir, dir)
-					if err != nil {
-						continue
-					}
-					if !hasFileMatching(fsys, relDir, pt.Requires) {
-						continue
-					}
-				}
-
-				for _, candidate := range pt.Servers {
-					key := dir + "\x00" + candidate.Command
-					if seen[key] {
-						continue
-					}
-					seen[key] = true
-
-					path, cached := resolveCache[key]
-					if !cached {
-						if abs := resolveCommand(dir, workingDir, candidate.Command); abs != "" {
-							path = abs
-						} else if _, err := exec.LookPath(candidate.Command); err == nil {
-							path = candidate.Command
-						} else if abs := resolveUserCommand(candidate.Command); abs != "" {
-							path = abs
-						}
-						resolveCache[key] = path
-					}
-					if path == "" {
-						continue
-					}
-					if !serverVersionSupported(candidate, path) {
-						continue
-					}
-
-					server := candidate
-					server.Command = path
-					roots = append(roots, projectRoot{Dir: dir, Server: server})
-					break
-				}
+				server := candidate
+				server.Command = path
+				roots = append(roots, projectRoot{Dir: dir, Server: server})
+				break
 			}
 		}
 	}
@@ -274,41 +271,55 @@ func detectAll(workingDir string) []projectRoot {
 	return roots
 }
 
-func excluded(dir string, excludes []string) bool {
-	for _, marker := range excludes {
-		if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
-			return true
+type workspaceEntry struct {
+	path  string
+	name  string
+	isDir bool
+}
+
+func scanWorkspaceEntries(workingDir string) []workspaceEntry {
+	var entries []workspaceEntry
+	_ = filepath.WalkDir(workingDir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if path != workingDir {
+			entries = append(entries, workspaceEntry{path: path, name: entry.Name(), isDir: entry.IsDir()})
+		}
+		if entry.IsDir() && path != workingDir && (ignoredDirs[entry.Name()] || strings.HasPrefix(entry.Name(), ".")) {
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	return entries
+}
+
+func matchesName(pattern, name string) bool {
+	matched, err := filepath.Match(pattern, name)
+	return err == nil && matched
+}
+
+func hasRequiredEntry(entries []workspaceEntry, dir string, patterns []string) bool {
+	for _, entry := range entries {
+		if entry.isDir || !isSubPath(dir, entry.path) {
+			continue
+		}
+		for _, pattern := range patterns {
+			if matchesName(pattern, entry.name) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-type filteredFS struct {
-	root string
-}
-
-func (f filteredFS) Open(name string) (fs.File, error) {
-	return os.Open(filepath.Join(f.root, name))
-}
-
-func (f filteredFS) ReadDir(name string) ([]fs.DirEntry, error) {
-	entries, err := os.ReadDir(filepath.Join(f.root, name))
-	if err != nil {
-		return nil, err
-	}
-
-	filtered := entries[:0]
-	for _, e := range entries {
-		if e.IsDir() && (ignoredDirs[e.Name()] || strings.HasPrefix(e.Name(), ".")) {
-			continue
+func excludedEntry(entries map[string]bool, dir string, excludes []string) bool {
+	for _, marker := range excludes {
+		if entries[filepath.Clean(filepath.Join(dir, marker))] {
+			return true
 		}
-		filtered = append(filtered, e)
 	}
-	return filtered, nil
-}
-
-func (f filteredFS) Stat(name string) (fs.FileInfo, error) {
-	return os.Stat(filepath.Join(f.root, name))
+	return false
 }
 
 func isSubPath(parent, child string) bool {
