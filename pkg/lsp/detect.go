@@ -19,20 +19,16 @@ type projectRoot struct {
 	Server Server
 }
 
-var ignoredDirs = map[string]bool{
-	".git":         true,
-	".hg":          true,
-	".svn":         true,
+// skippedDirs are never descended into. Dot-prefixed directories are skipped
+// separately, so only their non-hidden counterparts are listed here.
+var skippedDirs = map[string]bool{
 	"node_modules": true,
 	"vendor":       true,
 	"__pycache__":  true,
-	".venv":        true,
 	"venv":         true,
 	"target":       true,
 	"build":        true,
 	"dist":         true,
-	".next":        true,
-	".nuxt":        true,
 }
 
 var projectBinDirs = []string{
@@ -192,77 +188,26 @@ func serverVersionSupported(server Server, command string) bool {
 }
 
 func detectAll(workingDir string) []projectRoot {
+	index := indexWorkspace(workingDir)
+	commands := make(map[string]string)
+	versions := make(map[string]bool)
+
 	var roots []projectRoot
 	seen := make(map[string]bool)
-	globalCommandCache := make(map[string]string)
-	versionCache := make(map[string]bool)
-	entries := scanWorkspaceEntries(workingDir)
-	entrySet := make(map[string]bool, len(entries))
-	for _, entry := range entries {
-		entrySet[filepath.Clean(entry.path)] = true
-	}
 
-	for _, pt := range knownProjects {
-		projectDirs := make(map[string]bool)
-		for _, marker := range pt.Markers {
-			for _, entry := range entries {
-				if !matchesName(marker, entry.name) {
-					continue
-				}
-				projectDirs[filepath.Dir(entry.path)] = true
-			}
-		}
-
-		dirs := make([]string, 0, len(projectDirs))
-		for dir := range projectDirs {
-			dirs = append(dirs, dir)
-		}
-		slices.Sort(dirs)
-		for _, dir := range dirs {
-			if excludedEntry(entrySet, dir, pt.Excludes) {
-				continue
-			}
-
-			if len(pt.Requires) > 0 && !hasRequiredEntry(entries, dir, pt.Requires) {
-				continue
-			}
-
-			for _, candidate := range pt.Servers {
-				key := dir + "\x00" + serverKey(candidate)
-				if seen[key] {
-					continue
-				}
-				seen[key] = true
-
-				path := resolveCommand(dir, workingDir, candidate.Command)
-				if path == "" {
-					var cached bool
-					path, cached = globalCommandCache[candidate.Command]
-					if !cached {
-						if _, err := exec.LookPath(candidate.Command); err == nil {
-							path = candidate.Command
-						} else {
-							path = resolveUserCommand(candidate.Command)
-						}
-						globalCommandCache[candidate.Command] = path
-					}
-				}
-				if path == "" {
-					continue
-				}
-				versionKey := path + "\x00" + strconv.Itoa(candidate.MinimumMajorVersion)
-				supported, checked := versionCache[versionKey]
-				if !checked {
-					supported = serverVersionSupported(candidate, path)
-					versionCache[versionKey] = supported
-				}
-				if !supported {
+	for _, project := range knownProjects {
+		for _, dir := range projectDirs(index, project) {
+			for _, candidate := range project.Servers {
+				server, ok := resolveServer(workingDir, dir, candidate, commands, versions)
+				if !ok {
 					continue
 				}
 
-				server := candidate
-				server.Command = path
-				roots = append(roots, projectRoot{Dir: dir, Server: server})
+				root := projectRoot{Dir: dir, Server: server}
+				if key := projectKey(root); !seen[key] {
+					seen[key] = true
+					roots = append(roots, root)
+				}
 				break
 			}
 		}
@@ -271,41 +216,98 @@ func detectAll(workingDir string) []projectRoot {
 	return roots
 }
 
+func projectDirs(index *workspaceIndex, project projectType) []string {
+	var dirs []string
+	seen := make(map[string]bool)
+
+	for _, marker := range project.Markers {
+		for _, entry := range index.matching(marker) {
+			dir := filepath.Dir(entry.path)
+			if seen[dir] {
+				continue
+			}
+			seen[dir] = true
+			dirs = append(dirs, dir)
+		}
+	}
+
+	slices.Sort(dirs)
+
+	return slices.DeleteFunc(dirs, func(dir string) bool {
+		for _, exclude := range project.Excludes {
+			if index.hasChild(dir, exclude) {
+				return true
+			}
+		}
+		return len(project.Requires) > 0 && !index.hasNestedFile(dir, project.Requires)
+	})
+}
+
+func resolveServer(workingDir, dir string, candidate Server, commands map[string]string, versions map[string]bool) (Server, bool) {
+	path := resolveCommand(dir, workingDir, candidate.Command)
+	if path == "" {
+		global, cached := commands[candidate.Command]
+		if !cached {
+			if _, err := exec.LookPath(candidate.Command); err == nil {
+				global = candidate.Command
+			} else {
+				global = resolveUserCommand(candidate.Command)
+			}
+			commands[candidate.Command] = global
+		}
+		path = global
+	}
+	if path == "" {
+		return Server{}, false
+	}
+
+	versionKey := path + "\x00" + strconv.Itoa(candidate.MinimumMajorVersion)
+	supported, checked := versions[versionKey]
+	if !checked {
+		supported = serverVersionSupported(candidate, path)
+		versions[versionKey] = supported
+	}
+	if !supported {
+		return Server{}, false
+	}
+
+	candidate.Command = path
+	return candidate, true
+}
+
 type workspaceEntry struct {
 	path  string
 	name  string
 	isDir bool
 }
 
-func scanWorkspaceEntries(workingDir string) []workspaceEntry {
-	var entries []workspaceEntry
-	_ = filepath.WalkDir(workingDir, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if path != workingDir {
-			entries = append(entries, workspaceEntry{path: path, name: entry.Name(), isDir: entry.IsDir()})
-		}
-		if entry.IsDir() && path != workingDir && (ignoredDirs[entry.Name()] || strings.HasPrefix(entry.Name(), ".")) {
-			return filepath.SkipDir
-		}
-		return nil
-	})
-	return entries
+// workspaceIndex holds one scan of the workspace, indexed so that marker
+// lookups cost a map hit instead of a pass over every entry.
+type workspaceIndex struct {
+	byName map[string][]workspaceEntry
+	byGlob map[string][]workspaceEntry
 }
 
-func matchesName(pattern, name string) bool {
-	matched, err := filepath.Match(pattern, name)
-	return err == nil && matched
+func (i *workspaceIndex) matching(pattern string) []workspaceEntry {
+	if isGlob(pattern) {
+		return i.byGlob[pattern]
+	}
+	return i.byName[pattern]
 }
 
-func hasRequiredEntry(entries []workspaceEntry, dir string, patterns []string) bool {
-	for _, entry := range entries {
-		if entry.isDir || !isSubPath(dir, entry.path) {
-			continue
+func (i *workspaceIndex) hasChild(dir, pattern string) bool {
+	for _, entry := range i.matching(pattern) {
+		if filepath.Dir(entry.path) == dir {
+			return true
 		}
-		for _, pattern := range patterns {
-			if matchesName(pattern, entry.name) {
+	}
+	return false
+}
+
+func (i *workspaceIndex) hasNestedFile(dir string, patterns []string) bool {
+	for _, pattern := range patterns {
+		for _, entry := range i.matching(pattern) {
+			if !entry.isDir && isSubPath(dir, entry.path) {
 				return true
 			}
 		}
@@ -313,13 +315,59 @@ func hasRequiredEntry(entries []workspaceEntry, dir string, patterns []string) b
 	return false
 }
 
-func excludedEntry(entries map[string]bool, dir string, excludes []string) bool {
-	for _, marker := range excludes {
-		if entries[filepath.Clean(filepath.Join(dir, marker))] {
-			return true
+func indexWorkspace(workingDir string) *workspaceIndex {
+	globs := markerGlobs()
+
+	index := &workspaceIndex{
+		byName: make(map[string][]workspaceEntry),
+		byGlob: make(map[string][]workspaceEntry),
+	}
+
+	_ = filepath.WalkDir(workingDir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || path == workingDir {
+			return nil
+		}
+
+		name := entry.Name()
+		item := workspaceEntry{path: path, name: name, isDir: entry.IsDir()}
+		index.byName[name] = append(index.byName[name], item)
+
+		for _, glob := range globs {
+			if matchesName(glob, name) {
+				index.byGlob[glob] = append(index.byGlob[glob], item)
+			}
+		}
+
+		if entry.IsDir() && (skippedDirs[name] || strings.HasPrefix(name, ".")) {
+			return filepath.SkipDir
+		}
+		return nil
+	})
+
+	return index
+}
+
+var markerGlobs = sync.OnceValue(func() []string {
+	var globs []string
+	for _, project := range knownProjects {
+		for _, patterns := range [][]string{project.Markers, project.Requires, project.Excludes} {
+			for _, pattern := range patterns {
+				if isGlob(pattern) && !slices.Contains(globs, pattern) {
+					globs = append(globs, pattern)
+				}
+			}
 		}
 	}
-	return false
+	return globs
+})
+
+func isGlob(pattern string) bool {
+	return strings.ContainsAny(pattern, `*?[`)
+}
+
+func matchesName(pattern, name string) bool {
+	matched, err := filepath.Match(pattern, name)
+	return err == nil && matched
 }
 
 func isSubPath(parent, child string) bool {

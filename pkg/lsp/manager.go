@@ -122,21 +122,6 @@ func (m *Manager) DetectServers() []Server {
 	return servers
 }
 
-func (m *Manager) projects() []projectRoot {
-	projects := m.detect()
-	result := make([]projectRoot, 0, len(projects))
-	seen := make(map[string]bool)
-	for _, project := range projects {
-		key := projectKey(project)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		result = append(result, project)
-	}
-	return result
-}
-
 func projectKey(project projectRoot) string {
 	return filepath.Clean(project.Dir) + "\x00" + serverKey(project.Server)
 }
@@ -178,16 +163,16 @@ func (m *Manager) getSession(ctx context.Context, project projectRoot) (*Session
 	}
 
 	var openedURIs []string
-	restartCount := m.restarts[key]
 	restarting := false
 	if previous := m.sessions[key]; previous != nil {
 		openedURIs = previous.OpenedDocURIs()
 		delete(m.sessions, key)
+		m.restarts[key]++
 		restarting = true
-		if restartCount >= maxRestarts {
-			m.mu.Unlock()
-			return nil, fmt.Errorf("LSP server %s crashed %d times, not restarting", server.Name, restartCount)
-		}
+	}
+	if m.restarts[key] > maxRestarts {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("LSP server %s crashed %d times, not restarting", server.Name, maxRestarts)
 	}
 	start := &sessionStart{done: make(chan struct{})}
 	m.starting[key] = start
@@ -211,9 +196,6 @@ func (m *Manager) getSession(ctx context.Context, project projectRoot) (*Session
 	}
 	if err == nil {
 		m.sessions[key] = session
-		if restarting {
-			m.restarts[key] = restartCount + 1
-		}
 	}
 	start.session = session
 	start.err = err
@@ -250,7 +232,7 @@ func (m *Manager) ActiveSession(filePath string) (*Session, bool) {
 
 func (m *Manager) WarmUpServers() {
 	go func() {
-		for _, project := range m.projects() {
+		for _, project := range m.detect() {
 			m.warmUp(project)
 		}
 	}()
@@ -416,7 +398,7 @@ type WorkspaceDiagnosticsReport struct {
 
 func (m *Manager) CollectAllDiagnostics(ctx context.Context) WorkspaceDiagnosticsReport {
 	report := WorkspaceDiagnosticsReport{Diagnostics: make(map[string][]Diagnostic)}
-	projects := m.projects()
+	projects := m.detect()
 	unavailable := make(map[string]bool)
 
 	for _, project := range projects {
@@ -498,7 +480,7 @@ func collectDiagnosticStates(ctx context.Context, session *Session, uris []strin
 }
 
 func (m *Manager) WorkspaceDiagnostics(ctx context.Context) (string, error) {
-	if len(m.projects()) == 0 {
+	if len(m.detect()) == 0 {
 		return "", fmt.Errorf("no LSP servers detected in workspace")
 	}
 
@@ -558,7 +540,7 @@ func (m *Manager) WorkspaceDiagnostics(ctx context.Context) (string, error) {
 }
 
 func (m *Manager) WorkspaceSymbols(ctx context.Context, query string) (string, error) {
-	projects := m.projects()
+	projects := m.detect()
 	if len(projects) == 0 {
 		return "", fmt.Errorf("no LSP servers detected in workspace")
 	}
@@ -600,19 +582,6 @@ func (m *Manager) WorkspaceSymbols(ctx context.Context, query string) (string, e
 	return "No symbols found", nil
 }
 
-var skippedDiscoveryDirs = map[string]bool{
-	"node_modules": true,
-	"vendor":       true,
-	"__pycache__":  true,
-	"target":       true,
-	"build":        true,
-	"dist":         true,
-}
-
-func discoverSourceFiles(workingDir string, extensions []string, maxFiles int) ([]string, int, bool) {
-	return discoverSourceFilesMatching(context.Background(), workingDir, extensions, maxFiles, nil)
-}
-
 func discoverSourceFilesMatching(ctx context.Context, workingDir string, extensions []string, maxFiles int, include func(string) bool) ([]string, int, bool) {
 	extSet := make(map[string]bool, len(extensions))
 	for _, ext := range extensions {
@@ -632,7 +601,7 @@ func discoverSourceFilesMatching(ctx context.Context, workingDir string, extensi
 
 		if d.IsDir() {
 			name := d.Name()
-			if path != workingDir && (strings.HasPrefix(name, ".") || skippedDiscoveryDirs[name]) {
+			if path != workingDir && (strings.HasPrefix(name, ".") || skippedDirs[name]) {
 				return filepath.SkipDir
 			}
 			return nil

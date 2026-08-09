@@ -175,7 +175,7 @@ func TestTypeScriptLanguageIDs(t *testing.T) {
 	}
 }
 
-func TestScanWorkspaceEntriesSkipsIgnoredContents(t *testing.T) {
+func TestIndexWorkspaceSkipsIgnoredContents(t *testing.T) {
 	root := t.TempDir()
 	ignored := filepath.Join(root, "node_modules", "pkg")
 	if err := os.MkdirAll(ignored, 0o755); err != nil {
@@ -188,29 +188,24 @@ func TestScanWorkspaceEntriesSkipsIgnoredContents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries := scanWorkspaceEntries(root)
-	foundRootMarker := false
-	for _, entry := range entries {
-		if entry.path == filepath.Join(root, "package.json") {
-			foundRootMarker = true
-		}
-		if isSubPath(filepath.Join(root, "node_modules"), entry.path) && entry.path != filepath.Join(root, "node_modules") {
-			t.Fatalf("ignored directory contents were scanned: %q", entry.path)
-		}
+	index := indexWorkspace(root)
+	entries := index.matching("package.json")
+	if len(entries) != 1 || entries[0].path != filepath.Join(root, "package.json") {
+		t.Fatalf("indexed package.json entries = %+v, want only the root marker", entries)
 	}
-	if !foundRootMarker {
-		t.Fatal("root project marker was not scanned")
+	if !index.hasChild(root, "package.json") {
+		t.Fatal("root project marker was not indexed as a child of the root")
 	}
 }
 
-func TestScanWorkspaceEntriesKeepsHiddenDirectoryMarker(t *testing.T) {
+func TestIndexWorkspaceKeepsHiddenDirectoryMarker(t *testing.T) {
 	root := t.TempDir()
 	marker := filepath.Join(root, ".metals")
 	if err := os.Mkdir(marker, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	for _, entry := range scanWorkspaceEntries(root) {
+	for _, entry := range indexWorkspace(root).matching(".metals") {
 		if entry.path == marker && entry.isDir {
 			return
 		}
@@ -218,14 +213,47 @@ func TestScanWorkspaceEntriesKeepsHiddenDirectoryMarker(t *testing.T) {
 	t.Fatalf("hidden directory marker %q was not recorded", marker)
 }
 
-func TestHasRequiredEntryMatchesFilesOnly(t *testing.T) {
+func TestHasNestedFileMatchesFilesOnly(t *testing.T) {
 	root := t.TempDir()
-	entries := []workspaceEntry{{path: filepath.Join(root, "component.vue"), name: "component.vue", isDir: true}}
-	if hasRequiredEntry(entries, root, []string{"*.vue"}) {
+	if err := os.Mkdir(filepath.Join(root, "component.vue"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	index := indexWorkspace(root)
+	if index.hasNestedFile(root, []string{"*.vue"}) {
 		t.Fatal("directory should not satisfy a source-file requirement")
 	}
-	entries = append(entries, workspaceEntry{path: filepath.Join(root, "src", "component.vue"), name: "component.vue"})
-	if !hasRequiredEntry(entries, root, []string{"*.vue"}) {
+
+	nested := filepath.Join(root, "src")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "component.vue"), []byte("<template/>\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if !indexWorkspace(root).hasNestedFile(root, []string{"*.vue"}) {
 		t.Fatal("nested source file should satisfy requirement")
 	}
+}
+
+func TestProjectDirsAppliesExcludes(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"package.json", "deno.json"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	index := indexWorkspace(root)
+	for _, project := range knownProjects {
+		if project.Name != "typescript" {
+			continue
+		}
+		if dirs := projectDirs(index, project); len(dirs) != 0 {
+			t.Fatalf("typescript dirs = %v, want none because deno.json excludes the root", dirs)
+		}
+		return
+	}
+	t.Fatal("typescript project type not found")
 }

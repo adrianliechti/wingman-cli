@@ -163,7 +163,7 @@ func TestDiscoverSourceFilesReportsTotal(t *testing.T) {
 		}
 	}
 
-	files, total, truncated := discoverSourceFiles(dir, []string{"go"}, 4)
+	files, total, truncated := discoverSourceFilesMatching(context.Background(), dir, []string{"go"}, 4, nil)
 	if len(files) != 4 {
 		t.Errorf("len(files) = %d, want 4", len(files))
 	}

@@ -25,16 +25,34 @@ type Session struct {
 	workingDir string
 	cancelFunc context.CancelFunc
 
-	documentMu  sync.Mutex
-	mu          sync.Mutex
-	openedDocs  map[string]uint64
-	docVersions map[string]int
-	docSaved    map[string]bool
-	pushDiags   map[string][]Diagnostic
-	pushSeen    map[string]bool
-	pullDiags   bool
-	alive       atomic.Bool
-	closeOnce   sync.Once
+	documentMu sync.Mutex
+	mu         sync.Mutex
+	documents  map[string]*document
+	pullDiags  bool
+	alive      atomic.Bool
+	closeOnce  sync.Once
+}
+
+// document tracks what the server has been told about a URI and what it has
+// reported back. Servers publish diagnostics for files we never opened, so
+// "tracked" and "opened" are distinct.
+type document struct {
+	opened  bool
+	sum     uint64
+	version int
+	saved   bool
+
+	diagnostics []Diagnostic
+	published   bool
+}
+
+func (s *Session) document(uri string) *document {
+	doc := s.documents[uri]
+	if doc == nil {
+		doc = &document{}
+		s.documents[uri] = doc
+	}
+	return doc
 }
 
 const startupTimeout = 30 * time.Second
@@ -67,16 +85,12 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 	connCtx, cancel := context.WithCancel(context.Background())
 
 	session := &Session{
-		server:      server,
-		cmd:         cmd,
-		rootURI:     FileURI(workingDir),
-		workingDir:  workingDir,
-		cancelFunc:  cancel,
-		openedDocs:  make(map[string]uint64),
-		docVersions: make(map[string]int),
-		docSaved:    make(map[string]bool),
-		pushDiags:   make(map[string][]Diagnostic),
-		pushSeen:    make(map[string]bool),
+		server:     server,
+		cmd:        cmd,
+		rootURI:    FileURI(workingDir),
+		workingDir: workingDir,
+		cancelFunc: cancel,
+		documents:  make(map[string]*document),
 	}
 	session.alive.Store(true)
 
@@ -94,9 +108,9 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 					var params PublishDiagnosticsParams
 					if err := json.Unmarshal(req.Params, &params); err == nil {
 						session.mu.Lock()
-						if params.Version == 0 || params.Version >= session.docVersions[params.URI] {
-							session.pushDiags[params.URI] = params.Diagnostics
-							session.pushSeen[params.URI] = true
+						if doc := session.document(params.URI); params.Version == 0 || params.Version >= doc.version {
+							doc.diagnostics = params.Diagnostics
+							doc.published = true
 						}
 						session.mu.Unlock()
 					}
@@ -128,9 +142,11 @@ func (s *Session) OpenedDocURIs() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	uris := make([]string, 0, len(s.openedDocs))
-	for uri := range s.openedDocs {
-		uris = append(uris, uri)
+	uris := make([]string, 0, len(s.documents))
+	for uri, doc := range s.documents {
+		if doc.opened {
+			uris = append(uris, uri)
+		}
 	}
 	return uris
 }
@@ -181,22 +197,21 @@ const maxRetries = 3
 
 var retryBaseDelay = 500 * time.Millisecond
 
+const (
+	codeServerCancelled  = -32802
+	codeContentModified  = -32801
+	codeRequestCancelled = -32800
+)
+
 func isTransientError(err error) bool {
 	var wireErr *jsonrpc2.WireError
 	if !errors.As(err, &wireErr) {
 		return false
 	}
 
-	switch wireErr.Code {
-	case -32801:
-		return true
-	case -32800:
-		return true
-	case -32802:
-		return true
-	default:
-		return false
-	}
+	return wireErr.Code == codeServerCancelled ||
+		wireErr.Code == codeContentModified ||
+		wireErr.Code == codeRequestCancelled
 }
 
 func (s *Session) OpenDocument(ctx context.Context, filePath string) (string, error) {
@@ -224,97 +239,87 @@ func (s *Session) syncDocument(ctx context.Context, filePath string, content []b
 	sum := h.Sum64()
 
 	s.mu.Lock()
-	prev, alreadyOpen := s.openedDocs[uri]
-	wasSaved := s.docSaved[uri]
+	doc := s.document(uri)
+	opened, unchanged, wasSaved := doc.opened, doc.sum == sum, doc.saved
+	version := doc.version + 1
+	if opened && !unchanged {
+		doc.version = version
+		doc.diagnostics = nil
+		doc.published = false
+	}
 	s.mu.Unlock()
 
-	if alreadyOpen {
-		if prev == sum {
-			if saved && !wasSaved {
-				if err := s.conn.Notify(ctx, "textDocument/didSave", DidSaveTextDocumentParams{
-					TextDocument: TextDocumentIdentifier{URI: uri},
-				}); err != nil {
-					return "", fmt.Errorf("didSave: %w", err)
-				}
-				s.mu.Lock()
-				s.docSaved[uri] = true
-				s.mu.Unlock()
-			}
+	notifySaved := func() error {
+		if err := s.conn.Notify(ctx, "textDocument/didSave", DidSaveTextDocumentParams{
+			TextDocument: TextDocumentIdentifier{URI: uri},
+		}); err != nil {
+			return fmt.Errorf("didSave: %w", err)
+		}
+		return nil
+	}
+
+	switch {
+	case opened && unchanged:
+		if !saved || wasSaved {
 			return uri, nil
 		}
-
-		s.mu.Lock()
-		version := s.docVersions[uri] + 1
-		s.docVersions[uri] = version
-		delete(s.pushDiags, uri)
-		delete(s.pushSeen, uri)
-		s.mu.Unlock()
-
-		changeParams := DidChangeTextDocumentParams{
-			TextDocument: VersionedTextDocumentIdentifier{
-				URI:     uri,
-				Version: version,
-			},
-			ContentChanges: []TextDocumentContentChangeEvent{{Text: string(content)}},
+		if err := notifySaved(); err != nil {
+			return "", err
 		}
 
-		if err := s.conn.Notify(ctx, "textDocument/didChange", changeParams); err != nil {
+	case opened:
+		if err := s.conn.Notify(ctx, "textDocument/didChange", DidChangeTextDocumentParams{
+			TextDocument:   VersionedTextDocumentIdentifier{URI: uri, Version: version},
+			ContentChanges: []TextDocumentContentChangeEvent{{Text: string(content)}},
+		}); err != nil {
 			return "", fmt.Errorf("didChange: %w", err)
 		}
-
 		if saved {
-			if err := s.conn.Notify(ctx, "textDocument/didSave", DidSaveTextDocumentParams{
-				TextDocument: TextDocumentIdentifier{URI: uri},
-			}); err != nil {
-				return "", fmt.Errorf("didSave: %w", err)
+			if err := notifySaved(); err != nil {
+				return "", err
 			}
 		}
 
-		s.mu.Lock()
-		s.openedDocs[uri] = sum
-		s.docSaved[uri] = saved
-		s.mu.Unlock()
-
-		return uri, nil
-	}
-
-	params := DidOpenTextDocumentParams{
-		TextDocument: TextDocumentItem{
-			URI:        uri,
-			LanguageID: s.server.LanguageIDForPath(filePath),
-			Version:    1,
-			Text:       string(content),
-		},
-	}
-
-	if err := s.conn.Notify(ctx, "textDocument/didOpen", params); err != nil {
-		return "", fmt.Errorf("didOpen: %w", err)
+	default:
+		if err := s.conn.Notify(ctx, "textDocument/didOpen", DidOpenTextDocumentParams{
+			TextDocument: TextDocumentItem{
+				URI:        uri,
+				LanguageID: s.server.LanguageIDForPath(filePath),
+				Version:    1,
+				Text:       string(content),
+			},
+		}); err != nil {
+			return "", fmt.Errorf("didOpen: %w", err)
+		}
 	}
 
 	s.mu.Lock()
-	s.openedDocs[uri] = sum
-	s.docVersions[uri] = 1
-	s.docSaved[uri] = saved
+	doc = s.document(uri)
+	doc.opened = true
+	doc.sum = sum
+	doc.saved = saved
+	if !opened {
+		doc.version = 1
+	}
 	s.mu.Unlock()
 
 	return uri, nil
 }
 
-func (s *Session) PushDiagnostics(uri string) []Diagnostic {
-	diags, _ := s.pushedDiagnostics(uri)
-	return diags
-}
-
-func (s *Session) pushedDiagnostics(uri string) ([]Diagnostic, bool) {
+func (s *Session) publishedDiagnostics(uri string) ([]Diagnostic, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.pushDiags[uri], s.pushSeen[uri]
+
+	doc := s.documents[uri]
+	if doc == nil {
+		return nil, false
+	}
+	return doc.diagnostics, doc.published
 }
 
 func (s *Session) PushSeen(uri string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.pushSeen[uri]
+	_, published := s.publishedDiagnostics(uri)
+	return published
 }
 
 func (s *Session) SupportsPullDiagnostics() bool {
@@ -351,9 +356,9 @@ func (s *Session) pullDiagnostics(ctx context.Context, uri string) ([]Diagnostic
 // actually produced a result: known=false means the server neither published
 // nor answered a pull request, so "no diagnostics" cannot be concluded.
 func (s *Session) DiagnosticsState(ctx context.Context, uri string) ([]Diagnostic, bool) {
-	pushed, seen := s.pushedDiagnostics(uri)
-	if seen {
-		return pushed, true
+	published, ok := s.publishedDiagnostics(uri)
+	if ok {
+		return published, true
 	}
 
 	if s.pullDiags {
@@ -363,11 +368,6 @@ func (s *Session) DiagnosticsState(ctx context.Context, uri string) ([]Diagnosti
 	}
 
 	return nil, false
-}
-
-func (s *Session) CollectDiagnostics(ctx context.Context, uri string) []Diagnostic {
-	diags, _ := s.DiagnosticsState(ctx, uri)
-	return diags
 }
 
 func (s *Session) WaitForDiagnostics(ctx context.Context, uri string, timeout time.Duration) ([]Diagnostic, bool) {
@@ -402,71 +402,44 @@ func (s *Session) Diagnostics(ctx context.Context, uri string, filePath string) 
 	return FormatDiagnostics(diags, filePath, s.workingDir), nil
 }
 
-func (s *Session) Definition(ctx context.Context, uri string, line, column int) (string, error) {
-	params := TextDocumentPositionParams{
-		TextDocument: TextDocumentIdentifier{URI: uri},
-		Position:     Position{Line: line, Character: column},
-	}
-
-	var result json.RawMessage
-	if err := s.CallAndAwait(ctx, "textDocument/definition", params, &result); err != nil {
-		return "", err
-	}
-
-	locations, err := parseLocationResponse(result)
-	if err != nil {
-		return "", err
-	}
-
-	if len(locations) == 0 {
-		return "No definition found", nil
-	}
-
-	return formatDefinitions(locations, s.workingDir), nil
-}
-
 type DefLocation struct {
 	Path   string
 	Line   int
 	Column int
 }
 
-func (s *Session) DefinitionLocations(ctx context.Context, uri string, line, column int) ([]DefLocation, error) {
-	return s.positionLocations(ctx, "textDocument/definition", uri, line, column)
-}
+const (
+	methodDefinition     = "textDocument/definition"
+	methodTypeDefinition = "textDocument/typeDefinition"
+	methodImplementation = "textDocument/implementation"
+	methodReferences     = "textDocument/references"
+)
 
-func (s *Session) TypeDefinitionLocations(ctx context.Context, uri string, line, column int) ([]DefLocation, error) {
-	return s.positionLocations(ctx, "textDocument/typeDefinition", uri, line, column)
-}
+// locations runs any of the position-based navigation requests, all of which
+// answer with Location | Location[] | LocationLink[].
+func (s *Session) locations(ctx context.Context, method, uri string, line, column int) ([]Location, error) {
+	position := Position{Line: line, Character: column}
+	document := TextDocumentIdentifier{URI: uri}
 
-func (s *Session) ImplementationLocations(ctx context.Context, uri string, line, column int) ([]DefLocation, error) {
-	return s.positionLocations(ctx, "textDocument/implementation", uri, line, column)
-}
-
-func (s *Session) ReferenceLocations(ctx context.Context, uri string, line, column int) ([]DefLocation, error) {
-	params := ReferenceParams{
-		TextDocument: TextDocumentIdentifier{URI: uri},
-		Position:     Position{Line: line, Character: column},
-		Context:      ReferenceContext{IncludeDeclaration: true},
+	var params any = TextDocumentPositionParams{TextDocument: document, Position: position}
+	if method == methodReferences {
+		params = ReferenceParams{
+			TextDocument: document,
+			Position:     position,
+			Context:      ReferenceContext{IncludeDeclaration: true},
+		}
 	}
-	return s.requestLocations(ctx, "textDocument/references", params)
-}
 
-func (s *Session) positionLocations(ctx context.Context, method, uri string, line, column int) ([]DefLocation, error) {
-	params := TextDocumentPositionParams{
-		TextDocument: TextDocumentIdentifier{URI: uri},
-		Position:     Position{Line: line, Character: column},
-	}
-	return s.requestLocations(ctx, method, params)
-}
-
-func (s *Session) requestLocations(ctx context.Context, method string, params any) ([]DefLocation, error) {
 	var result json.RawMessage
 	if err := s.CallAndAwait(ctx, method, params, &result); err != nil {
 		return nil, err
 	}
 
-	locations, err := parseLocationResponse(result)
+	return parseLocationResponse(result)
+}
+
+func (s *Session) defLocations(ctx context.Context, method, uri string, line, column int) ([]DefLocation, error) {
+	locations, err := s.locations(ctx, method, uri, line, column)
 	if err != nil {
 		return nil, err
 	}
@@ -482,32 +455,52 @@ func (s *Session) requestLocations(ctx context.Context, method string, params an
 	return out, nil
 }
 
-func (s *Session) References(ctx context.Context, uri string, line, column int) (string, error) {
-	params := ReferenceParams{
-		TextDocument: TextDocumentIdentifier{URI: uri},
-		Position:     Position{Line: line, Character: column},
-		Context:      ReferenceContext{IncludeDeclaration: true},
-	}
+func (s *Session) DefinitionLocations(ctx context.Context, uri string, line, column int) ([]DefLocation, error) {
+	return s.defLocations(ctx, methodDefinition, uri, line, column)
+}
 
-	var result json.RawMessage
-	if err := s.CallAndAwait(ctx, "textDocument/references", params, &result); err != nil {
-		return "", err
-	}
+func (s *Session) TypeDefinitionLocations(ctx context.Context, uri string, line, column int) ([]DefLocation, error) {
+	return s.defLocations(ctx, methodTypeDefinition, uri, line, column)
+}
 
-	locations, err := parseLocationResponse(result)
+func (s *Session) ImplementationLocations(ctx context.Context, uri string, line, column int) ([]DefLocation, error) {
+	return s.defLocations(ctx, methodImplementation, uri, line, column)
+}
+
+func (s *Session) ReferenceLocations(ctx context.Context, uri string, line, column int) ([]DefLocation, error) {
+	return s.defLocations(ctx, methodReferences, uri, line, column)
+}
+
+func (s *Session) Definition(ctx context.Context, uri string, line, column int) (string, error) {
+	locations, err := s.locations(ctx, methodDefinition, uri, line, column)
 	if err != nil {
 		return "", err
 	}
-
 	if len(locations) == 0 {
-		return "No references found", nil
+		return "No definition found", nil
 	}
 
-	return formatLocations("References", locations, s.workingDir), nil
+	return formatDefinitions(locations, s.workingDir), nil
+}
+
+func (s *Session) References(ctx context.Context, uri string, line, column int) (string, error) {
+	return s.formatLocationRequest(ctx, methodReferences, "References", uri, line, column)
 }
 
 func (s *Session) Implementation(ctx context.Context, uri string, line, column int) (string, error) {
-	return s.locationOp(ctx, "textDocument/implementation", "Implementations", uri, line, column)
+	return s.formatLocationRequest(ctx, methodImplementation, "Implementations", uri, line, column)
+}
+
+func (s *Session) formatLocationRequest(ctx context.Context, method, title, uri string, line, column int) (string, error) {
+	locations, err := s.locations(ctx, method, uri, line, column)
+	if err != nil {
+		return "", err
+	}
+	if len(locations) == 0 {
+		return fmt.Sprintf("No %s found", strings.ToLower(title)), nil
+	}
+
+	return formatLocations(title, locations, s.workingDir), nil
 }
 
 func (s *Session) Hover(ctx context.Context, uri string, line, column int) (string, error) {
@@ -554,6 +547,9 @@ func (s *Session) DocumentSymbols(ctx context.Context, uri string, filePath stri
 	return "No symbols found", nil
 }
 
+// DocumentSymbolItems returns the file's symbols in whichever of the two
+// documentSymbol response shapes the server chose: a DocumentSymbol tree or a
+// flat SymbolInformation list.
 func (s *Session) DocumentSymbolItems(ctx context.Context, uri string) ([]DocumentSymbol, []SymbolInformation, error) {
 	params := DocumentSymbolParams{
 		TextDocument: TextDocumentIdentifier{URI: uri},
@@ -564,7 +560,7 @@ func (s *Session) DocumentSymbolItems(ctx context.Context, uri string) ([]Docume
 		return nil, nil, err
 	}
 
-	if result == nil || string(result) == "null" {
+	if isNullResult(result) {
 		return nil, nil, nil
 	}
 
@@ -587,40 +583,26 @@ type symbolCandidate struct {
 	position  Position
 }
 
+// SymbolPosition locates a named symbol in a file, preferring the language
+// server's own symbol table and falling back to the first textual occurrence of
+// the name's last segment.
 func (s *Session) SymbolPosition(ctx context.Context, uri string, name string) (Position, bool) {
-	params := DocumentSymbolParams{
-		TextDocument: TextDocumentIdentifier{URI: uri},
-	}
+	path := uriToPath(uri)
 
-	var result json.RawMessage
-	if err := s.CallAndAwait(ctx, "textDocument/documentSymbol", params, &result); err != nil {
-		return Position{}, false
-	}
-
-	if result == nil || string(result) == "null" {
-		return Position{}, false
-	}
-
-	var candidates []symbolCandidate
-
-	var symInfos []SymbolInformation
-	if err := json.Unmarshal(result, &symInfos); err == nil && len(symInfos) > 0 && symInfos[0].Location.URI != "" {
+	docSymbols, symInfos, err := s.DocumentSymbolItems(ctx, uri)
+	if err == nil {
+		var candidates []symbolCandidate
 		for _, sym := range symInfos {
 			candidates = append(candidates, symbolCandidate{name: sym.Name, qualified: sym.Name, position: sym.Location.Range.Start})
 		}
-	} else {
-		var docSymbols []DocumentSymbol
-		if err := json.Unmarshal(result, &docSymbols); err == nil {
-			collectSymbolCandidates(docSymbols, "", &candidates)
+		collectSymbolCandidates(docSymbols, "", &candidates)
+
+		if matched, ok := matchSymbol(candidates, name); ok {
+			return snapToIdentifier(path, matched), true
 		}
 	}
 
-	matched, ok := matchSymbol(candidates, name)
-	if !ok {
-		return Position{}, false
-	}
-
-	return snapToIdentifier(uriToPath(uri), matched), true
+	return PositionOfSymbol(path, symbolLeaf(name))
 }
 
 // snapToIdentifier adjusts a candidate position to the symbol's name token:
@@ -777,29 +759,6 @@ func diagnosticProviderEnabled(provider json.RawMessage) bool {
 	return value != "" && value != "null" && value != "false"
 }
 
-func (s *Session) locationOp(ctx context.Context, method, title, uri string, line, column int) (string, error) {
-	params := TextDocumentPositionParams{
-		TextDocument: TextDocumentIdentifier{URI: uri},
-		Position:     Position{Line: line, Character: column},
-	}
-
-	var result json.RawMessage
-	if err := s.CallAndAwait(ctx, method, params, &result); err != nil {
-		return "", err
-	}
-
-	locations, err := parseLocationResponse(result)
-	if err != nil {
-		return "", err
-	}
-
-	if len(locations) == 0 {
-		return fmt.Sprintf("No %s found", strings.ToLower(title)), nil
-	}
-
-	return formatLocations(title, locations, s.workingDir), nil
-}
-
 func (s *Session) incomingCalls(ctx context.Context, item CallHierarchyItem) (string, error) {
 	var result json.RawMessage
 	if err := s.CallAndAwait(ctx, "callHierarchy/incomingCalls", CallHierarchyIncomingCallsParams{Item: item}, &result); err != nil {
@@ -836,52 +795,54 @@ func (s *Session) outgoingCalls(ctx context.Context, item CallHierarchyItem) (st
 	return formatOutgoingCalls(calls, s.workingDir), nil
 }
 
+// parseLocationResponse decodes the Location | Location[] | LocationLink[]
+// union shared by definition, references and implementation. An empty array is
+// a valid "nothing found" answer, not a malformed response.
 func parseLocationResponse(data json.RawMessage) ([]Location, error) {
-	if data == nil || string(data) == "null" {
+	if isNullResult(data) {
 		return nil, nil
 	}
 
-	var loc Location
-	if err := json.Unmarshal(data, &loc); err == nil && loc.URI != "" {
-		return []Location{loc}, nil
-	}
-
-	var locs []Location
-	if err := json.Unmarshal(data, &locs); err == nil && len(locs) > 0 && locs[0].URI != "" {
-		return locs, nil
-	}
-	locs = nil
-
-	var links []struct {
-		TargetURI            string `json:"targetUri"`
-		TargetRange          Range  `json:"targetRange"`
-		TargetSelectionRange Range  `json:"targetSelectionRange"`
-	}
-	if err := json.Unmarshal(data, &links); err == nil && len(links) > 0 && links[0].TargetURI != "" {
-		for _, link := range links {
-			locs = append(locs, Location{URI: link.TargetURI, Range: link.TargetSelectionRange})
+	var single Location
+	if err := json.Unmarshal(data, &single); err == nil {
+		if single.URI == "" {
+			return nil, nil
 		}
-		return locs, nil
+		return []Location{single}, nil
+	}
+
+	var locations []Location
+	if err := json.Unmarshal(data, &locations); err == nil && (len(locations) == 0 || locations[0].URI != "") {
+		return locations, nil
+	}
+
+	var links []LocationLink
+	if err := json.Unmarshal(data, &links); err == nil {
+		locations = make([]Location, 0, len(links))
+		for _, link := range links {
+			locations = append(locations, Location{URI: link.TargetURI, Range: link.TargetSelectionRange})
+		}
+		return locations, nil
 	}
 
 	return nil, fmt.Errorf("unexpected location response format")
 }
 
 func parseCallHierarchyItems(data json.RawMessage) ([]CallHierarchyItem, error) {
-	if data == nil || string(data) == "null" {
-		return nil, nil
-	}
-
 	var items []CallHierarchyItem
-	if err := json.Unmarshal(data, &items); err != nil {
+	if err := unmarshalResult(data, &items); err != nil {
 		return nil, err
 	}
 
 	return items, nil
 }
 
+func isNullResult(data json.RawMessage) bool {
+	return len(data) == 0 || string(data) == "null"
+}
+
 func unmarshalResult(data json.RawMessage, v any) error {
-	if data == nil || string(data) == "null" {
+	if isNullResult(data) {
 		return nil
 	}
 	return json.Unmarshal(data, v)
