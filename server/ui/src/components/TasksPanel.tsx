@@ -9,6 +9,7 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import type { ServerMessage, TaskEntry } from "../types/protocol";
 import { formatElapsed } from "../utils/tasks";
+import { useToast } from "./ui/Feedback";
 
 interface Props {
 	sessionId: string;
@@ -17,22 +18,27 @@ interface Props {
 }
 
 export function TasksPanel({ sessionId, subscribe, onOpenTask }: Props) {
+	const toast = useToast();
 	const [tasks, setTasks] = useState<TaskEntry[]>([]);
+	const [error, setError] = useState<string | null>(null);
 
 	const load = useCallback(async () => {
 		if (!sessionId) {
 			setTasks([]);
+			setError(null);
 			return;
 		}
 		try {
 			const res = await fetch(`/api/sessions/${sessionId}/tasks`);
 			if (!res.ok) {
-				setTasks([]);
-				return;
+				throw new Error(`Could not load agents (${res.status}).`);
 			}
 			setTasks(await res.json());
-		} catch {
-			setTasks([]);
+			setError(null);
+		} catch (loadError) {
+			setError(
+				loadError instanceof Error ? loadError.message : String(loadError),
+			);
 		}
 	}, [sessionId]);
 
@@ -65,15 +71,36 @@ export function TasksPanel({ sessionId, subscribe, onOpenTask }: Props) {
 	}, [anyRunning, load]);
 
 	const stop = async (id: string) => {
-		await fetch(`/api/sessions/${sessionId}/tasks/${id}/stop`, {
-			method: "POST",
-		});
-		load();
+		try {
+			const response = await fetch(
+				`/api/sessions/${sessionId}/tasks/${id}/stop`,
+				{ method: "POST" },
+			);
+			if (!response.ok) {
+				throw new Error(
+					(await response.text()).trim() ||
+						`Could not stop agent (${response.status}).`,
+				);
+			}
+			void load();
+		} catch (stopError) {
+			toast({
+				title: "Agent is still running",
+				description:
+					stopError instanceof Error ? stopError.message : String(stopError),
+				tone: "error",
+			});
+		}
 	};
 
 	return (
 		<div className="flex flex-col h-full overflow-hidden bg-bg">
 			<div className="overflow-y-auto flex-1">
+				{error && (
+					<div className="mx-2 mt-2 rounded bg-danger/5 px-2 py-1.5 text-[10px] text-danger/80">
+						{error}
+					</div>
+				)}
 				{tasks.length === 0 && (
 					<div className="px-3 py-6 text-[11px] text-fg-dim text-center">
 						No background agents in this session
@@ -82,28 +109,30 @@ export function TasksPanel({ sessionId, subscribe, onOpenTask }: Props) {
 				{tasks.map((t) => (
 					<div
 						key={t.id}
-						className="flex items-start gap-2 px-3 py-2 cursor-pointer text-[11px] text-fg-muted hover:bg-bg-hover hover:text-fg border-b border-border-subtle transition-colors"
-						onClick={() => onOpenTask?.(t)}
-						title={t.description}
+						className="group relative flex items-stretch border-b border-border-subtle text-[11px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg"
 					>
-						<TaskStatusIcon status={t.status} className="mt-0.5" />
-						<div className="min-w-0 flex-1">
-							<div className="truncate">{t.description}</div>
-							<div className="text-[10px] text-fg-dim font-mono truncate mt-0.5">
-								{t.agent_type} · {formatElapsed(t.elapsed_seconds)}
-								{t.status !== "running" && ` · ${t.status}`}
-								{t.status === "running" && t.activity && ` · ${t.activity}`}
+						<button
+							type="button"
+							className="flex min-w-0 flex-1 items-start gap-2 px-3 py-2 pr-9 text-left"
+							onClick={() => onOpenTask?.(t)}
+							title={t.description}
+						>
+							<TaskStatusIcon status={t.status} className="mt-0.5" />
+							<div className="min-w-0 flex-1">
+								<div className="truncate">{t.description}</div>
+								<div className="mt-0.5 truncate font-mono text-[11px] text-fg-dim">
+									{t.agent_type} · {formatElapsed(t.elapsed_seconds)}
+									{t.status !== "running" && ` · ${t.status}`}
+									{t.status === "running" && t.activity && ` · ${t.activity}`}
+								</div>
 							</div>
-						</div>
+						</button>
 						{t.status === "running" && (
 							<button
 								type="button"
-								className="shrink-0 w-4 h-4 flex items-center justify-center rounded text-fg-dim hover:text-danger transition-colors"
+								className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded text-fg-dim transition-colors hover:bg-bg-active hover:text-danger"
 								title="Stop agent"
-								onClick={(e) => {
-									e.stopPropagation();
-									stop(t.id);
-								}}
+								onClick={() => void stop(t.id)}
 							>
 								<Square size={9} />
 							</button>

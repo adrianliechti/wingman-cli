@@ -24,6 +24,7 @@ import type {
 	GitStatus,
 	ServerMessage,
 } from "../types/protocol";
+import { Dialog, dialogButtonClass } from "./ui/Feedback";
 
 interface Props {
 	sessionId: string;
@@ -62,6 +63,7 @@ export function DiffsPanel({
 	const [message, setMessage] = useState("");
 	const [error, setError] = useState("");
 	const [notice, setNotice] = useState("");
+	const [revertTarget, setRevertTarget] = useState<DiffEntry | null>(null);
 	const qs = sessionId ? `?session=${encodeURIComponent(sessionId)}` : "";
 
 	const load = useCallback(async () => {
@@ -140,17 +142,14 @@ export function DiffsPanel({
 		[load],
 	);
 
-	const handleRevert = async (diff: DiffEntry) => {
+	const requestRevert = (diff: DiffEntry) => {
 		setMenu(null);
-		const verb =
-			diff.status === "added"
-				? "Delete"
-				: diff.status === "deleted"
-					? "Restore"
-					: git
-						? "Discard unstaged changes to"
-						: "Revert changes to";
-		if (!confirm(`${verb} "${diff.path}"?`)) return;
+		setRevertTarget(diff);
+	};
+
+	const confirmRevert = async () => {
+		const diff = revertTarget;
+		if (!diff) return;
 		const params = new URLSearchParams({ path: diff.path });
 		if (sessionId) params.set("session", sessionId);
 		setBusy("revert");
@@ -160,6 +159,7 @@ export function DiffsPanel({
 			});
 			if (!res.ok) throw new Error(await responseError(res));
 			await load();
+			setRevertTarget(null);
 		} catch (e) {
 			setError(e instanceof Error ? e.message : String(e));
 		} finally {
@@ -169,21 +169,29 @@ export function DiffsPanel({
 
 	if (git) {
 		return (
-			<GitChanges
-				status={gitStatus}
-				loaded={loaded}
-				busy={busy}
-				message={message}
-				error={error}
-				notice={notice}
-				onMessage={setMessage}
-				onRequest={request}
-				onOpenDiff={onOpenDiff}
-				onCommit={async () => {
-					if (await request("commit", { message })) setMessage("");
-				}}
-				onRevert={(file) => void handleRevert(gitFileAsDiff(file))}
-			/>
+			<>
+				<GitChanges
+					status={gitStatus}
+					loaded={loaded}
+					busy={busy}
+					message={message}
+					error={error}
+					notice={notice}
+					onMessage={setMessage}
+					onRequest={request}
+					onOpenDiff={onOpenDiff}
+					onCommit={async () => {
+						if (await request("commit", { message })) setMessage("");
+					}}
+					onRevert={(file) => requestRevert(gitFileAsDiff(file))}
+				/>
+				<RevertDialog
+					diff={revertTarget}
+					git={git}
+					onClose={() => setRevertTarget(null)}
+					onConfirm={() => void confirmRevert()}
+				/>
+			</>
 		);
 	}
 
@@ -234,12 +242,63 @@ export function DiffsPanel({
 					<DiffMenuItem
 						icon={<RotateCcw size={12} />}
 						label="Revert"
-						onClick={() => void handleRevert(menu.diff)}
+						onClick={() => requestRevert(menu.diff)}
 						danger
 					/>
 				</div>
 			)}
+			<RevertDialog
+				diff={revertTarget}
+				git={git}
+				onClose={() => setRevertTarget(null)}
+				onConfirm={() => void confirmRevert()}
+			/>
 		</div>
+	);
+}
+
+function RevertDialog({
+	diff,
+	git,
+	onClose,
+	onConfirm,
+}: {
+	diff: DiffEntry | null;
+	git: boolean;
+	onClose: () => void;
+	onConfirm: () => void;
+}) {
+	const verb = diff
+		? diff.status === "added"
+			? "Delete"
+			: diff.status === "deleted"
+				? "Restore"
+				: git
+					? "Discard changes"
+					: "Revert changes"
+		: "Revert";
+	return (
+		<Dialog
+			open={diff !== null}
+			title={`${verb}?`}
+			description={
+				diff
+					? `This operation affects “${diff.path}” and cannot be undone in Wingman.`
+					: undefined
+			}
+			onClose={onClose}
+		>
+			<button type="button" className={dialogButtonClass} onClick={onClose}>
+				Cancel
+			</button>
+			<button
+				type="button"
+				className={`${dialogButtonClass} border-danger/40 text-danger hover:bg-danger/10`}
+				onClick={onConfirm}
+			>
+				{verb}
+			</button>
+		</Dialog>
 	);
 }
 
@@ -386,7 +445,9 @@ function GitChanges({
 						/>
 					</>
 				) : null}
-				{status.files.length === 0 && !error && <EmptyChanges loaded={loaded} />}
+				{status.files.length === 0 && !error && (
+					<EmptyChanges loaded={loaded} />
+				)}
 			</div>
 
 			{error && <InlineMessage kind="error" text={error} />}
@@ -827,31 +888,34 @@ function ChangeRow({
 	const dir = path.slice(0, path.length - fileName.length).replace(/\/$/, "");
 	return (
 		<div
-			className={`group flex h-[26px] items-center gap-2 px-3 text-[12px] text-fg-muted hover:bg-bg-hover hover:text-fg transition-colors ${disabled ? "pointer-events-none opacity-50" : "cursor-pointer"}`}
-			onClick={onClick}
+			className={`group relative flex h-8 items-stretch text-[12px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg ${disabled ? "pointer-events-none opacity-50" : ""}`}
 			onContextMenu={onContextMenu}
-			title={path}
 		>
-			<span
-				className={`text-[10.5px] font-bold w-3 text-center shrink-0 ${statusColor(status, conflict)}`}
+			<button
+				type="button"
+				disabled={disabled}
+				onClick={onClick}
+				title={path}
+				className="flex min-w-0 flex-1 items-center gap-2 px-3 pr-8 text-left"
 			>
-				{status}
-			</span>
-			<span className="truncate font-mono text-[11.5px]">{fileName}</span>
-			{dir && (
-				<span className="text-fg-dim truncate font-mono text-[10.5px] ml-auto group-hover:hidden">
-					{dir}
+				<span
+					className={`w-3 shrink-0 text-center text-[11px] font-bold ${statusColor(status, conflict)}`}
+				>
+					{status}
 				</span>
-			)}
+				<span className="truncate font-mono text-[12px]">{fileName}</span>
+				{dir && (
+					<span className="ml-auto truncate font-mono text-[11px] text-fg-dim group-hover:hidden">
+						{dir}
+					</span>
+				)}
+			</button>
 			{action && (
 				<button
 					type="button"
 					title={actionLabel}
-					className="hidden group-hover:flex ml-auto w-5 h-5 items-center justify-center rounded text-fg-dim hover:text-fg hover:bg-bg-active"
-					onClick={(e) => {
-						e.stopPropagation();
-						onAction?.();
-					}}
+					className="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded text-fg-dim opacity-0 hover:bg-bg-active hover:text-fg group-hover:opacity-100 group-focus-within:opacity-100"
+					onClick={() => onAction?.()}
 				>
 					{action}
 				</button>
@@ -891,8 +955,9 @@ function SyncButton({
 
 function EmptyChanges({ loaded }: { loaded: boolean }) {
 	return (
-		<div className="px-3 py-7 text-[11px] text-fg-dim text-center">
-			{loaded ? "Working tree clean" : "Loading…"}
+		<div className="flex min-h-12 items-center justify-center gap-1.5 px-3 text-center text-[11px] text-fg-dim">
+			{!loaded && <Loader2 size={11} className="animate-spin" />}
+			<span>{loaded ? "Working tree clean" : "Loading…"}</span>
 		</div>
 	);
 }
@@ -967,7 +1032,7 @@ function DiffMenuItem({
 	return (
 		<button
 			type="button"
-			className={`w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-bg-hover ${danger ? "text-red-400" : "text-fg-muted hover:text-fg"}`}
+			className={`w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-bg-hover ${danger ? "text-danger" : "text-fg-muted hover:text-fg"}`}
 			onClick={onClick}
 		>
 			<span className="w-3.5 flex items-center justify-center shrink-0">

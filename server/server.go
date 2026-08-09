@@ -354,6 +354,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Get("/", s.handleTerminals)
 			r.Post("/", s.handleNewTerminal)
 			r.Get("/shells", s.handleTerminalShells)
+			r.Get("/{id}", s.handleTerminal)
 			r.Delete("/{id}", s.handleDeleteTerminal)
 			r.HandleFunc("/{id}/ws", s.handleTerminalWebSocket)
 		})

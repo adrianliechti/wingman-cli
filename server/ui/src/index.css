@@ -14,8 +14,8 @@
 	--color-bg-input: #181818;
 
 	--color-fg: #e6e6e6;
-	--color-fg-muted: #a3a3a3;
-	--color-fg-dim: #737373;
+	--color-fg-muted: #b3b3b3;
+	--color-fg-dim: #8b8b8b;
 
 	--color-border: #2a2a2a;
 	--color-border-subtle: #1f1f1f;
@@ -31,6 +31,7 @@
 	--color-info: #60a5fa;
 	--color-orange: #fb923c;
 	--color-purple: #a78bfa;
+	--color-focus: #a3a3a3;
 
 	--font-sans:
 		-apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Helvetica,
@@ -38,6 +39,9 @@
 	--font-mono:
 		"SF Mono", "JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace;
 }
+
+/* Overlay layers: menus 100, drawers 120, command UI 130, blocking state 140,
+   dialogs 150, and toasts 200. Keep modal surfaces above transient menus. */
 
 /* Streamdown's components use shadcn-style tokens (bg-background, bg-muted,
    text-muted-foreground, …). Alias them to the app palette so its built-in
@@ -54,6 +58,7 @@
 }
 
 :root {
+	color-scheme: dark;
 	--color-scrollbar-thumb: rgba(255, 255, 255, 0.08);
 	--color-scrollbar-thumb-hover: rgba(255, 255, 255, 0.15);
 	--color-selection: rgba(255, 255, 255, 0.15);
@@ -65,38 +70,38 @@
 	background-color: transparent;
 }
 
-@media (prefers-color-scheme: light) {
-	:root {
-		--color-bg: #ffffff;
-		--color-bg-surface: #f5f5f5;
-		--color-bg-elevated: #ececec;
-		--color-bg-hover: #e8e8e8;
-		--color-bg-active: #dcdcdc;
-		--color-bg-input: #fafafa;
+:root[data-theme="light"] {
+	color-scheme: light;
+	--color-bg: #ffffff;
+	--color-bg-surface: #f5f5f5;
+	--color-bg-elevated: #ececec;
+	--color-bg-hover: #e8e8e8;
+	--color-bg-active: #dcdcdc;
+	--color-bg-input: #fafafa;
 
-		--color-fg: #171717;
-		--color-fg-muted: #525252;
-		--color-fg-dim: #737373;
+	--color-fg: #171717;
+	--color-fg-muted: #4f4f4f;
+	--color-fg-dim: #666666;
 
-		--color-border: #d4d4d4;
-		--color-border-subtle: #e5e5e5;
-		--color-border-strong: #a3a3a3;
+	--color-border: #d4d4d4;
+	--color-border-subtle: #e5e5e5;
+	--color-border-strong: #a3a3a3;
 
-		--color-accent: #525252;
-		--color-accent-hover: #171717;
-		--color-accent-muted: #c4c4c4;
+	--color-accent: #525252;
+	--color-accent-hover: #171717;
+	--color-accent-muted: #c4c4c4;
 
-		--color-success: #059669;
-		--color-danger: #dc2626;
-		--color-warning: #d97706;
-		--color-info: #2563eb;
-		--color-orange: #ea580c;
-		--color-purple: #7c3aed;
+	--color-success: #059669;
+	--color-danger: #dc2626;
+	--color-warning: #d97706;
+	--color-info: #2563eb;
+	--color-orange: #ea580c;
+	--color-purple: #7c3aed;
+	--color-focus: #525252;
 
-		--color-scrollbar-thumb: rgba(0, 0, 0, 0.15);
-		--color-scrollbar-thumb-hover: rgba(0, 0, 0, 0.28);
-		--color-selection: rgba(0, 0, 0, 0.15);
-	}
+	--color-scrollbar-thumb: rgba(0, 0, 0, 0.15);
+	--color-scrollbar-thumb-hover: rgba(0, 0, 0, 0.28);
+	--color-selection: rgba(0, 0, 0, 0.15);
 }
 
 html,
@@ -117,7 +122,64 @@ body {
 	user-select: none;
 }
 
+button,
+[role="button"],
+[role="tab"],
+[role="treeitem"],
+input,
+textarea,
+select,
+[tabindex] {
+	outline: none;
+}
+
+:where(
+		button,
+		a[href],
+		[role="button"],
+		[role="tab"],
+		[role="treeitem"],
+		[role="menuitem"],
+		[role="menuitemradio"],
+		[role="option"],
+		[role="slider"],
+		[tabindex]
+	):not(input):not(textarea):not(select):focus-visible {
+	outline: 2px solid var(--color-focus);
+	outline-offset: -2px;
+}
+
+/* The entire rounded composer is the input affordance. Its textarea remains
+   visually transparent while focus is shown on the outer surface only. */
+[data-chat-composer] {
+	background: var(--color-bg-input);
+	border: 1px solid var(--color-border-subtle);
+	transition:
+		background-color 120ms ease,
+		border-color 120ms ease;
+}
+[data-chat-composer]:hover {
+	border-color: var(--color-border);
+}
+[data-chat-composer]:focus-within {
+	border-color: var(--color-border-strong);
+}
+
+.chat-composer-textarea,
+.chat-composer-textarea:hover,
+.chat-composer-textarea:focus,
+.chat-composer-textarea:focus-visible,
+.chat-composer-textarea:active {
+	border: 0;
+	outline: 0;
+	box-shadow: none;
+}
+
 /* Minimal scrollbars */
+* {
+	scrollbar-color: var(--color-scrollbar-thumb) transparent;
+	scrollbar-width: thin;
+}
 ::-webkit-scrollbar {
 	width: 6px;
 	height: 6px;
@@ -134,8 +196,29 @@ body {
 	background: transparent;
 }
 
+/* A desktop tab strip scrolls as tabs accumulate, but should not grow a
+   scrollbar inside the 40px title bar. The active tab is kept in view by App. */
+.tab-strip {
+	scrollbar-width: none;
+	overscroll-behavior-inline: contain;
+}
+.tab-strip::-webkit-scrollbar {
+	display: none;
+}
+
 ::selection {
 	background: var(--color-selection);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		scroll-behavior: auto !important;
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+	}
 }
 
 /* Markdown lists: custom markers instead of native list-style so bullets and

@@ -5,8 +5,8 @@ import { memo } from "react";
 import { type BundledTheme, Streamdown } from "streamdown";
 import "katex/dist/katex.min.css";
 
-// Light/dark Shiki themes; Streamdown swaps them with the dark variant, which
-// follows prefers-color-scheme — matching the app's theme switching.
+// Streamdown selects the dark Shiki tokens from the root `.dark` class, which
+// the system color-scheme listener keeps aligned with the OS preference.
 const SHIKI_THEME: [BundledTheme, BundledTheme] = [
 	"github-light",
 	"github-dark",

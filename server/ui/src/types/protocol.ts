@@ -386,6 +386,7 @@ export interface TerminalEntry {
 	shell: string;
 	cols: number;
 	rows: number;
+	busy: boolean;
 }
 
 export interface ShellEntry {

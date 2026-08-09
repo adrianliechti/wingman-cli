@@ -73,6 +73,18 @@ func TestTerminalAPI(t *testing.T) {
 		}
 	}
 
+	input, _ = json.Marshal(terminalMessage{Type: "input", Data: "sleep 30\r"})
+	if err := conn.Write(dialCtx, websocket.MessageText, input); err != nil {
+		t.Fatal(err)
+	}
+	busyDeadline := time.Now().Add(5 * time.Second)
+	for !getTerminal(t, web.URL, created.ID).Busy {
+		if time.Now().After(busyDeadline) {
+			t.Fatal("terminal never reported its foreground process")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
 	req, err := http.NewRequest(http.MethodDelete, web.URL+"/api/terminals/"+created.ID, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -89,6 +101,23 @@ func TestTerminalAPI(t *testing.T) {
 	if got := listTerminals(t, web.URL); len(got) != 0 {
 		t.Fatalf("terminals after delete = %+v, want none", got)
 	}
+}
+
+func getTerminal(t *testing.T, base, id string) TerminalEntry {
+	t.Helper()
+	res, err := http.Get(base + "/api/terminals/" + id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("terminal status = %d", res.StatusCode)
+	}
+	var out TerminalEntry
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func listTerminals(t *testing.T, base string) []TerminalEntry {

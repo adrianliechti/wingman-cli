@@ -1,24 +1,26 @@
 import Editor, { type OnMount } from "@monaco-editor/react";
-import { FileDigit } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { AlertTriangle, FileDigit, Loader2 } from "lucide-react";
+import { useCallback, useEffect, useRef } from "react";
 import { useColorScheme } from "../hooks/useColorScheme";
+import type { OpenDocument, SaveResult } from "../hooks/useOpenDocuments";
 import {
 	createMonacoLSPBridge,
 	type MonacoLSPBridge,
 	revealEditorPosition,
 } from "../monacoLsp";
 import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
-import type { FileContent, ServerMessage } from "../types/protocol";
+import type { ServerMessage } from "../types/protocol";
 
 interface Props {
-	path: string;
+	document: OpenDocument;
 	line?: number;
 	column?: number;
 	navigationKey?: number;
-	external?: boolean;
-	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
-	onDeleted?: () => void;
-	onDirtyChange?: (dirty: boolean) => void;
+	subscribe?: (handler: (message: ServerMessage) => void) => () => void;
+	onChange: (value: string) => void;
+	onSave: () => Promise<SaveResult>;
+	onReload: () => void;
+	onKeepVersion: () => void;
 	onOpenFile?: (
 		path: string,
 		line: number,
@@ -29,60 +31,31 @@ interface Props {
 }
 
 export function FileTab({
-	path,
+	document,
 	line,
 	column,
 	navigationKey,
-	external = false,
 	subscribe,
-	onDeleted,
-	onDirtyChange,
+	onChange,
+	onSave,
+	onReload,
+	onKeepVersion,
 	onOpenFile,
 	view = "code",
 }: Props) {
-	const [file, setFile] = useState<FileContent | null>(null);
-	const [loading, setLoading] = useState(true);
-	const [value, setValue] = useState("");
-	const [previewRevision, setPreviewRevision] = useState(0);
 	const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
 	const lspBridgeRef = useRef<MonacoLSPBridge | null>(null);
-	const loadControllerRef = useRef<AbortController | null>(null);
-	const diagnosticsEventTimerRef = useRef<number | null>(null);
-	const savingRef = useRef(false);
-	const scheme = useColorScheme();
-
-	const onDeletedRef = useRef(onDeleted);
-	useEffect(() => {
-		onDeletedRef.current = onDeleted;
-	});
-
-	const dirty = file !== null && !file.binary && value !== (file.content ?? "");
-	const dirtyRef = useRef(dirty);
-	const valueRef = useRef(value);
-	const fileRef = useRef(file);
-	useEffect(() => {
-		dirtyRef.current = dirty;
-		valueRef.current = value;
-		fileRef.current = file;
-	});
-
-	const onDirtyChangeRef = useRef(onDirtyChange);
-	useEffect(() => {
-		onDirtyChangeRef.current = onDirtyChange;
-	});
-
-	useEffect(() => {
-		onDirtyChangeRef.current?.(dirty);
-	}, [dirty]);
-
-	useEffect(() => {
-		return () => onDirtyChangeRef.current?.(false);
-	}, []);
-
+	const diagnosticsTimerRef = useRef<number | null>(null);
+	const documentRef = useRef(document);
 	const onOpenFileRef = useRef(onOpenFile);
-	useEffect(() => {
-		onOpenFileRef.current = onOpenFile;
-	});
+	const onSaveRef = useRef(onSave);
+	const scheme = useColorScheme();
+	documentRef.current = document;
+	onOpenFileRef.current = onOpenFile;
+	onSaveRef.current = onSave;
+
+	const dirty = document.draft !== document.savedContent;
+	const file = document.file;
 
 	useEffect(() => {
 		const editor = editorRef.current;
@@ -92,9 +65,8 @@ export function FileTab({
 
 	useEffect(() => {
 		return () => {
-			loadControllerRef.current?.abort();
-			if (diagnosticsEventTimerRef.current !== null) {
-				window.clearTimeout(diagnosticsEventTimerRef.current);
+			if (diagnosticsTimerRef.current !== null) {
+				window.clearTimeout(diagnosticsTimerRef.current);
 			}
 			lspBridgeRef.current?.dispose();
 			lspBridgeRef.current = null;
@@ -113,207 +85,151 @@ export function FileTab({
 			dirty ? 600 : 0,
 		);
 		return () => window.clearTimeout(timer);
-	}, [file, value, dirty, loadDiagnostics]);
-
-	const load = useCallback(async () => {
-		loadControllerRef.current?.abort();
-		const controller = new AbortController();
-		loadControllerRef.current = controller;
-		try {
-			const res = await fetch(
-				`${external ? "/api/lsp/file" : "/api/files/read"}?path=${encodeURIComponent(path)}`,
-				{ signal: controller.signal },
-			);
-			if (controller.signal.aborted) return;
-			if (res.status === 404) {
-				onDeletedRef.current?.();
-				return;
-			}
-			if (!res.ok) {
-				setLoading(false);
-				return;
-			}
-			const data: FileContent = await res.json();
-			if (fileRef.current && dirtyRef.current) return;
-			setFile(data);
-			setValue(data.content ?? "");
-			setLoading(false);
-		} catch (error) {
-			if (
-				loadControllerRef.current === controller &&
-				!(error instanceof DOMException && error.name === "AbortError")
-			) {
-				setLoading(false);
-			}
-		} finally {
-			if (loadControllerRef.current === controller) {
-				loadControllerRef.current = null;
-			}
-		}
-	}, [path, external]);
-
-	useEffect(() => {
-		setLoading(true);
-		load();
-	}, [load]);
+	}, [dirty, document.draft, file, loadDiagnostics]);
 
 	useEffect(() => {
 		if (!subscribe) return;
-		const unsubscribe = subscribe((msg) => {
-			if (msg.type === "files_changed") {
-				setPreviewRevision((revision) => revision + 1);
-				if (dirtyRef.current) return;
-				load();
-			} else if (msg.type === "diagnostics_changed") {
-				if (diagnosticsEventTimerRef.current !== null) {
-					window.clearTimeout(diagnosticsEventTimerRef.current);
-				}
-				diagnosticsEventTimerRef.current = window.setTimeout(() => {
-					diagnosticsEventTimerRef.current = null;
-					void loadDiagnostics();
-				}, 200);
+		return subscribe((message) => {
+			if (message.type !== "diagnostics_changed") return;
+			if (diagnosticsTimerRef.current !== null) {
+				window.clearTimeout(diagnosticsTimerRef.current);
 			}
+			diagnosticsTimerRef.current = window.setTimeout(() => {
+				diagnosticsTimerRef.current = null;
+				void loadDiagnostics();
+			}, 200);
 		});
-		return () => {
-			unsubscribe();
-			if (diagnosticsEventTimerRef.current !== null) {
-				window.clearTimeout(diagnosticsEventTimerRef.current);
-				diagnosticsEventTimerRef.current = null;
-			}
-		};
-	}, [subscribe, load, loadDiagnostics]);
+	}, [loadDiagnostics, subscribe]);
 
-	const save = useCallback(async () => {
-		const f = fileRef.current;
-		if (!f || f.binary || savingRef.current) return;
-		const content = valueRef.current;
-		if (content === (f.content ?? "")) return;
-		savingRef.current = true;
-		try {
-			const res = await fetch("/api/files/write", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ path: f.path, content }),
-			});
-			if (res.ok) {
-				setFile({ ...f, content });
-			}
-		} catch {
-		} finally {
-			savingRef.current = false;
-		}
-	}, []);
-
-	if (loading) {
+	if (document.loading && !file) {
 		return (
-			<div className="flex items-center justify-center h-full text-fg-dim text-[12px]">
-				Loading…
+			<div className="flex h-full items-center justify-center text-fg-dim">
+				<Loader2 size={15} className="animate-spin" aria-label="Loading file" />
 			</div>
 		);
 	}
 
 	if (!file) {
 		return (
-			<div className="flex items-center justify-center h-full text-fg-dim text-[12px]">
-				Failed to load file
+			<div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+				<div className="max-w-md text-[12px] text-danger">
+					{document.error || "Failed to load file."}
+				</div>
+				<button
+					type="button"
+					onClick={onReload}
+					className="h-8 rounded-md border border-border px-3 text-[12px] text-fg-muted hover:bg-bg-hover hover:text-fg"
+				>
+					Retry
+				</button>
 			</div>
 		);
 	}
 
-	if (file.binary) {
-		return <BinaryPreview file={file} />;
-	}
+	if (file.binary) return <BinaryPreview file={file} />;
 
 	const isHtml = file.language === "html" || /\.html?$/i.test(file.path);
 	const previewSrc = `/api/files/preview?path=${encodeURIComponent(file.path)}`;
 	return (
-		<div className="h-full min-h-0">
-			{isHtml && view === "preview" ? (
-				<iframe
-					key={previewRevision}
-					src={previewSrc}
-					title={`Preview of ${file.path}`}
-					sandbox="allow-scripts allow-same-origin"
-					referrerPolicy="no-referrer"
-					className="h-full w-full border-0 bg-bg"
-					style={{ colorScheme: scheme }}
-				/>
-			) : (
-				<Editor
-					height="100%"
-					path={`/${file.path}`}
-					language={file.language || undefined}
-					value={value}
-					theme={wingmanThemeName(scheme)}
-					beforeMount={(monaco) => {
-						defineWingmanThemes(monaco);
-					}}
-					onMount={(editor, monaco) => {
-						editorRef.current = editor;
-						lspBridgeRef.current?.dispose();
-						if (!external) {
-							lspBridgeRef.current = createMonacoLSPBridge({
-								monaco,
-								editor,
-								file,
-								getDirtyContent: () =>
-									dirtyRef.current ? valueRef.current : undefined,
-								onOpenFile: (
-									targetPath,
-									targetLine,
-									targetColumn,
-									targetExternal,
-								) =>
-									onOpenFileRef.current?.(
-										targetPath,
-										targetLine,
-										targetColumn,
-										targetExternal,
-									),
-							});
-							void loadDiagnostics();
-							editor.addCommand(
-								monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
-								() => {
-									void save();
-								},
-							);
-						}
-						revealEditorPosition(editor, line, column);
-					}}
-					onChange={(v) => {
-						loadControllerRef.current?.abort();
-						const nextValue = v ?? "";
-						valueRef.current = nextValue;
-						const currentFile = fileRef.current;
-						dirtyRef.current =
-							currentFile !== null &&
-							!currentFile.binary &&
-							nextValue !== (currentFile.content ?? "");
-						setValue(nextValue);
-					}}
-					options={{
-						minimap: { enabled: false },
-						fontSize: 12,
-						lineNumbers: "on",
-						scrollBeyondLastLine: false,
-						wordWrap: "on",
-						renderWhitespace: "none",
-						padding: { top: 8 },
-						readOnly: external,
-					}}
-				/>
+		<div className="flex h-full min-h-0 flex-col">
+			{document.conflict && (
+				<div className="flex shrink-0 items-center gap-2 border-b border-warning/30 bg-warning/5 px-3 py-2 text-[11px] text-warning">
+					<AlertTriangle size={13} className="shrink-0" />
+					<span className="min-w-0 flex-1">
+						This file changed on disk while you had unsaved edits.
+					</span>
+					<button
+						type="button"
+						onClick={onReload}
+						className="rounded px-2 py-1 hover:bg-warning/10"
+					>
+						Reload from disk
+					</button>
+					<button
+						type="button"
+						onClick={onKeepVersion}
+						className="rounded px-2 py-1 hover:bg-warning/10"
+					>
+						Keep my version
+					</button>
+				</div>
 			)}
+			{document.saveError && (
+				<div className="shrink-0 border-b border-danger/30 bg-danger/5 px-3 py-2 text-[11px] text-danger">
+					{document.saveError}
+				</div>
+			)}
+			<div className="min-h-0 flex-1">
+				{isHtml && view === "preview" ? (
+					<iframe
+						key={document.revision}
+						src={previewSrc}
+						title={`Preview of ${file.path}`}
+						sandbox="allow-scripts allow-same-origin"
+						referrerPolicy="no-referrer"
+						className="h-full w-full border-0 bg-bg"
+						style={{ colorScheme: scheme }}
+					/>
+				) : (
+					<Editor
+						height="100%"
+						path={`/${file.path}`}
+						language={file.language || undefined}
+						value={document.draft}
+						theme={wingmanThemeName(scheme)}
+						beforeMount={defineWingmanThemes}
+						onMount={(editor, monaco) => {
+							editorRef.current = editor;
+							lspBridgeRef.current?.dispose();
+							if (!document.external) {
+								lspBridgeRef.current = createMonacoLSPBridge({
+									monaco,
+									editor,
+									file,
+									getDirtyContent: () => {
+										const current = documentRef.current;
+										return current.draft !== current.savedContent
+											? current.draft
+											: undefined;
+									},
+									onOpenFile: (path, row, col, external) =>
+										onOpenFileRef.current?.(path, row, col, external),
+								});
+								void loadDiagnostics();
+								editor.addCommand(
+									monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
+									() => void onSaveRef.current(),
+								);
+							}
+							revealEditorPosition(editor, line, column);
+						}}
+						onChange={(value) => onChange(value ?? "")}
+						options={{
+							minimap: { enabled: false },
+							fontSize: 12,
+							lineNumbers: "on",
+							scrollBeyondLastLine: false,
+							wordWrap: "on",
+							renderWhitespace: "none",
+							padding: { top: 8 },
+							readOnly: document.external,
+						}}
+					/>
+				)}
+			</div>
 		</div>
 	);
 }
 
-function BinaryPreview({ file }: { file: FileContent }) {
+function BinaryPreview({
+	file,
+}: {
+	file: import("../types/protocol").FileContent;
+}) {
 	const mime = file.mime ?? "application/octet-stream";
 	const src = `/api/files/download?path=${encodeURIComponent(file.path)}`;
-
 	return (
-		<div className="h-full w-full bg-bg overflow-auto">
+		<div className="h-full w-full overflow-auto bg-bg">
 			<PreviewBody mime={mime} src={src} />
 		</div>
 	);
@@ -322,18 +238,18 @@ function BinaryPreview({ file }: { file: FileContent }) {
 function PreviewBody({ mime, src }: { mime: string; src: string }) {
 	if (mime.startsWith("image/")) {
 		return (
-			<div className="h-full w-full flex items-center justify-center p-6">
+			<div className="flex h-full w-full items-center justify-center p-6">
 				<img
 					src={src}
 					alt=""
-					className="max-h-full max-w-full object-contain [image-rendering:auto]"
+					className="max-h-full max-w-full object-contain"
 				/>
 			</div>
 		);
 	}
 	if (mime.startsWith("video/")) {
 		return (
-			<div className="h-full w-full flex items-center justify-center p-6 bg-black/40">
+			<div className="flex h-full w-full items-center justify-center bg-black/40 p-6">
 				<video src={src} controls className="max-h-full max-w-full">
 					<track kind="captions" />
 				</video>
@@ -342,7 +258,7 @@ function PreviewBody({ mime, src }: { mime: string; src: string }) {
 	}
 	if (mime.startsWith("audio/")) {
 		return (
-			<div className="h-full w-full flex items-center justify-center p-6">
+			<div className="flex h-full w-full items-center justify-center p-6">
 				<audio src={src} controls className="w-full max-w-xl">
 					<track kind="captions" />
 				</audio>
@@ -354,7 +270,7 @@ function PreviewBody({ mime, src }: { mime: string; src: string }) {
 			<object
 				data={src}
 				type="application/pdf"
-				className="w-full h-full"
+				className="h-full w-full"
 				aria-label="PDF preview"
 			>
 				<UnknownBinary />
@@ -366,9 +282,9 @@ function PreviewBody({ mime, src }: { mime: string; src: string }) {
 
 function UnknownBinary() {
 	return (
-		<div className="h-full w-full flex flex-col items-center justify-center gap-3 p-6 text-center">
+		<div className="flex h-full w-full flex-col items-center justify-center gap-3 p-6 text-center">
 			<FileDigit size={36} className="text-fg-dim/60" strokeWidth={1.25} />
-			<div className="text-fg-dim text-[12px] font-mono">
+			<div className="font-mono text-[12px] text-fg-dim">
 				Binary file — no inline preview
 			</div>
 		</div>

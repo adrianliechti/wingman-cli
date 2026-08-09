@@ -1,6 +1,7 @@
 import { Brain } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ServerMessage } from "../types/protocol";
+import { useToast } from "./ui/Feedback";
 
 interface ModelInfo {
 	id: string;
@@ -13,6 +14,7 @@ interface Props {
 }
 
 export function ModelPicker({ sessionId, subscribe }: Props) {
+	const toast = useToast();
 	const [model, setModel] = useState("");
 	const [models, setModels] = useState<ModelInfo[]>([]);
 	const [effort, setEffort] = useState("auto");
@@ -83,11 +85,20 @@ export function ModelPicker({ sessionId, subscribe }: Props) {
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ model: id }),
 			})
-				.then((r) => r.json())
+				.then(async (r) => {
+					if (!r.ok) throw new Error(await r.text());
+					return r.json();
+				})
 				.then((data) => setModel(data.model || id))
-				.catch(() => {});
+				.catch((error) =>
+					toast({
+						title: "Could not change model",
+						description: String(error),
+						tone: "error",
+					}),
+				);
 		},
-		[apiBase],
+		[apiBase, toast],
 	);
 
 	const selectEffort = useCallback(
@@ -97,11 +108,20 @@ export function ModelPicker({ sessionId, subscribe }: Props) {
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ effort: value }),
 			})
-				.then((r) => r.json())
+				.then(async (r) => {
+					if (!r.ok) throw new Error(await r.text());
+					return r.json();
+				})
 				.then((data) => applyEffort(data.effort))
-				.catch(() => {});
+				.catch((error) =>
+					toast({
+						title: "Could not change effort",
+						description: String(error),
+						tone: "error",
+					}),
+				);
 		},
-		[applyEffort, apiBase],
+		[applyEffort, apiBase, toast],
 	);
 
 	useEffect(() => {
@@ -209,6 +229,8 @@ export function ModelPicker({ sessionId, subscribe }: Props) {
 				onClick={toggle}
 				className="flex items-center gap-1 px-2 h-7 rounded text-[11.5px] text-fg-muted hover:text-fg hover:bg-bg-hover cursor-pointer transition-colors max-w-[260px]"
 				title={`${model} · ${effort}`}
+				aria-haspopup="dialog"
+				aria-expanded={open}
 			>
 				<Brain size={12} className="shrink-0" />
 				<span className="truncate">{currentName}</span>
@@ -222,15 +244,23 @@ export function ModelPicker({ sessionId, subscribe }: Props) {
 			{open && (
 				<div
 					ref={popRef}
+					role="dialog"
+					aria-label="Model and reasoning effort"
 					className="absolute bottom-full mb-1 left-0 min-w-[240px] max-w-[360px] bg-bg-elevated/95 backdrop-blur-sm border border-border rounded-md shadow-xl z-50"
 				>
-					<div className="py-1 max-h-[260px] overflow-y-auto">
+					<div
+						className="py-1 max-h-[260px] overflow-y-auto"
+						role="listbox"
+						aria-label="Model"
+					>
 						{models.length === 0 ? (
 							<div className="px-3 py-2 text-[12px] text-fg-dim">Loading…</div>
 						) : (
 							models.map((m) => (
 								<button
 									type="button"
+									role="option"
+									aria-selected={m.id === model}
 									key={m.id}
 									className={`block w-full text-left px-3 py-1.5 text-[12px] cursor-pointer whitespace-nowrap transition-colors ${
 										m.id === model

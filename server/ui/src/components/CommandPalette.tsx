@@ -1,5 +1,6 @@
 import { Brain, File, MessageSquare, Sparkles } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useToast } from "./ui/Feedback";
 
 export interface PaletteAction {
 	id: string;
@@ -57,6 +58,8 @@ export function CommandPalette({
 	onSelectSession,
 	onOpenFile,
 }: Props) {
+	const toast = useToast();
+	const listId = useId();
 	const [query, setQuery] = useState("");
 	const [skills, setSkills] = useState<PaletteSkill[]>([]);
 	const [sessionList, setSessionList] = useState<SessionEntry[]>([]);
@@ -138,11 +141,21 @@ export function CommandPalette({
 				label: `Switch to ${m.name}`,
 				icon: <Brain size={12} className="text-fg-dim shrink-0" />,
 				run: () => {
-					fetch(`${apiBase}/model`, {
+					void fetch(`${apiBase}/model`, {
 						method: "POST",
 						headers: { "Content-Type": "application/json" },
 						body: JSON.stringify({ model: m.id }),
-					}).catch(() => {});
+					})
+						.then(async (response) => {
+							if (!response.ok) throw new Error(await response.text());
+						})
+						.catch((error) => {
+							toast({
+								title: "Could not change model",
+								description: String(error),
+								tone: "error",
+							});
+						});
 				},
 			});
 		}
@@ -190,6 +203,7 @@ export function CommandPalette({
 		onRunSkill,
 		onSelectSession,
 		onOpenFile,
+		toast,
 	]);
 
 	const [prevQuery, setPrevQuery] = useState(query);
@@ -233,8 +247,11 @@ export function CommandPalette({
 
 	return (
 		<div
-			className="absolute inset-0 z-40 flex items-start justify-center bg-bg/40 backdrop-blur-[1px]"
+			className="absolute inset-0 z-130 flex items-start justify-center bg-bg/40 backdrop-blur-[1px]"
 			onMouseDown={onClose}
+			role="dialog"
+			aria-modal="true"
+			aria-label="Command palette"
 		>
 			<div
 				className="mt-[12vh] w-[560px] max-w-[90vw] bg-bg-elevated/95 backdrop-blur-sm border border-border rounded-lg shadow-2xl overflow-hidden"
@@ -248,10 +265,23 @@ export function CommandPalette({
 						onChange={(e) => setQuery(e.target.value)}
 						onKeyDown={onKeyDown}
 						placeholder="Type a command, session, skill or file…"
+						role="combobox"
+						aria-label="Search commands"
+						aria-expanded="true"
+						aria-controls={listId}
+						aria-activedescendant={
+							items[clamped] ? `${listId}-${clamped}` : undefined
+						}
+						aria-autocomplete="list"
 						className="w-full bg-transparent text-fg text-[13px] outline-none placeholder:text-fg-dim"
 					/>
 				</div>
-				<div ref={listRef} className="max-h-[45vh] overflow-y-auto py-1">
+				<div
+					ref={listRef}
+					id={listId}
+					role="listbox"
+					className="max-h-[45vh] overflow-y-auto py-1"
+				>
 					{items.length === 0 ? (
 						<div className="px-3 py-6 text-[11px] text-fg-dim text-center">
 							No matches
@@ -272,6 +302,9 @@ export function CommandPalette({
 									<button
 										type="button"
 										data-idx={i}
+										id={`${listId}-${i}`}
+										role="option"
+										aria-selected={isActive}
 										onClick={() => runItem(item)}
 										onMouseEnter={() => setActive(i)}
 										className={`w-full flex items-center gap-2 px-3 py-1.5 text-left cursor-pointer transition-colors ${

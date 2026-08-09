@@ -16,6 +16,7 @@ type TerminalEntry struct {
 	Shell string `json:"shell"`
 	Cols  int    `json:"cols"`
 	Rows  int    `json:"rows"`
+	Busy  bool   `json:"busy"`
 }
 
 type terminalMessage struct {
@@ -33,6 +34,7 @@ func terminalEntry(s *terminal.Session) TerminalEntry {
 		Shell: s.Shell(),
 		Cols:  cols,
 		Rows:  rows,
+		Busy:  s.HasForegroundProcess(),
 	}
 }
 
@@ -51,6 +53,15 @@ func (s *Server) handleTerminalShells(w http.ResponseWriter, _ *http.Request) {
 		shells = []terminal.Shell{}
 	}
 	writeJSON(w, shells)
+}
+
+func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
+	t := s.terminals.Get(r.PathValue("id"))
+	if t == nil {
+		http.Error(w, "terminal not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, terminalEntry(t))
 }
 
 func (s *Server) handleNewTerminal(w http.ResponseWriter, r *http.Request) {

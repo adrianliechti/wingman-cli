@@ -10,6 +10,7 @@ import { createRoot } from "react-dom/client";
 import "./devicon-slim.css";
 import "./index.css";
 import App from "./App.tsx";
+import { ToastProvider } from "./components/ui/Feedback.tsx";
 
 // monaco-editor declares MonacoEnvironment inside its own module, so the name
 // never reaches the global scope we assign it on.
@@ -35,6 +36,8 @@ loader.config({ monaco });
 
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>
-		<App />
+		<ToastProvider>
+			<App />
+		</ToastProvider>
 	</StrictMode>,
 );

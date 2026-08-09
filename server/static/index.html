@@ -4,26 +4,30 @@
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<link
+			data-wingman-favicon
 			rel="icon"
 			type="image/svg+xml"
 			href="/icon_dark.svg"
-			media="(prefers-color-scheme: dark)"
 		/>
-		<link
-			rel="icon"
-			type="image/svg+xml"
-			href="/icon_light.svg"
-			media="(prefers-color-scheme: light)"
-		/>
+		<script>
+			(() => {
+				const theme = matchMedia("(prefers-color-scheme: light)").matches
+					? "light"
+					: "dark";
+				document.documentElement.dataset.theme = theme;
+				document.documentElement.style.colorScheme = theme;
+				document.documentElement.classList.toggle("dark", theme === "dark");
+				document.querySelector("[data-wingman-favicon]").href =
+					theme === "dark" ? "/icon_dark.svg" : "/icon_light.svg";
+			})();
+		</script>
 		<style>
 			html {
 				color-scheme: light dark;
 				background-color: #0a0a0a;
 			}
-			@media (prefers-color-scheme: light) {
-				html {
-					background-color: #ffffff;
-				}
+			html[data-theme="light"] {
+				background-color: #ffffff;
 			}
 		</style>
 		<title>Wingman</title>

@@ -732,8 +732,8 @@ export function ChatPanel({
 						</div>
 					</div>
 				) : entries.length === 0 && phase === "idle" ? (
-					<div className="h-full flex items-center justify-center">
-						<div className="flex flex-col items-center text-center max-w-sm">
+					<div className="flex h-full items-center justify-center px-4">
+						<div className="flex max-w-sm flex-col items-center text-center">
 							<img
 								src={scheme === "light" ? "/icon_light.svg" : "/icon_dark.svg"}
 								alt="Wingman"
@@ -745,7 +745,7 @@ export function ChatPanel({
 						</div>
 					</div>
 				) : (
-					<div className="px-4 py-4" ref={contentRef}>
+					<div className="mx-auto w-full max-w-4xl px-4 py-4" ref={contentRef}>
 						<ToolProgressContext.Provider value={toolProgress ?? {}}>
 							{turns.map((turn, idx) => {
 								const isLastTurn = idx === turns.length - 1;
@@ -768,7 +768,7 @@ export function ChatPanel({
 
 			<div className="absolute bottom-0 left-0 right-0 z-20">
 				<div className="h-6 bg-gradient-to-t from-bg to-transparent pointer-events-none" />
-				<div className="bg-bg px-4 pb-3">
+				<div className="mx-auto w-full max-w-4xl bg-bg px-4 pb-3">
 					{pendingInputs.length > 0 && (
 						<TurnQueue
 							items={pendingInputs}
@@ -802,7 +802,7 @@ export function ChatPanel({
 							onReply={onPromptReply}
 						/>
 					) : (
-						<div className="relative rounded-lg border border-border-subtle bg-bg-surface/60 hover:border-border focus-within:border-border transition-colors">
+						<div data-chat-composer className="relative rounded-xl">
 							{editingQueueId && (
 								<div className="flex items-center justify-between px-2.5 pt-2 text-[10px] text-warning font-mono">
 									<span>Editing queued message</span>
@@ -879,7 +879,7 @@ export function ChatPanel({
 								<textarea
 									ref={textareaRef}
 									autoFocus
-									className="w-full bg-transparent text-fg text-[12px] font-mono resize-none outline-none leading-[1.7] placeholder:text-fg-dim max-h-[40vh] overflow-y-auto"
+									className="chat-composer-textarea w-full appearance-none bg-transparent text-fg text-[12px] font-mono resize-none leading-[1.7] placeholder:text-fg-dim max-h-[40vh] overflow-y-auto"
 									style={{ fieldSizing: "content" } as React.CSSProperties}
 									value={input}
 									onChange={(e) => {

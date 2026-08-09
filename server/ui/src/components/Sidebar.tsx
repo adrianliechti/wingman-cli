@@ -1,4 +1,10 @@
-import { Loader2, MessageSquare, Plus, Trash2 } from "lucide-react";
+import {
+	Loader2,
+	MessageSquare,
+	MoreHorizontal,
+	Plus,
+	Trash2,
+} from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { ServerMessage } from "../types/protocol";
 import { AgentPicker } from "./AgentPicker";
@@ -14,7 +20,7 @@ interface Props {
 	currentSessionId: string;
 	onSessionSelect: (id: string) => void;
 	onNewSession: () => void;
-	onSessionDeleted?: (id: string) => void;
+	onSessionDelete?: (id: string, title: string) => void;
 	runningSessionIds?: Set<string>;
 	canCreateNew?: boolean;
 	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
@@ -24,13 +30,13 @@ export function Sidebar({
 	currentSessionId,
 	onSessionSelect,
 	onNewSession,
-	onSessionDeleted,
+	onSessionDelete,
 	runningSessionIds,
 	canCreateNew,
 	subscribe,
 }: Props) {
 	const [sessions, setSessions] = useState<SessionInfo[]>([]);
-	const [canDelete, setCanDelete] = useState(true);
+	const [canDelete, setCanDelete] = useState(false);
 
 	const loadSessions = useCallback(async () => {
 		try {
@@ -67,18 +73,12 @@ export function Sidebar({
 	}, [subscribe, loadSessions, loadAgent]);
 
 	const [switchingAgent, setSwitchingAgent] = useState<string | null>(null);
-	const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(
-		null,
-	);
-
-	const doDelete = useCallback(
-		async (id: string) => {
-			await fetch(`/api/sessions/${id}`, { method: "DELETE" });
-			onSessionDeleted?.(id);
-			loadSessions();
-		},
-		[onSessionDeleted, loadSessions],
-	);
+	const [menu, setMenu] = useState<{
+		id: string;
+		title: string;
+		x: number;
+		y: number;
+	} | null>(null);
 
 	useEffect(() => {
 		if (!menu) return;
@@ -99,7 +99,7 @@ export function Sidebar({
 	const groups = groupSessions(sessions);
 
 	return (
-		<div className="w-full h-full flex flex-col bg-bg">
+		<nav className="w-full h-full flex flex-col bg-bg" aria-label="Sessions">
 			<div className="h-10 px-1.5 flex items-center gap-2 shrink-0">
 				<AgentPicker
 					subscribe={subscribe}
@@ -143,38 +143,69 @@ export function Sidebar({
 								return (
 									<div
 										key={s.id}
-										className={`group flex items-center gap-2 px-2.5 py-1.5 mx-1.5 rounded-md cursor-pointer text-[12px] transition-colors ${
+										className={`group relative mx-1.5 flex items-stretch rounded-md text-[12px] transition-colors ${
 											active
 												? "bg-bg-active text-fg"
 												: "text-fg-muted hover:bg-bg-hover hover:text-fg"
 										}`}
-										onClick={() => onSessionSelect(s.id)}
 										onContextMenu={(e) => {
 											if (!canDelete) return;
 											e.preventDefault();
-											setMenu({ id: s.id, x: e.clientX, y: e.clientY });
+											setMenu({
+												id: s.id,
+												title: displayTitle,
+												x: e.clientX,
+												y: e.clientY,
+											});
 										}}
-										title={s.title || s.id}
 									>
-										{runningSessionIds?.has(s.id) ? (
-											<Loader2
-												size={12}
-												className="shrink-0 text-accent animate-spin"
-											/>
-										) : (
-											<MessageSquare
-												size={12}
-												className="shrink-0 text-fg-dim"
-											/>
+										<button
+											type="button"
+											className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2.5 py-1.5 pr-8 text-left"
+											onClick={() => onSessionSelect(s.id)}
+											title={s.title || s.id}
+											aria-current={active ? "page" : undefined}
+										>
+											{runningSessionIds?.has(s.id) ? (
+												<Loader2
+													size={12}
+													className="shrink-0 animate-spin text-accent"
+												/>
+											) : (
+												<MessageSquare
+													size={12}
+													className="shrink-0 text-fg-dim"
+												/>
+											)}
+											<div className="min-w-0 flex-1">
+												<div className="truncate text-[12px] leading-snug">
+													{displayTitle}
+												</div>
+												<div className="mt-0.5 truncate text-[11px] text-fg-dim">
+													{relativeTime(s.updated_at)}
+												</div>
+											</div>
+										</button>
+										{canDelete && (
+											<button
+												type="button"
+												className="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded text-fg-dim opacity-0 hover:bg-bg-active hover:text-fg group-hover:opacity-100 group-focus-within:opacity-100"
+												onClick={(event) => {
+													event.stopPropagation();
+													const rect =
+														event.currentTarget.getBoundingClientRect();
+													setMenu({
+														id: s.id,
+														title: displayTitle,
+														x: rect.right,
+														y: rect.bottom + 4,
+													});
+												}}
+												aria-label={`Session actions for ${displayTitle}`}
+											>
+												<MoreHorizontal size={13} />
+											</button>
 										)}
-										<div className="min-w-0 flex-1">
-											<div className="truncate text-[12px] leading-snug">
-												{displayTitle}
-											</div>
-											<div className="text-[10px] text-fg-dim truncate mt-0.5">
-												{relativeTime(s.updated_at)}
-											</div>
-										</div>
 									</div>
 								);
 							})}
@@ -183,14 +214,17 @@ export function Sidebar({
 			</div>
 			{menu && (
 				<div
+					role="menu"
+					aria-label={`Actions for ${menu.title}`}
 					className="fixed z-50 min-w-[140px] py-1 bg-bg-elevated border border-border rounded-md shadow-xl"
 					style={{ top: menu.y, left: menu.x }}
 					onClick={(e) => e.stopPropagation()}
 				>
 					<button
 						type="button"
+						role="menuitem"
 						onClick={() => {
-							doDelete(menu.id);
+							onSessionDelete?.(menu.id, menu.title);
 							setMenu(null);
 						}}
 						className="flex w-full items-center gap-2 px-3 py-1.5 text-[12px] text-fg-muted hover:text-danger hover:bg-bg-hover cursor-pointer transition-colors"
@@ -200,7 +234,7 @@ export function Sidebar({
 					</button>
 				</div>
 			)}
-		</div>
+		</nav>
 	);
 }
 

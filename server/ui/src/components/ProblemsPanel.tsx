@@ -152,7 +152,7 @@ export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
 					)}
 				</button>
 			</div>
-			<div className="overflow-y-auto flex-1 px-1 pb-2">
+			<div className="flex-1 overflow-y-auto px-1 py-1.5">
 				{error && (
 					<div className="mx-2 mb-1 px-2 py-1.5 rounded bg-danger/5 text-[10px] text-danger/80">
 						{error}
@@ -167,16 +167,18 @@ export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
 					</div>
 				)}
 				{diagnostics.length === 0 && loading && (
-					<div className="px-3 py-6 text-[11px] text-fg-dim text-center">
-						Checking problems…
+					<div className="flex min-h-12 items-center justify-center gap-1.5 px-3 text-center text-[11px] text-fg-dim">
+						<Loader2 size={11} className="animate-spin" />
+						<span>Checking problems…</span>
 					</div>
 				)}
 				{diagnostics.map((d, i) => {
 					const fileName = d.path.split("/").pop() || d.path;
 					return (
-						<div
+						<button
+							type="button"
 							key={`${d.path}:${d.line}:${d.column}:${i}`}
-							className="flex items-start gap-1.5 mx-1 px-2 py-1 rounded cursor-pointer text-[11px] text-fg-muted hover:bg-bg-hover hover:text-fg transition-colors"
+							className="mx-1 flex w-[calc(100%-0.5rem)] cursor-pointer items-start gap-1.5 rounded px-2 py-1 text-left text-[11px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg"
 							onClick={() => onOpenFile(d.path, d.line, d.column)}
 						>
 							<SeverityIcon severity={d.severity} />
@@ -186,7 +188,7 @@ export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
 									{fileName}:{d.line}
 								</div>
 							</div>
-						</div>
+						</button>
 					);
 				})}
 			</div>

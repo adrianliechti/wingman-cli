@@ -17,6 +17,10 @@ func setPTYSize(f *os.File, cols, rows int) error {
 	return ErrUnsupported
 }
 
+func hasForegroundProcess(f *os.File, cmd *exec.Cmd) bool {
+	return false
+}
+
 func killProcess(cmd *exec.Cmd) {
 	if cmd.Process != nil {
 		_ = cmd.Process.Kill()
