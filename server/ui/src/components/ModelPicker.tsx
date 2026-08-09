@@ -278,7 +278,10 @@ export function ModelPicker({ sessionId, subscribe }: Props) {
 									className={`absolute top-1/2 flex items-center justify-center h-5 px-1.5 rounded-[5px] bg-fg text-bg text-[10px] font-semibold capitalize leading-none whitespace-nowrap shadow-sm cursor-grab active:cursor-grabbing ${
 										dragging ? "" : "transition-[left] duration-150 ease-out"
 									}`}
-									style={{ left: `${pct}%`, transform: `translate(-${pct}%, -50%)` }}
+									style={{
+										left: `${pct}%`,
+										transform: `translate(-${pct}%, -50%)`,
+									}}
 								>
 									{knobLabel}
 								</div>

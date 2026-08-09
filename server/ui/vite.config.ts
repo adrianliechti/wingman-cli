@@ -2,7 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
-const monacoLang = /monaco-editor\/esm\/vs\/(basic-languages|language)\//;
+const monacoLang = /monaco-editor\/esm\/vs\/(basic-languages|languages?)\//;
 
 export default defineConfig({
 	plugins: [react(), tailwindcss()],
