@@ -235,7 +235,8 @@ export function FileTab({
 					title={`Preview of ${file.path}`}
 					sandbox="allow-scripts allow-same-origin"
 					referrerPolicy="no-referrer"
-					className="h-full w-full border-0 bg-white"
+					className="h-full w-full border-0 bg-bg"
+					style={{ colorScheme: scheme }}
 				/>
 			) : (
 				<Editor
