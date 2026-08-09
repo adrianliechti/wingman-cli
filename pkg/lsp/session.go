@@ -24,11 +24,14 @@ type Session struct {
 	workingDir string
 	cancelFunc context.CancelFunc
 
+	documentMu  sync.Mutex
 	mu          sync.Mutex
 	openedDocs  map[string]uint64
 	docVersions map[string]int
+	docSaved    map[string]bool
 	pushDiags   map[string][]Diagnostic
 	pushSeen    map[string]bool
+	pullDiags   bool
 }
 
 const startupTimeout = 30 * time.Second
@@ -61,13 +64,14 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 	connCtx, cancel := context.WithCancel(context.Background())
 
 	session := &Session{
-		server:     server,
-		cmd:        cmd,
-		rootURI:    FileURI(workingDir),
-		workingDir: workingDir,
-		cancelFunc: cancel,
+		server:      server,
+		cmd:         cmd,
+		rootURI:     FileURI(workingDir),
+		workingDir:  workingDir,
+		cancelFunc:  cancel,
 		openedDocs:  make(map[string]uint64),
 		docVersions: make(map[string]int),
+		docSaved:    make(map[string]bool),
 		pushDiags:   make(map[string][]Diagnostic),
 		pushSeen:    make(map[string]bool),
 	}
@@ -179,12 +183,24 @@ func isTransientError(err error) bool {
 }
 
 func (s *Session) OpenDocument(ctx context.Context, filePath string) (string, error) {
-	uri := FileURI(filePath)
-
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return "", fmt.Errorf("read file: %w", err)
 	}
+	return s.syncDocument(ctx, filePath, content, true)
+}
+
+// SyncDocument updates the language server with an editor buffer without
+// claiming that the buffer has been saved to disk.
+func (s *Session) SyncDocument(ctx context.Context, filePath, content string) (string, error) {
+	return s.syncDocument(ctx, filePath, []byte(content), false)
+}
+
+func (s *Session) syncDocument(ctx context.Context, filePath string, content []byte, saved bool) (string, error) {
+	s.documentMu.Lock()
+	defer s.documentMu.Unlock()
+
+	uri := FileURI(filePath)
 
 	h := fnv.New64a()
 	h.Write(content)
@@ -192,10 +208,21 @@ func (s *Session) OpenDocument(ctx context.Context, filePath string) (string, er
 
 	s.mu.Lock()
 	prev, alreadyOpen := s.openedDocs[uri]
+	wasSaved := s.docSaved[uri]
 	s.mu.Unlock()
 
 	if alreadyOpen {
 		if prev == sum {
+			if saved && !wasSaved {
+				if err := s.conn.Notify(ctx, "textDocument/didSave", DidSaveTextDocumentParams{
+					TextDocument: TextDocumentIdentifier{URI: uri},
+				}); err != nil {
+					return "", fmt.Errorf("didSave: %w", err)
+				}
+				s.mu.Lock()
+				s.docSaved[uri] = true
+				s.mu.Unlock()
+			}
 			return uri, nil
 		}
 
@@ -218,12 +245,17 @@ func (s *Session) OpenDocument(ctx context.Context, filePath string) (string, er
 			return "", fmt.Errorf("didChange: %w", err)
 		}
 
-		s.conn.Notify(ctx, "textDocument/didSave", DidSaveTextDocumentParams{
-			TextDocument: TextDocumentIdentifier{URI: uri},
-		})
+		if saved {
+			if err := s.conn.Notify(ctx, "textDocument/didSave", DidSaveTextDocumentParams{
+				TextDocument: TextDocumentIdentifier{URI: uri},
+			}); err != nil {
+				return "", fmt.Errorf("didSave: %w", err)
+			}
+		}
 
 		s.mu.Lock()
 		s.openedDocs[uri] = sum
+		s.docSaved[uri] = saved
 		s.mu.Unlock()
 
 		return uri, nil
@@ -232,7 +264,7 @@ func (s *Session) OpenDocument(ctx context.Context, filePath string) (string, er
 	params := DidOpenTextDocumentParams{
 		TextDocument: TextDocumentItem{
 			URI:        uri,
-			LanguageID: s.server.LanguageID,
+			LanguageID: s.server.LanguageIDForPath(filePath),
 			Version:    1,
 			Text:       string(content),
 		},
@@ -245,6 +277,7 @@ func (s *Session) OpenDocument(ctx context.Context, filePath string) (string, er
 	s.mu.Lock()
 	s.openedDocs[uri] = sum
 	s.docVersions[uri] = 1
+	s.docSaved[uri] = saved
 	s.mu.Unlock()
 
 	return uri, nil
@@ -265,6 +298,10 @@ func (s *Session) PushSeen(uri string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.pushSeen[uri]
+}
+
+func (s *Session) SupportsPullDiagnostics() bool {
+	return s.pullDiags
 }
 
 func (s *Session) pullDiagnostics(ctx context.Context, uri string) ([]Diagnostic, bool) {
@@ -298,16 +335,14 @@ func (s *Session) pullDiagnostics(ctx context.Context, uri string) ([]Diagnostic
 // nor answered a pull request, so "no diagnostics" cannot be concluded.
 func (s *Session) DiagnosticsState(ctx context.Context, uri string) ([]Diagnostic, bool) {
 	pushed, seen := s.pushedDiagnostics(uri)
-	if seen && len(pushed) > 0 {
-		return pushed, true
-	}
-
-	if diags, ok := s.pullDiagnostics(ctx, uri); ok {
-		return diags, true
-	}
-
 	if seen {
 		return pushed, true
+	}
+
+	if s.pullDiags {
+		if diags, ok := s.pullDiagnostics(ctx, uri); ok {
+			return diags, true
+		}
 	}
 
 	return nil, false
@@ -319,21 +354,19 @@ func (s *Session) CollectDiagnostics(ctx context.Context, uri string) []Diagnost
 }
 
 func (s *Session) WaitForDiagnostics(ctx context.Context, uri string, timeout time.Duration) ([]Diagnostic, bool) {
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	ticker := time.NewTicker(300 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
-		if diags, known := s.DiagnosticsState(ctx, uri); known {
+		if diags, known := s.DiagnosticsState(waitCtx, uri); known {
 			return diags, true
 		}
 
 		select {
-		case <-ctx.Done():
-			return nil, false
-		case <-deadline.C:
+		case <-waitCtx.Done():
 			return nil, false
 		case <-ticker.C:
 		}
@@ -382,13 +415,37 @@ type DefLocation struct {
 }
 
 func (s *Session) DefinitionLocations(ctx context.Context, uri string, line, column int) ([]DefLocation, error) {
+	return s.positionLocations(ctx, "textDocument/definition", uri, line, column)
+}
+
+func (s *Session) TypeDefinitionLocations(ctx context.Context, uri string, line, column int) ([]DefLocation, error) {
+	return s.positionLocations(ctx, "textDocument/typeDefinition", uri, line, column)
+}
+
+func (s *Session) ImplementationLocations(ctx context.Context, uri string, line, column int) ([]DefLocation, error) {
+	return s.positionLocations(ctx, "textDocument/implementation", uri, line, column)
+}
+
+func (s *Session) ReferenceLocations(ctx context.Context, uri string, line, column int) ([]DefLocation, error) {
+	params := ReferenceParams{
+		TextDocument: TextDocumentIdentifier{URI: uri},
+		Position:     Position{Line: line, Character: column},
+		Context:      ReferenceContext{IncludeDeclaration: true},
+	}
+	return s.requestLocations(ctx, "textDocument/references", params)
+}
+
+func (s *Session) positionLocations(ctx context.Context, method, uri string, line, column int) ([]DefLocation, error) {
 	params := TextDocumentPositionParams{
 		TextDocument: TextDocumentIdentifier{URI: uri},
 		Position:     Position{Line: line, Character: column},
 	}
+	return s.requestLocations(ctx, method, params)
+}
 
+func (s *Session) requestLocations(ctx context.Context, method string, params any) ([]DefLocation, error) {
 	var result json.RawMessage
-	if err := s.CallAndAwait(ctx, "textDocument/definition", params, &result); err != nil {
+	if err := s.CallAndAwait(ctx, method, params, &result); err != nil {
 		return nil, err
 	}
 
@@ -398,8 +455,12 @@ func (s *Session) DefinitionLocations(ctx context.Context, uri string, line, col
 	}
 
 	out := make([]DefLocation, 0, len(locations))
-	for _, l := range locations {
-		out = append(out, DefLocation{Path: uriToPath(l.URI), Line: l.Range.Start.Line, Column: l.Range.Start.Character})
+	for _, location := range locations {
+		out = append(out, DefLocation{
+			Path:   uriToPath(location.URI),
+			Line:   location.Range.Start.Line,
+			Column: location.Range.Start.Character,
+		})
 	}
 	return out, nil
 }
@@ -433,6 +494,17 @@ func (s *Session) Implementation(ctx context.Context, uri string, line, column i
 }
 
 func (s *Session) Hover(ctx context.Context, uri string, line, column int) (string, error) {
+	contents, err := s.HoverInformation(ctx, uri, line, column)
+	if err != nil {
+		return "", err
+	}
+	if contents == "" {
+		return "No hover information available", nil
+	}
+	return contents, nil
+}
+
+func (s *Session) HoverInformation(ctx context.Context, uri string, line, column int) (string, error) {
 	params := TextDocumentPositionParams{
 		TextDocument: TextDocumentIdentifier{URI: uri},
 		Position:     Position{Line: line, Character: column},
@@ -448,38 +520,48 @@ func (s *Session) Hover(ctx context.Context, uri string, line, column int) (stri
 		return "", err
 	}
 
-	if hover.Contents.Value == "" {
-		return "No hover information available", nil
-	}
-
 	return hover.Contents.Value, nil
 }
 
 func (s *Session) DocumentSymbols(ctx context.Context, uri string, filePath string) (string, error) {
+	docSymbols, symInfos, err := s.DocumentSymbolItems(ctx, uri)
+	if err != nil {
+		return "", err
+	}
+	if len(symInfos) > 0 {
+		return formatSymbolInformations(symInfos, s.workingDir), nil
+	}
+	if len(docSymbols) > 0 {
+		return formatDocumentSymbols(docSymbols, filePath, s.workingDir, 0), nil
+	}
+	return "No symbols found", nil
+}
+
+func (s *Session) DocumentSymbolItems(ctx context.Context, uri string) ([]DocumentSymbol, []SymbolInformation, error) {
 	params := DocumentSymbolParams{
 		TextDocument: TextDocumentIdentifier{URI: uri},
 	}
 
 	var result json.RawMessage
 	if err := s.CallAndAwait(ctx, "textDocument/documentSymbol", params, &result); err != nil {
-		return "", err
+		return nil, nil, err
 	}
 
 	if result == nil || string(result) == "null" {
-		return "No symbols found", nil
+		return nil, nil, nil
 	}
 
 	var symInfos []SymbolInformation
 	if err := json.Unmarshal(result, &symInfos); err == nil && len(symInfos) > 0 && symInfos[0].Location.URI != "" {
-		return formatSymbolInformations(symInfos, s.workingDir), nil
+		return nil, symInfos, nil
 	}
 
 	var docSymbols []DocumentSymbol
 	if err := json.Unmarshal(result, &docSymbols); err == nil && len(docSymbols) > 0 {
-		return formatDocumentSymbols(docSymbols, filePath, s.workingDir, 0), nil
+		return docSymbols, nil, nil
 	}
 
-	return "No symbols found", nil
+	return nil, nil, nil
 }
 
 type symbolCandidate struct {
@@ -649,6 +731,7 @@ func (s *Session) initialize(ctx context.Context) error {
 				Synchronization: TextDocumentSyncClientCapabilities{DidSave: true},
 				Hover:           HoverClientCapabilities{ContentFormat: []string{"plaintext", "markdown"}},
 				Definition:      DefinitionClientCapabilities{},
+				TypeDefinition:  TypeDefinitionClientCapabilities{},
 				References:      ReferencesClientCapabilities{},
 				Implementation:  ImplementationClientCapabilities{},
 				DocumentSymbol:  DocumentSymbolClientCapabilities{},
@@ -658,17 +741,23 @@ func (s *Session) initialize(ctx context.Context) error {
 		},
 	}
 
-	var result json.RawMessage
+	var result InitializeResult
 	call := s.conn.Call(ctx, "initialize", params)
 	if err := call.Await(ctx, &result); err != nil {
 		return err
 	}
+	s.pullDiags = diagnosticProviderEnabled(result.Capabilities.DiagnosticProvider)
 
 	if err := s.conn.Notify(ctx, "initialized", struct{}{}); err != nil {
 		return fmt.Errorf("initialized notification: %w", err)
 	}
 
 	return nil
+}
+
+func diagnosticProviderEnabled(provider json.RawMessage) bool {
+	value := strings.TrimSpace(string(provider))
+	return value != "" && value != "null" && value != "false"
 }
 
 func (s *Session) locationOp(ctx context.Context, method, title, uri string, line, column int) (string, error) {

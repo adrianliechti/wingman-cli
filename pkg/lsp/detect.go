@@ -1,13 +1,16 @@
 package lsp
 
 import (
+	"context"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
 )
@@ -181,6 +184,28 @@ func isExecutableFile(path string) bool {
 	return info.Mode()&0o111 != 0
 }
 
+func serverVersionSupported(server Server, command string) bool {
+	if server.MinimumMajorVersion == 0 {
+		return true
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, command, "--version").CombinedOutput()
+	if err != nil {
+		return false
+	}
+
+	for _, field := range strings.Fields(string(output)) {
+		majorText := strings.SplitN(strings.TrimPrefix(field, "v"), ".", 2)[0]
+		major, err := strconv.Atoi(majorText)
+		if err == nil {
+			return major >= server.MinimumMajorVersion
+		}
+	}
+	return false
+}
+
 func detectAll(workingDir string) []projectRoot {
 	var roots []projectRoot
 	seen := make(map[string]bool)
@@ -231,6 +256,9 @@ func detectAll(workingDir string) []projectRoot {
 						resolveCache[key] = path
 					}
 					if path == "" {
+						continue
+					}
+					if !serverVersionSupported(candidate, path) {
 						continue
 					}
 

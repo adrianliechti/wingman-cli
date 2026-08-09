@@ -11,6 +11,14 @@ type InitializeParams struct {
 	Capabilities ClientCapabilities `json:"capabilities"`
 }
 
+type InitializeResult struct {
+	Capabilities ServerCapabilities `json:"capabilities"`
+}
+
+type ServerCapabilities struct {
+	DiagnosticProvider json.RawMessage `json:"diagnosticProvider"`
+}
+
 type ClientCapabilities struct {
 	TextDocument TextDocumentClientCapabilities `json:"textDocument"`
 }
@@ -19,6 +27,7 @@ type TextDocumentClientCapabilities struct {
 	Synchronization TextDocumentSyncClientCapabilities `json:"synchronization"`
 	Hover           HoverClientCapabilities            `json:"hover"`
 	Definition      DefinitionClientCapabilities       `json:"definition"`
+	TypeDefinition  TypeDefinitionClientCapabilities   `json:"typeDefinition"`
 	References      ReferencesClientCapabilities       `json:"references"`
 	Implementation  ImplementationClientCapabilities   `json:"implementation"`
 	DocumentSymbol  DocumentSymbolClientCapabilities   `json:"documentSymbol"`
@@ -37,6 +46,8 @@ type HoverClientCapabilities struct {
 type DefinitionClientCapabilities struct {
 	LinkSupport bool `json:"linkSupport,omitempty"`
 }
+
+type TypeDefinitionClientCapabilities struct{}
 
 type ReferencesClientCapabilities struct{}
 

@@ -29,8 +29,8 @@ var extToLanguage = map[string]string{
 	".go":         "go",
 	".js":         "javascript",
 	".ts":         "typescript",
-	".tsx":        "tsx",
-	".jsx":        "jsx",
+	".tsx":        "typescript",
+	".jsx":        "javascript",
 	".py":         "python",
 	".rs":         "rust",
 	".java":       "java",
@@ -273,6 +273,9 @@ func (s *Server) handleFileWrite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.flushFiles()
+	if s.workspace.HasLSP() {
+		s.broadcast(Frame{Type: EvtDiagnosticsChanged})
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

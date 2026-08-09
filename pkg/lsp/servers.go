@@ -1,11 +1,33 @@
 package lsp
 
+import (
+	"path/filepath"
+	"strings"
+)
+
 type Server struct {
-	Name       string
-	Command    string
-	Args       []string
-	Languages  []string
-	LanguageID string
+	Name                string
+	Command             string
+	Args                []string
+	Languages           []string
+	LanguageID          string
+	MinimumMajorVersion int
+}
+
+func (s Server) LanguageIDForPath(path string) string {
+	if s.LanguageID != "typescript" {
+		return s.LanguageID
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".js", ".mjs", ".cjs":
+		return "javascript"
+	case ".jsx":
+		return "javascriptreact"
+	case ".tsx":
+		return "typescriptreact"
+	default:
+		return "typescript"
+	}
 }
 
 type projectType struct {
@@ -36,6 +58,14 @@ var knownProjects = []projectType{
 		Markers:  []string{"tsconfig.json", "jsconfig.json", "package.json", "package-lock.json", "bun.lockb", "yarn.lock", "pnpm-lock.yaml"},
 		Excludes: []string{"deno.json", "deno.jsonc"},
 		Servers: []Server{
+			{
+				Name:                "typescript-go",
+				Command:             "tsc",
+				Args:                []string{"--lsp", "--stdio"},
+				Languages:           []string{"ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"},
+				LanguageID:          "typescript",
+				MinimumMajorVersion: 7,
+			},
 			{
 				Name:       "typescript-language-server",
 				Command:    "typescript-language-server",

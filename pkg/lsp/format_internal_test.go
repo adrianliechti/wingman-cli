@@ -110,11 +110,31 @@ func TestDiscoverSourceFilesReportsTotal(t *testing.T) {
 		}
 	}
 
-	files, total := discoverSourceFiles(dir, []string{"go"}, 4)
+	files, total, truncated := discoverSourceFiles(dir, []string{"go"}, 4)
 	if len(files) != 4 {
 		t.Errorf("len(files) = %d, want 4", len(files))
 	}
 	if total != 10 {
 		t.Errorf("total = %d, want 10", total)
+	}
+	if truncated {
+		t.Error("truncated = true, want false")
+	}
+}
+
+func TestDiagnosticProviderEnabled(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  bool
+	}{
+		{value: "", want: false},
+		{value: "null", want: false},
+		{value: "false", want: false},
+		{value: "true", want: true},
+		{value: `{}`, want: true},
+	} {
+		if got := diagnosticProviderEnabled([]byte(test.value)); got != test.want {
+			t.Errorf("diagnosticProviderEnabled(%q) = %v, want %v", test.value, got, test.want)
+		}
 	}
 }

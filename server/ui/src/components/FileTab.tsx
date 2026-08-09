@@ -1,25 +1,36 @@
-import Editor, { type Monaco } from "@monaco-editor/react";
+import Editor, { type OnMount } from "@monaco-editor/react";
 import { FileDigit } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useColorScheme } from "../hooks/useColorScheme";
+import {
+	createMonacoLSPBridge,
+	type MonacoLSPBridge,
+	revealEditorPosition,
+} from "../monacoLsp";
 import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
 import type { FileContent, ServerMessage } from "../types/protocol";
 
 interface Props {
 	path: string;
 	line?: number;
+	column?: number;
+	navigationKey?: number;
 	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 	onDeleted?: () => void;
 	onDirtyChange?: (dirty: boolean) => void;
+	onOpenFile?: (path: string, line: number, column: number) => void;
 	view?: "code" | "preview";
 }
 
 export function FileTab({
 	path,
 	line,
+	column,
+	navigationKey,
 	subscribe,
 	onDeleted,
 	onDirtyChange,
+	onOpenFile,
 	view = "code",
 }: Props) {
 	const [file, setFile] = useState<FileContent | null>(null);
@@ -27,7 +38,8 @@ export function FileTab({
 	const [value, setValue] = useState("");
 	const [saving, setSaving] = useState(false);
 	const [previewRevision, setPreviewRevision] = useState(0);
-	const monacoRef = useRef<Monaco | null>(null);
+	const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
+	const lspBridgeRef = useRef<MonacoLSPBridge | null>(null);
 	const scheme = useColorScheme();
 
 	const onDeletedRef = useRef(onDeleted);
@@ -57,6 +69,38 @@ export function FileTab({
 	useEffect(() => {
 		return () => onDirtyChangeRef.current?.(false);
 	}, []);
+
+	const onOpenFileRef = useRef(onOpenFile);
+	useEffect(() => {
+		onOpenFileRef.current = onOpenFile;
+	});
+
+	useEffect(() => {
+		const editor = editorRef.current;
+		if (!editor || !line || line < 1) return;
+		revealEditorPosition(editor, line, column);
+	}, [line, column, navigationKey]);
+
+	useEffect(() => {
+		return () => {
+			lspBridgeRef.current?.dispose();
+			lspBridgeRef.current = null;
+			editorRef.current = null;
+		};
+	}, []);
+
+	const loadDiagnostics = useCallback(async () => {
+		await lspBridgeRef.current?.refreshDiagnostics();
+	}, []);
+
+	useEffect(() => {
+		if (!file || file.binary || !editorRef.current) return;
+		const timer = window.setTimeout(
+			() => void loadDiagnostics(),
+			dirty ? 600 : 0,
+		);
+		return () => window.clearTimeout(timer);
+	}, [file, value, dirty, loadDiagnostics]);
 
 	const load = useCallback(async () => {
 		try {
@@ -92,9 +136,11 @@ export function FileTab({
 				setPreviewRevision((revision) => revision + 1);
 				if (dirtyRef.current) return;
 				load();
+			} else if (msg.type === "diagnostics_changed") {
+				void loadDiagnostics();
 			}
 		});
-	}, [subscribe, load]);
+	}, [subscribe, load, loadDiagnostics]);
 
 	const save = useCallback(async () => {
 		const f = fileRef.current;
@@ -139,7 +185,6 @@ export function FileTab({
 
 	const isHtml = file.language === "html" || /\.html?$/i.test(file.path);
 	const previewSrc = `/api/files/preview?path=${encodeURIComponent(file.path)}`;
-
 	return (
 		<div className="h-full min-h-0">
 			{isHtml && view === "preview" ? (
@@ -154,18 +199,27 @@ export function FileTab({
 			) : (
 				<Editor
 					height="100%"
+					path={`/${file.path}`}
 					language={file.language || undefined}
 					value={value}
 					theme={wingmanThemeName(scheme)}
 					beforeMount={(monaco) => {
-						monacoRef.current = monaco;
 						defineWingmanThemes(monaco);
 					}}
 					onMount={(editor, monaco) => {
-						if (line && line > 0) {
-							editor.revealLineInCenter(line);
-							editor.setPosition({ lineNumber: line, column: 1 });
-						}
+						editorRef.current = editor;
+						lspBridgeRef.current?.dispose();
+						lspBridgeRef.current = createMonacoLSPBridge({
+							monaco,
+							editor,
+							file,
+							getDirtyContent: () =>
+								dirtyRef.current ? valueRef.current : undefined,
+							onOpenFile: (targetPath, targetLine, targetColumn) =>
+								onOpenFileRef.current?.(targetPath, targetLine, targetColumn),
+						});
+						void loadDiagnostics();
+						revealEditorPosition(editor, line, column);
 						editor.addCommand(
 							monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
 							() => {

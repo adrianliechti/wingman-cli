@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/signal"
 	"path"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -28,7 +27,6 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/code/agents"
-	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 	"github.com/adrianliechti/wingman-agent/pkg/system"
 	"github.com/adrianliechti/wingman-agent/pkg/terminal"
 	"github.com/adrianliechti/wingman-agent/pkg/watch"
@@ -89,6 +87,7 @@ type Server struct {
 
 	files           *watch.Monitor
 	prevGit         bool
+	prevLSP         bool
 	prevFingerprint uint64
 }
 
@@ -141,6 +140,7 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 	ws.WarmUp()
 
 	s.prevGit = ws.IsGitRepo()
+	s.prevLSP = ws.HasLSP()
 	s.files = watch.New(watch.Options{Active: s.hasClients}, s.checkWorkspace)
 	s.background.Go(func() {
 		s.files.Run(serverCtx)
@@ -355,7 +355,16 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.HandleFunc("/{id}/ws", s.handleTerminalWebSocket)
 		})
 
-		r.Get("/diagnostics", s.handleDiagnostics)
+		r.Route("/lsp", func(r chi.Router) {
+			r.Get("/diagnostics", s.handleDiagnostics)
+			r.Post("/diagnostics", s.handleLSPFileDiagnostics)
+			r.Post("/definition", s.handleLSPDefinition)
+			r.Post("/type-definition", s.handleLSPTypeDefinition)
+			r.Post("/implementations", s.handleLSPImplementations)
+			r.Post("/references", s.handleLSPReferences)
+			r.Post("/hover", s.handleLSPHover)
+			r.Post("/document-symbols", s.handleLSPDocumentSymbols)
+		})
 		r.Get("/skills", s.handleSkills)
 		r.Get("/capabilities", s.handleCapabilities)
 		r.Get("/ws", s.handleWebSocketURL)
@@ -717,59 +726,6 @@ func (s *Server) handleSetEffort(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"effort": body.Effort})
 }
 
-func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
-	allDiags := s.workspace.Diagnostics(r.Context())
-
-	type diagItem struct {
-		Path     string `json:"path"`
-		Line     int    `json:"line"`
-		Column   int    `json:"column"`
-		Severity string `json:"severity"`
-		Message  string `json:"message"`
-		Source   string `json:"source,omitempty"`
-	}
-
-	var result []diagItem
-	for filePath, diags := range allDiags {
-		relPath := filePath
-		if rel, err := filepath.Rel(s.workspace.RootPath, filePath); err == nil {
-			relPath = rel
-		}
-		for _, d := range diags {
-			sev := "info"
-			switch d.Severity {
-			case lsp.DiagnosticSeverityError:
-				sev = "error"
-			case lsp.DiagnosticSeverityWarning:
-				sev = "warning"
-			}
-			result = append(result, diagItem{
-				Path:     relPath,
-				Line:     d.Range.Start.Line + 1,
-				Column:   d.Range.Start.Character + 1,
-				Severity: sev,
-				Message:  d.Message,
-				Source:   d.Source,
-			})
-		}
-	}
-	if result == nil {
-		result = []diagItem{}
-	}
-	sevOrder := map[string]int{"error": 0, "warning": 1, "info": 2}
-	slices.SortFunc(result, func(a, b diagItem) int {
-		si, sj := sevOrder[a.Severity], sevOrder[b.Severity]
-		if si != sj {
-			return cmp.Compare(si, sj)
-		}
-		if a.Path != b.Path {
-			return cmp.Compare(a.Path, b.Path)
-		}
-		return cmp.Compare(a.Line, b.Line)
-	})
-	writeJSON(w, result)
-}
-
 func (s *Server) handleCapabilities(w http.ResponseWriter, _ *http.Request) {
 	ws := s.workspace
 	_, isCoder := s.activeAgent().(*codeagent.Agent)
@@ -806,6 +762,15 @@ func (s *Server) checkWorkspace() {
 		s.prevGit = gitNow
 	}
 
+	lspNow := ws.HasLSP()
+	if lspNow != s.prevLSP {
+		s.prevLSP = lspNow
+		s.broadcast(Frame{Type: EvtCapabilitiesChanged})
+		if lspNow {
+			s.broadcast(Frame{Type: EvtDiagnosticsChanged})
+		}
+	}
+
 	if !ws.HasChanges() {
 		return
 	}
@@ -814,6 +779,9 @@ func (s *Server) checkWorkspace() {
 		s.prevFingerprint = fp
 		s.broadcast(Frame{Type: EvtFilesChanged})
 		s.broadcast(Frame{Type: EvtDiffsChanged})
+		if ws.HasLSP() {
+			s.broadcast(Frame{Type: EvtDiagnosticsChanged})
+		}
 	}
 }
 

@@ -119,7 +119,8 @@ func (a *App) collectDiagnostics(ctx context.Context) ([]fileDiagnostics, error)
 	workDir := a.agent.Workspace().RootPath
 	var files []fileDiagnostics
 
-	for path, diags := range a.agent.Workspace().Diagnostics(ctx) {
+	report := a.agent.Workspace().Diagnostics(ctx)
+	for path, diags := range report.Diagnostics {
 		if len(diags) == 0 {
 			continue
 		}

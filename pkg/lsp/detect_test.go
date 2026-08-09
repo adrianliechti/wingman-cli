@@ -105,3 +105,72 @@ func TestFindCommandInIgnoresNonExecutable(t *testing.T) {
 		t.Fatalf("directory resolved: %q", got)
 	}
 }
+
+func TestServerVersionSupported(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper uses a POSIX shell script")
+	}
+
+	dir := t.TempDir()
+	command := filepath.Join(dir, "tsc")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf 'Version 7.1.0\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	server := Server{MinimumMajorVersion: 7}
+	if !serverVersionSupported(server, command) {
+		t.Fatal("TypeScript 7 should satisfy a version 7 minimum")
+	}
+	server.MinimumMajorVersion = 8
+	if serverVersionSupported(server, command) {
+		t.Fatal("TypeScript 7 should not satisfy a version 8 minimum")
+	}
+	if !serverVersionSupported(Server{}, filepath.Join(dir, "missing")) {
+		t.Fatal("servers without a version constraint should not be probed")
+	}
+}
+
+func TestDetectAllPrefersNativeTypeScriptSevenLSP(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper uses POSIX shell scripts")
+	}
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(root, "node_modules", ".bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tsc := filepath.Join(binDir, "tsc")
+	if err := os.WriteFile(tsc, []byte("#!/bin/sh\nprintf 'Version 7.0.2\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	roots := detectAll(root)
+	if len(roots) != 1 {
+		t.Fatalf("detected roots = %+v, want one TypeScript root", roots)
+	}
+	if roots[0].Server.Name != "typescript-go" || roots[0].Server.Command != tsc {
+		t.Fatalf("detected server = %+v, want native TypeScript server %q", roots[0].Server, tsc)
+	}
+}
+
+func TestTypeScriptLanguageIDs(t *testing.T) {
+	server := Server{LanguageID: "typescript"}
+	tests := map[string]string{
+		"file.ts":  "typescript",
+		"file.tsx": "typescriptreact",
+		"file.js":  "javascript",
+		"file.jsx": "javascriptreact",
+	}
+	for path, want := range tests {
+		if got := server.LanguageIDForPath(path); got != want {
+			t.Errorf("LanguageIDForPath(%q) = %q, want %q", path, got, want)
+		}
+	}
+	if got := (Server{LanguageID: "go"}).LanguageIDForPath("file.go"); got != "go" {
+		t.Fatalf("Go language ID = %q, want go", got)
+	}
+}

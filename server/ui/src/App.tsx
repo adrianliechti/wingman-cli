@@ -62,6 +62,8 @@ interface CenterTab {
 	path?: string;
 	diffLayer?: DiffLayer;
 	line?: number;
+	column?: number;
+	navigationKey?: number;
 	sessionId?: string;
 	terminalId?: string;
 }
@@ -342,12 +344,21 @@ export default function App() {
 	);
 
 	const openFile = useCallback(
-		(path: string, line?: number) => {
+		(path: string, line?: number, column?: number) => {
 			const existing = tabs.find((t) => t.type === "file" && t.path === path);
 			if (existing) {
 				if (line) {
 					setTabs((prev) =>
-						prev.map((t) => (t.id === existing.id ? { ...t, line } : t)),
+						prev.map((t) =>
+							t.id === existing.id
+								? {
+										...t,
+										line,
+										column,
+										navigationKey: (t.navigationKey ?? 0) + 1,
+									}
+								: t,
+						),
 					);
 				}
 				setActiveTabId(existing.id);
@@ -360,6 +371,8 @@ export default function App() {
 				label,
 				path,
 				line,
+				column,
+				navigationKey: line ? 1 : undefined,
 			};
 			setTabs((prev) => [...prev, tab]);
 			setActiveTabId(tab.id);
@@ -1037,9 +1050,12 @@ export default function App() {
 									key={activeTab.id}
 									path={activeTab.path}
 									line={activeTab.line}
+									column={activeTab.column}
+									navigationKey={activeTab.navigationKey}
 									subscribe={subscribe}
 									onDeleted={() => closeTab(activeTab.id)}
 									onDirtyChange={(d) => setTabDirty(activeTab.id, d)}
+									onOpenFile={openFile}
 									view={fileViews[activeTab.id] ?? "code"}
 								/>
 							) : null}

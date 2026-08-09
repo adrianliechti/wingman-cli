@@ -14,6 +14,11 @@ import (
 
 const maxRestarts = 3
 
+const (
+	workspaceDiagnosticsMaxFiles = 50
+	sourceDiscoveryCountLimit    = 2000
+)
+
 type Manager struct {
 	workingDir string
 	sessions   map[string]*Session
@@ -22,9 +27,12 @@ type Manager struct {
 	closed     bool
 	mu         sync.Mutex
 
+	detectMu   sync.Mutex
 	roots      []projectRoot
-	detectOnce sync.Once
+	detectedAt time.Time
 }
+
+const detectionCacheTTL = 30 * time.Second
 
 func NewManager(workingDir string) *Manager {
 	return &Manager{
@@ -40,20 +48,32 @@ func (m *Manager) WorkingDir() string {
 }
 
 func (m *Manager) detect() []projectRoot {
-	m.detectOnce.Do(func() {
+	m.detectMu.Lock()
+	defer m.detectMu.Unlock()
+	if m.detectedAt.IsZero() || time.Since(m.detectedAt) >= detectionCacheTTL {
 		m.roots = detectAll(m.workingDir)
-	})
-	return m.roots
+		m.detectedAt = time.Now()
+	}
+	return slices.Clone(m.roots)
 }
 
 func (m *Manager) FindServer(filePath string) *Server {
+	project := m.findProject(filePath)
+	if project == nil {
+		return nil
+	}
+	server := project.Server
+	return &server
+}
+
+func (m *Manager) findProject(filePath string) *projectRoot {
 	ext := strings.TrimPrefix(filepath.Ext(filePath), ".")
 	if ext == "" {
 		return nil
 	}
 
 	dir := filepath.Dir(filePath)
-	var best *Server
+	var best *projectRoot
 	bestLen := -1
 
 	for _, root := range m.detect() {
@@ -66,8 +86,8 @@ func (m *Manager) FindServer(filePath string) *Server {
 		if !slices.Contains(root.Server.Languages, ext) {
 			continue
 		}
-		srv := root.Server
-		best = &srv
+		candidate := root
+		best = &candidate
 		bestLen = len(root.Dir)
 	}
 
@@ -89,17 +109,37 @@ func (m *Manager) DetectServers() []Server {
 	return servers
 }
 
+func (m *Manager) projects() []projectRoot {
+	projects := m.detect()
+	result := make([]projectRoot, 0, len(projects))
+	seen := make(map[string]bool)
+	for _, project := range projects {
+		key := projectKey(project)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, project)
+	}
+	return result
+}
+
+func projectKey(project projectRoot) string {
+	return filepath.Clean(project.Dir) + "\x00" + project.Server.Command
+}
+
 func (m *Manager) GetSession(ctx context.Context, filePath string) (*Session, error) {
-	server := m.FindServer(filePath)
-	if server == nil {
+	project := m.findProject(filePath)
+	if project == nil {
 		return nil, fmt.Errorf("no LSP server found for file: %s", filePath)
 	}
 
-	return m.GetSessionByServer(ctx, *server)
+	return m.getSession(ctx, *project)
 }
 
-func (m *Manager) GetSessionByServer(ctx context.Context, server Server) (*Session, error) {
-	key := server.Command
+func (m *Manager) getSession(ctx context.Context, project projectRoot) (*Session, error) {
+	server := project.Server
+	key := projectKey(project)
 
 	m.mu.Lock()
 	if m.closed {
@@ -121,7 +161,7 @@ func (m *Manager) GetSessionByServer(ctx context.Context, server Server) (*Sessi
 			return nil, fmt.Errorf("LSP server %s crashed %d times, not restarting", server.Name, restartCount)
 		}
 
-		newSession, err := connect(ctx, m.workingDir, server)
+		newSession, err := connect(ctx, project.Dir, server)
 		if err != nil {
 			return nil, fmt.Errorf("restart %s: %w", server.Name, err)
 		}
@@ -153,7 +193,7 @@ func (m *Manager) GetSessionByServer(ctx context.Context, server Server) (*Sessi
 	}
 	m.mu.Unlock()
 
-	session, err := connect(ctx, m.workingDir, server)
+	session, err := connect(ctx, project.Dir, server)
 	if err != nil {
 		return nil, err
 	}
@@ -177,15 +217,15 @@ func (m *Manager) GetSessionByServer(ctx context.Context, server Server) (*Sessi
 }
 
 func (m *Manager) ActiveSession(filePath string) (*Session, bool) {
-	server := m.FindServer(filePath)
-	if server == nil {
+	project := m.findProject(filePath)
+	if project == nil {
 		return nil, false
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if session, ok := m.sessions[server.Command]; ok && session.IsAlive() {
+	if session, ok := m.sessions[projectKey(*project)]; ok && session.IsAlive() {
 		return session, true
 	}
 	return nil, false
@@ -193,31 +233,32 @@ func (m *Manager) ActiveSession(filePath string) (*Session, bool) {
 
 func (m *Manager) WarmUpServers() {
 	go func() {
-		for _, server := range m.DetectServers() {
-			m.warmUp(server)
+		for _, project := range m.projects() {
+			m.warmUp(project)
 		}
 	}()
 }
 
-func (m *Manager) warmUp(server Server) {
+func (m *Manager) warmUp(project projectRoot) {
+	key := projectKey(project)
 	m.mu.Lock()
-	if m.closed || m.warming[server.Command] {
+	if m.closed || m.warming[key] {
 		m.mu.Unlock()
 		return
 	}
-	m.warming[server.Command] = true
+	m.warming[key] = true
 	m.mu.Unlock()
 
 	go func() {
 		defer func() {
 			m.mu.Lock()
-			delete(m.warming, server.Command)
+			delete(m.warming, key)
 			m.mu.Unlock()
 		}()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*startupTimeout)
 		defer cancel()
-		m.GetSessionByServer(ctx, server)
+		m.getSession(ctx, project)
 	}()
 }
 
@@ -225,14 +266,14 @@ func (m *Manager) warmUp(server Server) {
 // to edit/write tool results. It never cold-starts a server synchronously: if
 // none is running yet it warms one up in the background and returns "".
 func (m *Manager) PostEditDiagnostics(ctx context.Context, path string) string {
-	server := m.FindServer(path)
-	if server == nil {
+	project := m.findProject(path)
+	if project == nil {
 		return ""
 	}
 
 	session, ok := m.ActiveSession(path)
 	if !ok {
-		m.warmUp(*server)
+		m.warmUp(*project)
 		return ""
 	}
 
@@ -287,8 +328,8 @@ func (m *Manager) Close() {
 	}
 }
 
-func (m *Manager) openDiscoveredFiles(ctx context.Context, session *Session, languages []string) ([]string, []string, int) {
-	files, total := discoverSourceFiles(m.workingDir, languages, 50)
+func (m *Manager) openDiscoveredFiles(ctx context.Context, project projectRoot, session *Session) ([]string, []string, int, bool) {
+	files, total, truncated := discoverSourceFiles(project.Dir, project.Server.Languages, workspaceDiagnosticsMaxFiles)
 
 	opened := make([]string, 0, len(files))
 	uris := make([]string, 0, len(files))
@@ -303,10 +344,13 @@ func (m *Manager) openDiscoveredFiles(ctx context.Context, session *Session, lan
 
 	waitForPushedDiagnostics(ctx, session, uris, 5*time.Second)
 
-	return opened, uris, total
+	return opened, uris, total, truncated
 }
 
 func waitForPushedDiagnostics(ctx context.Context, session *Session, uris []string, timeout time.Duration) {
+	if session.SupportsPullDiagnostics() {
+		return
+	}
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 
@@ -334,31 +378,83 @@ func waitForPushedDiagnostics(ctx context.Context, session *Session, uris []stri
 	}
 }
 
-func (m *Manager) CollectAllDiagnostics(ctx context.Context) map[string][]Diagnostic {
-	servers := m.DetectServers()
-	result := make(map[string][]Diagnostic)
+type WorkspaceDiagnosticsReport struct {
+	Diagnostics        map[string][]Diagnostic
+	CheckedFiles       int
+	DiscoveredFiles    int
+	DiscoveryTruncated bool
+	UnknownFiles       int
+	UnavailableServers []string
+}
 
-	for _, server := range servers {
-		session, err := m.GetSessionByServer(ctx, server)
+func (m *Manager) CollectAllDiagnostics(ctx context.Context) WorkspaceDiagnosticsReport {
+	report := WorkspaceDiagnosticsReport{Diagnostics: make(map[string][]Diagnostic)}
+
+	for _, project := range m.projects() {
+		session, err := m.getSession(ctx, project)
 		if err != nil {
+			report.UnavailableServers = append(report.UnavailableServers, project.Server.Name)
 			continue
 		}
 
-		files, uris, _ := m.openDiscoveredFiles(ctx, session, server.Languages)
+		files, uris, total, truncated := m.openDiscoveredFiles(ctx, project, session)
+		report.CheckedFiles += len(files)
+		report.DiscoveredFiles += total
+		report.DiscoveryTruncated = report.DiscoveryTruncated || truncated
+		states := collectDiagnosticStates(ctx, session, uris)
 		for i, file := range files {
-			diags := session.CollectDiagnostics(ctx, uris[i])
+			diags, known := states[i].diagnostics, states[i].known
+			if !known {
+				report.UnknownFiles++
+				continue
+			}
 			if len(diags) > 0 {
-				result[file] = diags
+				report.Diagnostics[file] = diags
 			}
 		}
 	}
 
-	return result
+	return report
+}
+
+type diagnosticState struct {
+	diagnostics []Diagnostic
+	known       bool
+}
+
+func collectDiagnosticStates(ctx context.Context, session *Session, uris []string) []diagnosticState {
+	states := make([]diagnosticState, len(uris))
+	if len(uris) == 0 {
+		return states
+	}
+
+	jobs := make(chan int)
+	var workers sync.WaitGroup
+	for range min(8, len(uris)) {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for i := range jobs {
+				states[i].diagnostics, states[i].known = session.DiagnosticsState(ctx, uris[i])
+			}
+		}()
+	}
+	for i := range uris {
+		select {
+		case jobs <- i:
+		case <-ctx.Done():
+			close(jobs)
+			workers.Wait()
+			return states
+		}
+	}
+	close(jobs)
+	workers.Wait()
+	return states
 }
 
 func (m *Manager) WorkspaceDiagnostics(ctx context.Context) (string, error) {
-	servers := m.DetectServers()
-	if len(servers) == 0 {
+	if len(m.projects()) == 0 {
 		return "", fmt.Errorf("no LSP servers detected in workspace")
 	}
 
@@ -367,48 +463,30 @@ func (m *Manager) WorkspaceDiagnostics(ctx context.Context) (string, error) {
 		diag Diagnostic
 	}
 
+	report := m.CollectAllDiagnostics(ctx)
 	var all []fileDiagnostic
-	checkedFiles := 0
-	totalFiles := 0
-	unknownFiles := 0
-	var unavailable []string
-
-	for _, server := range servers {
-		session, err := m.GetSessionByServer(ctx, server)
-		if err != nil {
-			unavailable = append(unavailable, server.Name)
-			continue
-		}
-
-		files, uris, total := m.openDiscoveredFiles(ctx, session, server.Languages)
-		checkedFiles += len(files)
-		totalFiles += total
-
-		for i, file := range files {
-			diags, known := session.DiagnosticsState(ctx, uris[i])
-			if !known {
-				unknownFiles++
-				continue
-			}
-
-			displayPath := relPath(m.workingDir, file)
-			for _, diag := range diags {
-				all = append(all, fileDiagnostic{path: displayPath, diag: diag})
-			}
+	for file, diagnostics := range report.Diagnostics {
+		displayPath := relPath(m.workingDir, file)
+		for _, diag := range diagnostics {
+			all = append(all, fileDiagnostic{path: displayPath, diag: diag})
 		}
 	}
 
 	var notes []string
-	if totalFiles > checkedFiles {
-		notes = append(notes, fmt.Sprintf("checked %d of %d source files; results are partial", checkedFiles, totalFiles))
+	if report.DiscoveredFiles > report.CheckedFiles || report.DiscoveryTruncated {
+		total := fmt.Sprintf("%d", report.DiscoveredFiles)
+		if report.DiscoveryTruncated {
+			total += "+"
+		}
+		notes = append(notes, fmt.Sprintf("checked %d of %s source files; results are partial", report.CheckedFiles, total))
 	} else {
-		notes = append(notes, fmt.Sprintf("checked %d source files", checkedFiles))
+		notes = append(notes, fmt.Sprintf("checked %d source files", report.CheckedFiles))
 	}
-	if unknownFiles > 0 {
-		notes = append(notes, fmt.Sprintf("%d files returned no data", unknownFiles))
+	if report.UnknownFiles > 0 {
+		notes = append(notes, fmt.Sprintf("%d files returned no data", report.UnknownFiles))
 	}
-	if len(unavailable) > 0 {
-		notes = append(notes, "server unavailable: "+strings.Join(unavailable, ", "))
+	if len(report.UnavailableServers) > 0 {
+		notes = append(notes, "server unavailable: "+strings.Join(report.UnavailableServers, ", "))
 	}
 	coverage := "Coverage: " + strings.Join(notes, "; ")
 
@@ -436,16 +514,16 @@ func (m *Manager) WorkspaceDiagnostics(ctx context.Context) (string, error) {
 }
 
 func (m *Manager) WorkspaceSymbols(ctx context.Context, query string) (string, error) {
-	servers := m.DetectServers()
-	if len(servers) == 0 {
+	projects := m.projects()
+	if len(projects) == 0 {
 		return "", fmt.Errorf("no LSP servers detected in workspace")
 	}
 
 	var allSymInfos []SymbolInformation
 	var allWsSymbols []WorkspaceSymbol
 
-	for _, server := range servers {
-		session, err := m.GetSessionByServer(ctx, server)
+	for _, project := range projects {
+		session, err := m.getSession(ctx, project)
 		if err != nil {
 			continue
 		}
@@ -487,9 +565,7 @@ var skippedDiscoveryDirs = map[string]bool{
 	"dist":         true,
 }
 
-func discoverSourceFiles(workingDir string, extensions []string, maxFiles int) ([]string, int) {
-	const countLimit = 2000
-
+func discoverSourceFiles(workingDir string, extensions []string, maxFiles int) ([]string, int, bool) {
 	extSet := make(map[string]bool, len(extensions))
 	for _, ext := range extensions {
 		extSet["."+ext] = true
@@ -497,6 +573,7 @@ func discoverSourceFiles(workingDir string, extensions []string, maxFiles int) (
 
 	var files []string
 	total := 0
+	truncated := false
 	filepath.WalkDir(workingDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -512,16 +589,18 @@ func discoverSourceFiles(workingDir string, extensions []string, maxFiles int) (
 
 		if extSet[filepath.Ext(path)] {
 			total++
+			if total > sourceDiscoveryCountLimit {
+				total = sourceDiscoveryCountLimit
+				truncated = true
+				return filepath.SkipAll
+			}
 			if len(files) < maxFiles {
 				files = append(files, path)
-			}
-			if total >= countLimit {
-				return filepath.SkipAll
 			}
 		}
 
 		return nil
 	})
 
-	return files, total
+	return files, total, truncated
 }
