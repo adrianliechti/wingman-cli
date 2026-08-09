@@ -86,10 +86,10 @@ test("steers an active turn without merging response boundaries", async ({
 	await expect(page.getByText("Queue paused", { exact: true })).toHaveCount(0);
 });
 
-test("runs a command in the terminal panel", async ({ page }) => {
+test("runs a command in a terminal tab", async ({ page }) => {
 	await composer(page);
 
-	await page.getByTitle(/Show terminal/).click();
+	await page.getByTitle(/New .* terminal/).click();
 
 	const screen = page.locator(".xterm-screen");
 	await expect(screen).toBeVisible();
@@ -111,9 +111,12 @@ test("runs a command in the terminal panel", async ({ page }) => {
 	if (await shellMenu.count()) {
 		await shellMenu.click();
 		await page.getByRole("button", { name: /default/ }).click();
-		await expect(page.locator(".xterm-screen")).toHaveCount(2);
+		await expect(page.locator(".xterm-screen")).toHaveCount(1);
+		await page.getByTitle("e2e-title").click();
+		await expect(page.locator(".xterm-screen")).toBeVisible();
 	}
 
-	await page.getByTitle("Hide terminal", { exact: true }).click();
-	await expect(page.locator(".xterm-screen")).toHaveCount(0);
+	await expect(page.getByTitle("Hide terminal", { exact: true })).toHaveCount(
+		0,
+	);
 });

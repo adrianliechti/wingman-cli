@@ -1,4 +1,5 @@
 import {
+	ChevronDown,
 	Compass,
 	Code2,
 	FileText,
@@ -16,13 +17,13 @@ import {
 	X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
 	Group,
 	Panel,
 	type PanelImperativeHandle,
 	Separator,
 	useDefaultLayout,
-	useGroupRef,
 	usePanelRef,
 } from "react-resizable-panels";
 import { ChatPanel } from "./components/ChatPanel";
@@ -38,7 +39,7 @@ import { FileTab } from "./components/FileTab";
 import { FileTree } from "./components/FileTree";
 import { ProblemsPanel } from "./components/ProblemsPanel";
 import { TasksPanel } from "./components/TasksPanel";
-import { TerminalPanel } from "./components/TerminalPanel";
+import { TerminalView } from "./components/TerminalView";
 import { BUILTIN_AGENT_ID } from "./components/AgentPicker";
 import { Sidebar } from "./components/Sidebar";
 import { useCapabilities } from "./hooks/useCapabilities";
@@ -47,16 +48,22 @@ import {
 	type PromptReply,
 	useWebSocket,
 } from "./hooks/useWebSocket";
-import type { DiffLayer, TurnInputIntent } from "./types/protocol";
+import type {
+	DiffLayer,
+	ShellEntry,
+	TerminalEntry,
+	TurnInputIntent,
+} from "./types/protocol";
 
 interface CenterTab {
 	id: string;
-	type: "chat" | "file" | "diff";
+	type: "chat" | "file" | "diff" | "terminal";
 	label: string;
 	path?: string;
 	diffLayer?: DiffLayer;
 	line?: number;
 	sessionId?: string;
+	terminalId?: string;
 }
 
 type RightTab = "changes" | "files" | "agents";
@@ -69,8 +76,6 @@ const EMPTY_USAGE = {
 	lastInputTokens: 0,
 	contextWindow: 0,
 };
-
-const DEFAULT_TERMINAL_PERCENT = 30;
 
 const TERMINAL_SHORTCUT = /Mac|iPhone|iPad/.test(navigator.platform)
 	? "⌃⌥T"
@@ -114,19 +119,13 @@ export default function App() {
 	const [requestedRightTab, setRequestedRightTab] = useState<RightTab>("files");
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
 	const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
-	const [terminalCollapsed, setTerminalCollapsed] = useState(true);
-	const terminalSizeRef = useRef(0);
+	const [terminalShells, setTerminalShells] = useState<ShellEntry[]>([]);
+	const terminalCreatingRef = useRef(false);
 	const leftPanelRef = usePanelRef();
 	const rightPanelRef = usePanelRef();
-	const terminalPanelRef = usePanelRef();
-	const centerGroupRef = useGroupRef();
 	const { defaultLayout, onLayoutChanged } = useDefaultLayout({
 		id: "wingman-layout",
 	});
-	const {
-		defaultLayout: centerDefaultLayout,
-		onLayoutChanged: onCenterLayoutChanged,
-	} = useDefaultLayout({ id: "wingman-center-layout" });
 
 	const [tabs, setTabs] = useState<CenterTab[]>([draftChatTab()]);
 	const [activeTabId, setActiveTabId] = useState(chatTabId(""));
@@ -140,21 +139,88 @@ export default function App() {
 		nonce: number;
 	} | null>(null);
 
-	const toggleTerminal = useCallback(() => {
-		const panel = terminalPanelRef.current;
-		if (!panel) return;
-		if (!panel.isCollapsed()) {
-			panel.collapse();
+	const createTerminal = useCallback(async (shell?: string) => {
+		if (terminalCreatingRef.current) return;
+		terminalCreatingRef.current = true;
+		try {
+			const response = await fetch("/api/terminals", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ shell, cols: 80, rows: 24 }),
+			});
+			if (!response.ok) return;
+			const entry = (await response.json()) as TerminalEntry;
+			const tab: CenterTab = {
+				id: `terminal:${entry.id}`,
+				type: "terminal",
+				label: entry.title,
+				terminalId: entry.id,
+			};
+			setTabs((prev) =>
+				prev.some((item) => item.id === tab.id) ? prev : [...prev, tab],
+			);
+			setActiveTabId(tab.id);
+		} catch {
+		} finally {
+			terminalCreatingRef.current = false;
+		}
+	}, []);
+
+	useEffect(() => {
+		if (!showTerminal) return;
+		let cancelled = false;
+		fetch("/api/terminals/shells")
+			.then((response) => (response.ok ? response.json() : []))
+			.then((shells: ShellEntry[]) => {
+				if (!cancelled) setTerminalShells(shells);
+			})
+			.catch(() => {
+				if (!cancelled) setTerminalShells([]);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [showTerminal]);
+
+	const reloadTerminals = useCallback(async () => {
+		let entries: TerminalEntry[];
+		try {
+			const response = await fetch("/api/terminals");
+			if (!response.ok) return;
+			entries = (await response.json()) as TerminalEntry[];
+		} catch {
 			return;
 		}
-		// Expanding a collapsed panel only grows it to its minSize, so set the
-		// group layout directly to restore the last height (or the default).
-		const size = terminalSizeRef.current || DEFAULT_TERMINAL_PERCENT;
-		centerGroupRef.current?.setLayout({
-			workspace: 100 - size,
-			terminal: size,
+		const ids = new Set(entries.map((entry) => entry.id));
+		setTabs((prev) => {
+			const next = prev.filter(
+				(tab) => tab.type !== "terminal" || ids.has(tab.terminalId ?? ""),
+			);
+			const known = new Set(
+				next
+					.filter((tab) => tab.type === "terminal")
+					.map((tab) => tab.terminalId),
+			);
+			for (const entry of entries) {
+				if (known.has(entry.id)) continue;
+				next.push({
+					id: `terminal:${entry.id}`,
+					type: "terminal",
+					label: entry.title,
+					terminalId: entry.id,
+				});
+			}
+			return next;
 		});
-	}, [terminalPanelRef, centerGroupRef]);
+	}, []);
+
+	useEffect(() => {
+		if (!showTerminal) return;
+		void reloadTerminals();
+		return subscribe((msg) => {
+			if (msg.type === "terminals_changed") void reloadTerminals();
+		});
+	}, [showTerminal, subscribe, reloadTerminals]);
 
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
@@ -177,12 +243,12 @@ export default function App() {
 					(!e.altKey && e.code === "Backquote"))
 			) {
 				e.preventDefault();
-				toggleTerminal();
+				void createTerminal();
 			}
 		};
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
-	}, [toggleTerminal]);
+	}, [createTerminal]);
 
 	const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
 	const activeIsHtml =
@@ -329,6 +395,12 @@ export default function App() {
 		(id: string) => {
 			const idx = tabs.findIndex((t) => t.id === id);
 			if (idx < 0) return;
+			const closing = tabs[idx];
+			if (closing.type === "terminal" && closing.terminalId) {
+				void fetch(`/api/terminals/${encodeURIComponent(closing.terminalId)}`, {
+					method: "DELETE",
+				}).catch(() => {});
+			}
 			setTabs((prev) => {
 				let next = prev.filter((t) => t.id !== id);
 				if (!next.some((t) => t.type === "chat")) {
@@ -352,6 +424,17 @@ export default function App() {
 		},
 		[tabs, activeTabId, activateTab],
 	);
+
+	const setTerminalTitle = useCallback((id: string, title: string) => {
+		if (!title) return;
+		setTabs((prev) =>
+			prev.map((tab) =>
+				tab.type === "terminal" && tab.terminalId === id
+					? { ...tab, label: title }
+					: tab,
+			),
+		);
+	}, []);
 
 	useEffect(() => {
 		if (tabs.some((t) => t.id === activeTabId)) return;
@@ -611,11 +694,11 @@ export default function App() {
 		}
 		if (showTerminal) {
 			actions.push({
-				id: "toggle-terminal",
-				label: "Toggle terminal",
+				id: "new-terminal",
+				label: "New terminal",
 				hint: TERMINAL_SHORTCUT,
 				icon: <SquareTerminal size={12} className="text-fg-dim shrink-0" />,
-				run: toggleTerminal,
+				run: () => void createTerminal(),
 			});
 		}
 		actions.push({
@@ -645,7 +728,7 @@ export default function App() {
 		showTerminal,
 		leftPanelRef,
 		rightPanelRef,
-		toggleTerminal,
+		createTerminal,
 		modes,
 		mode,
 		selectMode,
@@ -722,282 +805,246 @@ export default function App() {
 					minSize="320px"
 					className="flex flex-col overflow-hidden min-w-0 bg-bg"
 				>
-					<Group
-						orientation="vertical"
-						groupRef={centerGroupRef}
-						id="wingman-center-layout"
-						defaultLayout={centerDefaultLayout}
-						onLayoutChanged={onCenterLayoutChanged}
-						className="flex-1 overflow-hidden"
-					>
-						<Panel
-							id="workspace"
-							minSize="160px"
-							className="flex flex-col overflow-hidden min-h-0 bg-bg"
-						>
-							<div className="h-10 flex items-stretch bg-bg shrink-0 overflow-x-auto">
+					<div className="flex flex-1 flex-col overflow-hidden min-h-0 bg-bg">
+						<div className="h-10 flex items-stretch bg-bg shrink-0 overflow-x-auto">
+							<button
+								type="button"
+								className="self-center flex items-center justify-center w-8 h-8 ml-1 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
+								onClick={() => togglePanel(leftPanelRef.current)}
+								title={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+							>
+								{sidebarCollapsed ? (
+									<PanelLeftOpen size={13} />
+								) : (
+									<PanelLeftClose size={13} />
+								)}
+							</button>
+							{sidebarCollapsed && canCreateNew && (
 								<button
 									type="button"
-									className="self-center flex items-center justify-center w-8 h-8 ml-1 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
-									onClick={() => togglePanel(leftPanelRef.current)}
-									title={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+									className="self-center flex items-center justify-center w-8 h-8 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
+									onClick={handleNewSession}
+									title="New session"
 								>
-									{sidebarCollapsed ? (
-										<PanelLeftOpen size={13} />
-									) : (
-										<PanelLeftClose size={13} />
-									)}
+									<Plus size={13} />
 								</button>
-								{sidebarCollapsed && canCreateNew && (
-									<button
-										type="button"
-										className="self-center flex items-center justify-center w-8 h-8 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
-										onClick={handleNewSession}
-										title="New session"
-									>
-										<Plus size={13} />
-									</button>
-								)}
-								{tabs.map((tab) => {
-									const active = tab.id === activeTabId;
-									const isDirty = dirtyTabs.has(tab.id);
-									const running =
-										tab.type === "chat" && tab.sessionId
-											? (sessions[tab.sessionId]?.phase ?? "idle") !== "idle"
-											: false;
-									const Icon =
-										tab.type === "chat"
-											? MessageSquare
+							)}
+							{tabs.map((tab) => {
+								const active = tab.id === activeTabId;
+								const isDirty = dirtyTabs.has(tab.id);
+								const running =
+									tab.type === "chat" && tab.sessionId
+										? (sessions[tab.sessionId]?.phase ?? "idle") !== "idle"
+										: false;
+								const Icon =
+									tab.type === "chat"
+										? MessageSquare
+										: tab.type === "terminal"
+											? SquareTerminal
 											: tab.type === "diff"
 												? GitCompare
 												: FileText;
-									const label =
-										tab.type === "chat" ? chatTabLabel(tab) : tab.label;
-									return (
-										<div
-											key={tab.id}
-											className={`group relative flex items-center gap-1.5 px-3 cursor-pointer text-[12px] shrink-0 select-none transition-colors ${
-												active ? "text-fg" : "text-fg-dim hover:text-fg-muted"
-											}`}
-											onClick={() => activateTab(tab)}
-										>
-											{active && (
-												<span className="absolute bottom-0 left-2 right-2 h-[2px] bg-accent rounded-full" />
+								const label =
+									tab.type === "chat" ? chatTabLabel(tab) : tab.label;
+								return (
+									<div
+										key={tab.id}
+										className={`group relative flex items-center gap-1.5 px-3 cursor-pointer text-[12px] shrink-0 select-none transition-colors ${
+											active ? "text-fg" : "text-fg-dim hover:text-fg-muted"
+										}`}
+										onClick={() => activateTab(tab)}
+										title={label}
+									>
+										{active && (
+											<span className="absolute bottom-0 left-2 right-2 h-[2px] bg-accent rounded-full" />
+										)}
+										<span className="w-3.5 h-3.5 flex items-center justify-center shrink-0">
+											{running ? (
+												<Loader2
+													size={13}
+													className="group-hover:hidden text-accent animate-spin"
+												/>
+											) : isDirty ? (
+												<span
+													className={`group-hover:hidden w-2 h-2 rounded-full ${active ? "bg-fg-muted" : "bg-fg-dim"}`}
+													aria-label="Unsaved changes"
+												/>
+											) : (
+												<Icon
+													size={13}
+													className={`group-hover:hidden ${active ? "text-fg-muted" : "text-fg-dim"}`}
+												/>
 											)}
-											<span className="w-3.5 h-3.5 flex items-center justify-center shrink-0">
-												{running ? (
-													<Loader2
-														size={13}
-														className="group-hover:hidden text-accent animate-spin"
-													/>
-												) : isDirty ? (
-													<span
-														className={`group-hover:hidden w-2 h-2 rounded-full ${active ? "bg-fg-muted" : "bg-fg-dim"}`}
-														aria-label="Unsaved changes"
-													/>
-												) : (
-													<Icon
-														size={13}
-														className={`group-hover:hidden ${active ? "text-fg-muted" : "text-fg-dim"}`}
-													/>
-												)}
-												<button
-													type="button"
-													className="hidden group-hover:flex w-3.5 h-3.5 items-center justify-center text-fg-dim hover:text-fg rounded transition-colors"
-													onClick={(e) => {
-														e.stopPropagation();
-														closeTab(tab.id);
-													}}
-													aria-label="Close tab"
-												>
-													<X size={11} />
-												</button>
-											</span>
-											<span className="truncate max-w-[200px]">{label}</span>
-										</div>
-									);
-								})}
-								<div className="flex-1" />
-								{(usage.inputTokens > 0 || outputTokens > 0) && (
-									<div className="flex items-center px-3 text-[11px] text-fg-dim tabular-nums whitespace-nowrap">
-										{"↑"}
-										{formatTokens(usage.inputTokens)}
-										{usage.cachedTokens > 0 && (
-											<span className="ml-1">
-												({formatTokens(usage.cachedTokens)} cached)
-											</span>
-										)}
-										<span className="ml-2">
-											{streamEstimate > 0 ? "↓~" : "↓"}
-											{formatTokens(outputTokens)}
+											<button
+												type="button"
+												className="hidden group-hover:flex w-3.5 h-3.5 items-center justify-center text-fg-dim hover:text-fg rounded transition-colors"
+												onClick={(e) => {
+													e.stopPropagation();
+													closeTab(tab.id);
+												}}
+												aria-label="Close tab"
+											>
+												<X size={11} />
+											</button>
 										</span>
-										{usage.contextWindow > 0 && usage.lastInputTokens > 0 && (
-											<ContextLeft
-												used={usage.lastInputTokens}
-												window={usage.contextWindow}
-											/>
-										)}
+										<span className="truncate max-w-[200px]">{label}</span>
 									</div>
-								)}
-								{activeIsHtml && (
-									<button
-										type="button"
-										className={`self-center flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-bg-hover ${
-											activeFileView === "preview"
-												? "text-fg-muted"
-												: "text-fg-dim hover:text-fg-muted"
-										}`}
-										onClick={() =>
-											setFileViews((prev) => ({
-												...prev,
-												[activeTab.id]:
-													activeFileView === "preview" ? "code" : "preview",
-											}))
-										}
-										title={
-											activeFileView === "preview"
-												? "Show code editor"
-												: "Show browser preview"
-										}
-										aria-label={
-											activeFileView === "preview"
-												? "Show code editor"
-												: "Show browser preview"
-										}
-									>
-										{activeFileView === "preview" ? (
-											<Code2 size={13} />
-										) : (
-											<Globe2 size={13} />
-										)}
-									</button>
-								)}
-								{showTerminal && (
-									<button
-										type="button"
-										className={`self-center flex items-center justify-center w-8 h-8 rounded-md hover:bg-bg-hover cursor-pointer transition-colors shrink-0 ${
-											terminalCollapsed
-												? "text-fg-dim hover:text-fg-muted"
-												: "text-fg-muted"
-										}`}
-										onClick={toggleTerminal}
-										title={`${terminalCollapsed ? "Show" : "Hide"} terminal (${TERMINAL_SHORTCUT})`}
-									>
-										<SquareTerminal size={13} />
-									</button>
-								)}
+								);
+							})}
+							<div className="flex-1" />
+							{(usage.inputTokens > 0 || outputTokens > 0) && (
+								<div className="flex items-center px-3 text-[11px] text-fg-dim tabular-nums whitespace-nowrap">
+									{"↑"}
+									{formatTokens(usage.inputTokens)}
+									{usage.cachedTokens > 0 && (
+										<span className="ml-1">
+											({formatTokens(usage.cachedTokens)} cached)
+										</span>
+									)}
+									<span className="ml-2">
+										{streamEstimate > 0 ? "↓~" : "↓"}
+										{formatTokens(outputTokens)}
+									</span>
+									{usage.contextWindow > 0 && usage.lastInputTokens > 0 && (
+										<ContextLeft
+											used={usage.lastInputTokens}
+											window={usage.contextWindow}
+										/>
+									)}
+								</div>
+							)}
+							{activeIsHtml && (
 								<button
 									type="button"
-									className="self-center flex items-center justify-center w-8 h-8 mr-1 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
-									onClick={() => togglePanel(rightPanelRef.current)}
-									title={rightPanelCollapsed ? "Show panel" : "Hide panel"}
+									className={`self-center flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-bg-hover ${
+										activeFileView === "preview"
+											? "text-fg-muted"
+											: "text-fg-dim hover:text-fg-muted"
+									}`}
+									onClick={() =>
+										setFileViews((prev) => ({
+											...prev,
+											[activeTab.id]:
+												activeFileView === "preview" ? "code" : "preview",
+										}))
+									}
+									title={
+										activeFileView === "preview"
+											? "Show code editor"
+											: "Show browser preview"
+									}
+									aria-label={
+										activeFileView === "preview"
+											? "Show code editor"
+											: "Show browser preview"
+									}
 								>
-									{rightPanelCollapsed ? (
-										<PanelRightOpen size={13} />
+									{activeFileView === "preview" ? (
+										<Code2 size={13} />
 									) : (
-										<PanelRightClose size={13} />
+										<Globe2 size={13} />
 									)}
 								</button>
-							</div>
-
-							<div className="h-px bg-border-subtle shrink-0" />
-
-							<div className="flex-1 overflow-hidden">
-								{activeTab.type === "chat" ? (
-									<ChatPanel
-										key={activeTab.id}
-										sessionId={activeTab.sessionId ?? ""}
-										entries={entries}
-										phase={phase}
-										modes={modes}
-										mode={mode}
-										onSelectMode={selectMode}
-										onSend={handleSend}
-										onCancel={handleCancel}
-										pendingInputs={pendingInputs}
-										queuePaused={queuePaused}
-										canSteer={canSteer}
-										onRemoveQueued={(id, state) => {
-											if (!sessionId) return;
-											if (state === "queued" || state === "sending") {
-												removeQueued(sessionId, id);
-											} else {
-												dismissPending(sessionId, id);
-											}
-										}}
-										onUpdateQueued={(id, text, files, images) =>
-											sessionId
-												? updateQueued(sessionId, id, text, files, images)
-												: false
-										}
-										onResumeQueue={() => {
-											if (sessionId) resumeQueue(sessionId);
-										}}
-										onClearQueue={() => {
-											if (sessionId) clearQueue(sessionId);
-										}}
-										loading={
-											sessionLoad.loading && sessionLoad.id === sessionId
-										}
-										loadError={
-											sessionLoad.id === sessionId ? sessionLoad.error : null
-										}
-										error={sessionError}
-										onDismissError={() => {
-											if (sessionId) dismissError(sessionId);
-										}}
-										subscribe={subscribe}
-										prompt={prompt}
-										onPromptReply={handlePromptReply}
-										seed={composerSeed}
-										toolProgress={toolProgress}
-									/>
-								) : activeTab.type === "diff" && activeTab.path ? (
-									<DiffTab
-										path={activeTab.path}
-										layer={activeTab.diffLayer}
-										sessionId={sessionId}
-										subscribe={subscribe}
-										onDeleted={() => closeTab(activeTab.id)}
-									/>
-								) : activeTab.path ? (
-									<FileTab
-										key={activeTab.id}
-										path={activeTab.path}
-										line={activeTab.line}
-										subscribe={subscribe}
-										onDeleted={() => closeTab(activeTab.id)}
-										onDirtyChange={(d) => setTabDirty(activeTab.id, d)}
-										view={fileViews[activeTab.id] ?? "code"}
-									/>
-								) : null}
-							</div>
-						</Panel>
-						{showTerminal && <VerticalResizeHandle />}
-						{showTerminal && (
-							<Panel
-								panelRef={terminalPanelRef}
-								id="terminal"
-								defaultSize="0px"
-								collapsible
-								collapsedSize="0px"
-								minSize="120px"
-								groupResizeBehavior="preserve-pixel-size"
-								onResize={({ inPixels, asPercentage }) => {
-									setTerminalCollapsed(inPixels === 0);
-									if (inPixels > 0) terminalSizeRef.current = asPercentage;
-								}}
-								className="overflow-hidden"
+							)}
+							{showTerminal && (
+								<TerminalLauncher
+									shells={terminalShells}
+									onCreate={(shell) => void createTerminal(shell)}
+								/>
+							)}
+							<button
+								type="button"
+								className="self-center flex items-center justify-center w-8 h-8 mr-1 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
+								onClick={() => togglePanel(rightPanelRef.current)}
+								title={rightPanelCollapsed ? "Show panel" : "Hide panel"}
 							>
-								{!terminalCollapsed && (
-									<TerminalPanel
-										onClose={() => terminalPanelRef.current?.collapse()}
-										subscribe={subscribe}
-									/>
+								{rightPanelCollapsed ? (
+									<PanelRightOpen size={13} />
+								) : (
+									<PanelRightClose size={13} />
 								)}
-							</Panel>
-						)}
-					</Group>
+							</button>
+						</div>
+
+						<div className="h-px bg-border-subtle shrink-0" />
+
+						<div className="flex-1 overflow-hidden">
+							{activeTab.type === "chat" ? (
+								<ChatPanel
+									key={activeTab.id}
+									sessionId={activeTab.sessionId ?? ""}
+									entries={entries}
+									phase={phase}
+									modes={modes}
+									mode={mode}
+									onSelectMode={selectMode}
+									onSend={handleSend}
+									onCancel={handleCancel}
+									pendingInputs={pendingInputs}
+									queuePaused={queuePaused}
+									canSteer={canSteer}
+									onRemoveQueued={(id, state) => {
+										if (!sessionId) return;
+										if (state === "queued" || state === "sending") {
+											removeQueued(sessionId, id);
+										} else {
+											dismissPending(sessionId, id);
+										}
+									}}
+									onUpdateQueued={(id, text, files, images) =>
+										sessionId
+											? updateQueued(sessionId, id, text, files, images)
+											: false
+									}
+									onResumeQueue={() => {
+										if (sessionId) resumeQueue(sessionId);
+									}}
+									onClearQueue={() => {
+										if (sessionId) clearQueue(sessionId);
+									}}
+									loading={sessionLoad.loading && sessionLoad.id === sessionId}
+									loadError={
+										sessionLoad.id === sessionId ? sessionLoad.error : null
+									}
+									error={sessionError}
+									onDismissError={() => {
+										if (sessionId) dismissError(sessionId);
+									}}
+									subscribe={subscribe}
+									prompt={prompt}
+									onPromptReply={handlePromptReply}
+									seed={composerSeed}
+									toolProgress={toolProgress}
+								/>
+							) : activeTab.type === "terminal" && activeTab.terminalId ? (
+								<TerminalView
+									key={activeTab.terminalId}
+									id={activeTab.terminalId}
+									active
+									onExit={() => closeTab(activeTab.id)}
+									onTitle={setTerminalTitle}
+								/>
+							) : activeTab.type === "diff" && activeTab.path ? (
+								<DiffTab
+									path={activeTab.path}
+									layer={activeTab.diffLayer}
+									sessionId={sessionId}
+									subscribe={subscribe}
+									onDeleted={() => closeTab(activeTab.id)}
+								/>
+							) : activeTab.path ? (
+								<FileTab
+									key={activeTab.id}
+									path={activeTab.path}
+									line={activeTab.line}
+									subscribe={subscribe}
+									onDeleted={() => closeTab(activeTab.id)}
+									onDirtyChange={(d) => setTabDirty(activeTab.id, d)}
+									view={fileViews[activeTab.id] ?? "code"}
+								/>
+							) : null}
+						</div>
+					</div>
 				</Panel>
 				<ResizeHandle />
 
@@ -1128,12 +1175,6 @@ function ResizeHandle() {
 	);
 }
 
-function VerticalResizeHandle() {
-	return (
-		<Separator className="h-px shrink-0 bg-border-subtle outline-none hover:bg-accent active:bg-accent transition-colors" />
-	);
-}
-
 function RightTabButton({
 	active,
 	onClick,
@@ -1156,6 +1197,112 @@ function RightTabButton({
 				<span className="absolute left-3 right-3 bottom-0 h-[2px] bg-accent rounded-full" />
 			)}
 		</button>
+	);
+}
+
+function TerminalLauncher({
+	shells,
+	onCreate,
+}: {
+	shells: ShellEntry[];
+	onCreate: (shell?: string) => void;
+}) {
+	const [open, setOpen] = useState(false);
+	const [menuPosition, setMenuPosition] = useState({ top: 0, right: 0 });
+	const launcherRef = useRef<HTMLDivElement>(null);
+	const menuRef = useRef<HTMLDivElement>(null);
+
+	const updateMenuPosition = useCallback(() => {
+		const rect = launcherRef.current?.getBoundingClientRect();
+		if (!rect) return;
+		setMenuPosition({
+			top: rect.bottom + 4,
+			right: Math.max(4, window.innerWidth - rect.right),
+		});
+	}, []);
+
+	useEffect(() => {
+		if (!open) return;
+		const close = (event: MouseEvent) => {
+			const target = event.target as Node;
+			if (
+				!launcherRef.current?.contains(target) &&
+				!menuRef.current?.contains(target)
+			) {
+				setOpen(false);
+			}
+		};
+		updateMenuPosition();
+		document.addEventListener("mousedown", close);
+		window.addEventListener("resize", updateMenuPosition);
+		window.addEventListener("scroll", updateMenuPosition, true);
+		return () => {
+			document.removeEventListener("mousedown", close);
+			window.removeEventListener("resize", updateMenuPosition);
+			window.removeEventListener("scroll", updateMenuPosition, true);
+		};
+	}, [open, updateMenuPosition]);
+
+	const label = shells[0]?.name ?? "shell";
+	const hasChoices = shells.length > 1;
+
+	return (
+		<div
+			ref={launcherRef}
+			className="relative self-center flex h-8 w-8 shrink-0"
+		>
+			<button
+				type="button"
+				className={`flex h-8 items-center justify-center text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted ${
+					hasChoices ? "w-5 rounded-l-md" : "w-8 rounded-md"
+				}`}
+				onClick={() => onCreate()}
+				title={`New ${label} terminal`}
+			>
+				<SquareTerminal size={13} />
+			</button>
+			{hasChoices && (
+				<button
+					type="button"
+					className="flex h-8 w-3 items-center justify-center rounded-r-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
+					onClick={() => {
+						updateMenuPosition();
+						setOpen((value) => !value);
+					}}
+					title="New terminal with another shell"
+					aria-label="Select shell"
+				>
+					<ChevronDown size={9} />
+				</button>
+			)}
+			{open &&
+				createPortal(
+					<div
+						ref={menuRef}
+						className="fixed z-[100] max-h-[220px] min-w-[160px] overflow-y-auto rounded-md border border-border bg-bg-elevated/95 py-1 shadow-xl backdrop-blur-sm"
+						style={menuPosition}
+					>
+						{shells.map((shell, index) => (
+							<button
+								type="button"
+								key={shell.id}
+								onClick={() => {
+									setOpen(false);
+									onCreate(shell.id);
+								}}
+								className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg"
+							>
+								<SquareTerminal size={12} className="shrink-0 text-fg-dim" />
+								<span className="flex-1 truncate">{shell.name}</span>
+								{index === 0 && (
+									<span className="text-[10px] text-fg-dim">default</span>
+								)}
+							</button>
+						))}
+					</div>,
+					document.body,
+				)}
+		</div>
 	);
 }
 
