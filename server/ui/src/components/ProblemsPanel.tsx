@@ -1,4 +1,10 @@
-import { AlertCircle, AlertTriangle, Info, RefreshCw } from "lucide-react";
+import {
+	AlertCircle,
+	AlertTriangle,
+	Info,
+	Loader2,
+	RefreshCw,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
 	DiagnosticEntry,
@@ -120,32 +126,30 @@ export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
 
 	return (
 		<div className="flex flex-col h-full overflow-hidden bg-bg">
-			<div className="h-8 px-3 flex items-center gap-2 shrink-0">
+			<div className="h-9 px-3 flex items-center gap-2 shrink-0 border-b border-border-subtle bg-bg-surface/20">
 				<span className="text-[11px] text-fg-muted">Diagnostics</span>
-				<span className="text-[10px] text-fg-dim tabular-nums">
-					{diagnostics.length}
-				</span>
-				{coverage && (
+				{diagnostics.length > 0 && (
 					<span
-						className="text-[10px] text-fg-dim tabular-nums truncate"
+						className="min-w-4 h-4 px-1 rounded-full bg-bg-active text-[9px] leading-4 text-center text-fg-dim tabular-nums"
 						title={coverageTitle}
 					>
-						{coverage.checked_files}
-						{coverage.discovery_truncated ? "+" : ""} files
+						{diagnostics.length}
 					</span>
 				)}
-				{coverage?.analyzing && (
-					<span className="text-[10px] text-fg-dim italic">analyzing…</span>
-				)}
+				<div className="flex-1" />
 				<button
 					type="button"
 					disabled={loading}
 					onClick={() => void load()}
 					title="Refresh diagnostics"
 					aria-label="Refresh diagnostics"
-					className="ml-auto w-6 h-6 flex items-center justify-center rounded text-fg-dim hover:text-fg hover:bg-bg-hover disabled:opacity-50"
+					className="w-6 h-6 flex items-center justify-center rounded text-fg-dim hover:text-fg hover:bg-bg-hover disabled:opacity-50"
 				>
-					<RefreshCw size={11} className={loading ? "animate-spin" : ""} />
+					{loading || coverage?.analyzing ? (
+						<Loader2 size={11} className="animate-spin" />
+					) : (
+						<RefreshCw size={11} />
+					)}
 				</button>
 			</div>
 			<div className="overflow-y-auto flex-1 px-1 pb-2">
