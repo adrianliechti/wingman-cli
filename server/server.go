@@ -79,6 +79,9 @@ type Server struct {
 	pendingPrompts map[string]pendingPrompt
 	confirmAll     map[string]bool
 
+	lspExternalMu    sync.Mutex
+	lspExternalPaths map[string]bool
+
 	taskPumpMu sync.Mutex
 	taskPumps  map[*task.Registry]bool
 
@@ -364,6 +367,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Post("/references", s.handleLSPReferences)
 			r.Post("/hover", s.handleLSPHover)
 			r.Post("/document-symbols", s.handleLSPDocumentSymbols)
+			r.Get("/file", s.handleLSPExternalFile)
 		})
 		r.Get("/skills", s.handleSkills)
 		r.Get("/capabilities", s.handleCapabilities)

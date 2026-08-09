@@ -401,12 +401,41 @@ func (w *Workspace) SyncProjectMode() {
 	previousChanges.Close()
 }
 
+// lspManager returns the LSP manager; callers must hold lspLifeMu for the
+// duration of any call into it.
+func (w *Workspace) lspManager() *lsp.Manager {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.LSP
+}
+
+// withLSPDocument runs fn against the session owning filePath after syncing the
+// document, holding the LSP lifetime lock for the duration of the call.
+func (w *Workspace) withLSPDocument(ctx context.Context, filePath string, content *string, fn func(*lsp.Session, string) error) error {
+	w.lspLifeMu.RLock()
+	defer w.lspLifeMu.RUnlock()
+
+	manager := w.lspManager()
+	if manager == nil {
+		return fmt.Errorf("language server unavailable")
+	}
+
+	session, err := manager.GetSession(ctx, filePath)
+	if err != nil {
+		return err
+	}
+	uri, err := syncEditorDocument(ctx, session, filePath, content)
+	if err != nil {
+		return err
+	}
+	return fn(session, uri)
+}
+
 func (w *Workspace) Diagnostics(ctx context.Context) lsp.WorkspaceDiagnosticsReport {
 	w.lspLifeMu.RLock()
 	defer w.lspLifeMu.RUnlock()
-	w.mu.RLock()
-	manager := w.LSP
-	w.mu.RUnlock()
+
+	manager := w.lspManager()
 	if manager == nil {
 		return lsp.WorkspaceDiagnosticsReport{}
 	}
@@ -416,24 +445,15 @@ func (w *Workspace) Diagnostics(ctx context.Context) lsp.WorkspaceDiagnosticsRep
 // FileDiagnostics returns diagnostics for one disk file or in-memory editor
 // buffer. The boolean is false when the server has not produced a result yet.
 func (w *Workspace) FileDiagnostics(ctx context.Context, filePath string, content *string) ([]lsp.Diagnostic, bool, error) {
-	w.lspLifeMu.RLock()
-	defer w.lspLifeMu.RUnlock()
-	w.mu.RLock()
-	manager := w.LSP
-	w.mu.RUnlock()
-	if manager == nil {
-		return nil, false, fmt.Errorf("language server unavailable")
-	}
-
-	session, err := manager.GetSession(ctx, filePath)
+	var diagnostics []lsp.Diagnostic
+	var known bool
+	err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
+		diagnostics, known = session.WaitForDiagnostics(ctx, uri, 2*time.Second)
+		return nil
+	})
 	if err != nil {
 		return nil, false, err
 	}
-	uri, err := syncEditorDocument(ctx, session, filePath, content)
-	if err != nil {
-		return nil, false, err
-	}
-	diagnostics, known := session.WaitForDiagnostics(ctx, uri, 2*time.Second)
 	return diagnostics, known, nil
 }
 
@@ -464,66 +484,43 @@ func (w *Workspace) ReferenceLocations(ctx context.Context, filePath string, con
 }
 
 func (w *Workspace) locationRequest(ctx context.Context, filePath string, content *string, request func(*lsp.Session, string) ([]lsp.DefLocation, error)) ([]lsp.DefLocation, error) {
-	w.lspLifeMu.RLock()
-	defer w.lspLifeMu.RUnlock()
-	w.mu.RLock()
-	manager := w.LSP
-	w.mu.RUnlock()
-	if manager == nil {
-		return nil, fmt.Errorf("language server unavailable")
-	}
-
-	session, err := manager.GetSession(ctx, filePath)
+	var locations []lsp.DefLocation
+	err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
+		var err error
+		locations, err = request(session, uri)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	uri, err := syncEditorDocument(ctx, session, filePath, content)
-	if err != nil {
-		return nil, err
-	}
-	return request(session, uri)
+	return locations, nil
 }
 
 func (w *Workspace) HoverInformation(ctx context.Context, filePath string, content *string, line, column int) (string, error) {
-	w.lspLifeMu.RLock()
-	defer w.lspLifeMu.RUnlock()
-	w.mu.RLock()
-	manager := w.LSP
-	w.mu.RUnlock()
-	if manager == nil {
-		return "", fmt.Errorf("language server unavailable")
-	}
-
-	session, err := manager.GetSession(ctx, filePath)
+	var contents string
+	err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
+		var err error
+		contents, err = session.HoverInformation(ctx, uri, line, column)
+		return err
+	})
 	if err != nil {
 		return "", err
 	}
-	uri, err := syncEditorDocument(ctx, session, filePath, content)
-	if err != nil {
-		return "", err
-	}
-	return session.HoverInformation(ctx, uri, line, column)
+	return contents, nil
 }
 
 func (w *Workspace) DocumentSymbolItems(ctx context.Context, filePath string, content *string) ([]lsp.DocumentSymbol, []lsp.SymbolInformation, error) {
-	w.lspLifeMu.RLock()
-	defer w.lspLifeMu.RUnlock()
-	w.mu.RLock()
-	manager := w.LSP
-	w.mu.RUnlock()
-	if manager == nil {
-		return nil, nil, fmt.Errorf("language server unavailable")
-	}
-
-	session, err := manager.GetSession(ctx, filePath)
+	var docSymbols []lsp.DocumentSymbol
+	var symInfos []lsp.SymbolInformation
+	err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
+		var err error
+		docSymbols, symInfos, err = session.DocumentSymbolItems(ctx, uri)
+		return err
+	})
 	if err != nil {
 		return nil, nil, err
 	}
-	uri, err := syncEditorDocument(ctx, session, filePath, content)
-	if err != nil {
-		return nil, nil, err
-	}
-	return session.DocumentSymbolItems(ctx, uri)
+	return docSymbols, symInfos, nil
 }
 
 func syncEditorDocument(ctx context.Context, session *lsp.Session, filePath string, content *string) (string, error) {
@@ -568,9 +565,8 @@ func (w *Workspace) postEditDiagnostics(ctx context.Context, path string) string
 
 	w.lspLifeMu.RLock()
 	defer w.lspLifeMu.RUnlock()
-	w.mu.RLock()
-	manager := w.LSP
-	w.mu.RUnlock()
+
+	manager := w.lspManager()
 	if manager == nil {
 		return ""
 	}
@@ -831,9 +827,8 @@ func (w *Workspace) ManagedTools() (mcpTools, lspTools, graphTools []tool.Tool) 
 func (w *Workspace) HasLSP() bool {
 	w.lspLifeMu.RLock()
 	defer w.lspLifeMu.RUnlock()
-	w.mu.RLock()
-	manager := w.LSP
-	w.mu.RUnlock()
+
+	manager := w.lspManager()
 	return manager != nil && len(manager.DetectServers()) > 0
 }
 

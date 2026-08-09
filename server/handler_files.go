@@ -219,27 +219,27 @@ func (s *Server) handleFileRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ext := strings.ToLower(filepath.Ext(filePath))
-	lang := extToLanguage[ext]
-
-	base := strings.ToLower(filepath.Base(filePath))
-	if lang == "" {
-		switch base {
-		case "dockerfile":
-			lang = "dockerfile"
-		case "makefile":
-			lang = "makefile"
-		case "cmakelists.txt":
-			lang = "cmake"
-		}
-	}
-
 	writeJSON(w, FileContent{
 		Path:     filePath,
 		Content:  string(data),
-		Language: lang,
+		Language: languageForPath(filePath),
 		Size:     size,
 	})
+}
+
+func languageForPath(filePath string) string {
+	if lang := extToLanguage[strings.ToLower(filepath.Ext(filePath))]; lang != "" {
+		return lang
+	}
+	switch strings.ToLower(filepath.Base(filePath)) {
+	case "dockerfile":
+		return "dockerfile"
+	case "makefile":
+		return "makefile"
+	case "cmakelists.txt":
+		return "cmake"
+	}
+	return ""
 }
 
 func isBinary(data []byte) bool {

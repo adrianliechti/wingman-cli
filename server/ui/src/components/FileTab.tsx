@@ -15,10 +15,16 @@ interface Props {
 	line?: number;
 	column?: number;
 	navigationKey?: number;
+	external?: boolean;
 	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 	onDeleted?: () => void;
 	onDirtyChange?: (dirty: boolean) => void;
-	onOpenFile?: (path: string, line: number, column: number) => void;
+	onOpenFile?: (
+		path: string,
+		line: number,
+		column: number,
+		external?: boolean,
+	) => void;
 	view?: "code" | "preview";
 }
 
@@ -27,6 +33,7 @@ export function FileTab({
 	line,
 	column,
 	navigationKey,
+	external = false,
 	subscribe,
 	onDeleted,
 	onDirtyChange,
@@ -114,7 +121,7 @@ export function FileTab({
 		loadControllerRef.current = controller;
 		try {
 			const res = await fetch(
-				`/api/files/read?path=${encodeURIComponent(path)}`,
+				`${external ? "/api/lsp/file" : "/api/files/read"}?path=${encodeURIComponent(path)}`,
 				{ signal: controller.signal },
 			);
 			if (controller.signal.aborted) return;
@@ -143,7 +150,7 @@ export function FileTab({
 				loadControllerRef.current = null;
 			}
 		}
-	}, [path]);
+	}, [path, external]);
 
 	useEffect(() => {
 		setLoading(true);
@@ -243,23 +250,35 @@ export function FileTab({
 					onMount={(editor, monaco) => {
 						editorRef.current = editor;
 						lspBridgeRef.current?.dispose();
-						lspBridgeRef.current = createMonacoLSPBridge({
-							monaco,
-							editor,
-							file,
-							getDirtyContent: () =>
-								dirtyRef.current ? valueRef.current : undefined,
-							onOpenFile: (targetPath, targetLine, targetColumn) =>
-								onOpenFileRef.current?.(targetPath, targetLine, targetColumn),
-						});
-						void loadDiagnostics();
+						if (!external) {
+							lspBridgeRef.current = createMonacoLSPBridge({
+								monaco,
+								editor,
+								file,
+								getDirtyContent: () =>
+									dirtyRef.current ? valueRef.current : undefined,
+								onOpenFile: (
+									targetPath,
+									targetLine,
+									targetColumn,
+									targetExternal,
+								) =>
+									onOpenFileRef.current?.(
+										targetPath,
+										targetLine,
+										targetColumn,
+										targetExternal,
+									),
+							});
+							void loadDiagnostics();
+							editor.addCommand(
+								monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
+								() => {
+									void save();
+								},
+							);
+						}
 						revealEditorPosition(editor, line, column);
-						editor.addCommand(
-							monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
-							() => {
-								void save();
-							},
-						);
 					}}
 					onChange={(v) => {
 						loadControllerRef.current?.abort();
@@ -280,6 +299,7 @@ export function FileTab({
 						wordWrap: "on",
 						renderWhitespace: "none",
 						padding: { top: 8 },
+						readOnly: external,
 					}}
 				/>
 			)}

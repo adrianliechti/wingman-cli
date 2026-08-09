@@ -10,7 +10,12 @@ interface BridgeOptions {
 	editor: MonacoTypes.editor.IStandaloneCodeEditor;
 	file: FileContent;
 	getDirtyContent: () => string | undefined;
-	onOpenFile?: (path: string, line: number, column: number) => void;
+	onOpenFile?: (
+		path: string,
+		line: number,
+		column: number,
+		external?: boolean,
+	) => void;
 }
 
 export interface MonacoLSPBridge {
@@ -44,7 +49,10 @@ export function createMonacoLSPBridge({
 	const sourceModel = editor.getModel();
 	const disposables: MonacoTypes.IDisposable[] = [];
 	const ownedModels = new Map<string, MonacoTypes.editor.ITextModel>();
-	const definitionPaths = new Map<string, string>();
+	const definitionTargets = new Map<
+		string,
+		{ path: string; external: boolean }
+	>();
 	const requests = new Set<AbortController>();
 	let disposed = false;
 	let diagnosticsRevision = 0;
@@ -78,28 +86,30 @@ export function createMonacoLSPBridge({
 	): Promise<MonacoTypes.languages.Location[] | undefined> {
 		if (!sourceModel || model !== sourceModel) return;
 		return trackedRequest(token, async (signal) => {
-			const response = await fetch(endpoint, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify(
-					positionRequest(file.path, getDirtyContent(), position),
-				),
+			const locations = await postJSON<LSPFileLocation[]>(
+				endpoint,
+				positionRequest(file.path, getDirtyContent(), position),
 				signal,
-			});
-			if (!response.ok || disposed || token.isCancellationRequested) return;
-			const locations = (await response.json()) as LSPFileLocation[];
+			);
+			if (!locations || disposed || token.isCancellationRequested) return;
 			const targetURIs = new Map<string, MonacoTypes.Uri>();
 			for (const location of locations) {
 				if (location.path === file.path) {
 					targetURIs.set(location.path, sourceModel.uri);
 					continue;
 				}
+				const external = location.external === true;
 				const uri = monaco.Uri.from({
 					scheme: definitionScheme,
-					path: `/${location.path}`,
+					path: location.path.startsWith("/")
+						? location.path
+						: `/${location.path}`,
 				});
 				targetURIs.set(location.path, uri);
-				definitionPaths.set(uri.toString(), location.path);
+				definitionTargets.set(uri.toString(), {
+					path: location.path,
+					external,
+				});
 			}
 
 			async function loadTargetModel(
@@ -107,8 +117,10 @@ export function createMonacoLSPBridge({
 				uri: MonacoTypes.Uri,
 			): Promise<string | null> {
 				if (targetPath === file.path) return targetPath;
+				const external =
+					definitionTargets.get(uri.toString())?.external === true;
 				const fileResponse = await fetch(
-					`/api/files/read?path=${encodeURIComponent(targetPath)}`,
+					`${external ? "/api/lsp/file" : "/api/files/read"}?path=${encodeURIComponent(targetPath)}`,
 					{ signal },
 				);
 				if (!fileResponse.ok || disposed || token.isCancellationRequested)
@@ -209,17 +221,12 @@ export function createMonacoLSPBridge({
 				) {
 					if (model !== sourceModel) return;
 					return trackedRequest(token, async (signal) => {
-						const response = await fetch("/api/lsp/hover", {
-							method: "POST",
-							headers: { "Content-Type": "application/json" },
-							body: JSON.stringify(
-								positionRequest(file.path, getDirtyContent(), position),
-							),
+						const result = await postJSON<{ contents: string }>(
+							"/api/lsp/hover",
+							positionRequest(file.path, getDirtyContent(), position),
 							signal,
-						});
-						if (!response.ok) return;
-						const result = (await response.json()) as { contents: string };
-						return result.contents
+						);
+						return result?.contents
 							? { contents: [{ value: result.contents }] }
 							: undefined;
 					});
@@ -232,21 +239,12 @@ export function createMonacoLSPBridge({
 				) {
 					if (model !== sourceModel) return;
 					return trackedRequest(token, async (signal) => {
-						const dirtyContent = getDirtyContent();
-						const response = await fetch("/api/lsp/document-symbols", {
-							method: "POST",
-							headers: { "Content-Type": "application/json" },
-							body: JSON.stringify({
-								path: file.path,
-								...(dirtyContent === undefined
-									? {}
-									: { content: dirtyContent }),
-							}),
+						const symbols = await postJSON<LSPDocumentSymbol[]>(
+							"/api/lsp/document-symbols",
+							documentRequest(file.path, getDirtyContent()),
 							signal,
-						});
-						if (!response.ok) return;
-						const symbols = (await response.json()) as LSPDocumentSymbol[];
-						return symbols.map((symbol) => documentSymbol(model, symbol));
+						);
+						return symbols?.map((symbol) => documentSymbol(model, symbol));
 					});
 				},
 			}),
@@ -261,8 +259,8 @@ export function createMonacoLSPBridge({
 					resource: MonacoTypes.Uri,
 					selection?: MonacoTypes.IRange | MonacoTypes.IPosition,
 				) {
-					const targetPath = definitionPaths.get(resource.toString());
-					if (!targetPath) return false;
+					const target = definitionTargets.get(resource.toString());
+					if (!target) return false;
 					const line = selection
 						? "lineNumber" in selection
 							? selection.lineNumber
@@ -273,7 +271,7 @@ export function createMonacoLSPBridge({
 							? selection.column
 							: selection.startColumn
 						: 1;
-					onOpenFile(targetPath, line, column);
+					onOpenFile(target.path, line, column, target.external);
 					return true;
 				},
 			}),
@@ -289,20 +287,13 @@ export function createMonacoLSPBridge({
 			requests.add(controller);
 			const revision = ++diagnosticsRevision;
 			try {
-				const dirtyContent = getDirtyContent();
-				const response = await fetch("/api/lsp/diagnostics", {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({
-						path: file.path,
-						...(dirtyContent === undefined ? {} : { content: dirtyContent }),
-					}),
-					signal: controller.signal,
-				});
-				if (!response.ok || disposed || revision !== diagnosticsRevision)
+				const diagnostics = await postJSON<DiagnosticEntry[]>(
+					"/api/lsp/diagnostics",
+					documentRequest(file.path, getDirtyContent()),
+					controller.signal,
+				);
+				if (!diagnostics || disposed || revision !== diagnosticsRevision)
 					return;
-				const diagnostics = (await response.json()) as DiagnosticEntry[];
-				if (disposed || revision !== diagnosticsRevision) return;
 				monaco.editor.setModelMarkers(
 					sourceModel,
 					markerOwner,
@@ -332,7 +323,7 @@ export function createMonacoLSPBridge({
 			for (const disposable of disposables) disposable.dispose();
 			for (const model of ownedModels.values()) model.dispose();
 			ownedModels.clear();
-			definitionPaths.clear();
+			definitionTargets.clear();
 		},
 	};
 }
@@ -341,6 +332,7 @@ interface LSPFileLocation {
 	path: string;
 	line: number;
 	column: number;
+	external?: boolean;
 }
 
 interface LSPPosition {
@@ -362,14 +354,32 @@ interface LSPDocumentSymbol {
 	children?: LSPDocumentSymbol[];
 }
 
+async function postJSON<T>(
+	endpoint: string,
+	body: unknown,
+	signal: AbortSignal,
+): Promise<T | undefined> {
+	const response = await fetch(endpoint, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body),
+		signal,
+	});
+	if (!response.ok) return undefined;
+	return (await response.json()) as T;
+}
+
+function documentRequest(path: string, content: string | undefined) {
+	return { path, ...(content === undefined ? {} : { content }) };
+}
+
 function positionRequest(
 	path: string,
 	content: string | undefined,
 	position: MonacoTypes.Position,
 ) {
 	return {
-		path,
-		...(content === undefined ? {} : { content }),
+		...documentRequest(path, content),
 		line: position.lineNumber,
 		column: position.column,
 	};

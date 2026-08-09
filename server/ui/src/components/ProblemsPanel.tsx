@@ -14,7 +14,7 @@ interface Props {
 export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
 	const [diagnostics, setDiagnostics] = useState<DiagnosticEntry[]>([]);
 	const [coverage, setCoverage] = useState<WorkspaceDiagnostics | null>(null);
-	const [loading, setLoading] = useState(false);
+	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
 	const requestRef = useRef<AbortController | null>(null);
 	const refreshTimerRef = useRef<number | null>(null);
@@ -42,6 +42,12 @@ export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
 			if (controller.signal.aborted) return;
 			setCoverage(data);
 			setDiagnostics(data.diagnostics);
+			if (data.analyzing) {
+				refreshTimerRef.current = window.setTimeout(() => {
+					refreshTimerRef.current = null;
+					void load();
+				}, 3000);
+			}
 		} catch (requestError) {
 			if (
 				requestRef.current === controller &&
@@ -103,15 +109,14 @@ export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
 		}
 	};
 
-	const coverageTotal = coverage
-		? `${coverage.discovered_files}${coverage.discovery_truncated ? "+" : ""}`
+	const coverageTitle = coverage
+		? [
+				`${coverage.checked_files} source files checked`,
+				...(coverage.unavailable_servers.length > 0
+					? [`unavailable: ${coverage.unavailable_servers.join(", ")}`]
+					: []),
+			].join(" · ")
 		: "";
-	const incomplete =
-		coverage !== null &&
-		(coverage.checked_files < coverage.discovered_files ||
-			coverage.discovery_truncated ||
-			coverage.unknown_files > 0 ||
-			coverage.unavailable_servers.length > 0);
 
 	return (
 		<div className="flex flex-col h-full overflow-hidden bg-bg">
@@ -123,10 +128,14 @@ export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
 				{coverage && (
 					<span
 						className="text-[10px] text-fg-dim tabular-nums truncate"
-						title={`${coverage.checked_files} of ${coverageTotal} source files checked`}
+						title={coverageTitle}
 					>
-						{coverage.checked_files}/{coverageTotal} files
+						{coverage.checked_files}
+						{coverage.discovery_truncated ? "+" : ""} files
 					</span>
+				)}
+				{coverage?.analyzing && (
+					<span className="text-[10px] text-fg-dim italic">analyzing…</span>
 				)}
 				<button
 					type="button"
@@ -146,24 +155,11 @@ export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
 						{coverage ? "; showing the last successful result." : "."}
 					</div>
 				)}
-				{incomplete && coverage && (
-					<div className="mx-2 mb-1 px-2 py-1.5 rounded bg-warning/5 text-[10px] text-fg-dim">
-						Results are partial
-						{coverage.unknown_files > 0
-							? ` · ${coverage.unknown_files} files returned no data`
-							: ""}
-						{coverage.unavailable_servers.length > 0
-							? ` · unavailable: ${coverage.unavailable_servers.join(", ")}`
-							: ""}
-					</div>
-				)}
 				{diagnostics.length === 0 && !loading && (
 					<div className="px-3 py-6 text-[11px] text-fg-dim text-center">
 						{error && !coverage
 							? "Diagnostics unavailable"
-							: incomplete
-								? "No reported problems"
-								: "No problems detected"}
+							: "No problems detected"}
 					</div>
 				)}
 				{diagnostics.length === 0 && loading && (

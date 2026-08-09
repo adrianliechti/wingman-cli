@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -29,9 +30,10 @@ type diagnosticItem struct {
 }
 
 type lspLocationItem struct {
-	Path   string `json:"path"`
-	Line   int    `json:"line"`
-	Column int    `json:"column"`
+	Path     string `json:"path"`
+	Line     int    `json:"line"`
+	Column   int    `json:"column"`
+	External bool   `json:"external,omitempty"`
 }
 
 type workspaceDiagnosticsResponse struct {
@@ -41,6 +43,7 @@ type workspaceDiagnosticsResponse struct {
 	DiscoveryTruncated bool             `json:"discovery_truncated"`
 	UnknownFiles       int              `json:"unknown_files"`
 	UnavailableServers []string         `json:"unavailable_servers"`
+	Analyzing          bool             `json:"analyzing"`
 }
 
 func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
@@ -71,25 +74,40 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 		DiscoveryTruncated: report.DiscoveryTruncated,
 		UnknownFiles:       report.UnknownFiles,
 		UnavailableServers: unavailableServers,
+		Analyzing:          report.Analyzing,
 	})
 }
 
-func (s *Server) handleLSPFileDiagnostics(w http.ResponseWriter, r *http.Request) {
-	var body lspDocumentRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
-		return
-	}
-	rel, ok := s.resolveExistingRegularFile(w, body.Path)
+// resolveLSPFile validates a workspace-relative request path and requires an
+// available language server, writing the error response on failure.
+func (s *Server) resolveLSPFile(w http.ResponseWriter, p string) (string, bool) {
+	rel, ok := s.resolveExistingRegularFile(w, p)
 	if !ok {
-		return
+		return "", false
 	}
 	if !s.workspace.HasLSP() {
 		http.Error(w, "language server unavailable", http.StatusNotFound)
+		return "", false
+	}
+	return filepath.Join(s.workspace.RootPath, rel), true
+}
+
+func (s *Server) decodeLSPDocumentRequest(w http.ResponseWriter, r *http.Request) (lspDocumentRequest, string, bool) {
+	var body lspDocumentRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return body, "", false
+	}
+	filePath, ok := s.resolveLSPFile(w, body.Path)
+	return body, filePath, ok
+}
+
+func (s *Server) handleLSPFileDiagnostics(w http.ResponseWriter, r *http.Request) {
+	body, filePath, ok := s.decodeLSPDocumentRequest(w, r)
+	if !ok {
 		return
 	}
 
-	filePath := filepath.Join(s.workspace.RootPath, rel)
 	diagnostics, known, err := s.workspace.FileDiagnostics(r.Context(), filePath, body.Content)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
@@ -132,21 +150,12 @@ func (s *Server) handleLSPHover(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLSPDocumentSymbols(w http.ResponseWriter, r *http.Request) {
-	var body lspDocumentRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
-		return
-	}
-	rel, ok := s.resolveExistingRegularFile(w, body.Path)
+	body, filePath, ok := s.decodeLSPDocumentRequest(w, r)
 	if !ok {
 		return
 	}
-	if !s.workspace.HasLSP() {
-		http.Error(w, "language server unavailable", http.StatusNotFound)
-		return
-	}
 
-	documents, flat, err := s.workspace.DocumentSymbolItems(r.Context(), filepath.Join(s.workspace.RootPath, rel), body.Content)
+	documents, flat, err := s.workspace.DocumentSymbolItems(r.Context(), filePath, body.Content)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -183,15 +192,8 @@ func (s *Server) decodeLSPPositionRequest(w http.ResponseWriter, r *http.Request
 		http.Error(w, "line and column must be positive", http.StatusBadRequest)
 		return body, "", false
 	}
-	rel, ok := s.resolveExistingRegularFile(w, body.Path)
-	if !ok {
-		return body, "", false
-	}
-	if !s.workspace.HasLSP() {
-		http.Error(w, "language server unavailable", http.StatusNotFound)
-		return body, "", false
-	}
-	return body, filepath.Join(s.workspace.RootPath, rel), true
+	filePath, ok := s.resolveLSPFile(w, body.Path)
+	return body, filePath, ok
 }
 
 type locationRequest func(context.Context, string, *string, int, int) ([]lsp.DefLocation, error)
@@ -212,15 +214,21 @@ func (s *Server) handleLSPLocations(w http.ResponseWriter, r *http.Request, requ
 		if location.Path == "" || location.Line < 0 || location.Column < 0 {
 			continue
 		}
-		targetRel, err := filepath.Rel(s.workspace.RootPath, location.Path)
-		if err != nil || targetRel == ".." || filepath.IsAbs(targetRel) ||
-			strings.HasPrefix(targetRel, ".."+string(filepath.Separator)) {
-			continue
-		}
 		item := lspLocationItem{
-			Path:   filepath.ToSlash(targetRel),
 			Line:   location.Line + 1,
 			Column: location.Column + 1,
+		}
+		if targetRel, err := filepath.Rel(s.workspace.RootPath, location.Path); err == nil && targetRel != ".." && !filepath.IsAbs(targetRel) &&
+			!strings.HasPrefix(targetRel, ".."+string(filepath.Separator)) {
+			item.Path = filepath.ToSlash(targetRel)
+		} else {
+			abs := filepath.Clean(location.Path)
+			if info, err := os.Stat(abs); err != nil || info.IsDir() {
+				continue
+			}
+			item.Path = filepath.ToSlash(abs)
+			item.External = true
+			s.allowLSPExternalFile(item.Path)
 		}
 		if !seen[item] {
 			seen[item] = true
@@ -228,6 +236,42 @@ func (s *Server) handleLSPLocations(w http.ResponseWriter, r *http.Request, requ
 		}
 	}
 	writeJSON(w, result)
+}
+
+// allowLSPExternalFile records a language-server reported location outside the
+// workspace so handleLSPExternalFile may serve exactly those files, read-only.
+func (s *Server) allowLSPExternalFile(path string) {
+	s.lspExternalMu.Lock()
+	defer s.lspExternalMu.Unlock()
+	if s.lspExternalPaths == nil {
+		s.lspExternalPaths = make(map[string]bool)
+	}
+	s.lspExternalPaths[path] = true
+}
+
+func (s *Server) lspExternalFileAllowed(path string) bool {
+	s.lspExternalMu.Lock()
+	defer s.lspExternalMu.Unlock()
+	return s.lspExternalPaths[path]
+}
+
+func (s *Server) handleLSPExternalFile(w http.ResponseWriter, r *http.Request) {
+	p := r.URL.Query().Get("path")
+	if !s.lspExternalFileAllowed(p) {
+		http.Error(w, "file not found", http.StatusNotFound)
+		return
+	}
+	data, err := os.ReadFile(filepath.FromSlash(p))
+	if err != nil || isBinary(data) {
+		http.Error(w, "file not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, FileContent{
+		Path:     p,
+		Content:  string(data),
+		Language: languageForPath(p),
+		Size:     int64(len(data)),
+	})
 }
 
 func (s *Server) diagnosticItems(filePath string, diagnostics []lsp.Diagnostic) []diagnosticItem {

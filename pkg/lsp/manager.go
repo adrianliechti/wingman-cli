@@ -14,10 +14,7 @@ import (
 
 const maxRestarts = 3
 
-const (
-	workspaceDiagnosticsMaxFiles = 50
-	sourceDiscoveryCountLimit    = 2000
-)
+const sourceDiscoveryCountLimit = 2000
 
 type Manager struct {
 	workingDir string
@@ -332,7 +329,7 @@ func (m *Manager) Close() {
 
 func (m *Manager) openDiscoveredFiles(ctx context.Context, project projectRoot, projects []projectRoot, session *Session) ([]string, []string, int, bool) {
 	projectID := projectKey(project)
-	files, total, truncated := discoverSourceFilesMatching(ctx, project.Dir, project.Server.Languages, workspaceDiagnosticsMaxFiles, func(path string) bool {
+	files, total, truncated := discoverSourceFilesMatching(ctx, project.Dir, project.Server.Languages, sourceDiscoveryCountLimit, func(path string) bool {
 		owner := findProject(projects, path)
 		return owner != nil && projectKey(*owner) == projectID
 	})
@@ -351,9 +348,36 @@ func (m *Manager) openDiscoveredFiles(ctx context.Context, project projectRoot, 
 		uris = append(uris, uri)
 	}
 
-	waitForPushedDiagnostics(ctx, session, uris, 5*time.Second)
+	timeout := min(30*time.Second, 5*time.Second+time.Duration(len(uris))*20*time.Millisecond)
+	waitForPushedDiagnostics(ctx, session, uris, timeout)
 
 	return opened, uris, total, truncated
+}
+
+const serverIdleTimeout = 15 * time.Second
+
+// serverWarmupWindow marks scans against a freshly started server as still
+// analyzing: language servers keep producing analysis diagnostics after their
+// work-done progress ends, so early results are not final.
+const serverWarmupWindow = 30 * time.Second
+
+// waitForServerIdle waits until the server stops reporting background work.
+// Fresh sessions get a short grace period for the first progress notification
+// to arrive; on established idle sessions it returns immediately.
+func waitForServerIdle(ctx context.Context, session *Session, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	grace := session.created.Add(3 * time.Second)
+
+	for time.Now().Before(deadline) {
+		if ctx.Err() != nil {
+			return false
+		}
+		if !session.Analyzing() && time.Now().After(grace) {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return !session.Analyzing()
 }
 
 func waitForPushedDiagnostics(ctx context.Context, session *Session, uris []string, timeout time.Duration) {
@@ -394,6 +418,10 @@ type WorkspaceDiagnosticsReport struct {
 	DiscoveryTruncated bool
 	UnknownFiles       int
 	UnavailableServers []string
+
+	// Analyzing marks results collected while a server was still reporting
+	// background work: counts may grow on the next scan.
+	Analyzing bool
 }
 
 func (m *Manager) CollectAllDiagnostics(ctx context.Context) WorkspaceDiagnosticsReport {
@@ -415,6 +443,9 @@ func (m *Manager) CollectAllDiagnostics(ctx context.Context) WorkspaceDiagnostic
 		report.CheckedFiles += len(files)
 		report.DiscoveredFiles += total
 		report.DiscoveryTruncated = report.DiscoveryTruncated || truncated
+		if !waitForServerIdle(ctx, session, serverIdleTimeout) || session.Age() < serverWarmupWindow {
+			report.Analyzing = true
+		}
 		states := collectDiagnosticStates(ctx, session, uris)
 		for i, file := range files {
 			diags, known := states[i].diagnostics, states[i].known
@@ -513,6 +544,9 @@ func (m *Manager) WorkspaceDiagnostics(ctx context.Context) (string, error) {
 	}
 	if len(report.UnavailableServers) > 0 {
 		notes = append(notes, "server unavailable: "+strings.Join(report.UnavailableServers, ", "))
+	}
+	if report.Analyzing {
+		notes = append(notes, "a language server is still analyzing; rerun for final results")
 	}
 	coverage := "Coverage: " + strings.Join(notes, "; ")
 

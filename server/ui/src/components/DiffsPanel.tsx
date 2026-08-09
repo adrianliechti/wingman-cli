@@ -56,6 +56,7 @@ export function DiffsPanel({
 }: Props) {
 	const [diffs, setDiffs] = useState<DiffEntry[]>([]);
 	const [gitStatus, setGitStatus] = useState<GitStatus>(EMPTY_GIT_STATUS);
+	const [loaded, setLoaded] = useState(false);
 	const [menu, setMenu] = useState<MenuState | null>(null);
 	const [busy, setBusy] = useState("");
 	const [message, setMessage] = useState("");
@@ -74,10 +75,15 @@ export function DiffsPanel({
 			if (git) setGitStatus(EMPTY_GIT_STATUS);
 			else setDiffs([]);
 			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setLoaded(true);
 		}
 	}, [git, qs]);
 
-	useEffect(() => void load(), [load]);
+	useEffect(() => {
+		setLoaded(false);
+		void load();
+	}, [load]);
 	useEffect(() => {
 		if (!notice) return;
 		const timeout = window.setTimeout(() => setNotice(""), 3000);
@@ -165,6 +171,7 @@ export function DiffsPanel({
 		return (
 			<GitChanges
 				status={gitStatus}
+				loaded={loaded}
 				busy={busy}
 				message={message}
 				error={error}
@@ -183,7 +190,7 @@ export function DiffsPanel({
 	return (
 		<div className="flex flex-col h-full overflow-hidden bg-bg relative">
 			<div className="overflow-y-auto flex-1 py-2">
-				{diffs.length === 0 && !error && <EmptyChanges />}
+				{diffs.length === 0 && !error && <EmptyChanges loaded={loaded} />}
 				{diffs.map((diff) => (
 					<ChangeRow
 						key={diff.path}
@@ -238,6 +245,7 @@ export function DiffsPanel({
 
 function GitChanges({
 	status,
+	loaded,
 	busy,
 	message,
 	error,
@@ -249,6 +257,7 @@ function GitChanges({
 	onRevert,
 }: {
 	status: GitStatus;
+	loaded: boolean;
 	busy: string;
 	message: string;
 	error: string;
@@ -377,7 +386,7 @@ function GitChanges({
 						/>
 					</>
 				) : null}
-				{status.files.length === 0 && !error && <EmptyChanges />}
+				{status.files.length === 0 && !error && <EmptyChanges loaded={loaded} />}
 			</div>
 
 			{error && <InlineMessage kind="error" text={error} />}
@@ -880,10 +889,10 @@ function SyncButton({
 	);
 }
 
-function EmptyChanges() {
+function EmptyChanges({ loaded }: { loaded: boolean }) {
 	return (
 		<div className="px-3 py-7 text-[11px] text-fg-dim text-center">
-			Working tree clean
+			{loaded ? "Working tree clean" : "Loading…"}
 		</div>
 	);
 }

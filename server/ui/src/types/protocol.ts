@@ -411,4 +411,5 @@ export interface WorkspaceDiagnostics {
 	discovery_truncated: boolean;
 	unknown_files: number;
 	unavailable_servers: string[];
+	analyzing: boolean;
 }

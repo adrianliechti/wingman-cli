@@ -25,6 +25,14 @@ func (a *App) showDiagnosticsView() {
 		ctx, cancel := context.WithTimeout(a.ctx, 30*time.Second)
 		defer cancel()
 
+		if !a.agent.Workspace().HasLSP() {
+			a.post(func() {
+				a.showToast("No language servers detected", theme.Default.Yellow)
+				a.invalidate()
+			})
+			return
+		}
+
 		files, report, err := a.collectDiagnostics(ctx)
 
 		a.post(func() {
@@ -166,12 +174,15 @@ func diagnosticsCoverage(report lsp.WorkspaceDiagnosticsReport) (string, bool) {
 		total += "+"
 	}
 	coverage := fmt.Sprintf("checked %d/%s files", report.CheckedFiles, total)
-	partial := report.CheckedFiles < report.DiscoveredFiles || report.DiscoveryTruncated || report.UnknownFiles > 0 || len(report.UnavailableServers) > 0
+	partial := report.CheckedFiles < report.DiscoveredFiles || report.DiscoveryTruncated || report.UnknownFiles > 0 || len(report.UnavailableServers) > 0 || report.Analyzing
 	if report.UnknownFiles > 0 {
 		coverage += fmt.Sprintf(", %d unknown", report.UnknownFiles)
 	}
 	if len(report.UnavailableServers) > 0 {
 		coverage += ", unavailable: " + strings.Join(report.UnavailableServers, ", ")
+	}
+	if report.Analyzing {
+		coverage += ", still analyzing"
 	}
 	return coverage, partial
 }

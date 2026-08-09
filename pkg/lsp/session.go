@@ -14,12 +14,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/adrianliechti/wingman-agent/pkg/lsp/jsonrpc2"
+	"go.lsp.dev/jsonrpc2"
 )
 
 type Session struct {
 	server     Server
-	conn       *jsonrpc2.Connection
+	conn       jsonrpc2.Conn
 	cmd        *exec.Cmd
 	rootURI    string
 	workingDir string
@@ -28,6 +28,8 @@ type Session struct {
 	documentMu sync.Mutex
 	mu         sync.Mutex
 	documents  map[string]*document
+	progress   map[string]bool
+	created    time.Time
 	pullDiags  bool
 	alive      atomic.Bool
 	closeOnce  sync.Once
@@ -91,36 +93,19 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 		workingDir: workingDir,
 		cancelFunc: cancel,
 		documents:  make(map[string]*document),
+		progress:   make(map[string]bool),
+		created:    time.Now(),
 	}
 	session.alive.Store(true)
 
-	framer := jsonrpc2.HeaderFramer()
-	conn := jsonrpc2.NewConnection(connCtx, jsonrpc2.ConnectionConfig{
-		Reader: framer.Reader(stdout),
-		Writer: framer.Writer(stdin),
-		Closer: &cmdCloser{cmd: cmd, stdin: stdin, stdout: stdout},
-		OnDone: func() {
-			session.alive.Store(false)
-		},
-		Bind: func(c *jsonrpc2.Connection) jsonrpc2.Handler {
-			return jsonrpc2.HandlerFunc(func(ctx context.Context, req *jsonrpc2.Request) (any, error) {
-				if req.Method == "textDocument/publishDiagnostics" {
-					var params PublishDiagnosticsParams
-					if err := json.Unmarshal(req.Params, &params); err == nil {
-						session.mu.Lock()
-						if doc := session.document(params.URI); params.Version == 0 || params.Version >= doc.version {
-							doc.diagnostics = params.Diagnostics
-							doc.published = true
-						}
-						session.mu.Unlock()
-					}
-					return nil, nil
-				}
-				return nil, jsonrpc2.ErrNotHandled
-			})
-		},
-	})
+	conn := jsonrpc2.NewConn(jsonrpc2.NewStream(&cmdStream{cmd: cmd, stdin: stdin, stdout: stdout}))
 	session.conn = conn
+	conn.Go(connCtx, session.handle)
+
+	go func() {
+		<-conn.Done()
+		session.alive.Store(false)
+	}()
 
 	initCtx, initCancel := context.WithTimeout(ctx, startupTimeout)
 	defer initCancel()
@@ -134,8 +119,61 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 	return session, nil
 }
 
+func (s *Session) handle(ctx context.Context, req *jsonrpc2.Request) (any, error) {
+	switch req.Method() {
+	case "textDocument/publishDiagnostics":
+		var params PublishDiagnosticsParams
+		if err := json.Unmarshal(req.Params(), &params); err == nil {
+			s.mu.Lock()
+			if doc := s.document(params.URI); params.Version == 0 || params.Version >= doc.version {
+				doc.diagnostics = params.Diagnostics
+				doc.published = true
+			}
+			s.mu.Unlock()
+		}
+		return nil, nil
+	case "window/workDoneProgress/create":
+		return nil, nil
+	case "$/progress":
+		var params ProgressParams
+		if err := json.Unmarshal(req.Params(), &params); err == nil {
+			s.applyProgress(params.Token, params.Value.Kind)
+		}
+		return nil, nil
+	}
+
+	if req.IsCall() {
+		return nil, jsonrpc2.ErrMethodNotFound
+	}
+	return nil, nil
+}
+
 func (s *Session) IsAlive() bool {
 	return s.alive.Load()
+}
+
+func (s *Session) applyProgress(token json.RawMessage, kind string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	switch kind {
+	case "begin":
+		s.progress[string(token)] = true
+	case "end":
+		delete(s.progress, string(token))
+	}
+}
+
+// Analyzing reports whether the server has announced ongoing background work
+// (indexing, loading packages) via work-done progress.
+func (s *Session) Analyzing() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.progress) > 0
+}
+
+func (s *Session) Age() time.Duration {
+	return time.Since(s.created)
 }
 
 func (s *Session) OpenedDocURIs() []string {
@@ -156,8 +194,7 @@ func (s *Session) Close() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		call := s.conn.Call(ctx, "shutdown", nil)
-		_ = s.awaitCall(ctx, call, nil)
+		_, _ = s.conn.Call(ctx, "shutdown", nil, nil)
 		_ = s.conn.Notify(ctx, "exit", nil)
 		_ = s.conn.Close()
 		s.cancelFunc()
@@ -168,8 +205,7 @@ func (s *Session) CallAndAwait(ctx context.Context, method string, params any, r
 	var err error
 
 	for attempt := range maxRetries {
-		call := s.conn.Call(ctx, method, params)
-		err = s.awaitCall(ctx, call, result)
+		_, err = s.conn.Call(ctx, method, params, result)
 		if err == nil || !isTransientError(err) {
 			return err
 		}
@@ -185,14 +221,6 @@ func (s *Session) CallAndAwait(ctx context.Context, method string, params any, r
 	return err
 }
 
-func (s *Session) awaitCall(ctx context.Context, call *jsonrpc2.AsyncCall, result any) error {
-	err := call.Await(ctx, result)
-	if err != nil && ctx.Err() != nil && !call.IsReady() {
-		s.conn.Retire(call, ctx.Err())
-	}
-	return err
-}
-
 const maxRetries = 3
 
 var retryBaseDelay = 500 * time.Millisecond
@@ -204,7 +232,7 @@ const (
 )
 
 func isTransientError(err error) bool {
-	var wireErr *jsonrpc2.WireError
+	var wireErr *jsonrpc2.Error
 	if !errors.As(err, &wireErr) {
 		return false
 	}
@@ -737,12 +765,12 @@ func (s *Session) initialize(ctx context.Context) error {
 				Diagnostic:      DiagnosticClientCapabilities{},
 				CallHierarchy:   CallHierarchyClientCapabilities{},
 			},
+			Window: WindowClientCapabilities{WorkDoneProgress: true},
 		},
 	}
 
 	var result InitializeResult
-	call := s.conn.Call(ctx, "initialize", params)
-	if err := s.awaitCall(ctx, call, &result); err != nil {
+	if _, err := s.conn.Call(ctx, "initialize", params, &result); err != nil {
 		return err
 	}
 	s.pullDiags = diagnosticProviderEnabled(result.Capabilities.DiagnosticProvider)
@@ -848,13 +876,21 @@ func unmarshalResult(data json.RawMessage, v any) error {
 	return json.Unmarshal(data, v)
 }
 
-type cmdCloser struct {
+type cmdStream struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
 }
 
-func (c *cmdCloser) Close() error {
+func (c *cmdStream) Read(p []byte) (int, error) {
+	return c.stdout.Read(p)
+}
+
+func (c *cmdStream) Write(p []byte) (int, error) {
+	return c.stdin.Write(p)
+}
+
+func (c *cmdStream) Close() error {
 	c.stdin.Close()
 	c.stdout.Close()
 

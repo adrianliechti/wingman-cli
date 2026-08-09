@@ -21,6 +21,11 @@ type ServerCapabilities struct {
 
 type ClientCapabilities struct {
 	TextDocument TextDocumentClientCapabilities `json:"textDocument"`
+	Window       WindowClientCapabilities       `json:"window"`
+}
+
+type WindowClientCapabilities struct {
+	WorkDoneProgress bool `json:"workDoneProgress,omitempty"`
 }
 
 type TextDocumentClientCapabilities struct {
@@ -96,6 +101,13 @@ type PublishDiagnosticsParams struct {
 	URI         string       `json:"uri"`
 	Version     int          `json:"version,omitempty"`
 	Diagnostics []Diagnostic `json:"diagnostics"`
+}
+
+type ProgressParams struct {
+	Token json.RawMessage `json:"token"`
+	Value struct {
+		Kind string `json:"kind"`
+	} `json:"value"`
 }
 
 type Position struct {
