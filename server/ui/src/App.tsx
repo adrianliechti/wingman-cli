@@ -1,4 +1,5 @@
 import {
+	Bot,
 	ChevronDown,
 	Compass,
 	Code2,
@@ -39,6 +40,7 @@ import { FileTab } from "./components/FileTab";
 import { FileTree } from "./components/FileTree";
 import { ProblemsPanel } from "./components/ProblemsPanel";
 import { TasksPanel } from "./components/TasksPanel";
+import { TaskTab } from "./components/TaskTab";
 import { TerminalView } from "./components/TerminalView";
 import { BUILTIN_AGENT_ID } from "./components/AgentPicker";
 import { Sidebar } from "./components/Sidebar";
@@ -51,13 +53,14 @@ import {
 import type {
 	DiffLayer,
 	ShellEntry,
+	TaskEntry,
 	TerminalEntry,
 	TurnInputIntent,
 } from "./types/protocol";
 
 interface CenterTab {
 	id: string;
-	type: "chat" | "file" | "diff" | "terminal";
+	type: "chat" | "file" | "diff" | "terminal" | "task";
 	label: string;
 	path?: string;
 	diffLayer?: DiffLayer;
@@ -67,6 +70,7 @@ interface CenterTab {
 	external?: boolean;
 	sessionId?: string;
 	terminalId?: string;
+	taskId?: string;
 }
 
 type RightTab = "changes" | "files" | "problems" | "agents";
@@ -381,6 +385,29 @@ export default function App() {
 			setActiveTabId(tab.id);
 		},
 		[tabs],
+	);
+
+	const openTask = useCallback(
+		(task: TaskEntry) => {
+			if (!sessionId) return;
+			const id = `task:${sessionId}:${task.id}`;
+			setTabs((prev) =>
+				prev.some((t) => t.id === id)
+					? prev
+					: [
+							...prev,
+							{
+								id,
+								type: "task" as const,
+								label: task.description,
+								sessionId,
+								taskId: task.id,
+							},
+						],
+			);
+			setActiveTabId(id);
+		},
+		[sessionId],
 	);
 
 	const openDiff = useCallback(
@@ -859,7 +886,9 @@ export default function App() {
 											? SquareTerminal
 											: tab.type === "diff"
 												? GitCompare
-												: FileText;
+												: tab.type === "task"
+													? Bot
+													: FileText;
 								const label =
 									tab.type === "chat" ? chatTabLabel(tab) : tab.label;
 								return (
@@ -1040,6 +1069,13 @@ export default function App() {
 									onExit={() => closeTab(activeTab.id)}
 									onTitle={setTerminalTitle}
 								/>
+							) : activeTab.type === "task" && activeTab.taskId ? (
+								<TaskTab
+									key={activeTab.id}
+									sessionId={activeTab.sessionId ?? ""}
+									taskId={activeTab.taskId}
+									subscribe={subscribe}
+								/>
 							) : activeTab.type === "diff" && activeTab.path ? (
 								<DiffTab
 									path={activeTab.path}
@@ -1116,7 +1152,11 @@ export default function App() {
 						<div className="h-px bg-border-subtle shrink-0" />
 						<div className="flex-1 overflow-hidden">
 							{rightTab === "agents" && showAgents ? (
-								<TasksPanel sessionId={sessionId} subscribe={subscribe} />
+								<TasksPanel
+									sessionId={sessionId}
+									subscribe={subscribe}
+									onOpenTask={openTask}
+								/>
 							) : rightTab === "changes" && showChanges ? (
 								<DiffsPanel
 									sessionId={sessionId}
