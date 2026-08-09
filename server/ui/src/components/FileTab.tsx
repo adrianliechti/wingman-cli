@@ -11,6 +11,7 @@ interface Props {
 	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 	onDeleted?: () => void;
 	onDirtyChange?: (dirty: boolean) => void;
+	view?: "code" | "preview";
 }
 
 export function FileTab({
@@ -19,11 +20,13 @@ export function FileTab({
 	subscribe,
 	onDeleted,
 	onDirtyChange,
+	view = "code",
 }: Props) {
 	const [file, setFile] = useState<FileContent | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [value, setValue] = useState("");
 	const [saving, setSaving] = useState(false);
+	const [previewRevision, setPreviewRevision] = useState(0);
 	const monacoRef = useRef<Monaco | null>(null);
 	const scheme = useColorScheme();
 
@@ -86,6 +89,7 @@ export function FileTab({
 		if (!subscribe) return;
 		return subscribe((msg) => {
 			if (msg.type === "files_changed") {
+				setPreviewRevision((revision) => revision + 1);
 				if (dirtyRef.current) return;
 				load();
 			}
@@ -133,36 +137,55 @@ export function FileTab({
 		return <BinaryPreview file={file} />;
 	}
 
+	const isHtml = file.language === "html" || /\.html?$/i.test(file.path);
+	const previewSrc = `/api/files/preview?path=${encodeURIComponent(file.path)}`;
+
 	return (
-		<Editor
-			height="100%"
-			language={file.language || undefined}
-			value={value}
-			theme={wingmanThemeName(scheme)}
-			beforeMount={(monaco) => {
-				monacoRef.current = monaco;
-				defineWingmanThemes(monaco);
-			}}
-			onMount={(editor, monaco) => {
-				if (line && line > 0) {
-					editor.revealLineInCenter(line);
-					editor.setPosition({ lineNumber: line, column: 1 });
-				}
-				editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-					void save();
-				});
-			}}
-			onChange={(v) => setValue(v ?? "")}
-			options={{
-				minimap: { enabled: false },
-				fontSize: 12,
-				lineNumbers: "on",
-				scrollBeyondLastLine: false,
-				wordWrap: "on",
-				renderWhitespace: "none",
-				padding: { top: 8 },
-			}}
-		/>
+		<div className="h-full min-h-0">
+			{isHtml && view === "preview" ? (
+				<iframe
+					key={previewRevision}
+					src={previewSrc}
+					title={`Preview of ${file.path}`}
+					sandbox="allow-scripts allow-same-origin"
+					referrerPolicy="no-referrer"
+					className="h-full w-full border-0 bg-white"
+				/>
+			) : (
+				<Editor
+					height="100%"
+					language={file.language || undefined}
+					value={value}
+					theme={wingmanThemeName(scheme)}
+					beforeMount={(monaco) => {
+						monacoRef.current = monaco;
+						defineWingmanThemes(monaco);
+					}}
+					onMount={(editor, monaco) => {
+						if (line && line > 0) {
+							editor.revealLineInCenter(line);
+							editor.setPosition({ lineNumber: line, column: 1 });
+						}
+						editor.addCommand(
+							monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
+							() => {
+								void save();
+							},
+						);
+					}}
+					onChange={(v) => setValue(v ?? "")}
+					options={{
+						minimap: { enabled: false },
+						fontSize: 12,
+						lineNumbers: "on",
+						scrollBeyondLastLine: false,
+						wordWrap: "on",
+						renderWhitespace: "none",
+						padding: { top: 8 },
+					}}
+				/>
+			)}
+		</div>
 	);
 }
 

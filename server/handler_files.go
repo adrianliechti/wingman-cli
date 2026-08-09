@@ -51,6 +51,7 @@ var extToLanguage = map[string]string{
 	".json":       "json",
 	".xml":        "xml",
 	".html":       "html",
+	".htm":        "html",
 	".css":        "css",
 	".scss":       "scss",
 	".sql":        "sql",
@@ -473,4 +474,16 @@ func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 	disposition := "attachment; filename=\"" + strings.ReplaceAll(name, "\"", "") + "\"; filename*=UTF-8''" + url.PathEscape(name)
 	w.Header().Set("Content-Disposition", disposition)
 	http.ServeContent(w, r, name, info.ModTime(), f)
+}
+
+// handleFilePreview redirects an HTML document to the isolated preview server.
+// The preview origin is rooted at the document's directory so both relative
+// and root-relative asset URLs behave like they do on a normal static server.
+func (s *Server) handleFilePreview(w http.ResponseWriter, r *http.Request) {
+	rel, ok := s.resolveExistingRegularFile(w, r.URL.Query().Get("path"))
+	if !ok {
+		return
+	}
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	http.Redirect(w, r, s.preview.startURL(rel, r.Host), http.StatusTemporaryRedirect)
 }
