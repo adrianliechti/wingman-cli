@@ -189,42 +189,11 @@ func executeShell(ctx context.Context, workDir string, extraWritableRoots []stri
 	ctx, cancel := context.WithTimeoutCause(ctx, time.Duration(timeout)*time.Second, errCommandTimeout)
 	defer cancel()
 
-	opts := sandboxOptions{WorkspaceDir: workDir, ExtraWritableRoots: extraWritableRoots}
-
-	cmd, err := buildCommand(ctx, command, dir, opts)
+	cmd, err := buildCommand(ctx, command, dir, sandboxOptions{WorkspaceDir: workDir, ExtraWritableRoots: extraWritableRoots})
 	if err != nil {
 		return "", err
 	}
 
-	result, runErr, elapsed := runShellCommand(ctx, cmd)
-
-	sandboxNote := ""
-	if workspaceSandboxEnabled() && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok && isLikelySandboxDenied(exitErr.ExitCode(), result) {
-			approved, cerr := confirmSandboxEscalation(ctx, elicit, appr, command, approvalWorkdir(workDir, dir))
-			if cerr != nil {
-				return "", cerr
-			}
-			if approved {
-				retryOpts := opts
-				retryOpts.Unsandboxed = true
-
-				retryCmd, rerr := buildCommand(ctx, command, dir, retryOpts)
-				if rerr != nil {
-					return "", rerr
-				}
-				result, runErr, elapsed = runShellCommand(ctx, retryCmd)
-				sandboxNote = "\n\n(retried without the workspace sandbox after approval)"
-			}
-		}
-	}
-
-	return formatShellResult(ctx, timeout, result, runErr, elapsed) + sandboxNote, nil
-}
-
-// runShellCommand executes cmd, wiring its combined output through the same
-// progress reporting and sanitization the shell tool always applies.
-func runShellCommand(ctx context.Context, cmd *exec.Cmd) (string, error, time.Duration) {
 	output := &progressBuffer{report: tool.Progress(ctx)}
 	cmd.Stdout = output
 	cmd.Stderr = output
@@ -233,7 +202,7 @@ func runShellCommand(ctx context.Context, cmd *exec.Cmd) (string, error, time.Du
 	runErr := cmd.Run()
 	elapsed := time.Since(started)
 
-	return sanitizeOutput(output.result()), runErr, elapsed
+	return formatShellResult(ctx, timeout, sanitizeOutput(output.result()), runErr, elapsed), nil
 }
 
 // formatShellResult turns a command's outcome into the text returned to the
@@ -331,10 +300,6 @@ type sandboxOptions struct {
 	// ExtraWritableRoots grants additional writable directories outside the
 	// workspace, e.g. the project memory directory.
 	ExtraWritableRoots []string
-	// Unsandboxed skips sandboxing even when WINGMAN_SANDBOX is set — used to
-	// retry a command the sandbox denied after the user approves running it
-	// unconfined.
-	Unsandboxed bool
 }
 
 func buildCommand(ctx context.Context, command, workingDir string, opts sandboxOptions) (*exec.Cmd, error) {
@@ -345,7 +310,7 @@ func buildCommand(ctx context.Context, command, workingDir string, opts sandboxO
 		ps := findPowerShell()
 
 		wrapped := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + command
-		if workspaceSandboxEnabled() && !opts.Unsandboxed {
+		if workspaceSandboxEnabled() {
 			return nil, fmt.Errorf("workspace shell sandbox is not supported on Windows")
 		}
 		cmd = exec.CommandContext(ctx, ps, "-NoProfile", "-NoLogo", "-NonInteractive", "-Command", wrapped)
@@ -354,7 +319,7 @@ func buildCommand(ctx context.Context, command, workingDir string, opts sandboxO
 		if shell == "" {
 			shell = "/bin/sh"
 		}
-		if workspaceSandboxEnabled() && !opts.Unsandboxed {
+		if workspaceSandboxEnabled() {
 			var err error
 			cmd, err = buildSandboxedCommand(ctx, shell, command, workingDir, opts)
 			if err != nil {

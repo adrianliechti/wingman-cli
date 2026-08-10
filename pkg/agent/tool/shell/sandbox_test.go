@@ -104,32 +104,3 @@ func TestBuildSandboxedCommandRejectsMissingWorkspace(t *testing.T) {
 		t.Fatalf("missing workspace error = %v", err)
 	}
 }
-
-func TestIsLikelySandboxDenied(t *testing.T) {
-	tests := []struct {
-		name     string
-		exitCode int
-		output   string
-		want     bool
-	}{
-		{"success", 0, "operation not permitted", false},
-		{"no output keyword, ordinary failure", 1, "file not found", false},
-		{"operation not permitted", 1, "touch: /outside: Operation not permitted", true},
-		{"permission denied", 1, "sh: cannot create foo: Permission denied", true},
-		{"read-only file system", 1, "cp: /outside/x: Read-only file system", true},
-		{"sandbox keyword", 1, "sandbox_apply: Operation not permitted", true},
-		{"case insensitive", 1, "PERMISSION DENIED", true},
-		{"quick-reject exit code 2", 2, "operation not permitted", false},
-		{"quick-reject exit code 126", 126, "permission denied", false},
-		{"quick-reject exit code 127", 127, "command not found: permission denied", false},
-		{"negative exit code (signal) with keyword", -1, "operation not permitted", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isLikelySandboxDenied(tt.exitCode, tt.output); got != tt.want {
-				t.Fatalf("isLikelySandboxDenied(%d, %q) = %v, want %v", tt.exitCode, tt.output, got, tt.want)
-			}
-		})
-	}
-}

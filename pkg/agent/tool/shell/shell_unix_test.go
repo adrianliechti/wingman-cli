@@ -358,15 +358,13 @@ func TestShellApprovalDistinguishesQuotedWhitespace(t *testing.T) {
 	}
 }
 
-// TestShellSandboxEscalationRetriesWithoutSandbox exercises the full
-// shell-tool escalation path: a command denied by the workspace sandbox
-// should prompt for approval and, once approved, retry without the sandbox.
-// The command creates, verifies, and removes its own marker file entirely
-// within the (possibly escalated) subprocess so the test never needs
-// filesystem access outside the workspace itself.
-func TestShellSandboxEscalationRetriesWithoutSandbox(t *testing.T) {
+// TestShellSandboxDenialIsFinal checks that a write the workspace sandbox
+// denies stays denied: the failure is reported as-is, with no prompt offering
+// to run the command unconfined. The command removes its own marker file so
+// the test never leaves anything behind if the write does succeed.
+func TestShellSandboxDenialIsFinal(t *testing.T) {
 	if os.Getenv("WINGMAN_SANDBOX_ACTIVE") == "1" {
-		t.Skip("already running under an inherited native sandbox; escalation cannot lift it")
+		t.Skip("already running under an inherited native sandbox")
 	}
 
 	home, err := os.UserHomeDir()
@@ -379,38 +377,28 @@ func TestShellSandboxEscalationRetriesWithoutSandbox(t *testing.T) {
 	ctx := context.Background()
 	workDir := t.TempDir()
 	confirmCalls := 0
-	var lastPrompt string
 
 	elicit := &tool.Elicitation{
 		Confirm: func(ctx context.Context, message string) (bool, error) {
 			confirmCalls++
-			lastPrompt = message
 			return true, nil
 		},
 	}
 	shellTool := Tools(workDir, nil, elicit, nil)[0]
 
-	outside := filepath.Join(home, fmt.Sprintf(".wingman-escalation-test-%d-%d", os.Getpid(), time.Now().UnixNano()))
-	command := "touch " + shellQuote(outside) + " && test -f " + shellQuote(outside) + " && rm -f " + shellQuote(outside)
+	outside := filepath.Join(home, fmt.Sprintf(".wingman-sandbox-test-%d-%d", os.Getpid(), time.Now().UnixNano()))
+	command := "touch " + shellQuote(outside) + " && rm -f " + shellQuote(outside)
 
 	result, err := shellTool.Execute(ctx, map[string]any{"command": command})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Skipf("sandbox backend unavailable: %v", err)
 	}
 
-	if confirmCalls != 1 {
-		t.Fatalf("confirm called %d times, want 1; result = %q", confirmCalls, result)
+	if confirmCalls != 0 {
+		t.Fatalf("confirm called %d times, want 0 (a denial must never offer to lift the sandbox)", confirmCalls)
 	}
-	if !strings.Contains(lastPrompt, "Blocked by the workspace sandbox") {
-		t.Fatalf("prompt = %q, missing escalation wording", lastPrompt)
-	}
-
-	if strings.Contains(strings.ToLower(result), "operation not permitted") ||
-		strings.Contains(strings.ToLower(result), "permission denied") {
-		t.Skipf("retry still denied, likely by an ambient host sandbox this test itself runs under: %q", result)
-	}
-	if !strings.Contains(result, "retried without the workspace sandbox after approval") {
-		t.Fatalf("result missing escalation note: %q", result)
+	if !strings.Contains(result, "Command exited with code") {
+		t.Fatalf("write outside the workspace was not denied: %q", result)
 	}
 }
 

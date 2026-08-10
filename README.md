@@ -183,11 +183,9 @@ unavailable. When Wingman itself runs in a container, that container must
 permit user/PID namespaces and a fresh `/proc` mount. Windows is not yet
 supported. An unset value preserves the existing file-tool-only path boundary.
 
-A command the sandbox denies (its output looks like a permission or read-only
-filesystem error, not an ordinary failure) prompts for approval to retry it
-without the sandbox, once per distinct command and directory; declining
-leaves the original denial in place. With no confirmation gate configured,
-there is no prompt to answer, so the sandbox boundary always holds.
+The boundary always holds: a command the sandbox denies fails with that denial
+and is never retried unconfined. Lift it by restarting without
+`WINGMAN_SANDBOX=workspace`.
 
 ### Project Configuration
 
