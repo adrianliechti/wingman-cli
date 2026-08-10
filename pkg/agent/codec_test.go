@@ -82,6 +82,26 @@ func TestFromReasoningDropsEmptyItems(t *testing.T) {
 	}
 }
 
+func TestOutputMessageTextPreservesStableID(t *testing.T) {
+	msg, ok := fromOutput(&responses.ResponseOutputMessageParam{
+		ID: "message-1",
+		Content: []responses.ResponseOutputMessageContentUnionParam{{
+			OfOutputText: &responses.ResponseOutputTextParam{Text: "answer"},
+		}},
+	})
+	if !ok || msg.Content[0].TextID != "message-1" {
+		t.Fatalf("converted message = %+v", msg)
+	}
+
+	items, _ := assistantToInput(msg)
+	if len(items) != 1 || items[0].OfOutputMessage == nil {
+		t.Fatalf("replayed items = %+v", items)
+	}
+	if items[0].OfOutputMessage.ID != "" {
+		t.Fatalf("provider-local text ID was replayed: %+v", items)
+	}
+}
+
 func TestToInputFlushesImagesAfterToolResultRun(t *testing.T) {
 	messages := []Message{
 		{Role: RoleAssistant, Content: []Content{

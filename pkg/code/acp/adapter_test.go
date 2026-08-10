@@ -227,7 +227,7 @@ func TestGroupedCategoryConfigAndNewSessionDefaults(t *testing.T) {
 
 func TestSessionUpdatesPreserveCommandsMetadataUsageAndProgress(t *testing.T) {
 	progress := make(chan string, 1)
-	ctx := tool.WithProgressSink(context.Background(), func(id, text string) { progress <- id + ":" + text })
+	ctx := tool.WithProgressSink(context.Background(), func(_ context.Context, id, text string) { progress <- id + ":" + text })
 	turn := &turn{ctx: ctx, events: make(chan event, 1), done: make(chan struct{})}
 	sess := &sessionState{id: "session", inflight: turn, toolCalls: map[string]toolCall{}}
 	a := &Agent{sessions: map[string]*sessionState{"session": sess}}

@@ -43,6 +43,7 @@ func (a *App) builtinCommands() []slashCommand {
 		cmds = append(cmds, slashCommand{
 			Name: "/" + mode.ID,
 			Desc: mode.Description,
+			Busy: true,
 			Run:  func(a *App) { a.setMode(mode.ID) },
 		})
 	}

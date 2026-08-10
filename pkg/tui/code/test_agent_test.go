@@ -12,6 +12,8 @@ import (
 type uiTestAgent struct {
 	workspace *wingmancode.Workspace
 	messages  []agent.Message
+	revision  uint64
+	snapshots int
 	model     string
 	effort    string
 	efforts   []string
@@ -64,7 +66,14 @@ func (a *uiTestAgent) NewSession(context.Context) (string, error)  { return "new
 func (a *uiTestAgent) LoadSession(context.Context, string) error   { return nil }
 func (a *uiTestAgent) DeleteSession(context.Context, string) error { return nil }
 func (a *uiTestAgent) Messages(string) []agent.Message             { return a.messages }
-func (a *uiTestAgent) Usage(string) agent.Usage                    { return agent.Usage{} }
+func (a *uiTestAgent) HistorySnapshot(string) wingmancode.HistorySnapshot {
+	a.snapshots++
+	return wingmancode.HistorySnapshot{Messages: agent.CloneMessages(a.messages), Revision: a.revision}
+}
+func (a *uiTestAgent) HistoryVersion(string) wingmancode.HistoryVersion {
+	return wingmancode.HistoryVersion{Revision: a.revision, MessageCount: len(a.messages)}
+}
+func (a *uiTestAgent) Usage(string) agent.Usage { return agent.Usage{} }
 func (a *uiTestAgent) Send(context.Context, string, []agent.Content) (iter.Seq2[agent.Message, error], error) {
 	return func(func(agent.Message, error) bool) {}, nil
 }

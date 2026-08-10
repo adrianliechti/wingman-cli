@@ -59,7 +59,11 @@ type Agent struct {
 	pending  map[string][]acpsdk.SessionUpdate
 }
 
-var _ code.Agent = (*Agent)(nil)
+var (
+	_ code.Agent                   = (*Agent)(nil)
+	_ code.HistorySnapshotProvider = (*Agent)(nil)
+	_ code.HistoryVersionProvider  = (*Agent)(nil)
+)
 
 type sessionState struct {
 	parent *Agent
@@ -677,6 +681,26 @@ func (a *Agent) Messages(id string) []agent.Message {
 	return agent.CloneMessages(sess.messages)
 }
 
+func (a *Agent) HistorySnapshot(id string) code.HistorySnapshot {
+	sess := a.session(id)
+	if sess == nil {
+		return code.HistorySnapshot{}
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return code.HistorySnapshot{Messages: agent.CloneMessages(sess.messages)}
+}
+
+func (a *Agent) HistoryVersion(id string) code.HistoryVersion {
+	sess := a.session(id)
+	if sess == nil {
+		return code.HistoryVersion{}
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return code.HistoryVersion{MessageCount: len(sess.messages)}
+}
+
 func (a *Agent) Commands(id string) []code.Command {
 	sess := a.session(id)
 	if sess == nil {
@@ -1073,7 +1097,7 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 		if u.AgentMessageChunk.MessageId != nil {
 			id = *u.AgentMessageChunk.MessageId
 		}
-		return emit(agent.RoleAssistant, agent.Content{Text: text}, "agent:"+id), true
+		return emit(agent.RoleAssistant, agent.Content{Text: text, TextID: id}, "agent:"+id), true
 
 	case u.AgentThoughtChunk != nil:
 		text := blockText(u.AgentThoughtChunk.Content)

@@ -631,6 +631,9 @@ func (s *Server) Prompt(ctx context.Context, params acpsdk.PromptRequest) (acpsd
 		})
 	}
 
+	// ACP agent_message_chunk updates cannot be retracted. Deliberately leave
+	// Reset unsupported so a recoverable error after visible output terminates
+	// the attempt instead of duplicating it with an invisible retry.
 	stream, err := sess.agent.Send(ctx, string(sess.id), acp.ContentFromBlocks(params.Prompt))
 	if err != nil {
 		return acpsdk.PromptResponse{}, err

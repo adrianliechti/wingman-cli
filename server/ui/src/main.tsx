@@ -1,15 +1,16 @@
 import { loader } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
-import editorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
-import cssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker";
-import htmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
-import jsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
-import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
+import editorWorker from "monaco-editor/editor/editor.worker?worker";
+import cssWorker from "monaco-editor/languages/features/css/css.worker?worker";
+import htmlWorker from "monaco-editor/languages/features/html/html.worker?worker";
+import jsonWorker from "monaco-editor/languages/features/json/json.worker?worker";
+import tsWorker from "monaco-editor/languages/features/typescript/ts.worker?worker";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./devicon-slim.css";
 import "./index.css";
 import App from "./App.tsx";
+import { ToastProvider } from "./components/ui/Feedback.tsx";
 
 // monaco-editor declares MonacoEnvironment inside its own module, so the name
 // never reaches the global scope we assign it on.
@@ -35,6 +36,8 @@ loader.config({ monaco });
 
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>
-		<App />
+		<ToastProvider>
+			<App />
+		</ToastProvider>
 	</StrictMode>,
 );

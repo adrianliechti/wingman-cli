@@ -161,6 +161,8 @@ export function AgentPicker({ subscribe, onSwitchingChange }: Props) {
 				disabled={!!switching}
 				className="flex items-center gap-1 px-2 h-7 rounded text-[11.5px] text-fg-muted hover:text-fg hover:bg-bg-hover cursor-pointer transition-colors max-w-[180px] disabled:cursor-wait disabled:opacity-70"
 				title={`Agent: ${displayedName}`}
+				aria-haspopup="menu"
+				aria-expanded={open}
 			>
 				{switching ? (
 					<Loader2 size={12} className="shrink-0 animate-spin" />
@@ -178,6 +180,8 @@ export function AgentPicker({ subscribe, onSwitchingChange }: Props) {
 				createPortal(
 					<div
 						ref={popRef}
+						role="menu"
+						aria-label="Agent"
 						style={{ position: "fixed", top: popPos.top, left: popPos.left }}
 						className="min-w-[180px] max-w-[260px] bg-bg-elevated/95 backdrop-blur-sm border border-border rounded-md shadow-xl z-50"
 					>
@@ -185,6 +189,8 @@ export function AgentPicker({ subscribe, onSwitchingChange }: Props) {
 							{agents.map((a) => (
 								<button
 									type="button"
+									role="menuitemradio"
+									aria-checked={a.id === current}
 									key={a.id}
 									className={`block w-full text-left px-3 py-1.5 text-[12px] cursor-pointer whitespace-nowrap transition-colors ${
 										a.id === current

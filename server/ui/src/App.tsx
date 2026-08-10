@@ -1,7 +1,11 @@
 import {
+	Bot,
+	ChevronDown,
 	Compass,
+	Code2,
 	FileText,
 	GitCompare,
+	Globe2,
 	Loader2,
 	MessageSquare,
 	PanelLeftClose,
@@ -14,13 +18,13 @@ import {
 	X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
 	Group,
 	Panel,
 	type PanelImperativeHandle,
 	Separator,
 	useDefaultLayout,
-	useGroupRef,
 	usePanelRef,
 } from "react-resizable-panels";
 import { ChatPanel } from "./components/ChatPanel";
@@ -36,28 +40,45 @@ import { FileTab } from "./components/FileTab";
 import { FileTree } from "./components/FileTree";
 import { ProblemsPanel } from "./components/ProblemsPanel";
 import { TasksPanel } from "./components/TasksPanel";
-import { TerminalPanel } from "./components/TerminalPanel";
+import { TaskTab } from "./components/TaskTab";
+import { TerminalView } from "./components/TerminalView";
+import { Dialog, dialogButtonClass, useToast } from "./components/ui/Feedback";
 import { BUILTIN_AGENT_ID } from "./components/AgentPicker";
 import { Sidebar } from "./components/Sidebar";
 import { useCapabilities } from "./hooks/useCapabilities";
+import { useOpenDocuments } from "./hooks/useOpenDocuments";
 import {
 	type ChatEntry,
 	type PromptReply,
 	useWebSocket,
 } from "./hooks/useWebSocket";
-import type { DiffLayer, TurnInputIntent } from "./types/protocol";
+import type {
+	DiffLayer,
+	ShellEntry,
+	TaskEntry,
+	TerminalEntry,
+	TurnInputIntent,
+} from "./types/protocol";
 
 interface CenterTab {
 	id: string;
-	type: "chat" | "file" | "diff";
+	type: "chat" | "file" | "diff" | "terminal" | "task";
 	label: string;
 	path?: string;
 	diffLayer?: DiffLayer;
 	line?: number;
+	column?: number;
+	navigationKey?: number;
+	external?: boolean;
 	sessionId?: string;
+	terminalId?: string;
+	taskId?: string;
 }
 
-type RightTab = "changes" | "files" | "agents";
+type RightTab = "changes" | "files" | "problems" | "agents";
+type CloseRequest = { kind: "file" | "terminal"; tab: CenterTab } | null;
+type SessionDeleteRequest = { id: string; title: string } | null;
+type LayoutMode = "wide" | "medium" | "narrow";
 
 const EMPTY_ENTRIES: never[] = [];
 const EMPTY_USAGE = {
@@ -67,8 +88,6 @@ const EMPTY_USAGE = {
 	lastInputTokens: 0,
 	contextWindow: 0,
 };
-
-const DEFAULT_TERMINAL_PERCENT = 30;
 
 const TERMINAL_SHORTCUT = /Mac|iPhone|iPad/.test(navigator.platform)
 	? "⌃⌥T"
@@ -86,6 +105,7 @@ function draftChatTab(): CenterTab {
 }
 
 export default function App() {
+	const layoutMode = useLayoutMode();
 	const {
 		connected,
 		sessions,
@@ -104,58 +124,171 @@ export default function App() {
 		clearSessions,
 		subscribe,
 	} = useWebSocket();
+	const toast = useToast();
+	const {
+		documents,
+		dirtyPaths,
+		openDocument,
+		updateDraft,
+		saveDocument,
+		discardDocument,
+		keepDocument,
+		reloadDocument,
+		closeDocument,
+	} = useOpenDocuments(subscribe);
 	const capabilities = useCapabilities(subscribe);
 	const showChanges = capabilities?.diffs ?? false;
 	const showProblems = capabilities?.lsp ?? false;
 	const showAgents = capabilities?.tasks ?? false;
 	const showTerminal = capabilities?.terminal ?? false;
-	const [requestedRightTab, setRequestedRightTab] =
-		useState<RightTab>("changes");
-	const rightTab =
-		(requestedRightTab === "changes" && !showChanges) ||
-		(requestedRightTab === "agents" && !showAgents)
-			? "files"
-			: requestedRightTab;
-	const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
+	const [requestedRightTab, setRequestedRightTab] = useState<RightTab>("files");
+	const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 	const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
-	const [terminalCollapsed, setTerminalCollapsed] = useState(true);
-	const terminalSizeRef = useRef(0);
+	const [leftDrawerOpen, setLeftDrawerOpen] = useState(false);
+	const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
+	const [terminalShells, setTerminalShells] = useState<ShellEntry[]>([]);
+	const terminalCreatingRef = useRef(false);
 	const leftPanelRef = usePanelRef();
 	const rightPanelRef = usePanelRef();
-	const terminalPanelRef = usePanelRef();
-	const centerGroupRef = useGroupRef();
+	const layoutId =
+		layoutMode === "wide" ? "wingman-layout" : "wingman-layout-medium";
 	const { defaultLayout, onLayoutChanged } = useDefaultLayout({
-		id: "wingman-layout",
+		id: layoutId,
 	});
-	const {
-		defaultLayout: centerDefaultLayout,
-		onLayoutChanged: onCenterLayoutChanged,
-	} = useDefaultLayout({ id: "wingman-center-layout" });
+
+	useEffect(() => {
+		setLeftDrawerOpen(false);
+		setRightDrawerOpen(false);
+	}, [layoutMode]);
 
 	const [tabs, setTabs] = useState<CenterTab[]>([draftChatTab()]);
 	const [activeTabId, setActiveTabId] = useState(chatTabId(""));
+	const tabListRef = useRef<HTMLDivElement>(null);
+	useEffect(() => {
+		const frame = requestAnimationFrame(() => {
+			const list = tabListRef.current;
+			const tab = list?.querySelector<HTMLElement>(
+				`[data-center-tab="${CSS.escape(activeTabId)}"]`,
+			);
+			if (!list || !tab) return;
+			const listRect = list.getBoundingClientRect();
+			const tabRect = tab.getBoundingClientRect();
+			if (tabRect.left < listRect.left) {
+				list.scrollLeft -= listRect.left - tabRect.left;
+			} else if (tabRect.right > listRect.right) {
+				list.scrollLeft += tabRect.right - listRect.right;
+			}
+		});
+		return () => cancelAnimationFrame(frame);
+	}, [activeTabId, tabs.length]);
+	const [fileViews, setFileViews] = useState<
+		Record<string, "code" | "preview">
+	>({});
 	const [currentSessionId, setCurrentSessionId] = useState("");
 	const [paletteOpen, setPaletteOpen] = useState(false);
 	const [composerSeed, setComposerSeed] = useState<{
 		text: string;
 		nonce: number;
 	} | null>(null);
+	const [closeRequest, setCloseRequest] = useState<CloseRequest>(null);
+	const [sessionDelete, setSessionDelete] =
+		useState<SessionDeleteRequest>(null);
 
-	const toggleTerminal = useCallback(() => {
-		const panel = terminalPanelRef.current;
-		if (!panel) return;
-		if (!panel.isCollapsed()) {
-			panel.collapse();
+	const createTerminal = useCallback(
+		async (shell?: string) => {
+			if (terminalCreatingRef.current) return;
+			terminalCreatingRef.current = true;
+			try {
+				const response = await fetch("/api/terminals", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ shell, cols: 80, rows: 24 }),
+				});
+				if (!response.ok) {
+					throw new Error(
+						(await response.text()).trim() ||
+							`Failed to create terminal (${response.status}).`,
+					);
+				}
+				const entry = (await response.json()) as TerminalEntry;
+				const tab: CenterTab = {
+					id: `terminal:${entry.id}`,
+					type: "terminal",
+					label: entry.title,
+					terminalId: entry.id,
+				};
+				setTabs((prev) =>
+					prev.some((item) => item.id === tab.id) ? prev : [...prev, tab],
+				);
+				setActiveTabId(tab.id);
+			} catch (error) {
+				toast({
+					title: "Could not create terminal",
+					description: error instanceof Error ? error.message : String(error),
+					tone: "error",
+				});
+			} finally {
+				terminalCreatingRef.current = false;
+			}
+		},
+		[toast],
+	);
+
+	useEffect(() => {
+		if (!showTerminal) return;
+		let cancelled = false;
+		fetch("/api/terminals/shells")
+			.then((response) => (response.ok ? response.json() : []))
+			.then((shells: ShellEntry[]) => {
+				if (!cancelled) setTerminalShells(shells);
+			})
+			.catch(() => {
+				if (!cancelled) setTerminalShells([]);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [showTerminal]);
+
+	const reloadTerminals = useCallback(async () => {
+		let entries: TerminalEntry[];
+		try {
+			const response = await fetch("/api/terminals");
+			if (!response.ok) return;
+			entries = (await response.json()) as TerminalEntry[];
+		} catch {
 			return;
 		}
-		// Expanding a collapsed panel only grows it to its minSize, so set the
-		// group layout directly to restore the last height (or the default).
-		const size = terminalSizeRef.current || DEFAULT_TERMINAL_PERCENT;
-		centerGroupRef.current?.setLayout({
-			workspace: 100 - size,
-			terminal: size,
+		const ids = new Set(entries.map((entry) => entry.id));
+		setTabs((prev) => {
+			const next = prev.filter(
+				(tab) => tab.type !== "terminal" || ids.has(tab.terminalId ?? ""),
+			);
+			const known = new Set(
+				next
+					.filter((tab) => tab.type === "terminal")
+					.map((tab) => tab.terminalId),
+			);
+			for (const entry of entries) {
+				if (known.has(entry.id)) continue;
+				next.push({
+					id: `terminal:${entry.id}`,
+					type: "terminal",
+					label: entry.title,
+					terminalId: entry.id,
+				});
+			}
+			return next;
 		});
-	}, [terminalPanelRef, centerGroupRef]);
+	}, []);
+
+	useEffect(() => {
+		if (!showTerminal) return;
+		void reloadTerminals();
+		return subscribe((msg) => {
+			if (msg.type === "terminals_changed") void reloadTerminals();
+		});
+	}, [showTerminal, subscribe, reloadTerminals]);
 
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
@@ -178,16 +311,25 @@ export default function App() {
 					(!e.altKey && e.code === "Backquote"))
 			) {
 				e.preventDefault();
-				toggleTerminal();
+				void createTerminal();
 			}
 		};
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
-	}, [toggleTerminal]);
+	}, [createTerminal]);
 
 	const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
+	const activeIsHtml =
+		activeTab.type === "file" && /\.html?$/i.test(activeTab.path ?? "");
+	const activeFileView = fileViews[activeTab.id] ?? "code";
 	const sessionId =
 		activeTab.type === "chat" ? (activeTab.sessionId ?? "") : currentSessionId;
+	const rightTab =
+		(requestedRightTab === "changes" && !showChanges) ||
+		(requestedRightTab === "problems" && !showProblems) ||
+		(requestedRightTab === "agents" && !showAgents)
+			? "files"
+			: requestedRightTab;
 
 	const activeSession = sessionId ? sessions[sessionId] : undefined;
 	const entries = activeSession?.entries ?? EMPTY_ENTRIES;
@@ -269,12 +411,22 @@ export default function App() {
 	);
 
 	const openFile = useCallback(
-		(path: string, line?: number) => {
+		(path: string, line?: number, column?: number, external?: boolean) => {
+			openDocument(path, external ?? false);
 			const existing = tabs.find((t) => t.type === "file" && t.path === path);
 			if (existing) {
 				if (line) {
 					setTabs((prev) =>
-						prev.map((t) => (t.id === existing.id ? { ...t, line } : t)),
+						prev.map((t) =>
+							t.id === existing.id
+								? {
+										...t,
+										line,
+										column,
+										navigationKey: (t.navigationKey ?? 0) + 1,
+									}
+								: t,
+						),
 					);
 				}
 				setActiveTabId(existing.id);
@@ -287,11 +439,37 @@ export default function App() {
 				label,
 				path,
 				line,
+				column,
+				navigationKey: line ? 1 : undefined,
+				external: external || undefined,
 			};
 			setTabs((prev) => [...prev, tab]);
 			setActiveTabId(tab.id);
 		},
-		[tabs],
+		[tabs, openDocument],
+	);
+
+	const openTask = useCallback(
+		(task: TaskEntry) => {
+			if (!sessionId) return;
+			const id = `task:${sessionId}:${task.id}`;
+			setTabs((prev) =>
+				prev.some((t) => t.id === id)
+					? prev
+					: [
+							...prev,
+							{
+								id,
+								type: "task" as const,
+								label: task.description,
+								sessionId,
+								taskId: task.id,
+							},
+						],
+			);
+			setActiveTabId(id);
+		},
+		[sessionId],
 	);
 
 	const openDiff = useCallback(
@@ -318,15 +496,23 @@ export default function App() {
 		[tabs],
 	);
 
-	const closeTab = useCallback(
+	const closeTabNow = useCallback(
 		(id: string) => {
 			const idx = tabs.findIndex((t) => t.id === id);
 			if (idx < 0) return;
+			const closing = tabs[idx];
+			if (closing.type === "file" && closing.path) closeDocument(closing.path);
 			setTabs((prev) => {
 				let next = prev.filter((t) => t.id !== id);
 				if (!next.some((t) => t.type === "chat")) {
 					next = [draftChatTab(), ...next];
 				}
+				return next;
+			});
+			setFileViews((prev) => {
+				if (!(id in prev)) return prev;
+				const next = { ...prev };
+				delete next[id];
 				return next;
 			});
 			if (activeTabId === id) {
@@ -337,45 +523,175 @@ export default function App() {
 				activateTab(fallback);
 			}
 		},
-		[tabs, activeTabId, activateTab],
+		[tabs, activeTabId, activateTab, closeDocument],
 	);
+
+	const closeTerminal = useCallback(
+		async (tab: CenterTab) => {
+			if (!tab.terminalId) return;
+			try {
+				const response = await fetch(
+					`/api/terminals/${encodeURIComponent(tab.terminalId)}`,
+					{ method: "DELETE" },
+				);
+				if (!response.ok && response.status !== 404) {
+					throw new Error(
+						(await response.text()).trim() ||
+							`Failed to close terminal (${response.status}).`,
+					);
+				}
+				setCloseRequest((current) =>
+					current?.kind === "terminal" && current.tab.id === tab.id
+						? null
+						: current,
+				);
+				closeTabNow(tab.id);
+			} catch (error) {
+				toast({
+					title: "Could not close terminal",
+					description: error instanceof Error ? error.message : String(error),
+					tone: "error",
+				});
+			}
+		},
+		[closeTabNow, toast],
+	);
+
+	const requestCloseTab = useCallback(
+		async (id: string) => {
+			const tab = tabs.find((item) => item.id === id);
+			if (!tab) return;
+			if (tab.type === "file" && tab.path && dirtyPaths.has(tab.path)) {
+				setCloseRequest({ kind: "file", tab });
+				return;
+			}
+			if (tab.type === "terminal" && tab.terminalId) {
+				try {
+					for (let attempt = 0; attempt < 2; attempt++) {
+						const response = await fetch(
+							`/api/terminals/${encodeURIComponent(tab.terminalId)}`,
+						);
+						if (response.status === 404) {
+							closeTabNow(tab.id);
+							return;
+						}
+						if (!response.ok) {
+							throw new Error(
+								(await response.text()).trim() ||
+									`Failed to inspect terminal (${response.status}).`,
+							);
+						}
+						const terminal = (await response.json()) as TerminalEntry;
+						if (!terminal.busy) {
+							await closeTerminal(tab);
+							return;
+						}
+						if (attempt === 0) {
+							await new Promise((resolve) => window.setTimeout(resolve, 100));
+						}
+					}
+					setCloseRequest({ kind: "terminal", tab });
+				} catch (error) {
+					toast({
+						title: "Could not check terminal",
+						description: error instanceof Error ? error.message : String(error),
+						tone: "error",
+					});
+				}
+				return;
+			}
+			closeTabNow(id);
+		},
+		[closeTabNow, closeTerminal, dirtyPaths, tabs, toast],
+	);
+
+	const terminateTerminal = useCallback(async () => {
+		const request = closeRequest;
+		if (request?.kind !== "terminal" || !request.tab.terminalId) return;
+		await closeTerminal(request.tab);
+	}, [closeRequest, closeTerminal]);
+
+	const saveAndCloseFile = useCallback(async () => {
+		const request = closeRequest;
+		if (request?.kind !== "file" || !request.tab.path) return;
+		const result = await saveDocument(request.tab.path);
+		if (!result.ok) {
+			toast({
+				title: "Could not save file",
+				description: result.error,
+				tone: "error",
+			});
+			return;
+		}
+		setCloseRequest(null);
+		closeTabNow(request.tab.id);
+	}, [closeRequest, closeTabNow, saveDocument, toast]);
+
+	const setTerminalTitle = useCallback((id: string, title: string) => {
+		if (!title) return;
+		setTabs((prev) =>
+			prev.map((tab) =>
+				tab.type === "terminal" && tab.terminalId === id
+					? { ...tab, label: title }
+					: tab,
+			),
+		);
+	}, []);
 
 	useEffect(() => {
 		if (tabs.some((t) => t.id === activeTabId)) return;
 		activateTab(tabs[0] ?? draftChatTab());
 	}, [tabs, activeTabId, activateTab]);
 
-	const [dirtyTabs, setDirtyTabs] = useState<Set<string>>(() => new Set());
-	const setTabDirty = useCallback((id: string, dirty: boolean) => {
-		setDirtyTabs((prev) => {
-			const has = prev.has(id);
-			if (has === dirty) return prev;
-			const next = new Set(prev);
-			if (dirty) next.add(id);
-			else next.delete(id);
-			return next;
-		});
-	}, []);
-
 	const handleNewSession = useCallback(async () => {
 		try {
 			const res = await fetch("/api/sessions", { method: "POST" });
-			if (!res.ok) return;
+			if (!res.ok) throw new Error(await res.text());
 			const data = (await res.json()) as { id?: string };
 			if (!data.id) return;
 			openChatTab(data.id);
-		} catch {}
-	}, [openChatTab]);
+		} catch (error) {
+			toast({
+				title: "Could not create session",
+				description: error instanceof Error ? error.message : String(error),
+				tone: "error",
+			});
+		}
+	}, [openChatTab, toast]);
 
 	const handleSessionDeleted = useCallback(
 		(id: string) => {
 			removeSession(id);
 			setCurrentSessionId((prev) => (prev === id ? "" : prev));
 			const tab = tabs.find((t) => t.type === "chat" && t.sessionId === id);
-			if (tab) closeTab(tab.id);
+			if (tab) closeTabNow(tab.id);
 		},
-		[removeSession, tabs, closeTab],
+		[removeSession, tabs, closeTabNow],
 	);
+
+	const deleteSession = useCallback(async () => {
+		if (!sessionDelete) return;
+		try {
+			const response = await fetch(`/api/sessions/${sessionDelete.id}`, {
+				method: "DELETE",
+			});
+			if (!response.ok) {
+				throw new Error(
+					(await response.text()).trim() ||
+						`Failed to delete session (${response.status}).`,
+				);
+			}
+			const id = sessionDelete.id;
+			setSessionDelete(null);
+			handleSessionDeleted(id);
+		} catch (error) {
+			toast({
+				title: "Session was not deleted",
+				description: error instanceof Error ? error.message : String(error),
+				tone: "error",
+			});
+		}
+	}, [handleSessionDeleted, sessionDelete, toast]);
 
 	const [sessionLoad, setSessionLoad] = useState<{
 		id: string;
@@ -547,11 +863,16 @@ export default function App() {
 				const data = await r.json();
 				setModes(data.modes ?? []);
 				setMode(data.current ?? next);
-			} catch {
+			} catch (error) {
 				setMode(prev);
+				toast({
+					title: "Could not change mode",
+					description: error instanceof Error ? error.message : String(error),
+					tone: "error",
+				});
 			}
 		},
-		[ensureSessionId, mode],
+		[ensureSessionId, mode, toast],
 	);
 
 	const handleCancel = useCallback(
@@ -563,6 +884,22 @@ export default function App() {
 
 	const [noticeDismissed, setNoticeDismissed] = useState(false);
 	const showNotice = !!capabilities?.notice && !noticeDismissed;
+	const toggleSidebar = useCallback(() => {
+		if (layoutMode === "wide") togglePanel(leftPanelRef.current);
+		else setLeftDrawerOpen((open) => !open);
+	}, [layoutMode, leftPanelRef]);
+	const toggleRightPanel = useCallback(() => {
+		if (layoutMode === "narrow") setRightDrawerOpen((open) => !open);
+		else togglePanel(rightPanelRef.current);
+	}, [layoutMode, rightPanelRef]);
+	const showRightPanel = useCallback(
+		(tab: RightTab) => {
+			setRequestedRightTab(tab);
+			if (layoutMode === "narrow") setRightDrawerOpen(true);
+			else expandPanel(rightPanelRef.current);
+		},
+		[layoutMode, rightPanelRef],
+	);
 
 	const paletteActions = useMemo<PaletteAction[]>(() => {
 		const actions: PaletteAction[] = [
@@ -576,13 +913,13 @@ export default function App() {
 				id: "toggle-sidebar",
 				label: "Toggle sidebar",
 				icon: <PanelLeftOpen size={12} className="text-fg-dim shrink-0" />,
-				run: () => togglePanel(leftPanelRef.current),
+				run: toggleSidebar,
 			},
 			{
 				id: "toggle-panel",
 				label: "Toggle side panel",
 				icon: <PanelRightOpen size={12} className="text-fg-dim shrink-0" />,
-				run: () => togglePanel(rightPanelRef.current),
+				run: toggleRightPanel,
 			},
 		];
 		if (showChanges) {
@@ -590,29 +927,23 @@ export default function App() {
 				id: "show-changes",
 				label: "Show changes",
 				icon: <GitCompare size={12} className="text-fg-dim shrink-0" />,
-				run: () => {
-					setRequestedRightTab("changes");
-					expandPanel(rightPanelRef.current);
-				},
+				run: () => showRightPanel("changes"),
 			});
 		}
 		if (showTerminal) {
 			actions.push({
-				id: "toggle-terminal",
-				label: "Toggle terminal",
+				id: "new-terminal",
+				label: "New terminal",
 				hint: TERMINAL_SHORTCUT,
 				icon: <SquareTerminal size={12} className="text-fg-dim shrink-0" />,
-				run: toggleTerminal,
+				run: () => void createTerminal(),
 			});
 		}
 		actions.push({
 			id: "show-files",
 			label: "Show files",
 			icon: <FileText size={12} className="text-fg-dim shrink-0" />,
-			run: () => {
-				setRequestedRightTab("files");
-				expandPanel(rightPanelRef.current);
-			},
+			run: () => showRightPanel("files"),
 		});
 		for (const m of modes) {
 			if (m.id === mode) continue;
@@ -630,9 +961,10 @@ export default function App() {
 		handleNewSession,
 		showChanges,
 		showTerminal,
-		leftPanelRef,
-		rightPanelRef,
-		toggleTerminal,
+		toggleSidebar,
+		toggleRightPanel,
+		showRightPanel,
+		createTerminal,
 		modes,
 		mode,
 		selectMode,
@@ -658,11 +990,93 @@ export default function App() {
 	const canCreateNew = !!(
 		sessionId && (sessions[sessionId]?.entries.length ?? 0) > 0
 	);
+	const sidebarContent = (
+		<Sidebar
+			currentSessionId={sessionId}
+			onSessionSelect={(id) => {
+				setLeftDrawerOpen(false);
+				void handleSessionSelect(id);
+			}}
+			onNewSession={() => {
+				setLeftDrawerOpen(false);
+				void handleNewSession();
+			}}
+			onSessionDelete={(id, title) => setSessionDelete({ id, title })}
+			runningSessionIds={runningSessionIds}
+			canCreateNew={canCreateNew}
+			subscribe={subscribe}
+		/>
+	);
+	const inspectorContent = (
+		<aside className="flex h-full flex-col bg-bg" aria-label="Workspace">
+			<div
+				className="flex h-10 shrink-0 items-stretch"
+				role="tablist"
+				aria-label="Workspace panels"
+			>
+				<RightTabButton
+					active={rightTab === "files"}
+					onClick={() => setRequestedRightTab("files")}
+				>
+					Files
+				</RightTabButton>
+				{showChanges && (
+					<RightTabButton
+						active={rightTab === "changes"}
+						onClick={() => setRequestedRightTab("changes")}
+					>
+						Changes
+					</RightTabButton>
+				)}
+				{showProblems && (
+					<RightTabButton
+						active={rightTab === "problems"}
+						onClick={() => setRequestedRightTab("problems")}
+					>
+						Problems
+					</RightTabButton>
+				)}
+				{showAgents && (
+					<RightTabButton
+						active={rightTab === "agents"}
+						onClick={() => setRequestedRightTab("agents")}
+					>
+						Agents
+					</RightTabButton>
+				)}
+				<div className="flex-1" />
+			</div>
+			<div className="h-px shrink-0 bg-border-subtle" />
+			<div className="flex-1 overflow-hidden" role="tabpanel">
+				{rightTab === "agents" && showAgents ? (
+					<TasksPanel
+						sessionId={sessionId}
+						subscribe={subscribe}
+						onOpenTask={openTask}
+					/>
+				) : rightTab === "changes" && showChanges ? (
+					<DiffsPanel
+						sessionId={sessionId}
+						git={capabilities?.git ?? false}
+						onOpenDiff={openDiff}
+						onOpenFile={openFile}
+						subscribe={subscribe}
+					/>
+				) : rightTab === "problems" && showProblems ? (
+					<ProblemsPanel onOpenFile={openFile} subscribe={subscribe} />
+				) : (
+					<div className="flex h-full flex-col overflow-hidden">
+						<FileTree onFileSelect={openFile} subscribe={subscribe} />
+					</div>
+				)}
+			</div>
+		</aside>
+	);
 
 	return (
 		<div className="relative flex flex-col h-screen bg-bg text-fg">
 			{showNotice && (
-				<div className="shrink-0 px-4 py-2 text-[12px] flex items-center gap-3 bg-yellow-500/10 border-b border-yellow-500/30 text-yellow-700 dark:text-yellow-300">
+				<div className="flex shrink-0 items-center gap-3 border-b border-warning/30 bg-warning/10 px-4 py-2 text-[12px] text-warning">
 					<span className="flex-1">{capabilities?.notice}</span>
 					<button
 						type="button"
@@ -676,78 +1090,80 @@ export default function App() {
 			)}
 			<Group
 				orientation="horizontal"
-				id="wingman-layout"
+				id={layoutId}
 				defaultLayout={defaultLayout}
 				onLayoutChanged={onLayoutChanged}
 				className="flex-1 overflow-hidden"
 			>
-				<Panel
-					panelRef={leftPanelRef}
-					id="sidebar"
-					defaultSize="0px"
-					collapsible
-					collapsedSize="0px"
-					minSize="224px"
-					groupResizeBehavior="preserve-pixel-size"
-					onResize={({ inPixels }) => setSidebarCollapsed(inPixels === 0)}
-					className="overflow-hidden"
-				>
-					<Sidebar
-						currentSessionId={sessionId}
-						onSessionSelect={handleSessionSelect}
-						onNewSession={handleNewSession}
-						onSessionDeleted={handleSessionDeleted}
-						runningSessionIds={runningSessionIds}
-						canCreateNew={canCreateNew}
-						subscribe={subscribe}
-					/>
-				</Panel>
-				<ResizeHandle />
+				{layoutMode === "wide" && (
+					<>
+						<Panel
+							panelRef={leftPanelRef}
+							id="sidebar"
+							defaultSize="240px"
+							collapsible
+							collapsedSize="0px"
+							minSize="224px"
+							groupResizeBehavior="preserve-pixel-size"
+							onResize={({ inPixels }) => setSidebarCollapsed(inPixels === 0)}
+							className="overflow-hidden"
+						>
+							{sidebarContent}
+						</Panel>
+						<ResizeHandle />
+					</>
+				)}
 
 				<Panel
 					id="center"
 					minSize="320px"
 					className="flex flex-col overflow-hidden min-w-0 bg-bg"
 				>
-					<Group
-						orientation="vertical"
-						groupRef={centerGroupRef}
-						id="wingman-center-layout"
-						defaultLayout={centerDefaultLayout}
-						onLayoutChanged={onCenterLayoutChanged}
-						className="flex-1 overflow-hidden"
-					>
-						<Panel
-							id="workspace"
-							minSize="160px"
-							className="flex flex-col overflow-hidden min-h-0 bg-bg"
-						>
-							<div className="h-10 flex items-stretch bg-bg shrink-0 overflow-x-auto">
+					<main className="flex flex-1 flex-col overflow-hidden min-h-0 bg-bg">
+						<div className="flex h-10 shrink-0 items-stretch overflow-hidden bg-bg">
+							<button
+								type="button"
+								className="self-center flex items-center justify-center w-8 h-8 ml-1 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
+								onClick={toggleSidebar}
+								title={
+									layoutMode !== "wide" || sidebarCollapsed
+										? "Show sessions"
+										: "Hide sessions"
+								}
+								aria-label={
+									layoutMode !== "wide" || sidebarCollapsed
+										? "Show sessions"
+										: "Hide sessions"
+								}
+							>
+								{layoutMode !== "wide" || sidebarCollapsed ? (
+									<PanelLeftOpen size={13} />
+								) : (
+									<PanelLeftClose size={13} />
+								)}
+							</button>
+							{(layoutMode !== "wide" || sidebarCollapsed) && canCreateNew && (
 								<button
 									type="button"
-									className="self-center flex items-center justify-center w-8 h-8 ml-1 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
-									onClick={() => togglePanel(leftPanelRef.current)}
-									title={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+									className="self-center flex items-center justify-center w-8 h-8 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
+									onClick={handleNewSession}
+									title="New session"
 								>
-									{sidebarCollapsed ? (
-										<PanelLeftOpen size={13} />
-									) : (
-										<PanelLeftClose size={13} />
-									)}
+									<Plus size={13} />
 								</button>
-								{sidebarCollapsed && canCreateNew && (
-									<button
-										type="button"
-										className="self-center flex items-center justify-center w-8 h-8 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
-										onClick={handleNewSession}
-										title="New session"
-									>
-										<Plus size={13} />
-									</button>
-								)}
-								{tabs.map((tab) => {
+							)}
+							<div
+								ref={tabListRef}
+								className="tab-strip flex min-w-0 flex-1 items-stretch overflow-x-auto"
+								role="tablist"
+								aria-label="Open tabs"
+							>
+								{tabs.map((tab, tabIndex) => {
 									const active = tab.id === activeTabId;
-									const isDirty = dirtyTabs.has(tab.id);
+									const isDirty =
+										tab.type === "file" &&
+										!!tab.path &&
+										dirtyPaths.has(tab.path);
 									const running =
 										tab.type === "chat" && tab.sessionId
 											? (sessions[tab.sessionId]?.phase ?? "idle") !== "idle"
@@ -755,23 +1171,66 @@ export default function App() {
 									const Icon =
 										tab.type === "chat"
 											? MessageSquare
-											: tab.type === "diff"
-												? GitCompare
-												: FileText;
+											: tab.type === "terminal"
+												? SquareTerminal
+												: tab.type === "diff"
+													? GitCompare
+													: tab.type === "task"
+														? Bot
+														: FileText;
 									const label =
 										tab.type === "chat" ? chatTabLabel(tab) : tab.label;
 									return (
-										<div
+										<button
+											type="button"
+											role="tab"
+											aria-selected={active}
+											tabIndex={active ? 0 : -1}
+											data-center-tab={tab.id}
 											key={tab.id}
-											className={`group relative flex items-center gap-1.5 px-3 cursor-pointer text-[12px] shrink-0 select-none transition-colors ${
+											className={`group relative flex shrink-0 items-center gap-1.5 px-3 py-0 text-[12px] transition-colors ${
 												active ? "text-fg" : "text-fg-dim hover:text-fg-muted"
-											}`}
-											onClick={() => activateTab(tab)}
+											} ${active ? "bg-bg-surface/50" : ""}`}
+											onClick={(event) => {
+												if (
+													(event.target as Element).closest("[data-tab-close]")
+												) {
+													void requestCloseTab(tab.id);
+													return;
+												}
+												activateTab(tab);
+											}}
+											onKeyDown={(event) => {
+												let next = tabIndex;
+												if (event.key === "ArrowLeft")
+													next = (tabIndex - 1 + tabs.length) % tabs.length;
+												else if (event.key === "ArrowRight")
+													next = (tabIndex + 1) % tabs.length;
+												else if (event.key === "Home") next = 0;
+												else if (event.key === "End") next = tabs.length - 1;
+												else if (event.key === "Delete") {
+													event.preventDefault();
+													void requestCloseTab(tab.id);
+													return;
+												} else return;
+												event.preventDefault();
+												const target = tabs[next];
+												activateTab(target);
+												requestAnimationFrame(() =>
+													tabListRef.current
+														?.querySelector<HTMLElement>(
+															`[data-center-tab="${CSS.escape(target.id)}"]`,
+														)
+														?.focus(),
+												);
+											}}
+											title={label}
+											aria-label={`${label}${isDirty ? ", unsaved changes" : ""}. Press Delete to close.`}
 										>
 											{active && (
-												<span className="absolute bottom-0 left-2 right-2 h-[2px] bg-accent rounded-full" />
+												<span className="absolute inset-x-2 bottom-0 h-[2px] rounded-full bg-accent" />
 											)}
-											<span className="w-3.5 h-3.5 flex items-center justify-center shrink-0">
+											<span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
 												{running ? (
 													<Loader2
 														size={13}
@@ -780,7 +1239,6 @@ export default function App() {
 												) : isDirty ? (
 													<span
 														className={`group-hover:hidden w-2 h-2 rounded-full ${active ? "bg-fg-muted" : "bg-fg-dim"}`}
-														aria-label="Unsaved changes"
 													/>
 												) : (
 													<Icon
@@ -788,243 +1246,242 @@ export default function App() {
 														className={`group-hover:hidden ${active ? "text-fg-muted" : "text-fg-dim"}`}
 													/>
 												)}
-												<button
-													type="button"
-													className="hidden group-hover:flex w-3.5 h-3.5 items-center justify-center text-fg-dim hover:text-fg rounded transition-colors"
-													onClick={(e) => {
-														e.stopPropagation();
-														closeTab(tab.id);
-													}}
-													aria-label="Close tab"
+												<span
+													data-tab-close
+													aria-hidden="true"
+													title={`Close ${label}`}
+													className="hidden h-3.5 w-3.5 items-center justify-center rounded text-fg-dim transition-colors hover:text-fg group-hover:flex"
 												>
 													<X size={11} />
-												</button>
+												</span>
 											</span>
-											<span className="truncate max-w-[200px]">{label}</span>
-										</div>
+											<span className="max-w-[200px] truncate">{label}</span>
+										</button>
 									);
 								})}
-								<div className="flex-1" />
-								{(usage.inputTokens > 0 || outputTokens > 0) && (
-									<div className="flex items-center px-3 text-[11px] text-fg-dim tabular-nums whitespace-nowrap">
-										{"↑"}
-										{formatTokens(usage.inputTokens)}
-										{usage.cachedTokens > 0 && (
-											<span className="ml-1">
-												({formatTokens(usage.cachedTokens)} cached)
-											</span>
-										)}
-										<span className="ml-2">
-											{streamEstimate > 0 ? "↓~" : "↓"}
-											{formatTokens(outputTokens)}
-										</span>
-										{usage.contextWindow > 0 && usage.lastInputTokens > 0 && (
-											<ContextLeft
-												used={usage.lastInputTokens}
-												window={usage.contextWindow}
-											/>
-										)}
-									</div>
+							</div>
+							{activeTab.type === "chat" &&
+								(usage.inputTokens > 0 || outputTokens > 0) && (
+									<UsageIndicator
+										inputTokens={usage.inputTokens}
+										cachedTokens={usage.cachedTokens}
+										outputTokens={outputTokens}
+										lastInputTokens={usage.lastInputTokens}
+										contextWindow={usage.contextWindow}
+										outputEstimated={streamEstimate > 0}
+									/>
 								)}
-								{showTerminal && (
-									<button
-										type="button"
-										className={`self-center flex items-center justify-center w-8 h-8 rounded-md hover:bg-bg-hover cursor-pointer transition-colors shrink-0 ${
-											terminalCollapsed
-												? "text-fg-dim hover:text-fg-muted"
-												: "text-fg-muted"
-										}`}
-										onClick={toggleTerminal}
-										title={`${terminalCollapsed ? "Show" : "Hide"} terminal (${TERMINAL_SHORTCUT})`}
-									>
-										<SquareTerminal size={13} />
-									</button>
-								)}
+							{activeIsHtml && (
 								<button
 									type="button"
-									className="self-center flex items-center justify-center w-8 h-8 mr-1 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
-									onClick={() => togglePanel(rightPanelRef.current)}
-									title={rightPanelCollapsed ? "Show panel" : "Hide panel"}
+									className={`self-center flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-bg-hover ${
+										activeFileView === "preview"
+											? "text-fg-muted"
+											: "text-fg-dim hover:text-fg-muted"
+									}`}
+									onClick={() =>
+										setFileViews((prev) => ({
+											...prev,
+											[activeTab.id]:
+												activeFileView === "preview" ? "code" : "preview",
+										}))
+									}
+									title={
+										activeFileView === "preview"
+											? "Show code editor"
+											: "Show browser preview"
+									}
+									aria-label={
+										activeFileView === "preview"
+											? "Show code editor"
+											: "Show browser preview"
+									}
 								>
-									{rightPanelCollapsed ? (
-										<PanelRightOpen size={13} />
+									{activeFileView === "preview" ? (
+										<Code2 size={13} />
 									) : (
-										<PanelRightClose size={13} />
+										<Globe2 size={13} />
 									)}
 								</button>
-							</div>
-
-							<div className="h-px bg-border-subtle shrink-0" />
-
-							<div className="flex-1 overflow-hidden">
-								{activeTab.type === "chat" ? (
-									<ChatPanel
-										key={activeTab.id}
-										sessionId={activeTab.sessionId ?? ""}
-										entries={entries}
-										phase={phase}
-										modes={modes}
-										mode={mode}
-										onSelectMode={selectMode}
-										onSend={handleSend}
-										onCancel={handleCancel}
-										pendingInputs={pendingInputs}
-										queuePaused={queuePaused}
-										canSteer={canSteer}
-										onRemoveQueued={(id, state) => {
-											if (!sessionId) return;
-											if (state === "queued" || state === "sending") {
-												removeQueued(sessionId, id);
-											} else {
-												dismissPending(sessionId, id);
-											}
-										}}
-										onUpdateQueued={(id, text, files, images) =>
-											sessionId
-												? updateQueued(sessionId, id, text, files, images)
-												: false
-										}
-										onResumeQueue={() => {
-											if (sessionId) resumeQueue(sessionId);
-										}}
-										onClearQueue={() => {
-											if (sessionId) clearQueue(sessionId);
-										}}
-										loading={
-											sessionLoad.loading && sessionLoad.id === sessionId
-										}
-										loadError={
-											sessionLoad.id === sessionId ? sessionLoad.error : null
-										}
-										error={sessionError}
-										onDismissError={() => {
-											if (sessionId) dismissError(sessionId);
-										}}
-										subscribe={subscribe}
-										prompt={prompt}
-										onPromptReply={handlePromptReply}
-										seed={composerSeed}
-										toolProgress={toolProgress}
-									/>
-								) : activeTab.type === "diff" && activeTab.path ? (
-									<DiffTab
-										path={activeTab.path}
-										layer={activeTab.diffLayer}
-										sessionId={sessionId}
-										subscribe={subscribe}
-										onDeleted={() => closeTab(activeTab.id)}
-									/>
-								) : activeTab.path ? (
-									<FileTab
-										key={activeTab.id}
-										path={activeTab.path}
-										line={activeTab.line}
-										subscribe={subscribe}
-										onDeleted={() => closeTab(activeTab.id)}
-										onDirtyChange={(d) => setTabDirty(activeTab.id, d)}
-									/>
-								) : null}
-							</div>
-						</Panel>
-						{showTerminal && <VerticalResizeHandle />}
-						{showTerminal && (
-							<Panel
-								panelRef={terminalPanelRef}
-								id="terminal"
-								defaultSize="0px"
-								collapsible
-								collapsedSize="0px"
-								minSize="120px"
-								groupResizeBehavior="preserve-pixel-size"
-								onResize={({ inPixels, asPercentage }) => {
-									setTerminalCollapsed(inPixels === 0);
-									if (inPixels > 0) terminalSizeRef.current = asPercentage;
-								}}
-								className="overflow-hidden"
+							)}
+							{showTerminal && (
+								<TerminalLauncher
+									shells={terminalShells}
+									onCreate={(shell) => void createTerminal(shell)}
+								/>
+							)}
+							<button
+								type="button"
+								className="self-center flex items-center justify-center w-8 h-8 mr-1 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
+								onClick={toggleRightPanel}
+								title={
+									layoutMode === "narrow" || rightPanelCollapsed
+										? "Show workspace panel"
+										: "Hide workspace panel"
+								}
+								aria-label={
+									layoutMode === "narrow" || rightPanelCollapsed
+										? "Show workspace panel"
+										: "Hide workspace panel"
+								}
 							>
-								{!terminalCollapsed && (
-									<TerminalPanel
-										onClose={() => terminalPanelRef.current?.collapse()}
-										subscribe={subscribe}
-									/>
+								{layoutMode === "narrow" || rightPanelCollapsed ? (
+									<PanelRightOpen size={13} />
+								) : (
+									<PanelRightClose size={13} />
 								)}
-							</Panel>
-						)}
-					</Group>
-				</Panel>
-				<ResizeHandle />
-
-				<Panel
-					panelRef={rightPanelRef}
-					id="right"
-					defaultSize="288px"
-					collapsible
-					collapsedSize="0px"
-					minSize="288px"
-					groupResizeBehavior="preserve-pixel-size"
-					onResize={({ inPixels }) => setRightPanelCollapsed(inPixels === 0)}
-					className="overflow-hidden"
-				>
-					<div className="h-full flex flex-col bg-bg">
-						<div className="h-10 flex items-stretch shrink-0">
-							{showChanges && (
-								<RightTabButton
-									active={rightTab === "changes"}
-									onClick={() => setRequestedRightTab("changes")}
-								>
-									Changes
-								</RightTabButton>
-							)}
-							<RightTabButton
-								active={rightTab === "files"}
-								onClick={() => setRequestedRightTab("files")}
-							>
-								Files
-							</RightTabButton>
-							{showAgents && (
-								<RightTabButton
-									active={rightTab === "agents"}
-									onClick={() => setRequestedRightTab("agents")}
-								>
-									Agents
-								</RightTabButton>
-							)}
-							<div className="flex-1" />
+							</button>
 						</div>
+
 						<div className="h-px bg-border-subtle shrink-0" />
+
 						<div className="flex-1 overflow-hidden">
-							{rightTab === "agents" && showAgents ? (
-								<TasksPanel sessionId={sessionId} subscribe={subscribe} />
-							) : rightTab === "changes" && showChanges ? (
-								<DiffsPanel
-									sessionId={sessionId}
-									git={capabilities?.git ?? false}
-									onOpenDiff={openDiff}
-									onOpenFile={openFile}
+							{activeTab.type === "chat" ? (
+								<ChatPanel
+									key={activeTab.id}
+									sessionId={activeTab.sessionId ?? ""}
+									entries={entries}
+									phase={phase}
+									modes={modes}
+									mode={mode}
+									onSelectMode={selectMode}
+									onSend={handleSend}
+									onCancel={handleCancel}
+									pendingInputs={pendingInputs}
+									queuePaused={queuePaused}
+									canSteer={canSteer}
+									onRemoveQueued={(id, state) => {
+										if (!sessionId) return;
+										if (state === "queued" || state === "sending") {
+											removeQueued(sessionId, id);
+										} else {
+											dismissPending(sessionId, id);
+										}
+									}}
+									onUpdateQueued={(id, text, files, images) =>
+										sessionId
+											? updateQueued(sessionId, id, text, files, images)
+											: false
+									}
+									onResumeQueue={() => {
+										if (sessionId) resumeQueue(sessionId);
+									}}
+									onClearQueue={() => {
+										if (sessionId) clearQueue(sessionId);
+									}}
+									loading={sessionLoad.loading && sessionLoad.id === sessionId}
+									loadError={
+										sessionLoad.id === sessionId ? sessionLoad.error : null
+									}
+									error={sessionError}
+									onDismissError={() => {
+										if (sessionId) dismissError(sessionId);
+									}}
+									subscribe={subscribe}
+									prompt={prompt}
+									onPromptReply={handlePromptReply}
+									seed={composerSeed}
+									toolProgress={toolProgress}
+								/>
+							) : activeTab.type === "terminal" && activeTab.terminalId ? (
+								<TerminalView
+									key={activeTab.terminalId}
+									id={activeTab.terminalId}
+									active
+									onExit={() => closeTabNow(activeTab.id)}
+									onTitle={setTerminalTitle}
+								/>
+							) : activeTab.type === "task" && activeTab.taskId ? (
+								<TaskTab
+									key={activeTab.id}
+									sessionId={activeTab.sessionId ?? ""}
+									taskId={activeTab.taskId}
 									subscribe={subscribe}
 								/>
-							) : (
-								<div className="flex flex-col h-full">
-									<div className="flex-[3] min-h-0 overflow-hidden flex flex-col">
-										<FileTree onFileSelect={openFile} subscribe={subscribe} />
-									</div>
-									{showProblems && (
-										<>
-											<div className="h-px bg-border-subtle shrink-0" />
-											<div className="flex-[1] min-h-0 overflow-hidden">
-												<ProblemsPanel
-													onOpenFile={openFile}
-													subscribe={subscribe}
-												/>
-											</div>
-										</>
-									)}
-								</div>
-							)}
+							) : activeTab.type === "diff" && activeTab.path ? (
+								<DiffTab
+									path={activeTab.path}
+									layer={activeTab.diffLayer}
+									sessionId={sessionId}
+									subscribe={subscribe}
+									onDeleted={() => closeTabNow(activeTab.id)}
+								/>
+							) : activeTab.path && documents[activeTab.path] ? (
+								<FileTab
+									key={activeTab.id}
+									document={documents[activeTab.path]}
+									line={activeTab.line}
+									column={activeTab.column}
+									navigationKey={activeTab.navigationKey}
+									subscribe={subscribe}
+									onChange={(value) => updateDraft(activeTab.path!, value)}
+									onSave={async () => {
+										const result = await saveDocument(activeTab.path!);
+										if (!result.ok) {
+											toast({
+												title: "Could not save file",
+												description: result.error,
+												tone: "error",
+											});
+										}
+										return result;
+									}}
+									onReload={() =>
+										void reloadDocument(
+											activeTab.path!,
+											activeTab.external ?? false,
+										)
+									}
+									onKeepVersion={() => keepDocument(activeTab.path!)}
+									onOpenFile={openFile}
+									view={fileViews[activeTab.id] ?? "code"}
+								/>
+							) : null}
 						</div>
-					</div>
+					</main>
 				</Panel>
+				{layoutMode !== "narrow" && (
+					<>
+						<ResizeHandle />
+						<Panel
+							panelRef={rightPanelRef}
+							id="right"
+							defaultSize={layoutMode === "wide" ? "304px" : "288px"}
+							collapsible
+							collapsedSize="0px"
+							minSize="288px"
+							groupResizeBehavior="preserve-pixel-size"
+							onResize={({ inPixels }) =>
+								setRightPanelCollapsed(inPixels === 0)
+							}
+							className="overflow-hidden"
+						>
+							{inspectorContent}
+						</Panel>
+					</>
+				)}
 			</Group>
+
+			{layoutMode !== "wide" && (
+				<SideDrawer
+					side="left"
+					title="Sessions"
+					open={leftDrawerOpen}
+					onClose={() => setLeftDrawerOpen(false)}
+				>
+					{sidebarContent}
+				</SideDrawer>
+			)}
+			{layoutMode === "narrow" && (
+				<SideDrawer
+					side="right"
+					title="Workspace"
+					open={rightDrawerOpen}
+					onClose={() => setRightDrawerOpen(false)}
+				>
+					{inspectorContent}
+				</SideDrawer>
+			)}
 
 			{paletteOpen && (
 				<CommandPalette
@@ -1037,8 +1494,95 @@ export default function App() {
 				/>
 			)}
 
+			<Dialog
+				open={closeRequest?.kind === "file"}
+				title="Save changes before closing?"
+				description={
+					closeRequest?.kind === "file"
+						? `“${closeRequest.tab.label}” has unsaved changes.`
+						: undefined
+				}
+				onClose={() => setCloseRequest(null)}
+			>
+				<button
+					type="button"
+					className={dialogButtonClass}
+					onClick={() => setCloseRequest(null)}
+				>
+					Cancel
+				</button>
+				<button
+					type="button"
+					className={`${dialogButtonClass} text-danger`}
+					onClick={() => {
+						if (closeRequest?.kind !== "file" || !closeRequest.tab.path) return;
+						discardDocument(closeRequest.tab.path);
+						const id = closeRequest.tab.id;
+						setCloseRequest(null);
+						closeTabNow(id);
+					}}
+				>
+					Discard
+				</button>
+				<button
+					type="button"
+					className={`${dialogButtonClass} bg-fg text-bg hover:bg-fg-muted hover:text-bg`}
+					onClick={() => void saveAndCloseFile()}
+				>
+					Save
+				</button>
+			</Dialog>
+
+			<Dialog
+				open={closeRequest?.kind === "terminal"}
+				title="Terminate terminal?"
+				description="Closing this tab will stop the shell and any process running in it."
+				onClose={() => setCloseRequest(null)}
+			>
+				<button
+					type="button"
+					className={dialogButtonClass}
+					onClick={() => setCloseRequest(null)}
+				>
+					Cancel
+				</button>
+				<button
+					type="button"
+					className={`${dialogButtonClass} border-danger/40 text-danger hover:bg-danger/10`}
+					onClick={() => void terminateTerminal()}
+				>
+					Terminate
+				</button>
+			</Dialog>
+
+			<Dialog
+				open={sessionDelete !== null}
+				title="Delete session?"
+				description={
+					sessionDelete
+						? `“${sessionDelete.title}” and its saved history will be permanently deleted.`
+						: undefined
+				}
+				onClose={() => setSessionDelete(null)}
+			>
+				<button
+					type="button"
+					className={dialogButtonClass}
+					onClick={() => setSessionDelete(null)}
+				>
+					Cancel
+				</button>
+				<button
+					type="button"
+					className={`${dialogButtonClass} border-danger/40 text-danger hover:bg-danger/10`}
+					onClick={() => void deleteSession()}
+				>
+					Delete
+				</button>
+			</Dialog>
+
 			{!connected && (
-				<div className="absolute inset-0 z-50 flex items-center justify-center backdrop-blur-md bg-bg/60">
+				<div className="absolute inset-0 z-140 flex items-center justify-center backdrop-blur-md bg-bg/60">
 					<div className="flex flex-col items-center gap-3 text-fg-muted">
 						<Loader2 size={28} className="animate-spin" />
 						<div className="text-[13px]">Reconnecting…</div>
@@ -1053,6 +1597,75 @@ function formatTokens(n: number): string {
 	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
 	if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
 	return String(n);
+}
+
+function useLayoutMode(): LayoutMode {
+	const read = (): LayoutMode => {
+		if (window.innerWidth >= 1200) return "wide";
+		if (window.innerWidth >= 800) return "medium";
+		return "narrow";
+	};
+	const [mode, setMode] = useState<LayoutMode>(read);
+	useEffect(() => {
+		const update = () => setMode(read());
+		window.addEventListener("resize", update);
+		return () => window.removeEventListener("resize", update);
+	}, []);
+	return mode;
+}
+
+function SideDrawer({
+	side,
+	title,
+	open,
+	onClose,
+	children,
+}: {
+	side: "left" | "right";
+	title: string;
+	open: boolean;
+	onClose: () => void;
+	children: React.ReactNode;
+}) {
+	const panelRef = useRef<HTMLDivElement>(null);
+	useEffect(() => {
+		if (!open) return;
+		const frame = requestAnimationFrame(() =>
+			panelRef.current
+				?.querySelector<HTMLElement>("button, input, [tabindex='0']")
+				?.focus(),
+		);
+		const onKey = (event: KeyboardEvent) => {
+			if (event.key === "Escape") onClose();
+		};
+		document.addEventListener("keydown", onKey);
+		return () => {
+			cancelAnimationFrame(frame);
+			document.removeEventListener("keydown", onKey);
+		};
+	}, [onClose, open]);
+
+	if (!open) return null;
+	return (
+		<div
+			className="fixed inset-0 z-120 bg-bg/60 backdrop-blur-sm"
+			onMouseDown={(event) => {
+				if (event.target === event.currentTarget) onClose();
+			}}
+		>
+			<div
+				ref={panelRef}
+				role="dialog"
+				aria-modal="true"
+				aria-label={title}
+				className={`absolute inset-y-0 w-[320px] max-w-[85vw] border-border bg-bg shadow-2xl ${
+					side === "left" ? "left-0 border-r" : "right-0 border-l"
+				}`}
+			>
+				{children}
+			</div>
+		</div>
+	);
 }
 
 function estimateStreamingTokens(entries: ChatEntry[]): number {
@@ -1077,13 +1690,10 @@ function expandPanel(panel: PanelImperativeHandle | null) {
 
 function ResizeHandle() {
 	return (
-		<Separator className="w-px shrink-0 bg-border-subtle outline-none hover:bg-accent active:bg-accent transition-colors" />
-	);
-}
-
-function VerticalResizeHandle() {
-	return (
-		<Separator className="h-px shrink-0 bg-border-subtle outline-none hover:bg-accent active:bg-accent transition-colors" />
+		<Separator
+			aria-label="Resize panels"
+			className="relative z-10 -mx-1 w-[9px] shrink-0 cursor-col-resize outline-none after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:bg-border-subtle after:transition-colors hover:after:bg-accent focus-visible:after:bg-accent active:after:bg-accent"
+		/>
 	);
 }
 
@@ -1099,10 +1709,27 @@ function RightTabButton({
 	return (
 		<button
 			type="button"
-			className={`relative px-4 text-[11px] font-medium cursor-pointer transition-colors ${
+			role="tab"
+			aria-selected={active}
+			tabIndex={active ? 0 : -1}
+			className={`relative cursor-pointer px-3 text-[12px] font-medium transition-colors ${
 				active ? "text-fg" : "text-fg-dim hover:text-fg-muted"
 			}`}
 			onClick={onClick}
+			onKeyDown={(event) => {
+				if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+				const tabs = Array.from(
+					event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(
+						'[role="tab"]',
+					) ?? [],
+				);
+				const index = tabs.indexOf(event.currentTarget);
+				const offset = event.key === "ArrowLeft" ? -1 : 1;
+				const next = tabs[(index + offset + tabs.length) % tabs.length];
+				event.preventDefault();
+				next?.focus();
+				next?.click();
+			}}
 		>
 			{children}
 			{active && (
@@ -1112,16 +1739,259 @@ function RightTabButton({
 	);
 }
 
-function ContextLeft({ used, window }: { used: number; window: number }) {
-	const left = Math.max(0, Math.round(((window - used) / window) * 100));
-	const tone =
-		left <= 10 ? "text-danger" : left <= 30 ? "text-warning" : "text-fg-dim";
+function TerminalLauncher({
+	shells,
+	onCreate,
+}: {
+	shells: ShellEntry[];
+	onCreate: (shell?: string) => void;
+}) {
+	const [open, setOpen] = useState(false);
+	const [menuPosition, setMenuPosition] = useState({ top: 0, right: 0 });
+	const launcherRef = useRef<HTMLDivElement>(null);
+	const menuRef = useRef<HTMLDivElement>(null);
+
+	const updateMenuPosition = useCallback(() => {
+		const rect = launcherRef.current?.getBoundingClientRect();
+		if (!rect) return;
+		setMenuPosition({
+			top: rect.bottom + 4,
+			right: Math.max(4, window.innerWidth - rect.right),
+		});
+	}, []);
+
+	useEffect(() => {
+		if (!open) return;
+		const close = (event: MouseEvent) => {
+			const target = event.target as Node;
+			if (
+				!launcherRef.current?.contains(target) &&
+				!menuRef.current?.contains(target)
+			) {
+				setOpen(false);
+			}
+		};
+		updateMenuPosition();
+		document.addEventListener("mousedown", close);
+		window.addEventListener("resize", updateMenuPosition);
+		window.addEventListener("scroll", updateMenuPosition, true);
+		return () => {
+			document.removeEventListener("mousedown", close);
+			window.removeEventListener("resize", updateMenuPosition);
+			window.removeEventListener("scroll", updateMenuPosition, true);
+		};
+	}, [open, updateMenuPosition]);
+
+	const label = shells[0]?.name ?? "shell";
+	const hasChoices = shells.length > 1;
+
 	return (
-		<span
-			className={`ml-2 ${tone}`}
-			title={`${formatTokens(used)} of ${formatTokens(window)} context used`}
+		<div
+			ref={launcherRef}
+			className="relative self-center flex h-8 w-8 shrink-0"
 		>
-			{left}% left
-		</span>
+			<button
+				type="button"
+				className={`flex h-8 items-center justify-center text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted ${
+					hasChoices ? "w-5 rounded-l-md" : "w-8 rounded-md"
+				}`}
+				onClick={() => onCreate()}
+				title={`New ${label} terminal`}
+			>
+				<SquareTerminal size={13} />
+			</button>
+			{hasChoices && (
+				<button
+					type="button"
+					className="flex h-8 w-3 items-center justify-center rounded-r-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
+					onClick={() => {
+						updateMenuPosition();
+						setOpen((value) => !value);
+					}}
+					title="New terminal with another shell"
+					aria-label="Select shell"
+				>
+					<ChevronDown size={9} />
+				</button>
+			)}
+			{open &&
+				createPortal(
+					<div
+						ref={menuRef}
+						className="fixed z-[100] max-h-[220px] min-w-[160px] overflow-y-auto rounded-md border border-border bg-bg-elevated/95 py-1 shadow-xl backdrop-blur-sm"
+						style={menuPosition}
+					>
+						{shells.map((shell, index) => (
+							<button
+								type="button"
+								key={shell.id}
+								onClick={() => {
+									setOpen(false);
+									onCreate(shell.id);
+								}}
+								className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg"
+							>
+								<SquareTerminal size={12} className="shrink-0 text-fg-dim" />
+								<span className="flex-1 truncate">{shell.name}</span>
+								{index === 0 && (
+									<span className="text-[10px] text-fg-dim">default</span>
+								)}
+							</button>
+						))}
+					</div>,
+					document.body,
+				)}
+		</div>
+	);
+}
+
+function UsageIndicator({
+	inputTokens,
+	cachedTokens,
+	outputTokens,
+	lastInputTokens,
+	contextWindow,
+	outputEstimated,
+}: {
+	inputTokens: number;
+	cachedTokens: number;
+	outputTokens: number;
+	lastInputTokens: number;
+	contextWindow: number;
+	outputEstimated: boolean;
+}) {
+	const [open, setOpen] = useState(false);
+	const buttonRef = useRef<HTMLButtonElement>(null);
+	const panelRef = useRef<HTMLDivElement>(null);
+	const [position, setPosition] = useState({ top: 0, left: 0 });
+	const hasContext = contextWindow > 0 && lastInputTokens > 0;
+	const used = hasContext ? Math.min(lastInputTokens, contextWindow) : 0;
+	const usedPercent = hasContext ? Math.round((used / contextWindow) * 100) : 0;
+	const leftPercent = hasContext ? Math.max(0, 100 - usedPercent) : 0;
+	const freeTokens = hasContext ? Math.max(0, contextWindow - used) : 0;
+	const tone = !hasContext
+		? "text-fg-dim"
+		: leftPercent <= 10
+			? "text-danger"
+			: leftPercent <= 30
+				? "text-warning"
+				: "text-fg-dim";
+
+	const place = useCallback(() => {
+		const rect = buttonRef.current?.getBoundingClientRect();
+		if (!rect) return;
+		const width = 288;
+		setPosition({
+			top: rect.bottom + 6,
+			left: Math.max(
+				8,
+				Math.min(rect.right - width, window.innerWidth - width - 8),
+			),
+		});
+	}, []);
+
+	useEffect(() => {
+		if (!open) return;
+		place();
+		const close = (event: MouseEvent) => {
+			const target = event.target as Node;
+			if (
+				!buttonRef.current?.contains(target) &&
+				!panelRef.current?.contains(target)
+			) {
+				setOpen(false);
+			}
+		};
+		const onKey = (event: KeyboardEvent) => {
+			if (event.key === "Escape") setOpen(false);
+		};
+		document.addEventListener("mousedown", close);
+		document.addEventListener("keydown", onKey);
+		window.addEventListener("resize", place);
+		window.addEventListener("scroll", place, true);
+		return () => {
+			document.removeEventListener("mousedown", close);
+			document.removeEventListener("keydown", onKey);
+			window.removeEventListener("resize", place);
+			window.removeEventListener("scroll", place, true);
+		};
+	}, [open, place]);
+
+	const hoverSummary = hasContext
+		? `${leftPercent}% context left · ${formatTokens(used)} of ${formatTokens(contextWindow)} used · ↑${formatTokens(inputTokens)} · ↓${outputEstimated ? "~" : ""}${formatTokens(outputTokens)}`
+		: `↑${formatTokens(inputTokens)} input · ↓${outputEstimated ? "~" : ""}${formatTokens(outputTokens)} output`;
+
+	return (
+		<>
+			<button
+				ref={buttonRef}
+				type="button"
+				className={`flex h-full shrink-0 items-center border-l border-border-subtle bg-bg px-2 text-[11px] tabular-nums transition-colors hover:bg-bg-hover ${tone}`}
+				title={hoverSummary}
+				aria-label={hasContext ? `${leftPercent}% context left` : "Token usage"}
+				aria-haspopup="dialog"
+				aria-expanded={open}
+				onClick={() => {
+					place();
+					setOpen((value) => !value);
+				}}
+			>
+				{hasContext ? `${leftPercent}%` : "Usage"}
+			</button>
+			{open &&
+				createPortal(
+					<div
+						ref={panelRef}
+						role="dialog"
+						aria-label="Usage information"
+						className="fixed z-100 w-72 rounded-lg border border-border bg-bg-elevated p-3 shadow-2xl"
+						style={position}
+					>
+						<div className="text-[12px] font-medium text-fg">Context usage</div>
+						{hasContext ? (
+							<>
+								<div className="mt-1 text-[11px] text-fg-muted">
+									{formatTokens(used)} / {formatTokens(contextWindow)} tokens ·{" "}
+									{usedPercent}% used
+								</div>
+								<div className="mt-2 h-1.5 overflow-hidden rounded-full bg-bg-active">
+									<div
+										className={`h-full rounded-full ${leftPercent <= 10 ? "bg-danger" : leftPercent <= 30 ? "bg-warning" : "bg-accent"}`}
+										style={{ width: `${usedPercent}%` }}
+									/>
+								</div>
+							</>
+						) : (
+							<div className="mt-1 text-[11px] text-fg-dim">
+								Context-window data is unavailable for this session.
+							</div>
+						)}
+						<dl className="mt-3 grid grid-cols-[1fr_auto] gap-x-4 gap-y-1.5 text-[11px]">
+							{hasContext && (
+								<>
+									<dt className="text-fg-dim">Free space</dt>
+									<dd className="text-right font-mono text-fg-muted">
+										{freeTokens.toLocaleString()} ({leftPercent}%)
+									</dd>
+								</>
+							)}
+							<dt className="text-fg-dim">Input tokens</dt>
+							<dd className="text-right font-mono text-fg-muted">
+								{inputTokens.toLocaleString()}
+							</dd>
+							<dt className="text-fg-dim">Cached input</dt>
+							<dd className="text-right font-mono text-fg-muted">
+								{cachedTokens.toLocaleString()}
+							</dd>
+							<dt className="text-fg-dim">Output tokens</dt>
+							<dd className="text-right font-mono text-fg-muted">
+								{outputEstimated ? "~" : ""}
+								{outputTokens.toLocaleString()}
+							</dd>
+						</dl>
+					</div>,
+					document.body,
+				)}
+		</>
 	);
 }

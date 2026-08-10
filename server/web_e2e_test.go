@@ -215,6 +215,20 @@ func (m *webE2EModel) handler(w http.ResponseWriter, r *http.Request) {
 
 func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
 	workDir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(workDir, "theme-preview.html"),
+		[]byte("<!doctype html><title>Theme preview</title><p>Preview</p>"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(workDir, "editable.txt"),
+		[]byte("original\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
 	model := &webE2EModel{
 		filePath:       filepath.Join(workDir, "e2e-result.txt"),
 		steerStarted:   make(chan struct{}),

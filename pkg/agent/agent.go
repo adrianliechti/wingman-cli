@@ -140,11 +140,6 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 		maxTurns = DefaultMaxTurns
 	}
 
-	var tools []tool.Tool
-	if a.Tools != nil {
-		tools = a.Tools()
-	}
-
 	return func(yield func(Message, error) bool) {
 
 		defer func() {
@@ -183,6 +178,13 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 				instructions = a.Instructions()
 			}
 
+			// Re-read per round like model and instructions: the session mode can
+			// change mid-turn, and it decides which tools are offered.
+			var tools []tool.Tool
+			if a.Tools != nil {
+				tools = a.Tools()
+			}
+
 			req := &request{
 				model:        model,
 				effort:       effort,
@@ -196,6 +198,11 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 
 			for attempt := 1; err != nil && attempt <= maxStreamRetries; attempt++ {
 				if errors.Is(err, errYieldStopped) || ctx.Err() != nil || !isRecoverableError(err) {
+					break
+				}
+				if streamOutputStarted(err) && !EmitStreamEvent(ctx, StreamEventReset) {
+					// Retrying would duplicate already-visible deltas for consumers
+					// whose stream protocol cannot retract a failed attempt.
 					break
 				}
 
@@ -251,6 +258,7 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 			}
 			a.Messages = append(a.Messages, resp.messages...)
 			a.stateMu.Unlock()
+			EmitStreamEvent(ctx, StreamEventCommit)
 
 			calls := extractToolCalls(resp.messages)
 

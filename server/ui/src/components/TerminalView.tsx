@@ -31,7 +31,9 @@ export function TerminalView({ id, active, onExit, onTitle }: Props) {
 			lineHeight: 1.25,
 			cursorBlink: true,
 			scrollback: 10000,
-			theme: terminalTheme(),
+			theme: terminalTheme(
+				document.documentElement.dataset.theme === "light" ? "light" : "dark",
+			),
 		});
 		const fit = new FitAddon();
 		term.loadAddon(fit);
@@ -101,7 +103,7 @@ export function TerminalView({ id, active, onExit, onTitle }: Props) {
 
 	useEffect(() => {
 		const term = termRef.current;
-		if (term) term.options.theme = terminalTheme();
+		if (term) term.options.theme = terminalTheme(scheme);
 	}, [scheme]);
 
 	useEffect(() => {
@@ -168,8 +170,8 @@ const LIGHT_ANSI: ITheme = {
 	brightWhite: "#171717",
 };
 
-function terminalTheme(): ITheme {
-	const light = window.matchMedia("(prefers-color-scheme: light)").matches;
+function terminalTheme(scheme: "light" | "dark"): ITheme {
+	const light = scheme === "light";
 	const background = cssVar("--color-bg", light ? "#ffffff" : "#0a0a0a");
 	const foreground = cssVar("--color-fg", light ? "#171717" : "#e6e6e6");
 	return {

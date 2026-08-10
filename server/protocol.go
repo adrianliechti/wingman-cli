@@ -39,6 +39,8 @@ const (
 	EvtToolCall            = "tool_call"
 	EvtToolResult          = "tool_result"
 	EvtToolProgress        = "tool_progress"
+	EvtStreamReset         = "stream_reset"
+	EvtStreamCommit        = "stream_commit"
 	EvtPhase               = "phase"
 	EvtUsage               = "usage"
 	EvtError               = "error"
@@ -114,6 +116,7 @@ type ConversationMessage struct {
 
 type ConversationContent struct {
 	Text       string                 `json:"text,omitempty"`
+	TextID     string                 `json:"text_id,omitempty"`
 	Image      *ConversationImage     `json:"image,omitempty"`
 	Reasoning  *ConversationReasoning `json:"reasoning,omitempty"`
 	ToolCall   *ConversationTool      `json:"tool_call,omitempty"`

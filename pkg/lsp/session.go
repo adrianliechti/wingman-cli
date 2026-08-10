@@ -11,24 +11,50 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/adrianliechti/wingman-agent/pkg/lsp/jsonrpc2"
+	"go.lsp.dev/jsonrpc2"
 )
 
 type Session struct {
 	server     Server
-	conn       *jsonrpc2.Connection
+	conn       jsonrpc2.Conn
 	cmd        *exec.Cmd
 	rootURI    string
 	workingDir string
 	cancelFunc context.CancelFunc
 
-	mu          sync.Mutex
-	openedDocs  map[string]uint64
-	docVersions map[string]int
-	pushDiags   map[string][]Diagnostic
-	pushSeen    map[string]bool
+	documentMu sync.Mutex
+	mu         sync.Mutex
+	documents  map[string]*document
+	progress   map[string]bool
+	created    time.Time
+	pullDiags  bool
+	alive      atomic.Bool
+	closeOnce  sync.Once
+}
+
+// document tracks what the server has been told about a URI and what it has
+// reported back. Servers publish diagnostics for files we never opened, so
+// "tracked" and "opened" are distinct.
+type document struct {
+	opened  bool
+	sum     uint64
+	version int
+	saved   bool
+
+	diagnostics []Diagnostic
+	published   bool
+}
+
+func (s *Session) document(uri string) *document {
+	doc := s.documents[uri]
+	if doc == nil {
+		doc = &document{}
+		s.documents[uri] = doc
+	}
+	return doc
 }
 
 const startupTimeout = 30 * time.Second
@@ -66,81 +92,120 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 		rootURI:    FileURI(workingDir),
 		workingDir: workingDir,
 		cancelFunc: cancel,
-		openedDocs:  make(map[string]uint64),
-		docVersions: make(map[string]int),
-		pushDiags:   make(map[string][]Diagnostic),
-		pushSeen:    make(map[string]bool),
+		documents:  make(map[string]*document),
+		progress:   make(map[string]bool),
+		created:    time.Now(),
 	}
+	session.alive.Store(true)
 
-	framer := jsonrpc2.HeaderFramer()
-	conn := jsonrpc2.NewConnection(connCtx, jsonrpc2.ConnectionConfig{
-		Reader: framer.Reader(stdout),
-		Writer: framer.Writer(stdin),
-		Closer: &cmdCloser{cmd: cmd, stdin: stdin, stdout: stdout},
-		Bind: func(c *jsonrpc2.Connection) jsonrpc2.Handler {
-			return jsonrpc2.HandlerFunc(func(ctx context.Context, req *jsonrpc2.Request) (any, error) {
-				if req.Method == "textDocument/publishDiagnostics" {
-					var params PublishDiagnosticsParams
-					if err := json.Unmarshal(req.Params, &params); err == nil {
-						session.mu.Lock()
-						if params.Version == 0 || params.Version >= session.docVersions[params.URI] {
-							session.pushDiags[params.URI] = params.Diagnostics
-							session.pushSeen[params.URI] = true
-						}
-						session.mu.Unlock()
-					}
-					return nil, nil
-				}
-				return nil, jsonrpc2.ErrNotHandled
-			})
-		},
-	})
+	conn := jsonrpc2.NewConn(jsonrpc2.NewStream(&cmdStream{cmd: cmd, stdin: stdin, stdout: stdout}))
 	session.conn = conn
+	conn.Go(connCtx, session.handle)
+
+	go func() {
+		<-conn.Done()
+		session.alive.Store(false)
+	}()
 
 	initCtx, initCancel := context.WithTimeout(ctx, startupTimeout)
 	defer initCancel()
 
 	if err := session.initialize(initCtx); err != nil {
+		_ = conn.Close()
 		cancel()
-		cmd.Process.Kill()
-		cmd.Wait()
 		return nil, fmt.Errorf("initialize: %w", err)
 	}
 
 	return session, nil
 }
 
+func (s *Session) handle(ctx context.Context, req *jsonrpc2.Request) (any, error) {
+	switch req.Method() {
+	case "textDocument/publishDiagnostics":
+		var params PublishDiagnosticsParams
+		if err := json.Unmarshal(req.Params(), &params); err == nil {
+			s.mu.Lock()
+			if doc := s.document(params.URI); params.Version == 0 || params.Version >= doc.version {
+				doc.diagnostics = params.Diagnostics
+				doc.published = true
+			}
+			s.mu.Unlock()
+		}
+		return nil, nil
+	case "window/workDoneProgress/create":
+		return nil, nil
+	case "$/progress":
+		var params ProgressParams
+		if err := json.Unmarshal(req.Params(), &params); err == nil {
+			s.applyProgress(params.Token, params.Value.Kind)
+		}
+		return nil, nil
+	}
+
+	if req.IsCall() {
+		return nil, jsonrpc2.ErrMethodNotFound
+	}
+	return nil, nil
+}
+
 func (s *Session) IsAlive() bool {
-	return s.cmd.ProcessState == nil
+	return s.alive.Load()
+}
+
+func (s *Session) applyProgress(token json.RawMessage, kind string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	switch kind {
+	case "begin":
+		s.progress[string(token)] = true
+	case "end":
+		delete(s.progress, string(token))
+	}
+}
+
+// Analyzing reports whether the server has announced ongoing background work
+// (indexing, loading packages) via work-done progress.
+func (s *Session) Analyzing() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.progress) > 0
+}
+
+func (s *Session) Age() time.Duration {
+	return time.Since(s.created)
 }
 
 func (s *Session) OpenedDocURIs() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	uris := make([]string, 0, len(s.openedDocs))
-	for uri := range s.openedDocs {
-		uris = append(uris, uri)
+	uris := make([]string, 0, len(s.documents))
+	for uri, doc := range s.documents {
+		if doc.opened {
+			uris = append(uris, uri)
+		}
 	}
 	return uris
 }
 
 func (s *Session) Close() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	s.closeOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 
-	call := s.conn.Call(ctx, "shutdown", nil)
-	call.Await(ctx, nil)
-	s.conn.Notify(ctx, "exit", nil)
-	s.cancelFunc()
+		_, _ = s.conn.Call(ctx, "shutdown", nil, nil)
+		_ = s.conn.Notify(ctx, "exit", nil)
+		_ = s.conn.Close()
+		s.cancelFunc()
+	})
 }
 
 func (s *Session) CallAndAwait(ctx context.Context, method string, params any, result any) error {
 	var err error
 
 	for attempt := range maxRetries {
-		call := s.conn.Call(ctx, method, params)
-		err = call.Await(ctx, result)
+		_, err = s.conn.Call(ctx, method, params, result)
 		if err == nil || !isTransientError(err) {
 			return err
 		}
@@ -160,111 +225,133 @@ const maxRetries = 3
 
 var retryBaseDelay = 500 * time.Millisecond
 
+const (
+	codeServerCancelled  = -32802
+	codeContentModified  = -32801
+	codeRequestCancelled = -32800
+)
+
 func isTransientError(err error) bool {
-	var wireErr *jsonrpc2.WireError
+	var wireErr *jsonrpc2.Error
 	if !errors.As(err, &wireErr) {
 		return false
 	}
 
-	switch wireErr.Code {
-	case -32801:
-		return true
-	case -32800:
-		return true
-	case -32802:
-		return true
-	default:
-		return false
-	}
+	return wireErr.Code == codeServerCancelled ||
+		wireErr.Code == codeContentModified ||
+		wireErr.Code == codeRequestCancelled
 }
 
 func (s *Session) OpenDocument(ctx context.Context, filePath string) (string, error) {
-	uri := FileURI(filePath)
-
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return "", fmt.Errorf("read file: %w", err)
 	}
+	return s.syncDocument(ctx, filePath, content, true)
+}
+
+// SyncDocument updates the language server with an editor buffer without
+// claiming that the buffer has been saved to disk.
+func (s *Session) SyncDocument(ctx context.Context, filePath, content string) (string, error) {
+	return s.syncDocument(ctx, filePath, []byte(content), false)
+}
+
+func (s *Session) syncDocument(ctx context.Context, filePath string, content []byte, saved bool) (string, error) {
+	s.documentMu.Lock()
+	defer s.documentMu.Unlock()
+
+	uri := FileURI(filePath)
 
 	h := fnv.New64a()
 	h.Write(content)
 	sum := h.Sum64()
 
 	s.mu.Lock()
-	prev, alreadyOpen := s.openedDocs[uri]
+	doc := s.document(uri)
+	opened, unchanged, wasSaved := doc.opened, doc.sum == sum, doc.saved
+	version := doc.version + 1
+	if opened && !unchanged {
+		doc.version = version
+		doc.diagnostics = nil
+		doc.published = false
+	}
 	s.mu.Unlock()
 
-	if alreadyOpen {
-		if prev == sum {
+	notifySaved := func() error {
+		if err := s.conn.Notify(ctx, "textDocument/didSave", DidSaveTextDocumentParams{
+			TextDocument: TextDocumentIdentifier{URI: uri},
+		}); err != nil {
+			return fmt.Errorf("didSave: %w", err)
+		}
+		return nil
+	}
+
+	switch {
+	case opened && unchanged:
+		if !saved || wasSaved {
 			return uri, nil
 		}
-
-		s.mu.Lock()
-		version := s.docVersions[uri] + 1
-		s.docVersions[uri] = version
-		delete(s.pushDiags, uri)
-		delete(s.pushSeen, uri)
-		s.mu.Unlock()
-
-		changeParams := DidChangeTextDocumentParams{
-			TextDocument: VersionedTextDocumentIdentifier{
-				URI:     uri,
-				Version: version,
-			},
-			ContentChanges: []TextDocumentContentChangeEvent{{Text: string(content)}},
+		if err := notifySaved(); err != nil {
+			return "", err
 		}
 
-		if err := s.conn.Notify(ctx, "textDocument/didChange", changeParams); err != nil {
+	case opened:
+		if err := s.conn.Notify(ctx, "textDocument/didChange", DidChangeTextDocumentParams{
+			TextDocument:   VersionedTextDocumentIdentifier{URI: uri, Version: version},
+			ContentChanges: []TextDocumentContentChangeEvent{{Text: string(content)}},
+		}); err != nil {
 			return "", fmt.Errorf("didChange: %w", err)
 		}
+		if saved {
+			if err := notifySaved(); err != nil {
+				return "", err
+			}
+		}
 
-		s.conn.Notify(ctx, "textDocument/didSave", DidSaveTextDocumentParams{
-			TextDocument: TextDocumentIdentifier{URI: uri},
-		})
-
-		s.mu.Lock()
-		s.openedDocs[uri] = sum
-		s.mu.Unlock()
-
-		return uri, nil
-	}
-
-	params := DidOpenTextDocumentParams{
-		TextDocument: TextDocumentItem{
-			URI:        uri,
-			LanguageID: s.server.LanguageID,
-			Version:    1,
-			Text:       string(content),
-		},
-	}
-
-	if err := s.conn.Notify(ctx, "textDocument/didOpen", params); err != nil {
-		return "", fmt.Errorf("didOpen: %w", err)
+	default:
+		if err := s.conn.Notify(ctx, "textDocument/didOpen", DidOpenTextDocumentParams{
+			TextDocument: TextDocumentItem{
+				URI:        uri,
+				LanguageID: s.server.LanguageIDForPath(filePath),
+				Version:    1,
+				Text:       string(content),
+			},
+		}); err != nil {
+			return "", fmt.Errorf("didOpen: %w", err)
+		}
 	}
 
 	s.mu.Lock()
-	s.openedDocs[uri] = sum
-	s.docVersions[uri] = 1
+	doc = s.document(uri)
+	doc.opened = true
+	doc.sum = sum
+	doc.saved = saved
+	if !opened {
+		doc.version = 1
+	}
 	s.mu.Unlock()
 
 	return uri, nil
 }
 
-func (s *Session) PushDiagnostics(uri string) []Diagnostic {
-	diags, _ := s.pushedDiagnostics(uri)
-	return diags
-}
-
-func (s *Session) pushedDiagnostics(uri string) ([]Diagnostic, bool) {
+func (s *Session) publishedDiagnostics(uri string) ([]Diagnostic, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.pushDiags[uri], s.pushSeen[uri]
+
+	doc := s.documents[uri]
+	if doc == nil {
+		return nil, false
+	}
+	return doc.diagnostics, doc.published
 }
 
 func (s *Session) PushSeen(uri string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.pushSeen[uri]
+	_, published := s.publishedDiagnostics(uri)
+	return published
+}
+
+func (s *Session) SupportsPullDiagnostics() bool {
+	return s.pullDiags
 }
 
 func (s *Session) pullDiagnostics(ctx context.Context, uri string) ([]Diagnostic, bool) {
@@ -297,43 +384,34 @@ func (s *Session) pullDiagnostics(ctx context.Context, uri string) ([]Diagnostic
 // actually produced a result: known=false means the server neither published
 // nor answered a pull request, so "no diagnostics" cannot be concluded.
 func (s *Session) DiagnosticsState(ctx context.Context, uri string) ([]Diagnostic, bool) {
-	pushed, seen := s.pushedDiagnostics(uri)
-	if seen && len(pushed) > 0 {
-		return pushed, true
+	published, ok := s.publishedDiagnostics(uri)
+	if ok {
+		return published, true
 	}
 
-	if diags, ok := s.pullDiagnostics(ctx, uri); ok {
-		return diags, true
-	}
-
-	if seen {
-		return pushed, true
+	if s.pullDiags {
+		if diags, ok := s.pullDiagnostics(ctx, uri); ok {
+			return diags, true
+		}
 	}
 
 	return nil, false
 }
 
-func (s *Session) CollectDiagnostics(ctx context.Context, uri string) []Diagnostic {
-	diags, _ := s.DiagnosticsState(ctx, uri)
-	return diags
-}
-
 func (s *Session) WaitForDiagnostics(ctx context.Context, uri string, timeout time.Duration) ([]Diagnostic, bool) {
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	ticker := time.NewTicker(300 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
-		if diags, known := s.DiagnosticsState(ctx, uri); known {
+		if diags, known := s.DiagnosticsState(waitCtx, uri); known {
 			return diags, true
 		}
 
 		select {
-		case <-ctx.Done():
-			return nil, false
-		case <-deadline.C:
+		case <-waitCtx.Done():
 			return nil, false
 		case <-ticker.C:
 		}
@@ -352,22 +430,80 @@ func (s *Session) Diagnostics(ctx context.Context, uri string, filePath string) 
 	return FormatDiagnostics(diags, filePath, s.workingDir), nil
 }
 
-func (s *Session) Definition(ctx context.Context, uri string, line, column int) (string, error) {
-	params := TextDocumentPositionParams{
-		TextDocument: TextDocumentIdentifier{URI: uri},
-		Position:     Position{Line: line, Character: column},
+type DefLocation struct {
+	Path   string
+	Line   int
+	Column int
+}
+
+const (
+	methodDefinition     = "textDocument/definition"
+	methodTypeDefinition = "textDocument/typeDefinition"
+	methodImplementation = "textDocument/implementation"
+	methodReferences     = "textDocument/references"
+)
+
+// locations runs any of the position-based navigation requests, all of which
+// answer with Location | Location[] | LocationLink[].
+func (s *Session) locations(ctx context.Context, method, uri string, line, column int) ([]Location, error) {
+	position := Position{Line: line, Character: column}
+	document := TextDocumentIdentifier{URI: uri}
+
+	var params any = TextDocumentPositionParams{TextDocument: document, Position: position}
+	if method == methodReferences {
+		params = ReferenceParams{
+			TextDocument: document,
+			Position:     position,
+			Context:      ReferenceContext{IncludeDeclaration: true},
+		}
 	}
 
 	var result json.RawMessage
-	if err := s.CallAndAwait(ctx, "textDocument/definition", params, &result); err != nil {
-		return "", err
+	if err := s.CallAndAwait(ctx, method, params, &result); err != nil {
+		return nil, err
 	}
 
-	locations, err := parseLocationResponse(result)
+	return parseLocationResponse(result)
+}
+
+func (s *Session) defLocations(ctx context.Context, method, uri string, line, column int) ([]DefLocation, error) {
+	locations, err := s.locations(ctx, method, uri, line, column)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]DefLocation, 0, len(locations))
+	for _, location := range locations {
+		out = append(out, DefLocation{
+			Path:   uriToPath(location.URI),
+			Line:   location.Range.Start.Line,
+			Column: location.Range.Start.Character,
+		})
+	}
+	return out, nil
+}
+
+func (s *Session) DefinitionLocations(ctx context.Context, uri string, line, column int) ([]DefLocation, error) {
+	return s.defLocations(ctx, methodDefinition, uri, line, column)
+}
+
+func (s *Session) TypeDefinitionLocations(ctx context.Context, uri string, line, column int) ([]DefLocation, error) {
+	return s.defLocations(ctx, methodTypeDefinition, uri, line, column)
+}
+
+func (s *Session) ImplementationLocations(ctx context.Context, uri string, line, column int) ([]DefLocation, error) {
+	return s.defLocations(ctx, methodImplementation, uri, line, column)
+}
+
+func (s *Session) ReferenceLocations(ctx context.Context, uri string, line, column int) ([]DefLocation, error) {
+	return s.defLocations(ctx, methodReferences, uri, line, column)
+}
+
+func (s *Session) Definition(ctx context.Context, uri string, line, column int) (string, error) {
+	locations, err := s.locations(ctx, methodDefinition, uri, line, column)
 	if err != nil {
 		return "", err
 	}
-
 	if len(locations) == 0 {
 		return "No definition found", nil
 	}
@@ -375,64 +511,38 @@ func (s *Session) Definition(ctx context.Context, uri string, line, column int) 
 	return formatDefinitions(locations, s.workingDir), nil
 }
 
-type DefLocation struct {
-	Path   string
-	Line   int
-	Column int
-}
-
-func (s *Session) DefinitionLocations(ctx context.Context, uri string, line, column int) ([]DefLocation, error) {
-	params := TextDocumentPositionParams{
-		TextDocument: TextDocumentIdentifier{URI: uri},
-		Position:     Position{Line: line, Character: column},
-	}
-
-	var result json.RawMessage
-	if err := s.CallAndAwait(ctx, "textDocument/definition", params, &result); err != nil {
-		return nil, err
-	}
-
-	locations, err := parseLocationResponse(result)
-	if err != nil {
-		return nil, err
-	}
-
-	out := make([]DefLocation, 0, len(locations))
-	for _, l := range locations {
-		out = append(out, DefLocation{Path: uriToPath(l.URI), Line: l.Range.Start.Line, Column: l.Range.Start.Character})
-	}
-	return out, nil
-}
-
 func (s *Session) References(ctx context.Context, uri string, line, column int) (string, error) {
-	params := ReferenceParams{
-		TextDocument: TextDocumentIdentifier{URI: uri},
-		Position:     Position{Line: line, Character: column},
-		Context:      ReferenceContext{IncludeDeclaration: true},
-	}
-
-	var result json.RawMessage
-	if err := s.CallAndAwait(ctx, "textDocument/references", params, &result); err != nil {
-		return "", err
-	}
-
-	locations, err := parseLocationResponse(result)
-	if err != nil {
-		return "", err
-	}
-
-	if len(locations) == 0 {
-		return "No references found", nil
-	}
-
-	return formatLocations("References", locations, s.workingDir), nil
+	return s.formatLocationRequest(ctx, methodReferences, "References", uri, line, column)
 }
 
 func (s *Session) Implementation(ctx context.Context, uri string, line, column int) (string, error) {
-	return s.locationOp(ctx, "textDocument/implementation", "Implementations", uri, line, column)
+	return s.formatLocationRequest(ctx, methodImplementation, "Implementations", uri, line, column)
+}
+
+func (s *Session) formatLocationRequest(ctx context.Context, method, title, uri string, line, column int) (string, error) {
+	locations, err := s.locations(ctx, method, uri, line, column)
+	if err != nil {
+		return "", err
+	}
+	if len(locations) == 0 {
+		return fmt.Sprintf("No %s found", strings.ToLower(title)), nil
+	}
+
+	return formatLocations(title, locations, s.workingDir), nil
 }
 
 func (s *Session) Hover(ctx context.Context, uri string, line, column int) (string, error) {
+	contents, err := s.HoverInformation(ctx, uri, line, column)
+	if err != nil {
+		return "", err
+	}
+	if contents == "" {
+		return "No hover information available", nil
+	}
+	return contents, nil
+}
+
+func (s *Session) HoverInformation(ctx context.Context, uri string, line, column int) (string, error) {
 	params := TextDocumentPositionParams{
 		TextDocument: TextDocumentIdentifier{URI: uri},
 		Position:     Position{Line: line, Character: column},
@@ -448,38 +558,51 @@ func (s *Session) Hover(ctx context.Context, uri string, line, column int) (stri
 		return "", err
 	}
 
-	if hover.Contents.Value == "" {
-		return "No hover information available", nil
-	}
-
 	return hover.Contents.Value, nil
 }
 
 func (s *Session) DocumentSymbols(ctx context.Context, uri string, filePath string) (string, error) {
+	docSymbols, symInfos, err := s.DocumentSymbolItems(ctx, uri)
+	if err != nil {
+		return "", err
+	}
+	if len(symInfos) > 0 {
+		return formatSymbolInformations(symInfos, s.workingDir), nil
+	}
+	if len(docSymbols) > 0 {
+		return formatDocumentSymbols(docSymbols, filePath, s.workingDir, 0), nil
+	}
+	return "No symbols found", nil
+}
+
+// DocumentSymbolItems returns the file's symbols in whichever of the two
+// documentSymbol response shapes the server chose: a DocumentSymbol tree or a
+// flat SymbolInformation list.
+func (s *Session) DocumentSymbolItems(ctx context.Context, uri string) ([]DocumentSymbol, []SymbolInformation, error) {
 	params := DocumentSymbolParams{
 		TextDocument: TextDocumentIdentifier{URI: uri},
 	}
 
 	var result json.RawMessage
 	if err := s.CallAndAwait(ctx, "textDocument/documentSymbol", params, &result); err != nil {
-		return "", err
+		return nil, nil, err
 	}
 
-	if result == nil || string(result) == "null" {
-		return "No symbols found", nil
+	if isNullResult(result) {
+		return nil, nil, nil
 	}
 
 	var symInfos []SymbolInformation
 	if err := json.Unmarshal(result, &symInfos); err == nil && len(symInfos) > 0 && symInfos[0].Location.URI != "" {
-		return formatSymbolInformations(symInfos, s.workingDir), nil
+		return nil, symInfos, nil
 	}
 
 	var docSymbols []DocumentSymbol
 	if err := json.Unmarshal(result, &docSymbols); err == nil && len(docSymbols) > 0 {
-		return formatDocumentSymbols(docSymbols, filePath, s.workingDir, 0), nil
+		return docSymbols, nil, nil
 	}
 
-	return "No symbols found", nil
+	return nil, nil, nil
 }
 
 type symbolCandidate struct {
@@ -488,40 +611,26 @@ type symbolCandidate struct {
 	position  Position
 }
 
+// SymbolPosition locates a named symbol in a file, preferring the language
+// server's own symbol table and falling back to the first textual occurrence of
+// the name's last segment.
 func (s *Session) SymbolPosition(ctx context.Context, uri string, name string) (Position, bool) {
-	params := DocumentSymbolParams{
-		TextDocument: TextDocumentIdentifier{URI: uri},
-	}
+	path := uriToPath(uri)
 
-	var result json.RawMessage
-	if err := s.CallAndAwait(ctx, "textDocument/documentSymbol", params, &result); err != nil {
-		return Position{}, false
-	}
-
-	if result == nil || string(result) == "null" {
-		return Position{}, false
-	}
-
-	var candidates []symbolCandidate
-
-	var symInfos []SymbolInformation
-	if err := json.Unmarshal(result, &symInfos); err == nil && len(symInfos) > 0 && symInfos[0].Location.URI != "" {
+	docSymbols, symInfos, err := s.DocumentSymbolItems(ctx, uri)
+	if err == nil {
+		var candidates []symbolCandidate
 		for _, sym := range symInfos {
 			candidates = append(candidates, symbolCandidate{name: sym.Name, qualified: sym.Name, position: sym.Location.Range.Start})
 		}
-	} else {
-		var docSymbols []DocumentSymbol
-		if err := json.Unmarshal(result, &docSymbols); err == nil {
-			collectSymbolCandidates(docSymbols, "", &candidates)
+		collectSymbolCandidates(docSymbols, "", &candidates)
+
+		if matched, ok := matchSymbol(candidates, name); ok {
+			return snapToIdentifier(path, matched), true
 		}
 	}
 
-	matched, ok := matchSymbol(candidates, name)
-	if !ok {
-		return Position{}, false
-	}
-
-	return snapToIdentifier(uriToPath(uri), matched), true
+	return PositionOfSymbol(path, symbolLeaf(name))
 }
 
 // snapToIdentifier adjusts a candidate position to the symbol's name token:
@@ -649,20 +758,22 @@ func (s *Session) initialize(ctx context.Context) error {
 				Synchronization: TextDocumentSyncClientCapabilities{DidSave: true},
 				Hover:           HoverClientCapabilities{ContentFormat: []string{"plaintext", "markdown"}},
 				Definition:      DefinitionClientCapabilities{},
+				TypeDefinition:  TypeDefinitionClientCapabilities{},
 				References:      ReferencesClientCapabilities{},
 				Implementation:  ImplementationClientCapabilities{},
 				DocumentSymbol:  DocumentSymbolClientCapabilities{},
 				Diagnostic:      DiagnosticClientCapabilities{},
 				CallHierarchy:   CallHierarchyClientCapabilities{},
 			},
+			Window: WindowClientCapabilities{WorkDoneProgress: true},
 		},
 	}
 
-	var result json.RawMessage
-	call := s.conn.Call(ctx, "initialize", params)
-	if err := call.Await(ctx, &result); err != nil {
+	var result InitializeResult
+	if _, err := s.conn.Call(ctx, "initialize", params, &result); err != nil {
 		return err
 	}
+	s.pullDiags = diagnosticProviderEnabled(result.Capabilities.DiagnosticProvider)
 
 	if err := s.conn.Notify(ctx, "initialized", struct{}{}); err != nil {
 		return fmt.Errorf("initialized notification: %w", err)
@@ -671,27 +782,9 @@ func (s *Session) initialize(ctx context.Context) error {
 	return nil
 }
 
-func (s *Session) locationOp(ctx context.Context, method, title, uri string, line, column int) (string, error) {
-	params := TextDocumentPositionParams{
-		TextDocument: TextDocumentIdentifier{URI: uri},
-		Position:     Position{Line: line, Character: column},
-	}
-
-	var result json.RawMessage
-	if err := s.CallAndAwait(ctx, method, params, &result); err != nil {
-		return "", err
-	}
-
-	locations, err := parseLocationResponse(result)
-	if err != nil {
-		return "", err
-	}
-
-	if len(locations) == 0 {
-		return fmt.Sprintf("No %s found", strings.ToLower(title)), nil
-	}
-
-	return formatLocations(title, locations, s.workingDir), nil
+func diagnosticProviderEnabled(provider json.RawMessage) bool {
+	value := strings.TrimSpace(string(provider))
+	return value != "" && value != "null" && value != "false"
 }
 
 func (s *Session) incomingCalls(ctx context.Context, item CallHierarchyItem) (string, error) {
@@ -730,64 +823,74 @@ func (s *Session) outgoingCalls(ctx context.Context, item CallHierarchyItem) (st
 	return formatOutgoingCalls(calls, s.workingDir), nil
 }
 
+// parseLocationResponse decodes the Location | Location[] | LocationLink[]
+// union shared by definition, references and implementation. An empty array is
+// a valid "nothing found" answer, not a malformed response.
 func parseLocationResponse(data json.RawMessage) ([]Location, error) {
-	if data == nil || string(data) == "null" {
+	if isNullResult(data) {
 		return nil, nil
 	}
 
-	var loc Location
-	if err := json.Unmarshal(data, &loc); err == nil && loc.URI != "" {
-		return []Location{loc}, nil
-	}
-
-	var locs []Location
-	if err := json.Unmarshal(data, &locs); err == nil && len(locs) > 0 && locs[0].URI != "" {
-		return locs, nil
-	}
-	locs = nil
-
-	var links []struct {
-		TargetURI            string `json:"targetUri"`
-		TargetRange          Range  `json:"targetRange"`
-		TargetSelectionRange Range  `json:"targetSelectionRange"`
-	}
-	if err := json.Unmarshal(data, &links); err == nil && len(links) > 0 && links[0].TargetURI != "" {
-		for _, link := range links {
-			locs = append(locs, Location{URI: link.TargetURI, Range: link.TargetSelectionRange})
+	var single Location
+	if err := json.Unmarshal(data, &single); err == nil {
+		if single.URI == "" {
+			return nil, nil
 		}
-		return locs, nil
+		return []Location{single}, nil
+	}
+
+	var locations []Location
+	if err := json.Unmarshal(data, &locations); err == nil && (len(locations) == 0 || locations[0].URI != "") {
+		return locations, nil
+	}
+
+	var links []LocationLink
+	if err := json.Unmarshal(data, &links); err == nil {
+		locations = make([]Location, 0, len(links))
+		for _, link := range links {
+			locations = append(locations, Location{URI: link.TargetURI, Range: link.TargetSelectionRange})
+		}
+		return locations, nil
 	}
 
 	return nil, fmt.Errorf("unexpected location response format")
 }
 
 func parseCallHierarchyItems(data json.RawMessage) ([]CallHierarchyItem, error) {
-	if data == nil || string(data) == "null" {
-		return nil, nil
-	}
-
 	var items []CallHierarchyItem
-	if err := json.Unmarshal(data, &items); err != nil {
+	if err := unmarshalResult(data, &items); err != nil {
 		return nil, err
 	}
 
 	return items, nil
 }
 
+func isNullResult(data json.RawMessage) bool {
+	return len(data) == 0 || string(data) == "null"
+}
+
 func unmarshalResult(data json.RawMessage, v any) error {
-	if data == nil || string(data) == "null" {
+	if isNullResult(data) {
 		return nil
 	}
 	return json.Unmarshal(data, v)
 }
 
-type cmdCloser struct {
+type cmdStream struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
 }
 
-func (c *cmdCloser) Close() error {
+func (c *cmdStream) Read(p []byte) (int, error) {
+	return c.stdout.Read(p)
+}
+
+func (c *cmdStream) Write(p []byte) (int, error) {
+	return c.stdin.Write(p)
+}
+
+func (c *cmdStream) Close() error {
 	c.stdin.Close()
 	c.stdout.Close()
 

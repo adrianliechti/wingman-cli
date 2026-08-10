@@ -112,6 +112,15 @@ func (s *Session) Exited() bool {
 	}
 }
 
+// HasForegroundProcess reports whether the PTY foreground process group is a
+// command rather than the interactive shell itself.
+func (s *Session) HasForegroundProcess() bool {
+	if s.Exited() {
+		return false
+	}
+	return hasForegroundProcess(s.pty, s.cmd)
+}
+
 func (s *Session) Write(p []byte) error {
 	if len(p) == 0 {
 		return nil

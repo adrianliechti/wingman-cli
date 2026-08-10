@@ -11,14 +11,28 @@ type InitializeParams struct {
 	Capabilities ClientCapabilities `json:"capabilities"`
 }
 
+type InitializeResult struct {
+	Capabilities ServerCapabilities `json:"capabilities"`
+}
+
+type ServerCapabilities struct {
+	DiagnosticProvider json.RawMessage `json:"diagnosticProvider"`
+}
+
 type ClientCapabilities struct {
 	TextDocument TextDocumentClientCapabilities `json:"textDocument"`
+	Window       WindowClientCapabilities       `json:"window"`
+}
+
+type WindowClientCapabilities struct {
+	WorkDoneProgress bool `json:"workDoneProgress,omitempty"`
 }
 
 type TextDocumentClientCapabilities struct {
 	Synchronization TextDocumentSyncClientCapabilities `json:"synchronization"`
 	Hover           HoverClientCapabilities            `json:"hover"`
 	Definition      DefinitionClientCapabilities       `json:"definition"`
+	TypeDefinition  TypeDefinitionClientCapabilities   `json:"typeDefinition"`
 	References      ReferencesClientCapabilities       `json:"references"`
 	Implementation  ImplementationClientCapabilities   `json:"implementation"`
 	DocumentSymbol  DocumentSymbolClientCapabilities   `json:"documentSymbol"`
@@ -37,6 +51,8 @@ type HoverClientCapabilities struct {
 type DefinitionClientCapabilities struct {
 	LinkSupport bool `json:"linkSupport,omitempty"`
 }
+
+type TypeDefinitionClientCapabilities struct{}
 
 type ReferencesClientCapabilities struct{}
 
@@ -87,6 +103,13 @@ type PublishDiagnosticsParams struct {
 	Diagnostics []Diagnostic `json:"diagnostics"`
 }
 
+type ProgressParams struct {
+	Token json.RawMessage `json:"token"`
+	Value struct {
+		Kind string `json:"kind"`
+	} `json:"value"`
+}
+
 type Position struct {
 	Line      int `json:"line"`
 	Character int `json:"character"`
@@ -100,6 +123,12 @@ type Range struct {
 type Location struct {
 	URI   string `json:"uri"`
 	Range Range  `json:"range"`
+}
+
+type LocationLink struct {
+	TargetURI            string `json:"targetUri"`
+	TargetRange          Range  `json:"targetRange"`
+	TargetSelectionRange Range  `json:"targetSelectionRange"`
 }
 
 type TextDocumentPositionParams struct {

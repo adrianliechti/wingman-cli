@@ -92,6 +92,42 @@ func TestTrimStaleToolResultsDropsImages(t *testing.T) {
 	}
 }
 
+func TestTrimStaleToolResultsBumpsRevisionForEmptyImage(t *testing.T) {
+	var messages []Message
+	messages = append(messages, Message{Role: RoleAssistant, Content: []Content{
+		{ToolResult: &ToolResult{ID: "img", Name: "view_image", Content: "[image attached below]"}},
+		{File: &File{}},
+	}})
+	for range 20 {
+		messages = append(messages, Message{
+			Role:    RoleUser,
+			Content: []Content{{Text: strings.Repeat("x", 8*1024)}},
+		})
+	}
+
+	a := trimTestAgent(messages)
+	if freed := a.trimStaleToolResults(); freed != 0 {
+		t.Fatalf("freed = %d, want 0 for an empty image", freed)
+	}
+	if a.Revision != 1 {
+		t.Fatalf("revision = %d, want 1 after retained history was rewritten", a.Revision)
+	}
+
+	first := a.Messages[0]
+	if len(first.Content) != 1 || first.Content[0].File != nil {
+		t.Fatalf("empty image was not dropped: %#v", first.Content)
+	}
+	if got := first.Content[0].ToolResult.Content; got != trimImageMarker {
+		t.Fatalf("tool result = %q, want %q", got, trimImageMarker)
+	}
+	if freed := a.trimStaleToolResults(); freed != 0 {
+		t.Fatalf("second trim freed %d bytes, want 0", freed)
+	}
+	if a.Revision != 1 {
+		t.Fatalf("revision = %d after no-op trim, want 1", a.Revision)
+	}
+}
+
 func TestTrimStaleToolResultsProtectsSmallSessions(t *testing.T) {
 	a := trimTestAgent(toolExchange("call", strings.Repeat("x", 8*1024)))
 	if freed := a.trimStaleToolResults(); freed != 0 {

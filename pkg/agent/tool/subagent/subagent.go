@@ -290,6 +290,15 @@ func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry,
 				runtime.AgentID = agentID
 				runtime.AgentType = subagentName
 				execCtx = hook.WithRuntime(execCtx, runtime)
+				// Sub-agent deltas are buffered internally rather than rendered on
+				// the parent stream, so a failed attempt can always be discarded.
+				execCtx = agent.WithStreamEventHandlers(execCtx, agent.StreamEventHandlers{
+					Reset: func() {
+						if tk != nil {
+							tk.SetActivity("")
+						}
+					},
+				})
 				started := time.Now()
 				before := sub.UsageSnapshot()
 				startIdx := len(sub.MessagesSnapshot())

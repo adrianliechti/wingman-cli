@@ -67,9 +67,12 @@ export type ClientMessage =
 	| PromptResponseMessage
 	| FocusMessage;
 
-interface SessionStateMessage {
-	type: "session_state";
+interface SessionMessage {
 	session: string;
+}
+
+interface SessionStateMessage extends SessionMessage {
+	type: "session_state";
 	phase: Phase;
 	messages?: ConversationMessage[];
 	input_tokens?: number;
@@ -79,52 +82,55 @@ interface SessionStateMessage {
 	context_window?: number;
 }
 
-interface TextDeltaMessage {
+interface TextDeltaMessage extends SessionMessage {
 	type: "text_delta";
-	session: string;
+	id?: string;
 	text: string;
 }
 
-interface ReasoningDeltaMessage {
+interface ReasoningDeltaMessage extends SessionMessage {
 	type: "reasoning_delta";
-	session: string;
 	id: string;
 	part?: number;
 	text: string;
 }
 
-interface ToolCallMessage {
+interface ToolCallMessage extends SessionMessage {
 	type: "tool_call";
-	session: string;
 	id: string;
 	name: string;
 	args: string;
 	hint: string;
 }
 
-interface ToolResultMessage {
+interface ToolResultMessage extends SessionMessage {
 	type: "tool_result";
-	session: string;
 	id: string;
 	name: string;
 	content: string;
 }
 
-interface ToolProgressMessage {
+interface ToolProgressMessage extends SessionMessage {
 	type: "tool_progress";
 	id: string;
 	text?: string;
 }
 
-interface PhaseMessage {
+interface StreamResetMessage extends SessionMessage {
+	type: "stream_reset";
+}
+
+interface StreamCommitMessage extends SessionMessage {
+	type: "stream_commit";
+}
+
+interface PhaseMessage extends SessionMessage {
 	type: "phase";
-	session: string;
 	phase: Phase;
 }
 
-interface UsageMessage {
+interface UsageMessage extends SessionMessage {
 	type: "usage";
-	session: string;
 	input_tokens: number;
 	cached_tokens: number;
 	output_tokens: number;
@@ -132,9 +138,8 @@ interface UsageMessage {
 	context_window?: number;
 }
 
-interface ErrorMessage {
+interface ErrorMessage extends SessionMessage {
 	type: "error";
-	session: string;
 	message: string;
 }
 
@@ -155,18 +160,16 @@ export interface PromptField {
 	default?: unknown;
 }
 
-interface PromptMessage {
+interface PromptMessage extends SessionMessage {
 	type: "prompt";
-	session: string;
 	prompt_id: string;
 	prompt_kind: PromptKind;
 	message: string;
 	prompt_fields?: PromptField[];
 }
 
-interface PromptCancelMessage {
+interface PromptCancelMessage extends SessionMessage {
 	type: "prompt_cancel";
-	session: string;
 	prompt_id: string;
 }
 
@@ -225,9 +228,8 @@ export interface TurnQueueEntry {
 	error?: string;
 }
 
-interface TurnInputMessage {
+interface TurnInputMessage extends SessionMessage {
 	type: "turn_input";
-	session: string;
 	id: string;
 	state: TurnInputState;
 	intent?: TurnInputIntent;
@@ -237,9 +239,8 @@ interface TurnInputMessage {
 	queue?: TurnQueueEntry[];
 }
 
-interface TurnQueueMessage {
+interface TurnQueueMessage extends SessionMessage {
 	type: "turn_queue";
-	session: string;
 	queue?: TurnQueueEntry[];
 	paused?: boolean;
 	can_steer?: boolean;
@@ -255,6 +256,8 @@ export type ServerMessage =
 	| ReasoningDeltaMessage
 	| ToolCallMessage
 	| ToolResultMessage
+	| StreamResetMessage
+	| StreamCommitMessage
 	| ToolProgressMessage
 	| PhaseMessage
 	| UsageMessage
@@ -282,6 +285,7 @@ export interface ConversationMessage {
 
 interface ConversationContent {
 	text?: string;
+	text_id?: string;
 	image?: {
 		data: string;
 		name?: string;
@@ -382,6 +386,7 @@ export interface TerminalEntry {
 	shell: string;
 	cols: number;
 	rows: number;
+	busy: boolean;
 }
 
 export interface ShellEntry {
@@ -393,7 +398,19 @@ export interface DiagnosticEntry {
 	path: string;
 	line: number;
 	column: number;
+	end_line?: number;
+	end_column?: number;
 	severity: "error" | "warning" | "info";
 	message: string;
 	source?: string;
+}
+
+export interface WorkspaceDiagnostics {
+	diagnostics: DiagnosticEntry[];
+	checked_files: number;
+	discovered_files: number;
+	discovery_truncated: boolean;
+	unknown_files: number;
+	unavailable_servers: string[];
+	analyzing: boolean;
 }

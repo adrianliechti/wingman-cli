@@ -337,7 +337,7 @@ func fromOutput(m *responses.ResponseOutputMessageParam) (Message, bool) {
 	var contents []Content
 	for _, part := range m.Content {
 		if text := part.OfOutputText; text != nil && text.Text != "" {
-			contents = append(contents, Content{Text: text.Text})
+			contents = append(contents, Content{Text: text.Text, TextID: m.ID})
 		}
 
 		if refusal := part.OfRefusal; refusal != nil && refusal.Refusal != "" {

@@ -14,6 +14,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FileEntry, ServerMessage } from "../types/protocol";
 import { getDeviconClass } from "../utils/fileIcons";
+import { Dialog, dialogButtonClass, useToast } from "./ui/Feedback";
 
 interface Props {
 	onFileSelect: (path: string) => void;
@@ -33,10 +34,13 @@ interface MenuState {
 }
 
 export function FileTree({ onFileSelect, subscribe }: Props) {
+	const toast = useToast();
 	const [nodes, setNodes] = useState<TreeNode[]>([]);
 	const [menu, setMenu] = useState<MenuState | null>(null);
 	const [renaming, setRenaming] = useState<string | null>(null);
 	const [renameValue, setRenameValue] = useState("");
+	const [focusedPath, setFocusedPath] = useState<string | null>(null);
+	const [deleteTarget, setDeleteTarget] = useState<TreeNode | null>(null);
 	const nodesRef = useRef(nodes);
 	useEffect(() => {
 		nodesRef.current = nodes;
@@ -46,6 +50,8 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 		const res = await fetch(
 			`/api/files?path=${encodeURIComponent(dirPath || "")}`,
 		);
+		if (!res.ok)
+			throw new Error((await res.text()).trim() || "Failed to load files.");
 		const files: FileEntry[] = await res.json();
 
 		return files
@@ -57,8 +63,16 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 	}, []);
 
 	useEffect(() => {
-		loadDir("").then(setNodes);
-	}, [loadDir]);
+		loadDir("")
+			.then(setNodes)
+			.catch((error) => {
+				toast({
+					title: "Could not load files",
+					description: String(error),
+					tone: "error",
+				});
+			});
+	}, [loadDir, toast]);
 
 	const refresh = useCallback(async () => {
 		const refreshLevel = async (
@@ -84,8 +98,16 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 			}
 			return result;
 		};
-		setNodes(await refreshLevel("", nodesRef.current));
-	}, [loadDir]);
+		try {
+			setNodes(await refreshLevel("", nodesRef.current));
+		} catch (error) {
+			toast({
+				title: "Could not refresh files",
+				description: String(error),
+				tone: "error",
+			});
+		}
+	}, [loadDir, toast]);
 
 	useEffect(() => {
 		if (!subscribe) return;
@@ -160,21 +182,35 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 			body: JSON.stringify({ from: node.path, to }),
 		});
 		if (!res.ok) {
-			alert(`Rename failed: ${await res.text()}`);
+			toast({
+				title: "Rename failed",
+				description: await res.text(),
+				tone: "error",
+			});
 		}
 	};
 
-	const handleDelete = async (node: TreeNode) => {
+	const requestDelete = (node: TreeNode) => {
 		setMenu(null);
-		const label = node.is_dir ? "folder" : "file";
-		if (!confirm(`Delete ${label} "${node.name}"?`)) return;
+		setDeleteTarget(node);
+	};
+
+	const confirmDelete = async () => {
+		const node = deleteTarget;
+		if (!node) return;
 		const res = await fetch(
 			`/api/files?path=${encodeURIComponent(node.path)}`,
 			{ method: "DELETE" },
 		);
 		if (!res.ok) {
-			alert(`Delete failed: ${await res.text()}`);
+			toast({
+				title: "Delete failed",
+				description: await res.text(),
+				tone: "error",
+			});
+			return;
 		}
+		setDeleteTarget(null);
 	};
 
 	const handleDuplicate = async (node: TreeNode) => {
@@ -197,11 +233,19 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 			});
 			if (res.ok) return;
 			if (res.status !== 409) {
-				alert(`Copy failed: ${await res.text()}`);
+				toast({
+					title: "Duplicate failed",
+					description: await res.text(),
+					tone: "error",
+				});
 				return;
 			}
 		}
-		alert("Copy failed: too many existing copies");
+		toast({
+			title: "Duplicate failed",
+			description: "Too many copies already exist.",
+			tone: "error",
+		});
 	};
 
 	const handleCopy = async (node: TreeNode) => {
@@ -219,7 +263,11 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 				}),
 			]);
 		} catch (e) {
-			alert(`Copy failed: ${e instanceof Error ? e.message : String(e)}`);
+			toast({
+				title: "Copy failed",
+				description: e instanceof Error ? e.message : String(e),
+				tone: "error",
+			});
 		}
 	};
 
@@ -233,8 +281,62 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 		document.body.removeChild(a);
 	};
 
+	const focusTreePath = (path: string) => {
+		setFocusedPath(path);
+		requestAnimationFrame(() =>
+			document
+				.querySelector<HTMLElement>(`[data-tree-path="${CSS.escape(path)}"]`)
+				?.focus(),
+		);
+	};
+
+	const handleTreeKey = (event: React.KeyboardEvent, node: TreeNode) => {
+		const visible = flattenVisible(nodes);
+		const index = visible.findIndex((item) => item.node.path === node.path);
+		if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+			event.preventDefault();
+			const offset = event.key === "ArrowDown" ? 1 : -1;
+			const next =
+				visible[Math.max(0, Math.min(visible.length - 1, index + offset))];
+			if (next) focusTreePath(next.node.path);
+			return;
+		}
+		if (event.key === "ArrowRight" && node.is_dir) {
+			event.preventDefault();
+			if (!node.expanded) void toggleDir(node.path);
+			else if (node.children?.[0]) focusTreePath(node.children[0].path);
+			return;
+		}
+		if (event.key === "ArrowLeft") {
+			event.preventDefault();
+			if (node.is_dir && node.expanded) void toggleDir(node.path);
+			else {
+				const current = visible[index];
+				const parent = [...visible.slice(0, index)]
+					.reverse()
+					.find((item) => item.depth === current.depth - 1);
+				if (parent) focusTreePath(parent.node.path);
+			}
+			return;
+		}
+		if (event.key === "Enter" || event.key === " ") {
+			event.preventDefault();
+			if (node.is_dir) void toggleDir(node.path);
+			else onFileSelect(node.path);
+			return;
+		}
+		if (
+			event.key === "ContextMenu" ||
+			(event.shiftKey && event.key === "F10")
+		) {
+			event.preventDefault();
+			const rect = event.currentTarget.getBoundingClientRect();
+			setMenu({ x: rect.left + 24, y: rect.bottom, node });
+		}
+	};
+
 	const renderNodes = (items: TreeNode[], depth: number) => {
-		return items.map((node) => {
+		return items.map((node, index) => {
 			const isRenaming = renaming === node.path;
 			return (
 				<div key={node.path}>
@@ -261,6 +363,18 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 							setMenu({ x: e.clientX, y: e.clientY, node });
 						}}
 						title={node.name}
+						role="treeitem"
+						aria-level={depth + 1}
+						aria-expanded={node.is_dir ? !!node.expanded : undefined}
+						tabIndex={
+							focusedPath === node.path ||
+							(!focusedPath && depth === 0 && index === 0)
+								? 0
+								: -1
+						}
+						data-tree-path={node.path}
+						onFocus={() => setFocusedPath(node.path)}
+						onKeyDown={(event) => handleTreeKey(event, node)}
 					>
 						<span className="w-3.5 flex items-center justify-center shrink-0 text-fg-dim">
 							{node.is_dir ? (
@@ -311,16 +425,20 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 							</span>
 						)}
 					</div>
-					{node.expanded &&
-						node.children &&
-						renderNodes(node.children, depth + 1)}
+					{node.expanded && node.children && (
+						<div role="group">{renderNodes(node.children, depth + 1)}</div>
+					)}
 				</div>
 			);
 		});
 	};
 
 	return (
-		<div className="flex-1 overflow-y-auto py-2 bg-bg relative">
+		<div
+			className="relative flex-1 overflow-y-auto bg-bg py-2"
+			role="tree"
+			aria-label="Workspace files"
+		>
 			{renderNodes(nodes, 0)}
 			{menu && (
 				<ContextMenu
@@ -333,11 +451,50 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 					onDuplicate={() => handleDuplicate(menu.node)}
 					onCopy={() => handleCopy(menu.node)}
 					onDownload={() => handleDownload(menu.node)}
-					onDelete={() => handleDelete(menu.node)}
+					onDelete={() => requestDelete(menu.node)}
 				/>
 			)}
+			<Dialog
+				open={deleteTarget !== null}
+				title={`Delete ${deleteTarget?.is_dir ? "folder" : "file"}?`}
+				description={
+					deleteTarget
+						? `“${deleteTarget.name}” will be permanently deleted.`
+						: undefined
+				}
+				onClose={() => setDeleteTarget(null)}
+			>
+				<button
+					type="button"
+					className={dialogButtonClass}
+					onClick={() => setDeleteTarget(null)}
+				>
+					Cancel
+				</button>
+				<button
+					type="button"
+					className={`${dialogButtonClass} border-danger/40 text-danger hover:bg-danger/10`}
+					onClick={() => void confirmDelete()}
+				>
+					Delete
+				</button>
+			</Dialog>
 		</div>
 	);
+}
+
+function flattenVisible(
+	nodes: TreeNode[],
+	depth = 0,
+): Array<{ node: TreeNode; depth: number }> {
+	const result: Array<{ node: TreeNode; depth: number }> = [];
+	for (const node of nodes) {
+		result.push({ node, depth });
+		if (node.is_dir && node.expanded && node.children) {
+			result.push(...flattenVisible(node.children, depth + 1));
+		}
+	}
+	return result;
 }
 
 interface ContextMenuProps {
@@ -362,6 +519,8 @@ function ContextMenu({
 	const isDir = menu.node.is_dir;
 	return (
 		<div
+			role="menu"
+			aria-label={`Actions for ${menu.node.name}`}
 			className="fixed z-100 min-w-[160px] bg-bg-elevated border border-border-subtle rounded-md shadow-2xl py-1 text-[12px]"
 			style={{ left: menu.x, top: menu.y }}
 			onMouseDown={(e) => e.stopPropagation()}
@@ -390,7 +549,7 @@ function ContextMenu({
 					onClick={onDownload}
 				/>
 			)}
-			<div className="my-1 border-t border-border-subtle" />
+			<div role="separator" className="my-1 border-t border-border-subtle" />
 			<MenuItem
 				icon={<Trash2 size={12} />}
 				label="Delete"
@@ -415,7 +574,8 @@ function MenuItem({
 	return (
 		<button
 			type="button"
-			className={`w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-bg-hover transition-colors ${danger ? "text-red-400 hover:text-red-300" : "text-fg-muted hover:text-fg"}`}
+			role="menuitem"
+			className={`w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-bg-hover transition-colors ${danger ? "text-danger" : "text-fg-muted hover:text-fg"}`}
 			onClick={onClick}
 		>
 			<span className="w-3.5 flex items-center justify-center shrink-0">

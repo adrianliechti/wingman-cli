@@ -1,177 +1,235 @@
-import Editor, { type Monaco } from "@monaco-editor/react";
-import { FileDigit } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import Editor, { type OnMount } from "@monaco-editor/react";
+import { AlertTriangle, FileDigit, Loader2 } from "lucide-react";
+import { useCallback, useEffect, useRef } from "react";
 import { useColorScheme } from "../hooks/useColorScheme";
+import type { OpenDocument, SaveResult } from "../hooks/useOpenDocuments";
+import {
+	createMonacoLSPBridge,
+	type MonacoLSPBridge,
+	revealEditorPosition,
+} from "../monacoLsp";
 import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
-import type { FileContent, ServerMessage } from "../types/protocol";
+import type { ServerMessage } from "../types/protocol";
 
 interface Props {
-	path: string;
+	document: OpenDocument;
 	line?: number;
-	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
-	onDeleted?: () => void;
-	onDirtyChange?: (dirty: boolean) => void;
+	column?: number;
+	navigationKey?: number;
+	subscribe?: (handler: (message: ServerMessage) => void) => () => void;
+	onChange: (value: string) => void;
+	onSave: () => Promise<SaveResult>;
+	onReload: () => void;
+	onKeepVersion: () => void;
+	onOpenFile?: (
+		path: string,
+		line: number,
+		column: number,
+		external?: boolean,
+	) => void;
+	view?: "code" | "preview";
 }
 
 export function FileTab({
-	path,
+	document,
 	line,
+	column,
+	navigationKey,
 	subscribe,
-	onDeleted,
-	onDirtyChange,
+	onChange,
+	onSave,
+	onReload,
+	onKeepVersion,
+	onOpenFile,
+	view = "code",
 }: Props) {
-	const [file, setFile] = useState<FileContent | null>(null);
-	const [loading, setLoading] = useState(true);
-	const [value, setValue] = useState("");
-	const [saving, setSaving] = useState(false);
-	const monacoRef = useRef<Monaco | null>(null);
+	const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
+	const lspBridgeRef = useRef<MonacoLSPBridge | null>(null);
+	const diagnosticsTimerRef = useRef<number | null>(null);
+	const documentRef = useRef(document);
+	const onOpenFileRef = useRef(onOpenFile);
+	const onSaveRef = useRef(onSave);
 	const scheme = useColorScheme();
+	documentRef.current = document;
+	onOpenFileRef.current = onOpenFile;
+	onSaveRef.current = onSave;
 
-	const onDeletedRef = useRef(onDeleted);
-	useEffect(() => {
-		onDeletedRef.current = onDeleted;
-	});
-
-	const dirty = file !== null && !file.binary && value !== (file.content ?? "");
-	const dirtyRef = useRef(dirty);
-	const valueRef = useRef(value);
-	const fileRef = useRef(file);
-	useEffect(() => {
-		dirtyRef.current = dirty;
-		valueRef.current = value;
-		fileRef.current = file;
-	});
-
-	const onDirtyChangeRef = useRef(onDirtyChange);
-	useEffect(() => {
-		onDirtyChangeRef.current = onDirtyChange;
-	});
+	const dirty = document.draft !== document.savedContent;
+	const file = document.file;
 
 	useEffect(() => {
-		onDirtyChangeRef.current?.(dirty);
-	}, [dirty]);
+		const editor = editorRef.current;
+		if (!editor || !line || line < 1) return;
+		revealEditorPosition(editor, line, column);
+	}, [line, column, navigationKey]);
 
 	useEffect(() => {
-		return () => onDirtyChangeRef.current?.(false);
+		return () => {
+			if (diagnosticsTimerRef.current !== null) {
+				window.clearTimeout(diagnosticsTimerRef.current);
+			}
+			lspBridgeRef.current?.dispose();
+			lspBridgeRef.current = null;
+			editorRef.current = null;
+		};
 	}, []);
 
-	const load = useCallback(async () => {
-		try {
-			const res = await fetch(
-				`/api/files/read?path=${encodeURIComponent(path)}`,
-			);
-			if (res.status === 404) {
-				onDeletedRef.current?.();
-				return;
-			}
-			if (!res.ok) {
-				setLoading(false);
-				return;
-			}
-			const data: FileContent = await res.json();
-			setFile(data);
-			setValue(data.content ?? "");
-			setLoading(false);
-		} catch {
-			setLoading(false);
-		}
-	}, [path]);
+	const loadDiagnostics = useCallback(async () => {
+		await lspBridgeRef.current?.refreshDiagnostics();
+	}, []);
 
 	useEffect(() => {
-		setLoading(true);
-		load();
-	}, [load]);
+		if (!file || file.binary || !editorRef.current) return;
+		const timer = window.setTimeout(
+			() => void loadDiagnostics(),
+			dirty ? 600 : 0,
+		);
+		return () => window.clearTimeout(timer);
+	}, [dirty, document.draft, file, loadDiagnostics]);
 
 	useEffect(() => {
 		if (!subscribe) return;
-		return subscribe((msg) => {
-			if (msg.type === "files_changed") {
-				if (dirtyRef.current) return;
-				load();
+		return subscribe((message) => {
+			if (message.type !== "diagnostics_changed") return;
+			if (diagnosticsTimerRef.current !== null) {
+				window.clearTimeout(diagnosticsTimerRef.current);
 			}
+			diagnosticsTimerRef.current = window.setTimeout(() => {
+				diagnosticsTimerRef.current = null;
+				void loadDiagnostics();
+			}, 200);
 		});
-	}, [subscribe, load]);
+	}, [loadDiagnostics, subscribe]);
 
-	const save = useCallback(async () => {
-		const f = fileRef.current;
-		if (!f || f.binary || saving) return;
-		const content = valueRef.current;
-		if (content === (f.content ?? "")) return;
-		setSaving(true);
-		try {
-			const res = await fetch("/api/files/write", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ path: f.path, content }),
-			});
-			if (res.ok) {
-				setFile({ ...f, content });
-			}
-		} catch {
-		} finally {
-			setSaving(false);
-		}
-	}, [saving]);
-
-	if (loading) {
+	if (document.loading && !file) {
 		return (
-			<div className="flex items-center justify-center h-full text-fg-dim text-[12px]">
-				Loading…
+			<div className="flex h-full items-center justify-center text-fg-dim">
+				<Loader2 size={15} className="animate-spin" aria-label="Loading file" />
 			</div>
 		);
 	}
 
 	if (!file) {
 		return (
-			<div className="flex items-center justify-center h-full text-fg-dim text-[12px]">
-				Failed to load file
+			<div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+				<div className="max-w-md text-[12px] text-danger">
+					{document.error || "Failed to load file."}
+				</div>
+				<button
+					type="button"
+					onClick={onReload}
+					className="h-8 rounded-md border border-border px-3 text-[12px] text-fg-muted hover:bg-bg-hover hover:text-fg"
+				>
+					Retry
+				</button>
 			</div>
 		);
 	}
 
-	if (file.binary) {
-		return <BinaryPreview file={file} />;
-	}
+	if (file.binary) return <BinaryPreview file={file} />;
 
+	const isHtml = file.language === "html" || /\.html?$/i.test(file.path);
+	const previewSrc = `/api/files/preview?path=${encodeURIComponent(file.path)}`;
 	return (
-		<Editor
-			height="100%"
-			language={file.language || undefined}
-			value={value}
-			theme={wingmanThemeName(scheme)}
-			beforeMount={(monaco) => {
-				monacoRef.current = monaco;
-				defineWingmanThemes(monaco);
-			}}
-			onMount={(editor, monaco) => {
-				if (line && line > 0) {
-					editor.revealLineInCenter(line);
-					editor.setPosition({ lineNumber: line, column: 1 });
-				}
-				editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-					void save();
-				});
-			}}
-			onChange={(v) => setValue(v ?? "")}
-			options={{
-				minimap: { enabled: false },
-				fontSize: 12,
-				lineNumbers: "on",
-				scrollBeyondLastLine: false,
-				wordWrap: "on",
-				renderWhitespace: "none",
-				padding: { top: 8 },
-			}}
-		/>
+		<div className="flex h-full min-h-0 flex-col">
+			{document.conflict && (
+				<div className="flex shrink-0 items-center gap-2 border-b border-warning/30 bg-warning/5 px-3 py-2 text-[11px] text-warning">
+					<AlertTriangle size={13} className="shrink-0" />
+					<span className="min-w-0 flex-1">
+						This file changed on disk while you had unsaved edits.
+					</span>
+					<button
+						type="button"
+						onClick={onReload}
+						className="rounded px-2 py-1 hover:bg-warning/10"
+					>
+						Reload from disk
+					</button>
+					<button
+						type="button"
+						onClick={onKeepVersion}
+						className="rounded px-2 py-1 hover:bg-warning/10"
+					>
+						Keep my version
+					</button>
+				</div>
+			)}
+			{document.saveError && (
+				<div className="shrink-0 border-b border-danger/30 bg-danger/5 px-3 py-2 text-[11px] text-danger">
+					{document.saveError}
+				</div>
+			)}
+			<div className="min-h-0 flex-1">
+				{isHtml && view === "preview" ? (
+					<iframe
+						key={document.revision}
+						src={previewSrc}
+						title={`Preview of ${file.path}`}
+						sandbox="allow-scripts allow-same-origin"
+						referrerPolicy="no-referrer"
+						className="h-full w-full border-0 bg-bg"
+						style={{ colorScheme: scheme }}
+					/>
+				) : (
+					<Editor
+						height="100%"
+						path={`/${file.path}`}
+						language={file.language || undefined}
+						value={document.draft}
+						theme={wingmanThemeName(scheme)}
+						beforeMount={defineWingmanThemes}
+						onMount={(editor, monaco) => {
+							editorRef.current = editor;
+							lspBridgeRef.current?.dispose();
+							if (!document.external) {
+								lspBridgeRef.current = createMonacoLSPBridge({
+									monaco,
+									editor,
+									file,
+									getDirtyContent: () => {
+										const current = documentRef.current;
+										return current.draft !== current.savedContent
+											? current.draft
+											: undefined;
+									},
+									onOpenFile: (path, row, col, external) =>
+										onOpenFileRef.current?.(path, row, col, external),
+								});
+								void loadDiagnostics();
+								editor.addCommand(
+									monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
+									() => void onSaveRef.current(),
+								);
+							}
+							revealEditorPosition(editor, line, column);
+						}}
+						onChange={(value) => onChange(value ?? "")}
+						options={{
+							minimap: { enabled: false },
+							fontSize: 12,
+							lineNumbers: "on",
+							scrollBeyondLastLine: false,
+							wordWrap: "on",
+							renderWhitespace: "none",
+							padding: { top: 8 },
+							readOnly: document.external,
+						}}
+					/>
+				)}
+			</div>
+		</div>
 	);
 }
 
-function BinaryPreview({ file }: { file: FileContent }) {
+function BinaryPreview({
+	file,
+}: {
+	file: import("../types/protocol").FileContent;
+}) {
 	const mime = file.mime ?? "application/octet-stream";
 	const src = `/api/files/download?path=${encodeURIComponent(file.path)}`;
-
 	return (
-		<div className="h-full w-full bg-bg overflow-auto">
+		<div className="h-full w-full overflow-auto bg-bg">
 			<PreviewBody mime={mime} src={src} />
 		</div>
 	);
@@ -180,18 +238,18 @@ function BinaryPreview({ file }: { file: FileContent }) {
 function PreviewBody({ mime, src }: { mime: string; src: string }) {
 	if (mime.startsWith("image/")) {
 		return (
-			<div className="h-full w-full flex items-center justify-center p-6">
+			<div className="flex h-full w-full items-center justify-center p-6">
 				<img
 					src={src}
 					alt=""
-					className="max-h-full max-w-full object-contain [image-rendering:auto]"
+					className="max-h-full max-w-full object-contain"
 				/>
 			</div>
 		);
 	}
 	if (mime.startsWith("video/")) {
 		return (
-			<div className="h-full w-full flex items-center justify-center p-6 bg-black/40">
+			<div className="flex h-full w-full items-center justify-center bg-black/40 p-6">
 				<video src={src} controls className="max-h-full max-w-full">
 					<track kind="captions" />
 				</video>
@@ -200,7 +258,7 @@ function PreviewBody({ mime, src }: { mime: string; src: string }) {
 	}
 	if (mime.startsWith("audio/")) {
 		return (
-			<div className="h-full w-full flex items-center justify-center p-6">
+			<div className="flex h-full w-full items-center justify-center p-6">
 				<audio src={src} controls className="w-full max-w-xl">
 					<track kind="captions" />
 				</audio>
@@ -212,7 +270,7 @@ function PreviewBody({ mime, src }: { mime: string; src: string }) {
 			<object
 				data={src}
 				type="application/pdf"
-				className="w-full h-full"
+				className="h-full w-full"
 				aria-label="PDF preview"
 			>
 				<UnknownBinary />
@@ -224,9 +282,9 @@ function PreviewBody({ mime, src }: { mime: string; src: string }) {
 
 function UnknownBinary() {
 	return (
-		<div className="h-full w-full flex flex-col items-center justify-center gap-3 p-6 text-center">
+		<div className="flex h-full w-full flex-col items-center justify-center gap-3 p-6 text-center">
 			<FileDigit size={36} className="text-fg-dim/60" strokeWidth={1.25} />
-			<div className="text-fg-dim text-[12px] font-mono">
+			<div className="font-mono text-[12px] text-fg-dim">
 				Binary file — no inline preview
 			</div>
 		</div>

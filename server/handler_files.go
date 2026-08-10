@@ -29,8 +29,8 @@ var extToLanguage = map[string]string{
 	".go":         "go",
 	".js":         "javascript",
 	".ts":         "typescript",
-	".tsx":        "tsx",
-	".jsx":        "jsx",
+	".tsx":        "typescript",
+	".jsx":        "javascript",
 	".py":         "python",
 	".rs":         "rust",
 	".java":       "java",
@@ -51,6 +51,7 @@ var extToLanguage = map[string]string{
 	".json":       "json",
 	".xml":        "xml",
 	".html":       "html",
+	".htm":        "html",
 	".css":        "css",
 	".scss":       "scss",
 	".sql":        "sql",
@@ -218,27 +219,27 @@ func (s *Server) handleFileRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ext := strings.ToLower(filepath.Ext(filePath))
-	lang := extToLanguage[ext]
-
-	base := strings.ToLower(filepath.Base(filePath))
-	if lang == "" {
-		switch base {
-		case "dockerfile":
-			lang = "dockerfile"
-		case "makefile":
-			lang = "makefile"
-		case "cmakelists.txt":
-			lang = "cmake"
-		}
-	}
-
 	writeJSON(w, FileContent{
 		Path:     filePath,
 		Content:  string(data),
-		Language: lang,
+		Language: languageForPath(filePath),
 		Size:     size,
 	})
+}
+
+func languageForPath(filePath string) string {
+	if lang := extToLanguage[strings.ToLower(filepath.Ext(filePath))]; lang != "" {
+		return lang
+	}
+	switch strings.ToLower(filepath.Base(filePath)) {
+	case "dockerfile":
+		return "dockerfile"
+	case "makefile":
+		return "makefile"
+	case "cmakelists.txt":
+		return "cmake"
+	}
+	return ""
 }
 
 func isBinary(data []byte) bool {
@@ -272,6 +273,9 @@ func (s *Server) handleFileWrite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.flushFiles()
+	if s.workspace.HasLSP() {
+		s.broadcast(Frame{Type: EvtDiagnosticsChanged})
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -473,4 +477,16 @@ func (s *Server) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 	disposition := "attachment; filename=\"" + strings.ReplaceAll(name, "\"", "") + "\"; filename*=UTF-8''" + url.PathEscape(name)
 	w.Header().Set("Content-Disposition", disposition)
 	http.ServeContent(w, r, name, info.ModTime(), f)
+}
+
+// handleFilePreview redirects an HTML document to the isolated preview server.
+// The preview origin is rooted at the document's directory so both relative
+// and root-relative asset URLs behave like they do on a normal static server.
+func (s *Server) handleFilePreview(w http.ResponseWriter, r *http.Request) {
+	rel, ok := s.resolveExistingRegularFile(w, r.URL.Query().Get("path"))
+	if !ok {
+		return
+	}
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	http.Redirect(w, r, s.preview.startURL(rel, r.Host), http.StatusTemporaryRedirect)
 }

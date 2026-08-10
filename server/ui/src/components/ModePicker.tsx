@@ -54,6 +54,8 @@ export function ModePicker({ modes, current, onSelect }: Props) {
 						: "text-fg-muted hover:text-fg hover:bg-bg-hover"
 				}`}
 				title={`Mode: ${label}`}
+				aria-haspopup="menu"
+				aria-expanded={open}
 			>
 				<Icon size={12} className="shrink-0" />
 				<span>{label}</span>
@@ -61,6 +63,8 @@ export function ModePicker({ modes, current, onSelect }: Props) {
 			{open && (
 				<div
 					ref={popRef}
+					role="menu"
+					aria-label="Session mode"
 					className="absolute bottom-full mb-1 left-0 w-[320px] bg-bg-elevated/95 backdrop-blur-sm border border-border rounded-md shadow-xl py-1 z-50"
 				>
 					{modes.map((opt) => {
@@ -69,6 +73,8 @@ export function ModePicker({ modes, current, onSelect }: Props) {
 						return (
 							<button
 								type="button"
+								role="menuitemradio"
+								aria-checked={isActive}
 								key={opt.id}
 								onClick={() => {
 									onSelect(opt.id);

@@ -20,8 +20,9 @@ func IsBackgroundOrigin(ctx context.Context) bool {
 }
 
 // WithProgressSink installs a UI callback that receives transient status text
-// from running tool calls, keyed by tool-call ID.
-func WithProgressSink(ctx context.Context, fn func(callID, text string)) context.Context {
+// from running tool calls, keyed by tool-call ID. The reporting context carries
+// session metadata installed after the sink itself.
+func WithProgressSink(ctx context.Context, fn func(context.Context, string, string)) context.Context {
 	return context.WithValue(ctx, progressSinkKey{}, fn)
 }
 
@@ -35,14 +36,14 @@ func WithProgressCall(ctx context.Context, callID string) context.Context {
 // call, or nil when no sink is installed. Reported text is display-only and
 // never reaches the model.
 func Progress(ctx context.Context) func(text string) {
-	sink, _ := ctx.Value(progressSinkKey{}).(func(callID, text string))
+	sink, _ := ctx.Value(progressSinkKey{}).(func(context.Context, string, string))
 	callID, _ := ctx.Value(progressCallKey{}).(string)
 
 	if sink == nil || callID == "" {
 		return nil
 	}
 
-	return func(text string) { sink(callID, text) }
+	return func(text string) { sink(ctx, callID, text) }
 }
 
 type UsageDelta struct {

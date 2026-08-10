@@ -235,8 +235,10 @@ const ToolRow = memo(function ToolRow({
 			onMouseLeave={() => setHovered(false)}
 		>
 			<div className="border-l-2 border-purple pl-3">
-				<div
-					className="flex items-center gap-2 py-0.5 cursor-pointer text-[12px] transition-colors"
+				<button
+					type="button"
+					aria-expanded={expanded}
+					className="flex w-full cursor-pointer items-center gap-2 py-0.5 text-left text-[12px] transition-colors"
 					onClick={() => setExpanded(!expanded)}
 				>
 					<span className="text-fg-dim shrink-0 flex items-center">
@@ -256,7 +258,7 @@ const ToolRow = memo(function ToolRow({
 							{displayHint}
 						</span>
 					)}
-				</div>
+				</button>
 				{running && progressText && (
 					<div className="pl-5 text-[11px] text-fg-dim font-mono italic overflow-hidden text-ellipsis whitespace-nowrap">
 						{progressText}
