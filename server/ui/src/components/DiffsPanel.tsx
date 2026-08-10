@@ -196,7 +196,7 @@ export function DiffsPanel({
 	}
 
 	return (
-		<div className="flex flex-col h-full overflow-hidden bg-bg relative">
+		<div className="relative flex h-full flex-col overflow-hidden bg-transparent">
 			<div className="overflow-y-auto flex-1 py-2">
 				{diffs.length === 0 && !error && <EmptyChanges loaded={loaded} />}
 				{diffs.map((diff) => (
@@ -342,7 +342,7 @@ function GitChanges({
 	];
 
 	return (
-		<div className="flex flex-col h-full overflow-hidden bg-bg">
+		<div className="flex h-full flex-col overflow-hidden bg-transparent">
 			<div className="relative h-9 px-2 flex items-center gap-1 shrink-0 border-b border-border-subtle bg-bg-surface/20">
 				<BranchPicker
 					status={status}

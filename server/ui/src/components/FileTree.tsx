@@ -342,7 +342,7 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 				<div key={node.path}>
 					<div
 						className="flex items-center gap-1 py-[3px] pr-2 cursor-pointer text-fg-muted whitespace-nowrap text-[12px] leading-snug select-none hover:bg-bg-hover hover:text-fg transition-colors"
-						style={{ paddingLeft: 12 + depth * 12 }}
+						style={{ paddingLeft: 8 + depth * 12 }}
 						draggable={!node.is_dir && !isRenaming}
 						onDragStart={(e) => {
 							e.dataTransfer.setData("application/x-wingman-file", node.path);
@@ -435,7 +435,7 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 
 	return (
 		<div
-			className="relative flex-1 overflow-y-auto bg-bg py-2"
+			className="relative flex-1 overflow-y-auto bg-transparent py-2"
 			role="tree"
 			aria-label="Workspace files"
 		>

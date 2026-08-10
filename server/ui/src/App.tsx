@@ -488,6 +488,7 @@ export default function App() {
 			const idx = tabs.findIndex((t) => t.id === id);
 			if (idx < 0) return;
 			const closing = tabs[idx];
+			if (!isClosableTab(closing)) return;
 			if (closing.type === "file" && closing.path) closeDocument(closing.path);
 			setTabs((prev) => {
 				let next = prev.filter((t) => t.id !== id);
@@ -547,7 +548,7 @@ export default function App() {
 	const requestCloseTab = useCallback(
 		async (id: string) => {
 			const tab = tabs.find((item) => item.id === id);
-			if (!tab) return;
+			if (!tab || !isClosableTab(tab)) return;
 			if (tab.type === "file" && tab.path && dirtyPaths.has(tab.path)) {
 				setCloseRequest({ kind: "file", tab });
 				return;
@@ -1004,6 +1005,8 @@ export default function App() {
 		sessionId && (sessions[sessionId]?.entries.length ?? 0) > 0
 	);
 	const leftPanelDocked = layoutMode === "wide" && !sidebarCollapsed;
+	const rightPanelDocked = layoutMode !== "narrow" && !rightPanelCollapsed;
+	const rightPanelWidth = layoutMode === "wide" ? 304 : 288;
 	const sidebarContent = (
 		<Sidebar
 			currentSessionId={sessionId}
@@ -1017,47 +1020,54 @@ export default function App() {
 			subscribe={subscribe}
 		/>
 	);
-	const inspectorContent = (
-		<aside className="flex h-full flex-col bg-bg" aria-label="Workspace">
-			<div
-				className="flex h-10 shrink-0 items-stretch"
-				role="tablist"
-				aria-label="Workspace panels"
+	const workspaceTabs = (
+		<div
+			className="flex h-10 w-full min-w-0 shrink-0 items-stretch overflow-hidden"
+			role="tablist"
+			aria-label="Workspace panels"
+		>
+			<RightTabButton
+				active={rightTab === "files"}
+				onClick={() => setRequestedRightTab("files")}
 			>
+				Files
+			</RightTabButton>
+			{showChanges && (
 				<RightTabButton
-					active={rightTab === "files"}
-					onClick={() => setRequestedRightTab("files")}
+					active={rightTab === "changes"}
+					onClick={() => setRequestedRightTab("changes")}
 				>
-					Files
+					Changes
 				</RightTabButton>
-				{showChanges && (
-					<RightTabButton
-						active={rightTab === "changes"}
-						onClick={() => setRequestedRightTab("changes")}
-					>
-						Changes
-					</RightTabButton>
-				)}
-				{showProblems && (
-					<RightTabButton
-						active={rightTab === "problems"}
-						onClick={() => setRequestedRightTab("problems")}
-					>
-						Problems
-					</RightTabButton>
-				)}
-				{showAgents && (
-					<RightTabButton
-						active={rightTab === "agents"}
-						onClick={() => setRequestedRightTab("agents")}
-					>
-						Agents
-					</RightTabButton>
-				)}
-				<div className="flex-1" />
-			</div>
-			<div className="h-px shrink-0 bg-border-subtle" />
-			<div className="flex-1 overflow-hidden" role="tabpanel">
+			)}
+			{showProblems && (
+				<RightTabButton
+					active={rightTab === "problems"}
+					onClick={() => setRequestedRightTab("problems")}
+				>
+					Problems
+				</RightTabButton>
+			)}
+			{showAgents && (
+				<RightTabButton
+					active={rightTab === "agents"}
+					onClick={() => setRequestedRightTab("agents")}
+				>
+					Agents
+				</RightTabButton>
+			)}
+			<div className="flex-1" />
+		</div>
+	);
+	const inspectorContent = (
+		<aside className="flex h-full flex-col bg-transparent" aria-label="Workspace">
+			{layoutMode === "narrow" && (
+				<>
+					{workspaceTabs}
+					<div className="h-px shrink-0 bg-border-subtle" />
+				</>
+			)}
+			<div className="min-h-0 flex-1 overflow-hidden pt-0.5" role="tabpanel">
 				{rightTab === "agents" && showAgents ? (
 					<TasksPanel
 						sessionId={sessionId}
@@ -1085,11 +1095,43 @@ export default function App() {
 
 	return (
 		<div className="relative flex flex-col h-screen bg-bg text-fg">
+			{layoutMode === "wide" && (
+				<div
+					data-panel-frame="sessions"
+					aria-hidden="true"
+					className={`pointer-events-none absolute inset-y-0 left-0 z-0 w-[240px] rounded-[10px] bg-bg-surface/40 transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
+						sidebarCollapsed
+							? "-translate-x-full opacity-0"
+							: "translate-x-0 opacity-100"
+					}`}
+				/>
+			)}
+			{layoutMode !== "narrow" && (
+				<div
+					data-panel-frame="workspace"
+					aria-hidden="true"
+					className={`pointer-events-none absolute inset-y-0 right-0 z-0 rounded-[10px] bg-bg-surface/40 transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
+						rightPanelCollapsed
+							? "translate-x-full opacity-0"
+							: "translate-x-0 opacity-100"
+					}`}
+					style={{ width: `${rightPanelWidth}px` }}
+				/>
+			)}
 			<header
 				data-window-titlebar
-				className="window-titlebar flex h-10 shrink-0 items-stretch overflow-hidden border-b border-border-subtle bg-bg"
+				className="window-titlebar relative z-10 flex h-10 shrink-0 items-stretch overflow-hidden bg-transparent"
 				aria-label="Window toolbar"
 			>
+				<div
+					data-titlebar-separator
+					aria-hidden="true"
+					className="pointer-events-none absolute bottom-0 h-px bg-border-subtle transition-[left,right] duration-200 ease-[cubic-bezier(0.2,0,0,1)]"
+					style={{
+						left: leftPanelDocked ? "240px" : "0px",
+						right: rightPanelDocked ? `${rightPanelWidth}px` : "0px",
+					}}
+				/>
 				<div
 					className="window-titlebar-controls-spacer shrink-0"
 					aria-hidden="true"
@@ -1097,22 +1139,22 @@ export default function App() {
 				<div
 					data-window-interactive
 					data-titlebar-left-panel
-					className="flex shrink-0 items-center gap-0.5 px-1"
-					style={
-						leftPanelDocked
-							? {
-									width: "calc(240px - var(--window-controls-inset))",
-								}
-							: undefined
-					}
+					className="flex shrink-0 items-center gap-0.5 overflow-hidden pr-0 pl-2 transition-[width] duration-200 ease-[cubic-bezier(0.2,0,0,1)]"
+					style={{
+						width: leftPanelDocked
+							? "calc(240px - var(--window-controls-inset))"
+							: "40px",
+					}}
 				>
 					{leftPanelDocked && (
-						<AgentPicker
-							subscribe={subscribe}
-							onSwitchingChange={setSwitchingAgent}
-						/>
+						<div data-titlebar-agent className="min-w-0 flex-1 overflow-hidden">
+							<AgentPicker
+								subscribe={subscribe}
+								onSwitchingChange={setSwitchingAgent}
+							/>
+						</div>
 					)}
-					<div className="min-w-0 flex-1" />
+					{!leftPanelDocked && <div className="min-w-0 flex-1" />}
 					<button
 						type="button"
 						className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
@@ -1143,18 +1185,22 @@ export default function App() {
 					aria-label="Open tabs"
 					onContextMenu={(event) => {
 						event.preventDefault();
-						const tab = (event.target as Element).closest<HTMLElement>(
+						const tabElement = (event.target as Element).closest<HTMLElement>(
 							"[data-center-tab]",
+						);
+						const tab = tabs.find(
+							(item) => item.id === tabElement?.dataset.centerTab,
 						);
 						setTabMenu({
 							x: event.clientX,
 							y: event.clientY,
-							tabId: tab?.dataset.centerTab,
+							tabId: tab && isClosableTab(tab) ? tab.id : undefined,
 						});
 					}}
 				>
 					{tabs.map((tab, tabIndex) => {
 						const active = tab.id === activeTabId;
+						const closable = isClosableTab(tab);
 						const isDirty =
 							tab.type === "file" && !!tab.path && dirtyPaths.has(tab.path);
 						const running =
@@ -1198,7 +1244,7 @@ export default function App() {
 										next = (tabIndex + 1) % tabs.length;
 									else if (event.key === "Home") next = 0;
 									else if (event.key === "End") next = tabs.length - 1;
-									else if (event.key === "Delete") {
+									else if (event.key === "Delete" && closable) {
 										event.preventDefault();
 										void requestCloseTab(tab.id);
 										return;
@@ -1215,7 +1261,7 @@ export default function App() {
 									);
 								}}
 								title={label}
-								aria-label={`${label}${isDirty ? ", unsaved changes" : ""}. Press Delete to close.`}
+								aria-label={`${label}${isDirty ? ", unsaved changes" : ""}${closable ? ". Press Delete to close." : ""}`}
 							>
 								{active && (
 									<span className="absolute inset-x-2 bottom-0 h-[2px] rounded-full bg-accent" />
@@ -1224,26 +1270,28 @@ export default function App() {
 									{running ? (
 										<Loader2
 											size={13}
-											className="group-hover:hidden text-accent animate-spin"
+											className={`${closable ? "group-hover:hidden" : ""} text-accent animate-spin`}
 										/>
 									) : isDirty ? (
 										<span
-											className={`group-hover:hidden h-2 w-2 rounded-full ${active ? "bg-fg-muted" : "bg-fg-dim"}`}
+											className={`${closable ? "group-hover:hidden" : ""} h-2 w-2 rounded-full ${active ? "bg-fg-muted" : "bg-fg-dim"}`}
 										/>
 									) : (
 										<Icon
 											size={13}
-											className={`group-hover:hidden ${active ? "text-fg-muted" : "text-fg-dim"}`}
+											className={`${closable ? "group-hover:hidden" : ""} ${active ? "text-fg-muted" : "text-fg-dim"}`}
 										/>
 									)}
-									<span
-										data-tab-close
-										aria-hidden="true"
-										title={`Close ${label}`}
-										className="hidden h-3.5 w-3.5 items-center justify-center rounded text-fg-dim transition-colors hover:text-fg group-hover:flex"
-									>
-										<X size={11} />
-									</span>
+									{closable && (
+										<span
+											data-tab-close
+											aria-hidden="true"
+											title={`Close ${label}`}
+											className="hidden h-3.5 w-3.5 items-center justify-center rounded text-fg-dim transition-colors hover:text-fg group-hover:flex"
+										>
+											<X size={11} />
+										</span>
+									)}
 								</span>
 								<span className="max-w-[200px] truncate">{label}</span>
 							</button>
@@ -1270,7 +1318,7 @@ export default function App() {
 				<div
 					data-window-interactive
 					data-titlebar-actions
-					className="flex shrink-0 items-center pr-1"
+					className="flex shrink-0 items-center pr-2"
 				>
 					{activeTab.type === "chat" &&
 						(usage.inputTokens > 0 || outputTokens > 0) && (
@@ -1333,6 +1381,13 @@ export default function App() {
 							onCreate={(shell) => void createTerminal(shell)}
 						/>
 					)}
+				</div>
+				<div
+					data-window-interactive
+					data-titlebar-right-panel
+					className="flex shrink-0 items-center overflow-hidden pr-2 pl-0 transition-[width] duration-200 ease-[cubic-bezier(0.2,0,0,1)]"
+					style={{ width: rightPanelDocked ? `${rightPanelWidth}px` : "40px" }}
+				>
 					<button
 						type="button"
 						className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
@@ -1354,6 +1409,15 @@ export default function App() {
 							<PanelRightClose size={13} />
 						)}
 					</button>
+					{rightPanelDocked && (
+						<div
+							data-titlebar-workspace-tabs
+							className="min-w-0 flex-1 self-stretch"
+						>
+							{workspaceTabs}
+						</div>
+					)}
+					{!rightPanelDocked && <div className="min-w-0 flex-1" />}
 				</div>
 			</header>
 			{showNotice && (
@@ -1369,17 +1433,11 @@ export default function App() {
 					</button>
 				</div>
 			)}
-			<div className="flex flex-1 overflow-hidden">
-				{layoutMode === "wide" && !sidebarCollapsed && (
-					<div
-						data-layout-panel="sessions"
-						className="h-full w-[240px] shrink-0 overflow-hidden border-r border-border-subtle"
-					>
-						{sidebarContent}
-					</div>
-				)}
-
-				<div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-bg">
+			<div className="relative z-10 flex flex-1 overflow-hidden">
+				<div
+					data-layout-panel="center"
+					className="order-2 flex min-w-0 flex-1 flex-col overflow-hidden bg-bg"
+				>
 					<main className="flex flex-1 flex-col overflow-hidden min-h-0 bg-bg">
 						<div className="flex-1 overflow-hidden">
 							{activeTab.type === "chat" ? (
@@ -1486,14 +1544,46 @@ export default function App() {
 						</div>
 					</main>
 				</div>
-				{layoutMode !== "narrow" && !rightPanelCollapsed && (
+				{layoutMode === "wide" && (
+					<div
+						data-layout-panel="sessions"
+						inert={sidebarCollapsed}
+						className="order-1 h-full shrink-0 overflow-hidden transition-[width] duration-200 ease-[cubic-bezier(0.2,0,0,1)]"
+						style={{ width: sidebarCollapsed ? "0px" : "240px" }}
+					>
+						<div
+							data-panel-content="sessions"
+							className={`h-full w-[240px] overflow-hidden transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
+								sidebarCollapsed
+									? "pointer-events-none -translate-x-full opacity-0"
+									: "translate-x-0 opacity-100"
+							}`}
+						>
+							{sidebarContent}
+						</div>
+					</div>
+				)}
+				{layoutMode !== "narrow" && (
 					<div
 						data-layout-panel="workspace"
-						className={`h-full shrink-0 overflow-hidden border-l border-border-subtle ${
-							layoutMode === "wide" ? "w-[304px]" : "w-[288px]"
-						}`}
+						inert={rightPanelCollapsed}
+						className="order-3 h-full shrink-0 overflow-hidden transition-[width] duration-200 ease-[cubic-bezier(0.2,0,0,1)]"
+						style={{
+							width: rightPanelCollapsed ? "0px" : `${rightPanelWidth}px`,
+						}}
 					>
-						{inspectorContent}
+						<div
+							data-panel-content="workspace"
+							className={`ml-auto h-full overflow-hidden transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
+								layoutMode === "wide" ? "w-[304px]" : "w-[288px]"
+							} ${
+								rightPanelCollapsed
+									? "pointer-events-none translate-x-full opacity-0"
+									: "translate-x-0 opacity-100"
+							}`}
+						>
+							{inspectorContent}
+						</div>
 					</div>
 				)}
 			</div>
@@ -1714,6 +1804,10 @@ function estimateStreamingTokens(entries: ChatEntry[]): number {
 	return Math.floor(chars / 4);
 }
 
+function isClosableTab(tab: CenterTab): boolean {
+	return tab.type !== "chat" || !!tab.sessionId;
+}
+
 function TabContextMenu({
 	x,
 	y,
@@ -1817,7 +1911,7 @@ function RightTabButton({
 			role="tab"
 			aria-selected={active}
 			tabIndex={active ? 0 : -1}
-			className={`relative cursor-pointer px-3 text-[12px] font-medium transition-colors ${
+			className={`relative flex cursor-pointer items-center px-2.5 text-[12px] font-medium transition-colors ${
 				active ? "text-fg" : "text-fg-dim hover:text-fg-muted"
 			}`}
 			onClick={onClick}
@@ -1838,7 +1932,7 @@ function RightTabButton({
 		>
 			{children}
 			{active && (
-				<span className="absolute left-3 right-3 bottom-0 h-[2px] bg-accent rounded-full" />
+				<span className="absolute right-2.5 bottom-0 left-2.5 h-[2px] rounded-full bg-accent" />
 			)}
 		</button>
 	);

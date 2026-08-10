@@ -226,6 +226,12 @@ select,
 	-webkit-app-region: no-drag;
 }
 
+/* Keep titlebar icon controls visually flat. Their icon color is enough hover
+   feedback; a 32px rounded fill looks oversized inside the slim chrome. */
+.window-titlebar button:not([role="tab"]):hover {
+	background-color: transparent;
+}
+
 html[data-window-chrome="macos-overlay"] .window-titlebar {
 	--window-controls-inset: 76px;
 }
