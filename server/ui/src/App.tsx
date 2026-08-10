@@ -378,27 +378,30 @@ export default function App() {
 
 	const openChatTab = useCallback(
 		(sid: string) => {
+			const existing = tabs.find(
+				(t) => t.type === "chat" && t.sessionId === sid,
+			);
+			if (existing) {
+				activateTab(existing);
+				return;
+			}
+			// ChatPanel is keyed by tab id, so reuse the draft's id; a fresh id
+			// would remount it and drop the composer text.
+			const draft = tabs.find((t) => t.type === "chat" && !t.sessionId);
 			const tab: CenterTab = {
-				id: chatTabId(sid),
+				id: draft?.id ?? chatTabId(sid),
 				type: "chat",
 				label: "Session",
 				sessionId: sid,
 			};
-			setTabs((prev) => {
-				if (prev.some((t) => t.type === "chat" && t.sessionId === sid)) {
-					return prev;
-				}
-				const draft = prev.findIndex((t) => t.type === "chat" && !t.sessionId);
-				if (draft >= 0) {
-					const next = [...prev];
-					next[draft] = tab;
-					return next;
-				}
-				return [...prev, tab];
-			});
+			setTabs((prev) =>
+				draft
+					? prev.map((t) => (t.id === draft.id ? tab : t))
+					: [...prev, tab],
+			);
 			activateTab(tab);
 		},
-		[activateTab],
+		[tabs, activateTab],
 	);
 
 	const handlePromptReply = useCallback(
@@ -604,6 +607,34 @@ export default function App() {
 		},
 		[closeTabNow, closeTerminal, dirtyPaths, tabs, toast],
 	);
+
+	const [tabMenu, setTabMenu] = useState<{
+		x: number;
+		y: number;
+		tabId?: string;
+	} | null>(null);
+
+	const closeTabs = useCallback(
+		async (ids: string[]) => {
+			for (const id of ids) {
+				await requestCloseTab(id);
+			}
+		},
+		[requestCloseTab],
+	);
+
+	useEffect(() => {
+		const onKey = (e: KeyboardEvent) => {
+			// The desktop app's menu leaves Cmd+W unbound so it reaches here
+			// instead of closing the whole window.
+			if (e.metaKey && !e.ctrlKey && e.key.toLowerCase() === "w") {
+				e.preventDefault();
+				void requestCloseTab(activeTabId);
+			}
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [requestCloseTab, activeTabId]);
 
 	const terminateTerminal = useCallback(async () => {
 		const request = closeRequest;
@@ -1157,6 +1188,17 @@ export default function App() {
 								className="tab-strip flex min-w-0 flex-1 items-stretch overflow-x-auto"
 								role="tablist"
 								aria-label="Open tabs"
+								onContextMenu={(event) => {
+									event.preventDefault();
+									const tabEl = (event.target as Element).closest<HTMLElement>(
+										"[data-center-tab]",
+									);
+									setTabMenu({
+										x: event.clientX,
+										y: event.clientY,
+										tabId: tabEl?.dataset.centerTab,
+									});
+								}}
 							>
 								{tabs.map((tab, tabIndex) => {
 									const active = tab.id === activeTabId;
@@ -1260,6 +1302,22 @@ export default function App() {
 									);
 								})}
 							</div>
+							{tabMenu && (
+								<TabContextMenu
+									x={tabMenu.x}
+									y={tabMenu.y}
+									tabId={tabMenu.tabId}
+									tabCount={tabs.length}
+									onClose={() => setTabMenu(null)}
+									onCloseTab={(id) => void closeTabs([id])}
+									onCloseOthers={(id) =>
+										void closeTabs(
+											tabs.filter((t) => t.id !== id).map((t) => t.id),
+										)
+									}
+									onCloseAll={() => void closeTabs(tabs.map((t) => t.id))}
+								/>
+							)}
 							{activeTab.type === "chat" &&
 								(usage.inputTokens > 0 || outputTokens > 0) && (
 									<UsageIndicator
@@ -1694,6 +1752,94 @@ function ResizeHandle() {
 			aria-label="Resize panels"
 			className="relative z-10 -mx-1 w-[9px] shrink-0 cursor-col-resize outline-none after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:bg-border-subtle after:transition-colors hover:after:bg-accent focus-visible:after:bg-accent active:after:bg-accent"
 		/>
+	);
+}
+
+function TabContextMenu({
+	x,
+	y,
+	tabId,
+	tabCount,
+	onClose,
+	onCloseTab,
+	onCloseOthers,
+	onCloseAll,
+}: {
+	x: number;
+	y: number;
+	tabId?: string;
+	tabCount: number;
+	onClose: () => void;
+	onCloseTab: (id: string) => void;
+	onCloseOthers: (id: string) => void;
+	onCloseAll: () => void;
+}) {
+	const menuRef = useRef<HTMLDivElement>(null);
+	const [position, setPosition] = useState({ left: x, top: y });
+
+	useEffect(() => {
+		const el = menuRef.current;
+		if (!el) return;
+		const { width, height } = el.getBoundingClientRect();
+		setPosition({
+			left: Math.min(x, window.innerWidth - width - 8),
+			top: Math.min(y, window.innerHeight - height - 8),
+		});
+	}, [x, y]);
+
+	useEffect(() => {
+		const dismiss = (event: MouseEvent) => {
+			if (!menuRef.current?.contains(event.target as Node)) onClose();
+		};
+		const onKey = (event: KeyboardEvent) => {
+			if (event.key === "Escape") onClose();
+		};
+		document.addEventListener("mousedown", dismiss);
+		window.addEventListener("keydown", onKey);
+		window.addEventListener("resize", onClose);
+		return () => {
+			document.removeEventListener("mousedown", dismiss);
+			window.removeEventListener("keydown", onKey);
+			window.removeEventListener("resize", onClose);
+		};
+	}, [onClose]);
+
+	const items: { label: string; disabled?: boolean; run: () => void }[] = [];
+	if (tabId) {
+		items.push({ label: "Close", run: () => onCloseTab(tabId) });
+		items.push({
+			label: "Close Others",
+			disabled: tabCount < 2,
+			run: () => onCloseOthers(tabId),
+		});
+	}
+	items.push({ label: "Close All", run: onCloseAll });
+
+	return createPortal(
+		<div
+			ref={menuRef}
+			role="menu"
+			aria-label="Tab actions"
+			className="fixed z-[100] min-w-[160px] rounded-md border border-border bg-bg-elevated/95 py-1 shadow-xl backdrop-blur-sm"
+			style={position}
+		>
+			{items.map((item) => (
+				<button
+					type="button"
+					role="menuitem"
+					key={item.label}
+					disabled={item.disabled}
+					onClick={() => {
+						onClose();
+						item.run();
+					}}
+					className="flex w-full items-center px-3 py-1.5 text-left text-[11.5px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-muted"
+				>
+					{item.label}
+				</button>
+			))}
+		</div>,
+		document.body,
 	);
 }
 
