@@ -122,6 +122,28 @@ wingman --agent claude --continue # resume the latest native Claude session
 wingman --agent pi --continue     # resume the latest native Pi session
 ```
 
+### Script Mode
+
+Use `-p` (or `--print`) to run one prompt without opening the TUI. Script mode
+defaults to unattended execution, so tools and file changes are approved
+without prompting. Use `--mode plan` for read-only analysis.
+
+```bash
+wingman -p "Summarize this project"
+wingman -p "Fix the failing tests" --agent codex
+git diff | wingman -p "Review this diff for bugs"
+```
+
+Piped input is prepended to the prompt and capped at 10 MiB. `text` is the
+default output; `json` includes the result, session ID, agent name, and token
+usage for the invocation:
+
+```bash
+wingman -p "List the main packages" --output-format json
+wingman -p "Now suggest improvements" --continue
+wingman -p "Inspect the authentication code" --mode plan --model gpt-5.4
+```
+
 ### Agent Modes
 
 | Command | UI/protocol | Model backend |
