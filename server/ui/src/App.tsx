@@ -19,14 +19,6 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import {
-	Group,
-	Panel,
-	type PanelImperativeHandle,
-	Separator,
-	useDefaultLayout,
-	usePanelRef,
-} from "react-resizable-panels";
 import { ChatPanel } from "./components/ChatPanel";
 import {
 	CommandPalette,
@@ -43,7 +35,7 @@ import { TasksPanel } from "./components/TasksPanel";
 import { TaskTab } from "./components/TaskTab";
 import { TerminalView } from "./components/TerminalView";
 import { Dialog, dialogButtonClass, useToast } from "./components/ui/Feedback";
-import { BUILTIN_AGENT_ID } from "./components/AgentPicker";
+import { AgentPicker, BUILTIN_AGENT_ID } from "./components/AgentPicker";
 import { Sidebar } from "./components/Sidebar";
 import { useCapabilities } from "./hooks/useCapabilities";
 import { useOpenDocuments } from "./hooks/useOpenDocuments";
@@ -148,13 +140,6 @@ export default function App() {
 	const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
 	const [terminalShells, setTerminalShells] = useState<ShellEntry[]>([]);
 	const terminalCreatingRef = useRef(false);
-	const leftPanelRef = usePanelRef();
-	const rightPanelRef = usePanelRef();
-	const layoutId =
-		layoutMode === "wide" ? "wingman-layout" : "wingman-layout-medium";
-	const { defaultLayout, onLayoutChanged } = useDefaultLayout({
-		id: layoutId,
-	});
 
 	useEffect(() => {
 		setLeftDrawerOpen(false);
@@ -342,6 +327,7 @@ export default function App() {
 	const canSteer = activeSession?.canSteer ?? false;
 
 	const [agentId, setAgentId] = useState("");
+	const [switchingAgent, setSwitchingAgent] = useState<string | null>(null);
 	const loadAgent = useCallback(async (): Promise<string> => {
 		try {
 			const r = await fetch("/api/agent");
@@ -885,20 +871,20 @@ export default function App() {
 	const [noticeDismissed, setNoticeDismissed] = useState(false);
 	const showNotice = !!capabilities?.notice && !noticeDismissed;
 	const toggleSidebar = useCallback(() => {
-		if (layoutMode === "wide") togglePanel(leftPanelRef.current);
+		if (layoutMode === "wide") setSidebarCollapsed((collapsed) => !collapsed);
 		else setLeftDrawerOpen((open) => !open);
-	}, [layoutMode, leftPanelRef]);
+	}, [layoutMode]);
 	const toggleRightPanel = useCallback(() => {
 		if (layoutMode === "narrow") setRightDrawerOpen((open) => !open);
-		else togglePanel(rightPanelRef.current);
-	}, [layoutMode, rightPanelRef]);
+		else setRightPanelCollapsed((collapsed) => !collapsed);
+	}, [layoutMode]);
 	const showRightPanel = useCallback(
 		(tab: RightTab) => {
 			setRequestedRightTab(tab);
 			if (layoutMode === "narrow") setRightDrawerOpen(true);
-			else expandPanel(rightPanelRef.current);
+			else setRightPanelCollapsed(false);
 		},
-		[layoutMode, rightPanelRef],
+		[layoutMode],
 	);
 
 	const paletteActions = useMemo<PaletteAction[]>(() => {
@@ -990,6 +976,7 @@ export default function App() {
 	const canCreateNew = !!(
 		sessionId && (sessions[sessionId]?.entries.length ?? 0) > 0
 	);
+	const leftPanelDocked = layoutMode === "wide" && !sidebarCollapsed;
 	const sidebarContent = (
 		<Sidebar
 			currentSessionId={sessionId}
@@ -997,13 +984,9 @@ export default function App() {
 				setLeftDrawerOpen(false);
 				void handleSessionSelect(id);
 			}}
-			onNewSession={() => {
-				setLeftDrawerOpen(false);
-				void handleNewSession();
-			}}
 			onSessionDelete={(id, title) => setSessionDelete({ id, title })}
 			runningSessionIds={runningSessionIds}
-			canCreateNew={canCreateNew}
+			switchingAgent={switchingAgent}
 			subscribe={subscribe}
 		/>
 	);
@@ -1075,6 +1058,250 @@ export default function App() {
 
 	return (
 		<div className="relative flex flex-col h-screen bg-bg text-fg">
+			<header
+				data-window-titlebar
+				className="window-titlebar flex h-10 shrink-0 items-stretch overflow-hidden border-b border-border-subtle bg-bg"
+				aria-label="Window toolbar"
+			>
+				<div
+					className="window-titlebar-controls-spacer shrink-0"
+					aria-hidden="true"
+				/>
+				<div
+					data-window-interactive
+					data-titlebar-left-panel
+					className="flex shrink-0 items-center gap-0.5 px-1"
+					style={
+						leftPanelDocked
+							? {
+									width: "calc(240px - var(--window-controls-inset))",
+								}
+							: undefined
+					}
+				>
+					{leftPanelDocked && (
+						<AgentPicker
+							subscribe={subscribe}
+							onSwitchingChange={setSwitchingAgent}
+						/>
+					)}
+					<div className="min-w-0 flex-1" />
+					<button
+						type="button"
+						className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
+						onClick={toggleSidebar}
+						title={
+							layoutMode !== "wide" || sidebarCollapsed
+								? "Show sessions"
+								: "Hide sessions"
+						}
+						aria-label={
+							layoutMode !== "wide" || sidebarCollapsed
+								? "Show sessions"
+								: "Hide sessions"
+						}
+					>
+						{layoutMode !== "wide" || sidebarCollapsed ? (
+							<PanelLeftOpen size={13} />
+						) : (
+							<PanelLeftClose size={13} />
+						)}
+					</button>
+				</div>
+
+				<div
+					ref={tabListRef}
+					className="tab-strip flex min-w-[80px] flex-1 items-stretch overflow-x-auto"
+					role="tablist"
+					aria-label="Open tabs"
+				>
+					{tabs.map((tab, tabIndex) => {
+						const active = tab.id === activeTabId;
+						const isDirty =
+							tab.type === "file" && !!tab.path && dirtyPaths.has(tab.path);
+						const running =
+							tab.type === "chat" && tab.sessionId
+								? (sessions[tab.sessionId]?.phase ?? "idle") !== "idle"
+								: false;
+						const Icon =
+							tab.type === "chat"
+								? MessageSquare
+								: tab.type === "terminal"
+									? SquareTerminal
+									: tab.type === "diff"
+										? GitCompare
+										: tab.type === "task"
+											? Bot
+											: FileText;
+						const label = tab.type === "chat" ? chatTabLabel(tab) : tab.label;
+						return (
+							<button
+								type="button"
+								role="tab"
+								aria-selected={active}
+								tabIndex={active ? 0 : -1}
+								data-center-tab={tab.id}
+								key={tab.id}
+								className={`group relative flex shrink-0 items-center gap-1.5 px-3 py-0 text-[12px] transition-colors ${
+									active ? "text-fg" : "text-fg-dim hover:text-fg-muted"
+								} ${active ? "bg-bg-surface/50" : ""}`}
+								onClick={(event) => {
+									if ((event.target as Element).closest("[data-tab-close]")) {
+										void requestCloseTab(tab.id);
+										return;
+									}
+									activateTab(tab);
+								}}
+								onKeyDown={(event) => {
+									let next = tabIndex;
+									if (event.key === "ArrowLeft")
+										next = (tabIndex - 1 + tabs.length) % tabs.length;
+									else if (event.key === "ArrowRight")
+										next = (tabIndex + 1) % tabs.length;
+									else if (event.key === "Home") next = 0;
+									else if (event.key === "End") next = tabs.length - 1;
+									else if (event.key === "Delete") {
+										event.preventDefault();
+										void requestCloseTab(tab.id);
+										return;
+									} else return;
+									event.preventDefault();
+									const target = tabs[next];
+									activateTab(target);
+									requestAnimationFrame(() =>
+										tabListRef.current
+											?.querySelector<HTMLElement>(
+												`[data-center-tab="${CSS.escape(target.id)}"]`,
+											)
+											?.focus(),
+									);
+								}}
+								title={label}
+								aria-label={`${label}${isDirty ? ", unsaved changes" : ""}. Press Delete to close.`}
+							>
+								{active && (
+									<span className="absolute inset-x-2 bottom-0 h-[2px] rounded-full bg-accent" />
+								)}
+								<span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+									{running ? (
+										<Loader2
+											size={13}
+											className="group-hover:hidden text-accent animate-spin"
+										/>
+									) : isDirty ? (
+										<span
+											className={`group-hover:hidden h-2 w-2 rounded-full ${active ? "bg-fg-muted" : "bg-fg-dim"}`}
+										/>
+									) : (
+										<Icon
+											size={13}
+											className={`group-hover:hidden ${active ? "text-fg-muted" : "text-fg-dim"}`}
+										/>
+									)}
+									<span
+										data-tab-close
+										aria-hidden="true"
+										title={`Close ${label}`}
+										className="hidden h-3.5 w-3.5 items-center justify-center rounded text-fg-dim transition-colors hover:text-fg group-hover:flex"
+									>
+										<X size={11} />
+									</span>
+								</span>
+								<span className="max-w-[200px] truncate">{label}</span>
+							</button>
+						);
+					})}
+				</div>
+
+				<div
+					data-window-interactive
+					data-titlebar-actions
+					className="flex shrink-0 items-center pr-1"
+				>
+					{activeTab.type === "chat" &&
+						(usage.inputTokens > 0 || outputTokens > 0) && (
+							<UsageIndicator
+								inputTokens={usage.inputTokens}
+								cachedTokens={usage.cachedTokens}
+								outputTokens={outputTokens}
+								lastInputTokens={usage.lastInputTokens}
+								contextWindow={usage.contextWindow}
+								outputEstimated={streamEstimate > 0}
+							/>
+						)}
+					{canCreateNew && (
+						<button
+							type="button"
+							className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
+							onClick={handleNewSession}
+							title="New session"
+							aria-label="New session"
+						>
+							<Plus size={13} />
+						</button>
+					)}
+					{activeIsHtml && (
+						<button
+							type="button"
+							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-bg-hover ${
+								activeFileView === "preview"
+									? "text-fg-muted"
+									: "text-fg-dim hover:text-fg-muted"
+							}`}
+							onClick={() =>
+								setFileViews((prev) => ({
+									...prev,
+									[activeTab.id]:
+										activeFileView === "preview" ? "code" : "preview",
+								}))
+							}
+							title={
+								activeFileView === "preview"
+									? "Show code editor"
+									: "Show browser preview"
+							}
+							aria-label={
+								activeFileView === "preview"
+									? "Show code editor"
+									: "Show browser preview"
+							}
+						>
+							{activeFileView === "preview" ? (
+								<Code2 size={13} />
+							) : (
+								<Globe2 size={13} />
+							)}
+						</button>
+					)}
+					{showTerminal && (
+						<TerminalLauncher
+							shells={terminalShells}
+							onCreate={(shell) => void createTerminal(shell)}
+						/>
+					)}
+					<button
+						type="button"
+						className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
+						onClick={toggleRightPanel}
+						title={
+							layoutMode === "narrow" || rightPanelCollapsed
+								? "Show workspace panel"
+								: "Hide workspace panel"
+						}
+						aria-label={
+							layoutMode === "narrow" || rightPanelCollapsed
+								? "Show workspace panel"
+								: "Hide workspace panel"
+						}
+					>
+						{layoutMode === "narrow" || rightPanelCollapsed ? (
+							<PanelRightOpen size={13} />
+						) : (
+							<PanelRightClose size={13} />
+						)}
+					</button>
+				</div>
+			</header>
 			{showNotice && (
 				<div className="flex shrink-0 items-center gap-3 border-b border-warning/30 bg-warning/10 px-4 py-2 text-[12px] text-warning">
 					<span className="flex-1">{capabilities?.notice}</span>
@@ -1088,253 +1315,18 @@ export default function App() {
 					</button>
 				</div>
 			)}
-			<Group
-				orientation="horizontal"
-				id={layoutId}
-				defaultLayout={defaultLayout}
-				onLayoutChanged={onLayoutChanged}
-				className="flex-1 overflow-hidden"
-			>
-				{layoutMode === "wide" && (
-					<>
-						<Panel
-							panelRef={leftPanelRef}
-							id="sidebar"
-							defaultSize="240px"
-							collapsible
-							collapsedSize="0px"
-							minSize="224px"
-							groupResizeBehavior="preserve-pixel-size"
-							onResize={({ inPixels }) => setSidebarCollapsed(inPixels === 0)}
-							className="overflow-hidden"
-						>
-							{sidebarContent}
-						</Panel>
-						<ResizeHandle />
-					</>
+			<div className="flex flex-1 overflow-hidden">
+				{layoutMode === "wide" && !sidebarCollapsed && (
+					<div
+						data-layout-panel="sessions"
+						className="h-full w-[240px] shrink-0 overflow-hidden border-r border-border-subtle"
+					>
+						{sidebarContent}
+					</div>
 				)}
 
-				<Panel
-					id="center"
-					minSize="320px"
-					className="flex flex-col overflow-hidden min-w-0 bg-bg"
-				>
+				<div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-bg">
 					<main className="flex flex-1 flex-col overflow-hidden min-h-0 bg-bg">
-						<div className="flex h-10 shrink-0 items-stretch overflow-hidden bg-bg">
-							<button
-								type="button"
-								className="self-center flex items-center justify-center w-8 h-8 ml-1 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
-								onClick={toggleSidebar}
-								title={
-									layoutMode !== "wide" || sidebarCollapsed
-										? "Show sessions"
-										: "Hide sessions"
-								}
-								aria-label={
-									layoutMode !== "wide" || sidebarCollapsed
-										? "Show sessions"
-										: "Hide sessions"
-								}
-							>
-								{layoutMode !== "wide" || sidebarCollapsed ? (
-									<PanelLeftOpen size={13} />
-								) : (
-									<PanelLeftClose size={13} />
-								)}
-							</button>
-							{(layoutMode !== "wide" || sidebarCollapsed) && canCreateNew && (
-								<button
-									type="button"
-									className="self-center flex items-center justify-center w-8 h-8 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
-									onClick={handleNewSession}
-									title="New session"
-								>
-									<Plus size={13} />
-								</button>
-							)}
-							<div
-								ref={tabListRef}
-								className="tab-strip flex min-w-0 flex-1 items-stretch overflow-x-auto"
-								role="tablist"
-								aria-label="Open tabs"
-							>
-								{tabs.map((tab, tabIndex) => {
-									const active = tab.id === activeTabId;
-									const isDirty =
-										tab.type === "file" &&
-										!!tab.path &&
-										dirtyPaths.has(tab.path);
-									const running =
-										tab.type === "chat" && tab.sessionId
-											? (sessions[tab.sessionId]?.phase ?? "idle") !== "idle"
-											: false;
-									const Icon =
-										tab.type === "chat"
-											? MessageSquare
-											: tab.type === "terminal"
-												? SquareTerminal
-												: tab.type === "diff"
-													? GitCompare
-													: tab.type === "task"
-														? Bot
-														: FileText;
-									const label =
-										tab.type === "chat" ? chatTabLabel(tab) : tab.label;
-									return (
-										<button
-											type="button"
-											role="tab"
-											aria-selected={active}
-											tabIndex={active ? 0 : -1}
-											data-center-tab={tab.id}
-											key={tab.id}
-											className={`group relative flex shrink-0 items-center gap-1.5 px-3 py-0 text-[12px] transition-colors ${
-												active ? "text-fg" : "text-fg-dim hover:text-fg-muted"
-											} ${active ? "bg-bg-surface/50" : ""}`}
-											onClick={(event) => {
-												if (
-													(event.target as Element).closest("[data-tab-close]")
-												) {
-													void requestCloseTab(tab.id);
-													return;
-												}
-												activateTab(tab);
-											}}
-											onKeyDown={(event) => {
-												let next = tabIndex;
-												if (event.key === "ArrowLeft")
-													next = (tabIndex - 1 + tabs.length) % tabs.length;
-												else if (event.key === "ArrowRight")
-													next = (tabIndex + 1) % tabs.length;
-												else if (event.key === "Home") next = 0;
-												else if (event.key === "End") next = tabs.length - 1;
-												else if (event.key === "Delete") {
-													event.preventDefault();
-													void requestCloseTab(tab.id);
-													return;
-												} else return;
-												event.preventDefault();
-												const target = tabs[next];
-												activateTab(target);
-												requestAnimationFrame(() =>
-													tabListRef.current
-														?.querySelector<HTMLElement>(
-															`[data-center-tab="${CSS.escape(target.id)}"]`,
-														)
-														?.focus(),
-												);
-											}}
-											title={label}
-											aria-label={`${label}${isDirty ? ", unsaved changes" : ""}. Press Delete to close.`}
-										>
-											{active && (
-												<span className="absolute inset-x-2 bottom-0 h-[2px] rounded-full bg-accent" />
-											)}
-											<span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-												{running ? (
-													<Loader2
-														size={13}
-														className="group-hover:hidden text-accent animate-spin"
-													/>
-												) : isDirty ? (
-													<span
-														className={`group-hover:hidden w-2 h-2 rounded-full ${active ? "bg-fg-muted" : "bg-fg-dim"}`}
-													/>
-												) : (
-													<Icon
-														size={13}
-														className={`group-hover:hidden ${active ? "text-fg-muted" : "text-fg-dim"}`}
-													/>
-												)}
-												<span
-													data-tab-close
-													aria-hidden="true"
-													title={`Close ${label}`}
-													className="hidden h-3.5 w-3.5 items-center justify-center rounded text-fg-dim transition-colors hover:text-fg group-hover:flex"
-												>
-													<X size={11} />
-												</span>
-											</span>
-											<span className="max-w-[200px] truncate">{label}</span>
-										</button>
-									);
-								})}
-							</div>
-							{activeTab.type === "chat" &&
-								(usage.inputTokens > 0 || outputTokens > 0) && (
-									<UsageIndicator
-										inputTokens={usage.inputTokens}
-										cachedTokens={usage.cachedTokens}
-										outputTokens={outputTokens}
-										lastInputTokens={usage.lastInputTokens}
-										contextWindow={usage.contextWindow}
-										outputEstimated={streamEstimate > 0}
-									/>
-								)}
-							{activeIsHtml && (
-								<button
-									type="button"
-									className={`self-center flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-bg-hover ${
-										activeFileView === "preview"
-											? "text-fg-muted"
-											: "text-fg-dim hover:text-fg-muted"
-									}`}
-									onClick={() =>
-										setFileViews((prev) => ({
-											...prev,
-											[activeTab.id]:
-												activeFileView === "preview" ? "code" : "preview",
-										}))
-									}
-									title={
-										activeFileView === "preview"
-											? "Show code editor"
-											: "Show browser preview"
-									}
-									aria-label={
-										activeFileView === "preview"
-											? "Show code editor"
-											: "Show browser preview"
-									}
-								>
-									{activeFileView === "preview" ? (
-										<Code2 size={13} />
-									) : (
-										<Globe2 size={13} />
-									)}
-								</button>
-							)}
-							{showTerminal && (
-								<TerminalLauncher
-									shells={terminalShells}
-									onCreate={(shell) => void createTerminal(shell)}
-								/>
-							)}
-							<button
-								type="button"
-								className="self-center flex items-center justify-center w-8 h-8 mr-1 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
-								onClick={toggleRightPanel}
-								title={
-									layoutMode === "narrow" || rightPanelCollapsed
-										? "Show workspace panel"
-										: "Hide workspace panel"
-								}
-								aria-label={
-									layoutMode === "narrow" || rightPanelCollapsed
-										? "Show workspace panel"
-										: "Hide workspace panel"
-								}
-							>
-								{layoutMode === "narrow" || rightPanelCollapsed ? (
-									<PanelRightOpen size={13} />
-								) : (
-									<PanelRightClose size={13} />
-								)}
-							</button>
-						</div>
-
-						<div className="h-px bg-border-subtle shrink-0" />
-
 						<div className="flex-1 overflow-hidden">
 							{activeTab.type === "chat" ? (
 								<ChatPanel
@@ -1439,28 +1431,18 @@ export default function App() {
 							) : null}
 						</div>
 					</main>
-				</Panel>
-				{layoutMode !== "narrow" && (
-					<>
-						<ResizeHandle />
-						<Panel
-							panelRef={rightPanelRef}
-							id="right"
-							defaultSize={layoutMode === "wide" ? "304px" : "288px"}
-							collapsible
-							collapsedSize="0px"
-							minSize="288px"
-							groupResizeBehavior="preserve-pixel-size"
-							onResize={({ inPixels }) =>
-								setRightPanelCollapsed(inPixels === 0)
-							}
-							className="overflow-hidden"
-						>
-							{inspectorContent}
-						</Panel>
-					</>
+				</div>
+				{layoutMode !== "narrow" && !rightPanelCollapsed && (
+					<div
+						data-layout-panel="workspace"
+						className={`h-full shrink-0 overflow-hidden border-l border-border-subtle ${
+							layoutMode === "wide" ? "w-[304px]" : "w-[288px]"
+						}`}
+					>
+						{inspectorContent}
+					</div>
 				)}
-			</Group>
+			</div>
 
 			{layoutMode !== "wide" && (
 				<SideDrawer
@@ -1676,25 +1658,6 @@ function estimateStreamingTokens(entries: ChatEntry[]): number {
 		chars += e.content.length;
 	}
 	return Math.floor(chars / 4);
-}
-
-function togglePanel(panel: PanelImperativeHandle | null) {
-	if (!panel) return;
-	if (panel.isCollapsed()) panel.expand();
-	else panel.collapse();
-}
-
-function expandPanel(panel: PanelImperativeHandle | null) {
-	panel?.expand();
-}
-
-function ResizeHandle() {
-	return (
-		<Separator
-			aria-label="Resize panels"
-			className="relative z-10 -mx-1 w-[9px] shrink-0 cursor-col-resize outline-none after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:bg-border-subtle after:transition-colors hover:after:bg-accent focus-visible:after:bg-accent active:after:bg-accent"
-		/>
-	);
 }
 
 function RightTabButton({

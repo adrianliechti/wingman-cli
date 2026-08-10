@@ -28,7 +28,6 @@
 		"react": "^19.2.8",
 		"react-dom": "^19.2.8",
 		"react-markdown": "^10.1.0",
-		"react-resizable-panels": "^4.12.2",
 		"remark-gfm": "^4.0.1",
 		"streamdown": "^2.5.0",
 		"tailwindcss": "^4.2.2"

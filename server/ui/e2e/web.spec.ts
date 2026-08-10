@@ -60,7 +60,9 @@ test("keeps the active tab visible as the tab strip fills", async ({
 	page,
 }) => {
 	await composer(page);
-	const tabs = page.getByRole("tab");
+	const tabs = page
+		.getByRole("tablist", { name: "Open tabs" })
+		.getByRole("tab");
 	const initialCount = await tabs.count();
 	for (let index = 0; index < 6; index++) {
 		await page.getByTitle(/New .* terminal/).click();
@@ -81,6 +83,93 @@ test("keeps the active tab visible as the tab strip fills", async ({
 			);
 		})
 		.toBe(true);
+});
+
+test("places navigation, tabs, and contextual actions in one window toolbar", async ({
+	page,
+}) => {
+	await composer(page);
+	const toolbar = page.getByLabel("Window toolbar");
+	const tabStrip = page.getByRole("tablist", { name: "Open tabs" });
+
+	await expect(toolbar).toBeVisible();
+	await expect(toolbar).toHaveCSS("height", "40px");
+	await expect(toolbar).toHaveCSS("border-bottom-width", "1px");
+	await expect(toolbar.locator(".window-titlebar-controls-spacer")).toHaveCSS(
+		"width",
+		"0px",
+	);
+	await expect(tabStrip).toBeVisible();
+	await expect(tabStrip).toHaveCSS("border-bottom-width", "0px");
+	expect(
+		await tabStrip.evaluate((element) =>
+			element.closest("[data-window-titlebar]")?.getAttribute("aria-label"),
+		),
+	).toBe("Window toolbar");
+	await expect(toolbar.getByLabel(/sessions/)).toBeVisible();
+	await expect(toolbar.getByLabel(/workspace panel/)).toBeVisible();
+	await expect(page.locator('[data-layout-panel="sessions"]')).toHaveCSS(
+		"width",
+		"240px",
+	);
+	await expect(page.locator('[data-layout-panel="workspace"]')).toHaveCSS(
+		"width",
+		"304px",
+	);
+	await expect(page.locator('[data-layout-panel="sessions"]')).toHaveCSS(
+		"border-right-width",
+		"1px",
+	);
+	await expect(page.locator('[data-layout-panel="workspace"]')).toHaveCSS(
+		"border-left-width",
+		"1px",
+	);
+	await expect(page.getByLabel("Resize panels")).toHaveCount(0);
+	await expect(toolbar.locator("[data-titlebar-left-panel]")).toHaveCSS(
+		"width",
+		"240px",
+	);
+	await expect
+		.poll(async () => {
+			const titlebarPanel = await toolbar
+				.locator("[data-titlebar-left-panel]")
+				.boundingBox();
+			const sidebar = await page
+				.locator('[data-layout-panel="sessions"]')
+				.boundingBox();
+			const firstTab = await tabStrip.getByRole("tab").first().boundingBox();
+			if (!titlebarPanel || !sidebar || !firstTab) return false;
+			const divider = sidebar.x + sidebar.width;
+			return (
+				Math.abs(titlebarPanel.x + titlebarPanel.width - divider) <= 1 &&
+				Math.abs(firstTab.x - divider) <= 1
+			);
+		})
+		.toBe(true);
+	await expect(toolbar).toHaveCSS("border-radius", "0px");
+	await expect(toolbar.locator("[data-titlebar-left-panel]")).toHaveCSS(
+		"border-right-width",
+		"0px",
+	);
+
+	const agentChooser = toolbar.getByTitle(/^Agent:/);
+	if (await agentChooser.count()) {
+		await expect(agentChooser).toBeVisible();
+		await toolbar.getByRole("button", { name: "Hide sessions" }).click();
+		await expect(toolbar.getByTitle(/^Agent:/)).toHaveCount(0);
+		await toolbar.getByRole("button", { name: "Show sessions" }).click();
+		await expect(toolbar.getByTitle(/^Agent:/)).toBeVisible();
+	}
+	const newSession = toolbar.getByRole("button", { name: "New session" });
+	if (await newSession.count()) {
+		expect(
+			await newSession.evaluate((element) =>
+				element
+					.closest("[data-titlebar-actions]")
+					?.hasAttribute("data-titlebar-actions"),
+			),
+		).toBe(true);
+	}
 });
 
 test("runs a coding tool and renders its result", async ({ page }) => {

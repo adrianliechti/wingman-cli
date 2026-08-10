@@ -206,6 +206,30 @@ select,
 	display: none;
 }
 
+/* The primary toolbar doubles as desktop window chrome. Electron and recent
+   WebView2 builds understand app-region directly; AppKit uses the equivalent
+   native full-size-content window configured by app/titlebar_darwin.go. */
+.window-titlebar {
+	--window-controls-inset: 0px;
+	app-region: drag;
+	-webkit-app-region: drag;
+	margin-left: env(titlebar-area-x, 0px);
+	width: env(titlebar-area-width, 100%);
+}
+
+.window-titlebar-controls-spacer {
+	width: var(--window-controls-inset);
+}
+
+.window-titlebar :where(button, [role="tab"], [data-window-interactive]) {
+	app-region: no-drag;
+	-webkit-app-region: no-drag;
+}
+
+html[data-window-chrome="macos-overlay"] .window-titlebar {
+	--window-controls-inset: 76px;
+}
+
 ::selection {
 	background: var(--color-selection);
 }

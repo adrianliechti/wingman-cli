@@ -1,13 +1,6 @@
-import {
-	Loader2,
-	MessageSquare,
-	MoreHorizontal,
-	Plus,
-	Trash2,
-} from "lucide-react";
+import { Loader2, MessageSquare, MoreHorizontal, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { ServerMessage } from "../types/protocol";
-import { AgentPicker } from "./AgentPicker";
 
 interface SessionInfo {
 	id: string;
@@ -19,20 +12,18 @@ interface SessionInfo {
 interface Props {
 	currentSessionId: string;
 	onSessionSelect: (id: string) => void;
-	onNewSession: () => void;
 	onSessionDelete?: (id: string, title: string) => void;
 	runningSessionIds?: Set<string>;
-	canCreateNew?: boolean;
+	switchingAgent?: string | null;
 	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 }
 
 export function Sidebar({
 	currentSessionId,
 	onSessionSelect,
-	onNewSession,
 	onSessionDelete,
 	runningSessionIds,
-	canCreateNew,
+	switchingAgent,
 	subscribe,
 }: Props) {
 	const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -72,7 +63,6 @@ export function Sidebar({
 		});
 	}, [subscribe, loadSessions, loadAgent]);
 
-	const [switchingAgent, setSwitchingAgent] = useState<string | null>(null);
 	const [menu, setMenu] = useState<{
 		id: string;
 		title: string;
@@ -100,24 +90,6 @@ export function Sidebar({
 
 	return (
 		<nav className="w-full h-full flex flex-col bg-bg" aria-label="Sessions">
-			<div className="h-10 px-1.5 flex items-center gap-2 shrink-0">
-				<AgentPicker
-					subscribe={subscribe}
-					onSwitchingChange={setSwitchingAgent}
-				/>
-				<div className="flex-1" />
-				{canCreateNew && (
-					<button
-						type="button"
-						onClick={onNewSession}
-						className="w-7 h-7 flex items-center justify-center rounded-md text-fg-dim hover:text-fg hover:bg-bg-hover cursor-pointer transition-colors"
-						title="New session"
-					>
-						<Plus size={14} />
-					</button>
-				)}
-			</div>
-
 			<div className="flex-1 overflow-y-auto pb-2">
 				{switchingAgent && (
 					<div className="h-full flex items-center justify-center">
