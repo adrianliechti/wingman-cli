@@ -18,6 +18,7 @@ import {
 	X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ErrorInfo } from "react";
 import { createPortal } from "react-dom";
 import {
 	Group,
@@ -36,6 +37,7 @@ import {
 import type { ModeOption } from "./components/ModePicker";
 import { DiffsPanel } from "./components/DiffsPanel";
 import { DiffTab } from "./components/DiffTab";
+import { ErrorBoundary, ErrorDetails } from "./components/ErrorBoundary";
 import { FileTab } from "./components/FileTab";
 import { FileTree } from "./components/FileTree";
 import { ProblemsPanel } from "./components/ProblemsPanel";
@@ -1394,7 +1396,18 @@ export default function App() {
 						<div className="h-px bg-border-subtle shrink-0" />
 
 						<div className="flex-1 overflow-hidden">
-							{activeTab.type === "chat" ? (
+							<ErrorBoundary
+								key={activeTab.id}
+								fallback={(error, reset, errorInfo) => (
+									<TabCrashed
+										error={error}
+										errorInfo={errorInfo}
+										onReset={reset}
+										onClose={() => closeTabNow(activeTab.id)}
+									/>
+								)}
+							>
+								{activeTab.type === "chat" ? (
 								<ChatPanel
 									key={activeTab.id}
 									sessionId={activeTab.sessionId ?? ""}
@@ -1495,6 +1508,7 @@ export default function App() {
 									view={fileViews[activeTab.id] ?? "code"}
 								/>
 							) : null}
+							</ErrorBoundary>
 						</div>
 					</main>
 				</Panel>
@@ -1752,6 +1766,41 @@ function ResizeHandle() {
 			aria-label="Resize panels"
 			className="relative z-10 -mx-1 w-[9px] shrink-0 cursor-col-resize outline-none after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:bg-border-subtle after:transition-colors hover:after:bg-accent focus-visible:after:bg-accent active:after:bg-accent"
 		/>
+	);
+}
+
+function TabCrashed({
+	error,
+	errorInfo,
+	onReset,
+	onClose,
+}: {
+	error: Error;
+	errorInfo: ErrorInfo | null;
+	onReset: () => void;
+	onClose: () => void;
+}) {
+	return (
+		<div className="flex h-full w-full flex-col items-center justify-center gap-3 p-6 text-center">
+			<div className="text-[13px] text-fg">This tab ran into a problem.</div>
+			<div className="flex gap-2">
+				<button
+					type="button"
+					onClick={onReset}
+					className="h-8 rounded-md border border-border px-3 text-[12px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg"
+				>
+					Try again
+				</button>
+				<button
+					type="button"
+					onClick={onClose}
+					className="h-8 rounded-md border border-border px-3 text-[12px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg"
+				>
+					Close tab
+				</button>
+			</div>
+			<ErrorDetails error={error} errorInfo={errorInfo} />
+		</div>
 	);
 }
 
