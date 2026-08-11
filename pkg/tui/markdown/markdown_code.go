@@ -64,12 +64,6 @@ func codeStyle() *chroma.Style {
 	return style
 }
 
-// Highlight returns ANSI syntax-highlighted source for lang, themed like
-// chat code blocks.
-func Highlight(code, lang string) string {
-	return highlightCode(code, lang)
-}
-
 func highlightCode(code, lang string) string {
 	lexer := lexers.Get(lang)
 

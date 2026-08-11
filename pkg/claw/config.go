@@ -31,7 +31,7 @@ type Config struct {
 
 func DefaultConfig() (*Config, func(), error) {
 	if os.Getenv("WINGMAN_URL") == "" && os.Getenv("OPENAI_API_KEY") == "" {
-		fmt.Fprintln(os.Stderr, "warning: neither WINGMAN_URL nor OPENAI_API_KEY is set; falling back to http://localhost:8080/v1")
+		fmt.Fprintln(os.Stderr, "warning: neither WINGMAN_URL nor OPENAI_API_KEY is set; falling back to http://localhost:4242/v1")
 	}
 
 	agentCfg, err := agent.DefaultConfig()

@@ -42,7 +42,7 @@ func printACPHelp() {
   wingman acp pi     [--backend native|wingman]
 
 The native backend reuses the agent's existing configuration and login.
-The wingman backend routes model traffic through WINGMAN_URL (or localhost:4242).
+The wingman backend routes model traffic through WINGMAN_URL.
 `)
 }
 
