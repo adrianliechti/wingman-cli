@@ -184,6 +184,16 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 			if a.Tools != nil {
 				tools = a.Tools()
 			}
+			var outputSchema map[string]any
+			if schema, ok := OutputSchemaFromContext(ctx); ok {
+				outputSchema = schema
+			}
+			if outputSchema != nil {
+				// Structured output is a finalization pass. Keeping tools enabled
+				// lets some providers apply a tool's argument schema to ordinary
+				// text deltas instead of producing the requested final document.
+				tools = nil
+			}
 
 			req := &request{
 				model:        model,
@@ -192,6 +202,7 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 				cacheKey:     a.CacheKey,
 				messages:     a.requestMessages(),
 				tools:        tools,
+				outputSchema: outputSchema,
 			}
 
 			resp, err := complete(ctx, a.client, req, yield)

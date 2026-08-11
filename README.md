@@ -122,6 +122,51 @@ wingman --agent claude --continue # resume the latest native Claude session
 wingman --agent pi --continue     # resume the latest native Pi session
 ```
 
+### Non-interactive mode
+
+Use `wingman exec` (or `wingman e`) to run a prompt without opening the TUI.
+Exec always runs unattended: actions are approved automatically, and
+elicitation uses defaults or recommended choices instead of waiting for a UI.
+Required free-text questions are declined rather than answered with invented
+input.
+
+```bash
+wingman exec "Summarize this project"
+wingman exec "Fix the failing tests"
+git diff | wingman exec "Review this diff for bugs"
+```
+
+When stdin is piped alongside a prompt, Wingman treats it as context and keeps
+the positional prompt as the instruction. Use `-` when stdin should be the
+entire prompt. Input is capped at 10 MiB.
+
+```bash
+git diff | wingman exec "Review this diff for bugs"
+printf 'Summarize this project' | wingman exec -
+```
+
+The final assistant message is the only content written to stdout, and normal
+runs are otherwise quiet. Add `--debug` to stream reasoning, tool arguments,
+and tool results to stderr. `--json` runs a final tool-free formatting pass and
+returns one JSON object; `--schema` additionally constrains that object with a
+JSON Schema:
+
+```bash
+wingman exec "Generate release notes" > release-notes.md
+wingman exec --debug "Inspect the main packages"
+wingman exec --json "Inspect the main packages" | jq
+wingman exec --schema ./project.schema.json "Extract project metadata"
+```
+
+Sessions are saved by default. Resume one by ID or continue the latest session
+for the current agent and workspace:
+
+```bash
+wingman exec resume <session-id> "Now suggest improvements"
+wingman exec resume --last "Implement the first suggestion"
+wingman exec --ephemeral "Triage this repository"
+```
+
 ### Agent Modes
 
 | Command | UI/protocol | Model backend |
