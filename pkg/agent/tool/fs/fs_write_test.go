@@ -26,8 +26,8 @@ func TestWriteTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result, "Created") {
-			t.Errorf("expected 'Created' message, got: %s", result)
+		if !strings.Contains(result.Content, "Created") {
+			t.Errorf("expected 'Created' message, got: %s", result.Content)
 		}
 
 		content, err := os.ReadFile(filepath.Join(tmpDir, "newfile.txt"))

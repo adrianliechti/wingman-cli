@@ -819,9 +819,13 @@ func notifyContent(notify func(acpsdk.SessionUpdate), role agent.MessageRole, c 
 			opts...,
 		))
 	case c.ToolResult != nil:
+		status := acpsdk.ToolCallStatusCompleted
+		if c.ToolResult.IsError {
+			status = acpsdk.ToolCallStatusFailed
+		}
 		notify(acpsdk.UpdateToolCall(
 			acpsdk.ToolCallId(c.ToolResult.ID),
-			acpsdk.WithUpdateStatus(acpsdk.ToolCallStatusCompleted),
+			acpsdk.WithUpdateStatus(status),
 			acpsdk.WithUpdateContent([]acpsdk.ToolCallContent{
 				acpsdk.ToolContent(acpsdk.TextBlock(c.ToolResult.Content)),
 			}),

@@ -28,7 +28,8 @@ func TestFreshnessDetectsExternalChangesOnce(t *testing.T) {
 	byName := map[string]func(map[string]any) (string, error){}
 	for _, tl := range tools {
 		byName[tl.Name] = func(args map[string]any) (string, error) {
-			return tl.Execute(t.Context(), args)
+			result, err := tl.Execute(t.Context(), args)
+			return result.Content, err
 		}
 	}
 
@@ -93,7 +94,8 @@ func TestEditRejectsStaleFileAfterExternalChange(t *testing.T) {
 	byName := map[string]func(map[string]any) (string, error){}
 	for _, tl := range tools {
 		byName[tl.Name] = func(args map[string]any) (string, error) {
-			return tl.Execute(t.Context(), args)
+			result, err := tl.Execute(t.Context(), args)
+			return result.Content, err
 		}
 	}
 

@@ -79,7 +79,7 @@ type sessionState struct {
 	// mode is switchable while a turn is running, so it is read from the turn
 	// goroutine and written from the UI one.
 	mode        atomic.Value // sessionMode
-	baseTools   []tool.Tool
+	toolSet     *tool.Set
 	turnTools   atomic.Value // []tool.Tool, pinned for the running turn
 	execManager *shell.ExecManager
 	tasks       *task.Registry
@@ -837,14 +837,16 @@ func (a *Agent) buildSession() *sessionState {
 	go s.watchFileChanges()
 	go s.runSchedules()
 
-	s.baseTools = slices.Concat(
+	shellOpts := &shell.Options{ScratchDir: ws.ScratchPath}
+
+	baseTools := slices.Concat(
 		ws.WithEditDiagnostics(fs.Tools(ws.Root, &fs.Options{
 			AllowedReadRoots:  allowedReadRoots,
 			AllowedWriteRoots: allowedWriteRoots,
 			Freshness:         s.freshness,
 		})),
-		shell.Tools(ws.RootPath, elicit, approvals),
-		shell.ExecTools(s.execManager, ws.RootPath, elicit, approvals),
+		shell.Tools(ws.RootPath, elicit, approvals, shellOpts),
+		shell.ExecTools(s.execManager, ws.RootPath, elicit, approvals, shellOpts),
 		todo.Tools(),
 		schedule.Tools(s.schedules),
 		elicittool.Tools(elicit),
@@ -852,6 +854,17 @@ func (a *Agent) buildSession() *sessionState {
 		websearch.Tools(elicit),
 		subagent.Tools(sessionCfg, s.subagentContext, s.tasks, subagent.Discover(ws.RootPath)...),
 	)
+	s.toolSet = tool.NewSet(baseTools...)
+	// Close runs in reverse: tasks first so background subagents are canceled
+	// before their shared exec sessions are killed.
+	s.toolSet.Own("exec manager", func() error {
+		s.execManager.Close()
+		return nil
+	})
+	s.toolSet.Own("task registry", func() error {
+		s.tasks.Close()
+		return nil
+	})
 	return s
 }
 
@@ -1040,8 +1053,7 @@ func (s *sessionState) close() {
 		fn()
 	}
 	close(s.watchStop)
-	s.tasks.Close()
-	s.execManager.Close()
+	_ = s.toolSet.Close()
 
 	if hooks := s.aa.Hooks.SessionEnd; len(hooks) > 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1128,7 +1140,7 @@ func formatFileChangeNotice(paths []string) string {
 }
 
 func (s *sessionState) tools() []tool.Tool {
-	tools := append([]tool.Tool{}, s.baseTools...)
+	tools := s.toolSet.Slice()
 	tools = append(tools, s.managedTools()...)
 	switch s.currentMode() {
 	case modePlan:
@@ -1173,10 +1185,10 @@ func planModeTools(tools []tool.Tool) []tool.Tool {
 	return filtered
 }
 
-func planModeEffectExecute(t tool.Tool) func(context.Context, map[string]any) (string, error) {
-	return func(ctx context.Context, args map[string]any) (string, error) {
+func planModeEffectExecute(t tool.Tool) func(context.Context, map[string]any) (tool.Result, error) {
+	return func(ctx context.Context, args map[string]any) (tool.Result, error) {
 		if t.Effect == nil || t.Effect(args) != tool.EffectReadOnly {
-			return "", fmt.Errorf("plan mode only allows read-only tool calls")
+			return tool.Result{}, fmt.Errorf("plan mode only allows read-only tool calls")
 		}
 		return t.Execute(ctx, args)
 	}

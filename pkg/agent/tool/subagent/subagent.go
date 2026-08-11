@@ -205,29 +205,29 @@ func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry,
 			"additionalProperties": false,
 		},
 
-		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			agentID := uuid.NewString()
 			description, ok := args["description"].(string)
 
 			if !ok || strings.TrimSpace(description) == "" {
-				return "", fmt.Errorf("description is required")
+				return tool.Result{}, fmt.Errorf("description is required")
 			}
 
 			prompt, ok := args["prompt"].(string)
 
 			if !ok || strings.TrimSpace(prompt) == "" {
-				return "", fmt.Errorf("prompt is required")
+				return tool.Result{}, fmt.Errorf("prompt is required")
 			}
 
 			subagentName, ok := args["agent_type"].(string)
 			if !ok || strings.TrimSpace(subagentName) == "" {
-				return "", fmt.Errorf("agent_type is required")
+				return tool.Result{}, fmt.Errorf("agent_type is required")
 			}
 			subagentName = strings.ToLower(strings.TrimSpace(subagentName))
 
 			typ, ok := types[subagentName]
 			if !ok {
-				return "", fmt.Errorf("unknown agent_type %q (available: %s)", subagentName, strings.Join(names, ", "))
+				return tool.Result{}, fmt.Errorf("unknown agent_type %q (available: %s)", subagentName, strings.Join(names, ", "))
 			}
 
 			var instructions strings.Builder
@@ -248,11 +248,11 @@ func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry,
 			if raw, present := args["schema"]; present {
 				schemaMap, ok := raw.(map[string]any)
 				if !ok {
-					return "", fmt.Errorf("schema must be a JSON Schema object")
+					return tool.Result{}, fmt.Errorf("schema must be a JSON Schema object")
 				}
 				var err error
 				if collector, err = newReportCollector(schemaMap); err != nil {
-					return "", fmt.Errorf("invalid schema: %w", err)
+					return tool.Result{}, fmt.Errorf("invalid schema: %w", err)
 				}
 				instructions.WriteString("\n\nDeliver your final result by calling the `report` tool exactly once; its `result` argument must match the provided JSON schema. Prose output outside `report` is not the deliverable.")
 			}
@@ -261,7 +261,7 @@ func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry,
 			subcfg.Instructions = func() string { return instructions.String() }
 
 			if err := applyModelOverrides(subcfg, args, typ.Model); err != nil {
-				return "", err
+				return tool.Result{}, err
 			}
 
 			subcfg.Tools = func() []tool.Tool {
@@ -397,13 +397,13 @@ func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry,
 
 			if background, _ := args["background"].(bool); background {
 				if tasks == nil {
-					return "", fmt.Errorf("background agents are not available in this session; run the agent synchronously")
+					return tool.Result{}, fmt.Errorf("background agents are not available in this session; run the agent synchronously")
 				}
 				t, err := tasks.Launch(description, subagentName, func(execCtx context.Context, tk *task.Task) (string, error) {
 					return runTurn(execCtx, tk, prompt)
 				})
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
 				t.SetPeek(sub.MessagesSnapshot)
 				t.SetResume(func(followUp string) error {
@@ -411,13 +411,13 @@ func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry,
 						return runTurn(execCtx, tk, followUp)
 					})
 				})
-				return fmt.Sprintf("Launched background agent %s (%s: %s). Continue with other work — the result arrives as a task notification when it finishes. Never assume or invent its result, and don't start work that overlaps its scope. Check on it with task_output, cancel it with task_stop, or ask it follow-ups later with task_send.", t.ID, subagentName, description), nil
+				return tool.Text(fmt.Sprintf("Launched background agent %s (%s: %s). Continue with other work — the result arrives as a task notification when it finishes. Never assume or invent its result, and don't start work that overlaps its scope. Check on it with task_output, cancel it with task_stop, or ask it follow-ups later with task_send.", t.ID, subagentName, description)), nil
 			}
 
 			started := time.Now()
 			out, err := runTurn(ctx, nil, prompt)
 			if err != nil || tasks == nil {
-				return out, err
+				return tool.Text(out), err
 			}
 			if t := tasks.Adopt(description, subagentName, out, time.Since(started)); t != nil {
 				t.SetPeek(sub.MessagesSnapshot)
@@ -428,7 +428,7 @@ func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry,
 				})
 				out += fmt.Sprintf("\n(id %s — task_send continues this agent with its context intact)", t.ID)
 			}
-			return out, nil
+			return tool.Text(out), nil
 		},
 	}}
 
@@ -569,26 +569,26 @@ func (c *reportCollector) tool() tool.Tool {
 			"additionalProperties": false,
 		},
 
-		Execute: func(_ context.Context, args map[string]any) (string, error) {
+		Execute: func(_ context.Context, args map[string]any) (tool.Result, error) {
 			value, present := args["result"]
 			if !present {
-				return "", fmt.Errorf("result is required")
+				return tool.Result{}, fmt.Errorf("result is required")
 			}
 
 			if err := c.resolved.Validate(value); err != nil {
-				return "", fmt.Errorf("result does not match the schema: %v", err)
+				return tool.Result{}, fmt.Errorf("result does not match the schema: %v", err)
 			}
 
 			data, err := json.Marshal(value)
 			if err != nil {
-				return "", err
+				return tool.Result{}, err
 			}
 
 			c.mu.Lock()
 			c.result = string(data)
 			c.mu.Unlock()
 
-			return "Result recorded. End your turn.", nil
+			return tool.Text("Result recorded. End your turn."), nil
 		},
 	}
 }
@@ -691,12 +691,12 @@ func readOnlyDynamicTool(t tool.Tool) tool.Tool {
 	originalExecute := t.Execute
 	originalEffect := t.Effect
 
-	t.Execute = func(ctx context.Context, args map[string]any) (string, error) {
+	t.Execute = func(ctx context.Context, args map[string]any) (tool.Result, error) {
 		if originalEffect(args) != tool.EffectReadOnly {
-			return "", fmt.Errorf("read-only subagent only allows read-only %s calls", t.Name)
+			return tool.Result{}, fmt.Errorf("read-only subagent only allows read-only %s calls", t.Name)
 		}
 		if originalExecute == nil {
-			return "", fmt.Errorf("tool %s has no executor", t.Name)
+			return tool.Result{}, fmt.Errorf("tool %s has no executor", t.Name)
 		}
 		return originalExecute(ctx, args)
 	}

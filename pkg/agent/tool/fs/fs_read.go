@@ -1,8 +1,10 @@
 package fs
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -10,10 +12,14 @@ import (
 )
 
 func ReadTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
-	return readTool(root, nil, nil, allowedReadRoots...)
+	return readTool(root, nil, nil, 0, allowedReadRoots...)
 }
 
-func readTool(root *os.Root, tracker *contentTracker, freshness *Freshness, allowedReadRoots ...string) tool.Tool {
+func readTool(root *os.Root, tracker *contentTracker, freshness *Freshness, maxFileBytes int64, allowedReadRoots ...string) tool.Tool {
+	if maxFileBytes == 0 {
+		maxFileBytes = MaxReadFileBytes
+	}
+
 	return tool.Tool{
 		Name:   "read",
 		Effect: tool.StaticEffect(tool.EffectReadOnly),
@@ -36,11 +42,11 @@ func readTool(root *os.Root, tracker *contentTracker, freshness *Freshness, allo
 			"additionalProperties": false,
 		},
 
-		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			pathArg, ok := args["file_path"].(string)
 
 			if !ok || pathArg == "" {
-				return "", fmt.Errorf("file_path is required")
+				return tool.Result{}, fmt.Errorf("file_path is required")
 			}
 
 			workingDir := root.Name()
@@ -48,7 +54,7 @@ func readTool(root *os.Root, tracker *contentTracker, freshness *Freshness, allo
 			limit := 0
 			if v, present, err := tool.PositiveIntArg(args, "limit"); present {
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
 				limit = v
 			}
@@ -56,44 +62,55 @@ func readTool(root *os.Root, tracker *contentTracker, freshness *Freshness, allo
 			startLine := 1
 			if v, present, err := tool.PositiveIntArg(args, "offset"); present {
 				if err != nil {
-					return "", fmt.Errorf("offset must be a positive 1-based integer")
+					return tool.Result{}, fmt.Errorf("offset must be a positive 1-based integer")
 				}
 				startLine = v
 			}
 
 			target, err := resolveFileTarget(pathArg, workingDir, allowedReadRoots, "read file")
 			if err != nil {
-				return "", err
+				return tool.Result{}, err
 			}
 
 			info, err := statFileTarget(root, target)
 			if err != nil {
-				return "", fmt.Errorf("stat file %q: %w", pathArg, err)
+				return tool.Result{}, fmt.Errorf("stat file %q: %w", pathArg, err)
 			}
 			if info.IsDir() {
-				return "", fmt.Errorf("cannot read file: path %q is a directory; use glob to find files inside it", pathArg)
+				return tool.Result{}, fmt.Errorf("cannot read file: path %q is a directory; use glob to find files inside it", pathArg)
+			}
+			if !info.Mode().IsRegular() {
+				return tool.Result{}, fmt.Errorf("cannot read file: path %q is not a regular file", pathArg)
+			}
+			if maxFileBytes > 0 && info.Size() > maxFileBytes {
+				output, err := readFileWindow(root, target, pathArg, info.Size(), startLine, limit)
+				if err != nil {
+					return tool.Result{}, err
+				}
+				freshness.record(ctx, target)
+				return tool.Text(output), nil
 			}
 
 			content, err := readFileTarget(root, target)
 			if err != nil {
-				return "", fmt.Errorf("read file %q: %w", pathArg, err)
+				return tool.Result{}, fmt.Errorf("read file %q: %w", pathArg, err)
 			}
 
 			if isBinaryContent(content) {
-				return "", fmt.Errorf("cannot read %s: file appears to be binary. Use the shell tool with an appropriate viewer if you really need to inspect it", pathArg)
+				return tool.Result{}, fmt.Errorf("cannot read %s: file appears to be binary. Use the shell tool with an appropriate viewer if you really need to inspect it", pathArg)
 			}
 
 			tracker.record(content)
 			freshness.record(ctx, target)
 
-			return formatRead(content, startLine, limit)
+			return tool.Text(formatRead(content, startLine, limit)), nil
 		},
 	}
 }
 
-func formatRead(content []byte, startLine, limit int) (string, error) {
+func formatRead(content []byte, startLine, limit int) string {
 	if len(content) == 0 {
-		return "<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>", nil
+		return "<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>"
 	}
 
 	_, text := stripBom(string(content))
@@ -102,7 +119,7 @@ func formatRead(content []byte, startLine, limit int) (string, error) {
 	offset := startLine - 1
 
 	if offset >= total {
-		return fmt.Sprintf("<system-reminder>Warning: the file exists but is shorter than the provided offset (%d). The file has %d lines.</system-reminder>", startLine, total), nil
+		return fmt.Sprintf("<system-reminder>Warning: the file exists but is shorter than the provided offset (%d). The file has %d lines.</system-reminder>", startLine, total)
 	}
 
 	maxLines := DefaultMaxLines
@@ -136,10 +153,98 @@ func formatRead(content []byte, startLine, limit int) (string, error) {
 		if endLine < total {
 			notice += fmt.Sprintf("; use offset=%d to continue", endLine+1)
 		}
-		return fmt.Sprintf("%s\n\n[%s]", output, notice), nil
+		return fmt.Sprintf("%s\n\n[%s]", output, notice)
 	}
 
-	return output, nil
+	return output
+}
+
+const maxReadLineBytes = 512 * 1024
+
+// readFileWindow serves files too large to load whole: it streams the file and
+// keeps only the requested line window in memory.
+func readFileWindow(root *os.Root, target fileTarget, pathArg string, fileSize int64, startLine, limit int) (string, error) {
+	f, err := openFileTarget(root, target)
+	if err != nil {
+		return "", fmt.Errorf("read file %q: %w", pathArg, err)
+	}
+	defer f.Close()
+
+	reader := bufio.NewReaderSize(f, 64*1024)
+
+	if head, err := reader.Peek(512); err == nil && isBinaryContent(head) {
+		return "", fmt.Errorf("cannot read %s: file appears to be binary. Use the shell tool with an appropriate viewer if you really need to inspect it", pathArg)
+	}
+
+	maxLines := DefaultMaxLines
+	if limit > 0 {
+		maxLines = limit
+	}
+
+	var numbered []string
+	size := 0
+	lineNum := 0
+	sawEOF := false
+
+	for {
+		line, tooLong, err := readLimitedLine(reader)
+		if tooLong {
+			return "", fmt.Errorf("cannot read %s: line %d is longer than %dKB; use grep or the shell tool to inspect this file", pathArg, lineNum+1, maxReadLineBytes/1024)
+		}
+		if err != nil && err != io.EOF {
+			return "", fmt.Errorf("read file %q: %w", pathArg, err)
+		}
+		sawEOF = err == io.EOF
+
+		lineNum++
+		if lineNum == 1 {
+			_, line = stripBom(line)
+		}
+
+		if lineNum >= startLine {
+			text := strings.TrimSuffix(line, "\n")
+			text = strings.TrimSuffix(text, "\r")
+			numbered = append(numbered, fmt.Sprintf("%d\t%s", lineNum, text))
+			size += len(text)
+		}
+
+		if sawEOF || len(numbered) >= maxLines || size >= DefaultMaxBytes {
+			break
+		}
+	}
+
+	if len(numbered) == 0 {
+		return fmt.Sprintf("<system-reminder>Warning: the file exists but is shorter than the provided offset (%d). The file has %d lines.</system-reminder>", startLine, lineNum), nil
+	}
+
+	output, bytesTruncated := truncateReadOutput(strings.Join(numbered, "\n"))
+	outputLines := strings.Count(output, "\n") + 1
+	endLine := startLine + outputLines - 1
+	notice := fmt.Sprintf("Showing lines %d-%d of a %.1fMB file (too large to read fully)", startLine, endLine, float64(fileSize)/(1024*1024))
+	if bytesTruncated {
+		notice += fmt.Sprintf("; %dKB cap reached", DefaultMaxBytes/1024)
+	}
+	if !sawEOF {
+		notice += fmt.Sprintf("; use offset=%d to continue", endLine+1)
+	}
+	return fmt.Sprintf("%s\n\n[%s]", output, notice), nil
+}
+
+// readLimitedLine reads one newline-terminated line while capping how much of
+// an unbroken line is held in memory.
+func readLimitedLine(r *bufio.Reader) (string, bool, error) {
+	var line []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		line = append(line, chunk...)
+		if len(line) > maxReadLineBytes {
+			return "", true, nil
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		return string(line), false, err
+	}
 }
 
 func truncateReadOutput(content string) (string, bool) {

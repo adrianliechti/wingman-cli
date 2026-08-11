@@ -67,19 +67,19 @@ func Tools(elicit *tool.Elicitation) []tool.Tool {
 			"additionalProperties": false,
 		},
 
-		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			questions, ok := args["questions"].([]any)
 
 			if !ok || len(questions) == 0 {
-				return "", fmt.Errorf("questions is required")
+				return tool.Result{}, fmt.Errorf("questions is required")
 			}
 			if len(questions) > maxQuestions {
-				return "", fmt.Errorf("at most %d questions per call; split the rest into a follow-up", maxQuestions)
+				return tool.Result{}, fmt.Errorf("at most %d questions per call; split the rest into a follow-up", maxQuestions)
 			}
 
 			fields, err := parseQuestions(questions)
 			if err != nil {
-				return "", err
+				return tool.Result{}, err
 			}
 
 			req := tool.ElicitRequest{Fields: fields}
@@ -92,16 +92,16 @@ func Tools(elicit *tool.Elicitation) []tool.Tool {
 			result, err := elicit.Elicit(ctx, req)
 
 			if err != nil {
-				return "", err
+				return tool.Result{}, err
 			}
 
 			switch result.Action {
 			case tool.ElicitAccept:
-				return renderAnswers(fields, result.Content), nil
+				return tool.Text(renderAnswers(fields, result.Content)), nil
 			case tool.ElicitDecline:
-				return "The user declined to answer. Proceed without this input; do not re-ask the same questions.", nil
+				return tool.Text("The user declined to answer. Proceed without this input; do not re-ask the same questions."), nil
 			default:
-				return "The user dismissed the questions without answering.", nil
+				return tool.Text("The user dismissed the questions without answering."), nil
 			}
 		},
 

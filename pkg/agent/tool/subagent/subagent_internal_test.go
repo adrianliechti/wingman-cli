@@ -93,7 +93,7 @@ func TestToolsForTypeFiltersExplore(t *testing.T) {
 	all := []tool.Tool{
 		{Name: "read", Effect: tool.StaticEffect(tool.EffectReadOnly)},
 		{Name: "write", Effect: tool.StaticEffect(tool.EffectMutates)},
-		{Name: "shell", Effect: tool.StaticEffect(tool.EffectDynamic), Execute: func(context.Context, map[string]any) (string, error) { return "ok", nil }},
+		{Name: "shell", Effect: tool.StaticEffect(tool.EffectDynamic), Execute: func(context.Context, map[string]any) (tool.Result, error) { return tool.Text("ok"), nil }},
 		{Name: "elicit", Hidden: true, Effect: tool.StaticEffect(tool.EffectReadOnly)},
 	}
 
@@ -125,9 +125,9 @@ func TestExploreWrapsDynamicToolsAsReadOnly(t *testing.T) {
 			}
 			return tool.EffectMutates
 		},
-		Execute: func(context.Context, map[string]any) (string, error) {
+		Execute: func(context.Context, map[string]any) (tool.Result, error) {
 			called = true
-			return "ran", nil
+			return tool.Text("ran"), nil
 		},
 	}
 
@@ -138,8 +138,8 @@ func TestExploreWrapsDynamicToolsAsReadOnly(t *testing.T) {
 	wrapped := filtered[0]
 
 	out, err := wrapped.Execute(context.Background(), map[string]any{"safe": true})
-	if err != nil || out != "ran" {
-		t.Fatalf("read-only call: got (%q, %v), want (ran, nil)", out, err)
+	if err != nil || out.Content != "ran" {
+		t.Fatalf("read-only call: got (%q, %v), want (ran, nil)", out.Content, err)
 	}
 	if !called {
 		t.Error("original executor must have run on read-only path")
@@ -175,7 +175,7 @@ func TestSpecializedReadOnlyAgentsFilterLikeExplore(t *testing.T) {
 	all := []tool.Tool{
 		{Name: "read", Effect: tool.StaticEffect(tool.EffectReadOnly)},
 		{Name: "write", Effect: tool.StaticEffect(tool.EffectMutates)},
-		{Name: "shell", Effect: tool.StaticEffect(tool.EffectDynamic), Execute: func(context.Context, map[string]any) (string, error) { return "ok", nil }},
+		{Name: "shell", Effect: tool.StaticEffect(tool.EffectDynamic), Execute: func(context.Context, map[string]any) (tool.Result, error) { return tool.Text("ok"), nil }},
 	}
 
 	for _, name := range []string{"code-architect", "code-reviewer"} {

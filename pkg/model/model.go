@@ -20,8 +20,9 @@ const (
 )
 
 type Model struct {
-	Name  string
-	Class Class
+	Name        string
+	Description string
+	Class       Class
 
 	ID string
 

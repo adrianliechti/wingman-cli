@@ -34,8 +34,8 @@ func TestImageToolViewsPNG(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(out, "data:image/png;base64,") {
-		t.Fatalf("output = %q", out[:min(len(out), 60)])
+	if !strings.HasPrefix(out.Content, "data:image/png;base64,") {
+		t.Fatalf("output = %q", out.Content[:min(len(out.Content), 60)])
 	}
 }
 

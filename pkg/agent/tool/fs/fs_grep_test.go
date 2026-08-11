@@ -32,12 +32,12 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result, "file1.go") {
-			t.Errorf("expected file1.go in results, got: %s", result)
+		if !strings.Contains(result.Content, "file1.go") {
+			t.Errorf("expected file1.go in results, got: %s", result.Content)
 		}
 
-		if strings.Contains(result, "func Hello") {
-			t.Errorf("default output should list files only, got: %s", result)
+		if strings.Contains(result.Content, "func Hello") {
+			t.Errorf("default output should list files only, got: %s", result.Content)
 		}
 	})
 
@@ -51,12 +51,12 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result, "Hello()") || !strings.Contains(result, "World()") {
-			t.Errorf("expected function matches, got: %s", result)
+		if !strings.Contains(result.Content, "Hello()") || !strings.Contains(result.Content, "World()") {
+			t.Errorf("expected function matches, got: %s", result.Content)
 		}
 
-		if !strings.Contains(result, "file1.go:3:func Hello") {
-			t.Errorf("expected ripgrep-style line-numbered content, got: %s", result)
+		if !strings.Contains(result.Content, "file1.go:3:func Hello") {
+			t.Errorf("expected ripgrep-style line-numbered content, got: %s", result.Content)
 		}
 	})
 
@@ -71,8 +71,8 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result, "Hello") || !strings.Contains(result, "hello") {
-			t.Errorf("expected case-insensitive matches, got: %s", result)
+		if !strings.Contains(result.Content, "Hello") || !strings.Contains(result.Content, "hello") {
+			t.Errorf("expected case-insensitive matches, got: %s", result.Content)
 		}
 	})
 
@@ -88,8 +88,8 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result, "Hello") || !strings.Contains(result, "return") {
-			t.Errorf("expected case-insensitive match with after context, got: %s", result)
+		if !strings.Contains(result.Content, "Hello") || !strings.Contains(result.Content, "return") {
+			t.Errorf("expected case-insensitive match with after context, got: %s", result.Content)
 		}
 	})
 
@@ -103,8 +103,8 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if strings.Contains(result, "readme.md") {
-			t.Errorf("should not include markdown files, got: %s", result)
+		if strings.Contains(result.Content, "readme.md") {
+			t.Errorf("should not include markdown files, got: %s", result.Content)
 		}
 	})
 
@@ -118,17 +118,17 @@ func TestGrepTool(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !strings.Contains(result, "func Hello") {
-			t.Errorf("expected match line, got: %s", result)
+		if !strings.Contains(result.Content, "func Hello") {
+			t.Errorf("expected match line, got: %s", result.Content)
 		}
-		lines := strings.Split(result, "\n")
+		lines := strings.Split(result.Content, "\n")
 
 		if len(lines) < 2 {
-			t.Errorf("expected multiple lines with context, got: %s", result)
+			t.Errorf("expected multiple lines with context, got: %s", result.Content)
 		}
 
-		if !strings.Contains(result, "file1.go-2-") {
-			t.Errorf("expected ripgrep-style context separator, got: %s", result)
+		if !strings.Contains(result.Content, "file1.go-2-") {
+			t.Errorf("expected ripgrep-style context separator, got: %s", result.Content)
 		}
 	})
 
@@ -143,11 +143,11 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if strings.Contains(result, "file1.go:3:") {
-			t.Errorf("did not expect line numbers, got: %s", result)
+		if strings.Contains(result.Content, "file1.go:3:") {
+			t.Errorf("did not expect line numbers, got: %s", result.Content)
 		}
-		if !strings.Contains(result, "file1.go:func Hello") {
-			t.Errorf("expected path:content output without line numbers, got: %s", result)
+		if !strings.Contains(result.Content, "file1.go:func Hello") {
+			t.Errorf("expected path:content output without line numbers, got: %s", result.Content)
 		}
 	})
 
@@ -160,8 +160,8 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if result != "No files found" {
-			t.Errorf("expected 'No files found', got: %s", result)
+		if result.Content != "No files found" {
+			t.Errorf("expected 'No files found', got: %s", result.Content)
 		}
 	})
 
@@ -224,8 +224,8 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result, "many.txt:10005") {
-			t.Errorf("expected exact count, got: %s", result)
+		if !strings.Contains(result.Content, "many.txt:10005") {
+			t.Errorf("expected exact count, got: %s", result.Content)
 		}
 	})
 
@@ -242,8 +242,8 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result, "occurrences.txt:3") {
-			t.Errorf("expected occurrence count, got: %s", result)
+		if !strings.Contains(result.Content, "occurrences.txt:3") {
+			t.Errorf("expected occurrence count, got: %s", result.Content)
 		}
 	})
 
@@ -257,12 +257,12 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result, "readme.md") {
-			t.Errorf("expected readme.md match, got: %s", result)
+		if !strings.Contains(result.Content, "readme.md") {
+			t.Errorf("expected readme.md match, got: %s", result.Content)
 		}
 
-		if strings.Contains(result, "file1.go") {
-			t.Errorf("should only search single file, got: %s", result)
+		if strings.Contains(result.Content, "file1.go") {
+			t.Errorf("should only search single file, got: %s", result.Content)
 		}
 	})
 
@@ -277,8 +277,8 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result, "No matches") {
-			t.Errorf("expected glob mismatch to return no matches, got: %s", result)
+		if !strings.Contains(result.Content, "No matches") {
+			t.Errorf("expected glob mismatch to return no matches, got: %s", result.Content)
 		}
 	})
 
@@ -293,8 +293,8 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if result != "No files found" {
-			t.Errorf("expected single files_with_matches result to be skipped, got: %s", result)
+		if result.Content != "No files found" {
+			t.Errorf("expected single files_with_matches result to be skipped, got: %s", result.Content)
 		}
 	})
 
@@ -312,8 +312,8 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result, "pagination = limit: 1, skip: 1") {
-			t.Errorf("expected next skip notice, got: %s", result)
+		if !strings.Contains(result.Content, "pagination = limit: 1, skip: 1") {
+			t.Errorf("expected next skip notice, got: %s", result.Content)
 		}
 	})
 
@@ -336,11 +336,11 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result, "newmatch.txt") || strings.Contains(result, "oldmatch.txt") {
-			t.Errorf("expected newest matching file only, got: %s", result)
+		if !strings.Contains(result.Content, "newmatch.txt") || strings.Contains(result.Content, "oldmatch.txt") {
+			t.Errorf("expected newest matching file only, got: %s", result.Content)
 		}
-		if !strings.Contains(result, "limit: 1") {
-			t.Errorf("expected limit info, got: %s", result)
+		if !strings.Contains(result.Content, "limit: 1") {
+			t.Errorf("expected limit info, got: %s", result.Content)
 		}
 	})
 
@@ -357,11 +357,11 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result, ".hidden.txt") {
-			t.Errorf("expected hidden file match, got: %s", result)
+		if !strings.Contains(result.Content, ".hidden.txt") {
+			t.Errorf("expected hidden file match, got: %s", result.Content)
 		}
-		if strings.Contains(result, "ignored.txt") {
-			t.Errorf("expected gitignored file to be skipped, got: %s", result)
+		if strings.Contains(result.Content, "ignored.txt") {
+			t.Errorf("expected gitignored file to be skipped, got: %s", result.Content)
 		}
 	})
 
@@ -383,11 +383,11 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if strings.Contains(result, filepath.Join("a", "ignored.txt")) {
-			t.Errorf("expected a/.gitignore to ignore only a/ignored.txt, got: %s", result)
+		if strings.Contains(result.Content, filepath.Join("a", "ignored.txt")) {
+			t.Errorf("expected a/.gitignore to ignore only a/ignored.txt, got: %s", result.Content)
 		}
-		if !strings.Contains(result, filepath.Join("b", "ignored.txt")) {
-			t.Errorf("expected sibling ignored.txt not to be ignored, got: %s", result)
+		if !strings.Contains(result.Content, filepath.Join("b", "ignored.txt")) {
+			t.Errorf("expected sibling ignored.txt not to be ignored, got: %s", result.Content)
 		}
 	})
 
@@ -402,12 +402,12 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result, "file1.go") {
-			t.Errorf("expected file1.go in results, got: %s", result)
+		if !strings.Contains(result.Content, "file1.go") {
+			t.Errorf("expected file1.go in results, got: %s", result.Content)
 		}
 
-		if !strings.Contains(result, "Hello") {
-			t.Errorf("expected 'Hello' in results, got: %s", result)
+		if !strings.Contains(result.Content, "Hello") {
+			t.Errorf("expected 'Hello' in results, got: %s", result.Content)
 		}
 	})
 
@@ -425,8 +425,8 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result, "multi.go") || !strings.Contains(result, "field") {
-			t.Errorf("expected multi.go and matched 'field' line, got: %s", result)
+		if !strings.Contains(result.Content, "multi.go") || !strings.Contains(result.Content, "field") {
+			t.Errorf("expected multi.go and matched 'field' line, got: %s", result.Content)
 		}
 
 		nonMulti, err := grepTool.Execute(context.Background(), map[string]any{
@@ -438,8 +438,8 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if nonMulti != "No files found" {
-			t.Errorf("non-multiline should not match across lines, got: %s", nonMulti)
+		if nonMulti.Content != "No files found" {
+			t.Errorf("non-multiline should not match across lines, got: %s", nonMulti.Content)
 		}
 	})
 
@@ -453,12 +453,12 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result, "file1.go") {
-			t.Errorf("expected go file in results, got: %s", result)
+		if !strings.Contains(result.Content, "file1.go") {
+			t.Errorf("expected go file in results, got: %s", result.Content)
 		}
 
-		if strings.Contains(result, "readme.md") {
-			t.Errorf("type=go should exclude markdown files, got: %s", result)
+		if strings.Contains(result.Content, "readme.md") {
+			t.Errorf("type=go should exclude markdown files, got: %s", result.Content)
 		}
 	})
 
@@ -484,8 +484,8 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result, "file2.go") || strings.Contains(result, "file1.go") {
-			t.Errorf("expected only file2.go, got: %s", result)
+		if !strings.Contains(result.Content, "file2.go") || strings.Contains(result.Content, "file1.go") {
+			t.Errorf("expected only file2.go, got: %s", result.Content)
 		}
 	})
 
@@ -499,11 +499,11 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if strings.Contains(result, "limit 0 hit") {
-			t.Errorf("head_limit=0 should not impose a zero-result limit, got: %s", result)
+		if strings.Contains(result.Content, "limit 0 hit") {
+			t.Errorf("head_limit=0 should not impose a zero-result limit, got: %s", result.Content)
 		}
-		if !strings.Contains(result, "file1.go") || !strings.Contains(result, "file2.go") || !strings.Contains(result, "readme.md") {
-			t.Errorf("expected all matching files, got: %s", result)
+		if !strings.Contains(result.Content, "file1.go") || !strings.Contains(result.Content, "file2.go") || !strings.Contains(result.Content, "readme.md") {
+			t.Errorf("expected all matching files, got: %s", result.Content)
 		}
 	})
 
@@ -523,11 +523,11 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result, filepath.Join("src", "main.go")) {
-			t.Errorf("expected src/main.go in results, got: %s", result)
+		if !strings.Contains(result.Content, filepath.Join("src", "main.go")) {
+			t.Errorf("expected src/main.go in results, got: %s", result.Content)
 		}
-		if strings.Contains(result, ".git") {
-			t.Errorf(".git contents must be skipped, got: %s", result)
+		if strings.Contains(result.Content, ".git") {
+			t.Errorf(".git contents must be skipped, got: %s", result.Content)
 		}
 	})
 
@@ -541,11 +541,11 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result, "file1.go-2-") {
-			t.Errorf("expected file1.go line 2 as before-context, got: %s", result)
+		if !strings.Contains(result.Content, "file1.go-2-") {
+			t.Errorf("expected file1.go line 2 as before-context, got: %s", result.Content)
 		}
-		if !strings.Contains(result, "file1.go-3-") {
-			t.Errorf("expected file1.go line 3 as before-context, got: %s", result)
+		if !strings.Contains(result.Content, "file1.go-3-") {
+			t.Errorf("expected file1.go line 3 as before-context, got: %s", result.Content)
 		}
 	})
 
@@ -564,11 +564,11 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result, "keep.go") {
-			t.Errorf("expected keep.go in results, got: %s", result)
+		if !strings.Contains(result.Content, "keep.go") {
+			t.Errorf("expected keep.go in results, got: %s", result.Content)
 		}
-		if strings.Contains(result, "drop.log") {
-			t.Errorf("negated glob should exclude drop.log, got: %s", result)
+		if strings.Contains(result.Content, "drop.log") {
+			t.Errorf("negated glob should exclude drop.log, got: %s", result.Content)
 		}
 	})
 
@@ -582,8 +582,8 @@ func TestGrepTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result, "icon.svg") {
-			t.Errorf("expected svg match, got: %s", result)
+		if !strings.Contains(result.Content, "icon.svg") {
+			t.Errorf("expected svg match, got: %s", result.Content)
 		}
 	})
 }
@@ -608,12 +608,12 @@ func TestGrepHandlesLongLines(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(result, "needle line 1") || !strings.Contains(result, "needle line 2") {
-		t.Errorf("expected pre-long-line matches preserved, got: %s", result)
+	if !strings.Contains(result.Content, "needle line 1") || !strings.Contains(result.Content, "needle line 2") {
+		t.Errorf("expected pre-long-line matches preserved, got: %s", result.Content)
 	}
 
-	if !strings.Contains(result, "exceeds") || !strings.Contains(result, "scan limit") {
-		t.Errorf("expected scan-cutoff sentinel, got: %s", result)
+	if !strings.Contains(result.Content, "exceeds") || !strings.Contains(result.Content, "scan limit") {
+		t.Errorf("expected scan-cutoff sentinel, got: %s", result.Content)
 	}
 }
 
@@ -635,8 +635,8 @@ func TestGrepLongLineWithoutMatchDoesNotCreateFalsePositive(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if result != "No files found" {
-		t.Errorf("expected no false positive for long line without match, got: %s", result)
+	if result.Content != "No files found" {
+		t.Errorf("expected no false positive for long line without match, got: %s", result.Content)
 	}
 }
 
@@ -662,11 +662,11 @@ func TestGrepSkipsExtensionlessBinaryFiles(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if strings.Contains(result, "blob") {
-		t.Errorf("expected binary file 'blob' to be skipped, got: %s", result)
+	if strings.Contains(result.Content, "blob") {
+		t.Errorf("expected binary file 'blob' to be skipped, got: %s", result.Content)
 	}
-	if !strings.Contains(result, "neighbor.txt") {
-		t.Errorf("expected neighbor.txt match preserved, got: %s", result)
+	if !strings.Contains(result.Content, "neighbor.txt") {
+		t.Errorf("expected neighbor.txt match preserved, got: %s", result.Content)
 	}
 }
 
@@ -687,8 +687,8 @@ func TestGrepBinaryDetectionDoesNotMisfireOnSmallFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "tiny.txt") {
-		t.Errorf("expected tiny.txt match, got: %s", result)
+	if !strings.Contains(result.Content, "tiny.txt") {
+		t.Errorf("expected tiny.txt match, got: %s", result.Content)
 	}
 }
 
@@ -718,8 +718,8 @@ func TestGrepSkipsSymlinks(t *testing.T) {
 		t.Fatalf("grep should not fail with symlinks: %v", err)
 	}
 
-	if !strings.Contains(result, "dir1/file.txt") {
-		t.Errorf("expected matching file in results, got: %s", result)
+	if !strings.Contains(result.Content, "dir1/file.txt") {
+		t.Errorf("expected matching file in results, got: %s", result.Content)
 	}
 }
 
@@ -755,12 +755,12 @@ func TestGrepAllowedReadRoots(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		want := filepath.Join(outside, "memory.md")
-		if !strings.Contains(result, want) {
-			t.Errorf("expected %s in result, got: %s", want, result)
+		if !strings.Contains(result.Content, want) {
+			t.Errorf("expected %s in result, got: %s", want, result.Content)
 		}
 		wantSub := filepath.Join(outside, "sub", "other.md")
-		if !strings.Contains(result, wantSub) {
-			t.Errorf("expected %s in result, got: %s", wantSub, result)
+		if !strings.Contains(result.Content, wantSub) {
+			t.Errorf("expected %s in result, got: %s", wantSub, result.Content)
 		}
 	})
 
@@ -774,8 +774,8 @@ func TestGrepAllowedReadRoots(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !strings.Contains(result, filePath) {
-			t.Errorf("expected absolute path %s in result, got: %s", filePath, result)
+		if !strings.Contains(result.Content, filePath) {
+			t.Errorf("expected absolute path %s in result, got: %s", filePath, result.Content)
 		}
 	})
 

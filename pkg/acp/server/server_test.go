@@ -33,6 +33,20 @@ type recordingClient struct {
 	updates       chan struct{}
 }
 
+func TestNotifyContentPreservesToolFailureStatus(t *testing.T) {
+	var update acpsdk.SessionUpdate
+	notifyContent(func(got acpsdk.SessionUpdate) { update = got }, agent.RoleAssistant, agent.Content{
+		ToolResult: &agent.ToolResult{ID: "call-1", Name: "shell", Content: "failed", IsError: true},
+	})
+
+	if update.ToolCallUpdate == nil || update.ToolCallUpdate.Status == nil {
+		t.Fatalf("tool update = %+v", update.ToolCallUpdate)
+	}
+	if got := *update.ToolCallUpdate.Status; got != acpsdk.ToolCallStatusFailed {
+		t.Fatalf("tool status = %q, want %q", got, acpsdk.ToolCallStatusFailed)
+	}
+}
+
 func TestClassifyPromptStreamError(t *testing.T) {
 	reason, err := classifyPromptStreamError(context.Canceled)
 	if err != nil || reason != acpsdk.StopReasonCancelled {

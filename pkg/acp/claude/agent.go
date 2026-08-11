@@ -362,7 +362,7 @@ func (a *Agent) LoadSession(ctx context.Context, params acp.LoadSessionRequest) 
 	}
 	a.ensureModels(ctx)
 	s := a.adoptSession(params.SessionId, cwd, additional, params.McpServers, string(params.SessionId), false)
-	if err := replayHistory(ctx, a.conn, params.SessionId, cwd); err != nil {
+	if err := replayHistory(ctx, a.conn, params.SessionId, cwd, s.plan); err != nil {
 		return acp.LoadSessionResponse{}, fmt.Errorf("replay history: %w", err)
 	}
 	a.sendAvailableCommands(params.SessionId)

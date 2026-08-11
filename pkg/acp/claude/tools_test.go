@@ -361,11 +361,11 @@ func TestTaskPlan(t *testing.T) {
 	p := newTaskPlan()
 
 	p.noteCreate("tu1", json.RawMessage(`{"subject":"first","description":"d","activeForm":"Doing first"}`))
-	if p.completeCreate("tu1", "Task #1 created successfully: first") != true {
+	if p.completeCreate("tu1", "Task #1 created successfully: first", false) != true {
 		t.Fatal("create #1 should register")
 	}
 	p.noteCreate("tu2", json.RawMessage(`{"subject":"second"}`))
-	if !p.completeCreate("tu2", "Task #2 created successfully: second") {
+	if !p.completeCreate("tu2", "Task #2 created successfully: second", false) {
 		t.Fatal("create #2 should register")
 	}
 
@@ -374,25 +374,61 @@ func TestTaskPlan(t *testing.T) {
 		t.Fatalf("entries after create = %#v", entries)
 	}
 
-	if !p.noteUpdate(json.RawMessage(`{"taskId":"1","status":"completed"}`)) {
+	p.noteUpdate("update-1", json.RawMessage(`{"taskId":"1","status":"completed"}`))
+	if !p.completeUpdate("update-1", `{"success":true,"taskId":"1"}`, false) {
 		t.Fatal("update #1 should change state")
 	}
-	if p.noteUpdate(json.RawMessage(`{"taskId":"1","status":"completed"}`)) {
+	p.noteUpdate("update-2", json.RawMessage(`{"taskId":"1","status":"completed"}`))
+	if p.completeUpdate("update-2", `{"success":true,"taskId":"1"}`, false) {
 		t.Fatal("repeat update should be a no-op")
 	}
-	if p.noteUpdate(json.RawMessage(`{"taskId":"99","status":"completed"}`)) {
+	p.noteUpdate("update-3", json.RawMessage(`{"taskId":"99","status":"completed"}`))
+	if p.completeUpdate("update-3", "ok", false) {
 		t.Fatal("unknown task id should be a no-op")
 	}
 	if entries := p.entries(); entries[0].Status != acp.PlanEntryStatusCompleted || entries[1].Status != acp.PlanEntryStatusPending {
 		t.Fatalf("entries after update = %#v", entries)
 	}
 
-	if p.completeCreate("tu-unknown", "Task #3 created successfully: x") {
+	if p.completeCreate("tu-unknown", "Task #3 created successfully: x", false) {
 		t.Fatal("result without matching create should be a no-op")
 	}
 	p.noteCreate("tu3", json.RawMessage(`{"subject":"third"}`))
-	if p.completeCreate("tu3", "something went wrong") {
+	if p.completeCreate("tu3", "something went wrong", false) {
 		t.Fatal("unparseable result should not register")
+	}
+
+	p.noteUpdate("failed-update", json.RawMessage(`{"taskId":"2","status":"completed"}`))
+	if p.completeUpdate("failed-update", "Task #2 not found", false) {
+		t.Fatal("logically failed update should not change state")
+	}
+	if entries := p.entries(); entries[1].Status != acp.PlanEntryStatusPending {
+		t.Fatalf("failed update changed task state: %#v", entries)
+	}
+
+	if entries, ok := p.unfinishedEntries(); !ok || len(entries) != 2 {
+		t.Fatalf("unfinished entries = %#v, %v", entries, ok)
+	}
+
+	p.noteUpdate("delete-2", json.RawMessage(`{"taskId":"2","status":"deleted"}`))
+	if !p.completeUpdate("delete-2", `{"success":true,"taskId":"2"}`, false) {
+		t.Fatal("delete #2 should change state")
+	}
+	if entries := p.entries(); len(entries) != 1 || entries[0].Content != "first" {
+		t.Fatalf("entries after delete = %#v", entries)
+	}
+	p.clear()
+	if entries, ok := p.unfinishedEntries(); ok || len(entries) != 0 {
+		t.Fatalf("entries after clear = %#v, %v", entries, ok)
+	}
+	if !p.applyTaskList(`{"tasks":[{"id":"7","subject":"restored","status":"in_progress"}]}`, false) {
+		t.Fatal("structured task list should restore state")
+	}
+	if entries := p.entries(); len(entries) != 1 || entries[0].Content != "restored" || entries[0].Status != acp.PlanEntryStatusInProgress {
+		t.Fatalf("entries after task list = %#v", entries)
+	}
+	if !p.applyTaskList("No tasks found", false) || len(p.entries()) != 0 {
+		t.Fatalf("empty task list did not clear state: %#v", p.entries())
 	}
 }
 

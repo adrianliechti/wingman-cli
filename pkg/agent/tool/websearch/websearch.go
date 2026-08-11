@@ -56,7 +56,7 @@ func Tools(elicit *tool.Elicitation) []tool.Tool {
 			"additionalProperties": false,
 		},
 
-		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			return execute(ctx, args, elicit, approval)
 		},
 	}}
@@ -93,23 +93,23 @@ func approveSearch(ctx context.Context, elicit *tool.Elicitation, approval *sear
 	return nil
 }
 
-func execute(ctx context.Context, args map[string]any, elicit *tool.Elicitation, approval *searchApproval) (string, error) {
+func execute(ctx context.Context, args map[string]any, elicit *tool.Elicitation, approval *searchApproval) (tool.Result, error) {
 	query, ok := args["query"].(string)
 	if !ok || strings.TrimSpace(query) == "" {
-		return "", fmt.Errorf("query is required")
+		return tool.Result{}, fmt.Errorf("query is required")
 	}
 	query = strings.TrimSpace(query)
 
 	limit := defaultResults
 	if value, present, err := tool.PositiveIntArg(args, "max_results"); present {
 		if err != nil {
-			return "", err
+			return tool.Result{}, err
 		}
 		limit = min(value, maxResults)
 	}
 
 	if err := approveSearch(ctx, elicit, approval, query); err != nil {
-		return "", err
+		return tool.Result{}, err
 	}
 
 	reqCtx, cancel := context.WithTimeout(ctx, searchTimeout)
@@ -117,29 +117,29 @@ func execute(ctx context.Context, args map[string]any, elicit *tool.Elicitation,
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, searchEndpoint+"?q="+url.QueryEscape(query), nil)
 	if err != nil {
-		return "", err
+		return tool.Result{}, err
 	}
 	req.Header.Set("User-Agent", "wingman-agent")
 	req.Header.Set("Accept", "text/html")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("web search: %w", err)
+		return tool.Result{}, fmt.Errorf("web search: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("web search: HTTP %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
+		return tool.Result{}, fmt.Errorf("web search: HTTP %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxReadBytes))
 	if err != nil {
-		return "", fmt.Errorf("web search: read response: %w", err)
+		return tool.Result{}, fmt.Errorf("web search: read response: %w", err)
 	}
 
 	results := parseResults(string(body))
 	if len(results) == 0 {
-		return fmt.Sprintf("No results for %q.", query), nil
+		return tool.Text(fmt.Sprintf("No results for %q.", query)), nil
 	}
 	if len(results) > limit {
 		results = results[:limit]
@@ -152,7 +152,7 @@ func execute(ctx context.Context, args map[string]any, elicit *tool.Elicitation,
 			fmt.Fprintf(&b, "   %s\n", r.snippet)
 		}
 	}
-	return strings.TrimRight(b.String(), "\n"), nil
+	return tool.Text(strings.TrimRight(b.String(), "\n")), nil
 }
 
 type result struct {

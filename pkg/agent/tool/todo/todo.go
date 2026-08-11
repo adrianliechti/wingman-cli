@@ -52,14 +52,14 @@ func Tools() []tool.Tool {
 			"additionalProperties": false,
 		},
 
-		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			raw, ok := args["items"].([]any)
 			if !ok {
-				return "", fmt.Errorf("items must be an array")
+				return tool.Result{}, fmt.Errorf("items must be an array")
 			}
 
 			if len(raw) == 0 {
-				return "Todo list cleared.", nil
+				return tool.Text("Todo list cleared."), nil
 			}
 
 			completed := 0
@@ -67,17 +67,17 @@ func Tools() []tool.Tool {
 			for i, item := range raw {
 				entry, ok := item.(map[string]any)
 				if !ok {
-					return "", fmt.Errorf("items[%d] must be an object with content and status", i)
+					return tool.Result{}, fmt.Errorf("items[%d] must be an object with content and status", i)
 				}
 
 				content, _ := entry["content"].(string)
 				if strings.TrimSpace(content) == "" {
-					return "", fmt.Errorf("items[%d].content is required", i)
+					return tool.Result{}, fmt.Errorf("items[%d].content is required", i)
 				}
 
 				status, _ := entry["status"].(string)
 				if !validStatuses[status] {
-					return "", fmt.Errorf("items[%d].status must be pending, in_progress, or completed", i)
+					return tool.Result{}, fmt.Errorf("items[%d].status must be pending, in_progress, or completed", i)
 				}
 				if status == "completed" {
 					completed++
@@ -86,7 +86,7 @@ func Tools() []tool.Tool {
 
 			// The model just wrote the list (it is in the call args); echoing
 			// it back would only bloat the transcript.
-			return fmt.Sprintf("Todo list updated (%d/%d completed).", completed, len(raw)), nil
+			return tool.Text(fmt.Sprintf("Todo list updated (%d/%d completed).", completed, len(raw))), nil
 		},
 	}}
 }

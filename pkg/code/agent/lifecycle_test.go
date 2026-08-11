@@ -65,10 +65,10 @@ func TestUnattendedApprovesAndResolvesPromptsWithoutUI(t *testing.T) {
 func TestModeSwitchReachesToolsWhileCatalogStaysPinned(t *testing.T) {
 	s := &sessionState{
 		parent: &Agent{workspace: &code.Workspace{}},
-		baseTools: []tool.Tool{
-			{Name: "elicit"},
-			{Name: "read"},
-		},
+		toolSet: tool.NewSet(
+			tool.Tool{Name: "elicit"},
+			tool.Tool{Name: "read"},
+		),
 	}
 	s.setMode(modeAgent)
 	s.turnTools.Store([]tool.Tool{{Name: "mcp_search"}})
@@ -98,10 +98,10 @@ func TestModeSwitchReachesToolsWhileCatalogStaysPinned(t *testing.T) {
 func TestUnattendedModeOwnsToolsAndInstructions(t *testing.T) {
 	s := &sessionState{
 		parent: &Agent{workspace: &code.Workspace{}},
-		baseTools: []tool.Tool{
-			{Name: "elicit"},
-			{Name: "read"},
-		},
+		toolSet: tool.NewSet(
+			tool.Tool{Name: "elicit"},
+			tool.Tool{Name: "read"},
+		),
 	}
 	s.setMode(modeUnattended)
 

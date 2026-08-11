@@ -13,7 +13,7 @@ func TestExecExitNotifiesBackgroundedSession(t *testing.T) {
 	m := NewExecManager(func(e ExecExit) { events <- e })
 	defer m.Close()
 
-	tools := ExecTools(m, t.TempDir(), nil, nil)
+	tools := ExecTools(m, t.TempDir(), nil, nil, nil)
 
 	out, err := tools[0].Execute(t.Context(), map[string]any{
 		"command":     "sleep 0.2; echo done",
@@ -23,8 +23,8 @@ func TestExecExitNotifiesBackgroundedSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "Still running") {
-		t.Fatalf("expected backgrounded session, got %q", out)
+	if !strings.Contains(out.Content, "Still running") {
+		t.Fatalf("expected backgrounded session, got %q", out.Content)
 	}
 
 	select {
@@ -48,7 +48,7 @@ func TestExecExitInlineDeliverySuppressesNotification(t *testing.T) {
 	m := NewExecManager(func(e ExecExit) { events <- e })
 	defer m.Close()
 
-	tools := ExecTools(m, t.TempDir(), nil, nil)
+	tools := ExecTools(m, t.TempDir(), nil, nil, nil)
 
 	if _, err := tools[0].Execute(t.Context(), map[string]any{
 		"command": "sleep 0.2; echo done",
@@ -61,8 +61,8 @@ func TestExecExitInlineDeliverySuppressesNotification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "done") || !strings.Contains(out, "Command completed") {
-		t.Fatalf("expected inline exit delivery, got %q", out)
+	if !strings.Contains(out.Content, "done") || !strings.Contains(out.Content, "Command completed") {
+		t.Fatalf("expected inline exit delivery, got %q", out.Content)
 	}
 
 	select {

@@ -20,11 +20,11 @@ func TestTodoReturnsSummaryNotEcho(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(result, "1/3") {
-		t.Errorf("result missing progress summary:\n%s", result)
+	if !strings.Contains(result.Content, "1/3") {
+		t.Errorf("result missing progress summary:\n%s", result.Content)
 	}
-	if strings.Contains(result, "read the code") {
-		t.Errorf("result must not echo the list back (it is already in the call args):\n%s", result)
+	if strings.Contains(result.Content, "read the code") {
+		t.Errorf("result must not echo the list back (it is already in the call args):\n%s", result.Content)
 	}
 }
 
@@ -56,7 +56,7 @@ func TestTodoEmptyListClears(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "cleared") {
-		t.Fatalf("unexpected result: %s", result)
+	if !strings.Contains(result.Content, "cleared") {
+		t.Fatalf("unexpected result: %s", result.Content)
 	}
 }

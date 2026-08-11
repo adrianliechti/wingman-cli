@@ -31,12 +31,13 @@ type session struct {
 	forkOnResume   bool
 	started        bool
 	lastTitle      string
+	plan           *taskPlan
 	cancel         context.CancelFunc
 	proc           *claudeProc
 }
 
 func (a *Agent) newSession(id acp.SessionId, cwd, model, effort string, additionalDirs []string) *session {
-	return &session{
+	s := &session{
 		id:             id,
 		cwd:            cwd,
 		agent:          a,
@@ -46,6 +47,10 @@ func (a *Agent) newSession(id acp.SessionId, cwd, model, effort string, addition
 		mode:           defaultModeID,
 		additionalDirs: append([]string(nil), additionalDirs...),
 	}
+	if a.supportsPlanUpdates() {
+		s.plan = newTaskPlan()
+	}
+	return s
 }
 
 func (s *session) cancelTurn() {
@@ -89,6 +94,17 @@ func (s *session) runTurn(ctx context.Context, prompt []acp.ContentBlock) (acp.S
 	}()
 
 	p.beginTurn()
+	if p.plan != nil {
+		if entries, ok := p.plan.unfinishedEntries(); ok {
+			if err := s.agent.conn.SessionUpdate(turnCtx, acp.SessionNotification{
+				SessionId: s.id,
+				Update:    acp.UpdatePlan(entries...),
+			}); err != nil {
+				p.finishTurn()
+				return "", nil, fmt.Errorf("republish task plan: %w", err)
+			}
+		}
+	}
 	if err := p.out.writeJSON(promptMessage(prompt)); err != nil {
 		p.finishTurn()
 		s.dropProc(p)
@@ -194,10 +210,6 @@ func (s *session) ensureProc() (*claudeProc, error) {
 		return nil, fmt.Errorf("start claude: %w", err)
 	}
 
-	var plan *taskPlan
-	if a.supportsPlanUpdates() {
-		plan = newTaskPlan()
-	}
 	p := &claudeProc{
 		cmd:             cmd,
 		out:             &streamWriter{w: stdin},
@@ -210,7 +222,7 @@ func (s *session) ensureProc() (*claudeProc, error) {
 		tools:           toolUseCache{},
 		emitted:         newToolCallTracker(),
 		streamedContent: &streamedBlockTracker{},
-		plan:            plan,
+		plan:            s.plan,
 		subagentParents: make(map[string]string),
 		results:         make(chan turnResult, 1),
 		dead:            make(chan struct{}),
@@ -372,6 +384,12 @@ func (p *claudeProc) read(ctx context.Context, conn *acp.AgentSideConnection, si
 
 func (p *claudeProc) handleSystem(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, env cliEnvelope) {
 	switch env.Subtype {
+	case "conversation_reset":
+		if p.plan != nil {
+			p.plan.clear()
+			_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: acp.UpdatePlan()})
+		}
+
 	case "session_state_changed":
 		if env.State == "idle" && p.finishTurn() {
 			select {

@@ -71,7 +71,9 @@ type ToolResult struct {
 	Name string `json:"name"`
 	Args string `json:"args,omitempty"`
 
-	Content string `json:"content,omitempty"`
+	Content  string         `json:"content,omitempty"`
+	IsError  bool           `json:"is_error,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type Reasoning struct {

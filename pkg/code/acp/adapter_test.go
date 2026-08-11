@@ -225,6 +225,30 @@ func TestGroupedCategoryConfigAndNewSessionDefaults(t *testing.T) {
 	}
 }
 
+func TestModelDescriptionIsPreserved(t *testing.T) {
+	modelCategory := acpsdk.SessionConfigOptionCategoryModel
+	description := "Claude Sonnet 4.6"
+	models := acpsdk.SessionConfigSelectOptionsUngrouped{{
+		Name: "Default", Value: "default", Description: &description,
+	}}
+	remote := &adapterProtocolAgent{options: []acpsdk.SessionConfigOption{{
+		Select: &acpsdk.SessionConfigOptionSelect{
+			Id: "model", Name: "Model", Type: "select", Category: &modelCategory, CurrentValue: "default",
+			Options: acpsdk.SessionConfigSelectOptions{Ungrouped: &models},
+		},
+	}}}
+	a := newAdapterForTest(t, remote)
+	id, err := a.NewSession(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	available, current := a.Models(id)
+	if current != "default" || len(available) != 1 || available[0].Description != description {
+		t.Fatalf("models = %#v current=%q", available, current)
+	}
+}
+
 func TestSessionUpdatesPreserveCommandsMetadataUsageAndProgress(t *testing.T) {
 	progress := make(chan string, 1)
 	ctx := tool.WithProgressSink(context.Background(), func(_ context.Context, id, text string) { progress <- id + ":" + text })

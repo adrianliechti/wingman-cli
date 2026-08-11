@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/model"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/ansi"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/inline"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/theme"
@@ -57,6 +58,18 @@ func TestComposerMovesIdentityToBottomRail(t *testing.T) {
 	unattendedChrome := a.composerChrome(64)
 	if unattendedChrome.TopColor != theme.Default.Red || unattendedChrome.TopLabel != "" || unattendedChrome.BottomLeft != "" {
 		t.Fatalf("unattended composer should be red without a label: %+v", unattendedChrome)
+	}
+}
+
+func TestComposerHidesDefaultIdentity(t *testing.T) {
+	agent := newUITestAgent(nil)
+	agent.model = "default"
+	agent.models = []model.Model{{ID: "default", Name: "Default", Description: "Claude Sonnet 4.6"}}
+	agent.effort = "default"
+	a := &App{agent: agent, sessionID: "session", editor: NewEditor()}
+
+	if got := ansi.Strip(a.composerChrome(64).BottomRight); got != "" {
+		t.Fatalf("defaults should be hidden, got %q", got)
 	}
 }
 

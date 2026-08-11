@@ -255,7 +255,7 @@ func cellTool(result *agent.ToolResult, width int, full bool) []string {
 
 	hint := tool.ExtractHint(result.Args, result.Name)
 	output := strings.TrimRight(result.Content, "\n")
-	errored := strings.HasPrefix(output, "error:")
+	errored := result.IsError || strings.HasPrefix(output, "error:")
 
 	colorize := func(s string) string { return dim(markdown.Sanitize(s)) }
 	preview := strings.Split(output, "\n")
