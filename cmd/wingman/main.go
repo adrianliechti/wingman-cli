@@ -32,8 +32,6 @@ func main() {
 		runServer(ctx, args[1:])
 	case "acp":
 		runACP(ctx, args[1:])
-	case "proxy":
-		runProxy(ctx, args[1:])
 	case "run":
 		runRun(ctx, args[1:])
 	default:
@@ -79,7 +77,6 @@ Usage:
   wingman [flags]               Launch the agent TUI
   wingman server [flags]        Run the web UI server
   wingman acp [target] [flags]  Run as an ACP stdio server (wingman | claude | codex | pi)
-  wingman proxy [flags]         Run the API proxy + dashboard (requires WINGMAN_URL)
   wingman run <target> [args]   Run an external agent through wingman
 
 Run targets:
