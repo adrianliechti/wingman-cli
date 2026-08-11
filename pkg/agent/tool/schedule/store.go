@@ -11,9 +11,9 @@ import (
 
 const tasksFile = "tasks.yaml"
 
-// Store holds a set of scheduled tasks. FileStore survives restarts and backs
-// the long-lived claw agents; MemoryStore is scoped to a single interactive
-// session and dies with it.
+// Store holds a set of scheduled tasks. FileStore persists them across
+// restarts (the building block for durable schedules); MemoryStore is scoped
+// to a single interactive session and dies with it.
 type Store interface {
 	List() ([]Task, error)
 	Mutate(fn func([]Task) ([]Task, error)) error
