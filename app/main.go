@@ -38,6 +38,8 @@ func main() {
 		s.Apply()
 	}
 
+	prepareCustomTitlebar()
+
 	app := &App{}
 	app.launcher = app.newLauncher()
 

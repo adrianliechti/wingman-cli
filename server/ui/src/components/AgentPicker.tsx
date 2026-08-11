@@ -153,13 +153,13 @@ export function AgentPicker({ subscribe, onSwitchingChange }: Props) {
 	if (agents.length <= 1) return null;
 
 	return (
-		<div className="relative">
+		<div className="relative min-w-0">
 			<button
 				ref={btnRef}
 				type="button"
 				onClick={toggleOpen}
 				disabled={!!switching}
-				className="flex items-center gap-1 px-2 h-7 rounded text-[11.5px] text-fg-muted hover:text-fg hover:bg-bg-hover cursor-pointer transition-colors max-w-[180px] disabled:cursor-wait disabled:opacity-70"
+				className="flex h-7 min-w-0 max-w-[180px] cursor-pointer items-center gap-1 rounded px-2 text-[11.5px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg disabled:cursor-wait disabled:opacity-70"
 				title={`Agent: ${displayedName}`}
 				aria-haspopup="menu"
 				aria-expanded={open}

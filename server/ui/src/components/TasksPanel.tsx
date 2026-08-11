@@ -94,7 +94,7 @@ export function TasksPanel({ sessionId, subscribe, onOpenTask }: Props) {
 	};
 
 	return (
-		<div className="flex flex-col h-full overflow-hidden bg-bg">
+		<div className="flex h-full flex-col overflow-hidden bg-transparent">
 			<div className="overflow-y-auto flex-1">
 				{error && (
 					<div className="mx-2 mt-2 rounded bg-danger/5 px-2 py-1.5 text-[10px] text-danger/80">
