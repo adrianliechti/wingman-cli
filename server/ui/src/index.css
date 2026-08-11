@@ -176,34 +176,26 @@ select,
 }
 
 /* Minimal scrollbars */
-* {
-	scrollbar-color: var(--color-scrollbar-thumb) transparent;
-	scrollbar-width: thin;
-}
-::-webkit-scrollbar {
-	width: 6px;
-	height: 6px;
-}
-::-webkit-scrollbar-thumb {
-	background: var(--color-scrollbar-thumb);
-	border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-	background: var(--color-scrollbar-thumb-hover);
-}
-::-webkit-scrollbar-track,
-::-webkit-scrollbar-corner {
-	background: transparent;
-}
-
-/* A desktop tab strip scrolls as tabs accumulate, but should not grow a
-   scrollbar inside the 40px title bar. The active tab is kept in view by App. */
-.tab-strip {
-	scrollbar-width: none;
-	overscroll-behavior-inline: contain;
-}
-.tab-strip::-webkit-scrollbar {
-	display: none;
+@layer base {
+	* {
+		scrollbar-color: var(--color-scrollbar-thumb) transparent;
+		scrollbar-width: thin;
+	}
+	::-webkit-scrollbar {
+		width: 6px;
+		height: 6px;
+	}
+	::-webkit-scrollbar-thumb {
+		background: var(--color-scrollbar-thumb);
+		border-radius: 3px;
+	}
+	::-webkit-scrollbar-thumb:hover {
+		background: var(--color-scrollbar-thumb-hover);
+	}
+	::-webkit-scrollbar-track,
+	::-webkit-scrollbar-corner {
+		background: transparent;
+	}
 }
 
 /* The primary toolbar doubles as desktop window chrome. Electron and recent

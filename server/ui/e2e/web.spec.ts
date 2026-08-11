@@ -35,6 +35,7 @@ test("focuses the composer surface without outlining its textarea", async ({
 		const surface = getComputedStyle(element.closest("[data-chat-composer]")!);
 		return {
 			textareaBorder: textarea.borderWidth,
+			textareaFieldSizing: textarea.getPropertyValue("field-sizing"),
 			textareaOutline: textarea.outlineStyle,
 			textareaShadow: textarea.boxShadow,
 			surfaceBorder: surface.borderWidth,
@@ -46,6 +47,7 @@ test("focuses the composer surface without outlining its textarea", async ({
 	});
 	expect(styles).toEqual({
 		textareaBorder: "0px",
+		textareaFieldSizing: "content",
 		textareaOutline: "none",
 		textareaShadow: "none",
 		surfaceBorder: "1px",
@@ -102,7 +104,92 @@ test("keeps the empty draft tab non-closable", async ({ page }) => {
 	await expect(page.locator(`[data-center-tab="${draftId}"]`)).toHaveCount(1);
 });
 
-test("keeps the session context menu above panel clipping", async ({ page }) => {
+test("uses each Git status slot for its stage action", async ({ page }) => {
+	await page.route(/\/api\/capabilities$/, async (route) => {
+		await route.fulfill({
+			json: {
+				git: true,
+				lsp: false,
+				diffs: true,
+				tasks: false,
+				terminal: true,
+			},
+		});
+	});
+	await page.route(/\/api\/git\/status$/, async (route) => {
+		await route.fulfill({
+			json: {
+				branch: "main",
+				ahead: 0,
+				behind: 0,
+				has_remote: false,
+				files: [
+					{
+						path: "src/staged.ts",
+						index_status: "M",
+						worktree_status: "",
+						staged: true,
+						changed: false,
+					},
+					{
+						path: "src/changed.ts",
+						index_status: "",
+						worktree_status: "M",
+						staged: false,
+						changed: true,
+					},
+				],
+			},
+		});
+	});
+	await composer(page);
+	await page
+		.getByRole("tablist", { name: "Workspace panels" })
+		.getByRole("tab", { name: "Changes", exact: true })
+		.click();
+
+	for (const entry of [
+		{ path: "src/staged.ts", action: "Unstage" },
+		{ path: "src/changed.ts", action: "Stage" },
+	]) {
+		const row = page.locator(`[data-change-row="${entry.path}"]`);
+		const status = row.locator("[data-change-status]");
+		const action = row.locator("[data-change-action]");
+		const directory = row.locator("[data-change-directory]");
+		const statusBox = await status.boundingBox();
+
+		await expect(row).toBeVisible();
+		await expect(status).toHaveText("M");
+		await expect(status).toBeVisible();
+		await expect(action).not.toBeVisible();
+		await expect(
+			row.getByRole("button", { name: `${entry.action} ${entry.path}` }),
+		).toBeVisible();
+		await expect(row.locator("[data-change-content]")).toHaveCSS(
+			"padding-right",
+			"12px",
+		);
+
+		await row.hover();
+		await expect(status).not.toBeVisible();
+		await expect(action).toBeVisible();
+		await expect(directory).toBeVisible();
+		const actionBox = await action.boundingBox();
+		expect(statusBox).not.toBeNull();
+		expect(actionBox).not.toBeNull();
+		expect(
+			Math.abs(
+				actionBox!.x +
+					actionBox!.width / 2 -
+					(statusBox!.x + statusBox!.width / 2),
+			),
+		).toBeLessThanOrEqual(1);
+	}
+});
+
+test("keeps the session context menu above panel clipping", async ({
+	page,
+}) => {
 	await page.route(/\/api\/sessions$/, async (route) => {
 		await route.fulfill({
 			json: [
@@ -128,11 +215,13 @@ test("keeps the session context menu above panel clipping", async ({ page }) => 
 	).toHaveCount(0);
 	await session.click({ button: "right" });
 
-	const menu = page.getByRole("menu", { name: "Actions for Menu clipping check" });
+	const menu = page.getByRole("menu", {
+		name: "Actions for Menu clipping check",
+	});
 	await expect(menu).toBeVisible();
-	expect(await menu.evaluate((element) => element.parentElement === document.body)).toBe(
-		true,
-	);
+	expect(
+		await menu.evaluate((element) => element.parentElement === document.body),
+	).toBe(true);
 	const box = await menu.boundingBox();
 	expect(box).not.toBeNull();
 	expect(box!.x).toBeGreaterThanOrEqual(4);
@@ -161,6 +250,8 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 	);
 	await expect(tabStrip).toBeVisible();
 	await expect(tabStrip).toHaveCSS("border-bottom-width", "0px");
+	await expect(tabStrip).toHaveCSS("scrollbar-width", "none");
+	await expect(tabStrip).toHaveCSS("overscroll-behavior-x", "contain");
 	expect(
 		await tabStrip.evaluate((element) =>
 			element.closest("[data-window-titlebar]")?.getAttribute("aria-label"),
@@ -184,9 +275,9 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 	await expect(workspaceFrame).toHaveCSS("width", "304px");
 	await expect(workspaceFrame).toHaveCSS("border-radius", "10px");
 	await expect(workspaceFrame).toHaveCSS("border-left-width", "0px");
-	await expect(page.getByRole("separator", { name: /Resize .* panel/ })).toHaveCount(
-		2,
-	);
+	await expect(
+		page.getByRole("separator", { name: /Resize .* panel/ }),
+	).toHaveCount(2);
 	await expect(toolbar.locator("[data-titlebar-left-panel]")).toHaveCSS(
 		"width",
 		"240px",
@@ -253,8 +344,7 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 				Math.abs(titlebarPanel.x - workspace.x) <= 1 &&
 				Math.abs(frame.x - workspace.x) <= 1 &&
 				Math.abs(toggle.x - workspace.x) <= 1 &&
-				Math.abs(frame.x + frame.width - (workspace.x + workspace.width)) <=
-					1
+				Math.abs(frame.x + frame.width - (workspace.x + workspace.width)) <= 1
 			);
 		})
 		.toBe(true);
@@ -316,8 +406,11 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 	}
 });
 
-test("resizes borderless desktop panels within their limits", async ({ page }) => {
+test("resizes borderless desktop panels within their limits", async ({
+	page,
+}) => {
 	await composer(page);
+	const toolbar = page.getByLabel("Window toolbar");
 	const sessions = page.locator('[data-layout-panel="sessions"]');
 	const workspace = page.locator('[data-layout-panel="workspace"]');
 	const sessionsHandle = page.getByRole("separator", {
@@ -327,9 +420,15 @@ test("resizes borderless desktop panels within their limits", async ({ page }) =
 		name: "Resize workspace panel",
 	});
 
-	await expect(sessionsHandle).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+	await expect(sessionsHandle).toHaveCSS(
+		"background-color",
+		"rgba(0, 0, 0, 0)",
+	);
 	await sessionsHandle.hover();
-	await expect(sessionsHandle).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+	await expect(sessionsHandle).toHaveCSS(
+		"background-color",
+		"rgba(0, 0, 0, 0)",
+	);
 
 	const sessionsBox = await sessionsHandle.boundingBox();
 	expect(sessionsBox).not.toBeNull();
@@ -344,6 +443,10 @@ test("resizes borderless desktop panels within their limits", async ({ page }) =
 		{ steps: 5 },
 	);
 	await expect(sessions).toHaveCSS("width", "300px");
+	await expect(toolbar.locator("[data-titlebar-left-panel]")).toHaveCSS(
+		"width",
+		"300px",
+	);
 	await page.mouse.move(sessionsBox!.x + 1_000, sessionsBox!.y + 20);
 	await expect(sessions).toHaveCSS("width", "360px");
 	await page.mouse.up();
@@ -365,6 +468,10 @@ test("resizes borderless desktop panels within their limits", async ({ page }) =
 		{ steps: 5 },
 	);
 	await expect(workspace).toHaveCSS("width", "364px");
+	await expect(toolbar.locator("[data-titlebar-right-panel]")).toHaveCSS(
+		"width",
+		"364px",
+	);
 	await page.mouse.move(workspaceBox!.x - 1_000, workspaceBox!.y + 20);
 	await expect(workspace).toHaveCSS("width", "480px");
 	await page.mouse.up();
@@ -372,6 +479,21 @@ test("resizes borderless desktop panels within their limits", async ({ page }) =
 		"width",
 		"480px",
 	);
+});
+
+test("keeps the center workspace mounted across responsive layouts", async ({
+	page,
+}) => {
+	await composer(page);
+	const center = page.locator('[data-layout-panel="center"]');
+	await center.evaluate((element) => {
+		element.setAttribute("data-mount-marker", "original");
+	});
+
+	for (const width of [1_000, 700, 1_280]) {
+		await page.setViewportSize({ width, height: 800 });
+		await expect(center).toHaveAttribute("data-mount-marker", "original");
+	}
 });
 
 test("keeps workspace tabs inside the drawer on narrow layouts", async ({

@@ -17,9 +17,22 @@ import {
 	Wrench,
 	X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	type CSSProperties,
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { createPortal } from "react-dom";
-import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
+import {
+	Group,
+	Panel,
+	type PanelSize,
+	Separator,
+	usePanelRef,
+} from "react-resizable-panels";
 import { ChatPanel } from "./components/ChatPanel";
 import {
 	CommandPalette,
@@ -146,12 +159,14 @@ export default function App() {
 	const [requestedRightTab, setRequestedRightTab] = useState<RightTab>("files");
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 	const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
-	const [leftPanelWidth, setLeftPanelWidth] = useState(LEFT_PANEL_DEFAULT_SIZE);
-	const [rightPanelWidth, setRightPanelWidth] = useState(
+	const appRef = useRef<HTMLDivElement>(null);
+	const leftPanelWidthRef = useRef(LEFT_PANEL_DEFAULT_SIZE);
+	const [rightPanelDefaultWidth] = useState(() =>
 		layoutMode === "wide"
 			? RIGHT_PANEL_WIDE_DEFAULT_SIZE
 			: RIGHT_PANEL_MEDIUM_DEFAULT_SIZE,
 	);
+	const rightPanelWidthRef = useRef(rightPanelDefaultWidth);
 	const leftPanelRef = usePanelRef();
 	const rightPanelRef = usePanelRef();
 	const [leftDrawerOpen, setLeftDrawerOpen] = useState(false);
@@ -916,30 +931,46 @@ export default function App() {
 
 	const [noticeDismissed, setNoticeDismissed] = useState(false);
 	const showNotice = !!capabilities?.notice && !noticeDismissed;
+	const handleLeftPanelResize = useCallback(({ inPixels }: PanelSize) => {
+		setSidebarCollapsed(inPixels === 0);
+		if (inPixels <= 0) return;
+		const width = Math.round(inPixels);
+		leftPanelWidthRef.current = width;
+		appRef.current?.style.setProperty("--left-panel-width", `${width}px`);
+	}, []);
+	const handleRightPanelResize = useCallback(({ inPixels }: PanelSize) => {
+		setRightPanelCollapsed(inPixels === 0);
+		if (inPixels <= 0) return;
+		const width = Math.round(inPixels);
+		rightPanelWidthRef.current = width;
+		appRef.current?.style.setProperty("--right-panel-width", `${width}px`);
+	}, []);
 	const toggleSidebar = useCallback(() => {
 		if (layoutMode === "wide") {
 			const panel = leftPanelRef.current;
-			if (panel?.isCollapsed()) panel.resize(`${leftPanelWidth}px`);
-			else panel?.collapse();
+			if (panel?.isCollapsed()) {
+				panel.resize(`${leftPanelWidthRef.current}px`);
+			} else panel?.collapse();
 		} else setLeftDrawerOpen((open) => !open);
-	}, [layoutMode, leftPanelRef, leftPanelWidth]);
+	}, [layoutMode, leftPanelRef]);
 	const toggleRightPanel = useCallback(() => {
 		if (layoutMode === "narrow") setRightDrawerOpen((open) => !open);
 		else {
 			const panel = rightPanelRef.current;
-			if (panel?.isCollapsed()) panel.resize(`${rightPanelWidth}px`);
-			else panel?.collapse();
+			if (panel?.isCollapsed()) {
+				panel.resize(`${rightPanelWidthRef.current}px`);
+			} else panel?.collapse();
 		}
-	}, [layoutMode, rightPanelRef, rightPanelWidth]);
+	}, [layoutMode, rightPanelRef]);
 	const showRightPanel = useCallback(
 		(tab: RightTab) => {
 			setRequestedRightTab(tab);
 			if (layoutMode === "narrow") setRightDrawerOpen(true);
 			else if (rightPanelRef.current?.isCollapsed()) {
-				rightPanelRef.current.resize(`${rightPanelWidth}px`);
+				rightPanelRef.current.resize(`${rightPanelWidthRef.current}px`);
 			}
 		},
-		[layoutMode, rightPanelRef, rightPanelWidth],
+		[layoutMode, rightPanelRef],
 	);
 
 	const paletteActions = useMemo<PaletteAction[]>(() => {
@@ -1123,7 +1154,16 @@ export default function App() {
 	);
 
 	return (
-		<div className="relative flex flex-col h-screen bg-bg text-fg">
+		<div
+			ref={appRef}
+			className="relative flex h-screen flex-col bg-bg text-fg"
+			style={
+				{
+					"--left-panel-width": `${LEFT_PANEL_DEFAULT_SIZE}px`,
+					"--right-panel-width": `${rightPanelDefaultWidth}px`,
+				} as CSSProperties
+			}
+		>
 			{layoutMode === "wide" && (
 				<div
 					data-panel-frame="sessions"
@@ -1133,7 +1173,7 @@ export default function App() {
 							? "-translate-x-full opacity-0"
 							: "translate-x-0 opacity-100"
 					}`}
-					style={{ width: `${leftPanelWidth}px` }}
+					style={{ width: "var(--left-panel-width)" }}
 				/>
 			)}
 			{layoutMode !== "narrow" && (
@@ -1145,7 +1185,7 @@ export default function App() {
 							? "translate-x-full opacity-0"
 							: "translate-x-0 opacity-100"
 					}`}
-					style={{ width: `${rightPanelWidth}px` }}
+					style={{ width: "var(--right-panel-width)" }}
 				/>
 			)}
 			<header
@@ -1158,8 +1198,8 @@ export default function App() {
 					aria-hidden="true"
 					className="pointer-events-none absolute bottom-0 h-px bg-border-subtle"
 					style={{
-						left: leftPanelDocked ? `${leftPanelWidth}px` : "0px",
-						right: rightPanelDocked ? `${rightPanelWidth}px` : "0px",
+						left: leftPanelDocked ? "var(--left-panel-width)" : "0px",
+						right: rightPanelDocked ? "var(--right-panel-width)" : "0px",
 					}}
 				/>
 				<div
@@ -1172,7 +1212,7 @@ export default function App() {
 					className="flex shrink-0 items-center gap-0.5 overflow-hidden pr-0 pl-2"
 					style={{
 						width: leftPanelDocked
-							? `calc(${leftPanelWidth}px - var(--window-controls-inset))`
+							? "calc(var(--left-panel-width) - var(--window-controls-inset))"
 							: "40px",
 					}}
 				>
@@ -1210,7 +1250,7 @@ export default function App() {
 
 				<div
 					ref={tabListRef}
-					className="tab-strip flex min-w-[80px] flex-1 items-stretch overflow-x-auto"
+					className="tab-strip flex min-w-[80px] flex-1 items-stretch overflow-x-auto overscroll-x-contain scrollbar-none"
 					role="tablist"
 					aria-label="Open tabs"
 					onContextMenu={(event) => {
@@ -1416,7 +1456,9 @@ export default function App() {
 					data-window-interactive
 					data-titlebar-right-panel
 					className="flex shrink-0 items-center overflow-hidden pr-2 pl-0"
-					style={{ width: rightPanelDocked ? `${rightPanelWidth}px` : "40px" }}
+					style={{
+						width: rightPanelDocked ? "var(--right-panel-width)" : "40px",
+					}}
 				>
 					<button
 						type="button"
@@ -1464,8 +1506,7 @@ export default function App() {
 				</div>
 			)}
 			<Group
-				key={layoutMode}
-				id={`wingman-${layoutMode}-layout`}
+				id="wingman-layout"
 				orientation="horizontal"
 				className="relative z-10 flex-1 overflow-hidden"
 			>
@@ -1479,10 +1520,7 @@ export default function App() {
 						collapsedSize="0px"
 						collapsible
 						groupResizeBehavior="preserve-pixel-size"
-						onResize={({ inPixels }) => {
-							setSidebarCollapsed(inPixels === 0);
-							if (inPixels > 0) setLeftPanelWidth(Math.round(inPixels));
-						}}
+						onResize={handleLeftPanelResize}
 						data-layout-panel="sessions"
 						inert={sidebarCollapsed}
 						className="h-full overflow-hidden"
@@ -1494,7 +1532,7 @@ export default function App() {
 									? "pointer-events-none -translate-x-full opacity-0"
 									: "translate-x-0 opacity-100"
 							}`}
-							style={{ width: `${leftPanelWidth}px` }}
+							style={{ width: "var(--left-panel-width)" }}
 						>
 							{sidebarContent}
 						</div>
@@ -1628,20 +1666,13 @@ export default function App() {
 					<Panel
 						id="workspace"
 						panelRef={rightPanelRef}
-						defaultSize={
-							layoutMode === "wide"
-								? `${RIGHT_PANEL_WIDE_DEFAULT_SIZE}px`
-								: `${RIGHT_PANEL_MEDIUM_DEFAULT_SIZE}px`
-						}
+						defaultSize={`${rightPanelDefaultWidth}px`}
 						minSize={`${RIGHT_PANEL_MIN_SIZE}px`}
 						maxSize={`${RIGHT_PANEL_MAX_SIZE}px`}
 						collapsedSize="0px"
 						collapsible
 						groupResizeBehavior="preserve-pixel-size"
-						onResize={({ inPixels }) => {
-							setRightPanelCollapsed(inPixels === 0);
-							if (inPixels > 0) setRightPanelWidth(Math.round(inPixels));
-						}}
+						onResize={handleRightPanelResize}
 						data-layout-panel="workspace"
 						inert={rightPanelCollapsed}
 						className="h-full overflow-hidden"
@@ -1653,7 +1684,7 @@ export default function App() {
 									? "pointer-events-none translate-x-full opacity-0"
 									: "translate-x-0 opacity-100"
 							}`}
-							style={{ width: `${rightPanelWidth}px` }}
+							style={{ width: "var(--right-panel-width)" }}
 						>
 							{inspectorContent}
 						</div>

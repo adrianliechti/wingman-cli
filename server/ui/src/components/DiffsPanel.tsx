@@ -888,38 +888,60 @@ function ChangeRow({
 	const dir = path.slice(0, path.length - fileName.length).replace(/\/$/, "");
 	return (
 		<div
+			data-change-row={path}
 			className={`group relative flex h-8 items-stretch text-[12px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg ${disabled ? "pointer-events-none opacity-50" : ""}`}
 			onContextMenu={onContextMenu}
 		>
+			{action ? (
+				<button
+					type="button"
+					disabled={disabled}
+					onClick={() => onAction?.()}
+					title={`${actionLabel} ${path}`}
+					aria-label={`${actionLabel} ${path}`}
+					className="group/action ml-2 flex w-5 shrink-0 items-center justify-center text-fg-dim transition-colors hover:text-fg focus-visible:text-fg"
+				>
+					<span
+						data-change-status
+						aria-hidden="true"
+						className={`text-center text-[11px] font-bold group-hover:hidden group-focus/action:hidden ${statusColor(status, conflict)}`}
+					>
+						{status}
+					</span>
+					<span
+						data-change-action
+						aria-hidden="true"
+						className="hidden items-center justify-center group-hover:flex group-focus/action:flex"
+					>
+						{action}
+					</span>
+				</button>
+			) : (
+				<span
+					data-change-status
+					className={`ml-3 flex w-3 shrink-0 items-center justify-center text-center text-[11px] font-bold ${statusColor(status, conflict)}`}
+				>
+					{status}
+				</span>
+			)}
 			<button
 				type="button"
 				disabled={disabled}
 				onClick={onClick}
 				title={path}
-				className="flex min-w-0 flex-1 items-center gap-2 px-3 pr-8 text-left"
+				data-change-content
+				className={`flex min-w-0 flex-1 items-center gap-2 pr-3 text-left ${action ? "pl-1" : "pl-2"}`}
 			>
-				<span
-					className={`w-3 shrink-0 text-center text-[11px] font-bold ${statusColor(status, conflict)}`}
-				>
-					{status}
-				</span>
 				<span className="truncate font-mono text-[12px]">{fileName}</span>
 				{dir && (
-					<span className="ml-auto truncate font-mono text-[11px] text-fg-dim group-hover:hidden">
+					<span
+						data-change-directory
+						className="ml-auto truncate font-mono text-[11px] text-fg-dim"
+					>
 						{dir}
 					</span>
 				)}
 			</button>
-			{action && (
-				<button
-					type="button"
-					title={actionLabel}
-					className="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded text-fg-dim opacity-0 hover:bg-bg-active hover:text-fg group-hover:opacity-100 group-focus-within:opacity-100"
-					onClick={() => onAction?.()}
-				>
-					{action}
-				</button>
-			)}
 		</div>
 	);
 }

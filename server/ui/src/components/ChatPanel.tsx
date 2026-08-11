@@ -879,8 +879,7 @@ export function ChatPanel({
 								<textarea
 									ref={textareaRef}
 									autoFocus
-									className="chat-composer-textarea w-full appearance-none bg-transparent text-fg text-[12px] font-mono resize-none leading-[1.7] placeholder:text-fg-dim max-h-[40vh] overflow-y-auto"
-									style={{ fieldSizing: "content" } as React.CSSProperties}
+									className="chat-composer-textarea field-sizing-content w-full appearance-none bg-transparent text-fg text-[12px] font-mono resize-none leading-[1.7] placeholder:text-fg-dim max-h-[40vh] overflow-y-auto"
 									value={input}
 									onChange={(e) => {
 										historyIdxRef.current = null;
