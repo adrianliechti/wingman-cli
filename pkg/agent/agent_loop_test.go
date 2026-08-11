@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -129,6 +130,95 @@ func TestCompleteClassifiesTransientTerminalFailureBeforeOutput(t *testing.T) {
 	}
 	if !isRecoverableError(err) {
 		t.Fatalf("error = %v, want recoverable", err)
+	}
+}
+
+func TestSendUsesStrictOutputSchemaWithoutTools(t *testing.T) {
+	var requestBody map[string]any
+	client := streamingTestClient(func(r *http.Request) string {
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(data, &requestBody); err != nil {
+			t.Fatal(err)
+		}
+		return "data: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{\"output\":[],\"usage\":{\"input_tokens\":1,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1}}}\n\n"
+	})
+
+	a := &Agent{Config: &Config{
+		client: &client,
+		Tools: func() []tool.Tool {
+			return []tool.Tool{{Name: "read", Parameters: map[string]any{"type": "object"}}}
+		},
+	}}
+	ctx := WithOutputSchema(context.Background(), map[string]any{
+		"type": "object",
+	})
+	stream, err := a.Send(ctx, []Content{{Text: "format the result"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, err := range stream {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	text, ok := requestBody["text"].(map[string]any)
+	if !ok {
+		t.Fatalf("text = %#v", requestBody["text"])
+	}
+	format, ok := text["format"].(map[string]any)
+	if !ok || format["type"] != "json_schema" || format["name"] != "response" || format["strict"] != true {
+		t.Fatalf("text.format = %#v", text["format"])
+	}
+	if tools, present := requestBody["tools"]; present {
+		if list, ok := tools.([]any); !ok || len(list) != 0 {
+			t.Fatalf("tools = %#v, want none during structured finalization", tools)
+		}
+	}
+}
+
+func TestSendUsesJSONObjectOutputForEmptySchema(t *testing.T) {
+	var requestBody map[string]any
+	client := streamingTestClient(func(r *http.Request) string {
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(data, &requestBody); err != nil {
+			t.Fatal(err)
+		}
+		return "data: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{\"output\":[],\"usage\":{\"input_tokens\":1,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1}}}\n\n"
+	})
+
+	a := &Agent{Config: &Config{
+		client: &client,
+		Tools: func() []tool.Tool {
+			return []tool.Tool{{Name: "read", Parameters: map[string]any{"type": "object"}}}
+		},
+	}}
+	stream, err := a.Send(WithOutputSchema(context.Background(), map[string]any{}), []Content{{Text: "format the result"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, err := range stream {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	text, ok := requestBody["text"].(map[string]any)
+	if !ok {
+		t.Fatalf("text = %#v", requestBody["text"])
+	}
+	format, ok := text["format"].(map[string]any)
+	if !ok || format["type"] != "json_object" {
+		t.Fatalf("text.format = %#v", text["format"])
+	}
+	if tools, present := requestBody["tools"]; present {
+		if list, ok := tools.([]any); !ok || len(list) != 0 {
+			t.Fatalf("tools = %#v, want none during structured finalization", tools)
+		}
 	}
 }
 

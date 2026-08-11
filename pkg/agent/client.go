@@ -56,6 +56,7 @@ type request struct {
 	cacheKey     string
 	messages     []Message
 	tools        []tool.Tool
+	outputSchema map[string]any
 }
 
 type response struct {
@@ -102,6 +103,20 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 		}
 
 		params.Reasoning = rp
+	}
+
+	if r.outputSchema != nil {
+		if len(r.outputSchema) == 0 {
+			format := shared.NewResponseFormatJSONObjectParam()
+			params.Text.Format.OfJSONObject = &format
+		} else {
+			format := responses.ResponseFormatTextConfigParamOfJSONSchema(
+				"response",
+				r.outputSchema,
+			)
+			format.OfJSONSchema.Strict = openai.Bool(true)
+			params.Text.Format = format
+		}
 	}
 
 	// A stalled stream (no events at all) would otherwise hang the turn

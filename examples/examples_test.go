@@ -13,6 +13,8 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/plugin"
 	"github.com/adrianliechti/wingman-agent/pkg/skill"
+
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 func TestMCPExampleMatchesConfigSchema(t *testing.T) {
@@ -36,6 +38,23 @@ func TestMCPExampleMatchesConfigSchema(t *testing.T) {
 		if server.Command == "" && server.URL == "" {
 			t.Errorf("server %q needs a command or url", name)
 		}
+	}
+}
+
+func TestNonInteractiveOutputSchemaResolves(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("non-interactive", "project.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema jsonschema.Schema
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := schema.Resolve(nil); err != nil {
+		t.Fatalf("project.schema.json is invalid: %v", err)
+	}
+	if schema.Type != "object" || len(schema.Required) == 0 {
+		t.Fatalf("project.schema.json must constrain an object: %+v", schema)
 	}
 }
 

@@ -3,9 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"iter"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,19 +19,20 @@ import (
 func TestParseScriptArgs(t *testing.T) {
 	opts, err := parseScriptArgs([]string{
 		"--agent", "codex",
-		"-p", "fix it",
-		"--output-format", "JSON",
-		"--mode", "PLAN",
+		"fix it",
+		"--json",
+		"--debug",
 		"--model", "gpt-test",
 		"--effort", "high",
+		"--schema", "schema.json",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	want := scriptOptions{
-		Agent: "codex", Prompt: "fix it", OutputFormat: "json", Mode: "plan",
-		Model: "gpt-test", Effort: "high",
+		Agent: "codex", Prompt: "fix it", JSON: true, Debug: true,
+		Model: "gpt-test", Effort: "high", Schema: "schema.json",
 	}
 	if opts != want {
 		t.Fatalf("parseScriptArgs() = %#v, want %#v", opts, want)
@@ -38,19 +40,43 @@ func TestParseScriptArgs(t *testing.T) {
 }
 
 func TestParseScriptArgsDefaults(t *testing.T) {
-	opts, err := parseScriptArgs([]string{"-p", "summarize"})
+	opts, err := parseScriptArgs([]string{"summarize"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts.Agent != code.BuiltinAgentName || opts.OutputFormat != "text" || opts.Mode != code.UnattendedModeID {
+	if opts.Agent != code.BuiltinAgentName || opts.JSON {
 		t.Fatalf("unexpected defaults: %#v", opts)
 	}
 }
 
-func TestParseScriptArgsRejectsConflictsAndUnknownFormat(t *testing.T) {
+func TestParseScriptArgsResume(t *testing.T) {
+	tests := []struct {
+		args      []string
+		sessionID string
+		prompt    string
+	}{
+		{[]string{"resume", "session-1", "continue fixing"}, "session-1", "continue fixing"},
+		{[]string{"resume", "--last", "review it"}, "latest", "review it"},
+		{[]string{"resume", "session-1"}, "session-1", ""},
+	}
+	for _, tt := range tests {
+		opts, err := parseScriptArgs(tt.args)
+		if err != nil {
+			t.Fatalf("parseScriptArgs(%q): %v", tt.args, err)
+		}
+		if !opts.Resume || opts.SessionID != tt.sessionID || opts.Prompt != tt.prompt {
+			t.Fatalf("parseScriptArgs(%q) = %#v", tt.args, opts)
+		}
+	}
+}
+
+func TestParseScriptArgsRejectsInvalidShapes(t *testing.T) {
 	for _, args := range [][]string{
-		{"-p", "hello", "--continue", "--resume", "session-1"},
-		{"-p", "hello", "--output-format", "yaml"},
+		{"one", "two"},
+		{"--last", "hello"},
+		{"resume"},
+		{"resume", "--last", "--ephemeral"},
+		{"hello", "--unknown"},
 	} {
 		if _, err := parseScriptArgs(args); err == nil {
 			t.Fatalf("parseScriptArgs(%q) succeeded", args)
@@ -58,8 +84,8 @@ func TestParseScriptArgsRejectsConflictsAndUnknownFormat(t *testing.T) {
 	}
 }
 
-func TestScriptPromptCombinesPipedInput(t *testing.T) {
-	got, err := scriptPrompt("explain the failure", strings.NewReader("build failed\n"), true)
+func TestScriptPromptCombinesPipedContextAndInstruction(t *testing.T) {
+	got, err := scriptPrompt("explain the failure", strings.NewReader("build failed\n"), true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,9 +94,26 @@ func TestScriptPromptCombinesPipedInput(t *testing.T) {
 	}
 }
 
+func TestScriptPromptDashReadsFullPrompt(t *testing.T) {
+	got, err := scriptPrompt("-", strings.NewReader("do the thing\n"), true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "do the thing" {
+		t.Fatalf("scriptPrompt() = %q", got)
+	}
+}
+
+func TestScriptPromptAllowsEmptyResume(t *testing.T) {
+	got, err := scriptPrompt("", strings.NewReader(""), false, true)
+	if err != nil || got != "Continue." {
+		t.Fatalf("scriptPrompt() = %q, %v", got, err)
+	}
+}
+
 func TestScriptPromptRejectsOversizedInput(t *testing.T) {
 	input := ioLimitByteReader{remaining: maxScriptStdinBytes + 1}
-	if _, err := scriptPrompt("explain", &input, true); err == nil || !strings.Contains(err.Error(), "10 MiB") {
+	if _, err := scriptPrompt("explain", &input, true, false); err == nil || !strings.Contains(err.Error(), "10 MiB") {
 		t.Fatalf("scriptPrompt() error = %v", err)
 	}
 }
@@ -104,6 +147,28 @@ func TestScriptTextCollectorDiscardsFailedAttempt(t *testing.T) {
 	}
 }
 
+func TestScriptReporterShowsToolProgressOnlyInDebugMode(t *testing.T) {
+	toolCall := agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{ToolCall: &agent.ToolCall{ID: "call-1", Name: "read"}}}}
+	toolResult := agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{ToolResult: &agent.ToolResult{ID: "call-1", Name: "read"}}}}
+
+	for _, tt := range []struct {
+		debug bool
+		want  string
+	}{
+		{debug: false, want: ""},
+		{debug: true, want: "→ read\n✓ read\n"},
+	} {
+		var errOut bytes.Buffer
+		reporter := newScriptReporter(tt.debug, &errOut)
+		reporter.add(toolCall)
+		reporter.commit()
+		reporter.add(toolResult)
+		if errOut.String() != tt.want {
+			t.Fatalf("debug=%v stderr=%q, want %q", tt.debug, errOut.String(), tt.want)
+		}
+	}
+}
+
 func TestFinalAssistantTextUsesLatestTurn(t *testing.T) {
 	messages := []agent.Message{
 		{Role: agent.RoleAssistant, Content: []agent.Content{{Text: "old"}}},
@@ -120,49 +185,140 @@ func TestFinalAssistantTextUsesLatestTurn(t *testing.T) {
 	}
 }
 
-func TestExecuteScriptReturnsJSONAndConfiguresSession(t *testing.T) {
-	a := &fakeScriptAgent{
+func TestExecuteScriptReturnsFinalJSONAndConfiguresSession(t *testing.T) {
+	a := newFakeScriptAgent()
+	a.response = `{"message":"hello back"}`
+	opts := scriptOptions{
+		Agent: "wingman", Prompt: "hello", JSON: true,
+		Model: "test-model", Effort: "high",
+	}
+
+	var out, errOut bytes.Buffer
+	if err := executeScript(context.Background(), a, opts, "hello", &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+
+	if out.String() != "{\"message\":\"hello back\"}\n" {
+		t.Fatalf("stdout = %q", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("JSON mode wrote stderr: %q", errOut.String())
+	}
+	if a.currentMode != code.UnattendedModeID || a.model != "test-model" || a.effort != "high" {
+		t.Fatalf("session configuration: mode=%q model=%q effort=%q", a.currentMode, a.model, a.effort)
+	}
+	if a.sendCount != 2 || a.jsonCalls != 1 || len(a.inputs[0]) != 1 || a.inputs[0][0].Text != "hello" {
+		t.Fatalf("sendCount=%d jsonCalls=%d inputs=%#v", a.sendCount, a.jsonCalls, a.inputs)
+	}
+}
+
+func TestExecuteScriptWritesOnlyFinalOutputForSimpleTurn(t *testing.T) {
+	a := newFakeScriptAgent()
+	var out, errOut bytes.Buffer
+	opts := scriptOptions{Prompt: "hello"}
+	if err := executeScript(context.Background(), a, opts, "hello", &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "hello back\n" {
+		t.Fatalf("stdout = %q", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("stderr = %q", errOut.String())
+	}
+	if a.saved != "new-session" {
+		t.Fatalf("saved session = %q", a.saved)
+	}
+}
+
+func TestExecuteScriptDeletesEphemeralSession(t *testing.T) {
+	a := newFakeScriptAgent()
+	opts := scriptOptions{Prompt: "hello", Ephemeral: true}
+	if err := executeScript(context.Background(), a, opts, "hello", &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if a.deleted != "new-session" || a.saved != "" {
+		t.Fatalf("deleted=%q saved=%q", a.deleted, a.saved)
+	}
+}
+
+func TestExecuteScriptValidatesOutputSchema(t *testing.T) {
+	dir := t.TempDir()
+	schemaPath := filepath.Join(dir, "schema.json")
+	schema := `{
+		"type":"object",
+		"properties":{"name":{"type":"string"}},
+		"required":["name"],
+		"additionalProperties":false
+	}`
+	if err := os.WriteFile(schemaPath, []byte(schema), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := newFakeScriptAgent()
+	a.response = `{"name":"wingman"}`
+	opts := scriptOptions{Prompt: "metadata", JSON: true, Schema: schemaPath}
+	var out bytes.Buffer
+	if err := executeScript(context.Background(), a, opts, "metadata", &out, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "{\"name\":\"wingman\"}\n" {
+		t.Fatalf("stdout = %q", out.String())
+	}
+	if a.sendCount != 2 || a.schemaCalls != 1 || a.jsonCalls != 0 {
+		t.Fatalf("sendCount=%d schemaCalls=%d jsonCalls=%d", a.sendCount, a.schemaCalls, a.jsonCalls)
+	}
+	if len(a.inputs) != 2 || len(a.inputs[0]) != 1 || len(a.inputs[1]) != 2 || !a.inputs[1][1].Hidden || !strings.Contains(a.inputs[1][1].Text, "<output-schema>") {
+		t.Fatalf("schema finalization inputs = %#v", a.inputs)
+	}
+}
+
+func TestExecuteScriptRejectsOutputThatDoesNotMatchSchema(t *testing.T) {
+	dir := t.TempDir()
+	schemaPath := filepath.Join(dir, "schema.json")
+	if err := os.WriteFile(schemaPath, []byte(`{"type":"object","required":["name"]}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := newFakeScriptAgent()
+	a.response = `{"other":true}`
+	opts := scriptOptions{Prompt: "metadata", Schema: schemaPath}
+	var out bytes.Buffer
+	err := executeScript(context.Background(), a, opts, "metadata", &out, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "does not match output schema") {
+		t.Fatalf("executeScript() error = %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty on validation failure", out.String())
+	}
+}
+
+func TestLoadScriptOutputSchemaRejectsInvalidSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "schema.json")
+	if err := os.WriteFile(path, []byte(`{"$ref":"#/$defs/missing"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadScriptOutputSchema(path, ""); err == nil {
+		t.Fatal("loadScriptOutputSchema() accepted an invalid schema")
+	}
+}
+
+func TestExecuteScriptFailsWhenModeIsUnavailable(t *testing.T) {
+	a := &fakeScriptAgent{currentMode: code.AgentModeID}
+	opts := scriptOptions{Prompt: "hello"}
+	err := executeScript(context.Background(), a, opts, "hello", &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "does not support session modes") {
+		t.Fatalf("executeScript() error = %v", err)
+	}
+}
+
+func newFakeScriptAgent() *fakeScriptAgent {
+	return &fakeScriptAgent{
 		modes: []code.Mode{
 			{ID: code.AgentModeID},
 			{ID: code.PlanModeID},
 			{ID: code.UnattendedModeID},
 		},
 		currentMode: code.AgentModeID,
-	}
-	opts := scriptOptions{
-		Agent: "wingman", Prompt: "hello", OutputFormat: "json", Mode: code.UnattendedModeID,
-		Model: "test-model", Effort: "high",
-	}
-
-	var out bytes.Buffer
-	if err := executeScript(context.Background(), a, opts, "hello", &out); err != nil {
-		t.Fatal(err)
-	}
-
-	var got scriptResult
-	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
-		t.Fatalf("decode output: %v\n%s", err, out.String())
-	}
-	if got.Type != "result" || got.Result != "hello back" || got.SessionID != "new-session" || got.Agent != "fake" {
-		t.Fatalf("unexpected result: %#v", got)
-	}
-	if got.Usage.InputTokens != 4 || got.Usage.OutputTokens != 2 {
-		t.Fatalf("usage = %#v", got.Usage)
-	}
-	if a.currentMode != code.UnattendedModeID || a.model != "test-model" || a.effort != "high" {
-		t.Fatalf("session configuration: mode=%q model=%q effort=%q", a.currentMode, a.model, a.effort)
-	}
-	if len(a.input) != 1 || a.input[0].Text != "hello" {
-		t.Fatalf("input = %#v", a.input)
-	}
-}
-
-func TestExecuteScriptFailsWhenUnattendedModeIsUnavailable(t *testing.T) {
-	a := &fakeScriptAgent{currentMode: code.AgentModeID}
-	opts := scriptOptions{Prompt: "hello", OutputFormat: "text", Mode: code.UnattendedModeID}
-	err := executeScript(context.Background(), a, opts, "hello", &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "does not support session modes") {
-		t.Fatalf("executeScript() error = %v", err)
 	}
 }
 
@@ -174,6 +330,14 @@ type fakeScriptAgent struct {
 	model       string
 	effort      string
 	usage       agent.Usage
+	loaded      string
+	deleted     string
+	response    string
+	sendCount   int
+	schemaCalls int
+	jsonCalls   int
+	inputs      [][]agent.Content
+	saved       string
 }
 
 func (a *fakeScriptAgent) Name() string                          { return "fake" }
@@ -198,18 +362,40 @@ func (a *fakeScriptAgent) SetMode(_ context.Context, _, mode string) error {
 func (a *fakeScriptAgent) ListSessions(context.Context) ([]code.SessionInfo, error) {
 	return []code.SessionInfo{{ID: "old"}, {ID: "latest", UpdatedAt: time.Now()}}, nil
 }
-func (a *fakeScriptAgent) NewSession(context.Context) (string, error)  { return "new-session", nil }
-func (a *fakeScriptAgent) LoadSession(context.Context, string) error   { return nil }
-func (a *fakeScriptAgent) DeleteSession(context.Context, string) error { return nil }
+func (a *fakeScriptAgent) NewSession(context.Context) (string, error) { return "new-session", nil }
+func (a *fakeScriptAgent) LoadSession(_ context.Context, id string) error {
+	a.loaded = id
+	return nil
+}
+func (a *fakeScriptAgent) DeleteSession(_ context.Context, id string) error {
+	a.deleted = id
+	return nil
+}
+func (a *fakeScriptAgent) Save(id string) error {
+	a.saved = id
+	return nil
+}
 func (a *fakeScriptAgent) Messages(string) []agent.Message {
 	return agent.CloneMessages(a.messages)
 }
 func (a *fakeScriptAgent) Usage(string) agent.Usage { return a.usage }
-func (a *fakeScriptAgent) Send(_ context.Context, _ string, input []agent.Content) (iter.Seq2[agent.Message, error], error) {
+func (a *fakeScriptAgent) Send(ctx context.Context, _ string, input []agent.Content) (iter.Seq2[agent.Message, error], error) {
+	a.sendCount++
+	if schema, ok := agent.OutputSchemaFromContext(ctx); ok {
+		a.schemaCalls++
+		if len(schema) == 0 {
+			a.jsonCalls++
+		}
+	}
 	a.input = agent.CloneContent(input)
+	a.inputs = append(a.inputs, agent.CloneContent(input))
 	a.messages = append(a.messages, agent.Message{Role: agent.RoleUser, Content: agent.CloneContent(input)})
 	return func(yield func(agent.Message, error) bool) {
-		message := agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{Text: "hello back"}}}
+		response := a.response
+		if response == "" {
+			response = "hello back"
+		}
+		message := agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{Text: response}}}
 		if yield(message, nil) {
 			a.messages = append(a.messages, message)
 			a.usage = agent.Usage{InputTokens: 4, OutputTokens: 2}

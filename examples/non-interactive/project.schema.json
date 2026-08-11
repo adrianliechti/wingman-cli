@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "project_name": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "languages": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "risk_areas": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 5
+    }
+  },
+  "required": [
+    "project_name",
+    "summary",
+    "languages",
+    "risk_areas"
+  ],
+  "additionalProperties": false
+}

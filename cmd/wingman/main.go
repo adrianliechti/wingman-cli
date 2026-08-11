@@ -28,6 +28,10 @@ func main() {
 	switch args[0] {
 	case "--help", "-h", "help":
 		printHelp(os.Stdout)
+	case "exec", "e":
+		if err := runExec(ctx, args[1:]); err != nil {
+			fatal(err)
+		}
 	case "server":
 		runServer(ctx, args[1:])
 	case "acp":
@@ -41,12 +45,6 @@ func main() {
 	default:
 		if !strings.HasPrefix(args[0], "-") {
 			fatal(fmt.Errorf("unknown command %q (run 'wingman --help' for usage)", args[0]))
-		}
-		if hasPrintFlag(args) {
-			if err := runScript(ctx, args); err != nil {
-				fatal(err)
-			}
-			return
 		}
 
 		opts, err := parseTUIArgs(args)
@@ -85,7 +83,8 @@ func printHelp(w io.Writer) {
 
 Usage:
   wingman [flags]               Launch the agent TUI
-  wingman -p PROMPT [flags]     Run one prompt non-interactively
+  wingman exec [flags] [PROMPT] Run non-interactively (alias: e)
+  wingman exec resume [ID]      Resume a non-interactive session
   wingman server [flags]        Run the web UI server
   wingman acp [target] [flags]  Run as an ACP stdio server (wingman | claude | codex | pi)
   wingman claw [flags]          Run the claw multi-agent runner (TUI; plain REPL when piped)
@@ -101,15 +100,19 @@ TUI flags:
   --resume, -r ID   Resume the specified session
   --help, -h        Show this help
 
-Script flags:
-  --print, -p PROMPT       Run PROMPT and print the result
-  --output-format FORMAT   Output text or json (default: text)
-  --mode MODE              Use unattended, plan, or agent mode (default: unattended)
-  --model MODEL            Override the model for this session
-  --effort LEVEL           Override the reasoning effort for this session
-  --agent, -a NAME         Use wingman or any detected/configured agent
-  --continue, -c           Resume the agent's latest session
-  --resume, -r ID          Resume the specified session
+Exec flags:
+  --json                        Return the final response as a JSON object
+  --debug                       Print reasoning and tool progress to stderr
+  --schema PATH                 Require final JSON matching a JSON Schema
+  --ephemeral                   Delete the session after the run
+  --model, -m MODEL             Override the model for this session
+  --effort LEVEL                Override the reasoning effort for this session
+  --agent, -a NAME              Use wingman or any detected/configured agent
+  --cd, -C PATH                 Set the workspace root
+
+Resume:
+  wingman exec resume --last [PROMPT]
+  wingman exec resume SESSION_ID [PROMPT]
 
 Run 'wingman <command> --help' for command flags.
 `)

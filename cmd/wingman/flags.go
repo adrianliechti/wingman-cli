@@ -67,12 +67,37 @@ func (f *flagSet) add(spec, usage string, set func(string) error) {
 }
 
 func (f *flagSet) Parse(args []string) error {
-	for i := 0; i < len(args); i++ {
-		name, value, hasValue := strings.Cut(args[i], "=")
+	positional, err := f.ParseArgs(args)
+	if err != nil {
+		return err
+	}
+	if len(positional) > 0 {
+		return fmt.Errorf("unexpected argument %q (run '%s --help' for usage)", positional[0], f.name)
+	}
+	return nil
+}
 
-		if !strings.HasPrefix(name, "-") {
-			return fmt.Errorf("unexpected argument %q (run '%s --help' for usage)", args[i], f.name)
+// ParseArgs parses flags and returns positional arguments. A lone dash is a
+// positional argument, and a double dash ends flag parsing.
+func (f *flagSet) ParseArgs(args []string) ([]string, error) {
+	var positional []string
+	flagsDone := false
+
+	for i := 0; i < len(args); i++ {
+		if flagsDone {
+			positional = append(positional, args[i])
+			continue
 		}
+		if args[i] == "--" {
+			flagsDone = true
+			continue
+		}
+		if args[i] == "-" || !strings.HasPrefix(args[i], "-") {
+			positional = append(positional, args[i])
+			continue
+		}
+
+		name, value, hasValue := strings.Cut(args[i], "=")
 
 		if name == "--help" || name == "-h" {
 			f.printUsage(os.Stdout)
@@ -82,12 +107,12 @@ func (f *flagSet) Parse(args []string) error {
 		def := f.lookup(name)
 
 		if def == nil {
-			return fmt.Errorf("unknown flag %s (run '%s --help' for usage)", name, f.name)
+			return nil, fmt.Errorf("unknown flag %s (run '%s --help' for usage)", name, f.name)
 		}
 
 		if def.arg == "" {
 			if hasValue {
-				return fmt.Errorf("flag %s does not take a value", name)
+				return nil, fmt.Errorf("flag %s does not take a value", name)
 			}
 
 			_ = def.set("")
@@ -96,7 +121,7 @@ func (f *flagSet) Parse(args []string) error {
 
 		if !hasValue {
 			if i+1 >= len(args) {
-				return fmt.Errorf("flag %s requires a value", name)
+				return nil, fmt.Errorf("flag %s requires a value", name)
 			}
 
 			i++
@@ -104,11 +129,11 @@ func (f *flagSet) Parse(args []string) error {
 		}
 
 		if err := def.set(value); err != nil {
-			return fmt.Errorf("invalid value for %s: %v", name, err)
+			return nil, fmt.Errorf("invalid value for %s: %v", name, err)
 		}
 	}
 
-	return nil
+	return positional, nil
 }
 
 func (f *flagSet) lookup(name string) *flagDef {
