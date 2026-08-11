@@ -331,7 +331,7 @@ func createClient() openai.Client {
 	}
 
 	return openai.NewClient(
-		option.WithBaseURL("http://localhost:8080/v1"),
+		option.WithBaseURL("http://localhost:4242/v1"),
 		option.WithAPIKey("-"),
 	)
 }

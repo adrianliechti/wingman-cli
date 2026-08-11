@@ -125,7 +125,7 @@ export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
 		: "";
 
 	return (
-		<div className="flex flex-col h-full overflow-hidden bg-bg">
+		<div className="flex h-full flex-col overflow-hidden bg-transparent">
 			<div className="h-9 px-3 flex items-center gap-2 shrink-0 border-b border-border-subtle bg-bg-surface/20">
 				<span className="text-[11px] text-fg-muted">Diagnostics</span>
 				{diagnostics.length > 0 && (

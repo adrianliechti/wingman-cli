@@ -17,14 +17,21 @@ import {
 	Wrench,
 	X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	type CSSProperties,
+	type ErrorInfo,
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { createPortal } from "react-dom";
 import {
 	Group,
 	Panel,
-	type PanelImperativeHandle,
+	type PanelSize,
 	Separator,
-	useDefaultLayout,
 	usePanelRef,
 } from "react-resizable-panels";
 import { ChatPanel } from "./components/ChatPanel";
@@ -36,6 +43,7 @@ import {
 import type { ModeOption } from "./components/ModePicker";
 import { DiffsPanel } from "./components/DiffsPanel";
 import { DiffTab } from "./components/DiffTab";
+import { ErrorBoundary, ErrorDetails } from "./components/ErrorBoundary";
 import { FileTab } from "./components/FileTab";
 import { FileTree } from "./components/FileTree";
 import { ProblemsPanel } from "./components/ProblemsPanel";
@@ -43,7 +51,7 @@ import { TasksPanel } from "./components/TasksPanel";
 import { TaskTab } from "./components/TaskTab";
 import { TerminalView } from "./components/TerminalView";
 import { Dialog, dialogButtonClass, useToast } from "./components/ui/Feedback";
-import { BUILTIN_AGENT_ID } from "./components/AgentPicker";
+import { AgentPicker, BUILTIN_AGENT_ID } from "./components/AgentPicker";
 import { Sidebar } from "./components/Sidebar";
 import { useCapabilities } from "./hooks/useCapabilities";
 import { useOpenDocuments } from "./hooks/useOpenDocuments";
@@ -79,6 +87,15 @@ type RightTab = "changes" | "files" | "problems" | "agents";
 type CloseRequest = { kind: "file" | "terminal"; tab: CenterTab } | null;
 type SessionDeleteRequest = { id: string; title: string } | null;
 type LayoutMode = "wide" | "medium" | "narrow";
+
+const LEFT_PANEL_DEFAULT_SIZE = 240;
+const LEFT_PANEL_MIN_SIZE = 200;
+const LEFT_PANEL_MAX_SIZE = 360;
+const RIGHT_PANEL_WIDE_DEFAULT_SIZE = 304;
+const RIGHT_PANEL_MEDIUM_DEFAULT_SIZE = 288;
+const RIGHT_PANEL_MIN_SIZE = 240;
+const RIGHT_PANEL_MAX_SIZE = 480;
+const CENTER_PANEL_MIN_SIZE = 320;
 
 const EMPTY_ENTRIES: never[] = [];
 const EMPTY_USAGE = {
@@ -144,17 +161,20 @@ export default function App() {
 	const [requestedRightTab, setRequestedRightTab] = useState<RightTab>("files");
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 	const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
+	const appRef = useRef<HTMLDivElement>(null);
+	const leftPanelWidthRef = useRef(LEFT_PANEL_DEFAULT_SIZE);
+	const [rightPanelDefaultWidth] = useState(() =>
+		layoutMode === "wide"
+			? RIGHT_PANEL_WIDE_DEFAULT_SIZE
+			: RIGHT_PANEL_MEDIUM_DEFAULT_SIZE,
+	);
+	const rightPanelWidthRef = useRef(rightPanelDefaultWidth);
+	const leftPanelRef = usePanelRef();
+	const rightPanelRef = usePanelRef();
 	const [leftDrawerOpen, setLeftDrawerOpen] = useState(false);
 	const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
 	const [terminalShells, setTerminalShells] = useState<ShellEntry[]>([]);
 	const terminalCreatingRef = useRef(false);
-	const leftPanelRef = usePanelRef();
-	const rightPanelRef = usePanelRef();
-	const layoutId =
-		layoutMode === "wide" ? "wingman-layout" : "wingman-layout-medium";
-	const { defaultLayout, onLayoutChanged } = useDefaultLayout({
-		id: layoutId,
-	});
 
 	useEffect(() => {
 		setLeftDrawerOpen(false);
@@ -342,6 +362,7 @@ export default function App() {
 	const canSteer = activeSession?.canSteer ?? false;
 
 	const [agentId, setAgentId] = useState("");
+	const [switchingAgent, setSwitchingAgent] = useState<string | null>(null);
 	const loadAgent = useCallback(async (): Promise<string> => {
 		try {
 			const r = await fetch("/api/agent");
@@ -378,27 +399,28 @@ export default function App() {
 
 	const openChatTab = useCallback(
 		(sid: string) => {
+			const existing = tabs.find(
+				(t) => t.type === "chat" && t.sessionId === sid,
+			);
+			if (existing) {
+				activateTab(existing);
+				return;
+			}
+			// ChatPanel is keyed by tab id, so reuse the draft's id; a fresh id
+			// would remount it and drop the composer text.
+			const draft = tabs.find((t) => t.type === "chat" && !t.sessionId);
 			const tab: CenterTab = {
-				id: chatTabId(sid),
+				id: draft?.id ?? chatTabId(sid),
 				type: "chat",
 				label: "Session",
 				sessionId: sid,
 			};
-			setTabs((prev) => {
-				if (prev.some((t) => t.type === "chat" && t.sessionId === sid)) {
-					return prev;
-				}
-				const draft = prev.findIndex((t) => t.type === "chat" && !t.sessionId);
-				if (draft >= 0) {
-					const next = [...prev];
-					next[draft] = tab;
-					return next;
-				}
-				return [...prev, tab];
-			});
+			setTabs((prev) =>
+				draft ? prev.map((t) => (t.id === draft.id ? tab : t)) : [...prev, tab],
+			);
 			activateTab(tab);
 		},
-		[activateTab],
+		[tabs, activateTab],
 	);
 
 	const handlePromptReply = useCallback(
@@ -501,6 +523,7 @@ export default function App() {
 			const idx = tabs.findIndex((t) => t.id === id);
 			if (idx < 0) return;
 			const closing = tabs[idx];
+			if (!isClosableTab(closing)) return;
 			if (closing.type === "file" && closing.path) closeDocument(closing.path);
 			setTabs((prev) => {
 				let next = prev.filter((t) => t.id !== id);
@@ -560,7 +583,7 @@ export default function App() {
 	const requestCloseTab = useCallback(
 		async (id: string) => {
 			const tab = tabs.find((item) => item.id === id);
-			if (!tab) return;
+			if (!tab || !isClosableTab(tab)) return;
 			if (tab.type === "file" && tab.path && dirtyPaths.has(tab.path)) {
 				setCloseRequest({ kind: "file", tab });
 				return;
@@ -604,6 +627,32 @@ export default function App() {
 		},
 		[closeTabNow, closeTerminal, dirtyPaths, tabs, toast],
 	);
+
+	const [tabMenu, setTabMenu] = useState<{
+		x: number;
+		y: number;
+		tabId?: string;
+	} | null>(null);
+
+	const closeTabs = useCallback(
+		async (ids: string[]) => {
+			for (const id of ids) {
+				await requestCloseTab(id);
+			}
+		},
+		[requestCloseTab],
+	);
+
+	useEffect(() => {
+		const onKey = (event: KeyboardEvent) => {
+			if (event.metaKey && !event.ctrlKey && event.key.toLowerCase() === "w") {
+				event.preventDefault();
+				void requestCloseTab(activeTabId);
+			}
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [requestCloseTab, activeTabId]);
 
 	const terminateTerminal = useCallback(async () => {
 		const request = closeRequest;
@@ -884,19 +933,44 @@ export default function App() {
 
 	const [noticeDismissed, setNoticeDismissed] = useState(false);
 	const showNotice = !!capabilities?.notice && !noticeDismissed;
+	const handleLeftPanelResize = useCallback(({ inPixels }: PanelSize) => {
+		setSidebarCollapsed(inPixels === 0);
+		if (inPixels <= 0) return;
+		const width = Math.round(inPixels);
+		leftPanelWidthRef.current = width;
+		appRef.current?.style.setProperty("--left-panel-width", `${width}px`);
+	}, []);
+	const handleRightPanelResize = useCallback(({ inPixels }: PanelSize) => {
+		setRightPanelCollapsed(inPixels === 0);
+		if (inPixels <= 0) return;
+		const width = Math.round(inPixels);
+		rightPanelWidthRef.current = width;
+		appRef.current?.style.setProperty("--right-panel-width", `${width}px`);
+	}, []);
 	const toggleSidebar = useCallback(() => {
-		if (layoutMode === "wide") togglePanel(leftPanelRef.current);
-		else setLeftDrawerOpen((open) => !open);
+		if (layoutMode === "wide") {
+			const panel = leftPanelRef.current;
+			if (panel?.isCollapsed()) {
+				panel.resize(`${leftPanelWidthRef.current}px`);
+			} else panel?.collapse();
+		} else setLeftDrawerOpen((open) => !open);
 	}, [layoutMode, leftPanelRef]);
 	const toggleRightPanel = useCallback(() => {
 		if (layoutMode === "narrow") setRightDrawerOpen((open) => !open);
-		else togglePanel(rightPanelRef.current);
+		else {
+			const panel = rightPanelRef.current;
+			if (panel?.isCollapsed()) {
+				panel.resize(`${rightPanelWidthRef.current}px`);
+			} else panel?.collapse();
+		}
 	}, [layoutMode, rightPanelRef]);
 	const showRightPanel = useCallback(
 		(tab: RightTab) => {
 			setRequestedRightTab(tab);
 			if (layoutMode === "narrow") setRightDrawerOpen(true);
-			else expandPanel(rightPanelRef.current);
+			else if (rightPanelRef.current?.isCollapsed()) {
+				rightPanelRef.current.resize(`${rightPanelWidthRef.current}px`);
+			}
 		},
 		[layoutMode, rightPanelRef],
 	);
@@ -990,6 +1064,8 @@ export default function App() {
 	const canCreateNew = !!(
 		sessionId && (sessions[sessionId]?.entries.length ?? 0) > 0
 	);
+	const leftPanelDocked = layoutMode === "wide" && !sidebarCollapsed;
+	const rightPanelDocked = layoutMode !== "narrow" && !rightPanelCollapsed;
 	const sidebarContent = (
 		<Sidebar
 			currentSessionId={sessionId}
@@ -997,57 +1073,63 @@ export default function App() {
 				setLeftDrawerOpen(false);
 				void handleSessionSelect(id);
 			}}
-			onNewSession={() => {
-				setLeftDrawerOpen(false);
-				void handleNewSession();
-			}}
 			onSessionDelete={(id, title) => setSessionDelete({ id, title })}
 			runningSessionIds={runningSessionIds}
-			canCreateNew={canCreateNew}
+			switchingAgent={switchingAgent}
 			subscribe={subscribe}
 		/>
 	);
-	const inspectorContent = (
-		<aside className="flex h-full flex-col bg-bg" aria-label="Workspace">
-			<div
-				className="flex h-10 shrink-0 items-stretch"
-				role="tablist"
-				aria-label="Workspace panels"
+	const workspaceTabs = (
+		<div
+			className="flex h-10 w-full min-w-0 shrink-0 items-stretch overflow-hidden"
+			role="tablist"
+			aria-label="Workspace panels"
+		>
+			<RightTabButton
+				active={rightTab === "files"}
+				onClick={() => setRequestedRightTab("files")}
 			>
+				Files
+			</RightTabButton>
+			{showChanges && (
 				<RightTabButton
-					active={rightTab === "files"}
-					onClick={() => setRequestedRightTab("files")}
+					active={rightTab === "changes"}
+					onClick={() => setRequestedRightTab("changes")}
 				>
-					Files
+					Changes
 				</RightTabButton>
-				{showChanges && (
-					<RightTabButton
-						active={rightTab === "changes"}
-						onClick={() => setRequestedRightTab("changes")}
-					>
-						Changes
-					</RightTabButton>
-				)}
-				{showProblems && (
-					<RightTabButton
-						active={rightTab === "problems"}
-						onClick={() => setRequestedRightTab("problems")}
-					>
-						Problems
-					</RightTabButton>
-				)}
-				{showAgents && (
-					<RightTabButton
-						active={rightTab === "agents"}
-						onClick={() => setRequestedRightTab("agents")}
-					>
-						Agents
-					</RightTabButton>
-				)}
-				<div className="flex-1" />
-			</div>
-			<div className="h-px shrink-0 bg-border-subtle" />
-			<div className="flex-1 overflow-hidden" role="tabpanel">
+			)}
+			{showProblems && (
+				<RightTabButton
+					active={rightTab === "problems"}
+					onClick={() => setRequestedRightTab("problems")}
+				>
+					Problems
+				</RightTabButton>
+			)}
+			{showAgents && (
+				<RightTabButton
+					active={rightTab === "agents"}
+					onClick={() => setRequestedRightTab("agents")}
+				>
+					Agents
+				</RightTabButton>
+			)}
+			<div className="flex-1" />
+		</div>
+	);
+	const inspectorContent = (
+		<aside
+			className="flex h-full flex-col bg-transparent"
+			aria-label="Workspace"
+		>
+			{layoutMode === "narrow" && (
+				<>
+					{workspaceTabs}
+					<div className="h-px shrink-0 bg-border-subtle" />
+				</>
+			)}
+			<div className="min-h-0 flex-1 overflow-hidden pt-0.5" role="tabpanel">
 				{rightTab === "agents" && showAgents ? (
 					<TasksPanel
 						sessionId={sessionId}
@@ -1074,7 +1156,344 @@ export default function App() {
 	);
 
 	return (
-		<div className="relative flex flex-col h-screen bg-bg text-fg">
+		<div
+			ref={appRef}
+			className="relative flex h-screen flex-col bg-bg text-fg"
+			style={
+				{
+					"--left-panel-width": `${LEFT_PANEL_DEFAULT_SIZE}px`,
+					"--right-panel-width": `${rightPanelDefaultWidth}px`,
+				} as CSSProperties
+			}
+		>
+			{layoutMode === "wide" && (
+				<div
+					data-panel-frame="sessions"
+					aria-hidden="true"
+					className={`pointer-events-none absolute inset-y-0 left-0 z-0 rounded-[10px] bg-bg-surface/40 transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
+						sidebarCollapsed
+							? "-translate-x-full opacity-0"
+							: "translate-x-0 opacity-100"
+					}`}
+					style={{ width: "var(--left-panel-width)" }}
+				/>
+			)}
+			{layoutMode !== "narrow" && (
+				<div
+					data-panel-frame="workspace"
+					aria-hidden="true"
+					className={`pointer-events-none absolute inset-y-0 right-0 z-0 rounded-[10px] bg-bg-surface/40 transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
+						rightPanelCollapsed
+							? "translate-x-full opacity-0"
+							: "translate-x-0 opacity-100"
+					}`}
+					style={{ width: "var(--right-panel-width)" }}
+				/>
+			)}
+			<header
+				data-window-titlebar
+				className="window-titlebar relative z-10 flex h-10 shrink-0 items-stretch overflow-hidden bg-transparent"
+				aria-label="Window toolbar"
+			>
+				<div
+					data-titlebar-separator
+					aria-hidden="true"
+					className="pointer-events-none absolute bottom-0 h-px bg-border-subtle"
+					style={{
+						left: leftPanelDocked ? "var(--left-panel-width)" : "0px",
+						right: rightPanelDocked ? "var(--right-panel-width)" : "0px",
+					}}
+				/>
+				<div
+					className="window-titlebar-controls-spacer shrink-0"
+					aria-hidden="true"
+				/>
+				<div
+					data-window-interactive
+					data-titlebar-left-panel
+					className="flex shrink-0 items-center gap-0.5 overflow-hidden pr-0 pl-2"
+					style={{
+						width: leftPanelDocked
+							? "calc(var(--left-panel-width) - var(--window-controls-inset))"
+							: "40px",
+					}}
+				>
+					{leftPanelDocked && (
+						<div data-titlebar-agent className="min-w-0 flex-1 overflow-hidden">
+							<AgentPicker
+								subscribe={subscribe}
+								onSwitchingChange={setSwitchingAgent}
+							/>
+						</div>
+					)}
+					{!leftPanelDocked && <div className="min-w-0 flex-1" />}
+					<button
+						type="button"
+						className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
+						onClick={toggleSidebar}
+						title={
+							layoutMode !== "wide" || sidebarCollapsed
+								? "Show sessions"
+								: "Hide sessions"
+						}
+						aria-label={
+							layoutMode !== "wide" || sidebarCollapsed
+								? "Show sessions"
+								: "Hide sessions"
+						}
+					>
+						{layoutMode !== "wide" || sidebarCollapsed ? (
+							<PanelLeftOpen size={13} />
+						) : (
+							<PanelLeftClose size={13} />
+						)}
+					</button>
+				</div>
+
+				<div
+					ref={tabListRef}
+					className="tab-strip flex min-w-[80px] flex-1 items-stretch overflow-x-auto overscroll-x-contain scrollbar-none"
+					role="tablist"
+					aria-label="Open tabs"
+					onContextMenu={(event) => {
+						event.preventDefault();
+						const tabElement = (event.target as Element).closest<HTMLElement>(
+							"[data-center-tab]",
+						);
+						const tab = tabs.find(
+							(item) => item.id === tabElement?.dataset.centerTab,
+						);
+						setTabMenu({
+							x: event.clientX,
+							y: event.clientY,
+							tabId: tab && isClosableTab(tab) ? tab.id : undefined,
+						});
+					}}
+				>
+					{tabs.map((tab, tabIndex) => {
+						const active = tab.id === activeTabId;
+						const closable = isClosableTab(tab);
+						const isDirty =
+							tab.type === "file" && !!tab.path && dirtyPaths.has(tab.path);
+						const running =
+							tab.type === "chat" && tab.sessionId
+								? (sessions[tab.sessionId]?.phase ?? "idle") !== "idle"
+								: false;
+						const Icon =
+							tab.type === "chat"
+								? MessageSquare
+								: tab.type === "terminal"
+									? SquareTerminal
+									: tab.type === "diff"
+										? GitCompare
+										: tab.type === "task"
+											? Bot
+											: FileText;
+						const label = tab.type === "chat" ? chatTabLabel(tab) : tab.label;
+						return (
+							<button
+								type="button"
+								role="tab"
+								aria-selected={active}
+								tabIndex={active ? 0 : -1}
+								data-center-tab={tab.id}
+								key={tab.id}
+								className={`group relative flex shrink-0 items-center gap-1.5 px-3 py-0 text-[12px] transition-colors ${
+									active ? "text-fg" : "text-fg-dim hover:text-fg-muted"
+								} ${active ? "bg-bg-surface/50" : ""}`}
+								onClick={(event) => {
+									if ((event.target as Element).closest("[data-tab-close]")) {
+										void requestCloseTab(tab.id);
+										return;
+									}
+									activateTab(tab);
+								}}
+								onKeyDown={(event) => {
+									let next = tabIndex;
+									if (event.key === "ArrowLeft")
+										next = (tabIndex - 1 + tabs.length) % tabs.length;
+									else if (event.key === "ArrowRight")
+										next = (tabIndex + 1) % tabs.length;
+									else if (event.key === "Home") next = 0;
+									else if (event.key === "End") next = tabs.length - 1;
+									else if (event.key === "Delete" && closable) {
+										event.preventDefault();
+										void requestCloseTab(tab.id);
+										return;
+									} else return;
+									event.preventDefault();
+									const target = tabs[next];
+									activateTab(target);
+									requestAnimationFrame(() =>
+										tabListRef.current
+											?.querySelector<HTMLElement>(
+												`[data-center-tab="${CSS.escape(target.id)}"]`,
+											)
+											?.focus(),
+									);
+								}}
+								title={label}
+								aria-label={`${label}${isDirty ? ", unsaved changes" : ""}${closable ? ". Press Delete to close." : ""}`}
+							>
+								{active && (
+									<span className="absolute inset-x-2 bottom-0 h-[2px] rounded-full bg-accent" />
+								)}
+								<span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+									{running ? (
+										<Loader2
+											size={13}
+											className={`${closable ? "group-hover:hidden" : ""} text-accent animate-spin`}
+										/>
+									) : isDirty ? (
+										<span
+											className={`${closable ? "group-hover:hidden" : ""} h-2 w-2 rounded-full ${active ? "bg-fg-muted" : "bg-fg-dim"}`}
+										/>
+									) : (
+										<Icon
+											size={13}
+											className={`${closable ? "group-hover:hidden" : ""} ${active ? "text-fg-muted" : "text-fg-dim"}`}
+										/>
+									)}
+									{closable && (
+										<span
+											data-tab-close
+											aria-hidden="true"
+											title={`Close ${label}`}
+											className="hidden h-3.5 w-3.5 items-center justify-center rounded text-fg-dim transition-colors hover:text-fg group-hover:flex"
+										>
+											<X size={11} />
+										</span>
+									)}
+								</span>
+								<span className="max-w-[200px] truncate">{label}</span>
+							</button>
+						);
+					})}
+				</div>
+				{tabMenu && (
+					<TabContextMenu
+						x={tabMenu.x}
+						y={tabMenu.y}
+						tabId={tabMenu.tabId}
+						tabCount={tabs.length}
+						onClose={() => setTabMenu(null)}
+						onCloseTab={(id) => void closeTabs([id])}
+						onCloseOthers={(id) =>
+							void closeTabs(
+								tabs.filter((tab) => tab.id !== id).map((tab) => tab.id),
+							)
+						}
+						onCloseAll={() => void closeTabs(tabs.map((tab) => tab.id))}
+					/>
+				)}
+
+				<div
+					data-window-interactive
+					data-titlebar-actions
+					className="flex shrink-0 items-center pr-2"
+				>
+					{activeTab.type === "chat" &&
+						(usage.inputTokens > 0 || outputTokens > 0) && (
+							<UsageIndicator
+								inputTokens={usage.inputTokens}
+								cachedTokens={usage.cachedTokens}
+								outputTokens={outputTokens}
+								lastInputTokens={usage.lastInputTokens}
+								contextWindow={usage.contextWindow}
+								outputEstimated={streamEstimate > 0}
+							/>
+						)}
+					{canCreateNew && (
+						<button
+							type="button"
+							className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
+							onClick={handleNewSession}
+							title="New session"
+							aria-label="New session"
+						>
+							<Plus size={13} />
+						</button>
+					)}
+					{activeIsHtml && (
+						<button
+							type="button"
+							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-bg-hover ${
+								activeFileView === "preview"
+									? "text-fg-muted"
+									: "text-fg-dim hover:text-fg-muted"
+							}`}
+							onClick={() =>
+								setFileViews((prev) => ({
+									...prev,
+									[activeTab.id]:
+										activeFileView === "preview" ? "code" : "preview",
+								}))
+							}
+							title={
+								activeFileView === "preview"
+									? "Show code editor"
+									: "Show browser preview"
+							}
+							aria-label={
+								activeFileView === "preview"
+									? "Show code editor"
+									: "Show browser preview"
+							}
+						>
+							{activeFileView === "preview" ? (
+								<Code2 size={13} />
+							) : (
+								<Globe2 size={13} />
+							)}
+						</button>
+					)}
+					{showTerminal && (
+						<TerminalLauncher
+							shells={terminalShells}
+							onCreate={(shell) => void createTerminal(shell)}
+						/>
+					)}
+				</div>
+				<div
+					data-window-interactive
+					data-titlebar-right-panel
+					className="flex shrink-0 items-center overflow-hidden pr-2 pl-0"
+					style={{
+						width: rightPanelDocked ? "var(--right-panel-width)" : "40px",
+					}}
+				>
+					<button
+						type="button"
+						className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
+						onClick={toggleRightPanel}
+						title={
+							layoutMode === "narrow" || rightPanelCollapsed
+								? "Show workspace panel"
+								: "Hide workspace panel"
+						}
+						aria-label={
+							layoutMode === "narrow" || rightPanelCollapsed
+								? "Show workspace panel"
+								: "Hide workspace panel"
+						}
+					>
+						{layoutMode === "narrow" || rightPanelCollapsed ? (
+							<PanelRightOpen size={13} />
+						) : (
+							<PanelRightClose size={13} />
+						)}
+					</button>
+					{rightPanelDocked && (
+						<div
+							data-titlebar-workspace-tabs
+							className="min-w-0 flex-1 self-stretch"
+						>
+							{workspaceTabs}
+						</div>
+					)}
+					{!rightPanelDocked && <div className="min-w-0 flex-1" />}
+				</div>
+			</header>
 			{showNotice && (
 				<div className="flex shrink-0 items-center gap-3 border-b border-warning/30 bg-warning/10 px-4 py-2 text-[12px] text-warning">
 					<span className="flex-1">{capabilities?.notice}</span>
@@ -1089,254 +1508,64 @@ export default function App() {
 				</div>
 			)}
 			<Group
+				id="wingman-layout"
 				orientation="horizontal"
-				id={layoutId}
-				defaultLayout={defaultLayout}
-				onLayoutChanged={onLayoutChanged}
-				className="flex-1 overflow-hidden"
+				className="relative z-10 flex-1 overflow-hidden"
 			>
 				{layoutMode === "wide" && (
-					<>
-						<Panel
-							panelRef={leftPanelRef}
-							id="sidebar"
-							defaultSize="240px"
-							collapsible
-							collapsedSize="0px"
-							minSize="224px"
-							groupResizeBehavior="preserve-pixel-size"
-							onResize={({ inPixels }) => setSidebarCollapsed(inPixels === 0)}
-							className="overflow-hidden"
+					<Panel
+						id="sessions"
+						panelRef={leftPanelRef}
+						defaultSize={`${LEFT_PANEL_DEFAULT_SIZE}px`}
+						minSize={`${LEFT_PANEL_MIN_SIZE}px`}
+						maxSize={`${LEFT_PANEL_MAX_SIZE}px`}
+						collapsedSize="0px"
+						collapsible
+						groupResizeBehavior="preserve-pixel-size"
+						onResize={handleLeftPanelResize}
+						data-layout-panel="sessions"
+						inert={sidebarCollapsed}
+						className="h-full overflow-hidden"
+					>
+						<div
+							data-panel-content="sessions"
+							className={`h-full overflow-hidden transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
+								sidebarCollapsed
+									? "pointer-events-none -translate-x-full opacity-0"
+									: "translate-x-0 opacity-100"
+							}`}
+							style={{ width: "var(--left-panel-width)" }}
 						>
 							{sidebarContent}
-						</Panel>
-						<ResizeHandle />
-					</>
+						</div>
+					</Panel>
 				)}
-
+				{layoutMode === "wide" && (
+					<ResizeHandle
+						label="Resize sessions panel"
+						hidden={sidebarCollapsed}
+					/>
+				)}
 				<Panel
 					id="center"
-					minSize="320px"
-					className="flex flex-col overflow-hidden min-w-0 bg-bg"
+					minSize={`${CENTER_PANEL_MIN_SIZE}px`}
+					data-layout-panel="center"
+					className="flex min-w-0 flex-col overflow-hidden bg-bg"
 				>
 					<main className="flex flex-1 flex-col overflow-hidden min-h-0 bg-bg">
-						<div className="flex h-10 shrink-0 items-stretch overflow-hidden bg-bg">
-							<button
-								type="button"
-								className="self-center flex items-center justify-center w-8 h-8 ml-1 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
-								onClick={toggleSidebar}
-								title={
-									layoutMode !== "wide" || sidebarCollapsed
-										? "Show sessions"
-										: "Hide sessions"
-								}
-								aria-label={
-									layoutMode !== "wide" || sidebarCollapsed
-										? "Show sessions"
-										: "Hide sessions"
-								}
-							>
-								{layoutMode !== "wide" || sidebarCollapsed ? (
-									<PanelLeftOpen size={13} />
-								) : (
-									<PanelLeftClose size={13} />
-								)}
-							</button>
-							{(layoutMode !== "wide" || sidebarCollapsed) && canCreateNew && (
-								<button
-									type="button"
-									className="self-center flex items-center justify-center w-8 h-8 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
-									onClick={handleNewSession}
-									title="New session"
-								>
-									<Plus size={13} />
-								</button>
-							)}
-							<div
-								ref={tabListRef}
-								className="tab-strip flex min-w-0 flex-1 items-stretch overflow-x-auto"
-								role="tablist"
-								aria-label="Open tabs"
-							>
-								{tabs.map((tab, tabIndex) => {
-									const active = tab.id === activeTabId;
-									const isDirty =
-										tab.type === "file" &&
-										!!tab.path &&
-										dirtyPaths.has(tab.path);
-									const running =
-										tab.type === "chat" && tab.sessionId
-											? (sessions[tab.sessionId]?.phase ?? "idle") !== "idle"
-											: false;
-									const Icon =
-										tab.type === "chat"
-											? MessageSquare
-											: tab.type === "terminal"
-												? SquareTerminal
-												: tab.type === "diff"
-													? GitCompare
-													: tab.type === "task"
-														? Bot
-														: FileText;
-									const label =
-										tab.type === "chat" ? chatTabLabel(tab) : tab.label;
-									return (
-										<button
-											type="button"
-											role="tab"
-											aria-selected={active}
-											tabIndex={active ? 0 : -1}
-											data-center-tab={tab.id}
-											key={tab.id}
-											className={`group relative flex shrink-0 items-center gap-1.5 px-3 py-0 text-[12px] transition-colors ${
-												active ? "text-fg" : "text-fg-dim hover:text-fg-muted"
-											} ${active ? "bg-bg-surface/50" : ""}`}
-											onClick={(event) => {
-												if (
-													(event.target as Element).closest("[data-tab-close]")
-												) {
-													void requestCloseTab(tab.id);
-													return;
-												}
-												activateTab(tab);
-											}}
-											onKeyDown={(event) => {
-												let next = tabIndex;
-												if (event.key === "ArrowLeft")
-													next = (tabIndex - 1 + tabs.length) % tabs.length;
-												else if (event.key === "ArrowRight")
-													next = (tabIndex + 1) % tabs.length;
-												else if (event.key === "Home") next = 0;
-												else if (event.key === "End") next = tabs.length - 1;
-												else if (event.key === "Delete") {
-													event.preventDefault();
-													void requestCloseTab(tab.id);
-													return;
-												} else return;
-												event.preventDefault();
-												const target = tabs[next];
-												activateTab(target);
-												requestAnimationFrame(() =>
-													tabListRef.current
-														?.querySelector<HTMLElement>(
-															`[data-center-tab="${CSS.escape(target.id)}"]`,
-														)
-														?.focus(),
-												);
-											}}
-											title={label}
-											aria-label={`${label}${isDirty ? ", unsaved changes" : ""}. Press Delete to close.`}
-										>
-											{active && (
-												<span className="absolute inset-x-2 bottom-0 h-[2px] rounded-full bg-accent" />
-											)}
-											<span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-												{running ? (
-													<Loader2
-														size={13}
-														className="group-hover:hidden text-accent animate-spin"
-													/>
-												) : isDirty ? (
-													<span
-														className={`group-hover:hidden w-2 h-2 rounded-full ${active ? "bg-fg-muted" : "bg-fg-dim"}`}
-													/>
-												) : (
-													<Icon
-														size={13}
-														className={`group-hover:hidden ${active ? "text-fg-muted" : "text-fg-dim"}`}
-													/>
-												)}
-												<span
-													data-tab-close
-													aria-hidden="true"
-													title={`Close ${label}`}
-													className="hidden h-3.5 w-3.5 items-center justify-center rounded text-fg-dim transition-colors hover:text-fg group-hover:flex"
-												>
-													<X size={11} />
-												</span>
-											</span>
-											<span className="max-w-[200px] truncate">{label}</span>
-										</button>
-									);
-								})}
-							</div>
-							{activeTab.type === "chat" &&
-								(usage.inputTokens > 0 || outputTokens > 0) && (
-									<UsageIndicator
-										inputTokens={usage.inputTokens}
-										cachedTokens={usage.cachedTokens}
-										outputTokens={outputTokens}
-										lastInputTokens={usage.lastInputTokens}
-										contextWindow={usage.contextWindow}
-										outputEstimated={streamEstimate > 0}
+						<div className="flex-1 overflow-hidden">
+							<ErrorBoundary
+								key={activeTab.id}
+								fallback={(error, reset, errorInfo) => (
+									<TabCrashed
+										error={error}
+										errorInfo={errorInfo}
+										onReset={reset}
+										onClose={() => closeTabNow(activeTab.id)}
 									/>
 								)}
-							{activeIsHtml && (
-								<button
-									type="button"
-									className={`self-center flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-bg-hover ${
-										activeFileView === "preview"
-											? "text-fg-muted"
-											: "text-fg-dim hover:text-fg-muted"
-									}`}
-									onClick={() =>
-										setFileViews((prev) => ({
-											...prev,
-											[activeTab.id]:
-												activeFileView === "preview" ? "code" : "preview",
-										}))
-									}
-									title={
-										activeFileView === "preview"
-											? "Show code editor"
-											: "Show browser preview"
-									}
-									aria-label={
-										activeFileView === "preview"
-											? "Show code editor"
-											: "Show browser preview"
-									}
-								>
-									{activeFileView === "preview" ? (
-										<Code2 size={13} />
-									) : (
-										<Globe2 size={13} />
-									)}
-								</button>
-							)}
-							{showTerminal && (
-								<TerminalLauncher
-									shells={terminalShells}
-									onCreate={(shell) => void createTerminal(shell)}
-								/>
-							)}
-							<button
-								type="button"
-								className="self-center flex items-center justify-center w-8 h-8 mr-1 rounded-md text-fg-dim hover:text-fg-muted hover:bg-bg-hover cursor-pointer transition-colors shrink-0"
-								onClick={toggleRightPanel}
-								title={
-									layoutMode === "narrow" || rightPanelCollapsed
-										? "Show workspace panel"
-										: "Hide workspace panel"
-								}
-								aria-label={
-									layoutMode === "narrow" || rightPanelCollapsed
-										? "Show workspace panel"
-										: "Hide workspace panel"
-								}
 							>
-								{layoutMode === "narrow" || rightPanelCollapsed ? (
-									<PanelRightOpen size={13} />
-								) : (
-									<PanelRightClose size={13} />
-								)}
-							</button>
-						</div>
-
-						<div className="h-px bg-border-subtle shrink-0" />
-
-						<div className="flex-1 overflow-hidden">
-							{activeTab.type === "chat" ? (
+								{activeTab.type === "chat" ? (
 								<ChatPanel
 									key={activeTab.id}
 									sessionId={activeTab.sessionId ?? ""}
@@ -1437,28 +1666,43 @@ export default function App() {
 									view={fileViews[activeTab.id] ?? "code"}
 								/>
 							) : null}
+							</ErrorBoundary>
 						</div>
 					</main>
 				</Panel>
 				{layoutMode !== "narrow" && (
-					<>
-						<ResizeHandle />
-						<Panel
-							panelRef={rightPanelRef}
-							id="right"
-							defaultSize={layoutMode === "wide" ? "304px" : "288px"}
-							collapsible
-							collapsedSize="0px"
-							minSize="288px"
-							groupResizeBehavior="preserve-pixel-size"
-							onResize={({ inPixels }) =>
-								setRightPanelCollapsed(inPixels === 0)
-							}
-							className="overflow-hidden"
+					<ResizeHandle
+						label="Resize workspace panel"
+						hidden={rightPanelCollapsed}
+					/>
+				)}
+				{layoutMode !== "narrow" && (
+					<Panel
+						id="workspace"
+						panelRef={rightPanelRef}
+						defaultSize={`${rightPanelDefaultWidth}px`}
+						minSize={`${RIGHT_PANEL_MIN_SIZE}px`}
+						maxSize={`${RIGHT_PANEL_MAX_SIZE}px`}
+						collapsedSize="0px"
+						collapsible
+						groupResizeBehavior="preserve-pixel-size"
+						onResize={handleRightPanelResize}
+						data-layout-panel="workspace"
+						inert={rightPanelCollapsed}
+						className="h-full overflow-hidden"
+					>
+						<div
+							data-panel-content="workspace"
+							className={`ml-auto h-full overflow-hidden transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
+								rightPanelCollapsed
+									? "pointer-events-none translate-x-full opacity-0"
+									: "translate-x-0 opacity-100"
+							}`}
+							style={{ width: "var(--right-panel-width)" }}
 						>
 							{inspectorContent}
-						</Panel>
-					</>
+						</div>
+					</Panel>
 				)}
 			</Group>
 
@@ -1599,6 +1843,18 @@ function formatTokens(n: number): string {
 	return String(n);
 }
 
+function ResizeHandle({ label, hidden }: { label: string; hidden: boolean }) {
+	return (
+		<Separator
+			aria-label={label}
+			disabled={hidden}
+			className={`relative z-20 -mx-1.5 w-3 shrink-0 cursor-col-resize bg-transparent outline-none ${
+				hidden ? "pointer-events-none" : ""
+			}`}
+		/>
+	);
+}
+
 function useLayoutMode(): LayoutMode {
 	const read = (): LayoutMode => {
 		if (window.innerWidth >= 1200) return "wide";
@@ -1678,22 +1934,130 @@ function estimateStreamingTokens(entries: ChatEntry[]): number {
 	return Math.floor(chars / 4);
 }
 
-function togglePanel(panel: PanelImperativeHandle | null) {
-	if (!panel) return;
-	if (panel.isCollapsed()) panel.expand();
-	else panel.collapse();
+function isClosableTab(tab: CenterTab): boolean {
+	return tab.type !== "chat" || !!tab.sessionId;
 }
 
-function expandPanel(panel: PanelImperativeHandle | null) {
-	panel?.expand();
-}
-
-function ResizeHandle() {
+function TabCrashed({
+	error,
+	errorInfo,
+	onReset,
+	onClose,
+}: {
+	error: Error;
+	errorInfo: ErrorInfo | null;
+	onReset: () => void;
+	onClose: () => void;
+}) {
 	return (
-		<Separator
-			aria-label="Resize panels"
-			className="relative z-10 -mx-1 w-[9px] shrink-0 cursor-col-resize outline-none after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:bg-border-subtle after:transition-colors hover:after:bg-accent focus-visible:after:bg-accent active:after:bg-accent"
-		/>
+		<div className="flex h-full w-full flex-col items-center justify-center gap-3 p-6 text-center">
+			<div className="text-[13px] text-fg">This tab ran into a problem.</div>
+			<div className="flex gap-2">
+				<button
+					type="button"
+					onClick={onReset}
+					className="h-8 rounded-md border border-border px-3 text-[12px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg"
+				>
+					Try again
+				</button>
+				<button
+					type="button"
+					onClick={onClose}
+					className="h-8 rounded-md border border-border px-3 text-[12px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg"
+				>
+					Close tab
+				</button>
+			</div>
+			<ErrorDetails error={error} errorInfo={errorInfo} />
+		</div>
+	);
+}
+
+function TabContextMenu({
+	x,
+	y,
+	tabId,
+	tabCount,
+	onClose,
+	onCloseTab,
+	onCloseOthers,
+	onCloseAll,
+}: {
+	x: number;
+	y: number;
+	tabId?: string;
+	tabCount: number;
+	onClose: () => void;
+	onCloseTab: (id: string) => void;
+	onCloseOthers: (id: string) => void;
+	onCloseAll: () => void;
+}) {
+	const menuRef = useRef<HTMLDivElement>(null);
+	const [position, setPosition] = useState({ left: x, top: y });
+
+	useEffect(() => {
+		const element = menuRef.current;
+		if (!element) return;
+		const { width, height } = element.getBoundingClientRect();
+		setPosition({
+			left: Math.min(x, window.innerWidth - width - 8),
+			top: Math.min(y, window.innerHeight - height - 8),
+		});
+	}, [x, y]);
+
+	useEffect(() => {
+		const dismiss = (event: MouseEvent) => {
+			if (!menuRef.current?.contains(event.target as Node)) onClose();
+		};
+		const onKey = (event: KeyboardEvent) => {
+			if (event.key === "Escape") onClose();
+		};
+		document.addEventListener("mousedown", dismiss);
+		window.addEventListener("keydown", onKey);
+		window.addEventListener("resize", onClose);
+		return () => {
+			document.removeEventListener("mousedown", dismiss);
+			window.removeEventListener("keydown", onKey);
+			window.removeEventListener("resize", onClose);
+		};
+	}, [onClose]);
+
+	const items: { label: string; disabled?: boolean; run: () => void }[] = [];
+	if (tabId) {
+		items.push({ label: "Close", run: () => onCloseTab(tabId) });
+		items.push({
+			label: "Close Others",
+			disabled: tabCount < 2,
+			run: () => onCloseOthers(tabId),
+		});
+	}
+	items.push({ label: "Close All", run: onCloseAll });
+
+	return createPortal(
+		<div
+			ref={menuRef}
+			role="menu"
+			aria-label="Tab actions"
+			className="fixed z-[100] min-w-[160px] rounded-md border border-border bg-bg-elevated/95 py-1 shadow-xl backdrop-blur-sm"
+			style={position}
+		>
+			{items.map((item) => (
+				<button
+					type="button"
+					role="menuitem"
+					key={item.label}
+					disabled={item.disabled}
+					onClick={() => {
+						onClose();
+						item.run();
+					}}
+					className="flex w-full items-center px-3 py-1.5 text-left text-[11.5px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-muted"
+				>
+					{item.label}
+				</button>
+			))}
+		</div>,
+		document.body,
 	);
 }
 
@@ -1712,7 +2076,7 @@ function RightTabButton({
 			role="tab"
 			aria-selected={active}
 			tabIndex={active ? 0 : -1}
-			className={`relative cursor-pointer px-3 text-[12px] font-medium transition-colors ${
+			className={`relative flex cursor-pointer items-center px-2.5 text-[12px] font-medium transition-colors ${
 				active ? "text-fg" : "text-fg-dim hover:text-fg-muted"
 			}`}
 			onClick={onClick}
@@ -1733,7 +2097,7 @@ function RightTabButton({
 		>
 			{children}
 			{active && (
-				<span className="absolute left-3 right-3 bottom-0 h-[2px] bg-accent rounded-full" />
+				<span className="absolute right-2.5 bottom-0 left-2.5 h-[2px] rounded-full bg-accent" />
 			)}
 		</button>
 	);

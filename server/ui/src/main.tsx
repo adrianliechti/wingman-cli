@@ -10,6 +10,8 @@ import { createRoot } from "react-dom/client";
 import "./devicon-slim.css";
 import "./index.css";
 import App from "./App.tsx";
+import { AppCrashed } from "./AppCrashed.tsx";
+import { ErrorBoundary } from "./components/ErrorBoundary.tsx";
 import { ToastProvider } from "./components/ui/Feedback.tsx";
 
 // monaco-editor declares MonacoEnvironment inside its own module, so the name
@@ -34,10 +36,28 @@ self.MonacoEnvironment = {
 
 loader.config({ monaco });
 
+// The packaged macOS app runs in WKWebView. Its AppKit window extends the web
+// content underneath the native traffic lights, so reserve their hit area.
+// Chromium-based browsers and WebView2 keep their normal content bounds.
+const userAgent = navigator.userAgent;
+if (
+	/Mac/.test(navigator.platform) &&
+	/AppleWebKit/.test(userAgent) &&
+	!/(Chrome|Chromium|CriOS|Edg|Electron|Safari)/.test(userAgent)
+) {
+	document.documentElement.dataset.windowChrome = "macos-overlay";
+}
+
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>
-		<ToastProvider>
-			<App />
-		</ToastProvider>
+		<ErrorBoundary
+			fallback={(error, reset, errorInfo) => (
+				<AppCrashed error={error} errorInfo={errorInfo} onReset={reset} />
+			)}
+		>
+			<ToastProvider>
+				<App />
+			</ToastProvider>
+		</ErrorBoundary>
 	</StrictMode>,
 );

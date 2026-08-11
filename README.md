@@ -131,9 +131,8 @@ wingman --agent pi --continue     # resume the latest native Pi session
 | `wingman server` | Web UI with the same agent picker | Same shared registry and behavior as the TUI |
 | `wingman acp` or `wingman acp wingman` | Wingman over ACP stdio | Built-in Wingman configuration |
 | `wingman acp {claude,codex,pi}` | Native agent bridge over ACP stdio | Native CLI configuration/login |
-| `wingman acp {claude,codex,pi} --backend wingman` | Agent bridge over ACP stdio | Wingman backend via `WINGMAN_URL`, or a local proxy on port 4242 |
-| `wingman proxy` | Local OpenAI-compatible proxy/dashboard | Remote `WINGMAN_URL` (required) |
-| `wingman run <target>` | Wrapped external CLI | Wingman via `WINGMAN_URL`, or a local proxy on port 4242 |
+| `wingman acp {claude,codex,pi} --backend wingman` | Agent bridge over ACP stdio | Wingman backend via `WINGMAN_URL` |
+| `wingman run <target>` | Wrapped external CLI | Wingman via `WINGMAN_URL` |
 
 `wingman acp <target>` defaults to the native backend. This keeps subscription
 login and session behavior aligned with selecting the same agent in the TUI or
@@ -151,6 +150,9 @@ Web UI; `--backend wingman` is the explicit opt-in to provider overrides.
 | `WINGMAN_TOKEN` | Wingman server authentication token |
 | `OPENAI_API_KEY` | API key for an OpenAI-compatible backend |
 | `OPENAI_BASE_URL` | OpenAI-compatible API endpoint (default: `https://api.openai.com/v1`) |
+
+When neither `WINGMAN_URL` nor `OPENAI_API_KEY` is set, Wingman connects to an
+OpenAI-compatible backend at `http://localhost:4242/v1`.
 
 **Models & Reasoning** — every value is optional; unset values are chosen automatically by role (plan → largest available model, code → medium, utilities → smallest):
 
@@ -519,16 +521,6 @@ xterm.js sessions, shell of your choice, `Ctrl+Alt+T`), and session management.
 `Ctrl+P` opens the command palette — same shortcut as the TUI command center
 (`Cmd/Ctrl+K` works too). The server uses WebSockets for real-time streaming.
 
-## 🔀 Proxy Mode
-
-When `WINGMAN_URL` is set, Wingman can act as a local API proxy with a TUI dashboard for inspecting requests:
-
-```bash
-wingman proxy [--port 4242]
-```
-
-This starts a local OpenAI-compatible proxy server that forwards requests to your Wingman server, showing real-time request/response details in a terminal UI.
-
 ## 🧩 CLI Wrappers
 
 Wingman can launch other coding agents pre-configured to use a Wingman backend:
@@ -546,8 +538,7 @@ wingman run pi [args...]
 ```
 
 Each wrapper automatically configures the target CLI with the correct endpoint
-and authentication. It uses `WINGMAN_URL` when set; otherwise it expects a
-local Wingman proxy at `http://localhost:4242`. These wrappers are deliberately
+and authentication. `WINGMAN_URL` is required. These wrappers are deliberately
 Wingman-backed and are separate from the native subscription-backed
 `wingman --agent <name>` modes.
 
