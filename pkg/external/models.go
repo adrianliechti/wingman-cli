@@ -2,6 +2,7 @@ package external
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 
@@ -37,13 +38,7 @@ func WithDefaults(options *Options) *Options {
 	}
 
 	if options.WingmanURL == "" {
-		val := os.Getenv("WINGMAN_URL")
-
-		if val == "" {
-			val = "http://localhost:4242"
-		}
-
-		options.WingmanURL = val
+		options.WingmanURL = os.Getenv("WINGMAN_URL")
 	}
 
 	if options.WingmanToken == "" {
@@ -61,6 +56,9 @@ func WithDefaults(options *Options) *Options {
 
 func AvailableModels(ctx context.Context, options *Options) (map[string]bool, error) {
 	options = WithDefaults(options)
+	if strings.TrimSpace(options.WingmanURL) == "" {
+		return nil, fmt.Errorf("WINGMAN_URL is required")
+	}
 
 	client := openai.NewClient(
 		option.WithBaseURL(strings.TrimRight(options.WingmanURL, "/")+"/v1"),
