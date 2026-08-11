@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Group, Panel, Separator, usePanelRef } from "react-resizable-panels";
 import { ChatPanel } from "./components/ChatPanel";
 import {
 	CommandPalette,
@@ -71,6 +72,15 @@ type RightTab = "changes" | "files" | "problems" | "agents";
 type CloseRequest = { kind: "file" | "terminal"; tab: CenterTab } | null;
 type SessionDeleteRequest = { id: string; title: string } | null;
 type LayoutMode = "wide" | "medium" | "narrow";
+
+const LEFT_PANEL_DEFAULT_SIZE = 240;
+const LEFT_PANEL_MIN_SIZE = 200;
+const LEFT_PANEL_MAX_SIZE = 360;
+const RIGHT_PANEL_WIDE_DEFAULT_SIZE = 304;
+const RIGHT_PANEL_MEDIUM_DEFAULT_SIZE = 288;
+const RIGHT_PANEL_MIN_SIZE = 240;
+const RIGHT_PANEL_MAX_SIZE = 480;
+const CENTER_PANEL_MIN_SIZE = 320;
 
 const EMPTY_ENTRIES: never[] = [];
 const EMPTY_USAGE = {
@@ -136,6 +146,14 @@ export default function App() {
 	const [requestedRightTab, setRequestedRightTab] = useState<RightTab>("files");
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 	const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
+	const [leftPanelWidth, setLeftPanelWidth] = useState(LEFT_PANEL_DEFAULT_SIZE);
+	const [rightPanelWidth, setRightPanelWidth] = useState(
+		layoutMode === "wide"
+			? RIGHT_PANEL_WIDE_DEFAULT_SIZE
+			: RIGHT_PANEL_MEDIUM_DEFAULT_SIZE,
+	);
+	const leftPanelRef = usePanelRef();
+	const rightPanelRef = usePanelRef();
 	const [leftDrawerOpen, setLeftDrawerOpen] = useState(false);
 	const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
 	const [terminalShells, setTerminalShells] = useState<ShellEntry[]>([]);
@@ -899,20 +917,29 @@ export default function App() {
 	const [noticeDismissed, setNoticeDismissed] = useState(false);
 	const showNotice = !!capabilities?.notice && !noticeDismissed;
 	const toggleSidebar = useCallback(() => {
-		if (layoutMode === "wide") setSidebarCollapsed((collapsed) => !collapsed);
-		else setLeftDrawerOpen((open) => !open);
-	}, [layoutMode]);
+		if (layoutMode === "wide") {
+			const panel = leftPanelRef.current;
+			if (panel?.isCollapsed()) panel.resize(`${leftPanelWidth}px`);
+			else panel?.collapse();
+		} else setLeftDrawerOpen((open) => !open);
+	}, [layoutMode, leftPanelRef, leftPanelWidth]);
 	const toggleRightPanel = useCallback(() => {
 		if (layoutMode === "narrow") setRightDrawerOpen((open) => !open);
-		else setRightPanelCollapsed((collapsed) => !collapsed);
-	}, [layoutMode]);
+		else {
+			const panel = rightPanelRef.current;
+			if (panel?.isCollapsed()) panel.resize(`${rightPanelWidth}px`);
+			else panel?.collapse();
+		}
+	}, [layoutMode, rightPanelRef, rightPanelWidth]);
 	const showRightPanel = useCallback(
 		(tab: RightTab) => {
 			setRequestedRightTab(tab);
 			if (layoutMode === "narrow") setRightDrawerOpen(true);
-			else setRightPanelCollapsed(false);
+			else if (rightPanelRef.current?.isCollapsed()) {
+				rightPanelRef.current.resize(`${rightPanelWidth}px`);
+			}
 		},
-		[layoutMode],
+		[layoutMode, rightPanelRef, rightPanelWidth],
 	);
 
 	const paletteActions = useMemo<PaletteAction[]>(() => {
@@ -1006,7 +1033,6 @@ export default function App() {
 	);
 	const leftPanelDocked = layoutMode === "wide" && !sidebarCollapsed;
 	const rightPanelDocked = layoutMode !== "narrow" && !rightPanelCollapsed;
-	const rightPanelWidth = layoutMode === "wide" ? 304 : 288;
 	const sidebarContent = (
 		<Sidebar
 			currentSessionId={sessionId}
@@ -1060,7 +1086,10 @@ export default function App() {
 		</div>
 	);
 	const inspectorContent = (
-		<aside className="flex h-full flex-col bg-transparent" aria-label="Workspace">
+		<aside
+			className="flex h-full flex-col bg-transparent"
+			aria-label="Workspace"
+		>
 			{layoutMode === "narrow" && (
 				<>
 					{workspaceTabs}
@@ -1099,11 +1128,12 @@ export default function App() {
 				<div
 					data-panel-frame="sessions"
 					aria-hidden="true"
-					className={`pointer-events-none absolute inset-y-0 left-0 z-0 w-[240px] rounded-[10px] bg-bg-surface/40 transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
+					className={`pointer-events-none absolute inset-y-0 left-0 z-0 rounded-[10px] bg-bg-surface/40 transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
 						sidebarCollapsed
 							? "-translate-x-full opacity-0"
 							: "translate-x-0 opacity-100"
 					}`}
+					style={{ width: `${leftPanelWidth}px` }}
 				/>
 			)}
 			{layoutMode !== "narrow" && (
@@ -1126,9 +1156,9 @@ export default function App() {
 				<div
 					data-titlebar-separator
 					aria-hidden="true"
-					className="pointer-events-none absolute bottom-0 h-px bg-border-subtle transition-[left,right] duration-200 ease-[cubic-bezier(0.2,0,0,1)]"
+					className="pointer-events-none absolute bottom-0 h-px bg-border-subtle"
 					style={{
-						left: leftPanelDocked ? "240px" : "0px",
+						left: leftPanelDocked ? `${leftPanelWidth}px` : "0px",
 						right: rightPanelDocked ? `${rightPanelWidth}px` : "0px",
 					}}
 				/>
@@ -1139,10 +1169,10 @@ export default function App() {
 				<div
 					data-window-interactive
 					data-titlebar-left-panel
-					className="flex shrink-0 items-center gap-0.5 overflow-hidden pr-0 pl-2 transition-[width] duration-200 ease-[cubic-bezier(0.2,0,0,1)]"
+					className="flex shrink-0 items-center gap-0.5 overflow-hidden pr-0 pl-2"
 					style={{
 						width: leftPanelDocked
-							? "calc(240px - var(--window-controls-inset))"
+							? `calc(${leftPanelWidth}px - var(--window-controls-inset))`
 							: "40px",
 					}}
 				>
@@ -1385,7 +1415,7 @@ export default function App() {
 				<div
 					data-window-interactive
 					data-titlebar-right-panel
-					className="flex shrink-0 items-center overflow-hidden pr-2 pl-0 transition-[width] duration-200 ease-[cubic-bezier(0.2,0,0,1)]"
+					className="flex shrink-0 items-center overflow-hidden pr-2 pl-0"
 					style={{ width: rightPanelDocked ? `${rightPanelWidth}px` : "40px" }}
 				>
 					<button
@@ -1433,10 +1463,54 @@ export default function App() {
 					</button>
 				</div>
 			)}
-			<div className="relative z-10 flex flex-1 overflow-hidden">
-				<div
+			<Group
+				key={layoutMode}
+				id={`wingman-${layoutMode}-layout`}
+				orientation="horizontal"
+				className="relative z-10 flex-1 overflow-hidden"
+			>
+				{layoutMode === "wide" && (
+					<Panel
+						id="sessions"
+						panelRef={leftPanelRef}
+						defaultSize={`${LEFT_PANEL_DEFAULT_SIZE}px`}
+						minSize={`${LEFT_PANEL_MIN_SIZE}px`}
+						maxSize={`${LEFT_PANEL_MAX_SIZE}px`}
+						collapsedSize="0px"
+						collapsible
+						groupResizeBehavior="preserve-pixel-size"
+						onResize={({ inPixels }) => {
+							setSidebarCollapsed(inPixels === 0);
+							if (inPixels > 0) setLeftPanelWidth(Math.round(inPixels));
+						}}
+						data-layout-panel="sessions"
+						inert={sidebarCollapsed}
+						className="h-full overflow-hidden"
+					>
+						<div
+							data-panel-content="sessions"
+							className={`h-full overflow-hidden transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
+								sidebarCollapsed
+									? "pointer-events-none -translate-x-full opacity-0"
+									: "translate-x-0 opacity-100"
+							}`}
+							style={{ width: `${leftPanelWidth}px` }}
+						>
+							{sidebarContent}
+						</div>
+					</Panel>
+				)}
+				{layoutMode === "wide" && (
+					<ResizeHandle
+						label="Resize sessions panel"
+						hidden={sidebarCollapsed}
+					/>
+				)}
+				<Panel
+					id="center"
+					minSize={`${CENTER_PANEL_MIN_SIZE}px`}
 					data-layout-panel="center"
-					className="order-2 flex min-w-0 flex-1 flex-col overflow-hidden bg-bg"
+					className="flex min-w-0 flex-col overflow-hidden bg-bg"
 				>
 					<main className="flex flex-1 flex-col overflow-hidden min-h-0 bg-bg">
 						<div className="flex-1 overflow-hidden">
@@ -1543,50 +1617,49 @@ export default function App() {
 							) : null}
 						</div>
 					</main>
-				</div>
-				{layoutMode === "wide" && (
-					<div
-						data-layout-panel="sessions"
-						inert={sidebarCollapsed}
-						className="order-1 h-full shrink-0 overflow-hidden transition-[width] duration-200 ease-[cubic-bezier(0.2,0,0,1)]"
-						style={{ width: sidebarCollapsed ? "0px" : "240px" }}
-					>
-						<div
-							data-panel-content="sessions"
-							className={`h-full w-[240px] overflow-hidden transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
-								sidebarCollapsed
-									? "pointer-events-none -translate-x-full opacity-0"
-									: "translate-x-0 opacity-100"
-							}`}
-						>
-							{sidebarContent}
-						</div>
-					</div>
+				</Panel>
+				{layoutMode !== "narrow" && (
+					<ResizeHandle
+						label="Resize workspace panel"
+						hidden={rightPanelCollapsed}
+					/>
 				)}
 				{layoutMode !== "narrow" && (
-					<div
+					<Panel
+						id="workspace"
+						panelRef={rightPanelRef}
+						defaultSize={
+							layoutMode === "wide"
+								? `${RIGHT_PANEL_WIDE_DEFAULT_SIZE}px`
+								: `${RIGHT_PANEL_MEDIUM_DEFAULT_SIZE}px`
+						}
+						minSize={`${RIGHT_PANEL_MIN_SIZE}px`}
+						maxSize={`${RIGHT_PANEL_MAX_SIZE}px`}
+						collapsedSize="0px"
+						collapsible
+						groupResizeBehavior="preserve-pixel-size"
+						onResize={({ inPixels }) => {
+							setRightPanelCollapsed(inPixels === 0);
+							if (inPixels > 0) setRightPanelWidth(Math.round(inPixels));
+						}}
 						data-layout-panel="workspace"
 						inert={rightPanelCollapsed}
-						className="order-3 h-full shrink-0 overflow-hidden transition-[width] duration-200 ease-[cubic-bezier(0.2,0,0,1)]"
-						style={{
-							width: rightPanelCollapsed ? "0px" : `${rightPanelWidth}px`,
-						}}
+						className="h-full overflow-hidden"
 					>
 						<div
 							data-panel-content="workspace"
 							className={`ml-auto h-full overflow-hidden transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
-								layoutMode === "wide" ? "w-[304px]" : "w-[288px]"
-							} ${
 								rightPanelCollapsed
 									? "pointer-events-none translate-x-full opacity-0"
 									: "translate-x-0 opacity-100"
 							}`}
+							style={{ width: `${rightPanelWidth}px` }}
 						>
 							{inspectorContent}
 						</div>
-					</div>
+					</Panel>
 				)}
-			</div>
+			</Group>
 
 			{layoutMode !== "wide" && (
 				<SideDrawer
@@ -1723,6 +1796,18 @@ function formatTokens(n: number): string {
 	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
 	if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
 	return String(n);
+}
+
+function ResizeHandle({ label, hidden }: { label: string; hidden: boolean }) {
+	return (
+		<Separator
+			aria-label={label}
+			disabled={hidden}
+			className={`relative z-20 -mx-1.5 w-3 shrink-0 cursor-col-resize bg-transparent outline-none ${
+				hidden ? "pointer-events-none" : ""
+			}`}
+		/>
+	);
 }
 
 function useLayoutMode(): LayoutMode {

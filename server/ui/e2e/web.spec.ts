@@ -184,7 +184,9 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 	await expect(workspaceFrame).toHaveCSS("width", "304px");
 	await expect(workspaceFrame).toHaveCSS("border-radius", "10px");
 	await expect(workspaceFrame).toHaveCSS("border-left-width", "0px");
-	await expect(page.getByLabel("Resize panels")).toHaveCount(0);
+	await expect(page.getByRole("separator", { name: /Resize .* panel/ })).toHaveCount(
+		2,
+	);
 	await expect(toolbar.locator("[data-titlebar-left-panel]")).toHaveCSS(
 		"width",
 		"240px",
@@ -312,6 +314,64 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 			),
 		).toBe(true);
 	}
+});
+
+test("resizes borderless desktop panels within their limits", async ({ page }) => {
+	await composer(page);
+	const sessions = page.locator('[data-layout-panel="sessions"]');
+	const workspace = page.locator('[data-layout-panel="workspace"]');
+	const sessionsHandle = page.getByRole("separator", {
+		name: "Resize sessions panel",
+	});
+	const workspaceHandle = page.getByRole("separator", {
+		name: "Resize workspace panel",
+	});
+
+	await expect(sessionsHandle).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+	await sessionsHandle.hover();
+	await expect(sessionsHandle).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+
+	const sessionsBox = await sessionsHandle.boundingBox();
+	expect(sessionsBox).not.toBeNull();
+	await page.mouse.move(
+		sessionsBox!.x + sessionsBox!.width / 2,
+		sessionsBox!.y + sessionsBox!.height / 2,
+	);
+	await page.mouse.down();
+	await page.mouse.move(
+		sessionsBox!.x + sessionsBox!.width / 2 + 60,
+		sessionsBox!.y + 20,
+		{ steps: 5 },
+	);
+	await expect(sessions).toHaveCSS("width", "300px");
+	await page.mouse.move(sessionsBox!.x + 1_000, sessionsBox!.y + 20);
+	await expect(sessions).toHaveCSS("width", "360px");
+	await page.mouse.up();
+	await expect(page.locator('[data-panel-frame="sessions"]')).toHaveCSS(
+		"width",
+		"360px",
+	);
+
+	const workspaceBox = await workspaceHandle.boundingBox();
+	expect(workspaceBox).not.toBeNull();
+	await page.mouse.move(
+		workspaceBox!.x + workspaceBox!.width / 2,
+		workspaceBox!.y + workspaceBox!.height / 2,
+	);
+	await page.mouse.down();
+	await page.mouse.move(
+		workspaceBox!.x + workspaceBox!.width / 2 - 60,
+		workspaceBox!.y + 20,
+		{ steps: 5 },
+	);
+	await expect(workspace).toHaveCSS("width", "364px");
+	await page.mouse.move(workspaceBox!.x - 1_000, workspaceBox!.y + 20);
+	await expect(workspace).toHaveCSS("width", "480px");
+	await page.mouse.up();
+	await expect(page.locator('[data-panel-frame="workspace"]')).toHaveCSS(
+		"width",
+		"480px",
+	);
 });
 
 test("keeps workspace tabs inside the drawer on narrow layouts", async ({
