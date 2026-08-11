@@ -15,6 +15,7 @@ type uiTestAgent struct {
 	revision  uint64
 	snapshots int
 	model     string
+	models    []model.Model
 	effort    string
 	efforts   []string
 	mode      string
@@ -35,6 +36,9 @@ func newUITestAgent(messages []agent.Message) *uiTestAgent {
 func (a *uiTestAgent) Name() string                      { return wingmancode.BuiltinAgentName }
 func (a *uiTestAgent) Workspace() *wingmancode.Workspace { return a.workspace }
 func (a *uiTestAgent) Models(string) ([]model.Model, string) {
+	if a.models != nil {
+		return append([]model.Model(nil), a.models...), a.model
+	}
 	return []model.Model{{ID: a.model, Name: "GPT 5.6 Sol"}}, a.model
 }
 func (a *uiTestAgent) SetModel(_ context.Context, _ string, value string) error {

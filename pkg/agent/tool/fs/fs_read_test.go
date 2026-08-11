@@ -187,6 +187,10 @@ func TestReadTool(t *testing.T) {
 		if !strings.Contains(result.Content, "use offset=5002 to continue") {
 			t.Fatalf("missing continuation notice, got: %s", result.Content[len(result.Content)-200:])
 		}
+		output, _, _ := strings.Cut(result.Content, "\n\n[")
+		if len(output) > DefaultMaxBytes {
+			t.Fatalf("windowed output exceeded %d-byte cap: %d", DefaultMaxBytes, len(output))
+		}
 	})
 
 	t.Run("read rejects oversized binary files", func(t *testing.T) {

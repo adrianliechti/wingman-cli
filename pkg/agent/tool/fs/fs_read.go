@@ -217,12 +217,17 @@ func readFileWindow(root *os.Root, target fileTarget, pathArg string, fileSize i
 		return fmt.Sprintf("<system-reminder>Warning: the file exists but is shorter than the provided offset (%d). The file has %d lines.</system-reminder>", startLine, lineNum), nil
 	}
 
-	endLine := startLine + len(numbered) - 1
+	output, bytesTruncated := truncateReadOutput(strings.Join(numbered, "\n"))
+	outputLines := strings.Count(output, "\n") + 1
+	endLine := startLine + outputLines - 1
 	notice := fmt.Sprintf("Showing lines %d-%d of a %.1fMB file (too large to read fully)", startLine, endLine, float64(fileSize)/(1024*1024))
+	if bytesTruncated {
+		notice += fmt.Sprintf("; %dKB cap reached", DefaultMaxBytes/1024)
+	}
 	if !sawEOF {
 		notice += fmt.Sprintf("; use offset=%d to continue", endLine+1)
 	}
-	return fmt.Sprintf("%s\n\n[%s]", strings.Join(numbered, "\n"), notice), nil
+	return fmt.Sprintf("%s\n\n[%s]", output, notice), nil
 }
 
 // readLimitedLine reads one newline-terminated line while capping how much of

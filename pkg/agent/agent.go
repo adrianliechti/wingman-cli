@@ -41,8 +41,6 @@ type Agent struct {
 	startOnce    sync.Once
 	toolRunsMu   sync.Mutex
 	toolRuns     map[string]*toolRun
-
-	roundBase int
 }
 
 type toolRun struct {
@@ -721,16 +719,12 @@ func (a *Agent) beginToolRound() {
 	a.toolRunsMu.Lock()
 	a.toolRuns = nil
 	a.toolRunsMu.Unlock()
-
-	a.stateMu.Lock()
-	a.roundBase = len(a.Messages)
-	a.stateMu.Unlock()
 }
 
 func (a *Agent) retainedToolResult(tc ToolCall) (tool.Result, bool) {
 	a.stateMu.RLock()
 	defer a.stateMu.RUnlock()
-	for i := len(a.Messages) - 1; i >= a.roundBase; i-- {
+	for i := len(a.Messages) - 1; i >= 0; i-- {
 		for j := len(a.Messages[i].Content) - 1; j >= 0; j-- {
 			result := a.Messages[i].Content[j].ToolResult
 			if result == nil || result.ID != tc.ID {

@@ -11,8 +11,8 @@ type Options struct {
 	AllowedWriteRoots []string
 	Freshness         *Freshness
 
-	// MaxReadFileBytes rejects files before read allocates their contents.
-	// Zero uses MaxReadFileBytes; a negative value disables the size limit.
+	// MaxReadFileBytes switches larger files to bounded streaming reads.
+	// Zero uses MaxReadFileBytes; a negative value loads files without a size limit.
 	MaxReadFileBytes int64
 }
 

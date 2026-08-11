@@ -133,9 +133,14 @@ func TestDuplicateToolCallIDExecutesOnce(t *testing.T) {
 func TestRetainedToolResultPreventsReplayAfterRestore(t *testing.T) {
 	a := &Agent{
 		Config: &Config{ToolTimeout: -1},
-		Messages: []Message{{Role: RoleAssistant, Content: []Content{{ToolResult: &ToolResult{
-			ID: "persisted", Name: "write", Args: `{"path":"a"}`, Content: "already written",
-		}}}}},
+		Messages: []Message{
+			{Role: RoleAssistant, Content: []Content{{ToolCall: &ToolCall{
+				ID: "persisted", Name: "write", Args: `{"path":"a"}`,
+			}}}},
+			{Role: RoleAssistant, Content: []Content{{ToolResult: &ToolResult{
+				ID: "persisted", Name: "write", Args: `{"path":"a"}`, Content: "already written",
+			}}}},
+		},
 	}
 	called := false
 	tl := tool.Tool{Name: "write", Execute: func(context.Context, map[string]any) (tool.Result, error) {
@@ -143,10 +148,13 @@ func TestRetainedToolResultPreventsReplayAfterRestore(t *testing.T) {
 		return tool.Text("replayed"), nil
 	}}
 
-	result := a.runSingleToolCall(context.Background(), ToolCall{
+	if err := a.processToolCalls(context.Background(), []ToolCall{{
 		ID: "persisted", Name: "write", Args: `{"path":"a"}`,
-	}, []tool.Tool{tl})
-	if called || result.Content != "already written" {
+	}}, []tool.Tool{tl}, yieldAll); err != nil {
+		t.Fatal(err)
+	}
+	result := a.Messages[len(a.Messages)-1].Content[0].ToolResult
+	if called || result == nil || result.Content != "already written" {
 		t.Fatalf("called=%v result=%+v", called, result)
 	}
 }

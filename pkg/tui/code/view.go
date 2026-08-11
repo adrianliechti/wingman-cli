@@ -65,11 +65,11 @@ func (a *App) composerChrome(width int) EditorChrome {
 	}
 
 	var identity []string
-	_, currentModel := a.agent.Models(a.sessionID)
-	if currentModel != "" {
-		identity = append(identity, model.Name(currentModel))
+	availableModels, currentModel := a.agent.Models(a.sessionID)
+	if label := modelIdentity(availableModels, currentModel); label != "" {
+		identity = append(identity, label)
 	}
-	if effort, _ := a.agent.Effort(a.sessionID); effort != "" && effort != "auto" {
+	if effort, _ := a.agent.Effort(a.sessionID); effort != "" && effort != "auto" && effort != "default" {
 		identity = append(identity, effort)
 	}
 	topLabel := ""
@@ -97,6 +97,21 @@ func (a *App) composerChrome(width int) EditorChrome {
 		TopColor:    color,
 		Attachments: a.attachmentLines(width),
 	}
+}
+
+func modelIdentity(available []model.Model, current string) string {
+	if current == "" || current == "default" || current == "auto" {
+		return ""
+	}
+	for _, candidate := range available {
+		if candidate.ID != current {
+			continue
+		}
+		if candidate.Name != "" {
+			return candidate.Name
+		}
+	}
+	return model.Name(current)
 }
 
 // streamCells renders the in-flight turn tail shown below the committed chat.
