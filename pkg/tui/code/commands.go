@@ -11,6 +11,7 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/task"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/schedule"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/skill"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/theme"
@@ -55,7 +56,7 @@ func (a *App) builtinCommands() []slashCommand {
 		cmds = append(cmds, slashCommand{Name: "/context", Desc: "Show context window usage", Busy: true, Run: (*App).showContextStats})
 	}
 	if _, ok := a.agent.(taskProvider); ok {
-		cmds = append(cmds, slashCommand{Name: "/tasks", Desc: "Show background agents", Busy: true, Run: (*App).showTasks})
+		cmds = append(cmds, slashCommand{Name: "/tasks", Desc: "Show background agents and scheduled tasks", Busy: true, Run: (*App).showTasks})
 	}
 	if _, ok := a.agent.(recapProvider); ok {
 		cmds = append(cmds, slashCommand{Name: "/recap", Desc: "Summarize the session so far", Run: (*App).showRecap})
@@ -385,38 +386,130 @@ func (a *App) showTasks() {
 		a.appendChat(cellNotice("Background agents are unavailable for this agent", t.Yellow, a.width()))
 		return
 	}
+
 	reg := provider.Tasks(a.sessionID)
-	if reg == nil {
-		a.appendChat(cellNotice("No background agents in this session", t.Yellow, a.width()))
+
+	var tasks []*task.Task
+	if reg != nil {
+		tasks = reg.List()
+	}
+
+	var jobs []schedule.Task
+	if sp, ok := a.agent.(scheduleProvider); ok {
+		if store := sp.Schedules(a.sessionID); store != nil {
+			jobs, _ = store.List()
+		}
+	}
+
+	if len(tasks) == 0 && len(jobs) == 0 {
+		a.appendChat(cellNotice("No background agents or scheduled tasks in this session", t.Yellow, a.width()))
 		return
 	}
 
-	tasks := reg.List()
-	if len(tasks) == 0 {
-		a.appendChat(cellNotice("No background agents in this session", t.Yellow, a.width()))
-		return
-	}
-
-	items := make([]PopupItem, len(tasks))
-	for i, tk := range tasks {
+	items := make([]PopupItem, 0, len(tasks)+len(jobs))
+	for _, tk := range tasks {
 		detail := tk.Description
 		if tk.Status() == task.StatusRunning {
 			if activity := tk.Activity(); activity != "" {
 				detail += " — " + activity
 			}
 		}
-		items[i] = PopupItem{
+		items = append(items, PopupItem{
 			ID:     tk.ID,
 			Label:  fmt.Sprintf("%s  %-7s  %-14s  %s", tk.ID, tk.Status(), tk.AgentType, tk.Elapsed().Round(time.Second)),
 			Detail: detail,
-		}
+		})
 	}
 
-	a.popup = newPopup(popupList, "background agents (enter to watch)", items, func(ids []string) {
+	now := time.Now()
+	for _, job := range jobs {
+		timing := schedule.Relative(schedule.NextRun(job, now), now)
+		if job.Script != "" {
+			timing += ", pre-check"
+		}
+		items = append(items, PopupItem{
+			ID:     schedulePopupPrefix + job.ID,
+			Label:  fmt.Sprintf("%s  %-7s  %-14s  %s", job.ID, job.Status, job.Schedule, timing),
+			Detail: job.Prompt,
+		})
+	}
+
+	a.popup = newPopup(popupList, "background agents & scheduled tasks (enter to watch)", items, func(ids []string) {
+		if id, ok := strings.CutPrefix(ids[0], schedulePopupPrefix); ok {
+			a.showSchedule(id)
+			return
+		}
+		if reg == nil {
+			return
+		}
 		if tk := reg.Get(ids[0]); tk != nil {
 			a.showTaskPeek(tk)
 		}
 	})
+}
+
+const schedulePopupPrefix = "schedule:"
+
+func (a *App) activeScheduleCount() int {
+	sp, ok := a.agent.(scheduleProvider)
+	if !ok {
+		return 0
+	}
+	store := sp.Schedules(a.sessionID)
+	if store == nil {
+		return 0
+	}
+
+	jobs, err := store.List()
+	if err != nil {
+		return 0
+	}
+
+	count := 0
+	for _, job := range jobs {
+		if job.Status == schedule.StatusActive {
+			count++
+		}
+	}
+	return count
+}
+
+func (a *App) showSchedule(id string) {
+	sp, ok := a.agent.(scheduleProvider)
+	if !ok {
+		return
+	}
+	store := sp.Schedules(a.sessionID)
+	if store == nil {
+		return
+	}
+
+	jobs, err := store.List()
+	if err != nil {
+		return
+	}
+	i, err := schedule.Find(jobs, id)
+	if err != nil {
+		a.appendChat(cellNotice(err.Error(), theme.Default.Yellow, a.width()))
+		return
+	}
+
+	job := jobs[i]
+	now := time.Now()
+
+	lines := []string{
+		fmt.Sprintf("Scheduled task %s (%s, %s)", job.ID, job.Schedule, job.Status),
+		fmt.Sprintf("Next run: %s", schedule.Relative(schedule.NextRun(job, now), now)),
+	}
+	if job.LastRun != nil {
+		lines = append(lines, fmt.Sprintf("Last run: %s", job.LastRun.Local().Format(time.RFC3339)))
+	}
+	if job.Script != "" {
+		lines = append(lines, "Pre-check script: "+job.Script)
+	}
+	lines = append(lines, "", job.Prompt)
+
+	a.appendChat(cellNotice(strings.Join(lines, "\n"), theme.Default.Cyan, a.width()))
 }
 
 func (a *App) showModelPicker() {

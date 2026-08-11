@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/adrianliechti/wingman-agent/pkg/claw/tool/schedule"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/schedule"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/ansi"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/markdown"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/theme"
@@ -14,8 +14,7 @@ import (
 func (t *TUI) refreshTasks() {
 	th := theme.Default
 	name := t.selected()
-	agentDir := t.claw.AgentDir(name)
-	tasks, _ := schedule.List(agentDir)
+	tasks, _ := schedule.NewFileStore(t.claw.AgentDir(name)).List()
 
 	t.taskLines = nil
 	now := time.Now()

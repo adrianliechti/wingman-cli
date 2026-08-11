@@ -3,13 +3,30 @@ import {
 	Bot,
 	CircleCheck,
 	CircleSlash,
+	Clock,
 	Loader2,
+	PauseCircle,
 	Square,
+	Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import type { ServerMessage, TaskEntry } from "../types/protocol";
+import type {
+	ScheduleEntry,
+	ServerMessage,
+	TaskEntry,
+} from "../types/protocol";
 import { formatElapsed } from "../utils/tasks";
 import { useToast } from "./ui/Feedback";
+
+// Mutating schedule tools whose results should refresh the panel; list_tasks
+// is read-only and excluded.
+const SCHEDULE_TOOLS = new Set([
+	"schedule_task",
+	"pause_task",
+	"resume_task",
+	"remove_task",
+	"run_task",
+]);
 
 interface Props {
 	sessionId: string;
@@ -20,20 +37,26 @@ interface Props {
 export function TasksPanel({ sessionId, subscribe, onOpenTask }: Props) {
 	const toast = useToast();
 	const [tasks, setTasks] = useState<TaskEntry[]>([]);
+	const [schedules, setSchedules] = useState<ScheduleEntry[]>([]);
 	const [error, setError] = useState<string | null>(null);
 
 	const load = useCallback(async () => {
 		if (!sessionId) {
 			setTasks([]);
+			setSchedules([]);
 			setError(null);
 			return;
 		}
 		try {
-			const res = await fetch(`/api/sessions/${sessionId}/tasks`);
-			if (!res.ok) {
-				throw new Error(`Could not load agents (${res.status}).`);
+			const [taskRes, scheduleRes] = await Promise.all([
+				fetch(`/api/sessions/${sessionId}/tasks`),
+				fetch(`/api/sessions/${sessionId}/schedules`),
+			]);
+			if (!taskRes.ok) {
+				throw new Error(`Could not load agents (${taskRes.status}).`);
 			}
-			setTasks(await res.json());
+			setTasks(await taskRes.json());
+			setSchedules(scheduleRes.ok ? await scheduleRes.json() : []);
 			setError(null);
 		} catch (loadError) {
 			setError(
@@ -55,7 +78,8 @@ export function TasksPanel({ sessionId, subscribe, onOpenTask }: Props) {
 				msg.type === "tool_result" &&
 				(msg.name === "agent" ||
 					msg.name === "task_send" ||
-					msg.name === "task_stop")
+					msg.name === "task_stop" ||
+					SCHEDULE_TOOLS.has(msg.name))
 			) {
 				load();
 			}
@@ -69,6 +93,38 @@ export function TasksPanel({ sessionId, subscribe, onOpenTask }: Props) {
 		const timer = setInterval(load, 3000);
 		return () => clearInterval(timer);
 	}, [anyRunning, load]);
+
+	// Keep the "in 42m" countdowns honest without polling when nothing is due.
+	useEffect(() => {
+		if (schedules.length === 0) return;
+		const timer = setInterval(load, 30000);
+		return () => clearInterval(timer);
+	}, [schedules.length, load]);
+
+	const removeSchedule = async (id: string) => {
+		try {
+			const response = await fetch(
+				`/api/sessions/${sessionId}/schedules/${id}`,
+				{ method: "DELETE" },
+			);
+			if (!response.ok) {
+				throw new Error(
+					(await response.text()).trim() ||
+						`Could not remove the scheduled task (${response.status}).`,
+				);
+			}
+			void load();
+		} catch (removeError) {
+			toast({
+				title: "Scheduled task is still there",
+				description:
+					removeError instanceof Error
+						? removeError.message
+						: String(removeError),
+				tone: "error",
+			});
+		}
+	};
 
 	const stop = async (id: string) => {
 		try {
@@ -101,9 +157,58 @@ export function TasksPanel({ sessionId, subscribe, onOpenTask }: Props) {
 						{error}
 					</div>
 				)}
-				{tasks.length === 0 && (
+				{tasks.length === 0 && schedules.length === 0 && (
 					<div className="px-3 py-6 text-[11px] text-fg-dim text-center">
-						No background agents in this session
+						No background agents or scheduled tasks in this session
+					</div>
+				)}
+				{schedules.length > 0 && (
+					<div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wide text-fg-dim">
+						Scheduled
+					</div>
+				)}
+				{schedules.map((s) => (
+					<div
+						key={s.id}
+						className="group relative flex items-stretch border-b border-border-subtle text-[11px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg"
+					>
+						<div
+							className="flex min-w-0 flex-1 items-start gap-2 px-3 py-2 pr-9 text-left"
+							title={s.prompt}
+						>
+							{s.status === "paused" ? (
+								<PauseCircle
+									size={12}
+									className="mt-0.5 shrink-0 text-fg-dim"
+								/>
+							) : (
+								<Clock size={12} className="mt-0.5 shrink-0 text-accent" />
+							)}
+							<div className="min-w-0 flex-1">
+								<div className="truncate">{s.prompt}</div>
+								<div className="mt-0.5 truncate font-mono text-[11px] text-fg-dim">
+									{s.schedule}
+									{s.status === "paused"
+										? " · paused"
+										: s.next_in && ` · ${s.next_in}`}
+									{s.script && " · pre-check"}
+									{s.failures ? ` · failing x${s.failures}` : ""}
+								</div>
+							</div>
+						</div>
+						<button
+							type="button"
+							className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded text-fg-dim transition-colors hover:bg-bg-active hover:text-danger"
+							title="Remove scheduled task"
+							onClick={() => void removeSchedule(s.id)}
+						>
+							<Trash2 size={11} />
+						</button>
+					</div>
+				))}
+				{schedules.length > 0 && tasks.length > 0 && (
+					<div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wide text-fg-dim">
+						Agents
 					</div>
 				)}
 				{tasks.map((t) => (

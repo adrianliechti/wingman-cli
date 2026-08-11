@@ -20,13 +20,13 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/fs"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/mcp"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/schedule"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/shell"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/subagent"
 	"github.com/adrianliechti/wingman-agent/pkg/claw/channel"
 	"github.com/adrianliechti/wingman-agent/pkg/claw/memory"
 	"github.com/adrianliechti/wingman-agent/pkg/claw/prompt"
 	"github.com/adrianliechti/wingman-agent/pkg/claw/tool/manage"
-	"github.com/adrianliechti/wingman-agent/pkg/claw/tool/schedule"
 )
 
 type managedAgent struct {
@@ -250,7 +250,7 @@ func (c *Claw) loadAgent(name string) (*managedAgent, error) {
 		shell.Tools(workDir, nil, nil),
 		c.config.Tools,
 		c.mcpTools,
-		schedule.Tools(c.config.Memory.AgentDir(name)),
+		schedule.Tools(schedule.NewFileStore(c.config.Memory.AgentDir(name))),
 	)
 
 	if name == "main" {
@@ -566,13 +566,13 @@ func Unframe(text string) string {
 }
 
 func (c *Claw) ensureDefaultTasks(name string) {
-	agentDir := c.config.Memory.AgentDir(name)
+	store := schedule.NewFileStore(c.config.Memory.AgentDir(name))
 
-	if schedule.HasTaskFile(agentDir) {
+	if store.Exists() {
 		return
 	}
 
-	err := schedule.Mutate(agentDir, func(tasks []schedule.Task) ([]schedule.Task, error) {
+	err := store.Mutate(func(tasks []schedule.Task) ([]schedule.Task, error) {
 		task, err := schedule.NewTask(
 			"Review your workspace for pending follow-ups: check README.md and your notes for items that are due, stale, or promised to the user, and handle or report anything that needs attention.",
 			"every 1h",

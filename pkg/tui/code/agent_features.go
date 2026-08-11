@@ -6,6 +6,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/task"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/schedule"
 	core "github.com/adrianliechti/wingman-agent/pkg/code"
 )
 
@@ -28,6 +29,10 @@ type contextStatsProvider interface {
 type taskProvider interface {
 	Tasks(string) *task.Registry
 	RunningTaskCount() int
+}
+
+type scheduleProvider interface {
+	Schedules(string) *schedule.MemoryStore
 }
 
 type toolProvider interface {

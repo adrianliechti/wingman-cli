@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/schedule"
 	"github.com/adrianliechti/wingman-agent/pkg/claw/memory"
-	"github.com/adrianliechti/wingman-agent/pkg/claw/tool/schedule"
 )
 
 type fakeManager struct {
@@ -89,7 +89,7 @@ func TestCreateAgentSavesTrimmedTasks(t *testing.T) {
 		t.Fatalf("create_agent failed: %v", err)
 	}
 
-	tasks, err := schedule.List(store.AgentDir("worker"))
+	tasks, err := schedule.NewFileStore(store.AgentDir("worker")).List()
 	if err != nil || len(tasks) != 1 || tasks[0].Prompt != "run" || tasks[0].Schedule != "every 1h" {
 		t.Fatalf("tasks = %#v, %v, want one trimmed task", tasks, err)
 	}

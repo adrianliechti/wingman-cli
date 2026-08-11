@@ -100,6 +100,12 @@ func (a *App) footerLine(width int) string {
 		}
 	}
 
+	if scheduled := a.activeScheduleCount(); scheduled == 1 {
+		right = append(right, colored(t.Cyan, "1 scheduled"))
+	} else if scheduled > 1 {
+		right = append(right, colored(t.Cyan, fmt.Sprintf("%d scheduled", scheduled)))
+	}
+
 	showFreshUsage := a.getPhase() == PhaseIdle && time.Now().Before(a.usageVisibleUntil)
 	if showFreshUsage && (a.inputTokens > 0 || a.outputTokens > 0) {
 		tokens := fmt.Sprintf("↑%s ↓%s", tui.FormatTokens(a.inputTokens), tui.FormatTokens(a.outputTokens))

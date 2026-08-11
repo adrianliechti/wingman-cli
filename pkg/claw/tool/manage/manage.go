@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/schedule"
 	"github.com/adrianliechti/wingman-agent/pkg/claw/memory"
-	"github.com/adrianliechti/wingman-agent/pkg/claw/tool/schedule"
 )
 
 type AgentManager interface {
@@ -91,7 +91,7 @@ func Tools(mgr AgentManager, store *memory.Store) []tool.Tool {
 				}
 
 				if len(tasks) > 0 {
-					err := schedule.Mutate(store.AgentDir(name), func(existing []schedule.Task) ([]schedule.Task, error) {
+					err := schedule.NewFileStore(store.AgentDir(name)).Mutate(func(existing []schedule.Task) ([]schedule.Task, error) {
 						return append(existing, tasks...), nil
 					})
 					if err != nil {

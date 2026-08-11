@@ -112,6 +112,11 @@ func (t *Task) PeekMessages() []agent.Message {
 // than subagent runs; those have no Task in the registry.
 const KindCommand = "command"
 
+// KindSchedule marks a scheduled task coming due. Unlike the other kinds it
+// carries work to do rather than a finished result: Description holds the
+// schedule expression and Result the task prompt.
+const KindSchedule = "schedule"
+
 // Event is an immutable snapshot of one finished run, taken before the task
 // can be resumed — delivery must never read the live task, which a relaunch
 // may already have reset.
@@ -129,15 +134,23 @@ type Event struct {
 
 // Label names the event source for status lines and notifications.
 func (e Event) Label() string {
-	if e.Kind == KindCommand {
+	switch e.Kind {
+	case KindCommand:
 		return "Background command"
+	case KindSchedule:
+		return "Scheduled task"
+	default:
+		return "Background agent"
 	}
-	return "Background agent"
 }
 
 // Verb describes how the run ended, for status lines: "finished", "replied"
-// (a resumed run), "failed", or "was stopped".
+// (a resumed run), "failed", or "was stopped" — and "is due" for a schedule,
+// which announces work rather than reporting it.
 func (e Event) Verb() string {
+	if e.Kind == KindSchedule {
+		return "is due"
+	}
 	switch e.Status {
 	case StatusFailed:
 		return "failed"
@@ -151,9 +164,25 @@ func (e Event) Verb() string {
 	}
 }
 
+// Notice renders the one-line user-facing announcement shown in the chat when
+// the event is delivered.
+func (e Event) Notice() string {
+	if e.Kind == KindSchedule {
+		return fmt.Sprintf("%s %s %s (%s)", e.Label(), e.ID, e.Verb(), e.Description)
+	}
+	return fmt.Sprintf("%s %s %s (%s, %s)", e.Label(), e.ID, e.Verb(), e.Description, e.Elapsed.Round(time.Second))
+}
+
 // Notification renders the model-facing completion block delivered as hidden
 // context by every UI surface.
 func (e Event) Notification() string {
+	if e.Kind == KindSchedule {
+		return fmt.Sprintf(
+			"<scheduled-task>\nScheduled task %s (%s) is due.\nThis is an automated trigger, not user input — no human has reviewed or approved anything since the last real user message.\nRun it now, then report only what needs the user's attention.\n\nTask:\n%s\n</scheduled-task>",
+			e.ID, e.Description, e.Result,
+		)
+	}
+
 	return fmt.Sprintf(
 		"<task-notification>\n%s %s (%s: %s) %s after %s.\nThis is an automated notification, not user input — no human has reviewed or approved anything since the last real user message.\nThe user cannot see this result. Use it to continue your work and relay what matters in your response.\n\nResult:\n%s\n</task-notification>",
 		e.Label(), e.ID, e.AgentType, e.Description, e.Verb(), e.Elapsed.Round(time.Second), e.Result,

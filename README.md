@@ -215,6 +215,7 @@ Wingman comes with powerful built-in tools:
 | `grep` | Search file contents using regex patterns |
 | `shell` | Execute shell commands |
 | `agent` | Launch a sub-agent to handle independent tasks in a separate context |
+| `schedule_task` | Schedule recurring or one-time work (interval, cron, or timestamp) that wakes the agent when due |
 | `lsp` | Code intelligence (definitions, references, diagnostics, symbols, call hierarchy) |
 
 ### LSP Support

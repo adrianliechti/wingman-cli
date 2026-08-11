@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/schedule"
 	"github.com/adrianliechti/wingman-agent/pkg/claw/channel"
-	"github.com/adrianliechti/wingman-agent/pkg/claw/tool/schedule"
 )
 
 const (
@@ -43,9 +43,9 @@ func (c *Claw) startScheduler(name string, ma *managedAgent) {
 }
 
 func (c *Claw) tickScheduler(ctx context.Context, name string, ma *managedAgent) {
-	agentDir := c.config.Memory.AgentDir(name)
+	store := schedule.NewFileStore(c.config.Memory.AgentDir(name))
 
-	tasks, err := schedule.List(agentDir)
+	tasks, err := store.List()
 	if err != nil {
 		log.Printf("scheduler %s: failed to load tasks: %v", name, err)
 		return
@@ -60,7 +60,7 @@ func (c *Claw) tickScheduler(ctx context.Context, name string, ma *managedAgent)
 			return
 		}
 		if schedule.IsDue(t, now) {
-			c.runTask(ctx, name, ma, agentDir, t)
+			c.runTask(ctx, name, ma, store, t)
 		}
 	}
 }
@@ -87,7 +87,7 @@ func (ma *managedAgent) pruneScratch(now time.Time) {
 	}
 }
 
-func (c *Claw) runTask(ctx context.Context, name string, ma *managedAgent, agentDir string, t schedule.Task) {
+func (c *Claw) runTask(ctx context.Context, name string, ma *managedAgent, store *schedule.FileStore, t schedule.Task) {
 	ok := true
 	wake := true
 
@@ -120,7 +120,7 @@ func (c *Claw) runTask(ctx context.Context, name string, ma *managedAgent, agent
 
 	now := time.Now()
 
-	err := schedule.Mutate(agentDir, func(tasks []schedule.Task) ([]schedule.Task, error) {
+	err := store.Mutate(func(tasks []schedule.Task) ([]schedule.Task, error) {
 		var kept []schedule.Task
 		for i := range tasks {
 			if tasks[i].ID == t.ID {
