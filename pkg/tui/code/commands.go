@@ -431,7 +431,7 @@ func (a *App) showModelPickerLevel(back bool) {
 
 	var items []PopupItem
 	for _, m := range available {
-		items = append(items, PopupItem{ID: m.ID, Label: m.Name})
+		items = append(items, PopupItem{ID: m.ID, Label: m.Name, Detail: m.Description})
 	}
 
 	kind := popupList

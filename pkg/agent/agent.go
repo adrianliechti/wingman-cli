@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"maps"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,14 @@ type Agent struct {
 	running      bool
 	pendingInput [][]Content
 	startOnce    sync.Once
+	toolRunsMu   sync.Mutex
+	toolRuns     map[string]*toolRun
+}
+
+type toolRun struct {
+	signature string
+	done      chan struct{}
+	result    tool.Result
 }
 
 // Running reports whether a turn is currently active.
@@ -519,6 +528,8 @@ func extractToolCalls(messages []Message) []ToolCall {
 }
 
 func (a *Agent) processToolCalls(ctx context.Context, calls []ToolCall, tools []tool.Tool, yield func(Message, error) bool) error {
+	a.beginToolRound()
+
 	for start := 0; start < len(calls); {
 		end := start + 1
 
@@ -572,10 +583,10 @@ func (a *Agent) processToolCallsParallel(ctx context.Context, calls []ToolCall, 
 
 	type completion struct {
 		index  int
-		result string
+		result tool.Result
 	}
 
-	results := make([]string, len(calls))
+	results := make([]tool.Result, len(calls))
 	ch := make(chan completion, len(calls))
 	jobs := make(chan int, len(calls))
 
@@ -627,18 +638,27 @@ func toolCallMessage(tc ToolCall) Message {
 	}
 }
 
-func toolResultMessage(tc ToolCall, result string) Message {
-	if tool.IsImageResult(result) {
+const imageResultPlaceholder = "[image attached below]"
+
+const (
+	interruptedToolResult = "error: interrupted — the request was canceled before this tool call finished"
+	interruptedWaitResult = "error: interrupted while waiting for the original tool call to finish"
+)
+
+func toolResultMessage(tc ToolCall, result tool.Result) Message {
+	if tool.IsImageResult(result.Content) {
 		return Message{
 			Role: RoleAssistant,
 			Content: []Content{
 				{ToolResult: &ToolResult{
-					ID:      tc.ID,
-					Name:    tc.Name,
-					Args:    tc.Args,
-					Content: "[image attached below]",
+					ID:       tc.ID,
+					Name:     tc.Name,
+					Args:     tc.Args,
+					Content:  imageResultPlaceholder,
+					IsError:  result.IsError,
+					Metadata: result.Metadata,
 				}},
-				{File: &File{Data: result}},
+				{File: &File{Data: result.Content}},
 			},
 		}
 	}
@@ -646,15 +666,94 @@ func toolResultMessage(tc ToolCall, result string) Message {
 	return Message{
 		Role: RoleAssistant,
 		Content: []Content{{ToolResult: &ToolResult{
-			ID:      tc.ID,
-			Name:    tc.Name,
-			Args:    tc.Args,
-			Content: result,
+			ID:       tc.ID,
+			Name:     tc.Name,
+			Args:     tc.Args,
+			Content:  result.Content,
+			IsError:  result.IsError,
+			Metadata: result.Metadata,
 		}}},
 	}
 }
 
-func (a *Agent) runSingleToolCall(ctx context.Context, tc ToolCall, tools []tool.Tool) string {
+func (a *Agent) runSingleToolCall(ctx context.Context, tc ToolCall, tools []tool.Tool) tool.Result {
+	if tc.ID == "" {
+		return a.executeSingleToolCall(ctx, tc, tools)
+	}
+	if result, ok := a.retainedToolResult(tc); ok {
+		return result
+	}
+
+	signature := tc.Name + "\x00" + tc.Args
+	a.toolRunsMu.Lock()
+	if a.toolRuns == nil {
+		a.toolRuns = make(map[string]*toolRun)
+	}
+	if existing := a.toolRuns[tc.ID]; existing != nil {
+		if existing.signature != signature {
+			a.toolRunsMu.Unlock()
+			return tool.Error(fmt.Sprintf("error: tool call ID %s was reused with different arguments", tc.ID))
+		}
+		done := existing.done
+		a.toolRunsMu.Unlock()
+		select {
+		case <-done:
+			return cloneToolResult(existing.result)
+		case <-ctx.Done():
+			return tool.Error(interruptedWaitResult)
+		}
+	}
+	run := &toolRun{signature: signature, done: make(chan struct{})}
+	a.toolRuns[tc.ID] = run
+	a.toolRunsMu.Unlock()
+
+	result := a.executeSingleToolCall(ctx, tc, tools)
+	a.toolRunsMu.Lock()
+	run.result = cloneToolResult(result)
+	close(run.done)
+	a.toolRunsMu.Unlock()
+	return result
+}
+
+func (a *Agent) beginToolRound() {
+	a.toolRunsMu.Lock()
+	a.toolRuns = nil
+	a.toolRunsMu.Unlock()
+}
+
+func (a *Agent) retainedToolResult(tc ToolCall) (tool.Result, bool) {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	for i := len(a.Messages) - 1; i >= 0; i-- {
+		for j := len(a.Messages[i].Content) - 1; j >= 0; j-- {
+			result := a.Messages[i].Content[j].ToolResult
+			if result == nil || result.ID != tc.ID {
+				continue
+			}
+			if result.Name != tc.Name || result.Args != tc.Args {
+				return tool.Error(fmt.Sprintf("error: tool call ID %s was reused with different arguments", tc.ID)), true
+			}
+			if result.Content == interruptedToolResult || result.Content == interruptedWaitResult {
+				return tool.Result{}, false
+			}
+			content := result.Content
+			if content == imageResultPlaceholder && j+1 < len(a.Messages[i].Content) {
+				if file := a.Messages[i].Content[j+1].File; file != nil {
+					content = file.Data
+				}
+			}
+			return tool.Result{Content: content, IsError: result.IsError, Metadata: maps.Clone(result.Metadata)}, true
+		}
+	}
+	return tool.Result{}, false
+}
+
+func cloneToolResult(result tool.Result) tool.Result {
+	result.Metadata = maps.Clone(result.Metadata)
+	return result
+}
+
+func (a *Agent) executeSingleToolCall(ctx context.Context, tc ToolCall, tools []tool.Tool) tool.Result {
 	started := time.Now()
 	t := findTool(tc.Name, tools)
 
@@ -682,14 +781,16 @@ func (a *Agent) runSingleToolCall(ctx context.Context, tc ToolCall, tools []tool
 
 	hc := tool.ToolCall{ID: tc.ID, Name: tc.Name, Args: tc.Args}
 
-	var result string
+	var result tool.Result
+	execute := true
 	var hookContext []string
 
 	for _, h := range a.Hooks.PreToolUse {
 		outcome, err := h(ctx, hc)
 
 		if err != nil {
-			result = fmt.Sprintf("error: %v", err)
+			result = tool.Error(fmt.Sprintf("error: %v", err))
+			execute = false
 			break
 		}
 		hookContext = append(hookContext, outcome.AdditionalContext...)
@@ -702,24 +803,25 @@ func (a *Agent) runSingleToolCall(ctx context.Context, tc ToolCall, tools []tool
 			if reason == "" {
 				reason = "tool call blocked by hook"
 			}
-			result = "error: " + reason
+			result = tool.Error("error: " + reason)
+			execute = false
 			break
 		}
 	}
 
-	if result == "" {
+	if execute {
 		result = a.executeTool(hook.WithToolCall(ctx, hc), tc, t, timeout, started)
 	}
 
 	for _, h := range a.Hooks.PostToolUse {
-		outcome, err := h(ctx, hc, result)
+		outcome, err := h(ctx, hc, result.Content)
 
 		if err != nil {
-			result = fmt.Sprintf("error: %v", err)
+			result = tool.Error(fmt.Sprintf("error: %v", err))
 			break
 		}
 		if outcome.UpdatedResult != nil {
-			result = *outcome.UpdatedResult
+			result.Content = *outcome.UpdatedResult
 		}
 		hookContext = append(hookContext, outcome.AdditionalContext...)
 		if outcome.Block || outcome.Stop {
@@ -730,29 +832,30 @@ func (a *Agent) runSingleToolCall(ctx context.Context, tc ToolCall, tools []tool
 			// Codex replaces the completed tool result with hook feedback. The
 			// side effect has already happened, but the original output must not
 			// continue into the next model request.
-			result = reason
+			result.Content = reason
+			result.IsError = true
 		}
 	}
-	if len(hookContext) > 0 && !tool.IsImageResult(result) {
-		result += "\n\n<hook-context>\n" + strings.Join(hookContext, "\n\n") + "\n</hook-context>"
+	if len(hookContext) > 0 && !tool.IsImageResult(result.Content) {
+		result.Content += "\n\n<hook-context>\n" + strings.Join(hookContext, "\n\n") + "\n</hook-context>"
 	}
 
 	return result
 }
 
-func (a *Agent) executeTool(ctx context.Context, tc ToolCall, t *tool.Tool, timeout time.Duration, started time.Time) string {
+func (a *Agent) executeTool(ctx context.Context, tc ToolCall, t *tool.Tool, timeout time.Duration, started time.Time) tool.Result {
 	if t == nil {
-		return fmt.Sprintf("error: unknown tool %s", tc.Name)
+		return tool.Error(fmt.Sprintf("error: unknown tool %s", tc.Name))
 	}
 	if t.Execute == nil {
-		return fmt.Sprintf("error: tool %s has no executor", tc.Name)
+		return tool.Error(fmt.Sprintf("error: tool %s has no executor", tc.Name))
 	}
 
 	args := make(map[string]any)
 
 	if tc.Args != "" {
 		if err := json.Unmarshal([]byte(tc.Args), &args); err != nil {
-			return fmt.Sprintf("error: failed to parse arguments: %v", err)
+			return tool.Error(fmt.Sprintf("error: failed to parse arguments: %v", err))
 		}
 	}
 
@@ -763,14 +866,14 @@ func (a *Agent) executeTool(ctx context.Context, tc ToolCall, t *tool.Tool, time
 		// races a cancellation must stay visible as-is.
 		switch {
 		case errors.Is(err, context.Canceled) && errors.Is(ctx.Err(), context.Canceled):
-			return "error: interrupted — the request was canceled before this tool call finished"
+			return tool.Error(interruptedToolResult)
 		case errors.Is(err, context.DeadlineExceeded) && errors.Is(ctx.Err(), context.DeadlineExceeded):
 			if timeout > 0 && time.Since(started) >= timeout {
-				return fmt.Sprintf("error: tool call aborted after exceeding its %s time limit", timeout)
+				return tool.Error(fmt.Sprintf("error: tool call aborted after exceeding its %s time limit", timeout))
 			}
-			return "error: tool call aborted — the request deadline expired before it finished"
+			return tool.Error("error: tool call aborted — the request deadline expired before it finished")
 		}
-		return fmt.Sprintf("error: %v", err)
+		return tool.Error(fmt.Sprintf("error: %v", err))
 	}
 
 	return result

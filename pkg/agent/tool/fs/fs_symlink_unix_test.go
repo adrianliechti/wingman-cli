@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
 // Absolute link targets are what Windows junctions always store; os.Root
@@ -38,8 +40,8 @@ func TestReadThroughAbsoluteInRootSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read through in-root absolute symlink failed: %v", err)
 	}
-	if !strings.Contains(result, "hello") {
-		t.Fatalf("unexpected content: %q", result)
+	if !strings.Contains(result.Content, "hello") {
+		t.Fatalf("unexpected content: %q", result.Content)
 	}
 }
 
@@ -97,7 +99,7 @@ func TestWriteAndEditThroughAbsoluteInRootSymlink(t *testing.T) {
 	}
 }
 
-type tool_ = func(context.Context, map[string]any) (string, error)
+type tool_ = func(context.Context, map[string]any) (tool.Result, error)
 
 func TestReadStillRejectsEscapingSymlink(t *testing.T) {
 	ws := t.TempDir()
@@ -153,8 +155,8 @@ func TestReadAcceptsAliasSpellingOfWorkspacePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("alias spelling of a workspace path rejected: %v", err)
 	}
-	if !strings.Contains(result, "aliased") {
-		t.Fatalf("unexpected content: %q", result)
+	if !strings.Contains(result.Content, "aliased") {
+		t.Fatalf("unexpected content: %q", result.Content)
 	}
 }
 
@@ -188,7 +190,7 @@ func TestGrepThroughAbsoluteInRootSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("grep through symlinked path failed: %v", err)
 	}
-	if !strings.Contains(result, "needlepkg") || !strings.Contains(result, "link") {
-		t.Fatalf("unexpected grep output: %q", result)
+	if !strings.Contains(result.Content, "needlepkg") || !strings.Contains(result.Content, "link") {
+		t.Fatalf("unexpected grep output: %q", result.Content)
 	}
 }

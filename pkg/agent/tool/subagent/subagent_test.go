@@ -137,8 +137,8 @@ func TestAgentToolBackgroundValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("editing types must be backgroundable, got %v", err)
 	}
-	if !strings.Contains(out, "Launched background agent") {
-		t.Fatalf("launch result = %q", out)
+	if !strings.Contains(out.Content, "Launched background agent") {
+		t.Fatalf("launch result = %q", out.Content)
 	}
 	// The empty config has no model client, so the run dies — the registry
 	// must contain that as a failed task instead of crashing the process.
@@ -206,8 +206,8 @@ func TestAgentToolBackgroundRunsDetached(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "Launched background agent") {
-		t.Fatalf("launch result = %q", out)
+	if !strings.Contains(out.Content, "Launched background agent") {
+		t.Fatalf("launch result = %q", out.Content)
 	}
 
 	var done task.Event
@@ -245,8 +245,8 @@ func TestAgentToolBackgroundRunsDetached(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "resumed") {
-		t.Fatalf("task_send result = %q", out)
+	if !strings.Contains(out.Content, "resumed") {
+		t.Fatalf("task_send result = %q", out.Content)
 	}
 
 	select {
@@ -317,13 +317,13 @@ func TestAgentToolSyncRunAdoptedForFollowUps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "sync report") {
-		t.Fatalf("result = %q", out)
+	if !strings.Contains(out.Content, "sync report") {
+		t.Fatalf("result = %q", out.Content)
 	}
 
-	m := regexp.MustCompile(`\(id (\S+) — task_send`).FindStringSubmatch(out)
+	m := regexp.MustCompile(`\(id (\S+) — task_send`).FindStringSubmatch(out.Content)
 	if m == nil {
-		t.Fatalf("result missing follow-up id: %q", out)
+		t.Fatalf("result missing follow-up id: %q", out.Content)
 	}
 	id := m[1]
 
@@ -373,7 +373,7 @@ func TestAgentToolSyncRunWithoutRegistryOmitsFollowUpID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, "task_send") {
-		t.Fatalf("no-registry result must not advertise task_send: %q", out)
+	if strings.Contains(out.Content, "task_send") {
+		t.Fatalf("no-registry result must not advertise task_send: %q", out.Content)
 	}
 }

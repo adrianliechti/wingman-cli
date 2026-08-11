@@ -59,9 +59,9 @@ func TestSendLimitsRunawayToolCallRounds(t *testing.T) {
 			toolSnapshots.Add(1)
 			return []tool.Tool{{
 				Name: "loop",
-				Execute: func(context.Context, map[string]any) (string, error) {
+				Execute: func(context.Context, map[string]any) (tool.Result, error) {
 					executions.Add(1)
-					return "again", nil
+					return tool.Text("again"), nil
 				},
 			}}
 		},
@@ -414,7 +414,7 @@ func TestParallelToolCallsRespectConcurrencyLimit(t *testing.T) {
 	var mu sync.Mutex
 	var completed []string
 
-	execute := func(context.Context, map[string]any) (string, error) {
+	execute := func(context.Context, map[string]any) (tool.Result, error) {
 		current := active.Add(1)
 		defer active.Add(-1)
 		for {
@@ -424,7 +424,7 @@ func TestParallelToolCallsRespectConcurrencyLimit(t *testing.T) {
 			}
 		}
 		time.Sleep(10 * time.Millisecond)
-		return "ok", nil
+		return tool.Text("ok"), nil
 	}
 
 	a := &Agent{Config: &Config{MaxParallelTools: 3, ToolTimeout: -1}}
@@ -455,8 +455,8 @@ func TestParallelToolCallsRespectConcurrencyLimit(t *testing.T) {
 func TestToolWithoutExecutorReturnsError(t *testing.T) {
 	a := &Agent{Config: &Config{ToolTimeout: -1}}
 	got := a.runSingleToolCall(context.Background(), ToolCall{Name: "broken"}, []tool.Tool{{Name: "broken"}})
-	if !strings.Contains(got, "no executor") {
-		t.Fatalf("result = %q", got)
+	if !strings.Contains(got.Content, "no executor") {
+		t.Fatalf("result = %q", got.Content)
 	}
 }
 
@@ -472,12 +472,12 @@ func TestToolTimeoutIncludesPreHooks(t *testing.T) {
 	}}
 	got := a.runSingleToolCall(context.Background(), ToolCall{Name: "slow"}, []tool.Tool{{
 		Name: "slow",
-		Execute: func(ctx context.Context, _ map[string]any) (string, error) {
-			return "", ctx.Err()
+		Execute: func(ctx context.Context, _ map[string]any) (tool.Result, error) {
+			return tool.Result{}, ctx.Err()
 		},
 	}})
-	if !strings.Contains(got, "10ms time limit") {
-		t.Fatalf("result = %q", got)
+	if !strings.Contains(got.Content, "10ms time limit") {
+		t.Fatalf("result = %q", got.Content)
 	}
 }
 
@@ -523,12 +523,12 @@ func TestCodexPostToolBlockReplacesOriginalResult(t *testing.T) {
 	}}}
 	got := a.runSingleToolCall(context.Background(), ToolCall{Name: "build"}, []tool.Tool{{
 		Name: "build",
-		Execute: func(context.Context, map[string]any) (string, error) {
-			return "original output that must be hidden", nil
+		Execute: func(context.Context, map[string]any) (tool.Result, error) {
+			return tool.Text("original output that must be hidden"), nil
 		},
 	}})
-	if got != "review the generated files" {
-		t.Fatalf("tool result = %q", got)
+	if got.Content != "review the generated files" {
+		t.Fatalf("tool result = %q", got.Content)
 	}
 }
 

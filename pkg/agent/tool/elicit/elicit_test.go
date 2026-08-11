@@ -76,8 +76,8 @@ func TestExecuteAllowsHeaderlessSingleQuestion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if answer != "blue" {
-		t.Fatalf("answer = %q, want blue", answer)
+	if answer.Content != "blue" {
+		t.Fatalf("answer = %q, want blue", answer.Content)
 	}
 
 	if len(captured.Fields) != 1 || captured.Fields[0].Name != "q_1" {
@@ -127,8 +127,8 @@ func TestExecuteSingleQuestionHoistsMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result != "Postgres" {
-		t.Errorf("result = %q, want Postgres", result)
+	if result.Content != "Postgres" {
+		t.Errorf("result = %q, want Postgres", result.Content)
 	}
 
 	if got.Message != "Which database?" {
@@ -188,8 +188,8 @@ func TestExecuteMultipleQuestionsAndMultiSelect(t *testing.T) {
 		t.Errorf("multi-question requests have no top-level message, got %q", got.Message)
 	}
 
-	if !strings.Contains(result, "Scope: API, CLI") || !strings.Contains(result, "Language: Go") {
-		t.Errorf("rendered answers = %q", result)
+	if !strings.Contains(result.Content, "Scope: API, CLI") || !strings.Contains(result.Content, "Language: Go") {
+		t.Errorf("rendered answers = %q", result.Content)
 	}
 }
 
@@ -211,8 +211,8 @@ func TestExecuteRendersDeclineAndCancel(t *testing.T) {
 		if err != nil {
 			t.Fatalf("action %s: unexpected error: %v", action, err)
 		}
-		if !strings.Contains(strings.ToLower(result), want) {
-			t.Errorf("action %s: result %q should mention %q", action, result, want)
+		if !strings.Contains(strings.ToLower(result.Content), want) {
+			t.Errorf("action %s: result %q should mention %q", action, result.Content, want)
 		}
 	}
 }

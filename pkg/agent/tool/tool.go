@@ -26,7 +26,7 @@ type Tool struct {
 	Name        string
 	Description string
 	Parameters  map[string]any
-	Execute     func(ctx context.Context, args map[string]any) (string, error)
+	Execute     func(ctx context.Context, args map[string]any) (Result, error)
 	Hidden      bool
 	Effect      func(args map[string]any) Effect
 
@@ -34,6 +34,24 @@ type Tool struct {
 	// An explicitly configured Config.ToolTimeout takes precedence; negative
 	// values disable the deadline.
 	Timeout time.Duration
+}
+
+// Result separates tool-reported failure from executor/transport failure and
+// carries machine-readable details without putting them into model-visible
+// text. Metadata should contain JSON-compatible values so session state can be
+// persisted unchanged.
+type Result struct {
+	Content  string
+	IsError  bool
+	Metadata map[string]any
+}
+
+func Text(content string) Result {
+	return Result{Content: content}
+}
+
+func Error(content string) Result {
+	return Result{Content: content, IsError: true}
 }
 
 type ToolCall struct {

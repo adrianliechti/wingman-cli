@@ -205,8 +205,8 @@ func TestExpandHomeAcrossTools(t *testing.T) {
 		if err != nil {
 			t.Fatalf("glob via ~/: %v", err)
 		}
-		if !strings.Contains(result, "note.md") {
-			t.Errorf("expected glob to find note.md via ~/, got: %s", result)
+		if !strings.Contains(result.Content, "note.md") {
+			t.Errorf("expected glob to find note.md via ~/, got: %s", result.Content)
 		}
 	})
 
@@ -218,8 +218,8 @@ func TestExpandHomeAcrossTools(t *testing.T) {
 		if err != nil {
 			t.Fatalf("grep via ~/: %v", err)
 		}
-		if !strings.Contains(result, "note.md") {
-			t.Errorf("expected grep to find note.md via ~/, got: %s", result)
+		if !strings.Contains(result.Content, "note.md") {
+			t.Errorf("expected grep to find note.md via ~/, got: %s", result.Content)
 		}
 	})
 }

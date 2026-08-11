@@ -19,7 +19,6 @@ require (
 	github.com/odvcencio/gotreesitter v0.48.0
 	github.com/openai/openai-go/v3 v3.50.0
 	github.com/rivo/uniseg v0.4.7
-	github.com/robfig/cron/v3 v3.0.1
 	github.com/sahilm/fuzzy v0.1.3
 	github.com/sergi/go-diff v1.4.0
 	github.com/yuin/goldmark v1.8.5

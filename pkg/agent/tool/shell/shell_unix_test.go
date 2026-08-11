@@ -282,7 +282,7 @@ func TestShellElicitationOnlyPromptsForDangerousCommands(t *testing.T) {
 			return false, nil
 		},
 	}
-	shellTool := Tools(workDir, elicit, nil)[0]
+	shellTool := Tools(workDir, elicit, nil, nil)[0]
 
 	if _, err := shellTool.Execute(ctx, map[string]any{"command": "printf hi > out.txt"}); err != nil {
 		t.Fatalf("benign mutating command failed: %v", err)
@@ -315,7 +315,7 @@ func TestShellApprovalRememberedForSession(t *testing.T) {
 			return true, nil
 		},
 	}
-	shellTool := Tools(workDir, elicit, nil)[0]
+	shellTool := Tools(workDir, elicit, nil, nil)[0]
 
 	for range 2 {
 		if _, err := shellTool.Execute(ctx, map[string]any{"command": "rm -rf missing-dir"}); err != nil {
@@ -344,7 +344,7 @@ func TestShellApprovalDistinguishesQuotedWhitespace(t *testing.T) {
 			return true, nil
 		},
 	}
-	shellTool := Tools(t.TempDir(), elicit, nil)[0]
+	shellTool := Tools(t.TempDir(), elicit, nil, nil)[0]
 
 	shellTool.Execute(ctx, map[string]any{"command": `rm -rf "missing a  b"`})
 	shellTool.Execute(ctx, map[string]any{"command": `rm -rf "missing a b"`})

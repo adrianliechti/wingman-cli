@@ -42,47 +42,50 @@ func ImageTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 			"additionalProperties": false,
 		},
 
-		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			pathArg, ok := args["file_path"].(string)
 
 			if !ok || pathArg == "" {
-				return "", fmt.Errorf("file_path is required")
+				return tool.Result{}, fmt.Errorf("file_path is required")
 			}
 
 			target, err := resolveFileTarget(pathArg, root.Name(), allowedReadRoots, "view image")
 			if err != nil {
-				return "", err
+				return tool.Result{}, err
 			}
 
 			info, err := statFileTarget(root, target)
 			if err != nil {
-				return "", fmt.Errorf("stat file %q: %w", pathArg, err)
+				return tool.Result{}, fmt.Errorf("stat file %q: %w", pathArg, err)
 			}
 			if info.IsDir() {
-				return "", fmt.Errorf("cannot view image: path %q is a directory", pathArg)
+				return tool.Result{}, fmt.Errorf("cannot view image: path %q is a directory", pathArg)
+			}
+			if !info.Mode().IsRegular() {
+				return tool.Result{}, fmt.Errorf("cannot view image: path %q is not a regular file", pathArg)
 			}
 			if info.Size() > maxImageBytes {
-				return "", fmt.Errorf("cannot view image: %q is %.1fMB (max %dMB)", pathArg, float64(info.Size())/(1024*1024), maxImageBytes/(1024*1024))
+				return tool.Result{}, fmt.Errorf("cannot view image: %q is %.1fMB (max %dMB)", pathArg, float64(info.Size())/(1024*1024), maxImageBytes/(1024*1024))
 			}
 
 			content, err := readFileTarget(root, target)
 			if err != nil {
-				return "", fmt.Errorf("read file %q: %w", pathArg, err)
+				return tool.Result{}, fmt.Errorf("read file %q: %w", pathArg, err)
 			}
 
 			mime := http.DetectContentType(content)
 			if !imageMimeTypes[mime] {
-				return "", fmt.Errorf("cannot view image: %q is not a supported image format (detected %s)", pathArg, mime)
+				return tool.Result{}, fmt.Errorf("cannot view image: %q is not a supported image format (detected %s)", pathArg, mime)
 			}
 			width, height, err := tool.ImageDimensions(content, mime)
 			if err != nil {
-				return "", fmt.Errorf("cannot view image %q: %w", pathArg, err)
+				return tool.Result{}, fmt.Errorf("cannot view image %q: %w", pathArg, err)
 			}
 			if width > tool.MaxImageDimension || height > tool.MaxImageDimension {
-				return "", fmt.Errorf("cannot view image: %q is %dx%d (max %dpx per dimension); resize or crop it first", pathArg, width, height, tool.MaxImageDimension)
+				return tool.Result{}, fmt.Errorf("cannot view image: %q is %dx%d (max %dpx per dimension); resize or crop it first", pathArg, width, height, tool.MaxImageDimension)
 			}
 
-			return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(content), nil
+			return tool.Text("data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(content)), nil
 		},
 	}
 }

@@ -1,11 +1,13 @@
 package shell
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 )
 
-func TestCappedBufferDropsBeyondLimit(t *testing.T) {
+func TestCappedBufferKeepsInlineOutputWithoutScratchDir(t *testing.T) {
 	var b cappedBuffer
 
 	chunk := strings.Repeat("x", 1024*1024)
@@ -18,22 +20,71 @@ func TestCappedBufferDropsBeyondLimit(t *testing.T) {
 
 	result := b.result()
 	if b.buf.Len() != maxOutputBytes {
-		t.Fatalf("buffer holds %d bytes, want %d", b.buf.Len(), maxOutputBytes)
+		t.Fatalf("inline buffer = %d bytes", b.buf.Len())
 	}
-	if b.dropped != 4*1024*1024 {
-		t.Fatalf("dropped %d bytes, want %d", b.dropped, 4*1024*1024)
+	dropped := 4 * 1024 * 1024
+	if !strings.Contains(result, fmt.Sprintf("[output exceeded 16MB; %d trailing bytes dropped (no scratch directory for a full transcript)]", dropped)) {
+		t.Fatalf("missing drop notice, got tail: %q", result[len(result)-120:])
 	}
-	if !strings.Contains(result, "[output capped at 16MB; 4194304 further bytes dropped]") {
-		t.Fatalf("missing cap notice, got tail: %q", result[len(result)-100:])
+	if !strings.HasPrefix(result, "xxxx") || len(result) < maxOutputBytes {
+		t.Fatalf("inline output not retained: %d bytes", len(result))
+	}
+}
+
+func TestCappedBufferCapsSpillSize(t *testing.T) {
+	b := newCappedBuffer(t.TempDir())
+	b.spillLimit = maxOutputBytes + 1024*1024
+
+	b.Write([]byte(strings.Repeat("a", maxOutputBytes)))
+	b.Write([]byte(strings.Repeat("b", 2*1024*1024)))
+
+	result := b.result()
+	if b.dropped != 1024*1024 {
+		t.Fatalf("dropped = %d", b.dropped)
+	}
+	content, err := os.ReadFile(b.spillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(content)) != b.spillLimit {
+		t.Fatalf("transcript = %d bytes", len(content))
+	}
+	if !strings.Contains(result, fmt.Sprintf("first %d bytes of raw output saved to %s", b.spillLimit, b.spillPath)) {
+		t.Fatalf("missing partial transcript notice, got tail: %q", result[len(result)-200:])
 	}
 }
 
 func TestCappedBufferSmallOutputUntouched(t *testing.T) {
-	var b cappedBuffer
+	b := newCappedBuffer(t.TempDir())
 	b.Write([]byte("hello"))
 
 	if got := b.result(); got != "hello" {
 		t.Fatalf("got %q", got)
+	}
+	if b.spillPath != "" {
+		t.Fatalf("small output created transcript %q", b.spillPath)
+	}
+}
+
+func TestCappedBufferRetainsTailAndSpillsCompleteOutput(t *testing.T) {
+	dir := t.TempDir()
+	b := newCappedBuffer(dir)
+	b.Write([]byte(strings.Repeat("a", maxOutputBytes)))
+	b.Write([]byte("FINAL DIAGNOSTIC"))
+
+	result := b.result()
+	if !strings.Contains(result, "FINAL DIAGNOSTIC") {
+		t.Fatalf("final diagnostic was lost: %q", result[len(result)-200:])
+	}
+	if b.spillPath == "" {
+		t.Fatal("expected complete output transcript path")
+	}
+	content, err := os.ReadFile(b.spillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(content) != maxOutputBytes+len("FINAL DIAGNOSTIC") || !strings.HasSuffix(string(content), "FINAL DIAGNOSTIC") {
+		t.Fatalf("transcript incomplete: %d bytes", len(content))
 	}
 }
 

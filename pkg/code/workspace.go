@@ -540,14 +540,14 @@ func (w *Workspace) WithEditDiagnostics(tools []tool.Tool) []tool.Tool {
 		if execute == nil {
 			continue
 		}
-		wrapped[i].Execute = func(ctx context.Context, args map[string]any) (string, error) {
+		wrapped[i].Execute = func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			out, err := execute(ctx, args)
 			if err != nil {
 				return out, err
 			}
 			path, _ := args["file_path"].(string)
 			if note := w.postEditDiagnostics(ctx, path); note != "" {
-				out += "\n\n" + note
+				out.Content += "\n\n" + note
 			}
 			return out, nil
 		}
@@ -581,7 +581,7 @@ func (w *Workspace) protectLSPTools(tools []tool.Tool) []tool.Tool {
 		if execute == nil {
 			continue
 		}
-		protected[i].Execute = func(ctx context.Context, args map[string]any) (string, error) {
+		protected[i].Execute = func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			w.lspLifeMu.RLock()
 			defer w.lspLifeMu.RUnlock()
 			return execute(ctx, args)

@@ -106,6 +106,15 @@ func modelConfigOption(models []ModelEntry, currentID string) acp.SessionConfigO
 	ungrouped := make(acp.SessionConfigSelectOptionsUngrouped, 0, len(models))
 	for _, m := range models {
 		desc := m.Description
+		if m.ID == "default" && m.ResolvedModel != "" {
+			desc = m.ResolvedModel
+			for _, candidate := range models {
+				if candidate.ID != "default" && candidate.ResolvedModel == m.ResolvedModel {
+					desc = candidate.Name
+					break
+				}
+			}
+		}
 		opt := acp.SessionConfigSelectOption{
 			Value: acp.SessionConfigValueId(m.ID),
 			Name:  m.Name,

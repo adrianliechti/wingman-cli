@@ -37,8 +37,8 @@ func Beta() { println("marker") }
 		t.Fatal(err)
 	}
 	for _, want := range []string{"Showing 1 of 2 containing symbol(s)", "Alpha (function)", "matches 5,6", "More symbols available", "Raw matches outside indexed definitions", "sample.go:3"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("output missing %q:\n%s", want, out)
+		if !strings.Contains(out.Content, want) {
+			t.Fatalf("output missing %q:\n%s", want, out.Content)
 		}
 	}
 }
@@ -58,8 +58,8 @@ func TestCodeGraphSearchReportsPaginationAndRejectsNegativeOffset(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "Showing 1 of 2 symbol(s)") || !strings.Contains(out, "offset=1") {
-		t.Fatalf("pagination metadata missing:\n%s", out)
+	if !strings.Contains(out.Content, "Showing 1 of 2 symbol(s)") || !strings.Contains(out.Content, "offset=1") {
+		t.Fatalf("pagination metadata missing:\n%s", out.Content)
 	}
 	_, err = graphTool.Execute(context.Background(), map[string]any{
 		"operation": "search",

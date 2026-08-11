@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 )
@@ -91,6 +92,7 @@ func CloneContent(in []Content) []Content {
 		}
 		if content.ToolResult != nil {
 			result := *content.ToolResult
+			result.Metadata = maps.Clone(result.Metadata)
 			out[i].ToolResult = &result
 		}
 	}

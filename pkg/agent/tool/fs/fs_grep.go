@@ -215,16 +215,16 @@ func GrepTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 			"additionalProperties": false,
 		},
 
-		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			workingDir := root.Name()
 			cfg, err := parseGrepArgs(args)
 			if err != nil {
-				return "", err
+				return tool.Result{}, err
 			}
 
 			target, err := resolveSearchTarget(cfg.searchPath, workingDir, root, allowedReadRoots, "search")
 			if err != nil {
-				return "", err
+				return tool.Result{}, err
 			}
 			defer target.Close()
 
@@ -245,17 +245,17 @@ func GrepTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 			info, err := target.Root.Stat(searchPathFS)
 
 			if err != nil {
-				return "", fmt.Errorf("stat path %q: %w", searchPath, err)
+				return tool.Result{}, fmt.Errorf("stat path %q: %w", searchPath, err)
 			}
 
 			fsys := target.Root.FS()
 
 			if !info.IsDir() {
 				if typeFilter != "" && !matchesType(searchPathFS, typeFilter) {
-					return "No matches found", nil
+					return tool.Text("No matches found"), nil
 				}
 				if !matchesGrepGlobs(globPatterns, searchPathFS, searchPathFS) {
-					return "No matches found", nil
+					return tool.Text("No matches found"), nil
 				}
 
 				reportPath := target.ReportPath(searchPathFS)
@@ -263,24 +263,24 @@ func GrepTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 				if outputMode == "count" {
 					count := countFileMatches(fsys, searchPathFS, re, multiline)
 					if count == 0 || resultOffset > 0 {
-						return "No matches found", nil
+						return tool.Text("No matches found"), nil
 					}
 					occurrences := "occurrences"
 					if count == 1 {
 						occurrences = "occurrence"
 					}
-					return fmt.Sprintf("%s:%d\n\nFound %d total %s across 1 file.", reportPath, count, count, occurrences), nil
+					return tool.Text(fmt.Sprintf("%s:%d\n\nFound %d total %s across 1 file.", reportPath, count, count, occurrences)), nil
 				}
 
 				if outputMode == "files_with_matches" {
 					matches := searchFileWithContext(fsys, searchPathFS, reportPath, re, 0, 0, 1, multiline, true)
 					if len(matches) == 0 {
-						return "No files found", nil
+						return tool.Text("No files found"), nil
 					}
 					if resultOffset > 0 {
-						return "No files found", nil
+						return tool.Text("No files found"), nil
 					}
-					return fmt.Sprintf("Found 1 file\n%s", reportPath), nil
+					return tool.Text(fmt.Sprintf("Found 1 file\n%s", reportPath)), nil
 				}
 
 				searchLimit := effectiveLimit
@@ -290,12 +290,12 @@ func GrepTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 				matches := searchFileWithContext(fsys, searchPathFS, reportPath, re, beforeContext, afterContext, searchLimit, multiline, showLineNumbers)
 
 				if len(matches) == 0 {
-					return "No matches found", nil
+					return tool.Text("No matches found"), nil
 				}
 
 				if resultOffset > 0 {
 					if resultOffset >= len(matches) {
-						return "No matches found", nil
+						return tool.Text("No matches found"), nil
 					}
 					matches = matches[resultOffset:]
 				}
@@ -312,7 +312,7 @@ func GrepTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 					}
 				}
 
-				return output, nil
+				return tool.Text(output), nil
 			}
 
 			var results []string
@@ -385,7 +385,7 @@ func GrepTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 			})
 
 			if err != nil && err != filepath.SkipAll {
-				return "", fmt.Errorf("search failed: %w", err)
+				return tool.Result{}, fmt.Errorf("search failed: %w", err)
 			}
 
 			var output string
@@ -393,14 +393,14 @@ func GrepTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 			switch outputMode {
 			case "files_with_matches":
 				if len(fileMatches) == 0 {
-					return "No files found", nil
+					return tool.Text("No files found"), nil
 				}
 
 				slices.SortFunc(fileMatches, func(a, b fileMatch) int {
 					return cmp.Or(b.modTime.Compare(a.modTime), cmp.Compare(a.path, b.path))
 				})
 				if resultOffset >= len(fileMatches) {
-					return "No files found", nil
+					return tool.Text("No files found"), nil
 				}
 				start := resultOffset
 				end := len(fileMatches)
@@ -418,10 +418,10 @@ func GrepTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 
 			case "count":
 				if len(fileMatches) == 0 {
-					return "No matches found", nil
+					return tool.Text("No matches found"), nil
 				}
 				if resultOffset >= len(fileMatches) {
-					return "No matches found", nil
+					return tool.Text("No matches found"), nil
 				}
 				start := resultOffset
 				end := len(fileMatches)
@@ -446,7 +446,7 @@ func GrepTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 
 			default:
 				if len(results) == 0 {
-					return "No matches found", nil
+					return tool.Text("No matches found"), nil
 				}
 				if !unlimited && len(results) > headLimit {
 					results = results[:headLimit]
@@ -461,7 +461,7 @@ func GrepTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 				}
 			}
 
-			return output, nil
+			return tool.Text(output), nil
 		},
 	}
 }
