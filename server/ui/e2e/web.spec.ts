@@ -35,6 +35,7 @@ test("focuses the composer surface without outlining its textarea", async ({
 		const surface = getComputedStyle(element.closest("[data-chat-composer]")!);
 		return {
 			textareaBorder: textarea.borderWidth,
+			textareaFieldSizing: textarea.getPropertyValue("field-sizing"),
 			textareaOutline: textarea.outlineStyle,
 			textareaShadow: textarea.boxShadow,
 			surfaceBorder: surface.borderWidth,
@@ -46,6 +47,7 @@ test("focuses the composer surface without outlining its textarea", async ({
 	});
 	expect(styles).toEqual({
 		textareaBorder: "0px",
+		textareaFieldSizing: "content",
 		textareaOutline: "none",
 		textareaShadow: "none",
 		surfaceBorder: "1px",
@@ -60,7 +62,9 @@ test("keeps the active tab visible as the tab strip fills", async ({
 	page,
 }) => {
 	await composer(page);
-	const tabs = page.getByRole("tab");
+	const tabs = page
+		.getByRole("tablist", { name: "Open tabs" })
+		.getByRole("tab");
 	const initialCount = await tabs.count();
 	for (let index = 0; index < 6; index++) {
 		await page.getByTitle(/New .* terminal/).click();
@@ -81,6 +85,433 @@ test("keeps the active tab visible as the tab strip fills", async ({
 			);
 		})
 		.toBe(true);
+});
+
+test("keeps the empty draft tab non-closable", async ({ page }) => {
+	await composer(page);
+	const tabs = page
+		.getByRole("tablist", { name: "Open tabs" })
+		.getByRole("tab");
+	const draft = tabs.first();
+	const draftId = await draft.getAttribute("data-center-tab");
+	expect(draftId).toBeTruthy();
+
+	await expect(draft).toHaveAttribute("aria-label", /New Session/);
+	await draft.hover();
+	await expect(draft.locator("[data-tab-close]")).toHaveCount(0);
+	await draft.focus();
+	await page.keyboard.press("Delete");
+	await expect(page.locator(`[data-center-tab="${draftId}"]`)).toHaveCount(1);
+});
+
+test("uses each Git status slot for its stage action", async ({ page }) => {
+	await page.route(/\/api\/capabilities$/, async (route) => {
+		await route.fulfill({
+			json: {
+				git: true,
+				lsp: false,
+				diffs: true,
+				tasks: false,
+				terminal: true,
+			},
+		});
+	});
+	await page.route(/\/api\/git\/status$/, async (route) => {
+		await route.fulfill({
+			json: {
+				branch: "main",
+				ahead: 0,
+				behind: 0,
+				has_remote: false,
+				files: [
+					{
+						path: "src/staged.ts",
+						index_status: "M",
+						worktree_status: "",
+						staged: true,
+						changed: false,
+					},
+					{
+						path: "src/changed.ts",
+						index_status: "",
+						worktree_status: "M",
+						staged: false,
+						changed: true,
+					},
+				],
+			},
+		});
+	});
+	await composer(page);
+	await page
+		.getByRole("tablist", { name: "Workspace panels" })
+		.getByRole("tab", { name: "Changes", exact: true })
+		.click();
+
+	for (const entry of [
+		{ path: "src/staged.ts", action: "Unstage" },
+		{ path: "src/changed.ts", action: "Stage" },
+	]) {
+		const row = page.locator(`[data-change-row="${entry.path}"]`);
+		const status = row.locator("[data-change-status]");
+		const action = row.locator("[data-change-action]");
+		const directory = row.locator("[data-change-directory]");
+		const statusBox = await status.boundingBox();
+
+		await expect(row).toBeVisible();
+		await expect(status).toHaveText("M");
+		await expect(status).toBeVisible();
+		await expect(action).not.toBeVisible();
+		await expect(
+			row.getByRole("button", { name: `${entry.action} ${entry.path}` }),
+		).toBeVisible();
+		await expect(row.locator("[data-change-content]")).toHaveCSS(
+			"padding-right",
+			"12px",
+		);
+
+		await row.hover();
+		await expect(status).not.toBeVisible();
+		await expect(action).toBeVisible();
+		await expect(directory).toBeVisible();
+		const actionBox = await action.boundingBox();
+		expect(statusBox).not.toBeNull();
+		expect(actionBox).not.toBeNull();
+		expect(
+			Math.abs(
+				actionBox!.x +
+					actionBox!.width / 2 -
+					(statusBox!.x + statusBox!.width / 2),
+			),
+		).toBeLessThanOrEqual(1);
+	}
+});
+
+test("keeps the session context menu above panel clipping", async ({
+	page,
+}) => {
+	await page.route(/\/api\/sessions$/, async (route) => {
+		await route.fulfill({
+			json: [
+				{
+					id: "menu-clipping-check",
+					title: "Menu clipping check",
+					created_at: "2026-08-11T00:00:00Z",
+					updated_at: "2026-08-11T00:00:00Z",
+				},
+			],
+		});
+	});
+	await page.route(/\/api\/agent$/, async (route) => {
+		await route.fulfill({ json: { agent: "wingman", canDelete: true } });
+	});
+	await composer(page);
+
+	const session = page.getByTitle("Menu clipping check");
+	await expect(
+		page.getByRole("button", {
+			name: "Session actions for Menu clipping check",
+		}),
+	).toHaveCount(0);
+	await session.click({ button: "right" });
+
+	const menu = page.getByRole("menu", {
+		name: "Actions for Menu clipping check",
+	});
+	await expect(menu).toBeVisible();
+	expect(
+		await menu.evaluate((element) => element.parentElement === document.body),
+	).toBe(true);
+	const box = await menu.boundingBox();
+	expect(box).not.toBeNull();
+	expect(box!.x).toBeGreaterThanOrEqual(4);
+	expect(box!.y).toBeGreaterThanOrEqual(4);
+	expect(box!.x + box!.width).toBeLessThanOrEqual(1280 - 4);
+	expect(box!.y + box!.height).toBeLessThanOrEqual(800 - 4);
+});
+
+test("places navigation, tabs, and contextual actions in one window toolbar", async ({
+	page,
+}) => {
+	await composer(page);
+	const toolbar = page.getByLabel("Window toolbar");
+	const tabStrip = page.getByRole("tablist", { name: "Open tabs" });
+
+	await expect(toolbar).toBeVisible();
+	await expect(toolbar).toHaveCSS("height", "40px");
+	await expect(toolbar).toHaveCSS("border-bottom-width", "0px");
+	await expect(toolbar.locator("[data-titlebar-separator]")).toHaveCSS(
+		"height",
+		"1px",
+	);
+	await expect(toolbar.locator(".window-titlebar-controls-spacer")).toHaveCSS(
+		"width",
+		"0px",
+	);
+	await expect(tabStrip).toBeVisible();
+	await expect(tabStrip).toHaveCSS("border-bottom-width", "0px");
+	await expect(tabStrip).toHaveCSS("scrollbar-width", "none");
+	await expect(tabStrip).toHaveCSS("overscroll-behavior-x", "contain");
+	expect(
+		await tabStrip.evaluate((element) =>
+			element.closest("[data-window-titlebar]")?.getAttribute("aria-label"),
+		),
+	).toBe("Window toolbar");
+	await expect(toolbar.getByLabel(/sessions/)).toBeVisible();
+	await expect(toolbar.getByLabel(/workspace panel/)).toBeVisible();
+	await expect(page.locator('[data-layout-panel="sessions"]')).toHaveCSS(
+		"width",
+		"240px",
+	);
+	await expect(page.locator('[data-layout-panel="workspace"]')).toHaveCSS(
+		"width",
+		"304px",
+	);
+	const sessionsFrame = page.locator('[data-panel-frame="sessions"]');
+	await expect(sessionsFrame).toHaveCSS("width", "240px");
+	await expect(sessionsFrame).toHaveCSS("border-radius", "10px");
+	await expect(sessionsFrame).toHaveCSS("border-right-width", "0px");
+	const workspaceFrame = page.locator('[data-panel-frame="workspace"]');
+	await expect(workspaceFrame).toHaveCSS("width", "304px");
+	await expect(workspaceFrame).toHaveCSS("border-radius", "10px");
+	await expect(workspaceFrame).toHaveCSS("border-left-width", "0px");
+	await expect(
+		page.getByRole("separator", { name: /Resize .* panel/ }),
+	).toHaveCount(2);
+	await expect(toolbar.locator("[data-titlebar-left-panel]")).toHaveCSS(
+		"width",
+		"240px",
+	);
+	await expect(toolbar.locator("[data-titlebar-right-panel]")).toHaveCSS(
+		"width",
+		"304px",
+	);
+	const workspaceTabs = page.getByRole("tablist", {
+		name: "Workspace panels",
+	});
+	await expect(workspaceTabs).toBeVisible();
+	expect(
+		await workspaceTabs.evaluate((element) =>
+			element
+				.closest("[data-window-titlebar]")
+				?.hasAttribute("data-window-titlebar"),
+		),
+	).toBe(true);
+	await expect(
+		page
+			.locator('[data-panel-content="workspace"]')
+			.getByRole("tablist", { name: "Workspace panels" }),
+	).toHaveCount(0);
+	await expect
+		.poll(async () => {
+			const titlebarPanel = await toolbar
+				.locator("[data-titlebar-left-panel]")
+				.boundingBox();
+			const sidebar = await page
+				.locator('[data-layout-panel="sessions"]')
+				.boundingBox();
+			const frame = await sessionsFrame.boundingBox();
+			const firstTab = await tabStrip.getByRole("tab").first().boundingBox();
+			const toggle = await toolbar
+				.getByRole("button", { name: "Hide sessions" })
+				.boundingBox();
+			if (!titlebarPanel || !sidebar || !frame || !firstTab || !toggle)
+				return false;
+			const divider = sidebar.x + sidebar.width;
+			return (
+				Math.abs(titlebarPanel.x + titlebarPanel.width - divider) <= 1 &&
+				Math.abs(frame.x - sidebar.x) <= 1 &&
+				Math.abs(frame.x + frame.width - divider) <= 1 &&
+				Math.abs(toggle.x + toggle.width - divider) <= 1 &&
+				Math.abs(firstTab.x - divider) <= 1
+			);
+		})
+		.toBe(true);
+	await expect
+		.poll(async () => {
+			const titlebarPanel = await toolbar
+				.locator("[data-titlebar-right-panel]")
+				.boundingBox();
+			const workspace = await page
+				.locator('[data-layout-panel="workspace"]')
+				.boundingBox();
+			const frame = await workspaceFrame.boundingBox();
+			const toggle = await toolbar
+				.getByRole("button", { name: "Hide workspace panel" })
+				.boundingBox();
+			if (!titlebarPanel || !workspace || !frame || !toggle) return false;
+			return (
+				Math.abs(titlebarPanel.x - workspace.x) <= 1 &&
+				Math.abs(frame.x - workspace.x) <= 1 &&
+				Math.abs(toggle.x - workspace.x) <= 1 &&
+				Math.abs(frame.x + frame.width - (workspace.x + workspace.width)) <= 1
+			);
+		})
+		.toBe(true);
+	await expect(toolbar).toHaveCSS("border-radius", "0px");
+	await expect(toolbar.locator("[data-titlebar-left-panel]")).toHaveCSS(
+		"border-right-width",
+		"0px",
+	);
+
+	const agentChooser = toolbar.getByTitle(/^Agent:/);
+	if (await agentChooser.count()) {
+		await expect(agentChooser).toBeVisible();
+		const sessions = page.locator('[data-layout-panel="sessions"]');
+		const sessionsContent = page.locator('[data-panel-content="sessions"]');
+		await toolbar.getByRole("button", { name: "Hide sessions" }).click();
+		await expect(toolbar.locator("[data-titlebar-agent]")).toHaveCount(0);
+		await expect(sessions).toHaveCSS("width", "0px");
+		await expect(sessionsContent).toHaveCSS("width", "240px");
+		await expect(sessionsContent).toHaveCSS("opacity", "0");
+		await expect(sessionsFrame).toHaveCSS("opacity", "0");
+		await toolbar.getByRole("button", { name: "Show sessions" }).click();
+		await expect(toolbar.getByTitle(/^Agent:/)).toBeVisible();
+		await expect(sessions).toHaveCSS("width", "240px");
+		await expect(sessionsContent).toHaveCSS("width", "240px");
+		await expect(sessionsContent).toHaveCSS("opacity", "1");
+		await expect(sessionsFrame).toHaveCSS("opacity", "1");
+	}
+	const workspace = page.locator('[data-layout-panel="workspace"]');
+	const workspaceContent = page.locator('[data-panel-content="workspace"]');
+	await toolbar.getByRole("button", { name: "Hide workspace panel" }).click();
+	await expect(workspace).toHaveCSS("width", "0px");
+	await expect(workspaceContent).toHaveCSS("width", "304px");
+	await expect(workspaceContent).toHaveCSS("opacity", "0");
+	await expect(workspaceFrame).toHaveCSS("opacity", "0");
+	await expect(toolbar.locator("[data-titlebar-right-panel]")).toHaveCSS(
+		"width",
+		"40px",
+	);
+	await expect(workspaceTabs).toHaveCount(0);
+	await toolbar.getByRole("button", { name: "Show workspace panel" }).click();
+	await expect(workspace).toHaveCSS("width", "304px");
+	await expect(workspaceContent).toHaveCSS("width", "304px");
+	await expect(workspaceContent).toHaveCSS("opacity", "1");
+	await expect(workspaceFrame).toHaveCSS("opacity", "1");
+	await expect(toolbar.locator("[data-titlebar-right-panel]")).toHaveCSS(
+		"width",
+		"304px",
+	);
+	await expect(workspaceTabs).toBeVisible();
+	const newSession = toolbar.getByRole("button", { name: "New session" });
+	if (await newSession.count()) {
+		expect(
+			await newSession.evaluate((element) =>
+				element
+					.closest("[data-titlebar-actions]")
+					?.hasAttribute("data-titlebar-actions"),
+			),
+		).toBe(true);
+	}
+});
+
+test("resizes borderless desktop panels within their limits", async ({
+	page,
+}) => {
+	await composer(page);
+	const toolbar = page.getByLabel("Window toolbar");
+	const sessions = page.locator('[data-layout-panel="sessions"]');
+	const workspace = page.locator('[data-layout-panel="workspace"]');
+	const sessionsHandle = page.getByRole("separator", {
+		name: "Resize sessions panel",
+	});
+	const workspaceHandle = page.getByRole("separator", {
+		name: "Resize workspace panel",
+	});
+
+	await expect(sessionsHandle).toHaveCSS(
+		"background-color",
+		"rgba(0, 0, 0, 0)",
+	);
+	await sessionsHandle.hover();
+	await expect(sessionsHandle).toHaveCSS(
+		"background-color",
+		"rgba(0, 0, 0, 0)",
+	);
+
+	const sessionsBox = await sessionsHandle.boundingBox();
+	expect(sessionsBox).not.toBeNull();
+	await page.mouse.move(
+		sessionsBox!.x + sessionsBox!.width / 2,
+		sessionsBox!.y + sessionsBox!.height / 2,
+	);
+	await page.mouse.down();
+	await page.mouse.move(
+		sessionsBox!.x + sessionsBox!.width / 2 + 60,
+		sessionsBox!.y + 20,
+		{ steps: 5 },
+	);
+	await expect(sessions).toHaveCSS("width", "300px");
+	await expect(toolbar.locator("[data-titlebar-left-panel]")).toHaveCSS(
+		"width",
+		"300px",
+	);
+	await page.mouse.move(sessionsBox!.x + 1_000, sessionsBox!.y + 20);
+	await expect(sessions).toHaveCSS("width", "360px");
+	await page.mouse.up();
+	await expect(page.locator('[data-panel-frame="sessions"]')).toHaveCSS(
+		"width",
+		"360px",
+	);
+
+	const workspaceBox = await workspaceHandle.boundingBox();
+	expect(workspaceBox).not.toBeNull();
+	await page.mouse.move(
+		workspaceBox!.x + workspaceBox!.width / 2,
+		workspaceBox!.y + workspaceBox!.height / 2,
+	);
+	await page.mouse.down();
+	await page.mouse.move(
+		workspaceBox!.x + workspaceBox!.width / 2 - 60,
+		workspaceBox!.y + 20,
+		{ steps: 5 },
+	);
+	await expect(workspace).toHaveCSS("width", "364px");
+	await expect(toolbar.locator("[data-titlebar-right-panel]")).toHaveCSS(
+		"width",
+		"364px",
+	);
+	await page.mouse.move(workspaceBox!.x - 1_000, workspaceBox!.y + 20);
+	await expect(workspace).toHaveCSS("width", "480px");
+	await page.mouse.up();
+	await expect(page.locator('[data-panel-frame="workspace"]')).toHaveCSS(
+		"width",
+		"480px",
+	);
+});
+
+test("keeps the center workspace mounted across responsive layouts", async ({
+	page,
+}) => {
+	await composer(page);
+	const center = page.locator('[data-layout-panel="center"]');
+	await center.evaluate((element) => {
+		element.setAttribute("data-mount-marker", "original");
+	});
+
+	for (const width of [1_000, 700, 1_280]) {
+		await page.setViewportSize({ width, height: 800 });
+		await expect(center).toHaveAttribute("data-mount-marker", "original");
+	}
+});
+
+test("keeps workspace tabs inside the drawer on narrow layouts", async ({
+	page,
+}) => {
+	await page.setViewportSize({ width: 700, height: 800 });
+	await composer(page);
+	const toolbar = page.getByLabel("Window toolbar");
+	await toolbar.getByRole("button", { name: "Show workspace panel" }).click();
+	const workspaceTabs = page.getByRole("tablist", {
+		name: "Workspace panels",
+	});
+	await expect(workspaceTabs).toBeVisible();
+	expect(
+		await workspaceTabs.evaluate(
+			(element) => element.closest("[data-window-titlebar]") === null,
+		),
+	).toBe(true);
 });
 
 test("runs a coding tool and renders its result", async ({ page }) => {

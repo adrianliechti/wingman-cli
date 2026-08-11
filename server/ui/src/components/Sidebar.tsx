@@ -1,13 +1,7 @@
-import {
-	Loader2,
-	MessageSquare,
-	MoreHorizontal,
-	Plus,
-	Trash2,
-} from "lucide-react";
+import { Loader2, MessageSquare, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import type { ServerMessage } from "../types/protocol";
-import { AgentPicker } from "./AgentPicker";
 
 interface SessionInfo {
 	id: string;
@@ -19,20 +13,18 @@ interface SessionInfo {
 interface Props {
 	currentSessionId: string;
 	onSessionSelect: (id: string) => void;
-	onNewSession: () => void;
 	onSessionDelete?: (id: string, title: string) => void;
 	runningSessionIds?: Set<string>;
-	canCreateNew?: boolean;
+	switchingAgent?: string | null;
 	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 }
 
 export function Sidebar({
 	currentSessionId,
 	onSessionSelect,
-	onNewSession,
 	onSessionDelete,
 	runningSessionIds,
-	canCreateNew,
+	switchingAgent,
 	subscribe,
 }: Props) {
 	const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -72,7 +64,6 @@ export function Sidebar({
 		});
 	}, [subscribe, loadSessions, loadAgent]);
 
-	const [switchingAgent, setSwitchingAgent] = useState<string | null>(null);
 	const [menu, setMenu] = useState<{
 		id: string;
 		title: string;
@@ -99,25 +90,10 @@ export function Sidebar({
 	const groups = groupSessions(sessions);
 
 	return (
-		<nav className="w-full h-full flex flex-col bg-bg" aria-label="Sessions">
-			<div className="h-10 px-1.5 flex items-center gap-2 shrink-0">
-				<AgentPicker
-					subscribe={subscribe}
-					onSwitchingChange={setSwitchingAgent}
-				/>
-				<div className="flex-1" />
-				{canCreateNew && (
-					<button
-						type="button"
-						onClick={onNewSession}
-						className="w-7 h-7 flex items-center justify-center rounded-md text-fg-dim hover:text-fg hover:bg-bg-hover cursor-pointer transition-colors"
-						title="New session"
-					>
-						<Plus size={14} />
-					</button>
-				)}
-			</div>
-
+		<nav
+			className="w-full h-full flex flex-col bg-transparent"
+			aria-label="Sessions"
+		>
 			<div className="flex-1 overflow-y-auto pb-2">
 				{switchingAgent && (
 					<div className="h-full flex items-center justify-center">
@@ -130,9 +106,11 @@ export function Sidebar({
 					</div>
 				)}
 				{!switchingAgent &&
-					groups.map((group) => (
+					groups.map((group, groupIndex) => (
 						<div key={group.label}>
-							<div className="pl-4 pr-3 pt-4 pb-1.5">
+							<div
+								className={`pr-3 pb-1.5 pl-4 ${groupIndex === 0 ? "pt-2" : "pt-4"}`}
+							>
 								<span className="text-[10px] font-medium uppercase tracking-wider text-fg-dim">
 									{group.label}
 								</span>
@@ -161,7 +139,7 @@ export function Sidebar({
 									>
 										<button
 											type="button"
-											className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2.5 py-1.5 pr-8 text-left"
+											className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2.5 py-1.5 text-left"
 											onClick={() => onSessionSelect(s.id)}
 											title={s.title || s.id}
 											aria-current={active ? "page" : undefined}
@@ -186,54 +164,39 @@ export function Sidebar({
 												</div>
 											</div>
 										</button>
-										{canDelete && (
-											<button
-												type="button"
-												className="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded text-fg-dim opacity-0 hover:bg-bg-active hover:text-fg group-hover:opacity-100 group-focus-within:opacity-100"
-												onClick={(event) => {
-													event.stopPropagation();
-													const rect =
-														event.currentTarget.getBoundingClientRect();
-													setMenu({
-														id: s.id,
-														title: displayTitle,
-														x: rect.right,
-														y: rect.bottom + 4,
-													});
-												}}
-												aria-label={`Session actions for ${displayTitle}`}
-											>
-												<MoreHorizontal size={13} />
-											</button>
-										)}
 									</div>
 								);
 							})}
 						</div>
 					))}
 			</div>
-			{menu && (
-				<div
-					role="menu"
-					aria-label={`Actions for ${menu.title}`}
-					className="fixed z-50 min-w-[140px] py-1 bg-bg-elevated border border-border rounded-md shadow-xl"
-					style={{ top: menu.y, left: menu.x }}
-					onClick={(e) => e.stopPropagation()}
-				>
-					<button
-						type="button"
-						role="menuitem"
-						onClick={() => {
-							onSessionDelete?.(menu.id, menu.title);
-							setMenu(null);
+			{menu &&
+				createPortal(
+					<div
+						role="menu"
+						aria-label={`Actions for ${menu.title}`}
+						className="fixed z-100 min-w-[140px] rounded-md border border-border bg-bg-elevated py-1 shadow-xl"
+						style={{
+							top: Math.max(4, Math.min(menu.y, window.innerHeight - 40)),
+							left: Math.max(4, Math.min(menu.x, window.innerWidth - 148)),
 						}}
-						className="flex w-full items-center gap-2 px-3 py-1.5 text-[12px] text-fg-muted hover:text-danger hover:bg-bg-hover cursor-pointer transition-colors"
+						onClick={(e) => e.stopPropagation()}
 					>
-						<Trash2 size={12} className="shrink-0" />
-						Delete session
-					</button>
-				</div>
-			)}
+						<button
+							type="button"
+							role="menuitem"
+							onClick={() => {
+								onSessionDelete?.(menu.id, menu.title);
+								setMenu(null);
+							}}
+							className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-[12px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-danger"
+						>
+							<Trash2 size={12} className="shrink-0" />
+							Delete session
+						</button>
+					</div>,
+					document.body,
+				)}
 		</nav>
 	);
 }

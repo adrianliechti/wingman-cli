@@ -36,6 +36,18 @@ self.MonacoEnvironment = {
 
 loader.config({ monaco });
 
+// The packaged macOS app runs in WKWebView. Its AppKit window extends the web
+// content underneath the native traffic lights, so reserve their hit area.
+// Chromium-based browsers and WebView2 keep their normal content bounds.
+const userAgent = navigator.userAgent;
+if (
+	/Mac/.test(navigator.platform) &&
+	/AppleWebKit/.test(userAgent) &&
+	!/(Chrome|Chromium|CriOS|Edg|Electron|Safari)/.test(userAgent)
+) {
+	document.documentElement.dataset.windowChrome = "macos-overlay";
+}
+
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>
 		<ErrorBoundary

@@ -176,34 +176,56 @@ select,
 }
 
 /* Minimal scrollbars */
-* {
-	scrollbar-color: var(--color-scrollbar-thumb) transparent;
-	scrollbar-width: thin;
-}
-::-webkit-scrollbar {
-	width: 6px;
-	height: 6px;
-}
-::-webkit-scrollbar-thumb {
-	background: var(--color-scrollbar-thumb);
-	border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-	background: var(--color-scrollbar-thumb-hover);
-}
-::-webkit-scrollbar-track,
-::-webkit-scrollbar-corner {
-	background: transparent;
+@layer base {
+	* {
+		scrollbar-color: var(--color-scrollbar-thumb) transparent;
+		scrollbar-width: thin;
+	}
+	::-webkit-scrollbar {
+		width: 6px;
+		height: 6px;
+	}
+	::-webkit-scrollbar-thumb {
+		background: var(--color-scrollbar-thumb);
+		border-radius: 3px;
+	}
+	::-webkit-scrollbar-thumb:hover {
+		background: var(--color-scrollbar-thumb-hover);
+	}
+	::-webkit-scrollbar-track,
+	::-webkit-scrollbar-corner {
+		background: transparent;
+	}
 }
 
-/* A desktop tab strip scrolls as tabs accumulate, but should not grow a
-   scrollbar inside the 40px title bar. The active tab is kept in view by App. */
-.tab-strip {
-	scrollbar-width: none;
-	overscroll-behavior-inline: contain;
+/* The primary toolbar doubles as desktop window chrome. Electron and recent
+   WebView2 builds understand app-region directly; AppKit uses the equivalent
+   native full-size-content window configured by app/titlebar_darwin.go. */
+.window-titlebar {
+	--window-controls-inset: 0px;
+	app-region: drag;
+	-webkit-app-region: drag;
+	margin-left: env(titlebar-area-x, 0px);
+	width: env(titlebar-area-width, 100%);
 }
-.tab-strip::-webkit-scrollbar {
-	display: none;
+
+.window-titlebar-controls-spacer {
+	width: var(--window-controls-inset);
+}
+
+.window-titlebar :where(button, [role="tab"], [data-window-interactive]) {
+	app-region: no-drag;
+	-webkit-app-region: no-drag;
+}
+
+/* Keep titlebar icon controls visually flat. Their icon color is enough hover
+   feedback; a 32px rounded fill looks oversized inside the slim chrome. */
+.window-titlebar button:not([role="tab"]):hover {
+	background-color: transparent;
+}
+
+html[data-window-chrome="macos-overlay"] .window-titlebar {
+	--window-controls-inset: 76px;
 }
 
 ::selection {
