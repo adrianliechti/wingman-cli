@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import {
 	type CSSProperties,
+	type ErrorInfo,
 	useCallback,
 	useEffect,
 	useMemo,
@@ -42,6 +43,7 @@ import {
 import type { ModeOption } from "./components/ModePicker";
 import { DiffsPanel } from "./components/DiffsPanel";
 import { DiffTab } from "./components/DiffTab";
+import { ErrorBoundary, ErrorDetails } from "./components/ErrorBoundary";
 import { FileTab } from "./components/FileTab";
 import { FileTree } from "./components/FileTree";
 import { ProblemsPanel } from "./components/ProblemsPanel";
@@ -1552,7 +1554,18 @@ export default function App() {
 				>
 					<main className="flex flex-1 flex-col overflow-hidden min-h-0 bg-bg">
 						<div className="flex-1 overflow-hidden">
-							{activeTab.type === "chat" ? (
+							<ErrorBoundary
+								key={activeTab.id}
+								fallback={(error, reset, errorInfo) => (
+									<TabCrashed
+										error={error}
+										errorInfo={errorInfo}
+										onReset={reset}
+										onClose={() => closeTabNow(activeTab.id)}
+									/>
+								)}
+							>
+								{activeTab.type === "chat" ? (
 								<ChatPanel
 									key={activeTab.id}
 									sessionId={activeTab.sessionId ?? ""}
@@ -1653,6 +1666,7 @@ export default function App() {
 									view={fileViews[activeTab.id] ?? "code"}
 								/>
 							) : null}
+							</ErrorBoundary>
 						</div>
 					</main>
 				</Panel>
@@ -1922,6 +1936,41 @@ function estimateStreamingTokens(entries: ChatEntry[]): number {
 
 function isClosableTab(tab: CenterTab): boolean {
 	return tab.type !== "chat" || !!tab.sessionId;
+}
+
+function TabCrashed({
+	error,
+	errorInfo,
+	onReset,
+	onClose,
+}: {
+	error: Error;
+	errorInfo: ErrorInfo | null;
+	onReset: () => void;
+	onClose: () => void;
+}) {
+	return (
+		<div className="flex h-full w-full flex-col items-center justify-center gap-3 p-6 text-center">
+			<div className="text-[13px] text-fg">This tab ran into a problem.</div>
+			<div className="flex gap-2">
+				<button
+					type="button"
+					onClick={onReset}
+					className="h-8 rounded-md border border-border px-3 text-[12px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg"
+				>
+					Try again
+				</button>
+				<button
+					type="button"
+					onClick={onClose}
+					className="h-8 rounded-md border border-border px-3 text-[12px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg"
+				>
+					Close tab
+				</button>
+			</div>
+			<ErrorDetails error={error} errorInfo={errorInfo} />
+		</div>
+	);
 }
 
 function TabContextMenu({
