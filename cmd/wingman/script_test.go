@@ -148,15 +148,29 @@ func TestScriptTextCollectorDiscardsFailedAttempt(t *testing.T) {
 }
 
 func TestScriptReporterShowsToolProgressOnlyInDebugMode(t *testing.T) {
-	toolCall := agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{ToolCall: &agent.ToolCall{ID: "call-1", Name: "read"}}}}
-	toolResult := agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{ToolResult: &agent.ToolResult{ID: "call-1", Name: "read"}}}}
+	args := "{\n  \"file_path\": \"pkg/agent/models.go\",\n  \"offset\": 10\n}"
+	toolCall := agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{ToolCall: &agent.ToolCall{
+		ID: "call-1", Name: "read", Args: args,
+	}}}}
+	toolResult := agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{ToolResult: &agent.ToolResult{
+		ID: "call-1", Name: "read", Args: args, Content: "first line\nsecond line",
+	}}}}
 
 	for _, tt := range []struct {
 		debug bool
 		want  string
 	}{
 		{debug: false, want: ""},
-		{debug: true, want: "→ read\n✓ read\n"},
+		{debug: true, want: "→ read /pkg/agent/models.go\n" +
+			"  {\n" +
+			"    \"file_path\": \"pkg/agent/models.go\",\n" +
+			"    \"offset\": 10\n" +
+			"  }\n" +
+			"\n" +
+			"✓ read /pkg/agent/models.go\n" +
+			"  first line\n" +
+			"  second line\n" +
+			"\n"},
 	} {
 		var errOut bytes.Buffer
 		reporter := newScriptReporter(tt.debug, &errOut)

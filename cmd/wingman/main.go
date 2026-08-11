@@ -99,7 +99,7 @@ TUI flags:
 
 Exec flags:
   --json                        Return the final response as a JSON object
-  --debug                       Print reasoning and tool progress to stderr
+  --debug                       Print reasoning and tool details to stderr
   --schema PATH                 Require final JSON matching a JSON Schema
   --ephemeral                   Delete the session after the run
   --model, -m MODEL             Override the model for this session

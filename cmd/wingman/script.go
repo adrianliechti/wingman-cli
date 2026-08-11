@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/code/agents"
 	"github.com/adrianliechti/wingman-agent/pkg/skill"
@@ -54,7 +55,7 @@ func parseScriptArgs(args []string) (scriptOptions, error) {
 	fs.String(&opts.Agent, "--agent, -a NAME", "use wingman or any detected/configured agent")
 	fs.Bool(&latest, "--last", "resume the latest session")
 	fs.Bool(&opts.JSON, "--json", "return the final response as a JSON object")
-	fs.Bool(&opts.Debug, "--debug", "print reasoning and tool progress to stderr")
+	fs.Bool(&opts.Debug, "--debug", "print reasoning and tool details to stderr")
 	fs.Bool(&opts.Ephemeral, "--ephemeral", "delete the session after the run")
 	fs.String(&opts.Schema, "--schema PATH", "require the final response to match a JSON Schema")
 	fs.String(&opts.WorkDir, "--cd, -C PATH", "set the workspace root")
@@ -438,7 +439,7 @@ type scriptReporter struct {
 	debug     bool
 	errOut    io.Writer
 	collector scriptTextCollector
-	pending   map[string]string
+	pending   map[string]scriptToolCall
 	order     []string
 	started   map[string]bool
 	reasoning strings.Builder
@@ -446,11 +447,16 @@ type scriptReporter struct {
 	err       error
 }
 
+type scriptToolCall struct {
+	name string
+	args string
+}
+
 func newScriptReporter(debug bool, errOut io.Writer) *scriptReporter {
 	return &scriptReporter{
 		debug:   debug,
 		errOut:  errOut,
-		pending: map[string]string{},
+		pending: map[string]scriptToolCall{},
 		started: map[string]bool{},
 	}
 }
@@ -471,19 +477,23 @@ func (r *scriptReporter) add(message agent.Message) {
 				id = r.itemID("tool")
 			}
 			if _, present := r.pending[id]; !present {
-				r.pending[id] = call.Name
+				r.pending[id] = scriptToolCall{name: call.Name, args: call.Args}
 				r.order = append(r.order, id)
 			}
+			pending := r.pending[id]
 			if call.Name != "" {
-				r.pending[id] = call.Name
+				pending.name = call.Name
 			}
+			if call.Args != "" {
+				pending.args = call.Args
+			}
+			r.pending[id] = pending
 		}
 		if content.ToolResult != nil {
 			r.flushProgress()
 			result := content.ToolResult
 			if r.debug {
-				_, err := fmt.Fprintf(r.errOut, "✓ %s\n", result.Name)
-				r.setErr(err)
+				r.writeToolResult(result)
 			}
 		}
 	}
@@ -491,7 +501,7 @@ func (r *scriptReporter) add(message agent.Message) {
 
 func (r *scriptReporter) reset() {
 	r.collector.Reset()
-	r.pending = map[string]string{}
+	r.pending = map[string]scriptToolCall{}
 	r.order = nil
 	r.reasoning.Reset()
 }
@@ -510,18 +520,52 @@ func (r *scriptReporter) flushProgress() {
 	}
 	r.reasoning.Reset()
 	for _, id := range r.order {
-		name, present := r.pending[id]
+		call, present := r.pending[id]
 		if !present || r.started[id] {
 			continue
 		}
 		r.started[id] = true
 		if r.debug {
-			_, err := fmt.Fprintf(r.errOut, "→ %s\n", name)
+			_, err := fmt.Fprintf(r.errOut, "→ %s\n", scriptToolLabel(call.name, call.args))
+			r.setErr(err)
+			r.writeToolArgs(call.args)
+			_, err = fmt.Fprintln(r.errOut)
 			r.setErr(err)
 		}
 	}
-	r.pending = map[string]string{}
+	r.pending = map[string]scriptToolCall{}
 	r.order = nil
+}
+
+func (r *scriptReporter) writeToolArgs(args string) {
+	r.writeIndented(args)
+}
+
+func (r *scriptReporter) writeToolResult(result *agent.ToolResult) {
+	_, err := fmt.Fprintf(r.errOut, "✓ %s\n", scriptToolLabel(result.Name, result.Args))
+	r.setErr(err)
+	r.writeIndented(result.Content)
+	_, err = fmt.Fprintln(r.errOut)
+	r.setErr(err)
+}
+
+func (r *scriptReporter) writeIndented(text string) {
+	text = strings.TrimRight(text, "\r\n")
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	for line := range strings.SplitSeq(text, "\n") {
+		_, err := fmt.Fprintf(r.errOut, "  %s\n", strings.TrimSuffix(line, "\r"))
+		r.setErr(err)
+	}
+}
+
+func scriptToolLabel(name, args string) string {
+	hint := tool.ExtractHint(args, name)
+	if hint == "" {
+		return name
+	}
+	return name + " " + hint
 }
 
 func (r *scriptReporter) finish() error {

@@ -146,10 +146,10 @@ printf 'Summarize this project' | wingman exec -
 ```
 
 The final assistant message is the only content written to stdout, and normal
-runs are otherwise quiet. Add `--debug` to stream reasoning and tool progress
-to stderr. `--json` runs a final tool-free formatting pass and returns one JSON
-object; `--schema` additionally constrains that object with a JSON
-Schema:
+runs are otherwise quiet. Add `--debug` to stream reasoning, tool arguments,
+and tool results to stderr. `--json` runs a final tool-free formatting pass and
+returns one JSON object; `--schema` additionally constrains that object with a
+JSON Schema:
 
 ```bash
 wingman exec "Generate release notes" > release-notes.md
