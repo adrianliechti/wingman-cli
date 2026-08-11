@@ -33,11 +33,6 @@ tasks:
     cmds:
       - go run ./cmd/wingman
 
-  run:claw:
-    desc: Run the claw multi-agent runner (TUI)
-    cmds:
-      - go run ./cmd/wingman claw
-
   run:web:
     desc: Run the web server
     deps: [ui]

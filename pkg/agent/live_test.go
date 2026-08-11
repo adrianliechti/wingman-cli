@@ -41,8 +41,8 @@ func TestLiveOpenAIStreaming(t *testing.T) {
 		return []tool.Tool{{
 			Name:        "get_secret_word",
 			Description: "Returns the secret word.",
-			Execute: func(context.Context, map[string]any) (string, error) {
-				return "pineapple", nil
+			Execute: func(context.Context, map[string]any) (tool.Result, error) {
+				return tool.Text("pineapple"), nil
 			},
 		}}
 	}

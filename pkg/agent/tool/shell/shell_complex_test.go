@@ -13,14 +13,14 @@ import (
 func runShell(t *testing.T, command string) string {
 	t.Helper()
 	tmpDir := t.TempDir()
-	result, err := Tools(tmpDir, nil, nil)[0].Execute(context.Background(), map[string]any{
+	result, err := Tools(tmpDir, nil, nil, nil)[0].Execute(context.Background(), map[string]any{
 		"command": command,
 		"timeout": float64(10),
 	})
 	if err != nil {
 		t.Fatalf("shell Execute error: %v", err)
 	}
-	return result
+	return result.Content
 }
 
 func TestComplex_MultiLineScript(t *testing.T) {
@@ -176,38 +176,38 @@ func TestComplex_LargeOutputPassedThrough(t *testing.T) {
 
 func TestComplex_Timeout(t *testing.T) {
 	tmpDir := t.TempDir()
-	result, err := Tools(tmpDir, nil, nil)[0].Execute(context.Background(), map[string]any{
+	result, err := Tools(tmpDir, nil, nil, nil)[0].Execute(context.Background(), map[string]any{
 		"command": "echo partial; sleep 30",
 		"timeout": float64(1),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "timed out") {
-		t.Errorf("expected timeout message, got: %q", result)
+	if !strings.Contains(result.Content, "timed out") {
+		t.Errorf("expected timeout message, got: %q", result.Content)
 	}
-	if !strings.Contains(result, "partial") {
-		t.Errorf("expected partial output preserved, got: %q", result)
+	if !strings.Contains(result.Content, "partial") {
+		t.Errorf("expected partial output preserved, got: %q", result.Content)
 	}
 }
 
 func TestComplex_IntegerTimeout(t *testing.T) {
 	tmpDir := t.TempDir()
-	result, err := Tools(tmpDir, nil, nil)[0].Execute(context.Background(), map[string]any{
+	result, err := Tools(tmpDir, nil, nil, nil)[0].Execute(context.Background(), map[string]any{
 		"command": "echo ok",
 		"timeout": 1,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "ok") {
-		t.Fatalf("expected command output, got: %q", result)
+	if !strings.Contains(result.Content, "ok") {
+		t.Fatalf("expected command output, got: %q", result.Content)
 	}
 }
 
 func TestComplex_FractionalTimeoutRejected(t *testing.T) {
 	tmpDir := t.TempDir()
-	_, err := Tools(tmpDir, nil, nil)[0].Execute(context.Background(), map[string]any{
+	_, err := Tools(tmpDir, nil, nil, nil)[0].Execute(context.Background(), map[string]any{
 		"command": "echo ok",
 		"timeout": 1.5,
 	})
@@ -218,14 +218,14 @@ func TestComplex_FractionalTimeoutRejected(t *testing.T) {
 
 func TestComplex_NonPositiveTimeoutUsesDefault(t *testing.T) {
 	tmpDir := t.TempDir()
-	result, err := Tools(tmpDir, nil, nil)[0].Execute(context.Background(), map[string]any{
+	result, err := Tools(tmpDir, nil, nil, nil)[0].Execute(context.Background(), map[string]any{
 		"command": "echo ok",
 		"timeout": 0,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "ok") {
-		t.Fatalf("expected command output, got: %q", result)
+	if !strings.Contains(result.Content, "ok") {
+		t.Fatalf("expected command output, got: %q", result.Content)
 	}
 }

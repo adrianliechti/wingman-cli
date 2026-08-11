@@ -185,8 +185,9 @@ type execSession struct {
 	interrupt   func() error
 	stdin       io.WriteCloser
 
-	done    chan struct{}
-	exitErr error
+	done     chan struct{}
+	exitErr  error
+	exitedAt time.Time
 
 	// backgrounded and waiters are lifecycle state guarded by the manager mutex:
 	// exit notifications fire only for backgrounded sessions no tool call is
@@ -275,7 +276,7 @@ func (s *execSession) exitNotice() string {
 	return "Command completed"
 }
 
-func ExecTools(manager *ExecManager, workDir string, elicit *tool.Elicitation, appr *Approvals) []tool.Tool {
+func ExecTools(manager *ExecManager, workDir string, elicit *tool.Elicitation, appr *Approvals, opts *Options) []tool.Tool {
 	if appr == nil {
 		appr = NewApprovals()
 	}
@@ -327,8 +328,8 @@ func ExecTools(manager *ExecManager, workDir string, elicit *tool.Elicitation, a
 				"additionalProperties": false,
 			},
 
-			Execute: func(ctx context.Context, args map[string]any) (string, error) {
-				return executeExecCommand(ctx, manager, workDir, elicit, appr, args)
+			Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
+				return executeExecCommand(ctx, manager, workDir, elicit, appr, opts, args)
 			},
 		},
 		{
@@ -351,24 +352,24 @@ func ExecTools(manager *ExecManager, workDir string, elicit *tool.Elicitation, a
 				"additionalProperties": false,
 			},
 
-			Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 				return executeExecSession(ctx, manager, elicit, appr, args)
 			},
 		},
 	}
 }
 
-func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, elicit *tool.Elicitation, appr *Approvals, args map[string]any) (string, error) {
+func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, elicit *tool.Elicitation, appr *Approvals, opts *Options, args map[string]any) (tool.Result, error) {
 	command, ok := args["command"].(string)
 
 	if !ok || command == "" {
-		return "", fmt.Errorf("command is required")
+		return tool.Result{}, fmt.Errorf("command is required")
 	}
 
 	wait := defaultExecWait
 	if value, present, err := tool.NonNegIntArg(args, "wait"); present {
 		if err != nil {
-			return "", err
+			return tool.Result{}, err
 		}
 		wait = value
 	}
@@ -378,11 +379,11 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, eli
 
 	dir, err := resolveWorkdir(workDir, args)
 	if err != nil {
-		return "", err
+		return tool.Result{}, err
 	}
 
 	if err := confirmDangerous(ctx, elicit, appr, args, approvalWorkdir(workDir, dir)); err != nil {
-		return "", err
+		return tool.Result{}, err
 	}
 
 	tty, _ := args["tty"].(bool)
@@ -392,8 +393,10 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, eli
 
 	sctx, cancel := context.WithCancel(context.Background())
 
-	cmd := buildCommand(sctx, command, dir)
-	cmd.Env = append(cmd.Env, "NO_COLOR=1", "PAGER=cat", "GIT_PAGER=cat")
+	cmd := buildToolCommand(sctx, command, dir, opts)
+	cmd.Env = setEnvironment(cmd.Env, "NO_COLOR", "1")
+	cmd.Env = setEnvironment(cmd.Env, "PAGER", "cat")
+	cmd.Env = setEnvironment(cmd.Env, "GIT_PAGER", "cat")
 
 	description, _ := args["description"].(string)
 
@@ -411,7 +414,7 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, eli
 		master, err := startTTY(cmd)
 		if err != nil {
 			cancel()
-			return "", fmt.Errorf("failed to start command: %w", err)
+			return tool.Result{}, fmt.Errorf("failed to start command: %w", err)
 		}
 		s.stdin = master
 
@@ -422,12 +425,14 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, eli
 		}()
 		go func() {
 			err := cmd.Wait()
+			exitedAt := time.Now()
 			select {
 			case <-copyDone:
 			case <-time.After(2 * time.Second):
 			}
 			master.Close()
 			s.exitErr = err
+			s.exitedAt = exitedAt
 			close(s.done)
 			m.notifyExit(s)
 		}()
@@ -435,7 +440,7 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, eli
 		stdin, err := cmd.StdinPipe()
 		if err != nil {
 			cancel()
-			return "", err
+			return tool.Result{}, err
 		}
 		s.stdin = stdin
 		cmd.Stdout = s
@@ -443,11 +448,12 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, eli
 
 		if err := cmd.Start(); err != nil {
 			cancel()
-			return "", fmt.Errorf("failed to start command: %w", err)
+			return tool.Result{}, fmt.Errorf("failed to start command: %w", err)
 		}
 
 		go func() {
 			s.exitErr = cmd.Wait()
+			s.exitedAt = time.Now()
 			close(s.done)
 			m.notifyExit(s)
 		}()
@@ -455,7 +461,7 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, eli
 
 	id, err := m.add(s)
 	if err != nil {
-		return "", err
+		return tool.Result{}, err
 	}
 
 	timer := time.NewTimer(time.Duration(wait) * time.Second)
@@ -464,7 +470,7 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, eli
 	select {
 	case <-s.done:
 		m.remove(id)
-		return sessionResult(s.drain(), s.exitNotice()), nil
+		return completedSessionResult(s), nil
 	case <-timer.C:
 	case <-ctx.Done():
 	}
@@ -472,18 +478,18 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, eli
 	m.markBackgrounded(s)
 
 	notice := fmt.Sprintf("Still running with session_id %d — use exec_session to poll output, send input, or kill it", id)
-	return sessionResult(s.drain(), notice), nil
+	return tool.Text(sessionResult(s.drain(), notice)), nil
 }
 
-func executeExecSession(ctx context.Context, m *ExecManager, elicit *tool.Elicitation, appr *Approvals, args map[string]any) (string, error) {
+func executeExecSession(ctx context.Context, m *ExecManager, elicit *tool.Elicitation, appr *Approvals, args map[string]any) (tool.Result, error) {
 	id, ok := tool.IntArg(args, "session_id")
 	if !ok {
-		return "", fmt.Errorf("session_id is required")
+		return tool.Result{}, fmt.Errorf("session_id is required")
 	}
 
 	s := m.get(id)
 	if s == nil {
-		return "", fmt.Errorf("no session with id %d (it may have exited and been cleaned up)", id)
+		return tool.Result{}, fmt.Errorf("no session with id %d (it may have exited and been cleaned up)", id)
 	}
 
 	m.beginWait(s)
@@ -492,7 +498,7 @@ func executeExecSession(ctx context.Context, m *ExecManager, elicit *tool.Elicit
 	wait := defaultSessionWait
 	if value, present, err := tool.NonNegIntArg(args, "wait"); present {
 		if err != nil {
-			return "", err
+			return tool.Result{}, err
 		}
 		wait = value
 	}
@@ -517,7 +523,7 @@ func executeExecSession(ctx context.Context, m *ExecManager, elicit *tool.Elicit
 		}
 
 		m.remove(id)
-		return sessionResult(s.drain(), notice), nil
+		return tool.Text(sessionResult(s.drain(), notice)), nil
 	}
 
 	input, _ := args["input"].(string)
@@ -525,19 +531,21 @@ func executeExecSession(ctx context.Context, m *ExecManager, elicit *tool.Elicit
 
 	if input == "\u0003" && !s.tty {
 		if err := s.interrupt(); err != nil {
-			return "", fmt.Errorf("cannot interrupt on this platform; use kill instead: %w", err)
+			return tool.Result{}, fmt.Errorf("cannot interrupt on this platform; use kill instead: %w", err)
 		}
 	} else if input != "" {
 		if err := confirmIfDangerous(ctx, elicit, appr, strings.TrimRight(input, "\n"), IsDangerousCommand(input)); err != nil {
-			return "", err
+			return tool.Result{}, err
 		}
 
 		if _, err := io.WriteString(s.stdin, input); err != nil {
 			if s.exited() {
 				m.remove(id)
-				return sessionResult(s.drain(), s.exitNotice()+" (input was not delivered)"), nil
+				result := completedSessionResult(s)
+				result.Content += " (input was not delivered)"
+				return result, nil
 			}
-			return "", fmt.Errorf("failed to write to stdin: %w", err)
+			return tool.Result{}, fmt.Errorf("failed to write to stdin: %w", err)
 		}
 	}
 
@@ -555,16 +563,36 @@ func executeExecSession(ctx context.Context, m *ExecManager, elicit *tool.Elicit
 	select {
 	case <-s.done:
 		m.remove(id)
-		return sessionResult(s.drain(), s.exitNotice()), nil
+		return completedSessionResult(s), nil
 	case <-timer.C:
 	case <-ctx.Done():
 	}
 
 	output := s.drain()
 	if output == "" {
-		return fmt.Sprintf("(no new output; session %d still running)", id), nil
+		return tool.Text(fmt.Sprintf("(no new output; session %d still running)", id)), nil
 	}
-	return sessionResult(output, fmt.Sprintf("Session %d still running", id)), nil
+	return tool.Text(sessionResult(output, fmt.Sprintf("Session %d still running", id))), nil
+}
+
+func completedSessionResult(s *execSession) tool.Result {
+	duration := s.exitedAt.Sub(s.started)
+	if s.exitedAt.IsZero() {
+		duration = time.Since(s.started)
+	}
+	result := tool.Result{
+		Content: sessionResult(s.drain(), s.exitNotice()),
+		IsError: s.exitErr != nil,
+		Metadata: map[string]any{
+			"duration_ms": duration.Milliseconds(),
+		},
+	}
+	if exitErr, ok := errors.AsType[*exec.ExitError](s.exitErr); ok {
+		result.Metadata["exit_code"] = exitErr.ExitCode()
+	} else if s.exitErr == nil {
+		result.Metadata["exit_code"] = 0
+	}
+	return result
 }
 
 func classifyExecSession(args map[string]any) tool.Effect {

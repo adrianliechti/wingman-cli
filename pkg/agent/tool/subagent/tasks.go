@@ -28,17 +28,17 @@ func taskTools(tasks *task.Registry) []tool.Tool {
 				"additionalProperties": false,
 			},
 
-			Execute: func(_ context.Context, args map[string]any) (string, error) {
+			Execute: func(_ context.Context, args map[string]any) (tool.Result, error) {
 				id, _ := args["id"].(string)
 				id = strings.TrimSpace(id)
 
 				if id == "" {
-					return formatTaskList(tasks), nil
+					return tool.Text(formatTaskList(tasks)), nil
 				}
 
 				t := tasks.Get(id)
 				if t == nil {
-					return "", fmt.Errorf("no background agent with id %s", id)
+					return tool.Result{}, fmt.Errorf("no background agent with id %s", id)
 				}
 
 				if t.Status() == task.StatusRunning {
@@ -46,9 +46,9 @@ func taskTools(tasks *task.Registry) []tool.Tool {
 					if activity := t.Activity(); activity != "" {
 						out += fmt.Sprintf(" Currently: %s.", activity)
 					}
-					return out + " The result will arrive as a task notification.", nil
+					return tool.Text(out + " The result will arrive as a task notification."), nil
 				}
-				return fmt.Sprintf("%s\n\n%s", formatTaskLine(t), t.Result()), nil
+				return tool.Text(fmt.Sprintf("%s\n\n%s", formatTaskLine(t), t.Result())), nil
 			},
 		},
 		{
@@ -68,25 +68,25 @@ func taskTools(tasks *task.Registry) []tool.Tool {
 				"additionalProperties": false,
 			},
 
-			Execute: func(_ context.Context, args map[string]any) (string, error) {
+			Execute: func(_ context.Context, args map[string]any) (tool.Result, error) {
 				id, _ := args["id"].(string)
 				id = strings.TrimSpace(id)
 				if id == "" {
-					return "", fmt.Errorf("id is required")
+					return tool.Result{}, fmt.Errorf("id is required")
 				}
 				message, _ := args["message"].(string)
 				if strings.TrimSpace(message) == "" {
-					return "", fmt.Errorf("message is required")
+					return tool.Result{}, fmt.Errorf("message is required")
 				}
 
 				t := tasks.Get(id)
 				if t == nil {
-					return "", fmt.Errorf("no background agent with id %s", id)
+					return tool.Result{}, fmt.Errorf("no background agent with id %s", id)
 				}
 				if err := t.Resume(message); err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
-				return fmt.Sprintf("Follow-up sent to background agent %s; it resumed with its prior context. The reply arrives as a task notification — never assume or invent it.", id), nil
+				return tool.Text(fmt.Sprintf("Follow-up sent to background agent %s; it resumed with its prior context. The reply arrives as a task notification — never assume or invent it.", id)), nil
 			},
 		},
 		{
@@ -105,16 +105,16 @@ func taskTools(tasks *task.Registry) []tool.Tool {
 				"additionalProperties": false,
 			},
 
-			Execute: func(_ context.Context, args map[string]any) (string, error) {
+			Execute: func(_ context.Context, args map[string]any) (tool.Result, error) {
 				id, _ := args["id"].(string)
 				id = strings.TrimSpace(id)
 				if id == "" {
-					return "", fmt.Errorf("id is required")
+					return tool.Result{}, fmt.Errorf("id is required")
 				}
 				if err := tasks.Stop(id); err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
-				return fmt.Sprintf("Stop requested for background agent %s.", id), nil
+				return tool.Text(fmt.Sprintf("Stop requested for background agent %s.", id)), nil
 			},
 		},
 	}

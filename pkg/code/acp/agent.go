@@ -1174,6 +1174,7 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 			Name:    prior.name,
 			Args:    prior.args,
 			Content: body,
+			IsError: status == acpsdk.ToolCallStatusFailed,
 		}}, ""), true
 
 	}

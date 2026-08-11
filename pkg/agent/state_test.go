@@ -28,6 +28,18 @@ func TestStateSnapshotIsIndependent(t *testing.T) {
 	}
 }
 
+func TestStateSnapshotClonesToolResultMetadata(t *testing.T) {
+	a := &Agent{Messages: []Message{{Role: RoleAssistant, Content: []Content{{
+		ToolResult: &ToolResult{ID: "call-1", Metadata: map[string]any{"exit_code": 7}},
+	}}}}}
+
+	snapshot := a.StateSnapshot()
+	snapshot.Messages[0].Content[0].ToolResult.Metadata["exit_code"] = 0
+	if got := a.Messages[0].Content[0].ToolResult.Metadata["exit_code"]; got != 7 {
+		t.Fatalf("snapshot metadata mutated retained state: %v", got)
+	}
+}
+
 func TestStateVersionDoesNotCloneHistory(t *testing.T) {
 	a := &Agent{Messages: []Message{{Role: RoleUser}}, Revision: 3}
 	messageCount, revision := a.StateVersion()

@@ -73,7 +73,7 @@ func lspTool(manager *lsp.Manager) tool.Tool {
 			"required":             []string{"operation"},
 			"additionalProperties": false,
 		},
-		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			operation, _ := args["operation"].(string)
 
 			runPosition := func(fn func(session *lsp.Session, uri string, line, column int) (string, error)) (string, error) {
@@ -106,55 +106,64 @@ func lspTool(manager *lsp.Manager) tool.Tool {
 			case "diagnostics":
 				path, _ := args["file_path"].(string)
 				if strings.TrimSpace(path) == "" {
-					return manager.WorkspaceDiagnostics(ctx)
+					content, err := manager.WorkspaceDiagnostics(ctx)
+					return tool.Text(content), err
 				}
 
 				path, err := resolveExistingFile(manager.WorkingDir(), path)
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
 
 				session, uri, err := openFile(ctx, manager, path)
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
 
-				return session.Diagnostics(ctx, uri, path)
+				content, err := session.Diagnostics(ctx, uri, path)
+				return tool.Text(content), err
 			case "workspaceSymbol":
 				query, _ := args["query"].(string)
-				return manager.WorkspaceSymbols(ctx, query)
+				content, err := manager.WorkspaceSymbols(ctx, query)
+				return tool.Text(content), err
 			case "documentSymbol":
 				path, err := requiredFileArg(manager.WorkingDir(), args, "file_path")
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
 				session, uri, err := openFile(ctx, manager, path)
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
-				return session.DocumentSymbols(ctx, uri, path)
+				content, err := session.DocumentSymbols(ctx, uri, path)
+				return tool.Text(content), err
 			case "goToDefinition":
-				return runPosition(func(s *lsp.Session, uri string, line, column int) (string, error) {
+				content, err := runPosition(func(s *lsp.Session, uri string, line, column int) (string, error) {
 					return s.Definition(ctx, uri, line, column)
 				})
+				return tool.Text(content), err
 			case "findReferences":
-				return runPosition(func(s *lsp.Session, uri string, line, column int) (string, error) {
+				content, err := runPosition(func(s *lsp.Session, uri string, line, column int) (string, error) {
 					return s.References(ctx, uri, line, column)
 				})
+				return tool.Text(content), err
 			case "hover":
-				return runPosition(func(s *lsp.Session, uri string, line, column int) (string, error) {
+				content, err := runPosition(func(s *lsp.Session, uri string, line, column int) (string, error) {
 					return s.Hover(ctx, uri, line, column)
 				})
+				return tool.Text(content), err
 			case "goToImplementation":
-				return runPosition(func(s *lsp.Session, uri string, line, column int) (string, error) {
+				content, err := runPosition(func(s *lsp.Session, uri string, line, column int) (string, error) {
 					return s.Implementation(ctx, uri, line, column)
 				})
+				return tool.Text(content), err
 			case "incomingCalls", "outgoingCalls":
-				return runPosition(func(s *lsp.Session, uri string, line, column int) (string, error) {
+				content, err := runPosition(func(s *lsp.Session, uri string, line, column int) (string, error) {
 					return s.CallHierarchy(ctx, uri, line, column, operation == "incomingCalls")
 				})
+				return tool.Text(content), err
 			default:
-				return "", fmt.Errorf("operation must be one of: diagnostics, goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, goToImplementation, incomingCalls, outgoingCalls")
+				return tool.Result{}, fmt.Errorf("operation must be one of: diagnostics, goToDefinition, findReferences, hover, documentSymbol, workspaceSymbol, goToImplementation, incomingCalls, outgoingCalls")
 			}
 		},
 	}

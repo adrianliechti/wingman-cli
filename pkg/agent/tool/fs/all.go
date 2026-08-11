@@ -10,6 +10,10 @@ type Options struct {
 	AllowedReadRoots  []string
 	AllowedWriteRoots []string
 	Freshness         *Freshness
+
+	// MaxReadFileBytes rejects files before read allocates their contents.
+	// Zero uses MaxReadFileBytes; a negative value disables the size limit.
+	MaxReadFileBytes int64
 }
 
 func Tools(root *os.Root, opts *Options) []tool.Tool {
@@ -18,7 +22,7 @@ func Tools(root *os.Root, opts *Options) []tool.Tool {
 	}
 	tracker := newContentTracker()
 	return []tool.Tool{
-		readTool(root, tracker, opts.Freshness, opts.AllowedReadRoots...),
+		readTool(root, tracker, opts.Freshness, opts.MaxReadFileBytes, opts.AllowedReadRoots...),
 		writeTool(root, tracker, opts.Freshness, opts.AllowedWriteRoots...),
 		editTool(root, tracker, opts.Freshness, opts.AllowedWriteRoots...),
 		GrepTool(root, opts.AllowedReadRoots...),

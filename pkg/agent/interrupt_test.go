@@ -14,9 +14,9 @@ func TestExecuteToolRendersInterruption(t *testing.T) {
 
 	tl := &tool.Tool{
 		Name: "probe",
-		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			<-ctx.Done()
-			return "", ctx.Err()
+			return tool.Result{}, ctx.Err()
 		},
 	}
 
@@ -24,8 +24,8 @@ func TestExecuteToolRendersInterruption(t *testing.T) {
 	cancel()
 
 	got := a.executeTool(ctx, ToolCall{ID: "1", Name: "probe"}, tl, 0, time.Now())
-	if !strings.Contains(got, "interrupted") {
-		t.Fatalf("canceled call rendered as %q", got)
+	if !strings.Contains(got.Content, "interrupted") {
+		t.Fatalf("canceled call rendered as %q", got.Content)
 	}
 }
 
@@ -34,9 +34,9 @@ func TestExecuteToolRendersTimeout(t *testing.T) {
 
 	tl := &tool.Tool{
 		Name: "probe",
-		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			<-ctx.Done()
-			return "", ctx.Err()
+			return tool.Result{}, ctx.Err()
 		},
 	}
 
@@ -45,8 +45,8 @@ func TestExecuteToolRendersTimeout(t *testing.T) {
 	defer cancel()
 
 	got := a.executeTool(ctx, ToolCall{ID: "1", Name: "probe"}, tl, timeout, time.Now())
-	if !strings.Contains(got, "time limit") {
-		t.Fatalf("timed-out call rendered as %q", got)
+	if !strings.Contains(got.Content, "time limit") {
+		t.Fatalf("timed-out call rendered as %q", got.Content)
 	}
 }
 
@@ -55,9 +55,9 @@ func TestExecuteToolBlamesRequestDeadlineNotToolLimit(t *testing.T) {
 
 	tl := &tool.Tool{
 		Name: "probe",
-		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			<-ctx.Done()
-			return "", ctx.Err()
+			return tool.Result{}, ctx.Err()
 		},
 	}
 
@@ -66,8 +66,8 @@ func TestExecuteToolBlamesRequestDeadlineNotToolLimit(t *testing.T) {
 	defer cancel()
 
 	got := a.executeTool(ctx, ToolCall{ID: "1", Name: "probe"}, tl, time.Hour, time.Now())
-	if !strings.Contains(got, "request deadline") {
-		t.Fatalf("parent-deadline abort rendered as %q", got)
+	if !strings.Contains(got.Content, "request deadline") {
+		t.Fatalf("parent-deadline abort rendered as %q", got.Content)
 	}
 }
 
@@ -76,14 +76,14 @@ func TestExecuteToolKeepsToolErrorWhenContextIntact(t *testing.T) {
 
 	tl := &tool.Tool{
 		Name: "probe",
-		Execute: func(ctx context.Context, args map[string]any) (string, error) {
-			return "", context.Canceled
+		Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
+			return tool.Result{}, context.Canceled
 		},
 	}
 
 	got := a.executeTool(context.Background(), ToolCall{ID: "1", Name: "probe"}, tl, 0, time.Now())
-	if strings.Contains(got, "interrupted") {
-		t.Fatalf("a tool's own canceled error must not read as user interruption: %q", got)
+	if strings.Contains(got.Content, "interrupted") {
+		t.Fatalf("a tool's own canceled error must not read as user interruption: %q", got.Content)
 	}
 }
 

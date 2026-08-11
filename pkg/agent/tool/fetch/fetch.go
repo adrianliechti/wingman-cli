@@ -72,7 +72,7 @@ func Tools(elicit *tool.Elicitation, extract Extract) []tool.Tool {
 			"additionalProperties": false,
 		},
 
-		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			return execute(ctx, args, elicit, approvals, extract)
 		},
 	}}
@@ -113,23 +113,23 @@ func approveHost(ctx context.Context, elicit *tool.Elicitation, approvals *hostA
 	return nil
 }
 
-func execute(ctx context.Context, args map[string]any, elicit *tool.Elicitation, approvals *hostApprovals, extract Extract) (string, error) {
+func execute(ctx context.Context, args map[string]any, elicit *tool.Elicitation, approvals *hostApprovals, extract Extract) (tool.Result, error) {
 	rawURL, ok := args["url"].(string)
 	if !ok || strings.TrimSpace(rawURL) == "" {
-		return "", fmt.Errorf("url is required")
+		return tool.Result{}, fmt.Errorf("url is required")
 	}
 	rawURL = strings.TrimSpace(rawURL)
 
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return "", fmt.Errorf("invalid url: %w", err)
+		return tool.Result{}, fmt.Errorf("invalid url: %w", err)
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", fmt.Errorf("unsupported scheme %q: only http and https are allowed", parsed.Scheme)
+		return tool.Result{}, fmt.Errorf("unsupported scheme %q: only http and https are allowed", parsed.Scheme)
 	}
 
 	if err := approveHost(ctx, elicit, approvals, parsed.Hostname(), rawURL); err != nil {
-		return "", err
+		return tool.Result{}, err
 	}
 
 	reqCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
@@ -137,7 +137,7 @@ func execute(ctx context.Context, args map[string]any, elicit *tool.Elicitation,
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
-		return "", err
+		return tool.Result{}, err
 	}
 	req.Header.Set("User-Agent", "wingman-agent")
 	req.Header.Set("Accept", "text/html, text/markdown;q=0.9, text/plain;q=0.8, application/json;q=0.7, */*;q=0.1")
@@ -160,17 +160,17 @@ func execute(ctx context.Context, args map[string]any, elicit *tool.Elicitation,
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("fetch %s: %w", rawURL, err)
+		return tool.Result{}, fmt.Errorf("fetch %s: %w", rawURL, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("fetch %s: HTTP %d %s", rawURL, resp.StatusCode, http.StatusText(resp.StatusCode))
+		return tool.Result{}, fmt.Errorf("fetch %s: HTTP %d %s", rawURL, resp.StatusCode, http.StatusText(resp.StatusCode))
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxReadBytes+1))
 	if err != nil {
-		return "", fmt.Errorf("read response from %s: %w", rawURL, err)
+		return tool.Result{}, fmt.Errorf("read response from %s: %w", rawURL, err)
 	}
 	bodyTruncated := len(body) > maxReadBytes
 	if bodyTruncated {
@@ -178,7 +178,7 @@ func execute(ctx context.Context, args map[string]any, elicit *tool.Elicitation,
 	}
 
 	if isBinary(body) {
-		return "", fmt.Errorf("fetch %s: response appears to be binary (%s); only text content is supported", rawURL, resp.Header.Get("Content-Type"))
+		return tool.Result{}, fmt.Errorf("fetch %s: response appears to be binary (%s); only text content is supported", rawURL, resp.Header.Get("Content-Type"))
 	}
 
 	text := string(body)
@@ -187,12 +187,12 @@ func execute(ctx context.Context, args map[string]any, elicit *tool.Elicitation,
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return fmt.Sprintf("[fetched %s: no readable text content]", rawURL), nil
+		return tool.Text(fmt.Sprintf("[fetched %s: no readable text content]", rawURL)), nil
 	}
 
 	if prompt, _ := args["prompt"].(string); strings.TrimSpace(prompt) != "" && extract != nil {
 		if answer, err := extractAnswer(ctx, extract, rawURL, strings.TrimSpace(prompt), text); err == nil && answer != "" {
-			return answer, nil
+			return tool.Text(answer), nil
 		}
 	}
 
@@ -207,7 +207,7 @@ func execute(ctx context.Context, args map[string]any, elicit *tool.Elicitation,
 		text += fmt.Sprintf("\n\n[truncated at %dKB]", maxOutputBytes/1024)
 	}
 
-	return text, nil
+	return tool.Text(text), nil
 }
 
 const extractInstructions = "You extract information from a fetched web page for a coding agent. " +

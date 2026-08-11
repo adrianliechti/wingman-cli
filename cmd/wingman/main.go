@@ -36,8 +36,6 @@ func main() {
 		runServer(ctx, args[1:])
 	case "acp":
 		runACP(ctx, args[1:])
-	case "claw":
-		runClaw(ctx, args[1:])
 	case "run":
 		runRun(ctx, args[1:])
 	default:
@@ -85,7 +83,6 @@ Usage:
   wingman exec resume [ID]      Resume a non-interactive session
   wingman server [flags]        Run the web UI server
   wingman acp [target] [flags]  Run as an ACP stdio server (wingman | claude | codex | pi)
-  wingman claw [flags]          Run the claw multi-agent runner (TUI; plain REPL when piped)
   wingman run <target> [args]   Run an external agent through wingman
 
 Run targets:
