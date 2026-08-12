@@ -17,6 +17,8 @@ func BuildArgs(cfg *CodexConfig) []string {
 	url := strings.TrimRight(cfg.BaseURL, "/") + "/v1"
 
 	return []string{
+		"--config", "agents.enabled=false",
+		"--config", "features.multi_agent_v2=false",
 
 		"--config", "model=\"" + cfg.Model + "\"",
 		"--config", "model_provider=\"wingman\"",
@@ -30,10 +32,13 @@ func BuildArgs(cfg *CodexConfig) []string {
 		"--config", "analytics.enabled=false",
 		"--config", "history.persistence=\"none\"",
 		"--config", "otel.exporter=\"none\"",
+		"--config", "otel.trace_exporter=\"none\"",
+		"--config", "otel.metrics_exporter=\"none\"",
 		"--config", "otel.log_user_prompt=false",
 
 		"--config", "web_search=\"disabled\"",
 		"--config", "features.apps=false",
+		"--config", "features.plugins=false",
 		"--config", "features.fast_mode=false",
 
 		"--config", "tui.show_tooltips=false",
