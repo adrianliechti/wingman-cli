@@ -986,11 +986,11 @@ test("previews raster images at their intrinsic size and renders SVG", async ({
 	await expect.poll(() => pixel.evaluate((image) => image.clientWidth)).toBe(1);
 
 	await page.getByRole("treeitem", { name: /logo-preview\.svg/ }).click();
-	await expect(page.locator(".monaco-editor")).toBeVisible();
-	await page.getByTitle("Show image preview").click();
 	const svg = page.getByRole("img", { name: "logo-preview.svg" });
 	await expect(svg).toBeVisible();
 	await expect.poll(() => svg.evaluate((image) => image.naturalWidth)).toBe(40);
+	await page.getByTitle("Show code editor").click();
+	await expect(page.locator(".monaco-editor")).toBeVisible();
 });
 
 test("previews structured data and delimited tables", async ({ page }) => {
@@ -1010,9 +1010,20 @@ test("previews structured data and delimited tables", async ({ page }) => {
 		await expect(preview.getByText('"wingman"')).toBeVisible();
 	}
 
+	await page.getByRole("treeitem", { name: "data-preview.json" }).click();
+	const structured = page.getByLabel("Preview of data-preview.json");
+	await structured.getByRole("button", { name: "Graph" }).click();
+	await expect(structured.getByText('"wingman"')).toBeVisible();
+	await expect(structured.getByText('"preview"')).toBeVisible();
+	await structured.getByTitle("Collapse features").click();
+	await expect(structured.getByText('"preview"')).not.toBeVisible();
+	await structured.getByTitle("Expand features").click();
+	await expect(structured.getByText('"preview"')).toBeVisible();
+	await structured.getByRole("button", { name: "Tree" }).click();
+	await expect(structured.getByText("project:")).toBeVisible();
+
 	for (const filename of ["data-preview.csv", "data-preview.tsv"]) {
 		await page.getByRole("treeitem", { name: filename }).click();
-		await page.getByTitle("Show table preview").click();
 		const preview = page.getByLabel(`Preview of ${filename}`);
 		await expect(
 			preview.getByRole("columnheader", { name: "name" }),
@@ -1024,13 +1035,14 @@ test("previews structured data and delimited tables", async ({ page }) => {
 		await expect(
 			preview.getByRole("columnheader", { name: "name" }),
 		).toHaveAttribute("aria-sort", "ascending");
+		await page.getByTitle("Show code editor").click();
+		await expect(page.locator(".monaco-editor")).toBeVisible();
 	}
 });
 
 test("renders Mermaid diagrams", async ({ page }) => {
 	await composer(page);
 	await page.getByRole("treeitem", { name: /flow-preview\.mmd/ }).click();
-	await page.getByTitle("Show diagram preview").click();
 	const preview = page.getByRole("img", {
 		name: "Preview of flow-preview.mmd",
 	});
@@ -1038,6 +1050,8 @@ test("renders Mermaid diagrams", async ({ page }) => {
 	await expect
 		.poll(() => preview.evaluate((image) => image.naturalWidth))
 		.toBeGreaterThan(0);
+	await page.getByTitle("Show code editor").click();
+	await expect(page.locator(".monaco-editor")).toBeVisible();
 });
 
 test("protects unsaved file edits when closing a tab", async ({

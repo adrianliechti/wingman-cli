@@ -68,7 +68,11 @@ import type {
 	TerminalEntry,
 	TurnInputIntent,
 } from "./types/protocol";
-import { textPreviewKind } from "./utils/filePreview";
+import {
+	defaultFileView,
+	type FileView,
+	textPreviewKind,
+} from "./utils/filePreview";
 
 interface CenterTab {
 	id: string;
@@ -188,9 +192,7 @@ export default function App() {
 		});
 		return () => cancelAnimationFrame(frame);
 	}, [activeTabId, tabs.length]);
-	const [fileViews, setFileViews] = useState<
-		Record<string, "code" | "preview">
-	>({});
+	const [fileViews, setFileViews] = useState<Record<string, FileView>>({});
 	const [currentSessionId, setCurrentSessionId] = useState("");
 	const [paletteOpen, setPaletteOpen] = useState(false);
 	const [composerSeed, setComposerSeed] = useState<{
@@ -328,7 +330,8 @@ export default function App() {
 	const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
 	const activePreviewKind =
 		activeTab.type === "file" ? textPreviewKind(activeTab.path ?? "") : null;
-	const activeFileView = fileViews[activeTab.id] ?? "code";
+	const activeFileView =
+		fileViews[activeTab.id] ?? defaultFileView(activeTab.path ?? "");
 	const previewToggleLabel =
 		activeFileView === "preview"
 			? "Show code editor"
@@ -1629,7 +1632,9 @@ export default function App() {
 										}
 										onKeepVersion={() => keepDocument(activeTab.path!)}
 										onOpenFile={openFile}
-										view={fileViews[activeTab.id] ?? "code"}
+										view={
+											fileViews[activeTab.id] ?? defaultFileView(activeTab.path)
+										}
 									/>
 								) : null}
 							</ErrorBoundary>

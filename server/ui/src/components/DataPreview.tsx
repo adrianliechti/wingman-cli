@@ -6,12 +6,27 @@ import {
 	tableFeatures,
 	useTable,
 } from "@tanstack/react-table";
-import { ArrowDown, ArrowUp, ChevronRight, ChevronsUpDown } from "lucide-react";
-import { useMemo, useState } from "react";
+import {
+	ArrowDown,
+	ArrowUp,
+	ChevronRight,
+	ChevronsUpDown,
+	ListTree,
+	Waypoints,
+} from "lucide-react";
+import { type ReactNode, useMemo, useState } from "react";
 import { parse as parseToml } from "smol-toml";
 import { parse as parseYaml } from "yaml";
+import {
+	collectionEntries,
+	collectionSummary,
+	formatScalar,
+	scalarClass,
+} from "../utils/dataValue";
+import { DataGraph } from "./DataGraph";
 
 type DataFormat = "json" | "yaml" | "toml" | "xml" | "csv" | "tsv";
+type StructuredView = "tree" | "graph";
 
 const MAX_TABLE_ROWS = 1_000;
 const MAX_TABLE_COLUMNS = 100;
@@ -36,6 +51,7 @@ export function DataPreview({
 	format: DataFormat;
 	path: string;
 }) {
+	const [view, setView] = useState<StructuredView>("tree");
 	const result = useMemo(() => {
 		try {
 			if (format === "csv" || format === "tsv") {
@@ -83,12 +99,60 @@ export function DataPreview({
 
 	return (
 		<div
-			data-structured-preview
 			aria-label={`Preview of ${path}`}
-			className="h-full overflow-auto px-5 py-4 font-mono text-[12px] select-text"
+			className="relative h-full min-h-0 overflow-hidden"
 		>
-			<DataNode value={result.value} depth={0} ancestors={[]} />
+			{view === "graph" ? (
+				<DataGraph value={result.value} />
+			) : (
+				<div
+					data-structured-preview
+					className="h-full overflow-auto px-5 py-4 font-mono text-[12px] select-text"
+				>
+					<DataNode value={result.value} depth={0} ancestors={[]} />
+				</div>
+			)}
+			<div className="absolute bottom-3 left-3 z-10 flex gap-0.5 rounded-md border border-border bg-bg-elevated/95 p-0.5 shadow-sm">
+				<ViewToggleButton
+					label="Tree"
+					icon={<ListTree size={12} />}
+					active={view === "tree"}
+					onClick={() => setView("tree")}
+				/>
+				<ViewToggleButton
+					label="Graph"
+					icon={<Waypoints size={12} />}
+					active={view === "graph"}
+					onClick={() => setView("graph")}
+				/>
+			</div>
 		</div>
+	);
+}
+
+function ViewToggleButton({
+	label,
+	icon,
+	active,
+	onClick,
+}: {
+	label: string;
+	icon: ReactNode;
+	active: boolean;
+	onClick: () => void;
+}) {
+	return (
+		<button
+			type="button"
+			aria-pressed={active}
+			onClick={onClick}
+			className={`flex h-6 items-center gap-1.5 rounded px-2 text-[11px] ${
+				active ? "bg-bg-active text-fg" : "text-fg-dim hover:text-fg"
+			}`}
+		>
+			{icon}
+			{label}
+		</button>
 	);
 }
 
@@ -215,45 +279,6 @@ function DataNode({
 
 function DataKey({ name }: { name: string }) {
 	return <span className="shrink-0 text-accent">{name}:</span>;
-}
-
-function collectionEntries(value: unknown): [string, unknown][] {
-	if (Array.isArray(value)) {
-		return value.map((child, index) => [String(index), child]);
-	}
-	if (value !== null && typeof value === "object") {
-		return Object.entries(value);
-	}
-	return [];
-}
-
-function collectionSummary(value: unknown) {
-	if (Array.isArray(value)) return `Array(${value.length})`;
-	if (value !== null && typeof value === "object") {
-		return `Object(${Object.keys(value).length})`;
-	}
-	return formatScalar(value);
-}
-
-function formatScalar(value: unknown) {
-	if (value === null) return "null";
-	if (value === undefined) return "undefined";
-	if (typeof value === "string") return JSON.stringify(value);
-	if (typeof value === "number" || typeof value === "boolean") {
-		return String(value);
-	}
-	if (value !== null && typeof value === "object") {
-		return Array.isArray(value) ? "[]" : "{}";
-	}
-	return String(value);
-}
-
-function scalarClass(value: unknown) {
-	if (value === null || value === undefined) return "text-fg-dim";
-	if (typeof value === "string") return "text-success";
-	if (typeof value === "number") return "text-info";
-	if (typeof value === "boolean") return "text-purple";
-	return "text-fg-muted";
 }
 
 interface DelimitedResult {

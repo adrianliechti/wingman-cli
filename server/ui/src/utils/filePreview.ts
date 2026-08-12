@@ -10,6 +10,8 @@ export type TextPreviewKind =
 	| "csv"
 	| "tsv";
 
+export type FileView = "code" | "preview";
+
 export function textPreviewKind(path: string): TextPreviewKind | null {
 	const extension = path.toLowerCase().split(".").pop();
 	switch (extension) {
@@ -35,4 +37,14 @@ export function textPreviewKind(path: string): TextPreviewKind | null {
 		default:
 			return null;
 	}
+}
+
+export function defaultFileView(path: string): FileView {
+	const kind = textPreviewKind(path);
+	return kind === "svg" ||
+		kind === "mermaid" ||
+		kind === "csv" ||
+		kind === "tsv"
+		? "preview"
+		: "code";
 }
