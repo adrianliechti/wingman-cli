@@ -12,14 +12,16 @@ type Graph struct {
 	Nodes   []*Node   `json:"nodes"`
 	Edges   []*Edge   `json:"edges"`
 	Imports []*Import `json:"imports,omitempty"`
+	Refs    []*Ref    `json:"refs,omitempty"`
 
-	byID    map[string]*Node
-	byName  map[string][]*Node
-	byFile  map[string][]*Node
-	tokens  map[string][]string
-	out     map[string][]string
-	in      map[string][]string
-	edgeVia map[string]Provenance
+	byID       map[string]*Node
+	byName     map[string][]*Node
+	byFile     map[string][]*Node
+	refsByName map[string][]*Ref
+	tokens     map[string][]string
+	out        map[string][]string
+	in         map[string][]string
+	edgeVia    map[string]Provenance
 
 	superOut map[string][]string
 	superIn  map[string][]string
@@ -51,6 +53,11 @@ func (g *Graph) build() {
 		g.byName[n.Name] = append(g.byName[n.Name], n)
 		g.byFile[n.File] = append(g.byFile[n.File], n)
 		g.tokens[n.ID] = tokenize(n.Name)
+	}
+
+	g.refsByName = make(map[string][]*Ref)
+	for _, r := range g.Refs {
+		g.refsByName[r.Name] = append(g.refsByName[r.Name], r)
 	}
 
 	for _, e := range g.Edges {

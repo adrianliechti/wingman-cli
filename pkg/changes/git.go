@@ -41,17 +41,8 @@ type GitBranch struct {
 	Current bool
 }
 
-func (m *Manager) IsNativeGit() bool {
-	if err := m.ready(); err != nil {
-		return false
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return !m.closed && m.native
-}
-
 func (m *Manager) GitStatus(ctx context.Context) (GitStatus, error) {
-	if err := m.lockNative(ctx); err != nil {
+	if err := m.lock(ctx); err != nil {
 		return GitStatus{}, err
 	}
 	defer m.mu.Unlock()
@@ -59,7 +50,7 @@ func (m *Manager) GitStatus(ctx context.Context) (GitStatus, error) {
 }
 
 func (m *Manager) Branches(ctx context.Context, refresh bool) ([]GitBranch, string, error) {
-	if err := m.lockNative(ctx); err != nil {
+	if err := m.lock(ctx); err != nil {
 		return nil, "", err
 	}
 	defer m.mu.Unlock()
@@ -109,7 +100,7 @@ func (m *Manager) Branches(ctx context.Context, refresh bool) ([]GitBranch, stri
 }
 
 func (m *Manager) CreateBranch(ctx context.Context, name string) error {
-	if err := m.lockNative(ctx); err != nil {
+	if err := m.lock(ctx); err != nil {
 		return err
 	}
 	defer m.mu.Unlock()
@@ -130,7 +121,7 @@ func (m *Manager) CreateBranch(ctx context.Context, name string) error {
 }
 
 func (m *Manager) CheckoutBranch(ctx context.Context, name, remote string) error {
-	if err := m.lockNative(ctx); err != nil {
+	if err := m.lock(ctx); err != nil {
 		return err
 	}
 	defer m.mu.Unlock()
@@ -206,7 +197,7 @@ func (m *Manager) CheckoutBranch(ctx context.Context, name, remote string) error
 }
 
 func (m *Manager) Stage(ctx context.Context, paths []string) error {
-	if err := m.lockNative(ctx); err != nil {
+	if err := m.lock(ctx); err != nil {
 		return err
 	}
 	defer m.mu.Unlock()
@@ -223,7 +214,7 @@ func (m *Manager) Stage(ctx context.Context, paths []string) error {
 }
 
 func (m *Manager) Unstage(ctx context.Context, paths []string) error {
-	if err := m.lockNative(ctx); err != nil {
+	if err := m.lock(ctx); err != nil {
 		return err
 	}
 	defer m.mu.Unlock()
@@ -262,7 +253,7 @@ func (m *Manager) Unstage(ctx context.Context, paths []string) error {
 }
 
 func (m *Manager) Commit(ctx context.Context, message string) (string, error) {
-	if err := m.lockNative(ctx); err != nil {
+	if err := m.lock(ctx); err != nil {
 		return "", err
 	}
 	defer m.mu.Unlock()
@@ -277,7 +268,7 @@ func (m *Manager) Commit(ctx context.Context, message string) (string, error) {
 }
 
 func (m *Manager) Pull(ctx context.Context) (string, error) {
-	if err := m.lockNative(ctx); err != nil {
+	if err := m.lock(ctx); err != nil {
 		return "", err
 	}
 	defer m.mu.Unlock()
@@ -309,7 +300,7 @@ func (m *Manager) Pull(ctx context.Context) (string, error) {
 }
 
 func (m *Manager) Push(ctx context.Context) (string, error) {
-	if err := m.lockNative(ctx); err != nil {
+	if err := m.lock(ctx); err != nil {
 		return "", err
 	}
 	defer m.mu.Unlock()
@@ -467,7 +458,7 @@ func branchReference(name string) (plumbing.ReferenceName, error) {
 	return branch, nil
 }
 
-func (m *Manager) lockNative(ctx context.Context) error {
+func (m *Manager) lock(ctx context.Context) error {
 	if err := m.ready(); err != nil {
 		return err
 	}
@@ -478,10 +469,6 @@ func (m *Manager) lockNative(ctx context.Context) error {
 	if m.closed {
 		m.mu.Unlock()
 		return ErrClosed
-	}
-	if !m.native {
-		m.mu.Unlock()
-		return ErrNotGitRepository
 	}
 	return nil
 }

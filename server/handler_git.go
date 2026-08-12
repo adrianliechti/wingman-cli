@@ -54,6 +54,16 @@ type gitBranchRequest struct {
 	Remote string `json:"remote,omitempty"`
 }
 
+func (s *Server) handleGitInit(w http.ResponseWriter, r *http.Request) {
+	if err := s.workspace.GitInit(); err != nil {
+		writeGitError(w, err)
+		return
+	}
+	s.broadcast(Frame{Type: EvtCapabilitiesChanged})
+	s.flushFiles()
+	s.gitMutationComplete(w, "Initialized Git repository")
+}
+
 func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
 	status, err := s.workspace.GitStatus(r.Context())
 	if err != nil {

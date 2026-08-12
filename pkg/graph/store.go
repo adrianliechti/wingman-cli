@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 )
 
@@ -20,6 +21,7 @@ type snapshot struct {
 	Nodes        []*Node             `json:"nodes"`
 	Edges        []edgeRec           `json:"edges"`
 	Imports      []*Import           `json:"imports,omitempty"`
+	Refs         []fileRefs          `json:"refs,omitempty"`
 }
 
 type edgeRec struct {
@@ -29,23 +31,55 @@ type edgeRec struct {
 	Via  Provenance `json:"v,omitempty"`
 }
 
-const snapshotVersion = 4
+// fileRefs groups one file's reference sites so the file path and language are
+// stored once instead of per site.
+type fileRefs struct {
+	File string   `json:"file"`
+	Lang string   `json:"lang"`
+	Refs []refRec `json:"refs"`
+}
 
-func loadSnapshot(path string) (*Graph, map[string]fileMeta, int, []CoverageIssue, time.Time, error) {
+type refRec struct {
+	Name string   `json:"n"`
+	Line int      `json:"l"`
+	Col  int      `json:"c"`
+	Kind EdgeKind `json:"k,omitempty"`
+}
+
+const snapshotVersion = 5
+
+type snapshotData struct {
+	graph        *Graph
+	files        map[string]fileMeta
+	indexedFiles int
+	skipped      []CoverageIssue
+	indexedAt    time.Time
+}
+
+func loadSnapshot(path string) (*snapshotData, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, nil, 0, nil, time.Time{}, err
+		return nil, err
 	}
 
 	var snap snapshot
 	if err := json.Unmarshal(data, &snap); err != nil {
-		return nil, nil, 0, nil, time.Time{}, err
+		return nil, err
 	}
 	if snap.Version != snapshotVersion {
-		return nil, nil, 0, nil, time.Time{}, os.ErrNotExist
+		return nil, os.ErrNotExist
 	}
 
 	g := &Graph{Nodes: snap.Nodes, Imports: snap.Imports}
+	for _, fr := range snap.Refs {
+		for _, r := range fr.Refs {
+			kind := r.Kind
+			if kind == "" {
+				kind = EdgeCalls
+			}
+			g.Refs = append(g.Refs, &Ref{Name: r.Name, File: fr.File, Line: r.Line, Col: r.Col, Kind: kind, Lang: fr.Lang})
+		}
+	}
 	g.Edges = make([]*Edge, 0, len(snap.Edges))
 	for _, e := range snap.Edges {
 		if int(e.From) >= len(snap.Nodes) || int(e.To) >= len(snap.Nodes) || e.From < 0 || e.To < 0 {
@@ -59,7 +93,13 @@ func loadSnapshot(path string) (*Graph, map[string]fileMeta, int, []CoverageIssu
 		})
 	}
 	g.build()
-	return g, snap.Files, snap.IndexedFiles, snap.Skipped, snap.IndexedAt, nil
+	return &snapshotData{
+		graph:        g,
+		files:        snap.Files,
+		indexedFiles: snap.IndexedFiles,
+		skipped:      snap.Skipped,
+		indexedAt:    snap.IndexedAt,
+	}, nil
 }
 
 func saveSnapshot(path string, g *Graph, files map[string]fileMeta, indexedFiles int, skipped []CoverageIssue, indexedAt time.Time) error {
@@ -82,6 +122,27 @@ func saveSnapshot(path string, g *Graph, files map[string]fileMeta, indexedFiles
 		edges = append(edges, edgeRec{From: from, To: to, Kind: e.Kind, Via: e.Via})
 	}
 
+	byFile := make(map[string]*fileRefs)
+	var fileOrder []string
+	for _, r := range g.Refs {
+		fr := byFile[r.File]
+		if fr == nil {
+			fr = &fileRefs{File: r.File, Lang: r.Lang}
+			byFile[r.File] = fr
+			fileOrder = append(fileOrder, r.File)
+		}
+		rec := refRec{Name: r.Name, Line: r.Line, Col: r.Col}
+		if r.Kind != EdgeCalls {
+			rec.Kind = r.Kind
+		}
+		fr.Refs = append(fr.Refs, rec)
+	}
+	sort.Strings(fileOrder)
+	refs := make([]fileRefs, 0, len(fileOrder))
+	for _, f := range fileOrder {
+		refs = append(refs, *byFile[f])
+	}
+
 	snap := snapshot{
 		Version:      snapshotVersion,
 		IndexedAt:    indexedAt,
@@ -91,6 +152,7 @@ func saveSnapshot(path string, g *Graph, files map[string]fileMeta, indexedFiles
 		Nodes:        g.Nodes,
 		Edges:        edges,
 		Imports:      g.Imports,
+		Refs:         refs,
 	}
 
 	data, err := json.Marshal(snap)

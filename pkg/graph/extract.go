@@ -99,12 +99,7 @@ func (ax *auxExtractor) extractFromTree(lang string, langObj *ts.Language, root 
 
 	var imps []rawImport
 	if iq != nil {
-		cur := iq.Exec(root, langObj, src)
-		for {
-			m, ok := cur.NextMatch()
-			if !ok {
-				break
-			}
+		for _, m := range iq.ExecuteNode(root, langObj, src) {
 			for _, cap := range m.Captures {
 				text := cap.Node.Text(src)
 				var norm string
@@ -126,12 +121,7 @@ func (ax *auxExtractor) extractFromTree(lang string, langObj *ts.Language, root 
 
 	var hiers []rawHierRef
 	if hq != nil {
-		cur := hq.Exec(root, langObj, src)
-		for {
-			m, ok := cur.NextMatch()
-			if !ok {
-				break
-			}
+		for _, m := range hq.ExecuteNode(root, langObj, src) {
 			for _, cap := range m.Captures {
 				kind := EdgeInherits
 				if cap.Name == "implements" {

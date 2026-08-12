@@ -108,6 +108,90 @@ func getGitBranches(t *testing.T, baseURL string) GitBranches {
 	return branches
 }
 
+func TestGitAPIInitCreatesRepository(t *testing.T) {
+	t.Setenv("WINGMAN_URL", "http://localhost:1")
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "hello.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app, err := New(context.Background(), workDir, &ServerOptions{NoBrowser: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	web := httptest.NewServer(app)
+	defer web.Close()
+
+	res, err := http.Get(web.URL + "/api/git/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("status before init = %d, want %d", res.StatusCode, http.StatusNotFound)
+	}
+	caps := getCapabilities(t, web.URL)
+	if caps["git"] != false || caps["diffs"] != false || caps["git_init"] != true {
+		t.Fatalf("capabilities before init = %v", caps)
+	}
+
+	postGit(t, web.URL, "init", "")
+	caps = getCapabilities(t, web.URL)
+	if caps["git"] != true || caps["diffs"] != true || caps["git_init"] != false {
+		t.Fatalf("capabilities after init = %v", caps)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, ".git")); err != nil {
+		t.Fatalf("missing .git directory: %v", err)
+	}
+	status := getGitStatus(t, web.URL)
+	if status.Branch != "main" {
+		t.Fatalf("branch after init = %q, want main", status.Branch)
+	}
+	if len(status.Files) != 1 || status.Files[0].Path != "hello.txt" || !status.Files[0].Changed {
+		t.Fatalf("status after init = %+v", status)
+	}
+
+	res, err = http.Post(web.URL+"/api/git/init", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("second init = %d, want %d", res.StatusCode, http.StatusConflict)
+	}
+}
+
+func TestGitAPIInitRemovesDanglingShadowPointer(t *testing.T) {
+	t.Setenv("WINGMAN_URL", "http://localhost:1")
+	workDir := t.TempDir()
+	stale := "gitdir: " + filepath.Join(t.TempDir(), "gone", "changes-old.git") + "\n"
+	if err := os.WriteFile(filepath.Join(workDir, ".git"), []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app, err := New(context.Background(), workDir, &ServerOptions{NoBrowser: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	web := httptest.NewServer(app)
+	defer web.Close()
+
+	caps := getCapabilities(t, web.URL)
+	if caps["git_init"] != true {
+		t.Fatalf("capabilities = %v", caps)
+	}
+	postGit(t, web.URL, "init", "")
+	info, err := os.Stat(filepath.Join(workDir, ".git"))
+	if err != nil || !info.IsDir() {
+		t.Fatalf(".git after init: info=%v err=%v", info, err)
+	}
+	if status := getGitStatus(t, web.URL); status.Branch != "main" {
+		t.Fatalf("status after init = %+v", status)
+	}
+}
+
 func TestGitAPIRejectsInvalidPath(t *testing.T) {
 	t.Setenv("WINGMAN_URL", "http://localhost:1")
 	repoDir := t.TempDir()
@@ -130,6 +214,23 @@ func TestGitAPIRejectsInvalidPath(t *testing.T) {
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", res.StatusCode, http.StatusBadRequest)
 	}
+}
+
+func getCapabilities(t *testing.T, baseURL string) map[string]any {
+	t.Helper()
+	res, err := http.Get(baseURL + "/api/capabilities")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("capabilities endpoint = %d", res.StatusCode)
+	}
+	var caps map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&caps); err != nil {
+		t.Fatal(err)
+	}
+	return caps
 }
 
 func getGitStatus(t *testing.T, baseURL string) GitStatus {

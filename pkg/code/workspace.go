@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/google/uuid"
 	"go.yaml.in/yaml/v4"
 
@@ -72,6 +73,7 @@ type Workspace struct {
 
 	mu               sync.RWMutex
 	closed           bool
+	warmed           bool
 	mcpToolsByServer map[string][]tool.Tool
 	lspTools         []tool.Tool
 	graphTools       []tool.Tool
@@ -189,8 +191,10 @@ func reportShadowedPluginSkills(skills []skill.Skill) {
 
 func (w *Workspace) WarmUp() {
 	w.warmupOnce.Do(func() {
-		nativeGit := isGitRepo(w.RootPath)
-		changesManager := changes.New(w.RootPath, w.nextShadowGitDir(), nativeGit)
+		var changesManager *changes.Manager
+		if isGitRepo(w.RootPath) {
+			changesManager = changes.New(w.RootPath)
+		}
 
 		lspManager := lsp.NewManager(w.RootPath)
 		lspTools := lsptool.NewTools(lspManager)
@@ -208,7 +212,9 @@ func (w *Workspace) WarmUp() {
 			if lspManager != nil {
 				lspManager.Close()
 			}
-			changesManager.Close()
+			if changesManager != nil {
+				changesManager.Close()
+			}
 			return
 		}
 		w.Changes = changesManager
@@ -216,6 +222,7 @@ func (w *Workspace) WarmUp() {
 		w.lspTools = lspTools
 		w.Graph = graphEngine
 		w.graphTools = graphTools
+		w.warmed = true
 		w.mu.Unlock()
 		w.lspLifeMu.Unlock()
 
@@ -380,25 +387,31 @@ func (w *Workspace) IsGitRepo() bool { return isGitRepo(w.RootPath) }
 
 func (w *Workspace) SyncProjectMode() {
 	w.mu.RLock()
-	available := !w.closed && w.Changes != nil
+	available := !w.closed && w.warmed
 	w.mu.RUnlock()
 	if !available {
 		return
 	}
 
-	nativeGit := isGitRepo(w.RootPath)
-	nextChanges := changes.New(w.RootPath, w.nextShadowGitDir(), nativeGit)
+	var nextChanges *changes.Manager
+	if isGitRepo(w.RootPath) {
+		nextChanges = changes.New(w.RootPath)
+	}
 
 	w.mu.Lock()
-	if w.closed || w.Changes == nil {
+	if w.closed || !w.warmed {
 		w.mu.Unlock()
-		nextChanges.Close()
+		if nextChanges != nil {
+			nextChanges.Close()
+		}
 		return
 	}
 	previousChanges := w.Changes
 	w.Changes = nextChanges
 	w.mu.Unlock()
-	previousChanges.Close()
+	if previousChanges != nil {
+		previousChanges.Close()
+	}
 }
 
 // lspManager returns the LSP manager; callers must hold lspLifeMu for the
@@ -458,11 +471,15 @@ func (w *Workspace) FileDiagnostics(ctx context.Context, filePath string, conten
 }
 
 // DefinitionLocations resolves a position in a disk file or in-memory editor
-// buffer using the language server associated with the file.
+// buffer using the language server associated with the file, falling back to
+// the tree-sitter graph index when no server covers it.
 func (w *Workspace) DefinitionLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.DefLocation, error) {
-	return w.locationRequest(ctx, filePath, content, func(session *lsp.Session, uri string) ([]lsp.DefLocation, error) {
-		return session.DefinitionLocations(ctx, uri, line, column)
-	})
+	if w.hasLSPServerFor(filePath) {
+		return w.locationRequest(ctx, filePath, content, func(session *lsp.Session, uri string) ([]lsp.DefLocation, error) {
+			return session.DefinitionLocations(ctx, uri, line, column)
+		})
+	}
+	return w.graphLocations(ctx, filePath, content, line, column, (*graph.Engine).Definitions)
 }
 
 func (w *Workspace) TypeDefinitionLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.DefLocation, error) {
@@ -472,15 +489,63 @@ func (w *Workspace) TypeDefinitionLocations(ctx context.Context, filePath string
 }
 
 func (w *Workspace) ImplementationLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.DefLocation, error) {
-	return w.locationRequest(ctx, filePath, content, func(session *lsp.Session, uri string) ([]lsp.DefLocation, error) {
-		return session.ImplementationLocations(ctx, uri, line, column)
-	})
+	if w.hasLSPServerFor(filePath) {
+		return w.locationRequest(ctx, filePath, content, func(session *lsp.Session, uri string) ([]lsp.DefLocation, error) {
+			return session.ImplementationLocations(ctx, uri, line, column)
+		})
+	}
+	return w.graphLocations(ctx, filePath, content, line, column, (*graph.Engine).Implementations)
 }
 
 func (w *Workspace) ReferenceLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.DefLocation, error) {
-	return w.locationRequest(ctx, filePath, content, func(session *lsp.Session, uri string) ([]lsp.DefLocation, error) {
-		return session.ReferenceLocations(ctx, uri, line, column)
-	})
+	if w.hasLSPServerFor(filePath) {
+		return w.locationRequest(ctx, filePath, content, func(session *lsp.Session, uri string) ([]lsp.DefLocation, error) {
+			return session.ReferenceLocations(ctx, uri, line, column)
+		})
+	}
+	return w.graphLocations(ctx, filePath, content, line, column, (*graph.Engine).References)
+}
+
+func (w *Workspace) hasLSPServerFor(filePath string) bool {
+	w.lspLifeMu.RLock()
+	defer w.lspLifeMu.RUnlock()
+
+	manager := w.lspManager()
+	return manager != nil && manager.FindServer(filePath) != nil
+}
+
+func (w *Workspace) graphEngine() *graph.Engine {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.Graph
+}
+
+func (w *Workspace) graphLocations(ctx context.Context, filePath string, content *string, line, column int, lookup func(*graph.Engine, context.Context, string, []byte, int, int) ([]graph.Location, error)) ([]lsp.DefLocation, error) {
+	engine := w.graphEngine()
+	if engine == nil {
+		return nil, fmt.Errorf("language server unavailable")
+	}
+	rel, err := filepath.Rel(w.RootPath, filePath)
+	if err != nil {
+		return nil, err
+	}
+	var src []byte
+	if content != nil {
+		src = []byte(*content)
+	}
+	locations, err := lookup(engine, ctx, filepath.ToSlash(rel), src, line, column)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]lsp.DefLocation, 0, len(locations))
+	for _, location := range locations {
+		result = append(result, lsp.DefLocation{
+			Path:   filepath.Join(w.RootPath, filepath.FromSlash(location.File)),
+			Line:   location.Line,
+			Column: location.Col,
+		})
+	}
+	return result, nil
 }
 
 func (w *Workspace) locationRequest(ctx context.Context, filePath string, content *string, request func(*lsp.Session, string) ([]lsp.DefLocation, error)) ([]lsp.DefLocation, error) {
@@ -497,6 +562,9 @@ func (w *Workspace) locationRequest(ctx context.Context, filePath string, conten
 }
 
 func (w *Workspace) HoverInformation(ctx context.Context, filePath string, content *string, line, column int) (string, error) {
+	if !w.hasLSPServerFor(filePath) {
+		return w.graphHover(ctx, filePath, content, line, column)
+	}
 	var contents string
 	err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
 		var err error
@@ -509,7 +577,40 @@ func (w *Workspace) HoverInformation(ctx context.Context, filePath string, conte
 	return contents, nil
 }
 
+func (w *Workspace) graphHover(ctx context.Context, filePath string, content *string, line, column int) (string, error) {
+	engine := w.graphEngine()
+	if engine == nil {
+		return "", fmt.Errorf("language server unavailable")
+	}
+	rel, err := filepath.Rel(w.RootPath, filePath)
+	if err != nil {
+		return "", err
+	}
+	var src []byte
+	if content != nil {
+		src = []byte(*content)
+	}
+	info, err := engine.Hover(ctx, filepath.ToSlash(rel), src, line, column)
+	if err != nil || info == nil {
+		return "", err
+	}
+
+	code := info.Code
+	if info.Truncated {
+		code += "\n…"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "```%s\n%s\n```\n\n%s · %s:%d", info.Node.Lang, code, info.Node.Kind, info.Node.File, info.Node.StartLine)
+	if info.Others > 0 {
+		fmt.Fprintf(&b, " · %d more candidates", info.Others)
+	}
+	return b.String(), nil
+}
+
 func (w *Workspace) DocumentSymbolItems(ctx context.Context, filePath string, content *string) ([]lsp.DocumentSymbol, []lsp.SymbolInformation, error) {
+	if !w.hasLSPServerFor(filePath) {
+		return w.graphDocumentSymbols(filePath, content)
+	}
 	var docSymbols []lsp.DocumentSymbol
 	var symInfos []lsp.SymbolInformation
 	err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
@@ -521,6 +622,63 @@ func (w *Workspace) DocumentSymbolItems(ctx context.Context, filePath string, co
 		return nil, nil, err
 	}
 	return docSymbols, symInfos, nil
+}
+
+func (w *Workspace) graphDocumentSymbols(filePath string, content *string) ([]lsp.DocumentSymbol, []lsp.SymbolInformation, error) {
+	var src []byte
+	if content != nil {
+		src = []byte(*content)
+	} else {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			return nil, nil, err
+		}
+		src = data
+	}
+	return graphDocumentSymbols(graph.FileSymbols(filepath.Base(filePath), src)), nil, nil
+}
+
+func graphDocumentSymbols(symbols []*graph.Symbol) []lsp.DocumentSymbol {
+	result := make([]lsp.DocumentSymbol, 0, len(symbols))
+	for _, symbol := range symbols {
+		result = append(result, lsp.DocumentSymbol{
+			Name:           symbol.Name,
+			Kind:           lspSymbolKind(symbol.Kind),
+			Range:          lspRange(symbol.Range),
+			SelectionRange: lspRange(symbol.NameRange),
+			Children:       graphDocumentSymbols(symbol.Children),
+		})
+	}
+	return result
+}
+
+func lspRange(r graph.SymRange) lsp.Range {
+	return lsp.Range{
+		Start: lsp.Position{Line: r.StartLine, Character: r.StartCol},
+		End:   lsp.Position{Line: r.EndLine, Character: r.EndCol},
+	}
+}
+
+func lspSymbolKind(kind graph.Kind) int {
+	switch kind {
+	case graph.KindModule:
+		return 2
+	case graph.KindClass:
+		return 5
+	case graph.KindMethod:
+		return 6
+	case graph.KindConstructor:
+		return 9
+	case graph.KindInterface:
+		return 11
+	case graph.KindFunction:
+		return 12
+	case graph.KindConstant:
+		return 14
+	case graph.KindType:
+		return 23
+	}
+	return 13
 }
 
 func syncEditorDocument(ctx context.Context, session *lsp.Session, filePath string, content *string) (string, error) {
@@ -617,10 +775,53 @@ func (w *Workspace) RevertChange(ctx context.Context, path string) error {
 	return w.Changes.Revert(ctx, path)
 }
 
-func (w *Workspace) HasNativeGit() bool {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-	return w.Changes != nil && w.Changes.IsNativeGit()
+func (w *Workspace) GitInit() error {
+	if isGitRepo(w.RootPath) {
+		return errors.New("workspace is already a Git repository")
+	}
+	if err := removeDanglingGitPointer(w.RootPath); err != nil {
+		return err
+	}
+	if _, err := git.PlainInitWithOptions(w.RootPath, &git.PlainInitOptions{
+		InitOptions: git.InitOptions{DefaultBranch: plumbing.Main},
+	}); err != nil {
+		return fmt.Errorf("initialize Git repository: %w", err)
+	}
+	w.SyncProjectMode()
+	return nil
+}
+
+func removeDanglingGitPointer(dir string) error {
+	path := filepath.Join(dir, git.GitDirName)
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect .git: %w", err)
+	}
+	if info.IsDir() {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("workspace contains an unusable .git file: %w", err)
+	}
+	target, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "gitdir:")
+	if !ok {
+		return errors.New("workspace contains a .git file that is not a Git repository; remove it and try again")
+	}
+	target = strings.TrimSpace(target)
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(dir, target)
+	}
+	if _, err := os.Stat(target); err == nil {
+		return errors.New("workspace .git file points to an existing external Git directory; remove it manually to reinitialize")
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("remove stale .git file: %w", err)
+	}
+	return nil
 }
 
 func (w *Workspace) GitStatus(ctx context.Context) (changes.GitStatus, error) {
@@ -702,10 +903,6 @@ func (w *Workspace) GitPush(ctx context.Context) (string, error) {
 		return "", changes.ErrNotGitRepository
 	}
 	return w.Changes.Push(ctx)
-}
-
-func (w *Workspace) nextShadowGitDir() string {
-	return filepath.Join(w.ScratchPath, "changes-"+uuid.NewString()+".git")
 }
 
 func (w *Workspace) MemoryContent() string {

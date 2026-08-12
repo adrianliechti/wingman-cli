@@ -12,16 +12,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
-	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	formatdiff "github.com/go-git/go-git/v5/plumbing/format/diff"
 	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/go-git/go-git/v5/storage/filesystem"
 	utildiff "github.com/go-git/go-git/v5/utils/diff"
 )
 
@@ -62,8 +58,6 @@ type statusEntry struct {
 
 type Manager struct {
 	workingDir string
-	gitDir     string
-	native     bool
 	prefix     string
 
 	repo     *git.Repository
@@ -76,14 +70,12 @@ type Manager struct {
 	closed bool
 }
 
-func New(workingDir, gitDir string, native bool) *Manager {
+func New(workingDir string) *Manager {
 	if absolute, err := filepath.Abs(workingDir); err == nil {
 		workingDir = absolute
 	}
 	m := &Manager{
 		workingDir: workingDir,
-		gitDir:     gitDir,
-		native:     native,
 		initDone:   make(chan struct{}),
 	}
 	go m.init()
@@ -93,69 +85,31 @@ func New(workingDir, gitDir string, native bool) *Manager {
 func (m *Manager) init() {
 	defer close(m.initDone)
 
-	if m.native {
-		repo, err := git.PlainOpenWithOptions(m.workingDir, &git.PlainOpenOptions{
-			DetectDotGit:          true,
-			EnableDotGitCommonDir: true,
-		})
-		if err != nil {
-			m.initErr = fmt.Errorf("open Git repository: %w", err)
-			return
-		}
-		worktree, err := repo.Worktree()
-		if err != nil {
-			m.initErr = fmt.Errorf("open Git worktree: %w", err)
-			return
-		}
-		root, err := repositoryRoot(m.workingDir)
-		if err != nil {
-			m.initErr = err
-			return
-		}
-		rel, err := filepath.Rel(root, m.workingDir)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			m.initErr = errors.New("workspace is outside the Git worktree")
-			return
-		}
-		if rel != "." {
-			m.prefix = filepath.ToSlash(rel) + "/"
-		}
-		m.repo = repo
-		m.worktree = worktree
-		return
-	}
-
-	if m.gitDir == "" {
-		m.initErr = errors.New("shadow Git directory is required")
-		return
-	}
-	if err := os.MkdirAll(m.gitDir, 0o755); err != nil {
-		m.initErr = fmt.Errorf("create shadow Git repository: %w", err)
-		return
-	}
-	storage := filesystem.NewStorage(osfs.New(m.gitDir), cache.NewObjectLRUDefault())
-	repo, err := git.Init(storage, osfs.New(m.workingDir))
+	repo, err := git.PlainOpenWithOptions(m.workingDir, &git.PlainOpenOptions{
+		DetectDotGit:          true,
+		EnableDotGitCommonDir: true,
+	})
 	if err != nil {
-		m.initErr = fmt.Errorf("initialize shadow Git repository: %w", err)
+		m.initErr = fmt.Errorf("open Git repository: %w", err)
 		return
 	}
 	worktree, err := repo.Worktree()
 	if err != nil {
-		m.initErr = fmt.Errorf("open shadow Git worktree: %w", err)
+		m.initErr = fmt.Errorf("open Git worktree: %w", err)
 		return
 	}
-	if err := worktree.AddWithOptions(&git.AddOptions{All: true}); err != nil {
-		m.initErr = fmt.Errorf("snapshot workspace: %w", err)
+	root, err := repositoryRoot(m.workingDir)
+	if err != nil {
+		m.initErr = err
 		return
 	}
-	signature := &object.Signature{Name: "wingman", Email: "wingman@local", When: time.Now()}
-	if _, err := worktree.Commit("Workspace baseline", &git.CommitOptions{
-		Author:            signature,
-		Committer:         signature,
-		AllowEmptyCommits: true,
-	}); err != nil {
-		m.initErr = fmt.Errorf("commit workspace baseline: %w", err)
+	rel, err := filepath.Rel(root, m.workingDir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		m.initErr = errors.New("workspace is outside the Git worktree")
 		return
+	}
+	if rel != "." {
+		m.prefix = filepath.ToSlash(rel) + "/"
 	}
 	m.repo = repo
 	m.worktree = worktree
@@ -270,66 +224,10 @@ func (m *Manager) Revert(ctx context.Context, path string) error {
 	if match == nil {
 		return errors.New("no change for path")
 	}
-	if m.native {
-		if match.worktree == git.Unmodified {
-			return errors.New("path has no unstaged change")
-		}
-		return m.restoreWorktreeFromIndex(match.path)
+	if match.worktree == git.Unmodified {
+		return errors.New("path has no unstaged change")
 	}
-
-	paths := []string{match.path}
-	if match.originalPath != "" && match.originalPath != match.path {
-		paths = append(paths, match.originalPath)
-	}
-	objectPaths := make([]string, 0, len(paths))
-	for _, item := range paths {
-		objectPaths = append(objectPaths, m.objectPath(item))
-	}
-
-	head, err := m.headTree()
-	if err != nil {
-		return err
-	}
-	if head != nil {
-		if err := m.worktree.Reset(&git.ResetOptions{Mode: git.HardReset, Files: objectPaths}); err != nil {
-			return fmt.Errorf("restore change: %w", err)
-		}
-		// A hard reset intentionally leaves unrelated untracked files alone,
-		// but an explicitly reverted path that is absent from HEAD must go.
-		for _, item := range paths {
-			_, _, exists, err := treeFile(m.repo, head, m.objectPath(item))
-			if err != nil {
-				return err
-			}
-			if !exists {
-				if err := m.remove(item); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	}
-
-	index, err := m.repo.Storer.Index()
-	if err != nil {
-		return fmt.Errorf("read Git index: %w", err)
-	}
-	for _, objectPath := range objectPaths {
-		for {
-			if _, err := index.Remove(objectPath); err != nil {
-				break
-			}
-		}
-	}
-	if err := m.repo.Storer.SetIndex(index); err != nil {
-		return fmt.Errorf("update Git index: %w", err)
-	}
-	for _, item := range paths {
-		if err := m.remove(item); err != nil {
-			return err
-		}
-	}
-	return nil
+	return m.restoreWorktreeFromIndex(match.path)
 }
 
 func (m *Manager) Fingerprint(ctx context.Context) uint64 {

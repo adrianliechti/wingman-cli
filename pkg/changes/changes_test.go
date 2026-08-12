@@ -12,61 +12,6 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
-func TestShadowRepositoryDiffAndRevert(t *testing.T) {
-	t.Setenv("PATH", "")
-	dir := t.TempDir()
-	writeFile(t, dir, "kept.txt", "before\n")
-	writeFile(t, dir, "deleted.txt", "delete me\n")
-
-	m := New(dir, filepath.Join(t.TempDir(), "changes.git"), false)
-	defer m.Close()
-	if diffs, err := m.Diffs(context.Background()); err != nil || len(diffs) != 0 {
-		t.Fatalf("initial diffs = %+v, %v", diffs, err)
-	}
-
-	writeFile(t, dir, "kept.txt", "after\n")
-	writeFile(t, dir, "added.txt", "added\n")
-	if err := os.Remove(filepath.Join(dir, "deleted.txt")); err != nil {
-		t.Fatal(err)
-	}
-
-	diffs, err := m.Diffs(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	byPath := map[string]FileDiff{}
-	for _, diff := range diffs {
-		byPath[diff.Path] = diff
-	}
-	if len(byPath) != 3 {
-		t.Fatalf("diffs = %+v", diffs)
-	}
-	if got := byPath["kept.txt"]; got.Status != StatusModified || got.Original != "before\n" || got.Modified != "after\n" {
-		t.Fatalf("modified diff = %+v", got)
-	}
-	if got := byPath["added.txt"]; got.Status != StatusAdded || !strings.Contains(got.Patch, "+added") {
-		t.Fatalf("added diff = %+v", got)
-	}
-	if got := byPath["deleted.txt"]; got.Status != StatusDeleted {
-		t.Fatalf("deleted diff = %+v", got)
-	}
-
-	for _, path := range []string{"kept.txt", "added.txt", "deleted.txt"} {
-		if err := m.Revert(context.Background(), path); err != nil {
-			t.Fatalf("revert %s: %v", path, err)
-		}
-	}
-	if got := readFile(t, dir, "kept.txt"); got != "before\n" {
-		t.Fatalf("kept.txt = %q", got)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "added.txt")); !os.IsNotExist(err) {
-		t.Fatalf("added.txt still exists: %v", err)
-	}
-	if got := readFile(t, dir, "deleted.txt"); got != "delete me\n" {
-		t.Fatalf("deleted.txt = %q", got)
-	}
-}
-
 func TestNativeRepositoryFingerprintIncludesIndexAndHead(t *testing.T) {
 	dir := t.TempDir()
 	repo := initRepository(t, dir)
@@ -74,7 +19,7 @@ func TestNativeRepositoryFingerprintIncludesIndexAndHead(t *testing.T) {
 	stage(t, repo, "file.txt")
 	commit(t, repo, "initial")
 
-	m := New(dir, "", true)
+	m := New(dir)
 	defer m.Close()
 	clean := m.Fingerprint(context.Background())
 
@@ -106,7 +51,7 @@ func TestNativeRepositoryShowsStagedOnlyContent(t *testing.T) {
 	stage(t, repo, "file.txt")
 	writeFile(t, dir, "file.txt", "one\n")
 
-	m := New(dir, "", true)
+	m := New(dir)
 	defer m.Close()
 	diffs, err := m.Diffs(context.Background())
 	if err != nil {
@@ -127,7 +72,7 @@ func TestNativeRepositoryDiffLayersAndRevertPreservesIndex(t *testing.T) {
 	stage(t, repo, "file.txt")
 	writeFile(t, dir, "file.txt", "three\n")
 
-	m := New(dir, "", true)
+	m := New(dir)
 	defer m.Close()
 	staged, err := m.Diff(context.Background(), "file.txt", DiffStaged)
 	if err != nil || staged.Original != "one\n" || staged.Modified != "two\n" {
@@ -159,7 +104,7 @@ func TestNativeRepositoryRevertRejectsStagedOnlyChange(t *testing.T) {
 	writeFile(t, dir, "file.txt", "content\n")
 	stage(t, repo, "file.txt")
 
-	m := New(dir, "", true)
+	m := New(dir)
 	defer m.Close()
 	if err := m.Revert(context.Background(), "file.txt"); err == nil {
 		t.Fatal("staged-only revert succeeded")
@@ -182,7 +127,7 @@ func TestNativeSubdirectoryCommitRejectsStagedChangesOutsideScope(t *testing.T) 
 	stage(t, repo, "sub/inside.txt")
 	stage(t, repo, "outside.txt")
 
-	m := New(filepath.Join(dir, "sub"), "", true)
+	m := New(filepath.Join(dir, "sub"))
 	defer m.Close()
 	_, err := m.Commit(context.Background(), "scoped commit")
 	if err == nil || !strings.Contains(err.Error(), "outside.txt") {
@@ -202,7 +147,7 @@ func TestNativeRepositoryFromSubdirectory(t *testing.T) {
 	commit(t, repo, "initial")
 
 	subdir := filepath.Join(dir, "sub")
-	m := New(subdir, "", true)
+	m := New(subdir)
 	defer m.Close()
 	writeFile(t, dir, "sub/file.txt", "two\n")
 

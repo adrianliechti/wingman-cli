@@ -3,6 +3,7 @@ import type { ServerMessage } from "../types/protocol";
 
 interface Capabilities {
 	git: boolean;
+	git_init?: boolean;
 	lsp: boolean;
 	diffs: boolean;
 	tasks?: boolean;

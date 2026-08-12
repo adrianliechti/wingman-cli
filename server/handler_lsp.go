@@ -78,32 +78,33 @@ func (s *Server) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// resolveLSPFile validates a workspace-relative request path and requires an
-// available language server, writing the error response on failure.
-func (s *Server) resolveLSPFile(w http.ResponseWriter, p string) (string, bool) {
+// resolveLSPFile validates a workspace-relative request path, writing the
+// error response on failure. requireLSP additionally demands an available
+// language server; endpoints with a graph fallback pass false.
+func (s *Server) resolveLSPFile(w http.ResponseWriter, p string, requireLSP bool) (string, bool) {
 	rel, ok := s.resolveExistingRegularFile(w, p)
 	if !ok {
 		return "", false
 	}
-	if !s.workspace.HasLSP() {
+	if requireLSP && !s.workspace.HasLSP() {
 		http.Error(w, "language server unavailable", http.StatusNotFound)
 		return "", false
 	}
 	return filepath.Join(s.workspace.RootPath, rel), true
 }
 
-func (s *Server) decodeLSPDocumentRequest(w http.ResponseWriter, r *http.Request) (lspDocumentRequest, string, bool) {
+func (s *Server) decodeLSPDocumentRequest(w http.ResponseWriter, r *http.Request, requireLSP bool) (lspDocumentRequest, string, bool) {
 	var body lspDocumentRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
 		return body, "", false
 	}
-	filePath, ok := s.resolveLSPFile(w, body.Path)
+	filePath, ok := s.resolveLSPFile(w, body.Path, requireLSP)
 	return body, filePath, ok
 }
 
 func (s *Server) handleLSPFileDiagnostics(w http.ResponseWriter, r *http.Request) {
-	body, filePath, ok := s.decodeLSPDocumentRequest(w, r)
+	body, filePath, ok := s.decodeLSPDocumentRequest(w, r, true)
 	if !ok {
 		return
 	}
@@ -121,23 +122,23 @@ func (s *Server) handleLSPFileDiagnostics(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleLSPDefinition(w http.ResponseWriter, r *http.Request) {
-	s.handleLSPLocations(w, r, s.workspace.DefinitionLocations)
+	s.handleLSPLocations(w, r, s.workspace.DefinitionLocations, false)
 }
 
 func (s *Server) handleLSPTypeDefinition(w http.ResponseWriter, r *http.Request) {
-	s.handleLSPLocations(w, r, s.workspace.TypeDefinitionLocations)
+	s.handleLSPLocations(w, r, s.workspace.TypeDefinitionLocations, true)
 }
 
 func (s *Server) handleLSPImplementations(w http.ResponseWriter, r *http.Request) {
-	s.handleLSPLocations(w, r, s.workspace.ImplementationLocations)
+	s.handleLSPLocations(w, r, s.workspace.ImplementationLocations, false)
 }
 
 func (s *Server) handleLSPReferences(w http.ResponseWriter, r *http.Request) {
-	s.handleLSPLocations(w, r, s.workspace.ReferenceLocations)
+	s.handleLSPLocations(w, r, s.workspace.ReferenceLocations, false)
 }
 
 func (s *Server) handleLSPHover(w http.ResponseWriter, r *http.Request) {
-	body, filePath, ok := s.decodeLSPPositionRequest(w, r)
+	body, filePath, ok := s.decodeLSPPositionRequest(w, r, false)
 	if !ok {
 		return
 	}
@@ -150,7 +151,7 @@ func (s *Server) handleLSPHover(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLSPDocumentSymbols(w http.ResponseWriter, r *http.Request) {
-	body, filePath, ok := s.decodeLSPDocumentRequest(w, r)
+	body, filePath, ok := s.decodeLSPDocumentRequest(w, r, false)
 	if !ok {
 		return
 	}
@@ -182,7 +183,7 @@ type lspPositionRequest struct {
 	Column int `json:"column"`
 }
 
-func (s *Server) decodeLSPPositionRequest(w http.ResponseWriter, r *http.Request) (lspPositionRequest, string, bool) {
+func (s *Server) decodeLSPPositionRequest(w http.ResponseWriter, r *http.Request, requireLSP bool) (lspPositionRequest, string, bool) {
 	var body lspPositionRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
@@ -192,14 +193,14 @@ func (s *Server) decodeLSPPositionRequest(w http.ResponseWriter, r *http.Request
 		http.Error(w, "line and column must be positive", http.StatusBadRequest)
 		return body, "", false
 	}
-	filePath, ok := s.resolveLSPFile(w, body.Path)
+	filePath, ok := s.resolveLSPFile(w, body.Path, requireLSP)
 	return body, filePath, ok
 }
 
 type locationRequest func(context.Context, string, *string, int, int) ([]lsp.DefLocation, error)
 
-func (s *Server) handleLSPLocations(w http.ResponseWriter, r *http.Request, request locationRequest) {
-	body, filePath, ok := s.decodeLSPPositionRequest(w, r)
+func (s *Server) handleLSPLocations(w http.ResponseWriter, r *http.Request, request locationRequest, requireLSP bool) {
+	body, filePath, ok := s.decodeLSPPositionRequest(w, r, requireLSP)
 	if !ok {
 		return
 	}

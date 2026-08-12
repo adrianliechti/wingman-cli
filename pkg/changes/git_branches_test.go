@@ -22,7 +22,7 @@ func TestNativeBranchesCreateCheckoutAndProtectChanges(t *testing.T) {
 	stage(t, repo, "file.txt")
 	commit(t, repo, "initial")
 
-	m := New(dir, "", true)
+	m := New(dir)
 	defer m.Close()
 	branches, warning, err := m.Branches(context.Background(), false)
 	if err != nil || warning != "" || len(branches) != 1 || !branches[0].Current {
@@ -86,7 +86,7 @@ func TestNativeBranchesFetchAndTrackRemoteBranch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := New(dir, "", true)
+	m := New(dir)
 	defer m.Close()
 	branches, warning, err := m.Branches(context.Background(), true)
 	if err != nil || warning != "" {
@@ -147,7 +147,7 @@ func TestRemoteCheckoutRejectsDivergentExistingLocalBranch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := New(dir, "", true)
+	m := New(dir)
 	defer m.Close()
 	if _, _, err := m.Branches(context.Background(), true); err != nil {
 		t.Fatal(err)

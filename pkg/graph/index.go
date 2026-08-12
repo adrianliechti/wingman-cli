@@ -127,6 +127,9 @@ func indexRepo(ctx context.Context, root string, resolver CallResolver) (*Graph,
 	resolves := 0
 	processed := make(map[string]bool, len(refs))
 	for _, r := range refs {
+		if r.fromID == "" {
+			continue
+		}
 		pk := r.fromID + "\x00" + r.name + "\x00" + string(r.kind)
 		if processed[pk] {
 			continue
@@ -135,7 +138,7 @@ func indexRepo(ctx context.Context, root string, resolver CallResolver) (*Graph,
 
 		var cands []*Node
 		for _, c := range g.byName[r.name] {
-			if c.Lang == r.lang {
+			if langFamily(c.Lang) == langFamily(r.lang) {
 				cands = append(cands, c)
 			}
 		}
@@ -161,6 +164,11 @@ func indexRepo(ctx context.Context, root string, resolver CallResolver) (*Graph,
 				addEdge(r.fromID, cand.ID, r.kind, ViaAmbiguous)
 			}
 		}
+	}
+
+	g.Refs = make([]*Ref, 0, len(refs))
+	for _, r := range refs {
+		g.Refs = append(g.Refs, &Ref{Name: r.name, File: r.file, Line: r.line, Col: r.col, Kind: r.kind, Lang: r.lang})
 	}
 
 	localDirs := make(map[string]bool, len(files))
@@ -356,6 +364,11 @@ func (ex *extractor) processFile(root, absPath string) *fileResult {
 			continue
 		}
 		id := fmt.Sprintf("%s#%s@%d", rel, t.Name, t.Range.StartByte)
+		namePos := t.NameRange.StartByte
+		if t.NameRange.EndByte == 0 {
+			namePos = t.Range.StartByte
+		}
+		nameLine, nameCol := li.lspPos(namePos)
 		res.nodes = append(res.nodes, &Node{
 			ID:        id,
 			Kind:      kind,
@@ -363,6 +376,8 @@ func (ex *extractor) processFile(root, absPath string) *fileResult {
 			File:      rel,
 			StartLine: li.line(t.Range.StartByte),
 			EndLine:   li.line(t.Range.EndByte),
+			NameLine:  nameLine + 1,
+			NameCol:   nameCol + 1,
 			Lang:      entry.Name,
 		})
 		defs = append(defs, defSpan{id: id, start: t.Range.StartByte, end: t.Range.EndByte, kind: kind})
@@ -390,9 +405,6 @@ func (ex *extractor) processFile(root, absPath string) *fileResult {
 			continue
 		}
 		fromID := enclosing(t.Range.StartByte, false)
-		if fromID == "" {
-			continue
-		}
 		pos := t.NameRange.StartByte
 		if t.NameRange.EndByte == 0 {
 			pos = t.Range.StartByte
@@ -405,9 +417,6 @@ func (ex *extractor) processFile(root, absPath string) *fileResult {
 	res.imports = imps
 	for _, hr := range hiers {
 		fromID := enclosing(hr.startByte, true)
-		if fromID == "" {
-			continue
-		}
 		line, col := li.lspPos(hr.startByte)
 		res.refs = append(res.refs, indexRef{fromID: fromID, name: hr.name, file: rel, line: line, col: col, kind: hr.kind, lang: entry.Name})
 	}

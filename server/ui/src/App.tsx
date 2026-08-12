@@ -154,7 +154,7 @@ export default function App() {
 		closeDocument,
 	} = useOpenDocuments(subscribe);
 	const capabilities = useCapabilities(subscribe);
-	const showChanges = capabilities?.diffs ?? false;
+	const showChanges = !!(capabilities?.diffs || capabilities?.git_init);
 	const showProblems = capabilities?.lsp ?? false;
 	const showAgents = capabilities?.tasks ?? false;
 	const showTerminal = capabilities?.terminal ?? false;
@@ -1140,6 +1140,7 @@ export default function App() {
 					<DiffsPanel
 						sessionId={sessionId}
 						git={capabilities?.git ?? false}
+						canInit={capabilities?.git_init ?? false}
 						onOpenDiff={openDiff}
 						onOpenFile={openFile}
 						subscribe={subscribe}

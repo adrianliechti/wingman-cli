@@ -31,6 +31,7 @@ import { FloatingMenu, FloatingSurface } from "./ui/Floating";
 interface Props {
 	sessionId: string;
 	git?: boolean;
+	canInit?: boolean;
 	onOpenDiff?: (path: string, layer?: DiffLayer) => void;
 	onOpenFile?: (path: string) => void;
 	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
@@ -60,6 +61,7 @@ const EMPTY_GIT_STATUS: GitStatus = {
 export function DiffsPanel({
 	sessionId,
 	git = false,
+	canInit = false,
 	onOpenDiff,
 	onOpenFile,
 	subscribe,
@@ -76,6 +78,10 @@ export function DiffsPanel({
 	const qs = sessionId ? `?session=${encodeURIComponent(sessionId)}` : "";
 
 	const load = useCallback(async () => {
+		if (!git && canInit) {
+			setLoaded(true);
+			return;
+		}
 		try {
 			const res = await fetch(git ? "/api/git/status" : `/api/diffs${qs}`);
 			if (!res.ok) throw new Error(await responseError(res));
@@ -89,7 +95,7 @@ export function DiffsPanel({
 		} finally {
 			setLoaded(true);
 		}
-	}, [git, qs]);
+	}, [git, canInit, qs]);
 
 	useEffect(() => {
 		setLoaded(false);
@@ -159,6 +165,10 @@ export function DiffsPanel({
 			setBusy("");
 		}
 	};
+
+	if (!git && canInit) {
+		return <GitInitPrompt />;
+	}
 
 	if (git) {
 		return (
@@ -249,6 +259,45 @@ export function DiffsPanel({
 				onClose={() => setRevertTarget(null)}
 				onConfirm={() => void confirmRevert()}
 			/>
+		</div>
+	);
+}
+
+function GitInitPrompt() {
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState("");
+
+	const init = async () => {
+		setBusy(true);
+		setError("");
+		try {
+			const res = await fetch("/api/git/init", { method: "POST" });
+			if (!res.ok) throw new Error(await responseError(res));
+		} catch (e) {
+			setError(e instanceof Error ? e.message : String(e));
+			setBusy(false);
+		}
+	};
+
+	return (
+		<div className="flex h-full flex-col overflow-hidden bg-transparent">
+			<div className="flex flex-1 flex-col items-center justify-center gap-3 overflow-y-auto px-5 text-center">
+				<GitBranch size={18} className="text-fg-dim" />
+				<p className="max-w-56 text-[11px] leading-5 text-fg-dim">
+					This folder is not a Git repository. Initialize one to track, review,
+					and commit changes.
+				</p>
+				<button
+					type="button"
+					disabled={busy}
+					onClick={() => void init()}
+					className="h-7 px-3 flex items-center gap-1.5 rounded-md bg-accent text-bg text-[10.5px] font-medium disabled:opacity-40"
+				>
+					{busy && <Loader2 size={11} className="animate-spin" />}
+					Initialize Repository
+				</button>
+			</div>
+			{error && <InlineMessage kind="error" text={error} />}
 		</div>
 	);
 }

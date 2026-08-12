@@ -310,6 +310,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 		})
 
 		r.Route("/git", func(r chi.Router) {
+			r.Post("/init", s.handleGitInit)
 			r.Get("/status", s.handleGitStatus)
 			r.Get("/branches", s.handleGitBranches)
 			r.Post("/branches", s.handleGitCreateBranch)
@@ -741,7 +742,8 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, _ *http.Request) {
 	caps := map[string]any{
 		"lsp":      ws.HasLSP(),
 		"diffs":    ws.HasChanges(),
-		"git":      ws.HasNativeGit(),
+		"git":      ws.HasChanges(),
+		"git_init": isCoder && !ws.HasChanges(),
 		"tasks":    isCoder,
 		"terminal": terminal.Supported(),
 	}
@@ -781,6 +783,10 @@ func (s *Server) checkWorkspace() {
 	}
 
 	if !ws.HasChanges() {
+		s.broadcast(Frame{Type: EvtFilesChanged})
+		if ws.HasLSP() {
+			s.broadcast(Frame{Type: EvtDiagnosticsChanged})
+		}
 		return
 	}
 	fp := ws.ChangesFingerprint(s.ctx)

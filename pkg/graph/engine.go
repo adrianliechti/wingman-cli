@@ -100,7 +100,7 @@ func (e *Engine) tryLoadCache() *Graph {
 		return g
 	}
 
-	loaded, files, indexedFiles, skipped, at, err := loadSnapshot(e.cachePath)
+	loaded, err := loadSnapshot(e.cachePath)
 	if err != nil {
 		return nil
 	}
@@ -108,11 +108,11 @@ func (e *Engine) tryLoadCache() *Graph {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.graph == nil {
-		e.graph = loaded
-		e.files = files
-		e.indexedFiles = indexedFiles
-		e.skipped = skipped
-		e.indexedAt = at
+		e.graph = loaded.graph
+		e.files = loaded.files
+		e.indexedFiles = loaded.indexedFiles
+		e.skipped = loaded.skipped
+		e.indexedAt = loaded.indexedAt
 	}
 	return e.graph
 }
