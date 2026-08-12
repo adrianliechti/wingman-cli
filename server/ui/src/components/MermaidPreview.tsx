@@ -1,17 +1,22 @@
 import { Loader2 } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import { useColorScheme } from "../hooks/useColorScheme";
+import { PanZoomCanvas } from "./PanZoomCanvas";
 
 export function MermaidPreview({ text, path }: { text: string; path: string }) {
 	const scheme = useColorScheme();
 	const reactId = useId();
 	const [imageURL, setImageURL] = useState<string | null>(null);
+	const [size, setSize] = useState<{ width: number; height: number } | null>(
+		null,
+	);
 	const [error, setError] = useState<string | null>(null);
 
 	useEffect(() => {
 		let active = true;
 		let nextURL: string | null = null;
 		setImageURL(null);
+		setSize(null);
 		setError(null);
 
 		void import("mermaid")
@@ -65,16 +70,27 @@ export function MermaidPreview({ text, path }: { text: string; path: string }) {
 	}
 
 	return (
-		<div
-			data-mermaid-preview
-			className="flex h-full min-h-0 w-full items-center justify-center overflow-auto p-6"
-		>
-			<img
-				src={imageURL}
-				alt={`Preview of ${path}`}
-				className="h-auto w-auto object-contain"
-				style={{ maxWidth: "100%", maxHeight: "100%" }}
-			/>
+		<div data-mermaid-preview className="h-full min-h-0 w-full">
+			<PanZoomCanvas
+				width={size?.width ?? 0}
+				height={size?.height ?? 0}
+				fitKey={size ? imageURL : null}
+			>
+				<img
+					src={imageURL}
+					alt={`Preview of ${path}`}
+					draggable={false}
+					onLoad={(event) => {
+						const image = event.currentTarget;
+						setSize({
+							width: image.naturalWidth || 800,
+							height: image.naturalHeight || 600,
+						});
+					}}
+					className="absolute top-0 left-0 max-w-none"
+					style={size ? { width: size.width, height: size.height } : undefined}
+				/>
+			</PanZoomCanvas>
 		</div>
 	);
 }
