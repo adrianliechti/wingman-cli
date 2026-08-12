@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { FileEntry, ServerMessage } from "../types/protocol";
 import { getDeviconClass } from "../utils/fileIcons";
 import { Dialog, dialogButtonClass, useToast } from "./ui/Feedback";
+import { FloatingMenu } from "./ui/Floating";
 
 interface Props {
 	onFileSelect: (path: string) => void;
@@ -142,22 +143,6 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 		},
 		[nodes, loadDir],
 	);
-
-	useEffect(() => {
-		if (!menu) return;
-		const close = () => setMenu(null);
-		const onKey = (e: KeyboardEvent) => {
-			if (e.key === "Escape") close();
-		};
-		document.addEventListener("mousedown", close);
-		document.addEventListener("scroll", close, true);
-		document.addEventListener("keydown", onKey);
-		return () => {
-			document.removeEventListener("mousedown", close);
-			document.removeEventListener("scroll", close, true);
-			document.removeEventListener("keydown", onKey);
-		};
-	}, [menu]);
 
 	const beginRename = (node: TreeNode) => {
 		setRenaming(node.path);
@@ -443,6 +428,7 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 			{menu && (
 				<ContextMenu
 					menu={menu}
+					onClose={() => setMenu(null)}
 					onOpen={() => {
 						setMenu(null);
 						onFileSelect(menu.node.path);
@@ -499,6 +485,7 @@ function flattenVisible(
 
 interface ContextMenuProps {
 	menu: MenuState;
+	onClose: () => void;
 	onOpen: () => void;
 	onRename: () => void;
 	onDuplicate: () => void;
@@ -509,6 +496,7 @@ interface ContextMenuProps {
 
 function ContextMenu({
 	menu,
+	onClose,
 	onOpen,
 	onRename,
 	onDuplicate,
@@ -518,13 +506,12 @@ function ContextMenu({
 }: ContextMenuProps) {
 	const isDir = menu.node.is_dir;
 	return (
-		<div
-			role="menu"
-			aria-label={`Actions for ${menu.node.name}`}
-			className="fixed z-100 min-w-[160px] bg-bg-elevated border border-border-subtle rounded-md shadow-2xl py-1 text-[12px]"
-			style={{ left: menu.x, top: menu.y }}
-			onMouseDown={(e) => e.stopPropagation()}
-			onContextMenu={(e) => e.preventDefault()}
+		<FloatingMenu
+			open
+			onOpenChange={(open) => !open && onClose()}
+			reference={{ x: menu.x, y: menu.y }}
+			label={`Actions for ${menu.node.name}`}
+			className="z-[100] min-w-[160px] bg-bg-elevated border border-border-subtle rounded-md shadow-2xl py-1 text-[12px]"
 		>
 			{!isDir && (
 				<MenuItem icon={<FileText size={12} />} label="Open" onClick={onOpen} />
@@ -556,7 +543,7 @@ function ContextMenu({
 				onClick={onDelete}
 				danger
 			/>
-		</div>
+		</FloatingMenu>
 	);
 }
 

@@ -1,5 +1,5 @@
 import { Sparkles } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { FloatingSurface } from "./ui/Floating";
 
 export interface Skill {
 	name: string;
@@ -8,6 +8,7 @@ export interface Skill {
 }
 
 interface Props {
+	anchor: Element | null;
 	skills: Skill[];
 	active: number;
 	onSelect: (skill: Skill) => void;
@@ -19,33 +20,25 @@ interface Props {
 // The composer owns the data and keyboard navigation; this component only
 // renders and reports mouse interactions.
 export function SkillPicker({
+	anchor,
 	skills,
 	active,
 	onSelect,
 	onHover,
 	onClose,
 }: Props) {
-	const containerRef = useRef<HTMLDivElement>(null);
-
-	useEffect(() => {
-		const onClick = (e: MouseEvent) => {
-			if (
-				containerRef.current &&
-				!containerRef.current.contains(e.target as Node)
-			) {
-				onClose();
-			}
-		};
-		document.addEventListener("mousedown", onClick);
-		return () => document.removeEventListener("mousedown", onClick);
-	}, [onClose]);
-
 	if (skills.length === 0) return null;
 
 	return (
-		<div
-			ref={containerRef}
-			className="absolute bottom-full mb-1 left-0 w-[360px] max-w-[90vw] bg-bg-elevated/95 backdrop-blur-sm border border-border rounded-md shadow-xl z-50 overflow-hidden"
+		<FloatingSurface
+			open
+			onOpenChange={(open) => !open && onClose()}
+			reference={anchor}
+			placement="top-start"
+			role="listbox"
+			label="Skills"
+			returnFocus={false}
+			className="z-[100] w-[360px] bg-bg-elevated/95 backdrop-blur-sm border border-border rounded-md shadow-xl overflow-hidden"
 		>
 			<div className="max-h-[280px] overflow-y-auto py-1">
 				{skills.map((s, i) => {
@@ -53,6 +46,8 @@ export function SkillPicker({
 					return (
 						<button
 							type="button"
+							role="option"
+							aria-selected={isActive}
 							key={s.name}
 							onClick={() => onSelect(s)}
 							onMouseEnter={() => onHover(i)}
@@ -84,6 +79,6 @@ export function SkillPicker({
 					);
 				})}
 			</div>
-		</div>
+		</FloatingSurface>
 	);
 }

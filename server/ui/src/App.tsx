@@ -26,7 +26,6 @@ import {
 	useRef,
 	useState,
 } from "react";
-import { createPortal } from "react-dom";
 import {
 	Group,
 	Panel,
@@ -51,6 +50,7 @@ import { TasksPanel } from "./components/TasksPanel";
 import { TaskTab } from "./components/TaskTab";
 import { TerminalView } from "./components/TerminalView";
 import { Dialog, dialogButtonClass, useToast } from "./components/ui/Feedback";
+import { FloatingMenu, FloatingSurface } from "./components/ui/Floating";
 import { AgentPicker, BUILTIN_AGENT_ID } from "./components/AgentPicker";
 import { Sidebar } from "./components/Sidebar";
 import { useCapabilities } from "./hooks/useCapabilities";
@@ -1566,106 +1566,108 @@ export default function App() {
 								)}
 							>
 								{activeTab.type === "chat" ? (
-								<ChatPanel
-									key={activeTab.id}
-									sessionId={activeTab.sessionId ?? ""}
-									entries={entries}
-									phase={phase}
-									modes={modes}
-									mode={mode}
-									onSelectMode={selectMode}
-									onSend={handleSend}
-									onCancel={handleCancel}
-									pendingInputs={pendingInputs}
-									queuePaused={queuePaused}
-									canSteer={canSteer}
-									onRemoveQueued={(id, state) => {
-										if (!sessionId) return;
-										if (state === "queued" || state === "sending") {
-											removeQueued(sessionId, id);
-										} else {
-											dismissPending(sessionId, id);
+									<ChatPanel
+										key={activeTab.id}
+										sessionId={activeTab.sessionId ?? ""}
+										entries={entries}
+										phase={phase}
+										modes={modes}
+										mode={mode}
+										onSelectMode={selectMode}
+										onSend={handleSend}
+										onCancel={handleCancel}
+										pendingInputs={pendingInputs}
+										queuePaused={queuePaused}
+										canSteer={canSteer}
+										onRemoveQueued={(id, state) => {
+											if (!sessionId) return;
+											if (state === "queued" || state === "sending") {
+												removeQueued(sessionId, id);
+											} else {
+												dismissPending(sessionId, id);
+											}
+										}}
+										onUpdateQueued={(id, text, files, images) =>
+											sessionId
+												? updateQueued(sessionId, id, text, files, images)
+												: false
 										}
-									}}
-									onUpdateQueued={(id, text, files, images) =>
-										sessionId
-											? updateQueued(sessionId, id, text, files, images)
-											: false
-									}
-									onResumeQueue={() => {
-										if (sessionId) resumeQueue(sessionId);
-									}}
-									onClearQueue={() => {
-										if (sessionId) clearQueue(sessionId);
-									}}
-									loading={sessionLoad.loading && sessionLoad.id === sessionId}
-									loadError={
-										sessionLoad.id === sessionId ? sessionLoad.error : null
-									}
-									error={sessionError}
-									onDismissError={() => {
-										if (sessionId) dismissError(sessionId);
-									}}
-									subscribe={subscribe}
-									prompt={prompt}
-									onPromptReply={handlePromptReply}
-									seed={composerSeed}
-									toolProgress={toolProgress}
-								/>
-							) : activeTab.type === "terminal" && activeTab.terminalId ? (
-								<TerminalView
-									key={activeTab.terminalId}
-									id={activeTab.terminalId}
-									active
-									onExit={() => closeTabNow(activeTab.id)}
-									onTitle={setTerminalTitle}
-								/>
-							) : activeTab.type === "task" && activeTab.taskId ? (
-								<TaskTab
-									key={activeTab.id}
-									sessionId={activeTab.sessionId ?? ""}
-									taskId={activeTab.taskId}
-									subscribe={subscribe}
-								/>
-							) : activeTab.type === "diff" && activeTab.path ? (
-								<DiffTab
-									path={activeTab.path}
-									layer={activeTab.diffLayer}
-									sessionId={sessionId}
-									subscribe={subscribe}
-									onDeleted={() => closeTabNow(activeTab.id)}
-								/>
-							) : activeTab.path && documents[activeTab.path] ? (
-								<FileTab
-									key={activeTab.id}
-									document={documents[activeTab.path]}
-									line={activeTab.line}
-									column={activeTab.column}
-									navigationKey={activeTab.navigationKey}
-									subscribe={subscribe}
-									onChange={(value) => updateDraft(activeTab.path!, value)}
-									onSave={async () => {
-										const result = await saveDocument(activeTab.path!);
-										if (!result.ok) {
-											toast({
-												title: "Could not save file",
-												description: result.error,
-												tone: "error",
-											});
+										onResumeQueue={() => {
+											if (sessionId) resumeQueue(sessionId);
+										}}
+										onClearQueue={() => {
+											if (sessionId) clearQueue(sessionId);
+										}}
+										loading={
+											sessionLoad.loading && sessionLoad.id === sessionId
 										}
-										return result;
-									}}
-									onReload={() =>
-										void reloadDocument(
-											activeTab.path!,
-											activeTab.external ?? false,
-										)
-									}
-									onKeepVersion={() => keepDocument(activeTab.path!)}
-									onOpenFile={openFile}
-									view={fileViews[activeTab.id] ?? "code"}
-								/>
-							) : null}
+										loadError={
+											sessionLoad.id === sessionId ? sessionLoad.error : null
+										}
+										error={sessionError}
+										onDismissError={() => {
+											if (sessionId) dismissError(sessionId);
+										}}
+										subscribe={subscribe}
+										prompt={prompt}
+										onPromptReply={handlePromptReply}
+										seed={composerSeed}
+										toolProgress={toolProgress}
+									/>
+								) : activeTab.type === "terminal" && activeTab.terminalId ? (
+									<TerminalView
+										key={activeTab.terminalId}
+										id={activeTab.terminalId}
+										active
+										onExit={() => closeTabNow(activeTab.id)}
+										onTitle={setTerminalTitle}
+									/>
+								) : activeTab.type === "task" && activeTab.taskId ? (
+									<TaskTab
+										key={activeTab.id}
+										sessionId={activeTab.sessionId ?? ""}
+										taskId={activeTab.taskId}
+										subscribe={subscribe}
+									/>
+								) : activeTab.type === "diff" && activeTab.path ? (
+									<DiffTab
+										path={activeTab.path}
+										layer={activeTab.diffLayer}
+										sessionId={sessionId}
+										subscribe={subscribe}
+										onDeleted={() => closeTabNow(activeTab.id)}
+									/>
+								) : activeTab.path && documents[activeTab.path] ? (
+									<FileTab
+										key={activeTab.id}
+										document={documents[activeTab.path]}
+										line={activeTab.line}
+										column={activeTab.column}
+										navigationKey={activeTab.navigationKey}
+										subscribe={subscribe}
+										onChange={(value) => updateDraft(activeTab.path!, value)}
+										onSave={async () => {
+											const result = await saveDocument(activeTab.path!);
+											if (!result.ok) {
+												toast({
+													title: "Could not save file",
+													description: result.error,
+													tone: "error",
+												});
+											}
+											return result;
+										}}
+										onReload={() =>
+											void reloadDocument(
+												activeTab.path!,
+												activeTab.external ?? false,
+											)
+										}
+										onKeepVersion={() => keepDocument(activeTab.path!)}
+										onOpenFile={openFile}
+										view={fileViews[activeTab.id] ?? "code"}
+									/>
+								) : null}
 							</ErrorBoundary>
 						</div>
 					</main>
@@ -1992,36 +1994,6 @@ function TabContextMenu({
 	onCloseOthers: (id: string) => void;
 	onCloseAll: () => void;
 }) {
-	const menuRef = useRef<HTMLDivElement>(null);
-	const [position, setPosition] = useState({ left: x, top: y });
-
-	useEffect(() => {
-		const element = menuRef.current;
-		if (!element) return;
-		const { width, height } = element.getBoundingClientRect();
-		setPosition({
-			left: Math.min(x, window.innerWidth - width - 8),
-			top: Math.min(y, window.innerHeight - height - 8),
-		});
-	}, [x, y]);
-
-	useEffect(() => {
-		const dismiss = (event: MouseEvent) => {
-			if (!menuRef.current?.contains(event.target as Node)) onClose();
-		};
-		const onKey = (event: KeyboardEvent) => {
-			if (event.key === "Escape") onClose();
-		};
-		document.addEventListener("mousedown", dismiss);
-		window.addEventListener("keydown", onKey);
-		window.addEventListener("resize", onClose);
-		return () => {
-			document.removeEventListener("mousedown", dismiss);
-			window.removeEventListener("keydown", onKey);
-			window.removeEventListener("resize", onClose);
-		};
-	}, [onClose]);
-
 	const items: { label: string; disabled?: boolean; run: () => void }[] = [];
 	if (tabId) {
 		items.push({ label: "Close", run: () => onCloseTab(tabId) });
@@ -2033,13 +2005,13 @@ function TabContextMenu({
 	}
 	items.push({ label: "Close All", run: onCloseAll });
 
-	return createPortal(
-		<div
-			ref={menuRef}
-			role="menu"
-			aria-label="Tab actions"
-			className="fixed z-[100] min-w-[160px] rounded-md border border-border bg-bg-elevated/95 py-1 shadow-xl backdrop-blur-sm"
-			style={position}
+	return (
+		<FloatingMenu
+			open
+			onOpenChange={(open) => !open && onClose()}
+			reference={{ x, y }}
+			label="Tab actions"
+			className="z-[100] min-w-[160px] rounded-md border border-border bg-bg-elevated/95 py-1 shadow-xl backdrop-blur-sm"
 		>
 			{items.map((item) => (
 				<button
@@ -2056,8 +2028,7 @@ function TabContextMenu({
 					{item.label}
 				</button>
 			))}
-		</div>,
-		document.body,
+		</FloatingMenu>
 	);
 }
 
@@ -2111,40 +2082,7 @@ function TerminalLauncher({
 	onCreate: (shell?: string) => void;
 }) {
 	const [open, setOpen] = useState(false);
-	const [menuPosition, setMenuPosition] = useState({ top: 0, right: 0 });
 	const launcherRef = useRef<HTMLDivElement>(null);
-	const menuRef = useRef<HTMLDivElement>(null);
-
-	const updateMenuPosition = useCallback(() => {
-		const rect = launcherRef.current?.getBoundingClientRect();
-		if (!rect) return;
-		setMenuPosition({
-			top: rect.bottom + 4,
-			right: Math.max(4, window.innerWidth - rect.right),
-		});
-	}, []);
-
-	useEffect(() => {
-		if (!open) return;
-		const close = (event: MouseEvent) => {
-			const target = event.target as Node;
-			if (
-				!launcherRef.current?.contains(target) &&
-				!menuRef.current?.contains(target)
-			) {
-				setOpen(false);
-			}
-		};
-		updateMenuPosition();
-		document.addEventListener("mousedown", close);
-		window.addEventListener("resize", updateMenuPosition);
-		window.addEventListener("scroll", updateMenuPosition, true);
-		return () => {
-			document.removeEventListener("mousedown", close);
-			window.removeEventListener("resize", updateMenuPosition);
-			window.removeEventListener("scroll", updateMenuPosition, true);
-		};
-	}, [open, updateMenuPosition]);
 
 	const label = shells[0]?.name ?? "shell";
 	const hasChoices = shells.length > 1;
@@ -2168,43 +2106,43 @@ function TerminalLauncher({
 				<button
 					type="button"
 					className="flex h-8 w-3 items-center justify-center rounded-r-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
-					onClick={() => {
-						updateMenuPosition();
-						setOpen((value) => !value);
-					}}
+					onClick={() => setOpen((value) => !value)}
 					title="New terminal with another shell"
 					aria-label="Select shell"
+					aria-haspopup="menu"
+					aria-expanded={open}
 				>
 					<ChevronDown size={9} />
 				</button>
 			)}
-			{open &&
-				createPortal(
-					<div
-						ref={menuRef}
-						className="fixed z-[100] max-h-[220px] min-w-[160px] overflow-y-auto rounded-md border border-border bg-bg-elevated/95 py-1 shadow-xl backdrop-blur-sm"
-						style={menuPosition}
+			<FloatingMenu
+				open={open}
+				onOpenChange={setOpen}
+				reference={launcherRef.current}
+				placement="bottom-end"
+				label="Terminal shell"
+				maxHeight={220}
+				className="z-[100] min-w-[160px] overflow-y-auto rounded-md border border-border bg-bg-elevated/95 py-1 shadow-xl backdrop-blur-sm"
+			>
+				{shells.map((shell, index) => (
+					<button
+						type="button"
+						role="menuitem"
+						key={shell.id}
+						onClick={() => {
+							setOpen(false);
+							onCreate(shell.id);
+						}}
+						className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg"
 					>
-						{shells.map((shell, index) => (
-							<button
-								type="button"
-								key={shell.id}
-								onClick={() => {
-									setOpen(false);
-									onCreate(shell.id);
-								}}
-								className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg"
-							>
-								<SquareTerminal size={12} className="shrink-0 text-fg-dim" />
-								<span className="flex-1 truncate">{shell.name}</span>
-								{index === 0 && (
-									<span className="text-[10px] text-fg-dim">default</span>
-								)}
-							</button>
-						))}
-					</div>,
-					document.body,
-				)}
+						<SquareTerminal size={12} className="shrink-0 text-fg-dim" />
+						<span className="flex-1 truncate">{shell.name}</span>
+						{index === 0 && (
+							<span className="text-[10px] text-fg-dim">default</span>
+						)}
+					</button>
+				))}
+			</FloatingMenu>
 		</div>
 	);
 }
@@ -2226,8 +2164,6 @@ function UsageIndicator({
 }) {
 	const [open, setOpen] = useState(false);
 	const buttonRef = useRef<HTMLButtonElement>(null);
-	const panelRef = useRef<HTMLDivElement>(null);
-	const [position, setPosition] = useState({ top: 0, left: 0 });
 	const hasContext = contextWindow > 0 && lastInputTokens > 0;
 	const used = hasContext ? Math.min(lastInputTokens, contextWindow) : 0;
 	const usedPercent = hasContext ? Math.round((used / contextWindow) * 100) : 0;
@@ -2240,46 +2176,6 @@ function UsageIndicator({
 			: leftPercent <= 30
 				? "text-warning"
 				: "text-fg-dim";
-
-	const place = useCallback(() => {
-		const rect = buttonRef.current?.getBoundingClientRect();
-		if (!rect) return;
-		const width = 288;
-		setPosition({
-			top: rect.bottom + 6,
-			left: Math.max(
-				8,
-				Math.min(rect.right - width, window.innerWidth - width - 8),
-			),
-		});
-	}, []);
-
-	useEffect(() => {
-		if (!open) return;
-		place();
-		const close = (event: MouseEvent) => {
-			const target = event.target as Node;
-			if (
-				!buttonRef.current?.contains(target) &&
-				!panelRef.current?.contains(target)
-			) {
-				setOpen(false);
-			}
-		};
-		const onKey = (event: KeyboardEvent) => {
-			if (event.key === "Escape") setOpen(false);
-		};
-		document.addEventListener("mousedown", close);
-		document.addEventListener("keydown", onKey);
-		window.addEventListener("resize", place);
-		window.addEventListener("scroll", place, true);
-		return () => {
-			document.removeEventListener("mousedown", close);
-			document.removeEventListener("keydown", onKey);
-			window.removeEventListener("resize", place);
-			window.removeEventListener("scroll", place, true);
-		};
-	}, [open, place]);
 
 	const hoverSummary = hasContext
 		? `${leftPercent}% context left · ${formatTokens(used)} of ${formatTokens(contextWindow)} used · ↑${formatTokens(inputTokens)} · ↓${outputEstimated ? "~" : ""}${formatTokens(outputTokens)}`
@@ -2295,67 +2191,63 @@ function UsageIndicator({
 				aria-label={hasContext ? `${leftPercent}% context left` : "Token usage"}
 				aria-haspopup="dialog"
 				aria-expanded={open}
-				onClick={() => {
-					place();
-					setOpen((value) => !value);
-				}}
+				onClick={() => setOpen((value) => !value)}
 			>
 				{hasContext ? `${leftPercent}%` : "Usage"}
 			</button>
-			{open &&
-				createPortal(
-					<div
-						ref={panelRef}
-						role="dialog"
-						aria-label="Usage information"
-						className="fixed z-100 w-72 rounded-lg border border-border bg-bg-elevated p-3 shadow-2xl"
-						style={position}
-					>
-						<div className="text-[12px] font-medium text-fg">Context usage</div>
-						{hasContext ? (
-							<>
-								<div className="mt-1 text-[11px] text-fg-muted">
-									{formatTokens(used)} / {formatTokens(contextWindow)} tokens ·{" "}
-									{usedPercent}% used
-								</div>
-								<div className="mt-2 h-1.5 overflow-hidden rounded-full bg-bg-active">
-									<div
-										className={`h-full rounded-full ${leftPercent <= 10 ? "bg-danger" : leftPercent <= 30 ? "bg-warning" : "bg-accent"}`}
-										style={{ width: `${usedPercent}%` }}
-									/>
-								</div>
-							</>
-						) : (
-							<div className="mt-1 text-[11px] text-fg-dim">
-								Context-window data is unavailable for this session.
-							</div>
-						)}
-						<dl className="mt-3 grid grid-cols-[1fr_auto] gap-x-4 gap-y-1.5 text-[11px]">
-							{hasContext && (
-								<>
-									<dt className="text-fg-dim">Free space</dt>
-									<dd className="text-right font-mono text-fg-muted">
-										{freeTokens.toLocaleString()} ({leftPercent}%)
-									</dd>
-								</>
-							)}
-							<dt className="text-fg-dim">Input tokens</dt>
-							<dd className="text-right font-mono text-fg-muted">
-								{inputTokens.toLocaleString()}
-							</dd>
-							<dt className="text-fg-dim">Cached input</dt>
-							<dd className="text-right font-mono text-fg-muted">
-								{cachedTokens.toLocaleString()}
-							</dd>
-							<dt className="text-fg-dim">Output tokens</dt>
-							<dd className="text-right font-mono text-fg-muted">
-								{outputEstimated ? "~" : ""}
-								{outputTokens.toLocaleString()}
-							</dd>
-						</dl>
-					</div>,
-					document.body,
+			<FloatingSurface
+				open={open}
+				onOpenChange={setOpen}
+				reference={buttonRef.current}
+				placement="bottom-end"
+				gap={6}
+				role="dialog"
+				label="Usage information"
+				className="z-[100] w-72 rounded-lg border border-border bg-bg-elevated p-3 shadow-2xl"
+			>
+				<div className="text-[12px] font-medium text-fg">Context usage</div>
+				{hasContext ? (
+					<>
+						<div className="mt-1 text-[11px] text-fg-muted">
+							{formatTokens(used)} / {formatTokens(contextWindow)} tokens ·{" "}
+							{usedPercent}% used
+						</div>
+						<div className="mt-2 h-1.5 overflow-hidden rounded-full bg-bg-active">
+							<div
+								className={`h-full rounded-full ${leftPercent <= 10 ? "bg-danger" : leftPercent <= 30 ? "bg-warning" : "bg-accent"}`}
+								style={{ width: `${usedPercent}%` }}
+							/>
+						</div>
+					</>
+				) : (
+					<div className="mt-1 text-[11px] text-fg-dim">
+						Context-window data is unavailable for this session.
+					</div>
 				)}
+				<dl className="mt-3 grid grid-cols-[1fr_auto] gap-x-4 gap-y-1.5 text-[11px]">
+					{hasContext && (
+						<>
+							<dt className="text-fg-dim">Free space</dt>
+							<dd className="text-right font-mono text-fg-muted">
+								{freeTokens.toLocaleString()} ({leftPercent}%)
+							</dd>
+						</>
+					)}
+					<dt className="text-fg-dim">Input tokens</dt>
+					<dd className="text-right font-mono text-fg-muted">
+						{inputTokens.toLocaleString()}
+					</dd>
+					<dt className="text-fg-dim">Cached input</dt>
+					<dd className="text-right font-mono text-fg-muted">
+						{cachedTokens.toLocaleString()}
+					</dd>
+					<dt className="text-fg-dim">Output tokens</dt>
+					<dd className="text-right font-mono text-fg-muted">
+						{outputEstimated ? "~" : ""}
+						{outputTokens.toLocaleString()}
+					</dd>
+				</dl>
+			</FloatingSurface>
 		</>
 	);
 }

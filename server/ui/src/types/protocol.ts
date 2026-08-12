@@ -375,6 +375,18 @@ export interface TaskEntry {
 	seq: number;
 }
 
+export interface ScheduleEntry {
+	id: string;
+	prompt: string;
+	schedule: string;
+	status: string;
+	script?: boolean;
+	next_run?: string;
+	next_in?: string;
+	last_run?: string;
+	failures?: number;
+}
+
 export interface TaskDetail extends TaskEntry {
 	result?: string;
 	transcript: ConversationMessage[];

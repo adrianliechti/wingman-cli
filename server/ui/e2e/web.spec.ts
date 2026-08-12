@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
 function controlURL(): string {
@@ -12,6 +12,30 @@ async function composer(page: Page) {
 	const input = page.getByPlaceholder("Message Wingman…");
 	await expect(input).toBeVisible();
 	return input;
+}
+
+async function expectFloatingInViewport(
+	page: Page,
+	element: Locator,
+	padding = 8,
+) {
+	const box = await element.boundingBox();
+	const viewport = page.viewportSize();
+	expect(box).not.toBeNull();
+	expect(viewport).not.toBeNull();
+	expect(box!.x).toBeGreaterThanOrEqual(padding - 1);
+	expect(box!.y).toBeGreaterThanOrEqual(padding - 1);
+	expect(box!.x + box!.width).toBeLessThanOrEqual(
+		viewport!.width - padding + 1,
+	);
+	expect(box!.y + box!.height).toBeLessThanOrEqual(
+		viewport!.height - padding + 1,
+	);
+	expect(
+		await element.evaluate(
+			(node) => !document.getElementById("root")?.contains(node),
+		),
+	).toBe(true);
 }
 
 test("focuses the composer surface without outlining its textarea", async ({
@@ -142,11 +166,26 @@ test("uses each Git status slot for its stage action", async ({ page }) => {
 			},
 		});
 	});
+	await page.route(/\/api\/git\/branches/, async (route) => {
+		await route.fulfill({
+			json: {
+				branches: [{ name: "main", current: true, remote: "" }],
+				warning: "",
+			},
+		});
+	});
 	await composer(page);
 	await page
 		.getByRole("tablist", { name: "Workspace panels" })
 		.getByRole("tab", { name: "Changes", exact: true })
 		.click();
+
+	await page.getByTitle("main", { exact: true }).click();
+	const branches = page.getByRole("dialog", { name: "Switch Git branch" });
+	await expect(branches).toBeVisible();
+	await expectFloatingInViewport(page, branches);
+	await page.keyboard.press("Escape");
+	await expect(branches).toBeHidden();
 
 	for (const entry of [
 		{ path: "src/staged.ts", action: "Unstage" },
@@ -185,6 +224,31 @@ test("uses each Git status slot for its stage action", async ({ page }) => {
 			),
 		).toBeLessThanOrEqual(1);
 	}
+
+	const changedRow = page.locator('[data-change-row="src/changed.ts"]');
+	await changedRow.click({ button: "right" });
+	const menu = page.getByRole("menu", {
+		name: "Actions for src/changed.ts",
+	});
+	await expect(menu).toBeVisible();
+	await expect(
+		menu.getByRole("menuitem", { name: "Open Changes" }),
+	).toBeVisible();
+	await expect(menu.getByRole("menuitem", { name: "Open File" })).toBeVisible();
+	await expect(
+		menu.getByRole("menuitem", { name: "Stage Changes" }),
+	).toBeVisible();
+	await expect(
+		menu.getByRole("menuitem", { name: "Discard Changes" }),
+	).toBeVisible();
+	await expect(
+		page.getByRole("dialog", { name: "Discard changes?" }),
+	).toHaveCount(0);
+	await expectFloatingInViewport(page, menu);
+	await menu.getByRole("menuitem", { name: "Discard Changes" }).click();
+	await expect(
+		page.getByRole("dialog", { name: "Discard changes?" }),
+	).toBeVisible();
 });
 
 test("keeps the session context menu above panel clipping", async ({
@@ -219,15 +283,116 @@ test("keeps the session context menu above panel clipping", async ({
 		name: "Actions for Menu clipping check",
 	});
 	await expect(menu).toBeVisible();
-	expect(
-		await menu.evaluate((element) => element.parentElement === document.body),
-	).toBe(true);
-	const box = await menu.boundingBox();
-	expect(box).not.toBeNull();
-	expect(box!.x).toBeGreaterThanOrEqual(4);
-	expect(box!.y).toBeGreaterThanOrEqual(4);
-	expect(box!.x + box!.width).toBeLessThanOrEqual(1280 - 4);
-	expect(box!.y + box!.height).toBeLessThanOrEqual(800 - 4);
+	await expectFloatingInViewport(page, menu);
+});
+
+test("shows file actions above panel clipping", async ({ page }) => {
+	await composer(page);
+	const file = page.getByRole("treeitem", { name: /editable\.txt/ });
+	await file.click({ button: "right" });
+
+	const menu = page.getByRole("menu", { name: "Actions for editable.txt" });
+	await expect(menu).toBeVisible();
+	await expect(menu.getByRole("menuitem", { name: "Rename" })).toBeVisible();
+	await expect(menu.getByRole("menuitem", { name: "Duplicate" })).toBeVisible();
+	await expect(menu.getByRole("menuitem", { name: "Delete" })).toBeVisible();
+	await expectFloatingInViewport(page, menu);
+	await expect(menu.getByRole("menuitem", { name: "Open" })).toBeFocused();
+	await page.keyboard.press("ArrowDown");
+	await expect(menu.getByRole("menuitem", { name: "Copy" })).toBeFocused();
+});
+
+test("keeps composer pickers visible in a constrained window", async ({
+	page,
+}) => {
+	await page.setViewportSize({ width: 420, height: 300 });
+	await page.route(/\/api\/files\/search/, async (route) => {
+		await route.fulfill({
+			json: Array.from({ length: 30 }, (_, index) => ({
+				path: `src/nested/example-${index}.ts`,
+				name: `example-${index}.ts`,
+			})),
+		});
+	});
+	await composer(page);
+	await page.getByTitle("Add file context").click();
+
+	const picker = page.getByRole("dialog", { name: "Find a file" });
+	await expect(picker).toBeVisible();
+	await expect(picker.getByPlaceholder("Search files…")).toBeFocused();
+	await expectFloatingInViewport(page, picker);
+	await page.keyboard.press("Escape");
+	await expect(picker).toBeHidden();
+});
+
+test("keeps scheduled-agent actions above inspector clipping", async ({
+	page,
+}) => {
+	await page.route(/\/api\/sessions$/, async (route) => {
+		await route.fulfill({
+			json: [
+				{
+					id: "agent-menu-check",
+					title: "Agent menu check",
+					created_at: "2026-08-11T00:00:00Z",
+					updated_at: "2026-08-11T00:00:00Z",
+				},
+			],
+		});
+	});
+	await page.route(
+		/\/api\/sessions\/agent-menu-check\/load$/,
+		async (route) => {
+			await route.fulfill({ status: 204 });
+		},
+	);
+	await page.route(/\/api\/capabilities$/, async (route) => {
+		await route.fulfill({
+			json: {
+				git: false,
+				lsp: false,
+				diffs: false,
+				tasks: true,
+				terminal: true,
+			},
+		});
+	});
+	await page.route(/\/api\/sessions\/[^/]+\/tasks$/, async (route) => {
+		await route.fulfill({ json: [] });
+	});
+	await page.route(/\/api\/sessions\/[^/]+\/schedules$/, async (route) => {
+		await route.fulfill({
+			json: [
+				{
+					id: "deploy-check",
+					prompt: "Check deploy",
+					schedule: "every 1h",
+					status: "active",
+					next_in: "in 42m",
+				},
+			],
+		});
+	});
+	await composer(page);
+	await page.getByTitle("Agent menu check").click();
+	await page
+		.getByRole("tablist", { name: "Workspace panels" })
+		.getByRole("tab", { name: "Agents", exact: true })
+		.click();
+
+	await page
+		.getByText("Check deploy", { exact: true })
+		.click({ button: "right" });
+
+	const menu = page.getByRole("menu", { name: "Agent actions" });
+	await expect(menu).toBeVisible();
+	await expect(menu.getByRole("menuitem", { name: "Pause" })).toBeVisible();
+	await expect(menu.getByRole("menuitem", { name: "Delete" })).toBeVisible();
+	await expectFloatingInViewport(page, menu);
+	await menu.getByRole("menuitem", { name: "Delete" }).click();
+	await expect(
+		page.getByRole("dialog", { name: "Delete scheduled task?" }),
+	).toBeVisible();
 });
 
 test("places navigation, tabs, and contextual actions in one window toolbar", async ({
@@ -633,7 +798,7 @@ test("runs a command in a terminal tab", async ({ page }) => {
 	const shellMenu = page.getByTitle("New terminal with another shell");
 	if (await shellMenu.count()) {
 		await shellMenu.click();
-		await page.getByRole("button", { name: /default/ }).click();
+		await page.getByRole("menuitem", { name: /default/ }).click();
 		await expect(page.locator(".xterm-screen")).toHaveCount(1);
 		await terminalTab.click();
 		await expect(page.locator(".xterm-screen")).toBeVisible();

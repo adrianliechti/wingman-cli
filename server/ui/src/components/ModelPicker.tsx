@@ -2,6 +2,7 @@ import { Brain } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ServerMessage } from "../types/protocol";
 import { useToast } from "./ui/Feedback";
+import { FloatingSurface } from "./ui/Floating";
 
 interface ModelInfo {
 	id: string;
@@ -22,7 +23,6 @@ export function ModelPicker({ sessionId, subscribe }: Props) {
 	const [open, setOpen] = useState(false);
 	const [dragPct, setDragPct] = useState<number | null>(null);
 	const [dragging, setDragging] = useState(false);
-	const popRef = useRef<HTMLDivElement>(null);
 	const btnRef = useRef<HTMLButtonElement>(null);
 	const trackRef = useRef<HTMLDivElement>(null);
 
@@ -124,23 +124,6 @@ export function ModelPicker({ sessionId, subscribe }: Props) {
 		[applyEffort, apiBase, toast],
 	);
 
-	useEffect(() => {
-		if (!open) return;
-		const handler = (e: MouseEvent) => {
-			const target = e.target as Node;
-			if (
-				popRef.current &&
-				!popRef.current.contains(target) &&
-				btnRef.current &&
-				!btnRef.current.contains(target)
-			) {
-				setOpen(false);
-			}
-		};
-		document.addEventListener("mousedown", handler);
-		return () => document.removeEventListener("mousedown", handler);
-	}, [open]);
-
 	const currentName = useMemo(() => {
 		const match = models.find((m) => m.id === model);
 		return match?.name || model;
@@ -241,85 +224,86 @@ export function ModelPicker({ sessionId, subscribe }: Props) {
 					</>
 				)}
 			</button>
-			{open && (
+			<FloatingSurface
+				open={open}
+				onOpenChange={setOpen}
+				reference={btnRef.current}
+				placement="top-start"
+				role="dialog"
+				label="Model and reasoning effort"
+				className="z-[100] min-w-[240px] max-w-[360px] bg-bg-elevated/95 backdrop-blur-sm border border-border rounded-md shadow-xl"
+			>
 				<div
-					ref={popRef}
-					role="dialog"
-					aria-label="Model and reasoning effort"
-					className="absolute bottom-full mb-1 left-0 min-w-[240px] max-w-[360px] bg-bg-elevated/95 backdrop-blur-sm border border-border rounded-md shadow-xl z-50"
+					className="py-1 max-h-[260px] overflow-y-auto"
+					role="listbox"
+					aria-label="Model"
 				>
-					<div
-						className="py-1 max-h-[260px] overflow-y-auto"
-						role="listbox"
-						aria-label="Model"
-					>
-						{models.length === 0 ? (
-							<div className="px-3 py-2 text-[12px] text-fg-dim">Loading…</div>
-						) : (
-							models.map((m) => (
-								<button
-									type="button"
-									role="option"
-									aria-selected={m.id === model}
-									key={m.id}
-									className={`block w-full text-left px-3 py-1.5 text-[12px] cursor-pointer whitespace-nowrap transition-colors ${
-										m.id === model
-											? "text-fg bg-bg-active"
-											: "text-fg-muted hover:text-fg hover:bg-bg-hover"
-									}`}
-									onClick={() => selectModel(m.id)}
-								>
-									{m.name}
-								</button>
-							))
-						)}
-					</div>
-					{efforts.length > 0 && (
-						<div className="border-t border-border px-3 h-9 flex items-center">
-							<div
-								ref={trackRef}
-								onPointerDown={handlePointerDown}
-								className="relative flex-1 h-6 flex items-center cursor-pointer touch-none"
+					{models.length === 0 ? (
+						<div className="px-3 py-2 text-[12px] text-fg-dim">Loading…</div>
+					) : (
+						models.map((m) => (
+							<button
+								type="button"
+								role="option"
+								aria-selected={m.id === model}
+								key={m.id}
+								className={`block w-full text-left px-3 py-1.5 text-[12px] cursor-pointer whitespace-nowrap transition-colors ${
+									m.id === model
+										? "text-fg bg-bg-active"
+										: "text-fg-muted hover:text-fg hover:bg-bg-hover"
+								}`}
+								onClick={() => selectModel(m.id)}
 							>
-								<div className="absolute inset-x-0 h-[2px] rounded-full bg-bg-active" />
-								<div
-									className="absolute left-0 h-[2px] rounded-full bg-fg-muted/70"
-									style={{ width: `${pct}%` }}
-								/>
-								<div className="absolute inset-0 flex items-center justify-between pointer-events-none">
-									{steps.map((v, i) => (
-										<span
-											key={v}
-											className={`w-[3px] h-[3px] rounded-full transition-colors ${
-												i <= previewIndex ? "bg-fg-muted/70" : "bg-fg-dim/40"
-											}`}
-										/>
-									))}
-								</div>
-								<div
-									role="slider"
-									tabIndex={0}
-									aria-label="Reasoning effort"
-									aria-valuemin={0}
-									aria-valuemax={steps.length - 1}
-									aria-valuenow={previewIndex}
-									aria-valuetext={knobLabel}
-									onKeyDown={handleKeyDown}
-									className={`absolute top-1/2 flex items-center justify-center h-5 px-1.5 rounded-[5px] bg-fg text-bg text-[10px] font-semibold capitalize leading-none whitespace-nowrap shadow-sm cursor-grab active:cursor-grabbing ${
-										dragging ? "" : "transition-[left] duration-150 ease-out"
-									}`}
-									style={{
-										left: `${pct}%`,
-										transform: `translate(-${pct}%, -50%)`,
-									}}
-								>
-									{knobLabel}
-								</div>
-							</div>
-						</div>
+								{m.name}
+							</button>
+						))
 					)}
 				</div>
-			)}
+				{efforts.length > 0 && (
+					<div className="border-t border-border px-3 h-9 flex items-center">
+						<div
+							ref={trackRef}
+							onPointerDown={handlePointerDown}
+							className="relative flex-1 h-6 flex items-center cursor-pointer touch-none"
+						>
+							<div className="absolute inset-x-0 h-[2px] rounded-full bg-bg-active" />
+							<div
+								className="absolute left-0 h-[2px] rounded-full bg-fg-muted/70"
+								style={{ width: `${pct}%` }}
+							/>
+							<div className="absolute inset-0 flex items-center justify-between pointer-events-none">
+								{steps.map((v, i) => (
+									<span
+										key={v}
+										className={`w-[3px] h-[3px] rounded-full transition-colors ${
+											i <= previewIndex ? "bg-fg-muted/70" : "bg-fg-dim/40"
+										}`}
+									/>
+								))}
+							</div>
+							<div
+								role="slider"
+								tabIndex={0}
+								aria-label="Reasoning effort"
+								aria-valuemin={0}
+								aria-valuemax={steps.length - 1}
+								aria-valuenow={previewIndex}
+								aria-valuetext={knobLabel}
+								onKeyDown={handleKeyDown}
+								className={`absolute top-1/2 flex items-center justify-center h-5 px-1.5 rounded-[5px] bg-fg text-bg text-[10px] font-semibold capitalize leading-none whitespace-nowrap shadow-sm cursor-grab active:cursor-grabbing ${
+									dragging ? "" : "transition-[left] duration-150 ease-out"
+								}`}
+								style={{
+									left: `${pct}%`,
+									transform: `translate(-${pct}%, -50%)`,
+								}}
+							>
+								{knobLabel}
+							</div>
+						</div>
+					</div>
+				)}
+			</FloatingSurface>
 		</div>
 	);
 }

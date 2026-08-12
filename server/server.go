@@ -336,6 +336,10 @@ func (s *Server) registerRoutes(r chi.Router) {
 				r.Get("/tasks", s.handleTasks)
 				r.Get("/tasks/{taskID}", s.handleTask)
 				r.Post("/tasks/{taskID}/stop", s.handleTaskStop)
+				r.Get("/schedules", s.handleSchedules)
+				r.Delete("/schedules/{scheduleID}", s.handleScheduleDelete)
+				r.Post("/schedules/{scheduleID}/pause", s.handleSchedulePause)
+				r.Post("/schedules/{scheduleID}/resume", s.handleScheduleResume)
 			})
 		})
 

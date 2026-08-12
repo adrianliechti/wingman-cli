@@ -4,6 +4,7 @@ import {
 	Check,
 	ChevronDown,
 	ClipboardCopy,
+	Code2,
 	FileText,
 	GitBranch,
 	GitCommitHorizontal,
@@ -25,6 +26,7 @@ import type {
 	ServerMessage,
 } from "../types/protocol";
 import { Dialog, dialogButtonClass } from "./ui/Feedback";
+import { FloatingMenu, FloatingSurface } from "./ui/Floating";
 
 interface Props {
 	sessionId: string;
@@ -38,6 +40,13 @@ interface MenuState {
 	x: number;
 	y: number;
 	diff: DiffEntry;
+}
+
+interface GitMenuState {
+	x: number;
+	y: number;
+	file: GitFileStatus;
+	staged: boolean;
 }
 
 const EMPTY_GIT_STATUS: GitStatus = {
@@ -97,22 +106,6 @@ export function DiffsPanel({
 			if (msg.type === "diffs_changed") void load();
 		});
 	}, [subscribe, load]);
-
-	useEffect(() => {
-		if (!menu) return;
-		const close = () => setMenu(null);
-		const onKey = (e: KeyboardEvent) => {
-			if (e.key === "Escape") close();
-		};
-		document.addEventListener("mousedown", close);
-		document.addEventListener("scroll", close, true);
-		document.addEventListener("keydown", onKey);
-		return () => {
-			document.removeEventListener("mousedown", close);
-			document.removeEventListener("scroll", close, true);
-			document.removeEventListener("keydown", onKey);
-		};
-	}, [menu]);
 
 	const request = useCallback(
 		async (action: string, body?: unknown) => {
@@ -180,6 +173,7 @@ export function DiffsPanel({
 					onMessage={setMessage}
 					onRequest={request}
 					onOpenDiff={onOpenDiff}
+					onOpenFile={onOpenFile}
 					onCommit={async () => {
 						if (await request("commit", { message })) setMessage("");
 					}}
@@ -215,10 +209,12 @@ export function DiffsPanel({
 			</div>
 			{error && <InlineMessage kind="error" text={error} />}
 			{menu && (
-				<div
-					className="fixed z-100 min-w-[160px] bg-bg-elevated border border-border-subtle rounded-md shadow-2xl py-1 text-[12px]"
-					style={{ left: menu.x, top: menu.y }}
-					onMouseDown={(e) => e.stopPropagation()}
+				<FloatingMenu
+					open
+					onOpenChange={(open) => !open && setMenu(null)}
+					reference={{ x: menu.x, y: menu.y }}
+					label={`Actions for ${menu.diff.path}`}
+					className="z-[100] min-w-[160px] bg-bg-elevated border border-border-subtle rounded-md shadow-2xl py-1 text-[12px]"
 				>
 					{menu.diff.status !== "deleted" && (
 						<DiffMenuItem
@@ -245,7 +241,7 @@ export function DiffsPanel({
 						onClick={() => requestRevert(menu.diff)}
 						danger
 					/>
-				</div>
+				</FloatingMenu>
 			)}
 			<RevertDialog
 				diff={revertTarget}
@@ -312,6 +308,7 @@ function GitChanges({
 	onMessage,
 	onRequest,
 	onOpenDiff,
+	onOpenFile,
 	onCommit,
 	onRevert,
 }: {
@@ -324,9 +321,11 @@ function GitChanges({
 	onMessage: (value: string) => void;
 	onRequest: (action: string, body?: unknown) => Promise<boolean>;
 	onOpenDiff?: (path: string, layer?: DiffLayer) => void;
+	onOpenFile?: (path: string) => void;
 	onCommit: () => Promise<void>;
 	onRevert: (file: GitFileStatus) => void;
 }) {
+	const [menu, setMenu] = useState<GitMenuState | null>(null);
 	const staged = useMemo(
 		() => status.files.filter((file) => file.staged),
 		[status.files],
@@ -340,6 +339,20 @@ function GitChanges({
 	const paths = (files: GitFileStatus[]) => [
 		...new Set(files.flatMap(gitFilePaths)),
 	];
+
+	const openMenu = (
+		event: React.MouseEvent,
+		file: GitFileStatus,
+		isStaged: boolean,
+	) => {
+		event.preventDefault();
+		setMenu({
+			x: event.clientX,
+			y: event.clientY,
+			file,
+			staged: isStaged,
+		});
+	};
 
 	return (
 		<div className="flex h-full flex-col overflow-hidden bg-transparent">
@@ -396,6 +409,7 @@ function GitChanges({
 								void onRequest("unstage", { paths: gitFilePaths(file) })
 							}
 							onOpenDiff={onOpenDiff}
+							onContextMenu={openMenu}
 							staged
 						/>
 						<ChangeGroup
@@ -409,7 +423,7 @@ function GitChanges({
 								void onRequest("stage", { paths: gitFilePaths(file) })
 							}
 							onOpenDiff={onOpenDiff}
-							onRevert={onRevert}
+							onContextMenu={openMenu}
 						/>
 					</>
 				) : changed.length > 0 ? (
@@ -441,7 +455,7 @@ function GitChanges({
 								void onRequest("stage", { paths: gitFilePaths(file) })
 							}
 							onOpenDiff={onOpenDiff}
-							onRevert={onRevert}
+							onContextMenu={openMenu}
 						/>
 					</>
 				) : null}
@@ -490,6 +504,66 @@ function GitChanges({
 					</div>
 				</form>
 			)}
+			{menu && (
+				<FloatingMenu
+					open
+					onOpenChange={(open) => !open && setMenu(null)}
+					reference={{ x: menu.x, y: menu.y }}
+					label={`Actions for ${menu.file.path}`}
+					className="z-[100] min-w-[170px] rounded-md border border-border-subtle bg-bg-elevated py-1 text-[12px] shadow-2xl"
+				>
+					<DiffMenuItem
+						icon={<FileText size={12} />}
+						label="Open Changes"
+						onClick={() => {
+							setMenu(null);
+							onOpenDiff?.(
+								menu.file.path,
+								menu.file.conflict
+									? undefined
+									: menu.staged
+										? "staged"
+										: "unstaged",
+							);
+						}}
+					/>
+					{gitStatusLabel(menu.file, menu.staged) !== "D" && (
+						<DiffMenuItem
+							icon={<Code2 size={12} />}
+							label="Open File"
+							onClick={() => {
+								setMenu(null);
+								onOpenFile?.(menu.file.path);
+							}}
+						/>
+					)}
+					<DiffMenuItem
+						icon={menu.staged ? <Minus size={11} /> : <Plus size={11} />}
+						label={menu.staged ? "Unstage Changes" : "Stage Changes"}
+						onClick={() => {
+							const action = menu.staged ? "unstage" : "stage";
+							const paths = gitFilePaths(menu.file);
+							setMenu(null);
+							void onRequest(action, { paths });
+						}}
+					/>
+					{!menu.staged && (
+						<>
+							<div className="my-1 border-t border-border-subtle" />
+							<DiffMenuItem
+								icon={<RotateCcw size={12} />}
+								label="Discard Changes"
+								danger
+								onClick={() => {
+									const file = menu.file;
+									setMenu(null);
+									onRevert(file);
+								}}
+							/>
+						</>
+					)}
+				</FloatingMenu>
+			)}
 		</div>
 	);
 }
@@ -503,7 +577,7 @@ function BranchPicker({
 	disabled: boolean;
 	onRequest: (action: string, body?: unknown) => Promise<boolean>;
 }) {
-	const root = useRef<HTMLDivElement>(null);
+	const buttonRef = useRef<HTMLButtonElement>(null);
 	const searchRef = useRef<HTMLInputElement>(null);
 	const [open, setOpen] = useState(false);
 	const [loading, setLoading] = useState(false);
@@ -539,18 +613,6 @@ function BranchPicker({
 			await loadBranches(true);
 		})();
 		requestAnimationFrame(() => searchRef.current?.focus());
-		const close = (event: MouseEvent) => {
-			if (!root.current?.contains(event.target as Node)) setOpen(false);
-		};
-		const onKey = (event: KeyboardEvent) => {
-			if (event.key === "Escape") setOpen(false);
-		};
-		document.addEventListener("mousedown", close);
-		document.addEventListener("keydown", onKey);
-		return () => {
-			document.removeEventListener("mousedown", close);
-			document.removeEventListener("keydown", onKey);
-		};
 	}, [open, loadBranches]);
 
 	const filtered = useMemo(() => {
@@ -592,8 +654,9 @@ function BranchPicker({
 	};
 
 	return (
-		<div ref={root} className="relative min-w-0">
+		<div className="relative min-w-0">
 			<button
+				ref={buttonRef}
 				type="button"
 				disabled={disabled}
 				onClick={() => setOpen((value) => !value)}
@@ -607,119 +670,121 @@ function BranchPicker({
 				<ChevronDown size={10} className="text-fg-dim shrink-0" />
 			</button>
 
-			{open && (
-				<div
-					role="dialog"
-					aria-label="Switch Git branch"
-					className="absolute z-50 top-[31px] left-0 w-[280px] max-w-[calc(100vw-16px)] overflow-hidden rounded-lg border border-border bg-bg-elevated shadow-2xl"
-				>
-					<div className="p-2 border-b border-border-subtle">
-						<div className="h-7 flex items-center rounded-md border border-border-subtle bg-bg focus-within:border-border">
-							<Search size={11} className="ml-2 text-fg-dim shrink-0" />
-							<input
-								ref={searchRef}
-								value={query}
-								onChange={(event) => setQuery(event.target.value)}
-								placeholder="Find a branch…"
-								aria-label="Find a branch"
-								className="min-w-0 flex-1 h-full px-1.5 bg-transparent outline-none text-[11px] text-fg placeholder:text-fg-dim"
-							/>
-							<button
-								type="button"
-								disabled={loading}
-								onClick={() => void loadBranches(true)}
-								title="Fetch and refresh branches"
-								className="w-7 h-full flex items-center justify-center text-fg-dim hover:text-fg disabled:opacity-40"
-							>
-								<RefreshCw
-									size={11}
-									className={loading ? "animate-spin" : ""}
-								/>
-							</button>
-						</div>
-					</div>
-
-					{warning && (
-						<div
-							className="px-3 py-2 text-[10px] leading-4 text-warning border-b border-border-subtle"
-							title={warning}
+			<FloatingSurface
+				open={open}
+				onOpenChange={(nextOpen) => {
+					if (nextOpen) setOpen(true);
+					else close();
+				}}
+				reference={buttonRef.current}
+				placement="bottom-start"
+				role="dialog"
+				label="Switch Git branch"
+				className="z-[100] w-[280px] overflow-hidden rounded-lg border border-border bg-bg-elevated shadow-2xl"
+			>
+				<div className="p-2 border-b border-border-subtle">
+					<div className="h-7 flex items-center rounded-md border border-border-subtle bg-bg focus-within:border-border">
+						<Search size={11} className="ml-2 text-fg-dim shrink-0" />
+						<input
+							ref={searchRef}
+							value={query}
+							onChange={(event) => setQuery(event.target.value)}
+							placeholder="Find a branch…"
+							aria-label="Find a branch"
+							className="min-w-0 flex-1 h-full px-1.5 bg-transparent outline-none text-[11px] text-fg placeholder:text-fg-dim"
+						/>
+						<button
+							type="button"
+							disabled={loading}
+							onClick={() => void loadBranches(true)}
+							title="Fetch and refresh branches"
+							className="w-7 h-full flex items-center justify-center text-fg-dim hover:text-fg disabled:opacity-40"
 						>
-							Remote refresh failed. Showing cached branches.
-						</div>
-					)}
-					{loadError && (
-						<div className="px-3 py-2 text-[10px] leading-4 text-danger border-b border-border-subtle">
-							{loadError}
-						</div>
-					)}
-
-					<div className="max-h-56 overflow-y-auto py-1">
-						{loading && branches.length === 0 ? (
-							<div className="h-16 flex items-center justify-center text-fg-dim">
-								<Loader2 size={13} className="animate-spin" />
-							</div>
-						) : (
-							<>
-								<BranchSection
-									title="Local"
-									branches={local}
-									disabled={disabled}
-									onSelect={checkout}
-								/>
-								<BranchSection
-									title="Remote"
-									branches={remote}
-									disabled={disabled}
-									onSelect={checkout}
-								/>
-								{filtered.length === 0 && !loadError && (
-									<div className="px-3 py-5 text-center text-[10.5px] text-fg-dim">
-										No matching branches
-									</div>
-								)}
-							</>
-						)}
-					</div>
-
-					<div className="p-2 border-t border-border-subtle bg-bg-surface/20">
-						{creating ? (
-							<form
-								onSubmit={(event) => {
-									event.preventDefault();
-									if (!disabled) void create();
-								}}
-								className="flex items-center gap-1.5"
-							>
-								<input
-									autoFocus
-									value={newBranch}
-									onChange={(event) => setNewBranch(event.target.value)}
-									placeholder="feature/name"
-									aria-label="New branch name"
-									className="h-7 min-w-0 flex-1 rounded-md border border-border-subtle bg-bg px-2 outline-none text-[11px] text-fg placeholder:text-fg-dim focus:border-border"
-								/>
-								<button
-									type="submit"
-									disabled={disabled || !newBranch.trim()}
-									className="h-7 px-2 rounded-md bg-accent text-bg text-[10.5px] font-medium disabled:opacity-30"
-								>
-									Create
-								</button>
-							</form>
-						) : (
-							<button
-								type="button"
-								disabled={disabled}
-								onClick={() => setCreating(true)}
-								className="h-7 w-full px-2 flex items-center gap-1.5 rounded-md text-[10.5px] text-fg-muted hover:text-fg hover:bg-bg-hover disabled:opacity-35"
-							>
-								<Plus size={11} />
-								Create new branch
-							</button>
-						)}
+							<RefreshCw size={11} className={loading ? "animate-spin" : ""} />
+						</button>
 					</div>
 				</div>
-			)}
+
+				{warning && (
+					<div
+						className="px-3 py-2 text-[10px] leading-4 text-warning border-b border-border-subtle"
+						title={warning}
+					>
+						Remote refresh failed. Showing cached branches.
+					</div>
+				)}
+				{loadError && (
+					<div className="px-3 py-2 text-[10px] leading-4 text-danger border-b border-border-subtle">
+						{loadError}
+					</div>
+				)}
+
+				<div className="max-h-56 overflow-y-auto py-1">
+					{loading && branches.length === 0 ? (
+						<div className="h-16 flex items-center justify-center text-fg-dim">
+							<Loader2 size={13} className="animate-spin" />
+						</div>
+					) : (
+						<>
+							<BranchSection
+								title="Local"
+								branches={local}
+								disabled={disabled}
+								onSelect={checkout}
+							/>
+							<BranchSection
+								title="Remote"
+								branches={remote}
+								disabled={disabled}
+								onSelect={checkout}
+							/>
+							{filtered.length === 0 && !loadError && (
+								<div className="px-3 py-5 text-center text-[10.5px] text-fg-dim">
+									No matching branches
+								</div>
+							)}
+						</>
+					)}
+				</div>
+
+				<div className="p-2 border-t border-border-subtle bg-bg-surface/20">
+					{creating ? (
+						<form
+							onSubmit={(event) => {
+								event.preventDefault();
+								if (!disabled) void create();
+							}}
+							className="flex items-center gap-1.5"
+						>
+							<input
+								autoFocus
+								value={newBranch}
+								onChange={(event) => setNewBranch(event.target.value)}
+								placeholder="feature/name"
+								aria-label="New branch name"
+								className="h-7 min-w-0 flex-1 rounded-md border border-border-subtle bg-bg px-2 outline-none text-[11px] text-fg placeholder:text-fg-dim focus:border-border"
+							/>
+							<button
+								type="submit"
+								disabled={disabled || !newBranch.trim()}
+								className="h-7 px-2 rounded-md bg-accent text-bg text-[10.5px] font-medium disabled:opacity-30"
+							>
+								Create
+							</button>
+						</form>
+					) : (
+						<button
+							type="button"
+							disabled={disabled}
+							onClick={() => setCreating(true)}
+							className="h-7 w-full px-2 flex items-center gap-1.5 rounded-md text-[10.5px] text-fg-muted hover:text-fg hover:bg-bg-hover disabled:opacity-35"
+						>
+							<Plus size={11} />
+							Create new branch
+						</button>
+					)}
+				</div>
+			</FloatingSurface>
 		</div>
 	);
 }
@@ -773,7 +838,7 @@ function ChangeGroup({
 	onAll,
 	onFile,
 	onOpenDiff,
-	onRevert,
+	onContextMenu,
 	staged = false,
 }: {
 	title: string;
@@ -784,7 +849,11 @@ function ChangeGroup({
 	onAll: () => void;
 	onFile: (file: GitFileStatus) => void;
 	onOpenDiff?: (path: string, layer?: DiffLayer) => void;
-	onRevert?: (file: GitFileStatus) => void;
+	onContextMenu?: (
+		event: React.MouseEvent,
+		file: GitFileStatus,
+		staged: boolean,
+	) => void;
 	staged?: boolean;
 }) {
 	if (files.length === 0) return null;
@@ -813,7 +882,7 @@ function ChangeGroup({
 				actionLabel={actionLabel}
 				onFile={onFile}
 				onOpenDiff={onOpenDiff}
-				onRevert={onRevert}
+				onContextMenu={onContextMenu}
 				staged={staged}
 			/>
 		</div>
@@ -827,7 +896,7 @@ function ChangeList({
 	actionLabel,
 	onFile,
 	onOpenDiff,
-	onRevert,
+	onContextMenu,
 	staged = false,
 }: {
 	files: GitFileStatus[];
@@ -836,7 +905,11 @@ function ChangeList({
 	actionLabel: string;
 	onFile: (file: GitFileStatus) => void;
 	onOpenDiff?: (path: string, layer?: DiffLayer) => void;
-	onRevert?: (file: GitFileStatus) => void;
+	onContextMenu?: (
+		event: React.MouseEvent,
+		file: GitFileStatus,
+		staged: boolean,
+	) => void;
 	staged?: boolean;
 }) {
 	return files.map((file) => (
@@ -856,8 +929,7 @@ function ChangeList({
 			actionLabel={actionLabel}
 			onAction={() => onFile(file)}
 			onContextMenu={(e) => {
-				e.preventDefault();
-				if (!staged) onRevert?.(file);
+				onContextMenu?.(e, file, staged);
 			}}
 		/>
 	));
@@ -1054,6 +1126,7 @@ function DiffMenuItem({
 	return (
 		<button
 			type="button"
+			role="menuitem"
 			className={`w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-bg-hover ${danger ? "text-danger" : "text-fg-muted hover:text-fg"}`}
 			onClick={onClick}
 		>

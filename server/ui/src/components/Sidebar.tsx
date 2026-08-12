@@ -1,7 +1,7 @@
 import { Loader2, MessageSquare, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { createPortal } from "react-dom";
 import type { ServerMessage } from "../types/protocol";
+import { FloatingMenu } from "./ui/Floating";
 
 interface SessionInfo {
 	id: string;
@@ -70,22 +70,6 @@ export function Sidebar({
 		x: number;
 		y: number;
 	} | null>(null);
-
-	useEffect(() => {
-		if (!menu) return;
-		const close = () => setMenu(null);
-		const onKey = (e: KeyboardEvent) => e.key === "Escape" && close();
-		window.addEventListener("click", close);
-		window.addEventListener("scroll", close, true);
-		window.addEventListener("resize", close);
-		window.addEventListener("keydown", onKey);
-		return () => {
-			window.removeEventListener("click", close);
-			window.removeEventListener("scroll", close, true);
-			window.removeEventListener("resize", close);
-			window.removeEventListener("keydown", onKey);
-		};
-	}, [menu]);
 
 	const groups = groupSessions(sessions);
 
@@ -170,33 +154,28 @@ export function Sidebar({
 						</div>
 					))}
 			</div>
-			{menu &&
-				createPortal(
-					<div
-						role="menu"
-						aria-label={`Actions for ${menu.title}`}
-						className="fixed z-100 min-w-[140px] rounded-md border border-border bg-bg-elevated py-1 shadow-xl"
-						style={{
-							top: Math.max(4, Math.min(menu.y, window.innerHeight - 40)),
-							left: Math.max(4, Math.min(menu.x, window.innerWidth - 148)),
+			{menu && (
+				<FloatingMenu
+					open
+					onOpenChange={(open) => !open && setMenu(null)}
+					reference={{ x: menu.x, y: menu.y }}
+					label={`Actions for ${menu.title}`}
+					className="z-[100] min-w-[140px] rounded-md border border-border bg-bg-elevated py-1 shadow-xl"
+				>
+					<button
+						type="button"
+						role="menuitem"
+						onClick={() => {
+							onSessionDelete?.(menu.id, menu.title);
+							setMenu(null);
 						}}
-						onClick={(e) => e.stopPropagation()}
+						className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-[12px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-danger"
 					>
-						<button
-							type="button"
-							role="menuitem"
-							onClick={() => {
-								onSessionDelete?.(menu.id, menu.title);
-								setMenu(null);
-							}}
-							className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-[12px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-danger"
-						>
-							<Trash2 size={12} className="shrink-0" />
-							Delete session
-						</button>
-					</div>,
-					document.body,
-				)}
+						<Trash2 size={12} className="shrink-0" />
+						Delete session
+					</button>
+				</FloatingMenu>
+			)}
 		</nav>
 	);
 }

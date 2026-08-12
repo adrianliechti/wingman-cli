@@ -27,6 +27,7 @@ import (
 	elicittool "github.com/adrianliechti/wingman-agent/pkg/agent/tool/elicit"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/fetch"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/fs"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/schedule"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/shell"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/subagent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/todo"
@@ -82,6 +83,9 @@ type sessionState struct {
 	turnTools   atomic.Value // []tool.Tool, pinned for the running turn
 	execManager *shell.ExecManager
 	tasks       *task.Registry
+
+	schedules   *schedule.MemoryStore
+	scheduleSeq atomic.Uint64
 
 	freshness *fs.Freshness
 	watchStop chan struct{}
@@ -570,6 +574,16 @@ func (a *Agent) Tasks(id string) *task.Registry {
 	return s.tasks
 }
 
+// Schedules exposes the session's scheduled tasks so UI surfaces can list
+// them alongside its background agents.
+func (a *Agent) Schedules(id string) *schedule.MemoryStore {
+	s := a.session(id)
+	if s == nil {
+		return nil
+	}
+	return s.schedules
+}
+
 // RunningTaskCount sums running background agents across every live session,
 // so quitting warns about agents outside the currently viewed session too.
 func (a *Agent) RunningTaskCount() int {
@@ -805,6 +819,7 @@ func (a *Agent) buildSession() *sessionState {
 		s.tasks.Publish(execExitEvent(e))
 	})
 	s.freshness = fs.NewFreshness(ws.Root)
+	s.schedules = schedule.NewMemoryStore()
 	s.watchStop = make(chan struct{})
 	approvals := shell.NewApprovals()
 
@@ -820,6 +835,7 @@ func (a *Agent) buildSession() *sessionState {
 	)
 
 	go s.watchFileChanges()
+	go s.runSchedules()
 
 	shellOpts := &shell.Options{ScratchDir: ws.ScratchPath}
 
@@ -832,6 +848,7 @@ func (a *Agent) buildSession() *sessionState {
 		shell.Tools(ws.RootPath, elicit, approvals, shellOpts),
 		shell.ExecTools(s.execManager, ws.RootPath, elicit, approvals, shellOpts),
 		todo.Tools(),
+		schedule.Tools(s.schedules),
 		elicittool.Tools(elicit),
 		fetch.Tools(elicit, sessionCfg.Utility),
 		websearch.Tools(elicit),

@@ -1,5 +1,6 @@
 import { File } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { FloatingSurface } from "./ui/Floating";
 
 interface Hit {
 	path: string;
@@ -7,16 +8,16 @@ interface Hit {
 }
 
 interface Props {
+	anchor: Element | null;
 	onSelect: (path: string) => void;
 	onClose: () => void;
 }
 
-export function FilePicker({ onSelect, onClose }: Props) {
+export function FilePicker({ anchor, onSelect, onClose }: Props) {
 	const [query, setQuery] = useState("");
 	const [hits, setHits] = useState<Hit[]>([]);
 	const [active, setActive] = useState(0);
 	const inputRef = useRef<HTMLInputElement>(null);
-	const containerRef = useRef<HTMLDivElement>(null);
 
 	useEffect(() => {
 		inputRef.current?.focus();
@@ -42,19 +43,6 @@ export function FilePicker({ onSelect, onClose }: Props) {
 		};
 	}, [query]);
 
-	useEffect(() => {
-		const onClick = (e: MouseEvent) => {
-			if (
-				containerRef.current &&
-				!containerRef.current.contains(e.target as Node)
-			) {
-				onClose();
-			}
-		};
-		document.addEventListener("mousedown", onClick);
-		return () => document.removeEventListener("mousedown", onClick);
-	}, [onClose]);
-
 	const onKey = (e: React.KeyboardEvent) => {
 		if (e.key === "Escape") {
 			e.preventDefault();
@@ -73,9 +61,15 @@ export function FilePicker({ onSelect, onClose }: Props) {
 	};
 
 	return (
-		<div
-			ref={containerRef}
-			className="absolute bottom-full mb-1 left-0 w-[360px] max-w-[90vw] bg-bg-elevated/95 backdrop-blur-sm border border-border rounded-md shadow-xl z-50 overflow-hidden"
+		<FloatingSurface
+			open
+			onOpenChange={(open) => !open && onClose()}
+			reference={anchor}
+			placement="top-start"
+			role="dialog"
+			label="Find a file"
+			focusOnOpen
+			className="z-[100] w-[360px] bg-bg-elevated/95 backdrop-blur-sm border border-border rounded-md shadow-xl overflow-hidden"
 		>
 			<div className="px-3 py-2 border-b border-border-subtle">
 				<input
@@ -123,6 +117,6 @@ export function FilePicker({ onSelect, onClose }: Props) {
 					})
 				)}
 			</div>
-		</div>
+		</FloatingSurface>
 	);
 }

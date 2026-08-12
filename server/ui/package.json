@@ -15,6 +15,7 @@
 		"test:web": "go test -tags=e2e -run TestWebUIE2E -count=1 -v .."
 	},
 	"dependencies": {
+		"@floating-ui/react": "^0.27.20",
 		"@monaco-editor/react": "^4.7.0",
 		"@streamdown/code": "^1.1.1",
 		"@streamdown/math": "^1.0.2",
