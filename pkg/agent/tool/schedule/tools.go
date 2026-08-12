@@ -57,14 +57,14 @@ func Tools(store Store) []tool.Tool {
 				"required":             []string{"prompt", "schedule"},
 				"additionalProperties": false,
 			},
-			Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 				prompt, _ := args["prompt"].(string)
 				sched, _ := args["schedule"].(string)
 				script, _ := args["script"].(string)
 
 				task, err := NewTask(prompt, sched)
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
 
 				task.Script = strings.TrimSpace(script)
@@ -73,11 +73,11 @@ func Tools(store Store) []tool.Tool {
 					return append(tasks, task), nil
 				})
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
 
 				now := time.Now()
-				return fmt.Sprintf("Task %s scheduled (%s), next run %s: %s", task.ID, task.Schedule, formatNext(NextRun(task, now), now), task.Prompt), nil
+				return tool.Text(fmt.Sprintf("Task %s scheduled (%s), next run %s: %s", task.ID, task.Schedule, formatNext(NextAttempt(task, now), now), task.Prompt)), nil
 			},
 		},
 		{
@@ -89,14 +89,14 @@ func Tools(store Store) []tool.Tool {
 				"properties":           map[string]any{},
 				"additionalProperties": false,
 			},
-			Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 				tasks, err := store.List()
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
 
 				if len(tasks) == 0 {
-					return "No tasks scheduled.", nil
+					return tool.Text("No tasks scheduled."), nil
 				}
 
 				now := time.Now()
@@ -104,7 +104,7 @@ func Tools(store Store) []tool.Tool {
 
 				for _, t := range tasks {
 					fmt.Fprintf(&b, "- [%s] %s (schedule: %s, status: %s, next: %s",
-						t.ID, t.Prompt, t.Schedule, t.Status, formatNext(NextRun(t, now), now))
+						t.ID, t.Prompt, t.Schedule, t.Status, formatNext(NextAttempt(t, now), now))
 					if t.Script != "" {
 						b.WriteString(", pre-check script")
 					}
@@ -117,7 +117,7 @@ func Tools(store Store) []tool.Tool {
 					b.WriteString(")\n")
 				}
 
-				return b.String(), nil
+				return tool.Text(b.String()), nil
 			},
 		},
 		{
@@ -125,7 +125,7 @@ func Tools(store Store) []tool.Tool {
 			Description: "Pause a scheduled task by ID.",
 			Effect:      tool.StaticEffect(tool.EffectMutates),
 			Parameters:  idParams,
-			Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 				return updateStatus(store, args, StatusPaused)
 			},
 		},
@@ -134,7 +134,7 @@ func Tools(store Store) []tool.Tool {
 			Description: "Resume a paused task by ID.",
 			Effect:      tool.StaticEffect(tool.EffectMutates),
 			Parameters:  idParams,
-			Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 				return updateStatus(store, args, StatusActive)
 			},
 		},
@@ -143,7 +143,7 @@ func Tools(store Store) []tool.Tool {
 			Description: "Remove a scheduled task by ID.",
 			Effect:      tool.StaticEffect(tool.EffectMutates),
 			Parameters:  idParams,
-			Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 				id, _ := args["id"].(string)
 
 				var removed string
@@ -156,42 +156,16 @@ func Tools(store Store) []tool.Tool {
 					return append(tasks[:i:i], tasks[i+1:]...), nil
 				})
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
 
-				return fmt.Sprintf("Task %s removed.", removed), nil
-			},
-		},
-		{
-			Name:        "run_task",
-			Description: "Run a scheduled task immediately, regardless of its schedule. Useful for testing.",
-			Effect:      tool.StaticEffect(tool.EffectMutates),
-			Parameters:  idParams,
-			Execute: func(ctx context.Context, args map[string]any) (string, error) {
-				id, _ := args["id"].(string)
-
-				var prompt string
-				err := store.Mutate(func(tasks []Task) ([]Task, error) {
-					i, err := Find(tasks, id)
-					if err != nil {
-						return nil, err
-					}
-					now := time.Now()
-					tasks[i].LastRun = &now
-					prompt = tasks[i].Prompt
-					return tasks, nil
-				})
-				if err != nil {
-					return "", err
-				}
-
-				return fmt.Sprintf("Task triggered. Execute now:\n\n%s", prompt), nil
+				return tool.Text(fmt.Sprintf("Task %s removed.", removed)), nil
 			},
 		},
 	}
 }
 
-func updateStatus(store Store, args map[string]any, status string) (string, error) {
+func updateStatus(store Store, args map[string]any, status string) (tool.Result, error) {
 	id, _ := args["id"].(string)
 
 	var updated string
@@ -205,10 +179,10 @@ func updateStatus(store Store, args map[string]any, status string) (string, erro
 		return tasks, nil
 	})
 	if err != nil {
-		return "", err
+		return tool.Result{}, err
 	}
 
-	return fmt.Sprintf("Task %s %s.", updated, status), nil
+	return tool.Text(fmt.Sprintf("Task %s %s.", updated, status)), nil
 }
 
 func formatNext(next, now time.Time) string {

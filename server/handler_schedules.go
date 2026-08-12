@@ -54,7 +54,7 @@ func (s *Server) handleSchedules(w http.ResponseWriter, r *http.Request) {
 			Failures: t.Failures,
 		}
 
-		if next := schedule.NextRun(t, now); !next.IsZero() {
+		if next := schedule.NextAttempt(t, now); !next.IsZero() {
 			entry.NextRun = next.Local().Format(time.RFC3339)
 			entry.NextIn = schedule.Relative(next, now)
 		}

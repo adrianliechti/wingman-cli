@@ -180,15 +180,24 @@ func jitter(id string, interval time.Duration) time.Duration {
 	return time.Duration(h.Sum64() % uint64(span))
 }
 
-func IsDue(t Task, now time.Time) bool {
-	if t.Failures > 0 && t.LastAttempt != nil {
-		backoff := min(time.Hour, time.Duration(1<<min(t.Failures, 6))*time.Minute)
-		if now.Before(t.LastAttempt.Add(backoff)) {
-			return false
-		}
+// NextAttempt is NextRun pushed out by failure backoff: consecutive pre-check
+// failures space retries exponentially (2m, 4m, ... capped at an hour) so a
+// broken gate on a tight interval cannot wake-loop the agent.
+func NextAttempt(t Task, now time.Time) time.Time {
+	next := NextRun(t, now)
+	if next.IsZero() || t.Failures == 0 || t.LastAttempt == nil {
+		return next
 	}
 
-	next := NextRun(t, now)
+	backoff := min(time.Hour, time.Duration(1<<min(t.Failures, 6))*time.Minute)
+	if retry := t.LastAttempt.Add(backoff); retry.After(next) {
+		return retry
+	}
+	return next
+}
+
+func IsDue(t Task, now time.Time) bool {
+	next := NextAttempt(t, now)
 	return !next.IsZero() && !next.After(now)
 }
 

@@ -68,7 +68,6 @@ func TestScheduleToolsExposeEffects(t *testing.T) {
 		"pause_task":    tool.EffectMutates,
 		"resume_task":   tool.EffectMutates,
 		"remove_task":   tool.EffectMutates,
-		"run_task":      tool.EffectMutates,
 	}
 
 	for _, tl := range Tools(NewMemoryStore()) {
@@ -262,20 +261,51 @@ func TestRunGate(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 
-	if wake, _ := RunGate(ctx, dir, `echo '{"wake": false}'`); wake {
-		t.Fatal("wake=false output should skip the run")
+	if wake, _, err := RunGate(ctx, dir, `echo '{"wake": false}'`); wake || err != nil {
+		t.Fatalf("wake=false output should skip the run, got wake=%v err=%v", wake, err)
 	}
-	if wake, _ := RunGate(ctx, dir, `echo '{"wake": true, "data": [1]}'`); !wake {
-		t.Fatal("wake=true output should wake the agent")
+	if wake, _, err := RunGate(ctx, dir, `echo '{"wake": true, "data": [1]}'`); !wake || err != nil {
+		t.Fatalf("wake=true output should wake the agent, got wake=%v err=%v", wake, err)
 	}
-	if wake, out := RunGate(ctx, dir, `echo checking; echo '{"wake": false}'`); wake || !strings.Contains(out, "checking") {
+	if wake, out, _ := RunGate(ctx, dir, `echo checking; echo '{"wake": false}'`); wake || !strings.Contains(out, "checking") {
 		t.Fatalf("trailing JSON line should be honored, got wake=%v out=%q", wake, out)
 	}
-	if wake, _ := RunGate(ctx, dir, `echo not-json`); !wake {
-		t.Fatal("non-JSON output should fail open")
+	if wake, _, err := RunGate(ctx, dir, `echo not-json`); !wake || err != nil {
+		t.Fatalf("non-JSON output should fail open without an error, got wake=%v err=%v", wake, err)
 	}
-	if wake, out := RunGate(ctx, dir, `exit 3`); !wake || !strings.Contains(out, "failed") {
-		t.Fatalf("script failure should fail open with a note, got wake=%v out=%q", wake, out)
+	if wake, out, err := RunGate(ctx, dir, `exit 3`); !wake || err == nil || !strings.Contains(out, "failed") {
+		t.Fatalf("script failure should fail open with a note and an error, got wake=%v out=%q err=%v", wake, out, err)
+	}
+}
+
+func TestFailureBackoffDelaysRetries(t *testing.T) {
+	last := time.Date(2026, 6, 12, 8, 0, 0, 0, time.UTC)
+	task := Task{
+		ID:          "flaky",
+		Schedule:    "every 15s",
+		Status:      StatusActive,
+		CreatedAt:   last.Add(-time.Hour),
+		LastRun:     &last,
+		Failures:    1,
+		LastAttempt: &last,
+	}
+
+	if IsDue(task, last.Add(time.Minute)) {
+		t.Fatal("a failed task should back off, not retry on its own interval")
+	}
+	if !IsDue(task, last.Add(3*time.Minute)) {
+		t.Fatal("a failed task should retry once the backoff elapsed")
+	}
+
+	task.Failures = 10
+	if got := NextAttempt(task, last.Add(time.Minute)); !got.Equal(last.Add(time.Hour)) {
+		t.Fatalf("NextAttempt = %v, want the backoff capped at %v", got, last.Add(time.Hour))
+	}
+
+	task.Failures = 0
+	task.LastAttempt = nil
+	if !IsDue(task, last.Add(time.Minute)) {
+		t.Fatal("a recovered task should follow its schedule again")
 	}
 }
 

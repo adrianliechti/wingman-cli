@@ -54,7 +54,7 @@ func (s *sessionState) nextScheduleWait() time.Duration {
 	wait := scheduleWaitMax
 
 	for _, t := range tasks {
-		if next := schedule.NextRun(t, now); !next.IsZero() {
+		if next := schedule.NextAttempt(t, now); !next.IsZero() {
 			wait = min(wait, next.Sub(now))
 		}
 	}
@@ -84,9 +84,10 @@ func (s *sessionState) fireDueSchedules(ctx context.Context) {
 func (s *sessionState) fireSchedule(ctx context.Context, t schedule.Task) {
 	wake := true
 	gateOutput := ""
+	var gateErr error
 
 	if t.Script != "" {
-		wake, gateOutput = schedule.RunGate(ctx, s.parent.workspace.RootPath, t.Script)
+		wake, gateOutput, gateErr = schedule.RunGate(ctx, s.parent.workspace.RootPath, t.Script)
 	}
 
 	if ctx.Err() != nil {
@@ -103,6 +104,13 @@ func (s *sessionState) fireSchedule(ctx context.Context, t schedule.Task) {
 					continue
 				}
 				tasks[i].LastRun = &now
+				if gateErr != nil {
+					tasks[i].Failures++
+					tasks[i].LastAttempt = &now
+				} else {
+					tasks[i].Failures = 0
+					tasks[i].LastAttempt = nil
+				}
 			}
 			kept = append(kept, tasks[i])
 		}

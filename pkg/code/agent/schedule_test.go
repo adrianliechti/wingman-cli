@@ -160,6 +160,101 @@ func TestFireScheduleAttachesGateOutput(t *testing.T) {
 	}
 }
 
+func TestFireScheduleBacksOffFailingGate(t *testing.T) {
+	s := newScheduleSession(t)
+	defer s.tasks.Close()
+
+	seedTask(t, s, schedule.Task{
+		ID:        "broken",
+		Prompt:    "poll",
+		Schedule:  "every 15s",
+		Script:    `exit 3`,
+		Status:    schedule.StatusActive,
+		CreatedAt: time.Now().Add(-time.Hour),
+	})
+
+	tasks, _ := s.schedules.List()
+	s.fireSchedule(context.Background(), tasks[0])
+
+	ev, ok := waitEvent(t, s)
+	if !ok {
+		t.Fatal("a failing gate should fail open and notify")
+	}
+	if !strings.Contains(ev.Result, "failed") {
+		t.Fatalf("result = %q, want the failure note attached", ev.Result)
+	}
+
+	after, _ := s.schedules.List()
+	if after[0].Failures != 1 || after[0].LastAttempt == nil {
+		t.Fatalf("task = %+v, want one recorded failure", after[0])
+	}
+	if schedule.IsDue(after[0], time.Now().Add(time.Minute)) {
+		t.Fatal("a failed task should back off past its own interval")
+	}
+	if !schedule.IsDue(after[0], time.Now().Add(3*time.Minute)) {
+		t.Fatal("a failed task should retry after the backoff")
+	}
+
+	s.fireSchedule(context.Background(), after[0])
+	if _, ok := waitEvent(t, s); !ok {
+		t.Fatal("expected a second fail-open notification")
+	}
+	after, _ = s.schedules.List()
+	if after[0].Failures != 2 {
+		t.Fatalf("failures = %d, want consecutive failures to accumulate", after[0].Failures)
+	}
+}
+
+func TestFireScheduleClearsFailuresOnSuccess(t *testing.T) {
+	s := newScheduleSession(t)
+	defer s.tasks.Close()
+
+	past := time.Now().Add(-time.Hour)
+	seedTask(t, s, schedule.Task{
+		ID:          "recovered",
+		Prompt:      "poll",
+		Schedule:    "every 15s",
+		Script:      `echo '{"wake": false}'`,
+		Status:      schedule.StatusActive,
+		CreatedAt:   past.Add(-time.Hour),
+		LastRun:     &past,
+		Failures:    3,
+		LastAttempt: &past,
+	})
+
+	tasks, _ := s.schedules.List()
+	s.fireSchedule(context.Background(), tasks[0])
+
+	after, _ := s.schedules.List()
+	if after[0].Failures != 0 || after[0].LastAttempt != nil {
+		t.Fatalf("task = %+v, want the failure state cleared", after[0])
+	}
+	if after[0].LastRun == nil || !after[0].LastRun.After(past) {
+		t.Fatal("a successful gate run should advance the last run")
+	}
+}
+
+func TestNextScheduleWaitHonorsBackoff(t *testing.T) {
+	s := newScheduleSession(t)
+	defer s.tasks.Close()
+
+	now := time.Now()
+	seedTask(t, s, schedule.Task{
+		ID:          "flaky",
+		Prompt:      "poll",
+		Schedule:    "every 15s",
+		Status:      schedule.StatusActive,
+		CreatedAt:   now.Add(-time.Hour),
+		LastRun:     &now,
+		Failures:    1,
+		LastAttempt: &now,
+	})
+
+	if wait := s.nextScheduleWait(); wait != scheduleWaitMax {
+		t.Fatalf("backed-off wait = %v, want the %v ceiling, not a %v spin", wait, scheduleWaitMax, scheduleWaitMin)
+	}
+}
+
 func TestNextScheduleWaitTracksShortIntervals(t *testing.T) {
 	s := newScheduleSession(t)
 	defer s.tasks.Close()

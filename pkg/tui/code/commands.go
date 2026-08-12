@@ -423,7 +423,7 @@ func (a *App) showTasks() {
 
 	now := time.Now()
 	for _, job := range jobs {
-		timing := schedule.Relative(schedule.NextRun(job, now), now)
+		timing := schedule.Relative(schedule.NextAttempt(job, now), now)
 		if job.Script != "" {
 			timing += ", pre-check"
 		}
@@ -499,7 +499,7 @@ func (a *App) showSchedule(id string) {
 
 	lines := []string{
 		fmt.Sprintf("Scheduled task %s (%s, %s)", job.ID, job.Schedule, job.Status),
-		fmt.Sprintf("Next run: %s", schedule.Relative(schedule.NextRun(job, now), now)),
+		fmt.Sprintf("Next run: %s", schedule.Relative(schedule.NextAttempt(job, now), now)),
 	}
 	if job.LastRun != nil {
 		lines = append(lines, fmt.Sprintf("Last run: %s", job.LastRun.Local().Format(time.RFC3339)))

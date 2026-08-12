@@ -25,7 +25,6 @@ const SCHEDULE_TOOLS = new Set([
 	"pause_task",
 	"resume_task",
 	"remove_task",
-	"run_task",
 ]);
 
 interface Props {

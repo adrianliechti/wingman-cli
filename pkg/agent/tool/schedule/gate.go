@@ -16,8 +16,9 @@ const (
 )
 
 // RunGate executes a task's pre-check script. It reports whether the agent
-// should be woken; on script failure it fails open so the agent can fix it.
-func RunGate(ctx context.Context, dir, script string) (bool, string) {
+// should be woken; on script failure it fails open so the agent can fix it,
+// and returns the error so the scheduler can back off repeat failures.
+func RunGate(ctx context.Context, dir, script string) (bool, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, gateTimeout)
 	defer cancel()
 
@@ -29,19 +30,19 @@ func RunGate(ctx context.Context, dir, script string) (bool, string) {
 	}
 
 	if err != nil {
-		return true, fmt.Sprintf("pre-check script failed (%v); fix the script or remove it from the task.\n%s", err, output)
+		return true, fmt.Sprintf("pre-check script failed (%v); fix the script or remove it from the task.\n%s", err, output), err
 	}
 
 	if wake, ok := parseGateOutput(output); ok {
-		return wake, output
+		return wake, output, nil
 	}
 
 	lines := strings.Split(output, "\n")
 	if wake, ok := parseGateOutput(lines[len(lines)-1]); ok {
-		return wake, output
+		return wake, output, nil
 	}
 
-	return true, output
+	return true, output, nil
 }
 
 func parseGateOutput(s string) (bool, bool) {
