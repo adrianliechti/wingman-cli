@@ -146,6 +146,7 @@ test("uses canonical product names for agents", async ({ page }) => {
 	});
 
 	await composer(page);
+	await page.getByLabel("Show sessions").click();
 	const picker = page.getByTitle("Agent: OpenCode");
 	await expect(picker).toBeVisible();
 	await picker.click();
@@ -300,6 +301,7 @@ test("keeps the session context menu above panel clipping", async ({
 		await route.fulfill({ json: { agent: "wingman", canDelete: true } });
 	});
 	await composer(page);
+	await page.getByLabel("Show sessions").click();
 
 	const session = page.getByTitle("Menu clipping check");
 	await expect(
@@ -404,6 +406,7 @@ test("keeps scheduled-agent actions above inspector clipping", async ({
 		});
 	});
 	await composer(page);
+	await page.getByLabel("Show sessions").click();
 	await page.getByTitle("Agent menu check").click();
 	await page
 		.getByRole("tablist", { name: "Workspace panels" })
@@ -481,7 +484,7 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 	await expect(toolbar.getByLabel(/workspace panel/)).toBeVisible();
 	await expect(page.locator('[data-layout-panel="sessions"]')).toHaveCSS(
 		"width",
-		"240px",
+		"0px",
 	);
 	await expect(page.locator('[data-layout-panel="workspace"]')).toHaveCSS(
 		"width",
@@ -489,6 +492,7 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 	);
 	const sessionsFrame = page.locator('[data-panel-frame="sessions"]');
 	await expect(sessionsFrame).toHaveCSS("width", "240px");
+	await expect(sessionsFrame).toHaveCSS("opacity", "0");
 	await expect(sessionsFrame).toHaveCSS("border-radius", "10px");
 	await expect(sessionsFrame).toHaveCSS("border-right-width", "0px");
 	const workspaceFrame = page.locator('[data-panel-frame="workspace"]');
@@ -500,7 +504,7 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 	).toHaveCount(2);
 	await expect(toolbar.locator("[data-titlebar-left-panel]")).toHaveCSS(
 		"width",
-		"240px",
+		"40px",
 	);
 	await expect(toolbar.locator("[data-titlebar-right-panel]")).toHaveCSS(
 		"width",
@@ -522,6 +526,16 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 			.locator('[data-panel-content="workspace"]')
 			.getByRole("tablist", { name: "Workspace panels" }),
 	).toHaveCount(0);
+	await toolbar.getByRole("button", { name: "Show sessions" }).click();
+	await expect(page.locator('[data-layout-panel="sessions"]')).toHaveCSS(
+		"width",
+		"240px",
+	);
+	await expect(sessionsFrame).toHaveCSS("opacity", "1");
+	await expect(toolbar.locator("[data-titlebar-left-panel]")).toHaveCSS(
+		"width",
+		"240px",
+	);
 	await expect
 		.poll(async () => {
 			const titlebarPanel = await toolbar
@@ -631,6 +645,7 @@ test("resizes borderless desktop panels within their limits", async ({
 }) => {
 	await composer(page);
 	const toolbar = page.getByLabel("Window toolbar");
+	await toolbar.getByRole("button", { name: "Show sessions" }).click();
 	const sessions = page.locator('[data-layout-panel="sessions"]');
 	const workspace = page.locator('[data-layout-panel="workspace"]');
 	const sessionsHandle = page.getByRole("separator", {
@@ -701,7 +716,7 @@ test("resizes borderless desktop panels within their limits", async ({
 	);
 });
 
-test("keeps the center workspace mounted across responsive layouts", async ({
+test("keeps the desktop workspace mounted across viewport sizes", async ({
 	page,
 }) => {
 	await composer(page);
@@ -713,23 +728,31 @@ test("keeps the center workspace mounted across responsive layouts", async ({
 	for (const width of [1_000, 700, 1_280]) {
 		await page.setViewportSize({ width, height: 800 });
 		await expect(center).toHaveAttribute("data-mount-marker", "original");
+		await expect(page.locator('[data-layout-panel="sessions"]')).toHaveCount(1);
+		await expect(page.locator('[data-layout-panel="workspace"]')).toHaveCount(
+			1,
+		);
+		await expect(page.getByRole("dialog", { name: "Sessions" })).toHaveCount(0);
+		await expect(page.getByRole("dialog", { name: "Workspace" })).toHaveCount(
+			0,
+		);
 	}
 });
 
-test("keeps workspace tabs inside the drawer on narrow layouts", async ({
+test("keeps workspace tabs in the titlebar at small viewport sizes", async ({
 	page,
 }) => {
 	await page.setViewportSize({ width: 700, height: 800 });
 	await composer(page);
-	const toolbar = page.getByLabel("Window toolbar");
-	await toolbar.getByRole("button", { name: "Show workspace panel" }).click();
 	const workspaceTabs = page.getByRole("tablist", {
 		name: "Workspace panels",
 	});
 	await expect(workspaceTabs).toBeVisible();
 	expect(
-		await workspaceTabs.evaluate(
-			(element) => element.closest("[data-window-titlebar]") === null,
+		await workspaceTabs.evaluate((element) =>
+			element
+				.closest("[data-window-titlebar]")
+				?.hasAttribute("data-window-titlebar"),
 		),
 	).toBe(true);
 });
@@ -950,6 +973,73 @@ test("renders markdown files in a browser preview", async ({ page }) => {
 	await expect(page.locator(".monaco-editor")).toBeVisible();
 });
 
+test("previews raster images at their intrinsic size and renders SVG", async ({
+	page,
+}) => {
+	await composer(page);
+	await page.getByRole("treeitem", { name: /pixel\.png/ }).click();
+	const pixel = page.getByRole("img", { name: "pixel.png" });
+	await expect(pixel).toBeVisible();
+	await expect
+		.poll(() => pixel.evaluate((image) => image.naturalWidth))
+		.toBe(1);
+	await expect.poll(() => pixel.evaluate((image) => image.clientWidth)).toBe(1);
+
+	await page.getByRole("treeitem", { name: /logo-preview\.svg/ }).click();
+	await expect(page.locator(".monaco-editor")).toBeVisible();
+	await page.getByTitle("Show image preview").click();
+	const svg = page.getByRole("img", { name: "logo-preview.svg" });
+	await expect(svg).toBeVisible();
+	await expect.poll(() => svg.evaluate((image) => image.naturalWidth)).toBe(40);
+});
+
+test("previews structured data and delimited tables", async ({ page }) => {
+	await composer(page);
+
+	for (const filename of [
+		"data-preview.json",
+		"data-preview.yaml",
+		"data-preview.toml",
+		"data-preview.xml",
+	]) {
+		await page.getByRole("treeitem", { name: filename }).click();
+		await page.getByTitle("Show data preview").click();
+		const preview = page.getByLabel(`Preview of ${filename}`);
+		await expect(preview).toBeVisible();
+		await expect(preview.getByText("project:")).toBeVisible();
+		await expect(preview.getByText('"wingman"')).toBeVisible();
+	}
+
+	for (const filename of ["data-preview.csv", "data-preview.tsv"]) {
+		await page.getByRole("treeitem", { name: filename }).click();
+		await page.getByTitle("Show table preview").click();
+		const preview = page.getByLabel(`Preview of ${filename}`);
+		await expect(
+			preview.getByRole("columnheader", { name: "name" }),
+		).toBeVisible();
+		await expect(
+			preview.getByRole("cell", { name: "ready" }).first(),
+		).toBeVisible();
+		await preview.getByRole("button", { name: "name" }).click();
+		await expect(
+			preview.getByRole("columnheader", { name: "name" }),
+		).toHaveAttribute("aria-sort", "ascending");
+	}
+});
+
+test("renders Mermaid diagrams", async ({ page }) => {
+	await composer(page);
+	await page.getByRole("treeitem", { name: /flow-preview\.mmd/ }).click();
+	await page.getByTitle("Show diagram preview").click();
+	const preview = page.getByRole("img", {
+		name: "Preview of flow-preview.mmd",
+	});
+	await expect(preview).toBeVisible();
+	await expect
+		.poll(() => preview.evaluate((image) => image.naturalWidth))
+		.toBeGreaterThan(0);
+});
+
 test("protects unsaved file edits when closing a tab", async ({
 	page,
 	request,
@@ -986,23 +1076,16 @@ test("protects unsaved file edits when closing a tab", async ({
 	expect((await response.json()).content).toBe("original\n");
 });
 
-test("uses accessible responsive drawers and command navigation", async ({
+test("uses accessible desktop panels and command navigation", async ({
 	page,
 }) => {
 	await page.setViewportSize({ width: 720, height: 800 });
 	await composer(page);
 
-	await page.getByLabel("Show sessions").click();
-	const sessions = page.getByRole("dialog", { name: "Sessions" });
-	await expect(sessions).toBeVisible();
-	await page.keyboard.press("Escape");
-	await expect(sessions).toBeHidden();
-
-	await page.getByLabel("Show workspace panel").click();
-	const workspace = page.getByRole("dialog", { name: "Workspace" });
-	await expect(workspace).toBeVisible();
-	await page.keyboard.press("Escape");
-	await expect(workspace).toBeHidden();
+	await expect(page.locator('[data-layout-panel="sessions"]')).toHaveCount(1);
+	await expect(page.locator('[data-layout-panel="workspace"]')).toHaveCount(1);
+	await expect(page.getByRole("dialog", { name: "Sessions" })).toHaveCount(0);
+	await expect(page.getByRole("dialog", { name: "Workspace" })).toHaveCount(0);
 
 	await page.keyboard.press("Control+k");
 	await expect(

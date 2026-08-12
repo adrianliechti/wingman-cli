@@ -49,7 +49,10 @@ var extToLanguage = map[string]string{
 	".yaml":       "yaml",
 	".yml":        "yaml",
 	".json":       "json",
+	".csv":        "plaintext",
+	".tsv":        "plaintext",
 	".xml":        "xml",
+	".svg":        "xml",
 	".html":       "html",
 	".htm":        "html",
 	".css":        "css",
@@ -57,6 +60,8 @@ var extToLanguage = map[string]string{
 	".sql":        "sql",
 	".md":         "markdown",
 	".markdown":   "markdown",
+	".mmd":        "plaintext",
+	".mermaid":    "plaintext",
 	".toml":       "toml",
 	".ini":        "ini",
 	".cfg":        "ini",
@@ -194,16 +199,6 @@ func (s *Server) handleFileRead(w http.ResponseWriter, r *http.Request) {
 	}
 
 	size := int64(len(data))
-
-	if strings.EqualFold(filepath.Ext(filePath), ".svg") {
-		writeJSON(w, FileContent{
-			Path:   filePath,
-			Binary: true,
-			Mime:   "image/svg+xml",
-			Size:   size,
-		})
-		return
-	}
 
 	if isBinary(data) {
 		head := data

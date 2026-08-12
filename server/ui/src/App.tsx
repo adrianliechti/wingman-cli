@@ -68,6 +68,7 @@ import type {
 	TerminalEntry,
 	TurnInputIntent,
 } from "./types/protocol";
+import { textPreviewKind } from "./utils/filePreview";
 
 interface CenterTab {
 	id: string;
@@ -87,13 +88,10 @@ interface CenterTab {
 type RightTab = "changes" | "files" | "problems" | "agents";
 type CloseRequest = { kind: "file" | "terminal"; tab: CenterTab } | null;
 type SessionDeleteRequest = { id: string; title: string } | null;
-type LayoutMode = "wide" | "medium" | "narrow";
-
 const LEFT_PANEL_DEFAULT_SIZE = 240;
 const LEFT_PANEL_MIN_SIZE = 200;
 const LEFT_PANEL_MAX_SIZE = 360;
 const RIGHT_PANEL_WIDE_DEFAULT_SIZE = 304;
-const RIGHT_PANEL_MEDIUM_DEFAULT_SIZE = 288;
 const RIGHT_PANEL_MIN_SIZE = 240;
 const RIGHT_PANEL_MAX_SIZE = 480;
 const CENTER_PANEL_MIN_SIZE = 320;
@@ -123,7 +121,6 @@ function draftChatTab(): CenterTab {
 }
 
 export default function App() {
-	const layoutMode = useLayoutMode();
 	const {
 		connected,
 		sessions,
@@ -160,27 +157,16 @@ export default function App() {
 	const showAgents = capabilities?.tasks ?? false;
 	const showTerminal = capabilities?.terminal ?? false;
 	const [requestedRightTab, setRequestedRightTab] = useState<RightTab>("files");
-	const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+	const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
 	const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
 	const appRef = useRef<HTMLDivElement>(null);
 	const leftPanelWidthRef = useRef(LEFT_PANEL_DEFAULT_SIZE);
-	const [rightPanelDefaultWidth] = useState(() =>
-		layoutMode === "wide"
-			? RIGHT_PANEL_WIDE_DEFAULT_SIZE
-			: RIGHT_PANEL_MEDIUM_DEFAULT_SIZE,
-	);
+	const rightPanelDefaultWidth = RIGHT_PANEL_WIDE_DEFAULT_SIZE;
 	const rightPanelWidthRef = useRef(rightPanelDefaultWidth);
 	const leftPanelRef = usePanelRef();
 	const rightPanelRef = usePanelRef();
-	const [leftDrawerOpen, setLeftDrawerOpen] = useState(false);
-	const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
 	const [terminalShells, setTerminalShells] = useState<ShellEntry[]>([]);
 	const terminalCreatingRef = useRef(false);
-
-	useEffect(() => {
-		setLeftDrawerOpen(false);
-		setRightDrawerOpen(false);
-	}, [layoutMode]);
 
 	const [tabs, setTabs] = useState<CenterTab[]>([draftChatTab()]);
 	const [activeTabId, setActiveTabId] = useState(chatTabId(""));
@@ -340,19 +326,23 @@ export default function App() {
 	}, [createTerminal]);
 
 	const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
-	const activeIsMarkdown =
-		activeTab.type === "file" &&
-		/\.(?:md|markdown)$/i.test(activeTab.path ?? "");
-	const activeSupportsPreview =
-		activeTab.type === "file" &&
-		/\.(?:html?|md|markdown)$/i.test(activeTab.path ?? "");
+	const activePreviewKind =
+		activeTab.type === "file" ? textPreviewKind(activeTab.path ?? "") : null;
 	const activeFileView = fileViews[activeTab.id] ?? "code";
 	const previewToggleLabel =
 		activeFileView === "preview"
 			? "Show code editor"
-			: activeIsMarkdown
-				? "Show Markdown preview"
-				: "Show browser preview";
+			: activePreviewKind === "html"
+				? "Show browser preview"
+				: activePreviewKind === "markdown"
+					? "Show Markdown preview"
+					: activePreviewKind === "svg"
+						? "Show image preview"
+						: activePreviewKind === "mermaid"
+							? "Show diagram preview"
+							: activePreviewKind === "csv" || activePreviewKind === "tsv"
+								? "Show table preview"
+								: "Show data preview";
 	const sessionId =
 		activeTab.type === "chat" ? (activeTab.sessionId ?? "") : currentSessionId;
 	const rightTab =
@@ -959,31 +949,25 @@ export default function App() {
 		appRef.current?.style.setProperty("--right-panel-width", `${width}px`);
 	}, []);
 	const toggleSidebar = useCallback(() => {
-		if (layoutMode === "wide") {
-			const panel = leftPanelRef.current;
-			if (panel?.isCollapsed()) {
-				panel.resize(`${leftPanelWidthRef.current}px`);
-			} else panel?.collapse();
-		} else setLeftDrawerOpen((open) => !open);
-	}, [layoutMode, leftPanelRef]);
+		const panel = leftPanelRef.current;
+		if (panel?.isCollapsed()) {
+			panel.resize(`${leftPanelWidthRef.current}px`);
+		} else panel?.collapse();
+	}, [leftPanelRef]);
 	const toggleRightPanel = useCallback(() => {
-		if (layoutMode === "narrow") setRightDrawerOpen((open) => !open);
-		else {
-			const panel = rightPanelRef.current;
-			if (panel?.isCollapsed()) {
-				panel.resize(`${rightPanelWidthRef.current}px`);
-			} else panel?.collapse();
-		}
-	}, [layoutMode, rightPanelRef]);
+		const panel = rightPanelRef.current;
+		if (panel?.isCollapsed()) {
+			panel.resize(`${rightPanelWidthRef.current}px`);
+		} else panel?.collapse();
+	}, [rightPanelRef]);
 	const showRightPanel = useCallback(
 		(tab: RightTab) => {
 			setRequestedRightTab(tab);
-			if (layoutMode === "narrow") setRightDrawerOpen(true);
-			else if (rightPanelRef.current?.isCollapsed()) {
+			if (rightPanelRef.current?.isCollapsed()) {
 				rightPanelRef.current.resize(`${rightPanelWidthRef.current}px`);
 			}
 		},
-		[layoutMode, rightPanelRef],
+		[rightPanelRef],
 	);
 
 	const paletteActions = useMemo<PaletteAction[]>(() => {
@@ -1075,13 +1059,12 @@ export default function App() {
 	const canCreateNew = !!(
 		sessionId && (sessions[sessionId]?.entries.length ?? 0) > 0
 	);
-	const leftPanelDocked = layoutMode === "wide" && !sidebarCollapsed;
-	const rightPanelDocked = layoutMode !== "narrow" && !rightPanelCollapsed;
+	const leftPanelDocked = !sidebarCollapsed;
+	const rightPanelDocked = !rightPanelCollapsed;
 	const sidebarContent = (
 		<Sidebar
 			currentSessionId={sessionId}
 			onSessionSelect={(id) => {
-				setLeftDrawerOpen(false);
 				void handleSessionSelect(id);
 			}}
 			onSessionDelete={(id, title) => setSessionDelete({ id, title })}
@@ -1134,12 +1117,6 @@ export default function App() {
 			className="flex h-full flex-col bg-transparent"
 			aria-label="Workspace"
 		>
-			{layoutMode === "narrow" && (
-				<>
-					{workspaceTabs}
-					<div className="h-px shrink-0 bg-border-subtle" />
-				</>
-			)}
 			<div className="min-h-0 flex-1 overflow-hidden pt-0.5" role="tabpanel">
 				{rightTab === "agents" && showAgents ? (
 					<TasksPanel
@@ -1178,30 +1155,26 @@ export default function App() {
 				} as CSSProperties
 			}
 		>
-			{layoutMode === "wide" && (
-				<div
-					data-panel-frame="sessions"
-					aria-hidden="true"
-					className={`pointer-events-none absolute inset-y-0 left-0 z-0 rounded-[10px] bg-bg-surface/40 transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
-						sidebarCollapsed
-							? "-translate-x-full opacity-0"
-							: "translate-x-0 opacity-100"
-					}`}
-					style={{ width: "var(--left-panel-width)" }}
-				/>
-			)}
-			{layoutMode !== "narrow" && (
-				<div
-					data-panel-frame="workspace"
-					aria-hidden="true"
-					className={`pointer-events-none absolute inset-y-0 right-0 z-0 rounded-[10px] bg-bg-surface/40 transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
-						rightPanelCollapsed
-							? "translate-x-full opacity-0"
-							: "translate-x-0 opacity-100"
-					}`}
-					style={{ width: "var(--right-panel-width)" }}
-				/>
-			)}
+			<div
+				data-panel-frame="sessions"
+				aria-hidden="true"
+				className={`pointer-events-none absolute inset-y-0 left-0 z-0 rounded-[10px] bg-bg-surface/40 transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
+					sidebarCollapsed
+						? "-translate-x-full opacity-0"
+						: "translate-x-0 opacity-100"
+				}`}
+				style={{ width: "var(--left-panel-width)" }}
+			/>
+			<div
+				data-panel-frame="workspace"
+				aria-hidden="true"
+				className={`pointer-events-none absolute inset-y-0 right-0 z-0 rounded-[10px] bg-bg-surface/40 transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
+					rightPanelCollapsed
+						? "translate-x-full opacity-0"
+						: "translate-x-0 opacity-100"
+				}`}
+				style={{ width: "var(--right-panel-width)" }}
+			/>
 			<header
 				data-window-titlebar
 				className="window-titlebar relative z-10 flex h-10 shrink-0 items-stretch overflow-hidden bg-transparent"
@@ -1243,18 +1216,10 @@ export default function App() {
 						type="button"
 						className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
 						onClick={toggleSidebar}
-						title={
-							layoutMode !== "wide" || sidebarCollapsed
-								? "Show sessions"
-								: "Hide sessions"
-						}
-						aria-label={
-							layoutMode !== "wide" || sidebarCollapsed
-								? "Show sessions"
-								: "Hide sessions"
-						}
+						title={sidebarCollapsed ? "Show sessions" : "Hide sessions"}
+						aria-label={sidebarCollapsed ? "Show sessions" : "Hide sessions"}
 					>
-						{layoutMode !== "wide" || sidebarCollapsed ? (
+						{sidebarCollapsed ? (
 							<PanelLeftOpen size={13} />
 						) : (
 							<PanelLeftClose size={13} />
@@ -1426,7 +1391,7 @@ export default function App() {
 							<Plus size={13} />
 						</button>
 					)}
-					{activeSupportsPreview && (
+					{activePreviewKind && (
 						<button
 							type="button"
 							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-bg-hover ${
@@ -1446,10 +1411,10 @@ export default function App() {
 						>
 							{activeFileView === "preview" ? (
 								<Code2 size={13} />
-							) : activeIsMarkdown ? (
-								<Eye size={13} />
-							) : (
+							) : activePreviewKind === "html" ? (
 								<Globe2 size={13} />
+							) : (
+								<Eye size={13} />
 							)}
 						</button>
 					)}
@@ -1473,17 +1438,17 @@ export default function App() {
 						className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
 						onClick={toggleRightPanel}
 						title={
-							layoutMode === "narrow" || rightPanelCollapsed
+							rightPanelCollapsed
 								? "Show workspace panel"
 								: "Hide workspace panel"
 						}
 						aria-label={
-							layoutMode === "narrow" || rightPanelCollapsed
+							rightPanelCollapsed
 								? "Show workspace panel"
 								: "Hide workspace panel"
 						}
 					>
-						{layoutMode === "narrow" || rightPanelCollapsed ? (
+						{rightPanelCollapsed ? (
 							<PanelRightOpen size={13} />
 						) : (
 							<PanelRightClose size={13} />
@@ -1518,40 +1483,33 @@ export default function App() {
 				orientation="horizontal"
 				className="relative z-10 flex-1 overflow-hidden"
 			>
-				{layoutMode === "wide" && (
-					<Panel
-						id="sessions"
-						panelRef={leftPanelRef}
-						defaultSize={`${LEFT_PANEL_DEFAULT_SIZE}px`}
-						minSize={`${LEFT_PANEL_MIN_SIZE}px`}
-						maxSize={`${LEFT_PANEL_MAX_SIZE}px`}
-						collapsedSize="0px"
-						collapsible
-						groupResizeBehavior="preserve-pixel-size"
-						onResize={handleLeftPanelResize}
-						data-layout-panel="sessions"
-						inert={sidebarCollapsed}
-						className="h-full overflow-hidden"
+				<Panel
+					id="sessions"
+					panelRef={leftPanelRef}
+					defaultSize="0px"
+					minSize={`${LEFT_PANEL_MIN_SIZE}px`}
+					maxSize={`${LEFT_PANEL_MAX_SIZE}px`}
+					collapsedSize="0px"
+					collapsible
+					groupResizeBehavior="preserve-pixel-size"
+					onResize={handleLeftPanelResize}
+					data-layout-panel="sessions"
+					inert={sidebarCollapsed}
+					className="h-full overflow-hidden"
+				>
+					<div
+						data-panel-content="sessions"
+						className={`h-full overflow-hidden transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
+							sidebarCollapsed
+								? "pointer-events-none -translate-x-full opacity-0"
+								: "translate-x-0 opacity-100"
+						}`}
+						style={{ width: "var(--left-panel-width)" }}
 					>
-						<div
-							data-panel-content="sessions"
-							className={`h-full overflow-hidden transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
-								sidebarCollapsed
-									? "pointer-events-none -translate-x-full opacity-0"
-									: "translate-x-0 opacity-100"
-							}`}
-							style={{ width: "var(--left-panel-width)" }}
-						>
-							{sidebarContent}
-						</div>
-					</Panel>
-				)}
-				{layoutMode === "wide" && (
-					<ResizeHandle
-						label="Resize sessions panel"
-						hidden={sidebarCollapsed}
-					/>
-				)}
+						{sidebarContent}
+					</div>
+				</Panel>
+				<ResizeHandle label="Resize sessions panel" hidden={sidebarCollapsed} />
 				<Panel
 					id="center"
 					minSize={`${CENTER_PANEL_MIN_SIZE}px`}
@@ -1678,62 +1636,37 @@ export default function App() {
 						</div>
 					</main>
 				</Panel>
-				{layoutMode !== "narrow" && (
-					<ResizeHandle
-						label="Resize workspace panel"
-						hidden={rightPanelCollapsed}
-					/>
-				)}
-				{layoutMode !== "narrow" && (
-					<Panel
-						id="workspace"
-						panelRef={rightPanelRef}
-						defaultSize={`${rightPanelDefaultWidth}px`}
-						minSize={`${RIGHT_PANEL_MIN_SIZE}px`}
-						maxSize={`${RIGHT_PANEL_MAX_SIZE}px`}
-						collapsedSize="0px"
-						collapsible
-						groupResizeBehavior="preserve-pixel-size"
-						onResize={handleRightPanelResize}
-						data-layout-panel="workspace"
-						inert={rightPanelCollapsed}
-						className="h-full overflow-hidden"
+				<ResizeHandle
+					label="Resize workspace panel"
+					hidden={rightPanelCollapsed}
+				/>
+				<Panel
+					id="workspace"
+					panelRef={rightPanelRef}
+					defaultSize={`${rightPanelDefaultWidth}px`}
+					minSize={`${RIGHT_PANEL_MIN_SIZE}px`}
+					maxSize={`${RIGHT_PANEL_MAX_SIZE}px`}
+					collapsedSize="0px"
+					collapsible
+					groupResizeBehavior="preserve-pixel-size"
+					onResize={handleRightPanelResize}
+					data-layout-panel="workspace"
+					inert={rightPanelCollapsed}
+					className="h-full overflow-hidden"
+				>
+					<div
+						data-panel-content="workspace"
+						className={`ml-auto h-full overflow-hidden transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
+							rightPanelCollapsed
+								? "pointer-events-none translate-x-full opacity-0"
+								: "translate-x-0 opacity-100"
+						}`}
+						style={{ width: "var(--right-panel-width)" }}
 					>
-						<div
-							data-panel-content="workspace"
-							className={`ml-auto h-full overflow-hidden transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
-								rightPanelCollapsed
-									? "pointer-events-none translate-x-full opacity-0"
-									: "translate-x-0 opacity-100"
-							}`}
-							style={{ width: "var(--right-panel-width)" }}
-						>
-							{inspectorContent}
-						</div>
-					</Panel>
-				)}
+						{inspectorContent}
+					</div>
+				</Panel>
 			</Group>
-
-			{layoutMode !== "wide" && (
-				<SideDrawer
-					side="left"
-					title="Sessions"
-					open={leftDrawerOpen}
-					onClose={() => setLeftDrawerOpen(false)}
-				>
-					{sidebarContent}
-				</SideDrawer>
-			)}
-			{layoutMode === "narrow" && (
-				<SideDrawer
-					side="right"
-					title="Workspace"
-					open={rightDrawerOpen}
-					onClose={() => setRightDrawerOpen(false)}
-				>
-					{inspectorContent}
-				</SideDrawer>
-			)}
 
 			{paletteOpen && (
 				<CommandPalette
@@ -1860,75 +1793,6 @@ function ResizeHandle({ label, hidden }: { label: string; hidden: boolean }) {
 				hidden ? "pointer-events-none" : ""
 			}`}
 		/>
-	);
-}
-
-function useLayoutMode(): LayoutMode {
-	const read = (): LayoutMode => {
-		if (window.innerWidth >= 1200) return "wide";
-		if (window.innerWidth >= 800) return "medium";
-		return "narrow";
-	};
-	const [mode, setMode] = useState<LayoutMode>(read);
-	useEffect(() => {
-		const update = () => setMode(read());
-		window.addEventListener("resize", update);
-		return () => window.removeEventListener("resize", update);
-	}, []);
-	return mode;
-}
-
-function SideDrawer({
-	side,
-	title,
-	open,
-	onClose,
-	children,
-}: {
-	side: "left" | "right";
-	title: string;
-	open: boolean;
-	onClose: () => void;
-	children: React.ReactNode;
-}) {
-	const panelRef = useRef<HTMLDivElement>(null);
-	useEffect(() => {
-		if (!open) return;
-		const frame = requestAnimationFrame(() =>
-			panelRef.current
-				?.querySelector<HTMLElement>("button, input, [tabindex='0']")
-				?.focus(),
-		);
-		const onKey = (event: KeyboardEvent) => {
-			if (event.key === "Escape") onClose();
-		};
-		document.addEventListener("keydown", onKey);
-		return () => {
-			cancelAnimationFrame(frame);
-			document.removeEventListener("keydown", onKey);
-		};
-	}, [onClose, open]);
-
-	if (!open) return null;
-	return (
-		<div
-			className="fixed inset-0 z-120 bg-bg/60 backdrop-blur-sm"
-			onMouseDown={(event) => {
-				if (event.target === event.currentTarget) onClose();
-			}}
-		>
-			<div
-				ref={panelRef}
-				role="dialog"
-				aria-modal="true"
-				aria-label={title}
-				className={`absolute inset-y-0 w-[320px] max-w-[85vw] border-border bg-bg shadow-2xl ${
-					side === "left" ? "left-0 border-r" : "right-0 border-l"
-				}`}
-			>
-				{children}
-			</div>
-		</div>
 	);
 }
 

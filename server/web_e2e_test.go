@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -230,6 +231,34 @@ func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
 		0o644,
 	); err != nil {
 		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(workDir, "logo-preview.svg"),
+		[]byte(`<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"><rect width="40" height="30" fill="rebeccapurple"/></svg>`),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	pixelPNG, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "pixel.png"), pixelPNG, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previewFiles := map[string]string{
+		"data-preview.json": `{ "project": "wingman", "features": ["preview", "edit"] }`,
+		"data-preview.yaml": "project: wingman\nfeatures:\n  - preview\n  - edit\n",
+		"data-preview.toml": "project = \"wingman\"\nfeatures = [\"preview\", \"edit\"]\n[server]\nport = 8080\n",
+		"data-preview.xml":  "<config><project>wingman</project><preview enabled=\"true\"><format>xml</format><format>svg</format></preview></config>",
+		"data-preview.csv":  "name,status\nmarkdown,ready\nsvg,ready\n",
+		"data-preview.tsv":  "name\tstatus\njson\tready\nyaml\tready\n",
+		"flow-preview.mmd":  "flowchart LR\n  Source --> Preview\n  Preview --> Browser\n",
+	}
+	for name, content := range previewFiles {
+		if err := os.WriteFile(filepath.Join(workDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := os.WriteFile(
 		filepath.Join(workDir, "editable.txt"),

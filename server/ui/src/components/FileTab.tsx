@@ -10,7 +10,10 @@ import {
 } from "../monacoLsp";
 import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
 import type { ServerMessage } from "../types/protocol";
+import { textPreviewKind } from "../utils/filePreview";
+import { DataPreview } from "./DataPreview";
 import { MarkdownContent } from "./MarkdownContent";
+import { MermaidPreview } from "./MermaidPreview";
 
 interface Props {
 	document: OpenDocument;
@@ -129,9 +132,16 @@ export function FileTab({
 
 	if (file.binary) return <BinaryPreview file={file} />;
 
-	const isHtml = file.language === "html" || /\.html?$/i.test(file.path);
-	const isMarkdown =
-		file.language === "markdown" || /\.(?:md|markdown)$/i.test(file.path);
+	const previewKind = textPreviewKind(file.path);
+	const dataFormat =
+		previewKind === "json" ||
+		previewKind === "yaml" ||
+		previewKind === "toml" ||
+		previewKind === "xml" ||
+		previewKind === "csv" ||
+		previewKind === "tsv"
+			? previewKind
+			: null;
 	const previewSrc = `/api/files/preview?path=${encodeURIComponent(file.path)}`;
 	return (
 		<div className="flex h-full min-h-0 flex-col">
@@ -163,7 +173,7 @@ export function FileTab({
 				</div>
 			)}
 			<div className="min-h-0 flex-1">
-				{isHtml && view === "preview" ? (
+				{previewKind === "html" && view === "preview" ? (
 					<iframe
 						key={document.revision}
 						src={previewSrc}
@@ -173,16 +183,26 @@ export function FileTab({
 						className="h-full w-full border-0 bg-bg"
 						style={{ colorScheme: scheme }}
 					/>
-				) : isMarkdown && view === "preview" ? (
+				) : previewKind === "svg" && view === "preview" ? (
+					<ImagePreview src={previewSrc} name={file.path} />
+				) : previewKind === "markdown" && view === "preview" ? (
 					<div className="h-full overflow-auto bg-bg">
 						<article
 							data-markdown-document
 							aria-label={`Preview of ${file.path}`}
-							className="mx-auto max-w-4xl px-8 py-7 text-[13px] leading-relaxed"
+							className="mx-auto max-w-4xl px-8 py-7 text-[13px] leading-relaxed select-text"
 						>
 							<MarkdownContent text={document.draft} />
 						</article>
 					</div>
+				) : previewKind === "mermaid" && view === "preview" ? (
+					<MermaidPreview text={document.draft} path={file.path} />
+				) : dataFormat && view === "preview" ? (
+					<DataPreview
+						text={document.draft}
+						format={dataFormat}
+						path={file.path}
+					/>
 				) : (
 					<Editor
 						height="100%"
@@ -243,22 +263,22 @@ function BinaryPreview({
 	const src = `/api/files/download?path=${encodeURIComponent(file.path)}`;
 	return (
 		<div className="h-full w-full overflow-auto bg-bg">
-			<PreviewBody mime={mime} src={src} />
+			<PreviewBody mime={mime} src={src} name={file.path} />
 		</div>
 	);
 }
 
-function PreviewBody({ mime, src }: { mime: string; src: string }) {
+function PreviewBody({
+	mime,
+	src,
+	name,
+}: {
+	mime: string;
+	src: string;
+	name: string;
+}) {
 	if (mime.startsWith("image/")) {
-		return (
-			<div className="flex h-full w-full items-center justify-center p-6">
-				<img
-					src={src}
-					alt=""
-					className="max-h-full max-w-full object-contain"
-				/>
-			</div>
-		);
+		return <ImagePreview src={src} name={name} />;
 	}
 	if (mime.startsWith("video/")) {
 		return (
@@ -291,6 +311,25 @@ function PreviewBody({ mime, src }: { mime: string; src: string }) {
 		);
 	}
 	return <UnknownBinary />;
+}
+
+function ImagePreview({ src, name }: { src: string; name: string }) {
+	return (
+		<div
+			data-image-preview
+			className="flex h-full min-h-0 w-full items-center justify-center overflow-auto p-6"
+		>
+			<img
+				src={src}
+				alt={name}
+				className="h-auto w-auto object-contain"
+				style={{
+					maxWidth: "min(100%, 1024px)",
+					maxHeight: "min(100%, 800px)",
+				}}
+			/>
+		</div>
+	);
 }
 
 function UnknownBinary() {
