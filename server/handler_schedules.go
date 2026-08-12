@@ -93,3 +93,36 @@ func (s *Server) handleScheduleDelete(w http.ResponseWriter, r *http.Request) {
 	s.sendSession(r.PathValue("id"), Frame{Type: EvtTasksChanged})
 	w.WriteHeader(http.StatusNoContent)
 }
+
+func (s *Server) handleSchedulePause(w http.ResponseWriter, r *http.Request) {
+	s.handleScheduleStatus(w, r, schedule.StatusPaused)
+}
+
+func (s *Server) handleScheduleResume(w http.ResponseWriter, r *http.Request) {
+	s.handleScheduleStatus(w, r, schedule.StatusActive)
+}
+
+func (s *Server) handleScheduleStatus(w http.ResponseWriter, r *http.Request, status string) {
+	store := s.sessionSchedules(r.PathValue("id"))
+	if store == nil {
+		http.Error(w, "scheduled tasks unavailable", http.StatusNotFound)
+		return
+	}
+
+	id := r.PathValue("scheduleID")
+	err := store.Mutate(func(tasks []schedule.Task) ([]schedule.Task, error) {
+		i, err := schedule.Find(tasks, id)
+		if err != nil {
+			return nil, err
+		}
+		tasks[i].Status = status
+		return tasks, nil
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	s.sendSession(r.PathValue("id"), Frame{Type: EvtTasksChanged})
+	w.WriteHeader(http.StatusNoContent)
+}

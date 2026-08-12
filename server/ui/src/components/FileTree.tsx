@@ -12,6 +12,7 @@ import {
 	Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { FileEntry, ServerMessage } from "../types/protocol";
 import { getDeviconClass } from "../utils/fileIcons";
 import { Dialog, dialogButtonClass, useToast } from "./ui/Feedback";
@@ -152,10 +153,12 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 		document.addEventListener("mousedown", close);
 		document.addEventListener("scroll", close, true);
 		document.addEventListener("keydown", onKey);
+		window.addEventListener("resize", close);
 		return () => {
 			document.removeEventListener("mousedown", close);
 			document.removeEventListener("scroll", close, true);
 			document.removeEventListener("keydown", onKey);
+			window.removeEventListener("resize", close);
 		};
 	}, [menu]);
 
@@ -440,20 +443,22 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 			aria-label="Workspace files"
 		>
 			{renderNodes(nodes, 0)}
-			{menu && (
-				<ContextMenu
-					menu={menu}
-					onOpen={() => {
-						setMenu(null);
-						onFileSelect(menu.node.path);
-					}}
-					onRename={() => beginRename(menu.node)}
-					onDuplicate={() => handleDuplicate(menu.node)}
-					onCopy={() => handleCopy(menu.node)}
-					onDownload={() => handleDownload(menu.node)}
-					onDelete={() => requestDelete(menu.node)}
-				/>
-			)}
+			{menu &&
+				createPortal(
+					<ContextMenu
+						menu={menu}
+						onOpen={() => {
+							setMenu(null);
+							onFileSelect(menu.node.path);
+						}}
+						onRename={() => beginRename(menu.node)}
+						onDuplicate={() => handleDuplicate(menu.node)}
+						onCopy={() => handleCopy(menu.node)}
+						onDownload={() => handleDownload(menu.node)}
+						onDelete={() => requestDelete(menu.node)}
+					/>,
+					document.body,
+				)}
 			<Dialog
 				open={deleteTarget !== null}
 				title={`Delete ${deleteTarget?.is_dir ? "folder" : "file"}?`}
@@ -522,7 +527,13 @@ function ContextMenu({
 			role="menu"
 			aria-label={`Actions for ${menu.node.name}`}
 			className="fixed z-100 min-w-[160px] bg-bg-elevated border border-border-subtle rounded-md shadow-2xl py-1 text-[12px]"
-			style={{ left: menu.x, top: menu.y }}
+			style={{
+				left: Math.max(4, Math.min(menu.x, window.innerWidth - 168)),
+				top: Math.max(
+					4,
+					Math.min(menu.y, window.innerHeight - (isDir ? 132 : 196)),
+				),
+			}}
 			onMouseDown={(e) => e.stopPropagation()}
 			onContextMenu={(e) => e.preventDefault()}
 		>

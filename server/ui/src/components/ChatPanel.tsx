@@ -143,6 +143,20 @@ export function ChatPanel({
 	const [sendError, setSendError] = useState<string | null>(null);
 	const inputError = sendError ?? error;
 	const [editingQueueId, setEditingQueueId] = useState<string | null>(null);
+	const queueSettling =
+		pendingInputs.length > 0 &&
+		pendingInputs.every((item) => item.state === "sending");
+	const [revealSettling, setRevealSettling] = useState(false);
+	useEffect(() => {
+		if (!queueSettling) {
+			setRevealSettling(false);
+			return;
+		}
+		const timer = setTimeout(() => setRevealSettling(true), 400);
+		return () => clearTimeout(timer);
+	}, [queueSettling]);
+	const showQueue =
+		pendingInputs.length > 0 && (!queueSettling || revealSettling);
 	const containerRef = useRef<HTMLDivElement>(null);
 	const contentRef = useRef<HTMLDivElement>(null);
 	const spacerRef = useRef<HTMLDivElement>(null);
@@ -718,7 +732,7 @@ export function ChatPanel({
 				</div>
 			)}
 			<div
-				className={`h-full overflow-y-auto [overflow-anchor:none] ${pendingInputs.length > 0 ? "pb-56" : "pb-24"}`}
+				className={`h-full overflow-y-auto [overflow-anchor:none] ${showQueue ? "pb-56" : "pb-24"}`}
 				ref={containerRef}
 			>
 				{loading && entries.length === 0 ? (
@@ -769,7 +783,7 @@ export function ChatPanel({
 			<div className="absolute bottom-0 left-0 right-0 z-20">
 				<div className="h-6 bg-gradient-to-t from-bg to-transparent pointer-events-none" />
 				<div className="mx-auto w-full max-w-4xl bg-bg px-4 pb-3">
-					{pendingInputs.length > 0 && (
+					{showQueue && (
 						<TurnQueue
 							items={pendingInputs}
 							paused={queuePaused}

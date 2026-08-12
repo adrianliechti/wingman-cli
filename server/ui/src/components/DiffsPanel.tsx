@@ -4,6 +4,7 @@ import {
 	Check,
 	ChevronDown,
 	ClipboardCopy,
+	Code2,
 	FileText,
 	GitBranch,
 	GitCommitHorizontal,
@@ -15,6 +16,7 @@ import {
 	Search,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type {
 	DiffEntry,
 	DiffLayer,
@@ -38,6 +40,13 @@ interface MenuState {
 	x: number;
 	y: number;
 	diff: DiffEntry;
+}
+
+interface GitMenuState {
+	x: number;
+	y: number;
+	file: GitFileStatus;
+	staged: boolean;
 }
 
 const EMPTY_GIT_STATUS: GitStatus = {
@@ -107,10 +116,12 @@ export function DiffsPanel({
 		document.addEventListener("mousedown", close);
 		document.addEventListener("scroll", close, true);
 		document.addEventListener("keydown", onKey);
+		window.addEventListener("resize", close);
 		return () => {
 			document.removeEventListener("mousedown", close);
 			document.removeEventListener("scroll", close, true);
 			document.removeEventListener("keydown", onKey);
+			window.removeEventListener("resize", close);
 		};
 	}, [menu]);
 
@@ -180,6 +191,7 @@ export function DiffsPanel({
 					onMessage={setMessage}
 					onRequest={request}
 					onOpenDiff={onOpenDiff}
+					onOpenFile={onOpenFile}
 					onCommit={async () => {
 						if (await request("commit", { message })) setMessage("");
 					}}
@@ -214,39 +226,47 @@ export function DiffsPanel({
 				))}
 			</div>
 			{error && <InlineMessage kind="error" text={error} />}
-			{menu && (
-				<div
-					className="fixed z-100 min-w-[160px] bg-bg-elevated border border-border-subtle rounded-md shadow-2xl py-1 text-[12px]"
-					style={{ left: menu.x, top: menu.y }}
-					onMouseDown={(e) => e.stopPropagation()}
-				>
-					{menu.diff.status !== "deleted" && (
+			{menu &&
+				createPortal(
+					<div
+						role="menu"
+						aria-label={`Actions for ${menu.diff.path}`}
+						className="fixed z-100 min-w-[160px] bg-bg-elevated border border-border-subtle rounded-md shadow-2xl py-1 text-[12px]"
+						style={{
+							left: Math.max(4, Math.min(menu.x, window.innerWidth - 168)),
+							top: Math.max(4, Math.min(menu.y, window.innerHeight - 132)),
+						}}
+						onMouseDown={(e) => e.stopPropagation()}
+						onContextMenu={(e) => e.preventDefault()}
+					>
+						{menu.diff.status !== "deleted" && (
+							<DiffMenuItem
+								icon={<FileText size={12} />}
+								label="Open"
+								onClick={() => {
+									setMenu(null);
+									onOpenFile?.(menu.diff.path);
+								}}
+							/>
+						)}
 						<DiffMenuItem
-							icon={<FileText size={12} />}
-							label="Open"
+							icon={<ClipboardCopy size={12} />}
+							label="Copy"
 							onClick={() => {
 								setMenu(null);
-								onOpenFile?.(menu.diff.path);
+								void navigator.clipboard.writeText(menu.diff.patch);
 							}}
 						/>
-					)}
-					<DiffMenuItem
-						icon={<ClipboardCopy size={12} />}
-						label="Copy"
-						onClick={() => {
-							setMenu(null);
-							void navigator.clipboard.writeText(menu.diff.patch);
-						}}
-					/>
-					<div className="my-1 border-t border-border-subtle" />
-					<DiffMenuItem
-						icon={<RotateCcw size={12} />}
-						label="Revert"
-						onClick={() => requestRevert(menu.diff)}
-						danger
-					/>
-				</div>
-			)}
+						<div className="my-1 border-t border-border-subtle" />
+						<DiffMenuItem
+							icon={<RotateCcw size={12} />}
+							label="Revert"
+							onClick={() => requestRevert(menu.diff)}
+							danger
+						/>
+					</div>,
+					document.body,
+				)}
 			<RevertDialog
 				diff={revertTarget}
 				git={git}
@@ -312,6 +332,7 @@ function GitChanges({
 	onMessage,
 	onRequest,
 	onOpenDiff,
+	onOpenFile,
 	onCommit,
 	onRevert,
 }: {
@@ -324,9 +345,11 @@ function GitChanges({
 	onMessage: (value: string) => void;
 	onRequest: (action: string, body?: unknown) => Promise<boolean>;
 	onOpenDiff?: (path: string, layer?: DiffLayer) => void;
+	onOpenFile?: (path: string) => void;
 	onCommit: () => Promise<void>;
 	onRevert: (file: GitFileStatus) => void;
 }) {
+	const [menu, setMenu] = useState<GitMenuState | null>(null);
 	const staged = useMemo(
 		() => status.files.filter((file) => file.staged),
 		[status.files],
@@ -340,6 +363,38 @@ function GitChanges({
 	const paths = (files: GitFileStatus[]) => [
 		...new Set(files.flatMap(gitFilePaths)),
 	];
+
+	useEffect(() => {
+		if (!menu) return;
+		const close = () => setMenu(null);
+		const onKey = (event: KeyboardEvent) => {
+			if (event.key === "Escape") close();
+		};
+		document.addEventListener("mousedown", close);
+		document.addEventListener("scroll", close, true);
+		document.addEventListener("keydown", onKey);
+		window.addEventListener("resize", close);
+		return () => {
+			document.removeEventListener("mousedown", close);
+			document.removeEventListener("scroll", close, true);
+			document.removeEventListener("keydown", onKey);
+			window.removeEventListener("resize", close);
+		};
+	}, [menu]);
+
+	const openMenu = (
+		event: React.MouseEvent,
+		file: GitFileStatus,
+		isStaged: boolean,
+	) => {
+		event.preventDefault();
+		setMenu({
+			x: event.clientX,
+			y: event.clientY,
+			file,
+			staged: isStaged,
+		});
+	};
 
 	return (
 		<div className="flex h-full flex-col overflow-hidden bg-transparent">
@@ -396,6 +451,7 @@ function GitChanges({
 								void onRequest("unstage", { paths: gitFilePaths(file) })
 							}
 							onOpenDiff={onOpenDiff}
+							onContextMenu={openMenu}
 							staged
 						/>
 						<ChangeGroup
@@ -409,7 +465,7 @@ function GitChanges({
 								void onRequest("stage", { paths: gitFilePaths(file) })
 							}
 							onOpenDiff={onOpenDiff}
-							onRevert={onRevert}
+							onContextMenu={openMenu}
 						/>
 					</>
 				) : changed.length > 0 ? (
@@ -441,7 +497,7 @@ function GitChanges({
 								void onRequest("stage", { paths: gitFilePaths(file) })
 							}
 							onOpenDiff={onOpenDiff}
-							onRevert={onRevert}
+							onContextMenu={openMenu}
 						/>
 					</>
 				) : null}
@@ -490,6 +546,72 @@ function GitChanges({
 					</div>
 				</form>
 			)}
+			{menu &&
+				createPortal(
+					<div
+						role="menu"
+						aria-label={`Actions for ${menu.file.path}`}
+						className="fixed z-100 min-w-[170px] rounded-md border border-border-subtle bg-bg-elevated py-1 text-[12px] shadow-2xl"
+						style={{
+							left: Math.max(4, Math.min(menu.x, window.innerWidth - 178)),
+							top: Math.max(4, Math.min(menu.y, window.innerHeight - 164)),
+						}}
+						onMouseDown={(event) => event.stopPropagation()}
+						onContextMenu={(event) => event.preventDefault()}
+					>
+						<DiffMenuItem
+							icon={<FileText size={12} />}
+							label="Open Changes"
+							onClick={() => {
+								setMenu(null);
+								onOpenDiff?.(
+									menu.file.path,
+									menu.file.conflict
+										? undefined
+										: menu.staged
+											? "staged"
+											: "unstaged",
+								);
+							}}
+						/>
+						{gitStatusLabel(menu.file, menu.staged) !== "D" && (
+							<DiffMenuItem
+								icon={<Code2 size={12} />}
+								label="Open File"
+								onClick={() => {
+									setMenu(null);
+									onOpenFile?.(menu.file.path);
+								}}
+							/>
+						)}
+						<DiffMenuItem
+							icon={menu.staged ? <Minus size={11} /> : <Plus size={11} />}
+							label={menu.staged ? "Unstage Changes" : "Stage Changes"}
+							onClick={() => {
+								const action = menu.staged ? "unstage" : "stage";
+								const paths = gitFilePaths(menu.file);
+								setMenu(null);
+								void onRequest(action, { paths });
+							}}
+						/>
+						{!menu.staged && (
+							<>
+								<div className="my-1 border-t border-border-subtle" />
+								<DiffMenuItem
+									icon={<RotateCcw size={12} />}
+									label="Discard Changes"
+									danger
+									onClick={() => {
+										const file = menu.file;
+										setMenu(null);
+										onRevert(file);
+									}}
+								/>
+							</>
+						)}
+					</div>,
+					document.body,
+				)}
 		</div>
 	);
 }
@@ -773,7 +895,7 @@ function ChangeGroup({
 	onAll,
 	onFile,
 	onOpenDiff,
-	onRevert,
+	onContextMenu,
 	staged = false,
 }: {
 	title: string;
@@ -784,7 +906,11 @@ function ChangeGroup({
 	onAll: () => void;
 	onFile: (file: GitFileStatus) => void;
 	onOpenDiff?: (path: string, layer?: DiffLayer) => void;
-	onRevert?: (file: GitFileStatus) => void;
+	onContextMenu?: (
+		event: React.MouseEvent,
+		file: GitFileStatus,
+		staged: boolean,
+	) => void;
 	staged?: boolean;
 }) {
 	if (files.length === 0) return null;
@@ -813,7 +939,7 @@ function ChangeGroup({
 				actionLabel={actionLabel}
 				onFile={onFile}
 				onOpenDiff={onOpenDiff}
-				onRevert={onRevert}
+				onContextMenu={onContextMenu}
 				staged={staged}
 			/>
 		</div>
@@ -827,7 +953,7 @@ function ChangeList({
 	actionLabel,
 	onFile,
 	onOpenDiff,
-	onRevert,
+	onContextMenu,
 	staged = false,
 }: {
 	files: GitFileStatus[];
@@ -836,7 +962,11 @@ function ChangeList({
 	actionLabel: string;
 	onFile: (file: GitFileStatus) => void;
 	onOpenDiff?: (path: string, layer?: DiffLayer) => void;
-	onRevert?: (file: GitFileStatus) => void;
+	onContextMenu?: (
+		event: React.MouseEvent,
+		file: GitFileStatus,
+		staged: boolean,
+	) => void;
 	staged?: boolean;
 }) {
 	return files.map((file) => (
@@ -856,8 +986,7 @@ function ChangeList({
 			actionLabel={actionLabel}
 			onAction={() => onFile(file)}
 			onContextMenu={(e) => {
-				e.preventDefault();
-				if (!staged) onRevert?.(file);
+				onContextMenu?.(e, file, staged);
 			}}
 		/>
 	));
@@ -1054,6 +1183,7 @@ function DiffMenuItem({
 	return (
 		<button
 			type="button"
+			role="menuitem"
 			className={`w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-bg-hover ${danger ? "text-danger" : "text-fg-muted hover:text-fg"}`}
 			onClick={onClick}
 		>

@@ -73,6 +73,28 @@ func TestSchedulesAPI(t *testing.T) {
 		t.Fatalf("entry = %+v, want a next run", entry)
 	}
 
+	res = postScheduleAction(t, web.URL, created.ID, "job-1", "pause")
+	if res.StatusCode != http.StatusNoContent {
+		res.Body.Close()
+		t.Fatalf("pause status = %d, want 204", res.StatusCode)
+	}
+	res.Body.Close()
+	got = getSchedules(t, web.URL, created.ID)
+	if got[0].Status != schedule.StatusPaused || got[0].NextRun != "" {
+		t.Fatalf("paused schedule = %+v", got[0])
+	}
+
+	res = postScheduleAction(t, web.URL, created.ID, "job-1", "resume")
+	if res.StatusCode != http.StatusNoContent {
+		res.Body.Close()
+		t.Fatalf("resume status = %d, want 204", res.StatusCode)
+	}
+	res.Body.Close()
+	got = getSchedules(t, web.URL, created.ID)
+	if got[0].Status != schedule.StatusActive || got[0].NextRun == "" {
+		t.Fatalf("resumed schedule = %+v", got[0])
+	}
+
 	req, _ := http.NewRequest(http.MethodDelete, web.URL+"/api/sessions/"+created.ID+"/schedules/nope", nil)
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -96,6 +118,20 @@ func TestSchedulesAPI(t *testing.T) {
 	if got := getSchedules(t, web.URL, created.ID); len(got) != 0 {
 		t.Fatalf("schedules = %+v, want empty after delete", got)
 	}
+}
+
+func postScheduleAction(t *testing.T, baseURL, sessionID, scheduleID, action string) *http.Response {
+	t.Helper()
+
+	res, err := http.Post(
+		baseURL+"/api/sessions/"+sessionID+"/schedules/"+scheduleID+"/"+action,
+		"application/json",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
 }
 
 func getSchedules(t *testing.T, baseURL, sessionID string) []ScheduleEntry {
