@@ -185,6 +185,8 @@ func (m *webE2EModel) handler(w http.ResponseWriter, r *http.Request) {
 			m.handleSteer(w, r)
 		case strings.Contains(string(body), "pick a color"):
 			m.handleAsk(w, body)
+		case strings.Contains(string(body), "render markdown"):
+			emitE2ETextResponse(w, "msg_markdown", "# Migration result\n\n- [x] Streaming\n\n| Language | Status |\n| --- | --- |\n| Go | ready |\n\n```go\npackage main\n\nfunc main() { println(\"ok\") }\n```\n\n```mermaid\ngraph TD; A-->B\n```\n\nMath stays literal: $x^2$.\n\n[Documentation](https://example.com/docs)")
 		default:
 			http.Error(w, "unknown e2e prompt", http.StatusBadRequest)
 		}

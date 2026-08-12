@@ -47,6 +47,9 @@
       }
 
       body {
+        --wingman-window-drag: drag;
+        app-region: drag;
+        -webkit-app-region: drag;
         background: var(--bg);
         color: var(--fg);
         font-family:
@@ -56,6 +59,12 @@
         line-height: 1.5;
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
+      }
+
+      :where(button, a, input, select, textarea, dialog) {
+        --wingman-window-drag: no-drag;
+        app-region: no-drag;
+        -webkit-app-region: no-drag;
       }
 
       button {

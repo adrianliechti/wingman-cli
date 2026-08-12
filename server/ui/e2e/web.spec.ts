@@ -128,6 +128,36 @@ test("keeps the empty draft tab non-closable", async ({ page }) => {
 	await expect(page.locator(`[data-center-tab="${draftId}"]`)).toHaveCount(1);
 });
 
+test("uses canonical product names for agents", async ({ page }) => {
+	await page.route(/\/api\/agents$/, async (route) => {
+		await route.fulfill({
+			json: [
+				{ id: "wingman", name: "Wingman" },
+				{ id: "claude", name: "claude" },
+				{ id: "codex", name: "codex" },
+				{ id: "copilot", name: "copilot" },
+				{ id: "opencode", name: "opencode" },
+				{ id: "pi", name: "pi" },
+			],
+		});
+	});
+	await page.route(/\/api\/agent$/, async (route) => {
+		await route.fulfill({ json: { agent: "opencode" } });
+	});
+
+	await composer(page);
+	const picker = page.getByTitle("Agent: OpenCode");
+	await expect(picker).toBeVisible();
+	await picker.click();
+
+	const menu = page.getByRole("menu", { name: "Agent" });
+	for (const name of ["Claude", "Codex", "Copilot", "OpenCode", "Pi"]) {
+		await expect(
+			menu.getByRole("menuitemradio", { name, exact: true }),
+		).toBeVisible();
+	}
+});
+
 test("uses each Git status slot for its stage action", async ({ page }) => {
 	await page.route(/\/api\/capabilities$/, async (route) => {
 		await route.fulfill({
@@ -417,6 +447,31 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 	await expect(tabStrip).toHaveCSS("border-bottom-width", "0px");
 	await expect(tabStrip).toHaveCSS("scrollbar-width", "none");
 	await expect(tabStrip).toHaveCSS("overscroll-behavior-x", "contain");
+	expect(
+		await toolbar.evaluate((element) =>
+			getComputedStyle(element)
+				.getPropertyValue("--wingman-window-drag")
+				.trim(),
+		),
+	).toBe("drag");
+	expect(
+		await toolbar
+			.getByLabel(/sessions/)
+			.evaluate((element) =>
+				getComputedStyle(element)
+					.getPropertyValue("--wingman-window-drag")
+					.trim(),
+			),
+	).toBe("no-drag");
+	expect(
+		await toolbar
+			.locator("[data-titlebar-left-panel]")
+			.evaluate((element) =>
+				getComputedStyle(element)
+					.getPropertyValue("--wingman-window-drag")
+					.trim(),
+			),
+	).toBe("drag");
 	expect(
 		await tabStrip.evaluate((element) =>
 			element.closest("[data-window-titlebar]")?.getAttribute("aria-label"),
@@ -713,6 +768,40 @@ test("runs a coding tool and renders its result", async ({ page }) => {
 	await expect(usage).toBeHidden();
 	await page.getByRole("tab", { name: /create e2e-result\.txt/i }).click();
 	await expect(usage).toBeVisible();
+});
+
+test("renders streaming Markdown with lazy Monaco highlighting", async ({
+	page,
+}) => {
+	const input = await composer(page);
+	await input.fill("render markdown");
+	await input.press("Enter");
+
+	const markdown = page.locator("[data-markdown-content]").last();
+	await expect(
+		markdown.getByRole("heading", { name: "Migration result" }),
+	).toBeVisible();
+	await expect(markdown.getByRole("checkbox", { name: "" })).toBeChecked();
+	await expect(markdown.getByRole("cell", { name: "ready" })).toBeVisible();
+
+	const goBlock = markdown.locator('[data-markdown-code][data-language="go"]');
+	await expect(goBlock).toContainText("package main");
+	await expect(goBlock.locator(".md-token-keyword").first()).toHaveText(
+		"package",
+	);
+	await expect(
+		goBlock.getByRole("button", { name: "Copy code" }),
+	).toBeVisible();
+
+	const mermaidBlock = markdown.locator(
+		'[data-markdown-code][data-language="mermaid"]',
+	);
+	await expect(mermaidBlock).toContainText("graph TD; A-->B");
+	await expect(mermaidBlock.locator("pre > code")).toBeVisible();
+	await expect(markdown).toContainText("Math stays literal: $x^2$.");
+	await expect(
+		markdown.getByRole("link", { name: "Documentation" }),
+	).toHaveAttribute("target", "_blank");
 });
 
 test("renders an elicitation form and returns the chosen option", async ({

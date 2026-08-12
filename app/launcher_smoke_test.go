@@ -33,6 +33,8 @@ func TestLauncherSmoke(t *testing.T) {
 
 	if rec := get("/"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Wingman Agent") {
 		t.Fatalf("start page: %d", rec.Code)
+	} else if !strings.Contains(rec.Body.String(), "--wingman-window-drag: drag") {
+		t.Fatal("start page has no macOS window drag region")
 	}
 
 	if rec := get("/app/workspaces"); rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "null" {

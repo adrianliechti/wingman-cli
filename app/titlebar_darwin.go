@@ -4,8 +4,9 @@ package main
 
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc -fblocks
-#cgo LDFLAGS: -framework Cocoa
+#cgo LDFLAGS: -framework Cocoa -framework WebKit
 #import <Cocoa/Cocoa.h>
+#import <WebKit/WebKit.h>
 #import <objc/runtime.h>
 
 // go-shell intentionally exposes a very small window API. Install the window
@@ -14,6 +15,78 @@ package main
 static id wingmanTitlebarObserver;
 static id wingmanTitlebarResizeObserver;
 static char wingmanTrafficLightOriginalFrameKey;
+static char wingmanWindowDragHandlerKey;
+
+@interface WingmanWindowDragHandler : NSObject <WKScriptMessageHandler>
+@property(weak) NSWindow *window;
+@end
+
+@implementation WingmanWindowDragHandler
+- (void)userContentController:(WKUserContentController *)userContentController
+      didReceiveScriptMessage:(WKScriptMessage *)message {
+	NSWindow *window = self.window;
+	if (window == nil) {
+		return;
+	}
+
+	NSEvent *event = NSApp.currentEvent;
+	if (event.type != NSEventTypeLeftMouseDown || event.window != window) {
+		event = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown
+							 location:window.mouseLocationOutsideOfEventStream
+						modifierFlags:0
+							timestamp:NSProcessInfo.processInfo.systemUptime
+						 windowNumber:window.windowNumber
+							  context:nil
+						  eventNumber:0
+						   clickCount:1
+							 pressure:1.0];
+	}
+	[window performWindowDragWithEvent:event];
+}
+@end
+
+static NSString *WingmanWindowDragScript(void) {
+	return @"(() => {"
+		"if (window.__wingmanWindowDragInstalled) return;"
+		"window.__wingmanWindowDragInstalled = true;"
+		"document.addEventListener('mousedown', (event) => {"
+			"if (event.button !== 0 || !(event.target instanceof Element)) return;"
+			"const region = getComputedStyle(event.target)"
+				".getPropertyValue('--wingman-window-drag').trim();"
+			"if (region !== 'drag') return;"
+			"event.preventDefault();"
+			"window.webkit.messageHandlers.wingmanWindowDrag.postMessage(null);"
+		"}, true);"
+	"})();";
+}
+
+static void WingmanInstallWindowDragging(NSWindow *window) {
+	if (![window.contentView isKindOfClass:[WKWebView class]]) {
+		return;
+	}
+
+	WKWebView *webView = (WKWebView *)window.contentView;
+	if (objc_getAssociatedObject(webView, &wingmanWindowDragHandlerKey) != nil) {
+		return;
+	}
+
+	WingmanWindowDragHandler *handler = [WingmanWindowDragHandler new];
+	handler.window = window;
+	objc_setAssociatedObject(
+		webView,
+		&wingmanWindowDragHandlerKey,
+		handler,
+		OBJC_ASSOCIATION_RETAIN_NONATOMIC
+	);
+
+	WKUserContentController *controller = webView.configuration.userContentController;
+	[controller addScriptMessageHandler:handler name:@"wingmanWindowDrag"];
+	[controller addUserScript:[[WKUserScript alloc]
+		initWithSource:WingmanWindowDragScript()
+		injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+		forMainFrameOnly:YES]];
+	[webView evaluateJavaScript:WingmanWindowDragScript() completionHandler:nil];
+}
 
 static void WingmanPositionTrafficLights(NSWindow *window) {
 	NSArray<NSNumber *> *buttonTypes = @[
@@ -65,6 +138,7 @@ static void WingmanPrepareCustomTitlebar(void) {
 			window.titleVisibility = NSWindowTitleHidden;
 			window.titlebarAppearsTransparent = YES;
 			window.movableByWindowBackground = YES;
+			WingmanInstallWindowDragging(window);
 
 			if (@available(macOS 11.0, *)) {
 				window.titlebarSeparatorStyle = NSTitlebarSeparatorStyleNone;

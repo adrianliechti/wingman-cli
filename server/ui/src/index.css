@@ -1,10 +1,6 @@
 @import "tailwindcss";
 @import "@xterm/xterm/css/xterm.css";
 
-/* Generate the Tailwind classes used inside Streamdown's compiled components. */
-@source "../node_modules/streamdown/dist/*.js";
-@source "../node_modules/@streamdown/*/dist/*.js";
-
 @theme {
 	--color-bg: #0a0a0a;
 	--color-bg-surface: #141414;
@@ -42,20 +38,6 @@
 
 /* Overlay layers: menus 100, drawers 120, command UI 130, blocking state 140,
    dialogs 150, and toasts 200. Keep modal surfaces above transient menus. */
-
-/* Streamdown's components use shadcn-style tokens (bg-background, bg-muted,
-   text-muted-foreground, …). Alias them to the app palette so its built-in
-   chrome — table copy/download menus, fullscreen view, hover states — picks
-   up the theme instead of silently rendering unstyled. */
-@theme {
-	--color-background: var(--color-bg);
-	--color-foreground: var(--color-fg);
-	--color-muted: var(--color-bg-elevated);
-	--color-muted-foreground: var(--color-fg-dim);
-	--color-sidebar: var(--color-bg-surface);
-	--color-primary: var(--color-accent);
-	--color-primary-foreground: var(--color-bg);
-}
 
 :root {
 	color-scheme: dark;
@@ -203,6 +185,7 @@ select,
    native full-size-content window configured by app/titlebar_darwin.go. */
 .window-titlebar {
 	--window-controls-inset: 0px;
+	--wingman-window-drag: drag;
 	app-region: drag;
 	-webkit-app-region: drag;
 	margin-left: env(titlebar-area-x, 0px);
@@ -213,7 +196,8 @@ select,
 	width: var(--window-controls-inset);
 }
 
-.window-titlebar :where(button, [role="tab"], [data-window-interactive]) {
+.window-titlebar :where(button, a, input, select, textarea, [role="tab"]) {
+	--wingman-window-drag: no-drag;
 	app-region: no-drag;
 	-webkit-app-region: no-drag;
 }
@@ -269,98 +253,145 @@ html[data-window-chrome="macos-overlay"] .window-titlebar {
 	content: none;
 }
 
-/* Streamdown blocks: strip the boxed frame (border, fill, p-2) and tighten
-   the stock my-4 margin / gap-2 rhythm for a flat, compact look. */
-[data-streamdown="code-block"],
-[data-streamdown="mermaid-block"],
-[data-streamdown="table-wrapper"] {
+/* Markdown blocks use the same compact rhythm as the surrounding chat. */
+[data-markdown-content] {
+	min-width: 0;
+}
+[data-markdown-content] > :first-child {
+	margin-top: 0;
+}
+[data-markdown-content] > :last-child {
+	margin-bottom: 0;
+}
+[data-markdown-content] hr {
+	margin-block: 0.75rem;
 	border: 0;
-	background: transparent;
-	padding: 0;
-	margin-block: 0.625rem;
-	gap: 0.25rem;
+	border-top: 1px solid var(--color-border-subtle);
+}
+[data-markdown-content] img {
+	max-width: 100%;
+	height: auto;
+	border-radius: 4px;
+}
+[data-markdown-content] input[type="checkbox"] {
+	margin-right: 0.25rem;
+	accent-color: var(--color-accent);
 }
 
-/* Code/mermaid: the whole block is the surface — language label and action
-   buttons sit inside it, above the content. */
-[data-streamdown="code-block"],
-[data-streamdown="mermaid-block"] {
+/* Code blocks reuse Monaco's lazy language tokenizers, but remain lightweight
+   React markup instead of editor instances. */
+[data-markdown-code] {
+	margin-block: 0.625rem;
 	background: var(--color-bg-surface);
 	border-radius: 6px;
 	padding: 6px 10px 8px;
+	min-width: 0;
 }
-
-/* Mermaid internals (diagram frame, loading skeleton) and the table scroll
-   frame are boxed too; flatten them. Divs only — the SVG keeps its styling. */
-[data-streamdown="mermaid-block"] div,
-[data-streamdown="table-wrapper"] > div,
-[data-streamdown="table-header"] {
-	border: 0;
-	background: transparent;
-}
-
-/* The body inherits the block surface; it only keeps its scroll behavior. */
-[data-streamdown="code-block-body"] {
-	border: 0;
-	background: transparent;
-	padding: 0;
-	font-size: 12px;
-}
-
-/* Streamdown emits one span per code line with no newline text, relying on a
-   `block` class it only adds when line numbers are on. With lineNumbers off
-   the spans render inline and all lines collapse into one — force the rows. */
-[data-streamdown="code-block-body"] code > span {
-	display: block;
-	min-height: 1lh;
-}
-
-/* Compact header: small language label, flush with the code text below it
-   (the label's stock ml-1 is dropped). */
-[data-streamdown="code-block-header"],
-[data-streamdown="mermaid-block"] > div:first-child {
+[data-markdown-code-header] {
+	display: flex;
 	height: 20px;
+	align-items: center;
+	justify-content: space-between;
+	color: var(--color-fg-dim);
 	font-size: 11px;
+	line-height: 1;
 }
-[data-streamdown="code-block-header"] span,
-[data-streamdown="mermaid-block"] > div:first-child span {
-	margin-left: 0;
-}
-
-/* The floating action row defaults to h-8/-mt-10 to cover the stock h-8
-   header + gap-2; resize it to the 20px header + 4px gap above. */
-[data-streamdown="code-block"]
-	> div:has([data-streamdown="code-block-actions"]),
-[data-streamdown="mermaid-block"]
-	> div:has([data-streamdown="mermaid-block-actions"]) {
+[data-markdown-code-header] button {
+	display: grid;
+	width: 20px;
 	height: 20px;
-	margin-top: -24px;
+	place-items: center;
+	border-radius: 3px;
+	color: var(--color-fg-dim);
 }
-
-/* Action buttons: bare small icons instead of a bordered pill. */
-[data-streamdown="code-block-actions"],
-[data-streamdown="mermaid-block-actions"] {
-	border: 0;
-	background-color: transparent;
-	padding: 0;
-	gap: 0;
+[data-markdown-code-header] button:hover {
+	color: var(--color-fg);
+	background: var(--color-bg-hover);
 }
-[data-streamdown="code-block-actions"] button svg,
-[data-streamdown="mermaid-block-actions"] button svg,
-[data-streamdown="table-wrapper"] button svg {
+[data-markdown-code-header] svg {
 	width: 12px;
 	height: 12px;
 }
+[data-markdown-code] pre {
+	margin: 0;
+	overflow-x: auto;
+	border: 0;
+	background: transparent;
+	padding: 0;
+}
+[data-markdown-code] code {
+	display: block;
+	width: max-content;
+	min-width: 100%;
+	color: var(--color-fg-muted);
+	font-family: var(--font-mono);
+	font-size: 12px;
+	line-height: 1.55;
+	white-space: pre;
+}
 
 /* Inline code: sized to the surrounding prose. */
-[data-streamdown="inline-code"] {
+[data-markdown-content] :not(pre) > code {
+	border-radius: 3px;
+	background: var(--color-bg-surface);
 	padding: 1px 4px;
+	color: var(--color-fg);
+	font-family: var(--font-mono);
 	font-size: 12px;
 }
 
 /* Tables: keep only light horizontal row separators for readability. */
-[data-streamdown="table-header-cell"],
-[data-streamdown="table-row"],
-[data-streamdown="table-cell"] {
-	border-color: var(--color-border-subtle);
+[data-markdown-table] {
+	margin-block: 0.625rem;
+	overflow-x: auto;
+}
+[data-markdown-table] table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 12px;
+}
+[data-markdown-table] th,
+[data-markdown-table] td {
+	border-bottom: 1px solid var(--color-border-subtle);
+	padding: 5px 8px;
+	text-align: left;
+}
+[data-markdown-table] th {
+	color: var(--color-fg);
+	font-weight: 600;
+}
+[data-markdown-table] td {
+	color: var(--color-fg-muted);
+}
+
+/* Semantic Monaco token colors use app theme variables in both color modes. */
+.md-token-comment {
+	color: var(--color-fg-dim);
+	font-style: italic;
+}
+.md-token-keyword,
+.md-token-type {
+	color: var(--color-purple);
+}
+.md-token-string {
+	color: var(--color-success);
+}
+.md-token-number,
+.md-token-attribute {
+	color: var(--color-warning);
+}
+.md-token-regexp {
+	color: var(--color-orange);
+}
+.md-token-tag {
+	color: var(--color-danger);
+}
+.md-token-function {
+	color: var(--color-info);
+}
+.md-token-variable {
+	color: var(--color-fg);
+}
+.md-token-operator {
+	color: var(--color-fg-muted);
 }

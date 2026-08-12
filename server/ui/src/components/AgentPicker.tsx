@@ -1,6 +1,7 @@
 import { Bot, ChevronDown, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ServerMessage } from "../types/protocol";
+import { formatAgentName } from "../utils/agents";
 import { useToast } from "./ui/Feedback";
 import { FloatingMenu } from "./ui/Floating";
 
@@ -93,7 +94,7 @@ export function AgentPicker({ subscribe, onSwitchingChange }: Props) {
 	const displayedName = useMemo(() => {
 		const id = switching ?? current;
 		const match = agents.find((a) => a.id === id);
-		return match?.name || id;
+		return formatAgentName(id, match?.name);
 	}, [agents, current, switching]);
 
 	if (agents.length <= 1) return null;
@@ -142,7 +143,7 @@ export function AgentPicker({ subscribe, onSwitchingChange }: Props) {
 							}`}
 							onClick={() => select(a.id)}
 						>
-							{a.name}
+							{formatAgentName(a.id, a.name)}
 						</button>
 					))}
 				</div>
