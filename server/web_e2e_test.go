@@ -225,6 +225,13 @@ func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
+		filepath.Join(workDir, "readme-preview.md"),
+		[]byte("# Markdown preview\n\nRendered **in the browser**.\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
 		filepath.Join(workDir, "editable.txt"),
 		[]byte("original\n"),
 		0o644,

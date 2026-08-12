@@ -10,6 +10,7 @@ import {
 } from "../monacoLsp";
 import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
 import type { ServerMessage } from "../types/protocol";
+import { MarkdownContent } from "./MarkdownContent";
 
 interface Props {
 	document: OpenDocument;
@@ -129,6 +130,8 @@ export function FileTab({
 	if (file.binary) return <BinaryPreview file={file} />;
 
 	const isHtml = file.language === "html" || /\.html?$/i.test(file.path);
+	const isMarkdown =
+		file.language === "markdown" || /\.(?:md|markdown)$/i.test(file.path);
 	const previewSrc = `/api/files/preview?path=${encodeURIComponent(file.path)}`;
 	return (
 		<div className="flex h-full min-h-0 flex-col">
@@ -170,6 +173,16 @@ export function FileTab({
 						className="h-full w-full border-0 bg-bg"
 						style={{ colorScheme: scheme }}
 					/>
+				) : isMarkdown && view === "preview" ? (
+					<div className="h-full overflow-auto bg-bg">
+						<article
+							data-markdown-document
+							aria-label={`Preview of ${file.path}`}
+							className="mx-auto max-w-4xl px-8 py-7 text-[13px] leading-relaxed"
+						>
+							<MarkdownContent text={document.draft} />
+						</article>
+					</div>
 				) : (
 					<Editor
 						height="100%"

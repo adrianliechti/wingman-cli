@@ -932,6 +932,24 @@ test("follows the system theme in browser previews", async ({ page }) => {
 	await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
 });
 
+test("renders markdown files in a browser preview", async ({ page }) => {
+	await composer(page);
+	await page.getByRole("treeitem", { name: /readme-preview\.md/ }).click();
+	await page.getByTitle("Show Markdown preview").click();
+
+	const preview = page.getByRole("article", {
+		name: "Preview of readme-preview.md",
+	});
+	await expect(preview).toBeVisible();
+	await expect(
+		preview.getByRole("heading", { name: "Markdown preview" }),
+	).toBeVisible();
+	await expect(preview.getByText("Rendered in the browser.")).toBeVisible();
+
+	await page.getByTitle("Show code editor").click();
+	await expect(page.locator(".monaco-editor")).toBeVisible();
+});
+
 test("protects unsaved file edits when closing a tab", async ({
 	page,
 	request,

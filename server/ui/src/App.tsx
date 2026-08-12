@@ -3,6 +3,7 @@ import {
 	ChevronDown,
 	Compass,
 	Code2,
+	Eye,
 	FileText,
 	GitCompare,
 	Globe2,
@@ -339,9 +340,19 @@ export default function App() {
 	}, [createTerminal]);
 
 	const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
-	const activeIsHtml =
-		activeTab.type === "file" && /\.html?$/i.test(activeTab.path ?? "");
+	const activeIsMarkdown =
+		activeTab.type === "file" &&
+		/\.(?:md|markdown)$/i.test(activeTab.path ?? "");
+	const activeSupportsPreview =
+		activeTab.type === "file" &&
+		/\.(?:html?|md|markdown)$/i.test(activeTab.path ?? "");
 	const activeFileView = fileViews[activeTab.id] ?? "code";
+	const previewToggleLabel =
+		activeFileView === "preview"
+			? "Show code editor"
+			: activeIsMarkdown
+				? "Show Markdown preview"
+				: "Show browser preview";
 	const sessionId =
 		activeTab.type === "chat" ? (activeTab.sessionId ?? "") : currentSessionId;
 	const rightTab =
@@ -1415,7 +1426,7 @@ export default function App() {
 							<Plus size={13} />
 						</button>
 					)}
-					{activeIsHtml && (
+					{activeSupportsPreview && (
 						<button
 							type="button"
 							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-bg-hover ${
@@ -1430,19 +1441,13 @@ export default function App() {
 										activeFileView === "preview" ? "code" : "preview",
 								}))
 							}
-							title={
-								activeFileView === "preview"
-									? "Show code editor"
-									: "Show browser preview"
-							}
-							aria-label={
-								activeFileView === "preview"
-									? "Show code editor"
-									: "Show browser preview"
-							}
+							title={previewToggleLabel}
+							aria-label={previewToggleLabel}
 						>
 							{activeFileView === "preview" ? (
 								<Code2 size={13} />
+							) : activeIsMarkdown ? (
+								<Eye size={13} />
 							) : (
 								<Globe2 size={13} />
 							)}

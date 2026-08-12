@@ -56,6 +56,7 @@ var extToLanguage = map[string]string{
 	".scss":       "scss",
 	".sql":        "sql",
 	".md":         "markdown",
+	".markdown":   "markdown",
 	".toml":       "toml",
 	".ini":        "ini",
 	".cfg":        "ini",
