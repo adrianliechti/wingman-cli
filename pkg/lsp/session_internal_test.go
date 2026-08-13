@@ -81,10 +81,11 @@ func TestParseCompletionResponse(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			items, err := parseCompletionResponse(json.RawMessage(test.payload))
+			list, err := parseCompletionResponse(json.RawMessage(test.payload))
 			if err != nil {
 				t.Fatal(err)
 			}
+			items := list.Items
 			if len(items) != len(test.want) {
 				t.Fatalf("items = %+v, want %v", items, test.want)
 			}
@@ -92,6 +93,9 @@ func TestParseCompletionResponse(t *testing.T) {
 				if items[i].Label != want {
 					t.Fatalf("item %d = %q, want %q", i, items[i].Label, want)
 				}
+			}
+			if test.name == "list" && !list.IsIncomplete {
+				t.Fatal("isIncomplete was not preserved")
 			}
 		})
 	}

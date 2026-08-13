@@ -1,7 +1,41 @@
 import { Loader2 } from "lucide-react";
 import { useEffect, useId, useState } from "react";
+import mermaidAssetURL from "mermaid/dist/mermaid.min.js?url";
 import { useColorScheme } from "../hooks/useColorScheme";
 import { PanZoomCanvas } from "./PanZoomCanvas";
+
+type Mermaid = (typeof import("mermaid"))["default"];
+
+let mermaidPromise: Promise<Mermaid> | null = null;
+
+function loadMermaid(): Promise<Mermaid> {
+	const loaded = (globalThis as typeof globalThis & { mermaid?: Mermaid })
+		.mermaid;
+	if (loaded) return Promise.resolve(loaded);
+	if (mermaidPromise) return mermaidPromise;
+
+	mermaidPromise = new Promise<Mermaid>((resolve, reject) => {
+		const script = document.createElement("script");
+		script.src = mermaidAssetURL;
+		script.async = true;
+		script.onload = () => {
+			const mermaid = (globalThis as typeof globalThis & { mermaid?: Mermaid })
+				.mermaid;
+			if (mermaid) {
+				resolve(mermaid);
+			} else {
+				reject(new Error("Mermaid loaded without exposing its API"));
+			}
+		};
+		script.onerror = () => reject(new Error("Could not load Mermaid"));
+		document.head.append(script);
+	}).catch((error: unknown) => {
+		mermaidPromise = null;
+		throw error;
+	});
+
+	return mermaidPromise;
+}
 
 export function MermaidPreview({ text, path }: { text: string; path: string }) {
 	const scheme = useColorScheme();
@@ -19,8 +53,8 @@ export function MermaidPreview({ text, path }: { text: string; path: string }) {
 		setSize(null);
 		setError(null);
 
-		void import("mermaid")
-			.then(async ({ default: mermaid }) => {
+		void loadMermaid()
+			.then(async (mermaid) => {
 				mermaid.initialize({
 					startOnLoad: false,
 					securityLevel: "strict",

@@ -159,10 +159,10 @@ func (m *Manager) getSession(ctx context.Context, project projectRoot) (*Session
 		}
 	}
 
-	var openedURIs []string
+	var openedDocuments []OpenDocument
 	restarting := false
 	if previous := m.sessions[key]; previous != nil {
-		openedURIs = previous.OpenedDocURIs()
+		openedDocuments = previous.OpenedDocuments()
 		delete(m.sessions, key)
 		m.restarts[key]++
 		restarting = true
@@ -180,9 +180,14 @@ func (m *Manager) getSession(ctx context.Context, project projectRoot) (*Session
 		err = fmt.Errorf("restart %s: %w", server.Name, err)
 	}
 	if err == nil {
-		for _, uri := range openedURIs {
-			if path := uriToPath(uri); path != "" {
-				_, _ = session.OpenDocument(ctx, path)
+		for _, document := range openedDocuments {
+			if document.Path == "" {
+				continue
+			}
+			if document.Saved {
+				_, _ = session.SaveDocument(ctx, document.Path, document.Content)
+			} else {
+				_, _ = session.SyncDocument(ctx, document.Path, document.Content)
 			}
 		}
 	}

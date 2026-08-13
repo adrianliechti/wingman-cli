@@ -444,6 +444,59 @@ func (w *Workspace) withLSPDocument(ctx context.Context, filePath string, conten
 	return fn(session, uri)
 }
 
+// SyncEditorDocument drives the explicit editor document lifecycle. Feature
+// requests still carry the current buffer as a recovery mechanism, but normal
+// synchronization no longer depends on the user invoking a language feature.
+func (w *Workspace) SyncEditorDocument(ctx context.Context, filePath, content string, saved bool) error {
+	w.lspLifeMu.RLock()
+	defer w.lspLifeMu.RUnlock()
+
+	manager := w.lspManager()
+	if manager == nil || manager.FindServer(filePath) == nil {
+		return nil
+	}
+	session, err := manager.GetSession(ctx, filePath)
+	if err != nil {
+		return err
+	}
+	if saved {
+		_, err = session.SaveDocument(ctx, filePath, content)
+	} else {
+		_, err = session.SyncDocument(ctx, filePath, content)
+	}
+	return err
+}
+
+func (w *Workspace) CloseEditorDocument(ctx context.Context, filePath string) error {
+	w.lspLifeMu.RLock()
+	defer w.lspLifeMu.RUnlock()
+
+	manager := w.lspManager()
+	if manager == nil {
+		return nil
+	}
+	session, ok := manager.ActiveSession(filePath)
+	if !ok {
+		return nil
+	}
+	return session.CloseDocument(ctx, filePath)
+}
+
+func (w *Workspace) EditorLSPCapabilities(ctx context.Context, filePath string) (lsp.ServerCapabilities, bool, error) {
+	w.lspLifeMu.RLock()
+	defer w.lspLifeMu.RUnlock()
+
+	manager := w.lspManager()
+	if manager == nil || manager.FindServer(filePath) == nil {
+		return lsp.ServerCapabilities{}, false, nil
+	}
+	session, err := manager.GetSession(ctx, filePath)
+	if err != nil {
+		return lsp.ServerCapabilities{}, false, err
+	}
+	return session.Capabilities(), true, nil
+}
+
 func (w *Workspace) Diagnostics(ctx context.Context) lsp.WorkspaceDiagnosticsReport {
 	w.lspLifeMu.RLock()
 	defer w.lspLifeMu.RUnlock()
@@ -580,26 +633,37 @@ func (w *Workspace) HoverInformation(ctx context.Context, filePath string, conte
 // CompletionItems asks the file's language server first and falls back to
 // symbols extracted from the current buffer with tree-sitter when completion
 // is unavailable.
-func (w *Workspace) CompletionItems(ctx context.Context, filePath string, content *string, line, column int, completionContext *lsp.CompletionContext) ([]lsp.CompletionItem, error) {
+func (w *Workspace) CompletionItems(ctx context.Context, filePath string, content *string, line, column int, completionContext *lsp.CompletionContext) (lsp.CompletionList, error) {
 	if w.hasLSPServerFor(filePath) {
-		var items []lsp.CompletionItem
+		var list lsp.CompletionList
 		err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
 			var err error
-			items, err = session.CompletionItems(ctx, uri, line, column, completionContext)
+			list, err = session.CompletionItems(ctx, uri, line, column, completionContext)
 			return err
 		})
 		if err == nil {
-			return items, nil
+			return list, nil
 		}
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return lsp.CompletionList{}, ctx.Err()
 		}
 	}
 
 	if completionContext != nil && completionContext.TriggerCharacter != "" {
-		return []lsp.CompletionItem{}, nil
+		return lsp.CompletionList{Items: []lsp.CompletionItem{}}, nil
 	}
-	return graphCompletionItems(filePath, content)
+	items, err := w.graphCompletionItems(ctx, filePath, content)
+	return lsp.CompletionList{Items: items}, err
+}
+
+func (w *Workspace) ResolveCompletionItem(ctx context.Context, filePath string, content *string, item lsp.CompletionItem) (lsp.CompletionItem, error) {
+	var resolved lsp.CompletionItem
+	err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, _ string) error {
+		var err error
+		resolved, err = session.ResolveCompletionItem(ctx, item)
+		return err
+	})
+	return resolved, err
 }
 
 func (w *Workspace) SignatureHelp(ctx context.Context, filePath string, content *string, line, column int, signatureContext *lsp.SignatureHelpContext) (*lsp.SignatureHelp, error) {
@@ -615,7 +679,7 @@ func (w *Workspace) SignatureHelp(ctx context.Context, filePath string, content 
 	return help, err
 }
 
-func graphCompletionItems(filePath string, content *string) ([]lsp.CompletionItem, error) {
+func (w *Workspace) graphCompletionItems(ctx context.Context, filePath string, content *string) ([]lsp.CompletionItem, error) {
 	var src []byte
 	if content != nil {
 		src = []byte(*content)
@@ -627,7 +691,7 @@ func graphCompletionItems(filePath string, content *string) ([]lsp.CompletionIte
 		src = data
 	}
 
-	result := make([]lsp.CompletionItem, 0)
+	result := make([]lsp.CompletionItem, 0, 128)
 	seen := make(map[string]bool)
 	var add func([]*graph.Symbol)
 	add = func(symbols []*graph.Symbol) {
@@ -644,6 +708,32 @@ func graphCompletionItems(filePath string, content *string) ([]lsp.CompletionIte
 		}
 	}
 	add(graph.FileSymbols(filepath.Base(filePath), src))
+
+	engine := w.graphEngine()
+	if engine == nil {
+		return result, nil
+	}
+	nodes, err := engine.Search(ctx, graph.SearchOpts{Limit: 200})
+	if err != nil {
+		return result, nil
+	}
+	rel, _ := filepath.Rel(w.RootPath, filePath)
+	rel = filepath.ToSlash(rel)
+	for _, node := range nodes {
+		if node.Name == "" || seen[node.Name] {
+			continue
+		}
+		seen[node.Name] = true
+		detail := string(node.Kind) + " · " + node.File + " · tree-sitter"
+		if node.File == rel {
+			detail = string(node.Kind) + " · current file · tree-sitter"
+		}
+		result = append(result, lsp.CompletionItem{
+			Label:  node.Name,
+			Kind:   lspCompletionKind(node.Kind),
+			Detail: detail,
+		})
+	}
 	return result, nil
 }
 
@@ -694,18 +784,112 @@ func (w *Workspace) DocumentSymbolItems(ctx context.Context, filePath string, co
 	return docSymbols, symInfos, nil
 }
 
-func (w *Workspace) graphDocumentSymbols(filePath string, content *string) ([]lsp.DocumentSymbol, []lsp.SymbolInformation, error) {
-	var src []byte
-	if content != nil {
-		src = []byte(*content)
-	} else {
-		data, err := os.ReadFile(filePath)
-		if err != nil {
-			return nil, nil, err
+func (w *Workspace) DocumentHighlights(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.DocumentHighlight, error) {
+	if w.hasLSPServerFor(filePath) {
+		var highlights []lsp.DocumentHighlight
+		err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
+			var err error
+			highlights, err = session.DocumentHighlights(ctx, uri, line, column)
+			return err
+		})
+		if err == nil {
+			return highlights, nil
 		}
-		src = data
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+	}
+	src, err := editorSource(filePath, content)
+	if err != nil {
+		return nil, err
+	}
+	ranges := graph.DocumentHighlights(filepath.Base(filePath), src, line, column)
+	result := make([]lsp.DocumentHighlight, 0, len(ranges))
+	for _, highlight := range ranges {
+		result = append(result, lsp.DocumentHighlight{Range: lspRange(highlight)})
+	}
+	return result, nil
+}
+
+func (w *Workspace) FoldingRanges(ctx context.Context, filePath string, content *string) ([]lsp.FoldingRange, error) {
+	if w.hasLSPServerFor(filePath) {
+		var ranges []lsp.FoldingRange
+		err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
+			var err error
+			ranges, err = session.FoldingRanges(ctx, uri)
+			return err
+		})
+		if err == nil {
+			return ranges, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+	}
+	src, err := editorSource(filePath, content)
+	if err != nil {
+		return nil, err
+	}
+	structural := graph.FoldingRanges(filepath.Base(filePath), src)
+	result := make([]lsp.FoldingRange, 0, len(structural))
+	for _, r := range structural {
+		start, end := r.StartCol, r.EndCol
+		result = append(result, lsp.FoldingRange{
+			StartLine:      r.StartLine,
+			StartCharacter: &start,
+			EndLine:        r.EndLine,
+			EndCharacter:   &end,
+		})
+	}
+	return result, nil
+}
+
+func (w *Workspace) SemanticTokens(ctx context.Context, filePath string, content *string) ([]lsp.SemanticToken, error) {
+	if w.hasLSPServerFor(filePath) {
+		var tokens []lsp.SemanticToken
+		err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
+			var err error
+			tokens, err = session.SemanticTokens(ctx, uri)
+			return err
+		})
+		if err == nil && tokens != nil {
+			return tokens, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+	}
+	src, err := editorSource(filePath, content)
+	if err != nil {
+		return nil, err
+	}
+	structural := graph.SemanticTokens(filepath.Base(filePath), src)
+	result := make([]lsp.SemanticToken, 0, len(structural))
+	for _, token := range structural {
+		result = append(result, lsp.SemanticToken{
+			Line:      token.Range.StartLine,
+			Character: token.Range.StartCol,
+			Length:    token.Range.EndCol - token.Range.StartCol,
+			Type:      token.Type,
+			Modifiers: token.Modifiers,
+		})
+	}
+	return result, nil
+}
+
+func (w *Workspace) graphDocumentSymbols(filePath string, content *string) ([]lsp.DocumentSymbol, []lsp.SymbolInformation, error) {
+	src, err := editorSource(filePath, content)
+	if err != nil {
+		return nil, nil, err
 	}
 	return graphDocumentSymbols(graph.FileSymbols(filepath.Base(filePath), src)), nil, nil
+}
+
+func editorSource(filePath string, content *string) ([]byte, error) {
+	if content != nil {
+		return []byte(*content), nil
+	}
+	return os.ReadFile(filePath)
 }
 
 func graphDocumentSymbols(symbols []*graph.Symbol) []lsp.DocumentSymbol {

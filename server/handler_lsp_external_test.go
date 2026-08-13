@@ -49,12 +49,15 @@ func TestExternalGoIntelliSense(t *testing.T) {
 		body, _ := io.ReadAll(response.Body)
 		t.Fatalf("completion status = %d, body %q", response.StatusCode, body)
 	}
-	var items []struct {
-		Label string `json:"label"`
+	var result struct {
+		Items []struct {
+			Label string `json:"label"`
+		} `json:"items"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&items); err != nil {
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 		t.Fatal(err)
 	}
+	items := result.Items
 	labels := make(map[string]bool, len(items))
 	for _, item := range items {
 		labels[item.Label] = true

@@ -25,14 +25,15 @@ type Session struct {
 	workingDir string
 	cancelFunc context.CancelFunc
 
-	documentMu sync.Mutex
-	mu         sync.Mutex
-	documents  map[string]*document
-	progress   map[string]bool
-	created    time.Time
-	pullDiags  bool
-	alive      atomic.Bool
-	closeOnce  sync.Once
+	documentMu   sync.Mutex
+	mu           sync.Mutex
+	documents    map[string]*document
+	progress     map[string]bool
+	created      time.Time
+	pullDiags    bool
+	capabilities ServerCapabilities
+	alive        atomic.Bool
+	closeOnce    sync.Once
 }
 
 // document tracks what the server has been told about a URI and what it has
@@ -43,6 +44,7 @@ type document struct {
 	sum     uint64
 	version int
 	saved   bool
+	content string
 
 	diagnostics []Diagnostic
 	published   bool
@@ -176,17 +178,27 @@ func (s *Session) Age() time.Duration {
 	return time.Since(s.created)
 }
 
-func (s *Session) OpenedDocURIs() []string {
+type OpenDocument struct {
+	Path    string
+	Content string
+	Saved   bool
+}
+
+func (s *Session) OpenedDocuments() []OpenDocument {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	uris := make([]string, 0, len(s.documents))
+	documents := make([]OpenDocument, 0, len(s.documents))
 	for uri, doc := range s.documents {
 		if doc.opened {
-			uris = append(uris, uri)
+			documents = append(documents, OpenDocument{
+				Path:    uriToPath(uri),
+				Content: doc.content,
+				Saved:   doc.saved,
+			})
 		}
 	}
-	return uris
+	return documents
 }
 
 func (s *Session) Close() {
@@ -254,6 +266,39 @@ func (s *Session) OpenDocument(ctx context.Context, filePath string) (string, er
 // claiming that the buffer has been saved to disk.
 func (s *Session) SyncDocument(ctx context.Context, filePath, content string) (string, error) {
 	return s.syncDocument(ctx, filePath, []byte(content), false)
+}
+
+// SaveDocument synchronizes an editor buffer and explicitly tells the server
+// that the same content has been persisted to disk.
+func (s *Session) SaveDocument(ctx context.Context, filePath, content string) (string, error) {
+	return s.syncDocument(ctx, filePath, []byte(content), true)
+}
+
+// CloseDocument ends the lifetime of an editor-owned document. A session can
+// also know diagnostics for unopened files, so only documents explicitly
+// opened by syncDocument receive didClose.
+func (s *Session) CloseDocument(ctx context.Context, filePath string) error {
+	s.documentMu.Lock()
+	defer s.documentMu.Unlock()
+
+	uri := FileURI(filePath)
+	s.mu.Lock()
+	doc := s.documents[uri]
+	opened := doc != nil && doc.opened
+	s.mu.Unlock()
+	if !opened {
+		return nil
+	}
+	if err := s.conn.Notify(ctx, "textDocument/didClose", DidCloseTextDocumentParams{
+		TextDocument: TextDocumentIdentifier{URI: uri},
+	}); err != nil {
+		return fmt.Errorf("didClose: %w", err)
+	}
+
+	s.mu.Lock()
+	delete(s.documents, uri)
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *Session) syncDocument(ctx context.Context, filePath string, content []byte, saved bool) (string, error) {
@@ -326,6 +371,7 @@ func (s *Session) syncDocument(ctx context.Context, filePath string, content []b
 	doc.opened = true
 	doc.sum = sum
 	doc.saved = saved
+	doc.content = string(content)
 	if !opened {
 		doc.version = 1
 	}
@@ -561,7 +607,7 @@ func (s *Session) HoverInformation(ctx context.Context, uri string, line, column
 	return hover.Contents.Value, nil
 }
 
-func (s *Session) CompletionItems(ctx context.Context, uri string, line, column int, completionContext *CompletionContext) ([]CompletionItem, error) {
+func (s *Session) CompletionItems(ctx context.Context, uri string, line, column int, completionContext *CompletionContext) (CompletionList, error) {
 	params := CompletionParams{
 		TextDocument: TextDocumentIdentifier{URI: uri},
 		Position:     Position{Line: line, Character: column},
@@ -570,9 +616,17 @@ func (s *Session) CompletionItems(ctx context.Context, uri string, line, column 
 
 	var result json.RawMessage
 	if err := s.CallAndAwait(ctx, "textDocument/completion", params, &result); err != nil {
-		return nil, err
+		return CompletionList{}, err
 	}
 	return parseCompletionResponse(result)
+}
+
+func (s *Session) ResolveCompletionItem(ctx context.Context, item CompletionItem) (CompletionItem, error) {
+	var result CompletionItem
+	if err := s.CallAndAwait(ctx, "completionItem/resolve", item, &result); err != nil {
+		return CompletionItem{}, err
+	}
+	return result, nil
 }
 
 func (s *Session) SignatureHelp(ctx context.Context, uri string, line, column int, signatureContext *SignatureHelpContext) (*SignatureHelp, error) {
@@ -596,19 +650,19 @@ func (s *Session) SignatureHelp(ctx context.Context, uri string, line, column in
 	return &help, nil
 }
 
-func parseCompletionResponse(result json.RawMessage) ([]CompletionItem, error) {
+func parseCompletionResponse(result json.RawMessage) (CompletionList, error) {
 	if isNullResult(result) {
-		return nil, nil
+		return CompletionList{}, nil
 	}
 	var items []CompletionItem
 	if err := json.Unmarshal(result, &items); err == nil {
-		return items, nil
+		return CompletionList{Items: items}, nil
 	}
 	var list CompletionList
 	if err := json.Unmarshal(result, &list); err != nil {
-		return nil, err
+		return CompletionList{}, err
 	}
-	return list.Items, nil
+	return list, nil
 }
 
 func (s *Session) DocumentSymbols(ctx context.Context, uri string, filePath string) (string, error) {
@@ -653,6 +707,74 @@ func (s *Session) DocumentSymbolItems(ctx context.Context, uri string) ([]Docume
 	}
 
 	return nil, nil, nil
+}
+
+func (s *Session) DocumentHighlights(ctx context.Context, uri string, line, column int) ([]DocumentHighlight, error) {
+	params := DocumentHighlightParams{
+		TextDocument: TextDocumentIdentifier{URI: uri},
+		Position:     Position{Line: line, Character: column},
+	}
+	var result []DocumentHighlight
+	if err := s.CallAndAwait(ctx, "textDocument/documentHighlight", params, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *Session) FoldingRanges(ctx context.Context, uri string) ([]FoldingRange, error) {
+	params := FoldingRangeParams{TextDocument: TextDocumentIdentifier{URI: uri}}
+	var result []FoldingRange
+	if err := s.CallAndAwait(ctx, "textDocument/foldingRange", params, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (s *Session) SemanticTokens(ctx context.Context, uri string) ([]SemanticToken, error) {
+	var options SemanticTokensOptions
+	if err := json.Unmarshal(s.capabilities.SemanticTokensProvider, &options); err != nil || len(options.Legend.TokenTypes) == 0 {
+		return nil, nil
+	}
+	params := SemanticTokensParams{TextDocument: TextDocumentIdentifier{URI: uri}}
+	var result SemanticTokens
+	if err := s.CallAndAwait(ctx, "textDocument/semanticTokens/full", params, &result); err != nil {
+		return nil, err
+	}
+	if len(result.Data)%5 != 0 {
+		return nil, fmt.Errorf("invalid semantic token data length %d", len(result.Data))
+	}
+
+	tokens := make([]SemanticToken, 0, len(result.Data)/5)
+	line, character := 0, 0
+	for index := 0; index < len(result.Data); index += 5 {
+		lineDelta := int(result.Data[index])
+		characterDelta := int(result.Data[index+1])
+		line += lineDelta
+		if lineDelta == 0 {
+			character += characterDelta
+		} else {
+			character = characterDelta
+		}
+		typeIndex := int(result.Data[index+3])
+		if typeIndex < 0 || typeIndex >= len(options.Legend.TokenTypes) {
+			continue
+		}
+		modifierBits := result.Data[index+4]
+		modifiers := make([]string, 0)
+		for modifierIndex, modifier := range options.Legend.TokenModifiers {
+			if modifierIndex < 32 && modifierBits&(1<<modifierIndex) != 0 {
+				modifiers = append(modifiers, modifier)
+			}
+		}
+		tokens = append(tokens, SemanticToken{
+			Line:      line,
+			Character: character,
+			Length:    int(result.Data[index+2]),
+			Type:      options.Legend.TokenTypes[typeIndex],
+			Modifiers: modifiers,
+		})
+	}
+	return tokens, nil
 }
 
 type symbolCandidate struct {
@@ -815,14 +937,36 @@ func (s *Session) initialize(ctx context.Context) error {
 					ParameterInformation:   ParameterInformationCapabilities{LabelOffsetSupport: true},
 					ActiveParameterSupport: true,
 				}},
-				Hover:          HoverClientCapabilities{ContentFormat: []string{"plaintext", "markdown"}},
-				Definition:     DefinitionClientCapabilities{},
-				TypeDefinition: TypeDefinitionClientCapabilities{},
-				References:     ReferencesClientCapabilities{},
-				Implementation: ImplementationClientCapabilities{},
-				DocumentSymbol: DocumentSymbolClientCapabilities{},
-				Diagnostic:     DiagnosticClientCapabilities{},
-				CallHierarchy:  CallHierarchyClientCapabilities{},
+				Hover:             HoverClientCapabilities{ContentFormat: []string{"plaintext", "markdown"}},
+				Definition:        DefinitionClientCapabilities{},
+				TypeDefinition:    TypeDefinitionClientCapabilities{},
+				References:        ReferencesClientCapabilities{},
+				Implementation:    ImplementationClientCapabilities{},
+				DocumentSymbol:    DocumentSymbolClientCapabilities{},
+				DocumentHighlight: DocumentHighlightClientCapabilities{},
+				FoldingRange:      FoldingRangeClientCapabilities{},
+				Rename:            RenameClientCapabilities{PrepareSupport: true},
+				CodeAction:        CodeActionClientCapabilities{},
+				Formatting:        FormattingClientCapabilities{},
+				RangeFormatting:   FormattingClientCapabilities{},
+				OnTypeFormatting:  FormattingClientCapabilities{},
+				SemanticTokens: SemanticTokensClientCapabilities{
+					Requests: SemanticTokensRequests{Full: true, Range: true},
+					TokenTypes: []string{
+						"namespace", "type", "class", "enum", "interface", "struct",
+						"typeParameter", "parameter", "variable", "property", "enumMember",
+						"event", "function", "method", "macro", "label", "comment", "string",
+						"keyword", "number", "regexp", "operator", "decorator",
+					},
+					TokenModifiers: []string{
+						"declaration", "definition", "readonly", "static", "deprecated",
+						"abstract", "async", "modification", "documentation", "defaultLibrary",
+					},
+					Formats: []string{"relative"},
+				},
+				InlayHint:     InlayHintClientCapabilities{},
+				Diagnostic:    DiagnosticClientCapabilities{},
+				CallHierarchy: CallHierarchyClientCapabilities{},
 			},
 			Window: WindowClientCapabilities{WorkDoneProgress: true},
 		},
@@ -833,12 +977,17 @@ func (s *Session) initialize(ctx context.Context) error {
 		return err
 	}
 	s.pullDiags = diagnosticProviderEnabled(result.Capabilities.DiagnosticProvider)
+	s.capabilities = result.Capabilities
 
 	if err := s.conn.Notify(ctx, "initialized", struct{}{}); err != nil {
 		return fmt.Errorf("initialized notification: %w", err)
 	}
 
 	return nil
+}
+
+func (s *Session) Capabilities() ServerCapabilities {
+	return s.capabilities
 }
 
 func diagnosticProviderEnabled(provider json.RawMessage) bool {

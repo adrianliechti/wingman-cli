@@ -143,12 +143,15 @@ func greet() {}
 	})
 
 	t.Run("tree-sitter completions", func(t *testing.T) {
-		var items []struct {
-			Label  string `json:"label"`
-			Kind   int    `json:"kind"`
-			Detail string `json:"detail"`
+		var result struct {
+			Items []struct {
+				Label  string `json:"label"`
+				Kind   int    `json:"kind"`
+				Detail string `json:"detail"`
+			} `json:"items"`
 		}
-		post(t, "/api/lsp/completions", `{"path":"main.go","line":4,"column":2}`, &items)
+		post(t, "/api/lsp/completions", `{"path":"main.go","line":4,"column":2}`, &result)
+		items := result.Items
 		if len(items) != 2 || items[0].Label != "main" || items[1].Label != "greet" {
 			t.Fatalf("items = %+v, want main and greet", items)
 		}
@@ -159,9 +162,9 @@ func greet() {}
 			t.Fatalf("kind = %d, want function completion", items[0].Kind)
 		}
 
-		post(t, "/api/lsp/completions", `{"path":"main.go","line":4,"column":2,"trigger_kind":2,"trigger_character":"."}`, &items)
-		if len(items) != 0 {
-			t.Fatalf("member fallback items = %+v, want none", items)
+		post(t, "/api/lsp/completions", `{"path":"main.go","line":4,"column":2,"trigger_kind":2,"trigger_character":"."}`, &result)
+		if len(result.Items) != 0 {
+			t.Fatalf("member fallback items = %+v, want none", result.Items)
 		}
 	})
 

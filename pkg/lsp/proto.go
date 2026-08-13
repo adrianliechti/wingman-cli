@@ -3,6 +3,8 @@ package lsp
 import (
 	"encoding/json"
 	"strings"
+
+	protocol "go.lsp.dev/protocol"
 )
 
 type InitializeParams struct {
@@ -12,11 +14,7 @@ type InitializeParams struct {
 }
 
 type InitializeResult struct {
-	Capabilities ServerCapabilities `json:"capabilities"`
-}
-
-type ServerCapabilities struct {
-	DiagnosticProvider json.RawMessage `json:"diagnosticProvider"`
+	Capabilities protocol.ServerCapabilities `json:"capabilities"`
 }
 
 type ClientCapabilities struct {
@@ -29,17 +27,26 @@ type WindowClientCapabilities struct {
 }
 
 type TextDocumentClientCapabilities struct {
-	Synchronization TextDocumentSyncClientCapabilities `json:"synchronization"`
-	Completion      CompletionClientCapabilities       `json:"completion"`
-	SignatureHelp   SignatureHelpClientCapabilities    `json:"signatureHelp"`
-	Hover           HoverClientCapabilities            `json:"hover"`
-	Definition      DefinitionClientCapabilities       `json:"definition"`
-	TypeDefinition  TypeDefinitionClientCapabilities   `json:"typeDefinition"`
-	References      ReferencesClientCapabilities       `json:"references"`
-	Implementation  ImplementationClientCapabilities   `json:"implementation"`
-	DocumentSymbol  DocumentSymbolClientCapabilities   `json:"documentSymbol"`
-	Diagnostic      DiagnosticClientCapabilities       `json:"diagnostic"`
-	CallHierarchy   CallHierarchyClientCapabilities    `json:"callHierarchy"`
+	Synchronization   TextDocumentSyncClientCapabilities  `json:"synchronization"`
+	Completion        CompletionClientCapabilities        `json:"completion"`
+	SignatureHelp     SignatureHelpClientCapabilities     `json:"signatureHelp"`
+	Hover             HoverClientCapabilities             `json:"hover"`
+	Definition        DefinitionClientCapabilities        `json:"definition"`
+	TypeDefinition    TypeDefinitionClientCapabilities    `json:"typeDefinition"`
+	References        ReferencesClientCapabilities        `json:"references"`
+	Implementation    ImplementationClientCapabilities    `json:"implementation"`
+	DocumentSymbol    DocumentSymbolClientCapabilities    `json:"documentSymbol"`
+	DocumentHighlight DocumentHighlightClientCapabilities `json:"documentHighlight"`
+	FoldingRange      FoldingRangeClientCapabilities      `json:"foldingRange"`
+	Rename            RenameClientCapabilities            `json:"rename"`
+	CodeAction        CodeActionClientCapabilities        `json:"codeAction"`
+	Formatting        FormattingClientCapabilities        `json:"formatting"`
+	RangeFormatting   FormattingClientCapabilities        `json:"rangeFormatting"`
+	OnTypeFormatting  FormattingClientCapabilities        `json:"onTypeFormatting"`
+	SemanticTokens    SemanticTokensClientCapabilities    `json:"semanticTokens"`
+	InlayHint         InlayHintClientCapabilities         `json:"inlayHint"`
+	Diagnostic        DiagnosticClientCapabilities        `json:"diagnostic"`
+	CallHierarchy     CallHierarchyClientCapabilities     `json:"callHierarchy"`
 }
 
 type TextDocumentSyncClientCapabilities struct {
@@ -85,6 +92,32 @@ type ImplementationClientCapabilities struct{}
 
 type DocumentSymbolClientCapabilities struct{}
 
+type DocumentHighlightClientCapabilities struct{}
+
+type FoldingRangeClientCapabilities struct{}
+
+type RenameClientCapabilities struct {
+	PrepareSupport bool `json:"prepareSupport,omitempty"`
+}
+
+type CodeActionClientCapabilities struct{}
+
+type FormattingClientCapabilities struct{}
+
+type SemanticTokensClientCapabilities struct {
+	Requests       SemanticTokensRequests `json:"requests"`
+	TokenTypes     []string               `json:"tokenTypes"`
+	TokenModifiers []string               `json:"tokenModifiers"`
+	Formats        []string               `json:"formats"`
+}
+
+type SemanticTokensRequests struct {
+	Full  bool `json:"full"`
+	Range bool `json:"range"`
+}
+
+type InlayHintClientCapabilities struct{}
+
 type DiagnosticClientCapabilities struct{}
 
 type CallHierarchyClientCapabilities struct{}
@@ -119,6 +152,10 @@ type TextDocumentContentChangeEvent struct {
 }
 
 type DidSaveTextDocumentParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+}
+
+type DidCloseTextDocumentParams struct {
 	TextDocument TextDocumentIdentifier `json:"textDocument"`
 }
 
@@ -183,10 +220,21 @@ type CompletionItem struct {
 	InsertTextFormat    int             `json:"insertTextFormat,omitempty"`
 	TextEdit            json.RawMessage `json:"textEdit,omitempty"`
 	AdditionalTextEdits []TextEdit      `json:"additionalTextEdits,omitempty"`
+	Command             *Command        `json:"command,omitempty"`
+	CommitCharacters    []string        `json:"commitCharacters,omitempty"`
+	Preselect           bool            `json:"preselect,omitempty"`
+	Data                json.RawMessage `json:"data,omitempty"`
 }
 
 type CompletionList struct {
-	Items []CompletionItem `json:"items"`
+	IsIncomplete bool             `json:"isIncomplete"`
+	Items        []CompletionItem `json:"items"`
+}
+
+type Command struct {
+	Title     string            `json:"title"`
+	Command   string            `json:"command"`
+	Arguments []json.RawMessage `json:"arguments,omitempty"`
 }
 
 type SignatureHelpParams struct {
@@ -318,6 +366,53 @@ type DocumentSymbol struct {
 	Range          Range            `json:"range"`
 	SelectionRange Range            `json:"selectionRange"`
 	Children       []DocumentSymbol `json:"children,omitempty"`
+}
+
+type DocumentHighlightParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Position     Position               `json:"position"`
+}
+
+type DocumentHighlight struct {
+	Range Range `json:"range"`
+	Kind  int   `json:"kind,omitempty"`
+}
+
+type FoldingRangeParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+}
+
+type FoldingRange struct {
+	StartLine      int    `json:"startLine"`
+	StartCharacter *int   `json:"startCharacter,omitempty"`
+	EndLine        int    `json:"endLine"`
+	EndCharacter   *int   `json:"endCharacter,omitempty"`
+	Kind           string `json:"kind,omitempty"`
+}
+
+type SemanticTokensParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+}
+
+type SemanticTokens struct {
+	Data []uint32 `json:"data"`
+}
+
+type SemanticTokensLegend struct {
+	TokenTypes     []string `json:"tokenTypes"`
+	TokenModifiers []string `json:"tokenModifiers"`
+}
+
+type SemanticTokensOptions struct {
+	Legend SemanticTokensLegend `json:"legend"`
+}
+
+type SemanticToken struct {
+	Line      int
+	Character int
+	Length    int
+	Type      string
+	Modifiers []string
 }
 
 type SymbolInformation struct {

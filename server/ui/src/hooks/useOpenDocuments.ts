@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { readWorkspaceFile, writeWorkspaceFile } from "../api/files";
+import { syncLSPDocument, type LSPDocumentEvent } from "../api/lsp";
 import type { FileContent, ServerMessage } from "../types/protocol";
 
 export interface OpenDocument {
@@ -28,6 +29,54 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 	const [documents, setDocuments] = useState<Record<string, OpenDocument>>({});
 	const documentsRef = useRef(documents);
 	const requestRef = useRef<Record<string, number>>({});
+	const lspQueuesRef = useRef(new Map<string, Promise<void>>());
+	const lspChangeTimersRef = useRef(
+		new Map<string, { timer: number; content: string }>(),
+	);
+	const queueLSPEvent = useCallback(
+		(event: LSPDocumentEvent, path: string, content = "") => {
+			const previous = lspQueuesRef.current.get(path) ?? Promise.resolve();
+			const next = previous
+				.then(() => syncLSPDocument(event, path, content))
+				.catch(() => {
+					// Feature requests still synchronize their current buffer, so a
+					// transient lifecycle failure is recoverable and should not block editing.
+				});
+			lspQueuesRef.current.set(path, next);
+			void next.finally(() => {
+				if (lspQueuesRef.current.get(path) === next) {
+					lspQueuesRef.current.delete(path);
+				}
+			});
+		},
+		[],
+	);
+	const cancelPendingLSPChange = useCallback((path: string) => {
+		const pending = lspChangeTimersRef.current.get(path);
+		if (!pending) return;
+		window.clearTimeout(pending.timer);
+		lspChangeTimersRef.current.delete(path);
+	}, []);
+	const scheduleLSPChange = useCallback(
+		(path: string, content: string) => {
+			cancelPendingLSPChange(path);
+			const timer = window.setTimeout(() => {
+				lspChangeTimersRef.current.delete(path);
+				queueLSPEvent("change", path, content);
+			}, 150);
+			lspChangeTimersRef.current.set(path, { timer, content });
+		},
+		[cancelPendingLSPChange, queueLSPEvent],
+	);
+	const flushLSPChange = useCallback(
+		(path: string) => {
+			const pending = lspChangeTimersRef.current.get(path);
+			if (!pending) return;
+			cancelPendingLSPChange(path);
+			queueLSPEvent("change", path, pending.content);
+		},
+		[cancelPendingLSPChange, queueLSPEvent],
+	);
 	const updateDocuments = useCallback(
 		(
 			update: (
@@ -73,6 +122,9 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 						revision: (current[path]?.revision ?? 0) + 1,
 					},
 				}));
+				if (!external && !file.binary) {
+					queueLSPEvent("open", path, content);
+				}
 			} catch (error) {
 				if (requestRef.current[path] !== request) return;
 				updateDocuments((current) => ({
@@ -85,7 +137,7 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 				}));
 			}
 		},
-		[updateDocuments],
+		[queueLSPEvent, updateDocuments],
 	);
 
 	const openDocument = useCallback(
@@ -119,12 +171,17 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 					revision: (current[path]?.revision ?? 0) + 1,
 				},
 			}));
+			if (!file.binary) queueLSPEvent("open", path, content);
 		},
-		[updateDocuments],
+		[queueLSPEvent, updateDocuments],
 	);
 
 	const updateDraft = useCallback(
 		(path: string, draft: string) => {
+			const document = documentsRef.current[path];
+			if (document && !document.external && !document.file?.binary) {
+				scheduleLSPChange(path, draft);
+			}
 			updateDocuments((current) => {
 				const document = current[path];
 				if (!document) return current;
@@ -134,7 +191,7 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 				};
 			});
 		},
-		[updateDocuments],
+		[scheduleLSPChange, updateDocuments],
 	);
 
 	const saveDocument = useCallback(
@@ -143,7 +200,11 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 			if (!document || document.external || document.file?.binary) {
 				return { ok: true };
 			}
-			if (document.draft === document.savedContent) return { ok: true };
+			flushLSPChange(path);
+			if (document.draft === document.savedContent) {
+				queueLSPEvent("save", path, document.draft);
+				return { ok: true };
+			}
 			if (document.conflict && !force) {
 				return {
 					ok: false,
@@ -203,6 +264,7 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 						},
 					};
 				});
+				queueLSPEvent("save", path, document.draft);
 				return { ok: true };
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
@@ -221,11 +283,16 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 				return { ok: false, error: message };
 			}
 		},
-		[updateDocuments],
+		[flushLSPChange, queueLSPEvent, updateDocuments],
 	);
 
 	const discardDocument = useCallback(
 		(path: string) => {
+			const document = documentsRef.current[path];
+			if (document && !document.external && !document.file?.binary) {
+				cancelPendingLSPChange(path);
+				queueLSPEvent("save", path, document.savedContent);
+			}
 			updateDocuments((current) => {
 				const document = current[path];
 				if (!document) return current;
@@ -240,11 +307,16 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 				};
 			});
 		},
-		[updateDocuments],
+		[cancelPendingLSPChange, queueLSPEvent, updateDocuments],
 	);
 
 	const closeDocument = useCallback(
 		(path: string) => {
+			const document = documentsRef.current[path];
+			cancelPendingLSPChange(path);
+			if (document && !document.external && !document.file?.binary) {
+				queueLSPEvent("close", path);
+			}
 			requestRef.current[path] = (requestRef.current[path] ?? 0) + 1;
 			updateDocuments((current) => {
 				if (!current[path]) return current;
@@ -253,11 +325,23 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 				return next;
 			});
 		},
-		[updateDocuments],
+		[cancelPendingLSPChange, queueLSPEvent, updateDocuments],
 	);
 
 	const moveDocuments = useCallback(
 		(from: string, to: string) => {
+			for (const [path, document] of Object.entries(documentsRef.current)) {
+				if (path !== from && !path.startsWith(`${from}/`)) continue;
+				if (document.external || document.file?.binary) continue;
+				const movedPath = `${to}${path.slice(from.length)}`;
+				cancelPendingLSPChange(path);
+				queueLSPEvent("close", path);
+				queueLSPEvent(
+					document.draft === document.savedContent ? "open" : "change",
+					movedPath,
+					document.draft,
+				);
+			}
 			updateDocuments((current) => {
 				let changed = false;
 				const next = { ...current };
@@ -278,7 +362,7 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 				return changed ? next : current;
 			});
 		},
-		[updateDocuments],
+		[cancelPendingLSPChange, queueLSPEvent, updateDocuments],
 	);
 
 	const refreshOpenDocuments = useCallback(async () => {
@@ -299,11 +383,13 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 					const file = await readWorkspaceFile(document.path);
 					if (requestRef.current[document.path] !== request) return;
 					const content = file.content ?? "";
+					let synchronize = false;
 					updateDocuments((current) => {
 						const latest = current[document.path];
 						if (!latest) return current;
 						if (latest.file?.revision !== baseRevision) return current;
 						if (file.revision === latest.file?.revision) {
+							synchronize = true;
 							if (!latest.conflict) return current;
 							return {
 								...current,
@@ -321,6 +407,7 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 								},
 							};
 						}
+						synchronize = true;
 						return {
 							...current,
 							[document.path]: {
@@ -333,10 +420,21 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 							},
 						};
 					});
+					if (synchronize) queueLSPEvent("save", document.path, content);
 				} catch {}
 			}),
 		);
-	}, [updateDocuments]);
+	}, [queueLSPEvent, updateDocuments]);
+
+	useEffect(() => {
+		const pendingChanges = lspChangeTimersRef.current;
+		return () => {
+			for (const pending of pendingChanges.values()) {
+				window.clearTimeout(pending.timer);
+			}
+			pendingChanges.clear();
+		};
+	}, []);
 
 	useEffect(() => {
 		if (!subscribe) return;

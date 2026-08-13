@@ -36,6 +36,130 @@ type lspLocationItem struct {
 	External bool   `json:"external,omitempty"`
 }
 
+type editorCapabilitiesResponse struct {
+	LanguageServer                    bool     `json:"language_server"`
+	Completion                        bool     `json:"completion"`
+	CompletionResolve                 bool     `json:"completion_resolve"`
+	CompletionTriggerCharacters       []string `json:"completion_trigger_characters"`
+	SignatureHelp                     bool     `json:"signature_help"`
+	SignatureHelpTriggerCharacters    []string `json:"signature_help_trigger_characters"`
+	SignatureHelpRetriggerCharacters  []string `json:"signature_help_retrigger_characters"`
+	Hover                             bool     `json:"hover"`
+	Definition                        bool     `json:"definition"`
+	TypeDefinition                    bool     `json:"type_definition"`
+	References                        bool     `json:"references"`
+	Implementation                    bool     `json:"implementation"`
+	DocumentSymbols                   bool     `json:"document_symbols"`
+	DocumentHighlights                bool     `json:"document_highlights"`
+	FoldingRanges                     bool     `json:"folding_ranges"`
+	Rename                            bool     `json:"rename"`
+	CodeActions                       bool     `json:"code_actions"`
+	DocumentFormatting                bool     `json:"document_formatting"`
+	RangeFormatting                   bool     `json:"range_formatting"`
+	OnTypeFormattingTriggerCharacters []string `json:"on_type_formatting_trigger_characters"`
+	SemanticTokens                    bool     `json:"semantic_tokens"`
+	InlayHints                        bool     `json:"inlay_hints"`
+	WorkspaceSymbols                  bool     `json:"workspace_symbols"`
+}
+
+func (s *Server) handleLSPEditorCapabilities(w http.ResponseWriter, r *http.Request) {
+	p := r.URL.Query().Get("path")
+	filePath, ok := s.resolveLSPFile(w, p, false)
+	if !ok {
+		return
+	}
+	capabilities, hasServer, err := s.workspace.EditorLSPCapabilities(r.Context(), filePath)
+	if err != nil {
+		// A missing or failed server must not disable structural fallbacks.
+		hasServer = false
+	}
+	response := editorCapabilitiesResponse{
+		LanguageServer:     hasServer,
+		Completion:         true,
+		Hover:              true,
+		Definition:         true,
+		References:         true,
+		Implementation:     true,
+		DocumentSymbols:    true,
+		DocumentHighlights: true,
+		FoldingRanges:      true,
+		SemanticTokens:     true,
+		WorkspaceSymbols:   true,
+	}
+	if hasServer {
+		if provider := capabilities.CompletionProvider; provider != nil {
+			response.CompletionResolve = provider.ResolveProvider
+			response.CompletionTriggerCharacters = nonNilStrings(provider.TriggerCharacters)
+		}
+		if provider := capabilities.SignatureHelpProvider; provider != nil {
+			response.SignatureHelp = true
+			response.SignatureHelpTriggerCharacters = nonNilStrings(provider.TriggerCharacters)
+			response.SignatureHelpRetriggerCharacters = nonNilStrings(provider.RetriggerCharacters)
+		}
+		// Structural features remain available when the server omits them or
+		// fails later; only type-aware features are strictly capability-gated.
+		response.TypeDefinition = lspCapabilityEnabled(capabilities.TypeDefinitionProvider)
+		response.Rename = lspCapabilityEnabled(capabilities.RenameProvider)
+		response.CodeActions = lspCapabilityEnabled(capabilities.CodeActionProvider)
+		response.DocumentFormatting = lspCapabilityEnabled(capabilities.DocumentFormattingProvider)
+		response.RangeFormatting = lspCapabilityEnabled(capabilities.RangeFormattingProvider)
+		if provider := capabilities.OnTypeFormattingProvider; provider != nil {
+			response.OnTypeFormattingTriggerCharacters = append(
+				[]string{provider.FirstTriggerCharacter},
+				provider.MoreTriggerCharacter...,
+			)
+		}
+		response.SemanticTokens = true
+		response.InlayHints = lspCapabilityEnabled(capabilities.InlayHintProvider)
+	}
+	writeJSON(w, response)
+}
+
+func lspCapabilityEnabled(raw json.RawMessage) bool {
+	value := strings.TrimSpace(string(raw))
+	return value != "" && value != "null" && value != "false"
+}
+
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
+}
+
+func (s *Server) handleLSPDocumentLifecycle(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+		Event   string `json:"event"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	filePath, ok := s.resolveLSPFile(w, body.Path, false)
+	if !ok {
+		return
+	}
+	var err error
+	switch body.Event {
+	case "open", "save":
+		err = s.workspace.SyncEditorDocument(r.Context(), filePath, body.Content, true)
+	case "change":
+		err = s.workspace.SyncEditorDocument(r.Context(), filePath, body.Content, false)
+	case "close":
+		err = s.workspace.CloseEditorDocument(r.Context(), filePath)
+	default:
+		http.Error(w, "invalid document event", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 type workspaceDiagnosticsResponse struct {
 	Diagnostics        []diagnosticItem `json:"diagnostics"`
 	CheckedFiles       int              `json:"checked_files"`
@@ -163,7 +287,7 @@ func (s *Server) handleLSPCompletions(w http.ResponseWriter, r *http.Request) {
 			TriggerCharacter: body.TriggerCharacter,
 		}
 	}
-	items, err := s.workspace.CompletionItems(
+	list, err := s.workspace.CompletionItems(
 		r.Context(),
 		filePath,
 		body.Content,
@@ -175,10 +299,31 @@ func (s *Server) handleLSPCompletions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	if items == nil {
-		items = []lsp.CompletionItem{}
+	if list.Items == nil {
+		list.Items = []lsp.CompletionItem{}
 	}
-	writeJSON(w, items)
+	writeJSON(w, list)
+}
+
+func (s *Server) handleLSPCompletionResolve(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		lspDocumentRequest
+		Item lsp.CompletionItem `json:"item"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	filePath, ok := s.resolveLSPFile(w, body.Path, true)
+	if !ok {
+		return
+	}
+	item, err := s.workspace.ResolveCompletionItem(r.Context(), filePath, body.Content, body.Item)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, item)
 }
 
 func (s *Server) handleLSPSignatureHelp(w http.ResponseWriter, r *http.Request) {
@@ -238,6 +383,56 @@ func (s *Server) handleLSPDocumentSymbols(w http.ResponseWriter, r *http.Request
 		})
 	}
 	writeJSON(w, converted)
+}
+
+func (s *Server) handleLSPDocumentHighlights(w http.ResponseWriter, r *http.Request) {
+	body, filePath, ok := s.decodeLSPPositionRequest(w, r, false)
+	if !ok {
+		return
+	}
+	highlights, err := s.workspace.DocumentHighlights(
+		r.Context(), filePath, body.Content, body.Line-1, body.Column-1,
+	)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if highlights == nil {
+		highlights = []lsp.DocumentHighlight{}
+	}
+	writeJSON(w, highlights)
+}
+
+func (s *Server) handleLSPFoldingRanges(w http.ResponseWriter, r *http.Request) {
+	body, filePath, ok := s.decodeLSPDocumentRequest(w, r, false)
+	if !ok {
+		return
+	}
+	ranges, err := s.workspace.FoldingRanges(r.Context(), filePath, body.Content)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if ranges == nil {
+		ranges = []lsp.FoldingRange{}
+	}
+	writeJSON(w, ranges)
+}
+
+func (s *Server) handleLSPSemanticTokens(w http.ResponseWriter, r *http.Request) {
+	body, filePath, ok := s.decodeLSPDocumentRequest(w, r, false)
+	if !ok {
+		return
+	}
+	tokens, err := s.workspace.SemanticTokens(r.Context(), filePath, body.Content)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if tokens == nil {
+		tokens = []lsp.SemanticToken{}
+	}
+	writeJSON(w, tokens)
 }
 
 type lspPositionRequest struct {

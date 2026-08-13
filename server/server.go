@@ -369,6 +369,8 @@ func (s *Server) registerRoutes(r chi.Router) {
 		})
 
 		r.Route("/lsp", func(r chi.Router) {
+			r.Get("/capabilities", s.handleLSPEditorCapabilities)
+			r.Post("/document", s.handleLSPDocumentLifecycle)
 			r.Get("/diagnostics", s.handleDiagnostics)
 			r.Post("/diagnostics", s.handleLSPFileDiagnostics)
 			r.Post("/definition", s.handleLSPDefinition)
@@ -377,8 +379,12 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Post("/references", s.handleLSPReferences)
 			r.Post("/hover", s.handleLSPHover)
 			r.Post("/completions", s.handleLSPCompletions)
+			r.Post("/completions/resolve", s.handleLSPCompletionResolve)
 			r.Post("/signature-help", s.handleLSPSignatureHelp)
 			r.Post("/document-symbols", s.handleLSPDocumentSymbols)
+			r.Post("/document-highlights", s.handleLSPDocumentHighlights)
+			r.Post("/folding-ranges", s.handleLSPFoldingRanges)
+			r.Post("/semantic-tokens", s.handleLSPSemanticTokens)
 			r.Get("/file", s.handleLSPExternalFile)
 		})
 		r.Get("/skills", s.handleSkills)

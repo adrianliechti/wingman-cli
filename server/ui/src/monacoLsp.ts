@@ -4,8 +4,43 @@ import type { DiagnosticEntry, FileContent } from "./types/protocol";
 
 const markerOwner = "wingman-lsp";
 const definitionScheme = "wingman-definition";
-const completionTriggerCharacters = [".", ":", ">", "/", "@", "#", '"', "'"];
-const signatureTriggerCharacters = ["(", ","];
+const semanticTokenTypes = [
+	"namespace",
+	"type",
+	"class",
+	"enum",
+	"interface",
+	"struct",
+	"typeParameter",
+	"parameter",
+	"variable",
+	"property",
+	"enumMember",
+	"event",
+	"function",
+	"method",
+	"macro",
+	"label",
+	"comment",
+	"string",
+	"keyword",
+	"number",
+	"regexp",
+	"operator",
+	"decorator",
+];
+const semanticTokenModifiers = [
+	"declaration",
+	"definition",
+	"readonly",
+	"static",
+	"deprecated",
+	"abstract",
+	"async",
+	"modification",
+	"documentation",
+	"defaultLibrary",
+];
 
 interface BridgeOptions {
 	monaco: Monaco;
@@ -54,6 +89,14 @@ export function createMonacoLSPBridge({
 		{ path: string; external: boolean }
 	>();
 	const requests = new Set<AbortController>();
+	const completionSources = new WeakMap<
+		MonacoTypes.languages.CompletionItem,
+		{
+			item: LSPCompletionItem;
+			model: MonacoTypes.editor.ITextModel;
+			position: MonacoTypes.Position;
+		}
+	>();
 	let disposed = false;
 	let diagnosticsRevision = 0;
 	let diagnosticsController: AbortController | null = null;
@@ -180,134 +223,302 @@ export function createMonacoLSPBridge({
 		});
 	}
 
+	function registerLanguageProviders(capabilities: LSPEditorCapabilities) {
+		if (!sourceModel || !file.language || disposed) return;
+
+		if (capabilities.completion) {
+			disposables.push(
+				monaco.languages.registerCompletionItemProvider(file.language, {
+					triggerCharacters: capabilities.completion_trigger_characters,
+					provideCompletionItems(
+						model: MonacoTypes.editor.ITextModel,
+						position: MonacoTypes.Position,
+						context: MonacoTypes.languages.CompletionContext,
+						token: MonacoTypes.CancellationToken,
+					) {
+						if (model !== sourceModel) return;
+						return trackedRequest(token, async (signal) => {
+							const list = await postJSON<LSPCompletionList>(
+								"/api/lsp/completions",
+								{
+									...positionRequest(file.path, model, position),
+									trigger_kind: context.triggerKind + 1,
+									...(context.triggerCharacter
+										? { trigger_character: context.triggerCharacter }
+										: {}),
+								},
+								signal,
+							);
+							if (!list || disposed || token.isCancellationRequested) return;
+							const suggestions = list.items.map((lspItem) => {
+								const suggestion = completionItem(
+									monaco,
+									model,
+									position,
+									lspItem,
+								);
+								completionSources.set(suggestion, {
+									item: lspItem,
+									model,
+									position,
+								});
+								return suggestion;
+							});
+							return {
+								suggestions,
+								incomplete: list.isIncomplete,
+							};
+						});
+					},
+					resolveCompletionItem: capabilities.completion_resolve
+						? (
+								suggestion: MonacoTypes.languages.CompletionItem,
+								token: MonacoTypes.CancellationToken,
+							) => {
+								const source = completionSources.get(suggestion);
+								if (!source) return suggestion;
+								return trackedRequest(token, async (signal) => {
+									const resolved = await postJSON<LSPCompletionItem>(
+										"/api/lsp/completions/resolve",
+										{
+											...documentRequest(file.path, source.model),
+											item: source.item,
+										},
+										signal,
+									);
+									if (!resolved) return suggestion;
+									const enriched = {
+										...suggestion,
+										...completionItem(
+											monaco,
+											source.model,
+											source.position,
+											resolved,
+										),
+									};
+									completionSources.set(enriched, {
+										...source,
+										item: resolved,
+									});
+									return enriched;
+								});
+							}
+						: undefined,
+				}),
+			);
+		}
+
+		if (capabilities.signature_help) {
+			disposables.push(
+				monaco.languages.registerSignatureHelpProvider(file.language, {
+					signatureHelpTriggerCharacters:
+						capabilities.signature_help_trigger_characters,
+					signatureHelpRetriggerCharacters:
+						capabilities.signature_help_retrigger_characters,
+					provideSignatureHelp(
+						model: MonacoTypes.editor.ITextModel,
+						position: MonacoTypes.Position,
+						token: MonacoTypes.CancellationToken,
+						context: MonacoTypes.languages.SignatureHelpContext,
+					) {
+						if (model !== sourceModel) return;
+						return trackedRequest(token, async (signal) => {
+							const help = await postJSON<LSPSignatureHelp>(
+								"/api/lsp/signature-help",
+								{
+									...positionRequest(file.path, model, position),
+									trigger_kind: context.triggerKind,
+									...(context.triggerCharacter
+										? { trigger_character: context.triggerCharacter }
+										: {}),
+									is_retrigger: context.isRetrigger,
+								},
+								signal,
+							);
+							if (!help?.signatures.length || token.isCancellationRequested)
+								return;
+							return signatureHelp(help);
+						});
+					},
+				}),
+			);
+		}
+
+		if (capabilities.definition) {
+			disposables.push(
+				monaco.languages.registerDefinitionProvider(file.language, {
+					provideDefinition: (
+						model: MonacoTypes.editor.ITextModel,
+						position: MonacoTypes.Position,
+						token: MonacoTypes.CancellationToken,
+					) => provideLocations("/api/lsp/definition", model, position, token),
+				}),
+			);
+		}
+		if (capabilities.type_definition) {
+			disposables.push(
+				monaco.languages.registerTypeDefinitionProvider(file.language, {
+					provideTypeDefinition: (
+						model: MonacoTypes.editor.ITextModel,
+						position: MonacoTypes.Position,
+						token: MonacoTypes.CancellationToken,
+					) =>
+						provideLocations(
+							"/api/lsp/type-definition",
+							model,
+							position,
+							token,
+						),
+				}),
+			);
+		}
+		if (capabilities.implementation) {
+			disposables.push(
+				monaco.languages.registerImplementationProvider(file.language, {
+					provideImplementation: (
+						model: MonacoTypes.editor.ITextModel,
+						position: MonacoTypes.Position,
+						token: MonacoTypes.CancellationToken,
+					) =>
+						provideLocations(
+							"/api/lsp/implementations",
+							model,
+							position,
+							token,
+						),
+				}),
+			);
+		}
+		if (capabilities.references) {
+			disposables.push(
+				monaco.languages.registerReferenceProvider(file.language, {
+					provideReferences: (
+						model: MonacoTypes.editor.ITextModel,
+						position: MonacoTypes.Position,
+						_context: MonacoTypes.languages.ReferenceContext,
+						token: MonacoTypes.CancellationToken,
+					) => provideLocations("/api/lsp/references", model, position, token),
+				}),
+			);
+		}
+		if (capabilities.hover) {
+			disposables.push(
+				monaco.languages.registerHoverProvider(file.language, {
+					provideHover(
+						model: MonacoTypes.editor.ITextModel,
+						position: MonacoTypes.Position,
+						token: MonacoTypes.CancellationToken,
+					) {
+						if (model !== sourceModel) return;
+						return trackedRequest(token, async (signal) => {
+							const result = await postJSON<{ contents: string }>(
+								"/api/lsp/hover",
+								positionRequest(file.path, model, position),
+								signal,
+							);
+							return result?.contents
+								? { contents: [{ value: result.contents }] }
+								: undefined;
+						});
+					},
+				}),
+			);
+		}
+		if (capabilities.document_symbols) {
+			disposables.push(
+				monaco.languages.registerDocumentSymbolProvider(file.language, {
+					provideDocumentSymbols(
+						model: MonacoTypes.editor.ITextModel,
+						token: MonacoTypes.CancellationToken,
+					) {
+						if (model !== sourceModel) return;
+						return trackedRequest(token, async (signal) => {
+							const symbols = await postJSON<LSPDocumentSymbol[]>(
+								"/api/lsp/document-symbols",
+								documentRequest(file.path, model),
+								signal,
+							);
+							return symbols?.map((symbol) => documentSymbol(model, symbol));
+						});
+					},
+				}),
+			);
+		}
+		if (capabilities.document_highlights) {
+			disposables.push(
+				monaco.languages.registerDocumentHighlightProvider(file.language, {
+					provideDocumentHighlights(model, position, token) {
+						if (model !== sourceModel) return;
+						return trackedRequest(token, async (signal) => {
+							const highlights = await postJSON<LSPDocumentHighlight[]>(
+								"/api/lsp/document-highlights",
+								positionRequest(file.path, model, position),
+								signal,
+							);
+							return highlights?.map((highlight) => ({
+								range: lspRange(model, highlight.range),
+								kind: Math.max(
+									0,
+									(highlight.kind ?? 1) - 1,
+								) as MonacoTypes.languages.DocumentHighlightKind,
+							}));
+						});
+					},
+				}),
+			);
+		}
+		if (capabilities.folding_ranges) {
+			disposables.push(
+				monaco.languages.registerFoldingRangeProvider(file.language, {
+					provideFoldingRanges(model, _context, token) {
+						if (model !== sourceModel) return;
+						return trackedRequest(token, async (signal) => {
+							const ranges = await postJSON<LSPFoldingRange[]>(
+								"/api/lsp/folding-ranges",
+								documentRequest(file.path, model),
+								signal,
+							);
+							return ranges?.map((range) => ({
+								start: range.startLine + 1,
+								end: range.endLine + 1,
+								kind: foldingKind(monaco, range.kind),
+							}));
+						});
+					},
+				}),
+			);
+		}
+		if (capabilities.semantic_tokens) {
+			disposables.push(
+				monaco.languages.registerDocumentSemanticTokensProvider(file.language, {
+					getLegend: () => ({
+						tokenTypes: semanticTokenTypes,
+						tokenModifiers: semanticTokenModifiers,
+					}),
+					provideDocumentSemanticTokens(model, _lastResultID, token) {
+						if (model !== sourceModel) return;
+						return trackedRequest(token, async (signal) => {
+							const tokens = await postJSON<LSPSemanticToken[]>(
+								"/api/lsp/semantic-tokens",
+								documentRequest(file.path, model),
+								signal,
+							);
+							return tokens ? encodeSemanticTokens(tokens) : undefined;
+						});
+					},
+					releaseDocumentSemanticTokens() {},
+				}),
+			);
+		}
+	}
+
 	if (sourceModel && file.language) {
-		disposables.push(
-			monaco.languages.registerCompletionItemProvider(file.language, {
-				triggerCharacters: completionTriggerCharacters,
-				provideCompletionItems(
-					model: MonacoTypes.editor.ITextModel,
-					position: MonacoTypes.Position,
-					context: MonacoTypes.languages.CompletionContext,
-					token: MonacoTypes.CancellationToken,
-				) {
-					if (model !== sourceModel) return;
-					return trackedRequest(token, async (signal) => {
-						const items = await postJSON<LSPCompletionItem[]>(
-							"/api/lsp/completions",
-							{
-								...positionRequest(file.path, model, position),
-								trigger_kind: context.triggerKind + 1,
-								...(context.triggerCharacter
-									? { trigger_character: context.triggerCharacter }
-									: {}),
-							},
-							signal,
-						);
-						if (!items || disposed || token.isCancellationRequested) return;
-						return {
-							suggestions: items.map((item) =>
-								completionItem(monaco, model, position, item),
-							),
-						};
-					});
-				},
-			}),
-			monaco.languages.registerSignatureHelpProvider(file.language, {
-				signatureHelpTriggerCharacters: signatureTriggerCharacters,
-				signatureHelpRetriggerCharacters: [","],
-				provideSignatureHelp(
-					model: MonacoTypes.editor.ITextModel,
-					position: MonacoTypes.Position,
-					token: MonacoTypes.CancellationToken,
-					context: MonacoTypes.languages.SignatureHelpContext,
-				) {
-					if (model !== sourceModel) return;
-					return trackedRequest(token, async (signal) => {
-						const help = await postJSON<LSPSignatureHelp>(
-							"/api/lsp/signature-help",
-							{
-								...positionRequest(file.path, model, position),
-								trigger_kind: context.triggerKind,
-								...(context.triggerCharacter
-									? { trigger_character: context.triggerCharacter }
-									: {}),
-								is_retrigger: context.isRetrigger,
-							},
-							signal,
-						);
-						if (!help?.signatures.length || token.isCancellationRequested)
-							return;
-						return signatureHelp(help);
-					});
-				},
-			}),
-			monaco.languages.registerDefinitionProvider(file.language, {
-				provideDefinition: (
-					model: MonacoTypes.editor.ITextModel,
-					position: MonacoTypes.Position,
-					token: MonacoTypes.CancellationToken,
-				) => provideLocations("/api/lsp/definition", model, position, token),
-			}),
-			monaco.languages.registerTypeDefinitionProvider(file.language, {
-				provideTypeDefinition: (
-					model: MonacoTypes.editor.ITextModel,
-					position: MonacoTypes.Position,
-					token: MonacoTypes.CancellationToken,
-				) =>
-					provideLocations("/api/lsp/type-definition", model, position, token),
-			}),
-			monaco.languages.registerImplementationProvider(file.language, {
-				provideImplementation: (
-					model: MonacoTypes.editor.ITextModel,
-					position: MonacoTypes.Position,
-					token: MonacoTypes.CancellationToken,
-				) =>
-					provideLocations("/api/lsp/implementations", model, position, token),
-			}),
-			monaco.languages.registerReferenceProvider(file.language, {
-				provideReferences: (
-					model: MonacoTypes.editor.ITextModel,
-					position: MonacoTypes.Position,
-					_context: MonacoTypes.languages.ReferenceContext,
-					token: MonacoTypes.CancellationToken,
-				) => provideLocations("/api/lsp/references", model, position, token),
-			}),
-			monaco.languages.registerHoverProvider(file.language, {
-				provideHover(
-					model: MonacoTypes.editor.ITextModel,
-					position: MonacoTypes.Position,
-					token: MonacoTypes.CancellationToken,
-				) {
-					if (model !== sourceModel) return;
-					return trackedRequest(token, async (signal) => {
-						const result = await postJSON<{ contents: string }>(
-							"/api/lsp/hover",
-							positionRequest(file.path, model, position),
-							signal,
-						);
-						return result?.contents
-							? { contents: [{ value: result.contents }] }
-							: undefined;
-					});
-				},
-			}),
-			monaco.languages.registerDocumentSymbolProvider(file.language, {
-				provideDocumentSymbols(
-					model: MonacoTypes.editor.ITextModel,
-					token: MonacoTypes.CancellationToken,
-				) {
-					if (model !== sourceModel) return;
-					return trackedRequest(token, async (signal) => {
-						const symbols = await postJSON<LSPDocumentSymbol[]>(
-							"/api/lsp/document-symbols",
-							documentRequest(file.path, model),
-							signal,
-						);
-						return symbols?.map((symbol) => documentSymbol(model, symbol));
-					});
-				},
-			}),
-		);
+		const controller = new AbortController();
+		requests.add(controller);
+		void getEditorCapabilities(file.path, controller.signal)
+			.then((capabilities) => registerLanguageProviders(capabilities))
+			.catch(() => registerLanguageProviders(structuralCapabilities))
+			.finally(() => requests.delete(controller));
 	}
 
 	if (onOpenFile) {
@@ -413,6 +624,84 @@ interface LSPDocumentSymbol {
 	children?: LSPDocumentSymbol[];
 }
 
+interface LSPDocumentHighlight {
+	range: LSPRange;
+	kind?: number;
+}
+
+interface LSPFoldingRange {
+	startLine: number;
+	startCharacter?: number;
+	endLine: number;
+	endCharacter?: number;
+	kind?: string;
+}
+
+interface LSPSemanticToken {
+	Line: number;
+	Character: number;
+	Length: number;
+	Type: string;
+	Modifiers?: string[];
+}
+
+interface LSPEditorCapabilities {
+	language_server: boolean;
+	completion: boolean;
+	completion_resolve: boolean;
+	completion_trigger_characters: string[];
+	signature_help: boolean;
+	signature_help_trigger_characters: string[];
+	signature_help_retrigger_characters: string[];
+	hover: boolean;
+	definition: boolean;
+	type_definition: boolean;
+	references: boolean;
+	implementation: boolean;
+	document_symbols: boolean;
+	document_highlights: boolean;
+	folding_ranges: boolean;
+	rename: boolean;
+	code_actions: boolean;
+	document_formatting: boolean;
+	range_formatting: boolean;
+	on_type_formatting_trigger_characters: string[];
+	semantic_tokens: boolean;
+	inlay_hints: boolean;
+	workspace_symbols: boolean;
+}
+
+const structuralCapabilities: LSPEditorCapabilities = {
+	language_server: false,
+	completion: true,
+	completion_resolve: false,
+	completion_trigger_characters: [],
+	signature_help: false,
+	signature_help_trigger_characters: [],
+	signature_help_retrigger_characters: [],
+	hover: true,
+	definition: true,
+	type_definition: false,
+	references: true,
+	implementation: true,
+	document_symbols: true,
+	document_highlights: true,
+	folding_ranges: true,
+	rename: false,
+	code_actions: false,
+	document_formatting: false,
+	range_formatting: false,
+	on_type_formatting_trigger_characters: [],
+	semantic_tokens: true,
+	inlay_hints: false,
+	workspace_symbols: true,
+};
+
+interface LSPCompletionList {
+	isIncomplete: boolean;
+	items: LSPCompletionItem[];
+}
+
 interface LSPCompletionItem {
 	label: string;
 	kind?: number;
@@ -424,6 +713,9 @@ interface LSPCompletionItem {
 	insertTextFormat?: number;
 	textEdit?: LSPCompletionTextEdit;
 	additionalTextEdits?: Array<{ range: LSPRange; newText: string }>;
+	commitCharacters?: string[];
+	preselect?: boolean;
+	data?: unknown;
 }
 
 type LSPDocumentation = string | { kind?: string; value?: string };
@@ -466,6 +758,29 @@ async function postJSON<T>(
 	});
 	if (!response.ok) return undefined;
 	return (await response.json()) as T;
+}
+
+async function getEditorCapabilities(
+	path: string,
+	signal: AbortSignal,
+): Promise<LSPEditorCapabilities> {
+	const response = await fetch(
+		`/api/lsp/capabilities?path=${encodeURIComponent(path)}`,
+		{ signal },
+	);
+	if (!response.ok) throw new Error("Editor capabilities unavailable");
+	const capabilities = (await response.json()) as LSPEditorCapabilities;
+	return {
+		...capabilities,
+		completion_trigger_characters:
+			capabilities.completion_trigger_characters ?? [],
+		signature_help_trigger_characters:
+			capabilities.signature_help_trigger_characters ?? [],
+		signature_help_retrigger_characters:
+			capabilities.signature_help_retrigger_characters ?? [],
+		on_type_formatting_trigger_characters:
+			capabilities.on_type_formatting_trigger_characters ?? [],
+	};
 }
 
 function documentRequest(path: string, model: MonacoTypes.editor.ITextModel) {
@@ -549,6 +864,8 @@ function completionItem(
 			range: lspRange(model, additional.range),
 			text: additional.newText,
 		})),
+		commitCharacters: item.commitCharacters,
+		preselect: item.preselect,
 	};
 }
 
@@ -571,6 +888,57 @@ function signatureHelp(
 		},
 		dispose() {},
 	};
+}
+
+function foldingKind(monaco: Monaco, kind?: string) {
+	switch (kind) {
+		case "comment":
+			return monaco.languages.FoldingRangeKind.Comment;
+		case "imports":
+			return monaco.languages.FoldingRangeKind.Imports;
+		case "region":
+			return monaco.languages.FoldingRangeKind.Region;
+	}
+}
+
+function encodeSemanticTokens(
+	tokens: LSPSemanticToken[],
+): MonacoTypes.languages.SemanticTokens {
+	const sorted = tokens
+		.filter(
+			(token) =>
+				token.Length > 0 && semanticTokenTypes.includes(token.Type),
+		)
+		.toSorted(
+			(a, b) => a.Line - b.Line || a.Character - b.Character || a.Length - b.Length,
+		);
+	const data = new Uint32Array(sorted.length * 5);
+	let previousLine = 0;
+	let previousCharacter = 0;
+	for (let index = 0; index < sorted.length; index++) {
+		const token = sorted[index];
+		const lineDelta = token.Line - previousLine;
+		const characterDelta =
+			lineDelta === 0 ? token.Character - previousCharacter : token.Character;
+		let modifierBits = 0;
+		for (const modifier of token.Modifiers ?? []) {
+			const modifierIndex = semanticTokenModifiers.indexOf(modifier);
+			if (modifierIndex >= 0) modifierBits |= 1 << modifierIndex;
+		}
+		data.set(
+			[
+				lineDelta,
+				characterDelta,
+				token.Length,
+				semanticTokenTypes.indexOf(token.Type),
+				modifierBits,
+			],
+			index * 5,
+		);
+		previousLine = token.Line;
+		previousCharacter = token.Character;
+	}
+	return { data };
 }
 
 function documentation(value?: LSPDocumentation) {
