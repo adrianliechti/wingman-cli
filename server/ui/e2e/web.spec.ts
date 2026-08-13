@@ -22,6 +22,15 @@ async function composer(page: Page) {
 	return input;
 }
 
+async function openWorkspaceMenu(page: Page) {
+	await page
+		.getByRole("tree", { name: "Workspace files" })
+		.dispatchEvent("contextmenu", { clientX: 32, clientY: 32 });
+	const menu = page.getByRole("menu", { name: "Workspace actions" });
+	await expect(menu).toBeVisible();
+	return menu;
+}
+
 async function expectFloatingInViewport(
 	page: Page,
 	element: Locator,
@@ -333,10 +342,12 @@ test("shows file actions above panel clipping", async ({ page }) => {
 
 	const menu = page.getByRole("menu", { name: "Actions for editable.txt" });
 	await expect(menu).toBeVisible();
-	await expect(menu.getByRole("menuitem", { name: "New File…" })).toBeVisible();
-	await expect(
-		menu.getByRole("menuitem", { name: "New Folder…" }),
-	).toBeVisible();
+	await expect(menu.getByRole("menuitem", { name: "New File…" })).toHaveCount(
+		0,
+	);
+	await expect(menu.getByRole("menuitem", { name: "New Folder…" })).toHaveCount(
+		0,
+	);
 	await expect(menu.getByRole("menuitem", { name: "Cut" })).toBeVisible();
 	await expect(
 		menu.getByRole("menuitem", { name: "Copy", exact: true }),
@@ -357,7 +368,28 @@ test("shows file actions above panel clipping", async ({ page }) => {
 	await expectFloatingInViewport(page, menu);
 	await expect(menu.getByRole("menuitem", { name: "Open" })).toBeFocused();
 	await page.keyboard.press("ArrowDown");
-	await expect(menu.getByRole("menuitem", { name: "New File…" })).toBeFocused();
+	await expect(menu.getByRole("menuitem", { name: "Cut" })).toBeFocused();
+
+	await page.keyboard.press("Escape");
+	await page
+		.getByRole("treeitem", { name: "nested" })
+		.click({ button: "right" });
+	const folderMenu = page.getByRole("menu", { name: "Actions for nested" });
+	await expect(
+		folderMenu.getByRole("menuitem", { name: "New File…" }),
+	).toBeVisible();
+	await expect(
+		folderMenu.getByRole("menuitem", { name: "New Folder…" }),
+	).toBeVisible();
+
+	await page.keyboard.press("Escape");
+	const workspaceMenu = await openWorkspaceMenu(page);
+	await expect(
+		workspaceMenu.getByRole("menuitem", { name: "New File…" }),
+	).toBeVisible();
+	await expect(
+		workspaceMenu.getByRole("menuitem", { name: "New Folder…" }),
+	).toBeVisible();
 });
 
 test("creates, saves, refreshes, and protects files changed on disk", async ({
@@ -366,13 +398,8 @@ test("creates, saves, refreshes, and protects files changed on disk", async ({
 }) => {
 	await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
 	await composer(page);
-	await page
-		.getByRole("treeitem", { name: /editable\.txt/ })
-		.click({ button: "right" });
-	await page
-		.getByRole("menu", { name: "Actions for editable.txt" })
-		.getByRole("menuitem", { name: "New File…" })
-		.click();
+	let workspaceMenu = await openWorkspaceMenu(page);
+	await workspaceMenu.getByRole("menuitem", { name: "New File…" }).click();
 	const nameInput = page.getByRole("textbox", {
 		name: "New file name in workspace",
 	});
@@ -450,13 +477,8 @@ test("creates, saves, refreshes, and protects files changed on disk", async ({
 	);
 	expect(nestedRead.ok()).toBeTruthy();
 
-	await page
-		.getByRole("treeitem", { name: /editable\.txt/ })
-		.click({ button: "right" });
-	await page
-		.getByRole("menu", { name: "Actions for editable.txt" })
-		.getByRole("menuitem", { name: "New Folder…" })
-		.click();
+	workspaceMenu = await openWorkspaceMenu(page);
+	await workspaceMenu.getByRole("menuitem", { name: "New Folder…" }).click();
 	const folderName = page.getByRole("textbox", {
 		name: "New folder name in workspace",
 	});
@@ -1227,11 +1249,65 @@ test("renders markdown files in a browser preview", async ({ page }) => {
 	await expect(page.locator(".monaco-editor")).toBeVisible();
 });
 
+test("uses Wingman's dynamic editor context menu", async ({ page }) => {
+	await composer(page);
+	await page.getByRole("treeitem", { name: /editable\.txt/ }).click();
+	const editor = page.locator(".monaco-editor");
+	await editor.click();
+
+	for (const shortcut of ["F1", "Control+Shift+P"]) {
+		await page.keyboard.press(shortcut);
+		await expect(page.locator(".quick-input-widget")).not.toBeVisible();
+		const wingmanPalette = page.getByRole("dialog", {
+			name: "Command palette",
+		});
+		if (await wingmanPalette.isVisible()) await page.keyboard.press("Escape");
+	}
+
+	await editor.click({ button: "right" });
+	const menu = page.getByRole("menu", { name: "Editor actions" });
+	await expect(menu).toBeVisible();
+	for (const item of ["Undo", "Redo", "Cut", "Copy", "Paste"]) {
+		await expect(
+			menu.getByRole("menuitem", { name: item, exact: true }),
+		).toBeVisible();
+	}
+	await expect(
+		page.getByRole("menuitem", { name: "Command Palette", exact: true }),
+	).toHaveCount(0);
+	await expectFloatingInViewport(page, menu);
+
+	await page.keyboard.press("Escape");
+	await editor.focus();
+	await page.keyboard.press("Shift+F10");
+	await expect(menu).toBeVisible();
+});
+
 test("routes native File menu commands through shared file handling", async ({
 	page,
 	request,
 }) => {
+	await page.addInitScript(() => {
+		const states: Array<{ command: string; enabled: boolean }> = [];
+		Reflect.set(window, "__shellCommandStates", states);
+		window.addEventListener("shell:command-state", (event) => {
+			states.push(
+				(event as CustomEvent<{ command: string; enabled: boolean }>).detail,
+			);
+		});
+	});
 	await composer(page);
+	const commandEnabled = (command: string) =>
+		page.evaluate((name) => {
+			const states = Reflect.get(window, "__shellCommandStates") as Array<{
+				command: string;
+				enabled: boolean;
+			}>;
+			return states.findLast((state) => state.command === name)?.enabled;
+		}, command);
+	await expect.poll(() => commandEnabled("save")).toBe(false);
+	await expect.poll(() => commandEnabled("save-as")).toBe(false);
+
 	await page.evaluate(() =>
 		window.dispatchEvent(
 			new CustomEvent("shell:command", { detail: "new-file" }),
@@ -1247,6 +1323,8 @@ test("routes native File menu commands through shared file handling", async ({
 	await expect(
 		page.getByRole("tab", { name: "menu-created.txt" }),
 	).toBeVisible();
+	await expect.poll(() => commandEnabled("save")).toBe(true);
+	await expect.poll(() => commandEnabled("save-as")).toBe(true);
 	const editor = page.locator(".monaco-editor");
 	await editor.click();
 	await page.keyboard.type("created through the File menu\n");

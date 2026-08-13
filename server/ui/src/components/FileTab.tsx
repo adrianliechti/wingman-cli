@@ -1,6 +1,6 @@
 import Editor, { type OnMount } from "@monaco-editor/react";
 import { AlertTriangle, FileDigit, Loader2 } from "lucide-react";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useColorScheme } from "../hooks/useColorScheme";
 import type { OpenDocument, SaveResult } from "../hooks/useOpenDocuments";
 import {
@@ -12,6 +12,7 @@ import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
 import type { ServerMessage } from "../types/protocol";
 import { textPreviewKind } from "../utils/filePreview";
 import { DataPreview } from "./DataPreview";
+import { EditorContextMenu } from "./EditorContextMenu";
 import { MarkdownContent } from "./MarkdownContent";
 import { MermaidPreview } from "./MermaidPreview";
 
@@ -46,11 +47,16 @@ export function FileTab({
 	view = "code",
 }: Props) {
 	const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
+	const contextMenuListenerRef = useRef<{ dispose(): void } | null>(null);
 	const lspBridgeRef = useRef<MonacoLSPBridge | null>(null);
 	const diagnosticsTimerRef = useRef<number | null>(null);
 	const onOpenFileRef = useRef(onOpenFile);
 	const onSaveRef = useRef(onSave);
 	const scheme = useColorScheme();
+	const [contextMenu, setContextMenu] = useState<{
+		x: number;
+		y: number;
+	} | null>(null);
 	onOpenFileRef.current = onOpenFile;
 	onSaveRef.current = onSave;
 
@@ -65,6 +71,8 @@ export function FileTab({
 
 	useEffect(() => {
 		return () => {
+			contextMenuListenerRef.current?.dispose();
+			contextMenuListenerRef.current = null;
 			if (diagnosticsTimerRef.current !== null) {
 				window.clearTimeout(diagnosticsTimerRef.current);
 			}
@@ -202,6 +210,42 @@ export function FileTab({
 						beforeMount={defineWingmanThemes}
 						onMount={(editor, monaco) => {
 							editorRef.current = editor;
+							// Wingman owns the command surface; keep Monaco's standalone
+							// palette shortcuts from opening a second command UI.
+							editor.addCommand(monaco.KeyCode.F1, () => {});
+							editor.addCommand(
+								monaco.KeyMod.CtrlCmd |
+									monaco.KeyMod.Shift |
+									monaco.KeyCode.KeyP,
+								() => {},
+							);
+							contextMenuListenerRef.current?.dispose();
+							contextMenuListenerRef.current = editor.onContextMenu((event) => {
+								if (!event.target.position) return;
+								event.event.preventDefault();
+								event.event.stopPropagation();
+								setContextMenu({
+									x: event.event.posx,
+									y: event.event.posy,
+								});
+							});
+							editor.addCommand(
+								monaco.KeyMod.Shift | monaco.KeyCode.F10,
+								() => {
+									const position = editor.getPosition();
+									const visible =
+										position && editor.getScrolledVisiblePosition(position);
+									const bounds = editor.getDomNode()?.getBoundingClientRect();
+									if (!bounds) return;
+									setContextMenu({
+										x: bounds.left + (visible?.left ?? 8),
+										y:
+											bounds.top +
+											(visible?.top ?? 8) +
+											(visible?.height ?? 16),
+									});
+								},
+							);
 							lspBridgeRef.current?.dispose();
 							if (!document.external) {
 								lspBridgeRef.current = createMonacoLSPBridge({
@@ -221,6 +265,7 @@ export function FileTab({
 						}}
 						onChange={(value) => onChange(value ?? "")}
 						options={{
+							contextmenu: false,
 							minimap: { enabled: false },
 							fontSize: 12,
 							lineNumbers: "on",
@@ -235,6 +280,14 @@ export function FileTab({
 					/>
 				)}
 			</div>
+			{contextMenu && editorRef.current && (
+				<EditorContextMenu
+					editor={editorRef.current}
+					openAt={contextMenu}
+					readOnly={document.external}
+					onClose={() => setContextMenu(null)}
+				/>
+			)}
 		</div>
 	);
 }

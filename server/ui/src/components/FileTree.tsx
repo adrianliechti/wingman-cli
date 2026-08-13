@@ -854,16 +854,20 @@ function ContextMenu({
 			{menu.node && !isDir && (
 				<MenuItem icon={<FileText size={12} />} label="Open" onClick={onOpen} />
 			)}
-			<MenuItem
-				icon={<FilePlus size={12} />}
-				label="New File…"
-				onClick={onNewFile}
-			/>
-			<MenuItem
-				icon={<FolderPlus size={12} />}
-				label="New Folder…"
-				onClick={onNewFolder}
-			/>
+			{isDir && (
+				<>
+					<MenuItem
+						icon={<FilePlus size={12} />}
+						label="New File…"
+						onClick={onNewFile}
+					/>
+					<MenuItem
+						icon={<FolderPlus size={12} />}
+						label="New Folder…"
+						onClick={onNewFolder}
+					/>
+				</>
+			)}
 			<div role="separator" className="my-1 border-t border-border-subtle" />
 			{menu.node && (
 				<MenuItem icon={<Scissors size={12} />} label="Cut" onClick={onCut} />

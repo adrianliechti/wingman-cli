@@ -376,18 +376,13 @@ export default function App() {
 		activeTab.type === "file" && activeTab.path
 			? documents[activeTab.path]
 			: undefined;
-	const canSaveAs = !!(
+	const canSaveFile = !!(
 		activeTab.type === "file" &&
 		activeTab.path &&
 		activeDocument?.file &&
 		!activeDocument.external &&
 		!activeDocument.file.binary &&
 		!activeDocument.saving
-	);
-	const canSave = !!(
-		canSaveAs &&
-		activeTab.path &&
-		dirtyPaths.has(activeTab.path)
 	);
 	const activePreviewKind =
 		activeTab.type === "file" ? textPreviewKind(activeTab.path ?? "") : null;
@@ -810,8 +805,8 @@ export default function App() {
 		for (const [command, enabled] of [
 			["new-file", !workspaceSwitching],
 			["open-folder", !workspaceSwitching],
-			["save", canSave],
-			["save-as", canSaveAs],
+			["save", canSaveFile],
+			["save-as", canSaveFile],
 		] as const) {
 			window.dispatchEvent(
 				new CustomEvent("shell:command-state", {
@@ -819,7 +814,7 @@ export default function App() {
 				}),
 			);
 		}
-	}, [canSave, canSaveAs, workspaceSwitching]);
+	}, [canSaveFile, workspaceSwitching]);
 
 	useEffect(() => {
 		const onShellCommand = (event: Event) => {
@@ -833,12 +828,12 @@ export default function App() {
 					else void openFolder();
 					break;
 				case "save":
-					if (canSave && activeTab.path) {
+					if (canSaveFile && activeTab.path) {
 						void saveFile(activeTab.path);
 					}
 					break;
 				case "save-as":
-					if (canSaveAs && activeTab.path && activeDocument) {
+					if (canSaveFile && activeTab.path && activeDocument) {
 						setFilePathRequest({
 							kind: "save-as",
 							path: activeTab.path,
@@ -856,8 +851,7 @@ export default function App() {
 	}, [
 		activeDocument,
 		activeTab,
-		canSave,
-		canSaveAs,
+		canSaveFile,
 		dirtyPaths.size,
 		openFolder,
 		saveFile,
