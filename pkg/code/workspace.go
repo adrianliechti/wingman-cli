@@ -596,7 +596,23 @@ func (w *Workspace) CompletionItems(ctx context.Context, filePath string, conten
 		}
 	}
 
+	if completionContext != nil && completionContext.TriggerCharacter != "" {
+		return []lsp.CompletionItem{}, nil
+	}
 	return graphCompletionItems(filePath, content)
+}
+
+func (w *Workspace) SignatureHelp(ctx context.Context, filePath string, content *string, line, column int, signatureContext *lsp.SignatureHelpContext) (*lsp.SignatureHelp, error) {
+	if !w.hasLSPServerFor(filePath) {
+		return nil, nil
+	}
+	var help *lsp.SignatureHelp
+	err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
+		var err error
+		help, err = session.SignatureHelp(ctx, uri, line, column, signatureContext)
+		return err
+	})
+	return help, err
 }
 
 func graphCompletionItems(filePath string, content *string) ([]lsp.CompletionItem, error) {
@@ -619,11 +635,9 @@ func graphCompletionItems(filePath string, content *string) ([]lsp.CompletionIte
 			if symbol.Name != "" && !seen[symbol.Name] {
 				seen[symbol.Name] = true
 				result = append(result, lsp.CompletionItem{
-					Label:      symbol.Name,
-					Kind:       lspSymbolKind(symbol.Kind),
-					Detail:     string(symbol.Kind) + " · tree-sitter",
-					SortText:   symbol.Name,
-					InsertText: symbol.Name,
+					Label:  symbol.Name,
+					Kind:   lspCompletionKind(symbol.Kind),
+					Detail: string(symbol.Kind) + " · tree-sitter",
 				})
 			}
 			add(symbol.Children)
@@ -713,6 +727,28 @@ func lspRange(r graph.SymRange) lsp.Range {
 		Start: lsp.Position{Line: r.StartLine, Character: r.StartCol},
 		End:   lsp.Position{Line: r.EndLine, Character: r.EndCol},
 	}
+}
+
+func lspCompletionKind(kind graph.Kind) int {
+	switch kind {
+	case graph.KindModule:
+		return 9
+	case graph.KindClass:
+		return 7
+	case graph.KindMethod:
+		return 2
+	case graph.KindConstructor:
+		return 4
+	case graph.KindInterface:
+		return 8
+	case graph.KindFunction:
+		return 3
+	case graph.KindConstant:
+		return 21
+	case graph.KindType:
+		return 22
+	}
+	return 6
 }
 
 func lspSymbolKind(kind graph.Kind) int {

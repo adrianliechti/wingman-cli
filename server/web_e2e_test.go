@@ -267,6 +267,16 @@ func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(
+		filepath.Join(workDir, "completion.go"),
+		[]byte("package main\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(workDir, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	model := &webE2EModel{
 		filePath:       filepath.Join(workDir, "e2e-result.txt"),
 		steerStarted:   make(chan struct{}),

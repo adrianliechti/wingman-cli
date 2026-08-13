@@ -234,7 +234,6 @@ func (s *Server) gitMutationComplete(w http.ResponseWriter, output string) {
 
 func (s *Server) gitCheckoutComplete(w http.ResponseWriter, output string) {
 	s.flushFiles()
-	s.broadcast(Frame{Type: EvtFilesChanged})
 	s.gitMutationComplete(w, output)
 }
 

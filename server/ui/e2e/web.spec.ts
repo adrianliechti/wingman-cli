@@ -378,10 +378,8 @@ test("creates, saves, refreshes, and protects files changed on disk", async ({
 	let file = (await read.json()) as { content: string; revision: string };
 	expect(file.content).toContain("initialVersion");
 
-	await writeFile(
-		workspacePath("web-created.go"),
-		"package main\n\nfunc refreshedFromDisk() {}\n",
-	);
+	const refreshedContent = "package main\n\nfunc refreshedFromDisk() {}\n";
+	await writeFile(workspacePath("web-created.go"), refreshedContent);
 	await expect(page.locator(".view-lines")).toContainText("refreshedFromDisk");
 
 	await editor.click();
@@ -391,6 +389,17 @@ test("creates, saves, refreshes, and protects files changed on disk", async ({
 		workspacePath("web-created.go"),
 		"package main\n\nfunc newerDiskVersion() {}\n",
 	);
+	const conflictBanner = page.getByText(
+		"This file changed on disk while you had unsaved edits.",
+	);
+	await expect(conflictBanner).toBeVisible();
+	await writeFile(workspacePath("web-created.go"), refreshedContent);
+	await expect(conflictBanner).not.toBeVisible();
+	await writeFile(
+		workspacePath("web-created.go"),
+		"package main\n\nfunc newerDiskVersion() {}\n",
+	);
+	await expect(conflictBanner).toBeVisible();
 
 	await save.click();
 	const overwriteDialog = page.getByRole("dialog", {
@@ -404,6 +413,72 @@ test("creates, saves, refreshes, and protects files changed on disk", async ({
 	file = (await read.json()) as { content: string; revision: string };
 	expect(file.content).toContain("localVersion");
 	expect(file.content).not.toContain("newerDiskVersion");
+
+	await page
+		.getByRole("treeitem", { name: "nested" })
+		.click({ button: "right" });
+	await page
+		.getByRole("menu", { name: "Actions for nested" })
+		.getByRole("menuitem", { name: "New…" })
+		.click();
+	const nestedName = page.getByRole("textbox", {
+		name: "New file name in nested",
+	});
+	await nestedName.fill("child.go");
+	await nestedName.press("Enter");
+	await expect(page.getByRole("tab", { name: /child\.go/ })).toBeVisible();
+	const nestedRead = await request.get(
+		"/api/files/read?path=nested%2Fchild.go",
+	);
+	expect(nestedRead.ok()).toBeTruthy();
+});
+
+test("uses Monaco's live buffer for automatic completion and parameter hints", async ({
+	page,
+}) => {
+	let completionContent = "";
+	let signatureContent = "";
+	await page.route(/\/api\/lsp\/completions$/, async (route) => {
+		const body = route.request().postDataJSON() as { content?: string };
+		completionContent = body.content ?? "";
+		await route.fulfill({
+			json: [{ label: "Done", kind: 2, detail: "func()", insertText: "Done" }],
+		});
+	});
+	await page.route(/\/api\/lsp\/signature-help$/, async (route) => {
+		const body = route.request().postDataJSON() as { content?: string };
+		signatureContent = body.content ?? "";
+		await route.fulfill({
+			json: {
+				signatures: [
+					{
+						label: "consume(name string, count int)",
+						parameters: [{ label: "name string" }, { label: "count int" }],
+					},
+				],
+				activeSignature: 0,
+				activeParameter: 0,
+			},
+		});
+	});
+
+	await composer(page);
+	await page.getByRole("treeitem", { name: /completion\.go/ }).click();
+	const editor = page.locator(".monaco-editor");
+	await expect(editor).toBeVisible();
+	await editor.click();
+	await page.keyboard.press("ControlOrMeta+A");
+	await page.keyboard.type("ctx.");
+	await expect.poll(() => completionContent).toContain("ctx.");
+	await expect(page.locator(".suggest-widget:visible")).toContainText("Done");
+
+	await page.keyboard.press("Escape");
+	await page.keyboard.press("ControlOrMeta+A");
+	await page.keyboard.type("consume(");
+	await expect.poll(() => signatureContent).toContain("consume(");
+	await expect(page.locator(".parameter-hints-widget:visible")).toContainText(
+		"consume(name string, count int)",
+	);
 });
 
 test("keeps composer pickers visible in a constrained window", async ({

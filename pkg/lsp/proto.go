@@ -31,6 +31,7 @@ type WindowClientCapabilities struct {
 type TextDocumentClientCapabilities struct {
 	Synchronization TextDocumentSyncClientCapabilities `json:"synchronization"`
 	Completion      CompletionClientCapabilities       `json:"completion"`
+	SignatureHelp   SignatureHelpClientCapabilities    `json:"signatureHelp"`
 	Hover           HoverClientCapabilities            `json:"hover"`
 	Definition      DefinitionClientCapabilities       `json:"definition"`
 	TypeDefinition  TypeDefinitionClientCapabilities   `json:"typeDefinition"`
@@ -52,6 +53,20 @@ type CompletionClientCapabilities struct {
 type CompletionItemClientCapabilities struct {
 	SnippetSupport      bool     `json:"snippetSupport,omitempty"`
 	DocumentationFormat []string `json:"documentationFormat,omitempty"`
+}
+
+type SignatureHelpClientCapabilities struct {
+	SignatureInformation SignatureInformationClientCapabilities `json:"signatureInformation"`
+}
+
+type SignatureInformationClientCapabilities struct {
+	DocumentationFormat    []string                         `json:"documentationFormat,omitempty"`
+	ParameterInformation   ParameterInformationCapabilities `json:"parameterInformation"`
+	ActiveParameterSupport bool                             `json:"activeParameterSupport,omitempty"`
+}
+
+type ParameterInformationCapabilities struct {
+	LabelOffsetSupport bool `json:"labelOffsetSupport,omitempty"`
 }
 
 type HoverClientCapabilities struct {
@@ -172,6 +187,36 @@ type CompletionItem struct {
 
 type CompletionList struct {
 	Items []CompletionItem `json:"items"`
+}
+
+type SignatureHelpParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Position     Position               `json:"position"`
+	Context      *SignatureHelpContext  `json:"context,omitempty"`
+}
+
+type SignatureHelpContext struct {
+	TriggerKind      int    `json:"triggerKind"`
+	TriggerCharacter string `json:"triggerCharacter,omitempty"`
+	IsRetrigger      bool   `json:"isRetrigger"`
+}
+
+type SignatureHelp struct {
+	Signatures      []SignatureInformation `json:"signatures"`
+	ActiveSignature int                    `json:"activeSignature,omitempty"`
+	ActiveParameter int                    `json:"activeParameter,omitempty"`
+}
+
+type SignatureInformation struct {
+	Label           string                 `json:"label"`
+	Documentation   json.RawMessage        `json:"documentation,omitempty"`
+	Parameters      []ParameterInformation `json:"parameters,omitempty"`
+	ActiveParameter *int                   `json:"activeParameter,omitempty"`
+}
+
+type ParameterInformation struct {
+	Label         json.RawMessage `json:"label"`
+	Documentation json.RawMessage `json:"documentation,omitempty"`
 }
 
 type TextEdit struct {

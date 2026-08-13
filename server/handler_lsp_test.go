@@ -145,6 +145,7 @@ func greet() {}
 	t.Run("tree-sitter completions", func(t *testing.T) {
 		var items []struct {
 			Label  string `json:"label"`
+			Kind   int    `json:"kind"`
 			Detail string `json:"detail"`
 		}
 		post(t, "/api/lsp/completions", `{"path":"main.go","line":4,"column":2}`, &items)
@@ -153,6 +154,24 @@ func greet() {}
 		}
 		if !strings.Contains(items[0].Detail, "tree-sitter") {
 			t.Fatalf("detail = %q, want tree-sitter attribution", items[0].Detail)
+		}
+		if items[0].Kind != 3 {
+			t.Fatalf("kind = %d, want function completion", items[0].Kind)
+		}
+
+		post(t, "/api/lsp/completions", `{"path":"main.go","line":4,"column":2,"trigger_kind":2,"trigger_character":"."}`, &items)
+		if len(items) != 0 {
+			t.Fatalf("member fallback items = %+v, want none", items)
+		}
+	})
+
+	t.Run("signature help without language server", func(t *testing.T) {
+		var help struct {
+			Signatures []json.RawMessage `json:"signatures"`
+		}
+		post(t, "/api/lsp/signature-help", `{"path":"main.go","line":4,"column":2}`, &help)
+		if help.Signatures == nil || len(help.Signatures) != 0 {
+			t.Fatalf("signatures = %v, want empty array", help.Signatures)
 		}
 	})
 

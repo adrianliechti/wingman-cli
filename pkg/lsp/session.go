@@ -575,6 +575,27 @@ func (s *Session) CompletionItems(ctx context.Context, uri string, line, column 
 	return parseCompletionResponse(result)
 }
 
+func (s *Session) SignatureHelp(ctx context.Context, uri string, line, column int, signatureContext *SignatureHelpContext) (*SignatureHelp, error) {
+	params := SignatureHelpParams{
+		TextDocument: TextDocumentIdentifier{URI: uri},
+		Position:     Position{Line: line, Character: column},
+		Context:      signatureContext,
+	}
+
+	var result json.RawMessage
+	if err := s.CallAndAwait(ctx, "textDocument/signatureHelp", params, &result); err != nil {
+		return nil, err
+	}
+	if isNullResult(result) {
+		return nil, nil
+	}
+	var help SignatureHelp
+	if err := json.Unmarshal(result, &help); err != nil {
+		return nil, err
+	}
+	return &help, nil
+}
+
 func parseCompletionResponse(result json.RawMessage) ([]CompletionItem, error) {
 	if isNullResult(result) {
 		return nil, nil
@@ -788,6 +809,11 @@ func (s *Session) initialize(ctx context.Context) error {
 				Completion: CompletionClientCapabilities{CompletionItem: CompletionItemClientCapabilities{
 					SnippetSupport:      true,
 					DocumentationFormat: []string{"markdown", "plaintext"},
+				}},
+				SignatureHelp: SignatureHelpClientCapabilities{SignatureInformation: SignatureInformationClientCapabilities{
+					DocumentationFormat:    []string{"markdown", "plaintext"},
+					ParameterInformation:   ParameterInformationCapabilities{LabelOffsetSupport: true},
+					ActiveParameterSupport: true,
 				}},
 				Hover:          HoverClientCapabilities{ContentFormat: []string{"plaintext", "markdown"}},
 				Definition:     DefinitionClientCapabilities{},

@@ -276,9 +276,16 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 						const latest = current[document.path];
 						if (!latest) return current;
 						if (latest.file?.revision !== baseRevision) return current;
-						if (file.revision === latest.file?.revision) return current;
+						if (file.revision === latest.file?.revision) {
+							if (!latest.conflict) return current;
+							return {
+								...current,
+								[document.path]: { ...latest, conflict: false },
+							};
+						}
 						const dirty = latest.draft !== latest.savedContent;
 						if (dirty) {
+							if (latest.conflict) return current;
 							return {
 								...current,
 								[document.path]: {

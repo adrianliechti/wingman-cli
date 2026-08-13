@@ -374,6 +374,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Post("/references", s.handleLSPReferences)
 			r.Post("/hover", s.handleLSPHover)
 			r.Post("/completions", s.handleLSPCompletions)
+			r.Post("/signature-help", s.handleLSPSignatureHelp)
 			r.Post("/document-symbols", s.handleLSPDocumentSymbols)
 			r.Get("/file", s.handleLSPExternalFile)
 		})

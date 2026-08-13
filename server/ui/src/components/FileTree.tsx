@@ -46,6 +46,7 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 	const [focusedPath, setFocusedPath] = useState<string | null>(null);
 	const [deleteTarget, setDeleteTarget] = useState<TreeNode | null>(null);
 	const nodesRef = useRef(nodes);
+	const refreshRef = useRef(0);
 	const renameSubmittingRef = useRef(false);
 	const renameCanceledRef = useRef(false);
 	const createSubmittingRef = useRef(false);
@@ -70,19 +71,8 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 			.map((f) => ({ ...f, expanded: false, loaded: false }));
 	}, []);
 
-	useEffect(() => {
-		loadDir("")
-			.then(setNodes)
-			.catch((error) => {
-				toast({
-					title: "Could not load files",
-					description: String(error),
-					tone: "error",
-				});
-			});
-	}, [loadDir, toast]);
-
 	const refresh = useCallback(async () => {
+		const request = ++refreshRef.current;
 		const refreshLevel = async (
 			path: string,
 			prev: TreeNode[],
@@ -107,8 +97,10 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 			return result;
 		};
 		try {
-			setNodes(await refreshLevel("", nodesRef.current));
+			const next = await refreshLevel("", nodesRef.current);
+			if (refreshRef.current === request) setNodes(next);
 		} catch (error) {
+			if (refreshRef.current !== request) return;
 			toast({
 				title: "Could not refresh files",
 				description: String(error),
@@ -116,6 +108,13 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 			});
 		}
 	}, [loadDir, toast]);
+
+	useEffect(() => {
+		void refresh();
+		return () => {
+			refreshRef.current++;
+		};
+	}, [refresh]);
 
 	useEffect(() => {
 		if (!subscribe) return;
@@ -128,27 +127,29 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 
 	const toggleDir = useCallback(
 		async (path: string) => {
-			const toggle = async (items: TreeNode[]): Promise<TreeNode[]> => {
-				const result: TreeNode[] = [];
-				for (const node of items) {
-					if (node.path === path && node.is_dir) {
-						if (!node.loaded) {
-							const children = await loadDir(node.path);
-							result.push({ ...node, expanded: true, loaded: true, children });
-						} else {
-							result.push({ ...node, expanded: !node.expanded });
-						}
-					} else if (node.children) {
-						result.push({ ...node, children: await toggle(node.children) });
-					} else {
-						result.push(node);
-					}
-				}
-				return result;
-			};
-			setNodes(await toggle(nodes));
+			refreshRef.current++;
+			const target = findNode(nodesRef.current, path);
+			if (!target?.is_dir) return;
+			if (target.loaded) {
+				setNodes((current) =>
+					updateNode(current, path, (node) => ({
+						...node,
+						expanded: !node.expanded,
+					})),
+				);
+				return;
+			}
+
+			const children = await loadDir(path);
+			setNodes((current) =>
+				updateNode(current, path, (node) =>
+					node.loaded
+						? { ...node, expanded: true }
+						: { ...node, expanded: true, loaded: true, children },
+				),
+			);
 		},
-		[nodes, loadDir],
+		[loadDir],
 	);
 
 	const beginRename = (node: TreeNode) => {
@@ -209,26 +210,8 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 				: "";
 
 		try {
-			if (node?.is_dir) {
-				const expand = async (items: TreeNode[]): Promise<TreeNode[]> =>
-					Promise.all(
-						items.map(async (item) => {
-							if (item.path === node.path) {
-								return {
-									...item,
-									expanded: true,
-									loaded: true,
-									children: item.loaded
-										? item.children
-										: await loadDir(item.path),
-								};
-							}
-							return item.children
-								? { ...item, children: await expand(item.children) }
-								: item;
-						}),
-					);
-				setNodes(await expand(nodesRef.current));
+			if (node?.is_dir && !node.expanded) {
+				await toggleDir(node.path);
 			}
 		} catch (error) {
 			toast({
@@ -650,6 +633,27 @@ function flattenVisible(
 		}
 	}
 	return result;
+}
+
+function findNode(nodes: TreeNode[], path: string): TreeNode | undefined {
+	for (const node of nodes) {
+		if (node.path === path) return node;
+		const child = node.children && findNode(node.children, path);
+		if (child) return child;
+	}
+}
+
+function updateNode(
+	nodes: TreeNode[],
+	path: string,
+	update: (node: TreeNode) => TreeNode,
+): TreeNode[] {
+	return nodes.map((node) => {
+		if (node.path === path) return update(node);
+		return node.children
+			? { ...node, children: updateNode(node.children, path, update) }
+			: node;
+	});
 }
 
 interface ContextMenuProps {

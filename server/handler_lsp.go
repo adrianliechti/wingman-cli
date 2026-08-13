@@ -151,22 +151,7 @@ func (s *Server) handleLSPHover(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLSPCompletions(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		lspDocumentRequest
-		Line             int    `json:"line"`
-		Column           int    `json:"column"`
-		TriggerKind      int    `json:"trigger_kind,omitempty"`
-		TriggerCharacter string `json:"trigger_character,omitempty"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
-		return
-	}
-	if body.Line < 1 || body.Column < 1 {
-		http.Error(w, "line and column must be positive", http.StatusBadRequest)
-		return
-	}
-	filePath, ok := s.resolveLSPFile(w, body.Path, false)
+	body, filePath, ok := s.decodeLSPTriggerRequest(w, r)
 	if !ok {
 		return
 	}
@@ -194,6 +179,38 @@ func (s *Server) handleLSPCompletions(w http.ResponseWriter, r *http.Request) {
 		items = []lsp.CompletionItem{}
 	}
 	writeJSON(w, items)
+}
+
+func (s *Server) handleLSPSignatureHelp(w http.ResponseWriter, r *http.Request) {
+	body, filePath, ok := s.decodeLSPTriggerRequest(w, r)
+	if !ok {
+		return
+	}
+
+	var signatureContext *lsp.SignatureHelpContext
+	if body.TriggerKind > 0 {
+		signatureContext = &lsp.SignatureHelpContext{
+			TriggerKind:      body.TriggerKind,
+			TriggerCharacter: body.TriggerCharacter,
+			IsRetrigger:      body.IsRetrigger,
+		}
+	}
+	help, err := s.workspace.SignatureHelp(
+		r.Context(),
+		filePath,
+		body.Content,
+		body.Line-1,
+		body.Column-1,
+		signatureContext,
+	)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if help == nil {
+		help = &lsp.SignatureHelp{Signatures: []lsp.SignatureInformation{}}
+	}
+	writeJSON(w, help)
 }
 
 func (s *Server) handleLSPDocumentSymbols(w http.ResponseWriter, r *http.Request) {
@@ -229,6 +246,13 @@ type lspPositionRequest struct {
 	Column int `json:"column"`
 }
 
+type lspTriggerRequest struct {
+	lspPositionRequest
+	TriggerKind      int    `json:"trigger_kind,omitempty"`
+	TriggerCharacter string `json:"trigger_character,omitempty"`
+	IsRetrigger      bool   `json:"is_retrigger,omitempty"`
+}
+
 func (s *Server) decodeLSPPositionRequest(w http.ResponseWriter, r *http.Request, requireLSP bool) (lspPositionRequest, string, bool) {
 	var body lspPositionRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -240,6 +264,20 @@ func (s *Server) decodeLSPPositionRequest(w http.ResponseWriter, r *http.Request
 		return body, "", false
 	}
 	filePath, ok := s.resolveLSPFile(w, body.Path, requireLSP)
+	return body, filePath, ok
+}
+
+func (s *Server) decodeLSPTriggerRequest(w http.ResponseWriter, r *http.Request) (lspTriggerRequest, string, bool) {
+	var body lspTriggerRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return body, "", false
+	}
+	if body.Line < 1 || body.Column < 1 {
+		http.Error(w, "line and column must be positive", http.StatusBadRequest)
+		return body, "", false
+	}
+	filePath, ok := s.resolveLSPFile(w, body.Path, false)
 	return body, filePath, ok
 }
 

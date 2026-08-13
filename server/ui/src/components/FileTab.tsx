@@ -48,11 +48,9 @@ export function FileTab({
 	const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
 	const lspBridgeRef = useRef<MonacoLSPBridge | null>(null);
 	const diagnosticsTimerRef = useRef<number | null>(null);
-	const documentRef = useRef(document);
 	const onOpenFileRef = useRef(onOpenFile);
 	const onSaveRef = useRef(onSave);
 	const scheme = useColorScheme();
-	documentRef.current = document;
 	onOpenFileRef.current = onOpenFile;
 	onSaveRef.current = onSave;
 
@@ -210,12 +208,6 @@ export function FileTab({
 									monaco,
 									editor,
 									file,
-									getDirtyContent: () => {
-										const current = documentRef.current;
-										return current.draft !== current.savedContent
-											? current.draft
-											: undefined;
-									},
 									onOpenFile: (path, row, col, external) =>
 										onOpenFileRef.current?.(path, row, col, external),
 								});
@@ -236,6 +228,8 @@ export function FileTab({
 							wordWrap: "on",
 							renderWhitespace: "none",
 							padding: { top: 8 },
+							suggestOnTriggerCharacters: true,
+							parameterHints: { enabled: true },
 							readOnly: document.external,
 						}}
 					/>

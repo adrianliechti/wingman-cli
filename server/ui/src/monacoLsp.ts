@@ -4,12 +4,13 @@ import type { DiagnosticEntry, FileContent } from "./types/protocol";
 
 const markerOwner = "wingman-lsp";
 const definitionScheme = "wingman-definition";
+const completionTriggerCharacters = [".", ":", ">", "/", "@", "#", '"', "'"];
+const signatureTriggerCharacters = ["(", ","];
 
 interface BridgeOptions {
 	monaco: Monaco;
 	editor: MonacoTypes.editor.IStandaloneCodeEditor;
 	file: FileContent;
-	getDirtyContent: () => string | undefined;
 	onOpenFile?: (
 		path: string,
 		line: number,
@@ -43,7 +44,6 @@ export function createMonacoLSPBridge({
 	monaco,
 	editor,
 	file,
-	getDirtyContent,
 	onOpenFile,
 }: BridgeOptions): MonacoLSPBridge {
 	const sourceModel = editor.getModel();
@@ -88,7 +88,7 @@ export function createMonacoLSPBridge({
 		return trackedRequest(token, async (signal) => {
 			const locations = await postJSON<LSPFileLocation[]>(
 				endpoint,
-				positionRequest(file.path, getDirtyContent(), position),
+				positionRequest(file.path, model, position),
 				signal,
 			);
 			if (!locations || disposed || token.isCancellationRequested) return;
@@ -183,7 +183,7 @@ export function createMonacoLSPBridge({
 	if (sourceModel && file.language) {
 		disposables.push(
 			monaco.languages.registerCompletionItemProvider(file.language, {
-				triggerCharacters: [".", ":", ">", "/", "@", "#", '"', "'"],
+				triggerCharacters: completionTriggerCharacters,
 				provideCompletionItems(
 					model: MonacoTypes.editor.ITextModel,
 					position: MonacoTypes.Position,
@@ -195,7 +195,7 @@ export function createMonacoLSPBridge({
 						const items = await postJSON<LSPCompletionItem[]>(
 							"/api/lsp/completions",
 							{
-								...positionRequest(file.path, getDirtyContent(), position),
+								...positionRequest(file.path, model, position),
 								trigger_kind: context.triggerKind + 1,
 								...(context.triggerCharacter
 									? { trigger_character: context.triggerCharacter }
@@ -209,6 +209,35 @@ export function createMonacoLSPBridge({
 								completionItem(monaco, model, position, item),
 							),
 						};
+					});
+				},
+			}),
+			monaco.languages.registerSignatureHelpProvider(file.language, {
+				signatureHelpTriggerCharacters: signatureTriggerCharacters,
+				signatureHelpRetriggerCharacters: [","],
+				provideSignatureHelp(
+					model: MonacoTypes.editor.ITextModel,
+					position: MonacoTypes.Position,
+					token: MonacoTypes.CancellationToken,
+					context: MonacoTypes.languages.SignatureHelpContext,
+				) {
+					if (model !== sourceModel) return;
+					return trackedRequest(token, async (signal) => {
+						const help = await postJSON<LSPSignatureHelp>(
+							"/api/lsp/signature-help",
+							{
+								...positionRequest(file.path, model, position),
+								trigger_kind: context.triggerKind,
+								...(context.triggerCharacter
+									? { trigger_character: context.triggerCharacter }
+									: {}),
+								is_retrigger: context.isRetrigger,
+							},
+							signal,
+						);
+						if (!help?.signatures.length || token.isCancellationRequested)
+							return;
+						return signatureHelp(help);
 					});
 				},
 			}),
@@ -253,7 +282,7 @@ export function createMonacoLSPBridge({
 					return trackedRequest(token, async (signal) => {
 						const result = await postJSON<{ contents: string }>(
 							"/api/lsp/hover",
-							positionRequest(file.path, getDirtyContent(), position),
+							positionRequest(file.path, model, position),
 							signal,
 						);
 						return result?.contents
@@ -271,7 +300,7 @@ export function createMonacoLSPBridge({
 					return trackedRequest(token, async (signal) => {
 						const symbols = await postJSON<LSPDocumentSymbol[]>(
 							"/api/lsp/document-symbols",
-							documentRequest(file.path, getDirtyContent()),
+							documentRequest(file.path, model),
 							signal,
 						);
 						return symbols?.map((symbol) => documentSymbol(model, symbol));
@@ -319,7 +348,7 @@ export function createMonacoLSPBridge({
 			try {
 				const diagnostics = await postJSON<DiagnosticEntry[]>(
 					"/api/lsp/diagnostics",
-					documentRequest(file.path, getDirtyContent()),
+					documentRequest(file.path, sourceModel),
 					controller.signal,
 				);
 				if (!diagnostics || disposed || revision !== diagnosticsRevision)
@@ -397,6 +426,26 @@ interface LSPCompletionItem {
 	additionalTextEdits?: Array<{ range: LSPRange; newText: string }>;
 }
 
+type LSPDocumentation = string | { kind?: string; value?: string };
+
+interface LSPSignatureHelp {
+	signatures: LSPSignatureInformation[];
+	activeSignature?: number;
+	activeParameter?: number;
+}
+
+interface LSPSignatureInformation {
+	label: string;
+	documentation?: LSPDocumentation;
+	parameters?: LSPParameterInformation[];
+	activeParameter?: number;
+}
+
+interface LSPParameterInformation {
+	label: string | [number, number];
+	documentation?: LSPDocumentation;
+}
+
 interface LSPCompletionTextEdit {
 	newText: string;
 	range?: LSPRange;
@@ -419,17 +468,17 @@ async function postJSON<T>(
 	return (await response.json()) as T;
 }
 
-function documentRequest(path: string, content: string | undefined) {
-	return { path, ...(content === undefined ? {} : { content }) };
+function documentRequest(path: string, model: MonacoTypes.editor.ITextModel) {
+	return { path, content: model.getValue() };
 }
 
 function positionRequest(
 	path: string,
-	content: string | undefined,
+	model: MonacoTypes.editor.ITextModel,
 	position: MonacoTypes.Position,
 ) {
 	return {
-		...documentRequest(path, content),
+		...documentRequest(path, model),
 		line: position.lineNumber,
 		column: position.column,
 	};
@@ -483,15 +532,11 @@ function completionItem(
 			: edit?.range
 				? lspRange(model, edit.range)
 				: wordRange(model, position);
-	const documentation =
-		typeof item.documentation === "string"
-			? item.documentation
-			: item.documentation?.value;
 	return {
 		label: item.label,
 		kind: completionKind(monaco, item.kind),
 		detail: item.detail,
-		documentation: documentation ? { value: documentation } : undefined,
+		documentation: documentation(item.documentation),
 		sortText: item.sortText,
 		filterText: item.filterText,
 		insertText: edit?.newText ?? item.insertText ?? item.label,
@@ -505,6 +550,32 @@ function completionItem(
 			text: additional.newText,
 		})),
 	};
+}
+
+function signatureHelp(
+	help: LSPSignatureHelp,
+): MonacoTypes.languages.SignatureHelpResult {
+	return {
+		value: {
+			signatures: help.signatures.map((signature) => ({
+				label: signature.label,
+				documentation: documentation(signature.documentation),
+				parameters: (signature.parameters ?? []).map((parameter) => ({
+					label: parameter.label,
+					documentation: documentation(parameter.documentation),
+				})),
+				activeParameter: signature.activeParameter,
+			})),
+			activeSignature: help.activeSignature ?? 0,
+			activeParameter: help.activeParameter ?? 0,
+		},
+		dispose() {},
+	};
+}
+
+function documentation(value?: LSPDocumentation) {
+	const text = typeof value === "string" ? value : value?.value;
+	return text ? { value: text } : undefined;
 }
 
 function completionKind(
