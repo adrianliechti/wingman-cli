@@ -159,7 +159,7 @@ func DocumentHighlights(filename string, src []byte, line, col int) []SymRange {
 			return
 		}
 		if node.ChildCount() == 0 {
-			if node.IsNamed() && node.Text(src) == name {
+			if isIdentifierNode(entry.Language(), node, src) && node.Text(src) == name {
 				sl, sc := li.lspPos(node.StartByte())
 				el, ec := li.lspPos(node.EndByte())
 				result = append(result, SymRange{StartLine: sl, StartCol: sc, EndLine: el, EndCol: ec})
@@ -226,6 +226,17 @@ func SemanticTokens(filename string, src []byte) []SemanticToken {
 	}
 
 	li := newLineIndex(src)
+	declarations := make(map[SymRange]string)
+	var collectDeclarations func([]*Symbol)
+	collectDeclarations = func(symbols []*Symbol) {
+		for _, symbol := range symbols {
+			if tokenType := semanticTypeForKind(symbol.Kind); tokenType != "" {
+				declarations[symbol.NameRange] = tokenType
+			}
+			collectDeclarations(symbol.Children)
+		}
+	}
+	collectDeclarations(FileSymbols(filename, src))
 	result := make([]SemanticToken, 0)
 	for _, highlight := range highlighter.Highlight(src) {
 		tokenType, modifiers, ok := semanticCapture(highlight.Capture)
@@ -244,8 +255,13 @@ func SemanticTokens(filename string, src []byte) []SemanticToken {
 			}
 			endLine, endCol := li.lspPos(end)
 			if endLine == line && endCol > col {
+				tokenRange := SymRange{StartLine: line, StartCol: col, EndLine: endLine, EndCol: endCol}
+				if declarationType := declarations[tokenRange]; declarationType != "" {
+					tokenType = declarationType
+					modifiers = appendUnique(modifiers, "declaration")
+				}
 				result = append(result, SemanticToken{
-					Range:     SymRange{StartLine: line, StartCol: col, EndLine: endLine, EndCol: endCol},
+					Range:     tokenRange,
 					Type:      tokenType,
 					Modifiers: modifiers,
 				})
@@ -257,6 +273,36 @@ func SemanticTokens(filename string, src []byte) []SemanticToken {
 		}
 	}
 	return result
+}
+
+func semanticTypeForKind(kind Kind) string {
+	switch kind {
+	case KindFunction, KindConstructor:
+		return "function"
+	case KindMethod:
+		return "method"
+	case KindClass:
+		return "class"
+	case KindInterface:
+		return "interface"
+	case KindType:
+		return "type"
+	case KindModule:
+		return "namespace"
+	case KindConstant, KindVariable:
+		return "variable"
+	default:
+		return ""
+	}
+}
+
+func appendUnique(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func semanticCapture(capture string) (string, []string, bool) {
@@ -589,11 +635,22 @@ func (ex *extractor) identifierAt(entry *grammars.LangEntry, src []byte, line, c
 		if n == nil || n.ChildCount() > 0 {
 			continue
 		}
-		if text := n.Text(src); isIdentifier(text) {
+		if text := n.Text(src); isIdentifierNode(entry.Language(), n, src) {
 			return text
 		}
 	}
 	return ""
+}
+
+func isIdentifierNode(language *ts.Language, node *ts.Node, src []byte) bool {
+	if node == nil || !node.IsNamed() || node.ChildCount() != 0 || !isIdentifier(node.Text(src)) {
+		return false
+	}
+	typeName := strings.ToLower(node.Type(language))
+	return typeName == "identifier" ||
+		typeName == "name" ||
+		strings.HasSuffix(typeName, "_identifier") ||
+		strings.HasSuffix(typeName, "_name")
 }
 
 func isIdentifier(s string) bool {

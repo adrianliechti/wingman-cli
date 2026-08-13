@@ -267,6 +267,8 @@ func (s *Server) handleFileWrite(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
 	}
+	s.fileWriteMu.Lock()
+	defer s.fileWriteMu.Unlock()
 
 	rel, ok := s.resolveExistingRegularFile(w, body.Path)
 	if !ok {
@@ -306,6 +308,96 @@ func (s *Server) handleFileWrite(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, struct {
 		Revision string `json:"revision"`
 	}{Revision: fileRevision(content)})
+}
+
+type fileBatchWrite struct {
+	Path     string `json:"path"`
+	Content  string `json:"content"`
+	Revision string `json:"revision"`
+}
+
+// handleFileWriteBatch applies text-only workspace edits as one guarded unit.
+// Every revision is validated before the first write; a later write failure
+// restores all earlier files from their in-memory snapshots.
+func (s *Server) handleFileWriteBatch(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Files []fileBatchWrite `json:"files"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	if len(body.Files) == 0 {
+		http.Error(w, "at least one file is required", http.StatusBadRequest)
+		return
+	}
+
+	type snapshot struct {
+		rel     string
+		content []byte
+		mode    fs.FileMode
+	}
+	snapshots := make([]snapshot, 0, len(body.Files))
+	seen := make(map[string]bool, len(body.Files))
+
+	s.fileWriteMu.Lock()
+	defer s.fileWriteMu.Unlock()
+
+	for _, file := range body.Files {
+		rel, ok := s.workspaceRel(file.Path)
+		if !ok || seen[rel] {
+			http.Error(w, "invalid or duplicate path", http.StatusBadRequest)
+			return
+		}
+		seen[rel] = true
+		if file.Revision == "" {
+			http.Error(w, "revision is required", http.StatusBadRequest)
+			return
+		}
+		info, err := s.workspace.Root.Lstat(rel)
+		if err != nil || !info.Mode().IsRegular() {
+			http.Error(w, "file not found", http.StatusNotFound)
+			return
+		}
+		current, err := s.workspace.Root.ReadFile(rel)
+		if err != nil {
+			http.Error(w, "file not found", http.StatusNotFound)
+			return
+		}
+		if fileRevision(current) != file.Revision {
+			http.Error(w, "file changed on disk", http.StatusConflict)
+			return
+		}
+		snapshots = append(snapshots, snapshot{rel: rel, content: current, mode: info.Mode().Perm()})
+	}
+
+	for index, file := range body.Files {
+		if err := s.workspace.Root.WriteFile(snapshots[index].rel, []byte(file.Content), snapshots[index].mode); err != nil {
+			// Restore the failing file too: a failed write may already have
+			// truncated or partially replaced its contents.
+			rollbackErrs := make([]error, 0, index+1)
+			for rollback := index; rollback >= 0; rollback-- {
+				old := snapshots[rollback]
+				if restoreErr := s.workspace.Root.WriteFile(old.rel, old.content, old.mode); restoreErr != nil {
+					rollbackErrs = append(rollbackErrs, restoreErr)
+				}
+			}
+			http.Error(w, errors.Join(append([]error{err}, rollbackErrs...)...).Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	revisions := make(map[string]string, len(body.Files))
+	for _, file := range body.Files {
+		revisions[file.Path] = fileRevision([]byte(file.Content))
+	}
+	s.flushFiles()
+	if s.workspace.HasLSP() {
+		s.broadcast(Frame{Type: EvtDiagnosticsChanged})
+	}
+	writeJSON(w, struct {
+		Revisions map[string]string `json:"revisions"`
+	}{Revisions: revisions})
 }
 
 func (s *Server) handleFileCreate(w http.ResponseWriter, r *http.Request) {

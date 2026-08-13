@@ -10,6 +10,7 @@ import {
 } from "../monacoLsp";
 import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
 import type { ServerMessage } from "../types/protocol";
+import type { WorkspaceEditEnvelope } from "../workspaceEdit";
 import { textPreviewKind } from "../utils/filePreview";
 import { DataPreview } from "./DataPreview";
 import { EditorContextMenu } from "./EditorContextMenu";
@@ -31,6 +32,10 @@ interface Props {
 		column: number,
 		external?: boolean,
 	) => void;
+	onApplyWorkspaceEdit?: (
+		envelope: WorkspaceEditEnvelope,
+		label: string,
+	) => Promise<boolean>;
 	view?: "code" | "preview";
 }
 
@@ -44,6 +49,7 @@ export function FileTab({
 	onSave,
 	onReload,
 	onOpenFile,
+	onApplyWorkspaceEdit,
 	view = "code",
 }: Props) {
 	const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
@@ -51,13 +57,16 @@ export function FileTab({
 	const lspBridgeRef = useRef<MonacoLSPBridge | null>(null);
 	const diagnosticsTimerRef = useRef<number | null>(null);
 	const onOpenFileRef = useRef(onOpenFile);
+	const onApplyWorkspaceEditRef = useRef(onApplyWorkspaceEdit);
 	const onSaveRef = useRef(onSave);
 	const scheme = useColorScheme();
 	const [contextMenu, setContextMenu] = useState<{
 		x: number;
 		y: number;
 	} | null>(null);
+	const [, setLanguageFeaturesRevision] = useState(0);
 	onOpenFileRef.current = onOpenFile;
+	onApplyWorkspaceEditRef.current = onApplyWorkspaceEdit;
 	onSaveRef.current = onSave;
 
 	const dirty = document.draft !== document.savedContent;
@@ -221,9 +230,15 @@ export function FileTab({
 							);
 							contextMenuListenerRef.current?.dispose();
 							contextMenuListenerRef.current = editor.onContextMenu((event) => {
-								if (!event.target.position) return;
+								const position = event.target.position;
+								if (!position) return;
 								event.event.preventDefault();
 								event.event.stopPropagation();
+								const selection = editor.getSelection();
+								if (!selection?.containsPosition(position)) {
+									editor.setPosition(position);
+								}
+								editor.focus();
 								setContextMenu({
 									x: event.event.posx,
 									y: event.event.posy,
@@ -232,6 +247,7 @@ export function FileTab({
 							editor.addCommand(
 								monaco.KeyMod.Shift | monaco.KeyCode.F10,
 								() => {
+									editor.focus();
 									const position = editor.getPosition();
 									const visible =
 										position && editor.getScrolledVisiblePosition(position);
@@ -252,8 +268,13 @@ export function FileTab({
 									monaco,
 									editor,
 									file,
+									onCapabilitiesChanged: () =>
+										setLanguageFeaturesRevision((revision) => revision + 1),
 									onOpenFile: (path, row, col, external) =>
 										onOpenFileRef.current?.(path, row, col, external),
+									onApplyWorkspaceEdit: (envelope, label) =>
+										onApplyWorkspaceEditRef.current?.(envelope, label) ??
+										Promise.resolve(false),
 								});
 								void loadDiagnostics();
 								editor.addCommand(
@@ -285,6 +306,9 @@ export function FileTab({
 					editor={editorRef.current}
 					openAt={contextMenu}
 					readOnly={document.external}
+					supportsLanguageFeature={(feature) =>
+						lspBridgeRef.current?.supports(feature) ?? false
+					}
 					onClose={() => setContextMenu(null)}
 				/>
 			)}

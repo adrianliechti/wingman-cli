@@ -278,7 +278,7 @@ func TestFoldingRangesUseSymbolBodies(t *testing.T) {
 }
 
 func TestSemanticTokensUseHighlightQueries(t *testing.T) {
-	src := []byte("package main\n\nfunc greet(name string) string { return \"hi " + name }\n")
+	src := []byte("package main\n\nfunc greet(name string) string { return \"hi \" + name }\n")
 	tokens := SemanticTokens("main.go", src)
 	if len(tokens) == 0 {
 		t.Fatal("expected semantic tokens")

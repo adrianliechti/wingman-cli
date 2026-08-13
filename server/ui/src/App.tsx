@@ -75,6 +75,11 @@ import {
 	type FileView,
 	textPreviewKind,
 } from "./utils/filePreview";
+import {
+	summarizeWorkspaceEdit,
+	type WorkspaceEditEnvelope,
+	type WorkspaceEditSummary,
+} from "./workspaceEdit";
 
 interface CenterTab {
 	id: string;
@@ -94,6 +99,13 @@ interface CenterTab {
 type RightTab = "changes" | "files" | "problems" | "agents";
 type CloseRequest = { kind: "file" | "terminal"; tab: CenterTab } | null;
 type SaveConflictRequest = { path: string; closeTabId?: string } | null;
+type WorkspaceEditRequest = {
+	envelope: WorkspaceEditEnvelope;
+	label: string;
+	summary: WorkspaceEditSummary;
+	resolve: (applied: boolean) => void;
+	applying: boolean;
+} | null;
 type SessionDeleteRequest = { id: string; title: string } | null;
 type FilePathRequest =
 	| { kind: "new"; path: string; submitting: boolean; error?: string }
@@ -193,6 +205,7 @@ export default function App() {
 		reloadDocument,
 		closeDocument,
 		moveDocuments,
+		applyWorkspaceEdit,
 	} = useOpenDocuments(subscribe);
 	const capabilities = useCapabilities(subscribe);
 	const showChanges = !!(capabilities?.diffs || capabilities?.git_init);
@@ -240,12 +253,74 @@ export default function App() {
 	} | null>(null);
 	const [closeRequest, setCloseRequest] = useState<CloseRequest>(null);
 	const [saveConflict, setSaveConflict] = useState<SaveConflictRequest>(null);
+	const [workspaceEditRequest, setWorkspaceEditRequest] =
+		useState<WorkspaceEditRequest>(null);
 	const [sessionDelete, setSessionDelete] =
 		useState<SessionDeleteRequest>(null);
 	const [filePathRequest, setFilePathRequest] =
 		useState<FilePathRequest | null>(null);
 	const [openFolderRequest, setOpenFolderRequest] = useState(false);
 	const [workspaceSwitching, setWorkspaceSwitching] = useState(false);
+
+	const runWorkspaceEdit = useCallback(
+		async (envelope: WorkspaceEditEnvelope, label: string) => {
+			const result = await applyWorkspaceEdit(envelope);
+			if (!result.ok) {
+				toast({
+					title: `${label} failed`,
+					description: result.error,
+					tone: "error",
+				});
+			}
+			return result.ok;
+		},
+		[applyWorkspaceEdit, toast],
+	);
+
+	const requestWorkspaceEdit = useCallback(
+		(envelope: WorkspaceEditEnvelope, label: string): Promise<boolean> => {
+			let summary: WorkspaceEditSummary;
+			try {
+				summary = summarizeWorkspaceEdit(envelope);
+			} catch (error) {
+				toast({
+					title: `${label} failed`,
+					description: error instanceof Error ? error.message : String(error),
+					tone: "error",
+				});
+				return Promise.resolve(false);
+			}
+			if (!summary.requiresConfirmation) {
+				return runWorkspaceEdit(envelope, label);
+			}
+			return new Promise<boolean>((resolve) => {
+				setWorkspaceEditRequest({
+					envelope,
+					label,
+					summary,
+					resolve,
+					applying: false,
+				});
+			});
+		},
+		[runWorkspaceEdit, toast],
+	);
+
+	const closeWorkspaceEditPreview = useCallback(() => {
+		workspaceEditRequest?.resolve(false);
+		setWorkspaceEditRequest(null);
+	}, [workspaceEditRequest]);
+
+	const confirmWorkspaceEdit = useCallback(async () => {
+		const request = workspaceEditRequest;
+		if (!request || request.applying) return;
+		setWorkspaceEditRequest({ ...request, applying: true });
+		const applied = await runWorkspaceEdit(request.envelope, request.label);
+		request.resolve(applied);
+		setWorkspaceEditRequest((current) =>
+			current?.resolve === request.resolve ? null : current,
+		);
+	}, [runWorkspaceEdit, workspaceEditRequest]);
 
 	const createTerminal = useCallback(
 		async (shell?: string) => {
@@ -1935,6 +2010,7 @@ export default function App() {
 											)
 										}
 										onOpenFile={openFile}
+										onApplyWorkspaceEdit={requestWorkspaceEdit}
 										view={
 											fileViews[activeTab.id] ?? defaultFileView(activeTab.path)
 										}
@@ -2155,6 +2231,43 @@ export default function App() {
 					onClick={() => void overwriteChangedFile()}
 				>
 					Overwrite
+				</button>
+			</Dialog>
+
+			<Dialog
+				open={workspaceEditRequest !== null}
+				title={workspaceEditRequest?.label ?? "Apply workspace edit?"}
+				description={
+					workspaceEditRequest
+						? `${workspaceEditRequest.summary.edits} ${workspaceEditRequest.summary.edits === 1 ? "edit" : "edits"} across ${workspaceEditRequest.summary.files.length} ${workspaceEditRequest.summary.files.length === 1 ? "file" : "files"}. The files will be saved together after their disk revisions are checked.`
+						: undefined
+				}
+				onClose={closeWorkspaceEditPreview}
+			>
+				{workspaceEditRequest && (
+					<div className="mr-auto max-h-36 min-w-0 overflow-auto text-[11px] text-fg-muted">
+						{workspaceEditRequest.summary.files.map((path) => (
+							<div key={path} className="truncate py-0.5" title={path}>
+								{path}
+							</div>
+						))}
+					</div>
+				)}
+				<button
+					type="button"
+					className={dialogButtonClass}
+					disabled={workspaceEditRequest?.applying}
+					onClick={closeWorkspaceEditPreview}
+				>
+					Cancel
+				</button>
+				<button
+					type="button"
+					className={`${dialogButtonClass} bg-fg text-bg hover:bg-fg-muted hover:text-bg`}
+					disabled={workspaceEditRequest?.applying}
+					onClick={() => void confirmWorkspaceEdit()}
+				>
+					{workspaceEditRequest?.applying ? "Applying…" : "Apply and Save"}
 				</button>
 			</Dialog>
 

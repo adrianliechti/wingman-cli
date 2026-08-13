@@ -573,7 +573,12 @@ test("uses Monaco's live buffer for automatic completion and parameter hints", a
 		const body = route.request().postDataJSON() as { content?: string };
 		completionContent = body.content ?? "";
 		await route.fulfill({
-			json: [{ label: "Done", kind: 2, detail: "func()", insertText: "Done" }],
+			json: {
+				isIncomplete: false,
+				items: [
+					{ label: "Done", kind: 2, detail: "func()", insertText: "Done" },
+				],
+			},
 		});
 	});
 	await page.route(/\/api\/lsp\/signature-help$/, async (route) => {
@@ -594,9 +599,17 @@ test("uses Monaco's live buffer for automatic completion and parameter hints", a
 	});
 
 	await composer(page);
+	const capabilitiesResponse = page.waitForResponse(/\/api\/lsp\/capabilities/);
 	await page.getByRole("treeitem", { name: /completion\.go/ }).click();
+	await capabilitiesResponse;
 	const editor = page.locator(".monaco-editor");
 	await expect(editor).toBeVisible();
+	await editor.click({ button: "right" });
+	const editorMenu = page.getByRole("menu", { name: "Editor actions" });
+	await expect(
+		editorMenu.getByRole("menuitem", { name: "Go to Definition" }),
+	).toBeEnabled();
+	await page.keyboard.press("Escape");
 	await editor.click();
 	await page.keyboard.press("ControlOrMeta+A");
 	await page.keyboard.type("ctx.");
@@ -1251,7 +1264,7 @@ test("renders markdown files in a browser preview", async ({ page }) => {
 
 test("uses Wingman's dynamic editor context menu", async ({ page }) => {
 	await composer(page);
-	await page.getByRole("treeitem", { name: /editable\.txt/ }).click();
+	await page.getByRole("treeitem", { name: /completion\.go/ }).click();
 	const editor = page.locator(".monaco-editor");
 	await editor.click();
 
@@ -1272,6 +1285,20 @@ test("uses Wingman's dynamic editor context menu", async ({ page }) => {
 			menu.getByRole("menuitem", { name: item, exact: true }),
 		).toBeVisible();
 	}
+	for (const item of [
+		"Go to Definition",
+		"Peek Definition",
+		"Go to Implementations",
+		"Peek Implementations",
+		"Find All References",
+	]) {
+		const action = menu.getByRole("menuitem", { name: item, exact: true });
+		await expect(action).toBeVisible();
+		await expect(action).toBeEnabled();
+	}
+	await expect(
+		menu.getByRole("menuitem", { name: "Go to Type Definition" }),
+	).toBeVisible();
 	await expect(
 		page.getByRole("menuitem", { name: "Command Palette", exact: true }),
 	).toHaveCount(0);

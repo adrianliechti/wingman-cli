@@ -187,6 +187,82 @@ func TestFileCreateAndConflictAwareWrite(t *testing.T) {
 	}
 }
 
+func TestFileBatchWriteChecksEveryRevisionBeforeWriting(t *testing.T) {
+	t.Setenv("WINGMAN_URL", "http://localhost:1")
+	workDir := t.TempDir()
+	for name, content := range map[string]string{
+		"first.txt":  "first\n",
+		"second.txt": "second\n",
+	} {
+		if err := os.WriteFile(filepath.Join(workDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	app, err := New(context.Background(), workDir, &ServerOptions{NoBrowser: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	web := httptest.NewServer(app)
+	defer web.Close()
+
+	post := func(files []fileBatchWrite) *http.Response {
+		t.Helper()
+		data, err := json.Marshal(map[string]any{"files": files})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := http.Post(web.URL+"/api/files/write-batch", "application/json", bytes.NewReader(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+
+	response := post([]fileBatchWrite{
+		{Path: "first.txt", Content: "one\n", Revision: fileRevision([]byte("first\n"))},
+		{Path: "second.txt", Content: "two\n", Revision: fileRevision([]byte("second\n"))},
+	})
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		t.Fatalf("batch write status = %d, body = %q", response.StatusCode, body)
+	}
+	var result struct {
+		Revisions map[string]string `json:"revisions"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if result.Revisions["first.txt"] != fileRevision([]byte("one\n")) || result.Revisions["second.txt"] != fileRevision([]byte("two\n")) {
+		t.Fatalf("batch revisions = %#v", result.Revisions)
+	}
+
+	if err := os.WriteFile(filepath.Join(workDir, "second.txt"), []byte("external\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	response = post([]fileBatchWrite{
+		{Path: "first.txt", Content: "must not write\n", Revision: result.Revisions["first.txt"]},
+		{Path: "second.txt", Content: "must not write\n", Revision: result.Revisions["second.txt"]},
+	})
+	response.Body.Close()
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("stale batch status = %d, want %d", response.StatusCode, http.StatusConflict)
+	}
+	for name, want := range map[string]string{
+		"first.txt":  "one\n",
+		"second.txt": "external\n",
+	} {
+		content, err := os.ReadFile(filepath.Join(workDir, name))
+		if err != nil || string(content) != want {
+			t.Fatalf("%s after rejected batch = %q, %v; want %q", name, content, err, want)
+		}
+	}
+}
+
 func TestFilePreviewServesWebsiteAssetsInline(t *testing.T) {
 	t.Setenv("WINGMAN_URL", "http://localhost:1")
 	workDir := t.TempDir()

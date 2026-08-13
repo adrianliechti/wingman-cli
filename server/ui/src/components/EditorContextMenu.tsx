@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import type * as MonacoTypes from "monaco-editor";
 import type { ReactNode } from "react";
+import type { MonacoLanguageFeature } from "../monacoLsp";
 import { FloatingMenu } from "./ui/Floating";
 
 interface Point {
@@ -27,6 +28,7 @@ interface Props {
 	editor: MonacoTypes.editor.IStandaloneCodeEditor;
 	openAt: Point;
 	readOnly: boolean;
+	supportsLanguageFeature: (feature: MonacoLanguageFeature) => boolean;
 	onClose: () => void;
 }
 
@@ -45,31 +47,52 @@ interface ActionDefinition {
 	shortcut?: string;
 }
 
-const navigationActions: ActionDefinition[] = [
+interface LanguageActionDefinition extends ActionDefinition {
+	feature: MonacoLanguageFeature;
+}
+
+const navigationActions: LanguageActionDefinition[] = [
 	{
 		id: "editor.action.revealDefinition",
+		feature: "definition",
 		label: "Go to Definition",
 		icon: <FileCode2 size={13} />,
 		shortcut: "F12",
 	},
 	{
 		id: "editor.action.peekDefinition",
+		feature: "definition",
 		label: "Peek Definition",
 		icon: <PanelTopOpen size={13} />,
 		shortcut: "⌥F12",
 	},
 	{
 		id: "editor.action.goToTypeDefinition",
+		feature: "typeDefinition",
 		label: "Go to Type Definition",
 		icon: <Braces size={13} />,
 	},
 	{
+		id: "editor.action.peekTypeDefinition",
+		feature: "typeDefinition",
+		label: "Peek Type Definition",
+		icon: <PanelTopOpen size={13} />,
+	},
+	{
 		id: "editor.action.goToImplementation",
+		feature: "implementation",
 		label: "Go to Implementations",
 		icon: <GitFork size={13} />,
 	},
 	{
+		id: "editor.action.peekImplementation",
+		feature: "implementation",
+		label: "Peek Implementations",
+		icon: <PanelTopOpen size={13} />,
+	},
+	{
 		id: "editor.action.referenceSearch.trigger",
+		feature: "references",
 		label: "Find All References",
 		icon: <Search size={13} />,
 		shortcut: "⇧F12",
@@ -99,6 +122,7 @@ export function EditorContextMenu({
 	editor,
 	openAt,
 	readOnly,
+	supportsLanguageFeature,
 	onClose,
 }: Props) {
 	const mac = /Mac|iPhone|iPad/.test(navigator.platform);
@@ -140,7 +164,11 @@ export function EditorContextMenu({
 			{ enabled: !readOnly },
 		),
 	];
-	const navigationItems = supportedActions(editor, navigationActions);
+	const navigationItems = languageActions(
+		editor,
+		navigationActions,
+		supportsLanguageFeature,
+	);
 	const supportedCodeActions = readOnly
 		? []
 		: supportedActions(editor, codeActions);
@@ -228,6 +256,18 @@ function supportedActions(
 			},
 		];
 	});
+}
+
+function languageActions(
+	editor: MonacoTypes.editor.IStandaloneCodeEditor,
+	definitions: LanguageActionDefinition[],
+	supports: (feature: MonacoLanguageFeature) => boolean,
+): MenuItem[] {
+	return definitions.map(({ feature, ...definition }) => ({
+		...definition,
+		enabled: supports(feature),
+		run: () => editor.trigger("wingman.contextMenu", definition.id, null),
+	}));
 }
 
 function commandItem(

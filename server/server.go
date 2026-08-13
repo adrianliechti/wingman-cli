@@ -82,6 +82,7 @@ type Server struct {
 
 	lspExternalMu    sync.Mutex
 	lspExternalPaths map[string]bool
+	fileWriteMu      sync.Mutex
 
 	taskPumpMu sync.Mutex
 	taskPumps  map[*task.Registry]bool
@@ -306,6 +307,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Post("/rename", s.handleFileRename)
 			r.Post("/copy", s.handleFileCopy)
 			r.Post("/write", s.handleFileWrite)
+			r.Post("/write-batch", s.handleFileWriteBatch)
 		})
 
 		r.Route("/diffs", func(r chi.Router) {
@@ -385,6 +387,15 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Post("/document-highlights", s.handleLSPDocumentHighlights)
 			r.Post("/folding-ranges", s.handleLSPFoldingRanges)
 			r.Post("/semantic-tokens", s.handleLSPSemanticTokens)
+			r.Post("/rename/prepare", s.handleLSPPrepareRename)
+			r.Post("/rename", s.handleLSPRename)
+			r.Post("/code-actions", s.handleLSPCodeActions)
+			r.Post("/code-actions/resolve", s.handleLSPCodeActionResolve)
+			r.Post("/execute-command", s.handleLSPExecuteCommand)
+			r.Post("/formatting", s.handleLSPFormatting)
+			r.Post("/formatting/range", s.handleLSPRangeFormatting)
+			r.Post("/formatting/on-type", s.handleLSPOnTypeFormatting)
+			r.Post("/inlay-hints", s.handleLSPInlayHints)
 			r.Get("/file", s.handleLSPExternalFile)
 		})
 		r.Get("/skills", s.handleSkills)

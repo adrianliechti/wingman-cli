@@ -1,9 +1,27 @@
 import type { Monaco } from "@monaco-editor/react";
 import type * as MonacoTypes from "monaco-editor";
+import type {
+	CodeAction as LSPCodeAction,
+	Command as LSPCommand,
+	CompletionItem as LSPCompletionItem,
+	CompletionList as LSPCompletionList,
+	DocumentHighlight as LSPDocumentHighlight,
+	DocumentSymbol as LSPDocumentSymbol,
+	FoldingRange as LSPFoldingRange,
+	InlayHint as LSPInlayHint,
+	Location as LSPLocation,
+	MarkupContent,
+	Range as LSPRange,
+	SignatureHelp as LSPSignatureHelp,
+	TextEdit as LSPTextEdit,
+} from "vscode-languageserver-types";
 import type { DiagnosticEntry, FileContent } from "./types/protocol";
+import type {
+	WorkspaceDocumentSnapshot,
+	WorkspaceEditEnvelope,
+} from "./workspaceEdit";
 
 const markerOwner = "wingman-lsp";
-const definitionScheme = "wingman-definition";
 const semanticTokenTypes = [
 	"namespace",
 	"type",
@@ -41,23 +59,36 @@ const semanticTokenModifiers = [
 	"documentation",
 	"defaultLibrary",
 ];
+let bridgeSequence = 0;
 
 interface BridgeOptions {
 	monaco: Monaco;
 	editor: MonacoTypes.editor.IStandaloneCodeEditor;
 	file: FileContent;
+	onCapabilitiesChanged?: () => void;
 	onOpenFile?: (
 		path: string,
 		line: number,
 		column: number,
 		external?: boolean,
 	) => void;
+	onApplyWorkspaceEdit?: (
+		envelope: WorkspaceEditEnvelope,
+		label: string,
+	) => Promise<boolean>;
 }
 
 export interface MonacoLSPBridge {
 	refreshDiagnostics(): Promise<void>;
+	supports(feature: MonacoLanguageFeature): boolean;
 	dispose(): void;
 }
+
+export type MonacoLanguageFeature =
+	| "definition"
+	| "typeDefinition"
+	| "implementation"
+	| "references";
 
 export function revealEditorPosition(
 	editor: MonacoTypes.editor.ICodeEditor,
@@ -79,7 +110,9 @@ export function createMonacoLSPBridge({
 	monaco,
 	editor,
 	file,
+	onCapabilitiesChanged,
 	onOpenFile,
+	onApplyWorkspaceEdit,
 }: BridgeOptions): MonacoLSPBridge {
 	const sourceModel = editor.getModel();
 	const disposables: MonacoTypes.IDisposable[] = [];
@@ -100,6 +133,79 @@ export function createMonacoLSPBridge({
 	let disposed = false;
 	let diagnosticsRevision = 0;
 	let diagnosticsController: AbortController | null = null;
+	let workspaceURI = "";
+	let activeCapabilities: LSPEditorCapabilities | null = null;
+	const lspCommandID = `wingman.lsp.command.${++bridgeSequence}`;
+
+	type CodeActionPayload = {
+		action: LSPCodeAction | LSPCommand;
+		documents: Record<string, WorkspaceDocumentSnapshot>;
+		resolve: boolean;
+	};
+
+	async function executeLSPCommand(command: LSPCommand) {
+		const controller = new AbortController();
+		requests.add(controller);
+		try {
+			await postJSON(
+				"/api/lsp/execute-command",
+				{
+					...documentRequest(file.path, sourceModel!),
+					command,
+				},
+				controller.signal,
+			);
+		} finally {
+			requests.delete(controller);
+		}
+	}
+
+	async function runCodeAction(payload: CodeActionPayload) {
+		if (!sourceModel || disposed) return;
+		let action = payload.action;
+		let documents = payload.documents;
+		if (
+			payload.resolve &&
+			!isLSPCommand(action) &&
+			!action.edit &&
+			action.data !== undefined
+		) {
+			const controller = new AbortController();
+			requests.add(controller);
+			try {
+				const resolved = await postJSON<LSPResolvedCodeActionResponse>(
+					"/api/lsp/code-actions/resolve",
+					{
+						...documentRequest(file.path, sourceModel),
+						action,
+					},
+					controller.signal,
+				);
+				if (!resolved) return;
+				action = resolved.action;
+				documents = resolved.documents;
+			} finally {
+				requests.delete(controller);
+			}
+		}
+		if (!isLSPCommand(action) && action.edit) {
+			const applied = await onApplyWorkspaceEdit?.(
+				{ edit: action.edit, documents },
+				action.title,
+			);
+			if (!applied) return;
+		}
+		const command = isLSPCommand(action) ? action : action.command;
+		if (command) await executeLSPCommand(command);
+	}
+
+	disposables.push(
+		monaco.editor.registerCommand(
+			lspCommandID,
+			(_accessor: unknown, payload: CodeActionPayload) =>
+				void runCodeAction(payload),
+		),
+	);
 
 	async function trackedRequest<T>(
 		token: MonacoTypes.CancellationToken,
@@ -129,7 +235,7 @@ export function createMonacoLSPBridge({
 	): Promise<MonacoTypes.languages.Location[] | undefined> {
 		if (!sourceModel || model !== sourceModel) return;
 		return trackedRequest(token, async (signal) => {
-			const locations = await postJSON<LSPFileLocation[]>(
+			const locations = await postJSON<LSPLocation[]>(
 				endpoint,
 				positionRequest(file.path, model, position),
 				signal,
@@ -137,33 +243,26 @@ export function createMonacoLSPBridge({
 			if (!locations || disposed || token.isCancellationRequested) return;
 			const targetURIs = new Map<string, MonacoTypes.Uri>();
 			for (const location of locations) {
-				if (location.path === file.path) {
-					targetURIs.set(location.path, sourceModel.uri);
+				const target = lspLocationTarget(location.uri, workspaceURI);
+				if (!target) continue;
+				if (!target.external && target.path === file.path) {
+					targetURIs.set(location.uri, sourceModel.uri);
 					continue;
 				}
-				const external = location.external === true;
-				const uri = monaco.Uri.from({
-					scheme: definitionScheme,
-					path: location.path.startsWith("/")
-						? location.path
-						: `/${location.path}`,
-				});
-				targetURIs.set(location.path, uri);
-				definitionTargets.set(uri.toString(), {
-					path: location.path,
-					external,
-				});
+				const uri = monaco.Uri.parse(location.uri);
+				targetURIs.set(location.uri, uri);
+				definitionTargets.set(uri.toString(), target);
 			}
 
 			async function loadTargetModel(
-				targetPath: string,
+				targetURI: string,
 				uri: MonacoTypes.Uri,
 			): Promise<string | null> {
-				if (targetPath === file.path) return targetPath;
-				const external =
-					definitionTargets.get(uri.toString())?.external === true;
+				const target = lspLocationTarget(targetURI, workspaceURI);
+				if (!target) return null;
+				if (!target.external && target.path === file.path) return targetURI;
 				const fileResponse = await fetch(
-					`${external ? "/api/lsp/file" : "/api/files/read"}?path=${encodeURIComponent(targetPath)}`,
+					`${target.external ? "/api/lsp/file" : "/api/files/read"}?path=${encodeURIComponent(target.path)}`,
 					{ signal },
 				);
 				if (!fileResponse.ok || disposed || token.isCancellationRequested)
@@ -186,7 +285,7 @@ export function createMonacoLSPBridge({
 				) {
 					targetModel.setValue(targetFile.content);
 				}
-				return targetPath;
+				return targetURI;
 			}
 
 			const targets = Array.from(targetURIs);
@@ -203,28 +302,40 @@ export function createMonacoLSPBridge({
 			}
 			if (disposed || token.isCancellationRequested) return;
 
-			const availablePaths = new Set(
-				loadedPaths.filter((path): path is string => path !== null),
+			const availableURIs = new Set(
+				loadedPaths.filter((uri): uri is string => uri !== null),
 			);
 			return locations
-				.filter((location) => availablePaths.has(location.path))
+				.filter((location) => availableURIs.has(location.uri))
 				.map((location) => {
-					const uri = targetURIs.get(location.path)!;
+					const uri = targetURIs.get(location.uri)!;
 					const targetModel = monaco.editor.getModel(uri)!;
-					const start = targetModel.validatePosition({
-						lineNumber: location.line,
-						column: location.column,
-					});
 					return {
 						uri,
-						range: wordRange(targetModel, start),
+						range: lspRange(targetModel, location.range),
 					};
 				});
 		});
 	}
 
+	async function provideFormattingEdits(
+		endpoint: string,
+		model: MonacoTypes.editor.ITextModel,
+		body: unknown,
+		token: MonacoTypes.CancellationToken,
+	): Promise<MonacoTypes.languages.TextEdit[] | undefined> {
+		return trackedRequest(token, async (signal) => {
+			const edits = await postJSON<LSPTextEdit[]>(endpoint, body, signal);
+			return edits?.map((edit) => ({
+				range: lspRange(model, edit.range),
+				text: edit.newText,
+			}));
+		});
+	}
+
 	function registerLanguageProviders(capabilities: LSPEditorCapabilities) {
 		if (!sourceModel || !file.language || disposed) return;
+		workspaceURI = capabilities.workspace_uri;
 
 		if (capabilities.completion) {
 			disposables.push(
@@ -256,6 +367,7 @@ export function createMonacoLSPBridge({
 									model,
 									position,
 									lspItem,
+									lspCommandID,
 								);
 								completionSources.set(suggestion, {
 									item: lspItem,
@@ -294,6 +406,7 @@ export function createMonacoLSPBridge({
 											source.model,
 											source.position,
 											resolved,
+											lspCommandID,
 										),
 									};
 									completionSources.set(enriched, {
@@ -447,7 +560,11 @@ export function createMonacoLSPBridge({
 		if (capabilities.document_highlights) {
 			disposables.push(
 				monaco.languages.registerDocumentHighlightProvider(file.language, {
-					provideDocumentHighlights(model, position, token) {
+					provideDocumentHighlights(
+						model: MonacoTypes.editor.ITextModel,
+						position: MonacoTypes.Position,
+						token: MonacoTypes.CancellationToken,
+					) {
 						if (model !== sourceModel) return;
 						return trackedRequest(token, async (signal) => {
 							const highlights = await postJSON<LSPDocumentHighlight[]>(
@@ -470,7 +587,11 @@ export function createMonacoLSPBridge({
 		if (capabilities.folding_ranges) {
 			disposables.push(
 				monaco.languages.registerFoldingRangeProvider(file.language, {
-					provideFoldingRanges(model, _context, token) {
+					provideFoldingRanges(
+						model: MonacoTypes.editor.ITextModel,
+						_context: MonacoTypes.languages.FoldingContext,
+						token: MonacoTypes.CancellationToken,
+					) {
 						if (model !== sourceModel) return;
 						return trackedRequest(token, async (signal) => {
 							const ranges = await postJSON<LSPFoldingRange[]>(
@@ -495,7 +616,11 @@ export function createMonacoLSPBridge({
 						tokenTypes: semanticTokenTypes,
 						tokenModifiers: semanticTokenModifiers,
 					}),
-					provideDocumentSemanticTokens(model, _lastResultID, token) {
+					provideDocumentSemanticTokens(
+						model: MonacoTypes.editor.ITextModel,
+						_lastResultID: string | null,
+						token: MonacoTypes.CancellationToken,
+					) {
 						if (model !== sourceModel) return;
 						return trackedRequest(token, async (signal) => {
 							const tokens = await postJSON<LSPSemanticToken[]>(
@@ -510,6 +635,272 @@ export function createMonacoLSPBridge({
 				}),
 			);
 		}
+		if (capabilities.rename && onApplyWorkspaceEdit) {
+			disposables.push(
+				monaco.languages.registerRenameProvider(file.language, {
+					...(capabilities.rename_prepare
+						? {
+								resolveRenameLocation(
+									model: MonacoTypes.editor.ITextModel,
+									position: MonacoTypes.Position,
+									token: MonacoTypes.CancellationToken,
+								) {
+									if (model !== sourceModel) return;
+									return trackedRequest(token, async (signal) => {
+										const result = await postJSON<LSPPrepareRenameResult>(
+											"/api/lsp/rename/prepare",
+											positionRequest(file.path, model, position),
+											signal,
+										);
+										if (!result) return;
+										if ("defaultBehavior" in result) {
+											return {
+												range: wordRange(model, position),
+												text: "",
+											};
+										}
+										const range = "range" in result ? result.range : result;
+										const monacoRange = lspRange(model, range);
+										return {
+											range: monacoRange,
+											text:
+												"placeholder" in result
+													? result.placeholder
+													: model.getValueInRange(monacoRange),
+										};
+									});
+								},
+							}
+						: {}),
+					provideRenameEdits(
+						model: MonacoTypes.editor.ITextModel,
+						position: MonacoTypes.Position,
+						newName: string,
+						token: MonacoTypes.CancellationToken,
+					) {
+						if (model !== sourceModel) return;
+						return trackedRequest(token, async (signal) => {
+							const response = await postJSON<WorkspaceEditEnvelope>(
+								"/api/lsp/rename",
+								{
+									...positionRequest(file.path, model, position),
+									new_name: newName,
+								},
+								signal,
+							);
+							if (!response?.edit)
+								return { edits: [], rejectReason: "Rename is unavailable." };
+							const applied = await onApplyWorkspaceEdit(
+								response,
+								`Rename to “${newName}”`,
+							);
+							return applied
+								? { edits: [] }
+								: { edits: [], rejectReason: "Rename was not applied." };
+						});
+					},
+				}),
+			);
+		}
+		if (capabilities.code_actions) {
+			disposables.push(
+				monaco.languages.registerCodeActionProvider(
+					file.language,
+					{
+						provideCodeActions(
+							model: MonacoTypes.editor.ITextModel,
+							range: MonacoTypes.Range,
+							context: MonacoTypes.languages.CodeActionContext,
+							token: MonacoTypes.CancellationToken,
+						) {
+							if (model !== sourceModel) return;
+							return trackedRequest(token, async (signal) => {
+								const response = await postJSON<LSPCodeActionsResponse>(
+									"/api/lsp/code-actions",
+									{
+										...documentRequest(file.path, model),
+										range: protocolRange(range),
+										...(context.only ? { only: [context.only] } : {}),
+										trigger_kind: context.trigger,
+									},
+									signal,
+								);
+								if (!response) return;
+								return {
+									actions: response.actions.map((action) => {
+										const resolvable =
+											!isLSPCommand(action) &&
+											capabilities.code_action_resolve &&
+											action.data !== undefined;
+										const executable =
+											isLSPCommand(action) ||
+											action.edit !== undefined ||
+											action.command !== undefined ||
+											resolvable;
+										return {
+											title: action.title,
+											kind: isLSPCommand(action) ? undefined : action.kind,
+											isPreferred: isLSPCommand(action)
+												? undefined
+												: action.isPreferred,
+											disabled: isLSPCommand(action)
+												? undefined
+												: (action.disabled?.reason ??
+													(!executable
+														? "The language server did not provide an executable action."
+														: undefined)),
+											command: {
+												id: lspCommandID,
+												title: action.title,
+												arguments: [
+													{
+														action,
+														documents: response.documents,
+														resolve: capabilities.code_action_resolve,
+													},
+												],
+											},
+										};
+									}),
+									dispose() {},
+								};
+							});
+						},
+					},
+					{ providedCodeActionKinds: ["quickfix", "refactor", "source"] },
+				),
+			);
+		}
+		if (capabilities.document_formatting) {
+			disposables.push(
+				monaco.languages.registerDocumentFormattingEditProvider(file.language, {
+					displayName: "Language Server",
+					provideDocumentFormattingEdits(
+						model: MonacoTypes.editor.ITextModel,
+						options: MonacoTypes.languages.FormattingOptions,
+						token: MonacoTypes.CancellationToken,
+					) {
+						if (model !== sourceModel) return;
+						return provideFormattingEdits(
+							"/api/lsp/formatting",
+							model,
+							{ ...documentRequest(file.path, model), options },
+							token,
+						);
+					},
+				}),
+			);
+		}
+		if (capabilities.range_formatting) {
+			disposables.push(
+				monaco.languages.registerDocumentRangeFormattingEditProvider(
+					file.language,
+					{
+						displayName: "Language Server",
+						provideDocumentRangeFormattingEdits(
+							model: MonacoTypes.editor.ITextModel,
+							range: MonacoTypes.Range,
+							options: MonacoTypes.languages.FormattingOptions,
+							token: MonacoTypes.CancellationToken,
+						) {
+							if (model !== sourceModel) return;
+							return provideFormattingEdits(
+								"/api/lsp/formatting/range",
+								model,
+								{
+									...documentRequest(file.path, model),
+									options,
+									range: protocolRange(range),
+								},
+								token,
+							);
+						},
+					},
+				),
+			);
+		}
+		if (capabilities.on_type_formatting_trigger_characters.length > 0) {
+			disposables.push(
+				monaco.languages.registerOnTypeFormattingEditProvider(file.language, {
+					autoFormatTriggerCharacters:
+						capabilities.on_type_formatting_trigger_characters,
+					provideOnTypeFormattingEdits(
+						model: MonacoTypes.editor.ITextModel,
+						position: MonacoTypes.Position,
+						character: string,
+						options: MonacoTypes.languages.FormattingOptions,
+						token: MonacoTypes.CancellationToken,
+					) {
+						if (model !== sourceModel) return;
+						return provideFormattingEdits(
+							"/api/lsp/formatting/on-type",
+							model,
+							{
+								...positionRequest(file.path, model, position),
+								options,
+								character,
+							},
+							token,
+						);
+					},
+				}),
+			);
+		}
+		if (capabilities.inlay_hints) {
+			disposables.push(
+				monaco.languages.registerInlayHintsProvider(file.language, {
+					displayName: "Language Server",
+					provideInlayHints(
+						model: MonacoTypes.editor.ITextModel,
+						range: MonacoTypes.Range,
+						token: MonacoTypes.CancellationToken,
+					) {
+						if (model !== sourceModel) return;
+						return trackedRequest(token, async (signal) => {
+							const hints = await postJSON<LSPInlayHint[]>(
+								"/api/lsp/inlay-hints",
+								{
+									...documentRequest(file.path, model),
+									range: protocolRange(range),
+								},
+								signal,
+							);
+							if (!hints) return;
+							return {
+								hints: hints.map((hint) => ({
+									position: {
+										lineNumber: hint.position.line + 1,
+										column: hint.position.character + 1,
+									},
+									label:
+										typeof hint.label === "string"
+											? hint.label
+											: hint.label.map((part) => ({
+													label: part.value,
+													tooltip: documentation(part.tooltip),
+													command: part.command
+														? lspCommand(part.command, lspCommandID)
+														: undefined,
+												})),
+									kind: hint.kind,
+									tooltip: documentation(hint.tooltip),
+									textEdits: hint.textEdits?.map((edit) => ({
+										range: lspRange(model, edit.range),
+										text: edit.newText,
+									})),
+									paddingLeft: hint.paddingLeft,
+									paddingRight: hint.paddingRight,
+								})),
+								dispose() {},
+							};
+						});
+					},
+				}),
+			);
+		}
+
+		activeCapabilities = capabilities;
+		onCapabilitiesChanged?.();
 	}
 
 	if (sourceModel && file.language) {
@@ -580,6 +971,19 @@ export function createMonacoLSPBridge({
 				if (diagnosticsController === controller) diagnosticsController = null;
 			}
 		},
+		supports(feature) {
+			if (!activeCapabilities) return false;
+			switch (feature) {
+				case "definition":
+					return activeCapabilities.definition;
+				case "typeDefinition":
+					return activeCapabilities.type_definition;
+				case "implementation":
+					return activeCapabilities.implementation;
+				case "references":
+					return activeCapabilities.references;
+			}
+		},
 		dispose() {
 			if (disposed) return;
 			disposed = true;
@@ -598,54 +1002,83 @@ export function createMonacoLSPBridge({
 	};
 }
 
-interface LSPFileLocation {
-	path: string;
-	line: number;
-	column: number;
-	external?: boolean;
-}
-
-interface LSPPosition {
+interface LSPSemanticToken {
 	line: number;
 	character: number;
+	length: number;
+	type: string;
+	modifiers?: string[];
 }
 
-interface LSPRange {
-	start: LSPPosition;
-	end: LSPPosition;
+interface LSPFileTarget {
+	path: string;
+	external: boolean;
 }
 
-interface LSPDocumentSymbol {
-	name: string;
-	detail?: string;
-	kind: number;
-	range: LSPRange;
-	selectionRange: LSPRange;
-	children?: LSPDocumentSymbol[];
+function lspLocationTarget(
+	locationURI: string,
+	workspaceURI: string,
+): LSPFileTarget | null {
+	const targetPath = fileURIPath(locationURI);
+	const rootPath = fileURIPath(workspaceURI);
+	if (!targetPath || !rootPath) return null;
+
+	const normalizedRoot = rootPath.endsWith("/")
+		? rootPath.slice(0, -1)
+		: rootPath;
+	const caseInsensitive = /^[a-z]:\//i.test(normalizedRoot);
+	const comparableTarget = caseInsensitive
+		? targetPath.toLowerCase()
+		: targetPath;
+	const comparableRoot = caseInsensitive
+		? normalizedRoot.toLowerCase()
+		: normalizedRoot;
+	if (
+		comparableTarget === comparableRoot ||
+		comparableTarget.startsWith(`${comparableRoot}/`)
+	) {
+		return {
+			path: targetPath.slice(normalizedRoot.length).replace(/^\/+/, ""),
+			external: false,
+		};
+	}
+	return { path: targetPath, external: true };
 }
 
-interface LSPDocumentHighlight {
-	range: LSPRange;
-	kind?: number;
+function fileURIPath(value: string): string | null {
+	if (!value) return null;
+	try {
+		const uri = new URL(value);
+		if (uri.protocol !== "file:") return null;
+		let path = decodeURIComponent(uri.pathname).replaceAll("\\", "/");
+		if (uri.hostname && uri.hostname !== "localhost") {
+			path = `//${uri.hostname}${path}`;
+		} else if (/^\/[a-z]:\//i.test(path)) {
+			path = path.slice(1);
+		}
+		return path;
+	} catch {
+		return null;
+	}
 }
 
-interface LSPFoldingRange {
-	startLine: number;
-	startCharacter?: number;
-	endLine: number;
-	endCharacter?: number;
-	kind?: string;
+type LSPPrepareRenameResult =
+	| LSPRange
+	| { range: LSPRange; placeholder: string }
+	| { defaultBehavior: boolean };
+
+interface LSPCodeActionsResponse {
+	actions: Array<LSPCodeAction | LSPCommand>;
+	documents: Record<string, WorkspaceDocumentSnapshot>;
 }
 
-interface LSPSemanticToken {
-	Line: number;
-	Character: number;
-	Length: number;
-	Type: string;
-	Modifiers?: string[];
+interface LSPResolvedCodeActionResponse {
+	action: LSPCodeAction;
+	documents: Record<string, WorkspaceDocumentSnapshot>;
 }
 
 interface LSPEditorCapabilities {
+	workspace_uri: string;
 	language_server: boolean;
 	completion: boolean;
 	completion_resolve: boolean;
@@ -662,7 +1095,9 @@ interface LSPEditorCapabilities {
 	document_highlights: boolean;
 	folding_ranges: boolean;
 	rename: boolean;
+	rename_prepare: boolean;
 	code_actions: boolean;
+	code_action_resolve: boolean;
 	document_formatting: boolean;
 	range_formatting: boolean;
 	on_type_formatting_trigger_characters: string[];
@@ -672,6 +1107,7 @@ interface LSPEditorCapabilities {
 }
 
 const structuralCapabilities: LSPEditorCapabilities = {
+	workspace_uri: "",
 	language_server: false,
 	completion: true,
 	completion_resolve: false,
@@ -688,7 +1124,9 @@ const structuralCapabilities: LSPEditorCapabilities = {
 	document_highlights: true,
 	folding_ranges: true,
 	rename: false,
+	rename_prepare: false,
 	code_actions: false,
+	code_action_resolve: false,
 	document_formatting: false,
 	range_formatting: false,
 	on_type_formatting_trigger_characters: [],
@@ -696,54 +1134,6 @@ const structuralCapabilities: LSPEditorCapabilities = {
 	inlay_hints: false,
 	workspace_symbols: true,
 };
-
-interface LSPCompletionList {
-	isIncomplete: boolean;
-	items: LSPCompletionItem[];
-}
-
-interface LSPCompletionItem {
-	label: string;
-	kind?: number;
-	detail?: string;
-	documentation?: string | { kind?: string; value?: string };
-	sortText?: string;
-	filterText?: string;
-	insertText?: string;
-	insertTextFormat?: number;
-	textEdit?: LSPCompletionTextEdit;
-	additionalTextEdits?: Array<{ range: LSPRange; newText: string }>;
-	commitCharacters?: string[];
-	preselect?: boolean;
-	data?: unknown;
-}
-
-type LSPDocumentation = string | { kind?: string; value?: string };
-
-interface LSPSignatureHelp {
-	signatures: LSPSignatureInformation[];
-	activeSignature?: number;
-	activeParameter?: number;
-}
-
-interface LSPSignatureInformation {
-	label: string;
-	documentation?: LSPDocumentation;
-	parameters?: LSPParameterInformation[];
-	activeParameter?: number;
-}
-
-interface LSPParameterInformation {
-	label: string | [number, number];
-	documentation?: LSPDocumentation;
-}
-
-interface LSPCompletionTextEdit {
-	newText: string;
-	range?: LSPRange;
-	insert?: LSPRange;
-	replace?: LSPRange;
-}
 
 async function postJSON<T>(
 	endpoint: string,
@@ -799,6 +1189,25 @@ function positionRequest(
 	};
 }
 
+function protocolRange(range: MonacoTypes.IRange): LSPRange {
+	return {
+		start: {
+			line: range.startLineNumber - 1,
+			character: range.startColumn - 1,
+		},
+		end: {
+			line: range.endLineNumber - 1,
+			character: range.endColumn - 1,
+		},
+	};
+}
+
+function isLSPCommand(
+	action: LSPCodeAction | LSPCommand,
+): action is LSPCommand {
+	return typeof action.command === "string";
+}
+
 function wordRange(
 	model: MonacoTypes.editor.ITextModel,
 	position: MonacoTypes.Position,
@@ -836,15 +1245,16 @@ function completionItem(
 	model: MonacoTypes.editor.ITextModel,
 	position: MonacoTypes.Position,
 	item: LSPCompletionItem,
+	commandID: string,
 ): MonacoTypes.languages.CompletionItem {
 	const edit = item.textEdit;
 	const range =
-		edit?.insert && edit.replace
+		edit && "insert" in edit
 			? {
 					insert: lspRange(model, edit.insert),
 					replace: lspRange(model, edit.replace),
 				}
-			: edit?.range
+			: edit
 				? lspRange(model, edit.range)
 				: wordRange(model, position);
 	return {
@@ -866,6 +1276,18 @@ function completionItem(
 		})),
 		commitCharacters: item.commitCharacters,
 		preselect: item.preselect,
+		command: item.command ? lspCommand(item.command, commandID) : undefined,
+	};
+}
+
+function lspCommand(
+	command: LSPCommand,
+	commandID: string,
+): MonacoTypes.languages.Command {
+	return {
+		id: commandID,
+		title: command.title,
+		arguments: [{ action: command, documents: {} }],
 	};
 }
 
@@ -881,7 +1303,7 @@ function signatureHelp(
 					label: parameter.label,
 					documentation: documentation(parameter.documentation),
 				})),
-				activeParameter: signature.activeParameter,
+				activeParameter: signature.activeParameter ?? undefined,
 			})),
 			activeSignature: help.activeSignature ?? 0,
 			activeParameter: help.activeParameter ?? 0,
@@ -906,22 +1328,22 @@ function encodeSemanticTokens(
 ): MonacoTypes.languages.SemanticTokens {
 	const sorted = tokens
 		.filter(
-			(token) =>
-				token.Length > 0 && semanticTokenTypes.includes(token.Type),
+			(token) => token.length > 0 && semanticTokenTypes.includes(token.type),
 		)
 		.toSorted(
-			(a, b) => a.Line - b.Line || a.Character - b.Character || a.Length - b.Length,
+			(a, b) =>
+				a.line - b.line || a.character - b.character || a.length - b.length,
 		);
 	const data = new Uint32Array(sorted.length * 5);
 	let previousLine = 0;
 	let previousCharacter = 0;
 	for (let index = 0; index < sorted.length; index++) {
 		const token = sorted[index];
-		const lineDelta = token.Line - previousLine;
+		const lineDelta = token.line - previousLine;
 		const characterDelta =
-			lineDelta === 0 ? token.Character - previousCharacter : token.Character;
+			lineDelta === 0 ? token.character - previousCharacter : token.character;
 		let modifierBits = 0;
-		for (const modifier of token.Modifiers ?? []) {
+		for (const modifier of token.modifiers ?? []) {
 			const modifierIndex = semanticTokenModifiers.indexOf(modifier);
 			if (modifierIndex >= 0) modifierBits |= 1 << modifierIndex;
 		}
@@ -929,19 +1351,19 @@ function encodeSemanticTokens(
 			[
 				lineDelta,
 				characterDelta,
-				token.Length,
-				semanticTokenTypes.indexOf(token.Type),
+				token.length,
+				semanticTokenTypes.indexOf(token.type),
 				modifierBits,
 			],
 			index * 5,
 		);
-		previousLine = token.Line;
-		previousCharacter = token.Character;
+		previousLine = token.line;
+		previousCharacter = token.character;
 	}
 	return { data };
 }
 
-function documentation(value?: LSPDocumentation) {
+function documentation(value?: string | MarkupContent) {
 	const text = typeof value === "string" ? value : value?.value;
 	return text ? { value: text } : undefined;
 }

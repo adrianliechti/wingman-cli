@@ -10,7 +10,60 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/adrianliechti/wingman-agent/pkg/fileuri"
+	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 )
+
+func TestEditorCapabilityOptions(t *testing.T) {
+	t.Run("rename", func(t *testing.T) {
+		prepare := true
+		tests := []struct {
+			name        string
+			provider    any
+			wantEnabled bool
+			wantPrepare bool
+		}{
+			{name: "missing"},
+			{name: "disabled", provider: lsp.Boolean(false)},
+			{name: "boolean", provider: lsp.Boolean(true), wantEnabled: true},
+			{name: "options", provider: &lsp.RenameOptions{}, wantEnabled: true},
+			{name: "prepare", provider: &lsp.RenameOptions{PrepareProvider: &prepare}, wantEnabled: true, wantPrepare: true},
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				enabled, canPrepare := renameCapabilities(test.provider)
+				if enabled != test.wantEnabled || canPrepare != test.wantPrepare {
+					t.Fatalf("renameCapabilities() = (%v, %v), want (%v, %v)", enabled, canPrepare, test.wantEnabled, test.wantPrepare)
+				}
+			})
+		}
+	})
+
+	t.Run("code action", func(t *testing.T) {
+		resolve := true
+		tests := []struct {
+			name        string
+			provider    any
+			wantEnabled bool
+			wantResolve bool
+		}{
+			{name: "missing"},
+			{name: "disabled", provider: lsp.Boolean(false)},
+			{name: "boolean", provider: lsp.Boolean(true), wantEnabled: true},
+			{name: "options", provider: &lsp.CodeActionOptions{}, wantEnabled: true},
+			{name: "resolve", provider: &lsp.CodeActionOptions{ResolveProvider: &resolve}, wantEnabled: true, wantResolve: true},
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				enabled, canResolve := codeActionCapabilities(test.provider)
+				if enabled != test.wantEnabled || canResolve != test.wantResolve {
+					t.Fatalf("codeActionCapabilities() = (%v, %v), want (%v, %v)", enabled, canResolve, test.wantEnabled, test.wantResolve)
+				}
+			})
+		}
+	})
+}
 
 func TestLSPDefinitionRequestValidation(t *testing.T) {
 	t.Setenv("WINGMAN_URL", "http://localhost:1")
@@ -97,23 +150,24 @@ func greet() {}
 	}
 
 	t.Run("definition", func(t *testing.T) {
-		var locations []lspLocationItem
+		var locations []lsp.Location
 		post(t, "/api/lsp/definition", `{"path":"main.go","line":4,"column":2}`, &locations)
 		if len(locations) != 1 {
 			t.Fatalf("locations = %+v, want one", locations)
 		}
-		if locations[0].Path != "main.go" || locations[0].Line != 7 || locations[0].Column != 6 {
+		path, ok := fileuri.Path(string(locations[0].URI))
+		if !ok || filepath.Clean(path) != filepath.Join(workDir, "main.go") || locations[0].Range.Start.Line != 6 || locations[0].Range.Start.Character != 5 {
 			t.Fatalf("location = %+v, want main.go:7:6", locations[0])
 		}
 	})
 
 	t.Run("references", func(t *testing.T) {
-		var locations []lspLocationItem
+		var locations []lsp.Location
 		post(t, "/api/lsp/references", `{"path":"main.go","line":7,"column":6}`, &locations)
 		if len(locations) != 2 {
 			t.Fatalf("locations = %+v, want declaration and call site", locations)
 		}
-		if locations[0].Line != 4 || locations[1].Line != 7 {
+		if locations[0].Range.Start.Line != 3 || locations[1].Range.Start.Line != 6 {
 			t.Fatalf("locations = %+v, want lines 4 and 7", locations)
 		}
 	})
@@ -189,7 +243,7 @@ func greet() {}
 	})
 
 	t.Run("implementations empty for functions", func(t *testing.T) {
-		var locations []lspLocationItem
+		var locations []lsp.Location
 		post(t, "/api/lsp/implementations", `{"path":"main.go","line":7,"column":6}`, &locations)
 		if len(locations) != 0 {
 			t.Fatalf("locations = %+v, want none", locations)

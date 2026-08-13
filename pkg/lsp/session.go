@@ -9,20 +9,23 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strings"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/adrianliechti/wingman-agent/pkg/fileuri"
 	"go.lsp.dev/jsonrpc2"
+	"go.lsp.dev/protocol"
+	lspuri "go.lsp.dev/uri"
 )
 
 type Session struct {
 	server     Server
 	conn       jsonrpc2.Conn
+	rpc        protocol.Server
 	cmd        *exec.Cmd
 	rootURI    string
-	workingDir string
 	cancelFunc context.CancelFunc
 
 	documentMu   sync.Mutex
@@ -31,7 +34,7 @@ type Session struct {
 	progress     map[string]bool
 	created      time.Time
 	pullDiags    bool
-	capabilities ServerCapabilities
+	capabilities protocol.ServerCapabilities
 	alive        atomic.Bool
 	closeOnce    sync.Once
 }
@@ -46,8 +49,8 @@ type document struct {
 	saved   bool
 	content string
 
-	diagnostics []Diagnostic
-	published   bool
+	wireDiagnostics []protocol.Diagnostic
+	published       bool
 }
 
 func (s *Session) document(uri string) *document {
@@ -91,8 +94,7 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 	session := &Session{
 		server:     server,
 		cmd:        cmd,
-		rootURI:    FileURI(workingDir),
-		workingDir: workingDir,
+		rootURI:    fileuri.FromPath(workingDir),
 		cancelFunc: cancel,
 		documents:  make(map[string]*document),
 		progress:   make(map[string]bool),
@@ -100,9 +102,13 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 	}
 	session.alive.Store(true)
 
-	conn := jsonrpc2.NewConn(jsonrpc2.NewStream(&cmdStream{cmd: cmd, stdin: stdin, stdout: stdout}))
+	_, conn, rpc := protocol.NewClient(
+		connCtx,
+		&sessionClient{session: session},
+		jsonrpc2.NewStream(&cmdStream{cmd: cmd, stdin: stdin, stdout: stdout}),
+	)
 	session.conn = conn
-	conn.Go(connCtx, session.handle)
+	session.rpc = rpc
 
 	go func() {
 		<-conn.Done()
@@ -121,33 +127,36 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 	return session, nil
 }
 
-func (s *Session) handle(ctx context.Context, req *jsonrpc2.Request) (any, error) {
-	switch req.Method() {
-	case "textDocument/publishDiagnostics":
-		var params PublishDiagnosticsParams
-		if err := json.Unmarshal(req.Params(), &params); err == nil {
-			s.mu.Lock()
-			if doc := s.document(params.URI); params.Version == 0 || params.Version >= doc.version {
-				doc.diagnostics = params.Diagnostics
-				doc.published = true
-			}
-			s.mu.Unlock()
-		}
-		return nil, nil
-	case "window/workDoneProgress/create":
-		return nil, nil
-	case "$/progress":
-		var params ProgressParams
-		if err := json.Unmarshal(req.Params(), &params); err == nil {
-			s.applyProgress(params.Token, params.Value.Kind)
-		}
-		return nil, nil
-	}
+type sessionClient struct {
+	protocol.UnimplementedClient
+	session *Session
+}
 
-	if req.IsCall() {
-		return nil, jsonrpc2.ErrMethodNotFound
+func (c *sessionClient) PublishDiagnostics(_ context.Context, params *protocol.PublishDiagnosticsParams) error {
+	version, _ := params.Version.Get()
+	uri := params.URI.String()
+	c.session.mu.Lock()
+	if doc := c.session.document(uri); version == 0 || int(version) >= doc.version {
+		doc.wireDiagnostics = slices.Clone(params.Diagnostics)
+		doc.published = true
 	}
-	return nil, nil
+	c.session.mu.Unlock()
+	return nil
+}
+
+func (c *sessionClient) WorkDoneProgressCreate(context.Context, *protocol.WorkDoneProgressCreateParams) error {
+	return nil
+}
+
+func (c *sessionClient) Progress(_ context.Context, params *protocol.ProgressParams) error {
+	var value struct {
+		Kind string `json:"kind"`
+	}
+	if err := protocol.Unmarshal(params.Value, &value); err == nil {
+		token, _ := protocol.Marshal(params.Token)
+		c.session.applyProgress(token, value.Kind)
+	}
+	return nil
 }
 
 func (s *Session) IsAlive() bool {
@@ -178,21 +187,22 @@ func (s *Session) Age() time.Duration {
 	return time.Since(s.created)
 }
 
-type OpenDocument struct {
+type openDocument struct {
 	Path    string
 	Content string
 	Saved   bool
 }
 
-func (s *Session) OpenedDocuments() []OpenDocument {
+func (s *Session) openedDocuments() []openDocument {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	documents := make([]OpenDocument, 0, len(s.documents))
+	documents := make([]openDocument, 0, len(s.documents))
 	for uri, doc := range s.documents {
 		if doc.opened {
-			documents = append(documents, OpenDocument{
-				Path:    uriToPath(uri),
+			path, _ := fileuri.Path(uri)
+			documents = append(documents, openDocument{
+				Path:    path,
 				Content: doc.content,
 				Saved:   doc.saved,
 			})
@@ -206,31 +216,29 @@ func (s *Session) Close() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		_, _ = s.conn.Call(ctx, "shutdown", nil, nil)
-		_ = s.conn.Notify(ctx, "exit", nil)
+		_ = s.rpc.Shutdown(ctx)
+		_ = s.rpc.Exit(ctx)
 		_ = s.conn.Close()
 		s.cancelFunc()
 	})
 }
 
-func (s *Session) CallAndAwait(ctx context.Context, method string, params any, result any) error {
+func retryRPC[T any](ctx context.Context, call func() (T, error)) (T, error) {
+	var result T
 	var err error
-
 	for attempt := range maxRetries {
-		_, err = s.conn.Call(ctx, method, params, result)
+		result, err = call()
 		if err == nil || !isTransientError(err) {
-			return err
+			return result, err
 		}
-
 		delay := retryBaseDelay << attempt
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return result, ctx.Err()
 		case <-time.After(delay):
 		}
 	}
-
-	return err
+	return result, err
 }
 
 const maxRetries = 3
@@ -281,7 +289,7 @@ func (s *Session) CloseDocument(ctx context.Context, filePath string) error {
 	s.documentMu.Lock()
 	defer s.documentMu.Unlock()
 
-	uri := FileURI(filePath)
+	uri := fileuri.FromPath(filePath)
 	s.mu.Lock()
 	doc := s.documents[uri]
 	opened := doc != nil && doc.opened
@@ -289,8 +297,8 @@ func (s *Session) CloseDocument(ctx context.Context, filePath string) error {
 	if !opened {
 		return nil
 	}
-	if err := s.conn.Notify(ctx, "textDocument/didClose", DidCloseTextDocumentParams{
-		TextDocument: TextDocumentIdentifier{URI: uri},
+	if err := s.rpc.DidClose(ctx, &protocol.DidCloseTextDocumentParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: lspuri.MustParse(uri)},
 	}); err != nil {
 		return fmt.Errorf("didClose: %w", err)
 	}
@@ -301,11 +309,21 @@ func (s *Session) CloseDocument(ctx context.Context, filePath string) error {
 	return nil
 }
 
+func (s *Session) DocumentContent(filePath string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	doc := s.documents[fileuri.FromPath(filePath)]
+	if doc == nil || !doc.opened {
+		return "", false
+	}
+	return doc.content, true
+}
+
 func (s *Session) syncDocument(ctx context.Context, filePath string, content []byte, saved bool) (string, error) {
 	s.documentMu.Lock()
 	defer s.documentMu.Unlock()
 
-	uri := FileURI(filePath)
+	uri := fileuri.FromPath(filePath)
 
 	h := fnv.New64a()
 	h.Write(content)
@@ -317,14 +335,14 @@ func (s *Session) syncDocument(ctx context.Context, filePath string, content []b
 	version := doc.version + 1
 	if opened && !unchanged {
 		doc.version = version
-		doc.diagnostics = nil
+		doc.wireDiagnostics = nil
 		doc.published = false
 	}
 	s.mu.Unlock()
 
 	notifySaved := func() error {
-		if err := s.conn.Notify(ctx, "textDocument/didSave", DidSaveTextDocumentParams{
-			TextDocument: TextDocumentIdentifier{URI: uri},
+		if err := s.rpc.DidSave(ctx, &protocol.DidSaveTextDocumentParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: lspuri.MustParse(uri)},
 		}); err != nil {
 			return fmt.Errorf("didSave: %w", err)
 		}
@@ -341,9 +359,14 @@ func (s *Session) syncDocument(ctx context.Context, filePath string, content []b
 		}
 
 	case opened:
-		if err := s.conn.Notify(ctx, "textDocument/didChange", DidChangeTextDocumentParams{
-			TextDocument:   VersionedTextDocumentIdentifier{URI: uri, Version: version},
-			ContentChanges: []TextDocumentContentChangeEvent{{Text: string(content)}},
+		if err := s.rpc.DidChange(ctx, &protocol.DidChangeTextDocumentParams{
+			TextDocument: protocol.VersionedTextDocumentIdentifier{
+				TextDocumentIdentifier: protocol.TextDocumentIdentifier{URI: lspuri.MustParse(uri)},
+				Version:                int32(version),
+			},
+			ContentChanges: []protocol.TextDocumentContentChangeEvent{
+				&protocol.TextDocumentContentChangeWholeDocument{Text: string(content)},
+			},
 		}); err != nil {
 			return "", fmt.Errorf("didChange: %w", err)
 		}
@@ -354,10 +377,10 @@ func (s *Session) syncDocument(ctx context.Context, filePath string, content []b
 		}
 
 	default:
-		if err := s.conn.Notify(ctx, "textDocument/didOpen", DidOpenTextDocumentParams{
-			TextDocument: TextDocumentItem{
-				URI:        uri,
-				LanguageID: s.server.LanguageIDForPath(filePath),
+		if err := s.rpc.DidOpen(ctx, &protocol.DidOpenTextDocumentParams{
+			TextDocument: protocol.TextDocumentItem{
+				URI:        lspuri.MustParse(uri),
+				LanguageID: protocol.LanguageKind(s.server.LanguageIDForPath(filePath)),
 				Version:    1,
 				Text:       string(content),
 			},
@@ -380,7 +403,7 @@ func (s *Session) syncDocument(ctx context.Context, filePath string, content []b
 	return uri, nil
 }
 
-func (s *Session) publishedDiagnostics(uri string) ([]Diagnostic, bool) {
+func (s *Session) publishedProtocolDiagnostics(uri string) ([]protocol.Diagnostic, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -388,11 +411,11 @@ func (s *Session) publishedDiagnostics(uri string) ([]Diagnostic, bool) {
 	if doc == nil {
 		return nil, false
 	}
-	return doc.diagnostics, doc.published
+	return slices.Clone(doc.wireDiagnostics), doc.published
 }
 
 func (s *Session) PushSeen(uri string) bool {
-	_, published := s.publishedDiagnostics(uri)
+	_, published := s.publishedProtocolDiagnostics(uri)
 	return published
 }
 
@@ -400,29 +423,31 @@ func (s *Session) SupportsPullDiagnostics() bool {
 	return s.pullDiags
 }
 
-func (s *Session) pullDiagnostics(ctx context.Context, uri string) ([]Diagnostic, bool) {
-	params := DocumentDiagnosticParams{
-		TextDocument: TextDocumentIdentifier{URI: uri},
-	}
-
+func (s *Session) pullProtocolDiagnostics(ctx context.Context, uri string) ([]protocol.Diagnostic, bool) {
 	callCtx, callCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer callCancel()
-
-	var result json.RawMessage
-	if err := s.CallAndAwait(callCtx, "textDocument/diagnostic", params, &result); err != nil || result == nil || string(result) == "null" {
+	report, err := retryRPC(callCtx, func() (protocol.DocumentDiagnosticReport, error) {
+		return s.rpc.Diagnostic(callCtx, &protocol.DocumentDiagnosticParams{TextDocument: wireDocument(uri)})
+	})
+	if err != nil {
 		return nil, false
 	}
-
-	var report FullDocumentDiagnosticReport
-	if err := json.Unmarshal(result, &report); err == nil && report.Kind != "" {
+	switch report := report.(type) {
+	case *protocol.RelatedFullDocumentDiagnosticReport:
 		return report.Items, true
+	case *protocol.RelatedUnchangedDocumentDiagnosticReport:
+		return s.publishedProtocolDiagnostics(uri)
 	}
+	return nil, false
+}
 
-	var diagnostics []Diagnostic
-	if err := json.Unmarshal(result, &diagnostics); err == nil {
-		return diagnostics, true
+func (s *Session) protocolDiagnostics(ctx context.Context, uri string) ([]protocol.Diagnostic, bool) {
+	if published, ok := s.publishedProtocolDiagnostics(uri); ok {
+		return published, true
 	}
-
+	if s.pullDiags {
+		return s.pullProtocolDiagnostics(ctx, uri)
+	}
 	return nil, false
 }
 
@@ -430,18 +455,7 @@ func (s *Session) pullDiagnostics(ctx context.Context, uri string) ([]Diagnostic
 // actually produced a result: known=false means the server neither published
 // nor answered a pull request, so "no diagnostics" cannot be concluded.
 func (s *Session) DiagnosticsState(ctx context.Context, uri string) ([]Diagnostic, bool) {
-	published, ok := s.publishedDiagnostics(uri)
-	if ok {
-		return published, true
-	}
-
-	if s.pullDiags {
-		if diags, ok := s.pullDiagnostics(ctx, uri); ok {
-			return diags, true
-		}
-	}
-
-	return nil, false
+	return s.protocolDiagnostics(ctx, uri)
 }
 
 func (s *Session) WaitForDiagnostics(ctx context.Context, uri string, timeout time.Duration) ([]Diagnostic, bool) {
@@ -464,24 +478,6 @@ func (s *Session) WaitForDiagnostics(ctx context.Context, uri string, timeout ti
 	}
 }
 
-func (s *Session) Diagnostics(ctx context.Context, uri string, filePath string) (string, error) {
-	diags, known := s.WaitForDiagnostics(ctx, uri, 3*time.Second)
-	if !known {
-		return "No diagnostics data: the language server did not report results for this file (it may still be analyzing or not support diagnostics). Do not treat this as a clean result.", nil
-	}
-	if len(diags) == 0 {
-		return "No diagnostics found", nil
-	}
-
-	return FormatDiagnostics(diags, filePath, s.workingDir), nil
-}
-
-type DefLocation struct {
-	Path   string
-	Line   int
-	Column int
-}
-
 const (
 	methodDefinition     = "textDocument/definition"
 	methodTypeDefinition = "textDocument/typeDefinition"
@@ -492,466 +488,233 @@ const (
 // locations runs any of the position-based navigation requests, all of which
 // answer with Location | Location[] | LocationLink[].
 func (s *Session) locations(ctx context.Context, method, uri string, line, column int) ([]Location, error) {
-	position := Position{Line: line, Character: column}
-	document := TextDocumentIdentifier{URI: uri}
-
-	var params any = TextDocumentPositionParams{TextDocument: document, Position: position}
-	if method == methodReferences {
-		params = ReferenceParams{
-			TextDocument: document,
-			Position:     position,
-			Context:      ReferenceContext{IncludeDeclaration: true},
-		}
+	documentPosition := protocol.TextDocumentPositionParams{
+		TextDocument: wireDocument(uri),
+		Position:     wirePosition(line, column),
 	}
-
-	var result json.RawMessage
-	if err := s.CallAndAwait(ctx, method, params, &result); err != nil {
-		return nil, err
-	}
-
-	return parseLocationResponse(result)
-}
-
-func (s *Session) defLocations(ctx context.Context, method, uri string, line, column int) ([]DefLocation, error) {
-	locations, err := s.locations(ctx, method, uri, line, column)
-	if err != nil {
-		return nil, err
-	}
-
-	out := make([]DefLocation, 0, len(locations))
-	for _, location := range locations {
-		out = append(out, DefLocation{
-			Path:   uriToPath(location.URI),
-			Line:   location.Range.Start.Line,
-			Column: location.Range.Start.Character,
+	switch method {
+	case methodDefinition:
+		result, err := retryRPC(ctx, func() (protocol.DefinitionResult, error) {
+			return s.rpc.Definition(ctx, &protocol.DefinitionParams{TextDocumentPositionParams: documentPosition})
 		})
+		return locationsFromDefinition(result), err
+	case methodTypeDefinition:
+		result, err := retryRPC(ctx, func() (protocol.DefinitionResult, error) {
+			return s.rpc.TypeDefinition(ctx, &protocol.TypeDefinitionParams{TextDocumentPositionParams: documentPosition})
+		})
+		return locationsFromDefinition(result), err
+	case methodImplementation:
+		result, err := retryRPC(ctx, func() (protocol.DefinitionResult, error) {
+			return s.rpc.Implementation(ctx, &protocol.ImplementationParams{TextDocumentPositionParams: documentPosition})
+		})
+		return locationsFromDefinition(result), err
+	case methodReferences:
+		result, err := retryRPC(ctx, func() ([]protocol.Location, error) {
+			return s.rpc.References(ctx, &protocol.ReferenceParams{
+				TextDocumentPositionParams: documentPosition,
+				Context:                    protocol.ReferenceContext{IncludeDeclaration: true},
+			})
+		})
+		return []Location(result), err
+	default:
+		return nil, fmt.Errorf("unsupported location method %q", method)
 	}
-	return out, nil
 }
 
-func (s *Session) DefinitionLocations(ctx context.Context, uri string, line, column int) ([]DefLocation, error) {
-	return s.defLocations(ctx, methodDefinition, uri, line, column)
+func (s *Session) DefinitionLocations(ctx context.Context, uri string, line, column int) ([]Location, error) {
+	return s.locations(ctx, methodDefinition, uri, line, column)
 }
 
-func (s *Session) TypeDefinitionLocations(ctx context.Context, uri string, line, column int) ([]DefLocation, error) {
-	return s.defLocations(ctx, methodTypeDefinition, uri, line, column)
+func (s *Session) TypeDefinitionLocations(ctx context.Context, uri string, line, column int) ([]Location, error) {
+	return s.locations(ctx, methodTypeDefinition, uri, line, column)
 }
 
-func (s *Session) ImplementationLocations(ctx context.Context, uri string, line, column int) ([]DefLocation, error) {
-	return s.defLocations(ctx, methodImplementation, uri, line, column)
+func (s *Session) ImplementationLocations(ctx context.Context, uri string, line, column int) ([]Location, error) {
+	return s.locations(ctx, methodImplementation, uri, line, column)
 }
 
-func (s *Session) ReferenceLocations(ctx context.Context, uri string, line, column int) ([]DefLocation, error) {
-	return s.defLocations(ctx, methodReferences, uri, line, column)
+func (s *Session) ReferenceLocations(ctx context.Context, uri string, line, column int) ([]Location, error) {
+	return s.locations(ctx, methodReferences, uri, line, column)
 }
 
-func (s *Session) Definition(ctx context.Context, uri string, line, column int) (string, error) {
-	locations, err := s.locations(ctx, methodDefinition, uri, line, column)
-	if err != nil {
-		return "", err
-	}
-	if len(locations) == 0 {
-		return "No definition found", nil
-	}
-
-	return formatDefinitions(locations, s.workingDir), nil
-}
-
-func (s *Session) References(ctx context.Context, uri string, line, column int) (string, error) {
-	return s.formatLocationRequest(ctx, methodReferences, "References", uri, line, column)
-}
-
-func (s *Session) Implementation(ctx context.Context, uri string, line, column int) (string, error) {
-	return s.formatLocationRequest(ctx, methodImplementation, "Implementations", uri, line, column)
-}
-
-func (s *Session) formatLocationRequest(ctx context.Context, method, title, uri string, line, column int) (string, error) {
-	locations, err := s.locations(ctx, method, uri, line, column)
-	if err != nil {
-		return "", err
-	}
-	if len(locations) == 0 {
-		return fmt.Sprintf("No %s found", strings.ToLower(title)), nil
-	}
-
-	return formatLocations(title, locations, s.workingDir), nil
-}
-
-func (s *Session) Hover(ctx context.Context, uri string, line, column int) (string, error) {
-	contents, err := s.HoverInformation(ctx, uri, line, column)
-	if err != nil {
-		return "", err
-	}
-	if contents == "" {
-		return "No hover information available", nil
-	}
-	return contents, nil
-}
-
-func (s *Session) HoverInformation(ctx context.Context, uri string, line, column int) (string, error) {
-	params := TextDocumentPositionParams{
-		TextDocument: TextDocumentIdentifier{URI: uri},
-		Position:     Position{Line: line, Character: column},
-	}
-
-	var result json.RawMessage
-	if err := s.CallAndAwait(ctx, "textDocument/hover", params, &result); err != nil {
-		return "", err
-	}
-
-	var hover HoverResponse
-	if err := unmarshalResult(result, &hover); err != nil {
-		return "", err
-	}
-
-	return hover.Contents.Value, nil
+func (s *Session) Hover(ctx context.Context, uri string, line, column int) (*Hover, error) {
+	return retryRPC(ctx, func() (*protocol.Hover, error) {
+		return s.rpc.Hover(ctx, &protocol.HoverParams{TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: wireDocument(uri),
+			Position:     wirePosition(line, column),
+		}})
+	})
 }
 
 func (s *Session) CompletionItems(ctx context.Context, uri string, line, column int, completionContext *CompletionContext) (CompletionList, error) {
-	params := CompletionParams{
-		TextDocument: TextDocumentIdentifier{URI: uri},
-		Position:     Position{Line: line, Character: column},
-		Context:      completionContext,
+	params := &protocol.CompletionParams{TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+		TextDocument: wireDocument(uri),
+		Position:     wirePosition(line, column),
+	}}
+	if completionContext != nil {
+		params.Context = *completionContext
 	}
-
-	var result json.RawMessage
-	if err := s.CallAndAwait(ctx, "textDocument/completion", params, &result); err != nil {
+	result, err := retryRPC(ctx, func() (protocol.CompletionResult, error) {
+		return s.rpc.Completion(ctx, params)
+	})
+	if err != nil {
 		return CompletionList{}, err
 	}
-	return parseCompletionResponse(result)
+	switch result := result.(type) {
+	case protocol.CompletionItemSlice:
+		return protocol.CompletionList{Items: []protocol.CompletionItem(result)}, nil
+	case *protocol.CompletionList:
+		return *result, nil
+	default:
+		return protocol.CompletionList{}, nil
+	}
 }
 
 func (s *Session) ResolveCompletionItem(ctx context.Context, item CompletionItem) (CompletionItem, error) {
-	var result CompletionItem
-	if err := s.CallAndAwait(ctx, "completionItem/resolve", item, &result); err != nil {
+	result, err := retryRPC(ctx, func() (*protocol.CompletionItem, error) {
+		return s.rpc.CompletionResolve(ctx, &item)
+	})
+	if err != nil {
 		return CompletionItem{}, err
 	}
-	return result, nil
+	if result == nil {
+		return item, nil
+	}
+	return *result, nil
 }
 
 func (s *Session) SignatureHelp(ctx context.Context, uri string, line, column int, signatureContext *SignatureHelpContext) (*SignatureHelp, error) {
-	params := SignatureHelpParams{
-		TextDocument: TextDocumentIdentifier{URI: uri},
-		Position:     Position{Line: line, Character: column},
-		Context:      signatureContext,
+	params := &protocol.SignatureHelpParams{TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+		TextDocument: wireDocument(uri),
+		Position:     wirePosition(line, column),
+	}}
+	if signatureContext != nil {
+		params.Context = *signatureContext
 	}
-
-	var result json.RawMessage
-	if err := s.CallAndAwait(ctx, "textDocument/signatureHelp", params, &result); err != nil {
-		return nil, err
-	}
-	if isNullResult(result) {
-		return nil, nil
-	}
-	var help SignatureHelp
-	if err := json.Unmarshal(result, &help); err != nil {
-		return nil, err
-	}
-	return &help, nil
-}
-
-func parseCompletionResponse(result json.RawMessage) (CompletionList, error) {
-	if isNullResult(result) {
-		return CompletionList{}, nil
-	}
-	var items []CompletionItem
-	if err := json.Unmarshal(result, &items); err == nil {
-		return CompletionList{Items: items}, nil
-	}
-	var list CompletionList
-	if err := json.Unmarshal(result, &list); err != nil {
-		return CompletionList{}, err
-	}
-	return list, nil
-}
-
-func (s *Session) DocumentSymbols(ctx context.Context, uri string, filePath string) (string, error) {
-	docSymbols, symInfos, err := s.DocumentSymbolItems(ctx, uri)
+	help, err := retryRPC(ctx, func() (*protocol.SignatureHelp, error) {
+		return s.rpc.SignatureHelp(ctx, params)
+	})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	if len(symInfos) > 0 {
-		return formatSymbolInformations(symInfos, s.workingDir), nil
-	}
-	if len(docSymbols) > 0 {
-		return formatDocumentSymbols(docSymbols, filePath, s.workingDir, 0), nil
-	}
-	return "No symbols found", nil
+	return help, nil
 }
 
-// DocumentSymbolItems returns the file's symbols in whichever of the two
-// documentSymbol response shapes the server chose: a DocumentSymbol tree or a
-// flat SymbolInformation list.
-func (s *Session) DocumentSymbolItems(ctx context.Context, uri string) ([]DocumentSymbol, []SymbolInformation, error) {
-	params := DocumentSymbolParams{
-		TextDocument: TextDocumentIdentifier{URI: uri},
-	}
+func (s *Session) DocumentSymbols(ctx context.Context, uri string) (DocumentSymbolResult, error) {
+	return retryRPC(ctx, func() (protocol.DocumentSymbolResult, error) {
+		return s.rpc.DocumentSymbol(ctx, &protocol.DocumentSymbolParams{TextDocument: wireDocument(uri)})
+	})
+}
 
-	var result json.RawMessage
-	if err := s.CallAndAwait(ctx, "textDocument/documentSymbol", params, &result); err != nil {
-		return nil, nil, err
-	}
-
-	if isNullResult(result) {
-		return nil, nil, nil
-	}
-
-	var symInfos []SymbolInformation
-	if err := json.Unmarshal(result, &symInfos); err == nil && len(symInfos) > 0 && symInfos[0].Location.URI != "" {
-		return nil, symInfos, nil
-	}
-
-	var docSymbols []DocumentSymbol
-	if err := json.Unmarshal(result, &docSymbols); err == nil && len(docSymbols) > 0 {
-		return docSymbols, nil, nil
-	}
-
-	return nil, nil, nil
+func (s *Session) WorkspaceSymbols(ctx context.Context, query string) (WorkspaceSymbolResult, error) {
+	return retryRPC(ctx, func() (protocol.WorkspaceSymbolResult, error) {
+		return s.rpc.Symbols(ctx, &protocol.WorkspaceSymbolParams{Query: query})
+	})
 }
 
 func (s *Session) DocumentHighlights(ctx context.Context, uri string, line, column int) ([]DocumentHighlight, error) {
-	params := DocumentHighlightParams{
-		TextDocument: TextDocumentIdentifier{URI: uri},
-		Position:     Position{Line: line, Character: column},
-	}
-	var result []DocumentHighlight
-	if err := s.CallAndAwait(ctx, "textDocument/documentHighlight", params, &result); err != nil {
+	result, err := retryRPC(ctx, func() ([]protocol.DocumentHighlight, error) {
+		return s.rpc.DocumentHighlight(ctx, &protocol.DocumentHighlightParams{TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: wireDocument(uri),
+			Position:     wirePosition(line, column),
+		}})
+	})
+	if err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
 func (s *Session) FoldingRanges(ctx context.Context, uri string) ([]FoldingRange, error) {
-	params := FoldingRangeParams{TextDocument: TextDocumentIdentifier{URI: uri}}
-	var result []FoldingRange
-	if err := s.CallAndAwait(ctx, "textDocument/foldingRange", params, &result); err != nil {
+	result, err := retryRPC(ctx, func() ([]protocol.FoldingRange, error) {
+		return s.rpc.FoldingRanges(ctx, &protocol.FoldingRangeParams{TextDocument: wireDocument(uri)})
+	})
+	if err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
-func (s *Session) SemanticTokens(ctx context.Context, uri string) ([]SemanticToken, error) {
-	var options SemanticTokensOptions
-	if err := json.Unmarshal(s.capabilities.SemanticTokensProvider, &options); err != nil || len(options.Legend.TokenTypes) == 0 {
-		return nil, nil
-	}
-	params := SemanticTokensParams{TextDocument: TextDocumentIdentifier{URI: uri}}
-	var result SemanticTokens
-	if err := s.CallAndAwait(ctx, "textDocument/semanticTokens/full", params, &result); err != nil {
-		return nil, err
-	}
-	if len(result.Data)%5 != 0 {
-		return nil, fmt.Errorf("invalid semantic token data length %d", len(result.Data))
-	}
-
-	tokens := make([]SemanticToken, 0, len(result.Data)/5)
-	line, character := 0, 0
-	for index := 0; index < len(result.Data); index += 5 {
-		lineDelta := int(result.Data[index])
-		characterDelta := int(result.Data[index+1])
-		line += lineDelta
-		if lineDelta == 0 {
-			character += characterDelta
-		} else {
-			character = characterDelta
-		}
-		typeIndex := int(result.Data[index+3])
-		if typeIndex < 0 || typeIndex >= len(options.Legend.TokenTypes) {
-			continue
-		}
-		modifierBits := result.Data[index+4]
-		modifiers := make([]string, 0)
-		for modifierIndex, modifier := range options.Legend.TokenModifiers {
-			if modifierIndex < 32 && modifierBits&(1<<modifierIndex) != 0 {
-				modifiers = append(modifiers, modifier)
-			}
-		}
-		tokens = append(tokens, SemanticToken{
-			Line:      line,
-			Character: character,
-			Length:    int(result.Data[index+2]),
-			Type:      options.Legend.TokenTypes[typeIndex],
-			Modifiers: modifiers,
-		})
-	}
-	return tokens, nil
+func (s *Session) SemanticTokens(ctx context.Context, uri string) (*SemanticTokens, error) {
+	return retryRPC(ctx, func() (*protocol.SemanticTokens, error) {
+		return s.rpc.SemanticTokensFull(ctx, &protocol.SemanticTokensParams{TextDocument: wireDocument(uri)})
+	})
 }
 
-type symbolCandidate struct {
-	name      string
-	qualified string
-	position  Position
-}
-
-// SymbolPosition locates a named symbol in a file, preferring the language
-// server's own symbol table and falling back to the first textual occurrence of
-// the name's last segment.
-func (s *Session) SymbolPosition(ctx context.Context, uri string, name string) (Position, bool) {
-	path := uriToPath(uri)
-
-	docSymbols, symInfos, err := s.DocumentSymbolItems(ctx, uri)
-	if err == nil {
-		var candidates []symbolCandidate
-		for _, sym := range symInfos {
-			candidates = append(candidates, symbolCandidate{name: sym.Name, qualified: sym.Name, position: sym.Location.Range.Start})
-		}
-		collectSymbolCandidates(docSymbols, "", &candidates)
-
-		if matched, ok := matchSymbol(candidates, name); ok {
-			return snapToIdentifier(path, matched), true
-		}
-	}
-
-	return PositionOfSymbol(path, symbolLeaf(name))
-}
-
-// snapToIdentifier adjusts a candidate position to the symbol's name token:
-// SymbolInformation ranges start at the declaration keyword, which servers
-// reject as "no identifier" for position-based requests.
-func snapToIdentifier(path string, matched symbolCandidate) Position {
-	pos := matched.position
-
-	lines, err := readLines(path)
-	if err != nil || pos.Line < 0 || pos.Line >= len(lines) {
-		return pos
-	}
-
-	text := lines[pos.Line]
-	leaf := symbolLeaf(matched.name)
-	if idx := findWordInLineFrom(text, leaf, runeColFromUTF16(text, pos.Character)); idx >= 0 {
-		pos.Character = utf16ColFromRune(text, idx)
-	}
-
-	return pos
-}
-
-func collectSymbolCandidates(symbols []DocumentSymbol, prefix string, out *[]symbolCandidate) {
-	for _, sym := range symbols {
-		qualified := sym.Name
-		if prefix != "" {
-			qualified = prefix + "." + sym.Name
-		}
-		*out = append(*out, symbolCandidate{name: sym.Name, qualified: qualified, position: sym.SelectionRange.Start})
-		collectSymbolCandidates(sym.Children, qualified, out)
-	}
-}
-
-func matchSymbol(candidates []symbolCandidate, query string) (symbolCandidate, bool) {
-	for _, c := range candidates {
-		if c.name == query || c.qualified == query {
-			return c, true
-		}
-	}
-
-	if strings.Contains(query, ".") {
-		normalized := normalizeSymbol(query)
-		for _, c := range candidates {
-			if strings.HasSuffix(normalizeSymbol(c.qualified), normalized) || strings.HasSuffix(normalizeSymbol(c.name), normalized) {
-				return c, true
-			}
-		}
-	}
-
-	leaf := symbolLeaf(query)
-	for _, c := range candidates {
-		if symbolLeaf(c.name) == leaf {
-			return c, true
-		}
-	}
-
-	return symbolCandidate{}, false
-}
-
-func symbolLeaf(name string) string {
-	name = strings.TrimSuffix(name, "()")
-	if idx := strings.LastIndex(name, "."); idx >= 0 {
-		name = name[idx+1:]
-	}
-	return strings.Trim(name, "*()")
-}
-
-func normalizeSymbol(name string) string {
-	return strings.Map(func(r rune) rune {
-		switch r {
-		case '(', ')', '*', ' ':
-			return -1
-		}
-		return r
-	}, name)
-}
-
-func (s *Session) CallHierarchy(ctx context.Context, uri string, line, column int, incoming bool) (string, error) {
-	items, err := s.prepareCallHierarchyItems(ctx, uri, line, column)
-	if err != nil {
-		return "", err
-	}
-
-	if len(items) == 0 {
-		return "No call hierarchy item found at this position", nil
-	}
-
-	var out string
-	if incoming {
-		out, err = s.incomingCalls(ctx, items[0])
-	} else {
-		out, err = s.outgoingCalls(ctx, items[0])
-	}
-	if err != nil {
-		return "", err
-	}
-
-	if len(items) > 1 {
-		out += fmt.Sprintf("(%d call hierarchy items at this position; showing calls for %s)\n", len(items), items[0].Name)
-	}
-
-	return out, nil
-}
-
-func (s *Session) prepareCallHierarchyItems(ctx context.Context, uri string, line, column int) ([]CallHierarchyItem, error) {
-	params := TextDocumentPositionParams{
-		TextDocument: TextDocumentIdentifier{URI: uri},
-		Position:     Position{Line: line, Character: column},
-	}
-
-	var prepareResult json.RawMessage
-	if err := s.CallAndAwait(ctx, "textDocument/prepareCallHierarchy", params, &prepareResult); err != nil {
-		return nil, err
-	}
-
-	return parseCallHierarchyItems(prepareResult)
+func (s *Session) PrepareCallHierarchy(ctx context.Context, uri string, line, column int) ([]CallHierarchyItem, error) {
+	return retryRPC(ctx, func() ([]protocol.CallHierarchyItem, error) {
+		return s.rpc.PrepareCallHierarchy(ctx, &protocol.CallHierarchyPrepareParams{TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: wireDocument(uri),
+			Position:     wirePosition(line, column),
+		}})
+	})
 }
 
 func (s *Session) initialize(ctx context.Context) error {
-	params := InitializeParams{
-		ProcessID: os.Getpid(),
-		RootURI:   s.rootURI,
-		Capabilities: ClientCapabilities{
-			TextDocument: TextDocumentClientCapabilities{
-				Synchronization: TextDocumentSyncClientCapabilities{DidSave: true},
-				Completion: CompletionClientCapabilities{CompletionItem: CompletionItemClientCapabilities{
-					SnippetSupport:      true,
-					DocumentationFormat: []string{"markdown", "plaintext"},
-				}},
-				SignatureHelp: SignatureHelpClientCapabilities{SignatureInformation: SignatureInformationClientCapabilities{
-					DocumentationFormat:    []string{"markdown", "plaintext"},
-					ParameterInformation:   ParameterInformationCapabilities{LabelOffsetSupport: true},
-					ActiveParameterSupport: true,
-				}},
-				Hover:             HoverClientCapabilities{ContentFormat: []string{"plaintext", "markdown"}},
-				Definition:        DefinitionClientCapabilities{},
-				TypeDefinition:    TypeDefinitionClientCapabilities{},
-				References:        ReferencesClientCapabilities{},
-				Implementation:    ImplementationClientCapabilities{},
-				DocumentSymbol:    DocumentSymbolClientCapabilities{},
-				DocumentHighlight: DocumentHighlightClientCapabilities{},
-				FoldingRange:      FoldingRangeClientCapabilities{},
-				Rename:            RenameClientCapabilities{PrepareSupport: true},
-				CodeAction:        CodeActionClientCapabilities{},
-				Formatting:        FormattingClientCapabilities{},
-				RangeFormatting:   FormattingClientCapabilities{},
-				OnTypeFormatting:  FormattingClientCapabilities{},
-				SemanticTokens: SemanticTokensClientCapabilities{
-					Requests: SemanticTokensRequests{Full: true, Range: true},
+	processID := int32(os.Getpid())
+	rootURI := lspuri.MustParse(s.rootURI)
+	params := &protocol.InitializeParams{
+		ProcessID: &processID,
+		RootURI:   &rootURI,
+		Capabilities: protocol.ClientCapabilities{
+			Workspace: &protocol.WorkspaceClientCapabilities{
+				WorkspaceEdit: &protocol.WorkspaceEditClientCapabilities{
+					DocumentChanges:         pointer(true),
+					FailureHandling:         protocol.FailureHandlingKindTextOnlyTransactional,
+					NormalizesLineEndings:   pointer(false),
+					ChangeAnnotationSupport: &protocol.ChangeAnnotationsSupportOptions{},
+				},
+			},
+			TextDocument: &protocol.TextDocumentClientCapabilities{
+				Synchronization: &protocol.TextDocumentSyncClientCapabilities{DidSave: pointer(true)},
+				Completion: &protocol.CompletionClientCapabilities{
+					ContextSupport: pointer(true),
+					CompletionItem: &protocol.ClientCompletionItemOptions{
+						SnippetSupport:          pointer(true),
+						CommitCharactersSupport: pointer(true),
+						PreselectSupport:        pointer(true),
+						InsertReplaceSupport:    pointer(true),
+						DocumentationFormat:     []protocol.MarkupKind{protocol.MarkupKindMarkdown, protocol.MarkupKindPlainText},
+						ResolveSupport: protocol.ClientCompletionItemResolveOptions{
+							Properties: []string{"documentation", "detail", "additionalTextEdits", "command"},
+						},
+					},
+				},
+				SignatureHelp: &protocol.SignatureHelpClientCapabilities{
+					ContextSupport: pointer(true),
+					SignatureInformation: &protocol.ClientSignatureInformationOptions{
+						DocumentationFormat:    []protocol.MarkupKind{protocol.MarkupKindMarkdown, protocol.MarkupKindPlainText},
+						ParameterInformation:   &protocol.ClientSignatureParameterInformationOptions{LabelOffsetSupport: pointer(true)},
+						ActiveParameterSupport: pointer(true),
+					},
+				},
+				Hover:             &protocol.HoverClientCapabilities{ContentFormat: []protocol.MarkupKind{protocol.MarkupKindMarkdown, protocol.MarkupKindPlainText}},
+				Definition:        &protocol.DefinitionClientCapabilities{LinkSupport: pointer(true)},
+				TypeDefinition:    &protocol.TypeDefinitionClientCapabilities{},
+				References:        &protocol.ReferenceClientCapabilities{},
+				Implementation:    &protocol.ImplementationClientCapabilities{},
+				DocumentSymbol:    &protocol.DocumentSymbolClientCapabilities{HierarchicalDocumentSymbolSupport: pointer(true)},
+				DocumentHighlight: &protocol.DocumentHighlightClientCapabilities{},
+				FoldingRange:      &protocol.FoldingRangeClientCapabilities{},
+				Rename:            &protocol.RenameClientCapabilities{PrepareSupport: pointer(true), HonorsChangeAnnotations: pointer(true)},
+				CodeAction: &protocol.CodeActionClientCapabilities{
+					IsPreferredSupport:      pointer(true),
+					DisabledSupport:         pointer(true),
+					DataSupport:             pointer(true),
+					HonorsChangeAnnotations: pointer(true),
+					CodeActionLiteralSupport: protocol.ClientCodeActionLiteralOptions{
+						CodeActionKind: protocol.ClientCodeActionKindOptions{},
+					},
+					ResolveSupport: protocol.ClientCodeActionResolveOptions{Properties: []string{"edit", "command"}},
+				},
+				Formatting:       &protocol.DocumentFormattingClientCapabilities{},
+				RangeFormatting:  &protocol.DocumentRangeFormattingClientCapabilities{},
+				OnTypeFormatting: &protocol.DocumentOnTypeFormattingClientCapabilities{},
+				SemanticTokens: protocol.SemanticTokensClientCapabilities{
+					Requests: protocol.ClientSemanticTokensRequestOptions{
+						Full:  protocol.Boolean(true),
+						Range: protocol.Boolean(true),
+					},
 					TokenTypes: []string{
 						"namespace", "type", "class", "enum", "interface", "struct",
 						"typeParameter", "parameter", "variable", "property", "enumMember",
@@ -962,126 +725,46 @@ func (s *Session) initialize(ctx context.Context) error {
 						"declaration", "definition", "readonly", "static", "deprecated",
 						"abstract", "async", "modification", "documentation", "defaultLibrary",
 					},
-					Formats: []string{"relative"},
+					Formats: []protocol.TokenFormat{protocol.TokenFormatRelative},
 				},
-				InlayHint:     InlayHintClientCapabilities{},
-				Diagnostic:    DiagnosticClientCapabilities{},
-				CallHierarchy: CallHierarchyClientCapabilities{},
+				InlayHint:     &protocol.InlayHintClientCapabilities{},
+				Diagnostic:    &protocol.DiagnosticClientCapabilities{},
+				CallHierarchy: &protocol.CallHierarchyClientCapabilities{},
 			},
-			Window: WindowClientCapabilities{WorkDoneProgress: true},
+			Window: &protocol.WindowClientCapabilities{WorkDoneProgress: pointer(true)},
 		},
 	}
 
-	var result InitializeResult
-	if _, err := s.conn.Call(ctx, "initialize", params, &result); err != nil {
+	result, err := s.rpc.Initialize(ctx, params)
+	if err != nil {
 		return err
 	}
-	s.pullDiags = diagnosticProviderEnabled(result.Capabilities.DiagnosticProvider)
+	s.pullDiags = result.Capabilities.DiagnosticProvider != nil
 	s.capabilities = result.Capabilities
 
-	if err := s.conn.Notify(ctx, "initialized", struct{}{}); err != nil {
+	if err := s.rpc.Initialized(ctx, &protocol.InitializedParams{}); err != nil {
 		return fmt.Errorf("initialized notification: %w", err)
 	}
 
 	return nil
 }
 
-func (s *Session) Capabilities() ServerCapabilities {
+func pointer[T any](value T) *T { return &value }
+
+func (s *Session) Capabilities() protocol.ServerCapabilities {
 	return s.capabilities
 }
 
-func diagnosticProviderEnabled(provider json.RawMessage) bool {
-	value := strings.TrimSpace(string(provider))
-	return value != "" && value != "null" && value != "false"
+func (s *Session) IncomingCalls(ctx context.Context, item CallHierarchyItem) ([]CallHierarchyIncomingCall, error) {
+	return retryRPC(ctx, func() ([]protocol.CallHierarchyIncomingCall, error) {
+		return s.rpc.IncomingCalls(ctx, &protocol.CallHierarchyIncomingCallsParams{Item: item})
+	})
 }
 
-func (s *Session) incomingCalls(ctx context.Context, item CallHierarchyItem) (string, error) {
-	var result json.RawMessage
-	if err := s.CallAndAwait(ctx, "callHierarchy/incomingCalls", CallHierarchyIncomingCallsParams{Item: item}, &result); err != nil {
-		return "", err
-	}
-
-	var calls []CallHierarchyIncomingCall
-	if err := unmarshalResult(result, &calls); err != nil {
-		return "", err
-	}
-
-	if len(calls) == 0 {
-		return "No incoming calls found", nil
-	}
-
-	return formatIncomingCalls(calls, s.workingDir), nil
-}
-
-func (s *Session) outgoingCalls(ctx context.Context, item CallHierarchyItem) (string, error) {
-	var result json.RawMessage
-	if err := s.CallAndAwait(ctx, "callHierarchy/outgoingCalls", CallHierarchyOutgoingCallsParams{Item: item}, &result); err != nil {
-		return "", err
-	}
-
-	var calls []CallHierarchyOutgoingCall
-	if err := unmarshalResult(result, &calls); err != nil {
-		return "", err
-	}
-
-	if len(calls) == 0 {
-		return "No outgoing calls found", nil
-	}
-
-	return formatOutgoingCalls(calls, s.workingDir), nil
-}
-
-// parseLocationResponse decodes the Location | Location[] | LocationLink[]
-// union shared by definition, references and implementation. An empty array is
-// a valid "nothing found" answer, not a malformed response.
-func parseLocationResponse(data json.RawMessage) ([]Location, error) {
-	if isNullResult(data) {
-		return nil, nil
-	}
-
-	var single Location
-	if err := json.Unmarshal(data, &single); err == nil {
-		if single.URI == "" {
-			return nil, nil
-		}
-		return []Location{single}, nil
-	}
-
-	var locations []Location
-	if err := json.Unmarshal(data, &locations); err == nil && (len(locations) == 0 || locations[0].URI != "") {
-		return locations, nil
-	}
-
-	var links []LocationLink
-	if err := json.Unmarshal(data, &links); err == nil {
-		locations = make([]Location, 0, len(links))
-		for _, link := range links {
-			locations = append(locations, Location{URI: link.TargetURI, Range: link.TargetSelectionRange})
-		}
-		return locations, nil
-	}
-
-	return nil, fmt.Errorf("unexpected location response format")
-}
-
-func parseCallHierarchyItems(data json.RawMessage) ([]CallHierarchyItem, error) {
-	var items []CallHierarchyItem
-	if err := unmarshalResult(data, &items); err != nil {
-		return nil, err
-	}
-
-	return items, nil
-}
-
-func isNullResult(data json.RawMessage) bool {
-	return len(data) == 0 || string(data) == "null"
-}
-
-func unmarshalResult(data json.RawMessage, v any) error {
-	if isNullResult(data) {
-		return nil
-	}
-	return json.Unmarshal(data, v)
+func (s *Session) OutgoingCalls(ctx context.Context, item CallHierarchyItem) ([]CallHierarchyOutgoingCall, error) {
+	return retryRPC(ctx, func() ([]protocol.CallHierarchyOutgoingCall, error) {
+		return s.rpc.OutgoingCalls(ctx, &protocol.CallHierarchyOutgoingCallsParams{Item: item})
+	})
 }
 
 type cmdStream struct {

@@ -13,6 +13,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/adrianliechti/wingman-agent/pkg/fileuri"
+	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 )
 
 func TestExternalGoIntelliSense(t *testing.T) {
@@ -129,7 +132,7 @@ func TestExternalDefinitionNavigation(t *testing.T) {
 	web := httptest.NewServer(app)
 	defer web.Close()
 
-	var locations []lspLocationItem
+	var locations []lsp.Location
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		response, err := http.Post(web.URL+"/api/lsp/definition", "application/json",
@@ -154,11 +157,15 @@ func TestExternalDefinitionNavigation(t *testing.T) {
 
 	loc := locations[0]
 	t.Logf("location: %+v", loc)
-	if !loc.External {
+	path, ok := fileuri.Path(string(loc.URI))
+	if !ok {
+		t.Fatalf("expected file URI, got %+v", loc)
+	}
+	if rel, err := filepath.Rel(workDir, path); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		t.Fatalf("expected external location, got %+v", loc)
 	}
 
-	response, err := http.Get(web.URL + "/api/lsp/file?path=" + url.QueryEscape(loc.Path))
+	response, err := http.Get(web.URL + "/api/lsp/file?path=" + url.QueryEscape(filepath.ToSlash(path)))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -274,6 +274,13 @@ func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(
+		filepath.Join(workDir, "go.mod"),
+		[]byte("module example.com/wingman-e2e\n\ngo 1.24\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Mkdir(filepath.Join(workDir, "nested"), 0o755); err != nil {
 		t.Fatal(err)
 	}
