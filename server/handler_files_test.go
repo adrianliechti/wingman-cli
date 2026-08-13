@@ -57,6 +57,86 @@ func TestFileCreateAndConflictAwareWrite(t *testing.T) {
 		t.Fatalf("duplicate create status = %d, want %d", res.StatusCode, http.StatusConflict)
 	}
 
+	res = postJSON("/api/files", map[string]string{
+		"path":    "created-with-content.txt",
+		"content": "draft contents\n",
+	})
+	if res.StatusCode != http.StatusOK {
+		res.Body.Close()
+		t.Fatalf("create with content status = %d, want %d", res.StatusCode, http.StatusOK)
+	}
+	var created FileContent
+	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
+		res.Body.Close()
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if created.Path != "created-with-content.txt" || created.Content != "draft contents\n" || created.Revision == "" {
+		t.Fatalf("create with content response = %#v", created)
+	}
+	if data, err := os.ReadFile(filepath.Join(workDir, "created-with-content.txt")); err != nil || string(data) != "draft contents\n" {
+		t.Fatalf("created file with content = %q, %v", data, err)
+	}
+
+	res = postJSON("/api/files", map[string]any{
+		"path":      "created-folder",
+		"directory": true,
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("create folder status = %d, want %d", res.StatusCode, http.StatusNoContent)
+	}
+	if info, err := os.Stat(filepath.Join(workDir, "created-folder")); err != nil || !info.IsDir() {
+		t.Fatalf("created folder info = %#v, %v", info, err)
+	}
+	res = postJSON("/api/files", map[string]string{"path": "created-folder/nested.txt"})
+	res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("nested create status = %d, want %d", res.StatusCode, http.StatusNoContent)
+	}
+	res = postJSON("/api/files", map[string]any{
+		"path":      "created-folder",
+		"directory": true,
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("duplicate folder status = %d, want %d", res.StatusCode, http.StatusConflict)
+	}
+
+	res, err = http.Get(web.URL + "/api/files/path?path=created-folder%2Fnested.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths struct {
+		Path     string `json:"path"`
+		Relative string `json:"relative"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&paths); err != nil {
+		res.Body.Close()
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if paths.Path != filepath.Join(workDir, "created-folder", "nested.txt") || paths.Relative != "created-folder/nested.txt" {
+		t.Fatalf("file paths = %#v", paths)
+	}
+
+	res = postJSON("/api/files/rename", map[string]string{
+		"from": "missing.txt",
+		"to":   "moved.txt",
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing rename status = %d, want %d", res.StatusCode, http.StatusNotFound)
+	}
+	res = postJSON("/api/files/rename", map[string]string{
+		"from": "created-folder",
+		"to":   "created-folder/inside",
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("recursive rename status = %d, want %d", res.StatusCode, http.StatusBadRequest)
+	}
+
 	res, err = http.Get(web.URL + "/api/files/read?path=editable.txt")
 	if err != nil {
 		t.Fatal(err)

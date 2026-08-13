@@ -310,7 +310,9 @@ func (s *Server) handleFileWrite(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFileCreate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Path string `json:"path"`
+		Path      string  `json:"path"`
+		Content   *string `json:"content"`
+		Directory bool    `json:"directory"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
@@ -322,16 +324,49 @@ func (s *Server) handleFileCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid path", http.StatusBadRequest)
 		return
 	}
-	file, err := s.workspace.Root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
-		if errors.Is(err, fs.ErrExist) {
-			http.Error(w, "file already exists", http.StatusConflict)
+	if body.Directory {
+		if body.Content != nil {
+			http.Error(w, "a directory cannot have file content", http.StatusBadRequest)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		if err := s.workspace.Root.Mkdir(rel, 0o755); err != nil {
+			switch {
+			case errors.Is(err, fs.ErrExist):
+				http.Error(w, "path already exists", http.StatusConflict)
+			case errors.Is(err, fs.ErrNotExist):
+				http.Error(w, "parent directory not found", http.StatusNotFound)
+			default:
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+			return
+		}
+		s.flushFiles()
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+
+	file, err := s.workspace.Root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		switch {
+		case errors.Is(err, fs.ErrExist):
+			http.Error(w, "file already exists", http.StatusConflict)
+		case errors.Is(err, fs.ErrNotExist):
+			http.Error(w, "parent directory not found", http.StatusNotFound)
+		default:
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+	if body.Content != nil {
+		if _, err := io.WriteString(file, *body.Content); err != nil {
+			_ = file.Close()
+			_ = s.workspace.Root.Remove(rel)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 	if err := file.Close(); err != nil {
+		_ = s.workspace.Root.Remove(rel)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -340,7 +375,20 @@ func (s *Server) handleFileCreate(w http.ResponseWriter, r *http.Request) {
 	if s.workspace.HasLSP() {
 		s.broadcast(Frame{Type: EvtDiagnosticsChanged})
 	}
-	w.WriteHeader(http.StatusNoContent)
+	if body.Content == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	filePath := filepath.ToSlash(rel)
+	content := []byte(*body.Content)
+	writeJSON(w, FileContent{
+		Path:     filePath,
+		Content:  *body.Content,
+		Language: languageForPath(filePath),
+		Revision: fileRevision(content),
+		Size:     int64(len(content)),
+	})
 }
 
 func (s *Server) workspaceRel(p string) (string, bool) {
@@ -362,14 +410,8 @@ func (s *Server) workspaceDirRel(p string) (string, bool) {
 }
 
 func (s *Server) resolveExistingRegularFile(w http.ResponseWriter, p string) (string, bool) {
-	rel, ok := s.workspaceRel(p)
+	rel, info, ok := s.resolveExistingPath(w, p)
 	if !ok {
-		http.Error(w, "invalid path", http.StatusBadRequest)
-		return "", false
-	}
-	info, err := s.workspace.Root.Lstat(rel)
-	if err != nil {
-		http.Error(w, "file not found", http.StatusNotFound)
 		return "", false
 	}
 	if info.IsDir() {
@@ -381,6 +423,63 @@ func (s *Server) resolveExistingRegularFile(w http.ResponseWriter, p string) (st
 		return "", false
 	}
 	return rel, true
+}
+
+func (s *Server) resolveExistingPath(w http.ResponseWriter, p string) (string, os.FileInfo, bool) {
+	rel, ok := s.workspaceRel(p)
+	if !ok {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return "", nil, false
+	}
+	info, err := s.workspace.Root.Lstat(rel)
+	if err != nil {
+		http.Error(w, "path not found", http.StatusNotFound)
+		return "", nil, false
+	}
+	return rel, info, true
+}
+
+func (s *Server) handleFilePath(w http.ResponseWriter, r *http.Request) {
+	rel, _, ok := s.resolveExistingPath(w, r.URL.Query().Get("path"))
+	if !ok {
+		return
+	}
+	absolute, err := filepath.Abs(filepath.Join(s.workspace.RootPath, rel))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, struct {
+		Path     string `json:"path"`
+		Relative string `json:"relative"`
+	}{
+		Path:     absolute,
+		Relative: filepath.ToSlash(rel),
+	})
+}
+
+func (s *Server) handleFileReveal(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	rel, info, ok := s.resolveExistingPath(w, body.Path)
+	if !ok {
+		return
+	}
+	absolute, err := filepath.Abs(filepath.Join(s.workspace.RootPath, rel))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := revealPath(absolute, info.IsDir()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleFileDelete(w http.ResponseWriter, r *http.Request) {
@@ -419,9 +518,21 @@ func (s *Server) handleFileRename(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid to path", http.StatusBadRequest)
 		return
 	}
+	fromInfo, err := s.workspace.Root.Lstat(fromRel)
+	if err != nil {
+		http.Error(w, "source not found", http.StatusNotFound)
+		return
+	}
+	if fromInfo.IsDir() && strings.HasPrefix(filepath.ToSlash(toRel), filepath.ToSlash(fromRel)+"/") {
+		http.Error(w, "cannot move a folder into itself", http.StatusBadRequest)
+		return
+	}
 
 	if _, err := s.workspace.Root.Lstat(toRel); err == nil {
 		http.Error(w, "destination already exists", http.StatusConflict)
+		return
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -459,6 +570,9 @@ func (s *Server) handleFileCopy(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := root.Lstat(toRel); err == nil {
 		http.Error(w, "destination already exists", http.StatusConflict)
+		return
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 

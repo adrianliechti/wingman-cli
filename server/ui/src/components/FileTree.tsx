@@ -2,17 +2,21 @@ import {
 	ChevronDown,
 	ChevronRight,
 	ClipboardCopy,
+	ClipboardPaste,
 	Copy,
-	Download,
 	File,
+	FilePlus,
 	FileText,
 	Folder,
 	FolderOpen,
+	FolderPlus,
+	FolderSearch,
 	Pencil,
-	Plus,
+	Scissors,
 	Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createWorkspaceFile } from "../api/files";
 import type { FileEntry, ServerMessage } from "../types/protocol";
 import { getDeviconClass } from "../utils/fileIcons";
 import { Dialog, dialogButtonClass, useToast } from "./ui/Feedback";
@@ -20,6 +24,8 @@ import { FloatingMenu } from "./ui/Floating";
 
 interface Props {
 	onFileSelect: (path: string) => void;
+	onFileMove?: (from: string, to: string) => void;
+	platform?: string;
 	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 }
 
@@ -35,14 +41,33 @@ interface MenuState {
 	node: TreeNode | null;
 }
 
-export function FileTree({ onFileSelect, subscribe }: Props) {
+interface CreateState {
+	parent: string;
+	directory: boolean;
+}
+
+interface FileClipboard {
+	path: string;
+	directory: boolean;
+	operation: "copy" | "cut";
+}
+
+export function FileTree({
+	onFileSelect,
+	onFileMove,
+	platform,
+	subscribe,
+}: Props) {
 	const toast = useToast();
 	const [nodes, setNodes] = useState<TreeNode[]>([]);
 	const [menu, setMenu] = useState<MenuState | null>(null);
 	const [renaming, setRenaming] = useState<string | null>(null);
 	const [renameValue, setRenameValue] = useState("");
-	const [creatingIn, setCreatingIn] = useState<string | null>(null);
+	const [creating, setCreating] = useState<CreateState | null>(null);
 	const [createValue, setCreateValue] = useState("");
+	const [fileClipboard, setFileClipboard] = useState<FileClipboard | null>(
+		null,
+	);
 	const [focusedPath, setFocusedPath] = useState<string | null>(null);
 	const [deleteTarget, setDeleteTarget] = useState<TreeNode | null>(null);
 	const nodesRef = useRef(nodes);
@@ -111,9 +136,6 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 
 	useEffect(() => {
 		void refresh();
-		return () => {
-			refreshRef.current++;
-		};
 	}, [refresh]);
 
 	useEffect(() => {
@@ -184,7 +206,15 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ from: node.path, to }),
 			});
-			if (res.ok) return;
+			if (res.ok) {
+				setFileClipboard((current) =>
+					current
+						? { ...current, path: movePath(current.path, node.path, to) }
+						: current,
+				);
+				onFileMove?.(node.path, to);
+				return;
+			}
 			toast({
 				title: "Rename failed",
 				description: await res.text(),
@@ -201,13 +231,9 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 		}
 	};
 
-	const beginCreate = async (node: TreeNode | null) => {
+	const beginCreate = async (node: TreeNode | null, directory: boolean) => {
 		setMenu(null);
-		const parent = node?.is_dir
-			? node.path
-			: node?.path.includes("/")
-				? node.path.slice(0, node.path.lastIndexOf("/"))
-				: "";
+		const parent = containingDirectory(node);
 
 		try {
 			if (node?.is_dir && !node.expanded) {
@@ -225,11 +251,11 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 		requestAnimationFrame(() => {
 			setCreateValue("");
 			createCanceledRef.current = false;
-			setCreatingIn(parent);
+			setCreating({ parent, directory });
 		});
 	};
 
-	const commitCreate = async (parent: string) => {
+	const commitCreate = async (target: CreateState) => {
 		if (createSubmittingRef.current) return;
 		if (createCanceledRef.current) {
 			createCanceledRef.current = false;
@@ -237,7 +263,7 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 		}
 		const name = createValue.trim();
 		if (!name) {
-			setCreatingIn(null);
+			setCreating(null);
 			return;
 		}
 		if (
@@ -247,35 +273,23 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 			name.includes("\\")
 		) {
 			toast({
-				title: "Invalid file name",
-				description: "Enter a file name without path separators.",
+				title: `Invalid ${target.directory ? "folder" : "file"} name`,
+				description: "Enter a name without path separators.",
 				tone: "error",
 			});
 			return;
 		}
 
-		const filePath = parent ? `${parent}/${name}` : name;
+		const filePath = target.parent ? `${target.parent}/${name}` : name;
 		createSubmittingRef.current = true;
 		try {
-			const res = await fetch("/api/files", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ path: filePath }),
-			});
-			if (!res.ok) {
-				toast({
-					title: "Could not create file",
-					description: (await res.text()).trim() || "File creation failed.",
-					tone: "error",
-				});
-				return;
-			}
-			setCreatingIn(null);
+			await createWorkspaceFile(filePath, { directory: target.directory });
+			setCreating(null);
 			await refresh();
-			onFileSelect(filePath);
+			if (!target.directory) onFileSelect(filePath);
 		} catch (error) {
 			toast({
-				title: "Could not create file",
+				title: `Could not create ${target.directory ? "folder" : "file"}`,
 				description: error instanceof Error ? error.message : String(error),
 				tone: "error",
 			});
@@ -304,6 +318,9 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 			});
 			return;
 		}
+		setFileClipboard((current) =>
+			current && isSameOrChild(current.path, node.path) ? null : current,
+		);
 		setDeleteTarget(null);
 	};
 
@@ -342,37 +359,124 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 		});
 	};
 
-	const handleCopy = async (node: TreeNode) => {
+	const handleCopyPath = async (node: TreeNode, relative: boolean) => {
 		setMenu(null);
 		try {
-			await navigator.clipboard.write([
-				new ClipboardItem({
-					"text/plain": fetch(
-						`/api/files/read?path=${encodeURIComponent(node.path)}`,
-					).then(async (res) => {
-						if (!res.ok) throw new Error(await res.text());
-						const data = (await res.json()) as { content: string };
-						return new Blob([data.content], { type: "text/plain" });
-					}),
-				}),
-			]);
-		} catch (e) {
+			let value = node.path;
+			if (!relative) {
+				const res = await fetch(
+					`/api/files/path?path=${encodeURIComponent(node.path)}`,
+				);
+				if (!res.ok) throw new Error(await res.text());
+				value = ((await res.json()) as { path: string }).path;
+			}
+			await navigator.clipboard.writeText(value);
+		} catch (error) {
 			toast({
-				title: "Copy failed",
-				description: e instanceof Error ? e.message : String(e),
+				title: "Copy path failed",
+				description: error instanceof Error ? error.message : String(error),
 				tone: "error",
 			});
 		}
 	};
 
-	const handleDownload = (node: TreeNode) => {
+	const handleReveal = async (node: TreeNode) => {
 		setMenu(null);
-		const a = document.createElement("a");
-		a.href = `/api/files/download?path=${encodeURIComponent(node.path)}`;
-		a.download = node.name;
-		document.body.appendChild(a);
-		a.click();
-		document.body.removeChild(a);
+		try {
+			const res = await fetch("/api/files/reveal", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ path: node.path }),
+			});
+			if (!res.ok) throw new Error(await res.text());
+		} catch (error) {
+			toast({
+				title: "Could not reveal path",
+				description: error instanceof Error ? error.message : String(error),
+				tone: "error",
+			});
+		}
+	};
+
+	const handleCut = (node: TreeNode) => {
+		setMenu(null);
+		setFileClipboard({
+			path: node.path,
+			directory: node.is_dir,
+			operation: "cut",
+		});
+	};
+
+	const handleCopy = (node: TreeNode) => {
+		setMenu(null);
+		setFileClipboard({
+			path: node.path,
+			directory: node.is_dir,
+			operation: "copy",
+		});
+	};
+
+	const handlePaste = async (node: TreeNode | null) => {
+		setMenu(null);
+		const clipboard = fileClipboard;
+		if (!clipboard) return;
+
+		const parent = containingDirectory(node);
+		const sourcePath = clipboard.path;
+		const sourceName = baseName(sourcePath);
+		const initialTo = parent ? `${parent}/${sourceName}` : sourceName;
+		if (clipboard.operation === "cut" && initialTo === sourcePath) {
+			setFileClipboard(null);
+			return;
+		}
+		if (clipboard.directory && isSameOrChild(parent, sourcePath)) {
+			toast({
+				title: "Paste failed",
+				description: `A folder cannot be ${clipboard.operation === "cut" ? "moved" : "copied"} into itself.`,
+				tone: "error",
+			});
+			return;
+		}
+
+		try {
+			let destination = initialTo;
+			for (let attempt = 0; attempt <= 50; attempt++) {
+				if (clipboard.operation === "copy" && attempt > 0) {
+					const name = copiedName(sourceName, clipboard.directory, attempt);
+					destination = parent ? `${parent}/${name}` : name;
+				}
+				const res = await fetch(
+					clipboard.operation === "cut"
+						? "/api/files/rename"
+						: "/api/files/copy",
+					{
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ from: sourcePath, to: destination }),
+					},
+				);
+				if (res.ok) break;
+				if (
+					clipboard.operation === "copy" &&
+					res.status === 409 &&
+					attempt < 50
+				) {
+					continue;
+				}
+				throw new Error((await res.text()).trim() || "File operation failed.");
+			}
+			if (clipboard.operation === "cut") {
+				onFileMove?.(sourcePath, destination);
+				setFileClipboard(null);
+			}
+			await refresh();
+		} catch (error) {
+			toast({
+				title: "Paste failed",
+				description: error instanceof Error ? error.message : String(error),
+				tone: "error",
+			});
+		}
 	};
 
 	const focusTreePath = (path: string) => {
@@ -429,7 +533,7 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 		}
 	};
 
-	const renderCreateInput = (parent: string, depth: number) => (
+	const renderCreateInput = (target: CreateState, depth: number) => (
 		<div
 			className="flex items-center gap-1 py-[3px] pr-2 text-[12px] leading-snug"
 			style={{ paddingLeft: 8 + depth * 12 }}
@@ -438,21 +542,21 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 		>
 			<span className="w-3.5 shrink-0" />
 			<span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-fg-dim">
-				<File size={13} />
+				{target.directory ? <Folder size={14} /> : <File size={13} />}
 			</span>
 			<input
 				autoFocus
 				value={createValue}
 				onChange={(event) => setCreateValue(event.target.value)}
 				onKeyDown={(event) => {
-					if (event.key === "Enter") void commitCreate(parent);
+					if (event.key === "Enter") void commitCreate(target);
 					else if (event.key === "Escape") {
 						createCanceledRef.current = true;
-						setCreatingIn(null);
+						setCreating(null);
 					}
 				}}
-				onBlur={() => void commitCreate(parent)}
-				aria-label={`New file name${parent ? ` in ${parent}` : " in workspace"}`}
+				onBlur={() => void commitCreate(target)}
+				aria-label={`New ${target.directory ? "folder" : "file"} name${target.parent ? ` in ${target.parent}` : " in workspace"}`}
 				className="ml-0.5 min-w-0 flex-1 rounded border border-border-strong bg-bg-surface px-1 py-0 text-[12px] text-fg outline-none"
 			/>
 		</div>
@@ -464,7 +568,7 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 			return (
 				<div key={node.path}>
 					<div
-						className="flex items-center gap-1 py-[3px] pr-2 cursor-pointer text-fg-muted whitespace-nowrap text-[12px] leading-snug select-none hover:bg-bg-hover hover:text-fg transition-colors"
+						className={`flex items-center gap-1 py-[3px] pr-2 cursor-pointer text-fg-muted whitespace-nowrap text-[12px] leading-snug select-none hover:bg-bg-hover hover:text-fg transition-colors ${fileClipboard?.operation === "cut" && fileClipboard.path === node.path ? "opacity-50" : ""}`}
 						style={{ paddingLeft: 8 + depth * 12 }}
 						draggable={!node.is_dir && !isRenaming}
 						onDragStart={(e) => {
@@ -553,8 +657,8 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 					</div>
 					{node.expanded && node.children && (
 						<div role="group">
-							{creatingIn === node.path &&
-								renderCreateInput(node.path, depth + 1)}
+							{creating?.parent === node.path &&
+								renderCreateInput(creating, depth + 1)}
 							{renderNodes(node.children, depth + 1)}
 						</div>
 					)}
@@ -574,7 +678,7 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 				setMenu({ x: event.clientX, y: event.clientY, node: null });
 			}}
 		>
-			{creatingIn === "" && renderCreateInput("", 0)}
+			{creating?.parent === "" && renderCreateInput(creating, 0)}
 			{renderNodes(nodes, 0)}
 			{menu && (
 				<ContextMenu
@@ -584,11 +688,20 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 						setMenu(null);
 						if (menu.node) onFileSelect(menu.node.path);
 					}}
-					onNew={() => void beginCreate(menu.node)}
+					onNewFile={() => void beginCreate(menu.node, false)}
+					onNewFolder={() => void beginCreate(menu.node, true)}
 					onRename={() => menu.node && beginRename(menu.node)}
 					onDuplicate={() => menu.node && handleDuplicate(menu.node)}
+					onCopyPath={() => menu.node && void handleCopyPath(menu.node, false)}
+					onCopyRelativePath={() =>
+						menu.node && void handleCopyPath(menu.node, true)
+					}
+					onReveal={() => menu.node && void handleReveal(menu.node)}
+					platform={platform}
+					onCut={() => menu.node && handleCut(menu.node)}
 					onCopy={() => menu.node && handleCopy(menu.node)}
-					onDownload={() => menu.node && handleDownload(menu.node)}
+					onPaste={() => void handlePaste(menu.node)}
+					canPaste={fileClipboard !== null}
 					onDelete={() => menu.node && requestDelete(menu.node)}
 				/>
 			)}
@@ -656,15 +769,58 @@ function updateNode(
 	});
 }
 
+function containingDirectory(node: TreeNode | null): string {
+	if (node?.is_dir) return node.path;
+	if (!node) return "";
+	const slash = node.path.lastIndexOf("/");
+	return slash < 0 ? "" : node.path.slice(0, slash);
+}
+
+function baseName(path: string): string {
+	return path.slice(path.lastIndexOf("/") + 1);
+}
+
+function isSameOrChild(path: string, parent: string): boolean {
+	return path === parent || path.startsWith(`${parent}/`);
+}
+
+function movePath(path: string, from: string, to: string): string {
+	return isSameOrChild(path, from) ? `${to}${path.slice(from.length)}` : path;
+}
+
+function copiedName(name: string, directory: boolean, attempt: number): string {
+	const dot = directory ? -1 : name.lastIndexOf(".");
+	const stem = dot > 0 ? name.slice(0, dot) : name;
+	const extension = dot > 0 ? name.slice(dot) : "";
+	const suffix = attempt === 1 ? " copy" : ` copy ${attempt}`;
+	return `${stem}${suffix}${extension}`;
+}
+
+function revealLabel(platform?: string): string {
+	const value = (platform || navigator.platform).toLowerCase();
+	if (value.includes("darwin") || value.includes("mac")) {
+		return "Reveal in Finder";
+	}
+	if (value.includes("win")) return "Reveal in Explorer";
+	return "Reveal in File Manager";
+}
+
 interface ContextMenuProps {
 	menu: MenuState;
 	onClose: () => void;
 	onOpen: () => void;
-	onNew: () => void;
+	onNewFile: () => void;
+	onNewFolder: () => void;
 	onRename: () => void;
 	onDuplicate: () => void;
+	onCopyPath: () => void;
+	onCopyRelativePath: () => void;
+	onReveal: () => void;
+	platform?: string;
+	onCut: () => void;
 	onCopy: () => void;
-	onDownload: () => void;
+	onPaste: () => void;
+	canPaste: boolean;
 	onDelete: () => void;
 }
 
@@ -672,11 +828,18 @@ function ContextMenu({
 	menu,
 	onClose,
 	onOpen,
-	onNew,
+	onNewFile,
+	onNewFolder,
 	onRename,
 	onDuplicate,
+	onCopyPath,
+	onCopyRelativePath,
+	onReveal,
+	platform,
+	onCut,
 	onCopy,
-	onDownload,
+	onPaste,
+	canPaste,
 	onDelete,
 }: ContextMenuProps) {
 	const isDir = menu.node?.is_dir ?? true;
@@ -691,21 +854,33 @@ function ContextMenu({
 			{menu.node && !isDir && (
 				<MenuItem icon={<FileText size={12} />} label="Open" onClick={onOpen} />
 			)}
-			{menu.node && !isDir && (
+			<MenuItem
+				icon={<FilePlus size={12} />}
+				label="New File…"
+				onClick={onNewFile}
+			/>
+			<MenuItem
+				icon={<FolderPlus size={12} />}
+				label="New Folder…"
+				onClick={onNewFolder}
+			/>
+			<div role="separator" className="my-1 border-t border-border-subtle" />
+			{menu.node && (
+				<MenuItem icon={<Scissors size={12} />} label="Cut" onClick={onCut} />
+			)}
+			{menu.node && (
 				<MenuItem
 					icon={<ClipboardCopy size={12} />}
 					label="Copy"
 					onClick={onCopy}
 				/>
 			)}
-			<MenuItem icon={<Plus size={12} />} label="New…" onClick={onNew} />
-			{menu.node && (
-				<MenuItem
-					icon={<Pencil size={12} />}
-					label="Rename"
-					onClick={onRename}
-				/>
-			)}
+			<MenuItem
+				icon={<ClipboardPaste size={12} />}
+				label="Paste"
+				onClick={onPaste}
+				disabled={!canPaste}
+			/>
 			{menu.node && (
 				<MenuItem
 					icon={<Copy size={12} />}
@@ -713,11 +888,32 @@ function ContextMenu({
 					onClick={onDuplicate}
 				/>
 			)}
-			{menu.node && !isDir && (
+			{menu.node && (
 				<MenuItem
-					icon={<Download size={12} />}
-					label="Download"
-					onClick={onDownload}
+					icon={<Copy size={12} />}
+					label="Copy Path"
+					onClick={onCopyPath}
+				/>
+			)}
+			{menu.node && (
+				<MenuItem
+					icon={<Copy size={12} />}
+					label="Copy Relative Path"
+					onClick={onCopyRelativePath}
+				/>
+			)}
+			{menu.node && (
+				<MenuItem
+					icon={<FolderSearch size={12} />}
+					label={revealLabel(platform)}
+					onClick={onReveal}
+				/>
+			)}
+			{menu.node && (
+				<MenuItem
+					icon={<Pencil size={12} />}
+					label="Rename"
+					onClick={onRename}
 				/>
 			)}
 			{menu.node && (
@@ -743,17 +939,20 @@ function MenuItem({
 	label,
 	onClick,
 	danger,
+	disabled,
 }: {
 	icon: React.ReactNode;
 	label: string;
 	onClick: () => void;
 	danger?: boolean;
+	disabled?: boolean;
 }) {
 	return (
 		<button
 			type="button"
 			role="menuitem"
-			className={`w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-bg-hover transition-colors ${danger ? "text-danger" : "text-fg-muted hover:text-fg"}`}
+			disabled={disabled}
+			className={`w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors disabled:cursor-default disabled:opacity-40 ${disabled ? "" : "hover:bg-bg-hover"} ${danger ? "text-danger" : "text-fg-muted enabled:hover:text-fg"}`}
 			onClick={onClick}
 		>
 			<span className="w-3.5 flex items-center justify-center shrink-0">

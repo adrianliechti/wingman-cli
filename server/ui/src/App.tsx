@@ -35,6 +35,7 @@ import {
 	Separator,
 	usePanelRef,
 } from "react-resizable-panels";
+import { createWorkspaceFile } from "./api/files";
 import { ChatPanel } from "./components/ChatPanel";
 import {
 	CommandPalette,
@@ -94,6 +95,17 @@ type RightTab = "changes" | "files" | "problems" | "agents";
 type CloseRequest = { kind: "file" | "terminal"; tab: CenterTab } | null;
 type SaveConflictRequest = { path: string; closeTabId?: string } | null;
 type SessionDeleteRequest = { id: string; title: string } | null;
+type FilePathRequest =
+	| { kind: "new"; path: string; submitting: boolean; error?: string }
+	| {
+			kind: "save-as";
+			path: string;
+			sourcePath: string;
+			sourceTabId: string;
+			content: string;
+			submitting: boolean;
+			error?: string;
+	  };
 const LEFT_PANEL_DEFAULT_SIZE = 240;
 const LEFT_PANEL_MIN_SIZE = 200;
 const LEFT_PANEL_MAX_SIZE = 360;
@@ -126,6 +138,30 @@ function draftChatTab(): CenterTab {
 	};
 }
 
+function moveWorkspacePath(path: string, from: string, to: string): string {
+	return path === from || path.startsWith(`${from}/`)
+		? `${to}${path.slice(from.length)}`
+		: path;
+}
+
+function moveWorkspaceTab(tab: CenterTab, from: string, to: string): CenterTab {
+	if (!tab.path) return tab;
+	const path = moveWorkspacePath(tab.path, from, to);
+	if (path === tab.path) return tab;
+	const name = path.split("/").pop() || path;
+	return {
+		...tab,
+		id:
+			tab.type === "file"
+				? `file:${path}`
+				: tab.type === "diff"
+					? `diff:${tab.diffLayer ?? "combined"}:${path}`
+					: tab.id,
+		path,
+		label: tab.diffLayer ? `${name} · ${tab.diffLayer}` : name,
+	};
+}
+
 export default function App() {
 	const {
 		connected,
@@ -150,11 +186,13 @@ export default function App() {
 		documents,
 		dirtyPaths,
 		openDocument,
+		openCreatedDocument,
 		updateDraft,
 		saveDocument,
 		discardDocument,
 		reloadDocument,
 		closeDocument,
+		moveDocuments,
 	} = useOpenDocuments(subscribe);
 	const capabilities = useCapabilities(subscribe);
 	const showChanges = !!(capabilities?.diffs || capabilities?.git_init);
@@ -204,6 +242,10 @@ export default function App() {
 	const [saveConflict, setSaveConflict] = useState<SaveConflictRequest>(null);
 	const [sessionDelete, setSessionDelete] =
 		useState<SessionDeleteRequest>(null);
+	const [filePathRequest, setFilePathRequest] =
+		useState<FilePathRequest | null>(null);
+	const [openFolderRequest, setOpenFolderRequest] = useState(false);
+	const [workspaceSwitching, setWorkspaceSwitching] = useState(false);
 
 	const createTerminal = useCallback(
 		async (shell?: string) => {
@@ -334,6 +376,19 @@ export default function App() {
 		activeTab.type === "file" && activeTab.path
 			? documents[activeTab.path]
 			: undefined;
+	const canSaveAs = !!(
+		activeTab.type === "file" &&
+		activeTab.path &&
+		activeDocument?.file &&
+		!activeDocument.external &&
+		!activeDocument.file.binary &&
+		!activeDocument.saving
+	);
+	const canSave = !!(
+		canSaveAs &&
+		activeTab.path &&
+		dirtyPaths.has(activeTab.path)
+	);
 	const activePreviewKind =
 		activeTab.type === "file" ? textPreviewKind(activeTab.path ?? "") : null;
 	const activeFileView =
@@ -481,6 +536,31 @@ export default function App() {
 		[tabs, openDocument],
 	);
 
+	const handleFileMove = useCallback(
+		(from: string, to: string) => {
+			moveDocuments(from, to);
+			const movedTabs = new Map(
+				tabs.map((tab) => [tab.id, moveWorkspaceTab(tab, from, to)]),
+			);
+			setTabs((current) =>
+				current.map((tab) => moveWorkspaceTab(tab, from, to)),
+			);
+			setActiveTabId((current) => movedTabs.get(current)?.id ?? current);
+			setFileViews((current) => {
+				let changed = false;
+				const next = { ...current };
+				for (const [oldID, tab] of movedTabs) {
+					if (tab.id === oldID || !(oldID in next)) continue;
+					next[tab.id] = next[oldID];
+					delete next[oldID];
+					changed = true;
+				}
+				return changed ? next : current;
+			});
+		},
+		[moveDocuments, tabs],
+	);
+
 	const openTask = useCallback(
 		(task: TaskEntry) => {
 			if (!sessionId) return;
@@ -614,6 +694,174 @@ export default function App() {
 		},
 		[closeTabNow, saveDocument, toast],
 	);
+
+	const submitFilePath = useCallback(async () => {
+		const request = filePathRequest;
+		if (!request || request.submitting) return;
+		const path = request.path.trim().replaceAll("\\", "/");
+		if (!path) {
+			setFilePathRequest({
+				...request,
+				error: "Enter a workspace-relative path.",
+			});
+			return;
+		}
+
+		if (request.kind === "save-as" && path === request.sourcePath) {
+			const result = await saveFile(request.sourcePath);
+			if (result?.ok || result?.conflict) setFilePathRequest(null);
+			return;
+		}
+
+		setFilePathRequest({
+			...request,
+			path,
+			submitting: true,
+			error: undefined,
+		});
+		try {
+			const content = request.kind === "save-as" ? request.content : "";
+			const created = await createWorkspaceFile(path, { content });
+			if (!created) throw new Error("The created file response was empty.");
+			openCreatedDocument(created);
+
+			if (request.kind === "new") {
+				openFile(created.path);
+			} else {
+				const nextId = `file:${created.path}`;
+				closeDocument(request.sourcePath);
+				setTabs((current) =>
+					current.map((tab) =>
+						tab.id === request.sourceTabId
+							? {
+									...tab,
+									id: nextId,
+									label: created.path.split("/").pop() || created.path,
+									path: created.path,
+									external: undefined,
+								}
+							: tab,
+					),
+				);
+				setFileViews((current) => {
+					if (!(request.sourceTabId in current)) return current;
+					const next = { ...current, [nextId]: current[request.sourceTabId] };
+					delete next[request.sourceTabId];
+					return next;
+				});
+				setActiveTabId(nextId);
+			}
+			setFilePathRequest(null);
+		} catch (error) {
+			setFilePathRequest((current) =>
+				current
+					? {
+							...current,
+							submitting: false,
+							error: error instanceof Error ? error.message : String(error),
+						}
+					: current,
+			);
+		}
+	}, [closeDocument, filePathRequest, openCreatedDocument, openFile, saveFile]);
+
+	const openFolder = useCallback(async () => {
+		if (workspaceSwitching) return;
+		setWorkspaceSwitching(true);
+		try {
+			const selected = await fetch("/app/folder", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: "{}",
+			});
+			if (!selected.ok) {
+				throw new Error(
+					(await selected.text()).trim() || "Could not select a folder.",
+				);
+			}
+			const { path } = (await selected.json()) as { path?: string };
+			if (!path) {
+				setWorkspaceSwitching(false);
+				return;
+			}
+
+			const opened = await fetch("/app/workspaces/open", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ path, replace: true }),
+			});
+			if (!opened.ok) {
+				throw new Error(
+					(await opened.text()).trim() || "Could not open the folder.",
+				);
+			}
+			window.location.replace("/");
+		} catch (error) {
+			setWorkspaceSwitching(false);
+			toast({
+				title: "Could not open folder",
+				description: error instanceof Error ? error.message : String(error),
+				tone: "error",
+			});
+		}
+	}, [toast, workspaceSwitching]);
+
+	useEffect(() => {
+		for (const [command, enabled] of [
+			["new-file", !workspaceSwitching],
+			["open-folder", !workspaceSwitching],
+			["save", canSave],
+			["save-as", canSaveAs],
+		] as const) {
+			window.dispatchEvent(
+				new CustomEvent("shell:command-state", {
+					detail: { command, enabled },
+				}),
+			);
+		}
+	}, [canSave, canSaveAs, workspaceSwitching]);
+
+	useEffect(() => {
+		const onShellCommand = (event: Event) => {
+			const command = (event as CustomEvent<unknown>).detail;
+			switch (command) {
+				case "new-file":
+					setFilePathRequest({ kind: "new", path: "", submitting: false });
+					break;
+				case "open-folder":
+					if (dirtyPaths.size > 0) setOpenFolderRequest(true);
+					else void openFolder();
+					break;
+				case "save":
+					if (canSave && activeTab.path) {
+						void saveFile(activeTab.path);
+					}
+					break;
+				case "save-as":
+					if (canSaveAs && activeTab.path && activeDocument) {
+						setFilePathRequest({
+							kind: "save-as",
+							path: activeTab.path,
+							sourcePath: activeTab.path,
+							sourceTabId: activeTab.id,
+							content: activeDocument.draft,
+							submitting: false,
+						});
+					}
+					break;
+			}
+		};
+		window.addEventListener("shell:command", onShellCommand);
+		return () => window.removeEventListener("shell:command", onShellCommand);
+	}, [
+		activeDocument,
+		activeTab,
+		canSave,
+		canSaveAs,
+		dirtyPaths.size,
+		openFolder,
+		saveFile,
+	]);
 
 	const requestCloseTab = useCallback(
 		async (id: string) => {
@@ -1177,7 +1425,12 @@ export default function App() {
 					<ProblemsPanel onOpenFile={openFile} subscribe={subscribe} />
 				) : (
 					<div className="flex h-full flex-col overflow-hidden">
-						<FileTree onFileSelect={openFile} subscribe={subscribe} />
+						<FileTree
+							onFileSelect={openFile}
+							onFileMove={handleFileMove}
+							platform={capabilities?.platform}
+							subscribe={subscribe}
+						/>
 					</div>
 				)}
 			</div>
@@ -1671,7 +1924,7 @@ export default function App() {
 									/>
 								) : activeTab.path && documents[activeTab.path] ? (
 									<FileTab
-										key={activeTab.id}
+										key={`${activeTab.id}:${activeTab.path}`}
 										document={documents[activeTab.path]}
 										line={activeTab.line}
 										column={activeTab.column}
@@ -1739,6 +1992,100 @@ export default function App() {
 					onOpenFile={openFile}
 				/>
 			)}
+
+			<Dialog
+				open={filePathRequest !== null}
+				title={filePathRequest?.kind === "save-as" ? "Save As" : "New File"}
+				description="Enter a path relative to the current workspace."
+				onClose={() => {
+					if (!filePathRequest?.submitting) setFilePathRequest(null);
+				}}
+				initialFocus="first"
+			>
+				<form
+					className="contents"
+					onSubmit={(event) => {
+						event.preventDefault();
+						void submitFilePath();
+					}}
+				>
+					<label className="flex w-full flex-col gap-1.5 text-[11px] text-fg-muted">
+						<span>File path</span>
+						<input
+							value={filePathRequest?.path ?? ""}
+							onChange={(event) =>
+								setFilePathRequest((current) =>
+									current
+										? {
+												...current,
+												path: event.target.value,
+												error: undefined,
+											}
+										: current,
+								)
+							}
+							onFocus={(event) => {
+								if (filePathRequest?.kind === "save-as") {
+									event.currentTarget.select();
+								}
+							}}
+							disabled={filePathRequest?.submitting}
+							autoComplete="off"
+							spellCheck={false}
+							className="h-9 rounded-md border border-border-strong bg-bg px-2.5 text-[12px] text-fg outline-none focus:border-focus"
+						/>
+					</label>
+					{filePathRequest?.error && (
+						<div className="w-full text-[11px] text-danger" role="alert">
+							{filePathRequest.error}
+						</div>
+					)}
+					<button
+						type="button"
+						className={dialogButtonClass}
+						disabled={filePathRequest?.submitting}
+						onClick={() => setFilePathRequest(null)}
+					>
+						Cancel
+					</button>
+					<button
+						type="submit"
+						className={`${dialogButtonClass} bg-fg text-bg hover:bg-fg-muted hover:text-bg`}
+						disabled={filePathRequest?.submitting}
+					>
+						{filePathRequest?.submitting
+							? "Saving..."
+							: filePathRequest?.kind === "save-as"
+								? "Save"
+								: "Create"}
+					</button>
+				</form>
+			</Dialog>
+
+			<Dialog
+				open={openFolderRequest}
+				title="Open another folder?"
+				description={`${dirtyPaths.size} unsaved ${dirtyPaths.size === 1 ? "file" : "files"} will be discarded.`}
+				onClose={() => setOpenFolderRequest(false)}
+			>
+				<button
+					type="button"
+					className={dialogButtonClass}
+					onClick={() => setOpenFolderRequest(false)}
+				>
+					Cancel
+				</button>
+				<button
+					type="button"
+					className={`${dialogButtonClass} border-danger/40 text-danger hover:bg-danger/10`}
+					onClick={() => {
+						setOpenFolderRequest(false);
+						void openFolder();
+					}}
+				>
+					Discard and Open
+				</button>
+			</Dialog>
 
 			<Dialog
 				open={closeRequest?.kind === "file"}

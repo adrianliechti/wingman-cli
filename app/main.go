@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,8 +39,6 @@ func main() {
 		s.Apply()
 	}
 
-	prepareCustomTitlebar()
-
 	app := &App{}
 	app.launcher = app.newLauncher()
 
@@ -52,6 +51,20 @@ func main() {
 
 		MinWidth:  640,
 		MinHeight: 400,
+
+		TitleBar: shell.TitleBarOptions{
+			Overlay:         true,
+			ControlsOffsetX: 4,
+			ControlsOffsetY: 4,
+		},
+		FileMenu: []shell.MenuItem{
+			{Title: "New File...", Command: "new-file", Key: "n", Disabled: true},
+			{Title: "Open Folder...", Command: "open-folder", Key: "o"},
+			{Separator: true},
+			{Title: "Save", Command: "save", Key: "s", Disabled: true},
+			{Title: "Save As...", Command: "save-as", Key: "s", Shift: true, Disabled: true},
+			{Separator: true},
+		},
 
 		Debug: os.Getenv("WINGMAN_DEBUG") != "",
 	})
@@ -69,6 +82,13 @@ func main() {
 // and staying behind its session cookie keeps the workspace server
 // unreachable for other local processes.
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// App-level commands stay available after a workspace is mounted so the
+	// native menu can select and switch folders without restarting the shell.
+	if strings.HasPrefix(r.URL.Path, "/app/") {
+		a.launcher.ServeHTTP(w, r)
+		return
+	}
+
 	a.mu.Lock()
 	srv := a.server
 	a.mu.Unlock()
@@ -172,21 +192,29 @@ func (a *App) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleOpenWorkspace(w http.ResponseWriter, r *http.Request) {
-	path, ok := readPath(w, r)
-
-	if !ok {
+	var request struct {
+		Path    string `json:"path"`
+		Replace bool   `json:"replace"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil && !errors.Is(err, io.EOF) {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if request.Path == "" {
+		http.Error(w, "path is required", http.StatusBadRequest)
 		return
 	}
 
 	a.mu.Lock()
-	if a.server != nil {
+	current := a.server
+	if current != nil && !request.Replace {
 		a.mu.Unlock()
 		http.Error(w, "workspace already open", http.StatusConflict)
 		return
 	}
 	a.mu.Unlock()
 
-	srv, err := server.New(context.Background(), path, nil)
+	srv, err := server.New(context.Background(), request.Path, nil)
 
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -194,21 +222,25 @@ func (a *App) handleOpenWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.mu.Lock()
-	if a.server != nil {
+	if a.server != current {
 		a.mu.Unlock()
 		srv.Close()
-		http.Error(w, "workspace already open", http.StatusConflict)
+		http.Error(w, "workspace changed while opening", http.StatusConflict)
 		return
 	}
 	a.server = srv
 	a.mu.Unlock()
 
 	if s, err := loadSettings(); err == nil {
-		s.AddWorkspace(path)
+		s.AddWorkspace(request.Path)
 		_ = saveSettings(s)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+
+	if current != nil {
+		go current.Close()
+	}
 }
 
 func (a *App) handleSelectFolder(w http.ResponseWriter, r *http.Request) {

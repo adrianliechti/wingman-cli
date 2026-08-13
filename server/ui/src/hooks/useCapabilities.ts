@@ -8,6 +8,7 @@ interface Capabilities {
 	diffs: boolean;
 	tasks?: boolean;
 	terminal?: boolean;
+	platform?: string;
 	notice?: string;
 }
 

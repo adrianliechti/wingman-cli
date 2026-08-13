@@ -333,27 +333,45 @@ test("shows file actions above panel clipping", async ({ page }) => {
 
 	const menu = page.getByRole("menu", { name: "Actions for editable.txt" });
 	await expect(menu).toBeVisible();
-	await expect(menu.getByRole("menuitem", { name: "New…" })).toBeVisible();
+	await expect(menu.getByRole("menuitem", { name: "New File…" })).toBeVisible();
+	await expect(
+		menu.getByRole("menuitem", { name: "New Folder…" }),
+	).toBeVisible();
+	await expect(menu.getByRole("menuitem", { name: "Cut" })).toBeVisible();
+	await expect(
+		menu.getByRole("menuitem", { name: "Copy", exact: true }),
+	).toBeVisible();
+	await expect(menu.getByRole("menuitem", { name: "Paste" })).toBeDisabled();
+	await expect(menu.getByRole("menuitem", { name: "Copy Path" })).toBeVisible();
+	await expect(
+		menu.getByRole("menuitem", { name: "Copy Relative Path" }),
+	).toBeVisible();
+	await expect(menu.getByRole("menuitem", { name: /Reveal in/ })).toBeVisible();
+	await expect(
+		menu.getByRole("menuitem", { name: "Copy Contents" }),
+	).toHaveCount(0);
+	await expect(menu.getByRole("menuitem", { name: "Download" })).toHaveCount(0);
 	await expect(menu.getByRole("menuitem", { name: "Rename" })).toBeVisible();
 	await expect(menu.getByRole("menuitem", { name: "Duplicate" })).toBeVisible();
 	await expect(menu.getByRole("menuitem", { name: "Delete" })).toBeVisible();
 	await expectFloatingInViewport(page, menu);
 	await expect(menu.getByRole("menuitem", { name: "Open" })).toBeFocused();
 	await page.keyboard.press("ArrowDown");
-	await expect(menu.getByRole("menuitem", { name: "Copy" })).toBeFocused();
+	await expect(menu.getByRole("menuitem", { name: "New File…" })).toBeFocused();
 });
 
 test("creates, saves, refreshes, and protects files changed on disk", async ({
 	page,
 	request,
 }) => {
+	await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
 	await composer(page);
 	await page
 		.getByRole("treeitem", { name: /editable\.txt/ })
 		.click({ button: "right" });
 	await page
 		.getByRole("menu", { name: "Actions for editable.txt" })
-		.getByRole("menuitem", { name: "New…" })
+		.getByRole("menuitem", { name: "New File…" })
 		.click();
 	const nameInput = page.getByRole("textbox", {
 		name: "New file name in workspace",
@@ -419,7 +437,7 @@ test("creates, saves, refreshes, and protects files changed on disk", async ({
 		.click({ button: "right" });
 	await page
 		.getByRole("menu", { name: "Actions for nested" })
-		.getByRole("menuitem", { name: "New…" })
+		.getByRole("menuitem", { name: "New File…" })
 		.click();
 	const nestedName = page.getByRole("textbox", {
 		name: "New file name in nested",
@@ -431,6 +449,97 @@ test("creates, saves, refreshes, and protects files changed on disk", async ({
 		"/api/files/read?path=nested%2Fchild.go",
 	);
 	expect(nestedRead.ok()).toBeTruthy();
+
+	await page
+		.getByRole("treeitem", { name: /editable\.txt/ })
+		.click({ button: "right" });
+	await page
+		.getByRole("menu", { name: "Actions for editable.txt" })
+		.getByRole("menuitem", { name: "New Folder…" })
+		.click();
+	const folderName = page.getByRole("textbox", {
+		name: "New folder name in workspace",
+	});
+	await folderName.fill("web-folder");
+	await folderName.press("Enter");
+	const folder = page.getByRole("treeitem", { name: "web-folder" });
+	await expect(folder).toBeVisible();
+
+	await page
+		.getByRole("treeitem", { name: /web-created\.go/ })
+		.click({ button: "right" });
+	await page
+		.getByRole("menu", { name: "Actions for web-created.go" })
+		.getByRole("menuitem", { name: "Cut" })
+		.click();
+	await folder.click({ button: "right" });
+	await page
+		.getByRole("menu", { name: "Actions for web-folder" })
+		.getByRole("menuitem", { name: "Paste" })
+		.click();
+
+	await folder.click();
+	const movedFile = page.getByRole("treeitem", { name: /web-created\.go/ });
+	await expect(movedFile).toBeVisible();
+	await movedFile.click({ button: "right" });
+	let fileMenu = page.getByRole("menu", { name: "Actions for web-created.go" });
+	await fileMenu.getByRole("menuitem", { name: "Copy Relative Path" }).click();
+	await expect
+		.poll(() => page.evaluate(() => navigator.clipboard.readText()))
+		.toBe("web-folder/web-created.go");
+
+	await movedFile.click({ button: "right" });
+	fileMenu = page.getByRole("menu", { name: "Actions for web-created.go" });
+	await fileMenu.getByRole("menuitem", { name: "Copy Path" }).click();
+	await expect
+		.poll(() => page.evaluate(() => navigator.clipboard.readText()))
+		.toBe(workspacePath("web-folder/web-created.go"));
+
+	await movedFile.click();
+	await expect(
+		page.getByRole("tab", { name: /web-created\.go/ }),
+	).toHaveAttribute("aria-selected", "true");
+	await editor.click();
+	await page.keyboard.press("Control+End");
+	await page.keyboard.type("\nfunc savedAfterMove() {}\n");
+	await expect(save).toBeEnabled();
+	await save.click();
+	await expect(save).toHaveAttribute("title", "No changes to save");
+	const movedRead = await request.get(
+		"/api/files/read?path=web-folder%2Fweb-created.go",
+	);
+	expect(movedRead.ok()).toBeTruthy();
+	expect(((await movedRead.json()) as { content: string }).content).toContain(
+		"savedAfterMove",
+	);
+	const oldRead = await request.get("/api/files/read?path=web-created.go");
+	expect(oldRead.status()).toBe(404);
+
+	const originalFile = page
+		.getByRole("treeitem", { name: /editable\.txt/ })
+		.first();
+	await originalFile.click({ button: "right" });
+	await page
+		.getByRole("menu", { name: "Actions for editable.txt" })
+		.getByRole("menuitem", { name: "Copy", exact: true })
+		.click();
+	await folder.click({ button: "right" });
+	await page
+		.getByRole("menu", { name: "Actions for web-folder" })
+		.getByRole("menuitem", { name: "Paste" })
+		.click();
+
+	const originalCopySource = await request.get(
+		"/api/files/read?path=editable.txt",
+	);
+	const copiedFile = await request.get(
+		"/api/files/read?path=web-folder%2Feditable.txt",
+	);
+	expect(originalCopySource.ok()).toBeTruthy();
+	expect(copiedFile.ok()).toBeTruthy();
+	expect(((await copiedFile.json()) as { content: string }).content).toBe(
+		((await originalCopySource.json()) as { content: string }).content,
+	);
 });
 
 test("uses Monaco's live buffer for automatic completion and parameter hints", async ({
@@ -599,9 +708,7 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 	await expect(tabStrip).toHaveCSS("overscroll-behavior-x", "contain");
 	expect(
 		await toolbar.evaluate((element) =>
-			getComputedStyle(element)
-				.getPropertyValue("--wingman-window-drag")
-				.trim(),
+			getComputedStyle(element).getPropertyValue("--shell-window-drag").trim(),
 		),
 	).toBe("drag");
 	expect(
@@ -609,7 +716,7 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 			.getByLabel(/sessions/)
 			.evaluate((element) =>
 				getComputedStyle(element)
-					.getPropertyValue("--wingman-window-drag")
+					.getPropertyValue("--shell-window-drag")
 					.trim(),
 			),
 	).toBe("no-drag");
@@ -618,7 +725,7 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 			.locator("[data-titlebar-left-panel]")
 			.evaluate((element) =>
 				getComputedStyle(element)
-					.getPropertyValue("--wingman-window-drag")
+					.getPropertyValue("--shell-window-drag")
 					.trim(),
 			),
 	).toBe("drag");
@@ -1118,6 +1225,62 @@ test("renders markdown files in a browser preview", async ({ page }) => {
 
 	await page.getByTitle("Show code editor").click();
 	await expect(page.locator(".monaco-editor")).toBeVisible();
+});
+
+test("routes native File menu commands through shared file handling", async ({
+	page,
+	request,
+}) => {
+	await composer(page);
+	await page.evaluate(() =>
+		window.dispatchEvent(
+			new CustomEvent("shell:command", { detail: "new-file" }),
+		),
+	);
+	const newFile = page.getByRole("dialog", { name: "New File" });
+	await expect(newFile).toBeVisible();
+	await newFile
+		.getByRole("textbox", { name: "File path" })
+		.fill("menu-created.txt");
+	await newFile.getByRole("button", { name: "Create" }).click();
+
+	await expect(
+		page.getByRole("tab", { name: "menu-created.txt" }),
+	).toBeVisible();
+	const editor = page.locator(".monaco-editor");
+	await editor.click();
+	await page.keyboard.type("created through the File menu\n");
+
+	await page.evaluate(() =>
+		window.dispatchEvent(
+			new CustomEvent("shell:command", { detail: "save-as" }),
+		),
+	);
+	const saveAs = page.getByRole("dialog", { name: "Save As" });
+	await expect(saveAs).toBeVisible();
+	await saveAs
+		.getByRole("textbox", { name: "File path" })
+		.fill("menu-copy.txt");
+	await saveAs.getByRole("button", { name: "Save" }).click();
+
+	await expect(page.getByRole("tab", { name: "menu-copy.txt" })).toBeVisible();
+	let read = await request.get("/api/files/read?path=menu-copy.txt");
+	expect(read.ok()).toBeTruthy();
+	let file = (await read.json()) as { content: string };
+	expect(file.content).toContain("created through the File menu");
+
+	await editor.click();
+	await page.keyboard.type("saved in place\n");
+	await page.evaluate(() =>
+		window.dispatchEvent(new CustomEvent("shell:command", { detail: "save" })),
+	);
+	await expect
+		.poll(async () => {
+			read = await request.get("/api/files/read?path=menu-copy.txt");
+			file = (await read.json()) as { content: string };
+			return file.content;
+		})
+		.toContain("saved in place");
 });
 
 test("previews raster images at their intrinsic size and renders SVG", async ({

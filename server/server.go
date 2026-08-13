@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -298,8 +299,10 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Delete("/", s.handleFileDelete)
 			r.Get("/read", s.handleFileRead)
 			r.Get("/search", s.handleFilesSearch)
+			r.Get("/path", s.handleFilePath)
 			r.Get("/download", s.handleFileDownload)
 			r.Get("/preview", s.handleFilePreview)
+			r.Post("/reveal", s.handleFileReveal)
 			r.Post("/rename", s.handleFileRename)
 			r.Post("/copy", s.handleFileCopy)
 			r.Post("/write", s.handleFileWrite)
@@ -749,6 +752,7 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, _ *http.Request) {
 		"git_init": isCoder && !ws.HasChanges(),
 		"tasks":    isCoder,
 		"terminal": terminal.Supported(),
+		"platform": runtime.GOOS,
 	}
 	writeJSON(w, caps)
 }

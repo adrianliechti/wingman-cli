@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { readWorkspaceFile, writeWorkspaceFile } from "../api/files";
 import type { FileContent, ServerMessage } from "../types/protocol";
 
 export interface OpenDocument {
@@ -55,16 +56,7 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 				},
 			}));
 			try {
-				const response = await fetch(
-					`${external ? "/api/lsp/file" : "/api/files/read"}?path=${encodeURIComponent(path)}`,
-				);
-				if (!response.ok) {
-					throw new Error(
-						(await response.text()).trim() ||
-							`Failed to load file (${response.status}).`,
-					);
-				}
-				const file = (await response.json()) as FileContent;
+				const file = await readWorkspaceFile(path, external);
 				if (requestRef.current[path] !== request) return;
 				const content = file.content ?? "";
 				updateDocuments((current) => ({
@@ -106,6 +98,31 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 		[readDocument, updateDocuments],
 	);
 
+	const openCreatedDocument = useCallback(
+		(file: FileContent) => {
+			const path = file.path;
+			requestRef.current[path] = (requestRef.current[path] ?? 0) + 1;
+			const content = file.content ?? "";
+			updateDocuments((current) => ({
+				...current,
+				[path]: {
+					path,
+					external: false,
+					file,
+					draft: content,
+					savedContent: content,
+					loading: false,
+					saving: false,
+					error: null,
+					saveError: null,
+					conflict: false,
+					revision: (current[path]?.revision ?? 0) + 1,
+				},
+			}));
+		},
+		[updateDocuments],
+	);
+
 	const updateDraft = useCallback(
 		(path: string, draft: string) => {
 			updateDocuments((current) => {
@@ -139,17 +156,13 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 				[path]: { ...current[path], saving: true, saveError: null },
 			}));
 			try {
-				const response = await fetch("/api/files/write", {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({
-						path,
-						content: document.draft,
-						revision: document.file?.revision,
-						force,
-					}),
+				const result = await writeWorkspaceFile({
+					path,
+					content: document.draft,
+					revision: document.file?.revision,
+					force,
 				});
-				if (response.status === 409) {
+				if (!result.ok) {
 					updateDocuments((current) => {
 						const latest = current[path];
 						if (!latest) return current;
@@ -166,16 +179,9 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 					return {
 						ok: false,
 						conflict: true,
-						error: (await response.text()).trim() || "File changed on disk.",
+						error: result.error,
 					};
 				}
-				if (!response.ok) {
-					throw new Error(
-						(await response.text()).trim() ||
-							`Failed to save file (${response.status}).`,
-					);
-				}
-				const saved = (await response.json()) as { revision: string };
 				updateDocuments((current) => {
 					const latest = current[path];
 					if (!latest) return current;
@@ -187,7 +193,7 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 								? {
 										...latest.file,
 										content: document.draft,
-										revision: saved.revision,
+										revision: result.revision,
 									}
 								: latest.file,
 							savedContent: document.draft,
@@ -250,6 +256,31 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 		[updateDocuments],
 	);
 
+	const moveDocuments = useCallback(
+		(from: string, to: string) => {
+			updateDocuments((current) => {
+				let changed = false;
+				const next = { ...current };
+				for (const [path, document] of Object.entries(current)) {
+					if (path !== from && !path.startsWith(`${from}/`)) continue;
+					const movedPath = `${to}${path.slice(from.length)}`;
+					requestRef.current[path] = (requestRef.current[path] ?? 0) + 1;
+					requestRef.current[movedPath] =
+						(requestRef.current[movedPath] ?? 0) + 1;
+					delete next[path];
+					next[movedPath] = {
+						...document,
+						path: movedPath,
+						file: document.file ? { ...document.file, path: movedPath } : null,
+					};
+					changed = true;
+				}
+				return changed ? next : current;
+			});
+		},
+		[updateDocuments],
+	);
+
 	const refreshOpenDocuments = useCallback(async () => {
 		const open = Object.values(documentsRef.current).filter(
 			(document) =>
@@ -265,11 +296,7 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 				const request = (requestRef.current[document.path] ?? 0) + 1;
 				requestRef.current[document.path] = request;
 				try {
-					const response = await fetch(
-						`/api/files/read?path=${encodeURIComponent(document.path)}`,
-					);
-					if (!response.ok) return;
-					const file = (await response.json()) as FileContent;
+					const file = await readWorkspaceFile(document.path);
 					if (requestRef.current[document.path] !== request) return;
 					const content = file.content ?? "";
 					updateDocuments((current) => {
@@ -353,11 +380,13 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 		documents,
 		dirtyPaths,
 		openDocument,
+		openCreatedDocument,
 		updateDraft,
 		saveDocument,
 		discardDocument,
 		reloadDocument: readDocument,
 		closeDocument,
+		moveDocuments,
 	};
 }
 

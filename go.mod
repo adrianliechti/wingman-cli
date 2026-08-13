@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
-	github.com/adrianliechti/go-shell v0.1.2
+	github.com/adrianliechti/go-shell v0.1.3-0.20260813215325-50369f3d540b
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/coder/acp-go-sdk v0.13.5

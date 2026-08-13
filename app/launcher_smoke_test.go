@@ -33,7 +33,7 @@ func TestLauncherSmoke(t *testing.T) {
 
 	if rec := get("/"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Wingman Agent") {
 		t.Fatalf("start page: %d", rec.Code)
-	} else if !strings.Contains(rec.Body.String(), "--wingman-window-drag: drag") {
+	} else if !strings.Contains(rec.Body.String(), "--shell-window-drag: drag") {
 		t.Fatal("start page has no macOS window drag region")
 	}
 
@@ -63,8 +63,8 @@ func TestLauncherSmoke(t *testing.T) {
 		t.Fatalf("open workspace: %d %q", rec.Code, rec.Body.String())
 	}
 
-	if rec := get("/app/workspaces"); rec.Code == http.StatusOK && strings.Contains(rec.Body.String(), "/app/") {
-		t.Fatalf("launcher still answering after open")
+	if rec := get("/app/workspaces"); rec.Code != http.StatusOK {
+		t.Fatalf("app commands unavailable after open: %d", rec.Code)
 	}
 
 	if rec := get("/api/capabilities"); rec.Code != http.StatusOK {
@@ -73,6 +73,11 @@ func TestLauncherSmoke(t *testing.T) {
 
 	if rec := post("/app/workspaces/open", `{"path":"`+workspace+`"}`); rec.Code == http.StatusNoContent {
 		t.Fatalf("second open should fail")
+	}
+
+	replacement := t.TempDir()
+	if rec := post("/app/workspaces/open", `{"path":"`+replacement+`","replace":true}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("replace workspace: %d %q", rec.Code, rec.Body.String())
 	}
 
 	app.shutdown()
