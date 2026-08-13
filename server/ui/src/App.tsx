@@ -14,6 +14,7 @@ import {
 	PanelRightClose,
 	PanelRightOpen,
 	Plus,
+	Save,
 	SquareTerminal,
 	Wrench,
 	X,
@@ -91,6 +92,7 @@ interface CenterTab {
 
 type RightTab = "changes" | "files" | "problems" | "agents";
 type CloseRequest = { kind: "file" | "terminal"; tab: CenterTab } | null;
+type SaveConflictRequest = { path: string; closeTabId?: string } | null;
 type SessionDeleteRequest = { id: string; title: string } | null;
 const LEFT_PANEL_DEFAULT_SIZE = 240;
 const LEFT_PANEL_MIN_SIZE = 200;
@@ -151,7 +153,6 @@ export default function App() {
 		updateDraft,
 		saveDocument,
 		discardDocument,
-		keepDocument,
 		reloadDocument,
 		closeDocument,
 	} = useOpenDocuments(subscribe);
@@ -200,6 +201,7 @@ export default function App() {
 		nonce: number;
 	} | null>(null);
 	const [closeRequest, setCloseRequest] = useState<CloseRequest>(null);
+	const [saveConflict, setSaveConflict] = useState<SaveConflictRequest>(null);
 	const [sessionDelete, setSessionDelete] =
 		useState<SessionDeleteRequest>(null);
 
@@ -328,6 +330,10 @@ export default function App() {
 	}, [createTerminal]);
 
 	const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
+	const activeDocument =
+		activeTab.type === "file" && activeTab.path
+			? documents[activeTab.path]
+			: undefined;
 	const activePreviewKind =
 		activeTab.type === "file" ? textPreviewKind(activeTab.path ?? "") : null;
 	const activeFileView =
@@ -584,6 +590,31 @@ export default function App() {
 		[closeTabNow, toast],
 	);
 
+	const saveFile = useCallback(
+		async (path: string, closeTabId?: string) => {
+			const result = await saveDocument(path);
+			if (result.conflict) {
+				if (closeTabId) setCloseRequest(null);
+				setSaveConflict({ path, closeTabId });
+				return result;
+			}
+			if (!result.ok) {
+				toast({
+					title: "Could not save file",
+					description: result.error,
+					tone: "error",
+				});
+				return result;
+			}
+			if (closeTabId) {
+				setCloseRequest(null);
+				closeTabNow(closeTabId);
+			}
+			return result;
+		},
+		[closeTabNow, saveDocument, toast],
+	);
+
 	const requestCloseTab = useCallback(
 		async (id: string) => {
 			const tab = tabs.find((item) => item.id === id);
@@ -667,7 +698,13 @@ export default function App() {
 	const saveAndCloseFile = useCallback(async () => {
 		const request = closeRequest;
 		if (request?.kind !== "file" || !request.tab.path) return;
-		const result = await saveDocument(request.tab.path);
+		await saveFile(request.tab.path, request.tab.id);
+	}, [closeRequest, saveFile]);
+
+	const overwriteChangedFile = useCallback(async () => {
+		const request = saveConflict;
+		if (!request) return;
+		const result = await saveDocument(request.path, true);
 		if (!result.ok) {
 			toast({
 				title: "Could not save file",
@@ -676,9 +713,9 @@ export default function App() {
 			});
 			return;
 		}
-		setCloseRequest(null);
-		closeTabNow(request.tab.id);
-	}, [closeRequest, closeTabNow, saveDocument, toast]);
+		setSaveConflict(null);
+		if (request.closeTabId) closeTabNow(request.closeTabId);
+	}, [closeTabNow, saveConflict, saveDocument, toast]);
 
 	const setTerminalTitle = useCallback((id: string, title: string) => {
 		if (!title) return;
@@ -1394,6 +1431,34 @@ export default function App() {
 							<Plus size={13} />
 						</button>
 					)}
+					{activeTab.type === "file" &&
+						activeTab.path &&
+						activeDocument &&
+						!activeDocument.external &&
+						!activeDocument.file?.binary && (
+							<button
+								type="button"
+								className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted disabled:cursor-default disabled:opacity-35 disabled:hover:bg-transparent"
+								disabled={
+									activeDocument.saving || !dirtyPaths.has(activeTab.path)
+								}
+								onClick={() => void saveFile(activeTab.path!)}
+								title={
+									activeDocument.saving
+										? "Saving file…"
+										: dirtyPaths.has(activeTab.path)
+											? "Save file (Ctrl+S)"
+											: "No changes to save"
+								}
+								aria-label="Save file"
+							>
+								{activeDocument.saving ? (
+									<Loader2 size={13} className="animate-spin" />
+								) : (
+									<Save size={13} />
+								)}
+							</button>
+						)}
 					{activePreviewKind && (
 						<button
 							type="button"
@@ -1614,15 +1679,7 @@ export default function App() {
 										subscribe={subscribe}
 										onChange={(value) => updateDraft(activeTab.path!, value)}
 										onSave={async () => {
-											const result = await saveDocument(activeTab.path!);
-											if (!result.ok) {
-												toast({
-													title: "Could not save file",
-													description: result.error,
-													tone: "error",
-												});
-											}
-											return result;
+											return saveFile(activeTab.path!);
 										}}
 										onReload={() =>
 											void reloadDocument(
@@ -1630,7 +1687,6 @@ export default function App() {
 												activeTab.external ?? false,
 											)
 										}
-										onKeepVersion={() => keepDocument(activeTab.path!)}
 										onOpenFile={openFile}
 										view={
 											fileViews[activeTab.id] ?? defaultFileView(activeTab.path)
@@ -1720,6 +1776,44 @@ export default function App() {
 					onClick={() => void saveAndCloseFile()}
 				>
 					Save
+				</button>
+			</Dialog>
+
+			<Dialog
+				open={saveConflict !== null}
+				title="Overwrite newer file?"
+				description={
+					saveConflict
+						? `“${saveConflict.path.split("/").pop() || saveConflict.path}” changed on disk since you opened it. Overwriting will replace those changes.`
+						: undefined
+				}
+				onClose={() => setSaveConflict(null)}
+			>
+				<button
+					type="button"
+					className={dialogButtonClass}
+					onClick={() => setSaveConflict(null)}
+				>
+					Cancel
+				</button>
+				<button
+					type="button"
+					className={dialogButtonClass}
+					onClick={() => {
+						if (!saveConflict) return;
+						const path = saveConflict.path;
+						setSaveConflict(null);
+						void reloadDocument(path, false);
+					}}
+				>
+					Reload from disk
+				</button>
+				<button
+					type="button"
+					className={`${dialogButtonClass} bg-fg text-bg hover:bg-fg-muted hover:text-bg`}
+					onClick={() => void overwriteChangedFile()}
+				>
+					Overwrite
 				</button>
 			</Dialog>
 

@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -11,6 +13,99 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestFileCreateAndConflictAwareWrite(t *testing.T) {
+	t.Setenv("WINGMAN_URL", "http://localhost:1")
+	workDir := t.TempDir()
+	filePath := filepath.Join(workDir, "editable.txt")
+	if err := os.WriteFile(filePath, []byte("original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app, err := New(context.Background(), workDir, &ServerOptions{NoBrowser: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	web := httptest.NewServer(app)
+	defer web.Close()
+
+	postJSON := func(endpoint string, body any) *http.Response {
+		t.Helper()
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := http.Post(web.URL+endpoint, "application/json", bytes.NewReader(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+
+	res := postJSON("/api/files", map[string]string{"path": "created.txt"})
+	res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("create status = %d, want %d", res.StatusCode, http.StatusNoContent)
+	}
+	if data, err := os.ReadFile(filepath.Join(workDir, "created.txt")); err != nil || len(data) != 0 {
+		t.Fatalf("created file = %q, %v; want empty file", data, err)
+	}
+	res = postJSON("/api/files", map[string]string{"path": "created.txt"})
+	res.Body.Close()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("duplicate create status = %d, want %d", res.StatusCode, http.StatusConflict)
+	}
+
+	res, err = http.Get(web.URL + "/api/files/read?path=editable.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var original FileContent
+	if err := json.NewDecoder(res.Body).Decode(&original); err != nil {
+		res.Body.Close()
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if original.Revision == "" {
+		t.Fatal("read response has no revision")
+	}
+
+	if err := os.WriteFile(filePath, []byte("changed elsewhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res = postJSON("/api/files/write", map[string]any{
+		"path":     "editable.txt",
+		"content":  "my edit\n",
+		"revision": original.Revision,
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("stale write status = %d, want %d", res.StatusCode, http.StatusConflict)
+	}
+	if data, err := os.ReadFile(filePath); err != nil || string(data) != "changed elsewhere\n" {
+		t.Fatalf("file after stale write = %q, %v", data, err)
+	}
+
+	res = postJSON("/api/files/write", map[string]any{
+		"path":    "editable.txt",
+		"content": "my edit\n",
+		"force":   true,
+	})
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("forced write status = %d, want %d", res.StatusCode, http.StatusOK)
+	}
+	var saved struct {
+		Revision string `json:"revision"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Revision == "" || saved.Revision == original.Revision {
+		t.Fatalf("forced write revision = %q, original = %q", saved.Revision, original.Revision)
+	}
+}
 
 func TestFilePreviewServesWebsiteAssetsInline(t *testing.T) {
 	t.Setenv("WINGMAN_URL", "http://localhost:1")

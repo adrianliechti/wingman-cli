@@ -9,6 +9,7 @@ import {
 	Folder,
 	FolderOpen,
 	Pencil,
+	Plus,
 	Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -31,7 +32,7 @@ interface TreeNode extends FileEntry {
 interface MenuState {
 	x: number;
 	y: number;
-	node: TreeNode;
+	node: TreeNode | null;
 }
 
 export function FileTree({ onFileSelect, subscribe }: Props) {
@@ -40,9 +41,15 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 	const [menu, setMenu] = useState<MenuState | null>(null);
 	const [renaming, setRenaming] = useState<string | null>(null);
 	const [renameValue, setRenameValue] = useState("");
+	const [creatingIn, setCreatingIn] = useState<string | null>(null);
+	const [createValue, setCreateValue] = useState("");
 	const [focusedPath, setFocusedPath] = useState<string | null>(null);
 	const [deleteTarget, setDeleteTarget] = useState<TreeNode | null>(null);
 	const nodesRef = useRef(nodes);
+	const renameSubmittingRef = useRef(false);
+	const renameCanceledRef = useRef(false);
+	const createSubmittingRef = useRef(false);
+	const createCanceledRef = useRef(false);
 	useEffect(() => {
 		nodesRef.current = nodes;
 	});
@@ -145,12 +152,20 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 	);
 
 	const beginRename = (node: TreeNode) => {
-		setRenaming(node.path);
-		setRenameValue(node.name);
 		setMenu(null);
+		requestAnimationFrame(() => {
+			renameCanceledRef.current = false;
+			setRenaming(node.path);
+			setRenameValue(node.name);
+		});
 	};
 
 	const commitRename = async (node: TreeNode) => {
+		if (renameSubmittingRef.current) return;
+		if (renameCanceledRef.current) {
+			renameCanceledRef.current = false;
+			return;
+		}
 		const newName = renameValue.trim();
 		setRenaming(null);
 		if (!newName || newName === node.name) return;
@@ -161,17 +176,128 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 			: "";
 		const to = parent ? `${parent}/${newName}` : newName;
 
-		const res = await fetch("/api/files/rename", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ from: node.path, to }),
-		});
-		if (!res.ok) {
+		renameSubmittingRef.current = true;
+		try {
+			const res = await fetch("/api/files/rename", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ from: node.path, to }),
+			});
+			if (res.ok) return;
 			toast({
 				title: "Rename failed",
 				description: await res.text(),
 				tone: "error",
 			});
+		} catch (error) {
+			toast({
+				title: "Rename failed",
+				description: error instanceof Error ? error.message : String(error),
+				tone: "error",
+			});
+		} finally {
+			renameSubmittingRef.current = false;
+		}
+	};
+
+	const beginCreate = async (node: TreeNode | null) => {
+		setMenu(null);
+		const parent = node?.is_dir
+			? node.path
+			: node?.path.includes("/")
+				? node.path.slice(0, node.path.lastIndexOf("/"))
+				: "";
+
+		try {
+			if (node?.is_dir) {
+				const expand = async (items: TreeNode[]): Promise<TreeNode[]> =>
+					Promise.all(
+						items.map(async (item) => {
+							if (item.path === node.path) {
+								return {
+									...item,
+									expanded: true,
+									loaded: true,
+									children: item.loaded
+										? item.children
+										: await loadDir(item.path),
+								};
+							}
+							return item.children
+								? { ...item, children: await expand(item.children) }
+								: item;
+						}),
+					);
+				setNodes(await expand(nodesRef.current));
+			}
+		} catch (error) {
+			toast({
+				title: "Could not load folder",
+				description: error instanceof Error ? error.message : String(error),
+				tone: "error",
+			});
+			return;
+		}
+
+		requestAnimationFrame(() => {
+			setCreateValue("");
+			createCanceledRef.current = false;
+			setCreatingIn(parent);
+		});
+	};
+
+	const commitCreate = async (parent: string) => {
+		if (createSubmittingRef.current) return;
+		if (createCanceledRef.current) {
+			createCanceledRef.current = false;
+			return;
+		}
+		const name = createValue.trim();
+		if (!name) {
+			setCreatingIn(null);
+			return;
+		}
+		if (
+			name === "." ||
+			name === ".." ||
+			name.includes("/") ||
+			name.includes("\\")
+		) {
+			toast({
+				title: "Invalid file name",
+				description: "Enter a file name without path separators.",
+				tone: "error",
+			});
+			return;
+		}
+
+		const filePath = parent ? `${parent}/${name}` : name;
+		createSubmittingRef.current = true;
+		try {
+			const res = await fetch("/api/files", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ path: filePath }),
+			});
+			if (!res.ok) {
+				toast({
+					title: "Could not create file",
+					description: (await res.text()).trim() || "File creation failed.",
+					tone: "error",
+				});
+				return;
+			}
+			setCreatingIn(null);
+			await refresh();
+			onFileSelect(filePath);
+		} catch (error) {
+			toast({
+				title: "Could not create file",
+				description: error instanceof Error ? error.message : String(error),
+				tone: "error",
+			});
+		} finally {
+			createSubmittingRef.current = false;
 		}
 	};
 
@@ -320,6 +446,35 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 		}
 	};
 
+	const renderCreateInput = (parent: string, depth: number) => (
+		<div
+			className="flex items-center gap-1 py-[3px] pr-2 text-[12px] leading-snug"
+			style={{ paddingLeft: 8 + depth * 12 }}
+			role="treeitem"
+			aria-level={depth + 1}
+		>
+			<span className="w-3.5 shrink-0" />
+			<span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-fg-dim">
+				<File size={13} />
+			</span>
+			<input
+				autoFocus
+				value={createValue}
+				onChange={(event) => setCreateValue(event.target.value)}
+				onKeyDown={(event) => {
+					if (event.key === "Enter") void commitCreate(parent);
+					else if (event.key === "Escape") {
+						createCanceledRef.current = true;
+						setCreatingIn(null);
+					}
+				}}
+				onBlur={() => void commitCreate(parent)}
+				aria-label={`New file name${parent ? ` in ${parent}` : " in workspace"}`}
+				className="ml-0.5 min-w-0 flex-1 rounded border border-border-strong bg-bg-surface px-1 py-0 text-[12px] text-fg outline-none"
+			/>
+		</div>
+	);
+
 	const renderNodes = (items: TreeNode[], depth: number) => {
 		return items.map((node, index) => {
 			const isRenaming = renaming === node.path;
@@ -397,7 +552,10 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 								onClick={(e) => e.stopPropagation()}
 								onKeyDown={(e) => {
 									if (e.key === "Enter") commitRename(node);
-									else if (e.key === "Escape") setRenaming(null);
+									else if (e.key === "Escape") {
+										renameCanceledRef.current = true;
+										setRenaming(null);
+									}
 								}}
 								onBlur={() => commitRename(node)}
 								className="ml-0.5 bg-bg-surface border border-border-strong rounded px-1 py-0 text-fg text-[12px] outline-none min-w-0 flex-1"
@@ -411,7 +569,11 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 						)}
 					</div>
 					{node.expanded && node.children && (
-						<div role="group">{renderNodes(node.children, depth + 1)}</div>
+						<div role="group">
+							{creatingIn === node.path &&
+								renderCreateInput(node.path, depth + 1)}
+							{renderNodes(node.children, depth + 1)}
+						</div>
 					)}
 				</div>
 			);
@@ -423,7 +585,13 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 			className="relative flex-1 overflow-y-auto bg-transparent py-2"
 			role="tree"
 			aria-label="Workspace files"
+			onContextMenu={(event) => {
+				if ((event.target as Element).closest("[data-tree-path]")) return;
+				event.preventDefault();
+				setMenu({ x: event.clientX, y: event.clientY, node: null });
+			}}
 		>
+			{creatingIn === "" && renderCreateInput("", 0)}
 			{renderNodes(nodes, 0)}
 			{menu && (
 				<ContextMenu
@@ -431,13 +599,14 @@ export function FileTree({ onFileSelect, subscribe }: Props) {
 					onClose={() => setMenu(null)}
 					onOpen={() => {
 						setMenu(null);
-						onFileSelect(menu.node.path);
+						if (menu.node) onFileSelect(menu.node.path);
 					}}
-					onRename={() => beginRename(menu.node)}
-					onDuplicate={() => handleDuplicate(menu.node)}
-					onCopy={() => handleCopy(menu.node)}
-					onDownload={() => handleDownload(menu.node)}
-					onDelete={() => requestDelete(menu.node)}
+					onNew={() => void beginCreate(menu.node)}
+					onRename={() => menu.node && beginRename(menu.node)}
+					onDuplicate={() => menu.node && handleDuplicate(menu.node)}
+					onCopy={() => menu.node && handleCopy(menu.node)}
+					onDownload={() => menu.node && handleDownload(menu.node)}
+					onDelete={() => menu.node && requestDelete(menu.node)}
 				/>
 			)}
 			<Dialog
@@ -487,6 +656,7 @@ interface ContextMenuProps {
 	menu: MenuState;
 	onClose: () => void;
 	onOpen: () => void;
+	onNew: () => void;
 	onRename: () => void;
 	onDuplicate: () => void;
 	onCopy: () => void;
@@ -498,51 +668,68 @@ function ContextMenu({
 	menu,
 	onClose,
 	onOpen,
+	onNew,
 	onRename,
 	onDuplicate,
 	onCopy,
 	onDownload,
 	onDelete,
 }: ContextMenuProps) {
-	const isDir = menu.node.is_dir;
+	const isDir = menu.node?.is_dir ?? true;
 	return (
 		<FloatingMenu
 			open
 			onOpenChange={(open) => !open && onClose()}
 			reference={{ x: menu.x, y: menu.y }}
-			label={`Actions for ${menu.node.name}`}
+			label={menu.node ? `Actions for ${menu.node.name}` : "Workspace actions"}
 			className="z-[100] min-w-[160px] bg-bg-elevated border border-border-subtle rounded-md shadow-2xl py-1 text-[12px]"
 		>
-			{!isDir && (
+			{menu.node && !isDir && (
 				<MenuItem icon={<FileText size={12} />} label="Open" onClick={onOpen} />
 			)}
-			{!isDir && (
+			{menu.node && !isDir && (
 				<MenuItem
 					icon={<ClipboardCopy size={12} />}
 					label="Copy"
 					onClick={onCopy}
 				/>
 			)}
-			<MenuItem icon={<Pencil size={12} />} label="Rename" onClick={onRename} />
-			<MenuItem
-				icon={<Copy size={12} />}
-				label="Duplicate"
-				onClick={onDuplicate}
-			/>
-			{!isDir && (
+			<MenuItem icon={<Plus size={12} />} label="New…" onClick={onNew} />
+			{menu.node && (
+				<MenuItem
+					icon={<Pencil size={12} />}
+					label="Rename"
+					onClick={onRename}
+				/>
+			)}
+			{menu.node && (
+				<MenuItem
+					icon={<Copy size={12} />}
+					label="Duplicate"
+					onClick={onDuplicate}
+				/>
+			)}
+			{menu.node && !isDir && (
 				<MenuItem
 					icon={<Download size={12} />}
 					label="Download"
 					onClick={onDownload}
 				/>
 			)}
-			<div role="separator" className="my-1 border-t border-border-subtle" />
-			<MenuItem
-				icon={<Trash2 size={12} />}
-				label="Delete"
-				onClick={onDelete}
-				danger
-			/>
+			{menu.node && (
+				<>
+					<div
+						role="separator"
+						className="my-1 border-t border-border-subtle"
+					/>
+					<MenuItem
+						icon={<Trash2 size={12} />}
+						label="Delete"
+						onClick={onDelete}
+						danger
+					/>
+				</>
+			)}
 		</FloatingMenu>
 	);
 }

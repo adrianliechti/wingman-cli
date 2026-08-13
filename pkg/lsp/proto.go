@@ -30,6 +30,7 @@ type WindowClientCapabilities struct {
 
 type TextDocumentClientCapabilities struct {
 	Synchronization TextDocumentSyncClientCapabilities `json:"synchronization"`
+	Completion      CompletionClientCapabilities       `json:"completion"`
 	Hover           HoverClientCapabilities            `json:"hover"`
 	Definition      DefinitionClientCapabilities       `json:"definition"`
 	TypeDefinition  TypeDefinitionClientCapabilities   `json:"typeDefinition"`
@@ -42,6 +43,15 @@ type TextDocumentClientCapabilities struct {
 
 type TextDocumentSyncClientCapabilities struct {
 	DidSave bool `json:"didSave,omitempty"`
+}
+
+type CompletionClientCapabilities struct {
+	CompletionItem CompletionItemClientCapabilities `json:"completionItem"`
+}
+
+type CompletionItemClientCapabilities struct {
+	SnippetSupport      bool     `json:"snippetSupport,omitempty"`
+	DocumentationFormat []string `json:"documentationFormat,omitempty"`
 }
 
 type HoverClientCapabilities struct {
@@ -134,6 +144,39 @@ type LocationLink struct {
 type TextDocumentPositionParams struct {
 	TextDocument TextDocumentIdentifier `json:"textDocument"`
 	Position     Position               `json:"position"`
+}
+
+type CompletionParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Position     Position               `json:"position"`
+	Context      *CompletionContext     `json:"context,omitempty"`
+}
+
+type CompletionContext struct {
+	TriggerKind      int    `json:"triggerKind"`
+	TriggerCharacter string `json:"triggerCharacter,omitempty"`
+}
+
+type CompletionItem struct {
+	Label               string          `json:"label"`
+	Kind                int             `json:"kind,omitempty"`
+	Detail              string          `json:"detail,omitempty"`
+	Documentation       json.RawMessage `json:"documentation,omitempty"`
+	SortText            string          `json:"sortText,omitempty"`
+	FilterText          string          `json:"filterText,omitempty"`
+	InsertText          string          `json:"insertText,omitempty"`
+	InsertTextFormat    int             `json:"insertTextFormat,omitempty"`
+	TextEdit            json.RawMessage `json:"textEdit,omitempty"`
+	AdditionalTextEdits []TextEdit      `json:"additionalTextEdits,omitempty"`
+}
+
+type CompletionList struct {
+	Items []CompletionItem `json:"items"`
+}
+
+type TextEdit struct {
+	Range   Range  `json:"range"`
+	NewText string `json:"newText"`
 }
 
 type ReferenceParams struct {

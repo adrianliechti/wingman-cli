@@ -142,6 +142,20 @@ func greet() {}
 		}
 	})
 
+	t.Run("tree-sitter completions", func(t *testing.T) {
+		var items []struct {
+			Label  string `json:"label"`
+			Detail string `json:"detail"`
+		}
+		post(t, "/api/lsp/completions", `{"path":"main.go","line":4,"column":2}`, &items)
+		if len(items) != 2 || items[0].Label != "main" || items[1].Label != "greet" {
+			t.Fatalf("items = %+v, want main and greet", items)
+		}
+		if !strings.Contains(items[0].Detail, "tree-sitter") {
+			t.Fatalf("detail = %q, want tree-sitter attribution", items[0].Detail)
+		}
+	})
+
 	t.Run("hover", func(t *testing.T) {
 		var result struct {
 			Contents string `json:"contents"`

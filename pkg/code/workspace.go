@@ -577,6 +577,62 @@ func (w *Workspace) HoverInformation(ctx context.Context, filePath string, conte
 	return contents, nil
 }
 
+// CompletionItems asks the file's language server first and falls back to
+// symbols extracted from the current buffer with tree-sitter when completion
+// is unavailable.
+func (w *Workspace) CompletionItems(ctx context.Context, filePath string, content *string, line, column int, completionContext *lsp.CompletionContext) ([]lsp.CompletionItem, error) {
+	if w.hasLSPServerFor(filePath) {
+		var items []lsp.CompletionItem
+		err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
+			var err error
+			items, err = session.CompletionItems(ctx, uri, line, column, completionContext)
+			return err
+		})
+		if err == nil {
+			return items, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+	}
+
+	return graphCompletionItems(filePath, content)
+}
+
+func graphCompletionItems(filePath string, content *string) ([]lsp.CompletionItem, error) {
+	var src []byte
+	if content != nil {
+		src = []byte(*content)
+	} else {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			return nil, err
+		}
+		src = data
+	}
+
+	result := make([]lsp.CompletionItem, 0)
+	seen := make(map[string]bool)
+	var add func([]*graph.Symbol)
+	add = func(symbols []*graph.Symbol) {
+		for _, symbol := range symbols {
+			if symbol.Name != "" && !seen[symbol.Name] {
+				seen[symbol.Name] = true
+				result = append(result, lsp.CompletionItem{
+					Label:      symbol.Name,
+					Kind:       lspSymbolKind(symbol.Kind),
+					Detail:     string(symbol.Kind) + " · tree-sitter",
+					SortText:   symbol.Name,
+					InsertText: symbol.Name,
+				})
+			}
+			add(symbol.Children)
+		}
+	}
+	add(graph.FileSymbols(filepath.Base(filePath), src))
+	return result, nil
+}
+
 func (w *Workspace) graphHover(ctx context.Context, filePath string, content *string, line, column int) (string, error) {
 	engine := w.graphEngine()
 	if engine == nil {

@@ -2,7 +2,10 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -207,10 +210,11 @@ func (s *Server) handleFileRead(w http.ResponseWriter, r *http.Request) {
 		}
 		mime := http.DetectContentType(head)
 		writeJSON(w, FileContent{
-			Path:   filePath,
-			Binary: true,
-			Mime:   mime,
-			Size:   size,
+			Path:     filePath,
+			Revision: fileRevision(data),
+			Binary:   true,
+			Mime:     mime,
+			Size:     size,
 		})
 		return
 	}
@@ -219,8 +223,13 @@ func (s *Server) handleFileRead(w http.ResponseWriter, r *http.Request) {
 		Path:     filePath,
 		Content:  string(data),
 		Language: languageForPath(filePath),
+		Revision: fileRevision(data),
 		Size:     size,
 	})
+}
+
+func fileRevision(data []byte) string {
+	return fmt.Sprintf("%x", sha256.Sum256(data))
 }
 
 func languageForPath(filePath string) string {
@@ -249,8 +258,10 @@ func isBinary(data []byte) bool {
 
 func (s *Server) handleFileWrite(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Path    string `json:"path"`
-		Content string `json:"content"`
+		Path     string `json:"path"`
+		Content  string `json:"content"`
+		Revision string `json:"revision"`
+		Force    bool   `json:"force"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
@@ -261,9 +272,66 @@ func (s *Server) handleFileWrite(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	info, _ := s.workspace.Root.Lstat(rel)
+	info, err := s.workspace.Root.Lstat(rel)
+	if err != nil {
+		http.Error(w, "file not found", http.StatusNotFound)
+		return
+	}
+	if !body.Force {
+		if body.Revision == "" {
+			http.Error(w, "revision is required", http.StatusBadRequest)
+			return
+		}
+		current, err := s.workspace.Root.ReadFile(rel)
+		if err != nil {
+			http.Error(w, "file not found", http.StatusNotFound)
+			return
+		}
+		if fileRevision(current) != body.Revision {
+			http.Error(w, "file changed on disk", http.StatusConflict)
+			return
+		}
+	}
 
-	if err := s.workspace.Root.WriteFile(rel, []byte(body.Content), info.Mode().Perm()); err != nil {
+	content := []byte(body.Content)
+	if err := s.workspace.Root.WriteFile(rel, content, info.Mode().Perm()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	s.flushFiles()
+	if s.workspace.HasLSP() {
+		s.broadcast(Frame{Type: EvtDiagnosticsChanged})
+	}
+	writeJSON(w, struct {
+		Revision string `json:"revision"`
+	}{Revision: fileRevision(content)})
+}
+
+func (s *Server) handleFileCreate(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+
+	rel, ok := s.workspaceRel(body.Path)
+	if !ok {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	file, err := s.workspace.Root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			http.Error(w, "file already exists", http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := file.Close(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

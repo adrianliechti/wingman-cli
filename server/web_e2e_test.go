@@ -293,6 +293,7 @@ func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
 	cmd.Env = append(os.Environ(),
 		"E2E_BASE_URL="+web.URL,
 		"E2E_CONTROL_URL="+modelServer.URL,
+		"E2E_WORKSPACE="+workDir,
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {

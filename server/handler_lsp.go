@@ -150,6 +150,52 @@ func (s *Server) handleLSPHover(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"contents": contents})
 }
 
+func (s *Server) handleLSPCompletions(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		lspDocumentRequest
+		Line             int    `json:"line"`
+		Column           int    `json:"column"`
+		TriggerKind      int    `json:"trigger_kind,omitempty"`
+		TriggerCharacter string `json:"trigger_character,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	if body.Line < 1 || body.Column < 1 {
+		http.Error(w, "line and column must be positive", http.StatusBadRequest)
+		return
+	}
+	filePath, ok := s.resolveLSPFile(w, body.Path, false)
+	if !ok {
+		return
+	}
+
+	var completionContext *lsp.CompletionContext
+	if body.TriggerKind > 0 {
+		completionContext = &lsp.CompletionContext{
+			TriggerKind:      body.TriggerKind,
+			TriggerCharacter: body.TriggerCharacter,
+		}
+	}
+	items, err := s.workspace.CompletionItems(
+		r.Context(),
+		filePath,
+		body.Content,
+		body.Line-1,
+		body.Column-1,
+		completionContext,
+	)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if items == nil {
+		items = []lsp.CompletionItem{}
+	}
+	writeJSON(w, items)
+}
+
 func (s *Server) handleLSPDocumentSymbols(w http.ResponseWriter, r *http.Request) {
 	body, filePath, ok := s.decodeLSPDocumentRequest(w, r, false)
 	if !ok {
@@ -271,6 +317,7 @@ func (s *Server) handleLSPExternalFile(w http.ResponseWriter, r *http.Request) {
 		Path:     p,
 		Content:  string(data),
 		Language: languageForPath(p),
+		Revision: fileRevision(data),
 		Size:     int64(len(data)),
 	})
 }

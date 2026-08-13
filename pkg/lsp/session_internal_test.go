@@ -69,6 +69,34 @@ func TestParseLocationResponse(t *testing.T) {
 	}
 }
 
+func TestParseCompletionResponse(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		want    []string
+	}{
+		{name: "null", payload: `null`},
+		{name: "array", payload: `[{"label":"Alpha"}]`, want: []string{"Alpha"}},
+		{name: "list", payload: `{"isIncomplete":true,"items":[{"label":"Beta"}]}`, want: []string{"Beta"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			items, err := parseCompletionResponse(json.RawMessage(test.payload))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(items) != len(test.want) {
+				t.Fatalf("items = %+v, want %v", items, test.want)
+			}
+			for i, want := range test.want {
+				if items[i].Label != want {
+					t.Fatalf("item %d = %q, want %q", i, items[i].Label, want)
+				}
+			}
+		})
+	}
+}
+
 func TestGetSessionStopsRestartingAfterRepeatedCrashes(t *testing.T) {
 	root := t.TempDir()
 	manager := NewManager(root)

@@ -24,7 +24,6 @@ interface Props {
 	onChange: (value: string) => void;
 	onSave: () => Promise<SaveResult>;
 	onReload: () => void;
-	onKeepVersion: () => void;
 	onOpenFile?: (
 		path: string,
 		line: number,
@@ -43,7 +42,6 @@ export function FileTab({
 	onChange,
 	onSave,
 	onReload,
-	onKeepVersion,
 	onOpenFile,
 	view = "code",
 }: Props) {
@@ -157,13 +155,6 @@ export function FileTab({
 						className="rounded px-2 py-1 hover:bg-warning/10"
 					>
 						Reload from disk
-					</button>
-					<button
-						type="button"
-						onClick={onKeepVersion}
-						className="rounded px-2 py-1 hover:bg-warning/10"
-					>
-						Keep my version
 					</button>
 				</div>
 			)}

@@ -294,6 +294,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 	r.Route("/api", func(r chi.Router) {
 		r.Route("/files", func(r chi.Router) {
 			r.Get("/", s.handleFiles)
+			r.Post("/", s.handleFileCreate)
 			r.Delete("/", s.handleFileDelete)
 			r.Get("/read", s.handleFileRead)
 			r.Get("/search", s.handleFilesSearch)
@@ -372,6 +373,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Post("/implementations", s.handleLSPImplementations)
 			r.Post("/references", s.handleLSPReferences)
 			r.Post("/hover", s.handleLSPHover)
+			r.Post("/completions", s.handleLSPCompletions)
 			r.Post("/document-symbols", s.handleLSPDocumentSymbols)
 			r.Get("/file", s.handleLSPExternalFile)
 		})
@@ -758,6 +760,7 @@ func (s *Server) hasClients() bool {
 
 func (s *Server) flushFiles() {
 	s.files.Flush()
+	s.broadcast(Frame{Type: EvtFilesChanged})
 }
 
 func (s *Server) checkWorkspace() {

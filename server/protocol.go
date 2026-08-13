@@ -158,6 +158,7 @@ type FileContent struct {
 	Path     string `json:"path"`
 	Content  string `json:"content,omitempty"`
 	Language string `json:"language,omitempty"`
+	Revision string `json:"revision"`
 
 	Binary bool   `json:"binary,omitempty"`
 	Mime   string `json:"mime,omitempty"`

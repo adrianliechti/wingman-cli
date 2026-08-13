@@ -1,10 +1,18 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 function controlURL(): string {
 	const url = process.env.E2E_CONTROL_URL;
 	if (!url) throw new Error("E2E_CONTROL_URL is required");
 	return url;
+}
+
+function workspacePath(path: string): string {
+	const workspace = process.env.E2E_WORKSPACE;
+	if (!workspace) throw new Error("E2E_WORKSPACE is required");
+	return join(workspace, path);
 }
 
 async function composer(page: Page) {
@@ -325,6 +333,7 @@ test("shows file actions above panel clipping", async ({ page }) => {
 
 	const menu = page.getByRole("menu", { name: "Actions for editable.txt" });
 	await expect(menu).toBeVisible();
+	await expect(menu.getByRole("menuitem", { name: "New…" })).toBeVisible();
 	await expect(menu.getByRole("menuitem", { name: "Rename" })).toBeVisible();
 	await expect(menu.getByRole("menuitem", { name: "Duplicate" })).toBeVisible();
 	await expect(menu.getByRole("menuitem", { name: "Delete" })).toBeVisible();
@@ -332,6 +341,69 @@ test("shows file actions above panel clipping", async ({ page }) => {
 	await expect(menu.getByRole("menuitem", { name: "Open" })).toBeFocused();
 	await page.keyboard.press("ArrowDown");
 	await expect(menu.getByRole("menuitem", { name: "Copy" })).toBeFocused();
+});
+
+test("creates, saves, refreshes, and protects files changed on disk", async ({
+	page,
+	request,
+}) => {
+	await composer(page);
+	await page
+		.getByRole("treeitem", { name: /editable\.txt/ })
+		.click({ button: "right" });
+	await page
+		.getByRole("menu", { name: "Actions for editable.txt" })
+		.getByRole("menuitem", { name: "New…" })
+		.click();
+	const nameInput = page.getByRole("textbox", {
+		name: "New file name in workspace",
+	});
+	await nameInput.fill("web-created.go");
+	await nameInput.press("Enter");
+
+	await expect(
+		page.getByRole("tab", { name: /web-created\.go/ }),
+	).toBeVisible();
+	const editor = page.locator(".monaco-editor");
+	await expect(editor).toBeVisible();
+	await editor.click();
+	await page.keyboard.type("package main\n\nfunc initialVersion() {}\n");
+	const save = page.getByRole("button", { name: "Save file" });
+	await expect(save).toBeEnabled();
+	await save.click();
+	await expect(save).toHaveAttribute("title", "No changes to save");
+
+	let read = await request.get("/api/files/read?path=web-created.go");
+	expect(read.ok()).toBeTruthy();
+	let file = (await read.json()) as { content: string; revision: string };
+	expect(file.content).toContain("initialVersion");
+
+	await writeFile(
+		workspacePath("web-created.go"),
+		"package main\n\nfunc refreshedFromDisk() {}\n",
+	);
+	await expect(page.locator(".view-lines")).toContainText("refreshedFromDisk");
+
+	await editor.click();
+	await page.keyboard.press("Control+End");
+	await page.keyboard.type("\nfunc localVersion() {}\n");
+	await writeFile(
+		workspacePath("web-created.go"),
+		"package main\n\nfunc newerDiskVersion() {}\n",
+	);
+
+	await save.click();
+	const overwriteDialog = page.getByRole("dialog", {
+		name: "Overwrite newer file?",
+	});
+	await expect(overwriteDialog).toBeVisible();
+	await overwriteDialog.getByRole("button", { name: "Overwrite" }).click();
+	await expect(overwriteDialog).not.toBeVisible();
+
+	read = await request.get("/api/files/read?path=web-created.go");
+	file = (await read.json()) as { content: string; revision: string };
+	expect(file.content).toContain("localVersion");
+	expect(file.content).not.toContain("newerDiskVersion");
 });
 
 test("keeps composer pickers visible in a constrained window", async ({

@@ -561,6 +561,35 @@ func (s *Session) HoverInformation(ctx context.Context, uri string, line, column
 	return hover.Contents.Value, nil
 }
 
+func (s *Session) CompletionItems(ctx context.Context, uri string, line, column int, completionContext *CompletionContext) ([]CompletionItem, error) {
+	params := CompletionParams{
+		TextDocument: TextDocumentIdentifier{URI: uri},
+		Position:     Position{Line: line, Character: column},
+		Context:      completionContext,
+	}
+
+	var result json.RawMessage
+	if err := s.CallAndAwait(ctx, "textDocument/completion", params, &result); err != nil {
+		return nil, err
+	}
+	return parseCompletionResponse(result)
+}
+
+func parseCompletionResponse(result json.RawMessage) ([]CompletionItem, error) {
+	if isNullResult(result) {
+		return nil, nil
+	}
+	var items []CompletionItem
+	if err := json.Unmarshal(result, &items); err == nil {
+		return items, nil
+	}
+	var list CompletionList
+	if err := json.Unmarshal(result, &list); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
 func (s *Session) DocumentSymbols(ctx context.Context, uri string, filePath string) (string, error) {
 	docSymbols, symInfos, err := s.DocumentSymbolItems(ctx, uri)
 	if err != nil {
@@ -756,14 +785,18 @@ func (s *Session) initialize(ctx context.Context) error {
 		Capabilities: ClientCapabilities{
 			TextDocument: TextDocumentClientCapabilities{
 				Synchronization: TextDocumentSyncClientCapabilities{DidSave: true},
-				Hover:           HoverClientCapabilities{ContentFormat: []string{"plaintext", "markdown"}},
-				Definition:      DefinitionClientCapabilities{},
-				TypeDefinition:  TypeDefinitionClientCapabilities{},
-				References:      ReferencesClientCapabilities{},
-				Implementation:  ImplementationClientCapabilities{},
-				DocumentSymbol:  DocumentSymbolClientCapabilities{},
-				Diagnostic:      DiagnosticClientCapabilities{},
-				CallHierarchy:   CallHierarchyClientCapabilities{},
+				Completion: CompletionClientCapabilities{CompletionItem: CompletionItemClientCapabilities{
+					SnippetSupport:      true,
+					DocumentationFormat: []string{"markdown", "plaintext"},
+				}},
+				Hover:          HoverClientCapabilities{ContentFormat: []string{"plaintext", "markdown"}},
+				Definition:     DefinitionClientCapabilities{},
+				TypeDefinition: TypeDefinitionClientCapabilities{},
+				References:     ReferencesClientCapabilities{},
+				Implementation: ImplementationClientCapabilities{},
+				DocumentSymbol: DocumentSymbolClientCapabilities{},
+				Diagnostic:     DiagnosticClientCapabilities{},
+				CallHierarchy:  CallHierarchyClientCapabilities{},
 			},
 			Window: WindowClientCapabilities{WorkDoneProgress: true},
 		},

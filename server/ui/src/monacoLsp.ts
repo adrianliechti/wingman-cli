@@ -182,6 +182,36 @@ export function createMonacoLSPBridge({
 
 	if (sourceModel && file.language) {
 		disposables.push(
+			monaco.languages.registerCompletionItemProvider(file.language, {
+				triggerCharacters: [".", ":", ">", "/", "@", "#", '"', "'"],
+				provideCompletionItems(
+					model: MonacoTypes.editor.ITextModel,
+					position: MonacoTypes.Position,
+					context: MonacoTypes.languages.CompletionContext,
+					token: MonacoTypes.CancellationToken,
+				) {
+					if (model !== sourceModel) return;
+					return trackedRequest(token, async (signal) => {
+						const items = await postJSON<LSPCompletionItem[]>(
+							"/api/lsp/completions",
+							{
+								...positionRequest(file.path, getDirtyContent(), position),
+								trigger_kind: context.triggerKind + 1,
+								...(context.triggerCharacter
+									? { trigger_character: context.triggerCharacter }
+									: {}),
+							},
+							signal,
+						);
+						if (!items || disposed || token.isCancellationRequested) return;
+						return {
+							suggestions: items.map((item) =>
+								completionItem(monaco, model, position, item),
+							),
+						};
+					});
+				},
+			}),
 			monaco.languages.registerDefinitionProvider(file.language, {
 				provideDefinition: (
 					model: MonacoTypes.editor.ITextModel,
@@ -354,6 +384,26 @@ interface LSPDocumentSymbol {
 	children?: LSPDocumentSymbol[];
 }
 
+interface LSPCompletionItem {
+	label: string;
+	kind?: number;
+	detail?: string;
+	documentation?: string | { kind?: string; value?: string };
+	sortText?: string;
+	filterText?: string;
+	insertText?: string;
+	insertTextFormat?: number;
+	textEdit?: LSPCompletionTextEdit;
+	additionalTextEdits?: Array<{ range: LSPRange; newText: string }>;
+}
+
+interface LSPCompletionTextEdit {
+	newText: string;
+	range?: LSPRange;
+	insert?: LSPRange;
+	replace?: LSPRange;
+}
+
 async function postJSON<T>(
 	endpoint: string,
 	body: unknown,
@@ -415,6 +465,82 @@ function documentSymbol(
 		selectionRange: lspRange(model, symbol.selectionRange),
 		children: symbol.children?.map((child) => documentSymbol(model, child)),
 	};
+}
+
+function completionItem(
+	monaco: Monaco,
+	model: MonacoTypes.editor.ITextModel,
+	position: MonacoTypes.Position,
+	item: LSPCompletionItem,
+): MonacoTypes.languages.CompletionItem {
+	const edit = item.textEdit;
+	const range =
+		edit?.insert && edit.replace
+			? {
+					insert: lspRange(model, edit.insert),
+					replace: lspRange(model, edit.replace),
+				}
+			: edit?.range
+				? lspRange(model, edit.range)
+				: wordRange(model, position);
+	const documentation =
+		typeof item.documentation === "string"
+			? item.documentation
+			: item.documentation?.value;
+	return {
+		label: item.label,
+		kind: completionKind(monaco, item.kind),
+		detail: item.detail,
+		documentation: documentation ? { value: documentation } : undefined,
+		sortText: item.sortText,
+		filterText: item.filterText,
+		insertText: edit?.newText ?? item.insertText ?? item.label,
+		insertTextRules:
+			item.insertTextFormat === 2
+				? monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet
+				: undefined,
+		range,
+		additionalTextEdits: item.additionalTextEdits?.map((additional) => ({
+			range: lspRange(model, additional.range),
+			text: additional.newText,
+		})),
+	};
+}
+
+function completionKind(
+	monaco: Monaco,
+	kind?: number,
+): MonacoTypes.languages.CompletionItemKind {
+	const kinds = monaco.languages.CompletionItemKind;
+	return (
+		[
+			kinds.Text,
+			kinds.Method,
+			kinds.Function,
+			kinds.Constructor,
+			kinds.Field,
+			kinds.Variable,
+			kinds.Class,
+			kinds.Interface,
+			kinds.Module,
+			kinds.Property,
+			kinds.Unit,
+			kinds.Value,
+			kinds.Enum,
+			kinds.Keyword,
+			kinds.Snippet,
+			kinds.Color,
+			kinds.File,
+			kinds.Reference,
+			kinds.Folder,
+			kinds.EnumMember,
+			kinds.Constant,
+			kinds.Struct,
+			kinds.Event,
+			kinds.Operator,
+			kinds.TypeParameter,
+		][Math.max(0, (kind ?? 1) - 1)] ?? kinds.Text
+	);
 }
 
 function lspRange(
