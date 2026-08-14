@@ -384,14 +384,19 @@ function CompareFile({
 }
 
 function RevisionLabel({ label, hash }: { label: string; hash: string }) {
-	const displayLabel = label === ":worktree" ? "Working tree" : label;
+	const displayLabel =
+		label === ":worktree"
+			? "Working tree"
+			: label === ":empty"
+				? "Empty tree"
+				: label;
 	return (
 		<span
 			className="flex min-w-0 items-center gap-1.5"
-			title={`${displayLabel} (${hash})`}
+			title={hash ? `${displayLabel} (${hash})` : displayLabel}
 		>
 			<span className="max-w-52 truncate text-fg-muted">{displayLabel}</span>
-			<span className="text-fg-dim">{hash.slice(0, 7)}</span>
+			{hash && <span className="text-fg-dim">{hash.slice(0, 7)}</span>}
 		</span>
 	);
 }

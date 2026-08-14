@@ -193,6 +193,13 @@ func TestNativeRepositoryCompareAndHistory(t *testing.T) {
 
 	m := New(dir)
 	defer m.Close()
+	root, err := m.Compare(context.Background(), EmptyTreeRevision, head.Hash().String(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.BaseHash != "" || root.HeadHash != head.Hash().String() || len(root.Diffs) != 1 || root.Diffs[0].Path != "shared.txt" || root.Diffs[0].Status != StatusAdded {
+		t.Fatalf("root comparison = %+v", root)
+	}
 	direct, err := m.Compare(context.Background(), mainBranch.Short(), featureBranch.Short(), false)
 	if err != nil {
 		t.Fatal(err)
@@ -232,7 +239,7 @@ func TestNativeRepositoryCompareAndHistory(t *testing.T) {
 		t.Fatalf("working tree diffs = %+v", workingDiffs)
 	}
 
-	history, err := m.History(context.Background(), 10)
+	history, err := m.History(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

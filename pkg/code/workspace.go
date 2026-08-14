@@ -814,13 +814,13 @@ func (w *Workspace) GitBranches(ctx context.Context, refresh bool) ([]changes.Gi
 	return w.Changes.Branches(ctx, refresh)
 }
 
-func (w *Workspace) GitHistory(ctx context.Context, limit int) ([]changes.GitCommit, error) {
+func (w *Workspace) GitHistory(ctx context.Context) ([]changes.GitCommit, error) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	if w.Changes == nil {
 		return nil, changes.ErrNotGitRepository
 	}
-	return w.Changes.History(ctx, limit)
+	return w.Changes.History(ctx)
 }
 
 func (w *Workspace) GitCompare(ctx context.Context, base, head string, mergeBase bool) (changes.CompareResult, error) {

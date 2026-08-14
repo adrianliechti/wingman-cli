@@ -156,12 +156,208 @@ test("keeps the empty draft tab non-closable", async ({ page }) => {
 	const draftId = await draft.getAttribute("data-center-tab");
 	expect(draftId).toBeTruthy();
 
-	await expect(draft).toHaveAttribute("aria-label", /New Session/);
+	await expect(draft).toHaveAttribute("aria-label", /Agent/);
 	await draft.hover();
 	await expect(draft.locator("[data-tab-close]")).toHaveCount(0);
 	await draft.focus();
 	await page.keyboard.press("Delete");
 	await expect(page.locator(`[data-center-tab="${draftId}"]`)).toHaveCount(1);
+});
+
+test("reuses and promotes preview tabs while browsing files", async ({
+	page,
+}) => {
+	await composer(page);
+	const tabs = page
+		.getByRole("tablist", { name: "Open tabs" })
+		.locator('[role="tab"][data-center-tab^="file:"]');
+	const initialTabs = await tabs.count();
+	const editableFile = page.getByRole("treeitem", { name: /editable\.txt/ });
+	const completionFile = page.getByRole("treeitem", { name: /completion\.go/ });
+	const themeFile = page.getByRole("treeitem", { name: /theme-preview\.html/ });
+	const editableTab = page.locator('[data-center-tab="file:editable.txt"]');
+	const completionTab = page.locator('[data-center-tab="file:completion.go"]');
+	const themeTab = page.locator('[data-center-tab="file:theme-preview.html"]');
+
+	await editableFile.click();
+	await expect(editableTab).toHaveAttribute("data-tab-preview", "true");
+	await expect(tabs).toHaveCount(initialTabs + 1);
+
+	await completionFile.click();
+	await expect(editableTab).toHaveCount(0);
+	await expect(completionTab).toHaveAttribute("data-tab-preview", "true");
+	await expect(tabs).toHaveCount(initialTabs + 1);
+
+	const editor = page.locator(".monaco-editor");
+	await expect(editor).toBeVisible();
+	await editor.click();
+	await expect(completionTab).not.toHaveAttribute("data-tab-preview", "true");
+
+	await themeFile.click();
+	await expect(themeTab).toHaveAttribute("data-tab-preview", "true");
+	await expect(tabs).toHaveCount(initialTabs + 2);
+	await editableFile.click();
+	await expect(themeTab).toHaveCount(0);
+	await expect(editableTab).toHaveAttribute("data-tab-preview", "true");
+	await expect(tabs).toHaveCount(initialTabs + 2);
+
+	await editableFile.dblclick();
+	await expect(editableTab).not.toHaveAttribute("data-tab-preview", "true");
+	await themeFile.click();
+	await expect(themeTab).toHaveAttribute("data-tab-preview", "true");
+	await themeTab.click({ button: "right" });
+	await page
+		.getByRole("menu", { name: "Tab actions" })
+		.getByRole("menuitem", { name: "Keep Open" })
+		.click();
+	await expect(themeTab).not.toHaveAttribute("data-tab-preview", "true");
+});
+
+test("reuses and promotes preview tabs while browsing sessions", async ({
+	page,
+}) => {
+	const savedSessions = [
+		{
+			id: "preview-session-one",
+			title: "Preview session one",
+			created_at: "2026-08-14T10:00:00Z",
+			updated_at: "2026-08-14T10:00:00Z",
+		},
+		{
+			id: "preview-session-two",
+			title: "Preview session two",
+			created_at: "2026-08-14T09:00:00Z",
+			updated_at: "2026-08-14T09:00:00Z",
+		},
+		{
+			id: "preview-session-three",
+			title: "Preview session three",
+			created_at: "2026-08-14T08:00:00Z",
+			updated_at: "2026-08-14T08:00:00Z",
+		},
+	];
+	const loadRequests: string[] = [];
+	let releaseLoads = () => {};
+	const loadsReleased = new Promise<void>((resolve) => {
+		releaseLoads = resolve;
+	});
+	await page.route(/\/api\/sessions$/, async (route) => {
+		if (route.request().method() === "GET") {
+			await route.fulfill({ json: savedSessions });
+			return;
+		}
+		await route.fulfill({ json: {} });
+	});
+	await page.route(
+		/\/api\/sessions\/preview-session-[^/]+\/load$/,
+		async (route) => {
+			loadRequests.push(route.request().url());
+			await loadsReleased;
+			await route.fulfill({ status: 204 });
+		},
+	);
+
+	const input = await composer(page);
+	await page.getByLabel("Show sessions").click();
+	const tabs = page
+		.getByRole("tablist", { name: "Open tabs" })
+		.getByRole("tab");
+	const initialTabs = await tabs.count();
+	const draftTab = page.locator('[data-center-tab="chat:"]');
+	const firstSession = page.locator('[data-session-id="preview-session-one"]');
+	const secondSession = page.locator('[data-session-id="preview-session-two"]');
+	const thirdSession = page.locator(
+		'[data-session-id="preview-session-three"]',
+	);
+	const firstTab = page.locator('[data-center-tab="chat:preview-session-one"]');
+	const secondTab = page.locator(
+		'[data-center-tab="chat:preview-session-two"]',
+	);
+	const thirdTab = page.locator(
+		'[data-center-tab="chat:preview-session-three"]',
+	);
+
+	await firstSession.click();
+	await expect(firstTab).toHaveAttribute("data-tab-preview", "true");
+	await expect(draftTab).toHaveCount(1);
+	await expect(tabs).toHaveCount(initialTabs + 1);
+
+	await secondSession.click();
+	await expect(firstTab).toHaveCount(0);
+	await expect(secondTab).toHaveAttribute("data-tab-preview", "true");
+	await expect(tabs).toHaveCount(initialTabs + 1);
+
+	await input.click();
+	await expect(secondTab).not.toHaveAttribute("data-tab-preview", "true");
+	await thirdSession.dblclick();
+	await expect(thirdTab).not.toHaveAttribute("data-tab-preview", "true");
+	await expect(tabs).toHaveCount(initialTabs + 2);
+
+	await firstSession.click({ button: "right" });
+	await page
+		.getByRole("menu", { name: "Actions for Preview session one" })
+		.getByRole("menuitem", { name: "Open session" })
+		.click();
+	await expect(firstTab).not.toHaveAttribute("data-tab-preview", "true");
+	await expect(tabs).toHaveCount(initialTabs + 3);
+	await expect.poll(() => loadRequests.length).toBe(3);
+	releaseLoads();
+});
+
+test("restores Agent when the last session preview is replaced", async ({
+	page,
+}) => {
+	await page.route(/\/api\/sessions$/, async (route) => {
+		if (route.request().method() === "GET") {
+			await route.fulfill({
+				json: [
+					{
+						id: "sole-session-preview",
+						title: "Sole session preview",
+						created_at: "2026-08-14T10:00:00Z",
+						updated_at: "2026-08-14T10:00:00Z",
+					},
+				],
+			});
+			return;
+		}
+		await route.fulfill({ json: { id: "initial-kept-session" } });
+	});
+	await page.route(
+		/\/api\/sessions\/sole-session-preview\/load$/,
+		async (route) => {
+			await route.fulfill({ status: 204 });
+		},
+	);
+
+	const input = await composer(page);
+	await input.fill("Keep this session open");
+	await input.press("Enter");
+	const initialSession = page.locator('[data-center-tab="chat:"]');
+	await expect(initialSession).toBeVisible();
+	await page.getByLabel("Show sessions").click();
+	const previewRow = page.locator('[data-session-id="sole-session-preview"]');
+	const previewTab = page.locator(
+		'[data-center-tab="chat:sole-session-preview"]',
+	);
+	await previewRow.click();
+	await expect(previewTab).toHaveAttribute("data-tab-preview", "true");
+
+	await initialSession.hover();
+	await initialSession.locator("[data-tab-close]").click();
+	await expect(initialSession).toHaveCount(0);
+	await expect(previewTab).toHaveCount(1);
+
+	await page.getByRole("treeitem", { name: /editable\.txt/ }).click();
+	await expect(previewTab).toHaveCount(0);
+	const newSession = page
+		.getByRole("tablist", { name: "Open tabs" })
+		.getByRole("tab", { name: "Agent", exact: true });
+	await expect(newSession).toBeVisible();
+	await expect(newSession).not.toHaveAttribute("data-tab-preview", "true");
+	await expect(
+		previewRow.getByRole("button", { name: /Sole session preview/ }),
+	).not.toHaveAttribute("aria-current", "page");
 });
 
 test("uses canonical product names for agents", async ({ page }) => {
@@ -193,6 +389,85 @@ test("uses canonical product names for agents", async ({ page }) => {
 			menu.getByRole("menuitemradio", { name, exact: true }),
 		).toBeVisible();
 	}
+});
+
+test("groups diagnostics by file and opens individual problems", async ({
+	page,
+}) => {
+	await page.route(/\/api\/capabilities$/, async (route) => {
+		await route.fulfill({
+			json: {
+				git: false,
+				lsp: true,
+				diffs: false,
+				tasks: false,
+				terminal: true,
+			},
+		});
+	});
+	const diagnostics = [
+		{
+			path: "completion.go",
+			line: 3,
+			column: 5,
+			severity: "error",
+			message: "Undefined symbol",
+			source: "gopls",
+		},
+		{
+			path: "completion.go",
+			line: 7,
+			column: 2,
+			severity: "warning",
+			message: "Value is never used",
+			source: "compiler",
+		},
+		{
+			path: "nested/example.go",
+			line: 2,
+			column: 1,
+			severity: "info",
+			message: "Consider simplifying this expression",
+			source: "gopls",
+		},
+	];
+	await page.route(/\/api\/lsp\/diagnostics$/, async (route) => {
+		if (route.request().method() === "POST") {
+			await route.fulfill({ json: diagnostics });
+			return;
+		}
+		await route.fulfill({
+			json: {
+				diagnostics,
+				checked_files: 2,
+				discovered_files: 2,
+				discovery_truncated: false,
+				unknown_files: 0,
+				unavailable_servers: [],
+				analyzing: false,
+			},
+		});
+	});
+
+	await composer(page);
+	await page
+		.getByRole("tablist", { name: "Workspace panels" })
+		.getByRole("tab", { name: "Problems" })
+		.click();
+	const completionGroup = page.locator('[data-problem-file="completion.go"]');
+	const nestedGroup = page.locator('[data-problem-file="nested/example.go"]');
+	await expect(completionGroup.locator("[data-problem-entry]")).toHaveCount(2);
+	await expect(nestedGroup.locator("[data-problem-entry]")).toHaveCount(1);
+	await expect(completionGroup.getByText("L3:5")).toHaveCount(0);
+	await expect(completionGroup.getByText("gopls")).toHaveCount(0);
+	await expect(
+		completionGroup.getByRole("button", { name: "Undefined symbol" }),
+	).toHaveAttribute("title", "Undefined symbol · completion.go:3:5 · gopls");
+
+	await completionGroup.getByText("Undefined symbol").click();
+	await expect(
+		page.locator('[data-center-tab="file:completion.go"]'),
+	).toHaveAttribute("data-tab-preview", "true");
 });
 
 test("uses each Git status slot for its stage action", async ({ page }) => {
@@ -248,7 +523,7 @@ test("uses each Git status slot for its stage action", async ({ page }) => {
 		.click();
 
 	await page.getByTitle("main", { exact: true }).click();
-	const branches = page.getByRole("dialog", { name: "Switch Git branch" });
+	const branches = page.getByRole("dialog", { name: "Git branches" });
 	await expect(branches).toBeVisible();
 	await expectFloatingInViewport(page, branches);
 	await page.keyboard.press("Escape");
@@ -324,8 +599,20 @@ test("compares branches and commits in a main content tab", async ({
 	const baseHash = "1111111111111111111111111111111111111111";
 	const middleHash = "3333333333333333333333333333333333333333";
 	const headHash = "2222222222222222222222222222222222222222";
+	const archivedHash = (index: number) =>
+		`${(index + 4).toString(16).padStart(7, "0")}${"a".repeat(33)}`;
+	const olderCommits = Array.from({ length: 200 }, (_, index) => ({
+		hash: archivedHash(index),
+		parents: index === 199 ? [] : [archivedHash(index + 1)],
+		summary: `Archived commit ${index + 1}`,
+		author: "Ada",
+		authored_at: "2026-08-12T10:00:00Z",
+		refs: [],
+	}));
 	const compareModes: string[] = [];
+	const compareBases: string[] = [];
 	const compareHeads: string[] = [];
+	const historyQueries: string[] = [];
 	await page.route(/\/api\/capabilities$/, async (route) => {
 		await route.fulfill({
 			json: {
@@ -356,6 +643,7 @@ test("compares branches and commits in a main content tab", async ({
 		});
 	});
 	await page.route(/\/api\/git\/history/, async (route) => {
+		historyQueries.push(new URL(route.request().url()).search);
 		await route.fulfill({
 			json: [
 				{
@@ -376,24 +664,27 @@ test("compares branches and commits in a main content tab", async ({
 				},
 				{
 					hash: baseHash,
-					parents: [],
+					parents: [olderCommits[0].hash],
 					summary: "Initial commit",
 					author: "Ada",
 					authored_at: "2026-08-13T10:00:00Z",
 					refs: ["main"],
 				},
+				...olderCommits,
 			],
 		});
 	});
 	await page.route(/\/api\/git\/compare/, async (route) => {
 		const request = new URL(route.request().url());
 		compareModes.push(request.searchParams.get("mode") || "");
+		compareBases.push(request.searchParams.get("base") || "");
 		compareHeads.push(request.searchParams.get("head") || "");
 		await route.fulfill({
 			json: {
 				base: request.searchParams.get("base"),
 				head: request.searchParams.get("head"),
-				base_hash: baseHash,
+				base_hash:
+					request.searchParams.get("base") === ":empty" ? "" : baseHash,
 				head_hash: headHash,
 				...(request.searchParams.get("mode") === "merge-base"
 					? { merge_base_hash: baseHash }
@@ -486,26 +777,160 @@ test("compares branches and commits in a main content tab", async ({
 	});
 	await expect(page.locator("[data-sticky-file-header]")).toBeVisible();
 
-	await page.getByRole("button", { name: /^History/ }).click();
+	const historyToggle = page.getByRole("button", {
+		name: "History",
+		exact: true,
+	});
+	await historyToggle.click();
+	await expect(historyToggle).toHaveText("History");
 	await expect(page.getByText("Unreferenced work")).toBeVisible();
-	await page.locator(`[data-git-commit="${middleHash}"]`).click();
-	await page.getByRole("button", { name: "View commit" }).click();
+	await expect.poll(() => historyQueries.length).toBeGreaterThan(0);
+	expect(
+		historyQueries.every((query) => !new URLSearchParams(query).has("limit")),
+	).toBe(true);
+	const historyList = page.locator("[data-virtual-git-history]");
+	await expect(historyList).toBeVisible();
+	const historyResize = page.getByRole("separator", {
+		name: "Resize Git history",
+	});
+	const historyBeforeResize = await historyList.boundingBox();
+	const historyResizeBox = await historyResize.boundingBox();
+	expect(historyBeforeResize).not.toBeNull();
+	expect(historyResizeBox).not.toBeNull();
+	await page.mouse.move(
+		historyResizeBox!.x + historyResizeBox!.width / 2,
+		historyResizeBox!.y + historyResizeBox!.height / 2,
+	);
+	await page.mouse.down();
+	await page.mouse.move(
+		historyResizeBox!.x + historyResizeBox!.width / 2,
+		historyResizeBox!.y - 60,
+	);
+	await page.mouse.up();
+	await expect
+		.poll(async () => (await historyList.boundingBox())?.height ?? 0)
+		.toBeGreaterThan(historyBeforeResize!.height + 40);
+	await expect
+		.poll(() => page.locator("[data-git-commit]").count())
+		.toBeLessThan(30);
+	await historyList.evaluate((element) => {
+		element.scrollTop = element.scrollHeight;
+		element.dispatchEvent(new Event("scroll"));
+	});
+	const rootCommit = page.locator(
+		`[data-git-commit="${olderCommits[olderCommits.length - 1].hash}"]`,
+	);
+	await expect(rootCommit).toBeVisible();
+	await rootCommit.click();
+	await expect(rootCommit.locator("[data-commit-select]")).toHaveAttribute(
+		"aria-pressed",
+		"false",
+	);
+	const centerTabs = page
+		.getByRole("tablist", { name: "Open tabs" })
+		.getByRole("tab");
+	const rootPreview = page.getByRole("tab", {
+		name: /Empty tree → 00000cb/,
+	});
+	await expect(rootPreview).toHaveAttribute("data-tab-preview", "true");
+	const tabsWithRootPreview = await centerTabs.count();
+	await historyList.evaluate((element) => {
+		element.scrollTop = 0;
+		element.dispatchEvent(new Event("scroll"));
+	});
+	await expect(page.getByText("Unreferenced work")).toBeVisible();
+	const middleCommit = page.locator(`[data-git-commit="${middleHash}"]`);
+	await middleCommit.click({ button: "right" });
+	const commitMenu = page.getByRole("menu", {
+		name: "Actions for Unreferenced work",
+	});
+	await expect(commitMenu).toBeVisible();
 	await expect(
-		page.getByRole("tab", { name: /1111111 → 3333333/ }),
+		commitMenu.getByRole("menuitem", { name: "Open commit changes" }),
 	).toBeVisible();
-	await page.getByRole("button", { name: "Clear", exact: true }).click();
-	await page.locator(`[data-git-commit="${baseHash}"]`).click();
-	await page.locator(`[data-git-commit="${headHash}"]`).click();
-	await page.getByRole("button", { name: "Compare", exact: true }).click();
 	await expect(
-		page.getByRole("tab", { name: /1111111 → 2222222/ }),
+		commitMenu.getByRole("menuitem", { name: "Copy commit hash" }),
 	).toBeVisible();
+	const commitMenuBox = await commitMenu.boundingBox();
+	await page.keyboard.down("Alt");
+	await expect(
+		commitMenu.getByRole("menuitem", { name: "Copy short hash" }),
+	).toBeVisible();
+	await expect.poll(() => commitMenu.boundingBox()).toEqual(commitMenuBox);
+	await page.keyboard.up("Alt");
+	await page.keyboard.press("Escape");
+	await middleCommit.click();
+	const middlePreview = page.getByRole("tab", { name: /1111111 → 3333333/ });
+	await expect(middlePreview).toHaveAttribute("data-tab-preview", "true");
+	await expect(rootPreview).toHaveCount(0);
+	await expect(centerTabs).toHaveCount(tabsWithRootPreview);
+	await middleCommit.dblclick();
+	await expect(middlePreview).not.toHaveAttribute("data-tab-preview", "true");
+	const baseCommit = page.locator(`[data-git-commit="${baseHash}"]`);
+	const baseSelect = baseCommit.locator("[data-commit-select]");
+	await baseSelect.click();
+	const basePreview = page.getByRole("tab", { name: /0000004 → 1111111/ });
+	await expect(basePreview).toHaveAttribute("data-tab-preview", "true");
+	await expect(baseSelect).toHaveAttribute("aria-pressed", "true");
+	await expect(baseSelect).toHaveText("C");
+	await expect(centerTabs).toHaveCount(tabsWithRootPreview + 1);
+	const headCommit = page.locator(`[data-git-commit="${headHash}"]`);
+	const headSelect = headCommit.locator("[data-commit-select]");
+	await headSelect.click();
+	const headPreview = page.getByRole("tab", { name: /1111111 → 2222222/ });
+	await expect(headPreview).toHaveAttribute("data-tab-preview", "true");
+	await expect(baseSelect).toHaveText("B");
+	await expect(headSelect).toHaveText("C");
+	await expect(basePreview).toHaveCount(0);
+	await expect(centerTabs).toHaveCount(tabsWithRootPreview + 1);
+	await headSelect.click();
+	await expect(headSelect).toHaveAttribute("aria-pressed", "false");
+	await expect(baseSelect).toHaveText("C");
+	await expect(basePreview).toHaveAttribute("data-tab-preview", "true");
+	await middleCommit.click();
+	await expect(middlePreview).toHaveAttribute("aria-selected", "true");
+	await expect(baseSelect).toHaveText("C");
+	await baseSelect.click();
+	await expect(baseSelect).toHaveAttribute("aria-pressed", "false");
+	await expect(basePreview).toHaveAttribute("aria-selected", "true");
+	await page.getByText("80 changed files", { exact: true }).click();
+	await expect(basePreview).not.toHaveAttribute("data-tab-preview", "true");
 	await expect
 		.poll(() => compareModes)
-		.toEqual(["merge-base", "direct", "direct"]);
+		.toEqual([
+			"merge-base",
+			"direct",
+			"direct",
+			"direct",
+			"direct",
+			"direct",
+			"direct",
+			"direct",
+		]);
+	await expect
+		.poll(() => compareBases)
+		.toEqual([
+			"main",
+			":empty",
+			baseHash,
+			olderCommits[0].hash,
+			baseHash,
+			olderCommits[0].hash,
+			baseHash,
+			olderCommits[0].hash,
+		]);
 	await expect
 		.poll(() => compareHeads)
-		.toEqual([":worktree", middleHash, headHash]);
+		.toEqual([
+			":worktree",
+			olderCommits[olderCommits.length - 1].hash,
+			middleHash,
+			baseHash,
+			headHash,
+			baseHash,
+			middleHash,
+			baseHash,
+		]);
 });
 
 test("keeps the session context menu above panel clipping", async ({
@@ -980,15 +1405,15 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 			element.closest("[data-window-titlebar]")?.getAttribute("aria-label"),
 		),
 	).toBe("Window toolbar");
-	await expect(toolbar.getByLabel(/sessions/)).toBeVisible();
-	await expect(toolbar.getByLabel(/workspace panel/)).toBeVisible();
+	await expect(toolbar.getByLabel("Show sessions")).toBeVisible();
+	await expect(toolbar.getByLabel(/workspace panel/)).toHaveCount(0);
 	await expect(page.locator('[data-layout-panel="sessions"]')).toHaveCSS(
 		"width",
 		"0px",
 	);
 	await expect(page.locator('[data-layout-panel="workspace"]')).toHaveCSS(
 		"width",
-		"304px",
+		"280px",
 	);
 	const sessionsFrame = page.locator('[data-panel-frame="sessions"]');
 	await expect(sessionsFrame).toHaveCSS("width", "240px");
@@ -996,7 +1421,7 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 	await expect(sessionsFrame).toHaveCSS("border-radius", "10px");
 	await expect(sessionsFrame).toHaveCSS("border-right-width", "0px");
 	const workspaceFrame = page.locator('[data-panel-frame="workspace"]');
-	await expect(workspaceFrame).toHaveCSS("width", "304px");
+	await expect(workspaceFrame).toHaveCSS("width", "280px");
 	await expect(workspaceFrame).toHaveCSS("border-radius", "10px");
 	await expect(workspaceFrame).toHaveCSS("border-left-width", "0px");
 	await expect(
@@ -1008,10 +1433,16 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 	);
 	await expect(toolbar.locator("[data-titlebar-right-panel]")).toHaveCSS(
 		"width",
-		"304px",
+		"280px",
 	);
 	const workspaceTabs = page.getByRole("tablist", {
 		name: "Workspace panels",
+	});
+	const sessionsHandle = page.getByRole("separator", {
+		name: "Resize sessions panel",
+	});
+	const workspaceHandle = page.getByRole("separator", {
+		name: "Resize workspace panel",
 	});
 	await expect(workspaceTabs).toBeVisible();
 	expect(
@@ -1036,6 +1467,12 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 		"width",
 		"240px",
 	);
+	await expect(
+		toolbar.getByRole("button", { name: "Hide sessions" }),
+	).toHaveCount(0);
+	await expect(
+		toolbar.getByRole("button", { name: "Hide workspace panel" }),
+	).toHaveCount(0);
 	await expect
 		.poll(async () => {
 			const titlebarPanel = await toolbar
@@ -1046,17 +1483,12 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 				.boundingBox();
 			const frame = await sessionsFrame.boundingBox();
 			const firstTab = await tabStrip.getByRole("tab").first().boundingBox();
-			const toggle = await toolbar
-				.getByRole("button", { name: "Hide sessions" })
-				.boundingBox();
-			if (!titlebarPanel || !sidebar || !frame || !firstTab || !toggle)
-				return false;
+			if (!titlebarPanel || !sidebar || !frame || !firstTab) return false;
 			const divider = sidebar.x + sidebar.width;
 			return (
 				Math.abs(titlebarPanel.x + titlebarPanel.width - divider) <= 1 &&
 				Math.abs(frame.x - sidebar.x) <= 1 &&
 				Math.abs(frame.x + frame.width - divider) <= 1 &&
-				Math.abs(toggle.x + toggle.width - divider) <= 1 &&
 				Math.abs(firstTab.x - divider) <= 1
 			);
 		})
@@ -1070,14 +1502,10 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 				.locator('[data-layout-panel="workspace"]')
 				.boundingBox();
 			const frame = await workspaceFrame.boundingBox();
-			const toggle = await toolbar
-				.getByRole("button", { name: "Hide workspace panel" })
-				.boundingBox();
-			if (!titlebarPanel || !workspace || !frame || !toggle) return false;
+			if (!titlebarPanel || !workspace || !frame) return false;
 			return (
 				Math.abs(titlebarPanel.x - workspace.x) <= 1 &&
 				Math.abs(frame.x - workspace.x) <= 1 &&
-				Math.abs(toggle.x - workspace.x) <= 1 &&
 				Math.abs(frame.x + frame.width - (workspace.x + workspace.width)) <= 1
 			);
 		})
@@ -1093,7 +1521,15 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 		await expect(agentChooser).toBeVisible();
 		const sessions = page.locator('[data-layout-panel="sessions"]');
 		const sessionsContent = page.locator('[data-panel-content="sessions"]');
-		await toolbar.getByRole("button", { name: "Hide sessions" }).click();
+		const sessionsHandleBox = await sessionsHandle.boundingBox();
+		expect(sessionsHandleBox).not.toBeNull();
+		await page.mouse.move(
+			sessionsHandleBox!.x + sessionsHandleBox!.width / 2,
+			sessionsHandleBox!.y + sessionsHandleBox!.height / 2,
+		);
+		await page.mouse.down();
+		await page.mouse.move(sessionsHandleBox!.x - 500, sessionsHandleBox!.y);
+		await page.mouse.up();
 		await expect(toolbar.locator("[data-titlebar-agent]")).toHaveCount(0);
 		await expect(sessions).toHaveCSS("width", "0px");
 		await expect(sessionsContent).toHaveCSS("width", "240px");
@@ -1108,9 +1544,17 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 	}
 	const workspace = page.locator('[data-layout-panel="workspace"]');
 	const workspaceContent = page.locator('[data-panel-content="workspace"]');
-	await toolbar.getByRole("button", { name: "Hide workspace panel" }).click();
+	const workspaceHandleBox = await workspaceHandle.boundingBox();
+	expect(workspaceHandleBox).not.toBeNull();
+	await page.mouse.move(
+		workspaceHandleBox!.x + workspaceHandleBox!.width / 2,
+		workspaceHandleBox!.y + workspaceHandleBox!.height / 2,
+	);
+	await page.mouse.down();
+	await page.mouse.move(workspaceHandleBox!.x + 500, workspaceHandleBox!.y);
+	await page.mouse.up();
 	await expect(workspace).toHaveCSS("width", "0px");
-	await expect(workspaceContent).toHaveCSS("width", "304px");
+	await expect(workspaceContent).toHaveCSS("width", "280px");
 	await expect(workspaceContent).toHaveCSS("opacity", "0");
 	await expect(workspaceFrame).toHaveCSS("opacity", "0");
 	await expect(toolbar.locator("[data-titlebar-right-panel]")).toHaveCSS(
@@ -1119,13 +1563,13 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 	);
 	await expect(workspaceTabs).toHaveCount(0);
 	await toolbar.getByRole("button", { name: "Show workspace panel" }).click();
-	await expect(workspace).toHaveCSS("width", "304px");
-	await expect(workspaceContent).toHaveCSS("width", "304px");
+	await expect(workspace).toHaveCSS("width", "280px");
+	await expect(workspaceContent).toHaveCSS("width", "280px");
 	await expect(workspaceContent).toHaveCSS("opacity", "1");
 	await expect(workspaceFrame).toHaveCSS("opacity", "1");
 	await expect(toolbar.locator("[data-titlebar-right-panel]")).toHaveCSS(
 		"width",
-		"304px",
+		"280px",
 	);
 	await expect(workspaceTabs).toBeVisible();
 	const newSession = toolbar.getByRole("button", { name: "New session" });
@@ -1189,6 +1633,36 @@ test("resizes borderless desktop panels within their limits", async ({
 		"width",
 		"360px",
 	);
+	const expandedSessionsBox = await sessionsHandle.boundingBox();
+	expect(expandedSessionsBox).not.toBeNull();
+	await page.mouse.move(
+		expandedSessionsBox!.x + expandedSessionsBox!.width / 2,
+		expandedSessionsBox!.y + expandedSessionsBox!.height / 2,
+	);
+	await page.mouse.down();
+	await page.mouse.move(
+		expandedSessionsBox!.x + expandedSessionsBox!.width / 2 - 120,
+		expandedSessionsBox!.y,
+	);
+	await page.mouse.up();
+	await expect(sessions).toHaveCSS("width", "240px");
+	const agentPicker = toolbar.getByTitle(/^Agent:/);
+	if (await agentPicker.count()) {
+		await expect
+			.poll(async () => {
+				const panel = await toolbar
+					.locator("[data-titlebar-left-panel]")
+					.boundingBox();
+				const picker = await agentPicker.boundingBox();
+				return !!(
+					panel &&
+					picker &&
+					picker.x >= panel.x &&
+					picker.x + picker.width <= panel.x + panel.width + 1
+				);
+			})
+			.toBe(true);
+	}
 
 	const workspaceBox = await workspaceHandle.boundingBox();
 	expect(workspaceBox).not.toBeNull();
@@ -1202,10 +1676,10 @@ test("resizes borderless desktop panels within their limits", async ({
 		workspaceBox!.y + 20,
 		{ steps: 5 },
 	);
-	await expect(workspace).toHaveCSS("width", "364px");
+	await expect(workspace).toHaveCSS("width", "340px");
 	await expect(toolbar.locator("[data-titlebar-right-panel]")).toHaveCSS(
 		"width",
-		"364px",
+		"340px",
 	);
 	await page.mouse.move(workspaceBox!.x - 1_000, workspaceBox!.y + 20);
 	await expect(workspace).toHaveCSS("width", "480px");
@@ -1214,6 +1688,35 @@ test("resizes borderless desktop panels within their limits", async ({
 		"width",
 		"480px",
 	);
+	const expandedWorkspaceBox = await workspaceHandle.boundingBox();
+	expect(expandedWorkspaceBox).not.toBeNull();
+	await page.mouse.move(
+		expandedWorkspaceBox!.x + expandedWorkspaceBox!.width / 2,
+		expandedWorkspaceBox!.y + expandedWorkspaceBox!.height / 2,
+	);
+	await page.mouse.down();
+	await page.mouse.move(
+		expandedWorkspaceBox!.x + expandedWorkspaceBox!.width / 2 + 200,
+		expandedWorkspaceBox!.y,
+	);
+	await page.mouse.up();
+	await expect(workspace).toHaveCSS("width", "280px");
+	await expect
+		.poll(async () => {
+			const panel = await toolbar
+				.locator("[data-titlebar-right-panel]")
+				.boundingBox();
+			const agents = await toolbar
+				.getByRole("tab", { name: "Agents", exact: true })
+				.boundingBox();
+			return !!(
+				panel &&
+				agents &&
+				agents.x >= panel.x &&
+				agents.x + agents.width <= panel.x + panel.width + 1
+			);
+		})
+		.toBe(true);
 });
 
 test("keeps the desktop workspace mounted across viewport sizes", async ({
@@ -1514,6 +2017,9 @@ test("uses Wingman's dynamic editor context menu", async ({ page }) => {
 	await expect(
 		menu.getByRole("menuitem", { name: "Go to Type Definition" }),
 	).toBeVisible();
+	await expect(
+		menu.getByRole("menuitem", { name: "Change All Occurrences" }),
+	).toBeVisible();
 	for (const item of [
 		"Peek Definition",
 		"Peek Type Definition",
@@ -1524,6 +2030,7 @@ test("uses Wingman's dynamic editor context menu", async ({ page }) => {
 		).toHaveCount(0);
 	}
 
+	const editorMenuBox = await menu.boundingBox();
 	await page.keyboard.down("Alt");
 	for (const item of [
 		"Peek Definition",
@@ -1535,6 +2042,9 @@ test("uses Wingman's dynamic editor context menu", async ({ page }) => {
 		await expect(action).toBeVisible();
 		await expect(action).toBeEnabled();
 	}
+	await expect(
+		menu.getByRole("menuitem", { name: "Change All Occurrences" }),
+	).toBeVisible();
 	for (const item of [
 		"Go to Definition",
 		"Go to Type Definition",
@@ -1544,6 +2054,7 @@ test("uses Wingman's dynamic editor context menu", async ({ page }) => {
 			menu.getByRole("menuitem", { name: item, exact: true }),
 		).toHaveCount(0);
 	}
+	await expect.poll(() => menu.boundingBox()).toEqual(editorMenuBox);
 	await page.keyboard.up("Alt");
 	await expect(
 		menu.getByRole("menuitem", { name: "Go to Definition", exact: true }),

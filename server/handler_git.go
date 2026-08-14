@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -130,16 +129,7 @@ func (s *Server) handleGitBranches(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGitHistory(w http.ResponseWriter, r *http.Request) {
-	limit := 100
-	if value := r.URL.Query().Get("limit"); value != "" {
-		parsed, err := strconv.Atoi(value)
-		if err != nil || parsed < 1 || parsed > 500 {
-			http.Error(w, "limit must be between 1 and 500", http.StatusBadRequest)
-			return
-		}
-		limit = parsed
-	}
-	commits, err := s.workspace.GitHistory(r.Context(), limit)
+	commits, err := s.workspace.GitHistory(r.Context())
 	if err != nil {
 		writeGitError(w, err)
 		return

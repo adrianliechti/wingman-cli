@@ -15,7 +15,7 @@ import {
 	Undo2,
 } from "lucide-react";
 import type * as MonacoTypes from "monaco-editor";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import type { MonacoLanguageFeature } from "../monacoLsp";
 import { FloatingMenu } from "./ui/Floating";
 
@@ -193,9 +193,10 @@ export function EditorContextMenu({
 		supportsLanguageFeature,
 		altKey,
 	);
-	const supportedCodeActions = readOnly
-		? []
-		: supportedActions(editor, codeActions);
+	const supportedCodeActions = useMemo(
+		() => (readOnly ? [] : supportedActions(editor, codeActions)),
+		[editor, readOnly],
+	);
 	const selection = editor.getSelection();
 	const hasSelection = !!selection && !selection.isEmpty();
 	const formatItems = readOnly
@@ -241,7 +242,7 @@ export function EditorContextMenu({
 							role="menuitem"
 							aria-label={item.label}
 							disabled={!item.enabled}
-							className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted transition-colors enabled:hover:bg-bg-hover enabled:hover:text-fg disabled:cursor-default disabled:opacity-40"
+							className="flex w-full items-center gap-2 px-3 py-1 text-left text-fg-muted transition-colors enabled:hover:bg-bg-hover enabled:hover:text-fg disabled:cursor-default disabled:opacity-40"
 							onClick={() => {
 								onClose();
 								editor.focus();

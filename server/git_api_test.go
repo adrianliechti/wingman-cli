@@ -260,7 +260,7 @@ func TestGitAPIHistoryAndCompare(t *testing.T) {
 	postGit(t, web.URL, "stage", `{"paths":["feature.txt"]}`)
 	postGit(t, web.URL, "commit", `{"message":"feature commit"}`)
 
-	res, err := http.Get(web.URL + "/api/git/history?limit=10")
+	res, err := http.Get(web.URL + "/api/git/history")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,12 +274,34 @@ func TestGitAPIHistoryAndCompare(t *testing.T) {
 	}
 	foundFeature := false
 	foundUnreferenced := false
+	initialHash := ""
 	for _, commit := range history {
 		foundFeature = foundFeature || commit.Summary == "feature commit"
 		foundUnreferenced = foundUnreferenced || commit.Refs != nil && len(commit.Refs) == 0
+		if commit.Summary == "initial" {
+			initialHash = commit.Hash
+		}
 	}
-	if len(history) != 3 || !foundFeature || !foundUnreferenced {
+	if len(history) != 3 || !foundFeature || !foundUnreferenced || initialHash == "" {
 		t.Fatalf("history = %+v", history)
+	}
+
+	rootURL := web.URL + "/api/git/compare?base=%3Aempty&head=" + url.QueryEscape(initialHash) + "&mode=direct"
+	res, err = http.Get(rootURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		message, _ := io.ReadAll(res.Body)
+		t.Fatalf("root comparison endpoint = %d: %s", res.StatusCode, message)
+	}
+	var rootComparison GitCompare
+	if err := json.NewDecoder(res.Body).Decode(&rootComparison); err != nil {
+		t.Fatal(err)
+	}
+	if len(rootComparison.Files) != 1 || rootComparison.Files[0].Path != "base.txt" || rootComparison.Files[0].Status != "added" {
+		t.Fatalf("root comparison = %+v", rootComparison)
 	}
 
 	compareURL := web.URL + "/api/git/compare?base=" + url.QueryEscape(mainBranch) + "&head=feature%2Fcompare&mode=merge-base"

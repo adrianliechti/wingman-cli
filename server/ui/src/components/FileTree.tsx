@@ -18,12 +18,13 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createWorkspaceFile } from "../api/files";
 import type { FileEntry, ServerMessage } from "../types/protocol";
+import type { TabDisposition } from "../types/tabs";
 import { getDeviconClass } from "../utils/fileIcons";
 import { Dialog, dialogButtonClass, useToast } from "./ui/Feedback";
 import { FloatingMenu } from "./ui/Floating";
 
 interface Props {
-	onFileSelect: (path: string) => void;
+	onFileSelect: (path: string, disposition?: TabDisposition) => void;
 	onFileMove?: (from: string, to: string) => void;
 	platform?: string;
 	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
@@ -286,7 +287,7 @@ export function FileTree({
 			await createWorkspaceFile(filePath, { directory: target.directory });
 			setCreating(null);
 			await refresh();
-			if (!target.directory) onFileSelect(filePath);
+			if (!target.directory) onFileSelect(filePath, "keep");
 		} catch (error) {
 			toast({
 				title: `Could not create ${target.directory ? "folder" : "file"}`,
@@ -520,7 +521,11 @@ export function FileTree({
 		if (event.key === "Enter" || event.key === " ") {
 			event.preventDefault();
 			if (node.is_dir) void toggleDir(node.path);
-			else onFileSelect(node.path);
+			else
+				onFileSelect(
+					node.path,
+					event.ctrlKey || event.metaKey ? "keep" : "preview",
+				);
 			return;
 		}
 		if (
@@ -582,6 +587,11 @@ export function FileTree({
 								toggleDir(node.path);
 							} else {
 								onFileSelect(node.path);
+							}
+						}}
+						onDoubleClick={() => {
+							if (!isRenaming && !node.is_dir) {
+								onFileSelect(node.path, "keep");
 							}
 						}}
 						onContextMenu={(e) => {
@@ -686,7 +696,7 @@ export function FileTree({
 					onClose={() => setMenu(null)}
 					onOpen={() => {
 						setMenu(null);
-						if (menu.node) onFileSelect(menu.node.path);
+						if (menu.node) onFileSelect(menu.node.path, "keep");
 					}}
 					onNewFile={() => void beginCreate(menu.node, false)}
 					onNewFolder={() => void beginCreate(menu.node, true)}

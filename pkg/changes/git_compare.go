@@ -22,6 +22,10 @@ import (
 // so it cannot shadow a real branch or tag.
 const WorktreeRevision = ":worktree"
 
+// EmptyTreeRevision is the API-only base used to show the contents introduced
+// by a repository's root commit.
+const EmptyTreeRevision = ":empty"
+
 type CompareResult struct {
 	BaseHash      string
 	HeadHash      string
@@ -46,6 +50,15 @@ func (m *Manager) Compare(ctx context.Context, base, head string, mergeBase bool
 		return CompareResult{}, err
 	}
 	defer m.mu.Unlock()
+	if base == EmptyTreeRevision {
+		if mergeBase {
+			return CompareResult{}, errors.New("the empty tree cannot be used for a merge-base comparison")
+		}
+		if head == WorktreeRevision {
+			return CompareResult{}, errors.New("the empty tree can only be compared with a commit")
+		}
+		return m.compareEmptyTree(ctx, head)
+	}
 
 	baseCommit, err := m.resolveCommit(base)
 	if err != nil {
@@ -84,23 +97,51 @@ func (m *Manager) Compare(ctx context.Context, base, head string, mergeBase bool
 	if err != nil {
 		return CompareResult{}, fmt.Errorf("read compare tree: %w", err)
 	}
-	changes, err := baseTree.DiffContext(ctx, headTree)
+	result.Diffs, err = m.committedTreeDiffs(ctx, baseTree, headTree)
 	if err != nil {
-		return CompareResult{}, fmt.Errorf("compare trees: %w", err)
+		return CompareResult{}, err
 	}
+	return result, nil
+}
+
+func (m *Manager) compareEmptyTree(ctx context.Context, head string) (CompareResult, error) {
+	headCommit, err := m.resolveCommit(head)
+	if err != nil {
+		return CompareResult{}, fmt.Errorf("resolve compare ref %q: %w", head, err)
+	}
+	headTree, err := headCommit.Tree()
+	if err != nil {
+		return CompareResult{}, fmt.Errorf("read compare tree: %w", err)
+	}
+	diffs, err := m.committedTreeDiffs(ctx, nil, headTree)
+	if err != nil {
+		return CompareResult{}, err
+	}
+	return CompareResult{
+		HeadHash: headCommit.Hash.String(),
+		Diffs:    diffs,
+	}, nil
+}
+
+func (m *Manager) committedTreeDiffs(ctx context.Context, baseTree, headTree *object.Tree) ([]FileDiff, error) {
+	changes, err := object.DiffTreeWithOptions(ctx, baseTree, headTree, object.DefaultDiffTreeOptions)
+	if err != nil {
+		return nil, fmt.Errorf("compare trees: %w", err)
+	}
+	diffs := make([]FileDiff, 0, len(changes))
 	for _, change := range changes {
 		if err := ctx.Err(); err != nil {
-			return CompareResult{}, err
+			return nil, err
 		}
 		diff, ok, err := m.committedFileDiff(ctx, baseTree, headTree, change)
 		if err != nil {
-			return CompareResult{}, err
+			return nil, err
 		}
 		if ok {
-			result.Diffs = append(result.Diffs, diff)
+			diffs = append(diffs, diff)
 		}
 	}
-	return result, nil
+	return diffs, nil
 }
 
 type worktreeCandidate struct {
@@ -282,17 +323,11 @@ func (m *Manager) worktreeCandidates(ctx context.Context, baseTree, headTree *ob
 
 // History returns commits reachable from all local and remote refs. Ref labels
 // are attached to their tip commits so the UI can render a compact history tree.
-func (m *Manager) History(ctx context.Context, limit int) ([]GitCommit, error) {
+func (m *Manager) History(ctx context.Context) ([]GitCommit, error) {
 	if err := m.lock(ctx); err != nil {
 		return nil, err
 	}
 	defer m.mu.Unlock()
-	if limit <= 0 {
-		limit = 100
-	}
-	if limit > 500 {
-		limit = 500
-	}
 
 	refsByHash := map[plumbing.Hash][]string{}
 	references, err := m.repo.References()
@@ -334,8 +369,11 @@ func (m *Manager) History(ctx context.Context, limit int) ([]GitCommit, error) {
 	}
 	defer iter.Close()
 
-	commits := make([]GitCommit, 0, limit)
-	for len(commits) < limit {
+	commits := make([]GitCommit, 0, 256)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		commit, err := iter.Next()
 		if errors.Is(err, io.EOF) {
 			break
