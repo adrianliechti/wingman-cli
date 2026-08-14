@@ -63,6 +63,7 @@ export function FileTab({
 	const [contextMenu, setContextMenu] = useState<{
 		x: number;
 		y: number;
+		altKey: boolean;
 	} | null>(null);
 	const [, setLanguageFeaturesRevision] = useState(0);
 	onOpenFileRef.current = onOpenFile;
@@ -242,6 +243,7 @@ export function FileTab({
 								setContextMenu({
 									x: event.event.posx,
 									y: event.event.posy,
+									altKey: event.event.altKey,
 								});
 							});
 							editor.addCommand(
@@ -259,6 +261,7 @@ export function FileTab({
 											bounds.top +
 											(visible?.top ?? 8) +
 											(visible?.height ?? 16),
+										altKey: false,
 									});
 								},
 							);
@@ -306,6 +309,7 @@ export function FileTab({
 					editor={editorRef.current}
 					openAt={contextMenu}
 					readOnly={document.external}
+					initialAltKey={contextMenu.altKey}
 					supportsLanguageFeature={(feature) =>
 						lspBridgeRef.current?.supports(feature) ?? false
 					}

@@ -1292,9 +1292,7 @@ test("uses Wingman's dynamic editor context menu", async ({ page }) => {
 	}
 	for (const item of [
 		"Go to Definition",
-		"Peek Definition",
 		"Go to Implementations",
-		"Peek Implementations",
 		"Find All References",
 	]) {
 		const action = menu.getByRole("menuitem", { name: item, exact: true });
@@ -1304,6 +1302,43 @@ test("uses Wingman's dynamic editor context menu", async ({ page }) => {
 	await expect(
 		menu.getByRole("menuitem", { name: "Go to Type Definition" }),
 	).toBeVisible();
+	for (const item of [
+		"Peek Definition",
+		"Peek Type Definition",
+		"Peek Implementations",
+	]) {
+		await expect(
+			menu.getByRole("menuitem", { name: item, exact: true }),
+		).toHaveCount(0);
+	}
+
+	await page.keyboard.down("Alt");
+	for (const item of [
+		"Peek Definition",
+		"Peek Type Definition",
+		"Peek Implementations",
+		"Find All References",
+	]) {
+		const action = menu.getByRole("menuitem", { name: item, exact: true });
+		await expect(action).toBeVisible();
+		await expect(action).toBeEnabled();
+	}
+	for (const item of [
+		"Go to Definition",
+		"Go to Type Definition",
+		"Go to Implementations",
+	]) {
+		await expect(
+			menu.getByRole("menuitem", { name: item, exact: true }),
+		).toHaveCount(0);
+	}
+	await page.keyboard.up("Alt");
+	await expect(
+		menu.getByRole("menuitem", { name: "Go to Definition", exact: true }),
+	).toBeVisible();
+	await expect(
+		menu.getByRole("menuitem", { name: "Peek Definition", exact: true }),
+	).toHaveCount(0);
 	await expect(
 		page.getByRole("menuitem", { name: "Command Palette", exact: true }),
 	).toHaveCount(0);

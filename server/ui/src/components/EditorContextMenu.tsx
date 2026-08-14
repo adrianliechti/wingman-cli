@@ -15,7 +15,7 @@ import {
 	Undo2,
 } from "lucide-react";
 import type * as MonacoTypes from "monaco-editor";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import type { MonacoLanguageFeature } from "../monacoLsp";
 import { FloatingMenu } from "./ui/Floating";
 
@@ -28,11 +28,13 @@ interface Props {
 	editor: MonacoTypes.editor.IStandaloneCodeEditor;
 	openAt: Point;
 	readOnly: boolean;
+	initialAltKey?: boolean;
 	supportsLanguageFeature: (feature: MonacoLanguageFeature) => boolean;
 	onClose: () => void;
 }
 
 interface MenuItem {
+	key: string;
 	label: string;
 	icon: ReactNode;
 	shortcut?: string;
@@ -49,6 +51,7 @@ interface ActionDefinition {
 
 interface LanguageActionDefinition extends ActionDefinition {
 	feature: MonacoLanguageFeature;
+	alternate?: ActionDefinition;
 }
 
 const navigationActions: LanguageActionDefinition[] = [
@@ -58,37 +61,34 @@ const navigationActions: LanguageActionDefinition[] = [
 		label: "Go to Definition",
 		icon: <FileCode2 size={13} />,
 		shortcut: "F12",
-	},
-	{
-		id: "editor.action.peekDefinition",
-		feature: "definition",
-		label: "Peek Definition",
-		icon: <PanelTopOpen size={13} />,
-		shortcut: "⌥F12",
+		alternate: {
+			id: "editor.action.peekDefinition",
+			label: "Peek Definition",
+			icon: <PanelTopOpen size={13} />,
+			shortcut: "⌥F12",
+		},
 	},
 	{
 		id: "editor.action.goToTypeDefinition",
 		feature: "typeDefinition",
 		label: "Go to Type Definition",
 		icon: <Braces size={13} />,
-	},
-	{
-		id: "editor.action.peekTypeDefinition",
-		feature: "typeDefinition",
-		label: "Peek Type Definition",
-		icon: <PanelTopOpen size={13} />,
+		alternate: {
+			id: "editor.action.peekTypeDefinition",
+			label: "Peek Type Definition",
+			icon: <PanelTopOpen size={13} />,
+		},
 	},
 	{
 		id: "editor.action.goToImplementation",
 		feature: "implementation",
 		label: "Go to Implementations",
 		icon: <GitFork size={13} />,
-	},
-	{
-		id: "editor.action.peekImplementation",
-		feature: "implementation",
-		label: "Peek Implementations",
-		icon: <PanelTopOpen size={13} />,
+		alternate: {
+			id: "editor.action.peekImplementation",
+			label: "Peek Implementations",
+			icon: <PanelTopOpen size={13} />,
+		},
 	},
 	{
 		id: "editor.action.referenceSearch.trigger",
@@ -122,9 +122,32 @@ export function EditorContextMenu({
 	editor,
 	openAt,
 	readOnly,
+	initialAltKey = false,
 	supportsLanguageFeature,
 	onClose,
 }: Props) {
+	const [altKey, setAltKey] = useState(initialAltKey);
+	useEffect(() => {
+		setAltKey(initialAltKey);
+	}, [initialAltKey, openAt]);
+	useEffect(() => {
+		const handleKeyDown = (event: KeyboardEvent) => {
+			if (event.altKey) setAltKey(true);
+		};
+		const handleKeyUp = (event: KeyboardEvent) => {
+			if (event.key === "Alt" || !event.altKey) setAltKey(false);
+		};
+		const handleBlur = () => setAltKey(false);
+		window.addEventListener("keydown", handleKeyDown, true);
+		window.addEventListener("keyup", handleKeyUp, true);
+		window.addEventListener("blur", handleBlur);
+		return () => {
+			window.removeEventListener("keydown", handleKeyDown, true);
+			window.removeEventListener("keyup", handleKeyUp, true);
+			window.removeEventListener("blur", handleBlur);
+		};
+	}, []);
+
 	const mac = /Mac|iPhone|iPad/.test(navigator.platform);
 	const primary = mac ? "⌘" : "Ctrl+";
 	const model = editor.getModel();
@@ -168,6 +191,7 @@ export function EditorContextMenu({
 		editor,
 		navigationActions,
 		supportsLanguageFeature,
+		altKey,
 	);
 	const supportedCodeActions = readOnly
 		? []
@@ -203,7 +227,7 @@ export function EditorContextMenu({
 			gap={0}
 		>
 			{groups.map((group, groupIndex) => (
-				<div key={group[0].label}>
+				<div key={group[0].key}>
 					{groupIndex > 0 && (
 						<div
 							role="separator"
@@ -212,7 +236,7 @@ export function EditorContextMenu({
 					)}
 					{group.map((item) => (
 						<button
-							key={item.label}
+							key={item.key}
 							type="button"
 							role="menuitem"
 							aria-label={item.label}
@@ -251,6 +275,7 @@ function supportedActions(
 		return [
 			{
 				...definition,
+				key: definition.id,
 				enabled: true,
 				run: () => action.run(),
 			},
@@ -262,12 +287,17 @@ function languageActions(
 	editor: MonacoTypes.editor.IStandaloneCodeEditor,
 	definitions: LanguageActionDefinition[],
 	supports: (feature: MonacoLanguageFeature) => boolean,
+	showAlternates: boolean,
 ): MenuItem[] {
-	return definitions.map(({ feature, ...definition }) => ({
-		...definition,
-		enabled: supports(feature),
-		run: () => editor.trigger("wingman.contextMenu", definition.id, null),
-	}));
+	return definitions.map(({ feature, alternate, ...definition }) => {
+		const action = showAlternates && alternate ? alternate : definition;
+		return {
+			...action,
+			key: definition.id,
+			enabled: supports(feature),
+			run: () => editor.trigger("wingman.contextMenu", action.id, null),
+		};
+	});
 }
 
 function commandItem(
@@ -279,6 +309,7 @@ function commandItem(
 	options: { enabled?: boolean } = {},
 ): MenuItem {
 	return {
+		key: id,
 		label,
 		icon,
 		shortcut,
