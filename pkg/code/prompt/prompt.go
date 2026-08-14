@@ -2,19 +2,97 @@ package prompt
 
 import (
 	"bytes"
-	_ "embed"
+	"embed"
+	"io/fs"
 	"strings"
 	"text/template"
+
+	"github.com/adrianliechti/wingman-agent/pkg/model"
 )
 
 //go:embed mode_agent.txt
-var Instructions string
+var modeAgent string
 
 //go:embed mode_plan.txt
-var Planning string
+var modePlan string
 
 //go:embed mode_unattended.txt
-var Unattended string
+var modeUnattended string
+
+//go:embed models
+var modelFS embed.FS
+
+type Variant struct {
+	Agent      string
+	Plan       string
+	Unattended string
+}
+
+var variants = loadVariants()
+
+func loadVariants() map[string]Variant {
+	result := map[string]Variant{}
+
+	dirs, err := fs.ReadDir(modelFS, "models")
+
+	if err != nil {
+		panic(err)
+	}
+
+	for _, dir := range dirs {
+		if !dir.IsDir() {
+			panic("prompt: unexpected file models/" + dir.Name())
+		}
+
+		variant := Variant{Agent: modeAgent, Plan: modePlan, Unattended: modeUnattended}
+
+		files, err := fs.ReadDir(modelFS, "models/"+dir.Name())
+
+		if err != nil {
+			panic(err)
+		}
+
+		for _, file := range files {
+			data, err := fs.ReadFile(modelFS, "models/"+dir.Name()+"/"+file.Name())
+
+			if err != nil {
+				panic(err)
+			}
+
+			switch file.Name() {
+			case "mode_agent.txt":
+				variant.Agent = string(data)
+			case "mode_plan.txt":
+				variant.Plan = string(data)
+			case "mode_unattended.txt":
+				variant.Unattended = string(data)
+			default:
+				panic("prompt: unexpected file models/" + dir.Name() + "/" + file.Name())
+			}
+		}
+
+		result[model.Normalize(dir.Name())] = variant
+	}
+
+	return result
+}
+
+func VariantFor(id string) Variant {
+	id = model.Normalize(id)
+
+	match := ""
+	for prefix := range variants {
+		if strings.HasPrefix(id, prefix) && len(prefix) > len(match) {
+			match = prefix
+		}
+	}
+
+	if variant, ok := variants[match]; ok {
+		return variant
+	}
+
+	return Variant{Agent: modeAgent, Plan: modePlan, Unattended: modeUnattended}
+}
 
 //go:embed section_environment.txt
 var sectionEnvironment string

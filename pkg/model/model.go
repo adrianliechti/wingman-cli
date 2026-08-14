@@ -698,14 +698,3 @@ func ClassOf(id string) Class {
 
 	return ClassMedium
 }
-
-// EffortBounds returns the reasoning-effort range a model supports; empty
-// means unbounded on that side. Callers clamp out-of-range requests to the
-// nearest bound instead of failing. Only known constraints are listed.
-func EffortBounds(id string) (lowest, highest string) {
-	if Family(id) == "gpt" {
-		return "", "xhigh"
-	}
-
-	return "", ""
-}

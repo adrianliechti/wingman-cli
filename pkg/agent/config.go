@@ -13,6 +13,7 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/hook"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/model"
 )
 
 const (
@@ -25,54 +26,9 @@ const (
 	DefaultReserveTokens = 32_000
 )
 
-// modelContextWindows maps model-ID prefixes to two compaction budgets:
-// window stays under the provider's long-context price threshold; large is
-// the full hardware window for models where it exceeds that threshold.
-// Verified 2026-07: current Claude models (Opus 4.6+, Sonnet 4.6+, Fable 5)
-// take 1M input tokens at flat per-token rates — no long-context premium;
-// Haiku and pre-4.6 models are 200k hardware (Sonnet 4.5's 1M beta bills 2x
-// above 200k and needs a beta header, so it stays capped). GPT-5.4/5.5 have
-// 1M-class windows but bill 2x input / 1.5x output for the whole session
-// once input exceeds 272k; GPT-5.6 (sol/terra/luna) keeps the short/long
-// pricing split with an unpublished threshold, so it inherits the 272k
-// budget. Codex and earlier GPT-5.x are 400k total, flat.
-// Gemini bills ~2x above 200k prompts.
-var modelContextWindows = []struct {
-	prefix string
-	window int // budget under the long-context price threshold
-	large  int // full hardware window when it exceeds the budget (0 = same)
-}{
-	{"claude-haiku", 200_000, 0},
-	{"claude-opus-4-5", 200_000, 0},
-	{"claude-opus-4-1", 200_000, 0},
-	{"claude-opus-4-0", 200_000, 0},
-	{"claude-sonnet-4-5", 200_000, 0},
-	{"claude-sonnet-4-0", 200_000, 0},
-	{"claude-3", 200_000, 0},
-	{"claude-", 1_000_000, 0},
-
-	{"gpt-5.6", 272_000, 1_000_000},
-	{"gpt-5.5", 272_000, 1_000_000},
-	{"gpt-5.4", 272_000, 1_000_000},
-	{"gpt-5", 400_000, 0},
-	{"gpt-4.1", 1_000_000, 0},
-	{"gpt-4o", 128_000, 0},
-	{"o3", 200_000, 0},
-	{"o4", 200_000, 0},
-
-	{"gemini-", 200_000, 1_000_000},
-}
-
-func ContextWindowFor(model string, largeContext bool) int {
-	model = strings.ToLower(model)
-
-	for _, e := range modelContextWindows {
-		if strings.HasPrefix(model, e.prefix) {
-			if largeContext && e.large > e.window {
-				return e.large
-			}
-			return e.window
-		}
+func ContextWindowFor(id string, largeContext bool) int {
+	if window := model.ProfileFor(id).ContextWindow(largeContext); window > 0 {
+		return window
 	}
 
 	return DefaultContextWindow

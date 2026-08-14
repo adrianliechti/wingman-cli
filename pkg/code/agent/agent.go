@@ -283,8 +283,12 @@ func (a *Agent) subagentRoleModel(s *sessionState, role string) (harness.ModelOp
 		return harness.ModelOption{}, false
 	}
 
-	lowest, highest := model.EffortBounds(id)
-	return harness.ModelOption{ID: id, MinEffort: lowest, MaxEffort: highest}, true
+	option := harness.ModelOption{ID: id}
+	if efforts := model.ProfileFor(id).Efforts; len(efforts) > 0 {
+		option.MinEffort = efforts[0]
+		option.MaxEffort = efforts[len(efforts)-1]
+	}
+	return option, true
 }
 
 // SetModel applies to the session's current role: picking a model while in
@@ -1195,19 +1199,22 @@ func planModeEffectExecute(t tool.Tool) func(context.Context, map[string]any) (t
 }
 
 func (s *sessionState) instructions() string {
-	return BuildInstructions(s.instructionsData())
+	_, current := s.parent.modelsFor(s)
+	return BuildInstructions(current, s.instructionsData())
 }
 
 func (s *sessionState) subagentContext() string {
 	return prompt.BuildAgentContext(s.instructionsData())
 }
 
-func BuildInstructions(data prompt.SectionData) string {
-	base := prompt.Instructions
+func BuildInstructions(model string, data prompt.SectionData) string {
+	variant := prompt.VariantFor(model)
+
+	base := variant.Agent
 	if data.PlanMode {
-		base = prompt.Planning
+		base = variant.Plan
 	} else if data.UnattendedMode {
-		base += "\n\n" + prompt.Unattended
+		base += "\n\n" + variant.Unattended
 	}
 	return prompt.BuildInstructions(base, data)
 }
