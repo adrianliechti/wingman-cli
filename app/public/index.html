@@ -47,7 +47,7 @@
       }
 
       body {
-        --wingman-window-drag: drag;
+        --shell-window-drag: drag;
         app-region: drag;
         -webkit-app-region: drag;
         background: var(--bg);
@@ -62,7 +62,7 @@
       }
 
       :where(button, a, input, select, textarea, dialog) {
-        --wingman-window-drag: no-drag;
+        --shell-window-drag: no-drag;
         app-region: no-drag;
         -webkit-app-region: no-drag;
       }
@@ -930,6 +930,11 @@
 
       function setOpenDisabled(disabled) {
         for (const b of openButtons) b.disabled = disabled;
+        window.dispatchEvent(
+          new CustomEvent("shell:command-state", {
+            detail: { command: "open-folder", enabled: !disabled },
+          }),
+        );
       }
 
       let isOpening = false;
@@ -972,6 +977,9 @@
 
       dropzoneBtn.addEventListener("click", pickAndOpen);
       addBtn.addEventListener("click", pickAndOpen);
+      window.addEventListener("shell:command", (event) => {
+        if (event.detail === "open-folder") void pickAndOpen();
+      });
 
       loadWorkspaces();
     </script>

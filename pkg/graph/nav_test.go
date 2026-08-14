@@ -258,6 +258,44 @@ func TestFileSymbolsUnsupportedFile(t *testing.T) {
 	}
 }
 
+func TestDocumentHighlightsUseIdentifierNodes(t *testing.T) {
+	src := []byte("package main\n\nfunc greet() {\n\tgreet()\n\t_ = \"greet\"\n}\n")
+	ranges := DocumentHighlights("main.go", src, 3, 3)
+	if len(ranges) != 2 {
+		t.Fatalf("highlights = %+v, want declaration and call only", ranges)
+	}
+	if ranges[0].StartLine != 2 || ranges[1].StartLine != 3 {
+		t.Fatalf("highlights = %+v, want lines 2 and 3", ranges)
+	}
+}
+
+func TestFoldingRangesUseSymbolBodies(t *testing.T) {
+	src := []byte("package main\n\nfunc greet() {\n\tprintln(\"hello\")\n}\n")
+	ranges := FoldingRanges("main.go", src)
+	if len(ranges) != 1 || ranges[0].StartLine != 2 || ranges[0].EndLine != 4 {
+		t.Fatalf("folds = %+v, want function body", ranges)
+	}
+}
+
+func TestSemanticTokensUseHighlightQueries(t *testing.T) {
+	src := []byte("package main\n\nfunc greet(name string) string { return \"hi \" + name }\n")
+	tokens := SemanticTokens("main.go", src)
+	if len(tokens) == 0 {
+		t.Fatal("expected semantic tokens")
+	}
+	want := map[string]bool{"keyword": false, "function": false, "string": false}
+	for _, token := range tokens {
+		if _, ok := want[token.Type]; ok {
+			want[token.Type] = true
+		}
+	}
+	for tokenType, found := range want {
+		if !found {
+			t.Fatalf("semantic tokens = %+v, missing %s", tokens, tokenType)
+		}
+	}
+}
+
 func TestSnapshotRoundtripKeepsRefsAndNamePositions(t *testing.T) {
 	e := newNavEngine(t)
 	ctx := context.Background()

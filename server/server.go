@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -81,6 +82,7 @@ type Server struct {
 
 	lspExternalMu    sync.Mutex
 	lspExternalPaths map[string]bool
+	fileWriteMu      sync.Mutex
 
 	taskPumpMu sync.Mutex
 	taskPumps  map[*task.Registry]bool
@@ -294,14 +296,18 @@ func (s *Server) registerRoutes(r chi.Router) {
 	r.Route("/api", func(r chi.Router) {
 		r.Route("/files", func(r chi.Router) {
 			r.Get("/", s.handleFiles)
+			r.Post("/", s.handleFileCreate)
 			r.Delete("/", s.handleFileDelete)
 			r.Get("/read", s.handleFileRead)
 			r.Get("/search", s.handleFilesSearch)
+			r.Get("/path", s.handleFilePath)
 			r.Get("/download", s.handleFileDownload)
 			r.Get("/preview", s.handleFilePreview)
+			r.Post("/reveal", s.handleFileReveal)
 			r.Post("/rename", s.handleFileRename)
 			r.Post("/copy", s.handleFileCopy)
 			r.Post("/write", s.handleFileWrite)
+			r.Post("/write-batch", s.handleFileWriteBatch)
 		})
 
 		r.Route("/diffs", func(r chi.Router) {
@@ -365,6 +371,8 @@ func (s *Server) registerRoutes(r chi.Router) {
 		})
 
 		r.Route("/lsp", func(r chi.Router) {
+			r.Get("/capabilities", s.handleLSPEditorCapabilities)
+			r.Post("/document", s.handleLSPDocumentLifecycle)
 			r.Get("/diagnostics", s.handleDiagnostics)
 			r.Post("/diagnostics", s.handleLSPFileDiagnostics)
 			r.Post("/definition", s.handleLSPDefinition)
@@ -372,7 +380,22 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Post("/implementations", s.handleLSPImplementations)
 			r.Post("/references", s.handleLSPReferences)
 			r.Post("/hover", s.handleLSPHover)
+			r.Post("/completions", s.handleLSPCompletions)
+			r.Post("/completions/resolve", s.handleLSPCompletionResolve)
+			r.Post("/signature-help", s.handleLSPSignatureHelp)
 			r.Post("/document-symbols", s.handleLSPDocumentSymbols)
+			r.Post("/document-highlights", s.handleLSPDocumentHighlights)
+			r.Post("/folding-ranges", s.handleLSPFoldingRanges)
+			r.Post("/semantic-tokens", s.handleLSPSemanticTokens)
+			r.Post("/rename/prepare", s.handleLSPPrepareRename)
+			r.Post("/rename", s.handleLSPRename)
+			r.Post("/code-actions", s.handleLSPCodeActions)
+			r.Post("/code-actions/resolve", s.handleLSPCodeActionResolve)
+			r.Post("/execute-command", s.handleLSPExecuteCommand)
+			r.Post("/formatting", s.handleLSPFormatting)
+			r.Post("/formatting/range", s.handleLSPRangeFormatting)
+			r.Post("/formatting/on-type", s.handleLSPOnTypeFormatting)
+			r.Post("/inlay-hints", s.handleLSPInlayHints)
 			r.Get("/file", s.handleLSPExternalFile)
 		})
 		r.Get("/skills", s.handleSkills)
@@ -746,6 +769,7 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, _ *http.Request) {
 		"git_init": isCoder && !ws.HasChanges(),
 		"tasks":    isCoder,
 		"terminal": terminal.Supported(),
+		"platform": runtime.GOOS,
 	}
 	writeJSON(w, caps)
 }
@@ -758,6 +782,7 @@ func (s *Server) hasClients() bool {
 
 func (s *Server) flushFiles() {
 	s.files.Flush()
+	s.broadcast(Frame{Type: EvtFilesChanged})
 }
 
 func (s *Server) checkWorkspace() {

@@ -24,7 +24,7 @@ import (
 	lsptool "github.com/adrianliechti/wingman-agent/pkg/agent/tool/lsp"
 	toolmcp "github.com/adrianliechti/wingman-agent/pkg/agent/tool/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/changes"
-	"github.com/adrianliechti/wingman-agent/pkg/graph"
+	"github.com/adrianliechti/wingman-agent/pkg/language"
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 	"github.com/adrianliechti/wingman-agent/pkg/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/plugin"
@@ -65,9 +65,8 @@ type Workspace struct {
 
 	MCP *mcp.Manager
 
-	LSP     *lsp.Manager
-	Changes *changes.Manager
-	Graph   *graph.Engine
+	Language *language.Service
+	Changes  *changes.Manager
 
 	warmupOnce sync.Once
 
@@ -196,10 +195,9 @@ func (w *Workspace) WarmUp() {
 			changesManager = changes.New(w.RootPath)
 		}
 
-		lspManager := lsp.NewManager(w.RootPath)
-		lspTools := lsptool.NewTools(lspManager)
-
-		graphEngine := graph.New(w.RootPath, filepath.Join(projectGraphDir(w.RootPath), "graph.json"), graph.WithResolver(&lspResolver{ws: w}))
+		languageService := language.New(w.RootPath, filepath.Join(projectGraphDir(w.RootPath), "graph.json"))
+		graphEngine := languageService.Graph()
+		lspTools := lsptool.NewTools(languageService)
 		graphTools := graphtool.NewTools(graphEngine)
 
 		lspTools = w.protectLSPTools(lspTools)
@@ -209,26 +207,21 @@ func (w *Workspace) WarmUp() {
 		if w.closed {
 			w.mu.Unlock()
 			w.lspLifeMu.Unlock()
-			if lspManager != nil {
-				lspManager.Close()
-			}
+			languageService.Close()
 			if changesManager != nil {
 				changesManager.Close()
 			}
 			return
 		}
 		w.Changes = changesManager
-		w.LSP = lspManager
+		w.Language = languageService
 		w.lspTools = lspTools
-		w.Graph = graphEngine
 		w.graphTools = graphTools
 		w.warmed = true
 		w.mu.Unlock()
 		w.lspLifeMu.Unlock()
 
-		if lspManager != nil {
-			lspManager.WarmUpServers()
-		}
+		languageService.WarmUp()
 	})
 }
 
@@ -344,15 +337,14 @@ func (w *Workspace) Close() {
 	}
 	w.closed = true
 	mcpManager := w.MCP
-	lspManager := w.LSP
+	languageService := w.Language
 	changesManager := w.Changes
 	root := w.Root
 	scratchPath := w.ScratchPath
 	mcpRefreshCancel := w.mcpRefreshCancel
 	w.MCP = nil
-	w.LSP = nil
+	w.Language = nil
 	w.Changes = nil
-	w.Graph = nil
 	w.mcpToolsByServer = nil
 	w.mcpRefreshCancel = nil
 	w.lspTools = nil
@@ -364,8 +356,8 @@ func (w *Workspace) Close() {
 	if mcpRefreshCancel != nil {
 		mcpRefreshCancel()
 	}
-	if lspManager != nil {
-		lspManager.Close()
+	if languageService != nil {
+		languageService.Close()
 	}
 	w.lspLifeMu.Unlock()
 
@@ -414,278 +406,260 @@ func (w *Workspace) SyncProjectMode() {
 	}
 }
 
-// lspManager returns the LSP manager; callers must hold lspLifeMu for the
-// duration of any call into it.
-func (w *Workspace) lspManager() *lsp.Manager {
+// SyncEditorDocument drives the explicit editor document lifecycle. Feature
+// requests still carry the current buffer as a recovery mechanism, but normal
+// synchronization no longer depends on the user invoking a language feature.
+func (w *Workspace) SyncEditorDocument(ctx context.Context, filePath, content string, saved bool) error {
 	w.mu.RLock()
-	defer w.mu.RUnlock()
-	return w.LSP
+	service := w.Language
+	w.mu.RUnlock()
+	if service == nil {
+		return nil
+	}
+	return service.SyncDocument(ctx, filePath, content, saved)
 }
 
-// withLSPDocument runs fn against the session owning filePath after syncing the
-// document, holding the LSP lifetime lock for the duration of the call.
-func (w *Workspace) withLSPDocument(ctx context.Context, filePath string, content *string, fn func(*lsp.Session, string) error) error {
-	w.lspLifeMu.RLock()
-	defer w.lspLifeMu.RUnlock()
-
-	manager := w.lspManager()
-	if manager == nil {
-		return fmt.Errorf("language server unavailable")
+func (w *Workspace) CloseEditorDocument(ctx context.Context, filePath string) error {
+	w.mu.RLock()
+	service := w.Language
+	w.mu.RUnlock()
+	if service == nil {
+		return nil
 	}
-
-	session, err := manager.GetSession(ctx, filePath)
-	if err != nil {
-		return err
-	}
-	uri, err := syncEditorDocument(ctx, session, filePath, content)
-	if err != nil {
-		return err
-	}
-	return fn(session, uri)
+	return service.CloseDocument(ctx, filePath)
 }
 
-func (w *Workspace) Diagnostics(ctx context.Context) lsp.WorkspaceDiagnosticsReport {
-	w.lspLifeMu.RLock()
-	defer w.lspLifeMu.RUnlock()
-
-	manager := w.lspManager()
-	if manager == nil {
-		return lsp.WorkspaceDiagnosticsReport{}
+func (w *Workspace) EditorLSPCapabilities(ctx context.Context, filePath string) (lsp.ServerCapabilities, bool, error) {
+	w.mu.RLock()
+	service := w.Language
+	w.mu.RUnlock()
+	if service == nil {
+		return lsp.ServerCapabilities{}, false, nil
 	}
-	return manager.CollectAllDiagnostics(ctx)
+	return service.Capabilities(ctx, filePath)
+}
+
+func (w *Workspace) EditorLSPDocumentContent(filePath string) (string, bool) {
+	w.mu.RLock()
+	service := w.Language
+	w.mu.RUnlock()
+	if service == nil {
+		return "", false
+	}
+	return service.DocumentContent(filePath)
+}
+
+func (w *Workspace) Diagnostics(ctx context.Context) language.WorkspaceReport {
+	w.mu.RLock()
+	service := w.Language
+	w.mu.RUnlock()
+	if service == nil {
+		return language.WorkspaceReport{}
+	}
+	return service.Diagnostics(ctx)
 }
 
 // FileDiagnostics returns diagnostics for one disk file or in-memory editor
 // buffer. The boolean is false when the server has not produced a result yet.
-func (w *Workspace) FileDiagnostics(ctx context.Context, filePath string, content *string) ([]lsp.Diagnostic, bool, error) {
-	var diagnostics []lsp.Diagnostic
-	var known bool
-	err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
-		diagnostics, known = session.WaitForDiagnostics(ctx, uri, 2*time.Second)
-		return nil
-	})
-	if err != nil {
-		return nil, false, err
+func (w *Workspace) FileDiagnostics(ctx context.Context, filePath string, content *string) ([]language.Diagnostic, bool, error) {
+	w.mu.RLock()
+	service := w.Language
+	w.mu.RUnlock()
+	if service == nil {
+		return nil, false, fmt.Errorf("language service unavailable")
 	}
-	return diagnostics, known, nil
+	return service.FileDiagnostics(ctx, filePath, content)
+}
+
+func (w *Workspace) languageService() (*language.Service, error) {
+	w.mu.RLock()
+	service := w.Language
+	w.mu.RUnlock()
+	if service == nil {
+		return nil, fmt.Errorf("language service unavailable")
+	}
+	return service, nil
 }
 
 // DefinitionLocations resolves a position in a disk file or in-memory editor
 // buffer using the language server associated with the file, falling back to
 // the tree-sitter graph index when no server covers it.
-func (w *Workspace) DefinitionLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.DefLocation, error) {
-	if w.hasLSPServerFor(filePath) {
-		return w.locationRequest(ctx, filePath, content, func(session *lsp.Session, uri string) ([]lsp.DefLocation, error) {
-			return session.DefinitionLocations(ctx, uri, line, column)
-		})
-	}
-	return w.graphLocations(ctx, filePath, content, line, column, (*graph.Engine).Definitions)
-}
-
-func (w *Workspace) TypeDefinitionLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.DefLocation, error) {
-	return w.locationRequest(ctx, filePath, content, func(session *lsp.Session, uri string) ([]lsp.DefLocation, error) {
-		return session.TypeDefinitionLocations(ctx, uri, line, column)
-	})
-}
-
-func (w *Workspace) ImplementationLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.DefLocation, error) {
-	if w.hasLSPServerFor(filePath) {
-		return w.locationRequest(ctx, filePath, content, func(session *lsp.Session, uri string) ([]lsp.DefLocation, error) {
-			return session.ImplementationLocations(ctx, uri, line, column)
-		})
-	}
-	return w.graphLocations(ctx, filePath, content, line, column, (*graph.Engine).Implementations)
-}
-
-func (w *Workspace) ReferenceLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.DefLocation, error) {
-	if w.hasLSPServerFor(filePath) {
-		return w.locationRequest(ctx, filePath, content, func(session *lsp.Session, uri string) ([]lsp.DefLocation, error) {
-			return session.ReferenceLocations(ctx, uri, line, column)
-		})
-	}
-	return w.graphLocations(ctx, filePath, content, line, column, (*graph.Engine).References)
-}
-
-func (w *Workspace) hasLSPServerFor(filePath string) bool {
-	w.lspLifeMu.RLock()
-	defer w.lspLifeMu.RUnlock()
-
-	manager := w.lspManager()
-	return manager != nil && manager.FindServer(filePath) != nil
-}
-
-func (w *Workspace) graphEngine() *graph.Engine {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-	return w.Graph
-}
-
-func (w *Workspace) graphLocations(ctx context.Context, filePath string, content *string, line, column int, lookup func(*graph.Engine, context.Context, string, []byte, int, int) ([]graph.Location, error)) ([]lsp.DefLocation, error) {
-	engine := w.graphEngine()
-	if engine == nil {
-		return nil, fmt.Errorf("language server unavailable")
-	}
-	rel, err := filepath.Rel(w.RootPath, filePath)
+func (w *Workspace) DefinitionLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.Location, error) {
+	service, err := w.languageService()
 	if err != nil {
 		return nil, err
 	}
-	var src []byte
-	if content != nil {
-		src = []byte(*content)
-	}
-	locations, err := lookup(engine, ctx, filepath.ToSlash(rel), src, line, column)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]lsp.DefLocation, 0, len(locations))
-	for _, location := range locations {
-		result = append(result, lsp.DefLocation{
-			Path:   filepath.Join(w.RootPath, filepath.FromSlash(location.File)),
-			Line:   location.Line,
-			Column: location.Col,
-		})
-	}
-	return result, nil
+	return service.DefinitionLocations(ctx, filePath, content, line, column)
 }
 
-func (w *Workspace) locationRequest(ctx context.Context, filePath string, content *string, request func(*lsp.Session, string) ([]lsp.DefLocation, error)) ([]lsp.DefLocation, error) {
-	var locations []lsp.DefLocation
-	err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
-		var err error
-		locations, err = request(session, uri)
-		return err
-	})
+func (w *Workspace) TypeDefinitionLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.Location, error) {
+	service, err := w.languageService()
 	if err != nil {
 		return nil, err
 	}
-	return locations, nil
+	return service.TypeDefinitionLocations(ctx, filePath, content, line, column)
+}
+
+func (w *Workspace) ImplementationLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.Location, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.ImplementationLocations(ctx, filePath, content, line, column)
+}
+
+func (w *Workspace) ReferenceLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.Location, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.ReferenceLocations(ctx, filePath, content, line, column)
 }
 
 func (w *Workspace) HoverInformation(ctx context.Context, filePath string, content *string, line, column int) (string, error) {
-	if !w.hasLSPServerFor(filePath) {
-		return w.graphHover(ctx, filePath, content, line, column)
-	}
-	var contents string
-	err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
-		var err error
-		contents, err = session.HoverInformation(ctx, uri, line, column)
-		return err
-	})
+	service, err := w.languageService()
 	if err != nil {
 		return "", err
 	}
-	return contents, nil
+	return service.Hover(ctx, filePath, content, line, column)
 }
 
-func (w *Workspace) graphHover(ctx context.Context, filePath string, content *string, line, column int) (string, error) {
-	engine := w.graphEngine()
-	if engine == nil {
-		return "", fmt.Errorf("language server unavailable")
-	}
-	rel, err := filepath.Rel(w.RootPath, filePath)
+// CompletionItems asks the file's language server first and falls back to
+// symbols extracted from the current buffer with tree-sitter when completion
+// is unavailable.
+func (w *Workspace) CompletionItems(ctx context.Context, filePath string, content *string, line, column int, completionContext *lsp.CompletionContext) (lsp.CompletionList, error) {
+	service, err := w.languageService()
 	if err != nil {
-		return "", err
+		return lsp.CompletionList{}, err
 	}
-	var src []byte
-	if content != nil {
-		src = []byte(*content)
-	}
-	info, err := engine.Hover(ctx, filepath.ToSlash(rel), src, line, column)
-	if err != nil || info == nil {
-		return "", err
-	}
+	return service.CompletionItems(ctx, filePath, content, line, column, completionContext)
+}
 
-	code := info.Code
-	if info.Truncated {
-		code += "\n…"
+func (w *Workspace) ResolveCompletionItem(ctx context.Context, filePath string, content *string, item lsp.CompletionItem) (lsp.CompletionItem, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return lsp.CompletionItem{}, err
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "```%s\n%s\n```\n\n%s · %s:%d", info.Node.Lang, code, info.Node.Kind, info.Node.File, info.Node.StartLine)
-	if info.Others > 0 {
-		fmt.Fprintf(&b, " · %d more candidates", info.Others)
+	return service.ResolveCompletionItem(ctx, filePath, content, item)
+}
+
+func (w *Workspace) SignatureHelp(ctx context.Context, filePath string, content *string, line, column int, signatureContext *lsp.SignatureHelpContext) (*lsp.SignatureHelp, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
 	}
-	return b.String(), nil
+	return service.SignatureHelp(ctx, filePath, content, line, column, signatureContext)
+}
+
+func (w *Workspace) PrepareRename(ctx context.Context, filePath string, content *string, line, column int) (lsp.PrepareRenameResult, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.PrepareRename(ctx, filePath, content, line, column)
+}
+
+func (w *Workspace) Rename(ctx context.Context, filePath string, content *string, line, column int, newName string) (*lsp.WorkspaceEdit, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.Rename(ctx, filePath, content, line, column, newName)
+}
+
+func (w *Workspace) CodeActions(
+	ctx context.Context,
+	filePath string,
+	content *string,
+	selection lsp.Range,
+	only []lsp.CodeActionKind,
+	trigger lsp.CodeActionTriggerKind,
+) ([]lsp.CommandOrCodeAction, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.CodeActions(ctx, filePath, content, selection, only, trigger)
+}
+
+func (w *Workspace) ResolveCodeAction(ctx context.Context, filePath string, content *string, action lsp.CodeAction) (*lsp.CodeAction, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.ResolveCodeAction(ctx, filePath, content, action)
+}
+
+func (w *Workspace) ExecuteLSPCommand(ctx context.Context, filePath string, content *string, command lsp.Command) (any, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.ExecuteCommand(ctx, filePath, content, command)
+}
+
+func (w *Workspace) Formatting(ctx context.Context, filePath string, content *string, options lsp.FormattingOptions) ([]lsp.TextEdit, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.Formatting(ctx, filePath, content, options)
+}
+
+func (w *Workspace) RangeFormatting(ctx context.Context, filePath string, content *string, selection lsp.Range, options lsp.FormattingOptions) ([]lsp.TextEdit, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.RangeFormatting(ctx, filePath, content, selection, options)
+}
+
+func (w *Workspace) OnTypeFormatting(ctx context.Context, filePath string, content *string, line, column int, character string, options lsp.FormattingOptions) ([]lsp.TextEdit, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.OnTypeFormatting(ctx, filePath, content, line, column, character, options)
+}
+
+func (w *Workspace) InlayHints(ctx context.Context, filePath string, content *string, selection lsp.Range) ([]lsp.InlayHint, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.InlayHints(ctx, filePath, content, selection)
 }
 
 func (w *Workspace) DocumentSymbolItems(ctx context.Context, filePath string, content *string) ([]lsp.DocumentSymbol, []lsp.SymbolInformation, error) {
-	if !w.hasLSPServerFor(filePath) {
-		return w.graphDocumentSymbols(filePath, content)
-	}
-	var docSymbols []lsp.DocumentSymbol
-	var symInfos []lsp.SymbolInformation
-	err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
-		var err error
-		docSymbols, symInfos, err = session.DocumentSymbolItems(ctx, uri)
-		return err
-	})
+	service, err := w.languageService()
 	if err != nil {
 		return nil, nil, err
 	}
-	return docSymbols, symInfos, nil
+	return service.DocumentSymbols(ctx, filePath, content)
 }
 
-func (w *Workspace) graphDocumentSymbols(filePath string, content *string) ([]lsp.DocumentSymbol, []lsp.SymbolInformation, error) {
-	var src []byte
-	if content != nil {
-		src = []byte(*content)
-	} else {
-		data, err := os.ReadFile(filePath)
-		if err != nil {
-			return nil, nil, err
-		}
-		src = data
+func (w *Workspace) DocumentHighlights(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.DocumentHighlight, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
 	}
-	return graphDocumentSymbols(graph.FileSymbols(filepath.Base(filePath), src)), nil, nil
+	return service.DocumentHighlights(ctx, filePath, content, line, column)
 }
 
-func graphDocumentSymbols(symbols []*graph.Symbol) []lsp.DocumentSymbol {
-	result := make([]lsp.DocumentSymbol, 0, len(symbols))
-	for _, symbol := range symbols {
-		result = append(result, lsp.DocumentSymbol{
-			Name:           symbol.Name,
-			Kind:           lspSymbolKind(symbol.Kind),
-			Range:          lspRange(symbol.Range),
-			SelectionRange: lspRange(symbol.NameRange),
-			Children:       graphDocumentSymbols(symbol.Children),
-		})
+func (w *Workspace) FoldingRanges(ctx context.Context, filePath string, content *string) ([]lsp.FoldingRange, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
 	}
-	return result
+	return service.FoldingRanges(ctx, filePath, content)
 }
 
-func lspRange(r graph.SymRange) lsp.Range {
-	return lsp.Range{
-		Start: lsp.Position{Line: r.StartLine, Character: r.StartCol},
-		End:   lsp.Position{Line: r.EndLine, Character: r.EndCol},
+func (w *Workspace) SemanticTokens(ctx context.Context, filePath string, content *string) ([]language.SemanticToken, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
 	}
-}
-
-func lspSymbolKind(kind graph.Kind) int {
-	switch kind {
-	case graph.KindModule:
-		return 2
-	case graph.KindClass:
-		return 5
-	case graph.KindMethod:
-		return 6
-	case graph.KindConstructor:
-		return 9
-	case graph.KindInterface:
-		return 11
-	case graph.KindFunction:
-		return 12
-	case graph.KindConstant:
-		return 14
-	case graph.KindType:
-		return 23
-	}
-	return 13
-}
-
-func syncEditorDocument(ctx context.Context, session *lsp.Session, filePath string, content *string) (string, error) {
-	if content != nil {
-		return session.SyncDocument(ctx, filePath, *content)
-	}
-	return session.OpenDocument(ctx, filePath)
+	return service.SemanticTokens(ctx, filePath, content)
 }
 
 func (w *Workspace) WithEditDiagnostics(tools []tool.Tool) []tool.Tool {
@@ -721,15 +695,13 @@ func (w *Workspace) postEditDiagnostics(ctx context.Context, path string) string
 		path = filepath.Join(w.RootPath, path)
 	}
 
-	w.lspLifeMu.RLock()
-	defer w.lspLifeMu.RUnlock()
-
-	manager := w.lspManager()
-	if manager == nil {
+	w.mu.RLock()
+	service := w.Language
+	w.mu.RUnlock()
+	if service == nil {
 		return ""
 	}
-
-	return manager.PostEditDiagnostics(ctx, path)
+	return service.PostEditDiagnostics(ctx, path)
 }
 
 func (w *Workspace) protectLSPTools(tools []tool.Tool) []tool.Tool {
@@ -1022,11 +994,10 @@ func (w *Workspace) ManagedTools() (mcpTools, lspTools, graphTools []tool.Tool) 
 }
 
 func (w *Workspace) HasLSP() bool {
-	w.lspLifeMu.RLock()
-	defer w.lspLifeMu.RUnlock()
-
-	manager := w.lspManager()
-	return manager != nil && len(manager.DetectServers()) > 0
+	w.mu.RLock()
+	service := w.Language
+	w.mu.RUnlock()
+	return service != nil && service.HasLSP()
 }
 
 func (w *Workspace) HasChanges() bool {

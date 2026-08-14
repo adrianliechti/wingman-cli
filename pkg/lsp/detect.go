@@ -14,10 +14,12 @@ import (
 	"time"
 )
 
-type projectRoot struct {
+type Project struct {
 	Dir    string
 	Server Server
 }
+
+type projectRoot = Project
 
 // skippedDirs are never descended into. Dot-prefixed directories are skipped
 // separately, so only their non-hidden counterparts are listed here.

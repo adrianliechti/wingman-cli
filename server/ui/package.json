@@ -7,6 +7,7 @@
 		"dev": "vite",
 		"build": "tsc -b && vite build",
 		"lint": "oxlint",
+		"test:unit": "node --test test/*.test.ts",
 		"fmt": "oxfmt",
 		"fmt:check": "oxfmt --check",
 		"preview": "vite preview",
@@ -31,10 +32,11 @@
 		"react-resizable-panels": "^4.12.2",
 		"smol-toml": "^1.8.0",
 		"tailwindcss": "^4.3.3",
+		"vscode-languageserver-types": "^3.18.0",
 		"yaml": "^2.9.0"
 	},
 	"devDependencies": {
-		"@axe-core/playwright": "^4.12.1",
+		"@axe-core/playwright": "^4.13.0",
 		"@playwright/test": "^1.62.1",
 		"@types/node": "^26.2.0",
 		"@types/react": "^19.2.18",

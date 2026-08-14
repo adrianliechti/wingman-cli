@@ -1,280 +1,115 @@
 package lsp
 
 import (
-	"encoding/json"
-	"strings"
+	"go.lsp.dev/protocol"
+	"go.lsp.dev/uri"
 )
 
-type InitializeParams struct {
-	ProcessID    int                `json:"processId"`
-	RootURI      string             `json:"rootUri"`
-	Capabilities ClientCapabilities `json:"capabilities"`
-}
+type Position = protocol.Position
+type Range = protocol.Range
+type Location = protocol.Location
+type LocationURIOnly = protocol.LocationUriOnly
+type DocumentURI = uri.URI
 
-type InitializeResult struct {
-	Capabilities ServerCapabilities `json:"capabilities"`
-}
+type CompletionContext = protocol.CompletionContext
+type CompletionTriggerKind = protocol.CompletionTriggerKind
+type CompletionItem = protocol.CompletionItem
+type CompletionList = protocol.CompletionList
+type CompletionItemKind = protocol.CompletionItemKind
+type SignatureHelpContext = protocol.SignatureHelpContext
+type SignatureHelpTriggerKind = protocol.SignatureHelpTriggerKind
+type SignatureHelp = protocol.SignatureHelp
+type SignatureInformation = protocol.SignatureInformation
+type ServerCapabilities = protocol.ServerCapabilities
 
-type ServerCapabilities struct {
-	DiagnosticProvider json.RawMessage `json:"diagnosticProvider"`
-}
+type PrepareRenameResult = protocol.PrepareRenameResult
+type RenameOptions = protocol.RenameOptions
+type WorkspaceEdit = protocol.WorkspaceEdit
+type CodeActionKind = protocol.CodeActionKind
+type CodeActionTriggerKind = protocol.CodeActionTriggerKind
+type CommandOrCodeAction = protocol.CommandOrCodeAction
+type CodeAction = protocol.CodeAction
+type CodeActionOptions = protocol.CodeActionOptions
+type Command = protocol.Command
+type FormattingOptions = protocol.FormattingOptions
+type TextEdit = protocol.TextEdit
+type InlayHint = protocol.InlayHint
+type TextDocumentEdit = protocol.TextDocumentEdit
+type CreateFile = protocol.CreateFile
+type RenameFile = protocol.RenameFile
+type DeleteFile = protocol.DeleteFile
+type Boolean = protocol.Boolean
+type OptionalValue[T any] = protocol.Optional[T]
 
-type ClientCapabilities struct {
-	TextDocument TextDocumentClientCapabilities `json:"textDocument"`
-	Window       WindowClientCapabilities       `json:"window"`
-}
-
-type WindowClientCapabilities struct {
-	WorkDoneProgress bool `json:"workDoneProgress,omitempty"`
-}
-
-type TextDocumentClientCapabilities struct {
-	Synchronization TextDocumentSyncClientCapabilities `json:"synchronization"`
-	Hover           HoverClientCapabilities            `json:"hover"`
-	Definition      DefinitionClientCapabilities       `json:"definition"`
-	TypeDefinition  TypeDefinitionClientCapabilities   `json:"typeDefinition"`
-	References      ReferencesClientCapabilities       `json:"references"`
-	Implementation  ImplementationClientCapabilities   `json:"implementation"`
-	DocumentSymbol  DocumentSymbolClientCapabilities   `json:"documentSymbol"`
-	Diagnostic      DiagnosticClientCapabilities       `json:"diagnostic"`
-	CallHierarchy   CallHierarchyClientCapabilities    `json:"callHierarchy"`
-}
-
-type TextDocumentSyncClientCapabilities struct {
-	DidSave bool `json:"didSave,omitempty"`
-}
-
-type HoverClientCapabilities struct {
-	ContentFormat []string `json:"contentFormat,omitempty"`
-}
-
-type DefinitionClientCapabilities struct {
-	LinkSupport bool `json:"linkSupport,omitempty"`
-}
-
-type TypeDefinitionClientCapabilities struct{}
-
-type ReferencesClientCapabilities struct{}
-
-type ImplementationClientCapabilities struct{}
-
-type DocumentSymbolClientCapabilities struct{}
-
-type DiagnosticClientCapabilities struct{}
-
-type CallHierarchyClientCapabilities struct{}
-
-type TextDocumentIdentifier struct {
-	URI string `json:"uri"`
-}
-
-type VersionedTextDocumentIdentifier struct {
-	URI     string `json:"uri"`
-	Version int    `json:"version"`
-}
-
-type TextDocumentItem struct {
-	URI        string `json:"uri"`
-	LanguageID string `json:"languageId"`
-	Version    int    `json:"version"`
-	Text       string `json:"text"`
-}
-
-type DidOpenTextDocumentParams struct {
-	TextDocument TextDocumentItem `json:"textDocument"`
-}
-
-type DidChangeTextDocumentParams struct {
-	TextDocument   VersionedTextDocumentIdentifier  `json:"textDocument"`
-	ContentChanges []TextDocumentContentChangeEvent `json:"contentChanges"`
-}
-
-type TextDocumentContentChangeEvent struct {
-	Text string `json:"text"`
-}
-
-type DidSaveTextDocumentParams struct {
-	TextDocument TextDocumentIdentifier `json:"textDocument"`
-}
-
-type PublishDiagnosticsParams struct {
-	URI         string       `json:"uri"`
-	Version     int          `json:"version,omitempty"`
-	Diagnostics []Diagnostic `json:"diagnostics"`
-}
-
-type ProgressParams struct {
-	Token json.RawMessage `json:"token"`
-	Value struct {
-		Kind string `json:"kind"`
-	} `json:"value"`
-}
-
-type Position struct {
-	Line      int `json:"line"`
-	Character int `json:"character"`
-}
-
-type Range struct {
-	Start Position `json:"start"`
-	End   Position `json:"end"`
-}
-
-type Location struct {
-	URI   string `json:"uri"`
-	Range Range  `json:"range"`
-}
-
-type LocationLink struct {
-	TargetURI            string `json:"targetUri"`
-	TargetRange          Range  `json:"targetRange"`
-	TargetSelectionRange Range  `json:"targetSelectionRange"`
-}
-
-type TextDocumentPositionParams struct {
-	TextDocument TextDocumentIdentifier `json:"textDocument"`
-	Position     Position               `json:"position"`
-}
-
-type ReferenceParams struct {
-	TextDocument TextDocumentIdentifier `json:"textDocument"`
-	Position     Position               `json:"position"`
-	Context      ReferenceContext       `json:"context"`
-}
-
-type ReferenceContext struct {
-	IncludeDeclaration bool `json:"includeDeclaration"`
-}
-
-type HoverResponse struct {
-	Contents HoverContents `json:"contents"`
-	Range    *Range        `json:"range,omitempty"`
-}
-
-type HoverContents struct {
-	Value string
-}
-
-func (h *HoverContents) UnmarshalJSON(data []byte) error {
-
-	var s string
-	if err := json.Unmarshal(data, &s); err == nil {
-		h.Value = s
-		return nil
-	}
-
-	var obj struct {
-		Value string `json:"value"`
-	}
-	if err := json.Unmarshal(data, &obj); err == nil && obj.Value != "" {
-		h.Value = obj.Value
-		return nil
-	}
-
-	var arr []json.RawMessage
-	if err := json.Unmarshal(data, &arr); err == nil {
-		var parts []string
-		for _, item := range arr {
-			var str string
-			if err := json.Unmarshal(item, &str); err == nil {
-				parts = append(parts, str)
-				continue
-			}
-			var ms struct {
-				Value string `json:"value"`
-			}
-			if err := json.Unmarshal(item, &ms); err == nil {
-				parts = append(parts, ms.Value)
-			}
-		}
-		h.Value = strings.Join(parts, "\n")
-		return nil
-	}
-
-	h.Value = string(data)
-	return nil
-}
-
-type Diagnostic struct {
-	Range    Range  `json:"range"`
-	Severity int    `json:"severity,omitempty"`
-	Code     any    `json:"code,omitempty"`
-	Source   string `json:"source,omitempty"`
-	Message  string `json:"message"`
-}
+type DocumentSymbol = protocol.DocumentSymbol
+type SymbolInformation = protocol.SymbolInformation
+type DocumentHighlight = protocol.DocumentHighlight
+type FoldingRange = protocol.FoldingRange
+type SemanticTokens = protocol.SemanticTokens
+type SemanticTokensLegend = protocol.SemanticTokensLegend
+type SemanticTokensOptions = protocol.SemanticTokensOptions
+type SemanticTokensRegistrationOptions = protocol.SemanticTokensRegistrationOptions
+type WorkspaceSymbol = protocol.WorkspaceSymbol
+type CallHierarchyItem = protocol.CallHierarchyItem
+type CallHierarchyIncomingCall = protocol.CallHierarchyIncomingCall
+type CallHierarchyOutgoingCall = protocol.CallHierarchyOutgoingCall
+type Diagnostic = protocol.Diagnostic
+type DiagnosticSeverity = protocol.DiagnosticSeverity
+type String = protocol.String
+type MarkupContent = protocol.MarkupContent
+type Hover = protocol.Hover
+type MarkedStringWithLanguage = protocol.MarkedStringWithLanguage
+type MarkedStringSlice = protocol.MarkedStringSlice
+type DocumentSymbolResult = protocol.DocumentSymbolResult
+type DocumentSymbolSlice = protocol.DocumentSymbolSlice
+type SymbolInformationSlice = protocol.SymbolInformationSlice
+type WorkspaceSymbolResult = protocol.WorkspaceSymbolResult
+type WorkspaceSymbolSlice = protocol.WorkspaceSymbolSlice
 
 const (
-	DiagnosticSeverityError       = 1
-	DiagnosticSeverityWarning     = 2
-	DiagnosticSeverityInformation = 3
-	DiagnosticSeverityHint        = 4
+	DiagnosticSeverityError       = protocol.DiagnosticSeverityError
+	DiagnosticSeverityWarning     = protocol.DiagnosticSeverityWarning
+	DiagnosticSeverityInformation = protocol.DiagnosticSeverityInformation
+	DiagnosticSeverityHint        = protocol.DiagnosticSeverityHint
 )
 
-type DocumentDiagnosticParams struct {
-	TextDocument TextDocumentIdentifier `json:"textDocument"`
-}
+const DocumentHighlightKindText = protocol.DocumentHighlightKindText
 
-type FullDocumentDiagnosticReport struct {
-	Kind  string       `json:"kind"`
-	Items []Diagnostic `json:"items"`
-}
+type SymbolKind = protocol.SymbolKind
 
-type DocumentSymbolParams struct {
-	TextDocument TextDocumentIdentifier `json:"textDocument"`
-}
+const (
+	SymbolKindFile          = protocol.SymbolKindFile
+	SymbolKindModule        = protocol.SymbolKindModule
+	SymbolKindNamespace     = protocol.SymbolKindNamespace
+	SymbolKindPackage       = protocol.SymbolKindPackage
+	SymbolKindClass         = protocol.SymbolKindClass
+	SymbolKindMethod        = protocol.SymbolKindMethod
+	SymbolKindProperty      = protocol.SymbolKindProperty
+	SymbolKindField         = protocol.SymbolKindField
+	SymbolKindConstructor   = protocol.SymbolKindConstructor
+	SymbolKindEnum          = protocol.SymbolKindEnum
+	SymbolKindInterface     = protocol.SymbolKindInterface
+	SymbolKindFunction      = protocol.SymbolKindFunction
+	SymbolKindVariable      = protocol.SymbolKindVariable
+	SymbolKindConstant      = protocol.SymbolKindConstant
+	SymbolKindString        = protocol.SymbolKindString
+	SymbolKindNumber        = protocol.SymbolKindNumber
+	SymbolKindBoolean       = protocol.SymbolKindBoolean
+	SymbolKindArray         = protocol.SymbolKindArray
+	SymbolKindObject        = protocol.SymbolKindObject
+	SymbolKindKey           = protocol.SymbolKindKey
+	SymbolKindNull          = protocol.SymbolKindNull
+	SymbolKindEnumMember    = protocol.SymbolKindEnumMember
+	SymbolKindStruct        = protocol.SymbolKindStruct
+	SymbolKindEvent         = protocol.SymbolKindEvent
+	SymbolKindOperator      = protocol.SymbolKindOperator
+	SymbolKindTypeParameter = protocol.SymbolKindTypeParameter
+)
 
-type DocumentSymbol struct {
-	Name           string           `json:"name"`
-	Detail         string           `json:"detail,omitempty"`
-	Kind           int              `json:"kind"`
-	Range          Range            `json:"range"`
-	SelectionRange Range            `json:"selectionRange"`
-	Children       []DocumentSymbol `json:"children,omitempty"`
-}
+func Optional[T any](value T) OptionalValue[T] { return protocol.NewOptional(value) }
 
-type SymbolInformation struct {
-	Name     string   `json:"name"`
-	Kind     int      `json:"kind"`
-	Location Location `json:"location"`
-}
+func Marshal(value any) ([]byte, error) { return protocol.Marshal(value) }
 
-type WorkspaceSymbolParams struct {
-	Query string `json:"query"`
-}
+func Unmarshal(data []byte, value any) error { return protocol.Unmarshal(data, value) }
 
-type WorkspaceSymbol struct {
-	Name     string `json:"name"`
-	Kind     int    `json:"kind"`
-	Location struct {
-		URI   string `json:"uri"`
-		Range *Range `json:"range,omitempty"`
-	} `json:"location"`
-}
-
-type CallHierarchyItem struct {
-	Name           string          `json:"name"`
-	Kind           int             `json:"kind"`
-	Detail         string          `json:"detail,omitempty"`
-	URI            string          `json:"uri"`
-	Range          Range           `json:"range"`
-	SelectionRange Range           `json:"selectionRange"`
-	Data           json.RawMessage `json:"data,omitempty"`
-}
-
-type CallHierarchyIncomingCallsParams struct {
-	Item CallHierarchyItem `json:"item"`
-}
-
-type CallHierarchyOutgoingCallsParams struct {
-	Item CallHierarchyItem `json:"item"`
-}
-
-type CallHierarchyIncomingCall struct {
-	From       CallHierarchyItem `json:"from"`
-	FromRanges []Range           `json:"fromRanges"`
-}
-
-type CallHierarchyOutgoingCall struct {
-	To         CallHierarchyItem `json:"to"`
-	FromRanges []Range           `json:"fromRanges"`
-}
+func ParseURI(value string) (DocumentURI, error) { return uri.Parse(value) }

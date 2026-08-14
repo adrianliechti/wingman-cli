@@ -319,6 +319,7 @@ export interface FileContent {
 	path: string;
 	content?: string;
 	language?: string;
+	revision: string;
 	binary?: boolean;
 	mime?: string;
 	size: number;

@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
-	github.com/adrianliechti/go-shell v0.1.2
+	github.com/adrianliechti/go-shell v0.1.3-0.20260813220358-cc5678092e14
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/coder/acp-go-sdk v0.13.5
@@ -23,6 +23,8 @@ require (
 	github.com/sergi/go-diff v1.4.0
 	github.com/yuin/goldmark v1.8.5
 	go.lsp.dev/jsonrpc2 v1.0.1
+	go.lsp.dev/protocol v1.0.1
+	go.lsp.dev/uri v1.0.1
 	go.yaml.in/yaml/v4 v4.0.0-rc.6
 	golang.org/x/net v0.58.0
 	golang.org/x/sys v0.47.0

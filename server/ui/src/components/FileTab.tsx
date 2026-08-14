@@ -1,6 +1,6 @@
 import Editor, { type OnMount } from "@monaco-editor/react";
 import { AlertTriangle, FileDigit, Loader2 } from "lucide-react";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useColorScheme } from "../hooks/useColorScheme";
 import type { OpenDocument, SaveResult } from "../hooks/useOpenDocuments";
 import {
@@ -10,8 +10,10 @@ import {
 } from "../monacoLsp";
 import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
 import type { ServerMessage } from "../types/protocol";
+import type { WorkspaceEditEnvelope } from "../workspaceEdit";
 import { textPreviewKind } from "../utils/filePreview";
 import { DataPreview } from "./DataPreview";
+import { EditorContextMenu } from "./EditorContextMenu";
 import { MarkdownContent } from "./MarkdownContent";
 import { MermaidPreview } from "./MermaidPreview";
 
@@ -24,13 +26,16 @@ interface Props {
 	onChange: (value: string) => void;
 	onSave: () => Promise<SaveResult>;
 	onReload: () => void;
-	onKeepVersion: () => void;
 	onOpenFile?: (
 		path: string,
 		line: number,
 		column: number,
 		external?: boolean,
 	) => void;
+	onApplyWorkspaceEdit?: (
+		envelope: WorkspaceEditEnvelope,
+		label: string,
+	) => Promise<boolean>;
 	view?: "code" | "preview";
 }
 
@@ -43,19 +48,25 @@ export function FileTab({
 	onChange,
 	onSave,
 	onReload,
-	onKeepVersion,
 	onOpenFile,
+	onApplyWorkspaceEdit,
 	view = "code",
 }: Props) {
 	const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
+	const contextMenuListenerRef = useRef<{ dispose(): void } | null>(null);
 	const lspBridgeRef = useRef<MonacoLSPBridge | null>(null);
 	const diagnosticsTimerRef = useRef<number | null>(null);
-	const documentRef = useRef(document);
 	const onOpenFileRef = useRef(onOpenFile);
+	const onApplyWorkspaceEditRef = useRef(onApplyWorkspaceEdit);
 	const onSaveRef = useRef(onSave);
 	const scheme = useColorScheme();
-	documentRef.current = document;
+	const [contextMenu, setContextMenu] = useState<{
+		x: number;
+		y: number;
+	} | null>(null);
+	const [, setLanguageFeaturesRevision] = useState(0);
 	onOpenFileRef.current = onOpenFile;
+	onApplyWorkspaceEditRef.current = onApplyWorkspaceEdit;
 	onSaveRef.current = onSave;
 
 	const dirty = document.draft !== document.savedContent;
@@ -69,6 +80,8 @@ export function FileTab({
 
 	useEffect(() => {
 		return () => {
+			contextMenuListenerRef.current?.dispose();
+			contextMenuListenerRef.current = null;
 			if (diagnosticsTimerRef.current !== null) {
 				window.clearTimeout(diagnosticsTimerRef.current);
 			}
@@ -158,13 +171,6 @@ export function FileTab({
 					>
 						Reload from disk
 					</button>
-					<button
-						type="button"
-						onClick={onKeepVersion}
-						className="rounded px-2 py-1 hover:bg-warning/10"
-					>
-						Keep my version
-					</button>
 				</div>
 			)}
 			{document.saveError && (
@@ -213,20 +219,62 @@ export function FileTab({
 						beforeMount={defineWingmanThemes}
 						onMount={(editor, monaco) => {
 							editorRef.current = editor;
+							// Wingman owns the command surface; keep Monaco's standalone
+							// palette shortcuts from opening a second command UI.
+							editor.addCommand(monaco.KeyCode.F1, () => {});
+							editor.addCommand(
+								monaco.KeyMod.CtrlCmd |
+									monaco.KeyMod.Shift |
+									monaco.KeyCode.KeyP,
+								() => {},
+							);
+							contextMenuListenerRef.current?.dispose();
+							contextMenuListenerRef.current = editor.onContextMenu((event) => {
+								const position = event.target.position;
+								if (!position) return;
+								event.event.preventDefault();
+								event.event.stopPropagation();
+								const selection = editor.getSelection();
+								if (!selection?.containsPosition(position)) {
+									editor.setPosition(position);
+								}
+								editor.focus();
+								setContextMenu({
+									x: event.event.posx,
+									y: event.event.posy,
+								});
+							});
+							editor.addCommand(
+								monaco.KeyMod.Shift | monaco.KeyCode.F10,
+								() => {
+									editor.focus();
+									const position = editor.getPosition();
+									const visible =
+										position && editor.getScrolledVisiblePosition(position);
+									const bounds = editor.getDomNode()?.getBoundingClientRect();
+									if (!bounds) return;
+									setContextMenu({
+										x: bounds.left + (visible?.left ?? 8),
+										y:
+											bounds.top +
+											(visible?.top ?? 8) +
+											(visible?.height ?? 16),
+									});
+								},
+							);
 							lspBridgeRef.current?.dispose();
 							if (!document.external) {
 								lspBridgeRef.current = createMonacoLSPBridge({
 									monaco,
 									editor,
 									file,
-									getDirtyContent: () => {
-										const current = documentRef.current;
-										return current.draft !== current.savedContent
-											? current.draft
-											: undefined;
-									},
+									onCapabilitiesChanged: () =>
+										setLanguageFeaturesRevision((revision) => revision + 1),
 									onOpenFile: (path, row, col, external) =>
 										onOpenFileRef.current?.(path, row, col, external),
+									onApplyWorkspaceEdit: (envelope, label) =>
+										onApplyWorkspaceEditRef.current?.(envelope, label) ??
+										Promise.resolve(false),
 								});
 								void loadDiagnostics();
 								editor.addCommand(
@@ -238,6 +286,7 @@ export function FileTab({
 						}}
 						onChange={(value) => onChange(value ?? "")}
 						options={{
+							contextmenu: false,
 							minimap: { enabled: false },
 							fontSize: 12,
 							lineNumbers: "on",
@@ -245,11 +294,24 @@ export function FileTab({
 							wordWrap: "on",
 							renderWhitespace: "none",
 							padding: { top: 8 },
+							suggestOnTriggerCharacters: true,
+							parameterHints: { enabled: true },
 							readOnly: document.external,
 						}}
 					/>
 				)}
 			</div>
+			{contextMenu && editorRef.current && (
+				<EditorContextMenu
+					editor={editorRef.current}
+					openAt={contextMenu}
+					readOnly={document.external}
+					supportsLanguageFeature={(feature) =>
+						lspBridgeRef.current?.supports(feature) ?? false
+					}
+					onClose={() => setContextMenu(null)}
+				/>
+			)}
 		</div>
 	);
 }

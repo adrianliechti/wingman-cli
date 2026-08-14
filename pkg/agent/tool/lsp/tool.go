@@ -7,16 +7,19 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/language"
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 )
 
-func NewTools(manager *lsp.Manager) []tool.Tool {
-	return []tool.Tool{lspTool(manager)}
+func NewTools(service *language.Service) []tool.Tool {
+	return []tool.Tool{lspTool(service)}
 }
 
-func lspTool(manager *lsp.Manager) tool.Tool {
+func lspTool(service *language.Service) tool.Tool {
+	manager := service.Manager()
 	return tool.Tool{
 		Name: "lsp",
 		Description: strings.Join([]string{
@@ -94,20 +97,22 @@ func lspTool(manager *lsp.Manager) tool.Tool {
 
 				if lookup != "" {
 					var ok bool
-					if pos, ok = session.SymbolPosition(ctx, uri, lookup); !ok {
+					if pos, ok = symbolPosition(ctx, session, uri, lookup); !ok {
 						return "", fmt.Errorf("symbol %q not found in %s", lookup, path)
 					}
 				}
 
-				return fn(session, uri, pos.Line, pos.Character)
+				return fn(session, uri, int(pos.Line), int(pos.Character))
 			}
 
 			switch operation {
 			case "diagnostics":
 				path, _ := args["file_path"].(string)
 				if strings.TrimSpace(path) == "" {
-					content, err := manager.WorkspaceDiagnostics(ctx)
-					return tool.Text(content), err
+					if len(manager.DetectServers()) == 0 {
+						return tool.Result{}, fmt.Errorf("no LSP servers detected in workspace")
+					}
+					return tool.Text(formatWorkspaceDiagnostics(service.Diagnostics(ctx), manager.WorkingDir())), nil
 				}
 
 				path, err := resolveExistingFile(manager.WorkingDir(), path)
@@ -120,12 +125,28 @@ func lspTool(manager *lsp.Manager) tool.Tool {
 					return tool.Result{}, err
 				}
 
-				content, err := session.Diagnostics(ctx, uri, path)
-				return tool.Text(content), err
+				raw, known := session.WaitForDiagnostics(ctx, uri, 3*time.Second)
+				if !known {
+					return tool.Text("No diagnostics data: the language server did not report results for this file (it may still be analyzing or not support diagnostics). Do not treat this as a clean result."), nil
+				}
+				values := language.DiagnosticsFromProtocol(raw)
+				if len(values) == 0 {
+					return tool.Text("No diagnostics found"), nil
+				}
+				return tool.Text(language.FormatDiagnostics(values, path, manager.WorkingDir())), nil
 			case "workspaceSymbol":
 				query, _ := args["query"].(string)
-				content, err := manager.WorkspaceSymbols(ctx, query)
-				return tool.Text(content), err
+				symbols, workspaceSymbols, err := service.WorkspaceSymbols(ctx, query)
+				if err != nil {
+					return tool.Result{}, err
+				}
+				if len(symbols) > 0 {
+					return tool.Text(formatSymbolInformation(symbols, manager.WorkingDir())), nil
+				}
+				if len(workspaceSymbols) > 0 {
+					return tool.Text(formatWorkspaceSymbols(workspaceSymbols, manager.WorkingDir())), nil
+				}
+				return tool.Text("No symbols found"), nil
 			case "documentSymbol":
 				path, err := requiredFileArg(manager.WorkingDir(), args, "file_path")
 				if err != nil {
@@ -135,31 +156,79 @@ func lspTool(manager *lsp.Manager) tool.Tool {
 				if err != nil {
 					return tool.Result{}, err
 				}
-				content, err := session.DocumentSymbols(ctx, uri, path)
-				return tool.Text(content), err
+				result, err := session.DocumentSymbols(ctx, uri)
+				documentSymbols, symbols := language.DocumentSymbolsFromProtocol(result)
+				if err != nil {
+					return tool.Result{}, err
+				}
+				if len(symbols) > 0 {
+					return tool.Text(formatSymbolInformation(symbols, manager.WorkingDir())), nil
+				}
+				if len(documentSymbols) > 0 {
+					return tool.Text(formatDocumentSymbols(documentSymbols, path, manager.WorkingDir(), 0)), nil
+				}
+				return tool.Text("No symbols found"), nil
 			case "goToDefinition":
 				content, err := runPosition(func(s *lsp.Session, uri string, line, column int) (string, error) {
-					return s.Definition(ctx, uri, line, column)
+					locations, err := s.DefinitionLocations(ctx, uri, line, column)
+					if err != nil || len(locations) == 0 {
+						return "No definition found", err
+					}
+					return formatDefinitions(locations, manager.WorkingDir()), nil
 				})
 				return tool.Text(content), err
 			case "findReferences":
 				content, err := runPosition(func(s *lsp.Session, uri string, line, column int) (string, error) {
-					return s.References(ctx, uri, line, column)
+					locations, err := s.ReferenceLocations(ctx, uri, line, column)
+					if err != nil || len(locations) == 0 {
+						return "No references found", err
+					}
+					return formatLocations("References", locations, manager.WorkingDir()), nil
 				})
 				return tool.Text(content), err
 			case "hover":
 				content, err := runPosition(func(s *lsp.Session, uri string, line, column int) (string, error) {
-					return s.Hover(ctx, uri, line, column)
+					hover, err := s.Hover(ctx, uri, line, column)
+					content := language.HoverText(hover)
+					if err == nil && content == "" {
+						content = "No hover information available"
+					}
+					return content, err
 				})
 				return tool.Text(content), err
 			case "goToImplementation":
 				content, err := runPosition(func(s *lsp.Session, uri string, line, column int) (string, error) {
-					return s.Implementation(ctx, uri, line, column)
+					locations, err := s.ImplementationLocations(ctx, uri, line, column)
+					if err != nil || len(locations) == 0 {
+						return "No implementations found", err
+					}
+					return formatLocations("Implementations", locations, manager.WorkingDir()), nil
 				})
 				return tool.Text(content), err
 			case "incomingCalls", "outgoingCalls":
 				content, err := runPosition(func(s *lsp.Session, uri string, line, column int) (string, error) {
-					return s.CallHierarchy(ctx, uri, line, column, operation == "incomingCalls")
+					items, err := s.PrepareCallHierarchy(ctx, uri, line, column)
+					if err != nil || len(items) == 0 {
+						return "No call hierarchy item found at this position", err
+					}
+					var content string
+					if operation == "incomingCalls" {
+						calls, err := s.IncomingCalls(ctx, items[0])
+						if err != nil || len(calls) == 0 {
+							return "No incoming calls found", err
+						}
+						content = formatIncomingCalls(calls, manager.WorkingDir())
+					} else {
+						calls, err := s.OutgoingCalls(ctx, items[0])
+						if err != nil || len(calls) == 0 {
+							return "No outgoing calls found", err
+						}
+						content = formatOutgoingCalls(calls, manager.WorkingDir())
+					}
+					if len(items) > 1 {
+						content += fmt.Sprintf("(%d call hierarchy items at this position; showing calls for %s)\n", len(items), items[0].Name)
+					}
+					return content, nil
 				})
 				return tool.Text(content), err
 			default:
@@ -185,10 +254,10 @@ func resolvePosition(path string, args map[string]any) (lsp.Position, string, er
 
 	switch {
 	case hasLine && hasColumn:
-		pos, err := lsp.PositionFromDisplay(path, line, column)
+		pos, err := positionFromDisplay(path, line, column)
 		return pos, "", err
 	case symbol != "" && hasLine:
-		pos, err := lsp.PositionOfSymbolOnLine(path, line, symbol)
+		pos, err := positionOfSymbolOnLine(path, line, symbol)
 		return pos, "", err
 	case symbol != "":
 		return lsp.Position{}, symbol, nil

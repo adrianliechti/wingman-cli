@@ -14,6 +14,7 @@ import {
 	PanelRightClose,
 	PanelRightOpen,
 	Plus,
+	Save,
 	SquareTerminal,
 	Wrench,
 	X,
@@ -34,6 +35,7 @@ import {
 	Separator,
 	usePanelRef,
 } from "react-resizable-panels";
+import { createWorkspaceFile } from "./api/files";
 import { ChatPanel } from "./components/ChatPanel";
 import {
 	CommandPalette,
@@ -73,6 +75,11 @@ import {
 	type FileView,
 	textPreviewKind,
 } from "./utils/filePreview";
+import {
+	summarizeWorkspaceEdit,
+	type WorkspaceEditEnvelope,
+	type WorkspaceEditSummary,
+} from "./workspaceEdit";
 
 interface CenterTab {
 	id: string;
@@ -91,7 +98,26 @@ interface CenterTab {
 
 type RightTab = "changes" | "files" | "problems" | "agents";
 type CloseRequest = { kind: "file" | "terminal"; tab: CenterTab } | null;
+type SaveConflictRequest = { path: string; closeTabId?: string } | null;
+type WorkspaceEditRequest = {
+	envelope: WorkspaceEditEnvelope;
+	label: string;
+	summary: WorkspaceEditSummary;
+	resolve: (applied: boolean) => void;
+	applying: boolean;
+} | null;
 type SessionDeleteRequest = { id: string; title: string } | null;
+type FilePathRequest =
+	| { kind: "new"; path: string; submitting: boolean; error?: string }
+	| {
+			kind: "save-as";
+			path: string;
+			sourcePath: string;
+			sourceTabId: string;
+			content: string;
+			submitting: boolean;
+			error?: string;
+	  };
 const LEFT_PANEL_DEFAULT_SIZE = 240;
 const LEFT_PANEL_MIN_SIZE = 200;
 const LEFT_PANEL_MAX_SIZE = 360;
@@ -124,6 +150,30 @@ function draftChatTab(): CenterTab {
 	};
 }
 
+function moveWorkspacePath(path: string, from: string, to: string): string {
+	return path === from || path.startsWith(`${from}/`)
+		? `${to}${path.slice(from.length)}`
+		: path;
+}
+
+function moveWorkspaceTab(tab: CenterTab, from: string, to: string): CenterTab {
+	if (!tab.path) return tab;
+	const path = moveWorkspacePath(tab.path, from, to);
+	if (path === tab.path) return tab;
+	const name = path.split("/").pop() || path;
+	return {
+		...tab,
+		id:
+			tab.type === "file"
+				? `file:${path}`
+				: tab.type === "diff"
+					? `diff:${tab.diffLayer ?? "combined"}:${path}`
+					: tab.id,
+		path,
+		label: tab.diffLayer ? `${name} · ${tab.diffLayer}` : name,
+	};
+}
+
 export default function App() {
 	const {
 		connected,
@@ -148,12 +198,14 @@ export default function App() {
 		documents,
 		dirtyPaths,
 		openDocument,
+		openCreatedDocument,
 		updateDraft,
 		saveDocument,
 		discardDocument,
-		keepDocument,
 		reloadDocument,
 		closeDocument,
+		moveDocuments,
+		applyWorkspaceEdit,
 	} = useOpenDocuments(subscribe);
 	const capabilities = useCapabilities(subscribe);
 	const showChanges = !!(capabilities?.diffs || capabilities?.git_init);
@@ -200,8 +252,75 @@ export default function App() {
 		nonce: number;
 	} | null>(null);
 	const [closeRequest, setCloseRequest] = useState<CloseRequest>(null);
+	const [saveConflict, setSaveConflict] = useState<SaveConflictRequest>(null);
+	const [workspaceEditRequest, setWorkspaceEditRequest] =
+		useState<WorkspaceEditRequest>(null);
 	const [sessionDelete, setSessionDelete] =
 		useState<SessionDeleteRequest>(null);
+	const [filePathRequest, setFilePathRequest] =
+		useState<FilePathRequest | null>(null);
+	const [openFolderRequest, setOpenFolderRequest] = useState(false);
+	const [workspaceSwitching, setWorkspaceSwitching] = useState(false);
+
+	const runWorkspaceEdit = useCallback(
+		async (envelope: WorkspaceEditEnvelope, label: string) => {
+			const result = await applyWorkspaceEdit(envelope);
+			if (!result.ok) {
+				toast({
+					title: `${label} failed`,
+					description: result.error,
+					tone: "error",
+				});
+			}
+			return result.ok;
+		},
+		[applyWorkspaceEdit, toast],
+	);
+
+	const requestWorkspaceEdit = useCallback(
+		(envelope: WorkspaceEditEnvelope, label: string): Promise<boolean> => {
+			let summary: WorkspaceEditSummary;
+			try {
+				summary = summarizeWorkspaceEdit(envelope);
+			} catch (error) {
+				toast({
+					title: `${label} failed`,
+					description: error instanceof Error ? error.message : String(error),
+					tone: "error",
+				});
+				return Promise.resolve(false);
+			}
+			if (!summary.requiresConfirmation) {
+				return runWorkspaceEdit(envelope, label);
+			}
+			return new Promise<boolean>((resolve) => {
+				setWorkspaceEditRequest({
+					envelope,
+					label,
+					summary,
+					resolve,
+					applying: false,
+				});
+			});
+		},
+		[runWorkspaceEdit, toast],
+	);
+
+	const closeWorkspaceEditPreview = useCallback(() => {
+		workspaceEditRequest?.resolve(false);
+		setWorkspaceEditRequest(null);
+	}, [workspaceEditRequest]);
+
+	const confirmWorkspaceEdit = useCallback(async () => {
+		const request = workspaceEditRequest;
+		if (!request || request.applying) return;
+		setWorkspaceEditRequest({ ...request, applying: true });
+		const applied = await runWorkspaceEdit(request.envelope, request.label);
+		request.resolve(applied);
+		setWorkspaceEditRequest((current) =>
+			current?.resolve === request.resolve ? null : current,
+		);
+	}, [runWorkspaceEdit, workspaceEditRequest]);
 
 	const createTerminal = useCallback(
 		async (shell?: string) => {
@@ -328,6 +447,18 @@ export default function App() {
 	}, [createTerminal]);
 
 	const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
+	const activeDocument =
+		activeTab.type === "file" && activeTab.path
+			? documents[activeTab.path]
+			: undefined;
+	const canSaveFile = !!(
+		activeTab.type === "file" &&
+		activeTab.path &&
+		activeDocument?.file &&
+		!activeDocument.external &&
+		!activeDocument.file.binary &&
+		!activeDocument.saving
+	);
 	const activePreviewKind =
 		activeTab.type === "file" ? textPreviewKind(activeTab.path ?? "") : null;
 	const activeFileView =
@@ -475,6 +606,31 @@ export default function App() {
 		[tabs, openDocument],
 	);
 
+	const handleFileMove = useCallback(
+		(from: string, to: string) => {
+			moveDocuments(from, to);
+			const movedTabs = new Map(
+				tabs.map((tab) => [tab.id, moveWorkspaceTab(tab, from, to)]),
+			);
+			setTabs((current) =>
+				current.map((tab) => moveWorkspaceTab(tab, from, to)),
+			);
+			setActiveTabId((current) => movedTabs.get(current)?.id ?? current);
+			setFileViews((current) => {
+				let changed = false;
+				const next = { ...current };
+				for (const [oldID, tab] of movedTabs) {
+					if (tab.id === oldID || !(oldID in next)) continue;
+					next[tab.id] = next[oldID];
+					delete next[oldID];
+					changed = true;
+				}
+				return changed ? next : current;
+			});
+		},
+		[moveDocuments, tabs],
+	);
+
 	const openTask = useCallback(
 		(task: TaskEntry) => {
 			if (!sessionId) return;
@@ -584,6 +740,198 @@ export default function App() {
 		[closeTabNow, toast],
 	);
 
+	const saveFile = useCallback(
+		async (path: string, closeTabId?: string) => {
+			const result = await saveDocument(path);
+			if (result.conflict) {
+				if (closeTabId) setCloseRequest(null);
+				setSaveConflict({ path, closeTabId });
+				return result;
+			}
+			if (!result.ok) {
+				toast({
+					title: "Could not save file",
+					description: result.error,
+					tone: "error",
+				});
+				return result;
+			}
+			if (closeTabId) {
+				setCloseRequest(null);
+				closeTabNow(closeTabId);
+			}
+			return result;
+		},
+		[closeTabNow, saveDocument, toast],
+	);
+
+	const submitFilePath = useCallback(async () => {
+		const request = filePathRequest;
+		if (!request || request.submitting) return;
+		const path = request.path.trim().replaceAll("\\", "/");
+		if (!path) {
+			setFilePathRequest({
+				...request,
+				error: "Enter a workspace-relative path.",
+			});
+			return;
+		}
+
+		if (request.kind === "save-as" && path === request.sourcePath) {
+			const result = await saveFile(request.sourcePath);
+			if (result?.ok || result?.conflict) setFilePathRequest(null);
+			return;
+		}
+
+		setFilePathRequest({
+			...request,
+			path,
+			submitting: true,
+			error: undefined,
+		});
+		try {
+			const content = request.kind === "save-as" ? request.content : "";
+			const created = await createWorkspaceFile(path, { content });
+			if (!created) throw new Error("The created file response was empty.");
+			openCreatedDocument(created);
+
+			if (request.kind === "new") {
+				openFile(created.path);
+			} else {
+				const nextId = `file:${created.path}`;
+				closeDocument(request.sourcePath);
+				setTabs((current) =>
+					current.map((tab) =>
+						tab.id === request.sourceTabId
+							? {
+									...tab,
+									id: nextId,
+									label: created.path.split("/").pop() || created.path,
+									path: created.path,
+									external: undefined,
+								}
+							: tab,
+					),
+				);
+				setFileViews((current) => {
+					if (!(request.sourceTabId in current)) return current;
+					const next = { ...current, [nextId]: current[request.sourceTabId] };
+					delete next[request.sourceTabId];
+					return next;
+				});
+				setActiveTabId(nextId);
+			}
+			setFilePathRequest(null);
+		} catch (error) {
+			setFilePathRequest((current) =>
+				current
+					? {
+							...current,
+							submitting: false,
+							error: error instanceof Error ? error.message : String(error),
+						}
+					: current,
+			);
+		}
+	}, [closeDocument, filePathRequest, openCreatedDocument, openFile, saveFile]);
+
+	const openFolder = useCallback(async () => {
+		if (workspaceSwitching) return;
+		setWorkspaceSwitching(true);
+		try {
+			const selected = await fetch("/app/folder", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: "{}",
+			});
+			if (!selected.ok) {
+				throw new Error(
+					(await selected.text()).trim() || "Could not select a folder.",
+				);
+			}
+			const { path } = (await selected.json()) as { path?: string };
+			if (!path) {
+				setWorkspaceSwitching(false);
+				return;
+			}
+
+			const opened = await fetch("/app/workspaces/open", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ path, replace: true }),
+			});
+			if (!opened.ok) {
+				throw new Error(
+					(await opened.text()).trim() || "Could not open the folder.",
+				);
+			}
+			window.location.replace("/");
+		} catch (error) {
+			setWorkspaceSwitching(false);
+			toast({
+				title: "Could not open folder",
+				description: error instanceof Error ? error.message : String(error),
+				tone: "error",
+			});
+		}
+	}, [toast, workspaceSwitching]);
+
+	useEffect(() => {
+		for (const [command, enabled] of [
+			["new-file", !workspaceSwitching],
+			["open-folder", !workspaceSwitching],
+			["save", canSaveFile],
+			["save-as", canSaveFile],
+		] as const) {
+			window.dispatchEvent(
+				new CustomEvent("shell:command-state", {
+					detail: { command, enabled },
+				}),
+			);
+		}
+	}, [canSaveFile, workspaceSwitching]);
+
+	useEffect(() => {
+		const onShellCommand = (event: Event) => {
+			const command = (event as CustomEvent<unknown>).detail;
+			switch (command) {
+				case "new-file":
+					setFilePathRequest({ kind: "new", path: "", submitting: false });
+					break;
+				case "open-folder":
+					if (dirtyPaths.size > 0) setOpenFolderRequest(true);
+					else void openFolder();
+					break;
+				case "save":
+					if (canSaveFile && activeTab.path) {
+						void saveFile(activeTab.path);
+					}
+					break;
+				case "save-as":
+					if (canSaveFile && activeTab.path && activeDocument) {
+						setFilePathRequest({
+							kind: "save-as",
+							path: activeTab.path,
+							sourcePath: activeTab.path,
+							sourceTabId: activeTab.id,
+							content: activeDocument.draft,
+							submitting: false,
+						});
+					}
+					break;
+			}
+		};
+		window.addEventListener("shell:command", onShellCommand);
+		return () => window.removeEventListener("shell:command", onShellCommand);
+	}, [
+		activeDocument,
+		activeTab,
+		canSaveFile,
+		dirtyPaths.size,
+		openFolder,
+		saveFile,
+	]);
+
 	const requestCloseTab = useCallback(
 		async (id: string) => {
 			const tab = tabs.find((item) => item.id === id);
@@ -667,7 +1015,13 @@ export default function App() {
 	const saveAndCloseFile = useCallback(async () => {
 		const request = closeRequest;
 		if (request?.kind !== "file" || !request.tab.path) return;
-		const result = await saveDocument(request.tab.path);
+		await saveFile(request.tab.path, request.tab.id);
+	}, [closeRequest, saveFile]);
+
+	const overwriteChangedFile = useCallback(async () => {
+		const request = saveConflict;
+		if (!request) return;
+		const result = await saveDocument(request.path, true);
 		if (!result.ok) {
 			toast({
 				title: "Could not save file",
@@ -676,9 +1030,9 @@ export default function App() {
 			});
 			return;
 		}
-		setCloseRequest(null);
-		closeTabNow(request.tab.id);
-	}, [closeRequest, closeTabNow, saveDocument, toast]);
+		setSaveConflict(null);
+		if (request.closeTabId) closeTabNow(request.closeTabId);
+	}, [closeTabNow, saveConflict, saveDocument, toast]);
 
 	const setTerminalTitle = useCallback((id: string, title: string) => {
 		if (!title) return;
@@ -1140,7 +1494,12 @@ export default function App() {
 					<ProblemsPanel onOpenFile={openFile} subscribe={subscribe} />
 				) : (
 					<div className="flex h-full flex-col overflow-hidden">
-						<FileTree onFileSelect={openFile} subscribe={subscribe} />
+						<FileTree
+							onFileSelect={openFile}
+							onFileMove={handleFileMove}
+							platform={capabilities?.platform}
+							subscribe={subscribe}
+						/>
 					</div>
 				)}
 			</div>
@@ -1394,6 +1753,34 @@ export default function App() {
 							<Plus size={13} />
 						</button>
 					)}
+					{activeTab.type === "file" &&
+						activeTab.path &&
+						activeDocument &&
+						!activeDocument.external &&
+						!activeDocument.file?.binary && (
+							<button
+								type="button"
+								className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted disabled:cursor-default disabled:opacity-35 disabled:hover:bg-transparent"
+								disabled={
+									activeDocument.saving || !dirtyPaths.has(activeTab.path)
+								}
+								onClick={() => void saveFile(activeTab.path!)}
+								title={
+									activeDocument.saving
+										? "Saving file…"
+										: dirtyPaths.has(activeTab.path)
+											? "Save file (Ctrl+S)"
+											: "No changes to save"
+								}
+								aria-label="Save file"
+							>
+								{activeDocument.saving ? (
+									<Loader2 size={13} className="animate-spin" />
+								) : (
+									<Save size={13} />
+								)}
+							</button>
+						)}
 					{activePreviewKind && (
 						<button
 							type="button"
@@ -1606,7 +1993,7 @@ export default function App() {
 									/>
 								) : activeTab.path && documents[activeTab.path] ? (
 									<FileTab
-										key={activeTab.id}
+										key={`${activeTab.id}:${activeTab.path}`}
 										document={documents[activeTab.path]}
 										line={activeTab.line}
 										column={activeTab.column}
@@ -1614,15 +2001,7 @@ export default function App() {
 										subscribe={subscribe}
 										onChange={(value) => updateDraft(activeTab.path!, value)}
 										onSave={async () => {
-											const result = await saveDocument(activeTab.path!);
-											if (!result.ok) {
-												toast({
-													title: "Could not save file",
-													description: result.error,
-													tone: "error",
-												});
-											}
-											return result;
+											return saveFile(activeTab.path!);
 										}}
 										onReload={() =>
 											void reloadDocument(
@@ -1630,8 +2009,8 @@ export default function App() {
 												activeTab.external ?? false,
 											)
 										}
-										onKeepVersion={() => keepDocument(activeTab.path!)}
 										onOpenFile={openFile}
+										onApplyWorkspaceEdit={requestWorkspaceEdit}
 										view={
 											fileViews[activeTab.id] ?? defaultFileView(activeTab.path)
 										}
@@ -1685,6 +2064,100 @@ export default function App() {
 			)}
 
 			<Dialog
+				open={filePathRequest !== null}
+				title={filePathRequest?.kind === "save-as" ? "Save As" : "New File"}
+				description="Enter a path relative to the current workspace."
+				onClose={() => {
+					if (!filePathRequest?.submitting) setFilePathRequest(null);
+				}}
+				initialFocus="first"
+			>
+				<form
+					className="contents"
+					onSubmit={(event) => {
+						event.preventDefault();
+						void submitFilePath();
+					}}
+				>
+					<label className="flex w-full flex-col gap-1.5 text-[11px] text-fg-muted">
+						<span>File path</span>
+						<input
+							value={filePathRequest?.path ?? ""}
+							onChange={(event) =>
+								setFilePathRequest((current) =>
+									current
+										? {
+												...current,
+												path: event.target.value,
+												error: undefined,
+											}
+										: current,
+								)
+							}
+							onFocus={(event) => {
+								if (filePathRequest?.kind === "save-as") {
+									event.currentTarget.select();
+								}
+							}}
+							disabled={filePathRequest?.submitting}
+							autoComplete="off"
+							spellCheck={false}
+							className="h-9 rounded-md border border-border-strong bg-bg px-2.5 text-[12px] text-fg outline-none focus:border-focus"
+						/>
+					</label>
+					{filePathRequest?.error && (
+						<div className="w-full text-[11px] text-danger" role="alert">
+							{filePathRequest.error}
+						</div>
+					)}
+					<button
+						type="button"
+						className={dialogButtonClass}
+						disabled={filePathRequest?.submitting}
+						onClick={() => setFilePathRequest(null)}
+					>
+						Cancel
+					</button>
+					<button
+						type="submit"
+						className={`${dialogButtonClass} bg-fg text-bg hover:bg-fg-muted hover:text-bg`}
+						disabled={filePathRequest?.submitting}
+					>
+						{filePathRequest?.submitting
+							? "Saving..."
+							: filePathRequest?.kind === "save-as"
+								? "Save"
+								: "Create"}
+					</button>
+				</form>
+			</Dialog>
+
+			<Dialog
+				open={openFolderRequest}
+				title="Open another folder?"
+				description={`${dirtyPaths.size} unsaved ${dirtyPaths.size === 1 ? "file" : "files"} will be discarded.`}
+				onClose={() => setOpenFolderRequest(false)}
+			>
+				<button
+					type="button"
+					className={dialogButtonClass}
+					onClick={() => setOpenFolderRequest(false)}
+				>
+					Cancel
+				</button>
+				<button
+					type="button"
+					className={`${dialogButtonClass} border-danger/40 text-danger hover:bg-danger/10`}
+					onClick={() => {
+						setOpenFolderRequest(false);
+						void openFolder();
+					}}
+				>
+					Discard and Open
+				</button>
+			</Dialog>
+
+			<Dialog
 				open={closeRequest?.kind === "file"}
 				title="Save changes before closing?"
 				description={
@@ -1720,6 +2193,81 @@ export default function App() {
 					onClick={() => void saveAndCloseFile()}
 				>
 					Save
+				</button>
+			</Dialog>
+
+			<Dialog
+				open={saveConflict !== null}
+				title="Overwrite newer file?"
+				description={
+					saveConflict
+						? `“${saveConflict.path.split("/").pop() || saveConflict.path}” changed on disk since you opened it. Overwriting will replace those changes.`
+						: undefined
+				}
+				onClose={() => setSaveConflict(null)}
+			>
+				<button
+					type="button"
+					className={dialogButtonClass}
+					onClick={() => setSaveConflict(null)}
+				>
+					Cancel
+				</button>
+				<button
+					type="button"
+					className={dialogButtonClass}
+					onClick={() => {
+						if (!saveConflict) return;
+						const path = saveConflict.path;
+						setSaveConflict(null);
+						void reloadDocument(path, false);
+					}}
+				>
+					Reload from disk
+				</button>
+				<button
+					type="button"
+					className={`${dialogButtonClass} bg-fg text-bg hover:bg-fg-muted hover:text-bg`}
+					onClick={() => void overwriteChangedFile()}
+				>
+					Overwrite
+				</button>
+			</Dialog>
+
+			<Dialog
+				open={workspaceEditRequest !== null}
+				title={workspaceEditRequest?.label ?? "Apply workspace edit?"}
+				description={
+					workspaceEditRequest
+						? `${workspaceEditRequest.summary.edits} ${workspaceEditRequest.summary.edits === 1 ? "edit" : "edits"} across ${workspaceEditRequest.summary.files.length} ${workspaceEditRequest.summary.files.length === 1 ? "file" : "files"}. The files will be saved together after their disk revisions are checked.`
+						: undefined
+				}
+				onClose={closeWorkspaceEditPreview}
+			>
+				{workspaceEditRequest && (
+					<div className="mr-auto max-h-36 min-w-0 overflow-auto text-[11px] text-fg-muted">
+						{workspaceEditRequest.summary.files.map((path) => (
+							<div key={path} className="truncate py-0.5" title={path}>
+								{path}
+							</div>
+						))}
+					</div>
+				)}
+				<button
+					type="button"
+					className={dialogButtonClass}
+					disabled={workspaceEditRequest?.applying}
+					onClick={closeWorkspaceEditPreview}
+				>
+					Cancel
+				</button>
+				<button
+					type="button"
+					className={`${dialogButtonClass} bg-fg text-bg hover:bg-fg-muted hover:text-bg`}
+					disabled={workspaceEditRequest?.applying}
+					onClick={() => void confirmWorkspaceEdit()}
+				>
+					{workspaceEditRequest?.applying ? "Applying…" : "Apply and Save"}
 				</button>
 			</Dialog>
 

@@ -25,8 +25,8 @@ func TestWarmUpCreatesLSPManagerOutsideGitRepository(t *testing.T) {
 	defer w.Close()
 
 	w.WarmUp()
-	if w.LSP == nil {
-		t.Fatal("LSP manager was not created")
+	if w.Language == nil {
+		t.Fatal("language service was not created")
 	}
 }
 

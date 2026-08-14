@@ -267,6 +267,23 @@ func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(
+		filepath.Join(workDir, "completion.go"),
+		[]byte("package main\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(workDir, "go.mod"),
+		[]byte("module example.com/wingman-e2e\n\ngo 1.24\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(workDir, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	model := &webE2EModel{
 		filePath:       filepath.Join(workDir, "e2e-result.txt"),
 		steerStarted:   make(chan struct{}),
@@ -293,6 +310,7 @@ func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
 	cmd.Env = append(os.Environ(),
 		"E2E_BASE_URL="+web.URL,
 		"E2E_CONTROL_URL="+modelServer.URL,
+		"E2E_WORKSPACE="+workDir,
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
