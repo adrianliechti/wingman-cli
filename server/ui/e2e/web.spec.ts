@@ -55,6 +55,25 @@ async function expectFloatingInViewport(
 	).toBe(true);
 }
 
+async function expectFloatingNotScrollable(element: Locator) {
+	expect(
+		await element.evaluate((node) => {
+			const style = getComputedStyle(node);
+			return {
+				overflowX: style.overflowX,
+				overflowY: style.overflowY,
+				fitsX: node.scrollWidth <= node.clientWidth,
+				fitsY: node.scrollHeight <= node.clientHeight,
+			};
+		}),
+	).toEqual({
+		overflowX: "visible",
+		overflowY: "visible",
+		fitsX: true,
+		fitsY: true,
+	});
+}
+
 test("focuses the composer surface without outlining its textarea", async ({
 	page,
 }) => {
@@ -336,9 +355,10 @@ test("keeps the session context menu above panel clipping", async ({
 });
 
 test("shows file actions above panel clipping", async ({ page }) => {
+	await page.setViewportSize({ width: 640, height: 400 });
 	await composer(page);
 	const file = page.getByRole("treeitem", { name: /editable\.txt/ });
-	await file.click({ button: "right" });
+	await file.dispatchEvent("contextmenu", { clientX: 160, clientY: 200 });
 
 	const menu = page.getByRole("menu", { name: "Actions for editable.txt" });
 	await expect(menu).toBeVisible();
@@ -365,7 +385,8 @@ test("shows file actions above panel clipping", async ({ page }) => {
 	await expect(menu.getByRole("menuitem", { name: "Rename" })).toBeVisible();
 	await expect(menu.getByRole("menuitem", { name: "Duplicate" })).toBeVisible();
 	await expect(menu.getByRole("menuitem", { name: "Delete" })).toBeVisible();
-	await expectFloatingInViewport(page, menu);
+	await expectFloatingInViewport(page, menu, 4);
+	await expectFloatingNotScrollable(menu);
 	await expect(menu.getByRole("menuitem", { name: "Open" })).toBeFocused();
 	await page.keyboard.press("ArrowDown");
 	await expect(menu.getByRole("menuitem", { name: "Cut" })).toBeFocused();
@@ -1263,6 +1284,7 @@ test("renders markdown files in a browser preview", async ({ page }) => {
 });
 
 test("uses Wingman's dynamic editor context menu", async ({ page }) => {
+	await page.setViewportSize({ width: 640, height: 400 });
 	let definitionRequested = false;
 	await page.route(/\/api\/lsp\/definition$/, async (route) => {
 		definitionRequested = true;
@@ -1342,7 +1364,8 @@ test("uses Wingman's dynamic editor context menu", async ({ page }) => {
 	await expect(
 		page.getByRole("menuitem", { name: "Command Palette", exact: true }),
 	).toHaveCount(0);
-	await expectFloatingInViewport(page, menu);
+	await expectFloatingInViewport(page, menu, 4);
+	await expectFloatingNotScrollable(menu);
 
 	await menu
 		.getByRole("menuitem", { name: "Go to Definition", exact: true })

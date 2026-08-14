@@ -94,6 +94,12 @@ export function FloatingSurface({
 	menuNavigation = false,
 	maxHeight,
 }: FloatingSurfaceProps) {
+	const contextMenu =
+		role === "menu" &&
+		maxHeight === undefined &&
+		reference !== null &&
+		isPoint(reference);
+	const boundaryPadding = contextMenu ? 4 : 8;
 	const virtualReference = useMemo<ReferenceType | null>(() => {
 		if (!reference || !isPoint(reference)) return null;
 		return {
@@ -109,16 +115,37 @@ export function FloatingSurface({
 		whileElementsMounted: autoUpdate,
 		middleware: [
 			offset(gap),
-			flip({ padding: 8 }),
-			shift({ padding: 8 }),
+			flip({ padding: boundaryPadding }),
+			shift({ padding: boundaryPadding, crossAxis: contextMenu }),
 			size({
-				padding: 8,
+				padding: boundaryPadding,
 				apply({ availableWidth, availableHeight, elements }) {
+					if (contextMenu) {
+						const viewport = elements.floating.ownerDocument.documentElement;
+						const maxWidth = Math.max(
+							0,
+							viewport.clientWidth - boundaryPadding * 2,
+						);
+						const maxHeight = Math.max(
+							0,
+							viewport.clientHeight - boundaryPadding * 2,
+						);
+						elements.floating.style.maxWidth = `${maxWidth}px`;
+						elements.floating.style.maxHeight = `${maxHeight}px`;
+						elements.floating.style.overflow =
+							elements.floating.scrollWidth > maxWidth ||
+							elements.floating.scrollHeight > maxHeight
+								? "auto"
+								: "visible";
+						return;
+					}
+
 					elements.floating.style.maxWidth = `${Math.max(0, availableWidth)}px`;
 					elements.floating.style.maxHeight = `${Math.max(
 						0,
 						Math.min(availableHeight, maxHeight ?? Number.POSITIVE_INFINITY),
 					)}px`;
+					elements.floating.style.overflow = "auto";
 				},
 			}),
 		],
@@ -150,7 +177,7 @@ export function FloatingSurface({
 					ref={refs.setFloating}
 					aria-label={label}
 					className={className}
-					style={{ ...floatingStyles, overflow: "auto" }}
+					style={floatingStyles}
 					{...getFloatingProps({
 						onKeyDown: menuNavigation
 							? (event: KeyboardEvent<HTMLDivElement>) =>
