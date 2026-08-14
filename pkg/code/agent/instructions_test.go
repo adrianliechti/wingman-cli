@@ -5,7 +5,20 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestLocalShellAndTimezoneFromEnvironment(t *testing.T) {
+	t.Setenv("SHELL", filepath.Join("opt", "bin", "zsh"))
+	t.Setenv("TZ", "Europe/Berlin")
+
+	if got := localShell(); got != "zsh" {
+		t.Fatalf("localShell() = %q, want zsh", got)
+	}
+	if got := localTimezone(time.Now()); got != "Europe/Berlin" {
+		t.Fatalf("localTimezone() = %q, want Europe/Berlin", got)
+	}
+}
 
 func TestProjectInstructionsRootFirstAndDeduped(t *testing.T) {
 	root := t.TempDir()

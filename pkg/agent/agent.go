@@ -15,6 +15,7 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/hook"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/model"
 )
 
 var errYieldStopped = errors.New("yield stopped")
@@ -170,12 +171,12 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 
 			a.removeOrphanedToolMessages()
 
-			model := ""
+			modelID := ""
 			if a.Config.Model != nil {
-				model = a.Model()
+				modelID = a.Model()
 			}
 
-			a.dropForeignReasoning(model)
+			a.dropForeignReasoning(modelID)
 
 			effort := ""
 			if a.Config.Effort != nil {
@@ -205,13 +206,14 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 			}
 
 			req := &request{
-				model:        model,
-				effort:       effort,
-				instructions: instructions,
-				cacheKey:     a.CacheKey,
-				messages:     a.requestMessages(),
-				tools:        tools,
-				outputSchema: outputSchema,
+				model:           modelID,
+				effort:          effort,
+				effortPlacement: model.ProfileFor(modelID).ReasoningEffortPlacement,
+				instructions:    instructions,
+				cacheKey:        a.CacheKey,
+				messages:        a.requestMessages(),
+				tools:           tools,
+				outputSchema:    outputSchema,
 			}
 
 			resp, err := complete(ctx, a.client, req, yield)
@@ -343,7 +345,7 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 			// summarization only runs when the estimated reclaim (~4 bytes per
 			// token) cannot cover the overshoot. The reserve leaves headroom to
 			// re-measure real usage next turn.
-			if overshoot := a.compactionOvershoot(model, resp.usage.InputTokens); overshoot > 0 {
+			if overshoot := a.compactionOvershoot(modelID, resp.usage.InputTokens); overshoot > 0 {
 				if int64(a.trimStaleToolResults()/4) < overshoot {
 					if outcome := a.runPreCompact(ctx, "auto"); outcome.Stop {
 						a.endRun()

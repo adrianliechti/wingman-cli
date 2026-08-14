@@ -5,6 +5,7 @@ import (
 	"embed"
 	"io/fs"
 	"strings"
+	"sync"
 	"text/template"
 
 	"github.com/adrianliechti/wingman-agent/pkg/model"
@@ -82,7 +83,7 @@ func VariantFor(id string) Variant {
 
 	match := ""
 	for prefix := range variants {
-		if strings.HasPrefix(id, prefix) && len(prefix) > len(match) {
+		if (id == prefix || strings.HasPrefix(id, prefix+"-")) && len(prefix) > len(match) {
 			match = prefix
 		}
 	}
@@ -125,12 +126,15 @@ var staticTemplates = []namedTemplate{tmplProject, tmplSkills, tmplMemory}
 var dynamicTemplates = []namedTemplate{tmplEnvironment}
 
 type SectionData struct {
+	Model               model.Model
 	PlanMode            bool
 	UnattendedMode      bool
 	Date                string
+	Timezone            string
 	OS                  string
 	Arch                string
 	WorkingDir          string
+	Shell               string
 	MemoryDir           string
 	MemoryContent       string
 	Skills              string
@@ -166,7 +170,7 @@ func BuildAgentContext(data SectionData) string {
 
 func BuildInstructions(base string, data SectionData) string {
 	var staticParts []Section
-	staticParts = append(staticParts, Section{Content: base})
+	staticParts = append(staticParts, Section{Content: renderBase(base, data)})
 	staticParts = append(staticParts, renderSections(staticTemplates, data)...)
 
 	dynamicParts := renderSections(dynamicTemplates, data)
@@ -183,6 +187,22 @@ func BuildInstructions(base string, data SectionData) string {
 	return staticBlock + "\n\n" + BoundaryMarker + "\n\n" + dynamicBlock
 }
 
+var baseTemplates sync.Map
+
+func renderBase(source string, data SectionData) string {
+	tmpl, ok := baseTemplates.Load(source)
+	if !ok {
+		parsed := template.Must(template.New("mode").Parse(source))
+		tmpl, _ = baseTemplates.LoadOrStore(source, parsed)
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.(*template.Template).Execute(&buf, data); err != nil {
+		panic(err)
+	}
+	return buf.String()
+}
+
 func composeSections(sections []Section) string {
 	var parts []string
 
@@ -193,7 +213,7 @@ func composeSections(sections []Section) string {
 		}
 
 		if section.Title != "" {
-			parts = append(parts, "## "+section.Title+"\n\n"+content)
+			parts = append(parts, "# "+section.Title+"\n\n"+content)
 			continue
 		}
 

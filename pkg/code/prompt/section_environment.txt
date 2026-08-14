@@ -1,4 +1,10 @@
 - Current Date: {{.Date}}
+{{- if .Timezone}}
+- Time Zone: {{.Timezone}}
+{{- end}}
 - Operating System: {{.OS}}
 - Architecture: {{.Arch}}
 - Working Directory: {{.WorkingDir}}
+{{- if .Shell}}
+- Shell: {{.Shell}}
+{{- end}}

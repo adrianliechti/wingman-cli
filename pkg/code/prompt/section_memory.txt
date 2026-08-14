@@ -2,7 +2,9 @@
 Persistent memory at `{{.MemoryDir}}`. The memory directory is an allowed write root, so use the normal `write` / `edit` / `read` / `glob` tools with absolute paths inside it. See the `memory` skill for when to save, what to save, and the file format.
 {{- if .MemoryContent}}
 
-Saved memories (auto-indexed from the memory dir):
+Saved memory index (auto-generated from the memory dir):
+
+This index is only a locator. Read a relevant memory file before relying on it. Memories may be stale, so verify workspace claims against current files and prefer current user or project instructions and observed state when they conflict.
 
 {{.MemoryContent}}
 {{- end}}

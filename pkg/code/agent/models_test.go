@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/adrianliechti/wingman-agent/pkg/model"
@@ -90,6 +91,28 @@ func TestEffortDefaultsByRole(t *testing.T) {
 	s.setMode(modeAgent)
 	if got := a.effortFor(s); got != "medium" {
 		t.Fatalf("code effort = %q, want medium", got)
+	}
+}
+
+func TestKimiK3EffortProfile(t *testing.T) {
+	a := upstreamAgent("kimi-k3")
+	s := &sessionState{}
+	a.sessions["sid"] = s
+
+	if got := a.effortFor(s); got != "max" {
+		t.Fatalf("Kimi K3 default effort = %q, want max", got)
+	}
+	if current, options := a.Effort("sid"); current != "auto" || !slices.Equal(options, []string{"auto", "low", "high", "max"}) {
+		t.Fatalf("Kimi K3 effort selector = %q, %v", current, options)
+	}
+	if err := a.SetEffort(context.Background(), "sid", "medium"); err == nil {
+		t.Fatal("Kimi K3 accepted unsupported medium effort")
+	}
+	if err := a.SetEffort(context.Background(), "sid", "low"); err != nil {
+		t.Fatalf("Kimi K3 rejected low effort: %v", err)
+	}
+	if option, ok := a.subagentRoleModel(s, ""); !ok || option.ID != "kimi-k3" || !slices.Equal(option.Efforts, []string{"low", "high", "max"}) {
+		t.Fatalf("Kimi K3 subagent option = %+v, ok=%v", option, ok)
 	}
 }
 

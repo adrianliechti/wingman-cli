@@ -115,7 +115,7 @@ func TestUnattendedModeOwnsToolsAndInstructions(t *testing.T) {
 	}
 
 	instructions = BuildInstructions("gpt-5.6-sol", s.instructionsData())
-	if !strings.Contains(instructions, "# Persistence") || !strings.Contains(instructions, "Work unattended") {
+	if !strings.Contains(instructions, "GPT 5.6 Sol") || !strings.Contains(instructions, "gpt-5.6-sol") || !strings.Contains(instructions, "## Autonomy and persistence") || !strings.Contains(instructions, "Work unattended") {
 		t.Fatalf("gpt unattended instructions missing variant base or addendum: %q", instructions)
 	}
 }

@@ -399,6 +399,16 @@ var Models = []Model{
 	// Z.ai
 
 	{
+		ID: "glm-5.3",
+
+		Name:  "GLM 5.3",
+		Class: ClassMedium,
+
+		Context: 1000000,
+		Output:  131072,
+	},
+
+	{
 		ID: "glm-5.2",
 
 		Name:  "GLM 5.2",
@@ -496,8 +506,9 @@ var Models = []Model{
 	{
 		ID: "kimi-k3",
 
-		Name:  "Kimi K3",
-		Class: ClassLarge,
+		Name:        "Kimi K3",
+		Description: "Kimi’s most capable model to date, with 2.8 trillion parameters, native visual understanding, and a 1M-token context window, designed for frontier intelligence scenarios such as software engineering, knowledge work, and deep reasoning.",
+		Class:       ClassLarge,
 
 		Context: 1048576,
 		Output:  131072,
@@ -506,30 +517,37 @@ var Models = []Model{
 	{
 		ID: "kimi-k2.7-code",
 
-		Name:  "Kimi K2.7 Code",
-		Class: ClassMedium,
-
-		Context: 262144,
-		Output:  262144,
-	},
-	{
-		ID: "kimi-k2.7-code-highspeed",
-
-		Name:  "Kimi K2.7 Code HighSpeed",
-		Class: ClassSmall,
+		Name:        "Kimi K2.7 Code",
+		Description: "Kimi’s dedicated coding model. It follows instructions more reliably in long contexts, completes coding tasks with higher success rates. Context 256k.",
+		Class:       ClassMedium,
 
 		Context: 262144,
 		Output:  262144,
 	},
 
+	// MiniMax
+
 	{
-		ID: "kimi-k2.6",
+		ID:      "minimax-m3",
+		Aliases: []string{"MiniMax-M3"},
 
-		Name:  "Kimi K2.6",
-		Class: ClassMedium,
+		Name:  "MiniMax M3",
+		Class: ClassLarge,
 
-		Context: 262144,
-		Output:  262144,
+		Context: 1000000,
+		Output:  128000,
+	},
+
+	// xAI
+
+	{
+		ID: "grok-4.6",
+
+		Name:  "Grok 4.6",
+		Class: ClassLarge,
+
+		Context: 500000,
+		Output:  500000,
 	},
 
 	// Alibaba

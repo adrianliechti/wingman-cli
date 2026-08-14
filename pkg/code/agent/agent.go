@@ -283,12 +283,10 @@ func (a *Agent) subagentRoleModel(s *sessionState, role string) (harness.ModelOp
 		return harness.ModelOption{}, false
 	}
 
-	option := harness.ModelOption{ID: id}
-	if efforts := model.ProfileFor(id).Efforts; len(efforts) > 0 {
-		option.MinEffort = efforts[0]
-		option.MaxEffort = efforts[len(efforts)-1]
-	}
-	return option, true
+	return harness.ModelOption{
+		ID:      id,
+		Efforts: slices.Clone(model.ProfileFor(id).Efforts),
+	}, true
 }
 
 // SetModel applies to the session's current role: picking a model while in
@@ -332,10 +330,18 @@ func (a *Agent) FetchModels(ctx context.Context) {
 
 var effortValues = []string{"auto", "none", "low", "medium", "high", "xhigh", "max"}
 
+func effortValuesFor(id string) []string {
+	if supported := model.ProfileFor(id).Efforts; len(supported) > 0 {
+		return append([]string{"auto"}, supported...)
+	}
+	return effortValues
+}
+
 func (a *Agent) Effort(sessionID string) (string, []string) {
 	s := a.session(sessionID)
 	a.modelMu.Lock()
 	var current string
+	_, currentModel := a.modelsLocked(s)
 	if s != nil && s.currentMode() == modePlan {
 		current = s.planEffortID
 		if current == "" {
@@ -350,7 +356,7 @@ func (a *Agent) Effort(sessionID string) (string, []string) {
 	if current == "" {
 		current = "auto"
 	}
-	return current, slices.Clone(effortValues)
+	return current, slices.Clone(effortValuesFor(currentModel))
 }
 
 func (a *Agent) effortFor(s *sessionState) string {
@@ -365,8 +371,12 @@ func (a *Agent) effortFor(s *sessionState) string {
 		if a.planEffortID != "" {
 			return a.planEffortID
 		}
+		_, current := a.modelsLocked(s)
+		if effort := model.ProfileFor(current).DefaultEffort; effort != "" {
+			return effort
+		}
 		// xhigh only where a large model backs it.
-		if _, current := a.modelsLocked(s); model.ClassOf(current) == model.ClassLarge {
+		if model.ClassOf(current) == model.ClassLarge {
 			return "xhigh"
 		}
 		return "high"
@@ -377,6 +387,10 @@ func (a *Agent) effortFor(s *sessionState) string {
 	}
 	if a.effortID != "" {
 		return a.effortID
+	}
+	_, current := a.modelsLocked(s)
+	if effort := model.ProfileFor(current).DefaultEffort; effort != "" {
+		return effort
 	}
 	return "high"
 }
@@ -391,6 +405,11 @@ func (a *Agent) SetEffort(_ context.Context, sessionID, value string) error {
 	}
 	s := a.session(sessionID)
 	a.modelMu.Lock()
+	_, currentModel := a.modelsLocked(s)
+	if supported := model.ProfileFor(currentModel).Efforts; value != "" && len(supported) > 0 && !slices.Contains(supported, value) {
+		a.modelMu.Unlock()
+		return fmt.Errorf("effort %q is not supported by %s (supported: %s)", value, currentModel, strings.Join(supported, ", "))
+	}
 	if s != nil && s.currentMode() == modePlan {
 		a.planEffortID = value
 		s.planEffortID = value
@@ -1207,8 +1226,14 @@ func (s *sessionState) subagentContext() string {
 	return prompt.BuildAgentContext(s.instructionsData())
 }
 
-func BuildInstructions(model string, data prompt.SectionData) string {
-	variant := prompt.VariantFor(model)
+func BuildInstructions(modelID string, data prompt.SectionData) string {
+	variant := prompt.VariantFor(modelID)
+	selected, ok := model.Find(modelID)
+	if !ok {
+		selected.ID = modelID
+		selected.Name = modelID
+	}
+	data.Model = selected
 
 	base := variant.Agent
 	if data.PlanMode {
@@ -1221,18 +1246,54 @@ func BuildInstructions(model string, data prompt.SectionData) string {
 
 func (s *sessionState) instructionsData() prompt.SectionData {
 	ws := s.parent.workspace
+	now := time.Now()
 	return prompt.SectionData{
 		PlanMode:            s.currentMode() == modePlan,
 		UnattendedMode:      s.currentMode() == modeUnattended,
-		Date:                time.Now().Format("January 2, 2006"),
+		Date:                now.Format("2006-01-02"),
+		Timezone:            localTimezone(now),
 		OS:                  runtime.GOOS,
 		Arch:                runtime.GOARCH,
 		WorkingDir:          ws.RootPath,
+		Shell:               localShell(),
 		MemoryDir:           ws.MemoryPath,
 		MemoryContent:       ws.MemoryContent(),
 		Skills:              skillpkg.FormatForPrompt(ws.Skills),
 		ProjectInstructions: s.projectInstructions(),
 	}
+}
+
+func localShell() string {
+	for _, name := range []string{"SHELL", "COMSPEC"} {
+		if shell := strings.TrimSpace(os.Getenv(name)); shell != "" {
+			return filepath.Base(shell)
+		}
+	}
+	return ""
+}
+
+func localTimezone(now time.Time) string {
+	if timezone := strings.TrimPrefix(strings.TrimSpace(os.Getenv("TZ")), ":"); timezone != "" && !filepath.IsAbs(timezone) {
+		return timezone
+	}
+	if timezone := now.Location().String(); timezone != "" && timezone != "Local" {
+		return timezone
+	}
+	if target, err := filepath.EvalSymlinks("/etc/localtime"); err == nil {
+		const marker = "/zoneinfo/"
+		normalized := filepath.ToSlash(target)
+		if index := strings.LastIndex(normalized, marker); index >= 0 {
+			return normalized[index+len(marker):]
+		}
+	}
+
+	name, offset := now.Zone()
+	sign := "+"
+	if offset < 0 {
+		sign = "-"
+		offset = -offset
+	}
+	return fmt.Sprintf("%s (UTC%s%02d:%02d)", name, sign, offset/3600, offset%3600/60)
 }
 
 const projectInstructionsMaxBytes = 25 * 1024

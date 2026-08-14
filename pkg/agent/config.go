@@ -34,13 +34,11 @@ func ContextWindowFor(id string, largeContext bool) int {
 	return DefaultContextWindow
 }
 
-// ModelOption is a resolved model for a per-subagent override. MinEffort and
-// MaxEffort bound the reasoning efforts the model supports; empty means
-// unbounded on that side.
+// ModelOption is a resolved model for a per-subagent override. Efforts lists
+// the supported reasoning efforts in ascending order; empty means unrestricted.
 type ModelOption struct {
-	ID        string
-	MinEffort string
-	MaxEffort string
+	ID      string
+	Efforts []string
 }
 
 type Config struct {

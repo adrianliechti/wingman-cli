@@ -257,8 +257,8 @@ func TestRunTrailer(t *testing.T) {
 func TestApplyModelOverrides(t *testing.T) {
 	roles := map[string]agent.ModelOption{
 		"plan":    {ID: "large-model"},
-		"utility": {ID: "gpt-small", MaxEffort: "xhigh"},
-		"":        {ID: "gpt-session", MaxEffort: "xhigh"},
+		"utility": {ID: "gpt-small", Efforts: []string{"none", "low", "medium", "high", "xhigh"}},
+		"":        {ID: "gpt-session", Efforts: []string{"none", "low", "medium", "high", "xhigh"}},
 	}
 	cfg := &agent.Config{
 		Model:  func() string { return "session-model" },
@@ -315,6 +315,14 @@ func TestApplyModelOverrides(t *testing.T) {
 	}
 	if cfg.Effort() != "xhigh" {
 		t.Fatalf("effort = %q, want clamp against the inherited model", cfg.Effort())
+	}
+
+	roles[""] = agent.ModelOption{ID: "kimi-k3", Efforts: []string{"low", "high", "max"}}
+	if err := applyModelOverrides(cfg, map[string]any{"effort": "medium"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Effort() != "low" {
+		t.Fatalf("effort = %q, want unsupported middle effort clamped down", cfg.Effort())
 	}
 
 	cfg.Effort = func() string { return "max" }

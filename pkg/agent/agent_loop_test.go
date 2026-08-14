@@ -133,6 +133,41 @@ func TestCompleteClassifiesTransientTerminalFailureBeforeOutput(t *testing.T) {
 	}
 }
 
+func TestSendUsesModelReasoningEffortPlacement(t *testing.T) {
+	var requestBody map[string]any
+	client := streamingTestClient(func(r *http.Request) string {
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(data, &requestBody); err != nil {
+			t.Fatal(err)
+		}
+		return "data: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{\"output\":[],\"usage\":{\"input_tokens\":1,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1}}}\n\n"
+	})
+
+	a := &Agent{Config: &Config{
+		client: &client,
+		Model:  func() string { return "kimi-k3" },
+		Effort: func() string { return "max" },
+	}}
+	stream, err := a.Send(context.Background(), []Content{{Text: "test"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, err := range stream {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := requestBody["reasoning_effort"]; got != "max" {
+		t.Fatalf("reasoning_effort = %#v, want max", got)
+	}
+	if nested, ok := requestBody["reasoning"]; ok {
+		t.Fatalf("Kimi K3 request contains nested reasoning object: %#v", nested)
+	}
+}
+
 func TestSendUsesStrictOutputSchemaWithoutTools(t *testing.T) {
 	var requestBody map[string]any
 	client := streamingTestClient(func(r *http.Request) string {
