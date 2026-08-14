@@ -1,6 +1,7 @@
 import { Loader2, MessageSquare, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { ServerMessage } from "../types/protocol";
+import type { TabDisposition } from "../types/tabs";
 import { FloatingMenu } from "./ui/Floating";
 
 interface SessionInfo {
@@ -12,7 +13,7 @@ interface SessionInfo {
 
 interface Props {
 	currentSessionId: string;
-	onSessionSelect: (id: string) => void;
+	onSessionSelect: (id: string, disposition?: TabDisposition) => void;
 	onSessionDelete?: (id: string, title: string) => void;
 	runningSessionIds?: Set<string>;
 	switchingAgent?: string | null;
@@ -105,13 +106,13 @@ export function Sidebar({
 								return (
 									<div
 										key={s.id}
+										data-session-id={s.id}
 										className={`group relative mx-1.5 flex items-stretch rounded-md text-[12px] transition-colors ${
 											active
 												? "bg-bg-active text-fg"
 												: "text-fg-muted hover:bg-bg-hover hover:text-fg"
 										}`}
 										onContextMenu={(e) => {
-											if (!canDelete) return;
 											e.preventDefault();
 											setMenu({
 												id: s.id,
@@ -124,7 +125,17 @@ export function Sidebar({
 										<button
 											type="button"
 											className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2.5 py-1.5 text-left"
-											onClick={() => onSessionSelect(s.id)}
+											onClick={() => onSessionSelect(s.id, "preview")}
+											onDoubleClick={() => onSessionSelect(s.id, "keep")}
+											onKeyDown={(event) => {
+												if (
+													event.key === "Enter" &&
+													(event.ctrlKey || event.metaKey)
+												) {
+													event.preventDefault();
+													onSessionSelect(s.id, "keep");
+												}
+											}}
 											title={s.title || s.id}
 											aria-current={active ? "page" : undefined}
 										>
@@ -166,14 +177,29 @@ export function Sidebar({
 						type="button"
 						role="menuitem"
 						onClick={() => {
-							onSessionDelete?.(menu.id, menu.title);
+							onSessionSelect(menu.id, "keep");
 							setMenu(null);
 						}}
-						className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-[12px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-danger"
+						className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-[12px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg"
 					>
-						<Trash2 size={12} className="shrink-0" />
-						Delete session
+						<MessageSquare size={12} className="shrink-0" />
+						Open session
 					</button>
+					{canDelete && <div className="my-1 border-t border-border-subtle" />}
+					{canDelete && (
+						<button
+							type="button"
+							role="menuitem"
+							onClick={() => {
+								onSessionDelete?.(menu.id, menu.title);
+								setMenu(null);
+							}}
+							className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-[12px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-danger"
+						>
+							<Trash2 size={12} className="shrink-0" />
+							Delete session
+						</button>
+					)}
 				</FloatingMenu>
 			)}
 		</nav>

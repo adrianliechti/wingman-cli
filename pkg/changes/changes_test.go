@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
@@ -157,6 +158,108 @@ func TestNativeRepositoryFromSubdirectory(t *testing.T) {
 	}
 	if len(diffs) != 1 || diffs[0].Path != "file.txt" || diffs[0].Original != "one\n" || diffs[0].Modified != "two\n" {
 		t.Fatalf("diffs = %+v", diffs)
+	}
+}
+
+func TestNativeRepositoryCompareAndHistory(t *testing.T) {
+	dir := t.TempDir()
+	repo := initRepository(t, dir)
+	writeFile(t, dir, "shared.txt", "base\n")
+	stage(t, repo, "shared.txt")
+	commit(t, repo, "initial")
+	head, err := repo.Head()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mainBranch := head.Name()
+
+	worktree, err := repo.Worktree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	featureBranch := plumbing.NewBranchReferenceName("feature/compare")
+	if err := worktree.Checkout(&git.CheckoutOptions{Branch: featureBranch, Create: true}); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dir, "feature.txt", "feature\n")
+	stage(t, repo, "feature.txt")
+	commit(t, repo, "feature commit\n\nDetails")
+	if err := worktree.Checkout(&git.CheckoutOptions{Branch: mainBranch}); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dir, "main.txt", "main\n")
+	stage(t, repo, "main.txt")
+	commit(t, repo, "main commit")
+
+	m := New(dir)
+	defer m.Close()
+	root, err := m.Compare(context.Background(), EmptyTreeRevision, head.Hash().String(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.BaseHash != "" || root.HeadHash != head.Hash().String() || len(root.Diffs) != 1 || root.Diffs[0].Path != "shared.txt" || root.Diffs[0].Status != StatusAdded {
+		t.Fatalf("root comparison = %+v", root)
+	}
+	direct, err := m.Compare(context.Background(), mainBranch.Short(), featureBranch.Short(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if direct.MergeBaseHash != "" || len(direct.Diffs) != 2 {
+		t.Fatalf("direct comparison = %+v", direct)
+	}
+	if direct.Diffs[0].Path != "feature.txt" || direct.Diffs[0].Status != StatusAdded || direct.Diffs[0].Modified != "feature\n" {
+		t.Fatalf("feature diff = %+v", direct.Diffs[0])
+	}
+	if direct.Diffs[1].Path != "main.txt" || direct.Diffs[1].Status != StatusDeleted || direct.Diffs[1].Original != "main\n" {
+		t.Fatalf("main diff = %+v", direct.Diffs[1])
+	}
+
+	pullRequest, err := m.Compare(context.Background(), mainBranch.Short(), featureBranch.Short(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pullRequest.MergeBaseHash == "" || len(pullRequest.Diffs) != 1 || pullRequest.Diffs[0].Path != "feature.txt" {
+		t.Fatalf("merge-base comparison = %+v", pullRequest)
+	}
+
+	writeFile(t, dir, "shared.txt", "working tree\n")
+	writeFile(t, dir, "untracked.txt", "local\n")
+	workingTree, err := m.Compare(context.Background(), mainBranch.Short(), WorktreeRevision, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workingTree.HeadHash == "" || len(workingTree.Diffs) != 2 {
+		t.Fatalf("working tree comparison = %+v", workingTree)
+	}
+	workingDiffs := map[string]FileDiff{}
+	for _, diff := range workingTree.Diffs {
+		workingDiffs[diff.Path] = diff
+	}
+	if workingDiffs["shared.txt"].Modified != "working tree\n" || workingDiffs["untracked.txt"].Status != StatusAdded {
+		t.Fatalf("working tree diffs = %+v", workingDiffs)
+	}
+
+	history, err := m.History(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 3 {
+		t.Fatalf("history = %+v", history)
+	}
+	refs := map[string]bool{}
+	for _, entry := range history {
+		if entry.Refs == nil {
+			t.Fatalf("history refs must encode as an empty list: %+v", entry)
+		}
+		if entry.Summary == "feature commit" && entry.Author == "test" {
+			refs[strings.Join(entry.Refs, ",")] = true
+		}
+	}
+	if !refs[featureBranch.Short()] {
+		t.Fatalf("feature ref missing from history: %+v", history)
+	}
+	if _, err := m.Compare(context.Background(), "missing", featureBranch.Short(), false); err == nil {
+		t.Fatal("comparison with a missing ref succeeded")
 	}
 }
 

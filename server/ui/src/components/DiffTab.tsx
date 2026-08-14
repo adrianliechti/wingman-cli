@@ -110,6 +110,9 @@ export function DiffTab({
 				options={{
 					readOnly: true,
 					renderSideBySide: !inline,
+					renderOverviewRuler: false,
+					overviewRulerLanes: 0,
+					overviewRulerBorder: false,
 					minimap: { enabled: false },
 					fontSize: 12,
 					lineNumbers: "on",

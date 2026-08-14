@@ -41,6 +41,24 @@ type GitBranches struct {
 	Warning  string      `json:"warning,omitempty"`
 }
 
+type GitCommit struct {
+	Hash       string   `json:"hash"`
+	Parents    []string `json:"parents"`
+	Summary    string   `json:"summary"`
+	Author     string   `json:"author"`
+	AuthoredAt string   `json:"authored_at"`
+	Refs       []string `json:"refs"`
+}
+
+type GitCompare struct {
+	Base          string      `json:"base"`
+	Head          string      `json:"head"`
+	BaseHash      string      `json:"base_hash"`
+	HeadHash      string      `json:"head_hash"`
+	MergeBaseHash string      `json:"merge_base_hash,omitempty"`
+	Files         []DiffEntry `json:"files"`
+}
+
 type gitPathsRequest struct {
 	Paths []string `json:"paths"`
 }
@@ -108,6 +126,52 @@ func (s *Server) handleGitBranches(w http.ResponseWriter, r *http.Request) {
 		s.broadcast(Frame{Type: EvtDiffsChanged})
 	}
 	writeJSON(w, result)
+}
+
+func (s *Server) handleGitHistory(w http.ResponseWriter, r *http.Request) {
+	commits, err := s.workspace.GitHistory(r.Context())
+	if err != nil {
+		writeGitError(w, err)
+		return
+	}
+	result := make([]GitCommit, 0, len(commits))
+	for _, commit := range commits {
+		result = append(result, GitCommit{
+			Hash: commit.Hash, Parents: commit.Parents, Summary: commit.Summary,
+			Author: commit.Author, AuthoredAt: commit.AuthoredAt.Format(time.RFC3339), Refs: commit.Refs,
+		})
+	}
+	writeJSON(w, result)
+}
+
+func (s *Server) handleGitCompare(w http.ResponseWriter, r *http.Request) {
+	base := strings.TrimSpace(r.URL.Query().Get("base"))
+	head := strings.TrimSpace(r.URL.Query().Get("head"))
+	if base == "" || head == "" {
+		http.Error(w, "base and head revisions are required", http.StatusBadRequest)
+		return
+	}
+	mode := r.URL.Query().Get("mode")
+	if mode == "" {
+		mode = "direct"
+	}
+	if mode != "direct" && mode != "merge-base" {
+		http.Error(w, "invalid compare mode", http.StatusBadRequest)
+		return
+	}
+	comparison, err := s.workspace.GitCompare(r.Context(), base, head, mode == "merge-base")
+	if err != nil {
+		writeGitError(w, err)
+		return
+	}
+	files := make([]DiffEntry, 0, len(comparison.Diffs))
+	for _, diff := range comparison.Diffs {
+		files = append(files, diffEntry(diff))
+	}
+	writeJSON(w, GitCompare{
+		Base: base, Head: head, BaseHash: comparison.BaseHash, HeadHash: comparison.HeadHash,
+		MergeBaseHash: comparison.MergeBaseHash, Files: files,
+	})
 }
 
 func (s *Server) handleGitCreateBranch(w http.ResponseWriter, r *http.Request) {

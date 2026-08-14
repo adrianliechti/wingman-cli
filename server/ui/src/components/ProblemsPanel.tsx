@@ -1,11 +1,12 @@
 import {
 	AlertCircle,
 	AlertTriangle,
+	FileCode2,
 	Info,
 	Loader2,
 	RefreshCw,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
 	DiagnosticEntry,
 	ServerMessage,
@@ -17,6 +18,56 @@ interface Props {
 	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 }
 
+interface DiagnosticGroup {
+	path: string;
+	fileName: string;
+	directory: string;
+	diagnostics: DiagnosticEntry[];
+	errors: number;
+	warnings: number;
+}
+
+function groupDiagnostics(diagnostics: DiagnosticEntry[]): DiagnosticGroup[] {
+	const groups = new Map<string, DiagnosticGroup>();
+	for (const diagnostic of diagnostics) {
+		let group = groups.get(diagnostic.path);
+		if (!group) {
+			const parts = diagnostic.path.split("/");
+			const fileName = parts.pop() || diagnostic.path;
+			group = {
+				path: diagnostic.path,
+				fileName,
+				directory: parts.join("/"),
+				diagnostics: [],
+				errors: 0,
+				warnings: 0,
+			};
+			groups.set(diagnostic.path, group);
+		}
+		group.diagnostics.push(diagnostic);
+		if (diagnostic.severity === "error") group.errors++;
+		else if (diagnostic.severity === "warning") group.warnings++;
+	}
+
+	return Array.from(groups.values()).sort(
+		(a, b) =>
+			b.errors - a.errors ||
+			b.warnings - a.warnings ||
+			a.path.localeCompare(b.path),
+	);
+}
+
+function SeverityIcon({ severity }: { severity: DiagnosticEntry["severity"] }) {
+	switch (severity) {
+		case "error":
+			return <AlertCircle size={12} className="shrink-0 text-danger/70" />;
+		case "warning":
+			return <AlertTriangle size={12} className="shrink-0 text-warning/70" />;
+		default:
+			return <Info size={12} className="shrink-0 text-fg-dim" />;
+	}
+}
+
 export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
 	const [diagnostics, setDiagnostics] = useState<DiagnosticEntry[]>([]);
 	const [coverage, setCoverage] = useState<WorkspaceDiagnostics | null>(null);
@@ -24,6 +75,7 @@ export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
 	const [error, setError] = useState<string | null>(null);
 	const requestRef = useRef<AbortController | null>(null);
 	const refreshTimerRef = useRef<number | null>(null);
+	const groups = useMemo(() => groupDiagnostics(diagnostics), [diagnostics]);
 
 	const load = useCallback(async () => {
 		if (refreshTimerRef.current !== null) {
@@ -104,19 +156,9 @@ export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
 		};
 	}, [subscribe, load]);
 
-	const SeverityIcon = ({ severity }: { severity: string }) => {
-		switch (severity) {
-			case "error":
-				return <AlertCircle size={12} className="text-danger/70 shrink-0" />;
-			case "warning":
-				return <AlertTriangle size={12} className="text-warning/70 shrink-0" />;
-			default:
-				return <Info size={12} className="text-fg-dim shrink-0" />;
-		}
-	};
-
 	const coverageTitle = coverage
 		? [
+				`${diagnostics.length} ${diagnostics.length === 1 ? "problem" : "problems"} in ${groups.length} ${groups.length === 1 ? "file" : "files"}`,
 				`${coverage.checked_files} source files checked`,
 				...(coverage.unavailable_servers.length > 0
 					? [`unavailable: ${coverage.unavailable_servers.join(", ")}`]
@@ -172,23 +214,53 @@ export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
 						<span>Checking problems…</span>
 					</div>
 				)}
-				{diagnostics.map((d, i) => {
-					const fileName = d.path.split("/").pop() || d.path;
+				{groups.map((group) => {
 					return (
-						<button
-							type="button"
-							key={`${d.path}:${d.line}:${d.column}:${i}`}
-							className="mx-1 flex w-[calc(100%-0.5rem)] cursor-pointer items-start gap-1.5 rounded px-2 py-1 text-left text-[11px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg"
-							onClick={() => onOpenFile(d.path, d.line, d.column)}
+						<section
+							key={group.path}
+							data-problem-file={group.path}
+							className="mx-1 mb-1 overflow-hidden rounded-md border border-border-subtle bg-bg-surface/10"
 						>
-							<SeverityIcon severity={d.severity} />
-							<div className="min-w-0 flex-1">
-								<div className="truncate">{d.message}</div>
-								<div className="text-[10px] text-fg-dim font-mono">
-									{fileName}:{d.line}
-								</div>
+							<div
+								title={group.path}
+								className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left"
+							>
+								<FileCode2 size={12} className="shrink-0 text-fg-dim" />
+								<span className="min-w-0 flex-1">
+									<span className="block truncate text-[11px] text-fg-muted">
+										{group.fileName}
+									</span>
+									{group.directory && (
+										<span className="block truncate font-mono text-[9px] text-fg-dim">
+											{group.directory}
+										</span>
+									)}
+								</span>
 							</div>
-						</button>
+							<div data-problem-list>
+								{group.diagnostics.map((diagnostic, index) => (
+									<button
+										type="button"
+										key={`${diagnostic.line}:${diagnostic.column}:${index}`}
+										data-problem-entry
+										title={`${diagnostic.message} · ${diagnostic.path}:${diagnostic.line}:${diagnostic.column}${diagnostic.source ? ` · ${diagnostic.source}` : ""}`}
+										className="flex w-full cursor-pointer items-center gap-1.5 border-b border-border-subtle/60 px-2 py-1 text-left text-[11px] text-fg-muted transition-colors last:border-b-0 hover:bg-bg-hover hover:text-fg"
+										onClick={() =>
+											onOpenFile(
+												diagnostic.path,
+												diagnostic.line,
+												diagnostic.column,
+											)
+										}
+									>
+										<SeverityIcon severity={diagnostic.severity} />
+										<span className="min-w-0 flex-1 truncate">
+											{diagnostic.message}
+										</span>
+									</button>
+								))}
+							</div>
+						</section>
 					);
 				})}
 			</div>

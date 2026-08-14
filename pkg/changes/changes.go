@@ -33,11 +33,12 @@ const (
 )
 
 type FileDiff struct {
-	Path     string
-	Status   FileStatus
-	Patch    string
-	Original string
-	Modified string
+	Path         string
+	OriginalPath string
+	Status       FileStatus
+	Patch        string
+	Original     string
+	Modified     string
 }
 
 type DiffLayer string
@@ -319,7 +320,7 @@ func (m *Manager) fileDiff(ctx context.Context, head *object.Tree, entry statusE
 		return FileDiff{}, err
 	}
 
-	diff := FileDiff{Path: entry.path, Status: status, Patch: patch}
+	diff := FileDiff{Path: entry.path, OriginalPath: entry.originalPath, Status: status, Patch: patch}
 	if !isBinary(original) && !isBinary(modified) {
 		diff.Original = string(original)
 		diff.Modified = string(modified)

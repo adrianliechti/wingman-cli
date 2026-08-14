@@ -7,6 +7,7 @@ import {
 	Code2,
 	FileText,
 	GitBranch,
+	GitCompareArrows,
 	GitCommitHorizontal,
 	Loader2,
 	Minus,
@@ -16,24 +17,44 @@ import {
 	Search,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	Group,
+	Panel,
+	type PanelSize,
+	Separator,
+	usePanelRef,
+} from "react-resizable-panels";
 import type {
 	DiffEntry,
 	DiffLayer,
+	CompareMode,
 	GitBranch as GitBranchInfo,
 	GitBranches,
 	GitFileStatus,
 	GitStatus,
 	ServerMessage,
 } from "../types/protocol";
+import type { TabDisposition } from "../types/tabs";
 import { Dialog, dialogButtonClass } from "./ui/Feedback";
 import { FloatingMenu, FloatingSurface } from "./ui/Floating";
+import { GitHistoryPanel } from "./GitCompareControls";
 
 interface Props {
 	sessionId: string;
 	git?: boolean;
 	canInit?: boolean;
-	onOpenDiff?: (path: string, layer?: DiffLayer) => void;
-	onOpenFile?: (path: string) => void;
+	onOpenDiff?: (
+		path: string,
+		layer?: DiffLayer,
+		disposition?: TabDisposition,
+	) => void;
+	onOpenCompare?: (
+		base: string,
+		head: string,
+		mode: CompareMode,
+		disposition?: TabDisposition,
+	) => void;
+	onOpenFile?: (path: string, disposition?: TabDisposition) => void;
 	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 }
 
@@ -63,6 +84,7 @@ export function DiffsPanel({
 	git = false,
 	canInit = false,
 	onOpenDiff,
+	onOpenCompare,
 	onOpenFile,
 	subscribe,
 }: Props) {
@@ -183,7 +205,9 @@ export function DiffsPanel({
 					onMessage={setMessage}
 					onRequest={request}
 					onOpenDiff={onOpenDiff}
+					onOpenCompare={onOpenCompare}
 					onOpenFile={onOpenFile}
+					subscribe={subscribe}
 					onCommit={async () => {
 						if (await request("commit", { message })) setMessage("");
 					}}
@@ -210,6 +234,7 @@ export function DiffsPanel({
 						status={diffStatusLabel(diff)}
 						disabled={busy !== ""}
 						onClick={() => onOpenDiff?.(diff.path)}
+						onDoubleClick={() => onOpenDiff?.(diff.path, undefined, "keep")}
 						onContextMenu={(e) => {
 							e.preventDefault();
 							setMenu({ x: e.clientX, y: e.clientY, diff });
@@ -232,7 +257,7 @@ export function DiffsPanel({
 							label="Open"
 							onClick={() => {
 								setMenu(null);
-								onOpenFile?.(menu.diff.path);
+								onOpenFile?.(menu.diff.path, "keep");
 							}}
 						/>
 					)}
@@ -357,7 +382,9 @@ function GitChanges({
 	onMessage,
 	onRequest,
 	onOpenDiff,
+	onOpenCompare,
 	onOpenFile,
+	subscribe,
 	onCommit,
 	onRevert,
 }: {
@@ -369,12 +396,25 @@ function GitChanges({
 	notice: string;
 	onMessage: (value: string) => void;
 	onRequest: (action: string, body?: unknown) => Promise<boolean>;
-	onOpenDiff?: (path: string, layer?: DiffLayer) => void;
-	onOpenFile?: (path: string) => void;
+	onOpenDiff?: (
+		path: string,
+		layer?: DiffLayer,
+		disposition?: TabDisposition,
+	) => void;
+	onOpenCompare?: (
+		base: string,
+		head: string,
+		mode: CompareMode,
+		disposition?: TabDisposition,
+	) => void;
+	onOpenFile?: (path: string, disposition?: TabDisposition) => void;
+	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 	onCommit: () => Promise<void>;
 	onRevert: (file: GitFileStatus) => void;
 }) {
 	const [menu, setMenu] = useState<GitMenuState | null>(null);
+	const [historyOpen, setHistoryOpen] = useState(false);
+	const historyPanelRef = usePanelRef();
 	const staged = useMemo(
 		() => status.files.filter((file) => file.staged),
 		[status.files],
@@ -402,218 +442,257 @@ function GitChanges({
 			staged: isStaged,
 		});
 	};
+	const toggleHistory = useCallback(() => {
+		const panel = historyPanelRef.current;
+		if (!panel) return;
+		if (panel.isCollapsed()) {
+			setHistoryOpen(true);
+			panel.resize("300px");
+		} else {
+			setHistoryOpen(false);
+			panel.collapse();
+		}
+	}, [historyPanelRef]);
+	const handleHistoryResize = useCallback(({ inPixels }: PanelSize) => {
+		setHistoryOpen(inPixels > 33);
+	}, []);
 
 	return (
-		<div className="flex h-full flex-col overflow-hidden bg-transparent">
-			<div className="relative h-9 px-2 flex items-center gap-1 shrink-0 border-b border-border-subtle bg-bg-surface/20">
-				<BranchPicker
-					status={status}
-					disabled={disabled}
-					onRequest={onRequest}
-				/>
-				{status.files.length > 0 && (
-					<span
-						className="min-w-4 h-4 px-1 rounded-full bg-bg-active text-[9px] leading-4 text-center text-fg-dim tabular-nums"
-						title={`${status.files.length} changed ${status.files.length === 1 ? "file" : "files"}`}
-					>
-						{status.files.length}
-					</span>
-				)}
-				<div className="flex-1" />
-				<SyncButton
-					label={status.behind ? `Pull ${status.behind}` : "Pull"}
-					title={
-						status.upstream
-							? `Pull from ${status.upstream}`
-							: "No upstream branch"
-					}
-					icon={<ArrowDownToLine size={12} />}
-					disabled={disabled || !status.upstream}
-					loading={busy === "pull"}
-					onClick={() => void onRequest("pull")}
-				/>
-				<SyncButton
-					label={status.ahead ? `Push ${status.ahead}` : "Push"}
-					title={
-						status.upstream ? `Push to ${status.upstream}` : "Publish branch"
-					}
-					icon={<ArrowUpFromLine size={12} />}
-					disabled={disabled || !status.has_remote}
-					loading={busy === "push"}
-					onClick={() => void onRequest("push")}
-				/>
-			</div>
+		<Group
+			id="git-changes-layout"
+			orientation="vertical"
+			className="h-full overflow-hidden bg-transparent"
+		>
+			<Panel
+				id="git-current-changes"
+				minSize="80px"
+				className="min-h-0 overflow-hidden"
+			>
+				<div className="flex h-full min-h-0 flex-col overflow-hidden bg-transparent">
+					<div className="relative h-9 px-2 flex items-center gap-1 shrink-0 border-b border-border-subtle bg-bg-surface/20">
+						<BranchPicker
+							status={status}
+							disabled={disabled}
+							onRequest={onRequest}
+							onCompare={onOpenCompare}
+						/>
+						<div className="flex-1" />
+						<SyncButton
+							label={status.behind ? `Pull ${status.behind}` : "Pull"}
+							title={
+								status.upstream
+									? `Pull from ${status.upstream}`
+									: "No upstream branch"
+							}
+							icon={<ArrowDownToLine size={12} />}
+							disabled={disabled || !status.upstream}
+							loading={busy === "pull"}
+							onClick={() => void onRequest("pull")}
+						/>
+						<SyncButton
+							label={status.ahead ? `Push ${status.ahead}` : "Push"}
+							title={
+								status.upstream
+									? `Push to ${status.upstream}`
+									: "Publish branch"
+							}
+							icon={<ArrowUpFromLine size={12} />}
+							disabled={disabled || !status.has_remote}
+							loading={busy === "push"}
+							onClick={() => void onRequest("push")}
+						/>
+					</div>
 
-			<div className="overflow-y-auto flex-1 py-1.5">
-				{hasStaged ? (
-					<>
-						<ChangeGroup
-							title="Staged Changes"
-							files={staged}
-							disabled={disabled}
-							action={<Minus size={11} />}
-							actionLabel="Unstage"
-							onAll={() => void onRequest("unstage", { paths: paths(staged) })}
-							onFile={(file) =>
-								void onRequest("unstage", { paths: gitFilePaths(file) })
-							}
-							onOpenDiff={onOpenDiff}
-							onContextMenu={openMenu}
-							staged
-						/>
-						<ChangeGroup
-							title="Changes"
-							files={changed}
-							disabled={disabled}
-							action={<Plus size={11} />}
-							actionLabel="Stage"
-							onAll={() => void onRequest("stage", { paths: paths(changed) })}
-							onFile={(file) =>
-								void onRequest("stage", { paths: gitFilePaths(file) })
-							}
-							onOpenDiff={onOpenDiff}
-							onContextMenu={openMenu}
-						/>
-					</>
-				) : changed.length > 0 ? (
-					<>
-						<div className="h-7 px-3 mb-0.5 flex items-center text-[10.5px] text-fg-dim">
-							<span>
-								{changed.length} changed{" "}
-								{changed.length === 1 ? "file" : "files"}
-							</span>
-							<div className="flex-1" />
-							<button
-								type="button"
+					<div className="overflow-y-auto flex-1 py-1.5">
+						{hasStaged ? (
+							<>
+								<ChangeGroup
+									title="Staged Changes"
+									files={staged}
+									disabled={disabled}
+									action={<Minus size={11} />}
+									actionLabel="Unstage"
+									onAll={() =>
+										void onRequest("unstage", { paths: paths(staged) })
+									}
+									onFile={(file) =>
+										void onRequest("unstage", { paths: gitFilePaths(file) })
+									}
+									onOpenDiff={onOpenDiff}
+									onContextMenu={openMenu}
+									staged
+								/>
+								<ChangeGroup
+									title="Changes"
+									files={changed}
+									disabled={disabled}
+									action={<Plus size={11} />}
+									actionLabel="Stage"
+									onAll={() =>
+										void onRequest("stage", { paths: paths(changed) })
+									}
+									onFile={(file) =>
+										void onRequest("stage", { paths: gitFilePaths(file) })
+									}
+									onOpenDiff={onOpenDiff}
+									onContextMenu={openMenu}
+								/>
+							</>
+						) : changed.length > 0 ? (
+							<ChangeGroup
+								title="Changes"
+								files={changed}
 								disabled={disabled}
-								onClick={() =>
-									void onRequest("stage", { paths: paths(changed) })
+								action={<Plus size={11} />}
+								actionLabel="Stage"
+								onAll={() => void onRequest("stage", { paths: paths(changed) })}
+								onFile={(file) =>
+									void onRequest("stage", { paths: gitFilePaths(file) })
 								}
-								className="h-6 px-2 flex items-center gap-1 rounded text-fg-dim hover:text-fg hover:bg-bg-hover disabled:opacity-30 transition-colors"
-							>
-								<Plus size={11} />
-								Stage all
-							</button>
-						</div>
-						<ChangeList
-							files={changed}
-							disabled={disabled}
-							action={<Plus size={11} />}
-							actionLabel="Stage"
-							onFile={(file) =>
-								void onRequest("stage", { paths: gitFilePaths(file) })
-							}
-							onOpenDiff={onOpenDiff}
-							onContextMenu={openMenu}
-						/>
-					</>
-				) : null}
-				{status.files.length === 0 && !error && (
-					<EmptyChanges loaded={loaded} />
-				)}
-			</div>
+								onOpenDiff={onOpenDiff}
+								onContextMenu={openMenu}
+							/>
+						) : null}
+						{status.files.length === 0 && !error && (
+							<EmptyChanges loaded={loaded} />
+						)}
+					</div>
 
-			{error && <InlineMessage kind="error" text={error} />}
-			{notice && !error && <InlineMessage kind="notice" text={notice} />}
-			{hasStaged && (
-				<form
-					onSubmit={(e) => {
-						e.preventDefault();
-						if (!disabled && message.trim()) void onCommit();
-					}}
-					className="px-2 py-2 border-t border-border-subtle bg-bg-surface/25 shrink-0"
-				>
-					<div className="mb-1.5 px-0.5 flex items-center text-[10px] text-fg-dim">
-						<span>
-							Commit {staged.length} staged{" "}
-							{staged.length === 1 ? "file" : "files"}
-						</span>
-					</div>
-					<div className="h-8 flex items-center rounded-md border border-border-subtle bg-bg focus-within:border-border transition-colors">
-						<input
-							value={message}
-							onChange={(e) => onMessage(e.target.value)}
-							placeholder="Commit message…"
-							aria-label="Commit message"
-							className="h-full min-w-0 flex-1 bg-transparent px-2 text-[11.5px] text-fg placeholder:text-fg-dim outline-none"
-						/>
-						<button
-							type="submit"
-							disabled={disabled || !message.trim()}
-							title="Commit staged changes"
-							className="h-7 mr-0.5 px-2 rounded flex items-center gap-1 text-[10.5px] text-fg-muted hover:text-fg hover:bg-bg-hover disabled:opacity-25 disabled:cursor-not-allowed transition-colors"
-						>
-							{busy === "commit" ? (
-								<Loader2 size={11} className="animate-spin" />
-							) : (
-								<GitCommitHorizontal size={11} />
-							)}
-							Commit
-						</button>
-					</div>
-				</form>
-			)}
-			{menu && (
-				<FloatingMenu
-					open
-					onOpenChange={(open) => !open && setMenu(null)}
-					reference={{ x: menu.x, y: menu.y }}
-					label={`Actions for ${menu.file.path}`}
-					className="z-[100] min-w-[170px] rounded-md border border-border-subtle bg-bg-elevated py-1 text-[12px] shadow-2xl"
-				>
-					<DiffMenuItem
-						icon={<FileText size={12} />}
-						label="Open Changes"
-						onClick={() => {
-							setMenu(null);
-							onOpenDiff?.(
-								menu.file.path,
-								menu.file.conflict
-									? undefined
-									: menu.staged
-										? "staged"
-										: "unstaged",
-							);
-						}}
-					/>
-					{gitStatusLabel(menu.file, menu.staged) !== "D" && (
-						<DiffMenuItem
-							icon={<Code2 size={12} />}
-							label="Open File"
-							onClick={() => {
-								setMenu(null);
-								onOpenFile?.(menu.file.path);
+					{error && <InlineMessage kind="error" text={error} />}
+					{notice && !error && <InlineMessage kind="notice" text={notice} />}
+					{hasStaged && (
+						<form
+							onSubmit={(e) => {
+								e.preventDefault();
+								if (!disabled && message.trim()) void onCommit();
 							}}
-						/>
+							className="px-2 py-2 border-t border-border-subtle bg-bg-surface/25 shrink-0"
+						>
+							<div className="mb-1.5 px-0.5 flex items-center text-[10px] text-fg-dim">
+								<span>
+									Commit {staged.length} staged{" "}
+									{staged.length === 1 ? "file" : "files"}
+								</span>
+							</div>
+							<div className="h-8 flex items-center rounded-md border border-border-subtle bg-bg focus-within:border-border transition-colors">
+								<input
+									value={message}
+									onChange={(e) => onMessage(e.target.value)}
+									placeholder="Commit message…"
+									aria-label="Commit message"
+									className="h-full min-w-0 flex-1 bg-transparent px-2 text-[11.5px] text-fg placeholder:text-fg-dim outline-none"
+								/>
+								<button
+									type="submit"
+									disabled={disabled || !message.trim()}
+									title="Commit staged changes"
+									className="h-7 mr-0.5 px-2 rounded flex items-center gap-1 text-[10.5px] text-fg-muted hover:text-fg hover:bg-bg-hover disabled:opacity-25 disabled:cursor-not-allowed transition-colors"
+								>
+									{busy === "commit" ? (
+										<Loader2 size={11} className="animate-spin" />
+									) : (
+										<GitCommitHorizontal size={11} />
+									)}
+									Commit
+								</button>
+							</div>
+						</form>
 					)}
-					<DiffMenuItem
-						icon={menu.staged ? <Minus size={11} /> : <Plus size={11} />}
-						label={menu.staged ? "Unstage Changes" : "Stage Changes"}
-						onClick={() => {
-							const action = menu.staged ? "unstage" : "stage";
-							const paths = gitFilePaths(menu.file);
-							setMenu(null);
-							void onRequest(action, { paths });
-						}}
-					/>
-					{!menu.staged && (
-						<>
-							<div className="my-1 border-t border-border-subtle" />
+					{menu && (
+						<FloatingMenu
+							open
+							onOpenChange={(open) => !open && setMenu(null)}
+							reference={{ x: menu.x, y: menu.y }}
+							label={`Actions for ${menu.file.path}`}
+							className="z-[100] min-w-[170px] rounded-md border border-border-subtle bg-bg-elevated py-1 text-[12px] shadow-2xl"
+						>
 							<DiffMenuItem
-								icon={<RotateCcw size={12} />}
-								label="Discard Changes"
-								danger
+								icon={<FileText size={12} />}
+								label="Open Changes"
 								onClick={() => {
-									const file = menu.file;
 									setMenu(null);
-									onRevert(file);
+									onOpenDiff?.(
+										menu.file.path,
+										menu.file.conflict
+											? undefined
+											: menu.staged
+												? "staged"
+												: "unstaged",
+										"keep",
+									);
 								}}
 							/>
-						</>
+							{gitStatusLabel(menu.file, menu.staged) !== "D" && (
+								<DiffMenuItem
+									icon={<Code2 size={12} />}
+									label="Open File"
+									onClick={() => {
+										setMenu(null);
+										onOpenFile?.(menu.file.path, "keep");
+									}}
+								/>
+							)}
+							<DiffMenuItem
+								icon={menu.staged ? <Minus size={11} /> : <Plus size={11} />}
+								label={menu.staged ? "Unstage Changes" : "Stage Changes"}
+								onClick={() => {
+									const action = menu.staged ? "unstage" : "stage";
+									const paths = gitFilePaths(menu.file);
+									setMenu(null);
+									void onRequest(action, { paths });
+								}}
+							/>
+							{!menu.staged && (
+								<>
+									<div className="my-1 border-t border-border-subtle" />
+									<DiffMenuItem
+										icon={<RotateCcw size={12} />}
+										label="Discard Changes"
+										danger
+										onClick={() => {
+											const file = menu.file;
+											setMenu(null);
+											onRevert(file);
+										}}
+									/>
+								</>
+							)}
+						</FloatingMenu>
 					)}
-				</FloatingMenu>
+				</div>
+			</Panel>
+			{onOpenCompare && (
+				<>
+					<Separator
+						aria-label="Resize Git history"
+						disabled={!historyOpen}
+						className={`relative z-20 -my-1.5 h-3 shrink-0 bg-transparent outline-none ${
+							historyOpen ? "cursor-row-resize" : "pointer-events-none"
+						}`}
+					/>
+					<Panel
+						id="git-history"
+						panelRef={historyPanelRef}
+						defaultSize="32px"
+						minSize="120px"
+						maxSize="75%"
+						collapsedSize="32px"
+						collapsible
+						groupResizeBehavior="preserve-pixel-size"
+						onResize={handleHistoryResize}
+						className="min-h-0 overflow-hidden"
+					>
+						<GitHistoryPanel
+							open={historyOpen}
+							disabled={disabled}
+							subscribe={subscribe}
+							onCompare={onOpenCompare}
+							onToggle={toggleHistory}
+						/>
+					</Panel>
+				</>
 			)}
-		</div>
+		</Group>
 	);
 }
 
@@ -621,10 +700,12 @@ function BranchPicker({
 	status,
 	disabled,
 	onRequest,
+	onCompare,
 }: {
 	status: GitStatus;
 	disabled: boolean;
 	onRequest: (action: string, body?: unknown) => Promise<boolean>;
+	onCompare?: (base: string, head: string, mode: CompareMode) => void;
 }) {
 	const buttonRef = useRef<HTMLButtonElement>(null);
 	const searchRef = useRef<HTMLInputElement>(null);
@@ -696,6 +777,11 @@ function BranchPicker({
 			close();
 		}
 	};
+	const compare = (branch: GitBranchInfo) => {
+		const ref = branch.remote ? `${branch.remote}/${branch.name}` : branch.name;
+		onCompare?.(ref, ":worktree", "merge-base");
+		close();
+	};
 	const create = async () => {
 		const name = newBranch.trim();
 		if (!name) return;
@@ -728,7 +814,7 @@ function BranchPicker({
 				reference={buttonRef.current}
 				placement="bottom-start"
 				role="dialog"
-				label="Switch Git branch"
+				label="Git branches"
 				className="z-[100] w-[280px] overflow-hidden rounded-lg border border-border bg-bg-elevated shadow-2xl"
 			>
 				<div className="p-2 border-b border-border-subtle">
@@ -780,12 +866,14 @@ function BranchPicker({
 								branches={local}
 								disabled={disabled}
 								onSelect={checkout}
+								onCompare={onCompare ? compare : undefined}
 							/>
 							<BranchSection
 								title="Remote"
 								branches={remote}
 								disabled={disabled}
 								onSelect={checkout}
+								onCompare={onCompare ? compare : undefined}
 							/>
 							{filtered.length === 0 && !loadError && (
 								<div className="px-3 py-5 text-center text-[10.5px] text-fg-dim">
@@ -843,11 +931,13 @@ function BranchSection({
 	branches,
 	disabled,
 	onSelect,
+	onCompare,
 }: {
 	title: string;
 	branches: GitBranchInfo[];
 	disabled: boolean;
 	onSelect: (branch: GitBranchInfo) => Promise<void>;
+	onCompare?: (branch: GitBranchInfo) => void;
 }) {
 	if (branches.length === 0) return null;
 	return (
@@ -855,25 +945,46 @@ function BranchSection({
 			<div className="h-5 px-3 flex items-center text-[9px] font-medium uppercase tracking-wide text-fg-dim">
 				{title}
 			</div>
-			{branches.map((branch) => (
-				<button
-					key={`${branch.remote || "local"}:${branch.name}`}
-					type="button"
-					disabled={disabled && !branch.current}
-					onClick={() => void onSelect(branch)}
-					className="h-7 w-full px-3 flex items-center gap-2 text-left text-[11px] text-fg-muted hover:text-fg hover:bg-bg-hover disabled:opacity-40 disabled:cursor-not-allowed"
-				>
-					<span className="w-3 shrink-0 text-accent">
-						{branch.current && <Check size={11} />}
-					</span>
-					<span className="truncate">
-						{branch.remote && (
-							<span className="text-fg-dim">{branch.remote}/</span>
+			{branches.map((branch) => {
+				const label = branch.remote
+					? `${branch.remote}/${branch.name}`
+					: branch.name;
+				return (
+					<div
+						key={`${branch.remote || "local"}:${branch.name}`}
+						className="group flex h-8 items-center px-1.5 hover:bg-bg-hover"
+					>
+						<button
+							type="button"
+							disabled={disabled && !branch.current}
+							onClick={() => void onSelect(branch)}
+							className="flex h-full min-w-0 flex-1 items-center gap-2 rounded px-1.5 text-left text-[11px] text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
+						>
+							<span className="w-3 shrink-0 text-accent">
+								{branch.current && <Check size={11} />}
+							</span>
+							<span className="truncate">
+								{branch.remote && (
+									<span className="text-fg-dim">{branch.remote}/</span>
+								)}
+								{branch.name}
+							</span>
+						</button>
+						{onCompare && (
+							<button
+								type="button"
+								disabled={disabled}
+								onClick={() => onCompare(branch)}
+								title={`Compare ${label} with working tree`}
+								aria-label={`Compare ${label} with working tree`}
+								className="flex h-6 w-7 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-bg-active hover:text-accent disabled:opacity-30"
+							>
+								<GitCompareArrows size={11} />
+							</button>
 						)}
-						{branch.name}
-					</span>
-				</button>
-			))}
+					</div>
+				);
+			})}
 		</div>
 	);
 }
@@ -897,7 +1008,11 @@ function ChangeGroup({
 	actionLabel: string;
 	onAll: () => void;
 	onFile: (file: GitFileStatus) => void;
-	onOpenDiff?: (path: string, layer?: DiffLayer) => void;
+	onOpenDiff?: (
+		path: string,
+		layer?: DiffLayer,
+		disposition?: TabDisposition,
+	) => void;
 	onContextMenu?: (
 		event: React.MouseEvent,
 		file: GitFileStatus,
@@ -919,6 +1034,7 @@ function ChangeGroup({
 					disabled={disabled}
 					onClick={onAll}
 					title={`${actionLabel} all`}
+					aria-label={`${actionLabel} all`}
 					className="p-1 rounded hover:bg-bg-hover hover:text-fg disabled:opacity-30"
 				>
 					{action}
@@ -953,7 +1069,11 @@ function ChangeList({
 	action: React.ReactNode;
 	actionLabel: string;
 	onFile: (file: GitFileStatus) => void;
-	onOpenDiff?: (path: string, layer?: DiffLayer) => void;
+	onOpenDiff?: (
+		path: string,
+		layer?: DiffLayer,
+		disposition?: TabDisposition,
+	) => void;
 	onContextMenu?: (
 		event: React.MouseEvent,
 		file: GitFileStatus,
@@ -974,6 +1094,13 @@ function ChangeList({
 					file.conflict ? undefined : staged ? "staged" : "unstaged",
 				)
 			}
+			onDoubleClick={() =>
+				onOpenDiff?.(
+					file.path,
+					file.conflict ? undefined : staged ? "staged" : "unstaged",
+					"keep",
+				)
+			}
 			action={action}
 			actionLabel={actionLabel}
 			onAction={() => onFile(file)}
@@ -990,6 +1117,7 @@ function ChangeRow({
 	conflict,
 	disabled,
 	onClick,
+	onDoubleClick,
 	onContextMenu,
 	action,
 	actionLabel,
@@ -1000,6 +1128,7 @@ function ChangeRow({
 	conflict?: boolean;
 	disabled: boolean;
 	onClick: () => void;
+	onDoubleClick?: () => void;
 	onContextMenu?: (e: React.MouseEvent) => void;
 	action?: React.ReactNode;
 	actionLabel?: string;
@@ -1049,6 +1178,7 @@ function ChangeRow({
 				type="button"
 				disabled={disabled}
 				onClick={onClick}
+				onDoubleClick={onDoubleClick}
 				title={path}
 				data-change-content
 				className={`flex min-w-0 flex-1 items-center gap-2 pr-3 text-left ${action ? "pl-1" : "pl-2"}`}
@@ -1086,12 +1216,12 @@ function SyncButton({
 		<button
 			type="button"
 			title={title}
+			aria-label={label}
 			disabled={disabled}
 			onClick={onClick}
-			className="h-6 px-1.5 flex items-center gap-1 rounded text-[10.5px] text-fg-dim hover:bg-bg-hover hover:text-fg disabled:opacity-30 disabled:cursor-not-allowed"
+			className="flex h-6 w-7 items-center justify-center rounded text-fg-dim hover:bg-bg-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-30"
 		>
 			{loading ? <Loader2 size={12} className="animate-spin" /> : icon}
-			<span>{label}</span>
 		</button>
 	);
 }

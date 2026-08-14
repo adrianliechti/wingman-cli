@@ -319,6 +319,8 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Post("/init", s.handleGitInit)
 			r.Get("/status", s.handleGitStatus)
 			r.Get("/branches", s.handleGitBranches)
+			r.Get("/history", s.handleGitHistory)
+			r.Get("/compare", s.handleGitCompare)
 			r.Post("/branches", s.handleGitCreateBranch)
 			r.Post("/checkout", s.handleGitCheckoutBranch)
 			r.Post("/stage", s.handleGitStage)

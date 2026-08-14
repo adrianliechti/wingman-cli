@@ -439,3 +439,11 @@ html[data-window-chrome="macos-overlay"] .window-titlebar {
 .md-token-operator {
 	color: var(--color-fg-muted);
 }
+
+/* Comparison rows have one outer scroller and a fixed collapsed-context view. */
+.wingman-static-diff .diff-hidden-lines-widget {
+	pointer-events: none;
+}
+.wingman-static-diff .diff-hidden-lines .center a {
+	display: none;
+}

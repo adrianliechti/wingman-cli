@@ -1,5 +1,4 @@
 import {
-	Bot,
 	ChevronDown,
 	Compass,
 	Code2,
@@ -8,16 +7,12 @@ import {
 	GitCompare,
 	Globe2,
 	Loader2,
-	MessageSquare,
-	PanelLeftClose,
 	PanelLeftOpen,
-	PanelRightClose,
 	PanelRightOpen,
 	Plus,
 	Save,
 	SquareTerminal,
 	Wrench,
-	X,
 } from "lucide-react";
 import {
 	type CSSProperties,
@@ -37,6 +32,7 @@ import {
 } from "react-resizable-panels";
 import { createWorkspaceFile } from "./api/files";
 import { ChatPanel } from "./components/ChatPanel";
+import { Tab } from "./components/Tab";
 import {
 	CommandPalette,
 	type PaletteAction,
@@ -45,6 +41,7 @@ import {
 import type { ModeOption } from "./components/ModePicker";
 import { DiffsPanel } from "./components/DiffsPanel";
 import { DiffTab } from "./components/DiffTab";
+import { CompareTab } from "./components/CompareTab";
 import { ErrorBoundary, ErrorDetails } from "./components/ErrorBoundary";
 import { FileTab } from "./components/FileTab";
 import { FileTree } from "./components/FileTree";
@@ -64,12 +61,14 @@ import {
 	useWebSocket,
 } from "./hooks/useWebSocket";
 import type {
+	CompareMode,
 	DiffLayer,
 	ShellEntry,
 	TaskEntry,
 	TerminalEntry,
 	TurnInputIntent,
 } from "./types/protocol";
+import type { TabDisposition } from "./types/tabs";
 import {
 	defaultFileView,
 	type FileView,
@@ -83,10 +82,13 @@ import {
 
 interface CenterTab {
 	id: string;
-	type: "chat" | "file" | "diff" | "terminal" | "task";
+	type: "chat" | "file" | "diff" | "compare" | "terminal" | "task";
 	label: string;
 	path?: string;
 	diffLayer?: DiffLayer;
+	compareBase?: string;
+	compareHead?: string;
+	compareMode?: CompareMode;
 	line?: number;
 	column?: number;
 	navigationKey?: number;
@@ -94,6 +96,7 @@ interface CenterTab {
 	sessionId?: string;
 	terminalId?: string;
 	taskId?: string;
+	preview?: boolean;
 }
 
 type RightTab = "changes" | "files" | "problems" | "agents";
@@ -119,10 +122,10 @@ type FilePathRequest =
 			error?: string;
 	  };
 const LEFT_PANEL_DEFAULT_SIZE = 240;
-const LEFT_PANEL_MIN_SIZE = 200;
+const LEFT_PANEL_MIN_SIZE = 240;
 const LEFT_PANEL_MAX_SIZE = 360;
-const RIGHT_PANEL_WIDE_DEFAULT_SIZE = 304;
-const RIGHT_PANEL_MIN_SIZE = 240;
+const RIGHT_PANEL_MIN_SIZE = 280;
+const RIGHT_PANEL_DEFAULT_SIZE = RIGHT_PANEL_MIN_SIZE;
 const RIGHT_PANEL_MAX_SIZE = 480;
 const CENTER_PANEL_MIN_SIZE = 320;
 
@@ -145,15 +148,67 @@ function draftChatTab(): CenterTab {
 	return {
 		id: chatTabId(""),
 		type: "chat",
-		label: "New Session",
+		label: "Agent",
 		sessionId: "",
 	};
+}
+
+function withSessionFallback(tabs: CenterTab[]): CenterTab[] {
+	return tabs.some((tab) => tab.type === "chat")
+		? tabs
+		: [draftChatTab(), ...tabs];
+}
+
+function placeCenterTab(
+	current: CenterTab[],
+	candidate: CenterTab,
+	disposition: TabDisposition,
+	dirtyPaths: ReadonlySet<string>,
+): { tabs: CenterTab[]; replaced?: CenterTab } {
+	const existingIndex = current.findIndex((tab) => tab.id === candidate.id);
+	if (existingIndex >= 0) {
+		const existing = current[existingIndex];
+		if (disposition !== "keep" || !existing.preview) return { tabs: current };
+		const tabs = [...current];
+		tabs[existingIndex] = { ...existing, preview: undefined };
+		return { tabs };
+	}
+
+	const placed: CenterTab = {
+		...candidate,
+		preview: disposition === "preview" || undefined,
+	};
+	if (disposition === "keep") return { tabs: [...current, placed] };
+
+	const previewIndex = current.findIndex((tab) => tab.preview);
+	if (previewIndex < 0) return { tabs: [...current, placed] };
+	const previous = current[previewIndex];
+	if (
+		previous.type === "file" &&
+		previous.path &&
+		dirtyPaths.has(previous.path)
+	) {
+		const tabs = current.map((tab, index) =>
+			index === previewIndex ? { ...tab, preview: undefined } : tab,
+		);
+		return { tabs: [...tabs, placed] };
+	}
+	const tabs = [...current];
+	tabs[previewIndex] = placed;
+	return { tabs, replaced: previous };
 }
 
 function moveWorkspacePath(path: string, from: string, to: string): string {
 	return path === from || path.startsWith(`${from}/`)
 		? `${to}${path.slice(from.length)}`
 		: path;
+}
+
+function shortRevision(revision: string): string {
+	if (revision === ":worktree") return "Working tree";
+	if (revision === ":empty") return "Empty tree";
+	const last = revision.split("/").pop() || revision;
+	return /^[0-9a-f]{12,}$/i.test(last) ? last.slice(0, 7) : last;
 }
 
 function moveWorkspaceTab(tab: CenterTab, from: string, to: string): CenterTab {
@@ -217,7 +272,7 @@ export default function App() {
 	const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
 	const appRef = useRef<HTMLDivElement>(null);
 	const leftPanelWidthRef = useRef(LEFT_PANEL_DEFAULT_SIZE);
-	const rightPanelDefaultWidth = RIGHT_PANEL_WIDE_DEFAULT_SIZE;
+	const rightPanelDefaultWidth = RIGHT_PANEL_DEFAULT_SIZE;
 	const rightPanelWidthRef = useRef(rightPanelDefaultWidth);
 	const leftPanelRef = usePanelRef();
 	const rightPanelRef = usePanelRef();
@@ -531,31 +586,71 @@ export default function App() {
 		setActiveTabId(tab.id);
 		if (tab.type === "chat") setCurrentSessionId(tab.sessionId ?? "");
 	}, []);
+	const keepTab = useCallback((id: string) => {
+		setTabs((current) =>
+			current.map((tab) =>
+				tab.id === id && tab.preview ? { ...tab, preview: undefined } : tab,
+			),
+		);
+	}, []);
+	const showCenterTab = useCallback(
+		(candidate: CenterTab, disposition: TabDisposition) => {
+			const placement = placeCenterTab(
+				tabs,
+				candidate,
+				disposition,
+				dirtyPaths,
+			);
+			if (placement.replaced?.type === "file" && placement.replaced.path) {
+				closeDocument(placement.replaced.path);
+			}
+			if (placement.replaced) {
+				setFileViews((current) => {
+					if (!(placement.replaced!.id in current)) return current;
+					const next = { ...current };
+					delete next[placement.replaced!.id];
+					return next;
+				});
+			}
+			setTabs(withSessionFallback(placement.tabs));
+			activateTab(candidate);
+		},
+		[activateTab, closeDocument, dirtyPaths, tabs],
+	);
 
 	const openChatTab = useCallback(
-		(sid: string) => {
+		(sid: string, disposition: TabDisposition = "keep", adoptDraft = false) => {
 			const existing = tabs.find(
 				(t) => t.type === "chat" && t.sessionId === sid,
 			);
 			if (existing) {
-				activateTab(existing);
+				showCenterTab(existing, disposition);
 				return;
 			}
-			// ChatPanel is keyed by tab id, so reuse the draft's id; a fresh id
-			// would remount it and drop the composer text.
-			const draft = tabs.find((t) => t.type === "chat" && !t.sessionId);
+
+			// Allocating a session for the draft must retain its component key so
+			// unsent composer state survives. Browsing history never adopts it.
+			const draft = adoptDraft
+				? tabs.find((t) => t.type === "chat" && !t.sessionId)
+				: undefined;
 			const tab: CenterTab = {
-				id: draft?.id ?? chatTabId(sid),
+				id: draft ? draft.id : chatTabId(sid),
 				type: "chat",
 				label: "Session",
 				sessionId: sid,
 			};
-			setTabs((prev) =>
-				draft ? prev.map((t) => (t.id === draft.id ? tab : t)) : [...prev, tab],
-			);
-			activateTab(tab);
+			if (draft) {
+				setTabs((current) =>
+					current.map((candidate) =>
+						candidate.id === draft.id ? tab : candidate,
+					),
+				);
+				activateTab(tab);
+				return;
+			}
+			showCenterTab(tab, disposition);
 		},
-		[tabs, activateTab],
+		[activateTab, showCenterTab, tabs],
 	);
 
 	const handlePromptReply = useCallback(
@@ -568,7 +663,13 @@ export default function App() {
 	);
 
 	const openFile = useCallback(
-		(path: string, line?: number, column?: number, external?: boolean) => {
+		(
+			path: string,
+			line?: number,
+			column?: number,
+			external?: boolean,
+			disposition: TabDisposition = "preview",
+		) => {
 			openDocument(path, external ?? false);
 			const existing = tabs.find((t) => t.type === "file" && t.path === path);
 			if (existing) {
@@ -586,6 +687,7 @@ export default function App() {
 						),
 					);
 				}
+				if (disposition === "keep") keepTab(existing.id);
 				setActiveTabId(existing.id);
 				return;
 			}
@@ -600,10 +702,9 @@ export default function App() {
 				navigationKey: line ? 1 : undefined,
 				external: external || undefined,
 			};
-			setTabs((prev) => [...prev, tab]);
-			setActiveTabId(tab.id);
+			showCenterTab(tab, disposition);
 		},
-		[tabs, openDocument],
+		[keepTab, openDocument, showCenterTab, tabs],
 	);
 
 	const handleFileMove = useCallback(
@@ -655,11 +756,16 @@ export default function App() {
 	);
 
 	const openDiff = useCallback(
-		(path: string, layer?: DiffLayer) => {
+		(
+			path: string,
+			layer?: DiffLayer,
+			disposition: TabDisposition = "preview",
+		) => {
 			const existing = tabs.find(
 				(t) => t.type === "diff" && t.path === path && t.diffLayer === layer,
 			);
 			if (existing) {
+				if (disposition === "keep") keepTab(existing.id);
 				setActiveTabId(existing.id);
 				return;
 			}
@@ -672,10 +778,33 @@ export default function App() {
 				path,
 				diffLayer: layer,
 			};
-			setTabs((prev) => [...prev, tab]);
-			setActiveTabId(tab.id);
+			showCenterTab(tab, disposition);
 		},
-		[tabs],
+		[keepTab, showCenterTab, tabs],
+	);
+
+	const openCompare = useCallback(
+		(
+			base: string,
+			head: string,
+			mode: CompareMode,
+			disposition: TabDisposition = "keep",
+		) => {
+			const id = `compare:${mode}:${base}:${head}`;
+			const label = `${shortRevision(base)} → ${shortRevision(head)}`;
+			showCenterTab(
+				{
+					id,
+					type: "compare",
+					label,
+					compareBase: base,
+					compareHead: head,
+					compareMode: mode,
+				},
+				disposition,
+			);
+		},
+		[showCenterTab],
 	);
 
 	const closeTabNow = useCallback(
@@ -685,13 +814,9 @@ export default function App() {
 			const closing = tabs[idx];
 			if (!isClosableTab(closing)) return;
 			if (closing.type === "file" && closing.path) closeDocument(closing.path);
-			setTabs((prev) => {
-				let next = prev.filter((t) => t.id !== id);
-				if (!next.some((t) => t.type === "chat")) {
-					next = [draftChatTab(), ...next];
-				}
-				return next;
-			});
+			setTabs((prev) =>
+				withSessionFallback(prev.filter((tab) => tab.id !== id)),
+			);
 			setFileViews((prev) => {
 				if (!(id in prev)) return prev;
 				const next = { ...prev };
@@ -796,7 +921,7 @@ export default function App() {
 			openCreatedDocument(created);
 
 			if (request.kind === "new") {
-				openFile(created.path);
+				openFile(created.path, undefined, undefined, undefined, "keep");
 			} else {
 				const nextId = `file:${created.path}`;
 				closeDocument(request.sourcePath);
@@ -809,6 +934,7 @@ export default function App() {
 									label: created.path.split("/").pop() || created.path,
 									path: created.path,
 									external: undefined,
+									preview: undefined,
 								}
 							: tab,
 					),
@@ -1050,13 +1176,26 @@ export default function App() {
 		activateTab(tabs[0] ?? draftChatTab());
 	}, [tabs, activeTabId, activateTab]);
 
+	useEffect(() => {
+		if (!currentSessionId) return;
+		if (
+			tabs.some(
+				(tab) => tab.type === "chat" && tab.sessionId === currentSessionId,
+			)
+		) {
+			return;
+		}
+		const fallback = tabs.find((tab) => tab.type === "chat");
+		setCurrentSessionId(fallback?.sessionId ?? "");
+	}, [currentSessionId, tabs]);
+
 	const handleNewSession = useCallback(async () => {
 		try {
 			const res = await fetch("/api/sessions", { method: "POST" });
 			if (!res.ok) throw new Error(await res.text());
 			const data = (await res.json()) as { id?: string };
 			if (!data.id) return;
-			openChatTab(data.id);
+			openChatTab(data.id, "keep", true);
 		} catch (error) {
 			toast({
 				title: "Could not create session",
@@ -1106,24 +1245,43 @@ export default function App() {
 		error: string | null;
 	}>({ id: "", loading: false, error: null });
 	const loadReqRef = useRef(0);
+	const sessionLoadRequestsRef = useRef(
+		new Map<string, Promise<string | null>>(),
+	);
 
 	const handleSessionSelect = useCallback(
-		async (id: string) => {
-			openChatTab(id);
-			if (hasSession(id)) return;
+		async (id: string, disposition: TabDisposition = "keep") => {
 			const req = ++loadReqRef.current;
-			setSessionLoad({ id, loading: true, error: null });
-			let error: string | null = null;
-			try {
-				const res = await fetch(`/api/sessions/${id}/load`, { method: "POST" });
-				if (!res.ok) {
-					error =
-						(await res.text()).trim() ||
-						`Failed to load session (${res.status}).`;
-				}
-			} catch {
-				error = "Failed to load session.";
+			openChatTab(id, disposition);
+			if (hasSession(id)) {
+				setSessionLoad({ id: "", loading: false, error: null });
+				return;
 			}
+			setSessionLoad({ id, loading: true, error: null });
+			let request = sessionLoadRequestsRef.current.get(id);
+			if (!request) {
+				request = (async () => {
+					try {
+						const res = await fetch(`/api/sessions/${id}/load`, {
+							method: "POST",
+						});
+						if (res.ok) return null;
+						return (
+							(await res.text()).trim() ||
+							`Failed to load session (${res.status}).`
+						);
+					} catch {
+						return "Failed to load session.";
+					}
+				})();
+				sessionLoadRequestsRef.current.set(id, request);
+				void request.finally(() => {
+					if (sessionLoadRequestsRef.current.get(id) === request) {
+						sessionLoadRequestsRef.current.delete(id);
+					}
+				});
+			}
+			const error = await request;
 			if (loadReqRef.current !== req) return;
 			setSessionLoad({ id, loading: false, error });
 		},
@@ -1199,7 +1357,7 @@ export default function App() {
 		if (!res.ok) throw new Error("failed to allocate session");
 		const data = (await res.json()) as { id?: string };
 		if (!data.id) throw new Error("session id missing in response");
-		openChatTab(data.id);
+		openChatTab(data.id, "keep", true);
 		return data.id;
 	}, [sessionId, openChatTab]);
 
@@ -1421,8 +1579,8 @@ export default function App() {
 	const sidebarContent = (
 		<Sidebar
 			currentSessionId={sessionId}
-			onSessionSelect={(id) => {
-				void handleSessionSelect(id);
+			onSessionSelect={(id, disposition) => {
+				void handleSessionSelect(id, disposition);
 			}}
 			onSessionDelete={(id, title) => setSessionDelete({ id, title })}
 			runningSessionIds={runningSessionIds}
@@ -1487,7 +1645,10 @@ export default function App() {
 						git={capabilities?.git ?? false}
 						canInit={capabilities?.git_init ?? false}
 						onOpenDiff={openDiff}
-						onOpenFile={openFile}
+						onOpenCompare={openCompare}
+						onOpenFile={(path, disposition) =>
+							openFile(path, undefined, undefined, undefined, disposition)
+						}
 						subscribe={subscribe}
 					/>
 				) : rightTab === "problems" && showProblems ? (
@@ -1495,7 +1656,9 @@ export default function App() {
 				) : (
 					<div className="flex h-full flex-col overflow-hidden">
 						<FileTree
-							onFileSelect={openFile}
+							onFileSelect={(path, disposition) =>
+								openFile(path, undefined, undefined, undefined, disposition)
+							}
 							onFileMove={handleFileMove}
 							platform={capabilities?.platform}
 							subscribe={subscribe}
@@ -1574,19 +1737,17 @@ export default function App() {
 						</div>
 					)}
 					{!leftPanelDocked && <div className="min-w-0 flex-1" />}
-					<button
-						type="button"
-						className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
-						onClick={toggleSidebar}
-						title={sidebarCollapsed ? "Show sessions" : "Hide sessions"}
-						aria-label={sidebarCollapsed ? "Show sessions" : "Hide sessions"}
-					>
-						{sidebarCollapsed ? (
+					{sidebarCollapsed && (
+						<button
+							type="button"
+							className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
+							onClick={toggleSidebar}
+							title="Show sessions"
+							aria-label="Show sessions"
+						>
 							<PanelLeftOpen size={13} />
-						) : (
-							<PanelLeftClose size={13} />
-						)}
-					</button>
+						</button>
+					)}
 				</div>
 
 				<div
@@ -1618,49 +1779,22 @@ export default function App() {
 							tab.type === "chat" && tab.sessionId
 								? (sessions[tab.sessionId]?.phase ?? "idle") !== "idle"
 								: false;
-						const Icon =
-							tab.type === "chat"
-								? MessageSquare
-								: tab.type === "terminal"
-									? SquareTerminal
-									: tab.type === "diff"
-										? GitCompare
-										: tab.type === "task"
-											? Bot
-											: FileText;
 						const label = tab.type === "chat" ? chatTabLabel(tab) : tab.label;
 						return (
-							<button
-								type="button"
-								role="tab"
-								aria-selected={active}
-								tabIndex={active ? 0 : -1}
-								data-center-tab={tab.id}
+							<Tab
 								key={tab.id}
-								className={`group relative flex shrink-0 items-center gap-1.5 px-3 py-0 text-[12px] transition-colors ${
-									active ? "text-fg" : "text-fg-dim hover:text-fg-muted"
-								} ${active ? "bg-bg-surface/50" : ""}`}
-								onClick={(event) => {
-									if ((event.target as Element).closest("[data-tab-close]")) {
-										void requestCloseTab(tab.id);
-										return;
-									}
-									activateTab(tab);
-								}}
-								onKeyDown={(event) => {
-									let next = tabIndex;
-									if (event.key === "ArrowLeft")
-										next = (tabIndex - 1 + tabs.length) % tabs.length;
-									else if (event.key === "ArrowRight")
-										next = (tabIndex + 1) % tabs.length;
-									else if (event.key === "Home") next = 0;
-									else if (event.key === "End") next = tabs.length - 1;
-									else if (event.key === "Delete" && closable) {
-										event.preventDefault();
-										void requestCloseTab(tab.id);
-										return;
-									} else return;
-									event.preventDefault();
+								id={tab.id}
+								kind={tab.type}
+								label={label}
+								active={active}
+								preview={!!tab.preview}
+								closable={closable}
+								dirty={isDirty}
+								running={running}
+								position={tabIndex}
+								count={tabs.length}
+								onActivate={() => activateTab(tab)}
+								onNavigate={(next) => {
 									const target = tabs[next];
 									activateTab(target);
 									requestAnimationFrame(() =>
@@ -1671,41 +1805,9 @@ export default function App() {
 											?.focus(),
 									);
 								}}
-								title={label}
-								aria-label={`${label}${isDirty ? ", unsaved changes" : ""}${closable ? ". Press Delete to close." : ""}`}
-							>
-								{active && (
-									<span className="absolute inset-x-2 bottom-0 h-[2px] rounded-full bg-accent" />
-								)}
-								<span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-									{running ? (
-										<Loader2
-											size={13}
-											className={`${closable ? "group-hover:hidden" : ""} text-accent animate-spin`}
-										/>
-									) : isDirty ? (
-										<span
-											className={`${closable ? "group-hover:hidden" : ""} h-2 w-2 rounded-full ${active ? "bg-fg-muted" : "bg-fg-dim"}`}
-										/>
-									) : (
-										<Icon
-											size={13}
-											className={`${closable ? "group-hover:hidden" : ""} ${active ? "text-fg-muted" : "text-fg-dim"}`}
-										/>
-									)}
-									{closable && (
-										<span
-											data-tab-close
-											aria-hidden="true"
-											title={`Close ${label}`}
-											className="hidden h-3.5 w-3.5 items-center justify-center rounded text-fg-dim transition-colors hover:text-fg group-hover:flex"
-										>
-											<X size={11} />
-										</span>
-									)}
-								</span>
-								<span className="max-w-[200px] truncate">{label}</span>
-							</button>
+								onClose={() => void requestCloseTab(tab.id)}
+								onKeepOpen={() => keepTab(tab.id)}
+							/>
 						);
 					})}
 				</div>
@@ -1715,7 +1817,9 @@ export default function App() {
 						y={tabMenu.y}
 						tabId={tabMenu.tabId}
 						tabCount={tabs.length}
+						preview={!!tabs.find((tab) => tab.id === tabMenu.tabId)?.preview}
 						onClose={() => setTabMenu(null)}
+						onKeepOpen={keepTab}
 						onCloseTab={(id) => void closeTabs([id])}
 						onCloseOthers={(id) =>
 							void closeTabs(
@@ -1789,13 +1893,14 @@ export default function App() {
 									? "text-fg-muted"
 									: "text-fg-dim hover:text-fg-muted"
 							}`}
-							onClick={() =>
+							onClick={() => {
+								keepTab(activeTab.id);
 								setFileViews((prev) => ({
 									...prev,
 									[activeTab.id]:
 										activeFileView === "preview" ? "code" : "preview",
-								}))
-							}
+								}));
+							}}
 							title={previewToggleLabel}
 							aria-label={previewToggleLabel}
 						>
@@ -1823,27 +1928,17 @@ export default function App() {
 						width: rightPanelDocked ? "var(--right-panel-width)" : "40px",
 					}}
 				>
-					<button
-						type="button"
-						className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
-						onClick={toggleRightPanel}
-						title={
-							rightPanelCollapsed
-								? "Show workspace panel"
-								: "Hide workspace panel"
-						}
-						aria-label={
-							rightPanelCollapsed
-								? "Show workspace panel"
-								: "Hide workspace panel"
-						}
-					>
-						{rightPanelCollapsed ? (
+					{rightPanelCollapsed && (
+						<button
+							type="button"
+							className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
+							onClick={toggleRightPanel}
+							title="Show workspace panel"
+							aria-label="Show workspace panel"
+						>
 							<PanelRightOpen size={13} />
-						) : (
-							<PanelRightClose size={13} />
-						)}
-					</button>
+						</button>
+					)}
 					{rightPanelDocked && (
 						<div
 							data-titlebar-workspace-tabs
@@ -1907,7 +2002,15 @@ export default function App() {
 					className="flex min-w-0 flex-col overflow-hidden bg-bg"
 				>
 					<main className="flex flex-1 flex-col overflow-hidden min-h-0 bg-bg">
-						<div className="flex-1 overflow-hidden">
+						<div
+							className="flex-1 overflow-hidden"
+							onPointerDownCapture={() => {
+								if (activeTab.preview) keepTab(activeTab.id);
+							}}
+							onKeyDownCapture={() => {
+								if (activeTab.preview) keepTab(activeTab.id);
+							}}
+						>
 							<ErrorBoundary
 								key={activeTab.id}
 								fallback={(error, reset, errorInfo) => (
@@ -1983,6 +2086,17 @@ export default function App() {
 										taskId={activeTab.taskId}
 										subscribe={subscribe}
 									/>
+								) : activeTab.type === "compare" &&
+								  activeTab.compareBase &&
+								  activeTab.compareHead &&
+								  activeTab.compareMode ? (
+									<CompareTab
+										key={activeTab.id}
+										base={activeTab.compareBase}
+										head={activeTab.compareHead}
+										mode={activeTab.compareMode}
+										subscribe={subscribe}
+									/>
 								) : activeTab.type === "diff" && activeTab.path ? (
 									<DiffTab
 										path={activeTab.path}
@@ -1999,7 +2113,10 @@ export default function App() {
 										column={activeTab.column}
 										navigationKey={activeTab.navigationKey}
 										subscribe={subscribe}
-										onChange={(value) => updateDraft(activeTab.path!, value)}
+										onChange={(value) => {
+											keepTab(activeTab.id);
+											updateDraft(activeTab.path!, value);
+										}}
 										onSave={async () => {
 											return saveFile(activeTab.path!);
 										}}
@@ -2058,7 +2175,7 @@ export default function App() {
 					onClose={() => setPaletteOpen(false)}
 					actions={paletteActions}
 					onRunSkill={runSkill}
-					onSelectSession={(id) => void handleSessionSelect(id)}
+					onSelectSession={(id) => void handleSessionSelect(id, "keep")}
 					onOpenFile={openFile}
 				/>
 			)}
@@ -2403,7 +2520,9 @@ function TabContextMenu({
 	y,
 	tabId,
 	tabCount,
+	preview,
 	onClose,
+	onKeepOpen,
 	onCloseTab,
 	onCloseOthers,
 	onCloseAll,
@@ -2412,13 +2531,18 @@ function TabContextMenu({
 	y: number;
 	tabId?: string;
 	tabCount: number;
+	preview: boolean;
 	onClose: () => void;
+	onKeepOpen: (id: string) => void;
 	onCloseTab: (id: string) => void;
 	onCloseOthers: (id: string) => void;
 	onCloseAll: () => void;
 }) {
 	const items: { label: string; disabled?: boolean; run: () => void }[] = [];
 	if (tabId) {
+		if (preview) {
+			items.push({ label: "Keep Open", run: () => onKeepOpen(tabId) });
+		}
 		items.push({ label: "Close", run: () => onCloseTab(tabId) });
 		items.push({
 			label: "Close Others",
