@@ -318,6 +318,196 @@ test("uses each Git status slot for its stage action", async ({ page }) => {
 	).toBeVisible();
 });
 
+test("compares branches and commits in a main content tab", async ({
+	page,
+}) => {
+	const baseHash = "1111111111111111111111111111111111111111";
+	const middleHash = "3333333333333333333333333333333333333333";
+	const headHash = "2222222222222222222222222222222222222222";
+	const compareModes: string[] = [];
+	const compareHeads: string[] = [];
+	await page.route(/\/api\/capabilities$/, async (route) => {
+		await route.fulfill({
+			json: {
+				git: true,
+				lsp: false,
+				diffs: true,
+				tasks: false,
+				terminal: true,
+			},
+		});
+	});
+	await page.route(/\/api\/git\/status$/, async (route) => {
+		await route.fulfill({
+			json: {
+				branch: "feature",
+				ahead: 1,
+				behind: 0,
+				has_remote: false,
+				files: [],
+			},
+		});
+	});
+	await page.route(/\/api\/git\/branches/, async (route) => {
+		await route.fulfill({
+			json: {
+				branches: [{ name: "feature", current: true }, { name: "main" }],
+			},
+		});
+	});
+	await page.route(/\/api\/git\/history/, async (route) => {
+		await route.fulfill({
+			json: [
+				{
+					hash: headHash,
+					parents: [middleHash],
+					summary: "Feature work",
+					author: "Ada",
+					authored_at: "2026-08-14T10:00:00Z",
+					refs: ["feature"],
+				},
+				{
+					hash: middleHash,
+					parents: [baseHash],
+					summary: "Unreferenced work",
+					author: "Ada",
+					authored_at: "2026-08-13T12:00:00Z",
+					refs: null,
+				},
+				{
+					hash: baseHash,
+					parents: [],
+					summary: "Initial commit",
+					author: "Ada",
+					authored_at: "2026-08-13T10:00:00Z",
+					refs: ["main"],
+				},
+			],
+		});
+	});
+	await page.route(/\/api\/git\/compare/, async (route) => {
+		const request = new URL(route.request().url());
+		compareModes.push(request.searchParams.get("mode") || "");
+		compareHeads.push(request.searchParams.get("head") || "");
+		await route.fulfill({
+			json: {
+				base: request.searchParams.get("base"),
+				head: request.searchParams.get("head"),
+				base_hash: baseHash,
+				head_hash: headHash,
+				...(request.searchParams.get("mode") === "merge-base"
+					? { merge_base_hash: baseHash }
+					: {}),
+				files: Array.from({ length: 80 }, (_, index) => {
+					if (index === 1) {
+						return {
+							path: "dist/bundle.min.js",
+							status: "modified",
+							patch:
+								"--- a/dist/bundle.min.js\n+++ b/dist/bundle.min.js\n@@ -1 +1 @@\n-old\n+new\n",
+							original: "old\n",
+							modified: "new\n",
+							language: "javascript",
+						};
+					}
+					if (index === 2) {
+						return {
+							path: "src/deleted.ts",
+							status: "deleted",
+							patch:
+								"--- a/src/deleted.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n",
+							original: "old\n",
+							language: "typescript",
+						};
+					}
+					if (index === 3) {
+						return {
+							path: "src/renamed.ts",
+							original_path: "src/original.ts",
+							status: "modified",
+							patch:
+								"--- a/src/original.ts\n+++ b/src/renamed.ts\n@@ -1 +1 @@\n-old\n+new\n",
+							original: "old\n",
+							modified: "new\n",
+							language: "typescript",
+						};
+					}
+					return {
+						path: `src/feature-${index}.ts`,
+						status: "modified",
+						patch: `--- a/src/feature-${index}.ts\n+++ b/src/feature-${index}.ts\n@@ -1 +1 @@\n-old\n+new\n`,
+						original: "old\n",
+						modified: "new\n",
+						language: "typescript",
+					};
+				}),
+			},
+		});
+	});
+
+	await composer(page);
+	await page
+		.getByRole("tablist", { name: "Workspace panels" })
+		.getByRole("tab", { name: "Changes", exact: true })
+		.click();
+
+	await page.getByTitle("feature", { exact: true }).click();
+	const branchDialog = page.getByRole("dialog", { name: "Git branches" });
+	await expect(branchDialog).toBeVisible();
+	await branchDialog
+		.getByRole("button", { name: "Compare main with working tree" })
+		.click();
+	await expect(
+		page.getByRole("tab", { name: /main → Working tree/ }),
+	).toBeVisible();
+	await expect(
+		page.getByText("Pull-request comparison from merge base"),
+	).toBeVisible();
+	const virtualList = page.locator("[data-virtual-compare-list]");
+	await expect(virtualList).toBeVisible();
+	await expect(
+		page.locator('[data-compare-file="src/feature-0.ts"]'),
+	).toBeVisible();
+	await expect(
+		page.locator('[data-compare-file="dist/bundle.min.js"] button'),
+	).toHaveAttribute("aria-expanded", "false");
+	await expect(
+		page.locator('[data-compare-file="src/deleted.ts"]'),
+	).toHaveAttribute("data-summary-only", "true");
+	await expect(
+		page.locator('[data-compare-file="src/renamed.ts"]'),
+	).toHaveAttribute("data-summary-only", "true");
+	await expect
+		.poll(() => page.locator("[data-compare-file]").count())
+		.toBeLessThan(10);
+	await virtualList.evaluate((element) => {
+		element.scrollTop = 500;
+		element.dispatchEvent(new Event("scroll"));
+	});
+	await expect(page.locator("[data-sticky-file-header]")).toBeVisible();
+
+	await page.getByRole("button", { name: /^History/ }).click();
+	await expect(page.getByText("Unreferenced work")).toBeVisible();
+	await page.locator(`[data-git-commit="${middleHash}"]`).click();
+	await page.getByRole("button", { name: "View commit" }).click();
+	await expect(
+		page.getByRole("tab", { name: /1111111 → 3333333/ }),
+	).toBeVisible();
+	await page.getByRole("button", { name: "Clear", exact: true }).click();
+	await page.locator(`[data-git-commit="${baseHash}"]`).click();
+	await page.locator(`[data-git-commit="${headHash}"]`).click();
+	await page.getByRole("button", { name: "Compare", exact: true }).click();
+	await expect(
+		page.getByRole("tab", { name: /1111111 → 2222222/ }),
+	).toBeVisible();
+	await expect
+		.poll(() => compareModes)
+		.toEqual(["merge-base", "direct", "direct"]);
+	await expect
+		.poll(() => compareHeads)
+		.toEqual([":worktree", middleHash, headHash]);
+});
+
 test("keeps the session context menu above panel clipping", async ({
 	page,
 }) => {

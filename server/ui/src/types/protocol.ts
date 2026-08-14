@@ -327,6 +327,7 @@ export interface FileContent {
 
 export interface DiffEntry {
 	path: string;
+	original_path?: string;
 	status: "added" | "modified" | "deleted";
 	patch: string;
 	original?: string;
@@ -335,6 +336,7 @@ export interface DiffEntry {
 }
 
 export type DiffLayer = "staged" | "unstaged";
+export type CompareMode = "direct" | "merge-base";
 
 export interface GitFileStatus {
 	path: string;
@@ -364,6 +366,24 @@ export interface GitBranch {
 export interface GitBranches {
 	branches: GitBranch[];
 	warning?: string;
+}
+
+export interface GitCommit {
+	hash: string;
+	parents: string[];
+	summary: string;
+	author: string;
+	authored_at: string;
+	refs: string[];
+}
+
+export interface GitCompare {
+	base: string;
+	head: string;
+	base_hash: string;
+	head_hash: string;
+	merge_base_hash?: string;
+	files: DiffEntry[];
 }
 
 export interface TaskEntry {

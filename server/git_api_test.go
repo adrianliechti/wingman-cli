@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -213,6 +214,121 @@ func TestGitAPIRejectsInvalidPath(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", res.StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestGitAPIHistoryAndCompare(t *testing.T) {
+	t.Setenv("WINGMAN_URL", "http://localhost:1")
+	repoDir := t.TempDir()
+	repo, err := git.PlainInit(repoDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := repo.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.User.Name = "Wingman Test"
+	cfg.User.Email = "wingman@test.local"
+	if err := repo.SetConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app, err := New(context.Background(), repoDir, &ServerOptions{NoBrowser: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	web := httptest.NewServer(app)
+	defer web.Close()
+
+	postGit(t, web.URL, "stage", `{"paths":["base.txt"]}`)
+	postGit(t, web.URL, "commit", `{"message":"initial"}`)
+	mainBranch := getGitStatus(t, web.URL).Branch
+	postGit(t, web.URL, "branches", `{"name":"feature/compare"}`)
+	if err := os.WriteFile(filepath.Join(repoDir, "feature.txt"), []byte("draft\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	postGit(t, web.URL, "stage", `{"paths":["feature.txt"]}`)
+	postGit(t, web.URL, "commit", `{"message":"draft feature"}`)
+	if err := os.WriteFile(filepath.Join(repoDir, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	postGit(t, web.URL, "stage", `{"paths":["feature.txt"]}`)
+	postGit(t, web.URL, "commit", `{"message":"feature commit"}`)
+
+	res, err := http.Get(web.URL + "/api/git/history?limit=10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("history endpoint = %d", res.StatusCode)
+	}
+	var history []GitCommit
+	if err := json.NewDecoder(res.Body).Decode(&history); err != nil {
+		t.Fatal(err)
+	}
+	foundFeature := false
+	foundUnreferenced := false
+	for _, commit := range history {
+		foundFeature = foundFeature || commit.Summary == "feature commit"
+		foundUnreferenced = foundUnreferenced || commit.Refs != nil && len(commit.Refs) == 0
+	}
+	if len(history) != 3 || !foundFeature || !foundUnreferenced {
+		t.Fatalf("history = %+v", history)
+	}
+
+	compareURL := web.URL + "/api/git/compare?base=" + url.QueryEscape(mainBranch) + "&head=feature%2Fcompare&mode=merge-base"
+	res, err = http.Get(compareURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		message, _ := io.ReadAll(res.Body)
+		t.Fatalf("compare endpoint = %d: %s", res.StatusCode, message)
+	}
+	var comparison GitCompare
+	if err := json.NewDecoder(res.Body).Decode(&comparison); err != nil {
+		t.Fatal(err)
+	}
+	if comparison.MergeBaseHash == "" || len(comparison.Files) != 1 || comparison.Files[0].Path != "feature.txt" || comparison.Files[0].Modified != "feature\n" {
+		t.Fatalf("comparison = %+v", comparison)
+	}
+
+	if err := os.WriteFile(filepath.Join(repoDir, "feature.txt"), []byte("working feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "local.txt"), []byte("untracked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	worktreeURL := web.URL + "/api/git/compare?base=" + url.QueryEscape(mainBranch) + "&head=" + url.QueryEscape(":worktree") + "&mode=merge-base"
+	res, err = http.Get(worktreeURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		message, _ := io.ReadAll(res.Body)
+		t.Fatalf("worktree compare endpoint = %d: %s", res.StatusCode, message)
+	}
+	comparison = GitCompare{}
+	if err := json.NewDecoder(res.Body).Decode(&comparison); err != nil {
+		t.Fatal(err)
+	}
+	if comparison.Head != ":worktree" || comparison.MergeBaseHash == "" || len(comparison.Files) != 2 {
+		t.Fatalf("worktree comparison = %+v", comparison)
+	}
+	files := map[string]DiffEntry{}
+	for _, file := range comparison.Files {
+		files[file.Path] = file
+	}
+	if files["feature.txt"].Modified != "working feature\n" || files["local.txt"].Status != "added" {
+		t.Fatalf("worktree files = %+v", files)
 	}
 }
 

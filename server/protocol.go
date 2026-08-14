@@ -166,12 +166,13 @@ type FileContent struct {
 }
 
 type DiffEntry struct {
-	Path     string `json:"path"`
-	Status   string `json:"status"`
-	Patch    string `json:"patch"`
-	Original string `json:"original,omitempty"`
-	Modified string `json:"modified,omitempty"`
-	Language string `json:"language,omitempty"`
+	Path         string `json:"path"`
+	OriginalPath string `json:"original_path,omitempty"`
+	Status       string `json:"status"`
+	Patch        string `json:"patch"`
+	Original     string `json:"original,omitempty"`
+	Modified     string `json:"modified,omitempty"`
+	Language     string `json:"language,omitempty"`
 }
 
 type SessionEntry struct {

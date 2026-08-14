@@ -45,6 +45,7 @@ import {
 import type { ModeOption } from "./components/ModePicker";
 import { DiffsPanel } from "./components/DiffsPanel";
 import { DiffTab } from "./components/DiffTab";
+import { CompareTab } from "./components/CompareTab";
 import { ErrorBoundary, ErrorDetails } from "./components/ErrorBoundary";
 import { FileTab } from "./components/FileTab";
 import { FileTree } from "./components/FileTree";
@@ -64,6 +65,7 @@ import {
 	useWebSocket,
 } from "./hooks/useWebSocket";
 import type {
+	CompareMode,
 	DiffLayer,
 	ShellEntry,
 	TaskEntry,
@@ -83,10 +85,13 @@ import {
 
 interface CenterTab {
 	id: string;
-	type: "chat" | "file" | "diff" | "terminal" | "task";
+	type: "chat" | "file" | "diff" | "compare" | "terminal" | "task";
 	label: string;
 	path?: string;
 	diffLayer?: DiffLayer;
+	compareBase?: string;
+	compareHead?: string;
+	compareMode?: CompareMode;
 	line?: number;
 	column?: number;
 	navigationKey?: number;
@@ -154,6 +159,12 @@ function moveWorkspacePath(path: string, from: string, to: string): string {
 	return path === from || path.startsWith(`${from}/`)
 		? `${to}${path.slice(from.length)}`
 		: path;
+}
+
+function shortRevision(revision: string): string {
+	if (revision === ":worktree") return "Working tree";
+	const last = revision.split("/").pop() || revision;
+	return /^[0-9a-f]{12,}$/i.test(last) ? last.slice(0, 7) : last;
 }
 
 function moveWorkspaceTab(tab: CenterTab, from: string, to: string): CenterTab {
@@ -676,6 +687,30 @@ export default function App() {
 			setActiveTabId(tab.id);
 		},
 		[tabs],
+	);
+
+	const openCompare = useCallback(
+		(base: string, head: string, mode: CompareMode) => {
+			const id = `compare:${mode}:${base}:${head}`;
+			const label = `${shortRevision(base)} → ${shortRevision(head)}`;
+			setTabs((previous) =>
+				previous.some((tab) => tab.id === id)
+					? previous
+					: [
+							...previous,
+							{
+								id,
+								type: "compare" as const,
+								label,
+								compareBase: base,
+								compareHead: head,
+								compareMode: mode,
+							},
+						],
+			);
+			setActiveTabId(id);
+		},
+		[],
 	);
 
 	const closeTabNow = useCallback(
@@ -1487,6 +1522,7 @@ export default function App() {
 						git={capabilities?.git ?? false}
 						canInit={capabilities?.git_init ?? false}
 						onOpenDiff={openDiff}
+						onOpenCompare={openCompare}
 						onOpenFile={openFile}
 						subscribe={subscribe}
 					/>
@@ -1623,7 +1659,7 @@ export default function App() {
 								? MessageSquare
 								: tab.type === "terminal"
 									? SquareTerminal
-									: tab.type === "diff"
+									: tab.type === "diff" || tab.type === "compare"
 										? GitCompare
 										: tab.type === "task"
 											? Bot
@@ -1981,6 +2017,17 @@ export default function App() {
 										key={activeTab.id}
 										sessionId={activeTab.sessionId ?? ""}
 										taskId={activeTab.taskId}
+										subscribe={subscribe}
+									/>
+								) : activeTab.type === "compare" &&
+								  activeTab.compareBase &&
+								  activeTab.compareHead &&
+								  activeTab.compareMode ? (
+									<CompareTab
+										key={activeTab.id}
+										base={activeTab.compareBase}
+										head={activeTab.compareHead}
+										mode={activeTab.compareMode}
 										subscribe={subscribe}
 									/>
 								) : activeTab.type === "diff" && activeTab.path ? (

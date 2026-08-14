@@ -7,6 +7,7 @@ import {
 	Code2,
 	FileText,
 	GitBranch,
+	GitCompareArrows,
 	GitCommitHorizontal,
 	Loader2,
 	Minus,
@@ -19,6 +20,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
 	DiffEntry,
 	DiffLayer,
+	CompareMode,
 	GitBranch as GitBranchInfo,
 	GitBranches,
 	GitFileStatus,
@@ -27,12 +29,14 @@ import type {
 } from "../types/protocol";
 import { Dialog, dialogButtonClass } from "./ui/Feedback";
 import { FloatingMenu, FloatingSurface } from "./ui/Floating";
+import { GitHistoryPanel } from "./GitCompareControls";
 
 interface Props {
 	sessionId: string;
 	git?: boolean;
 	canInit?: boolean;
 	onOpenDiff?: (path: string, layer?: DiffLayer) => void;
+	onOpenCompare?: (base: string, head: string, mode: CompareMode) => void;
 	onOpenFile?: (path: string) => void;
 	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 }
@@ -63,6 +67,7 @@ export function DiffsPanel({
 	git = false,
 	canInit = false,
 	onOpenDiff,
+	onOpenCompare,
 	onOpenFile,
 	subscribe,
 }: Props) {
@@ -183,7 +188,9 @@ export function DiffsPanel({
 					onMessage={setMessage}
 					onRequest={request}
 					onOpenDiff={onOpenDiff}
+					onOpenCompare={onOpenCompare}
 					onOpenFile={onOpenFile}
+					subscribe={subscribe}
 					onCommit={async () => {
 						if (await request("commit", { message })) setMessage("");
 					}}
@@ -357,7 +364,9 @@ function GitChanges({
 	onMessage,
 	onRequest,
 	onOpenDiff,
+	onOpenCompare,
 	onOpenFile,
+	subscribe,
 	onCommit,
 	onRevert,
 }: {
@@ -370,7 +379,9 @@ function GitChanges({
 	onMessage: (value: string) => void;
 	onRequest: (action: string, body?: unknown) => Promise<boolean>;
 	onOpenDiff?: (path: string, layer?: DiffLayer) => void;
+	onOpenCompare?: (base: string, head: string, mode: CompareMode) => void;
 	onOpenFile?: (path: string) => void;
+	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 	onCommit: () => Promise<void>;
 	onRevert: (file: GitFileStatus) => void;
 }) {
@@ -410,6 +421,7 @@ function GitChanges({
 					status={status}
 					disabled={disabled}
 					onRequest={onRequest}
+					onCompare={onOpenCompare}
 				/>
 				{status.files.length > 0 && (
 					<span
@@ -553,6 +565,13 @@ function GitChanges({
 					</div>
 				</form>
 			)}
+			{onOpenCompare && (
+				<GitHistoryPanel
+					disabled={disabled}
+					subscribe={subscribe}
+					onCompare={onOpenCompare}
+				/>
+			)}
 			{menu && (
 				<FloatingMenu
 					open
@@ -621,10 +640,12 @@ function BranchPicker({
 	status,
 	disabled,
 	onRequest,
+	onCompare,
 }: {
 	status: GitStatus;
 	disabled: boolean;
 	onRequest: (action: string, body?: unknown) => Promise<boolean>;
+	onCompare?: (base: string, head: string, mode: CompareMode) => void;
 }) {
 	const buttonRef = useRef<HTMLButtonElement>(null);
 	const searchRef = useRef<HTMLInputElement>(null);
@@ -696,6 +717,11 @@ function BranchPicker({
 			close();
 		}
 	};
+	const compare = (branch: GitBranchInfo) => {
+		const ref = branch.remote ? `${branch.remote}/${branch.name}` : branch.name;
+		onCompare?.(ref, ":worktree", "merge-base");
+		close();
+	};
 	const create = async () => {
 		const name = newBranch.trim();
 		if (!name) return;
@@ -728,7 +754,7 @@ function BranchPicker({
 				reference={buttonRef.current}
 				placement="bottom-start"
 				role="dialog"
-				label="Switch Git branch"
+				label="Git branches"
 				className="z-[100] w-[280px] overflow-hidden rounded-lg border border-border bg-bg-elevated shadow-2xl"
 			>
 				<div className="p-2 border-b border-border-subtle">
@@ -780,12 +806,14 @@ function BranchPicker({
 								branches={local}
 								disabled={disabled}
 								onSelect={checkout}
+								onCompare={onCompare ? compare : undefined}
 							/>
 							<BranchSection
 								title="Remote"
 								branches={remote}
 								disabled={disabled}
 								onSelect={checkout}
+								onCompare={onCompare ? compare : undefined}
 							/>
 							{filtered.length === 0 && !loadError && (
 								<div className="px-3 py-5 text-center text-[10.5px] text-fg-dim">
@@ -843,11 +871,13 @@ function BranchSection({
 	branches,
 	disabled,
 	onSelect,
+	onCompare,
 }: {
 	title: string;
 	branches: GitBranchInfo[];
 	disabled: boolean;
 	onSelect: (branch: GitBranchInfo) => Promise<void>;
+	onCompare?: (branch: GitBranchInfo) => void;
 }) {
 	if (branches.length === 0) return null;
 	return (
@@ -855,25 +885,46 @@ function BranchSection({
 			<div className="h-5 px-3 flex items-center text-[9px] font-medium uppercase tracking-wide text-fg-dim">
 				{title}
 			</div>
-			{branches.map((branch) => (
-				<button
-					key={`${branch.remote || "local"}:${branch.name}`}
-					type="button"
-					disabled={disabled && !branch.current}
-					onClick={() => void onSelect(branch)}
-					className="h-7 w-full px-3 flex items-center gap-2 text-left text-[11px] text-fg-muted hover:text-fg hover:bg-bg-hover disabled:opacity-40 disabled:cursor-not-allowed"
-				>
-					<span className="w-3 shrink-0 text-accent">
-						{branch.current && <Check size={11} />}
-					</span>
-					<span className="truncate">
-						{branch.remote && (
-							<span className="text-fg-dim">{branch.remote}/</span>
+			{branches.map((branch) => {
+				const label = branch.remote
+					? `${branch.remote}/${branch.name}`
+					: branch.name;
+				return (
+					<div
+						key={`${branch.remote || "local"}:${branch.name}`}
+						className="group flex h-8 items-center px-1.5 hover:bg-bg-hover"
+					>
+						<button
+							type="button"
+							disabled={disabled && !branch.current}
+							onClick={() => void onSelect(branch)}
+							className="flex h-full min-w-0 flex-1 items-center gap-2 rounded px-1.5 text-left text-[11px] text-fg-muted hover:text-fg disabled:cursor-not-allowed disabled:opacity-40"
+						>
+							<span className="w-3 shrink-0 text-accent">
+								{branch.current && <Check size={11} />}
+							</span>
+							<span className="truncate">
+								{branch.remote && (
+									<span className="text-fg-dim">{branch.remote}/</span>
+								)}
+								{branch.name}
+							</span>
+						</button>
+						{onCompare && (
+							<button
+								type="button"
+								disabled={disabled}
+								onClick={() => onCompare(branch)}
+								title={`Compare ${label} with working tree`}
+								aria-label={`Compare ${label} with working tree`}
+								className="flex h-6 w-7 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-bg-active hover:text-accent disabled:opacity-30"
+							>
+								<GitCompareArrows size={11} />
+							</button>
 						)}
-						{branch.name}
-					</span>
-				</button>
-			))}
+					</div>
+				);
+			})}
 		</div>
 	);
 }
@@ -1086,12 +1137,12 @@ function SyncButton({
 		<button
 			type="button"
 			title={title}
+			aria-label={label}
 			disabled={disabled}
 			onClick={onClick}
-			className="h-6 px-1.5 flex items-center gap-1 rounded text-[10.5px] text-fg-dim hover:bg-bg-hover hover:text-fg disabled:opacity-30 disabled:cursor-not-allowed"
+			className="flex h-6 w-7 items-center justify-center rounded text-fg-dim hover:bg-bg-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-30"
 		>
 			{loading ? <Loader2 size={12} className="animate-spin" /> : icon}
-			<span>{label}</span>
 		</button>
 	);
 }
