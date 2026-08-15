@@ -109,8 +109,13 @@ func TestUnattendedModeOwnsToolsAndInstructions(t *testing.T) {
 	if len(tools) != 1 || tools[0].Name != "read" {
 		t.Fatalf("unattended tools = %#v, want read without elicit", tools)
 	}
-	instructions := BuildInstructions(s.instructionsData())
+	instructions := BuildInstructions("", s.instructionsData())
 	if !strings.Contains(instructions, "Work unattended") || !strings.Contains(instructions, "Do not ask the user") {
 		t.Fatalf("unattended instructions missing policy: %q", instructions)
+	}
+
+	instructions = BuildInstructions("gpt-5.6-sol", s.instructionsData())
+	if !strings.Contains(instructions, "GPT 5.6 Sol") || !strings.Contains(instructions, "gpt-5.6-sol") || !strings.Contains(instructions, "## Autonomy and persistence") || !strings.Contains(instructions, "Work unattended") {
+		t.Fatalf("gpt unattended instructions missing variant base or addendum: %q", instructions)
 	}
 }

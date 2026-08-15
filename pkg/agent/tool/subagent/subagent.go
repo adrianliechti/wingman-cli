@@ -442,13 +442,18 @@ func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry,
 var effortRank = map[string]int{"none": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5}
 
 func clampEffort(level string, target agent.ModelOption) string {
-	if target.MaxEffort != "" && effortRank[level] > effortRank[target.MaxEffort] {
-		return target.MaxEffort
+	if len(target.Efforts) == 0 {
+		return level
 	}
-	if target.MinEffort != "" && effortRank[level] < effortRank[target.MinEffort] {
-		return target.MinEffort
+
+	clamped := target.Efforts[0]
+	for _, supported := range target.Efforts {
+		if effortRank[supported] > effortRank[level] {
+			break
+		}
+		clamped = supported
 	}
-	return level
+	return clamped
 }
 
 func applyModelOverrides(cfg *agent.Config, args map[string]any, defaultRole string) error {
