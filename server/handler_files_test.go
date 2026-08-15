@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/adrianliechti/wingman-agent/pkg/code"
 )
 
 func TestFileCreateAndConflictAwareWrite(t *testing.T) {
@@ -260,6 +262,115 @@ func TestFileBatchWriteChecksEveryRevisionBeforeWriting(t *testing.T) {
 		if err != nil || string(content) != want {
 			t.Fatalf("%s after rejected batch = %q, %v; want %q", name, content, err, want)
 		}
+	}
+}
+
+func TestWorkspaceContentSearchStreamsFilteredReplaceableMatches(t *testing.T) {
+	t.Setenv("WINGMAN_URL", "http://localhost:1")
+	workDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workDir, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(workDir, "build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(workDir, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		".gitignore":           "ignored.txt\n",
+		"notes.txt":            "Alpha alpha cat scatter 😀cat\n",
+		"ignored.txt":          "cat\n",
+		"src/code.go":          "const cat = cat\n",
+		"build/out.txt":        "cat\n",
+		"nested/.gitignore":    "skipped.txt\n",
+		"nested/skipped.txt":   "cat\n",
+		"nested/not-text.data": "cat\n",
+	} {
+		if err := os.WriteFile(filepath.Join(workDir, filepath.FromSlash(name)), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	root, err := os.OpenRoot(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	app := &Server{workspace: &code.Workspace{Root: root, RootPath: workDir}}
+
+	body, err := json.Marshal(workspaceSearchRequest{
+		Query:         "cat",
+		Replacement:   "dog",
+		CaseSensitive: true,
+		WholeWord:     true,
+		Include:       "*.txt",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/files/content-search", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	app.handleWorkspaceSearch(recorder, request)
+	response := recorder.Result()
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		detail, _ := io.ReadAll(response.Body)
+		t.Fatalf("search status = %d, body = %q", response.StatusCode, detail)
+	}
+
+	decoder := json.NewDecoder(response.Body)
+	var fileEvent workspaceSearchEvent
+	if err := decoder.Decode(&fileEvent); err != nil {
+		t.Fatal(err)
+	}
+	if fileEvent.Type != "file" || fileEvent.File == nil || fileEvent.File.Path != "notes.txt" {
+		t.Fatalf("file event = %#v", fileEvent)
+	}
+	if fileEvent.File.Revision == "" || len(fileEvent.File.Matches) != 2 {
+		t.Fatalf("search file = %#v", fileEvent.File)
+	}
+	first, second := fileEvent.File.Matches[0], fileEvent.File.Matches[1]
+	if first.Line != 1 || first.Column != 13 || first.EndColumn != 16 || first.Replacement != "dog" {
+		t.Fatalf("first match = %#v", first)
+	}
+	if second.Column != 27 || second.EndColumn != 30 {
+		t.Fatalf("unicode match columns = %#v", second)
+	}
+
+	var done workspaceSearchEvent
+	if err := decoder.Decode(&done); err != nil {
+		t.Fatal(err)
+	}
+	if done.Type != "done" || done.Files != 1 || done.Matches != 2 || done.Truncated {
+		t.Fatalf("done event = %#v", done)
+	}
+}
+
+func TestWorkspaceContentSearchRegexReplacementAndValidation(t *testing.T) {
+	config, err := newWorkspaceSearchConfig(workspaceSearchRequest{
+		Query:         "(cat)",
+		Replacement:   "${1}s",
+		Regex:         true,
+		CaseSensitive: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	matches, more := config.searchFile("cat scatter cat", 10)
+	if more || len(matches) != 3 {
+		t.Fatalf("matches = %#v, more = %v", matches, more)
+	}
+	if matches[0].Replacement != "cats" {
+		t.Fatalf("expanded replacement = %q", matches[0].Replacement)
+	}
+
+	if _, err := newWorkspaceSearchConfig(workspaceSearchRequest{Query: "(", Regex: true}); err == nil {
+		t.Fatal("invalid regex was accepted")
+	}
+	if _, err := newWorkspaceSearchConfig(workspaceSearchRequest{Query: "cat", Include: "["}); err == nil {
+		t.Fatal("invalid glob was accepted")
 	}
 }
 

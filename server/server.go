@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -300,6 +301,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Delete("/", s.handleFileDelete)
 			r.Get("/read", s.handleFileRead)
 			r.Get("/search", s.handleFilesSearch)
+			r.Post("/content-search", s.handleWorkspaceSearch)
 			r.Get("/path", s.handleFilePath)
 			r.Get("/download", s.handleFileDownload)
 			r.Get("/preview", s.handleFilePreview)
@@ -765,13 +767,14 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, _ *http.Request) {
 	ws := s.workspace
 	_, isCoder := s.activeAgent().(*codeagent.Agent)
 	caps := map[string]any{
-		"lsp":      ws.HasLSP(),
-		"diffs":    ws.HasChanges(),
-		"git":      ws.HasChanges(),
-		"git_init": isCoder && !ws.HasChanges(),
-		"tasks":    isCoder,
-		"terminal": terminal.Supported(),
-		"platform": runtime.GOOS,
+		"lsp":            ws.HasLSP(),
+		"diffs":          ws.HasChanges(),
+		"git":            ws.HasChanges(),
+		"git_init":       isCoder && !ws.HasChanges(),
+		"tasks":          isCoder,
+		"terminal":       terminal.Supported(),
+		"platform":       runtime.GOOS,
+		"workspace_name": filepath.Base(ws.RootPath),
 	}
 	writeJSON(w, caps)
 }
