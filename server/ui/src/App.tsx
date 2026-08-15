@@ -11,6 +11,7 @@ import {
 	PanelRightOpen,
 	Plus,
 	Save,
+	Search,
 	SquareTerminal,
 	Wrench,
 } from "lucide-react";
@@ -45,11 +46,11 @@ import { CompareTab } from "./components/CompareTab";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ErrorPanel } from "./components/ErrorScreen";
 import { FileTab } from "./components/FileTab";
-import { FileTree } from "./components/FileTree";
 import { ProblemsPanel } from "./components/ProblemsPanel";
 import { TasksPanel } from "./components/TasksPanel";
 import { TaskTab } from "./components/TaskTab";
 import { TerminalView } from "./components/TerminalView";
+import { WorkspaceFilesPanel } from "./components/WorkspaceFilesPanel";
 import { Dialog, dialogButtonClass, useToast } from "./components/ui/Feedback";
 import { FloatingMenu, FloatingSurface } from "./components/ui/Floating";
 import { AgentPicker, BUILTIN_AGENT_ID } from "./components/AgentPicker";
@@ -269,6 +270,8 @@ export default function App() {
 	const showAgents = capabilities?.tasks ?? false;
 	const showTerminal = capabilities?.terminal ?? false;
 	const [requestedRightTab, setRequestedRightTab] = useState<RightTab>("files");
+	const [workspaceSearching, setWorkspaceSearching] = useState(false);
+	const [searchFocusKey, setSearchFocusKey] = useState(0);
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
 	const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
 	const appRef = useRef<HTMLDivElement>(null);
@@ -1485,6 +1488,25 @@ export default function App() {
 		},
 		[rightPanelRef],
 	);
+	const showWorkspaceSearch = useCallback(() => {
+		showRightPanel("files");
+		setWorkspaceSearching(true);
+		setSearchFocusKey((value) => value + 1);
+	}, [showRightPanel]);
+	useEffect(() => {
+		const onKey = (event: KeyboardEvent) => {
+			if (
+				!(event.metaKey || event.ctrlKey) ||
+				!event.shiftKey ||
+				event.key.toLowerCase() !== "f"
+			)
+				return;
+			event.preventDefault();
+			showWorkspaceSearch();
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [showWorkspaceSearch]);
 
 	const paletteActions = useMemo<PaletteAction[]>(() => {
 		const actions: PaletteAction[] = [
@@ -1525,6 +1547,13 @@ export default function App() {
 			});
 		}
 		actions.push({
+			id: "find-in-files",
+			label: "Find in files",
+			hint: /Mac|iPhone|iPad/.test(navigator.platform) ? "⇧⌘F" : "Ctrl+Shift+F",
+			icon: <Search size={12} className="text-fg-dim shrink-0" />,
+			run: showWorkspaceSearch,
+		});
+		actions.push({
 			id: "show-files",
 			label: "Show files",
 			icon: <FileText size={12} className="text-fg-dim shrink-0" />,
@@ -1549,6 +1578,7 @@ export default function App() {
 		toggleSidebar,
 		toggleRightPanel,
 		showRightPanel,
+		showWorkspaceSearch,
 		createTerminal,
 		modes,
 		mode,
@@ -1655,16 +1685,23 @@ export default function App() {
 				) : rightTab === "problems" && showProblems ? (
 					<ProblemsPanel onOpenFile={openFile} subscribe={subscribe} />
 				) : (
-					<div className="flex h-full flex-col overflow-hidden">
-						<FileTree
-							onFileSelect={(path, disposition) =>
-								openFile(path, undefined, undefined, undefined, disposition)
-							}
-							onFileMove={handleFileMove}
-							platform={capabilities?.platform}
-							subscribe={subscribe}
-						/>
-					</div>
+					<WorkspaceFilesPanel
+						workspaceName={capabilities?.workspace_name ?? "Files"}
+						searching={workspaceSearching}
+						searchFocusKey={searchFocusKey}
+						onSearch={showWorkspaceSearch}
+						onCloseSearch={() => setWorkspaceSearching(false)}
+						onFileSelect={(path, disposition) =>
+							openFile(path, undefined, undefined, undefined, disposition)
+						}
+						onFileMove={handleFileMove}
+						onOpenSearchResult={(path, line, column, disposition) =>
+							openFile(path, line, column, undefined, disposition)
+						}
+						onApplyWorkspaceEdit={requestWorkspaceEdit}
+						platform={capabilities?.platform}
+						subscribe={subscribe}
+					/>
 				)}
 			</div>
 		</aside>

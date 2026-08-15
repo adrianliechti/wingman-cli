@@ -11,22 +11,12 @@ Wingman already provides:
 - Monaco-based editing with HTML, SVG, Markdown, Mermaid, and structured-data previews.
 - Zero-config detection of ~50 language servers with LSP completion, navigation, references, rename, code actions, semantic tokens, formatting, diagnostics, and inlay hints, plus a tree-sitter fallback for navigation, hover, and completion when no server covers a file.
 - Revision-checked file writes with atomic multi-file batches and post-edit diagnostics fed back to the agent.
+- Streaming workspace search with regex, case, whole-word, and file filters, plus previewed revision-checked replacement at match, file, and workspace scope.
 - File editing, terminals, permission gates, multiple models, persistent agent sessions, and queued or steerable turns.
 - Git status, branches, comparisons, staging, commits, pull, and push.
 - Tasks and schedules, skills, plugins, MCP, lifecycle hooks, structural code intelligence, and subagents.
 
 ## Feature gaps
-
-### P0: Workspace search and replace
-
-Search today matches file names only, capped at 50 hits (`server/handler_files.go`); content search exists solely as agent tools. Add:
-
-- Content search across the workspace with streaming results grouped by file.
-- Regex, case, and whole-word options; include/exclude globs; `.gitignore` awareness.
-- Replace across files with per-match preview and accept.
-- A search panel plus results as clickable editor locations.
-
-Benchmark: [VS Code search](https://code.visualstudio.com/docs/editing/codebasics#_search-across-files).
 
 ### P0: AI inline editing
 
@@ -195,12 +185,11 @@ Benchmark: [VS Code Settings Sync](https://code.visualstudio.com/docs/configure/
 
 ## Recommended implementation order
 
-1. Workspace content search and replace.
-2. AI inline completion and next-edit prediction.
-3. Automatic checkpoints with per-hunk accept or reject.
-4. Worktree-isolated agent sessions with merge-back.
-5. Browser control and screenshot-based UI verification.
-6. Structured specifications and task artifacts.
-7. Debugger and Test Explorer.
+1. AI inline completion and next-edit prediction.
+2. Automatic checkpoints with per-hunk accept or reject.
+3. Worktree-isolated agent sessions with merge-back.
+4. Browser control and screenshot-based UI verification.
+5. Structured specifications and task artifacts.
+6. Debugger and Test Explorer.
 
-Item 1 is pure UI and endpoint work with the highest daily-use return. Items 2–4 close the most visible gap with Cursor and VS Code without requiring Wingman to reproduce the entire VS Code extension ecosystem; item 2 is the only one needing a new model integration (a FIM-capable endpoint through the gateway).
+Items 1–3 close the most visible gap with Cursor and VS Code without requiring Wingman to reproduce the entire VS Code extension ecosystem; item 1 is the only one needing a new model integration (a FIM-capable endpoint through the gateway).

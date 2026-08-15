@@ -19,6 +19,7 @@ func TestCurrentProviderModels(t *testing.T) {
 		{"minimax-m3", "MiniMax M3", ClassLarge, 1_000_000, 128_000},
 		{"MiniMax-M3", "MiniMax M3", ClassLarge, 1_000_000, 128_000},
 		{"grok-4.6", "Grok 4.6", ClassLarge, 500_000, 500_000},
+		{"gpt-5.4-nano", "GPT 5.4 Nano", ClassSmall, 400_000, 128_000},
 	}
 
 	for _, tc := range cases {
@@ -36,10 +37,11 @@ func TestCurrentProviderModels(t *testing.T) {
 
 func TestCurrentProviderModelAvailability(t *testing.T) {
 	available := Available(map[string]bool{
-		"kimi-k3":    true,
-		"glm-5.3":    true,
-		"MiniMax-M3": true,
-		"grok-4.6":   true,
+		"gpt-5.4-nano": true,
+		"kimi-k3":      true,
+		"glm-5.3":      true,
+		"MiniMax-M3":   true,
+		"grok-4.6":     true,
 	})
 
 	ids := make([]string, 0, len(available))
@@ -47,7 +49,7 @@ func TestCurrentProviderModelAvailability(t *testing.T) {
 		ids = append(ids, m.ID)
 	}
 
-	if want := []string{"glm-5.3", "kimi-k3", "MiniMax-M3", "grok-4.6"}; !slices.Equal(ids, want) {
+	if want := []string{"gpt-5.4-nano", "glm-5.3", "kimi-k3", "MiniMax-M3", "grok-4.6"}; !slices.Equal(ids, want) {
 		t.Fatalf("Available() ids = %v, want %v", ids, want)
 	}
 }
