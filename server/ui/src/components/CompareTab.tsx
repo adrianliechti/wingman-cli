@@ -1,15 +1,7 @@
-import { DiffEditor, type DiffOnMount } from "@monaco-editor/react";
-import { useVirtualizer } from "@tanstack/react-virtual";
-import {
-	ChevronDown,
-	ChevronRight,
-	FileDiff,
-	GitCompareArrows,
-	Loader2,
-} from "lucide-react";
+import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
+import type { Range } from "@tanstack/react-virtual";
+import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useColorScheme } from "../hooks/useColorScheme";
-import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
 import type {
 	CompareMode,
 	DiffEntry,
@@ -30,7 +22,6 @@ export function CompareTab({ base, head, mode, subscribe }: Props) {
 	const [loading, setLoading] = useState(true);
 	const [failure, setFailure] = useState<Error | null>(null);
 	const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-	const scheme = useColorScheme();
 
 	const load = useCallback(async () => {
 		setLoading(true);
@@ -101,8 +92,7 @@ export function CompareTab({ base, head, mode, subscribe }: Props) {
 
 	return (
 		<div className="flex h-full flex-col overflow-hidden bg-bg">
-			<div className="flex min-h-12 shrink-0 items-center gap-3 border-b border-border-subtle bg-bg-surface/30 px-4">
-				<GitCompareArrows size={15} className="shrink-0 text-accent" />
+			<div className="flex min-h-10 w-full shrink-0 items-center gap-3 border-b border-border-subtle pr-5 pl-2">
 				<div className="flex min-w-0 flex-1 items-center gap-2 font-mono text-[11px]">
 					<RevisionLabel label={base} hash={comparison.base_hash} />
 					<span className="text-fg-dim">→</span>
@@ -113,24 +103,14 @@ export function CompareTab({ base, head, mode, subscribe }: Props) {
 						{comparison.files.length} changed{" "}
 						{comparison.files.length === 1 ? "file" : "files"}
 					</span>
-					<span className="text-success">+{totals.additions}</span>
-					<span className="text-danger">−{totals.deletions}</span>
 					{largeFiles > 0 && (
 						<span title="Generated, minified, or unusually large diffs start collapsed">
 							{largeFiles} large {largeFiles === 1 ? "diff" : "diffs"}
 						</span>
 					)}
+					<ChangeCounts changes={totals} />
 				</div>
 			</div>
-			{mode === "merge-base" && comparison.merge_base_hash && (
-				<div className="shrink-0 border-b border-border-subtle bg-bg-surface/15 px-4 py-1.5 text-[10px] text-fg-dim">
-					Pull-request comparison from merge base{" "}
-					<span className="font-mono">
-						{comparison.merge_base_hash.slice(0, 7)}
-					</span>
-				</div>
-			)}
-
 			<div className="min-h-0 flex-1 overflow-hidden">
 				{comparison.files.length === 0 ? (
 					<div className="flex min-h-32 items-center justify-center text-[12px] text-fg-dim">
@@ -140,7 +120,6 @@ export function CompareTab({ base, head, mode, subscribe }: Props) {
 					<VirtualCompareFiles
 						files={comparison.files}
 						collapsed={collapsed}
-						scheme={scheme}
 						onToggle={(path) =>
 							setCollapsed((current) => togglePath(current, path))
 						}
@@ -154,36 +133,63 @@ export function CompareTab({ base, head, mode, subscribe }: Props) {
 function VirtualCompareFiles({
 	files,
 	collapsed,
-	scheme,
 	onToggle,
 }: {
 	files: DiffEntry[];
 	collapsed: Set<string>;
-	scheme: "light" | "dark";
 	onToggle: (path: string) => void;
 }) {
 	const scrollRef = useRef<HTMLDivElement>(null);
+	const items = useMemo<CompareVirtualItem[]>(() => {
+		const result: CompareVirtualItem[] = [];
+		files.forEach((file, fileIndex) => {
+			const key = `${file.original_path ?? ""}:${file.path}`;
+			result.push({ kind: "header", fileIndex, key: `${key}:header` });
+			if (!isSummaryOnlyChange(file) && !collapsed.has(file.path)) {
+				result.push({ kind: "body", fileIndex, key: `${key}:body` });
+			}
+		});
+		return result;
+	}, [collapsed, files]);
+	const stickyIndexes = useMemo(
+		() =>
+			items.flatMap((item, index) => (item.kind === "header" ? [index] : [])),
+		[items],
+	);
+	const activeStickyIndexRef = useRef(0);
+	const rangeExtractor = useCallback(
+		(range: Range) => {
+			for (let index = stickyIndexes.length - 1; index >= 0; index--) {
+				if (range.startIndex >= stickyIndexes[index]) {
+					activeStickyIndexRef.current = stickyIndexes[index];
+					break;
+				}
+			}
+			return Array.from(
+				new Set([
+					activeStickyIndexRef.current,
+					...defaultRangeExtractor(range),
+				]),
+			).sort((a, b) => a - b);
+		},
+		[stickyIndexes],
+	);
 	const virtualizer = useVirtualizer({
-		count: files.length,
+		count: items.length,
 		getScrollElement: () => scrollRef.current,
-		getItemKey: (index) =>
-			`${files[index].original_path ?? ""}:${files[index].path}`,
+		getItemKey: (index) => items[index].key,
 		estimateSize: (index) =>
-			compareRowHeight(files[index], collapsed.has(files[index].path)),
+			items[index].kind === "header"
+				? 36
+				: compareBodyHeight(files[items[index].fileIndex]),
 		overscan: 1,
-		paddingStart: 12,
-		paddingEnd: 12,
+		rangeExtractor,
 	});
 
 	useEffect(() => {
 		virtualizer.measure();
-	}, [collapsed, files, virtualizer]);
+	}, [items, virtualizer]);
 	const virtualRows = virtualizer.getVirtualItems();
-	const scrollOffset = virtualizer.scrollOffset ?? 0;
-	const activeRow =
-		virtualRows.find((row) => row.end > scrollOffset + 12) ?? virtualRows[0];
-	const activeFile = activeRow ? files[activeRow.index] : undefined;
-	const showStickyHeader = !!activeRow && scrollOffset > activeRow.start + 36;
 
 	return (
 		<div
@@ -191,55 +197,72 @@ function VirtualCompareFiles({
 			className="h-full overflow-y-auto"
 			data-virtual-compare-list
 		>
-			{activeFile && showStickyHeader && (
-				<div className="pointer-events-none sticky top-0 z-30 h-0 px-3">
-					<div
-						className="pointer-events-auto mx-auto w-full max-w-[1576px] overflow-hidden rounded-b-md border-x border-b border-border bg-bg-elevated shadow-lg"
-						data-sticky-file-header={activeFile.path}
-					>
-						<FileHeader
-							file={activeFile}
-							closed={collapsed.has(activeFile.path)}
-							onToggle={onToggle}
-						/>
-					</div>
-				</div>
-			)}
 			<div
-				className="relative mx-auto w-full max-w-[1600px]"
+				className="relative w-full"
 				style={{ height: virtualizer.getTotalSize() }}
 			>
 				{virtualRows.map((virtualRow) => {
-					const file = files[virtualRow.index];
+					const item = items[virtualRow.index];
+					const file = files[item.fileIndex];
 					const summaryOnly = isSummaryOnlyChange(file);
 					const closed = collapsed.has(file.path);
+					const activeSticky =
+						item.kind === "header" &&
+						virtualRow.index === activeStickyIndexRef.current;
+					const pinned =
+						activeSticky && (virtualizer.scrollOffset ?? 0) > virtualRow.start;
+
+					if (item.kind === "header") {
+						return (
+							<div
+								key={virtualRow.key}
+								data-index={virtualRow.index}
+								ref={virtualizer.measureElement}
+								className={`${activeSticky ? "sticky top-0 z-20" : "absolute left-0 top-0"} w-full px-2`}
+								style={
+									activeSticky
+										? undefined
+										: { transform: `translateY(${virtualRow.start}px)` }
+								}
+							>
+								<section
+									data-compare-file={file.path}
+									data-active-file-header={activeSticky || undefined}
+									data-summary-only={summaryOnly || undefined}
+									data-large-diff={
+										(!summaryOnly && isLargeChange(file)) || undefined
+									}
+									className={`bg-bg-surface ${pinned ? "shadow-[0_1px_0_var(--color-border),0_3px_8px_rgba(0,0,0,0.15)]" : ""}`}
+								>
+									<FileHeader file={file} closed={closed} onToggle={onToggle} />
+								</section>
+							</div>
+						);
+					}
+
 					return (
 						<div
 							key={virtualRow.key}
 							data-index={virtualRow.index}
 							ref={virtualizer.measureElement}
-							className="absolute left-0 top-0 w-full px-3 pb-3"
+							className="absolute left-0 top-0 w-full px-2"
 							style={{ transform: `translateY(${virtualRow.start}px)` }}
 						>
-							<section
-								data-compare-file={file.path}
-								data-summary-only={summaryOnly || undefined}
-								data-large-diff={
-									(!summaryOnly && isLargeChange(file)) || undefined
-								}
-								className="overflow-hidden rounded-md border border-border-subtle bg-bg-surface/10"
-							>
-								<FileHeader file={file} closed={closed} onToggle={onToggle} />
-								{!summaryOnly && !closed && (
-									<CompareFile file={file} scheme={scheme} />
-								)}
-							</section>
+							<div className="overflow-x-auto bg-bg">
+								<DiffView patch={file.patch} />
+							</div>
 						</div>
 					);
 				})}
 			</div>
 		</div>
 	);
+}
+
+interface CompareVirtualItem {
+	kind: "header" | "body";
+	fileIndex: number;
+	key: string;
 }
 
 function FileHeader({
@@ -252,13 +275,14 @@ function FileHeader({
 	onToggle: (path: string) => void;
 }) {
 	const summaryOnly = isSummaryOnlyChange(file);
+	const changes = useMemo(() => countFileChanges(file), [file]);
 	return (
 		<button
 			type="button"
 			disabled={summaryOnly}
 			onClick={() => !summaryOnly && onToggle(file.path)}
 			aria-expanded={summaryOnly ? undefined : !closed}
-			className="flex h-9 w-full items-center gap-2 border-b border-border-subtle bg-bg-surface/70 px-3 text-left disabled:cursor-default"
+			className="flex h-9 w-full items-center gap-2 bg-bg-surface px-3 text-left transition-colors enabled:hover:bg-bg-hover disabled:cursor-default"
 		>
 			{summaryOnly ? (
 				<span className="w-3 shrink-0" />
@@ -267,14 +291,14 @@ function FileHeader({
 			) : (
 				<ChevronDown size={12} className="shrink-0 text-fg-dim" />
 			)}
-			<FileDiff size={12} className="shrink-0 text-fg-dim" />
-			<FilePath file={file} />
-			<FileStatus file={file} />
-			{!summaryOnly && isLargeChange(file) && (
-				<span className="shrink-0 rounded bg-bg-active px-1.5 py-0.5 text-[9px] text-fg-dim">
-					Large diff
-				</span>
-			)}
+			<span className="flex min-w-0 flex-1 items-center gap-2">
+				<FilePath file={file} />
+				<FileStatus file={file} />
+				{!summaryOnly && isLargeChange(file) && (
+					<span className="shrink-0 text-[9px] text-fg-dim">Large diff</span>
+				)}
+			</span>
+			<ChangeCounts changes={changes} />
 		</button>
 	);
 }
@@ -282,7 +306,7 @@ function FileHeader({
 function FilePath({ file }: { file: DiffEntry }) {
 	if (file.original_path && file.original_path !== file.path) {
 		return (
-			<span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-fg-muted">
+			<span className="min-w-0 truncate font-mono text-[11.5px] text-fg-muted">
 				{file.original_path} <span className="text-fg-dim">→</span> {file.path}
 			</span>
 		);
@@ -290,93 +314,26 @@ function FilePath({ file }: { file: DiffEntry }) {
 	const name = file.path.split("/").pop() || file.path;
 	const directory = file.path.slice(0, -name.length);
 	return (
-		<span className="flex min-w-0 flex-1 items-center font-mono text-[11.5px]">
+		<span className="flex min-w-0 items-center font-mono text-[11.5px]">
 			{directory && <span className="truncate text-fg-dim">{directory}</span>}
 			<span className="shrink-0 text-fg-muted">{name}</span>
 		</span>
 	);
 }
 
-function CompareFile({
-	file,
-	scheme,
+function ChangeCounts({
+	changes,
 }: {
-	file: DiffEntry;
-	scheme: "light" | "dark";
+	changes: { additions: number; deletions: number };
 }) {
-	const [editorHeight, setEditorHeight] = useState(96);
-	const editorCleanup = useRef<Array<{ dispose: () => void }>>([]);
-	const resizeFrame = useRef<number | null>(null);
-	useEffect(
-		() => () => {
-			for (const disposable of editorCleanup.current) disposable.dispose();
-			if (resizeFrame.current !== null)
-				cancelAnimationFrame(resizeFrame.current);
-		},
-		[],
-	);
-	const mountEditor: DiffOnMount = (editor) => {
-		for (const disposable of editorCleanup.current) disposable.dispose();
-		const resize = () => {
-			resizeFrame.current = null;
-			const height = Math.max(
-				96,
-				Math.ceil(
-					Math.max(
-						editor.getOriginalEditor().getContentHeight(),
-						editor.getModifiedEditor().getContentHeight(),
-					),
-				),
-			);
-			setEditorHeight(height);
-		};
-		const scheduleResize = () => {
-			if (resizeFrame.current !== null)
-				cancelAnimationFrame(resizeFrame.current);
-			resizeFrame.current = requestAnimationFrame(resize);
-		};
-		editorCleanup.current = [editor.onDidUpdateDiff(scheduleResize)];
-		scheduleResize();
-	};
-	const hasText = file.original !== undefined || file.modified !== undefined;
-	if (!hasText) {
-		return (
-			<div className="bg-bg">
-				<DiffView patch={file.patch} />
-			</div>
-		);
+	if (changes.additions === 0 && changes.deletions === 0) {
+		return <span className="w-20 shrink-0" />;
 	}
 	return (
-		<DiffEditor
-			className="wingman-static-diff"
-			height={editorHeight}
-			language={isLargeChange(file) ? "plaintext" : file.language || undefined}
-			original={file.original ?? ""}
-			modified={file.modified ?? ""}
-			theme={wingmanThemeName(scheme)}
-			beforeMount={defineWingmanThemes}
-			onMount={mountEditor}
-			options={{
-				readOnly: true,
-				renderSideBySide: true,
-				renderOverviewRuler: false,
-				overviewRulerLanes: 0,
-				overviewRulerBorder: false,
-				minimap: { enabled: false },
-				fontSize: 12,
-				lineNumbers: "on",
-				scrollBeyondLastLine: false,
-				renderWhitespace: "none",
-				padding: { top: 8 },
-				hideUnchangedRegions: { enabled: true },
-				scrollbar: {
-					vertical: "hidden",
-					horizontal: "auto",
-					handleMouseWheel: false,
-					alwaysConsumeMouseWheel: false,
-				},
-			}}
-		/>
+		<span className="grid w-20 shrink-0 grid-cols-2 gap-2 text-right text-[10.5px] tabular-nums">
+			<span className="text-success">+{changes.additions}</span>
+			<span className="text-danger">−{changes.deletions}</span>
+		</span>
 	);
 }
 
@@ -425,17 +382,8 @@ function togglePath(current: Set<string>, path: string) {
 	return next;
 }
 
-function diffEditorHeight(file: DiffEntry) {
-	return Math.max(180, file.patch.split("\n").length * 19 + 48);
-}
-
-function compareRowHeight(file: DiffEntry, collapsed: boolean) {
-	if (collapsed || isSummaryOnlyChange(file)) return 48;
-	const contentHeight =
-		file.original !== undefined || file.modified !== undefined
-			? diffEditorHeight(file)
-			: file.patch.split("\n").length * 19 + 16;
-	return 48 + contentHeight;
+function compareBodyHeight(file: DiffEntry) {
+	return 16 + file.patch.split("\n").length * 19;
 }
 
 function isLargeChange(file: DiffEntry) {
@@ -446,17 +394,11 @@ function isLargeChange(file: DiffEntry) {
 			path,
 		);
 	const patchLines = file.patch.split("\n").length;
-	const contentSize =
-		(file.original?.length ?? 0) + (file.modified?.length ?? 0);
-	return generated || patchLines > 750 || contentSize > 250_000;
+	return generated || patchLines > 750 || file.patch.length > 250_000;
 }
 
 function isSummaryOnlyChange(file: DiffEntry) {
-	return (
-		file.status === "deleted" ||
-		(!!file.original_path && file.original_path !== file.path) ||
-		!hasContentChanges(file)
-	);
+	return file.status === "deleted" || !hasContentChanges(file);
 }
 
 function hasContentChanges(file: DiffEntry) {
@@ -473,10 +415,19 @@ function countChanges(files: DiffEntry[]) {
 	let additions = 0;
 	let deletions = 0;
 	for (const file of files) {
-		for (const line of file.patch.split("\n")) {
-			if (line.startsWith("+") && !line.startsWith("+++")) additions++;
-			if (line.startsWith("-") && !line.startsWith("---")) deletions++;
-		}
+		const changes = countFileChanges(file);
+		additions += changes.additions;
+		deletions += changes.deletions;
+	}
+	return { additions, deletions };
+}
+
+function countFileChanges(file: DiffEntry) {
+	let additions = 0;
+	let deletions = 0;
+	for (const line of file.patch.split("\n")) {
+		if (line.startsWith("+") && !line.startsWith("+++")) additions++;
+		if (line.startsWith("-") && !line.startsWith("---")) deletions++;
 	}
 	return { additions, deletions };
 }

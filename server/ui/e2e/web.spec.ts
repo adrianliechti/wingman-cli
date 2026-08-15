@@ -702,8 +702,6 @@ test("compares branches and commits in a main content tab", async ({
 							status: "modified",
 							patch:
 								"--- a/dist/bundle.min.js\n+++ b/dist/bundle.min.js\n@@ -1 +1 @@\n-old\n+new\n",
-							original: "old\n",
-							modified: "new\n",
 							language: "javascript",
 						};
 					}
@@ -713,7 +711,6 @@ test("compares branches and commits in a main content tab", async ({
 							status: "deleted",
 							patch:
 								"--- a/src/deleted.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n",
-							original: "old\n",
 							language: "typescript",
 						};
 					}
@@ -724,8 +721,15 @@ test("compares branches and commits in a main content tab", async ({
 							status: "modified",
 							patch:
 								"--- a/src/original.ts\n+++ b/src/renamed.ts\n@@ -1 +1 @@\n-old\n+new\n",
-							original: "old\n",
-							modified: "new\n",
+							language: "typescript",
+						};
+					}
+					if (index === 4) {
+						return {
+							path: "src/moved.ts",
+							original_path: "src/movable.ts",
+							status: "modified",
+							patch: "diff --git a/src/movable.ts b/src/moved.ts\n",
 							language: "typescript",
 						};
 					}
@@ -733,8 +737,6 @@ test("compares branches and commits in a main content tab", async ({
 						path: `src/feature-${index}.ts`,
 						status: "modified",
 						patch: `--- a/src/feature-${index}.ts\n+++ b/src/feature-${index}.ts\n@@ -1 +1 @@\n-old\n+new\n`,
-						original: "old\n",
-						modified: "new\n",
 						language: "typescript",
 					};
 				}),
@@ -759,12 +761,17 @@ test("compares branches and commits in a main content tab", async ({
 	).toBeVisible();
 	await expect(
 		page.getByText("Pull-request comparison from merge base"),
-	).toBeVisible();
+	).toHaveCount(0);
 	const virtualList = page.locator("[data-virtual-compare-list]");
 	await expect(virtualList).toBeVisible();
 	await expect(
 		page.locator('[data-compare-file="src/feature-0.ts"]'),
 	).toBeVisible();
+	const firstFileHeader = page.locator(
+		'[data-compare-file="src/feature-0.ts"] button',
+	);
+	await expect(firstFileHeader.getByText("+1", { exact: true })).toBeVisible();
+	await expect(firstFileHeader.getByText("−1", { exact: true })).toBeVisible();
 	await expect(
 		page.locator('[data-compare-file="dist/bundle.min.js"] button'),
 	).toHaveAttribute("aria-expanded", "false");
@@ -772,16 +779,76 @@ test("compares branches and commits in a main content tab", async ({
 		page.locator('[data-compare-file="src/deleted.ts"]'),
 	).toHaveAttribute("data-summary-only", "true");
 	await expect(
-		page.locator('[data-compare-file="src/renamed.ts"]'),
+		page.locator('[data-compare-file="src/renamed.ts"] button'),
+	).toHaveAttribute("aria-expanded", "true");
+	await expect(
+		page.locator('[data-compare-file="src/moved.ts"]'),
 	).toHaveAttribute("data-summary-only", "true");
 	await expect
 		.poll(() => page.locator("[data-compare-file]").count())
 		.toBeLessThan(10);
+	await expect(virtualList.locator(".monaco-diff-editor")).toHaveCount(0);
+	for (let index = 0; index < 20; index++) {
+		await virtualList.evaluate(
+			(element, scrollToEnd) => {
+				element.scrollTop = scrollToEnd ? element.scrollHeight : 0;
+				element.dispatchEvent(new Event("scroll"));
+			},
+			index % 2 === 0,
+		);
+		await page.waitForTimeout(10);
+	}
 	await virtualList.evaluate((element) => {
-		element.scrollTop = 500;
+		element.scrollTop = element.scrollHeight;
 		element.dispatchEvent(new Event("scroll"));
 	});
-	await expect(page.locator("[data-sticky-file-header]")).toBeVisible();
+	await expect(page.locator('[data-active-file-header="true"]')).toHaveCount(1);
+	await expect(page.locator('[data-active-file-header="true"]')).toBeVisible();
+	await virtualList.evaluate((element) => {
+		element.scrollTop = 0;
+		element.dispatchEvent(new Event("scroll"));
+	});
+	await virtualList.evaluate((element) => {
+		const nextRow = element
+			.querySelector<HTMLElement>('[data-compare-file="dist/bundle.min.js"]')
+			?.closest<HTMLElement>("[data-index]");
+		if (!nextRow) throw new Error("Expected the next comparison row");
+		const nextRowStart =
+			nextRow.getBoundingClientRect().top -
+			element.getBoundingClientRect().top +
+			element.scrollTop;
+		element.scrollTop = nextRowStart + 1;
+		element.dispatchEvent(new Event("scroll"));
+	});
+	const nextFileHeader = page.locator(
+		'[data-compare-file="dist/bundle.min.js"]',
+	);
+	await expect(nextFileHeader).toHaveCount(1);
+	await expect(nextFileHeader).toBeVisible();
+	await expect(nextFileHeader).toHaveAttribute(
+		"data-active-file-header",
+		"true",
+	);
+	await expect
+		.poll(async () => {
+			const listBox = await virtualList.boundingBox();
+			const headerBox = await nextFileHeader.boundingBox();
+			if (!listBox || !headerBox) return Number.POSITIVE_INFINITY;
+			return Math.abs(headerBox.y - listBox.y);
+		})
+		.toBeLessThanOrEqual(1);
+	await expect
+		.poll(() =>
+			virtualList.evaluate((element) => {
+				const top = element.getBoundingClientRect().top;
+				return Array.from(
+					element.querySelectorAll<HTMLElement>("[data-compare-file]"),
+				).filter(
+					(header) => Math.abs(header.getBoundingClientRect().top - top) <= 1,
+				).length;
+			}),
+		)
+		.toBe(1);
 
 	const historyToggle = page.getByRole("button", {
 		name: "History",
@@ -937,8 +1004,7 @@ test("compares branches and commits in a main content tab", async ({
 			middleHash,
 			baseHash,
 		]);
-	// Monaco reports worker teardown failures asynchronously. Leave time for a
-	// rejected diff computation to reach the page before checking the listener.
+	// Leave time for delayed browser errors to reach the listeners.
 	await page.waitForTimeout(500);
 	expect(pageErrors).toEqual([]);
 	expect(consoleErrors).toEqual([]);

@@ -166,7 +166,10 @@ func (s *Server) handleGitCompare(w http.ResponseWriter, r *http.Request) {
 	}
 	files := make([]DiffEntry, 0, len(comparison.Diffs))
 	for _, diff := range comparison.Diffs {
-		files = append(files, diffEntry(diff))
+		// The compare view renders unified patches only; omit full file contents.
+		entry := diffEntry(diff)
+		entry.Original, entry.Modified = "", ""
+		files = append(files, entry)
 	}
 	writeJSON(w, GitCompare{
 		Base: base, Head: head, BaseHash: comparison.BaseHash, HeadHash: comparison.HeadHash,

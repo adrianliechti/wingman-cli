@@ -318,8 +318,11 @@ func TestGitAPIHistoryAndCompare(t *testing.T) {
 	if err := json.NewDecoder(res.Body).Decode(&comparison); err != nil {
 		t.Fatal(err)
 	}
-	if comparison.MergeBaseHash == "" || len(comparison.Files) != 1 || comparison.Files[0].Path != "feature.txt" || comparison.Files[0].Modified != "feature\n" {
+	if comparison.MergeBaseHash == "" || len(comparison.Files) != 1 || comparison.Files[0].Path != "feature.txt" || !strings.Contains(comparison.Files[0].Patch, "+feature") {
 		t.Fatalf("comparison = %+v", comparison)
+	}
+	if comparison.Files[0].Original != "" || comparison.Files[0].Modified != "" {
+		t.Fatalf("comparison should omit file contents, got %+v", comparison.Files[0])
 	}
 
 	if err := os.WriteFile(filepath.Join(repoDir, "feature.txt"), []byte("working feature\n"), 0o644); err != nil {
@@ -349,7 +352,7 @@ func TestGitAPIHistoryAndCompare(t *testing.T) {
 	for _, file := range comparison.Files {
 		files[file.Path] = file
 	}
-	if files["feature.txt"].Modified != "working feature\n" || files["local.txt"].Status != "added" {
+	if !strings.Contains(files["feature.txt"].Patch, "+working feature") || files["local.txt"].Status != "added" {
 		t.Fatalf("worktree files = %+v", files)
 	}
 }
