@@ -109,6 +109,7 @@ export function DiffTab({
 				beforeMount={defineWingmanThemes}
 				options={{
 					readOnly: true,
+					find: { addExtraSpaceOnTop: false },
 					renderSideBySide: !inline,
 					renderOverviewRuler: false,
 					overviewRulerLanes: 0,

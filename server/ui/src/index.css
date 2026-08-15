@@ -36,14 +36,21 @@
 		"SF Mono", "JetBrains Mono", "Fira Code", Menlo, Monaco, Consolas, monospace;
 }
 
-/* Overlay layers: menus 100, drawers 120, command UI 130, blocking state 140,
-   dialogs 150, and toasts 200. Keep modal surfaces above transient menus. */
+/* Overlay layers: Monaco hovers/dropdowns 90, menus 100, drawers 120,
+   command UI 130, blocking state 140, dialogs 150, and toasts 200. Keep modal
+   surfaces above transient menus. */
 
 :root {
 	color-scheme: dark;
 	--color-scrollbar-thumb: rgba(255, 255, 255, 0.08);
 	--color-scrollbar-thumb-hover: rgba(255, 255, 255, 0.15);
 	--color-selection: rgba(255, 255, 255, 0.15);
+}
+
+/* Monaco hovers and dropdowns mount in a fixed click-through overlay (see
+   main.tsx); only the popups themselves take pointer events. */
+.monaco-component > .context-view {
+	pointer-events: auto;
 }
 
 /* xterm paints an opaque black viewport by default; let the panel background

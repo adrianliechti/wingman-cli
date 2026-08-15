@@ -290,6 +290,7 @@ export function FileTab({
 						onChange={(value) => onChange(value ?? "")}
 						options={{
 							contextmenu: false,
+							find: { addExtraSpaceOnTop: false },
 							minimap: { enabled: false },
 							fontSize: 12,
 							lineNumbers: "on",

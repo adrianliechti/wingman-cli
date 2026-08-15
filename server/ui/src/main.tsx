@@ -1,6 +1,7 @@
 import { loader } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import editorWorker from "monaco-editor/editor/editor.worker?worker";
+import { StandaloneServices } from "monaco-editor/editor/standalone/browser/standaloneServices";
 import cssWorker from "monaco-editor/languages/features/css/css.worker?worker";
 import htmlWorker from "monaco-editor/languages/features/html/html.worker?worker";
 import jsonWorker from "monaco-editor/languages/features/json/json.worker?worker";
@@ -35,6 +36,59 @@ self.MonacoEnvironment = {
 };
 
 loader.config({ monaco });
+
+// Monaco's standalone layout service parents hover tooltips and dropdowns
+// inside the active editor's container, where the app's overflow-hidden panels
+// clip them at the tab-bar edge (and the clipped box swallows clicks on the
+// find widget's buttons). Serve them from a click-through viewport overlay
+// instead; the monaco-component class keeps Monaco's theme variables in scope.
+let monacoOverlay: HTMLElement | null = null;
+function monacoOverlayContainer(): HTMLElement {
+	if (!monacoOverlay) {
+		monacoOverlay = document.createElement("div");
+		monacoOverlay.className = "monaco-component";
+		monacoOverlay.style.position = "fixed";
+		monacoOverlay.style.inset = "0";
+		monacoOverlay.style.zIndex = "90";
+		monacoOverlay.style.pointerEvents = "none";
+		document.body.appendChild(monacoOverlay);
+	}
+	return monacoOverlay;
+}
+const overlayDimension = () => ({
+	width: window.innerWidth,
+	height: window.innerHeight,
+});
+const noEvent = () => ({ dispose() {} });
+StandaloneServices.initialize({
+	layoutService: {
+		onDidLayoutMainContainer: noEvent,
+		onDidLayoutActiveContainer: noEvent,
+		onDidLayoutContainer: noEvent,
+		onDidChangeActiveContainer: noEvent,
+		onDidAddContainer: noEvent,
+		mainContainerOffset: { top: 0, quickPickTop: 0 },
+		activeContainerOffset: { top: 0, quickPickTop: 0 },
+		get mainContainer() {
+			return monacoOverlayContainer();
+		},
+		get activeContainer() {
+			return monacoOverlayContainer();
+		},
+		get containers() {
+			return [monacoOverlayContainer()];
+		},
+		get mainContainerDimension() {
+			return overlayDimension();
+		},
+		get activeContainerDimension() {
+			return overlayDimension();
+		},
+		getContainer: () => monacoOverlayContainer(),
+		whenContainerStylesLoaded: () => undefined,
+		focus: () => {},
+	},
+});
 
 // The packaged macOS app runs in WKWebView. Its AppKit window extends the web
 // content underneath the native traffic lights, so reserve their hit area.
