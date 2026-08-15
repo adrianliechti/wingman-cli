@@ -11,6 +11,7 @@ import type {
 	TurnInputState,
 	TurnQueueEntry,
 } from "../types/protocol";
+import { discardUncommittedStreamEntries } from "../streamEntries";
 
 export interface PendingPrompt {
 	id: string;
@@ -41,6 +42,7 @@ export interface ChatEntry {
 	toolHint?: string;
 	toolResult?: string;
 	toolId?: string;
+	toolPartial?: boolean;
 	reasoningId?: string;
 }
 
@@ -264,6 +266,12 @@ function emptyStreamRefs(): StreamRefs {
 		liveEntryIds: new Set(),
 		attemptEntryIds: new Set(),
 	};
+}
+
+function forgetPartialEntries(entries: ChatEntry[], liveEntryIds: Set<string>) {
+	for (const entry of entries) {
+		if (entry.toolPartial) liveEntryIds.delete(entry.id);
+	}
 }
 
 function reconcileSnapshotEntries(
@@ -643,6 +651,7 @@ export function useWebSocket() {
 							toolName: msg.name,
 							toolArgs: msg.args,
 							toolHint: msg.hint,
+							toolPartial: msg.partial,
 						};
 						stream.liveEntryIds.add(entries[idx].id);
 						return { ...sess, entries };
@@ -661,6 +670,7 @@ export function useWebSocket() {
 								toolName: msg.name,
 								toolArgs: msg.args,
 								toolHint: msg.hint,
+								toolPartial: msg.partial,
 							},
 						],
 					};
@@ -669,6 +679,7 @@ export function useWebSocket() {
 			}
 
 			case "tool_result": {
+				const stream = getStream(sid);
 				setToolProgress((prev) => {
 					if (!(msg.id in prev)) return prev;
 					const rest = { ...prev };
@@ -688,7 +699,7 @@ export function useWebSocket() {
 							);
 					if (idx < 0) {
 						const id = nextId();
-						getStream(sid).liveEntryIds.add(id);
+						stream.liveEntryIds.add(id);
 						return {
 							...sess,
 							entries: [
@@ -705,7 +716,11 @@ export function useWebSocket() {
 						};
 					}
 					const updated = [...sess.entries];
-					updated[idx] = { ...updated[idx], toolResult: msg.content };
+					updated[idx] = {
+						...updated[idx],
+						toolResult: msg.content,
+						toolPartial: false,
+					};
 					return { ...sess, entries: updated };
 				});
 				break;
@@ -715,10 +730,13 @@ export function useWebSocket() {
 				flushActiveStream(sid);
 				const stream = getStream(sid);
 				const failed = new Set(stream.attemptEntryIds);
-				updateSession(sid, (sess) => ({
-					...sess,
-					entries: sess.entries.filter((entry) => !failed.has(entry.id)),
-				}));
+				updateSession(sid, (sess) => {
+					forgetPartialEntries(sess.entries, stream.liveEntryIds);
+					return {
+						...sess,
+						entries: discardUncommittedStreamEntries(sess.entries, failed),
+					};
+				});
 				for (const id of failed) stream.liveEntryIds.delete(id);
 				stream.attemptEntryIds.clear();
 				finalizeStreaming(sid);
@@ -726,12 +744,21 @@ export function useWebSocket() {
 				break;
 			}
 
-			case "stream_commit":
+			case "stream_commit": {
 				flushActiveStream(sid);
-				getStream(sid).attemptEntryIds.clear();
+				const stream = getStream(sid);
+				updateSession(sid, (sess) => {
+					forgetPartialEntries(sess.entries, stream.liveEntryIds);
+					return {
+						...sess,
+						entries: discardUncommittedStreamEntries(sess.entries),
+					};
+				});
+				stream.attemptEntryIds.clear();
 				finalizeStreaming(sid);
 				finalizeReasoning(sid);
 				break;
+			}
 
 			case "phase":
 				if (msg.phase === "idle") {
@@ -754,6 +781,7 @@ export function useWebSocket() {
 				stream.attemptEntryIds.clear();
 				updateSession(sid, (sess) => ({
 					...sess,
+					entries: discardUncommittedStreamEntries(sess.entries),
 					error: msg.message,
 				}));
 				break;

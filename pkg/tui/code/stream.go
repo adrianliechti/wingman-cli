@@ -295,6 +295,21 @@ func (a *App) releaseUserTextLocked(text string) {
 	)
 }
 
+func (a *App) liveToolSnapshotLocked(id string) *streamSnapshot {
+	if id == "" {
+		return nil
+	}
+	if a.streamCurrent.toolID == id && a.streamCurrent.toolResult == nil {
+		return &a.streamCurrent
+	}
+	for i := len(a.streamHistory) - 1; i >= 0; i-- {
+		if a.streamHistory[i].toolID == id && a.streamHistory[i].toolResult == nil {
+			return &a.streamHistory[i]
+		}
+	}
+	return nil
+}
+
 func (a *App) releaseStreamFieldLocked(match func(*streamSnapshot) bool, clear func(*streamSnapshot)) bool {
 	for i := range a.streamHistory {
 		if match(&a.streamHistory[i]) {
@@ -336,9 +351,16 @@ func (a *App) resetFailedStreamAttempt() {
 func (a *App) commitStreamAttempt() {
 	a.streamStateMu.Lock()
 	for i := range a.streamHistory {
+		if a.streamHistory[i].toolPartial {
+			a.streamHistory[i].clearTool()
+		}
 		a.streamHistory[i].retryAttempt = false
 	}
+	if a.streamCurrent.toolPartial {
+		a.streamCurrent.clearTool()
+	}
 	a.streamCurrent.retryAttempt = false
+	a.compactStreamHistoryLocked()
 	a.archiveStreamStateLocked()
 	a.streamStateMu.Unlock()
 }
@@ -349,6 +371,9 @@ func (a *App) clearRetryableOutputLocked(snapshot *streamSnapshot) {
 	snapshot.reasoning = ""
 	snapshot.reasoningID = ""
 	snapshot.reasoningPart = 0
+	if snapshot.toolPartial {
+		snapshot.clearTool()
+	}
 	snapshot.retryAttempt = false
 }
 
@@ -363,6 +388,7 @@ func (snapshot *streamSnapshot) clearTool() {
 	snapshot.toolName = ""
 	snapshot.toolArgs = ""
 	snapshot.toolHint = ""
+	snapshot.toolPartial = false
 	snapshot.toolProgress = ""
 	snapshot.toolResult = nil
 }
@@ -374,6 +400,11 @@ func (snapshot streamSnapshot) empty() bool {
 func (snapshot streamSnapshot) toolLines(width int, expanded bool) []string {
 	if snapshot.toolResult != nil {
 		return cellTool(snapshot.toolResult, width, expanded)
+	}
+	if snapshot.toolName == "todo" {
+		if items := tool.ParseTodoItems(snapshot.toolArgs); len(items) > 0 {
+			return cellTodoItems(items, width)
+		}
 	}
 	return cellToolProgress(snapshot.toolName, snapshot.toolHint, snapshot.toolProgress, width)
 }
@@ -530,13 +561,35 @@ func (a *App) handleStreamMessage(msg agent.Message) {
 		case c.ToolCall != nil:
 			hint := tool.ExtractHint(c.ToolCall.Args, c.ToolCall.Name)
 			a.streamStateMu.Lock()
-			a.archiveStreamStateLocked()
-			a.streamCurrent.toolID = c.ToolCall.ID
-			a.streamCurrent.toolName = c.ToolCall.Name
-			a.streamCurrent.toolArgs = c.ToolCall.Args
-			a.streamCurrent.toolHint = hint
+			if snapshot := a.liveToolSnapshotLocked(c.ToolCall.ID); snapshot != nil {
+				if c.ToolCall.Name != "" {
+					snapshot.toolName = c.ToolCall.Name
+				}
+				if c.ToolCall.Args != "" {
+					snapshot.toolArgs = c.ToolCall.Args
+				}
+				if hint != "" {
+					snapshot.toolHint = hint
+				}
+				snapshot.toolPartial = c.ToolCall.Partial
+				if !c.ToolCall.Partial {
+					snapshot.retryAttempt = false
+				}
+			} else {
+				a.archiveStreamStateLocked()
+				a.streamCurrent.toolID = c.ToolCall.ID
+				a.streamCurrent.toolName = c.ToolCall.Name
+				a.streamCurrent.toolArgs = c.ToolCall.Args
+				a.streamCurrent.toolHint = hint
+				a.streamCurrent.toolPartial = c.ToolCall.Partial
+				a.streamCurrent.retryAttempt = c.ToolCall.Partial
+			}
 			a.streamStateMu.Unlock()
-			a.queuePhase(PhaseToolRunning)
+			if c.ToolCall.Partial {
+				a.queuePhase(PhaseThinking)
+			} else {
+				a.queuePhase(PhaseToolRunning)
+			}
 			a.requestRender()
 
 		case c.ToolResult != nil:

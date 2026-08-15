@@ -16,9 +16,8 @@ var workingDirTools = map[string]bool{
 }
 
 func ExtractHint(argsJSON, toolName string) string {
-	var args map[string]any
-
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+	args, ok := parseArgs(argsJSON)
+	if !ok {
 		return wdFallback(toolName)
 	}
 
@@ -105,21 +104,42 @@ func ExtractHint(argsJSON, toolName string) string {
 	return wdFallback(toolName)
 }
 
+func parseArgs(argsJSON string) (map[string]any, bool) {
+	var args map[string]any
+	if json.Unmarshal([]byte(argsJSON), &args) == nil {
+		return args, true
+	}
+	repaired, ok := completeJSONPrefix(argsJSON)
+	if !ok || json.Unmarshal([]byte(repaired), &args) != nil {
+		return nil, false
+	}
+	return args, true
+}
+
 type TodoItem struct {
 	Content string `json:"content"`
 	Status  string `json:"status"`
 }
 
-// ParseTodoItems extracts the checklist from a todo tool call's arguments so
-// UIs can render it richly instead of showing the raw JSON.
+// ParseTodoItems extracts a todo checklist from complete or streaming arguments.
 func ParseTodoItems(argsJSON string) []TodoItem {
 	var args struct {
 		Items []TodoItem `json:"items"`
 	}
 	if json.Unmarshal([]byte(argsJSON), &args) != nil {
-		return nil
+		repaired, ok := completeJSONPrefix(argsJSON)
+		if !ok || json.Unmarshal([]byte(repaired), &args) != nil {
+			return nil
+		}
 	}
-	return args.Items
+
+	items := args.Items[:0]
+	for _, item := range args.Items {
+		if strings.TrimSpace(item.Content) != "" {
+			items = append(items, item)
+		}
+	}
+	return items
 }
 
 // TodoHint summarizes a todo call as progress plus the active step.

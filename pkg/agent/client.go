@@ -19,6 +19,39 @@ import (
 // models can be quiet for minutes between items, so it is generous.
 const streamIdleTimeout = 5 * time.Minute
 
+const (
+	partialArgsInterval  = 100 * time.Millisecond
+	partialArgsMinGrowth = 64
+)
+
+type pendingToolCall struct {
+	id            string
+	name          string
+	args          []byte
+	lastYield     time.Time
+	lastYieldSize int
+}
+
+func (p *pendingToolCall) message() Message {
+	return Message{
+		Role:    RoleAssistant,
+		Content: []Content{{ToolCall: &ToolCall{ID: p.id, Name: p.name, Args: string(p.args), Partial: true}}},
+	}
+}
+
+func (p *pendingToolCall) snapshotReady(now time.Time) bool {
+	if now.Sub(p.lastYield) < partialArgsInterval {
+		return false
+	}
+	growth := len(p.args) - p.lastYieldSize
+	return growth >= max(partialArgsMinGrowth, p.lastYieldSize/4)
+}
+
+func (p *pendingToolCall) markSnapshot(now time.Time) {
+	p.lastYield = now
+	p.lastYieldSize = len(p.args)
+}
+
 // streamFailure records whether a streamed request produced visible output
 // before its transport failed. The response is not committed and tool calls
 // are not executed until a terminal event arrives, so retrying remains safe;
@@ -138,6 +171,8 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 	var outputItems []responses.ResponseInputItemUnionParam
 	var usageDelta Usage
 
+	pendingCalls := map[string]*pendingToolCall{}
+
 	incomplete := false
 	incompleteReason := ""
 	outputStarted := false
@@ -174,6 +209,43 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 
 			if !yield(msg, nil) {
 				return nil, errYieldStopped
+			}
+
+		case responses.ResponseOutputItemAddedEvent:
+			if item, ok := e.Item.AsAny().(responses.ResponseFunctionToolCall); ok && item.CallID != "" {
+				pending := &pendingToolCall{id: item.CallID, name: item.Name, lastYield: time.Now()}
+				pendingCalls[item.ID] = pending
+
+				if !yield(pending.message(), nil) {
+					return nil, errYieldStopped
+				}
+			}
+
+		case responses.ResponseFunctionCallArgumentsDeltaEvent:
+			if pending := pendingCalls[e.ItemID]; pending != nil {
+				pending.args = append(pending.args, e.Delta...)
+
+				now := time.Now()
+				if pending.snapshotReady(now) {
+					pending.markSnapshot(now)
+
+					if !yield(pending.message(), nil) {
+						return nil, errYieldStopped
+					}
+				}
+			}
+
+		case responses.ResponseFunctionCallArgumentsDoneEvent:
+			if pending := pendingCalls[e.ItemID]; pending != nil {
+				delete(pendingCalls, e.ItemID)
+				pending.args = []byte(e.Arguments)
+				if e.Name != "" {
+					pending.name = e.Name
+				}
+
+				if !yield(pending.message(), nil) {
+					return nil, errYieldStopped
+				}
 			}
 
 		case responses.ResponseOutputItemDoneEvent:

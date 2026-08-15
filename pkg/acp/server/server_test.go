@@ -47,6 +47,16 @@ func TestNotifyContentPreservesToolFailureStatus(t *testing.T) {
 	}
 }
 
+func TestNotifyContentIgnoresPartialToolCall(t *testing.T) {
+	called := false
+	notifyContent(func(acpsdk.SessionUpdate) { called = true }, agent.RoleAssistant, agent.Content{
+		ToolCall: &agent.ToolCall{ID: "call-1", Name: "shell", Partial: true},
+	})
+	if called {
+		t.Fatal("partial tool call was sent to ACP")
+	}
+}
+
 func TestClassifyPromptStreamError(t *testing.T) {
 	reason, err := classifyPromptStreamError(context.Canceled)
 	if err != nil || reason != acpsdk.StopReasonCancelled {
