@@ -2,7 +2,7 @@ package tool
 
 import "strings"
 
-func completeJSONPrefix(s string) (string, bool) {
+func closeJSONPrefix(s string) string {
 	var stack []byte
 	inString := false
 	escaped := false
@@ -27,18 +27,18 @@ func completeJSONPrefix(s string) (string, bool) {
 			stack = append(stack, c)
 		case '}', ']':
 			if len(stack) == 0 {
-				return "", false
+				return ""
 			}
 			open := stack[len(stack)-1]
 			if c == '}' && open != '{' || c == ']' && open != '[' {
-				return "", false
+				return ""
 			}
 			stack = stack[:len(stack)-1]
 		}
 	}
 
 	if !inString && len(stack) == 0 {
-		return "", false
+		return ""
 	}
 
 	out := s
@@ -64,5 +64,5 @@ func completeJSONPrefix(s string) (string, bool) {
 		}
 	}
 
-	return out, true
+	return out
 }

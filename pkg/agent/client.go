@@ -171,7 +171,7 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 	var outputItems []responses.ResponseInputItemUnionParam
 	var usageDelta Usage
 
-	pendingCalls := map[string]*pendingToolCall{}
+	pendingCalls := map[int64]*pendingToolCall{}
 
 	incomplete := false
 	incompleteReason := ""
@@ -213,8 +213,14 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 
 		case responses.ResponseOutputItemAddedEvent:
 			if item, ok := e.Item.AsAny().(responses.ResponseFunctionToolCall); ok && item.CallID != "" {
-				pending := &pendingToolCall{id: item.CallID, name: item.Name, lastYield: time.Now()}
-				pendingCalls[item.ID] = pending
+				pending := &pendingToolCall{
+					id:            item.CallID,
+					name:          item.Name,
+					args:          []byte(item.Arguments),
+					lastYield:     time.Now(),
+					lastYieldSize: len(item.Arguments),
+				}
+				pendingCalls[e.OutputIndex] = pending
 
 				if !yield(pending.message(), nil) {
 					return nil, errYieldStopped
@@ -222,7 +228,7 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 			}
 
 		case responses.ResponseFunctionCallArgumentsDeltaEvent:
-			if pending := pendingCalls[e.ItemID]; pending != nil {
+			if pending := pendingCalls[e.OutputIndex]; pending != nil {
 				pending.args = append(pending.args, e.Delta...)
 
 				now := time.Now()
@@ -236,8 +242,8 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 			}
 
 		case responses.ResponseFunctionCallArgumentsDoneEvent:
-			if pending := pendingCalls[e.ItemID]; pending != nil {
-				delete(pendingCalls, e.ItemID)
+			if pending := pendingCalls[e.OutputIndex]; pending != nil {
+				delete(pendingCalls, e.OutputIndex)
 				pending.args = []byte(e.Arguments)
 				if e.Name != "" {
 					pending.name = e.Name

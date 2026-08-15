@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestCompleteJSONPrefix(t *testing.T) {
+func TestCloseJSONPrefix(t *testing.T) {
 	cases := []string{
 		`{"items":[`,
 		`{"items":[{"content":"Fix parser","status":"pending"}`,
@@ -18,21 +18,21 @@ func TestCompleteJSONPrefix(t *testing.T) {
 	}
 
 	for _, input := range cases {
-		repaired, ok := completeJSONPrefix(input)
-		if !ok {
-			t.Fatalf("completeJSONPrefix(%q) failed", input)
+		closed := closeJSONPrefix(input)
+		if closed == "" {
+			t.Fatalf("closeJSONPrefix(%q) failed", input)
 		}
 		var out map[string]any
-		if err := json.Unmarshal([]byte(repaired), &out); err != nil {
-			t.Fatalf("completeJSONPrefix(%q) = %q, still invalid: %v", input, repaired, err)
+		if err := json.Unmarshal([]byte(closed), &out); err != nil {
+			t.Fatalf("closeJSONPrefix(%q) = %q, still invalid: %v", input, closed, err)
 		}
 	}
 }
 
-func TestCompleteJSONPrefixRejectsInvalidOrCompleteJSON(t *testing.T) {
+func TestCloseJSONPrefixRejectsInvalidOrCompleteJSON(t *testing.T) {
 	for _, input := range []string{``, `{"done":true}`, `]`, `{"a":1}]`, `{"a":[}`, `{"a":{]`} {
-		if completed, ok := completeJSONPrefix(input); ok {
-			t.Fatalf("completeJSONPrefix(%q) = %q, want failure", input, completed)
+		if closed := closeJSONPrefix(input); closed != "" {
+			t.Fatalf("closeJSONPrefix(%q) = %q, want failure", input, closed)
 		}
 	}
 }
@@ -62,6 +62,9 @@ func TestExtractHintPartialArgs(t *testing.T) {
 		t.Fatalf("hint = %q", hint)
 	}
 	if hint := ExtractHint(`{"file_path":"pkg/agent/cli`, "read"); hint != "/pkg/agent/cli" {
+		t.Fatalf("hint = %q", hint)
+	}
+	if hint := ExtractHint(`{"items":[{"content":"Done","status":"completed"},{"content":"Test","status":"in_progress"}`, "todo"); hint != "1/2 · Test" {
 		t.Fatalf("hint = %q", hint)
 	}
 }

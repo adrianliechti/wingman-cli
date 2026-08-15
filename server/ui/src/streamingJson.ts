@@ -3,7 +3,7 @@ export interface TodoItem {
 	status?: string;
 }
 
-function completeJsonPrefix(s: string): string | null {
+function closeJsonPrefix(s: string): string | null {
 	const stack: string[] = [];
 	let inString = false;
 	let escaped = false;
@@ -43,14 +43,16 @@ function completeJsonPrefix(s: string): string | null {
 
 export function parseTodoItems(raw?: string): TodoItem[] {
 	if (!raw) return [];
-	for (const candidate of [raw, completeJsonPrefix(raw)]) {
+	for (const candidate of [raw, closeJsonPrefix(raw)]) {
 		if (!candidate) continue;
 		try {
 			const items: unknown = JSON.parse(candidate).items;
 			if (Array.isArray(items)) {
 				return items.filter(
 					(it): it is TodoItem =>
-						typeof it?.content === "string" && it.content.trim() !== "",
+						typeof it?.content === "string" &&
+						it.content.trim() !== "" &&
+						(it.status === undefined || typeof it.status === "string"),
 				);
 			}
 		} catch {}

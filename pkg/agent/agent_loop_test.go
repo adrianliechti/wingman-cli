@@ -123,8 +123,7 @@ func TestCompleteStreamsPartialToolCalls(t *testing.T) {
 	const args = "{\\\"items\\\":[{\\\"content\\\":\\\"Fix\\\",\\\"status\\\":\\\"pending\\\"}]}"
 
 	client := streamingTestClient(func(*http.Request) string {
-		return "data: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"todo\",\"arguments\":\"\",\"status\":\"in_progress\"}}\n\n" +
-			"data: {\"type\":\"response.function_call_arguments.delta\",\"sequence_number\":2,\"output_index\":0,\"item_id\":\"fc_1\",\"delta\":\"{\\\"items\\\":[\"}\n\n" +
+		return "data: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"todo\",\"arguments\":\"{\\\"items\\\":[\",\"status\":\"in_progress\"}}\n\n" +
 			"data: {\"type\":\"response.function_call_arguments.done\",\"sequence_number\":3,\"output_index\":0,\"item_id\":\"fc_1\",\"name\":\"todo\",\"arguments\":\"" + args + "\"}\n\n" +
 			"data: {\"type\":\"response.output_item.done\",\"sequence_number\":4,\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"todo\",\"arguments\":\"" + args + "\",\"status\":\"completed\"}}\n\n" +
 			"data: {\"type\":\"response.completed\",\"sequence_number\":5,\"response\":{\"usage\":{\"input_tokens\":1,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1}}}\n\n"
@@ -147,7 +146,7 @@ func TestCompleteStreamsPartialToolCalls(t *testing.T) {
 		t.Fatalf("partial tool calls = %v, want announcement and completion", partials)
 	}
 	first, last := partials[0], partials[len(partials)-1]
-	if !first.Partial || first.ID != "call_1" || first.Name != "todo" || first.Args != "" {
+	if !first.Partial || first.ID != "call_1" || first.Name != "todo" || first.Args != `{"items":[` {
 		t.Fatalf("announcement = %+v", first)
 	}
 	wantArgs := `{"items":[{"content":"Fix","status":"pending"}]}`
@@ -157,6 +156,39 @@ func TestCompleteStreamsPartialToolCalls(t *testing.T) {
 
 	calls := extractToolCalls(resp.messages)
 	if len(calls) != 1 || calls[0].Partial || calls[0].ID != "call_1" || calls[0].Args != wantArgs {
+		t.Fatalf("committed calls = %+v", calls)
+	}
+}
+
+func TestCompleteTracksInterleavedPartialCallsByOutputIndex(t *testing.T) {
+	client := streamingTestClient(func(*http.Request) string {
+		return "data: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_a\",\"name\":\"shell\",\"arguments\":\"\",\"status\":\"in_progress\"}}\n\n" +
+			"data: {\"type\":\"response.output_item.added\",\"sequence_number\":2,\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_b\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"\",\"status\":\"in_progress\"}}\n\n" +
+			"data: {\"type\":\"response.function_call_arguments.delta\",\"sequence_number\":3,\"output_index\":0,\"item_id\":\"item_a\",\"delta\":\"{\\\"command\\\":\\\"ls\\\"}\"}\n\n" +
+			"data: {\"type\":\"response.function_call_arguments.done\",\"sequence_number\":4,\"output_index\":1,\"item_id\":\"item_b\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"b.go\\\"}\"}\n\n" +
+			"data: {\"type\":\"response.function_call_arguments.done\",\"sequence_number\":5,\"output_index\":0,\"item_id\":\"item_a\",\"name\":\"shell\",\"arguments\":\"{\\\"command\\\":\\\"ls\\\"}\"}\n\n" +
+			"data: {\"type\":\"response.output_item.done\",\"sequence_number\":6,\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"item_a\",\"call_id\":\"call_a\",\"name\":\"shell\",\"arguments\":\"{\\\"command\\\":\\\"ls\\\"}\",\"status\":\"completed\"}}\n\n" +
+			"data: {\"type\":\"response.output_item.done\",\"sequence_number\":7,\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"item_b\",\"call_id\":\"call_b\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"b.go\\\"}\",\"status\":\"completed\"}}\n\n" +
+			"data: {\"type\":\"response.completed\",\"sequence_number\":8,\"response\":{\"usage\":{\"input_tokens\":1,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1}}}\n\n"
+	})
+
+	latest := map[string]string{}
+	resp, err := complete(context.Background(), &client, &request{}, func(m Message, _ error) bool {
+		for _, c := range m.Content {
+			if c.ToolCall != nil {
+				latest[c.ToolCall.ID] = c.ToolCall.Args
+			}
+		}
+		return true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest["call_a"] != `{"command":"ls"}` || latest["call_b"] != `{"path":"b.go"}` {
+		t.Fatalf("partial calls were mixed: %v", latest)
+	}
+	calls := extractToolCalls(resp.messages)
+	if len(calls) != 2 || calls[0].ID != "call_a" || calls[1].ID != "call_b" {
 		t.Fatalf("committed calls = %+v", calls)
 	}
 }

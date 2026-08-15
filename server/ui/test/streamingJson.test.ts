@@ -25,4 +25,8 @@ test("rejects malformed todo arguments", () => {
 	assert.deepEqual(parseTodoItems(`{"items":true}`), []);
 	assert.deepEqual(parseTodoItems(`]`), []);
 	assert.deepEqual(parseTodoItems(`{"items":[}`), []);
+	assert.deepEqual(
+		parseTodoItems(`{"items":[{"content":"bad","status":1}]}`),
+		[],
+	);
 });

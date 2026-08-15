@@ -16,6 +16,10 @@ var workingDirTools = map[string]bool{
 }
 
 func ExtractHint(argsJSON, toolName string) string {
+	if toolName == "todo" {
+		return TodoHint(argsJSON)
+	}
+
 	args, ok := parseArgs(argsJSON)
 	if !ok {
 		return wdFallback(toolName)
@@ -49,12 +53,6 @@ func ExtractHint(argsJSON, toolName string) string {
 
 	if toolName == "elicit" {
 		if hint := ElicitHint(args); hint != "" {
-			return hint
-		}
-	}
-
-	if toolName == "todo" {
-		if hint := TodoHint(argsJSON); hint != "" {
 			return hint
 		}
 	}
@@ -109,8 +107,7 @@ func parseArgs(argsJSON string) (map[string]any, bool) {
 	if json.Unmarshal([]byte(argsJSON), &args) == nil {
 		return args, true
 	}
-	repaired, ok := completeJSONPrefix(argsJSON)
-	if !ok || json.Unmarshal([]byte(repaired), &args) != nil {
+	if json.Unmarshal([]byte(closeJSONPrefix(argsJSON)), &args) != nil {
 		return nil, false
 	}
 	return args, true
@@ -127,8 +124,7 @@ func ParseTodoItems(argsJSON string) []TodoItem {
 		Items []TodoItem `json:"items"`
 	}
 	if json.Unmarshal([]byte(argsJSON), &args) != nil {
-		repaired, ok := completeJSONPrefix(argsJSON)
-		if !ok || json.Unmarshal([]byte(repaired), &args) != nil {
+		if json.Unmarshal([]byte(closeJSONPrefix(argsJSON)), &args) != nil {
 			return nil
 		}
 	}

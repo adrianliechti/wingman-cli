@@ -476,6 +476,7 @@ func (snapshot *streamSnapshot) completeTool(result *agent.ToolResult) {
 	if completed.Args == "" {
 		completed.Args = snapshot.toolArgs
 	}
+	snapshot.toolPartial = false
 	snapshot.toolResult = &completed
 }
 
@@ -525,6 +526,7 @@ func (a *App) handleTurnEvent(ev code.TurnEvent) {
 				a.requestRender()
 			case agent.StreamEventCommit:
 				a.commitStreamAttempt()
+				a.requestRender()
 			}
 		})
 		return
