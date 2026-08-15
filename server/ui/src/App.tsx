@@ -42,7 +42,8 @@ import type { ModeOption } from "./components/ModePicker";
 import { DiffsPanel } from "./components/DiffsPanel";
 import { DiffTab } from "./components/DiffTab";
 import { CompareTab } from "./components/CompareTab";
-import { ErrorBoundary, ErrorDetails } from "./components/ErrorBoundary";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import { ErrorPanel } from "./components/ErrorScreen";
 import { FileTab } from "./components/FileTab";
 import { FileTree } from "./components/FileTree";
 import { ProblemsPanel } from "./components/ProblemsPanel";
@@ -2013,13 +2014,8 @@ export default function App() {
 						>
 							<ErrorBoundary
 								key={activeTab.id}
-								fallback={(error, reset, errorInfo) => (
-									<TabCrashed
-										error={error}
-										errorInfo={errorInfo}
-										onReset={reset}
-										onClose={() => closeTabNow(activeTab.id)}
-									/>
+								fallback={(error, _reset, errorInfo) => (
+									<TabCrashed error={error} errorInfo={errorInfo} />
 								)}
 							>
 								{activeTab.type === "chat" ? (
@@ -2483,35 +2479,16 @@ function isClosableTab(tab: CenterTab): boolean {
 function TabCrashed({
 	error,
 	errorInfo,
-	onReset,
-	onClose,
 }: {
 	error: Error;
 	errorInfo: ErrorInfo | null;
-	onReset: () => void;
-	onClose: () => void;
 }) {
 	return (
-		<div className="flex h-full w-full flex-col items-center justify-center gap-3 p-6 text-center">
-			<div className="text-[13px] text-fg">This tab ran into a problem.</div>
-			<div className="flex gap-2">
-				<button
-					type="button"
-					onClick={onReset}
-					className="h-8 rounded-md border border-border px-3 text-[12px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg"
-				>
-					Try again
-				</button>
-				<button
-					type="button"
-					onClick={onClose}
-					className="h-8 rounded-md border border-border px-3 text-[12px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg"
-				>
-					Close tab
-				</button>
-			</div>
-			<ErrorDetails error={error} errorInfo={errorInfo} />
-		</div>
+		<ErrorPanel
+			title="This tab stopped rendering"
+			error={error}
+			errorInfo={errorInfo}
+		/>
 	);
 }
 

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -281,7 +282,7 @@ func (m *Manager) fileDiff(ctx context.Context, head *object.Tree, entry statusE
 	if err != nil {
 		return FileDiff{}, err
 	}
-	working, workingMode, workingExists, err := workingFile(filepath.Join(m.workingDir, filepath.FromSlash(entry.path)))
+	working, workingMode, workingExists, err := m.worktreeFile(entry.path)
 	if err != nil {
 		return FileDiff{}, err
 	}
@@ -445,17 +446,57 @@ func treeFile(repo *git.Repository, tree *object.Tree, path string) ([]byte, fil
 		return nil, filemode.Empty, false, nil
 	}
 	entry, err := tree.FindEntry(path)
-	if errors.Is(err, object.ErrEntryNotFound) {
+	if errors.Is(err, object.ErrEntryNotFound) || errors.Is(err, object.ErrDirectoryNotFound) {
 		return nil, filemode.Empty, false, nil
+	}
+	if errors.Is(err, plumbing.ErrObjectNotFound) {
+		// FindEntry tries to load every intermediate component as a tree. If
+		// one is a file, go-git returns ErrObjectNotFound even though the
+		// repository is healthy and the requested path is simply absent.
+		blocked, lookupErr := treePathBlockedByFile(repo, tree, path)
+		if lookupErr != nil {
+			return nil, filemode.Empty, false, fmt.Errorf("inspect tree entry %s: %w", path, lookupErr)
+		}
+		if blocked {
+			return nil, filemode.Empty, false, nil
+		}
 	}
 	if err != nil {
 		return nil, filemode.Empty, false, fmt.Errorf("read tree entry %s: %w", path, err)
+	}
+	if entry.Mode == filemode.Dir {
+		return nil, filemode.Empty, false, nil
 	}
 	data, err := blobContents(repo, entry.Hash, entry.Mode)
 	if err != nil {
 		return nil, filemode.Empty, false, fmt.Errorf("read HEAD file %s: %w", path, err)
 	}
 	return data, entry.Mode, true, nil
+}
+
+func treePathBlockedByFile(repo *git.Repository, tree *object.Tree, path string) (bool, error) {
+	parts := strings.Split(path, "/")
+	for _, part := range parts[:len(parts)-1] {
+		var entry *object.TreeEntry
+		for i := range tree.Entries {
+			if tree.Entries[i].Name == part {
+				entry = &tree.Entries[i]
+				break
+			}
+		}
+		if entry == nil {
+			return false, nil
+		}
+		if entry.Mode != filemode.Dir {
+			return true, nil
+		}
+		var err error
+		tree, err = object.GetTree(repo.Storer, entry.Hash)
+		if err != nil {
+			return false, err
+		}
+	}
+	return false, nil
 }
 
 func blobContents(repo *git.Repository, hash plumbing.Hash, mode filemode.FileMode) ([]byte, error) {
@@ -476,7 +517,7 @@ func blobContents(repo *git.Repository, hash plumbing.Hash, mode filemode.FileMo
 
 func workingFile(path string) ([]byte, filemode.FileMode, bool, error) {
 	info, err := os.Lstat(path)
-	if os.IsNotExist(err) {
+	if isMissingPathError(err) {
 		return nil, filemode.Empty, false, nil
 	}
 	if err != nil {
@@ -495,6 +536,53 @@ func workingFile(path string) ([]byte, filemode.FileMode, bool, error) {
 	}
 	data, err := os.ReadFile(path)
 	return data, mode, true, err
+}
+
+func (m *Manager) worktreeFile(path string) ([]byte, filemode.FileMode, bool, error) {
+	blocked, err := worktreePathBlockedByFile(m.workingDir, path)
+	if err != nil {
+		return nil, filemode.Empty, false, err
+	}
+	if blocked {
+		return nil, filemode.Empty, false, nil
+	}
+	data, mode, exists, err := workingFile(filepath.Join(m.workingDir, filepath.FromSlash(path)))
+	if err != nil || !exists || mode != filemode.Submodule {
+		return data, mode, exists, err
+	}
+	indexed, indexedMode, indexedExists, err := m.indexFile(m.objectPath(path))
+	if err != nil {
+		return nil, filemode.Empty, false, err
+	}
+	if indexedExists && indexedMode == filemode.Submodule {
+		return indexed, indexedMode, true, nil
+	}
+	return nil, filemode.Empty, false, nil
+}
+
+func worktreePathBlockedByFile(root, path string) (bool, error) {
+	parts := strings.Split(filepath.FromSlash(path), string(filepath.Separator))
+	current := root
+	for _, part := range parts[:len(parts)-1] {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if isMissingPathError(err) {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		// Git treats symlinks as files. Do not follow one in an intermediate
+		// component when a directory-to-symlink change removes nested paths.
+		if !info.IsDir() {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func isMissingPathError(err error) bool {
+	return os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR)
 }
 
 func (m *Manager) scopePath(path string) (string, bool) {

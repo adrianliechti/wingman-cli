@@ -183,6 +183,29 @@ func TestScriptReporterShowsToolProgressOnlyInDebugMode(t *testing.T) {
 	}
 }
 
+func TestScriptReporterDropsUncommittedPartialTool(t *testing.T) {
+	var errOut bytes.Buffer
+	reporter := newScriptReporter(true, &errOut)
+	reporter.add(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		ToolCall: &agent.ToolCall{ID: "call-1", Name: "write", Args: `{"file_path":"partial`, Partial: true},
+	}}})
+	reporter.commit()
+
+	if errOut.Len() != 0 {
+		t.Fatalf("partial tool was reported as executed: %q", errOut.String())
+	}
+
+	reporter.add(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		ToolCall: &agent.ToolCall{ID: "call-1", Name: "write", Args: `{"file_path":"main.go"}`},
+	}}})
+	reporter.add(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		ToolResult: &agent.ToolResult{ID: "call-1", Name: "write", Args: `{"file_path":"main.go"}`, Content: "ok"},
+	}}})
+	if got := errOut.String(); strings.Count(got, "→ write /main.go") != 1 || !strings.Contains(got, "✓ write /main.go") {
+		t.Fatalf("definitive tool reporting = %q", got)
+	}
+}
+
 func TestFinalAssistantTextUsesLatestTurn(t *testing.T) {
 	messages := []agent.Message{
 		{Role: agent.RoleAssistant, Content: []agent.Content{{Text: "old"}}},

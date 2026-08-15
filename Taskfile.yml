@@ -47,11 +47,11 @@ tasks:
       - go tool appbundle -name "Wingman Agent" -id com.adrianliechti.wingman-agent -description "Wingman Agent" -company "Adrian Liechti" -copyright "© Adrian Liechti" -package .
 
   run:app:
-    desc: Build and launch the desktop app
+    desc: Build and launch the desktop app with web inspection enabled
     deps: [build:app]
     dir: app
     cmds:
-      - open -n "build/bin/Wingman Agent.app"
+      - open -n --env WINGMAN_DEBUG=1 "build/bin/Wingman Agent.app"
 
   install:cli:
     desc: Build and install the CLI to GOPATH/bin or GOBIN

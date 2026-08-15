@@ -82,6 +82,7 @@ type Frame struct {
 	Position int              `json:"position,omitempty"`
 	Paused   bool             `json:"paused,omitempty"`
 	CanSteer bool             `json:"can_steer,omitempty"`
+	Partial  bool             `json:"partial,omitempty"`
 	Queue    []TurnQueueEntry `json:"queue,omitempty"`
 
 	PromptID     string             `json:"prompt_id,omitempty"`

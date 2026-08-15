@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/task"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
@@ -251,6 +252,23 @@ func TestRunTrailer(t *testing.T) {
 	want := "\n\n(agent: 1 tool call · 45.2k in / 900 out tokens · 1m40s)"
 	if got != want {
 		t.Fatalf("runTrailer = %q, want %q", got, want)
+	}
+}
+
+func TestUpdateTaskActivityIgnoresPartialToolCall(t *testing.T) {
+	tk := &task.Task{}
+	updateTaskActivity(tk, agent.Message{Content: []agent.Content{{ToolCall: &agent.ToolCall{
+		ID: "call-1", Name: "shell", Args: `{"command":"go te`, Partial: true,
+	}}}})
+	if activity := tk.Activity(); activity != "" {
+		t.Fatalf("partial activity = %q", activity)
+	}
+
+	updateTaskActivity(tk, agent.Message{Content: []agent.Content{{ToolCall: &agent.ToolCall{
+		ID: "call-1", Name: "shell", Args: `{"command":"go test"}`,
+	}}}})
+	if activity := tk.Activity(); activity != "shell go test" {
+		t.Fatalf("definitive activity = %q", activity)
 	}
 }
 

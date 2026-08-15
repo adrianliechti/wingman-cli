@@ -323,7 +323,10 @@ func cellTodo(argsJSON string, width int) []string {
 	if len(items) == 0 {
 		return []string{toolTitleLine("todo", "", "", width, false, false)}
 	}
+	return cellTodoItems(items, width)
+}
 
+func cellTodoItems(items []tool.TodoItem, width int) []string {
 	t := theme.Default
 
 	completed := 0

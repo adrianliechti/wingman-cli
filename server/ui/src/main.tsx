@@ -51,8 +51,8 @@ if (
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>
 		<ErrorBoundary
-			fallback={(error, reset, errorInfo) => (
-				<AppCrashed error={error} errorInfo={errorInfo} onReset={reset} />
+			fallback={(error, _reset, errorInfo) => (
+				<AppCrashed error={error} errorInfo={errorInfo} />
 			)}
 		>
 			<ToastProvider>

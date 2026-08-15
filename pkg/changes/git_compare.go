@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -208,7 +207,7 @@ func (m *Manager) compareWorktree(ctx context.Context, baseCommit *object.Commit
 		if err != nil {
 			return CompareResult{}, err
 		}
-		modified, modifiedMode, modifiedExists, err := workingFile(filepath.Join(m.workingDir, filepath.FromSlash(path)))
+		modified, modifiedMode, modifiedExists, err := m.worktreeFile(path)
 		if err != nil {
 			return CompareResult{}, fmt.Errorf("read working tree file %s: %w", path, err)
 		}

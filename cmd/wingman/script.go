@@ -448,8 +448,9 @@ type scriptReporter struct {
 }
 
 type scriptToolCall struct {
-	name string
-	args string
+	name    string
+	args    string
+	partial bool
 }
 
 func newScriptReporter(debug bool, errOut io.Writer) *scriptReporter {
@@ -487,6 +488,7 @@ func (r *scriptReporter) add(message agent.Message) {
 			if call.Args != "" {
 				pending.args = call.Args
 			}
+			pending.partial = call.Partial
 			r.pending[id] = pending
 		}
 		if content.ToolResult != nil {
@@ -521,7 +523,7 @@ func (r *scriptReporter) flushProgress() {
 	r.reasoning.Reset()
 	for _, id := range r.order {
 		call, present := r.pending[id]
-		if !present || r.started[id] {
+		if !present || call.partial || r.started[id] {
 			continue
 		}
 		r.started[id] = true

@@ -28,16 +28,24 @@ interface Props {
 export function CompareTab({ base, head, mode, subscribe }: Props) {
 	const [comparison, setComparison] = useState<GitCompare | null>(null);
 	const [loading, setLoading] = useState(true);
-	const [error, setError] = useState("");
+	const [failure, setFailure] = useState<Error | null>(null);
 	const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 	const scheme = useColorScheme();
 
 	const load = useCallback(async () => {
 		setLoading(true);
+		const params = new URLSearchParams({ base, head, mode });
+		const endpoint = `/api/git/compare?${params.toString()}`;
+		const requestContext = [
+			"Operation: Compare Git revisions",
+			`Request: GET ${endpoint}`,
+			`Base: ${base}`,
+			`Target: ${head}`,
+			`Mode: ${mode}`,
+		].join("\n");
 		try {
-			const params = new URLSearchParams({ base, head, mode });
-			const response = await fetch(`/api/git/compare?${params.toString()}`);
-			if (!response.ok) throw new Error(await responseError(response));
+			const response = await fetch(endpoint);
+			if (!response.ok) throw await responseError(response, requestContext);
 			const data = (await response.json()) as GitCompare;
 			setComparison(data);
 			setCollapsed(
@@ -47,10 +55,12 @@ export function CompareTab({ base, head, mode, subscribe }: Props) {
 						.map((file) => file.path),
 				),
 			);
-			setError("");
+			setFailure(null);
 		} catch (e) {
 			setComparison(null);
-			setError(e instanceof Error ? e.message : String(e));
+			const error = withDiagnosticContext(e, requestContext);
+			console.error("Git comparison failed:", error, error.diagnosticContext);
+			setFailure(error);
 		} finally {
 			setLoading(false);
 		}
@@ -86,20 +96,7 @@ export function CompareTab({ base, head, mode, subscribe }: Props) {
 			</div>
 		);
 	}
-	if (error) {
-		return (
-			<div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-				<div className="text-[12px] text-danger">{error}</div>
-				<button
-					type="button"
-					onClick={() => void load()}
-					className="rounded-md border border-border-subtle px-3 py-1.5 text-[11px] text-fg-muted hover:bg-bg-hover hover:text-fg"
-				>
-					Try again
-				</button>
-			</div>
-		);
-	}
+	if (failure) throw failure;
 	if (!comparison) return null;
 
 	return (
@@ -484,9 +481,33 @@ function countChanges(files: DiffEntry[]) {
 	return { additions, deletions };
 }
 
-async function responseError(response: Response) {
-	return (
-		(await response.text()).trim() ||
-		`${response.status} ${response.statusText}`
-	);
+type DiagnosticError = Error & { diagnosticContext: string };
+
+function withDiagnosticContext(
+	value: unknown,
+	context: string,
+): DiagnosticError {
+	const error = (
+		value instanceof Error ? value : new Error(String(value))
+	) as DiagnosticError;
+	error.diagnosticContext ||= context;
+	return error;
+}
+
+async function responseError(
+	response: Response,
+	requestContext: string,
+): Promise<DiagnosticError> {
+	const serverResponse = (await response.text()).trim();
+	const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
+	const error = new Error(serverResponse || status) as DiagnosticError;
+	error.name = "GitCompareRequestError";
+	error.diagnosticContext = [
+		requestContext,
+		`Response: HTTP ${status}`,
+		serverResponse ? `Server response:\n${serverResponse}` : "",
+	]
+		.filter(Boolean)
+		.join("\n\n");
+	return error;
 }

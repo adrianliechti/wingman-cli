@@ -72,6 +72,22 @@ func TestTurnQueueFrameJSONCarriesCapabilitiesAndOrdering(t *testing.T) {
 	}
 }
 
+func TestToolCallFrameCarriesPartialState(t *testing.T) {
+	b, err := json.Marshal(Frame{Type: EvtToolCall, ID: "call-1", Partial: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Partial bool `json:"partial"`
+	}
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !decoded.Partial {
+		t.Fatalf("frame = %s", b)
+	}
+}
+
 func TestSnapshotHasActive(t *testing.T) {
 	if snapshotHasActive(code.TurnSnapshot{Inputs: []code.TurnInputSnapshot{{State: code.TurnInputQueued}}}) {
 		t.Fatal("queued-only snapshot reported active")

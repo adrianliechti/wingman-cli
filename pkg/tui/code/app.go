@@ -133,6 +133,7 @@ type streamSnapshot struct {
 	toolName      string
 	toolArgs      string
 	toolHint      string
+	toolPartial   bool
 	toolProgress  string
 	toolResult    *agent.ToolResult
 	text          string

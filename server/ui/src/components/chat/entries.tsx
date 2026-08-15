@@ -8,6 +8,7 @@ import {
 	useState,
 } from "react";
 import type { ChatEntry } from "../../hooks/useWebSocket";
+import { parseTodoItems } from "../../streamingJson";
 import type { Phase } from "../../types/protocol";
 import { MarkdownContent } from "../MarkdownContent";
 import { ToolProgressContext } from "./progress";
@@ -122,7 +123,7 @@ export const ToolGroupView = memo(function ToolGroupView({
 				const running =
 					isTrailing && phase !== "idle" && entry.toolResult === undefined;
 				if (entry.toolName === "todo") {
-					return <TodoRow key={entry.id} entry={entry} />;
+					return <TodoRow key={entry.id} entry={entry} running={running} />;
 				}
 				return <ToolRow key={entry.id} entry={entry} running={running} />;
 			})}
@@ -130,14 +131,11 @@ export const ToolGroupView = memo(function ToolGroupView({
 	);
 });
 
-function TodoRow({ entry }: { entry: ChatEntry }) {
-	let items: { content: string; status: string }[] = [];
-	try {
-		items = JSON.parse(entry.toolArgs || "{}").items ?? [];
-	} catch {}
+function TodoRow({ entry, running }: { entry: ChatEntry; running: boolean }) {
+	const items = parseTodoItems(entry.toolArgs);
 
 	if (!items.length) {
-		return <ToolRow entry={entry} running={false} />;
+		return <ToolRow entry={entry} running={running} />;
 	}
 
 	const completed = items.filter((it) => it.status === "completed").length;
@@ -145,6 +143,13 @@ function TodoRow({ entry }: { entry: ChatEntry }) {
 	return (
 		<div data-entry-id={entry.id} className="border-l-2 border-purple pl-3">
 			<div className="flex items-center gap-2 py-0.5 text-[12px]">
+				{running && (
+					<LoaderCircle
+						size={11}
+						className="animate-spin text-fg-dim"
+						aria-label={entry.toolPartial ? "Preparing plan" : "Updating plan"}
+					/>
+				)}
 				<span className="text-purple font-mono text-[11px]">plan</span>
 				<span className="text-fg-dim font-mono text-[11px]">
 					{completed}/{items.length}
@@ -243,7 +248,13 @@ const ToolRow = memo(function ToolRow({
 				>
 					<span className="text-fg-dim shrink-0 flex items-center">
 						{running ? (
-							<LoaderCircle size={11} className="animate-spin" />
+							<LoaderCircle
+								size={11}
+								className="animate-spin"
+								aria-label={
+									entry.toolPartial ? "Preparing tool" : "Tool running"
+								}
+							/>
 						) : expanded ? (
 							<ChevronDown size={12} />
 						) : (

@@ -263,6 +263,132 @@ func TestNativeRepositoryCompareAndHistory(t *testing.T) {
 	}
 }
 
+func TestNativeRepositoryCompareWorktreeWithFileInNewDirectory(t *testing.T) {
+	dir := t.TempDir()
+	repo := initRepository(t, dir)
+	writeFile(t, dir, "README.md", "base\n")
+	stage(t, repo, "README.md")
+	commit(t, repo, "initial")
+	base, err := repo.Head()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, dir, "examples/coding-router.yaml", "router: coding\n")
+	stage(t, repo, "examples/coding-router.yaml")
+	commit(t, repo, "add coding router")
+
+	m := New(dir)
+	defer m.Close()
+	comparison, err := m.Compare(context.Background(), base.Hash().String(), WorktreeRevision, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(comparison.Diffs) != 1 {
+		t.Fatalf("working tree comparison = %+v", comparison)
+	}
+	diff := comparison.Diffs[0]
+	if diff.Path != "examples/coding-router.yaml" || diff.Status != StatusAdded || diff.Modified != "router: coding\n" {
+		t.Fatalf("nested added file diff = %+v", diff)
+	}
+}
+
+func TestNativeRepositoryComparePathTypeChanges(t *testing.T) {
+	t.Run("file to directory", func(t *testing.T) {
+		dir := t.TempDir()
+		repo := initRepository(t, dir)
+		writeFile(t, dir, "entry", "file\n")
+		stage(t, repo, "entry")
+		commit(t, repo, "file")
+		base, err := repo.Head()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		remove(t, repo, "entry")
+		writeFile(t, dir, "entry/nested.txt", "nested\n")
+		stage(t, repo, "entry/nested.txt")
+		commit(t, repo, "directory")
+
+		assertComparePaths(t, dir, base.Hash().String(),
+			map[string]FileStatus{"entry": StatusDeleted, "entry/nested.txt": StatusAdded})
+	})
+
+	t.Run("directory to file", func(t *testing.T) {
+		dir := t.TempDir()
+		repo := initRepository(t, dir)
+		writeFile(t, dir, "entry/nested.txt", "nested\n")
+		stage(t, repo, "entry/nested.txt")
+		commit(t, repo, "directory")
+		base, err := repo.Head()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		remove(t, repo, "entry/nested.txt")
+		if err := os.Remove(filepath.Join(dir, "entry")); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, dir, "entry", "file\n")
+		stage(t, repo, "entry")
+		commit(t, repo, "file")
+
+		assertComparePaths(t, dir, base.Hash().String(),
+			map[string]FileStatus{"entry": StatusAdded, "entry/nested.txt": StatusDeleted})
+	})
+
+	t.Run("directory to symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		repo := initRepository(t, dir)
+		writeFile(t, dir, "entry/nested.txt", "entry\n")
+		writeFile(t, dir, "target/nested.txt", "target\n")
+		stage(t, repo, "entry/nested.txt")
+		stage(t, repo, "target/nested.txt")
+		commit(t, repo, "directory")
+		base, err := repo.Head()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		remove(t, repo, "entry/nested.txt")
+		if err := os.Remove(filepath.Join(dir, "entry")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("target", filepath.Join(dir, "entry")); err != nil {
+			t.Fatal(err)
+		}
+		stage(t, repo, "entry")
+		commit(t, repo, "symlink")
+
+		assertComparePaths(t, dir, base.Hash().String(),
+			map[string]FileStatus{"entry": StatusAdded, "entry/nested.txt": StatusDeleted})
+	})
+}
+
+func assertComparePaths(t *testing.T, dir, base string, want map[string]FileStatus) {
+	t.Helper()
+	m := New(dir)
+	defer m.Close()
+	for name, head := range map[string]string{"commit": "HEAD", "worktree": WorktreeRevision} {
+		comparison, err := m.Compare(context.Background(), base, head, false)
+		if err != nil {
+			t.Fatalf("%s comparison: %v", name, err)
+		}
+		got := make(map[string]FileStatus, len(comparison.Diffs))
+		for _, diff := range comparison.Diffs {
+			got[diff.Path] = diff.Status
+		}
+		if len(got) != len(want) {
+			t.Fatalf("%s comparison paths = %+v, want %+v", name, got, want)
+		}
+		for path, status := range want {
+			if got[path] != status {
+				t.Fatalf("%s comparison path %q status = %v, want %v", name, path, got[path], status)
+			}
+		}
+	}
+}
+
 func writeFile(t *testing.T, dir, rel, content string) {
 	t.Helper()
 	path := filepath.Join(dir, rel)
@@ -299,6 +425,17 @@ func stage(t *testing.T, repo *git.Repository, path string) {
 		t.Fatal(err)
 	}
 	if _, err := worktree.Add(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func remove(t *testing.T, repo *git.Repository, path string) {
+	t.Helper()
+	worktree, err := repo.Worktree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := worktree.Remove(path); err != nil {
 		t.Fatal(err)
 	}
 }

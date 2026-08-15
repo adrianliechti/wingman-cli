@@ -119,6 +119,140 @@ func TestSendAllowsFinalResponseAtMaxTurns(t *testing.T) {
 	}
 }
 
+func TestCompleteStreamsPartialToolCalls(t *testing.T) {
+	const args = "{\\\"items\\\":[{\\\"content\\\":\\\"Fix\\\",\\\"status\\\":\\\"pending\\\"}]}"
+
+	client := streamingTestClient(func(*http.Request) string {
+		return "data: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"todo\",\"arguments\":\"{\\\"items\\\":[\",\"status\":\"in_progress\"}}\n\n" +
+			"data: {\"type\":\"response.function_call_arguments.done\",\"sequence_number\":3,\"output_index\":0,\"item_id\":\"fc_1\",\"name\":\"todo\",\"arguments\":\"" + args + "\"}\n\n" +
+			"data: {\"type\":\"response.output_item.done\",\"sequence_number\":4,\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"todo\",\"arguments\":\"" + args + "\",\"status\":\"completed\"}}\n\n" +
+			"data: {\"type\":\"response.completed\",\"sequence_number\":5,\"response\":{\"usage\":{\"input_tokens\":1,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1}}}\n\n"
+	})
+
+	var partials []ToolCall
+	resp, err := complete(context.Background(), &client, &request{}, func(m Message, err error) bool {
+		for _, c := range m.Content {
+			if c.ToolCall != nil {
+				partials = append(partials, *c.ToolCall)
+			}
+		}
+		return true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(partials) < 2 {
+		t.Fatalf("partial tool calls = %v, want announcement and completion", partials)
+	}
+	first, last := partials[0], partials[len(partials)-1]
+	if !first.Partial || first.ID != "call_1" || first.Name != "todo" || first.Args != `{"items":[` {
+		t.Fatalf("announcement = %+v", first)
+	}
+	wantArgs := `{"items":[{"content":"Fix","status":"pending"}]}`
+	if !last.Partial || last.ID != "call_1" || last.Args != wantArgs {
+		t.Fatalf("completion snapshot = %+v", last)
+	}
+
+	calls := extractToolCalls(resp.messages)
+	if len(calls) != 1 || calls[0].Partial || calls[0].ID != "call_1" || calls[0].Args != wantArgs {
+		t.Fatalf("committed calls = %+v", calls)
+	}
+}
+
+func TestCompleteTracksInterleavedPartialCallsByOutputIndex(t *testing.T) {
+	client := streamingTestClient(func(*http.Request) string {
+		return "data: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_a\",\"name\":\"shell\",\"arguments\":\"\",\"status\":\"in_progress\"}}\n\n" +
+			"data: {\"type\":\"response.output_item.added\",\"sequence_number\":2,\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_b\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"\",\"status\":\"in_progress\"}}\n\n" +
+			"data: {\"type\":\"response.function_call_arguments.delta\",\"sequence_number\":3,\"output_index\":0,\"item_id\":\"item_a\",\"delta\":\"{\\\"command\\\":\\\"ls\\\"}\"}\n\n" +
+			"data: {\"type\":\"response.function_call_arguments.done\",\"sequence_number\":4,\"output_index\":1,\"item_id\":\"item_b\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"b.go\\\"}\"}\n\n" +
+			"data: {\"type\":\"response.function_call_arguments.done\",\"sequence_number\":5,\"output_index\":0,\"item_id\":\"item_a\",\"name\":\"shell\",\"arguments\":\"{\\\"command\\\":\\\"ls\\\"}\"}\n\n" +
+			"data: {\"type\":\"response.output_item.done\",\"sequence_number\":6,\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"item_a\",\"call_id\":\"call_a\",\"name\":\"shell\",\"arguments\":\"{\\\"command\\\":\\\"ls\\\"}\",\"status\":\"completed\"}}\n\n" +
+			"data: {\"type\":\"response.output_item.done\",\"sequence_number\":7,\"output_index\":1,\"item\":{\"type\":\"function_call\",\"id\":\"item_b\",\"call_id\":\"call_b\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"b.go\\\"}\",\"status\":\"completed\"}}\n\n" +
+			"data: {\"type\":\"response.completed\",\"sequence_number\":8,\"response\":{\"usage\":{\"input_tokens\":1,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1}}}\n\n"
+	})
+
+	latest := map[string]string{}
+	resp, err := complete(context.Background(), &client, &request{}, func(m Message, _ error) bool {
+		for _, c := range m.Content {
+			if c.ToolCall != nil {
+				latest[c.ToolCall.ID] = c.ToolCall.Args
+			}
+		}
+		return true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest["call_a"] != `{"command":"ls"}` || latest["call_b"] != `{"path":"b.go"}` {
+		t.Fatalf("partial calls were mixed: %v", latest)
+	}
+	calls := extractToolCalls(resp.messages)
+	if len(calls) != 2 || calls[0].ID != "call_a" || calls[1].ID != "call_b" {
+		t.Fatalf("committed calls = %+v", calls)
+	}
+}
+
+func TestCompleteDoesNotCommitIncompleteToolCall(t *testing.T) {
+	client := streamingTestClient(func(*http.Request) string {
+		return "data: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"write\",\"arguments\":\"\",\"status\":\"in_progress\"}}\n\n" +
+			"data: {\"type\":\"response.function_call_arguments.delta\",\"sequence_number\":2,\"output_index\":0,\"item_id\":\"fc_1\",\"delta\":\"{\\\"file_path\\\":\\\"main.go\\\"\"}\n\n" +
+			"data: {\"type\":\"response.incomplete\",\"sequence_number\":3,\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"write\",\"arguments\":\"{\\\"file_path\\\":\\\"main.go\\\"\",\"status\":\"incomplete\"}],\"usage\":{\"input_tokens\":1,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1}}}\n\n"
+	})
+
+	partialSeen := false
+	resp, err := complete(context.Background(), &client, &request{}, func(m Message, err error) bool {
+		for _, c := range m.Content {
+			partialSeen = partialSeen || c.ToolCall != nil && c.ToolCall.Partial
+		}
+		return true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !partialSeen || !resp.incomplete {
+		t.Fatalf("partialSeen=%v incomplete=%v", partialSeen, resp.incomplete)
+	}
+	if calls := extractToolCalls(resp.messages); len(calls) != 0 {
+		t.Fatalf("incomplete tool call was committed: %+v", calls)
+	}
+}
+
+func TestPendingToolCallSnapshotNeedsTimeAndGrowth(t *testing.T) {
+	now := time.Now()
+	pending := pendingToolCall{
+		args:      make([]byte, partialArgsMinGrowth),
+		lastYield: now,
+	}
+
+	if pending.snapshotReady(now.Add(partialArgsInterval - time.Millisecond)) {
+		t.Fatal("snapshot ignored time throttle")
+	}
+	if !pending.snapshotReady(now.Add(partialArgsInterval)) {
+		t.Fatal("first useful snapshot was not ready")
+	}
+
+	pending.markSnapshot(now.Add(partialArgsInterval))
+	pending.args = append(pending.args, make([]byte, partialArgsMinGrowth-1)...)
+	if pending.snapshotReady(now.Add(time.Second)) {
+		t.Fatal("snapshot ignored growth throttle")
+	}
+	pending.args = append(pending.args, 0)
+	if !pending.snapshotReady(now.Add(time.Second)) {
+		t.Fatal("snapshot was not ready after enough growth")
+	}
+
+	pending.lastYieldSize = 4096
+	pending.args = make([]byte, 4096+1023)
+	if pending.snapshotReady(now.Add(time.Second)) {
+		t.Fatal("large snapshot did not scale its growth threshold")
+	}
+	pending.args = append(pending.args, 0)
+	if !pending.snapshotReady(now.Add(time.Second)) {
+		t.Fatal("large snapshot was not ready after proportional growth")
+	}
+}
+
 func TestCompleteClassifiesTransientTerminalFailureBeforeOutput(t *testing.T) {
 	client := streamingTestClient(func(*http.Request) string {
 		return "data: {\"type\":\"response.failed\",\"sequence_number\":1,\"response\":{\"error\":{\"code\":\"server_error\",\"message\":\"try again\"}}}\n\n"

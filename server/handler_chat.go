@@ -180,13 +180,18 @@ func (s *Server) handleTurnEvent(ev code.TurnEvent) {
 			switch {
 			case c.ToolCall != nil:
 				s.sendSession(ev.SessionID, Frame{
-					Type: EvtToolCall,
-					ID:   c.ToolCall.ID,
-					Name: c.ToolCall.Name,
-					Args: c.ToolCall.Args,
-					Hint: tool.ExtractHint(c.ToolCall.Args, c.ToolCall.Name),
+					Type:    EvtToolCall,
+					ID:      c.ToolCall.ID,
+					Name:    c.ToolCall.Name,
+					Args:    c.ToolCall.Args,
+					Hint:    tool.ExtractHint(c.ToolCall.Args, c.ToolCall.Name),
+					Partial: c.ToolCall.Partial,
 				})
-				s.setSessionPhase(ev.SessionID, "tool_running")
+				if c.ToolCall.Partial {
+					s.setSessionPhase(ev.SessionID, "thinking")
+				} else {
+					s.setSessionPhase(ev.SessionID, "tool_running")
+				}
 
 			case c.ToolResult != nil:
 				s.sendSession(ev.SessionID, Frame{

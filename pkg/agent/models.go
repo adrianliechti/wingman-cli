@@ -63,6 +63,8 @@ type ToolCall struct {
 
 	Name string `json:"name"`
 	Args string `json:"args,omitempty"`
+
+	Partial bool `json:"partial,omitempty"`
 }
 
 type ToolResult struct {

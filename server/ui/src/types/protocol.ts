@@ -101,6 +101,7 @@ interface ToolCallMessage extends SessionMessage {
 	name: string;
 	args: string;
 	hint: string;
+	partial?: boolean;
 }
 
 interface ToolResultMessage extends SessionMessage {

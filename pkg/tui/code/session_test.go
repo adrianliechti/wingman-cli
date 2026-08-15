@@ -122,6 +122,66 @@ func TestStreamResetPreservesCommittedEarlierRound(t *testing.T) {
 	}
 }
 
+func TestPartialToolCallUpdatesInPlaceAndResets(t *testing.T) {
+	a, _ := newStreamTestApp(nil)
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		ToolCall: &agent.ToolCall{ID: "call-1", Name: "shell", Partial: true},
+	}}})
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		ToolCall: &agent.ToolCall{ID: "call-1", Name: "shell", Args: `{"command":"go test"}`, Partial: true},
+	}}})
+
+	snapshots := a.snapshotStreamState()
+	if len(snapshots) != 1 || snapshots[0].toolArgs != `{"command":"go test"}` || !snapshots[0].toolPartial {
+		t.Fatalf("partial snapshots did not merge: %+v", snapshots)
+	}
+
+	a.handleTurnEvent(code.TurnEvent{SessionID: "session", StreamEvent: agent.StreamEventReset})
+	if snapshots := a.snapshotStreamState(); len(snapshots) != 0 {
+		t.Fatalf("failed partial tool survived reset: %+v", snapshots)
+	}
+}
+
+func TestToolResultMakesPartialSnapshotAuthoritative(t *testing.T) {
+	a, _ := newStreamTestApp(nil)
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		ToolCall: &agent.ToolCall{ID: "call-1", Name: "shell", Args: `{"command":"go test"}`, Partial: true},
+	}}})
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		ToolResult: &agent.ToolResult{ID: "call-1", Name: "shell", Content: "ok"},
+	}}})
+	a.commitStreamAttempt()
+
+	snapshots := a.snapshotStreamState()
+	if len(snapshots) != 1 || snapshots[0].toolPartial || snapshots[0].toolResult == nil {
+		t.Fatalf("completed partial snapshot was discarded: %+v", snapshots)
+	}
+}
+
+func TestStreamCommitReplacesPartialToolWithDefinitiveCall(t *testing.T) {
+	a, _ := newStreamTestApp(nil)
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		ToolCall: &agent.ToolCall{ID: "call-1", Name: "shell", Args: `{"command":"go te"}`, Partial: true},
+	}}})
+	a.renderPending.Store(false)
+	a.handleTurnEvent(code.TurnEvent{SessionID: "session", StreamEvent: agent.StreamEventCommit})
+	if snapshots := a.snapshotStreamState(); len(snapshots) != 0 {
+		t.Fatalf("commit retained non-authoritative tool call: %+v", snapshots)
+	}
+	if !a.renderPending.Load() {
+		t.Fatal("commit did not schedule removal of the partial tool")
+	}
+
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		ToolCall: &agent.ToolCall{ID: "call-1", Name: "shell", Args: `{"command":"go test"}`},
+	}}})
+
+	snapshots := a.snapshotStreamState()
+	if len(snapshots) != 1 || snapshots[0].toolArgs != `{"command":"go test"}` || snapshots[0].toolPartial {
+		t.Fatalf("definitive call did not replace partial snapshot: %+v", snapshots)
+	}
+}
+
 func TestStreamCommitStartsFreshTextCell(t *testing.T) {
 	a, _ := newStreamTestApp(nil)
 	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{

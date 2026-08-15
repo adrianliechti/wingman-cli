@@ -509,7 +509,7 @@ func applyModelOverrides(cfg *agent.Config, args map[string]any, defaultRole str
 
 func updateTaskActivity(tk *task.Task, msg agent.Message) {
 	for _, c := range msg.Content {
-		if c.ToolCall == nil {
+		if c.ToolCall == nil || c.ToolCall.Partial {
 			continue
 		}
 		activity := c.ToolCall.Name

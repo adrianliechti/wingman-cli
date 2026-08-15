@@ -596,6 +596,12 @@ test("uses each Git status slot for its stage action", async ({ page }) => {
 test("compares branches and commits in a main content tab", async ({
 	page,
 }) => {
+	const pageErrors: Error[] = [];
+	const consoleErrors: string[] = [];
+	page.on("pageerror", (error) => pageErrors.push(error));
+	page.on("console", (message) => {
+		if (message.type() === "error") consoleErrors.push(message.text());
+	});
 	const baseHash = "1111111111111111111111111111111111111111";
 	const middleHash = "3333333333333333333333333333333333333333";
 	const headHash = "2222222222222222222222222222222222222222";
@@ -931,6 +937,79 @@ test("compares branches and commits in a main content tab", async ({
 			middleHash,
 			baseHash,
 		]);
+	// Monaco reports worker teardown failures asynchronously. Leave time for a
+	// rejected diff computation to reach the page before checking the listener.
+	await page.waitForTimeout(500);
+	expect(pageErrors).toEqual([]);
+	expect(consoleErrors).toEqual([]);
+});
+
+test("shows and copies diagnostics for comparison failures", async ({
+	page,
+	context,
+}) => {
+	await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+	await page.route(/\/api\/capabilities$/, async (route) => {
+		await route.fulfill({
+			json: {
+				git: true,
+				lsp: false,
+				diffs: true,
+				tasks: false,
+				terminal: true,
+			},
+		});
+	});
+	await page.route(/\/api\/git\/status$/, async (route) => {
+		await route.fulfill({
+			json: {
+				branch: "feature/router",
+				ahead: 1,
+				behind: 0,
+				has_remote: false,
+				files: [],
+			},
+		});
+	});
+	await page.route(/\/api\/git\/branches/, async (route) => {
+		await route.fulfill({
+			json: {
+				branches: [{ name: "feature/router", current: true }, { name: "main" }],
+			},
+		});
+	});
+	await page.route(/\/api\/git\/compare/, async (route) => {
+		await route.fulfill({
+			status: 409,
+			contentType: "text/plain",
+			body: "read tree entry examples/coding-router.yaml: directory not found",
+		});
+	});
+
+	await composer(page);
+	await page
+		.getByRole("tablist", { name: "Workspace panels" })
+		.getByRole("tab", { name: "Changes", exact: true })
+		.click();
+	await page.getByTitle("feature/router", { exact: true }).click();
+	await page
+		.getByRole("dialog", { name: "Git branches" })
+		.getByRole("button", { name: "Compare main with working tree" })
+		.click();
+
+	await expect(
+		page.getByRole("alert", { name: "This tab stopped rendering" }),
+	).toBeVisible();
+	await page.getByRole("button", { name: "Copy error" }).click();
+	await expect(page.getByRole("button", { name: "Copied" })).toBeVisible();
+	const copiedError = await page.evaluate(() => navigator.clipboard.readText());
+	expect(copiedError).toContain("Operation: Compare Git revisions");
+	expect(copiedError).toContain("Target: :worktree");
+	expect(copiedError).toContain("Response: HTTP 409");
+	expect(copiedError).toContain("Client stack:");
+	expect(copiedError).toContain(
+		"Server response:\nread tree entry examples/coding-router.yaml",
+	);
 });
 
 test("keeps the session context menu above panel clipping", async ({
