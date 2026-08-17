@@ -2478,6 +2478,11 @@ test("uses Wingman's dynamic editor context menu", async ({ page }) => {
 			menu.getByRole("menuitem", { name: item, exact: true }),
 		).toBeVisible();
 	}
+	for (const item of ["Toggle Line Comment", "Toggle Block Comment"]) {
+		const action = menu.getByRole("menuitem", { name: item, exact: true });
+		await expect(action).toBeVisible();
+		await expect(action).toBeEnabled();
+	}
 	for (const item of [
 		"Go to Definition",
 		"Go to Implementations",
@@ -2545,9 +2550,45 @@ test("uses Wingman's dynamic editor context menu", async ({ page }) => {
 		.getByRole("menuitem", { name: "Go to Definition", exact: true })
 		.click();
 	await expect.poll(() => definitionRequested).toBe(true);
-	await editor.focus();
+	const viewLines = editor.locator(".view-lines");
+	const packageLine = editor
+		.locator(".view-line")
+		.filter({ hasText: "package main" })
+		.first();
+	await packageLine.click();
+	await page.keyboard.press("Home");
 	await page.keyboard.press("Shift+F10");
 	await expect(menu).toBeVisible();
+
+	await menu
+		.getByRole("menuitem", { name: "Toggle Line Comment", exact: true })
+		.click();
+	await expect(viewLines).toContainText("// package main");
+
+	await packageLine.click();
+	await page.keyboard.press("Home");
+	await page.keyboard.press("Shift+F10");
+	await menu
+		.getByRole("menuitem", { name: "Toggle Line Comment", exact: true })
+		.click();
+	await expect(viewLines).not.toContainText("// package main");
+	await expect(viewLines).toContainText("package main");
+
+	await editor.focus();
+	await page.keyboard.press("ControlOrMeta+A");
+	await page.keyboard.press("Shift+F10");
+	await menu
+		.getByRole("menuitem", { name: "Toggle Block Comment", exact: true })
+		.click();
+	await expect(viewLines).toContainText(/\/\*\s*package\s+main\s*\*\//);
+
+	await editor.focus();
+	await page.keyboard.press("Shift+F10");
+	await menu
+		.getByRole("menuitem", { name: "Toggle Block Comment", exact: true })
+		.click();
+	await expect(viewLines).not.toContainText(/\/\*|\*\//);
+	await expect(viewLines).toContainText("package main");
 });
 
 test("routes native File menu commands through shared file handling", async ({

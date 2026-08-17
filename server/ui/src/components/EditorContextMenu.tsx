@@ -1,11 +1,13 @@
 import {
 	AlignLeft,
+	Brackets,
 	Braces,
 	ClipboardPaste,
 	Copy,
 	FileCode2,
 	GitFork,
 	Lightbulb,
+	MessageSquareCode,
 	PanelTopOpen,
 	PencilLine,
 	Redo2,
@@ -149,6 +151,7 @@ export function EditorContextMenu({
 	}, []);
 
 	const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+	const linux = /Linux/.test(navigator.platform);
 	const primary = mac ? "⌘" : "Ctrl+";
 	const model = editor.getModel();
 	const editItems: MenuItem[] = [
@@ -197,6 +200,22 @@ export function EditorContextMenu({
 		() => (readOnly ? [] : supportedActions(editor, codeActions)),
 		[editor, readOnly],
 	);
+	const commentItems = readOnly
+		? []
+		: supportedActions(editor, [
+				{
+					id: "editor.action.commentLine",
+					label: "Toggle Line Comment",
+					icon: <MessageSquareCode size={13} />,
+					shortcut: `${primary}/`,
+				},
+				{
+					id: "editor.action.blockComment",
+					label: "Toggle Block Comment",
+					icon: <Brackets size={13} />,
+					shortcut: mac ? "⇧⌥A" : linux ? "Ctrl+Shift+A" : "Shift+Alt+A",
+				},
+			]);
 	const selection = editor.getSelection();
 	const hasSelection = !!selection && !selection.isEmpty();
 	const formatItems = readOnly
@@ -213,6 +232,7 @@ export function EditorContextMenu({
 			]);
 	const groups = [
 		editItems,
+		commentItems,
 		navigationItems,
 		supportedCodeActions,
 		formatItems,
@@ -242,7 +262,7 @@ export function EditorContextMenu({
 							role="menuitem"
 							aria-label={item.label}
 							disabled={!item.enabled}
-							className="flex w-full items-center gap-2 px-3 py-1 text-left text-fg-muted transition-colors enabled:hover:bg-bg-hover enabled:hover:text-fg disabled:cursor-default disabled:opacity-40"
+							className="flex w-full items-center gap-2 px-3 py-0.5 text-left text-fg-muted transition-colors enabled:hover:bg-bg-hover enabled:hover:text-fg disabled:cursor-default disabled:opacity-40"
 							onClick={() => {
 								onClose();
 								editor.focus();
