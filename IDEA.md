@@ -10,6 +10,7 @@ Wingman already provides:
 
 - Monaco-based editing with HTML, SVG, Markdown, Mermaid, and structured-data previews.
 - Zero-config detection of ~50 language servers with LSP completion, navigation, references, rename, code actions, semantic tokens, formatting, diagnostics, and inlay hints, plus a tree-sitter fallback for navigation, hover, and completion when no server covers a file.
+- Predictive Tab editing with edit-gated ghost text, nearby multiline next edits, stale-result cancellation, and awaited LSP import cleanup on save or acceptance.
 - Revision-checked file writes with atomic multi-file batches and post-edit diagnostics fed back to the agent.
 - Streaming workspace search with regex, case, whole-word, and file filters, plus previewed revision-checked replacement at match, file, and workspace scope.
 - File editing, terminals, permission gates, multiple models, persistent agent sessions, and queued or steerable turns.
@@ -18,15 +19,13 @@ Wingman already provides:
 
 ## Feature gaps
 
-### P0: AI inline editing
+### P1: AI editing beyond Tab
 
-Add:
+Predictive completion and nearby multiline next-edit suggestions are implemented. Remaining extensions are:
 
-- Ghost-text completion.
-- Next-edit prediction and Tab-to-jump navigation.
-- Coordinated multi-line and multi-file suggestions.
+- Coordinated multi-file suggestions and cross-file transitions.
 - Selection-based inline chat and transformations.
-- Awareness of recent edits, diagnostics, and surrounding files.
+- Optional diagnostic and surrounding-file context, gated by quality evaluations.
 - Terminal command generation and terminal-output-to-chat context.
 - AI-generated commit messages in the commit box.
 
@@ -185,11 +184,11 @@ Benchmark: [VS Code Settings Sync](https://code.visualstudio.com/docs/configure/
 
 ## Recommended implementation order
 
-1. AI inline completion and next-edit prediction.
-2. Automatic checkpoints with per-hunk accept or reject.
-3. Worktree-isolated agent sessions with merge-back.
-4. Browser control and screenshot-based UI verification.
-5. Structured specifications and task artifacts.
+1. Automatic checkpoints with per-hunk accept or reject.
+2. Worktree-isolated agent sessions with merge-back.
+3. Browser control and screenshot-based UI verification.
+4. Structured specifications and task artifacts.
+5. AI editing beyond the completed Tab foundation.
 6. Debugger and Test Explorer.
 
-Items 1–3 close the most visible gap with Cursor and VS Code without requiring Wingman to reproduce the entire VS Code extension ecosystem; item 1 is the only one needing a new model integration (a FIM-capable endpoint through the gateway).
+Items 1–3 close the most visible remaining gaps with Cursor and VS Code without requiring Wingman to reproduce the entire VS Code extension ecosystem. Predictive Tab editing already uses the configured utility role through the existing Responses endpoint and does not require a dedicated FIM model.

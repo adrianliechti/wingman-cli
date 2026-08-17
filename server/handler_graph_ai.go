@@ -26,8 +26,8 @@ const (
 // summarizing and ranking need no deliberation, so the cheapest effort wins.
 // Unknown capability keeps effort unset rather than guessing.
 func (s *Server) generationTarget(role string) (model, effort string) {
-	if s.config.SubagentModel != nil {
-		if option, ok := s.config.SubagentModel(role); ok {
+	if s.config.RoleModel != nil {
+		if option, ok := s.config.RoleModel(role); ok {
 			if len(option.Efforts) > 0 {
 				effort = option.Efforts[0]
 			}

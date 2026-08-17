@@ -77,8 +77,8 @@ type editorTabResponse struct {
 }
 
 type editorTabService struct {
-	model    func() string
-	complete func(context.Context, string) (string, error)
+	modelOverride string
+	complete      func(context.Context, string) (string, error)
 }
 
 type editorTabInputError struct {
@@ -94,57 +94,33 @@ type editorTabPrompt struct {
 	cursorMarker string
 }
 
-func newEditorTabService(cfg *agent.Config, utilityModel func() string) *editorTabService {
-	override := strings.TrimSpace(os.Getenv("WINGMAN_MODEL_TAB"))
-	return newEditorTabServiceForModelResolver(cfg, func() string {
-		if override != "" {
-			return override
-		}
-		if utilityModel != nil {
-			if model := strings.TrimSpace(utilityModel()); model != "" {
-				return model
-			}
-		}
-		if model := strings.TrimSpace(agent.DefaultUtilityModel()); model != "" {
-			return model
-		}
-		if cfg.Model != nil {
-			if model := strings.TrimSpace(cfg.Model()); model != "" {
-				return model
-			}
-		}
-		return "gpt-5.6-luna"
-	})
+func newEditorTabService(cfg *agent.Config) *editorTabService {
+	return newEditorTabServiceForModel(cfg, os.Getenv("WINGMAN_MODEL_TAB"))
 }
 
 func newEditorTabServiceForModel(cfg *agent.Config, model string) *editorTabService {
-	return newEditorTabServiceForModelResolver(cfg, func() string { return model })
-}
-
-func newEditorTabServiceForModelResolver(cfg *agent.Config, model func() string) *editorTabService {
-	return &editorTabService{
-		model: model,
-		complete: func(ctx context.Context, prompt string) (string, error) {
-			result, err := cfg.Generate(ctx, agent.GenerateOptions{
-				Model:           model(),
-				Effort:          "none",
-				Instructions:    editorTabInstructions,
-				Input:           prompt,
-				OutputSchema:    editorTabOutputSchema,
-				MaxOutputTokens: 2_048,
-			})
-			if err != nil {
-				return "", err
-			}
-			var output struct {
-				UpdatedWindow string `json:"updated_window"`
-			}
-			if err := json.Unmarshal([]byte(result.Text), &output); err != nil {
-				return "", fmt.Errorf("decode Tab prediction: %w", err)
-			}
-			return output.UpdatedWindow, nil
-		},
+	service := &editorTabService{modelOverride: strings.TrimSpace(model)}
+	service.complete = func(ctx context.Context, prompt string) (string, error) {
+		result, err := cfg.Generate(ctx, agent.GenerateOptions{
+			Model:           service.modelOverride,
+			Effort:          "none",
+			Instructions:    editorTabInstructions,
+			Input:           prompt,
+			OutputSchema:    editorTabOutputSchema,
+			MaxOutputTokens: 2_048,
+		})
+		if err != nil {
+			return "", err
+		}
+		var output struct {
+			UpdatedWindow string `json:"updated_window"`
+		}
+		if err := json.Unmarshal([]byte(result.Text), &output); err != nil {
+			return "", fmt.Errorf("decode Tab prediction: %w", err)
+		}
+		return output.UpdatedWindow, nil
 	}
+	return service
 }
 
 func (s *editorTabService) predict(ctx context.Context, input editorTabRequest) (editorTabResponse, error) {

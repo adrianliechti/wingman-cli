@@ -459,7 +459,7 @@ func clampEffort(level string, target agent.ModelOption) string {
 }
 
 func applyModelOverrides(cfg *agent.Config, args map[string]any, defaultRole string) error {
-	resolve := cfg.SubagentModel
+	resolve := cfg.RoleModel
 
 	var target agent.ModelOption
 

@@ -205,26 +205,21 @@ func TestUTF16PositionConversions(t *testing.T) {
 	}
 }
 
-func TestEditorTabModelSelection(t *testing.T) {
+func TestEditorTabModelOverride(t *testing.T) {
 	t.Setenv("WINGMAN_MODEL_TAB", "")
-	t.Setenv("WINGMAN_MODEL_UTILITY", "")
 	cfg, err := agent.DefaultConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := newEditorTabService(cfg, func() string { return "utility-model" })
-	if model := service.model(); model != "utility-model" {
-		t.Fatalf("fallback model = %q", model)
-	}
-	service = newEditorTabService(cfg, func() string { return "" })
-	if model := service.model(); model != "gpt-5.6-luna" {
-		t.Fatalf("last-resort model = %q", model)
+	service := newEditorTabService(cfg)
+	if service.modelOverride != "" {
+		t.Fatalf("unexpected model override = %q", service.modelOverride)
 	}
 
 	t.Setenv("WINGMAN_MODEL_TAB", "gpt-5.6-luna")
-	service = newEditorTabService(cfg, func() string { return "utility-model" })
-	if model := service.model(); model != "gpt-5.6-luna" {
-		t.Fatalf("configured model = %q", model)
+	service = newEditorTabService(cfg)
+	if service.modelOverride != "gpt-5.6-luna" {
+		t.Fatalf("configured model = %q", service.modelOverride)
 	}
 }
 

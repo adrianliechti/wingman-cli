@@ -39,8 +39,8 @@ func ContextWindowFor(id string, largeContext bool) int {
 	return DefaultContextWindow
 }
 
-// ModelOption is a resolved model for a per-subagent override. Efforts lists
-// the supported reasoning efforts in ascending order; empty means unrestricted.
+// ModelOption is a resolved model role. Efforts lists the supported reasoning
+// efforts in ascending order; empty means unrestricted.
 type ModelOption struct {
 	ID      string
 	Efforts []string
@@ -54,15 +54,11 @@ type Config struct {
 	Tools        func() []tool.Tool
 	Instructions func() string
 
-	// UtilityModel, when set and non-empty, handles internal utility calls
-	// (compaction summaries, recaps) instead of the main model.
-	UtilityModel func() string
-
-	// SubagentModel resolves a model role for per-subagent overrides: "plan"
-	// and "utility" name the session's role models, "" the currently
-	// inherited model (consulted for effort clamping). ok=false or an empty
-	// ID keep the inherited model. Nil disables overrides and clamping.
-	SubagentModel func(role string) (ModelOption, bool)
+	// RoleModel resolves "main", "plan", and "utility" role models. An empty
+	// role names the currently inherited model and is used for effort clamping.
+	// ok=false or an empty ID keeps the inherited model. Nil disables role
+	// overrides.
+	RoleModel func(role string) (ModelOption, bool)
 
 	// CacheKey routes provider-side prompt caching; keep it stable per
 	// conversation (e.g. the session ID) to maximize prefix-cache hits.
@@ -95,13 +91,12 @@ type Config struct {
 
 func (c *Config) Derive() *Config {
 	return &Config{
-		client:        c.client,
-		Model:         c.Model,
-		Effort:        c.Effort,
-		Tools:         c.Tools,
-		Instructions:  c.Instructions,
-		UtilityModel:  c.UtilityModel,
-		SubagentModel: c.SubagentModel,
+		client:       c.client,
+		Model:        c.Model,
+		Effort:       c.Effort,
+		Tools:        c.Tools,
+		Instructions: c.Instructions,
+		RoleModel:    c.RoleModel,
 
 		CacheKey: c.CacheKey,
 
@@ -130,9 +125,9 @@ func (c *Config) Derive() *Config {
 }
 
 func (c *Config) utilityModelName() string {
-	if c.UtilityModel != nil {
-		if model := c.UtilityModel(); model != "" {
-			return model
+	if c.RoleModel != nil {
+		if option, ok := c.RoleModel("utility"); ok && option.ID != "" {
+			return option.ID
 		}
 	}
 	if c.Model != nil {

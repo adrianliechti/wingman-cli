@@ -144,7 +144,12 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 
 	wa := codeagent.New(ws, cfg, nil)
 	wa.SetUI(s)
-	s.tab = newEditorTabService(cfg, wa.UtilityModel)
+	cfg.RoleModel = wa.RoleModel
+	cfg.Model = func() string {
+		option, _ := wa.RoleModel("")
+		return option.ID
+	}
+	s.tab = newEditorTabService(cfg)
 	s.agent = wa
 	s.turns = code.NewTurnManager(tool.WithProgressSink(serverCtx, s.onToolProgress), wa, s.handleTurnEvent)
 
