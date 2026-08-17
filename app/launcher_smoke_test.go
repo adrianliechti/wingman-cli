@@ -7,12 +7,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/adrianliechti/wingman-agent/internal/testenv"
 )
 
 func TestLauncherSmoke(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	testenv.UserHome(t)
+	home := testenv.WingmanHome(t)
+	t.Setenv("WINGMAN_URL", "https://example.com")
+	t.Setenv("WINGMAN_TOKEN", "secret")
 
 	app := &App{}
 	app.launcher = app.newLauncher()
@@ -41,16 +44,8 @@ func TestLauncherSmoke(t *testing.T) {
 		t.Fatalf("workspaces: %d %q", rec.Code, rec.Body.String())
 	}
 
-	if rec := post("/app/settings", `{"url":"https://example.com","token":"secret"}`); rec.Code != http.StatusNoContent {
-		t.Fatalf("save settings: %d %q", rec.Code, rec.Body.String())
-	}
-
-	if rec := get("/app/settings"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "https://example.com") {
-		t.Fatalf("settings: %d %q", rec.Code, rec.Body.String())
-	}
-
-	if _, err := os.Stat(filepath.Join(home, ".wingman", "config.json")); err != nil {
-		t.Fatalf("config not written: %v", err)
+	if rec := get("/app/settings"); rec.Code != http.StatusNotFound {
+		t.Fatalf("removed settings endpoint: %d %q", rec.Code, rec.Body.String())
 	}
 
 	if rec := post("/app/workspaces/remove", `{}`); rec.Code != http.StatusBadRequest {
@@ -61,6 +56,13 @@ func TestLauncherSmoke(t *testing.T) {
 
 	if rec := post("/app/workspaces/open", `{"path":"`+workspace+`"}`); rec.Code != http.StatusNoContent {
 		t.Fatalf("open workspace: %d %q", rec.Code, rec.Body.String())
+	}
+	config, err := os.ReadFile(filepath.Join(home, "config.json"))
+	if err != nil {
+		t.Fatalf("config not written: %v", err)
+	}
+	if strings.Contains(string(config), "url") || strings.Contains(string(config), "token") || strings.Contains(string(config), "secret") {
+		t.Fatalf("config contains connection credentials: %s", config)
 	}
 
 	if rec := get("/app/workspaces"); rec.Code != http.StatusOK {

@@ -85,10 +85,7 @@ func (h *tuiE2EHarness) postText(t *testing.T, value string) {
 func newTUIE2EHarness(t *testing.T) *tuiE2EHarness {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	workspace, err := code.NewWorkspace(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	workspace := newTestWorkspace(t, t.TempDir())
 	cfg, err := agent.DefaultConfig()
 	if err != nil {
 		t.Fatal(err)

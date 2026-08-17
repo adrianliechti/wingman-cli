@@ -218,7 +218,18 @@ OpenAI-compatible backend at `http://localhost:4242/v1`.
 |----------|-------------|
 | `WINGMAN_SANDBOX` | `off` lifts the workspace path restriction from the file tools |
 | `WINGMAN_ELICITATION` | Headless (ACP) sessions: `accept` or `cancel` answers elicitation prompts automatically |
+| `WINGMAN_HOME` | Overrides the `~/.wingman` directory for all Wingman-owned user data |
 | `WINGMAN_<AGENT>_PATH` | Path override for an external agent binary (e.g. `WINGMAN_CODEX_PATH`) |
+
+### User Data
+
+Editor AI completion is enabled whenever the server advertises Tab support.
+Wingman's `~/.wingman/config.json` stores recent launcher workspaces only;
+backend URLs and authentication tokens are read from environment variables and
+are never persisted in this file.
+Set `WINGMAN_HOME` to relocate the complete `~/.wingman` directory, including
+settings, project memory and sessions, global MCP configuration, skills,
+plugins, and plugin data.
 
 ### Project Configuration
 

@@ -118,7 +118,6 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 		return nil, err
 	}
 	serverCtx, cancel := context.WithCancel(ctx)
-
 	s := &Server{
 		noBrowser:      opts.NoBrowser,
 		workspace:      ws,

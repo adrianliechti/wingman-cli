@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/adrianliechti/wingman-agent/internal/testenv"
 	"github.com/adrianliechti/wingman-agent/pkg/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/skill"
 )
@@ -24,14 +25,10 @@ func installPlugin(t *testing.T, dir, name string) {
 	}
 }
 
-func isolateHome(t *testing.T) string {
+func isolateHome(t *testing.T) (string, string) {
 	t.Helper()
 
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-
-	return home
+	return testenv.UserHome(t), testenv.WingmanHome(t)
 }
 
 func TestDiscoverPrefersWingmanOverAgentsAndClaude(t *testing.T) {
@@ -59,10 +56,10 @@ func TestDiscoverPrefersWingmanOverAgentsAndClaude(t *testing.T) {
 }
 
 func TestDiscoverPrefersProjectOverPersonal(t *testing.T) {
-	home := isolateHome(t)
+	_, wingmanHome := isolateHome(t)
 	work := t.TempDir()
 
-	installPlugin(t, filepath.Join(home, ".wingman", "plugins", "personal"), "shared")
+	installPlugin(t, filepath.Join(wingmanHome, "plugins", "personal"), "shared")
 	installPlugin(t, filepath.Join(work, ".claude", "plugins", "project"), "shared")
 
 	plugins, _ := Discover(work, t.TempDir(), t.TempDir())

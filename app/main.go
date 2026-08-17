@@ -14,8 +14,9 @@ import (
 	"sync"
 	"time"
 
-	shell "github.com/adrianliechti/go-shell"
+	"github.com/adrianliechti/go-shell"
 
+	"github.com/adrianliechti/wingman-agent/pkg/settings"
 	"github.com/adrianliechti/wingman-agent/server"
 )
 
@@ -34,10 +35,6 @@ func main() {
 	// launches (Finder/Dock) inherit a minimal PATH that hides Homebrew /
 	// ~/.local/bin CLIs like codex and copilot.
 	ensureShellPath()
-
-	if s, err := loadSettings(); err == nil {
-		s.Apply()
-	}
 
 	app := &App{}
 	app.launcher = app.newLauncher()
@@ -107,8 +104,6 @@ func (a *App) newLauncher() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.FS(public)))
 
-	mux.HandleFunc("GET /app/settings", a.handleSettings)
-	mux.HandleFunc("POST /app/settings", a.handleSaveSettings)
 	mux.HandleFunc("GET /app/workspaces", a.handleWorkspaces)
 	mux.HandleFunc("POST /app/workspaces/remove", a.handleRemoveWorkspace)
 	mux.HandleFunc("POST /app/workspaces/open", a.handleOpenWorkspace)
@@ -117,41 +112,8 @@ func (a *App) newLauncher() http.Handler {
 	return mux
 }
 
-func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
-	s, err := loadSettings()
-
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	writeJSON(w, s)
-}
-
-func (a *App) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
-	var s Settings
-
-	if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	if current, err := loadSettings(); err == nil {
-		s.Workspaces = current.Workspaces
-	}
-
-	if err := saveSettings(s); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	s.Apply()
-
-	w.WriteHeader(http.StatusNoContent)
-}
-
 func (a *App) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
-	s, err := loadSettings()
+	s, err := settings.Load()
 
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -160,8 +122,8 @@ func (a *App) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
 
 	workspaces := s.Workspaces
 
-	if len(workspaces) > maxWorkspaces {
-		workspaces = workspaces[:maxWorkspaces]
+	if len(workspaces) > settings.MaxWorkspaces {
+		workspaces = workspaces[:settings.MaxWorkspaces]
 	}
 
 	writeJSON(w, workspaces)
@@ -174,16 +136,10 @@ func (a *App) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s, err := loadSettings()
-
+	s, err := settings.Update(func(current *settings.Settings) {
+		current.RemoveWorkspace(path)
+	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	s.RemoveWorkspace(path)
-
-	if err := saveSettings(s); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -231,10 +187,9 @@ func (a *App) handleOpenWorkspace(w http.ResponseWriter, r *http.Request) {
 	a.server = srv
 	a.mu.Unlock()
 
-	if s, err := loadSettings(); err == nil {
-		s.AddWorkspace(request.Path)
-		_ = saveSettings(s)
-	}
+	_, _ = settings.Update(func(settings *settings.Settings) {
+		settings.AddWorkspace(request.Path)
+	})
 
 	w.WriteHeader(http.StatusNoContent)
 

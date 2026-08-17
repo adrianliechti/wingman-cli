@@ -271,6 +271,7 @@ export default function App() {
 	const showProblems = capabilities?.lsp ?? false;
 	const showAgents = capabilities?.tasks ?? false;
 	const showTerminal = capabilities?.terminal ?? false;
+	const tabEnabled = capabilities?.tab ?? false;
 	const [requestedRightTab, setRequestedRightTab] = useState<RightTab>("files");
 	const [workspaceSearching, setWorkspaceSearching] = useState(false);
 	const [searchFocusKey, setSearchFocusKey] = useState(0);
@@ -2188,7 +2189,7 @@ export default function App() {
 									<FileTab
 										key={`${activeTab.id}:${activeTab.path}`}
 										document={documents[activeTab.path]}
-										tabEnabled={capabilities?.tab ?? false}
+										tabEnabled={tabEnabled}
 										line={activeTab.line}
 										column={activeTab.column}
 										navigationKey={activeTab.navigationKey}

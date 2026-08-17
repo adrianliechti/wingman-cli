@@ -11,6 +11,7 @@ import (
 
 	acpsdk "github.com/coder/acp-go-sdk"
 
+	"github.com/adrianliechti/wingman-agent/internal/testenv"
 	"github.com/adrianliechti/wingman-agent/pkg/acp/claude"
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
@@ -53,6 +54,8 @@ func TestLiveWebPipelineAskUserQuestion(t *testing.T) {
 	if _, err := exec.LookPath(path); err != nil {
 		t.Skipf("claude not found: %v", err)
 	}
+	testenv.UserHome(t)
+	testenv.WingmanHome(t)
 
 	dir := t.TempDir()
 	ws, err := code.NewWorkspace(dir)

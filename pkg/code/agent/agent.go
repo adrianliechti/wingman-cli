@@ -34,6 +34,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/websearch"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/code/prompt"
+	"github.com/adrianliechti/wingman-agent/pkg/layout"
 	"github.com/adrianliechti/wingman-agent/pkg/model"
 	"github.com/adrianliechti/wingman-agent/pkg/session"
 	skillpkg "github.com/adrianliechti/wingman-agent/pkg/skill"
@@ -805,8 +806,8 @@ func (a *Agent) buildSession() *sessionState {
 			allowedReadRoots = append(allowedReadRoots, sk.Location)
 		}
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		allowedReadRoots = append(allowedReadRoots, filepath.Join(home, ".wingman", "skills"))
+	if path, err := layout.WingmanPath("skills"); err == nil {
+		allowedReadRoots = append(allowedReadRoots, path)
 	}
 	allowedReadRoots = append(allowedReadRoots, ws.ScratchPath)
 

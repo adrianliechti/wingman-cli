@@ -15,6 +15,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/task"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
+	"github.com/adrianliechti/wingman-agent/pkg/layout"
 	"github.com/adrianliechti/wingman-agent/pkg/tui"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/ansi"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/clipboard"
@@ -374,12 +375,11 @@ func saveExecutablePath() {
 		return
 	}
 
-	home, err := os.UserHomeDir()
+	dir, err := layout.WingmanPath()
 	if err != nil {
 		return
 	}
 
-	dir := filepath.Join(home, ".wingman")
 	os.MkdirAll(dir, 0755)
 
 	os.WriteFile(filepath.Join(dir, "path"), []byte(path), 0644)

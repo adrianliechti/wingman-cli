@@ -5,17 +5,28 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/adrianliechti/wingman-agent/internal/testenv"
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/ansi"
 )
 
-func TestThoughtCellsGetSurroundingBlankLines(t *testing.T) {
-	ws, err := code.NewWorkspace(t.TempDir())
+func newTestWorkspace(t *testing.T, path string) *code.Workspace {
+	t.Helper()
+	testenv.UserHome(t)
+	testenv.WingmanHome(t)
+
+	workspace, err := code.NewWorkspace(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(workspace.Close)
+	return workspace
+}
+
+func TestThoughtCellsGetSurroundingBlankLines(t *testing.T) {
+	ws := newTestWorkspace(t, t.TempDir())
 
 	a := &App{agent: codeagent.New(ws, &agent.Config{}, nil)}
 
@@ -78,10 +89,7 @@ func TestThoughtCellsGetSurroundingBlankLines(t *testing.T) {
 }
 
 func TestStreamTailFollowsWorkOrder(t *testing.T) {
-	ws, err := code.NewWorkspace(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := newTestWorkspace(t, t.TempDir())
 
 	a := &App{agent: codeagent.New(ws, &agent.Config{}, nil), queue: make(chan func(), 64), quit: make(chan struct{})}
 
@@ -166,10 +174,7 @@ func TestStreamTailRetainsIntermediateACPCells(t *testing.T) {
 }
 
 func TestWhitespaceOnlyTextRendersNothing(t *testing.T) {
-	ws, err := code.NewWorkspace(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := newTestWorkspace(t, t.TempDir())
 
 	a := &App{agent: codeagent.New(ws, &agent.Config{}, nil)}
 
@@ -180,10 +185,7 @@ func TestWhitespaceOnlyTextRendersNothing(t *testing.T) {
 }
 
 func TestAnnotationsSurviveChatRebuild(t *testing.T) {
-	ws, err := code.NewWorkspace(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := newTestWorkspace(t, t.TempDir())
 
 	a := &App{agent: codeagent.New(ws, &agent.Config{}, nil)}
 

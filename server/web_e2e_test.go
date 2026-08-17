@@ -18,6 +18,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/adrianliechti/wingman-agent/internal/testenv"
 )
 
 type webE2EModel struct {
@@ -230,6 +232,7 @@ func (m *webE2EModel) handler(w http.ResponseWriter, r *http.Request) {
 }
 
 func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
+	testenv.WingmanHome(t)
 	workDir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(workDir, "theme-preview.html"),

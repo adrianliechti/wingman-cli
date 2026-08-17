@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/adrianliechti/wingman-agent/pkg/external"
+	"github.com/adrianliechti/wingman-agent/pkg/layout"
 )
 
 const providerName = "wingman"
@@ -21,11 +22,10 @@ func BinPath() string {
 // Unlike the launcher's ephemeral temp dir, this persists so pi sessions written
 // under <dir>/sessions survive across runs and can be listed/loaded.
 func ConfigDir() (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := layout.WingmanPath("pi")
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".wingman", "pi")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
