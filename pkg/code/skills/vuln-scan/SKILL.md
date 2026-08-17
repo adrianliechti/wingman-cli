@@ -6,6 +6,8 @@ description: Static source-code vulnerability scan that maps focus areas, fans o
 
 Run an authorized static scan and write raw findings for `/triage`. This is read-only with respect to target code: do not build, run, install dependencies, send requests, or probe services. You may write only `VULN-FINDINGS.json` and `VULN-FINDINGS.md` in the current workspace.
 
+For every subagent launched in this workflow, set `model: plan` so reconnaissance, scanning, and confidence calibration use the configured frontier model.
+
 Arguments: `$ARGUMENTS`. Parse them yourself:
 - first positional: target path (default `.`);
 - `--focus TEXT`: add or restrict to a focus area; may appear more than once;

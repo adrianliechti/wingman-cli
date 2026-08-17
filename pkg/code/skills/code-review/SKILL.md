@@ -6,6 +6,8 @@ description: High-precision review of local changes, branch diffs, or pull reque
 
 Review the requested changes and report only findings independently verified as real. Optimize for a short list a senior engineer would act on, not exhaustive commentary. Do not edit files, post comments, add labels, or approve the change.
 
+For every subagent launched in this workflow, set `model: plan` so discovery and verification use the configured frontier model.
+
 ## Phase 1: Resolve the review scope
 
 Use exactly one scope and state it:
@@ -57,6 +59,24 @@ Keep only `real` findings with confidence at least 80. Uncertainty is a rejectio
 
 ## Phase 4: Report
 
-Lead with findings, ordered by severity, with `file:line` references. For each include the failure scenario, why this diff causes it, verifier confidence, and the smallest concrete fix. Then list verification gaps, if any.
+Lead with findings, ordered by severity. Use this compact shape so results remain scannable in chat:
+
+```markdown
+## Findings
+### HIGH · Concise finding title
+`path/to/file.go:42` · confidence 92
+
+Failure scenario and evidence from the diff.
+
+Fix: smallest concrete correction.
+
+## Verification gaps
+Only meaningful gaps, or "None".
+
+## Verdict
+needs work
+```
+
+Use `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW` honestly; omit the findings section when nothing survives verification.
 
 End with `ready to merge` or `needs work`. If nothing survives, say `No high-confidence issues found` and do not manufacture suggestions.
