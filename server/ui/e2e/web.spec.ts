@@ -1966,9 +1966,22 @@ test("renders streaming Markdown with lazy Monaco highlighting", async ({
 
 	const mermaidBlock = markdown.locator(
 		'[data-markdown-code][data-language="mermaid"]',
-	);
-	await expect(mermaidBlock).toContainText("graph TD; A-->B");
+	).first();
+	await expect(mermaidBlock.locator("[data-mermaid-preview]")).toBeVisible();
+	await mermaidBlock
+		.getByRole("button", { name: "Show Mermaid source" })
+		.click();
 	await expect(mermaidBlock.locator("pre > code")).toBeVisible();
+	await expect(mermaidBlock).toContainText("graph TD; A-->B");
+
+	const c4Block = markdown
+		.locator('[data-markdown-code][data-language="mermaid"]')
+		.nth(1);
+	const c4Image = c4Block.locator("[data-mermaid-preview] img");
+	await expect(c4Image).toBeVisible();
+	await expect
+		.poll(() => c4Image.evaluate((image: HTMLImageElement) => image.naturalWidth))
+		.toBeGreaterThan(0);
 	await expect(markdown).toContainText("Math stays literal: $x^2$.");
 	await expect(
 		markdown.getByRole("link", { name: "Documentation" }),

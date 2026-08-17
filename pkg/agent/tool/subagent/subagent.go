@@ -61,6 +61,7 @@ var subagentTypes = map[string]subagentType{
 		AllowTool:           allowReadOnlyTool,
 		WrapDynamicReadOnly: true,
 		ReadOnly:            true,
+		Model:               "plan",
 	},
 	"code-architect": {
 		Instructions:        codeArchitectInstructions,
@@ -73,6 +74,7 @@ var subagentTypes = map[string]subagentType{
 		AllowTool:           allowReadOnlyTool,
 		WrapDynamicReadOnly: true,
 		ReadOnly:            true,
+		Model:               "plan",
 	},
 	"code-simplifier": {
 		Instructions: codeSimplifierInstructions,

@@ -100,6 +100,53 @@ func TestSearchContentPaginationFiltersAndRegex(t *testing.T) {
 	}
 }
 
+func TestSearchContentSortingAndUnlimitedResults(t *testing.T) {
+	e := newContentTestEngine(t)
+	ctx := context.Background()
+	writeFile(t, e.root, "many.go", "package app\n"+strings.Repeat("// NEEDLE outside definitions\n", maxRawContentHits+5))
+
+	limited, err := e.SearchContent(ctx, ContentSearchOpts{Pattern: "NEEDLE", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !limited.RawHasMore || len(limited.Raw) != maxRawContentHits {
+		t.Fatalf("default search should cap ungrouped matches: %+v", limited)
+	}
+
+	byMatches, err := e.SearchContent(ctx, ContentSearchOpts{
+		Pattern: "NEEDLE",
+		Sort:    SearchSortMatches,
+		Limit:   -1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if byMatches.HasMore || len(byMatches.Hits) != byMatches.TotalResults {
+		t.Fatalf("unlimited content search did not return all definitions: %+v", byMatches)
+	}
+	if byMatches.RawHasMore || len(byMatches.Raw) != byMatches.TotalRawResults {
+		t.Fatalf("unlimited content search did not return all ungrouped matches: %+v", byMatches)
+	}
+	if len(byMatches.Hits) == 0 || byMatches.Hits[0].Node.Name != "popular" {
+		t.Fatalf("most matching definition should be first: %+v", byMatches.Hits)
+	}
+
+	byFile, err := e.SearchContent(ctx, ContentSearchOpts{
+		Pattern: "NEEDLE",
+		Sort:    SearchSortFile,
+		Limit:   -1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i < len(byFile.Hits); i++ {
+		previous, current := byFile.Hits[i-1].Node, byFile.Hits[i].Node
+		if previous.File > current.File || (previous.File == current.File && previous.StartLine > current.StartLine) {
+			t.Fatalf("content results are not sorted by source location: %+v before %+v", previous, current)
+		}
+	}
+}
+
 func TestCoveragePersistsAndContentSearchScansSkippedFiles(t *testing.T) {
 	e := newContentTestEngine(t)
 	ctx := context.Background()

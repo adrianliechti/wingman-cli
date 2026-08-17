@@ -119,9 +119,20 @@ type SearchOpts struct {
 	Query  string
 	Kind   Kind
 	File   string
+	Sort   SearchSort
 	Limit  int
 	Offset int
 }
+
+type SearchSort string
+
+const (
+	SearchSortRelevance   SearchSort = "relevance"
+	SearchSortName        SearchSort = "name"
+	SearchSortFile        SearchSort = "file"
+	SearchSortConnections SearchSort = "connections"
+	SearchSortMatches     SearchSort = "matches"
+)
 
 type SearchResult struct {
 	Nodes   []*Node `json:"nodes"`
@@ -136,7 +147,7 @@ func (g *Graph) search(opts SearchOpts) []*Node {
 
 func (g *Graph) searchPage(opts SearchOpts) SearchResult {
 	limit := opts.Limit
-	if limit <= 0 {
+	if limit == 0 {
 		limit = 50
 	}
 	offset := max(opts.Offset, 0)
@@ -151,8 +162,9 @@ func (g *Graph) searchPage(opts SearchOpts) SearchResult {
 	qTokens := tokenize(opts.Query)
 
 	type scored struct {
-		node  *Node
-		score int
+		node        *Node
+		score       int
+		connections int
 	}
 	var out []scored
 	for _, n := range g.Nodes {
@@ -166,12 +178,36 @@ func (g *Graph) searchPage(opts SearchOpts) SearchResult {
 		if score == 0 {
 			continue
 		}
-		out = append(out, scored{n, score + kindBoost(n.Kind) + degreeBoost(len(g.in[n.ID]))})
+		connections := len(g.in[n.ID]) + len(g.out[n.ID])
+		out = append(out, scored{
+			node:        n,
+			score:       score + kindBoost(n.Kind) + degreeBoost(len(g.in[n.ID])),
+			connections: connections,
+		})
 	}
 
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].score != out[j].score {
-			return out[i].score > out[j].score
+		switch opts.Sort {
+		case SearchSortName:
+			in, jn := strings.ToLower(out[i].node.Name), strings.ToLower(out[j].node.Name)
+			if in != jn {
+				return in < jn
+			}
+		case SearchSortFile:
+			if out[i].node.File != out[j].node.File {
+				return out[i].node.File < out[j].node.File
+			}
+			if out[i].node.StartLine != out[j].node.StartLine {
+				return out[i].node.StartLine < out[j].node.StartLine
+			}
+		case SearchSortConnections:
+			if out[i].connections != out[j].connections {
+				return out[i].connections > out[j].connections
+			}
+		default:
+			if out[i].score != out[j].score {
+				return out[i].score > out[j].score
+			}
 		}
 		if out[i].node.Name != out[j].node.Name {
 			return out[i].node.Name < out[j].node.Name
@@ -183,7 +219,10 @@ func (g *Graph) searchPage(opts SearchOpts) SearchResult {
 	if offset > total {
 		offset = total
 	}
-	end := min(offset+limit, total)
+	end := total
+	if limit > 0 {
+		end = min(offset+limit, total)
+	}
 	page := out[offset:end]
 	nodes := make([]*Node, len(page))
 	for i, s := range page {

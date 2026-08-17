@@ -20,6 +20,7 @@ export function PanZoomCanvas({
 	width,
 	height,
 	fitKey,
+	wheelMode = "pan-and-zoom",
 	dragExclude,
 	onBackgroundClick,
 	children,
@@ -28,6 +29,7 @@ export function PanZoomCanvas({
 	width: number;
 	height: number;
 	fitKey?: unknown;
+	wheelMode?: "pan-and-zoom" | "zoom-only";
 	dragExclude?: string;
 	onBackgroundClick?: () => void;
 	children: ReactNode;
@@ -77,9 +79,11 @@ export function PanZoomCanvas({
 		const container = containerRef.current;
 		if (!container) return;
 		const onWheel = (event: WheelEvent) => {
+			const zooming = event.ctrlKey || event.metaKey;
+			if (!zooming && wheelMode === "zoom-only") return;
 			event.preventDefault();
 			const current = transformRef.current;
-			if (event.ctrlKey || event.metaKey) {
+			if (zooming) {
 				const rect = container.getBoundingClientRect();
 				const px = event.clientX - rect.left;
 				const py = event.clientY - rect.top;
@@ -100,7 +104,7 @@ export function PanZoomCanvas({
 		};
 		container.addEventListener("wheel", onWheel, { passive: false });
 		return () => container.removeEventListener("wheel", onWheel);
-	}, []);
+	}, [wheelMode]);
 
 	const zoomBy = useCallback((factor: number) => {
 		const container = containerRef.current;

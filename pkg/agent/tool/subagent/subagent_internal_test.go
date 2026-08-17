@@ -12,6 +12,14 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
+func TestReviewAgentsDefaultToPlanModel(t *testing.T) {
+	for _, name := range []string{"code-reviewer", "security"} {
+		if got := subagentTypes[name].Model; got != "plan" {
+			t.Errorf("%s model = %q, want plan", name, got)
+		}
+	}
+}
+
 func TestVerificationToolFilterRejectsUnknownAndMutatingTools(t *testing.T) {
 	tests := []struct {
 		name string

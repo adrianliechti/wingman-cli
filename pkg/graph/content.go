@@ -27,6 +27,7 @@ type ContentSearchOpts struct {
 	IgnoreCase bool
 	File       string
 	Glob       string
+	Sort       SearchSort
 	Limit      int
 	Offset     int
 }
@@ -118,7 +119,7 @@ func (e *Engine) SearchContent(ctx context.Context, opts ContentSearchOpts) (Con
 			n := g.nodeAt(file, line)
 			if n == nil {
 				totalRaw++
-				if len(raw) < maxRawContentHits {
+				if opts.Limit < 0 || len(raw) < maxRawContentHits {
 					raw = append(raw, RawContentHit{File: file, Line: line, Content: contentPreview(text)})
 				}
 				continue
@@ -139,8 +140,25 @@ func (e *Engine) SearchContent(ctx context.Context, opts ContentSearchOpts) (Con
 		hits = append(hits, *hit)
 	}
 	sort.SliceStable(hits, func(i, j int) bool {
-		if hits[i].Score != hits[j].Score {
-			return hits[i].Score > hits[j].Score
+		switch opts.Sort {
+		case SearchSortFile:
+			if hits[i].Node.File != hits[j].Node.File {
+				return hits[i].Node.File < hits[j].Node.File
+			}
+		case SearchSortConnections:
+			iConnections := hits[i].Callers + hits[i].Callees
+			jConnections := hits[j].Callers + hits[j].Callees
+			if iConnections != jConnections {
+				return iConnections > jConnections
+			}
+		case SearchSortMatches:
+			if len(hits[i].MatchLines) != len(hits[j].MatchLines) {
+				return len(hits[i].MatchLines) > len(hits[j].MatchLines)
+			}
+		default:
+			if hits[i].Score != hits[j].Score {
+				return hits[i].Score > hits[j].Score
+			}
 		}
 		if hits[i].Node.File != hits[j].Node.File {
 			return hits[i].Node.File < hits[j].Node.File
@@ -153,11 +171,14 @@ func (e *Engine) SearchContent(ctx context.Context, opts ContentSearchOpts) (Con
 
 	total := len(hits)
 	limit := opts.Limit
-	if limit <= 0 {
+	if limit == 0 {
 		limit = defaultContentLimit
 	}
 	offset := min(max(opts.Offset, 0), total)
-	end := min(offset+limit, total)
+	end := total
+	if limit > 0 {
+		end = min(offset+limit, total)
+	}
 
 	return ContentSearchResult{
 		Hits:            hits[offset:end],

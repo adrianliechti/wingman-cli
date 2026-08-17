@@ -8,6 +8,8 @@ Find HIGH-CONFIDENCE, genuinely exploitable vulnerabilities — not a checklist 
 
 This is **read-only**. Spawn `security` agents for all scanning and verification. Never build, run, install, send requests, or probe the target. If `$ARGUMENTS` contains a path, scope everything to it. If the user asks for raw scanner output, backlog triage, or patch-ready artifacts, use `/vuln-scan` and `/triage` instead.
 
+For every subagent launched in this workflow, set `model: plan` so scanning and adversarial verification use the configured frontier model.
+
 ## Phase 1: Scope
 
 First fix the **environment**, because reachability — and therefore every verdict — is judged against it: is this internet-facing (HTTP is untrusted), an internal service (callers are authenticated peers), a library/SDK (the caller is the trust boundary), or a CLI/batch tool (operator input is trusted, file/network input is not)? State it up front. It decides cases like an env-var- or CLI-driven sink: operator-controlled and excluded in a CLI, but a true positive in a multi-tenant web service.

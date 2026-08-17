@@ -6,6 +6,7 @@ import {
 	FileText,
 	GitCompare,
 	Globe2,
+	Lightbulb,
 	Loader2,
 	PanelLeftOpen,
 	PanelRightOpen,
@@ -46,6 +47,7 @@ import { CompareTab } from "./components/CompareTab";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ErrorPanel } from "./components/ErrorScreen";
 import { FileTab } from "./components/FileTab";
+import { InsightsTab } from "./components/insights/InsightsTab";
 import { ProblemsPanel } from "./components/ProblemsPanel";
 import { TasksPanel } from "./components/TasksPanel";
 import { TaskTab } from "./components/TaskTab";
@@ -84,7 +86,7 @@ import {
 
 interface CenterTab {
 	id: string;
-	type: "chat" | "file" | "diff" | "compare" | "terminal" | "task";
+	type: "chat" | "file" | "diff" | "compare" | "terminal" | "task" | "graph";
 	label: string;
 	path?: string;
 	diffLayer?: DiffLayer;
@@ -811,6 +813,10 @@ export default function App() {
 		[showCenterTab],
 	);
 
+	const openInsightsTab = useCallback(() => {
+		showCenterTab({ id: "graph", type: "graph", label: "Insights" }, "keep");
+	}, [showCenterTab]);
+
 	const closeTabNow = useCallback(
 		(id: string) => {
 			const idx = tabs.findIndex((t) => t.id === id);
@@ -1382,6 +1388,28 @@ export default function App() {
 		[sendChat, ensureSessionId],
 	);
 
+	const startInsightsAnalysis = useCallback(
+		async (command: string) => {
+			try {
+				const response = await fetch("/api/sessions", { method: "POST" });
+				if (!response.ok) throw new Error(await response.text());
+				const data = (await response.json()) as { id?: string };
+				if (!data.id) throw new Error("Session id missing in response");
+				openChatTab(data.id, "keep");
+				if (!sendChat(data.id, command)) {
+					throw new Error("The chat connection is not ready");
+				}
+			} catch (error) {
+				toast({
+					title: "Could not start analysis",
+					description: error instanceof Error ? error.message : String(error),
+					tone: "error",
+				});
+			}
+		},
+		[openChatTab, sendChat, toast],
+	);
+
 	const focusChat = useCallback(() => {
 		const tab =
 			tabs.find((t) => t.type === "chat" && t.sessionId === currentSessionId) ??
@@ -1554,6 +1582,12 @@ export default function App() {
 			run: showWorkspaceSearch,
 		});
 		actions.push({
+			id: "code-graph",
+			label: "Open insights",
+			icon: <Lightbulb size={12} className="text-fg-dim shrink-0" />,
+			run: openInsightsTab,
+		});
+		actions.push({
 			id: "show-files",
 			label: "Show files",
 			icon: <FileText size={12} className="text-fg-dim shrink-0" />,
@@ -1579,6 +1613,7 @@ export default function App() {
 		toggleRightPanel,
 		showRightPanel,
 		showWorkspaceSearch,
+		openInsightsTab,
 		createTerminal,
 		modes,
 		mode,
@@ -1691,6 +1726,7 @@ export default function App() {
 						searchFocusKey={searchFocusKey}
 						onSearch={showWorkspaceSearch}
 						onCloseSearch={() => setWorkspaceSearching(false)}
+						onOpenInsights={openInsightsTab}
 						onFileSelect={(path, disposition) =>
 							openFile(path, undefined, undefined, undefined, disposition)
 						}
@@ -2118,6 +2154,16 @@ export default function App() {
 										sessionId={activeTab.sessionId ?? ""}
 										taskId={activeTab.taskId}
 										subscribe={subscribe}
+									/>
+								) : activeTab.type === "graph" ? (
+									<InsightsTab
+										key={activeTab.id}
+										onStartAnalysis={(command) =>
+											void startInsightsAnalysis(command)
+										}
+										onOpenFile={(path, line, column) =>
+											openFile(path, line, column)
+										}
 									/>
 								) : activeTab.type === "compare" &&
 								  activeTab.compareBase &&

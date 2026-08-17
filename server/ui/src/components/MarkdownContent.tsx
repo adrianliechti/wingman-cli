@@ -4,12 +4,14 @@ import {
 	type MarkdownComponentProps,
 	type MarkdownComponents,
 } from "@tanstack/markdown/react";
-import { Check, Copy } from "lucide-react";
+import { Check, Code2, Copy, Image } from "lucide-react";
 import * as monaco from "monaco-editor";
 import {
 	Children,
+	createContext,
 	isValidElement,
 	memo,
+	useContext,
 	useEffect,
 	useMemo,
 	useRef,
@@ -17,8 +19,10 @@ import {
 	type ReactElement,
 	type ReactNode,
 } from "react";
+import { MermaidPreview } from "./MermaidPreview";
 
 const STREAMING_EXTENSIONS = [streamingMarkdownExtension()];
+const MarkdownStreamingContext = createContext(false);
 
 const LANGUAGE_ALIASES: Record<string, string> = {
 	bash: "shell",
@@ -133,7 +137,10 @@ function MarkdownCodeBlock({ children, ...props }: CodePreProps) {
 	const label = props["data-filename"] ?? props["data-code-title"] ?? language;
 	const [loadedLanguage, setLoadedLanguage] = useState<string | null>(null);
 	const [copied, setCopied] = useState(false);
+	const [showMermaidSource, setShowMermaidSource] = useState(false);
 	const copyTimer = useRef<number | undefined>(undefined);
+	const mermaid = language.trim().toLowerCase() === "mermaid";
+	const streaming = useContext(MarkdownStreamingContext);
 
 	useEffect(() => {
 		let active = true;
@@ -166,6 +173,63 @@ function MarkdownCodeBlock({ children, ...props }: CodePreProps) {
 				window.clearTimeout(copyTimer.current);
 			copyTimer.current = window.setTimeout(() => setCopied(false), 1500);
 		});
+	}
+
+	if (mermaid) {
+		return (
+			<div data-markdown-code data-language={language}>
+				<div data-markdown-code-header>
+					<span>
+						{label === "mermaid" ? "diagram" : label}
+						{streaming ? " · generating…" : ""}
+					</span>
+					<span className="flex items-center gap-0.5">
+						<button
+							type="button"
+							disabled={streaming}
+							onClick={() => setShowMermaidSource((show) => !show)}
+							aria-label={
+								streaming
+									? "Diagram available when generation finishes"
+									: showMermaidSource
+										? "Show diagram"
+										: "Show Mermaid source"
+							}
+							title={
+								streaming
+									? "Diagram available when complete"
+									: showMermaidSource
+										? "Show diagram"
+										: "Show source"
+							}
+						>
+							{showMermaidSource ? (
+								<Image aria-hidden="true" />
+							) : (
+								<Code2 aria-hidden="true" />
+							)}
+						</button>
+						<button
+							type="button"
+							onClick={copyCode}
+							aria-label={copied ? "Diagram source copied" : "Copy diagram source"}
+							title={copied ? "Copied" : "Copy source"}
+						>
+							{copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+						</button>
+					</span>
+				</div>
+				{streaming || showMermaidSource ? (
+					<pre {...props}>
+						<code className="language-mermaid">{code}</code>
+					</pre>
+				) : (
+					<div className="h-96 min-h-72 overflow-hidden rounded border border-border-subtle bg-bg">
+						<MermaidPreview text={code} path={label} />
+					</div>
+				)}
+			</div>
+		);
 	}
 
 	return (
@@ -278,15 +342,17 @@ export const MarkdownContent = memo(function MarkdownContent({
 	if (!text?.trim()) return null;
 
 	return (
-		<div data-markdown-content data-streaming={streaming || undefined}>
-			<Markdown
-				components={components}
-				extensions={STREAMING_EXTENSIONS}
-				frontmatter={false}
-				headingIds={false}
-			>
-				{text}
-			</Markdown>
-		</div>
+		<MarkdownStreamingContext.Provider value={streaming}>
+			<div data-markdown-content data-streaming={streaming || undefined}>
+				<Markdown
+					components={components}
+					extensions={STREAMING_EXTENSIONS}
+					frontmatter={false}
+					headingIds={false}
+				>
+					{text}
+				</Markdown>
+			</div>
+		</MarkdownStreamingContext.Provider>
 	);
 });
