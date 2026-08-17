@@ -31,8 +31,6 @@ const maxFileBytes = 2 << 20
 // the genuinely narrow guesses and discards the long noise tail.
 const maxAmbiguousFanout = 8
 
-// isSelectorCall reports whether the identifier at nameStart is preceded by a
-// dot, i.e. the call is a method/field selector rather than a bare call.
 func isSelectorCall(src []byte, nameStart uint32) bool {
 	for i := int(nameStart) - 1; i >= 0; i-- {
 		switch src[i] {
@@ -51,10 +49,8 @@ func isIdentByte(b byte) bool {
 	return b == '_' || b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
 }
 
-// callQualifier returns the identifier immediately left of the dot in a
-// selector call (`q` in `q.name(...)`), or "" for bare calls and non-identifier
-// receivers. It is a lexical hint: when it names an imported module the call
-// can be pinned to that module.
+// callQualifier returns the identifier left of the dot in a selector call,
+// or "" for bare calls.
 func callQualifier(src []byte, nameStart uint32) string {
 	i := int(nameStart) - 1
 	for i >= 0 && (src[i] == ' ' || src[i] == '\t' || src[i] == '\r' || src[i] == '\n') {
@@ -174,8 +170,6 @@ func indexRepo(ctx context.Context, root string, resolver CallResolver) (*Graph,
 	for f := range files {
 		localDirs[path.Dir(f)] = true
 	}
-	// reachable maps each indexed file to the modules its names can legally
-	// resolve into: its own directory plus every local module it imports.
 	reachable := make(map[string]map[string]bool, len(results))
 	for _, r := range results {
 		if r.issue != nil {
@@ -212,8 +206,6 @@ func indexRepo(ctx context.Context, root string, resolver CallResolver) (*Graph,
 	resolves := 0
 	implResolver, _ := resolver.(ImplementationResolver)
 
-	// resolveViaLSP settles one call site precisely: definition first, and when
-	// the definition is an interface (or missing), the concrete implementations.
 	resolveViaLSP := func(r indexRef) bool {
 		if resolver == nil || resolves >= maxResolves {
 			return false
@@ -257,11 +249,8 @@ func indexRepo(ctx context.Context, root string, resolver CallResolver) (*Graph,
 		}
 		processed[pk] = true
 
-		// For languages with import extraction, a name may only resolve into
-		// modules the referencing file actually reaches. When the selector
-		// qualifier names one of those modules (`graph.New(...)`), the call is
-		// pinned to it. Go additionally keeps unexported names and bare calls
-		// inside their own package, which the language guarantees.
+		// Names resolve only into modules the file imports (or its own); a
+		// qualifier naming an imported module pins the call to it.
 		refDir := path.Dir(r.file)
 		reach := reachable[r.file]
 		_, connected := importQueries[r.lang]
@@ -300,8 +289,6 @@ func indexRepo(ctx context.Context, root string, resolver CallResolver) (*Graph,
 		}
 		switch len(cands) {
 		case 0:
-			// Same-named definitions exist but none is import-reachable — the
-			// dynamic-dispatch shape. Only the language server can settle it.
 			if sameFamily > 0 {
 				resolveViaLSP(r)
 			}
@@ -550,8 +537,6 @@ func (ex *extractor) processFile(root, absPath string) *fileResult {
 		if t.NameRange.EndByte == 0 {
 			pos = t.Range.StartByte
 		}
-		// A bare call to a language builtin is the builtin, not a same-named
-		// local definition; method/attribute calls keep their selector form.
 		if builtins[t.Name] && !isSelectorCall(src, pos) {
 			continue
 		}

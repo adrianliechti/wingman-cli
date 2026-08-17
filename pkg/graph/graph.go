@@ -659,9 +659,7 @@ func (g *Graph) architecture() Arch {
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].File < entries[j].File })
 
-	// Hotspots count only confidently resolved call edges: ambiguous name
-	// fan-out attributes the same call site to several same-named definitions
-	// and turns common names (Error, String, ...) into fake hubs.
+	// Ambiguous fan-out would turn common names (Error, String) into fake hubs.
 	unambiguous := func(from, to string) bool {
 		return g.edgeVia[from+"\x00"+to] != ViaAmbiguous
 	}

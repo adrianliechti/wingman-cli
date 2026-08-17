@@ -22,10 +22,8 @@ type ResolvedLocation struct {
 	Line int
 }
 
-// ImplementationResolver is an optional CallResolver capability. When the
-// language server supports it, call sites whose target is an interface (or
-// that name resolution could not bind at all) gain edges to the concrete
-// implementations. Resolvers without the capability simply skip this.
+// ImplementationResolver is an optional CallResolver capability for edges to
+// concrete implementations of interface call sites.
 type ImplementationResolver interface {
 	ResolveImplementations(ctx context.Context, file string, line, column int) []ResolvedLocation
 }
@@ -50,8 +48,6 @@ type Engine struct {
 	indexedAt    time.Time
 }
 
-// staleCheckTTL rate-limits the staleness walk (a full tree stat) so bursts of
-// interactive queries don't re-scan the workspace on every call.
 var staleCheckTTL = 10 * time.Second
 
 type Option func(*Engine)
@@ -200,9 +196,8 @@ func (e *Engine) indexLocked(ctx context.Context) (Status, error) {
 	return e.Status(), nil
 }
 
-// ensureIndexed serves the current graph and never blocks a query on
-// freshness: a missing graph builds synchronously, a stale one is served as-is
-// while a single background refresh brings it up to date.
+// ensureIndexed never blocks a query on freshness: a missing graph builds
+// synchronously, a stale one is served while one background refresh runs.
 func (e *Engine) ensureIndexed(ctx context.Context) (*Graph, error) {
 	if g := e.tryLoadCache(); g != nil {
 		if e.IsStale(ctx) {
@@ -243,10 +238,9 @@ func (e *Engine) refreshInBackground() {
 	}()
 }
 
-// IsStale reports whether the cached graph's discovered source-file set or
-// any file's size/mtime differs from the workspace, re-walking the tree at
-// most once per staleCheckTTL. A false result when no graph exists means "not
-// indexed", not "fresh".
+// IsStale reports whether any file's size/mtime or the file set differs from
+// the workspace, re-walking at most once per staleCheckTTL. False with no
+// graph means "not indexed", not "fresh".
 func (e *Engine) IsStale(ctx context.Context) bool {
 	if e.tryLoadCache() == nil {
 		return false

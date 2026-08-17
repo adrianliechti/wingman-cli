@@ -128,8 +128,6 @@ func TestSearchServesStaleAndRefreshesInBackground(t *testing.T) {
 		t.Fatal("expected new source file to make graph stale")
 	}
 
-	// A stale graph must answer immediately; the refresh happens in the
-	// background and converges shortly after.
 	if _, err := e.Search(ctx, SearchOpts{Query: "freshlyAdded"}); err != nil {
 		t.Fatal(err)
 	}

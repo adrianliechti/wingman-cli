@@ -6,11 +6,8 @@ import (
 	"sync"
 )
 
-// builtinsByLang caches per language the callable builtin names declared by
-// the grammar's bundled highlight query, so no hand-maintained per-language
-// lists exist here. Builtins are the names bound to @function.builtin or
-// @constructor.builtin captures via #eq?, #any-of?, or strict-alternation
-// #match? predicates.
+// Builtin names are derived from the grammar's highlight query captures
+// (@function.builtin / @constructor.builtin), not hand-maintained lists.
 var builtinsByLang sync.Map
 
 var builtinPredicate = regexp.MustCompile(
@@ -44,8 +41,6 @@ func builtinNames(lang, highlightQuery string) map[string]bool {
 	return names
 }
 
-// alternation unpacks a ^(a|b|c)$ regex into its literal alternatives,
-// skipping anything that is not a plain identifier.
 func alternation(pattern string) []string {
 	inner, ok := strings.CutPrefix(pattern, "^(")
 	if !ok {

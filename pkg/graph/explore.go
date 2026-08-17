@@ -63,10 +63,8 @@ type ModuleProfile struct {
 	Digest  string   `json:"digest"`
 }
 
-// ModuleProfiles describes modules for summarization: files, most connected
-// symbols, and a digest over the structure so cached summaries can be
-// invalidated when a module meaningfully changes. One call indexes once,
-// regardless of how many modules are requested.
+// ModuleProfiles indexes once and returns per-module files, most connected
+// symbols, and a structure digest for cache invalidation.
 func (e *Engine) ModuleProfiles(ctx context.Context, modules []string, topSymbols int) (map[string]ModuleProfile, error) {
 	if topSymbols <= 0 {
 		topSymbols = 20
