@@ -1388,6 +1388,28 @@ export default function App() {
 		[sendChat, ensureSessionId],
 	);
 
+	const startInsightsAnalysis = useCallback(
+		async (command: string) => {
+			try {
+				const response = await fetch("/api/sessions", { method: "POST" });
+				if (!response.ok) throw new Error(await response.text());
+				const data = (await response.json()) as { id?: string };
+				if (!data.id) throw new Error("Session id missing in response");
+				openChatTab(data.id, "keep");
+				if (!sendChat(data.id, command)) {
+					throw new Error("The chat connection is not ready");
+				}
+			} catch (error) {
+				toast({
+					title: "Could not start analysis",
+					description: error instanceof Error ? error.message : String(error),
+					tone: "error",
+				});
+			}
+		},
+		[openChatTab, sendChat, toast],
+	);
+
 	const focusChat = useCallback(() => {
 		const tab =
 			tabs.find((t) => t.type === "chat" && t.sessionId === currentSessionId) ??
@@ -2136,6 +2158,9 @@ export default function App() {
 								) : activeTab.type === "graph" ? (
 									<InsightsTab
 										key={activeTab.id}
+										onStartAnalysis={(command) =>
+											void startInsightsAnalysis(command)
+										}
 										onOpenFile={(path, line, column) =>
 											openFile(path, line, column)
 										}

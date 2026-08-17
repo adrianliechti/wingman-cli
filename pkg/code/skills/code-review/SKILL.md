@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: High-precision review of local changes, branch diffs, or pull requests for real bugs, silent failures, compatibility breaks, missing behavioral tests, security regressions, and explicit project-rule violations. Use when the user wants trustworthy feedback before committing or merging, including targeted review of tests, error handling, types, public contracts, or security.
+description: High-precision review of local changes, branch diffs, or pull requests for real bugs, silent failures, compatibility breaks, material performance regressions, missing behavioral tests, security regressions, and explicit project-rule violations. Use when the user wants trustworthy feedback before committing or merging, including targeted review of tests, error handling, types, public contracts, performance, or security.
 ---
 # Code Review
 
@@ -35,6 +35,10 @@ Check public APIs, CLI flags and output, configuration, protocols, persisted dat
 ### Tests and behavioral coverage (`code-reviewer`)
 
 Check whether changed behavior is exercised at the right layer. Flag a test gap only when you can name a meaningful regression and the exact case that would catch it. Reject assertion-light tests, tests of mocks rather than behavior, and tests that merely restate static definitions.
+
+### Performance and resource use (`code-reviewer`)
+
+Inspect changed hot paths, bulk operations, database access, and long-lived resources for N+1 work, unbounded queries or loops, algorithmic regressions, excessive allocation, blocking, and leaks. Require a plausible input scale and concrete user or system consequence. Do not report micro-optimizations or theoretical complexity that cannot matter on a reachable path.
 
 ### Security (`security`)
 

@@ -1,4 +1,12 @@
-import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
+import {
+	AlertTriangle,
+	ChevronDown,
+	GitPullRequest,
+	Loader2,
+	Network,
+	RefreshCw,
+	ShieldCheck,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	type GraphNode,
@@ -7,6 +15,7 @@ import {
 	reindexGraph,
 } from "../../api/insights";
 import { ActivityView } from "./ActivityView";
+import { FloatingMenu } from "../ui/Floating";
 import { ModuleMap } from "./ModuleMap";
 import { OverviewView } from "./OverviewView";
 import { SearchView } from "./SearchView";
@@ -42,10 +51,34 @@ const VIEWS: { id: GraphView; label: string }[] = [
 	{ id: "activity", label: "Authors" },
 ];
 
+const ANALYSES = [
+	{
+		label: "Review working tree",
+		detail: "Find high-confidence issues in current changes",
+		command: "/code-review",
+		icon: GitPullRequest,
+	},
+	{
+		label: "Security review",
+		detail: "Audit trust boundaries and exploitable risks",
+		command: "/security-review",
+		icon: ShieldCheck,
+	},
+	{
+		label: "Architecture diagram",
+		detail: "Generate an evidence-based C4 Mermaid view",
+		command:
+			"/architecture Generate an evidence-based C4 Mermaid diagram of this repository.",
+		icon: Network,
+	},
+] as const;
+
 export function InsightsTab({
 	onOpenFile,
+	onStartAnalysis,
 }: {
 	onOpenFile: (path: string, line?: number, column?: number) => void;
+	onStartAnalysis: (command: string) => void;
 }) {
 	const [view, setView] = useState<GraphView>(memory.view);
 	const [focus, setFocus] = useState<Focus | null>(memory.focus);
@@ -57,6 +90,8 @@ export function InsightsTab({
 	const [indexRevision, setIndexRevision] = useState(0);
 	const [error, setError] = useState<string | null>(null);
 	const requestRef = useRef<AbortController | null>(null);
+	const analysisButtonRef = useRef<HTMLButtonElement | null>(null);
+	const [analysisOpen, setAnalysisOpen] = useState(false);
 
 	useEffect(() => {
 		memory.view = view;
@@ -166,6 +201,16 @@ export function InsightsTab({
 				))}
 				<div className="flex-1" />
 				<button
+					ref={analysisButtonRef}
+					type="button"
+					onClick={() => setAnalysisOpen((open) => !open)}
+					aria-haspopup="menu"
+					aria-expanded={analysisOpen}
+					className="flex h-6 items-center gap-1 rounded px-1.5 text-[10px] text-fg-dim hover:bg-bg-hover hover:text-fg"
+				>
+					Analyze <ChevronDown size={10} />
+				</button>
+				<button
 					type="button"
 					disabled={indexing || loading}
 					onClick={() => void load(true)}
@@ -180,6 +225,38 @@ export function InsightsTab({
 					)}
 				</button>
 			</div>
+			<FloatingMenu
+				open={analysisOpen}
+				onOpenChange={setAnalysisOpen}
+				reference={analysisButtonRef.current}
+				placement="bottom-end"
+				label="Insights analyses"
+				className="z-[100] w-72 rounded-md border border-border bg-bg-elevated/95 py-1 shadow-xl backdrop-blur-sm"
+			>
+				{ANALYSES.map((analysis) => {
+					const Icon = analysis.icon;
+					return (
+						<button
+							key={analysis.command}
+							type="button"
+							role="menuitem"
+							onClick={() => {
+								setAnalysisOpen(false);
+								onStartAnalysis(analysis.command);
+							}}
+							className="flex w-full items-start gap-2 px-3 py-2 text-left text-fg-muted hover:bg-bg-hover hover:text-fg"
+						>
+							<Icon size={13} className="mt-0.5 shrink-0 text-fg-dim" />
+							<span className="min-w-0">
+								<span className="block text-[11px]">{analysis.label}</span>
+								<span className="mt-0.5 block text-[10px] text-fg-dim">
+									{analysis.detail}
+								</span>
+							</span>
+						</button>
+					);
+				})}
+			</FloatingMenu>
 			{error && overview && (
 				<div className="flex shrink-0 items-center gap-1.5 border-b border-danger/20 bg-danger/5 px-3 py-1.5 text-[10px] text-danger/90">
 					<AlertTriangle size={11} className="shrink-0" />

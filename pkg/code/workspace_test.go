@@ -407,7 +407,7 @@ func TestLoadBundledSkillsIncludesCoreWorkflows(t *testing.T) {
 			t.Errorf("skill %q has empty content", sk.Name)
 		}
 		switch sk.Name {
-		case "architecture", "code-review", "commit", "debug", "feature-dev", "patch", "pull-request", "security-review", "test", "threat-model", "triage", "vuln-scan":
+		case "architecture", "code-review", "commit", "debug", "feature-dev", "patch", "pull-request", "security-review", "system-design", "test", "threat-model", "triage", "vuln-scan":
 			if !strings.Contains(sk.Content, "$ARGUMENTS") {
 				t.Errorf("argument-taking skill %q does not expose Claude-compatible $ARGUMENTS", sk.Name)
 			}
@@ -437,6 +437,7 @@ func TestLoadBundledSkillsIncludesCoreWorkflows(t *testing.T) {
 		"security-review",
 		"skill-creator",
 		"simplify",
+		"system-design",
 		"test",
 		"threat-model",
 		"triage",
