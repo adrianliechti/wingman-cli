@@ -22,6 +22,7 @@ func TestProfileFor(t *testing.T) {
 		{"gpt-5.4-mini", false, 400_000, gptEfforts},
 		{"gpt-5.4-nano", false, 400_000, gptEfforts},
 		{"gpt-5.3-codex", false, 400_000, gptEfforts},
+		{"gpt-5.3-codex-spark", false, 128_000, gptEfforts},
 		{"gpt-6-experimental", false, 0, gptEfforts},
 		{"gptish-5.6", false, 0, nil},
 		{"gemini-2.5-pro", false, 200_000, nil},
