@@ -6,6 +6,7 @@ import {
 	FileText,
 	GitCompare,
 	Globe2,
+	Lightbulb,
 	Loader2,
 	PanelLeftOpen,
 	PanelRightOpen,
@@ -13,7 +14,6 @@ import {
 	Save,
 	Search,
 	SquareTerminal,
-	Waypoints,
 	Wrench,
 } from "lucide-react";
 import {
@@ -47,7 +47,7 @@ import { CompareTab } from "./components/CompareTab";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ErrorPanel } from "./components/ErrorScreen";
 import { FileTab } from "./components/FileTab";
-import { GraphTab } from "./components/graph/GraphTab";
+import { InsightsTab } from "./components/insights/InsightsTab";
 import { ProblemsPanel } from "./components/ProblemsPanel";
 import { TasksPanel } from "./components/TasksPanel";
 import { TaskTab } from "./components/TaskTab";
@@ -813,8 +813,8 @@ export default function App() {
 		[showCenterTab],
 	);
 
-	const openGraphTab = useCallback(() => {
-		showCenterTab({ id: "graph", type: "graph", label: "Code Graph" }, "keep");
+	const openInsightsTab = useCallback(() => {
+		showCenterTab({ id: "graph", type: "graph", label: "Insights" }, "keep");
 	}, [showCenterTab]);
 
 	const closeTabNow = useCallback(
@@ -1561,9 +1561,9 @@ export default function App() {
 		});
 		actions.push({
 			id: "code-graph",
-			label: "Open code graph",
-			icon: <Waypoints size={12} className="text-fg-dim shrink-0" />,
-			run: openGraphTab,
+			label: "Open insights",
+			icon: <Lightbulb size={12} className="text-fg-dim shrink-0" />,
+			run: openInsightsTab,
 		});
 		actions.push({
 			id: "show-files",
@@ -1591,7 +1591,7 @@ export default function App() {
 		toggleRightPanel,
 		showRightPanel,
 		showWorkspaceSearch,
-		openGraphTab,
+		openInsightsTab,
 		createTerminal,
 		modes,
 		mode,
@@ -1704,7 +1704,7 @@ export default function App() {
 						searchFocusKey={searchFocusKey}
 						onSearch={showWorkspaceSearch}
 						onCloseSearch={() => setWorkspaceSearching(false)}
-						onOpenGraph={openGraphTab}
+						onOpenInsights={openInsightsTab}
 						onFileSelect={(path, disposition) =>
 							openFile(path, undefined, undefined, undefined, disposition)
 						}
@@ -2134,7 +2134,7 @@ export default function App() {
 										subscribe={subscribe}
 									/>
 								) : activeTab.type === "graph" ? (
-									<GraphTab
+									<InsightsTab
 										key={activeTab.id}
 										onOpenFile={(path, line, column) =>
 											openFile(path, line, column)

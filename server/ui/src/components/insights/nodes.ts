@@ -1,4 +1,4 @@
-import type { GraphNode } from "../../api/graph";
+import type { GraphNode } from "../../api/insights";
 
 export function nodeLocation(node: GraphNode) {
 	return `${node.file}:${node.start_line}`;

@@ -1,5 +1,5 @@
 import { ExternalLink } from "lucide-react";
-import type { GraphNode, GraphNodeKind } from "../../api/graph";
+import type { GraphNode, GraphNodeKind } from "../../api/insights";
 import { nodeLocation } from "./nodes";
 
 const KIND_LETTER: Record<GraphNodeKind, string> = {
@@ -57,7 +57,7 @@ export function NodeRow({
 }) {
 	const primary = onExplore ?? onOpen;
 	return (
-		<div className="group flex w-full items-center gap-1.5 border-b border-border-subtle/60 px-2 py-1 text-left text-[11px] last:border-b-0 hover:bg-bg-hover">
+		<div className="group flex h-[27px] w-full items-center gap-1.5 border-b border-border-subtle/60 px-2 py-1 text-left text-[11px] last:border-b-0 hover:bg-bg-hover">
 			<KindBadge kind={node.kind} />
 			<button
 				type="button"

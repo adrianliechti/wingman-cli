@@ -199,8 +199,8 @@ func (s *Server) generateModuleSummary(ctx context.Context, profile graph.Module
 		return "", err
 	}
 	summary := strings.TrimSpace(strings.Trim(result.Text, `"'.`))
-	if len(summary) > 120 {
-		summary = summary[:120]
+	if runes := []rune(summary); len(runes) > 120 {
+		summary = string(runes[:120])
 	}
 	return summary, nil
 }

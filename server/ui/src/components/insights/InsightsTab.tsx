@@ -1,11 +1,11 @@
-import { Loader2, RefreshCw } from "lucide-react";
+import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	type GraphNode,
 	type GraphOverview,
 	fetchGraphOverview,
 	reindexGraph,
-} from "../../api/graph";
+} from "../../api/insights";
 import { ActivityView } from "./ActivityView";
 import { ModuleMap } from "./ModuleMap";
 import { OverviewView } from "./OverviewView";
@@ -20,7 +20,7 @@ interface Focus {
 	file?: string;
 }
 
-interface GraphTabMemory {
+interface InsightsTabMemory {
 	view: GraphView;
 	focus: Focus | null;
 	history: Focus[];
@@ -29,7 +29,7 @@ interface GraphTabMemory {
 	searchSeed?: { query?: string; file?: string };
 }
 
-const memory: GraphTabMemory = {
+const memory: InsightsTabMemory = {
 	view: "overview",
 	focus: null,
 	history: [],
@@ -37,12 +37,12 @@ const memory: GraphTabMemory = {
 
 const VIEWS: { id: GraphView; label: string }[] = [
 	{ id: "overview", label: "Overview" },
-	{ id: "map", label: "Modules" },
-	{ id: "search", label: "Search" },
-	{ id: "activity", label: "Activity" },
+	{ id: "map", label: "Architecture" },
+	{ id: "search", label: "Code" },
+	{ id: "activity", label: "Authors" },
 ];
 
-export function GraphTab({
+export function InsightsTab({
 	onOpenFile,
 }: {
 	onOpenFile: (path: string, line?: number, column?: number) => void;
@@ -54,6 +54,7 @@ export function GraphTab({
 	);
 	const [loading, setLoading] = useState(!memory.overview);
 	const [indexing, setIndexing] = useState(false);
+	const [indexRevision, setIndexRevision] = useState(0);
 	const [error, setError] = useState<string | null>(null);
 	const requestRef = useRef<AbortController | null>(null);
 
@@ -76,6 +77,7 @@ export function GraphTab({
 			if (controller.signal.aborted) return;
 			memory.overview = result;
 			setOverview(result);
+			if (reindex) setIndexRevision((value) => value + 1);
 		} catch (loadError) {
 			if (controller.signal.aborted) return;
 			setError(loadError instanceof Error ? loadError.message : "Load failed");
@@ -126,17 +128,32 @@ export function GraphTab({
 	}, []);
 
 	const status = overview?.status;
-	const statusText = status?.indexed
-		? `${status.files.toLocaleString()} files · ${status.nodes.toLocaleString()} symbols${status.stale ? " · stale" : ""}`
-		: "";
+	const refreshTitle = [
+		"Re-index codebase",
+		status?.indexed_at
+			? `Last indexed ${new Date(status.indexed_at).toLocaleString()}`
+			: "",
+		status?.stale ? "Source files changed since this index was built." : "",
+		...(status?.skipped ?? [])
+			.slice(0, 8)
+			.map((issue) => `${issue.file}: ${issue.reason}`),
+	]
+		.filter(Boolean)
+		.join("\n");
 
 	return (
 		<div className="flex h-full min-h-0 flex-col overflow-hidden bg-bg">
-			<div className="flex h-9 shrink-0 items-center gap-1 border-b border-border-subtle bg-bg-surface/20 px-2">
+			<div
+				role="tablist"
+				aria-label="Insights views"
+				className="flex h-10 shrink-0 items-center gap-1 border-b border-border-subtle bg-bg-surface/20 px-2"
+			>
 				{VIEWS.map((entry) => (
 					<button
 						key={entry.id}
 						type="button"
+						role="tab"
+						aria-selected={view === entry.id}
 						onClick={() => setView(entry.id)}
 						className={`rounded px-2 py-1 text-[11px] transition-colors ${
 							view === entry.id
@@ -148,23 +165,11 @@ export function GraphTab({
 					</button>
 				))}
 				<div className="flex-1" />
-				{statusText && (
-					<span
-						className="truncate text-[10px] text-fg-dim tabular-nums"
-						title={
-							status?.indexed_at
-								? `Indexed ${new Date(status.indexed_at).toLocaleString()}`
-								: undefined
-						}
-					>
-						{statusText}
-					</span>
-				)}
 				<button
 					type="button"
 					disabled={indexing || loading}
 					onClick={() => void load(true)}
-					title="Re-index codebase"
+					title={refreshTitle}
 					aria-label="Re-index codebase"
 					className="flex h-6 w-6 items-center justify-center rounded text-fg-dim hover:bg-bg-hover hover:text-fg disabled:opacity-50"
 				>
@@ -175,13 +180,22 @@ export function GraphTab({
 					)}
 				</button>
 			</div>
+			{error && overview && (
+				<div className="flex shrink-0 items-center gap-1.5 border-b border-danger/20 bg-danger/5 px-3 py-1.5 text-[10px] text-danger/90">
+					<AlertTriangle size={11} className="shrink-0" />
+					<span className="min-w-0 flex-1 truncate">Could not refresh insights: {error}</span>
+					<button type="button" onClick={() => void load(false)} className="shrink-0 text-fg-muted hover:text-fg">
+						Try again
+					</button>
+				</div>
+			)}
 			<div className="min-h-0 flex-1">
 				{view === "overview" ? (
-					loading || indexing ? (
+					loading && !overview ? (
 						<div className="flex h-full items-center justify-center gap-1.5 text-[11px] text-fg-dim">
 							<Loader2 size={11} className="animate-spin" />
 							<span>
-								{indexing ? "Re-indexing codebase…" : "Indexing codebase…"}
+								Indexing codebase…
 							</span>
 						</div>
 					) : error ? (
@@ -198,15 +212,20 @@ export function GraphTab({
 					) : null
 				) : view === "map" ? (
 					<ModuleMap
+						refreshKey={indexRevision}
 						initialSelection={memory.mapSelection}
 						onSearchModule={searchModule}
 					/>
 				) : view === "activity" ? (
-					<ActivityView onOpenFile={onOpenFile} />
+					<ActivityView
+						refreshKey={indexRevision}
+						onOpenFile={onOpenFile}
+					/>
 				) : (
 					<div className="h-full">
 						<div className={focus ? "hidden" : "h-full"}>
 							<SearchView
+								refreshKey={indexRevision}
 								seed={memory.searchSeed}
 								onExplore={explore}
 								onOpenFile={onOpenFile}
@@ -214,6 +233,7 @@ export function GraphTab({
 						</div>
 						{focus && (
 							<SymbolView
+								refreshKey={indexRevision}
 								focus={focus}
 								canGoBack
 								onBack={goBack}

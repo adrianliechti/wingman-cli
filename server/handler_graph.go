@@ -94,6 +94,7 @@ func (s *Server) handleGraphSearch(w http.ResponseWriter, r *http.Request) {
 		Query:  query.Get("q"),
 		Kind:   graph.Kind(query.Get("kind")),
 		File:   query.Get("file"),
+		Sort:   graph.SearchSort(query.Get("sort")),
 		Limit:  limit,
 		Offset: offset,
 	})
@@ -113,6 +114,7 @@ type graphContentSearchRequest struct {
 	IgnoreCase bool   `json:"ignore_case"`
 	File       string `json:"file"`
 	Glob       string `json:"glob"`
+	Sort       string `json:"sort"`
 	Limit      int    `json:"limit"`
 	Offset     int    `json:"offset"`
 }
@@ -136,6 +138,7 @@ func (s *Server) handleGraphContentSearch(w http.ResponseWriter, r *http.Request
 		IgnoreCase: request.IgnoreCase,
 		File:       request.File,
 		Glob:       request.Glob,
+		Sort:       graph.SearchSort(request.Sort),
 		Limit:      request.Limit,
 		Offset:     request.Offset,
 	})

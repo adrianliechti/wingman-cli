@@ -4,7 +4,7 @@ import {
 	type GraphNeighborhood,
 	type GraphNode,
 	fetchGraphSymbol,
-} from "../../api/graph";
+} from "../../api/insights";
 import { PanZoomCanvas } from "../PanZoomCanvas";
 import { nodeLocation, nodeTargetLine } from "./nodes";
 import { KindBadge } from "./shared";
@@ -148,12 +148,14 @@ function SideCard({
 
 export function SymbolView({
 	focus,
+	refreshKey,
 	canGoBack,
 	onBack,
 	onExplore,
 	onOpenFile,
 }: {
 	focus: { id?: string; name?: string; file?: string } | null;
+	refreshKey: number;
 	canGoBack: boolean;
 	onBack: () => void;
 	onExplore: (node: GraphNode) => void;
@@ -173,8 +175,10 @@ export function SymbolView({
 		const controller = new AbortController();
 		setLoading(true);
 		setError(null);
+		setNeighborhood(null);
 		fetchGraphSymbol(focus, controller.signal)
 			.then((result) => {
+				if (controller.signal.aborted) return;
 				setNeighborhood(result);
 				setLoading(false);
 			})
@@ -186,7 +190,7 @@ export function SymbolView({
 				setLoading(false);
 			});
 		return () => controller.abort();
-	}, [focus]);
+	}, [focus, refreshKey]);
 
 	const layout = useMemo(() => {
 		if (!neighborhood) return null;
@@ -232,16 +236,38 @@ export function SymbolView({
 	}
 	if (error) {
 		return (
-			<div className="grid h-full place-items-center px-6 text-center text-[11px] text-danger/80">
-				{error}
+			<div className="relative grid h-full place-items-center px-6 text-center text-[11px] text-danger/80">
+				{canGoBack && (
+					<button
+						type="button"
+						onClick={onBack}
+						className="absolute top-3 left-3 flex items-center gap-1 rounded-md border border-border bg-bg-elevated px-2 py-1 text-[10px] text-fg-muted hover:bg-bg-hover hover:text-fg"
+					>
+						<ArrowLeft size={11} /> Back to search
+					</button>
+				)}
+				<div>
+					<div className="mb-1 text-fg-muted">Could not load this symbol</div>
+					{error}
+				</div>
 			</div>
 		);
 	}
 	if (!neighborhood || !layout) {
 		return (
-			<div className="flex h-full items-center justify-center gap-1.5 text-[11px] text-fg-dim">
+			<div className="relative flex h-full items-center justify-center gap-1.5 text-[11px] text-fg-dim">
+				{canGoBack && (
+					<button
+						type="button"
+						onClick={onBack}
+						aria-label="Back to search"
+						className="absolute top-3 left-3 grid h-6 w-6 place-items-center rounded-md border border-border bg-bg-elevated text-fg-dim hover:bg-bg-hover hover:text-fg"
+					>
+						<ArrowLeft size={12} />
+					</button>
+				)}
 				<Loader2 size={11} className="animate-spin" />
-				<span>Loading call graph…</span>
+				<span>{loading ? "Loading relationships…" : "Loading symbol…"}</span>
 			</div>
 		);
 	}
@@ -272,9 +298,6 @@ export function SymbolView({
 								>
 									<ArrowLeft size={12} />
 								</button>
-							)}
-							{loading && (
-								<Loader2 size={12} className="animate-spin text-fg-dim" />
 							)}
 							<span className="rounded-md border border-border bg-bg-elevated/95 px-2 py-1 text-[10px] text-fg-dim shadow-sm">
 								{(neighborhood.callers ?? []).length} callers ·{" "}
@@ -389,7 +412,7 @@ export function SymbolView({
 				(neighborhood.implements?.length ?? 0) > 0 ||
 				(neighborhood.implementers?.length ?? 0) > 0 ||
 				(neighborhood.others?.length ?? 0) > 0) && (
-				<div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-border-subtle bg-bg-surface/20 px-3 py-2">
+				<div className="flex max-h-32 shrink-0 flex-wrap items-center gap-x-4 gap-y-1.5 overflow-y-auto border-t border-border-subtle bg-bg-surface/20 px-3 py-2">
 					<RelationChips
 						label="Extends"
 						nodes={neighborhood.extends ?? []}

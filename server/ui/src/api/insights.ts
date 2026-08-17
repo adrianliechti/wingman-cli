@@ -146,6 +146,7 @@ export interface GraphChurnStat {
 	file: string;
 	commits: number;
 	authors: number;
+	recent_authors: { name: string; commits: number }[];
 }
 
 export interface GraphAuthorSeries {
@@ -160,6 +161,7 @@ export interface GraphModuleActivity {
 
 export interface GraphInsights {
 	commits: number;
+	total_authors: number;
 	since: string;
 	weeks: GraphWeekActivity[];
 	author_weeks: GraphAuthorSeries[];
@@ -218,6 +220,7 @@ export function searchGraphSymbols(
 		query: string;
 		kind?: string;
 		file?: string;
+		sort?: string;
 		limit?: number;
 		offset?: number;
 	},
@@ -226,6 +229,7 @@ export function searchGraphSymbols(
 	const params = new URLSearchParams({ q: options.query });
 	if (options.kind) params.set("kind", options.kind);
 	if (options.file) params.set("file", options.file);
+	if (options.sort) params.set("sort", options.sort);
 	if (options.limit) params.set("limit", String(options.limit));
 	if (options.offset) params.set("offset", String(options.offset));
 	return request<GraphSearchResult>(`/api/graph/search?${params}`, { signal });
@@ -238,7 +242,9 @@ export function searchGraphContent(
 		ignore_case?: boolean;
 		file?: string;
 		glob?: string;
+		sort?: string;
 		limit?: number;
+		offset?: number;
 	},
 	signal?: AbortSignal,
 ) {

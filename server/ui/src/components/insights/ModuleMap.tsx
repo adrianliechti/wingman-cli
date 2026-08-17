@@ -1,11 +1,11 @@
-import { Loader2, Search } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Loader2, Search, Sparkles } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
 	type GraphModules,
 	type GraphModuleStat,
 	fetchGraphModules,
 	fetchGraphSummaries,
-} from "../../api/graph";
+} from "../../api/insights";
 import { PanZoomCanvas } from "../PanZoomCanvas";
 
 const MAX_MODULES = 300;
@@ -231,9 +231,11 @@ function layoutModules(data: GraphModules) {
 
 export function ModuleMap({
 	initialSelection,
+	refreshKey,
 	onSearchModule,
 }: {
 	initialSelection?: string;
+	refreshKey: number;
 	onSearchModule: (path: string) => void;
 }) {
 	const [data, setData] = useState<GraphModules | null>(null);
@@ -243,9 +245,14 @@ export function ModuleMap({
 	);
 	const [hovered, setHovered] = useState<string | null>(null);
 	const [summaries, setSummaries] = useState<Record<string, string>>({});
+	const [summaryLoading, setSummaryLoading] = useState(false);
+	const [summaryError, setSummaryError] = useState<string | null>(null);
+	const summaryRequestRef = useRef<AbortController | null>(null);
 
 	useEffect(() => {
 		const controller = new AbortController();
+		setData(null);
+		setError(null);
 		fetchGraphModules(controller.signal)
 			.then(setData)
 			.catch((loadError: unknown) => {
@@ -255,46 +262,73 @@ export function ModuleMap({
 				);
 			});
 		return () => controller.abort();
-	}, []);
+	}, [refreshKey]);
+
+	useEffect(() => {
+		if (initialSelection) setSelected(initialSelection);
+	}, [initialSelection]);
+
+	useEffect(() => {
+		summaryRequestRef.current?.abort();
+		summaryRequestRef.current = null;
+		setSummaryLoading(false);
+		setSummaryError(null);
+	}, [selected]);
 
 	useEffect(() => {
 		if (!data) return;
 		const controller = new AbortController();
+		setSummaries({});
 		const ordered = [...data.modules]
 			.sort((a, b) => b.nodes - a.nodes)
+			.slice(0, MAX_MODULES)
 			.map((module) => module.path);
-		void (async () => {
-			const known = new Set<string>();
-			try {
-				const { summaries: cached } = await fetchGraphSummaries(
-					ordered,
-					true,
-					controller.signal,
-				);
-				setSummaries((previous) => ({ ...previous, ...cached }));
-				for (const module of Object.keys(cached)) known.add(module);
-			} catch {
-				return;
-			}
-			const missing = ordered.filter((module) => !known.has(module));
-			for (let start = 0; start < missing.length; start += 6) {
-				if (controller.signal.aborted) return;
-				try {
-					const { summaries: batch } = await fetchGraphSummaries(
-						missing.slice(start, start + 6),
-						false,
-						controller.signal,
-					);
-					setSummaries((previous) => ({ ...previous, ...batch }));
-				} catch {
-					return;
-				}
-			}
-		})();
+		fetchGraphSummaries(ordered, true, controller.signal)
+			.then(({ summaries: cached }) =>
+				setSummaries((previous) => ({ ...previous, ...cached })),
+			)
+			.catch(() => {});
 		return () => controller.abort();
 	}, [data]);
 
+	useEffect(() => () => summaryRequestRef.current?.abort(), []);
+
+	const summarizeSelected = async () => {
+		if (!selected) return;
+		summaryRequestRef.current?.abort();
+		const controller = new AbortController();
+		summaryRequestRef.current = controller;
+		setSummaryLoading(true);
+		setSummaryError(null);
+		try {
+			const result = await fetchGraphSummaries([selected], false, controller.signal);
+			if (controller.signal.aborted) return;
+			const summary = result.summaries[selected];
+			if (!summary) throw new Error("No description was generated.");
+			setSummaries((previous) => ({ ...previous, [selected]: summary }));
+		} catch (loadError) {
+			if (controller.signal.aborted) return;
+			setSummaryError(
+				loadError instanceof Error ? loadError.message : "Description failed",
+			);
+		} finally {
+			if (summaryRequestRef.current === controller) {
+				summaryRequestRef.current = null;
+				setSummaryLoading(false);
+			}
+		}
+	};
+
 	const layout = useMemo(() => (data ? layoutModules(data) : null), [data]);
+	useEffect(() => {
+		if (
+			selected &&
+			layout &&
+			!layout.placed.some((entry) => entry.module.path === selected)
+		) {
+			setSelected(null);
+		}
+	}, [layout, selected]);
 
 	const focus = hovered ?? selected;
 
@@ -323,6 +357,16 @@ export function ModuleMap({
 			</div>
 		);
 	}
+	if (layout.placed.length === 0) {
+		return (
+			<div className="grid h-full place-items-center px-6 text-center text-[11px] text-fg-dim">
+				<div>
+					<div className="mb-1 text-fg-muted">No architecture to map yet</div>
+					No indexed definitions were found in this workspace.
+				</div>
+			</div>
+		);
+	}
 
 	const selectedModule = selected
 		? layout.placed.find((entry) => entry.module.path === selected)?.module
@@ -346,25 +390,51 @@ export function ModuleMap({
 					{selectedModule && (
 						<div
 							data-canvas-hud
-							className="absolute top-3 left-3 z-10 flex max-w-[75%] items-center gap-2 rounded-md border border-border bg-bg-elevated/95 py-1 pr-1 pl-2.5 text-[11px] shadow-sm"
+							className="absolute top-3 left-3 z-10 w-80 max-w-[calc(100%-24px)] rounded-lg border border-border bg-bg-elevated/95 p-3 text-[11px] shadow-sm backdrop-blur-sm"
 						>
-							<span className="truncate font-mono text-fg">
+							<div className="truncate font-mono text-[12px] font-medium text-fg">
 								{selectedModule.path}
-							</span>
-							<span className="shrink-0 text-[10px] text-fg-dim tabular-nums">
+							</div>
+							<div className="mt-1 text-[10px] text-fg-dim tabular-nums">
 								{selectedModule.files} files · {selectedModule.nodes} symbols ·{" "}
-								<span className="text-info">{dependsOn} deps</span> ·{" "}
+								<span className="text-info">{dependsOn} dependencies</span> ·{" "}
 								<span className="text-purple">{dependedBy} dependents</span>
-							</span>
-							<button
-								type="button"
-								title="Find symbols in this module"
-								aria-label="Find symbols in this module"
-								onClick={() => onSearchModule(selectedModule.path)}
-								className="grid h-5 w-5 shrink-0 place-items-center rounded text-fg-dim hover:bg-bg-hover hover:text-fg"
-							>
-								<Search size={11} />
-							</button>
+							</div>
+							{summaries[selectedModule.path] ? (
+								<p className="mt-2 text-[10px] leading-relaxed text-fg-muted">
+									{summaries[selectedModule.path]}
+								</p>
+							) : (
+								<button
+									type="button"
+									disabled={summaryLoading}
+									onClick={() => void summarizeSelected()}
+									className="mt-2 flex items-center gap-1 text-[10px] text-fg-dim hover:text-fg disabled:opacity-50"
+								>
+									{summaryLoading ? (
+										<Loader2 size={10} className="animate-spin" />
+									) : (
+										<Sparkles size={10} />
+									)}
+									Describe this module
+								</button>
+							)}
+							{summaryError && (
+								<div className="mt-1 text-[9px] text-danger/80">{summaryError}</div>
+							)}
+							<div className="mt-2 flex items-center gap-3 border-t border-border-subtle pt-2">
+								<button
+									type="button"
+									onClick={() => onSearchModule(selectedModule.path)}
+									className="flex items-center gap-1 text-[10px] text-fg-muted hover:text-fg"
+								>
+									<Search size={10} /> Find symbols
+								</button>
+								<span className="ml-auto text-[9px] text-fg-dim">
+									<span className="text-info">outgoing</span> ·{" "}
+									<span className="text-purple">incoming</span>
+								</span>
+							</div>
 						</div>
 					)}
 					{layout.legend.length > 1 && (
@@ -408,6 +478,14 @@ export function ModuleMap({
 				width={Math.max(1, layout.width)}
 				height={Math.max(1, layout.height)}
 			>
+				<defs>
+					<marker id="module-arrow-out" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto">
+						<path d="M 0 0 L 8 4 L 0 8 z" fill="var(--color-info)" />
+					</marker>
+					<marker id="module-arrow-in" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto">
+						<path d="M 0 0 L 8 4 L 0 8 z" fill="var(--color-purple)" />
+					</marker>
+				</defs>
 				{layout.edges.map((edge) => {
 					const outgoing = focus === edge.from;
 					const incoming = focus === edge.to;
@@ -424,6 +502,13 @@ export function ModuleMap({
 							fill="none"
 							stroke={color}
 							strokeWidth={highlighted ? 1.75 : 1}
+							markerEnd={
+								outgoing
+									? "url(#module-arrow-out)"
+									: incoming
+										? "url(#module-arrow-in)"
+										: undefined
+							}
 							opacity={focus ? (highlighted ? 0.95 : 0.08) : 0.35}
 							style={{ transition: "opacity 150ms, stroke 150ms" }}
 						/>

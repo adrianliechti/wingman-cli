@@ -1,20 +1,8 @@
 import { Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { type GraphInsights, fetchGraphInsights } from "../../api/graph";
+import { type GraphInsights, fetchGraphInsights } from "../../api/insights";
 
-const SERIES_COLORS = [
-	"var(--color-info)",
-	"var(--color-purple)",
-	"var(--color-orange)",
-	"var(--color-success)",
-];
-const OTHERS_COLOR = "var(--color-border-strong)";
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-
-function seriesColor(index: number, name: string) {
-	if (name === "others") return OTHERS_COLOR;
-	return SERIES_COLORS[index % SERIES_COLORS.length];
-}
 
 function relativeDay(value: string) {
 	const then = new Date(value);
@@ -27,7 +15,7 @@ function relativeDay(value: string) {
 }
 
 function weekLabel(value: string) {
-	return new Date(value).toLocaleDateString(undefined, {
+	return new Date(`${value}T00:00:00`).toLocaleDateString(undefined, {
 		month: "short",
 		day: "numeric",
 	});
@@ -95,8 +83,10 @@ function BarRow({
 }
 
 export function ActivityView({
+	refreshKey,
 	onOpenFile,
 }: {
+	refreshKey: number;
 	onOpenFile: (path: string, line?: number) => void;
 }) {
 	const [insights, setInsights] = useState<GraphInsights | null>(null);
@@ -104,6 +94,7 @@ export function ActivityView({
 
 	useEffect(() => {
 		const controller = new AbortController();
+		setError(null);
 		fetchGraphInsights(controller.signal)
 			.then(setInsights)
 			.catch((loadError: unknown) => {
@@ -113,7 +104,7 @@ export function ActivityView({
 				);
 			});
 		return () => controller.abort();
-	}, []);
+	}, [refreshKey]);
 
 	if (error) {
 		return (
@@ -135,7 +126,6 @@ export function ActivityView({
 	}
 
 	const weeks = insights.weeks;
-	const series = insights.author_weeks;
 	const maxWeek = Math.max(1, ...weeks.map((w) => w.commits));
 	const maxAuthor = Math.max(1, ...insights.authors.map((a) => a.commits));
 	const maxModule = Math.max(1, ...insights.modules.map((m) => m.commits));
@@ -144,9 +134,9 @@ export function ActivityView({
 	return (
 		<div className="@container h-full overflow-y-auto p-3">
 			<div className="mb-3 text-[11px] text-fg-muted">
-				{insights.commits.toLocaleString()} commits · {insights.authors.length}{" "}
-				{insights.authors.length === 1 ? "contributor" : "contributors"}
-				{insights.since
+				{insights.commits.toLocaleString()} commits · {insights.total_authors}{" "}
+				{insights.total_authors === 1 ? "contributor" : "contributors"}
+				{insights.commits > 0 && insights.since
 					? ` · since ${new Date(insights.since).toLocaleDateString()}`
 					: ""}
 			</div>
@@ -154,42 +144,20 @@ export function ActivityView({
 				<Card title="Commits per week" detail={`last ${weeks.length} weeks`}>
 					<div className="px-2.5 pt-3 pb-2">
 						<div className="flex h-24 items-end gap-[2px] border-b border-border">
-							{weeks.map((week, index) => {
-								const breakdown = series
-									.map((s) => ({ name: s.name, count: s.weeks[index] ?? 0 }))
-									.filter((s) => s.count > 0);
+							{weeks.map((week) => {
 								return (
 									<div
 										key={week.week}
-										title={[
-											`${weekLabel(week.week)} · ${week.commits} ${week.commits === 1 ? "commit" : "commits"}`,
-											...breakdown.map((s) => `${s.name}: ${s.count}`),
-										].join("\n")}
+										title={`${weekLabel(week.week)} · ${week.commits} ${week.commits === 1 ? "commit" : "commits"}`}
 										className="flex h-full flex-1 items-end"
 									>
 										{week.commits > 0 && (
 											<div
-												className="flex w-full flex-col-reverse gap-[1px] overflow-hidden rounded-t-[3px]"
+												className="w-full rounded-t-[3px] bg-accent/70"
 												style={{
 													height: `${Math.max(4, (week.commits / maxWeek) * 100)}%`,
 												}}
-											>
-												{series.map((s, seriesIndex) => {
-													const count = s.weeks[index] ?? 0;
-													if (count === 0) return null;
-													return (
-														<div
-															key={s.name}
-															className="w-full"
-															style={{
-																flexGrow: count,
-																background: seriesColor(seriesIndex, s.name),
-																opacity: 0.75,
-															}}
-														/>
-													);
-												})}
-											</div>
+											/>
 										)}
 									</div>
 								);
@@ -199,25 +167,6 @@ export function ActivityView({
 							<span>{weekLabel(weeks[0]?.week ?? "")}</span>
 							<span>{weekLabel(weeks[weeks.length - 1]?.week ?? "")}</span>
 						</div>
-						{series.length > 1 && (
-							<div className="flex flex-wrap gap-x-2.5 gap-y-1 pt-1.5">
-								{series.map((s, index) => (
-									<span
-										key={s.name}
-										className="flex items-center gap-1 text-[10px] text-fg-muted"
-									>
-										<span
-											className="h-2 w-2 rounded-full"
-											style={{
-												background: seriesColor(index, s.name),
-												opacity: 0.85,
-											}}
-										/>
-										{s.name}
-									</span>
-								))}
-							</div>
-						)}
 					</div>
 				</Card>
 				<Card title="Commit times" detail="by weekday and hour">
@@ -285,8 +234,8 @@ export function ActivityView({
 				</Card>
 				<Card
 					className="@3xl:col-span-2"
-					title="Most changed files"
-					detail="commits in window"
+					title="Code knowledge & churn"
+					detail="recent authors inferred from commits"
 				>
 					{insights.churn.map((entry) => (
 						<button
@@ -299,6 +248,16 @@ export function ActivityView({
 							<span className="min-w-0 flex-1 truncate font-mono text-fg-muted group-hover:text-fg">
 								{entry.file}
 							</span>
+							{entry.recent_authors.length > 0 && (
+								<span
+									title={entry.recent_authors
+										.map((author) => `${author.name}: ${author.commits} commits`)
+										.join("\n")}
+									className="max-w-52 shrink truncate text-[10px] text-fg-muted"
+								>
+									{entry.recent_authors.map((author) => author.name).join(", ")}
+								</span>
+							)}
 							<span className="shrink-0 text-[10px] text-fg-dim tabular-nums">
 								{entry.commits} {entry.commits === 1 ? "commit" : "commits"} ·{" "}
 								{entry.authors} {entry.authors === 1 ? "author" : "authors"}

@@ -2,10 +2,10 @@ import {
 	Bot,
 	FileText,
 	GitCompare,
+	Lightbulb,
 	Loader2,
 	MessageSquare,
 	SquareTerminal,
-	Waypoints,
 	X,
 } from "lucide-react";
 
@@ -58,8 +58,8 @@ export function Tab({
 					? GitCompare
 					: kind === "task"
 						? Bot
-						: kind === "graph"
-							? Waypoints
+					: kind === "graph"
+							? Lightbulb
 							: FileText;
 
 	return (

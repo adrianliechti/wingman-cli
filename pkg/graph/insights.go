@@ -39,9 +39,15 @@ type AuthorStat struct {
 }
 
 type ChurnStat struct {
-	File    string `json:"file"`
+	File          string               `json:"file"`
+	Commits       int                  `json:"commits"`
+	Authors       int                  `json:"authors"`
+	RecentAuthors []AuthorContribution `json:"recent_authors"`
+}
+
+type AuthorContribution struct {
+	Name    string `json:"name"`
 	Commits int    `json:"commits"`
-	Authors int    `json:"authors"`
 }
 
 type AuthorSeries struct {
@@ -55,14 +61,15 @@ type ModuleActivity struct {
 }
 
 type GitInsightsResult struct {
-	Commits     int              `json:"commits"`
-	Since       time.Time        `json:"since"`
-	Weeks       []WeekActivity   `json:"weeks"`
-	AuthorWeeks []AuthorSeries   `json:"author_weeks"`
-	Punch       [7][24]int       `json:"punch"`
-	Authors     []AuthorStat     `json:"authors"`
-	Modules     []ModuleActivity `json:"modules"`
-	Churn       []ChurnStat      `json:"churn"`
+	Commits      int              `json:"commits"`
+	TotalAuthors int              `json:"total_authors"`
+	Since        time.Time        `json:"since"`
+	Weeks        []WeekActivity   `json:"weeks"`
+	AuthorWeeks  []AuthorSeries   `json:"author_weeks"`
+	Punch        [7][24]int       `json:"punch"`
+	Authors      []AuthorStat     `json:"authors"`
+	Modules      []ModuleActivity `json:"modules"`
+	Churn        []ChurnStat      `json:"churn"`
 }
 
 func (e *Engine) GitInsights(ctx context.Context) (GitInsightsResult, error) {
@@ -94,7 +101,10 @@ func gitInsights(ctx context.Context, root string) (GitInsightsResult, error) {
 	if err != nil {
 		return res, err
 	}
-	iter, err := repo.Log(&git.LogOptions{From: head.Hash()})
+	iter, err := repo.Log(&git.LogOptions{
+		From:  head.Hash(),
+		Order: git.LogOrderCommitterTime,
+	})
 	if err != nil {
 		return res, err
 	}
@@ -103,6 +113,7 @@ func gitInsights(ctx context.Context, root string) (GitInsightsResult, error) {
 	now := time.Now()
 	currentWeek := weekStart(now)
 	cutoff := currentWeek.AddDate(0, 0, -7*(insightsWeeks-1))
+	windowEnd := currentWeek.AddDate(0, 0, 7)
 
 	weekCommits := map[string]int{}
 	weekAuthorCommits := map[string]map[string]int{}
@@ -114,18 +125,27 @@ func gitInsights(ctx context.Context, root string) (GitInsightsResult, error) {
 	}
 	authors := map[string]*authorAgg{}
 	type churnAgg struct {
-		commits int
-		authors map[string]bool
+		commits       int
+		authorCommits map[string]int
 	}
 	churn := map[string]*churnAgg{}
 
+	walked := 0
 	err = iter.ForEach(func(c *object.Commit) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		when := c.Author.When
-		if when.Before(cutoff) || res.Commits >= insightsMaxCommits {
+		if walked >= insightsMaxCommits {
 			return storer.ErrStop
+		}
+		walked++
+
+		// Committer time is the closest match to `git log` ordering and to
+		// when work actually landed. Keep walking past out-of-window commits:
+		// imported histories and rebases can contain timestamps out of order.
+		when := c.Committer.When
+		if when.Before(cutoff) || !when.Before(windowEnd) {
+			return nil
 		}
 		res.Commits++
 		if res.Since.IsZero() || when.Before(res.Since) {
@@ -169,11 +189,11 @@ func gitInsights(ctx context.Context, root string) (GitInsightsResult, error) {
 			author.files[f] = true
 			entry := churn[f]
 			if entry == nil {
-				entry = &churnAgg{authors: map[string]bool{}}
+				entry = &churnAgg{authorCommits: map[string]int{}}
 				churn[f] = entry
 			}
 			entry.commits++
-			entry.authors[name] = true
+			entry.authorCommits[name]++
 			modules[topPathSegment(f)] = true
 		}
 		for m := range modules {
@@ -198,6 +218,7 @@ func gitInsights(ctx context.Context, root string) (GitInsightsResult, error) {
 			Last:    agg.last,
 		})
 	}
+	res.TotalAuthors = len(res.Authors)
 	sort.Slice(res.Authors, func(i, j int) bool {
 		if res.Authors[i].Commits != res.Authors[j].Commits {
 			return res.Authors[i].Commits > res.Authors[j].Commits
@@ -251,7 +272,20 @@ func gitInsights(ctx context.Context, root string) (GitInsightsResult, error) {
 	}
 
 	for f, agg := range churn {
-		res.Churn = append(res.Churn, ChurnStat{File: f, Commits: agg.commits, Authors: len(agg.authors)})
+		entry := ChurnStat{File: f, Commits: agg.commits, Authors: len(agg.authorCommits)}
+		for name, commits := range agg.authorCommits {
+			entry.RecentAuthors = append(entry.RecentAuthors, AuthorContribution{Name: name, Commits: commits})
+		}
+		sort.Slice(entry.RecentAuthors, func(i, j int) bool {
+			if entry.RecentAuthors[i].Commits != entry.RecentAuthors[j].Commits {
+				return entry.RecentAuthors[i].Commits > entry.RecentAuthors[j].Commits
+			}
+			return entry.RecentAuthors[i].Name < entry.RecentAuthors[j].Name
+		})
+		if len(entry.RecentAuthors) > 3 {
+			entry.RecentAuthors = entry.RecentAuthors[:3]
+		}
+		res.Churn = append(res.Churn, entry)
 	}
 	sort.Slice(res.Churn, func(i, j int) bool {
 		if res.Churn[i].Commits != res.Churn[j].Commits {

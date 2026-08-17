@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -109,6 +110,38 @@ func TestSearchPagination(t *testing.T) {
 	}
 	if first.Nodes[0].ID == second.Nodes[0].ID || first.Nodes[1].ID == second.Nodes[0].ID {
 		t.Fatalf("pagination repeated a result: first=%v second=%v", first.Nodes, second.Nodes)
+	}
+}
+
+func TestSearchSortingAndUnlimitedResults(t *testing.T) {
+	e := newTestEngine(t)
+	ctx := context.Background()
+	if _, err := e.Index(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	byName, err := e.SearchPage(ctx, SearchOpts{Sort: SearchSortName, Limit: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if byName.HasMore || len(byName.Nodes) != byName.Total {
+		t.Fatalf("unlimited search did not return all results: %+v", byName)
+	}
+	for i := 1; i < len(byName.Nodes); i++ {
+		if strings.ToLower(byName.Nodes[i-1].Name) > strings.ToLower(byName.Nodes[i].Name) {
+			t.Fatalf("results are not sorted by name: %q before %q", byName.Nodes[i-1].Name, byName.Nodes[i].Name)
+		}
+	}
+
+	byFile, err := e.SearchPage(ctx, SearchOpts{Sort: SearchSortFile, Limit: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i < len(byFile.Nodes); i++ {
+		previous, current := byFile.Nodes[i-1], byFile.Nodes[i]
+		if previous.File > current.File || (previous.File == current.File && previous.StartLine > current.StartLine) {
+			t.Fatalf("results are not sorted by source location: %+v before %+v", previous, current)
+		}
 	}
 }
 

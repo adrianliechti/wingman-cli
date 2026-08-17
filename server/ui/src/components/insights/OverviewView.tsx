@@ -1,5 +1,5 @@
 import { ChevronRight } from "lucide-react";
-import type { GraphNode, GraphOverview } from "../../api/graph";
+import type { GraphNode, GraphOverview } from "../../api/insights";
 import { nodeTargetLine } from "./nodes";
 import { NodeRow } from "./shared";
 
@@ -19,23 +19,16 @@ function StatTile({ label, value }: { label: string; value: number }) {
 function Card({
 	title,
 	children,
-	count,
 }: {
 	title: string;
-	count?: number;
 	children: React.ReactNode;
 }) {
 	return (
 		<section className="flex min-h-0 flex-col overflow-hidden rounded-md border border-border-subtle bg-bg-surface/10">
-			<div className="flex shrink-0 items-center gap-2 border-b border-border-subtle px-2.5 py-1.5">
+			<div className="flex shrink-0 items-center border-b border-border-subtle px-2.5 py-1.5">
 				<span className="text-[10px] font-medium uppercase tracking-wider text-fg-dim">
 					{title}
 				</span>
-				{count !== undefined && count > 0 && (
-					<span className="min-w-4 rounded-full bg-bg-active px-1 text-center text-[9px] leading-4 text-fg-dim tabular-nums">
-						{count}
-					</span>
-				)}
 			</div>
 			<div className="max-h-80 min-h-0 flex-1 overflow-y-auto @3xl:max-h-none">
 				{children}
@@ -74,7 +67,7 @@ export function OverviewView({
 				<StatTile label="Languages" value={languages.length} />
 			</div>
 			<div className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto @3xl:grid-cols-2 @3xl:grid-rows-2 @3xl:overflow-visible">
-				<Card title="Largest modules" count={modules.length}>
+				<Card title="Largest modules">
 					{modules.map((module) => (
 						<button
 							key={module.path}
@@ -96,7 +89,7 @@ export function OverviewView({
 						</button>
 					))}
 				</Card>
-				<Card title="Hotspots" count={hotspots.length}>
+				<Card title="Hotspots">
 					{hotspots.map((hotspot) => (
 						<NodeRow
 							key={hotspot.node.id}
@@ -112,7 +105,7 @@ export function OverviewView({
 						</div>
 					)}
 				</Card>
-				<Card title="Languages" count={languages.length}>
+				<Card title="Languages">
 					{languages.map((lang) => (
 						<div
 							key={lang.lang}
@@ -136,7 +129,7 @@ export function OverviewView({
 						</div>
 					))}
 				</Card>
-				<Card title="Entry points" count={entryPoints.length}>
+				<Card title="Entry points">
 					{entryPoints.map((node) => (
 						<NodeRow
 							key={node.id}
