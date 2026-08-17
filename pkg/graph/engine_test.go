@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeFile(t *testing.T, dir, name, content string) {
@@ -111,7 +112,11 @@ func TestSearchPagination(t *testing.T) {
 	}
 }
 
-func TestSearchRefreshesStaleCache(t *testing.T) {
+func TestSearchServesStaleAndRefreshesInBackground(t *testing.T) {
+	previousTTL := staleCheckTTL
+	staleCheckTTL = 0
+	t.Cleanup(func() { staleCheckTTL = previousTTL })
+
 	e := newTestEngine(t)
 	ctx := context.Background()
 	if _, err := e.Index(ctx); err != nil {
@@ -122,15 +127,26 @@ func TestSearchRefreshesStaleCache(t *testing.T) {
 	if !e.IsStale(ctx) {
 		t.Fatal("expected new source file to make graph stale")
 	}
-	got, err := e.Search(ctx, SearchOpts{Query: "freshlyAdded"})
-	if err != nil {
+
+	if _, err := e.Search(ctx, SearchOpts{Query: "freshlyAdded"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Name != "freshlyAdded" {
-		t.Fatalf("stale graph did not refresh: %+v", got)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		got, err := e.Search(ctx, SearchOpts{Query: "freshlyAdded"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) == 1 && got[0].Name == "freshlyAdded" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("background refresh never picked up new file: %+v", got)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	if e.IsStale(ctx) {
-		t.Fatal("graph remained stale after query refresh")
+		t.Fatal("graph remained stale after background refresh")
 	}
 }
 

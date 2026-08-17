@@ -46,7 +46,7 @@ type refRec struct {
 	Kind EdgeKind `json:"k,omitempty"`
 }
 
-const snapshotVersion = 5
+const snapshotVersion = 8
 
 type snapshotData struct {
 	graph        *Graph

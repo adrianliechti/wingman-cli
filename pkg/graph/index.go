@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode"
 	"unicode/utf8"
 
 	ts "github.com/odvcencio/gotreesitter"
@@ -29,6 +30,59 @@ const maxFileBytes = 2 << 20
 // On the Go stdlib the median ambiguous name has ~9 candidates, so this keeps
 // the genuinely narrow guesses and discards the long noise tail.
 const maxAmbiguousFanout = 8
+
+func isSelectorCall(src []byte, nameStart uint32) bool {
+	for i := int(nameStart) - 1; i >= 0; i-- {
+		switch src[i] {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case '.':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+func isIdentByte(b byte) bool {
+	return b == '_' || b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
+}
+
+// callQualifier returns the identifier left of the dot in a selector call,
+// or "" for bare calls.
+func callQualifier(src []byte, nameStart uint32) string {
+	i := int(nameStart) - 1
+	for i >= 0 && (src[i] == ' ' || src[i] == '\t' || src[i] == '\r' || src[i] == '\n') {
+		i--
+	}
+	if i < 0 || src[i] != '.' {
+		return ""
+	}
+	i--
+	for i >= 0 && (src[i] == ' ' || src[i] == '\t' || src[i] == '\r' || src[i] == '\n') {
+		i--
+	}
+	end := i
+	for i >= 0 && isIdentByte(src[i]) {
+		i--
+	}
+	if i >= 0 && src[i] == '.' {
+		return ""
+	}
+	if end == i {
+		return ""
+	}
+	return string(src[i+1 : end+1])
+}
+
+// goUnexported reports whether a Go identifier is package-private (its first
+// rune is not upper case). Such names are only reachable from their own
+// package, so name resolution must not bind them across directories.
+func goUnexported(name string) bool {
+	r, _ := utf8.DecodeRuneInString(name)
+	return !unicode.IsUpper(r)
+}
 
 var skipDirs = map[string]bool{
 	"node_modules": true,
@@ -60,6 +114,7 @@ type indexStats struct {
 type indexRef struct {
 	fromID string
 	name   string
+	qual   string
 	file   string
 	line   int
 	col    int
@@ -111,6 +166,30 @@ func indexRepo(ctx context.Context, root string, resolver CallResolver) (*Graph,
 	g := &Graph{Nodes: nodes}
 	g.build()
 
+	localDirs := make(map[string]bool, len(files))
+	for f := range files {
+		localDirs[path.Dir(f)] = true
+	}
+	reachable := make(map[string]map[string]bool, len(results))
+	for _, r := range results {
+		if r.issue != nil {
+			continue
+		}
+		reach := map[string]bool{path.Dir(r.rel): true}
+		for _, im := range r.imports {
+			target := resolveImport(r.rel, im.norm, im.rel, localDirs)
+			g.Imports = append(g.Imports, &Import{
+				FromFile: r.rel,
+				Path:     im.norm,
+				ToModule: target,
+			})
+			if target != "" {
+				reach[target] = true
+			}
+		}
+		reachable[r.rel] = reach
+	}
+
 	seen := map[string]bool{}
 	addEdge := func(from, to string, kind EdgeKind, via Provenance) {
 		if from == to {
@@ -125,37 +204,99 @@ func indexRepo(ctx context.Context, root string, resolver CallResolver) (*Graph,
 	}
 
 	resolves := 0
+	implResolver, _ := resolver.(ImplementationResolver)
+
+	resolveViaLSP := func(r indexRef) bool {
+		if resolver == nil || resolves >= maxResolves {
+			return false
+		}
+		resolves++
+		added := false
+		if df, dl, ok := resolver.ResolveCall(ctx, r.file, r.line, r.col); ok {
+			if tgt := g.nodeAt(df, dl); tgt != nil {
+				addEdge(r.fromID, tgt.ID, r.kind, ViaLSP)
+				added = true
+				if !isTypeKind(tgt.Kind) {
+					return true
+				}
+			}
+		}
+		if implResolver == nil || r.kind != EdgeCalls || resolves >= maxResolves {
+			return added
+		}
+		resolves++
+		impls := implResolver.ResolveImplementations(ctx, r.file, r.line, r.col)
+		if len(impls) > maxAmbiguousFanout {
+			impls = impls[:maxAmbiguousFanout]
+		}
+		for _, loc := range impls {
+			if tgt := g.nodeAt(loc.File, loc.Line); tgt != nil {
+				addEdge(r.fromID, tgt.ID, r.kind, ViaLSP)
+				added = true
+			}
+		}
+		return added
+	}
+
 	processed := make(map[string]bool, len(refs))
 	for _, r := range refs {
 		if r.fromID == "" {
 			continue
 		}
-		pk := r.fromID + "\x00" + r.name + "\x00" + string(r.kind)
+		pk := r.fromID + "\x00" + r.name + "\x00" + r.qual + "\x00" + string(r.kind)
 		if processed[pk] {
 			continue
 		}
 		processed[pk] = true
 
+		// Names resolve only into modules the file imports (or its own); a
+		// qualifier naming an imported module pins the call to it.
+		refDir := path.Dir(r.file)
+		reach := reachable[r.file]
+		_, connected := importQueries[r.lang]
+		var qualModule map[string]bool
+		if r.qual != "" && reach != nil {
+			for m := range reach {
+				if path.Base(m) == r.qual {
+					if qualModule == nil {
+						qualModule = map[string]bool{}
+					}
+					qualModule[m] = true
+				}
+			}
+		}
+		goLocal := r.lang == "go" &&
+			(goUnexported(r.name) || (r.kind == EdgeCalls && r.qual == ""))
+
+		sameFamily := 0
 		var cands []*Node
 		for _, c := range g.byName[r.name] {
-			if langFamily(c.Lang) == langFamily(r.lang) {
-				cands = append(cands, c)
+			if langFamily(c.Lang) != langFamily(r.lang) {
+				continue
 			}
+			sameFamily++
+			dir := path.Dir(c.File)
+			if goLocal && dir != refDir {
+				continue
+			}
+			if connected && reach != nil && !reach[dir] {
+				continue
+			}
+			if qualModule != nil && !qualModule[dir] {
+				continue
+			}
+			cands = append(cands, c)
 		}
 		switch len(cands) {
 		case 0:
-			continue
+			if sameFamily > 0 {
+				resolveViaLSP(r)
+			}
 		case 1:
 			addEdge(r.fromID, cands[0].ID, r.kind, ViaName)
 		default:
-			if resolver != nil && resolves < maxResolves {
-				resolves++
-				if df, dl, ok := resolver.ResolveCall(ctx, r.file, r.line, r.col); ok {
-					if tgt := g.nodeAt(df, dl); tgt != nil {
-						addEdge(r.fromID, tgt.ID, r.kind, ViaLSP)
-						continue
-					}
-				}
+			if resolveViaLSP(r) {
+				continue
 			}
 			if len(cands) > maxAmbiguousFanout {
 				continue
@@ -169,20 +310,6 @@ func indexRepo(ctx context.Context, root string, resolver CallResolver) (*Graph,
 	g.Refs = make([]*Ref, 0, len(refs))
 	for _, r := range refs {
 		g.Refs = append(g.Refs, &Ref{Name: r.name, File: r.file, Line: r.line, Col: r.col, Kind: r.kind, Lang: r.lang})
-	}
-
-	localDirs := make(map[string]bool, len(files))
-	for f := range files {
-		localDirs[path.Dir(f)] = true
-	}
-	for _, r := range results {
-		for _, im := range r.imports {
-			g.Imports = append(g.Imports, &Import{
-				FromFile: r.rel,
-				Path:     im.norm,
-				ToModule: resolveImport(r.rel, im.norm, im.rel, localDirs),
-			})
-		}
 	}
 
 	g.build()
@@ -400,6 +527,7 @@ func (ex *extractor) processFile(root, absPath string) *fileResult {
 		return ""
 	}
 
+	builtins := builtinNames(entry.Name, entry.HighlightQuery)
 	for _, t := range tags {
 		if !isCallTag(t.Kind) {
 			continue
@@ -409,8 +537,11 @@ func (ex *extractor) processFile(root, absPath string) *fileResult {
 		if t.NameRange.EndByte == 0 {
 			pos = t.Range.StartByte
 		}
+		if builtins[t.Name] && !isSelectorCall(src, pos) {
+			continue
+		}
 		line, col := li.lspPos(pos)
-		res.refs = append(res.refs, indexRef{fromID: fromID, name: t.Name, file: rel, line: line, col: col, kind: EdgeCalls, lang: entry.Name})
+		res.refs = append(res.refs, indexRef{fromID: fromID, name: t.Name, qual: callQualifier(src, pos), file: rel, line: line, col: col, kind: EdgeCalls, lang: entry.Name})
 	}
 
 	imps, hiers := ex.ax.extractFromTree(entry.Name, entry.Language(), rn, src)
