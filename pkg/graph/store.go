@@ -46,7 +46,11 @@ type refRec struct {
 	Kind EdgeKind `json:"k,omitempty"`
 }
 
-const snapshotVersion = 5
+// v7: name resolution binds only along import edges; bare calls to language
+// builtins (derived from the grammars' highlight queries) never bind; Go keeps
+// bare calls and unexported names in-package. Cached graphs from older
+// resolvers are wrong.
+const snapshotVersion = 7
 
 type snapshotData struct {
 	graph        *Graph

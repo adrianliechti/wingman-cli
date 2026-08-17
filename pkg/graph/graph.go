@@ -659,9 +659,25 @@ func (g *Graph) architecture() Arch {
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].File < entries[j].File })
 
+	// Hotspots count only confidently resolved call edges: ambiguous name
+	// fan-out attributes the same call site to several same-named definitions
+	// and turns common names (Error, String, ...) into fake hubs.
+	unambiguous := func(from, to string) bool {
+		return g.edgeVia[from+"\x00"+to] != ViaAmbiguous
+	}
 	hot := make([]Hotspot, 0, len(g.Nodes))
 	for _, n := range g.Nodes {
-		ci, co := len(g.in[n.ID]), len(g.out[n.ID])
+		ci, co := 0, 0
+		for _, from := range g.in[n.ID] {
+			if unambiguous(from, n.ID) {
+				ci++
+			}
+		}
+		for _, to := range g.out[n.ID] {
+			if unambiguous(n.ID, to) {
+				co++
+			}
+		}
 		if ci+co == 0 {
 			continue
 		}

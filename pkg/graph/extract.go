@@ -161,14 +161,22 @@ func resolveImport(fromFile, norm string, rel bool, localDirs map[string]bool) s
 	}
 
 	best := ""
-	for d := range localDirs {
-		if d == "." {
-			continue
-		}
-		if norm == d || strings.HasSuffix(norm, "/"+d) {
-			if len(d) > len(best) {
-				best = d
+	match := func(target string) {
+		for d := range localDirs {
+			if d == "." {
+				continue
 			}
+			if target == d || strings.HasSuffix(target, "/"+d) {
+				if len(d) > len(best) {
+					best = d
+				}
+			}
+		}
+	}
+	match(norm)
+	if best == "" {
+		if parent := path.Dir(norm); parent != "." && parent != "/" {
+			match(parent)
 		}
 	}
 	return best

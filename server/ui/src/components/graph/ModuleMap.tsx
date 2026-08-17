@@ -8,31 +8,74 @@ import {
 import { PanZoomCanvas } from "../PanZoomCanvas";
 
 const MAX_MODULES = 300;
+const MAX_ROW_WIDTH = 2200;
 const CARD_HEIGHT = 40;
 const ROW_GAP = 72;
 const COL_GAP = 26;
 const CHAR_WIDTH = 6.4;
+const SECTION_GAP = 56;
+const MAX_LEGEND = 8;
+
+const GROUP_PALETTE = [
+	"var(--color-info)",
+	"var(--color-purple)",
+	"var(--color-orange)",
+	"var(--color-success)",
+	"var(--color-warning)",
+	"var(--color-danger)",
+];
 
 interface PlacedModule {
 	module: GraphModuleStat;
 	x: number;
 	y: number;
 	width: number;
+	isolated: boolean;
 }
 
 interface PlacedEdge {
 	from: string;
 	to: string;
+	color: string;
 	x0: number;
 	y0: number;
 	x1: number;
 	y1: number;
 }
 
+interface LegendGroup {
+	name: string;
+	color: string;
+}
+
 function cardWidth(path: string) {
 	return Math.round(
 		Math.min(280, Math.max(100, path.length * CHAR_WIDTH + 26)),
 	);
+}
+
+function topSegment(path: string) {
+	if (path === "." || path === "") return "./";
+	const [first] = path.split("/");
+	return first;
+}
+
+function wrapRows(modules: GraphModuleStat[]): GraphModuleStat[][] {
+	const rows: GraphModuleStat[][] = [];
+	let current: GraphModuleStat[] = [];
+	let width = 0;
+	for (const module of modules) {
+		const w = cardWidth(module.path);
+		if (current.length > 0 && width + COL_GAP + w > MAX_ROW_WIDTH) {
+			rows.push(current);
+			current = [];
+			width = 0;
+		}
+		current.push(module);
+		width += (current.length > 1 ? COL_GAP : 0) + w;
+	}
+	if (current.length > 0) rows.push(current);
+	return rows;
 }
 
 function layoutModules(data: GraphModules) {
@@ -48,6 +91,28 @@ function layoutModules(data: GraphModules) {
 	const edges = data.edges.filter(
 		(edge) => present.has(edge.from) && present.has(edge.to),
 	);
+
+	const groupNodes = new Map<string, number>();
+	for (const module of modules) {
+		const group = topSegment(module.path);
+		groupNodes.set(group, (groupNodes.get(group) ?? 0) + module.nodes);
+	}
+	const groupColor = new Map<string, string>();
+	const legend: LegendGroup[] = [];
+	const sortedGroups = [...groupNodes.entries()].sort((a, b) => b[1] - a[1]);
+	sortedGroups.forEach(([name], index) => {
+		const color = GROUP_PALETTE[index % GROUP_PALETTE.length];
+		groupColor.set(name, color);
+		legend.push({ name, color });
+	});
+
+	const degree = new Map<string, number>();
+	for (const edge of edges) {
+		degree.set(edge.from, (degree.get(edge.from) ?? 0) + 1);
+		degree.set(edge.to, (degree.get(edge.to) ?? 0) + 1);
+	}
+	const connected = modules.filter((module) => degree.has(module.path));
+	const isolated = modules.filter((module) => !degree.has(module.path));
 
 	const depsOf = new Map<string, string[]>();
 	for (const edge of edges) {
@@ -71,37 +136,65 @@ function layoutModules(data: GraphModules) {
 		layerOf.set(path, value);
 		return value;
 	};
-	for (const module of modules) layer(module.path);
+	for (const module of connected) layer(module.path);
 
-	const rows = new Map<number, GraphModuleStat[]>();
+	const layers = new Map<number, GraphModuleStat[]>();
 	let maxLayer = 0;
-	for (const module of modules) {
+	for (const module of connected) {
 		const l = layerOf.get(module.path) ?? 0;
 		maxLayer = Math.max(maxLayer, l);
-		const row = rows.get(l);
+		const row = layers.get(l);
 		if (row) row.push(module);
-		else rows.set(l, [module]);
+		else layers.set(l, [module]);
 	}
 
-	const rowWidths = new Map<number, number>();
+	const byGroupThenPath = (a: GraphModuleStat, b: GraphModuleStat) => {
+		const ga = topSegment(a.path);
+		const gb = topSegment(b.path);
+		if (ga !== gb) return ga.localeCompare(gb);
+		return a.path.localeCompare(b.path);
+	};
+
+	const connectedRows: GraphModuleStat[][] = [];
+	for (let l = maxLayer; l >= 0; l--) {
+		const row = layers.get(l);
+		if (!row) continue;
+		row.sort(byGroupThenPath);
+		connectedRows.push(...wrapRows(row));
+	}
+	const isolatedRows = wrapRows([...isolated].sort(byGroupThenPath));
+
+	const widthOf = (row: GraphModuleStat[]) =>
+		row.reduce((sum, module) => sum + cardWidth(module.path), 0) +
+		COL_GAP * (row.length - 1);
 	let canvasWidth = 0;
-	for (const [l, row] of rows) {
-		row.sort((a, b) => a.path.localeCompare(b.path));
-		const width =
-			row.reduce((sum, module) => sum + cardWidth(module.path), 0) +
-			COL_GAP * (row.length - 1);
-		rowWidths.set(l, width);
-		canvasWidth = Math.max(canvasWidth, width);
+	for (const row of [...connectedRows, ...isolatedRows]) {
+		canvasWidth = Math.max(canvasWidth, widthOf(row));
 	}
 
 	const placed = new Map<string, PlacedModule>();
-	for (const [l, row] of rows) {
-		const y = (maxLayer - l) * (CARD_HEIGHT + ROW_GAP);
-		let x = (canvasWidth - (rowWidths.get(l) ?? 0)) / 2;
+	let y = 0;
+	for (const row of connectedRows) {
+		let x = (canvasWidth - widthOf(row)) / 2;
 		for (const module of row) {
 			const width = cardWidth(module.path);
-			placed.set(module.path, { module, x, y, width });
+			placed.set(module.path, { module, x, y, width, isolated: false });
 			x += width + COL_GAP;
+		}
+		y += CARD_HEIGHT + ROW_GAP;
+	}
+	let isolatedLabelY: number | null = null;
+	if (isolatedRows.length > 0) {
+		y += connectedRows.length > 0 ? SECTION_GAP - ROW_GAP : 0;
+		isolatedLabelY = y - 24;
+		for (const row of isolatedRows) {
+			let x = (canvasWidth - widthOf(row)) / 2;
+			for (const module of row) {
+				const width = cardWidth(module.path);
+				placed.set(module.path, { module, x, y, width, isolated: true });
+				x += width + COL_GAP;
+			}
+			y += CARD_HEIGHT + ROW_GAP / 2;
 		}
 	}
 
@@ -113,6 +206,8 @@ function layoutModules(data: GraphModules) {
 			{
 				from: edge.from,
 				to: edge.to,
+				color:
+					groupColor.get(topSegment(edge.from)) ?? "var(--color-border-strong)",
 				x0: from.x + from.width / 2,
 				y0: from.y + CARD_HEIGHT,
 				x1: to.x + to.width / 2,
@@ -124,8 +219,11 @@ function layoutModules(data: GraphModules) {
 	return {
 		placed: [...placed.values()],
 		edges: placedEdges,
+		groupColor,
+		legend,
+		isolatedLabelY,
 		width: canvasWidth,
-		height: maxLayer * (CARD_HEIGHT + ROW_GAP) + CARD_HEIGHT,
+		height: Math.max(CARD_HEIGHT, y - ROW_GAP / 2),
 		truncated,
 	};
 }
@@ -142,6 +240,7 @@ export function ModuleMap({
 	const [selected, setSelected] = useState<string | null>(
 		initialSelection ?? null,
 	);
+	const [hovered, setHovered] = useState<string | null>(null);
 
 	useEffect(() => {
 		const controller = new AbortController();
@@ -158,15 +257,17 @@ export function ModuleMap({
 
 	const layout = useMemo(() => (data ? layoutModules(data) : null), [data]);
 
+	const focus = hovered ?? selected;
+
 	const neighbors = useMemo(() => {
 		const set = new Set<string>();
-		if (!selected || !layout) return set;
+		if (!focus || !layout) return set;
 		for (const edge of layout.edges) {
-			if (edge.from === selected) set.add(edge.to);
-			if (edge.to === selected) set.add(edge.from);
+			if (edge.from === focus) set.add(edge.to);
+			if (edge.to === focus) set.add(edge.from);
 		}
 		return set;
-	}, [selected, layout]);
+	}, [focus, layout]);
 
 	if (error) {
 		return (
@@ -227,6 +328,30 @@ export function ModuleMap({
 							</button>
 						</div>
 					)}
+					{layout.legend.length > 1 && (
+						<div
+							data-canvas-hud
+							className="absolute bottom-3 left-3 z-10 flex max-w-[60%] flex-wrap items-center gap-x-2.5 gap-y-1 rounded-md border border-border bg-bg-elevated/95 px-2.5 py-1.5 shadow-sm"
+						>
+							{layout.legend.slice(0, MAX_LEGEND).map((group) => (
+								<span
+									key={group.name}
+									className="flex items-center gap-1 text-[10px] text-fg-muted"
+								>
+									<span
+										className="h-2 w-2 rounded-full"
+										style={{ background: group.color }}
+									/>
+									{group.name}
+								</span>
+							))}
+							{layout.legend.length > MAX_LEGEND && (
+								<span className="text-[10px] text-fg-dim">
+									+{layout.legend.length - MAX_LEGEND}
+								</span>
+							)}
+						</div>
+					)}
 					{layout.truncated && (
 						<div
 							data-canvas-hud
@@ -245,29 +370,40 @@ export function ModuleMap({
 				height={Math.max(1, layout.height)}
 			>
 				{layout.edges.map((edge) => {
-					const outgoing = selected === edge.from;
-					const incoming = selected === edge.to;
+					const outgoing = focus === edge.from;
+					const incoming = focus === edge.to;
+					const highlighted = outgoing || incoming;
 					const color = outgoing
 						? "var(--color-info)"
 						: incoming
 							? "var(--color-purple)"
-							: "var(--color-border-strong)";
+							: edge.color;
 					return (
 						<path
 							key={`${edge.from}->${edge.to}`}
 							d={`M ${edge.x0} ${edge.y0} C ${edge.x0} ${edge.y0 + ROW_GAP / 2}, ${edge.x1} ${edge.y1 - ROW_GAP / 2}, ${edge.x1} ${edge.y1}`}
 							fill="none"
 							stroke={color}
-							strokeWidth={outgoing || incoming ? 1.75 : 1}
-							opacity={selected && !outgoing && !incoming ? 0.25 : 0.9}
+							strokeWidth={highlighted ? 1.75 : 1}
+							opacity={focus ? (highlighted ? 0.95 : 0.08) : 0.35}
+							style={{ transition: "opacity 150ms, stroke 150ms" }}
 						/>
 					);
 				})}
 			</svg>
-			{layout.placed.map(({ module, x, y, width }) => {
-				const active = selected === module.path;
-				const dimmed =
-					selected !== null && !active && !neighbors.has(module.path);
+			{layout.isolatedLabelY !== null && (
+				<div
+					aria-hidden="true"
+					className="absolute left-0 text-[10px] uppercase tracking-wider text-fg-dim"
+					style={{ top: layout.isolatedLabelY }}
+				>
+					Standalone modules
+				</div>
+			)}
+			{layout.placed.map(({ module, x, y, width, isolated }) => {
+				const active = focus === module.path;
+				const dimmed = focus !== null && !active && !neighbors.has(module.path);
+				const color = layout.groupColor.get(topSegment(module.path));
 				return (
 					<div
 						key={module.path}
@@ -277,19 +413,32 @@ export function ModuleMap({
 						title={`${module.path} · ${module.files} files · ${module.nodes} symbols`}
 						onClick={(event) => {
 							event.stopPropagation();
-							setSelected(active ? null : module.path);
+							setSelected(selected === module.path ? null : module.path);
 						}}
 						onKeyDown={(event) => {
 							if (event.key !== "Enter" && event.key !== " ") return;
 							event.preventDefault();
-							setSelected(active ? null : module.path);
+							setSelected(selected === module.path ? null : module.path);
 						}}
-						className={`absolute cursor-pointer overflow-hidden rounded-lg border px-2 py-1 shadow-sm transition-[opacity,border-color] ${
-							active
+						onMouseEnter={() => setHovered(module.path)}
+						onMouseLeave={() =>
+							setHovered((value) => (value === module.path ? null : value))
+						}
+						className={`absolute cursor-pointer overflow-hidden rounded-lg border shadow-sm transition-[opacity,border-color] duration-150 ${
+							selected === module.path
 								? "border-accent bg-bg-elevated"
 								: "border-border bg-bg-surface hover:border-border-strong"
-						} ${dimmed ? "opacity-35" : ""}`}
-						style={{ left: x, top: y, width, height: CARD_HEIGHT }}
+						} ${dimmed ? "opacity-30" : isolated ? "opacity-60" : ""}`}
+						style={{
+							left: x,
+							top: y,
+							width,
+							height: CARD_HEIGHT,
+							borderLeftWidth: 3,
+							borderLeftColor: color,
+							paddingInline: 8,
+							paddingBlock: 4,
+						}}
 					>
 						<div className="truncate font-mono text-[11px] text-fg">
 							{module.path}

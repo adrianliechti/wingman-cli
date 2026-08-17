@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode"
 	"unicode/utf8"
 
 	ts "github.com/odvcencio/gotreesitter"
@@ -29,6 +30,63 @@ const maxFileBytes = 2 << 20
 // On the Go stdlib the median ambiguous name has ~9 candidates, so this keeps
 // the genuinely narrow guesses and discards the long noise tail.
 const maxAmbiguousFanout = 8
+
+// isSelectorCall reports whether the identifier at nameStart is preceded by a
+// dot, i.e. the call is a method/field selector rather than a bare call.
+func isSelectorCall(src []byte, nameStart uint32) bool {
+	for i := int(nameStart) - 1; i >= 0; i-- {
+		switch src[i] {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case '.':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+func isIdentByte(b byte) bool {
+	return b == '_' || b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
+}
+
+// callQualifier returns the identifier immediately left of the dot in a
+// selector call (`q` in `q.name(...)`), or "" for bare calls and non-identifier
+// receivers. It is a lexical hint: when it names an imported module the call
+// can be pinned to that module.
+func callQualifier(src []byte, nameStart uint32) string {
+	i := int(nameStart) - 1
+	for i >= 0 && (src[i] == ' ' || src[i] == '\t' || src[i] == '\r' || src[i] == '\n') {
+		i--
+	}
+	if i < 0 || src[i] != '.' {
+		return ""
+	}
+	i--
+	for i >= 0 && (src[i] == ' ' || src[i] == '\t' || src[i] == '\r' || src[i] == '\n') {
+		i--
+	}
+	end := i
+	for i >= 0 && isIdentByte(src[i]) {
+		i--
+	}
+	if i >= 0 && src[i] == '.' {
+		return ""
+	}
+	if end == i {
+		return ""
+	}
+	return string(src[i+1 : end+1])
+}
+
+// goUnexported reports whether a Go identifier is package-private (its first
+// rune is not upper case). Such names are only reachable from their own
+// package, so name resolution must not bind them across directories.
+func goUnexported(name string) bool {
+	r, _ := utf8.DecodeRuneInString(name)
+	return !unicode.IsUpper(r)
+}
 
 var skipDirs = map[string]bool{
 	"node_modules": true,
@@ -60,6 +118,7 @@ type indexStats struct {
 type indexRef struct {
 	fromID string
 	name   string
+	qual   string
 	file   string
 	line   int
 	col    int
@@ -111,6 +170,32 @@ func indexRepo(ctx context.Context, root string, resolver CallResolver) (*Graph,
 	g := &Graph{Nodes: nodes}
 	g.build()
 
+	localDirs := make(map[string]bool, len(files))
+	for f := range files {
+		localDirs[path.Dir(f)] = true
+	}
+	// reachable maps each indexed file to the modules its names can legally
+	// resolve into: its own directory plus every local module it imports.
+	reachable := make(map[string]map[string]bool, len(results))
+	for _, r := range results {
+		if r.issue != nil {
+			continue
+		}
+		reach := map[string]bool{path.Dir(r.rel): true}
+		for _, im := range r.imports {
+			target := resolveImport(r.rel, im.norm, im.rel, localDirs)
+			g.Imports = append(g.Imports, &Import{
+				FromFile: r.rel,
+				Path:     im.norm,
+				ToModule: target,
+			})
+			if target != "" {
+				reach[target] = true
+			}
+		}
+		reachable[r.rel] = reach
+	}
+
 	seen := map[string]bool{}
 	addEdge := func(from, to string, kind EdgeKind, via Provenance) {
 		if from == to {
@@ -130,17 +215,50 @@ func indexRepo(ctx context.Context, root string, resolver CallResolver) (*Graph,
 		if r.fromID == "" {
 			continue
 		}
-		pk := r.fromID + "\x00" + r.name + "\x00" + string(r.kind)
+		pk := r.fromID + "\x00" + r.name + "\x00" + r.qual + "\x00" + string(r.kind)
 		if processed[pk] {
 			continue
 		}
 		processed[pk] = true
 
+		// For languages with import extraction, a name may only resolve into
+		// modules the referencing file actually reaches. When the selector
+		// qualifier names one of those modules (`graph.New(...)`), the call is
+		// pinned to it. Go additionally keeps unexported names and bare calls
+		// inside their own package, which the language guarantees.
+		refDir := path.Dir(r.file)
+		reach := reachable[r.file]
+		_, connected := importQueries[r.lang]
+		var qualModule map[string]bool
+		if r.qual != "" && reach != nil {
+			for m := range reach {
+				if path.Base(m) == r.qual {
+					if qualModule == nil {
+						qualModule = map[string]bool{}
+					}
+					qualModule[m] = true
+				}
+			}
+		}
+		goLocal := r.lang == "go" &&
+			(goUnexported(r.name) || (r.kind == EdgeCalls && r.qual == ""))
+
 		var cands []*Node
 		for _, c := range g.byName[r.name] {
-			if langFamily(c.Lang) == langFamily(r.lang) {
-				cands = append(cands, c)
+			if langFamily(c.Lang) != langFamily(r.lang) {
+				continue
 			}
+			dir := path.Dir(c.File)
+			if goLocal && dir != refDir {
+				continue
+			}
+			if connected && reach != nil && !reach[dir] {
+				continue
+			}
+			if qualModule != nil && !qualModule[dir] {
+				continue
+			}
+			cands = append(cands, c)
 		}
 		switch len(cands) {
 		case 0:
@@ -169,20 +287,6 @@ func indexRepo(ctx context.Context, root string, resolver CallResolver) (*Graph,
 	g.Refs = make([]*Ref, 0, len(refs))
 	for _, r := range refs {
 		g.Refs = append(g.Refs, &Ref{Name: r.name, File: r.file, Line: r.line, Col: r.col, Kind: r.kind, Lang: r.lang})
-	}
-
-	localDirs := make(map[string]bool, len(files))
-	for f := range files {
-		localDirs[path.Dir(f)] = true
-	}
-	for _, r := range results {
-		for _, im := range r.imports {
-			g.Imports = append(g.Imports, &Import{
-				FromFile: r.rel,
-				Path:     im.norm,
-				ToModule: resolveImport(r.rel, im.norm, im.rel, localDirs),
-			})
-		}
 	}
 
 	g.build()
@@ -400,6 +504,7 @@ func (ex *extractor) processFile(root, absPath string) *fileResult {
 		return ""
 	}
 
+	builtins := builtinNames(entry.Name, entry.HighlightQuery)
 	for _, t := range tags {
 		if !isCallTag(t.Kind) {
 			continue
@@ -409,8 +514,13 @@ func (ex *extractor) processFile(root, absPath string) *fileResult {
 		if t.NameRange.EndByte == 0 {
 			pos = t.Range.StartByte
 		}
+		// A bare call to a language builtin is the builtin, not a same-named
+		// local definition; method/attribute calls keep their selector form.
+		if builtins[t.Name] && !isSelectorCall(src, pos) {
+			continue
+		}
 		line, col := li.lspPos(pos)
-		res.refs = append(res.refs, indexRef{fromID: fromID, name: t.Name, file: rel, line: line, col: col, kind: EdgeCalls, lang: entry.Name})
+		res.refs = append(res.refs, indexRef{fromID: fromID, name: t.Name, qual: callQualifier(src, pos), file: rel, line: line, col: col, kind: EdgeCalls, lang: entry.Name})
 	}
 
 	imps, hiers := ex.ax.extractFromTree(entry.Name, entry.Language(), rn, src)
