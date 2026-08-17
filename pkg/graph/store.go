@@ -46,11 +46,12 @@ type refRec struct {
 	Kind EdgeKind `json:"k,omitempty"`
 }
 
-// v7: name resolution binds only along import edges; bare calls to language
+// v8: name resolution binds only along import edges; bare calls to language
 // builtins (derived from the grammars' highlight queries) never bind; Go keeps
-// bare calls and unexported names in-package. Cached graphs from older
-// resolvers are wrong.
-const snapshotVersion = 7
+// bare calls and unexported names in-package; unresolvable and interface call
+// sites gain LSP implementation edges. Cached graphs from older resolvers are
+// wrong or incomplete.
+const snapshotVersion = 8
 
 type snapshotData struct {
 	graph        *Graph

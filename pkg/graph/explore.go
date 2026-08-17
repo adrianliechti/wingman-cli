@@ -2,6 +2,9 @@ package graph
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"path"
 	"sort"
 )
@@ -51,6 +54,77 @@ func (g *Graph) moduleGraph() ModuleGraph {
 	})
 
 	return ModuleGraph{Modules: stats, Edges: edges}
+}
+
+type ModuleProfile struct {
+	Module  string   `json:"module"`
+	Files   []string `json:"files"`
+	Symbols []*Node  `json:"symbols"`
+	Digest  string   `json:"digest"`
+}
+
+// ModuleProfiles describes modules for summarization: files, most connected
+// symbols, and a digest over the structure so cached summaries can be
+// invalidated when a module meaningfully changes. One call indexes once,
+// regardless of how many modules are requested.
+func (e *Engine) ModuleProfiles(ctx context.Context, modules []string, topSymbols int) (map[string]ModuleProfile, error) {
+	if topSymbols <= 0 {
+		topSymbols = 20
+	}
+	g, err := e.ensureIndexed(ctx)
+	if err != nil {
+		return nil, err
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	wanted := make(map[string]bool, len(modules))
+	for _, m := range modules {
+		wanted[m] = true
+	}
+
+	files := map[string][]string{}
+	nodes := map[string][]*Node{}
+	for file, fileNodes := range g.byFile {
+		module := path.Dir(file)
+		if !wanted[module] {
+			continue
+		}
+		files[module] = append(files[module], file)
+		nodes[module] = append(nodes[module], fileNodes...)
+	}
+
+	degree := func(n *Node) int { return len(g.in[n.ID]) + len(g.out[n.ID]) }
+	out := make(map[string]ModuleProfile, len(files))
+	for module, moduleFiles := range files {
+		profile := ModuleProfile{Module: module, Files: moduleFiles}
+		sort.Strings(profile.Files)
+
+		moduleNodes := nodes[module]
+		sort.SliceStable(moduleNodes, func(i, j int) bool {
+			di, dj := degree(moduleNodes[i]), degree(moduleNodes[j])
+			if di != dj {
+				return di > dj
+			}
+			return moduleNodes[i].Name < moduleNodes[j].Name
+		})
+
+		digest := sha256.New()
+		for _, f := range profile.Files {
+			fmt.Fprintln(digest, f)
+		}
+		for _, n := range moduleNodes {
+			fmt.Fprintln(digest, n.Name, n.Kind)
+		}
+		profile.Digest = hex.EncodeToString(digest.Sum(nil))
+
+		if len(moduleNodes) > topSymbols {
+			moduleNodes = moduleNodes[:topSymbols]
+		}
+		profile.Symbols = moduleNodes
+		out[module] = profile
+	}
+	return out, nil
 }
 
 type NeighborhoodResult struct {

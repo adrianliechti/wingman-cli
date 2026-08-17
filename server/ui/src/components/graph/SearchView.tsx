@@ -207,7 +207,6 @@ export function SearchView({
 							<NodeRow
 								key={node.id}
 								node={node}
-								detail={`:${node.start_line}`}
 								onOpen={openNode}
 								onExplore={onExplore}
 							/>

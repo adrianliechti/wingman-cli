@@ -4,6 +4,7 @@ import {
 	type GraphModules,
 	type GraphModuleStat,
 	fetchGraphModules,
+	fetchGraphSummaries,
 } from "../../api/graph";
 import { PanZoomCanvas } from "../PanZoomCanvas";
 
@@ -241,6 +242,7 @@ export function ModuleMap({
 		initialSelection ?? null,
 	);
 	const [hovered, setHovered] = useState<string | null>(null);
+	const [summaries, setSummaries] = useState<Record<string, string>>({});
 
 	useEffect(() => {
 		const controller = new AbortController();
@@ -254,6 +256,43 @@ export function ModuleMap({
 			});
 		return () => controller.abort();
 	}, []);
+
+	useEffect(() => {
+		if (!data) return;
+		const controller = new AbortController();
+		const ordered = [...data.modules]
+			.sort((a, b) => b.nodes - a.nodes)
+			.map((module) => module.path);
+		void (async () => {
+			const known = new Set<string>();
+			try {
+				const { summaries: cached } = await fetchGraphSummaries(
+					ordered,
+					true,
+					controller.signal,
+				);
+				setSummaries((previous) => ({ ...previous, ...cached }));
+				for (const module of Object.keys(cached)) known.add(module);
+			} catch {
+				return;
+			}
+			const missing = ordered.filter((module) => !known.has(module));
+			for (let start = 0; start < missing.length; start += 6) {
+				if (controller.signal.aborted) return;
+				try {
+					const { summaries: batch } = await fetchGraphSummaries(
+						missing.slice(start, start + 6),
+						false,
+						controller.signal,
+					);
+					setSummaries((previous) => ({ ...previous, ...batch }));
+				} catch {
+					return;
+				}
+			}
+		})();
+		return () => controller.abort();
+	}, [data]);
 
 	const layout = useMemo(() => (data ? layoutModules(data) : null), [data]);
 
@@ -410,7 +449,12 @@ export function ModuleMap({
 						data-module-card
 						role="button"
 						tabIndex={0}
-						title={`${module.path} · ${module.files} files · ${module.nodes} symbols`}
+						title={[
+							`${module.path} · ${module.files} files · ${module.nodes} symbols`,
+							summaries[module.path] ?? "",
+						]
+							.filter(Boolean)
+							.join("\n")}
 						onClick={(event) => {
 							event.stopPropagation();
 							setSelected(selected === module.path ? null : module.path);
@@ -443,8 +487,12 @@ export function ModuleMap({
 						<div className="truncate font-mono text-[11px] text-fg">
 							{module.path}
 						</div>
-						<div className="truncate text-[9px] text-fg-dim tabular-nums">
-							{module.files} files · {module.nodes} symbols
+						<div className="truncate text-[9px] text-fg-dim">
+							{summaries[module.path] ?? (
+								<span className="tabular-nums">
+									{module.files} files · {module.nodes} symbols
+								</span>
+							)}
 						</div>
 					</div>
 				);

@@ -207,6 +207,64 @@ func New() int { return 2 }
 	}
 }
 
+type fakeImplResolver struct {
+	impls []ResolvedLocation
+}
+
+func (f *fakeImplResolver) ResolveCall(ctx context.Context, file string, line, column int) (string, int, bool) {
+	return "", 0, false
+}
+
+func (f *fakeImplResolver) ResolveImplementations(ctx context.Context, file string, line, column int) []ResolvedLocation {
+	return f.impls
+}
+
+func TestInterfaceDispatchViaImplementationResolver(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "p1/use.go", `package p1
+
+type Runner interface {
+	Run() error
+}
+
+func Use(r Runner) error {
+	return r.Run()
+}
+`)
+	writeFile(t, root, "p2/impl.go", `package p2
+
+type Impl struct{}
+
+func (i *Impl) Run() error { return nil }
+`)
+
+	ctx := context.Background()
+
+	plain := New(root, filepath.Join(t.TempDir(), "plain.json"))
+	res, err := plain.Neighborhood(ctx, "", "Run", "p2/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Callers) != 0 {
+		t.Fatalf("without resolver, p2 Run callers = %+v, want none", res.Callers)
+	}
+
+	resolver := &fakeImplResolver{impls: []ResolvedLocation{{File: "p2/impl.go", Line: 5}}}
+	e := New(root, filepath.Join(t.TempDir(), "graph.json"), WithResolver(resolver))
+	res, err = e.Neighborhood(ctx, "", "Run", "p2/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Callers) != 1 || res.Callers[0].Name != "Use" {
+		t.Fatalf("with resolver, p2 Run callers = %+v, want Use", res.Callers)
+	}
+
+	stats := e.EdgeStats()
+	if stats[ViaLSP] == 0 {
+		t.Fatalf("edge stats = %+v, want lsp-provenance edges", stats)
+	}
+}
+
 func TestHotspotsExcludeAmbiguousEdges(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "p1/a.go", `package p1

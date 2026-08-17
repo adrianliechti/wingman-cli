@@ -490,6 +490,10 @@ func (w *Workspace) GraphEngine() (*graph.Engine, error) {
 	return service.Graph(), nil
 }
 
+func (w *Workspace) GraphStateDir() string {
+	return projectGraphDir(w.RootPath)
+}
+
 // DefinitionLocations resolves a position in a disk file or in-memory editor
 // buffer using the language server associated with the file, falling back to
 // the tree-sitter graph index when no server covers it.

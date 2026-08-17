@@ -210,6 +210,42 @@ func indexRepo(ctx context.Context, root string, resolver CallResolver) (*Graph,
 	}
 
 	resolves := 0
+	implResolver, _ := resolver.(ImplementationResolver)
+
+	// resolveViaLSP settles one call site precisely: definition first, and when
+	// the definition is an interface (or missing), the concrete implementations.
+	resolveViaLSP := func(r indexRef) bool {
+		if resolver == nil || resolves >= maxResolves {
+			return false
+		}
+		resolves++
+		added := false
+		if df, dl, ok := resolver.ResolveCall(ctx, r.file, r.line, r.col); ok {
+			if tgt := g.nodeAt(df, dl); tgt != nil {
+				addEdge(r.fromID, tgt.ID, r.kind, ViaLSP)
+				added = true
+				if !isTypeKind(tgt.Kind) {
+					return true
+				}
+			}
+		}
+		if implResolver == nil || r.kind != EdgeCalls || resolves >= maxResolves {
+			return added
+		}
+		resolves++
+		impls := implResolver.ResolveImplementations(ctx, r.file, r.line, r.col)
+		if len(impls) > maxAmbiguousFanout {
+			impls = impls[:maxAmbiguousFanout]
+		}
+		for _, loc := range impls {
+			if tgt := g.nodeAt(loc.File, loc.Line); tgt != nil {
+				addEdge(r.fromID, tgt.ID, r.kind, ViaLSP)
+				added = true
+			}
+		}
+		return added
+	}
+
 	processed := make(map[string]bool, len(refs))
 	for _, r := range refs {
 		if r.fromID == "" {
@@ -243,11 +279,13 @@ func indexRepo(ctx context.Context, root string, resolver CallResolver) (*Graph,
 		goLocal := r.lang == "go" &&
 			(goUnexported(r.name) || (r.kind == EdgeCalls && r.qual == ""))
 
+		sameFamily := 0
 		var cands []*Node
 		for _, c := range g.byName[r.name] {
 			if langFamily(c.Lang) != langFamily(r.lang) {
 				continue
 			}
+			sameFamily++
 			dir := path.Dir(c.File)
 			if goLocal && dir != refDir {
 				continue
@@ -262,18 +300,16 @@ func indexRepo(ctx context.Context, root string, resolver CallResolver) (*Graph,
 		}
 		switch len(cands) {
 		case 0:
-			continue
+			// Same-named definitions exist but none is import-reachable — the
+			// dynamic-dispatch shape. Only the language server can settle it.
+			if sameFamily > 0 {
+				resolveViaLSP(r)
+			}
 		case 1:
 			addEdge(r.fromID, cands[0].ID, r.kind, ViaName)
 		default:
-			if resolver != nil && resolves < maxResolves {
-				resolves++
-				if df, dl, ok := resolver.ResolveCall(ctx, r.file, r.line, r.col); ok {
-					if tgt := g.nodeAt(df, dl); tgt != nil {
-						addEdge(r.fromID, tgt.ID, r.kind, ViaLSP)
-						continue
-					}
-				}
+			if resolveViaLSP(r) {
+				continue
 			}
 			if len(cands) > maxAmbiguousFanout {
 				continue

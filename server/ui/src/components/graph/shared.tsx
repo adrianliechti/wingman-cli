@@ -87,7 +87,7 @@ export function NodeRow({
 					title={`Open ${nodeLocation(node)}`}
 					aria-label={`Open ${nodeLocation(node)}`}
 					onClick={() => onOpen(node)}
-					className="hidden h-5 w-5 shrink-0 place-items-center rounded text-fg-dim group-hover:grid hover:bg-bg-active hover:text-fg"
+					className="invisible grid h-5 w-5 shrink-0 place-items-center rounded text-fg-dim group-hover:visible hover:bg-bg-active hover:text-fg"
 				>
 					<ExternalLink size={11} />
 				</button>

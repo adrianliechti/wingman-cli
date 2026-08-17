@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,12 +17,30 @@ type CallResolver interface {
 	ResolveCall(ctx context.Context, file string, line, column int) (defFile string, defLine int, ok bool)
 }
 
+type ResolvedLocation struct {
+	File string
+	Line int
+}
+
+// ImplementationResolver is an optional CallResolver capability. When the
+// language server supports it, call sites whose target is an interface (or
+// that name resolution could not bind at all) gain edges to the concrete
+// implementations. Resolvers without the capability simply skip this.
+type ImplementationResolver interface {
+	ResolveImplementations(ctx context.Context, file string, line, column int) []ResolvedLocation
+}
+
 type Engine struct {
 	root      string
 	cachePath string
 	resolver  CallResolver
 
-	buildMu sync.Mutex
+	buildMu    sync.Mutex
+	refreshing atomic.Bool
+
+	staleMu  sync.Mutex
+	staleAt  time.Time
+	staleVal bool
 
 	mu           sync.RWMutex
 	graph        *Graph
@@ -30,6 +49,10 @@ type Engine struct {
 	skipped      []CoverageIssue
 	indexedAt    time.Time
 }
+
+// staleCheckTTL rate-limits the staleness walk (a full tree stat) so bursts of
+// interactive queries don't re-scan the workspace on every call.
+var staleCheckTTL = 10 * time.Second
 
 type Option func(*Engine)
 
@@ -169,11 +192,22 @@ func (e *Engine) indexLocked(ctx context.Context) (Status, error) {
 		_ = saveSnapshot(e.cachePath, g, files, stats.Files, stats.Skipped, now)
 	}
 
+	e.staleMu.Lock()
+	e.staleAt = now
+	e.staleVal = false
+	e.staleMu.Unlock()
+
 	return e.Status(), nil
 }
 
+// ensureIndexed serves the current graph and never blocks a query on
+// freshness: a missing graph builds synchronously, a stale one is served as-is
+// while a single background refresh brings it up to date.
 func (e *Engine) ensureIndexed(ctx context.Context) (*Graph, error) {
-	if g := e.tryLoadCache(); g != nil && !e.IsStale(ctx) {
+	if g := e.tryLoadCache(); g != nil {
+		if e.IsStale(ctx) {
+			e.refreshInBackground()
+		}
 		return g, nil
 	}
 
@@ -183,7 +217,7 @@ func (e *Engine) ensureIndexed(ctx context.Context) (*Graph, error) {
 	e.mu.RLock()
 	g := e.graph
 	e.mu.RUnlock()
-	if g != nil && !e.IsStale(ctx) {
+	if g != nil {
 		return g, nil
 	}
 
@@ -197,14 +231,44 @@ func (e *Engine) ensureIndexed(ctx context.Context) (*Graph, error) {
 	return g, nil
 }
 
+func (e *Engine) refreshInBackground() {
+	if !e.refreshing.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer e.refreshing.Store(false)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		_, _ = e.Index(ctx)
+	}()
+}
+
 // IsStale reports whether the cached graph's discovered source-file set or
-// any file's size/mtime differs from the workspace. A false result when no
-// graph exists means "not indexed", not "fresh".
+// any file's size/mtime differs from the workspace, re-walking the tree at
+// most once per staleCheckTTL. A false result when no graph exists means "not
+// indexed", not "fresh".
 func (e *Engine) IsStale(ctx context.Context) bool {
 	if e.tryLoadCache() == nil {
 		return false
 	}
 
+	e.staleMu.Lock()
+	if time.Since(e.staleAt) < staleCheckTTL {
+		stale := e.staleVal
+		e.staleMu.Unlock()
+		return stale
+	}
+	e.staleMu.Unlock()
+
+	stale := e.checkStale(ctx)
+	e.staleMu.Lock()
+	e.staleAt = time.Now()
+	e.staleVal = stale
+	e.staleMu.Unlock()
+	return stale
+}
+
+func (e *Engine) checkStale(ctx context.Context) bool {
 	e.mu.RLock()
 	files := make(map[string]fileMeta, len(e.files))
 	maps.Copy(files, e.files)

@@ -197,6 +197,22 @@ export function fetchGraphInsights(signal?: AbortSignal) {
 	return request<GraphInsights>("/api/graph/insights", { signal });
 }
 
+export function fetchGraphSummaries(
+	modules: string[],
+	cachedOnly?: boolean,
+	signal?: AbortSignal,
+) {
+	return request<{ summaries: Record<string, string> }>(
+		"/api/graph/summaries",
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ modules, cached_only: cachedOnly ?? false }),
+			signal,
+		},
+	);
+}
+
 export function searchGraphSymbols(
 	options: {
 		query: string;

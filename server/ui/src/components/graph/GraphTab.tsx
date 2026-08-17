@@ -24,6 +24,7 @@ interface GraphTabMemory {
 	view: GraphView;
 	focus: Focus | null;
 	history: Focus[];
+	overview?: GraphOverview;
 	mapSelection?: string;
 	searchSeed?: { query?: string; file?: string };
 }
@@ -48,8 +49,10 @@ export function GraphTab({
 }) {
 	const [view, setView] = useState<GraphView>(memory.view);
 	const [focus, setFocus] = useState<Focus | null>(memory.focus);
-	const [overview, setOverview] = useState<GraphOverview | null>(null);
-	const [loading, setLoading] = useState(true);
+	const [overview, setOverview] = useState<GraphOverview | null>(
+		memory.overview ?? null,
+	);
+	const [loading, setLoading] = useState(!memory.overview);
 	const [indexing, setIndexing] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const requestRef = useRef<AbortController | null>(null);
@@ -71,6 +74,7 @@ export function GraphTab({
 			if (reindex) await reindexGraph(controller.signal);
 			const result = await fetchGraphOverview(controller.signal);
 			if (controller.signal.aborted) return;
+			memory.overview = result;
 			setOverview(result);
 		} catch (loadError) {
 			if (controller.signal.aborted) return;
