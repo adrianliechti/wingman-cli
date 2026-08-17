@@ -171,6 +171,35 @@ func (s *Server) handleGraphSymbol(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, result)
 }
 
+func (s *Server) handleGraphInsights(w http.ResponseWriter, r *http.Request) {
+	engine := s.graphEngine(w)
+	if engine == nil {
+		return
+	}
+
+	result, err := engine.GitInsights(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if result.Weeks == nil {
+		result.Weeks = []graph.WeekActivity{}
+	}
+	if result.AuthorWeeks == nil {
+		result.AuthorWeeks = []graph.AuthorSeries{}
+	}
+	if result.Authors == nil {
+		result.Authors = []graph.AuthorStat{}
+	}
+	if result.Modules == nil {
+		result.Modules = []graph.ModuleActivity{}
+	}
+	if result.Churn == nil {
+		result.Churn = []graph.ChurnStat{}
+	}
+	writeJSON(w, result)
+}
+
 func (s *Server) handleGraphModules(w http.ResponseWriter, r *http.Request) {
 	engine := s.graphEngine(w)
 	if engine == nil {

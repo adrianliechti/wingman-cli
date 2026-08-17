@@ -30,6 +30,11 @@ func ContextWindowFor(id string, largeContext bool) int {
 	if window := model.ProfileFor(id).ContextWindow(largeContext); window > 0 {
 		return window
 	}
+	if candidate, ok := model.Find(id); ok {
+		if window := candidate.ContextTokens(); window > 0 {
+			return window
+		}
+	}
 
 	return DefaultContextWindow
 }

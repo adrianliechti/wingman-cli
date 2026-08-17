@@ -6,12 +6,13 @@ import {
 	fetchGraphOverview,
 	reindexGraph,
 } from "../../api/graph";
+import { ActivityView } from "./ActivityView";
 import { ModuleMap } from "./ModuleMap";
 import { OverviewView } from "./OverviewView";
 import { SearchView } from "./SearchView";
 import { SymbolView } from "./SymbolView";
 
-type GraphView = "overview" | "map" | "search" | "symbol";
+type GraphView = "overview" | "map" | "search" | "activity";
 
 interface Focus {
 	id?: string;
@@ -37,7 +38,7 @@ const VIEWS: { id: GraphView; label: string }[] = [
 	{ id: "overview", label: "Overview" },
 	{ id: "map", label: "Modules" },
 	{ id: "search", label: "Search" },
-	{ id: "symbol", label: "Symbol" },
+	{ id: "activity", label: "Activity" },
 ];
 
 export function GraphTab({
@@ -95,14 +96,17 @@ export function GraphTab({
 			}
 			return { id: node.id, name: node.name, file: node.file };
 		});
-		setView("symbol");
+		setView("search");
 	}, []);
 
 	const goBack = useCallback(() => {
 		const previous = memory.history[memory.history.length - 1];
-		if (!previous) return;
-		memory.history = memory.history.slice(0, -1);
-		setFocus(previous);
+		if (previous) {
+			memory.history = memory.history.slice(0, -1);
+			setFocus(previous);
+			return;
+		}
+		setFocus(null);
 	}, []);
 
 	const selectModule = useCallback((path: string) => {
@@ -112,6 +116,8 @@ export function GraphTab({
 
 	const searchModule = useCallback((path: string) => {
 		memory.searchSeed = { file: path };
+		memory.history = [];
+		setFocus(null);
 		setView("search");
 	}, []);
 
@@ -191,20 +197,27 @@ export function GraphTab({
 						initialSelection={memory.mapSelection}
 						onSearchModule={searchModule}
 					/>
-				) : view === "search" ? (
-					<SearchView
-						seed={memory.searchSeed}
-						onExplore={explore}
-						onOpenFile={onOpenFile}
-					/>
+				) : view === "activity" ? (
+					<ActivityView onOpenFile={onOpenFile} />
 				) : (
-					<SymbolView
-						focus={focus}
-						canGoBack={memory.history.length > 0}
-						onBack={goBack}
-						onExplore={explore}
-						onOpenFile={onOpenFile}
-					/>
+					<div className="h-full">
+						<div className={focus ? "hidden" : "h-full"}>
+							<SearchView
+								seed={memory.searchSeed}
+								onExplore={explore}
+								onOpenFile={onOpenFile}
+							/>
+						</div>
+						{focus && (
+							<SymbolView
+								focus={focus}
+								canGoBack
+								onBack={goBack}
+								onExplore={explore}
+								onOpenFile={onOpenFile}
+							/>
+						)}
+					</div>
 				)}
 			</div>
 		</div>

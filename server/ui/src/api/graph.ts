@@ -130,6 +130,45 @@ export interface GraphModules {
 	edges: GraphModuleEdge[];
 }
 
+export interface GraphWeekActivity {
+	week: string;
+	commits: number;
+}
+
+export interface GraphAuthorStat {
+	name: string;
+	commits: number;
+	files: number;
+	last: string;
+}
+
+export interface GraphChurnStat {
+	file: string;
+	commits: number;
+	authors: number;
+}
+
+export interface GraphAuthorSeries {
+	name: string;
+	weeks: number[];
+}
+
+export interface GraphModuleActivity {
+	module: string;
+	commits: number;
+}
+
+export interface GraphInsights {
+	commits: number;
+	since: string;
+	weeks: GraphWeekActivity[];
+	author_weeks: GraphAuthorSeries[];
+	punch: number[][];
+	authors: GraphAuthorStat[];
+	modules: GraphModuleActivity[];
+	churn: GraphChurnStat[];
+}
+
 async function request<T>(input: string, init?: RequestInit): Promise<T> {
 	const response = await fetch(input, init);
 	if (!response.ok) {
@@ -152,6 +191,10 @@ export function reindexGraph(signal?: AbortSignal) {
 
 export function fetchGraphModules(signal?: AbortSignal) {
 	return request<GraphModules>("/api/graph/modules", { signal });
+}
+
+export function fetchGraphInsights(signal?: AbortSignal) {
+	return request<GraphInsights>("/api/graph/insights", { signal });
 }
 
 export function searchGraphSymbols(

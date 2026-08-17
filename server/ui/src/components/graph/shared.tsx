@@ -1,3 +1,4 @@
+import { ExternalLink } from "lucide-react";
 import type { GraphNode, GraphNodeKind } from "../../api/graph";
 import { nodeLocation } from "./nodes";
 
@@ -54,13 +55,18 @@ export function NodeRow({
 	onOpen: (node: GraphNode) => void;
 	onExplore?: (node: GraphNode) => void;
 }) {
+	const primary = onExplore ?? onOpen;
 	return (
 		<div className="group flex w-full items-center gap-1.5 border-b border-border-subtle/60 px-2 py-1 text-left text-[11px] last:border-b-0 hover:bg-bg-hover">
 			<KindBadge kind={node.kind} />
 			<button
 				type="button"
-				title={nodeLocation(node)}
-				onClick={() => onOpen(node)}
+				title={
+					onExplore
+						? `Explore the call graph of ${node.name}`
+						: nodeLocation(node)
+				}
+				onClick={() => primary(node)}
 				className="flex min-w-0 flex-1 cursor-pointer items-baseline gap-1.5 text-left"
 			>
 				<span className="truncate text-fg-muted group-hover:text-fg">
@@ -78,12 +84,12 @@ export function NodeRow({
 			{onExplore && (
 				<button
 					type="button"
-					title={`Explore ${node.name}`}
-					aria-label={`Explore ${node.name}`}
-					onClick={() => onExplore(node)}
-					className="hidden h-5 shrink-0 items-center rounded px-1.5 text-[10px] text-fg-dim hover:bg-bg-active hover:text-fg group-hover:flex"
+					title={`Open ${nodeLocation(node)}`}
+					aria-label={`Open ${nodeLocation(node)}`}
+					onClick={() => onOpen(node)}
+					className="hidden h-5 w-5 shrink-0 place-items-center rounded text-fg-dim group-hover:grid hover:bg-bg-active hover:text-fg"
 				>
-					graph
+					<ExternalLink size={11} />
 				</button>
 			)}
 		</div>

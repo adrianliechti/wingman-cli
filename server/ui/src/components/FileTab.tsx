@@ -72,6 +72,13 @@ export function FileTab({
 
 	const dirty = document.draft !== document.savedContent;
 	const file = document.file;
+	const disposeEditorIntegration = useCallback(() => {
+		contextMenuListenerRef.current?.dispose();
+		contextMenuListenerRef.current = null;
+		lspBridgeRef.current?.dispose();
+		lspBridgeRef.current = null;
+		editorRef.current = null;
+	}, []);
 
 	useEffect(() => {
 		const editor = editorRef.current;
@@ -81,16 +88,19 @@ export function FileTab({
 
 	useEffect(() => {
 		return () => {
-			contextMenuListenerRef.current?.dispose();
-			contextMenuListenerRef.current = null;
 			if (diagnosticsTimerRef.current !== null) {
 				window.clearTimeout(diagnosticsTimerRef.current);
 			}
-			lspBridgeRef.current?.dispose();
-			lspBridgeRef.current = null;
-			editorRef.current = null;
+			disposeEditorIntegration();
 		};
-	}, []);
+	}, [disposeEditorIntegration]);
+
+	useEffect(() => {
+		if (view !== "code") {
+			setContextMenu(null);
+			disposeEditorIntegration();
+		}
+	}, [disposeEditorIntegration, view]);
 
 	const loadDiagnostics = useCallback(async () => {
 		await lspBridgeRef.current?.refreshDiagnostics();
@@ -219,6 +229,7 @@ export function FileTab({
 						theme={wingmanThemeName(scheme)}
 						beforeMount={defineWingmanThemes}
 						onMount={(editor, monaco) => {
+							disposeEditorIntegration();
 							editorRef.current = editor;
 							// Wingman owns the command surface; keep Monaco's standalone
 							// palette shortcuts from opening a second command UI.
@@ -229,7 +240,6 @@ export function FileTab({
 									monaco.KeyCode.KeyP,
 								() => {},
 							);
-							contextMenuListenerRef.current?.dispose();
 							contextMenuListenerRef.current = editor.onContextMenu((event) => {
 								const position = event.target.position;
 								if (!position) return;
@@ -265,7 +275,6 @@ export function FileTab({
 									});
 								},
 							);
-							lspBridgeRef.current?.dispose();
 							if (!document.external) {
 								lspBridgeRef.current = createMonacoLSPBridge({
 									monaco,

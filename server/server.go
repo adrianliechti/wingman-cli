@@ -381,6 +381,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Post("/content-search", s.handleGraphContentSearch)
 			r.Get("/symbol", s.handleGraphSymbol)
 			r.Get("/modules", s.handleGraphModules)
+			r.Get("/insights", s.handleGraphInsights)
 		})
 
 		r.Route("/lsp", func(r chi.Router) {
