@@ -253,7 +253,17 @@ func (a *Agent) utilityModel() string {
 	if a.utilityModelID != "" {
 		return a.utilityModelID
 	}
+	if a.upstreamModels == nil {
+		return ""
+	}
 	return a.classModelLocked(model.ClassSmall)
+}
+
+// UtilityModel returns the model currently selected for lightweight internal
+// work. It is empty until backend model discovery completes when no explicit
+// utility model was configured.
+func (a *Agent) UtilityModel() string {
+	return a.utilityModel()
 }
 
 // subagentRoleModel resolves the model roles the agent tool may launch

@@ -8,6 +8,7 @@ interface Capabilities {
 	diffs: boolean;
 	tasks?: boolean;
 	terminal?: boolean;
+	tab?: boolean;
 	platform?: string;
 	workspace_name?: string;
 	notice?: string;

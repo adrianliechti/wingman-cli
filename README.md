@@ -12,6 +12,7 @@ A powerful AI-powered coding assistant that runs directly in your terminal. Wing
 - **File Operations** — Read, write, edit, and search files in your codebase
 - **Shell Integration** — Execute shell commands with user approval
 - **LSP Integration** — Code intelligence via auto-detected language servers (definitions, references, diagnostics, call hierarchy, and more)
+- **Predictive Tab Edits** — Low-latency inline and multiline next-edit suggestions in the web editor, with import cleanup through the active language server
 - **MCP Support** — Extend functionality with Model Context Protocol servers
 - **Multi-Model Support** — Works with any [OpenResponses API](https://www.openresponses.org) compatible endpoint with auto-selection
 - **Changes** — Git-backed working tree changes with a visual diff viewer
@@ -206,6 +207,7 @@ OpenAI-compatible backend at `http://localhost:4242/v1`.
 | `WINGMAN_MODEL` | Coding model; takes priority over `OPENAI_DEFAULT_MODEL` |
 | `WINGMAN_MODEL_PLAN` | Plan-mode model (default: largest available, e.g. Opus/Sol) |
 | `WINGMAN_MODEL_UTILITY` | Model for recaps and compaction summaries (default: smallest available, e.g. Haiku/Luna) |
+| `WINGMAN_MODEL_TAB` | Optional model override for web-editor Tab predictions (default: the selected utility model, then Luna) |
 | `WINGMAN_EFFORT` | Coding reasoning effort: `none`/`low`/`medium`/`high`/`xhigh`/`max` (default: `high`) |
 | `WINGMAN_EFFORT_PLAN` | Plan-mode reasoning effort (default: `xhigh` on large models, else `high`) |
 | `WINGMAN_LARGE_CONTEXT` | `1` compacts against the model's full context window instead of stopping at the provider's long-context price threshold |

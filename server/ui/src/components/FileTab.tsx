@@ -1,6 +1,7 @@
-import Editor, { type OnMount } from "@monaco-editor/react";
+import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
 import { AlertTriangle, FileDigit, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { registerEditorSaveParticipant } from "../editorSaveParticipants";
 import { useColorScheme } from "../hooks/useColorScheme";
 import type { OpenDocument, SaveResult } from "../hooks/useOpenDocuments";
 import {
@@ -8,6 +9,7 @@ import {
 	type MonacoLSPBridge,
 	revealEditorPosition,
 } from "../monacoLsp";
+import { createMonacoTabBridge, type MonacoTabBridge } from "../monacoTab";
 import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
 import type { ServerMessage } from "../types/protocol";
 import type { WorkspaceEditEnvelope } from "../workspaceEdit";
@@ -37,6 +39,7 @@ interface Props {
 		label: string,
 	) => Promise<boolean>;
 	view?: "code" | "preview";
+	tabEnabled?: boolean;
 }
 
 export function FileTab({
@@ -51,10 +54,14 @@ export function FileTab({
 	onOpenFile,
 	onApplyWorkspaceEdit,
 	view = "code",
+	tabEnabled = false,
 }: Props) {
 	const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
+	const monacoRef = useRef<Monaco | null>(null);
 	const contextMenuListenerRef = useRef<{ dispose(): void } | null>(null);
+	const saveParticipantDisposeRef = useRef<(() => void) | null>(null);
 	const lspBridgeRef = useRef<MonacoLSPBridge | null>(null);
+	const tabBridgeRef = useRef<MonacoTabBridge | null>(null);
 	const diagnosticsTimerRef = useRef<number | null>(null);
 	const onOpenFileRef = useRef(onOpenFile);
 	const onApplyWorkspaceEditRef = useRef(onApplyWorkspaceEdit);
@@ -75,10 +82,36 @@ export function FileTab({
 	const disposeEditorIntegration = useCallback(() => {
 		contextMenuListenerRef.current?.dispose();
 		contextMenuListenerRef.current = null;
+		saveParticipantDisposeRef.current?.();
+		saveParticipantDisposeRef.current = null;
 		lspBridgeRef.current?.dispose();
 		lspBridgeRef.current = null;
+		tabBridgeRef.current?.dispose();
+		tabBridgeRef.current = null;
 		editorRef.current = null;
+		monacoRef.current = null;
 	}, []);
+	const refreshTabIntegration = useCallback(() => {
+		tabBridgeRef.current?.dispose();
+		tabBridgeRef.current = null;
+		if (
+			!tabEnabled ||
+			document.external ||
+			!file ||
+			!editorRef.current ||
+			!monacoRef.current
+		) {
+			return;
+		}
+		tabBridgeRef.current = createMonacoTabBridge({
+			monaco: monacoRef.current,
+			editor: editorRef.current,
+			path: file.path,
+			onAccepted: async () => {
+				await lspBridgeRef.current?.organizeImports();
+			},
+		});
+	}, [document.external, file, tabEnabled]);
 
 	useEffect(() => {
 		const editor = editorRef.current;
@@ -94,6 +127,14 @@ export function FileTab({
 			disposeEditorIntegration();
 		};
 	}, [disposeEditorIntegration]);
+
+	useEffect(() => {
+		refreshTabIntegration();
+		return () => {
+			tabBridgeRef.current?.dispose();
+			tabBridgeRef.current = null;
+		};
+	}, [refreshTabIntegration]);
 
 	useEffect(() => {
 		if (view !== "code") {
@@ -231,6 +272,8 @@ export function FileTab({
 						onMount={(editor, monaco) => {
 							disposeEditorIntegration();
 							editorRef.current = editor;
+							monacoRef.current = monaco;
+							refreshTabIntegration();
 							// Wingman owns the command surface; keep Monaco's standalone
 							// palette shortcuts from opening a second command UI.
 							editor.addCommand(monaco.KeyCode.F1, () => {});
@@ -288,6 +331,13 @@ export function FileTab({
 										onApplyWorkspaceEditRef.current?.(envelope, label) ??
 										Promise.resolve(false),
 								});
+								saveParticipantDisposeRef.current =
+									registerEditorSaveParticipant(
+										file.path,
+										() =>
+											lspBridgeRef.current?.organizeImports() ??
+											Promise.resolve(false),
+									);
 								void loadDiagnostics();
 								editor.addCommand(
 									monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,

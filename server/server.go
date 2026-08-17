@@ -90,6 +90,7 @@ type Server struct {
 
 	terminals *terminal.Manager
 	preview   *filePreviewServer
+	tab       *editorTabService
 
 	summariesMu sync.Mutex
 	summaries   *summaryStore
@@ -143,6 +144,7 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 
 	wa := codeagent.New(ws, cfg, nil)
 	wa.SetUI(s)
+	s.tab = newEditorTabService(cfg, wa.UtilityModel)
 	s.agent = wa
 	s.turns = code.NewTurnManager(tool.WithProgressSink(serverCtx, s.onToolProgress), wa, s.handleTurnEvent)
 
@@ -416,6 +418,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Post("/inlay-hints", s.handleLSPInlayHints)
 			r.Get("/file", s.handleLSPExternalFile)
 		})
+		r.Post("/editor/tab", s.handleEditorTab)
 		r.Get("/skills", s.handleSkills)
 		r.Get("/capabilities", s.handleCapabilities)
 		r.Get("/ws", s.handleWebSocketURL)
@@ -787,6 +790,7 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, _ *http.Request) {
 		"git_init":       isCoder && !ws.HasChanges(),
 		"tasks":          isCoder,
 		"terminal":       terminal.Supported(),
+		"tab":            s.tab != nil,
 		"platform":       runtime.GOOS,
 		"workspace_name": filepath.Base(ws.RootPath),
 	}

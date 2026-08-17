@@ -2188,6 +2188,7 @@ export default function App() {
 									<FileTab
 										key={`${activeTab.id}:${activeTab.path}`}
 										document={documents[activeTab.path]}
+										tabEnabled={capabilities?.tab ?? false}
 										line={activeTab.line}
 										column={activeTab.column}
 										navigationKey={activeTab.navigationKey}

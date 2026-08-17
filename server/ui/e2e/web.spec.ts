@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -20,6 +21,16 @@ async function composer(page: Page) {
 	const input = page.getByPlaceholder("Message Wingman…");
 	await expect(input).toBeVisible();
 	return input;
+}
+
+async function openTabFixture(page: Page, file: RegExp, lineText: string) {
+	await composer(page);
+	await page.getByRole("treeitem", { name: file }).click();
+	await expect(page.locator(".monaco-editor")).toBeVisible();
+	const line = page.locator(".view-line", { hasText: lineText }).first();
+	await expect(line).toBeVisible();
+	await line.click();
+	await page.keyboard.press("End");
 }
 
 async function openWorkspaceMenu(page: Page) {
@@ -1406,6 +1417,308 @@ test("uses Monaco's live buffer for automatic completion and parameter hints", a
 	);
 });
 
+test("save awaits LSP actions that add and remove Go imports", async ({
+	page,
+	request,
+}) => {
+	let workspaceURI = "";
+	const sourceActions: string[] = [];
+	await page.route(/\/api\/lsp\/capabilities\?/, async (route) => {
+		const response = await route.fetch();
+		const capabilities = (await response.json()) as Record<string, unknown>;
+		workspaceURI = String(capabilities.workspace_uri ?? "");
+		await route.fulfill({
+			response,
+			json: {
+				...capabilities,
+				language_server: true,
+				code_actions: true,
+			},
+		});
+	});
+	await page.route(/\/api\/lsp\/code-actions$/, async (route) => {
+		const body = route.request().postDataJSON() as {
+			content: string;
+			only?: string[];
+		};
+		const kind = body.only?.[0] ?? "";
+		if (kind) sourceActions.push(kind);
+		const documentURI = `${workspaceURI.replace(/\/$/, "")}/completion.go`;
+		const edit =
+			kind === "source.addMissingImports"
+				? {
+						changes: {
+							[documentURI]: [
+								{
+									range: {
+										start: { line: 2, character: 0 },
+										end: { line: 2, character: 0 },
+									},
+									newText: 'import "fmt"\n',
+								},
+							],
+						},
+					}
+				: {
+						changes: {
+							[documentURI]: [
+								{
+									range: {
+										start: { line: 2, character: 0 },
+										end: { line: 4, character: 0 },
+									},
+									newText: 'import "fmt"\n',
+								},
+							],
+						},
+					};
+		await route.fulfill({
+			json: {
+				actions: [
+					{
+						title: kind,
+						kind,
+						edit,
+					},
+				],
+				documents: {
+					[documentURI]: {
+						path: "completion.go",
+						revision: createHash("sha256").update(body.content).digest("hex"),
+						exists: true,
+					},
+				},
+			},
+		});
+	});
+
+	await composer(page);
+	await page.getByRole("treeitem", { name: /completion\.go/ }).click();
+	const editor = page.locator(".monaco-editor").first();
+	await expect(editor).toBeVisible();
+	await editor.click();
+	await page.keyboard.press("ControlOrMeta+A");
+	await page.keyboard.insertText(
+		'package main\n\nimport "os"\n\nfunc main() { fmt.Println("ok") }\n',
+	);
+	const save = page.getByRole("button", { name: "Save file" });
+	await expect(save).toBeEnabled();
+	await save.click();
+	await expect
+		.poll(() => sourceActions)
+		.toEqual(["source.addMissingImports", "source.organizeImports"]);
+	const read = await request.get("/api/files/read?path=completion.go");
+	const saved = (await read.json()) as { content: string };
+	expect(saved.content).toContain('import "fmt"');
+	expect(saved.content).not.toContain('import "os"');
+});
+
+test("save applies real gopls organize-imports edits", async ({
+	page,
+	request,
+}) => {
+	const capabilitiesResponse = await request.get(
+		"/api/lsp/capabilities?path=organize-imports.go",
+	);
+	const capabilities = (await capabilitiesResponse.json()) as {
+		language_server?: boolean;
+		code_actions?: boolean;
+	};
+	test.skip(
+		!capabilities.language_server || !capabilities.code_actions,
+		"gopls is not available in this environment",
+	);
+
+	await composer(page);
+	await page.getByRole("treeitem", { name: /organize-imports\.go/ }).click();
+	const editor = page.locator(".monaco-editor").first();
+	await expect(editor).toBeVisible();
+	await editor.click();
+	await page.keyboard.press("ControlOrMeta+A");
+	await page.keyboard.insertText(
+		'package main\n\nimport "os"\n\nfunc main() { fmt.Println("ok") }\n',
+	);
+	await page.getByRole("button", { name: "Save file" }).click();
+	await expect
+		.poll(async () => {
+			const response = await request.get(
+				"/api/files/read?path=organize-imports.go",
+			);
+			return ((await response.json()) as { content: string }).content;
+		})
+		.toBe(
+			'package main\n\nimport "fmt"\n\nfunc main() { fmt.Println("ok") }\n',
+		);
+});
+
+test("Tab stays idle until an edit and accepts a cursor completion", async ({
+	page,
+}) => {
+	let predictions = 0;
+	const sourceActions: string[] = [];
+	await page.route(/\/api\/lsp\/capabilities\?/, async (route) => {
+		const response = await route.fetch();
+		const capabilities = (await response.json()) as Record<string, unknown>;
+		await route.fulfill({
+			response,
+			json: {
+				...capabilities,
+				language_server: true,
+				code_actions: true,
+			},
+		});
+	});
+	await page.route(/\/api\/lsp\/code-actions$/, async (route) => {
+		const body = route.request().postDataJSON() as { only?: string[] };
+		if (body.only?.[0]) sourceActions.push(body.only[0]);
+		await route.fulfill({ json: { actions: [], documents: {} } });
+	});
+	await page.route(/\/api\/editor\/tab$/, async (route) => {
+		predictions++;
+		const body = route.request().postDataJSON() as {
+			line: number;
+			column: number;
+			version: number;
+		};
+		await route.fulfill({
+			json: {
+				version: body.version,
+				edit: {
+					insert_text: "quantity",
+					expected_text: "",
+					range: {
+						start_line: body.line,
+						start_column: body.column,
+						end_line: body.line,
+						end_column: body.column,
+					},
+				},
+			},
+		});
+	});
+
+	await openTabFixture(page, /tab-ghost\.go/, "total := price *");
+	await page.waitForTimeout(400);
+	expect(predictions).toBe(0);
+
+	await page.keyboard.type(" ");
+	const ghost = page.locator(".ghost-text-decoration", {
+		hasText: "quantity",
+	});
+	await expect(ghost).toBeVisible();
+	await page.keyboard.press("Tab");
+	await expect(
+		page.locator(".view-line", { hasText: "price * quantity" }).first(),
+	).toBeVisible();
+	await expect
+		.poll(() => sourceActions)
+		.toEqual(["source.addMissingImports", "source.organizeImports"]);
+});
+
+test("Tab renders and accepts a real multiline Monaco inline edit", async ({
+	page,
+}) => {
+	await page.route(/\/api\/editor\/tab$/, async (route) => {
+		const body = route.request().postDataJSON() as { version: number };
+		await route.fulfill({
+			json: {
+				version: body.version,
+				edit: {
+					insert_text: "if ready {\n  new one\n  new two\n}\n",
+					expected_text: "old one\nold two\n",
+					range: {
+						start_line: 2,
+						start_column: 1,
+						end_line: 4,
+						end_column: 1,
+					},
+				},
+			},
+		});
+	});
+
+	await openTabFixture(page, /tab-multiline\.txt/, "old one");
+	await page.keyboard.type(" ");
+	await page.keyboard.press("Backspace");
+	const preview = page.locator(".monaco-editor:visible").filter({
+		hasText: "new one",
+	});
+	await expect(preview.first()).toBeVisible();
+	await expect
+		.poll(() => page.locator(".monaco-editor:visible").count())
+		.toBeGreaterThan(1);
+	await page.keyboard.press("Tab");
+	await expect
+		.poll(() => page.locator(".monaco-editor:visible").count())
+		.toBe(1);
+	await expect(
+		page.locator(".view-line", { hasText: "if ready" }).first(),
+	).toBeVisible();
+	await expect(page.locator(".view-line", { hasText: "old one" })).toHaveCount(
+		0,
+	);
+});
+
+test("Tab drops a delayed response after the cursor moves", async ({
+	page,
+}) => {
+	let firstStarted!: () => void;
+	const started = new Promise<void>((resolve) => {
+		firstStarted = resolve;
+	});
+	await page.route(/\/api\/editor\/tab$/, async (route) => {
+		const body = route.request().postDataJSON() as {
+			line: number;
+			column: number;
+			version: number;
+		};
+		const first = body.line === 1;
+		if (first) {
+			firstStarted();
+			await new Promise((resolve) => setTimeout(resolve, 900));
+		}
+		try {
+			await route.fulfill({
+				json: {
+					version: body.version,
+					edit: {
+						insert_text: first ? "oldValue" : " newValue",
+						expected_text: "",
+						range: {
+							start_line: body.line,
+							start_column: body.column,
+							end_line: body.line,
+							end_column: body.column,
+						},
+					},
+				},
+			});
+		} catch {
+			// The cursor move is expected to abort the first routed request.
+		}
+	});
+
+	await openTabFixture(page, /tab-stale\.txt/, "first :=");
+	await page.keyboard.type(" ");
+	await started;
+	const second = page.locator(".view-line", { hasText: "second :=" }).first();
+	await second.click();
+	await page.keyboard.press("End");
+	const currentGhost = page.locator(".ghost-text-decoration", {
+		hasText: "newValue",
+	});
+	await expect(currentGhost).toBeVisible();
+	await page.waitForTimeout(1_000);
+	await expect(currentGhost).toBeVisible();
+	await expect(
+		page.locator(".ghost-text-decoration", { hasText: "oldValue" }),
+	).toHaveCount(0);
+	await page.keyboard.press("Tab");
+	await expect(
+		page.locator(".view-line", { hasText: "second := newValue" }).first(),
+	).toBeVisible();
+});
+
 test("keeps composer pickers visible in a constrained window", async ({
 	page,
 }) => {
@@ -1964,9 +2277,9 @@ test("renders streaming Markdown with lazy Monaco highlighting", async ({
 		goBlock.getByRole("button", { name: "Copy code" }),
 	).toBeVisible();
 
-	const mermaidBlock = markdown.locator(
-		'[data-markdown-code][data-language="mermaid"]',
-	).first();
+	const mermaidBlock = markdown
+		.locator('[data-markdown-code][data-language="mermaid"]')
+		.first();
 	await expect(mermaidBlock.locator("[data-mermaid-preview]")).toBeVisible();
 	await mermaidBlock
 		.getByRole("button", { name: "Show Mermaid source" })
@@ -1980,7 +2293,9 @@ test("renders streaming Markdown with lazy Monaco highlighting", async ({
 	const c4Image = c4Block.locator("[data-mermaid-preview] img");
 	await expect(c4Image).toBeVisible();
 	await expect
-		.poll(() => c4Image.evaluate((image: HTMLImageElement) => image.naturalWidth))
+		.poll(() =>
+			c4Image.evaluate((image: HTMLImageElement) => image.naturalWidth),
+		)
 		.toBeGreaterThan(0);
 	await expect(markdown).toContainText("Math stays literal: $x^2$.");
 	await expect(

@@ -60,6 +60,15 @@ func emitE2ETextResponse(w http.ResponseWriter, id, text string) {
 	fmt.Fprint(w, "data: [DONE]\n\n")
 }
 
+func emitE2ETabNoop(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprint(w, `{
+		"id":"resp_tab","object":"response","status":"completed",
+		"output":[{"id":"msg_tab","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"{\"updated_window\":\"\"}","annotations":[]}]}],
+		"usage":{"input_tokens":8,"input_tokens_details":{"cached_tokens":0},"output_tokens":2}
+	}`)
+}
+
 func (m *webE2EModel) handleTool(w http.ResponseWriter) {
 	if m.toolRequests.Add(1) == 1 {
 		args, _ := json.Marshal(map[string]any{
@@ -168,6 +177,10 @@ func (m *webE2EModel) handler(w http.ResponseWriter, r *http.Request) {
 	case "/v1/responses":
 		m.requests.Add(1)
 		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "You are Wingman Tab") {
+			emitE2ETabNoop(w)
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		switch {
 		case strings.Contains(string(body), "create e2e-result.txt"):
@@ -275,6 +288,23 @@ func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
+		filepath.Join(workDir, "organize-imports.go"),
+		[]byte("package main\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	tabFiles := map[string]string{
+		"tab-ghost.go":      "package main\n\nfunc main() {\n\ttotal := price *\n\t_ = total\n}\n",
+		"tab-multiline.txt": "first\nold one\nold two\nlast\n",
+		"tab-stale.txt":     "first :=\nsecond :=\n",
+	}
+	for name, content := range tabFiles {
+		if err := os.WriteFile(filepath.Join(workDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(
 		filepath.Join(workDir, "go.mod"),
 		[]byte("module example.com/wingman-e2e\n\ngo 1.24\n"),
 		0o644,
@@ -305,7 +335,12 @@ func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
 	web := httptest.NewServer(app)
 	defer web.Close()
 
-	cmd := exec.CommandContext(ctx, "npx", "playwright", "test", "e2e/web.spec.ts", "--config", "playwright.config.ts")
+	playwrightArgs := []string{"playwright", "test", "e2e/web.spec.ts", "--config", "playwright.config.ts"}
+	grepPattern := os.Getenv("E2E_GREP")
+	if grepPattern != "" {
+		playwrightArgs = append(playwrightArgs, "--grep", grepPattern)
+	}
+	cmd := exec.CommandContext(ctx, "npx", playwrightArgs...)
 	cmd.Dir = filepath.Join("ui")
 	cmd.Env = append(os.Environ(),
 		"E2E_BASE_URL="+web.URL,
@@ -315,6 +350,9 @@ func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("playwright after %d model requests: %v\n%s", model.requests.Load(), err, output)
+	}
+	if grepPattern != "" {
+		return
 	}
 
 	content, err := os.ReadFile(model.filePath)
