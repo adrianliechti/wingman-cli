@@ -13,6 +13,7 @@ import {
 	Save,
 	Search,
 	SquareTerminal,
+	Waypoints,
 	Wrench,
 } from "lucide-react";
 import {
@@ -46,6 +47,7 @@ import { CompareTab } from "./components/CompareTab";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ErrorPanel } from "./components/ErrorScreen";
 import { FileTab } from "./components/FileTab";
+import { GraphTab } from "./components/graph/GraphTab";
 import { ProblemsPanel } from "./components/ProblemsPanel";
 import { TasksPanel } from "./components/TasksPanel";
 import { TaskTab } from "./components/TaskTab";
@@ -84,7 +86,7 @@ import {
 
 interface CenterTab {
 	id: string;
-	type: "chat" | "file" | "diff" | "compare" | "terminal" | "task";
+	type: "chat" | "file" | "diff" | "compare" | "terminal" | "task" | "graph";
 	label: string;
 	path?: string;
 	diffLayer?: DiffLayer;
@@ -810,6 +812,10 @@ export default function App() {
 		},
 		[showCenterTab],
 	);
+
+	const openGraphTab = useCallback(() => {
+		showCenterTab({ id: "graph", type: "graph", label: "Code Graph" }, "keep");
+	}, [showCenterTab]);
 
 	const closeTabNow = useCallback(
 		(id: string) => {
@@ -1554,6 +1560,12 @@ export default function App() {
 			run: showWorkspaceSearch,
 		});
 		actions.push({
+			id: "code-graph",
+			label: "Open code graph",
+			icon: <Waypoints size={12} className="text-fg-dim shrink-0" />,
+			run: openGraphTab,
+		});
+		actions.push({
 			id: "show-files",
 			label: "Show files",
 			icon: <FileText size={12} className="text-fg-dim shrink-0" />,
@@ -1579,6 +1591,7 @@ export default function App() {
 		toggleRightPanel,
 		showRightPanel,
 		showWorkspaceSearch,
+		openGraphTab,
 		createTerminal,
 		modes,
 		mode,
@@ -1691,6 +1704,7 @@ export default function App() {
 						searchFocusKey={searchFocusKey}
 						onSearch={showWorkspaceSearch}
 						onCloseSearch={() => setWorkspaceSearching(false)}
+						onOpenGraph={openGraphTab}
 						onFileSelect={(path, disposition) =>
 							openFile(path, undefined, undefined, undefined, disposition)
 						}
@@ -2118,6 +2132,13 @@ export default function App() {
 										sessionId={activeTab.sessionId ?? ""}
 										taskId={activeTab.taskId}
 										subscribe={subscribe}
+									/>
+								) : activeTab.type === "graph" ? (
+									<GraphTab
+										key={activeTab.id}
+										onOpenFile={(path, line, column) =>
+											openFile(path, line, column)
+										}
 									/>
 								) : activeTab.type === "compare" &&
 								  activeTab.compareBase &&

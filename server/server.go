@@ -374,6 +374,15 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.HandleFunc("/{id}/ws", s.handleTerminalWebSocket)
 		})
 
+		r.Route("/graph", func(r chi.Router) {
+			r.Get("/overview", s.handleGraphOverview)
+			r.Post("/index", s.handleGraphIndex)
+			r.Get("/search", s.handleGraphSearch)
+			r.Post("/content-search", s.handleGraphContentSearch)
+			r.Get("/symbol", s.handleGraphSymbol)
+			r.Get("/modules", s.handleGraphModules)
+		})
+
 		r.Route("/lsp", func(r chi.Router) {
 			r.Get("/capabilities", s.handleLSPEditorCapabilities)
 			r.Post("/document", s.handleLSPDocumentLifecycle)

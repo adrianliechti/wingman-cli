@@ -1,4 +1,4 @@
-import { Search, X } from "lucide-react";
+import { Search, Waypoints, X } from "lucide-react";
 import type { ServerMessage } from "../types/protocol";
 import type { TabDisposition } from "../types/tabs";
 import type { WorkspaceEditEnvelope } from "../workspaceEdit";
@@ -11,6 +11,7 @@ interface Props {
 	searchFocusKey: number;
 	onSearch: () => void;
 	onCloseSearch: () => void;
+	onOpenGraph: () => void;
 	onFileSelect: (path: string, disposition?: TabDisposition) => void;
 	onFileMove: (from: string, to: string) => void;
 	onOpenSearchResult: (
@@ -33,6 +34,7 @@ export function WorkspaceFilesPanel({
 	searchFocusKey,
 	onSearch,
 	onCloseSearch,
+	onOpenGraph,
 	onFileSelect,
 	onFileMove,
 	onOpenSearchResult,
@@ -49,6 +51,15 @@ export function WorkspaceFilesPanel({
 				>
 					{searching ? "Search" : workspaceName || "Files"}
 				</span>
+				<button
+					type="button"
+					onClick={onOpenGraph}
+					title="Code graph"
+					aria-label="Code graph"
+					className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-bg-hover hover:text-fg"
+				>
+					<Waypoints size={12} />
+				</button>
 				<button
 					type="button"
 					onClick={searching ? onCloseSearch : onSearch}

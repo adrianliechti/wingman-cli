@@ -24,6 +24,7 @@ import (
 	lsptool "github.com/adrianliechti/wingman-agent/pkg/agent/tool/lsp"
 	toolmcp "github.com/adrianliechti/wingman-agent/pkg/agent/tool/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/changes"
+	"github.com/adrianliechti/wingman-agent/pkg/graph"
 	"github.com/adrianliechti/wingman-agent/pkg/language"
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 	"github.com/adrianliechti/wingman-agent/pkg/mcp"
@@ -479,6 +480,14 @@ func (w *Workspace) languageService() (*language.Service, error) {
 		return nil, fmt.Errorf("language service unavailable")
 	}
 	return service, nil
+}
+
+func (w *Workspace) GraphEngine() (*graph.Engine, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.Graph(), nil
 }
 
 // DefinitionLocations resolves a position in a disk file or in-memory editor

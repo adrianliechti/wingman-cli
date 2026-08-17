@@ -5,6 +5,7 @@ import {
 	Loader2,
 	MessageSquare,
 	SquareTerminal,
+	Waypoints,
 	X,
 } from "lucide-react";
 
@@ -14,7 +15,8 @@ export type TabKind =
 	| "diff"
 	| "compare"
 	| "terminal"
-	| "task";
+	| "task"
+	| "graph";
 
 export function Tab({
 	id,
@@ -56,7 +58,9 @@ export function Tab({
 					? GitCompare
 					: kind === "task"
 						? Bot
-						: FileText;
+						: kind === "graph"
+							? Waypoints
+							: FileText;
 
 	return (
 		<button
