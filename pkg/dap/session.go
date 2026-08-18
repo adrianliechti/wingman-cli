@@ -365,7 +365,7 @@ func (session *Session) readLoop() {
 	for {
 		message, err := godap.ReadProtocolMessage(reader)
 		if err != nil {
-			session.finish(err)
+			session.closeResourcesWithError(err)
 			return
 		}
 		switch message := message.(type) {
@@ -550,7 +550,7 @@ func (session *Session) watchProcess() {
 	}
 	err, ok := <-session.connection.processDone
 	if ok && err != nil && session.Status().State != StateTerminated {
-		session.finish(fmt.Errorf("debug adapter exited: %w", err))
+		session.closeResourcesWithError(fmt.Errorf("debug adapter exited: %w", err))
 	}
 }
 

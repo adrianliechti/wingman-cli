@@ -5,11 +5,11 @@ import {
 	ChevronRight,
 	Loader2,
 	Pause,
+	Play,
 	RedoDot,
 	RefreshCw,
 	Square,
 	StepBack,
-	StepForward,
 	UndoDot,
 } from "lucide-react";
 import {
@@ -33,6 +33,7 @@ import {
 interface Props {
 	onLaunch: () => void;
 	onOpenFile: (path: string, line: number, column: number) => void;
+	onStopped?: () => void;
 }
 
 type DebugOperation =
@@ -44,17 +45,34 @@ type DebugOperation =
 	| "pause"
 	| "stop";
 
-export function DebugTab({ onLaunch, onOpenFile }: Props) {
+export function DebugTab({ onLaunch, onOpenFile, onStopped }: Props) {
 	const requestsRef = useRef(new Set<AbortController>());
+	const refreshSequenceRef = useRef(0);
+	const inspectionRef = useRef<DebugInspection | null>(null);
 	const selectedFrameRef = useRef<number | undefined>(undefined);
+	const scopeRequestRef = useRef<AbortController | null>(null);
 	const stopVersionRef = useRef("");
 	const outputRef = useRef<HTMLPreElement | null>(null);
+	const onOpenFileRef = useRef(onOpenFile);
+	const onStoppedRef = useRef(onStopped);
+	const busyCountRef = useRef(0);
 	const [inspection, setInspection] = useState<DebugInspection | null>(null);
 	const [selectedFrameID, setSelectedFrameID] = useState<number>();
 	const [scopes, setScopes] = useState<DebugScopeInspection[]>([]);
 	const [error, setError] = useState("");
 	const [busy, setBusy] = useState(false);
 	selectedFrameRef.current = selectedFrameID;
+	onOpenFileRef.current = onOpenFile;
+	onStoppedRef.current = onStopped;
+
+	const beginBusy = useCallback(() => {
+		busyCountRef.current += 1;
+		setBusy(true);
+		return () => {
+			busyCountRef.current = Math.max(0, busyCountRef.current - 1);
+			if (busyCountRef.current === 0) setBusy(false);
+		};
+	}, []);
 
 	const track = useCallback(
 		async <T,>(controller: AbortController, request: Promise<T>) => {
@@ -69,52 +87,64 @@ export function DebugTab({ onLaunch, onOpenFile }: Props) {
 	);
 
 	const applyInspection = useCallback((next: DebugInspection) => {
-		setInspection((current) => {
-			if (!next.session && current?.session?.state === "terminated")
-				return current;
-			return next;
-		});
+		const current = inspectionRef.current;
+		if (!next.session && current?.session?.state === "terminated") return false;
+		if (
+			next.session &&
+			current?.session?.session_id === next.session.session_id &&
+			next.session.state_version < current.session.state_version
+		)
+			return false;
+
+		inspectionRef.current = next;
+		setInspection(next);
 		if (next.session?.state !== "stopped" || next.frames.length === 0) {
 			stopVersionRef.current = "";
 			setSelectedFrameID(undefined);
 			setScopes([]);
-			return;
+			return true;
 		}
 		const stopVersion = `${next.session.session_id}:${next.session.state_version}`;
 		if (stopVersion !== stopVersionRef.current) {
 			stopVersionRef.current = stopVersion;
 			setSelectedFrameID(next.frames[0].id);
 			setScopes(next.scopes);
-			return;
+			const frame = next.frames[0];
+			if (frame.source?.path) {
+				onOpenFileRef.current(frame.source.path, frame.line, frame.column);
+			}
+			onStoppedRef.current?.();
+			return true;
 		}
 		const selected =
 			next.frames.find((frame) => frame.id === selectedFrameRef.current) ??
 			next.frames[0];
 		setSelectedFrameID(selected.id);
 		if (selected.id === next.frames[0].id) setScopes(next.scopes);
+		return true;
 	}, []);
 
 	const refresh = useCallback(
 		async (showBusy = false) => {
+			const sequence = ++refreshSequenceRef.current;
 			const controller = new AbortController();
-			if (showBusy) setBusy(true);
+			const endBusy = showBusy ? beginBusy() : undefined;
 			try {
 				const next = await track(
 					controller,
 					getDebugInspection(controller.signal),
 				);
-				applyInspection(next);
-				if (next.error) setError(next.error);
-				else setError("");
+				if (sequence !== refreshSequenceRef.current) return null;
+				if (applyInspection(next)) setError(next.error ?? "");
 				return next;
 			} catch (cause) {
 				if (!controller.signal.aborted) setError(errorMessage(cause));
 				return null;
 			} finally {
-				if (showBusy) setBusy(false);
+				endBusy?.();
 			}
 		},
-		[applyInspection, track],
+		[applyInspection, beginBusy, track],
 	);
 
 	useEffect(() => {
@@ -131,6 +161,7 @@ export function DebugTab({ onLaunch, onOpenFile }: Props) {
 		return () => {
 			disposed = true;
 			window.clearTimeout(timer);
+			scopeRequestRef.current?.abort();
 			for (const request of requests) request.abort();
 			requests.clear();
 		};
@@ -143,35 +174,52 @@ export function DebugTab({ onLaunch, onOpenFile }: Props) {
 
 	const selectFrame = useCallback(
 		async (frame: DebugStackFrame) => {
-			const session = inspection?.session;
+			const current = inspectionRef.current;
+			const session = current?.session;
 			if (!session || session.state !== "stopped") return;
 			setSelectedFrameID(frame.id);
-			if (frame.id === inspection.frames[0]?.id) {
-				setScopes(inspection.scopes);
+			if (frame.source?.path) {
+				onOpenFileRef.current(frame.source.path, frame.line, frame.column);
+			}
+			if (frame.id === current.frames[0]?.id) {
+				setScopes(current.scopes);
 				return;
 			}
+			scopeRequestRef.current?.abort();
 			const controller = new AbortController();
-			setBusy(true);
+			scopeRequestRef.current = controller;
+			const stateVersion = session.state_version;
+			const endBusy = beginBusy();
 			try {
 				const result = await track(
 					controller,
 					getDebugScopes(frame.id, session.session_id, controller.signal),
 				);
-				if (!controller.signal.aborted) setScopes(result.scopes);
+				if (
+					!controller.signal.aborted &&
+					selectedFrameRef.current === frame.id &&
+					inspectionRef.current?.session?.session_id === session.session_id &&
+					inspectionRef.current.session.state_version === stateVersion &&
+					inspectionRef.current.session.state === "stopped"
+				)
+					setScopes(result.scopes);
 			} catch (cause) {
 				if (!controller.signal.aborted) setError(errorMessage(cause));
 			} finally {
-				setBusy(false);
+				if (scopeRequestRef.current === controller)
+					scopeRequestRef.current = null;
+				endBusy();
 			}
 		},
-		[inspection, track],
+		[beginBusy, track],
 	);
 
 	const control = useCallback(
 		async (operation: DebugOperation) => {
-			const session = inspection?.session;
+			const session = inspectionRef.current?.session;
 			if (!session || session.state === "terminated") return;
-			setBusy(true);
+			scopeRequestRef.current?.abort();
+			const endBusy = beginBusy();
 			setError("");
 			try {
 				const result = await controlDebug(
@@ -180,17 +228,18 @@ export function DebugTab({ onLaunch, onOpenFile }: Props) {
 					session.stop?.thread_id,
 				);
 				if (operation === "stop" && result.session) {
-					setInspection((current) =>
-						current
-							? {
-									...current,
-									session: result.session,
-									threads: [],
-									frames: [],
-									scopes: [],
-								}
-							: current,
-					);
+					const current = inspectionRef.current;
+					if (current) {
+						const terminated = {
+							...current,
+							session: result.session,
+							threads: [],
+							frames: [],
+							scopes: [],
+						};
+						inspectionRef.current = terminated;
+						setInspection(terminated);
+					}
 					setSelectedFrameID(undefined);
 					setScopes([]);
 				} else {
@@ -199,74 +248,83 @@ export function DebugTab({ onLaunch, onOpenFile }: Props) {
 			} catch (cause) {
 				setError(errorMessage(cause));
 			} finally {
-				setBusy(false);
+				endBusy();
 			}
 		},
-		[inspection?.session, refresh],
+		[beginBusy, refresh],
 	);
 
 	const session = inspection?.session;
 	const stopped = session?.state === "stopped";
 	return (
 		<div className="flex h-full min-h-0 flex-col bg-bg">
-			<div className="flex h-10 shrink-0 items-center gap-2 border-b border-border-subtle bg-bg-surface/40 px-3 text-[12px]">
-				<Bug size={14} className="text-warning" />
-				<span className="font-medium text-fg">Debug</span>
-				{session ? (
-					<>
-						<span className="rounded bg-bg-hover px-1.5 py-0.5 text-[10px] text-fg-muted">
-							{session.state}
-						</span>
-						<span className="truncate text-[11px] text-fg-dim">
-							{session.language} · {session.adapter}
-						</span>
-					</>
-				) : (
-					<span className="text-[11px] text-fg-dim">No active session</span>
-				)}
-				<div className="flex-1" />
-				{session && session.state !== "terminated" && (
-					<DebugControls
-						stopped={stopped}
-						supportsStepBack={session.capabilities.supports_step_back}
-						busy={busy}
-						onControl={(operation) => void control(operation)}
-					/>
-				)}
-				<button
-					type="button"
-					title="Refresh debugger state"
-					aria-label="Refresh debugger state"
-					onClick={() => void refresh(true)}
-					className="flex h-6 w-6 items-center justify-center rounded text-fg-dim hover:bg-bg-hover hover:text-fg"
-				>
-					{busy ? (
-						<Loader2 size={12} className="animate-spin" />
+			{session && (
+				<div className="flex h-9 shrink-0 items-center gap-1 border-b border-border-subtle bg-bg-surface/30 px-2">
+					{session.state !== "terminated" ? (
+						<DebugControls
+							stopped={stopped}
+							supportsStepBack={session.capabilities.supports_step_back}
+							busy={busy}
+							onControl={(operation) => void control(operation)}
+						/>
 					) : (
-						<RefreshCw size={12} />
+						<button
+							type="button"
+							onClick={onLaunch}
+							className="flex h-6 items-center gap-1 rounded px-1.5 text-[10px] text-fg-muted hover:bg-bg-hover hover:text-fg"
+						>
+							<Play size={10} /> New session
+						</button>
 					)}
-				</button>
-			</div>
+					<div className="flex-1" />
+					<span
+						className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${
+							stopped
+								? "bg-warning/10 text-warning"
+								: session.state === "running"
+									? "bg-success/10 text-success"
+									: "bg-bg-hover text-fg-muted"
+						}`}
+					>
+						{session.state}
+					</span>
+					<button
+						type="button"
+						title="Refresh debugger state"
+						aria-label="Refresh debugger state"
+						onClick={() => void refresh(true)}
+						className="flex h-6 w-6 items-center justify-center rounded text-fg-dim hover:bg-bg-hover hover:text-fg"
+					>
+						{busy ? (
+							<Loader2 size={12} className="animate-spin" />
+						) : (
+							<RefreshCw size={12} />
+						)}
+					</button>
+				</div>
+			)}
 
 			{!session && !inspection?.output ? (
 				<div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
-					<Bug size={24} className="text-fg-dim" />
-					<div className="max-w-sm text-[12px] text-fg-muted">
-						Start a reviewed debug session to inspect its call stack, variables,
-						and output here.
+					<div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border-subtle bg-bg-surface text-fg-dim">
+						<Bug size={18} />
 					</div>
-					<button
-						type="button"
-						onClick={onLaunch}
-						className="h-7 rounded-md border border-border px-3 text-[11px] text-fg-muted hover:bg-bg-hover hover:text-fg"
-					>
-						Run and debug
-					</button>
+					<div className="space-y-1">
+						<div className="text-[12px] font-medium text-fg">
+							No active session
+						</div>
+						<div className="max-w-56 text-[11px] leading-relaxed text-fg-dim">
+							Use Run or Debug above an entry point. Frames, variables, and
+							output will appear here.
+						</div>
+					</div>
 				</div>
 			) : (
-				<div className="grid min-h-0 flex-1 grid-cols-[minmax(180px,0.75fr)_minmax(260px,1.25fr)] grid-rows-[minmax(180px,1fr)_minmax(130px,0.7fr)]">
-					<section className="min-h-0 overflow-auto border-r border-border-subtle">
-						<SectionTitle>Call stack</SectionTitle>
+				<div className="grid min-h-0 flex-1 grid-rows-[minmax(100px,0.65fr)_minmax(160px,1.3fr)_minmax(110px,0.7fr)] overflow-hidden">
+					<section className="min-h-0 overflow-auto border-b border-border-subtle">
+						<SectionTitle count={inspection?.frames.length}>
+							Call stack
+						</SectionTitle>
 						{inspection?.frames.length ? (
 							<div className="py-1">
 								{inspection.frames.map((frame) => (
@@ -274,14 +332,10 @@ export function DebugTab({ onLaunch, onOpenFile }: Props) {
 										type="button"
 										key={frame.id}
 										onClick={() => void selectFrame(frame)}
-										onDoubleClick={() => {
-											if (frame.source?.path)
-												onOpenFile(frame.source.path, frame.line, frame.column);
-										}}
-										className={`block w-full px-3 py-1.5 text-left text-[11px] hover:bg-bg-hover ${
+										className={`block w-full border-l-2 px-3 py-1.5 text-left text-[11px] hover:bg-bg-hover ${
 											selectedFrameID === frame.id
-												? "bg-bg-hover text-fg"
-												: "text-fg-muted"
+												? "border-accent bg-bg-hover text-fg"
+												: "border-transparent text-fg-muted"
 										}`}
 									>
 										<div className="truncate">{frame.name}</div>
@@ -300,7 +354,7 @@ export function DebugTab({ onLaunch, onOpenFile }: Props) {
 						)}
 					</section>
 
-					<section className="min-h-0 overflow-auto">
+					<section className="min-h-0 overflow-auto border-b border-border-subtle">
 						<SectionTitle>Variables</SectionTitle>
 						{scopes.length ? (
 							<div className="pb-2">
@@ -319,7 +373,7 @@ export function DebugTab({ onLaunch, onOpenFile }: Props) {
 						)}
 					</section>
 
-					<section className="col-span-2 flex min-h-0 flex-col border-t border-border-subtle bg-black/10">
+					<section className="flex min-h-0 flex-col bg-black/10">
 						<SectionTitle>Debug output</SectionTitle>
 						<pre
 							ref={outputRef}
@@ -352,7 +406,7 @@ function DebugControls({
 	onControl: (operation: DebugOperation) => void;
 }) {
 	return (
-		<div className="flex items-center gap-0.5">
+		<div className="flex items-center gap-1">
 			{stopped ? (
 				<>
 					{supportsStepBack && (
@@ -369,7 +423,7 @@ function DebugControls({
 						disabled={busy}
 						onClick={() => onControl("continue")}
 					>
-						<StepForward size={12} />
+						<Play size={12} />
 					</Control>
 					<Control
 						label="Step over"
@@ -516,7 +570,7 @@ function VariableRow({
 				type="button"
 				disabled={reference <= 0}
 				onClick={() => void toggle()}
-				className="grid w-full grid-cols-[minmax(100px,0.75fr)_minmax(120px,1.25fr)] items-start gap-2 px-3 py-1 text-left text-[11px] hover:bg-bg-hover disabled:hover:bg-transparent"
+				className="grid w-full grid-cols-[minmax(72px,0.65fr)_minmax(92px,1.35fr)] items-start gap-2 px-3 py-1 text-left text-[11px] hover:bg-bg-hover disabled:hover:bg-transparent"
 				style={{ paddingLeft: `${12 + depth * 12}px` }}
 			>
 				<span className="flex min-w-0 items-center gap-1 text-fg-muted">
@@ -565,10 +619,21 @@ function VariableRow({
 	);
 }
 
-function SectionTitle({ children }: { children: ReactNode }) {
+function SectionTitle({
+	children,
+	count,
+}: {
+	children: ReactNode;
+	count?: number;
+}) {
 	return (
 		<div className="sticky top-0 z-20 flex h-7 items-center border-b border-border-subtle bg-bg-surface/95 px-3 text-[10px] font-medium uppercase tracking-wide text-fg-dim backdrop-blur">
 			{children}
+			{count !== undefined && (
+				<span className="ml-auto font-mono text-[9px] text-fg-dim">
+					{count}
+				</span>
+			)}
 		</div>
 	);
 }

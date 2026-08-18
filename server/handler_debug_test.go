@@ -14,6 +14,7 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
+	"github.com/adrianliechti/wingman-agent/pkg/debugadapter"
 )
 
 func TestDebugTargetsReturnsGoCodeLensCandidates(t *testing.T) {
@@ -111,6 +112,34 @@ func TestValidateDebugPlanConstrainsWorkspacePaths(t *testing.T) {
 	plan.Configuration["program"] = "../outside"
 	if err := app.validateDebugPlan(&plan, adapters); err == nil {
 		t.Fatal("outside program path was accepted")
+	}
+}
+
+func TestSelectDeterministicDebugTargetUsesCurrentFileAndInstalledLanguage(t *testing.T) {
+	targets := []debugadapter.Target{
+		{ID: "go:main", Language: "Go", Path: "cmd/main.go"},
+		{ID: "python:main", Language: "Python", Path: "tools/main.py"},
+	}
+	selected, err := selectDeterministicDebugTarget(targets, "tools/main.py", []dap.AdapterInfo{{Language: "Python"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.ID != "python:main" {
+		t.Fatalf("selected = %#v", selected)
+	}
+}
+
+func TestSelectTargetDebugProjectPrefersNearestProject(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "services", "api")
+	project, err := selectTargetDebugProject(root, dap.AdapterInfo{
+		Language: "Go", Projects: []string{root, nested},
+	}, debugadapter.Target{Path: "services/api/main.go", Directory: "services/api"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if project != "services/api" {
+		t.Fatalf("project = %q", project)
 	}
 }
 

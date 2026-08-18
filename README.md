@@ -12,7 +12,7 @@ A powerful AI-powered coding assistant that runs directly in your terminal. Wing
 - **File Operations** — Read, write, edit, and search files in your codebase
 - **Shell Integration** — Execute shell commands with user approval
 - **LSP Integration** — Code intelligence via auto-detected language servers (definitions, references, diagnostics, call hierarchy, and more)
-- **AI-Assisted Debugging** — Debug Adapter Protocol sessions with adapter discovery, reviewed launch plans, breakpoints, stepping, stack/variable inspection, output, and interactive terminals
+- **Integrated Debugging** — Debug Adapter Protocol sessions with deterministic launch profiles, breakpoints, stepping, stack/variable inspection, output, and interactive terminals
 - **MCP Support** — Extend functionality with Model Context Protocol servers
 - **Multi-Model Support** — Works with any [OpenResponses API](https://www.openresponses.org) compatible endpoint with auto-selection
 - **Changes** — Git-backed working tree changes with a visual diff viewer
@@ -252,29 +252,30 @@ Configs are loaded from two locations and merged: `~/.wingman/mcp.json` (global,
 
 ### Debugging (experimental)
 
-The web editor includes a user-facing Debug launcher. Open it with the bug
-button beside **Insights** in the workspace panel, or use the inline **Run |
-Debug** actions above supported entry points. Wingman discovers installed
-adapters and runnable candidates, then asks the configured plan model to create
-an adapter-specific launch or attach configuration. The proposed target,
-arguments, paths, and breakpoints are shown for review before any application
-code executes; there is no `launch.json` builder or language launch policy in
-the DAP client.
+The web editor groups **Diagnostics** and **Debug** under a compact **Inspect**
+workspace view, keeping Files separate. Open Debug there or use the inline
+**Run | Debug** actions above supported entry points. Wingman discovers
+installed adapters and runnable targets, then prepares a deterministic
+language-specific launch configuration. The target, arguments, paths, and
+breakpoints are shown for review before any application code executes.
 
-The initial experiment supports Go through [Delve](https://github.com/go-delve/delve/tree/master/Documentation/api/dap):
+Go uses [Delve](https://github.com/go-delve/delve/tree/master/Documentation/api/dap),
+and Python uses [debugpy](https://github.com/microsoft/debugpy):
 
 ```bash
 go install github.com/go-delve/delve/cmd/dlv@latest
+python -m pip install debugpy
 ```
 
-Keep `dlv` on `PATH` (standard Go bin locations are also checked) and open a
-workspace containing `go.mod` or `go.work`. Go `main`, test, benchmark, fuzz,
-and example functions receive CodeLens actions. During a debug session, click
-Monaco's glyph margin to toggle source breakpoints; the editor shows the active
-stack frame, automatically reveals each new stop, and provides
-Continue/Pause/Step/Stop controls and hover evaluation while stopped. Starting
-a session opens a dedicated **Debug** tab with debugger/debuggee output, the
-call stack, scopes, and recursively expandable variables.
+Keep `dlv` or `debugpy-adapter` on `PATH`; Wingman also checks common workspace
+virtual-environment directories for debugpy. Go `main`, test, benchmark, fuzz,
+and example functions receive CodeLens actions. Python files with an explicit
+`__main__` guard, plus conventional entry files such as `main.py` and `app.py`,
+receive the same actions. During a session, click Monaco's glyph margin to
+toggle source breakpoints. Inspect automatically switches to Debug at each new
+stop and shows the active stack frame, Continue/Pause/Step/Stop,
+hover evaluation, debugger output, scopes, and recursively expandable
+variables without replacing the source editor.
 
 Every reviewed plan also chooses where program I/O runs. **Debug output** uses
 the internal console and is appropriate for ordinary programs. **Integrated
@@ -286,12 +287,11 @@ future adapters that request a client-owned terminal. When the debuggee exits,
 Wingman tears down the adapter cleanly and removes its terminal tab while the
 captured Debug output remains available.
 
-The protocol session and transports are language-neutral. Deterministic
-language detectors provide stable target facts (such as a Go test name and its
-package directory), while adapter descriptors validate and resolve declared
-path fields. The AI only composes the intent-specific adapter configuration.
-Another language can therefore be added without changing the DAP client or AI
-planner.
+The protocol session and transports are language-neutral. Each language adapter
+owns its source-target detector, deterministic launch policy, and passive DAP
+process descriptor. The generic DAP client only validates paths, starts the
+declared process, and manages protocol state. Another language can therefore be
+added as one cohesive adapter without changing the session client.
 
 ## 🛠️ Built-in Tools
 

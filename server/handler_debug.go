@@ -5,43 +5,34 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
-	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
-	"github.com/adrianliechti/wingman-agent/pkg/debugtarget"
+	"github.com/adrianliechti/wingman-agent/pkg/debugadapter"
 	"github.com/adrianliechti/wingman-agent/pkg/terminal"
 )
 
 const (
 	debugRequestLimit       = 2 << 20
-	debugIntentLimit        = 4_000
-	debugManifestLimit      = 800
-	debugEvidenceLimit      = 120 << 10
 	debugControlMaxWait     = 30 * time.Second
 	debugStateRequestBudget = 2 * time.Second
 )
-
-var errActiveDebugSession = errors.New("a debug session is already active")
 
 type debugAdapter struct {
 	Name               string   `json:"name"`
 	Language           string   `json:"language"`
 	Projects           []string `json:"projects"`
-	ConfigurationHint  string   `json:"configuration_hint,omitempty"`
 	IntegratedTerminal bool     `json:"integrated_terminal"`
 }
 
 type debugDiscoveryResponse struct {
-	Adapters []debugAdapter       `json:"adapters"`
-	Targets  []debugtarget.Target `json:"targets"`
-	Session  *dap.Status          `json:"session,omitempty"`
+	Adapters []debugAdapter        `json:"adapters"`
+	Targets  []debugadapter.Target `json:"targets"`
+	Session  *dap.Status           `json:"session,omitempty"`
 }
 
 type debugPlanBreakpoint struct {
@@ -109,7 +100,7 @@ func (s *Server) handleDebugDiscovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targets, err := debugtarget.NewRegistry().DetectWorkspace(r.Context(), s.workspace.RootPath)
+	targets, err := debugadapter.NewRegistry().DetectWorkspace(r.Context(), s.workspace.RootPath)
 	if err != nil && r.Context().Err() != nil {
 		http.Error(w, r.Context().Err().Error(), http.StatusRequestTimeout)
 		return
@@ -144,7 +135,7 @@ func (s *Server) handleDebugTargets(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	targets, err := debugtarget.NewRegistry().DetectFile(filepath.ToSlash(rel), source)
+	targets, err := debugadapter.NewRegistry().DetectFile(filepath.ToSlash(rel), source)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
@@ -156,7 +147,6 @@ type debugPlanRequest struct {
 	Action      string `json:"action"`
 	Adapter     string `json:"adapter,omitempty"`
 	TargetID    string `json:"target_id,omitempty"`
-	Intent      string `json:"intent,omitempty"`
 	CurrentPath string `json:"current_path,omitempty"`
 }
 
@@ -173,12 +163,6 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "action must be run or debug", http.StatusBadRequest)
 		return
 	}
-	request.Intent = strings.TrimSpace(request.Intent)
-	if len(request.Intent) > debugIntentLimit {
-		http.Error(w, "intent is too long", http.StatusBadRequest)
-		return
-	}
-
 	var adapterInfo []dap.AdapterInfo
 	err := s.workspace.WithDAPManager(func(manager *dap.Manager) error {
 		values, err := manager.Adapters(r.Context())
@@ -199,12 +183,12 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targets, err := debugtarget.NewRegistry().DetectWorkspace(r.Context(), s.workspace.RootPath)
+	targets, err := debugadapter.NewRegistry().DetectWorkspace(r.Context(), s.workspace.RootPath)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	var selected *debugtarget.Target
+	var selected *debugadapter.Target
 	if request.TargetID != "" {
 		for i := range targets {
 			if targets[i].ID == request.TargetID {
@@ -223,28 +207,44 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-
-	evidence, err := s.debugPlanningEvidence(r.Context(), targets, selected, request.CurrentPath, adapterInfo)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	plan, err := s.generateDebugPlan(r.Context(), request, selected, adapterInfo, evidence)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	if validationErr := s.validateDebugPlan(&plan, adapterInfo); validationErr != nil {
-		correctedEvidence := evidence + "\nCorrection required: the previous proposal was rejected because " + validationErr.Error() + ". Produce a corrected plan.\n"
-		plan, err = s.generateDebugPlan(r.Context(), request, selected, adapterInfo, correctedEvidence)
+	if selected == nil {
+		selected, err = selectDeterministicDebugTarget(targets, request.CurrentPath, adapterInfo)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := s.validateDebugPlan(&plan, adapterInfo); err != nil {
-			http.Error(w, "AI proposed an invalid debug configuration: "+err.Error(), http.StatusUnprocessableEntity)
-			return
-		}
+	}
+	adapterInfo, err = selectTargetDebugAdapter(adapterInfo, *selected)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	projectDir, err := selectTargetDebugProject(s.workspace.RootPath, adapterInfo[0], *selected)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	profile, err := debugadapter.NewRegistry().Plan(adapterInfo[0].Language, debugadapter.Request{
+		Action: request.Action, ProjectDir: projectDir, Target: *selected,
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	plan := debugLaunchPlan{
+		Action: request.Action, Title: profile.Title, Summary: profile.Summary,
+		Adapter: adapterInfo[0].Name, ProjectDir: profile.ProjectDir, Request: profile.Request,
+		Console: profile.Console, Configuration: profile.Configuration,
+		FunctionBreakpoints: profile.FunctionBreakpoints,
+	}
+	for _, breakpoint := range profile.Breakpoints {
+		plan.Breakpoints = append(plan.Breakpoints, debugPlanBreakpoint{
+			FilePath: breakpoint.FilePath, Line: breakpoint.Line, Column: breakpoint.Column,
+		})
+	}
+	if err := s.validateDebugPlan(&plan, adapterInfo); err != nil {
+		http.Error(w, "invalid deterministic debug configuration: "+err.Error(), http.StatusUnprocessableEntity)
+		return
 	}
 	writeJSON(w, plan)
 }
@@ -266,7 +266,7 @@ func (s *Server) handleDebugStart(w http.ResponseWriter, r *http.Request) {
 		if active := manager.ActiveSession(); active != nil {
 			state := active.Status().State
 			if state != dap.StateTerminated {
-				return errActiveDebugSession
+				return dap.ErrActiveSession
 			}
 		}
 		options, err := s.debugStartOptions(plan)
@@ -282,7 +282,7 @@ func (s *Server) handleDebugStart(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		code := http.StatusBadRequest
-		if errors.Is(err, errActiveDebugSession) {
+		if errors.Is(err, dap.ErrActiveSession) {
 			code = http.StatusConflict
 		}
 		http.Error(w, err.Error(), code)
@@ -645,7 +645,6 @@ func publicDebugAdapters(root string, values []dap.AdapterInfo) []debugAdapter {
 			Name:               value.Name,
 			Language:           value.Language,
 			Projects:           projects,
-			ConfigurationHint:  value.ConfigurationHint,
 			IntegratedTerminal: value.TerminalStrategy != dap.TerminalUnsupported && terminal.Supported(),
 		})
 	}
@@ -668,9 +667,85 @@ func selectDebugAdapters(values []dap.AdapterInfo, requested string) ([]dap.Adap
 	return nil, fmt.Errorf("debug adapter %q is not available", requested)
 }
 
-func nonNilDebugTargets(values []debugtarget.Target) []debugtarget.Target {
+func selectDeterministicDebugTarget(values []debugadapter.Target, currentPath string, adapters []dap.AdapterInfo) (*debugadapter.Target, error) {
+	languages := make(map[string]bool, len(adapters))
+	for _, adapter := range adapters {
+		languages[strings.ToLower(adapter.Language)] = true
+	}
+	currentPath = strings.TrimSpace(currentPath)
+	if currentPath != "" {
+		currentPath = filepath.ToSlash(filepath.Clean(filepath.FromSlash(currentPath)))
+	}
+	candidates := make([]debugadapter.Target, 0, len(values))
+	current := make([]debugadapter.Target, 0, 1)
+	for _, target := range values {
+		if !languages[strings.ToLower(target.Language)] {
+			continue
+		}
+		candidates = append(candidates, target)
+		if currentPath != "" && target.Path == currentPath {
+			current = append(current, target)
+		}
+	}
+	if len(current) == 1 {
+		return &current[0], nil
+	}
+	if len(current) > 1 {
+		return nil, fmt.Errorf("choose one of the %d debug targets in %s", len(current), currentPath)
+	}
+	if len(candidates) == 1 {
+		return &candidates[0], nil
+	}
+	if len(candidates) == 0 {
+		return nil, errors.New("no deterministic debug target was found for an installed adapter")
+	}
+	return nil, fmt.Errorf("choose a debug target; %d runnable targets were found", len(candidates))
+}
+
+func selectTargetDebugAdapter(values []dap.AdapterInfo, target debugadapter.Target) ([]dap.AdapterInfo, error) {
+	matching := make([]dap.AdapterInfo, 0, 1)
+	for _, adapter := range values {
+		if strings.EqualFold(adapter.Language, target.Language) {
+			matching = append(matching, adapter)
+		}
+	}
+	if len(matching) == 0 {
+		return nil, fmt.Errorf("no installed debug adapter supports %s", target.Language)
+	}
+	if len(matching) > 1 {
+		return nil, fmt.Errorf("multiple %s debug adapters are available; choose one explicitly", target.Language)
+	}
+	return matching, nil
+}
+
+func selectTargetDebugProject(root string, adapter dap.AdapterInfo, target debugadapter.Target) (string, error) {
+	targetDir := filepath.Join(root, filepath.FromSlash(target.Directory))
+	best := ""
+	for _, project := range adapter.Projects {
+		rel, err := filepath.Rel(project, targetDir)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if len(project) > len(best) {
+			best = project
+		}
+	}
+	if best == "" {
+		return "", fmt.Errorf("target %s is not inside a detected %s project", target.Path, adapter.Language)
+	}
+	rel, err := filepath.Rel(root, best)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", errors.New("detected debug project is outside the workspace")
+	}
+	if rel == "." {
+		return ".", nil
+	}
+	return filepath.ToSlash(rel), nil
+}
+
+func nonNilDebugTargets(values []debugadapter.Target) []debugadapter.Target {
 	if values == nil {
-		return []debugtarget.Target{}
+		return []debugadapter.Target{}
 	}
 	return values
 }
@@ -844,238 +919,4 @@ func debugWorkspaceDirectory(root, value string) (string, error) {
 		return "", fmt.Errorf("project_dir %q is not a workspace directory", value)
 	}
 	return filepath.ToSlash(cleaned), nil
-}
-
-func (s *Server) generateDebugPlan(ctx context.Context, request debugPlanRequest, selected *debugtarget.Target, adapters []dap.AdapterInfo, evidence string) (debugLaunchPlan, error) {
-	instructions := `You create one reviewed Debug Adapter Protocol launch or attach plan for a local code workspace.
-The installed debug adapter owns all language-specific configuration semantics. Use only the adapter hints and workspace evidence provided. Never invent a path, target, function, process ID, command, or environment value.
-Return adapter-specific arguments in configuration_json as a JSON object string. Do not include request in that object. Use concrete paths interpreted from project_dir, never editor variables such as ${workspaceFolder}. Breakpoint file_path values are always workspace-relative.
-Choose internalConsole for ordinary programs. Choose integratedTerminal only when the user intent or target evidence indicates interactive stdin, terminal control sequences, or a full-screen TUI and the selected adapter advertises it.
-For action=debug and a selected source target, normally add a source breakpoint at that target so execution stops in useful code. For action=run, do not add breakpoints and use the adapter's no-debug configuration when its hint supports one.
-Keep the summary short and explain what will execute. If the intent asks to attach but gives no concrete process ID, produce a launch plan instead. Do not emit shell commands.`
-
-	var input strings.Builder
-	fmt.Fprintf(&input, "Action: %s\n", request.Action)
-	if request.Intent != "" {
-		fmt.Fprintf(&input, "User intent: %s\n", request.Intent)
-	}
-	if selected != nil {
-		encoded, _ := json.Marshal(selected)
-		fmt.Fprintf(&input, "Selected target: %s\n", encoded)
-	} else {
-		input.WriteString("Selected target: none; choose the most likely target supported by the evidence.\n")
-	}
-	input.WriteString("Installed adapters:\n")
-	for _, adapter := range publicDebugAdapters(s.workspace.RootPath, adapters) {
-		fmt.Fprintf(&input, "- %s (%s), projects=%s, integrated_terminal=%t\n  hint: %s\n", adapter.Name, adapter.Language, strings.Join(adapter.Projects, ", "), adapter.IntegratedTerminal, adapter.ConfigurationHint)
-	}
-	input.WriteString("\nWorkspace evidence:\n")
-	input.WriteString(evidence)
-
-	model, effort := s.generationTarget("plan")
-	result, err := s.config.Generate(ctx, agent.GenerateOptions{
-		Model:           model,
-		Effort:          effort,
-		Instructions:    instructions,
-		Input:           input.String(),
-		OutputSchema:    debugPlanOutputSchema(adapters),
-		MaxOutputTokens: 4_000,
-	})
-	if err != nil {
-		return debugLaunchPlan{}, fmt.Errorf("generate debug configuration: %w", err)
-	}
-	var generated struct {
-		Title               string                `json:"title"`
-		Summary             string                `json:"summary"`
-		Adapter             string                `json:"adapter"`
-		ProjectDir          string                `json:"project_dir"`
-		Request             string                `json:"request"`
-		Console             string                `json:"console"`
-		ConfigurationJSON   string                `json:"configuration_json"`
-		Breakpoints         []debugPlanBreakpoint `json:"breakpoints"`
-		FunctionBreakpoints []string              `json:"function_breakpoints"`
-	}
-	if err := json.Unmarshal([]byte(result.Text), &generated); err != nil {
-		return debugLaunchPlan{}, fmt.Errorf("decode generated debug plan: %w", err)
-	}
-	configuration := map[string]any{}
-	if err := json.Unmarshal([]byte(generated.ConfigurationJSON), &configuration); err != nil {
-		return debugLaunchPlan{}, fmt.Errorf("decode generated adapter configuration: %w", err)
-	}
-	return debugLaunchPlan{
-		Action: request.Action, Title: generated.Title, Summary: generated.Summary,
-		Adapter: generated.Adapter, ProjectDir: generated.ProjectDir, Request: generated.Request,
-		Console:       generated.Console,
-		Configuration: configuration, Breakpoints: generated.Breakpoints,
-		FunctionBreakpoints: generated.FunctionBreakpoints,
-	}, nil
-}
-
-func debugPlanOutputSchema(adapters []dap.AdapterInfo) map[string]any {
-	names := make([]string, 0, len(adapters))
-	for _, adapter := range adapters {
-		names = append(names, adapter.Name)
-	}
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"title":              map[string]any{"type": "string"},
-			"summary":            map[string]any{"type": "string"},
-			"adapter":            map[string]any{"type": "string", "enum": names},
-			"project_dir":        map[string]any{"type": "string"},
-			"request":            map[string]any{"type": "string", "enum": []string{"launch", "attach"}},
-			"console":            map[string]any{"type": "string", "enum": []string{string(dap.ConsoleInternal), string(dap.ConsoleIntegrated)}},
-			"configuration_json": map[string]any{"type": "string"},
-			"breakpoints": map[string]any{
-				"type": "array",
-				"items": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"file_path":     map[string]any{"type": "string"},
-						"line":          map[string]any{"type": "integer"},
-						"column":        map[string]any{"type": "integer"},
-						"condition":     map[string]any{"type": "string"},
-						"hit_condition": map[string]any{"type": "string"},
-						"log_message":   map[string]any{"type": "string"},
-					},
-					"required":             []string{"file_path", "line", "column", "condition", "hit_condition", "log_message"},
-					"additionalProperties": false,
-				},
-			},
-			"function_breakpoints": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-		},
-		"required":             []string{"title", "summary", "adapter", "project_dir", "request", "console", "configuration_json", "breakpoints", "function_breakpoints"},
-		"additionalProperties": false,
-	}
-}
-
-func (s *Server) debugPlanningEvidence(ctx context.Context, targets []debugtarget.Target, selected *debugtarget.Target, currentPath string, adapters []dap.AdapterInfo) (string, error) {
-	var evidence strings.Builder
-	evidence.WriteString("Runnable candidates:\n")
-	for index, target := range targets {
-		if index >= 250 {
-			fmt.Fprintf(&evidence, "- ... %d more candidates\n", len(targets)-index)
-			break
-		}
-		fmt.Fprintf(&evidence, "- %s: %s %s in %s at %s:%d\n", target.ID, target.Kind, target.Name, target.Directory, target.Path, target.Line)
-	}
-
-	manifest, err := debugWorkspaceManifest(ctx, s.workspace.RootPath)
-	if err != nil {
-		return "", err
-	}
-	evidence.WriteString("Workspace files:\n")
-	for _, file := range manifest {
-		fmt.Fprintf(&evidence, "- %s\n", file)
-	}
-
-	relevant := map[string]bool{}
-	if selected != nil {
-		relevant[selected.Path] = true
-	}
-	if currentPath != "" {
-		relevant[filepath.ToSlash(filepath.Clean(filepath.FromSlash(currentPath)))] = true
-	}
-	for _, adapter := range adapters {
-		for _, project := range adapter.Projects {
-			entries, _ := os.ReadDir(project)
-			for _, entry := range entries {
-				if entry.IsDir() || !debugEvidenceFile(entry.Name()) {
-					continue
-				}
-				rel, err := filepath.Rel(s.workspace.RootPath, filepath.Join(project, entry.Name()))
-				if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-					relevant[filepath.ToSlash(rel)] = true
-				}
-			}
-		}
-	}
-
-	evidence.WriteString("Relevant file contents:\n")
-	remaining := debugEvidenceLimit - evidence.Len()
-	relevantPaths := mapsKeys(relevant)
-	slices.Sort(relevantPaths)
-	for _, path := range relevantPaths {
-		if remaining <= 0 {
-			break
-		}
-		rel, ok := s.workspaceRel(path)
-		if !ok {
-			continue
-		}
-		content, err := s.workspace.Root.ReadFile(rel)
-		if err != nil {
-			continue
-		}
-		if len(content) > remaining {
-			content = content[:remaining]
-		}
-		fmt.Fprintf(&evidence, "--- %s ---\n%s\n", path, content)
-		remaining = debugEvidenceLimit - evidence.Len()
-	}
-	if evidence.Len() > debugEvidenceLimit {
-		value := evidence.String()
-		return value[:debugEvidenceLimit], nil
-	}
-	return evidence.String(), nil
-}
-
-func debugWorkspaceManifest(ctx context.Context, root string) ([]string, error) {
-	files := make([]string, 0, debugManifestLimit)
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if path != root && skipDebugDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if len(files) >= debugManifestLimit {
-			return fs.SkipAll
-		}
-		rel, err := filepath.Rel(root, path)
-		if err == nil {
-			files = append(files, filepath.ToSlash(rel))
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	slices.Sort(files)
-	return files, nil
-}
-
-func skipDebugDir(name string) bool {
-	if strings.HasPrefix(name, ".") {
-		return true
-	}
-	switch name {
-	case "node_modules", "vendor", "testdata", "target", "build", "dist", "__pycache__", "venv":
-		return true
-	default:
-		return false
-	}
-}
-
-func debugEvidenceFile(name string) bool {
-	lower := strings.ToLower(name)
-	switch lower {
-	case "go.mod", "go.work", "package.json", "cargo.toml", "pyproject.toml", "pom.xml", "build.gradle", "build.gradle.kts", "makefile":
-		return true
-	}
-	return strings.HasSuffix(lower, ".csproj") || strings.HasSuffix(lower, ".sln")
-}
-
-func mapsKeys(values map[string]bool) []string {
-	result := make([]string, 0, len(values))
-	for key := range values {
-		result = append(result, key)
-	}
-	return result
 }

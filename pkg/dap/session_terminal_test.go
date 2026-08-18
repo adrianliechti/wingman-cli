@@ -22,7 +22,7 @@ func TestRunInTerminalRequestUsesConfiguredHost(t *testing.T) {
 	process := newFakeTerminalProcess()
 	launcher := &fakeTerminalLauncher{process: process, launches: make(chan TerminalLaunch, 1)}
 	plan := Plan{
-		Adapter:    Adapter{Name: "fake", Language: "Test", AdapterID: "fake", TerminalStrategy: TerminalRunInTerminal},
+		Adapter:    AdapterDescriptor{Name: "fake", Language: "Test", AdapterID: "fake", TerminalStrategy: TerminalRunInTerminal},
 		ProjectDir: "/workspace",
 		Request:    "launch",
 		Console:    ConsoleIntegrated,

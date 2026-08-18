@@ -12,6 +12,7 @@ import {
 	PanelLeftOpen,
 	PanelRightOpen,
 	Plus,
+	RefreshCw,
 	Save,
 	Search,
 	SquareTerminal,
@@ -34,7 +35,7 @@ import {
 	usePanelRef,
 } from "react-resizable-panels";
 import { createWorkspaceFile } from "./api/files";
-import { getDebugState, type DebugSession } from "./api/debug";
+import type { DebugSession } from "./api/debug";
 import { ChatPanel } from "./components/ChatPanel";
 import { Tab } from "./components/Tab";
 import {
@@ -60,7 +61,12 @@ import { TasksPanel } from "./components/TasksPanel";
 import { TaskTab } from "./components/TaskTab";
 import { TerminalView } from "./components/TerminalView";
 import { WorkspaceFilesPanel } from "./components/WorkspaceFilesPanel";
-import { Dialog, dialogButtonClass, useToast } from "./components/ui/Feedback";
+import {
+	Dialog,
+	dialogButtonClass,
+	dialogPrimaryButtonClass,
+	useToast,
+} from "./components/ui/Feedback";
 import { FloatingMenu, FloatingSurface } from "./components/ui/Floating";
 import { AgentPicker, BUILTIN_AGENT_ID } from "./components/AgentPicker";
 import { Sidebar } from "./components/Sidebar";
@@ -93,15 +99,7 @@ import {
 
 interface CenterTab {
 	id: string;
-	type:
-		| "chat"
-		| "file"
-		| "diff"
-		| "compare"
-		| "terminal"
-		| "task"
-		| "graph"
-		| "debug";
+	type: "chat" | "file" | "diff" | "compare" | "terminal" | "task" | "graph";
 	label: string;
 	path?: string;
 	diffLayer?: DiffLayer;
@@ -118,7 +116,8 @@ interface CenterTab {
 	preview?: boolean;
 }
 
-type RightTab = "changes" | "files" | "problems" | "agents";
+type RightTab = "changes" | "files" | "inspect" | "agents";
+type InspectView = "problems" | "debug";
 type CloseRequest = { kind: "file" | "terminal"; tab: CenterTab } | null;
 type SaveConflictRequest = { path: string; closeTabId?: string } | null;
 type WorkspaceEditRequest = {
@@ -287,6 +286,8 @@ export default function App() {
 	const showAgents = capabilities?.tasks ?? false;
 	const showTerminal = capabilities?.terminal ?? false;
 	const [requestedRightTab, setRequestedRightTab] = useState<RightTab>("files");
+	const [inspectView, setInspectView] = useState<InspectView>("debug");
+	const [problemsRefreshKey, setProblemsRefreshKey] = useState(0);
 	const [workspaceSearching, setWorkspaceSearching] = useState(false);
 	const [searchFocusKey, setSearchFocusKey] = useState(0);
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
@@ -560,10 +561,11 @@ export default function App() {
 		activeTab.type === "chat" ? (activeTab.sessionId ?? "") : currentSessionId;
 	const rightTab =
 		(requestedRightTab === "changes" && !showChanges) ||
-		(requestedRightTab === "problems" && !showProblems) ||
 		(requestedRightTab === "agents" && !showAgents)
 			? "files"
 			: requestedRightTab;
+	const activeInspectView =
+		inspectView === "problems" && !showProblems ? "debug" : inspectView;
 
 	const activeSession = sessionId ? sessions[sessionId] : undefined;
 	const entries = activeSession?.entries ?? EMPTY_ENTRIES;
@@ -731,42 +733,6 @@ export default function App() {
 		[keepTab, openDocument, showCenterTab, tabs],
 	);
 
-	const revealedDebugStopRef = useRef("");
-	useEffect(() => {
-		let disposed = false;
-		let timer = 0;
-		let controller: AbortController | null = null;
-		const poll = async () => {
-			controller = new AbortController();
-			let delay = 2_000;
-			try {
-				const state = await getDebugState(undefined, controller.signal);
-				if (disposed) return;
-				if (state.session && state.session.state !== "terminated") delay = 500;
-				if (state.session?.state === "stopped" && state.frame?.source?.path) {
-					const stopKey = `${state.session.session_id}:${state.session.state_version}`;
-					if (stopKey !== revealedDebugStopRef.current) {
-						revealedDebugStopRef.current = stopKey;
-						openFile(
-							state.frame.source.path,
-							state.frame.line,
-							state.frame.column,
-						);
-					}
-				}
-			} catch {
-				// Debug support is best-effort; a later poll will recover.
-			}
-			if (!disposed) timer = window.setTimeout(() => void poll(), delay);
-		};
-		void poll();
-		return () => {
-			disposed = true;
-			window.clearTimeout(timer);
-			controller?.abort();
-		};
-	}, [openFile]);
-
 	const handleFileMove = useCallback(
 		(from: string, to: string) => {
 			moveDocuments(from, to);
@@ -870,33 +836,6 @@ export default function App() {
 	const openInsightsTab = useCallback(() => {
 		showCenterTab({ id: "graph", type: "graph", label: "Insights" }, "keep");
 	}, [showCenterTab]);
-	const openDebugTab = useCallback(() => {
-		showCenterTab({ id: "debug", type: "debug", label: "Debug" }, "keep");
-	}, [showCenterTab]);
-	const openDebugSessionTabs = useCallback((session: DebugSession) => {
-		const debugTab: CenterTab = {
-			id: "debug",
-			type: "debug",
-			label: "Debug",
-		};
-		const terminalTab: CenterTab | undefined = session.terminal_id
-			? {
-					id: `terminal:${session.terminal_id}`,
-					type: "terminal",
-					label: `Debug · ${session.adapter}`,
-					terminalId: session.terminal_id,
-				}
-			: undefined;
-		setTabs((current) => {
-			const next = [...current];
-			if (!next.some((tab) => tab.id === debugTab.id)) next.push(debugTab);
-			if (terminalTab && !next.some((tab) => tab.id === terminalTab.id)) {
-				next.push(terminalTab);
-			}
-			return withSessionFallback(next);
-		});
-		setActiveTabId(terminalTab?.id ?? debugTab.id);
-	}, []);
 	const openDebugLauncher = useCallback((seed: DebugLauncherSeed = {}) => {
 		setDebugLauncher({ ...seed });
 	}, []);
@@ -1600,6 +1539,29 @@ export default function App() {
 		},
 		[rightPanelRef],
 	);
+	const showDebugPanel = useCallback(() => {
+		setInspectView("debug");
+		showRightPanel("inspect");
+	}, [showRightPanel]);
+	const showDebugSession = useCallback(
+		(session: DebugSession) => {
+			showDebugPanel();
+			if (!session.terminal_id) return;
+			const terminalTab: CenterTab = {
+				id: `terminal:${session.terminal_id}`,
+				type: "terminal",
+				label: `Debug · ${session.adapter}`,
+				terminalId: session.terminal_id,
+			};
+			setTabs((current) =>
+				current.some((tab) => tab.id === terminalTab.id)
+					? current
+					: [...current, terminalTab],
+			);
+			setActiveTabId(terminalTab.id);
+		},
+		[showDebugPanel],
+	);
 	const showWorkspaceSearch = useCallback(() => {
 		showRightPanel("files");
 		setWorkspaceSearching(true);
@@ -1682,9 +1644,9 @@ export default function App() {
 		});
 		actions.push({
 			id: "open-debug",
-			label: "Open debug console",
+			label: "Show debugger",
 			icon: <Bug size={12} className="text-fg-dim shrink-0" />,
-			run: openDebugTab,
+			run: showDebugPanel,
 		});
 		actions.push({
 			id: "show-files",
@@ -1713,7 +1675,7 @@ export default function App() {
 		showRightPanel,
 		showWorkspaceSearch,
 		openInsightsTab,
-		openDebugTab,
+		showDebugPanel,
 		openDebugLauncher,
 		activeTab,
 		createTerminal,
@@ -1776,14 +1738,12 @@ export default function App() {
 					Changes
 				</RightTabButton>
 			)}
-			{showProblems && (
-				<RightTabButton
-					active={rightTab === "problems"}
-					onClick={() => setRequestedRightTab("problems")}
-				>
-					Problems
-				</RightTabButton>
-			)}
+			<RightTabButton
+				active={rightTab === "inspect"}
+				onClick={() => setRequestedRightTab("inspect")}
+			>
+				Inspect
+			</RightTabButton>
 			{showAgents && (
 				<RightTabButton
 					active={rightTab === "agents"}
@@ -1800,8 +1760,72 @@ export default function App() {
 			className="flex h-full flex-col bg-transparent"
 			aria-label="Workspace"
 		>
-			<div className="min-h-0 flex-1 overflow-hidden pt-0.5" role="tabpanel">
-				{rightTab === "agents" && showAgents ? (
+			<div
+				className="relative min-h-0 flex-1 overflow-hidden pt-0.5"
+				role="tabpanel"
+			>
+				<div
+					className={rightTab === "inspect" ? "flex h-full flex-col" : "hidden"}
+				>
+					<div
+						className="flex h-9 shrink-0 items-center gap-1 border-b border-border-subtle bg-bg-surface/20 px-2"
+						role="tablist"
+						aria-label="Inspector views"
+					>
+						<InspectViewButton
+							active={activeInspectView === "debug"}
+							onClick={() => setInspectView("debug")}
+						>
+							Debug
+						</InspectViewButton>
+						{showProblems && (
+							<InspectViewButton
+								active={activeInspectView === "problems"}
+								onClick={() => setInspectView("problems")}
+							>
+								Diagnostics
+							</InspectViewButton>
+						)}
+						<div className="flex-1" />
+						{activeInspectView === "problems" && showProblems && (
+							<button
+								type="button"
+								onClick={() => setProblemsRefreshKey((value) => value + 1)}
+								title="Refresh diagnostics"
+								aria-label="Refresh diagnostics"
+								className="flex h-6 w-6 items-center justify-center rounded text-fg-dim hover:bg-bg-hover hover:text-fg"
+							>
+								<RefreshCw size={11} />
+							</button>
+						)}
+					</div>
+					<div className="relative min-h-0 flex-1 overflow-hidden">
+						<div
+							className={activeInspectView === "debug" ? "h-full" : "hidden"}
+						>
+							<DebugTab
+								onLaunch={() =>
+									openDebugLauncher({
+										currentPath:
+											activeTab.type === "file" ? activeTab.path : undefined,
+									})
+								}
+								onOpenFile={(path, line, column) =>
+									openFile(path, line, column)
+								}
+								onStopped={showDebugPanel}
+							/>
+						</div>
+						{activeInspectView === "problems" && showProblems && (
+							<ProblemsPanel
+								onOpenFile={openFile}
+								subscribe={subscribe}
+								refreshKey={problemsRefreshKey}
+							/>
+						)}
+					</div>
+				</div>
+				{rightTab === "inspect" ? null : rightTab === "agents" && showAgents ? (
 					<TasksPanel
 						sessionId={sessionId}
 						subscribe={subscribe}
@@ -1819,8 +1843,6 @@ export default function App() {
 						}
 						subscribe={subscribe}
 					/>
-				) : rightTab === "problems" && showProblems ? (
-					<ProblemsPanel onOpenFile={openFile} subscribe={subscribe} />
 				) : (
 					<WorkspaceFilesPanel
 						workspaceName={capabilities?.workspace_name ?? "Files"}
@@ -1829,12 +1851,6 @@ export default function App() {
 						onSearch={showWorkspaceSearch}
 						onCloseSearch={() => setWorkspaceSearching(false)}
 						onOpenInsights={openInsightsTab}
-						onOpenDebug={() =>
-							openDebugLauncher({
-								currentPath:
-									activeTab.type === "file" ? activeTab.path : undefined,
-							})
-						}
 						onFileSelect={(path, disposition) =>
 							openFile(path, undefined, undefined, undefined, disposition)
 						}
@@ -2273,14 +2289,6 @@ export default function App() {
 											openFile(path, line, column)
 										}
 									/>
-								) : activeTab.type === "debug" ? (
-									<DebugTab
-										key={activeTab.id}
-										onLaunch={() => openDebugLauncher()}
-										onOpenFile={(path, line, column) =>
-											openFile(path, line, column)
-										}
-									/>
 								) : activeTab.type === "compare" &&
 								  activeTab.compareBase &&
 								  activeTab.compareHead &&
@@ -2387,7 +2395,7 @@ export default function App() {
 				seed={debugLauncher ?? undefined}
 				onClose={() => setDebugLauncher(null)}
 				onStarted={(session) => {
-					openDebugSessionTabs(session);
+					showDebugSession(session);
 					toast({
 						title:
 							session.state === "stopped"
@@ -2456,7 +2464,7 @@ export default function App() {
 					</button>
 					<button
 						type="submit"
-						className={`${dialogButtonClass} bg-fg text-bg hover:bg-fg-muted hover:text-bg`}
+						className={dialogPrimaryButtonClass}
 						disabled={filePathRequest?.submitting}
 					>
 						{filePathRequest?.submitting
@@ -2525,7 +2533,7 @@ export default function App() {
 				</button>
 				<button
 					type="button"
-					className={`${dialogButtonClass} bg-fg text-bg hover:bg-fg-muted hover:text-bg`}
+					className={dialogPrimaryButtonClass}
 					onClick={() => void saveAndCloseFile()}
 				>
 					Save
@@ -2563,7 +2571,7 @@ export default function App() {
 				</button>
 				<button
 					type="button"
-					className={`${dialogButtonClass} bg-fg text-bg hover:bg-fg-muted hover:text-bg`}
+					className={dialogPrimaryButtonClass}
 					onClick={() => void overwriteChangedFile()}
 				>
 					Overwrite
@@ -2599,7 +2607,7 @@ export default function App() {
 				</button>
 				<button
 					type="button"
-					className={`${dialogButtonClass} bg-fg text-bg hover:bg-fg-muted hover:text-bg`}
+					className={dialogPrimaryButtonClass}
 					disabled={workspaceEditRequest?.applying}
 					onClick={() => void confirmWorkspaceEdit()}
 				>
@@ -2817,6 +2825,33 @@ function RightTabButton({
 			{active && (
 				<span className="absolute right-2.5 bottom-0 left-2.5 h-[2px] rounded-full bg-accent" />
 			)}
+		</button>
+	);
+}
+
+function InspectViewButton({
+	active,
+	onClick,
+	children,
+}: {
+	active: boolean;
+	onClick: () => void;
+	children: React.ReactNode;
+}) {
+	return (
+		<button
+			type="button"
+			role="tab"
+			aria-selected={active}
+			tabIndex={active ? 0 : -1}
+			onClick={onClick}
+			className={`h-6 rounded px-2 text-[10px] font-medium transition-colors ${
+				active
+					? "bg-bg-active text-fg"
+					: "text-fg-dim hover:bg-bg-hover hover:text-fg-muted"
+			}`}
+		>
+			{children}
 		</button>
 	);
 }

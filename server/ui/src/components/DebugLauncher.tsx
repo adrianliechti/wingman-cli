@@ -1,4 +1,11 @@
-import { Bug, Loader2, Play, Sparkles, Square, UndoDot } from "lucide-react";
+import {
+	ArrowLeft,
+	ArrowRight,
+	Bug,
+	Loader2,
+	Play,
+	Square,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	controlDebug,
@@ -11,7 +18,11 @@ import {
 	generateDebugPlan,
 	startDebugPlan,
 } from "../api/debug";
-import { Dialog, dialogButtonClass } from "./ui/Feedback";
+import {
+	Dialog,
+	dialogButtonClass,
+	dialogPrimaryButtonClass,
+} from "./ui/Feedback";
 
 export interface DebugLauncherSeed {
 	action?: DebugAction;
@@ -35,7 +46,6 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 	const [action, setAction] = useState<DebugAction>("debug");
 	const [adapter, setAdapter] = useState("");
 	const [targetID, setTargetID] = useState("");
-	const [intent, setIntent] = useState("");
 	const [plan, setPlan] = useState<DebugLaunchPlan | null>(null);
 	const [configurationText, setConfigurationText] = useState("{}");
 	const [error, setError] = useState("");
@@ -46,7 +56,6 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 				action: DebugAction;
 				adapter?: string;
 				targetID?: string;
-				intent?: string;
 			},
 			signal?: AbortSignal,
 		) => {
@@ -58,7 +67,6 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 						action: values.action,
 						adapter: values.adapter || undefined,
 						target_id: values.targetID || undefined,
-						intent: values.intent || undefined,
 						current_path: seed?.currentPath,
 					},
 					signal,
@@ -86,7 +94,6 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 		setAction(initialAction);
 		setAdapter("");
 		setTargetID(seed?.target?.id ?? "");
-		setIntent("");
 		setPlan(null);
 		setConfigurationText("{}");
 		setError("");
@@ -95,7 +102,15 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 			.then((value) => {
 				if (controller.signal.aborted) return;
 				setDiscovery(value);
-				const selectedAdapter = value.adapters[0]?.name ?? "";
+				const selectedAdapter =
+					value.adapters.find(
+						(item) =>
+							seed?.target &&
+							item.language.toLowerCase() ===
+								seed.target.language.toLowerCase(),
+					)?.name ??
+					value.adapters[0]?.name ??
+					"";
 				setAdapter(selectedAdapter);
 				if (
 					seed?.target &&
@@ -129,11 +144,8 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 		requestRef.current?.abort();
 		const controller = new AbortController();
 		requestRef.current = controller;
-		void requestPlan(
-			{ action, adapter, targetID, intent: intent.trim() },
-			controller.signal,
-		);
-	}, [action, adapter, intent, requestPlan, targetID]);
+		void requestPlan({ action, adapter, targetID }, controller.signal);
+	}, [action, adapter, requestPlan, targetID]);
 
 	const start = useCallback(async () => {
 		if (!plan) return;
@@ -185,9 +197,15 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 		discovery?.session && discovery.session.state !== "terminated"
 			? discovery.session
 			: undefined;
-	const selectedTarget = discovery?.targets.find(
-		(target) => target.id === targetID,
+	const selectedAdapter = discovery?.adapters.find(
+		(item) => item.name === adapter,
 	);
+	const compatibleTargets =
+		discovery?.targets.filter(
+			(target) =>
+				target.language.toLowerCase() ===
+				selectedAdapter?.language.toLowerCase(),
+		) ?? [];
 	const plannedAdapter = discovery?.adapters.find(
 		(item) => item.name === plan?.adapter,
 	);
@@ -199,7 +217,7 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 			description={
 				phase === "review" && plan
 					? plan.summary
-					: "Describe what should run. AI will inspect the discovered targets and produce configuration for the installed debug adapter."
+					: "Choose a discovered target. Its language adapter prepares a deterministic launch configuration for review."
 			}
 			onClose={onClose}
 			initialFocus="first"
@@ -235,10 +253,9 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 					<>
 						{discovery && discovery.adapters.length === 0 ? (
 							<div className="rounded-md border border-warning/30 bg-warning/5 p-3 text-[12px] text-fg-muted">
-								No compatible debug adapter was found. The Go experiment looks
-								for
-								<code className="font-mono text-fg">dlv</code> in a Go module or
-								workspace.
+								No compatible debug adapter was found. Install Delve for Go or
+								debugpy for Python, then make sure its executable is on PATH or
+								in the workspace virtual environment.
 							</div>
 						) : (
 							<>
@@ -260,7 +277,10 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 										<span>Adapter</span>
 										<select
 											value={adapter}
-											onChange={(event) => setAdapter(event.target.value)}
+											onChange={(event) => {
+												setAdapter(event.target.value);
+												setTargetID("");
+											}}
 											className={fieldClass}
 										>
 											{discovery?.adapters.map((item) => (
@@ -278,34 +298,20 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 										onChange={(event) => setTargetID(event.target.value)}
 										className={fieldClass}
 									>
-										<option value="">Let AI choose</option>
-										{discovery?.targets.map((target) => (
+										<option value="">Auto-select current target</option>
+										{compatibleTargets.map((target) => (
 											<option key={target.id} value={target.id}>
 												{target.name} · {target.path}:{target.line}
 											</option>
 										))}
 									</select>
 								</label>
-								<label className="block space-y-1 text-[11px] text-fg-muted">
-									<span>What should this session exercise?</span>
-									<textarea
-										value={intent}
-										onChange={(event) => setIntent(event.target.value)}
-										placeholder={
-											selectedTarget
-												? `Run ${selectedTarget.name} and stop where it begins`
-												: "e.g. start the API server, or run the failing parser test"
-										}
-										rows={3}
-										className={`${fieldClass} resize-none py-2`}
-									/>
-								</label>
 							</>
 						)}
 					</>
 				)}
 
-				{phase === "planning" && <Busy label="AI is preparing the launch…" />}
+				{phase === "planning" && <Busy label="Preparing launch…" />}
 
 				{!activeSession &&
 					plan &&
@@ -368,8 +374,9 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 								</div>
 							)}
 							<div className="text-[10px] leading-relaxed text-fg-dim">
-								AI generated this adapter-owned configuration. Review paths and
-								arguments before starting; application code will execute.
+								This configuration comes from the{" "}
+								{plannedAdapter?.language ?? "language"} adapter. Review paths
+								and arguments before starting; application code will execute.
 							</div>
 						</>
 					)}
@@ -389,12 +396,10 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 						(discovery?.adapters.length ?? 0) > 0 && (
 							<button
 								type="button"
-								className={`${dialogButtonClass} bg-fg text-bg hover:bg-fg-muted`}
+								className={dialogPrimaryButtonClass}
 								onClick={generate}
 							>
-								<span className="flex items-center gap-1.5">
-									<Sparkles size={11} /> Generate launch
-								</span>
+								Review launch <ArrowRight size={12} />
 							</button>
 						)}
 					{!activeSession && phase === "review" && plan && (
@@ -407,31 +412,21 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 									setPhase("choose");
 								}}
 							>
-								<span className="flex items-center gap-1.5">
-									<UndoDot size={11} /> Back
-								</span>
+								<ArrowLeft size={12} /> Back
 							</button>
 							<button
 								type="button"
-								className={`${dialogButtonClass} bg-fg text-bg hover:bg-fg-muted`}
+								className={dialogPrimaryButtonClass}
 								onClick={() => void start()}
 							>
-								<span className="flex items-center gap-1.5">
-									{plan.action === "run" ? (
-										<Play size={11} />
-									) : (
-										<Bug size={11} />
-									)}
-									{plan.action === "run" ? "Run" : "Start debugging"}
-								</span>
+								{plan.action === "run" ? <Play size={12} /> : <Bug size={12} />}
+								{plan.action === "run" ? "Run" : "Start debugging"}
 							</button>
 						</>
 					)}
 					{phase === "starting" && (
-						<button type="button" className={dialogButtonClass} disabled>
-							<span className="flex items-center gap-1.5">
-								<Loader2 size={11} className="animate-spin" /> Starting…
-							</span>
+						<button type="button" className={dialogPrimaryButtonClass} disabled>
+							<Loader2 size={12} className="animate-spin" /> Starting…
 						</button>
 					)}
 				</div>

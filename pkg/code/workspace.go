@@ -25,6 +25,7 @@ import (
 	toolmcp "github.com/adrianliechti/wingman-agent/pkg/agent/tool/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/changes"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
+	"github.com/adrianliechti/wingman-agent/pkg/debugadapter"
 	"github.com/adrianliechti/wingman-agent/pkg/graph"
 	"github.com/adrianliechti/wingman-agent/pkg/language"
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
@@ -200,7 +201,7 @@ func (w *Workspace) WarmUp() {
 		}
 
 		languageService := language.New(w.RootPath, filepath.Join(projectGraphDir(w.RootPath), "graph.json"))
-		dapManager := dap.NewManager(w.RootPath)
+		dapManager := dap.NewManager(w.RootPath, debugadapter.NewRegistry().Descriptors()...)
 		graphEngine := languageService.Graph()
 		lspTools := lsptool.NewTools(languageService)
 		graphTools := graphtool.NewTools(graphEngine)

@@ -2,6 +2,7 @@ package dap
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,7 +16,7 @@ func TestDetectProjectsUsesDescriptorMarkersAndSkipsGeneratedTrees(t *testing.T)
 	writeTestFile(t, filepath.Join(root, "vendor", "dep", "project.marker"), "ignored\n")
 	writeTestFile(t, filepath.Join(root, ".cache", "dep", "project.marker"), "ignored\n")
 
-	projects, err := detectProjects(context.Background(), root, []string{"project.marker"})
+	projects, err := detectProjects(context.Background(), root, []string{"project.marker"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +31,20 @@ func TestDetectProjectsUsesDescriptorMarkersAndSkipsGeneratedTrees(t *testing.T)
 	}
 }
 
-func TestResolvePlanPassesAIConfigurationThrough(t *testing.T) {
+func TestDetectProjectsUsesSourceFileAsWorkspaceFallback(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "tools", "main.py"), "print('hello')\n")
+
+	projects, err := detectProjects(context.Background(), root, []string{"pyproject.toml"}, []string{".py"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(projects, []string{root}) {
+		t.Fatalf("projects = %v, want workspace root", projects)
+	}
+}
+
+func TestResolvePlanPassesAdapterConfigurationThrough(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "service")
 	writeTestFile(t, filepath.Join(project, "go.mod"), "module example.com/service\n")
@@ -39,7 +53,7 @@ func TestResolvePlanPassesAIConfigurationThrough(t *testing.T) {
 		t.Fatal(err)
 	}
 	selected := detectedAdapter{
-		adapter: Adapter{
+		adapter: AdapterDescriptor{
 			Name: "delve", AdapterID: "go",
 			Defaults: map[string]any{"type": "go"},
 		},
@@ -73,7 +87,7 @@ func TestResolvePlanSelectsNestedProjectFromProgram(t *testing.T) {
 	if err := os.MkdirAll(program, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	selected := detectedAdapter{adapter: Adapter{Name: "test"}, projects: []string{root, nested}}
+	selected := detectedAdapter{adapter: AdapterDescriptor{Name: "test"}, projects: []string{root, nested}}
 
 	plan, err := resolvePlan(root, selected, StartOptions{Configuration: map[string]any{"program": program}})
 	if err != nil {
@@ -91,7 +105,7 @@ func TestResolvePlanResolvesOnlyDescriptorPathFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	selected := detectedAdapter{
-		adapter: Adapter{
+		adapter: AdapterDescriptor{
 			Name: "test",
 			ConfigurationPaths: []ConfigurationPath{
 				{Key: "program"},
@@ -131,6 +145,16 @@ func TestMergeSourceBreakpointsPreservesUserBreakpoint(t *testing.T) {
 	}
 	if planned[0].Condition != "" {
 		t.Fatalf("planned breakpoints were mutated: %#v", planned)
+	}
+}
+
+func TestManagerRejectsSecondActiveSession(t *testing.T) {
+	manager := newManager(t.TempDir(), nil, func(string) string { return "" }, nil)
+	manager.sessions["active"] = &Session{state: StateRunning}
+	manager.active = "active"
+
+	if _, err := manager.Start(context.Background(), StartOptions{}); !errors.Is(err, ErrActiveSession) {
+		t.Fatalf("Start error = %v, want ErrActiveSession", err)
 	}
 }
 

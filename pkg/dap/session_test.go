@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,7 +19,7 @@ func TestSessionLaunchAndInspectionFlow(t *testing.T) {
 	go adapter.serve()
 
 	plan := Plan{
-		Adapter: Adapter{Name: "fake", Language: "Go"},
+		Adapter: AdapterDescriptor{Name: "fake", Language: "Go"},
 		Target:  "/workspace/main.go",
 		Mode:    "debug",
 		Request: "launch",
@@ -100,6 +101,41 @@ func TestSessionLaunchAndInspectionFlow(t *testing.T) {
 	if !ok || status.State != StateStopped || status.Stop.Reason != "step" {
 		t.Fatalf("status after step back = %+v, stopped = %v", status, ok)
 	}
+}
+
+func TestSessionClosesConnectionAfterUnexpectedEOF(t *testing.T) {
+	connection := &unexpectedEOFConnection{closed: make(chan struct{})}
+	session := newConnectedSession("eof", Plan{
+		Adapter: AdapterDescriptor{Name: "fake", Language: "Test"},
+	}, connection)
+
+	select {
+	case <-connection.closed:
+	case <-time.After(time.Second):
+		t.Fatal("session left the failed adapter connection open")
+	}
+	status := session.Status()
+	if status.State != StateTerminated || !strings.Contains(status.Error, "unexpected EOF") {
+		t.Fatalf("status = %+v", status)
+	}
+}
+
+type unexpectedEOFConnection struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (connection *unexpectedEOFConnection) Read([]byte) (int, error) {
+	return 0, io.ErrUnexpectedEOF
+}
+
+func (connection *unexpectedEOFConnection) Write(buffer []byte) (int, error) {
+	return len(buffer), nil
+}
+
+func (connection *unexpectedEOFConnection) Close() error {
+	connection.once.Do(func() { close(connection.closed) })
+	return nil
 }
 
 type fakeAdapter struct {

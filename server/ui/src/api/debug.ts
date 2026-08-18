@@ -4,7 +4,6 @@ export interface DebugAdapter {
 	name: string;
 	language: string;
 	projects: string[];
-	configuration_hint?: string;
 	integrated_terminal: boolean;
 }
 
@@ -165,7 +164,6 @@ export async function generateDebugPlan(
 		action: DebugAction;
 		adapter?: string;
 		target_id?: string;
-		intent?: string;
 		current_path?: string;
 	},
 	signal?: AbortSignal,

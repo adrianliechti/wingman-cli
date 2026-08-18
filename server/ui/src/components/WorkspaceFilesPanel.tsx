@@ -1,4 +1,4 @@
-import { Bug, Lightbulb, Search, X } from "lucide-react";
+import { Lightbulb, Search, X } from "lucide-react";
 import type { ServerMessage } from "../types/protocol";
 import type { TabDisposition } from "../types/tabs";
 import type { WorkspaceEditEnvelope } from "../workspaceEdit";
@@ -12,7 +12,6 @@ interface Props {
 	onSearch: () => void;
 	onCloseSearch: () => void;
 	onOpenInsights: () => void;
-	onOpenDebug: () => void;
 	onFileSelect: (path: string, disposition?: TabDisposition) => void;
 	onFileMove: (from: string, to: string) => void;
 	onOpenSearchResult: (
@@ -36,7 +35,6 @@ export function WorkspaceFilesPanel({
 	onSearch,
 	onCloseSearch,
 	onOpenInsights,
-	onOpenDebug,
 	onFileSelect,
 	onFileMove,
 	onOpenSearchResult,
@@ -61,15 +59,6 @@ export function WorkspaceFilesPanel({
 					className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-bg-hover hover:text-fg"
 				>
 					<Lightbulb size={12} />
-				</button>
-				<button
-					type="button"
-					onClick={onOpenDebug}
-					title="Run and debug"
-					aria-label="Run and debug"
-					className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-bg-hover hover:text-fg"
-				>
-					<Bug size={12} />
 				</button>
 				<button
 					type="button"

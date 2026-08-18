@@ -34,7 +34,7 @@ func main() {
 }
 `)
 
-	manager := NewManager(root)
+	manager := NewManager(root, liveDelveAdapter())
 	defer manager.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -66,8 +66,8 @@ func main() {
 	}
 }
 
-// TestLiveDelveWorkspacePackage protects the AI-launcher case where a model
-// supplies a project-relative package directory without a leading "./".
+// TestLiveDelveWorkspacePackage protects deterministic plans that use a
+// project-relative package directory without a leading "./".
 func TestLiveDelveWorkspacePackage(t *testing.T) {
 	if os.Getenv("WINGMAN_LIVE_DAP") == "" {
 		t.Skip("set WINGMAN_LIVE_DAP=1 to run a real Delve session")
@@ -80,7 +80,7 @@ func TestLiveDelveWorkspacePackage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManager(root)
+	manager := NewManager(root, liveDelveAdapter())
 	defer manager.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -136,7 +136,7 @@ func main() {
 
 	terminals := terminal.NewManager(root)
 	defer terminals.Close()
-	manager := NewManager(root)
+	manager := NewManager(root, liveDelveAdapter())
 	manager.SetTerminalLauncher(liveTerminalLauncher{manager: terminals})
 	defer manager.Close()
 
@@ -179,6 +179,16 @@ func main() {
 
 type liveTerminalLauncher struct {
 	manager *terminal.Manager
+}
+
+func liveDelveAdapter() AdapterDescriptor {
+	return AdapterDescriptor{
+		Name: "delve", Language: "Go", AdapterID: "go", Command: "dlv",
+		Args: []string{"dap", "--listen=127.0.0.1:0"}, Transport: TransportTCP,
+		ReadyPrefix: "DAP server listening at:", Markers: []string{"go.mod", "go.work"},
+		ConfigurationPaths: []ConfigurationPath{{Key: "program"}, {Key: "cwd", Directory: true}},
+		TerminalStrategy:   TerminalAdapterProcess,
+	}
 }
 
 func (launcher liveTerminalLauncher) LaunchTerminal(_ context.Context, launch TerminalLaunch) (TerminalProcess, error) {

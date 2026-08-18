@@ -1,7 +1,6 @@
 import type { Monaco } from "@monaco-editor/react";
 import type * as MonacoTypes from "monaco-editor";
 import {
-	controlDebug,
 	discoverDebugTargets,
 	evaluateDebug,
 	getDebugState,
@@ -17,14 +16,9 @@ interface DebugBridgeOptions {
 	editor: MonacoTypes.editor.IStandaloneCodeEditor;
 	path: string;
 	onLaunchTarget: (target: DebugTarget, action: DebugAction) => void;
-	onStateChanged?: (state: DebugState | null) => void;
 }
 
 export interface MonacoDebugBridge {
-	refresh(): Promise<void>;
-	control(
-		operation: "continue" | "next" | "stepIn" | "stepOut" | "pause" | "stop",
-	): Promise<void>;
 	dispose(): void;
 }
 
@@ -35,7 +29,6 @@ export function createMonacoDebugBridge({
 	editor,
 	path,
 	onLaunchTarget,
-	onStateChanged,
 }: DebugBridgeOptions): MonacoDebugBridge {
 	const model = editor.getModel();
 	const disposables: MonacoTypes.IDisposable[] = [];
@@ -97,7 +90,6 @@ export function createMonacoDebugBridge({
 		state = next;
 		if (!breakpointMutation) breakpoints = next.breakpoints ?? [];
 		applyDecorations();
-		onStateChanged?.(next);
 	}
 
 	function schedulePoll() {
@@ -298,21 +290,6 @@ export function createMonacoDebugBridge({
 	void refresh();
 
 	return {
-		refresh,
-		async control(operation) {
-			if (!state?.session || disposed) return;
-			const controller = new AbortController();
-			await track(
-				controller,
-				controlDebug(
-					operation,
-					state.session.session_id,
-					state.session.stop?.thread_id,
-					controller.signal,
-				),
-			);
-			await refresh();
-		},
 		dispose() {
 			if (disposed) return;
 			disposed = true;
@@ -322,7 +299,6 @@ export function createMonacoDebugBridge({
 			for (const disposable of disposables) disposable.dispose();
 			breakpointDecorations.clear();
 			frameDecorations.clear();
-			onStateChanged?.(null);
 		},
 	};
 }

@@ -19,17 +19,20 @@ import (
 
 const detectionCacheTTL = 30 * time.Second
 
+var ErrActiveSession = errors.New("a debug session is already active")
+
 type detectedAdapter struct {
-	adapter  Adapter
+	adapter  AdapterDescriptor
 	projects []string
 }
 
 type Manager struct {
 	root     string
-	adapters []Adapter
+	adapters []AdapterDescriptor
 	lookup   func(string) string
 	start    sessionStarter
 	terminal TerminalLauncher
+	startMu  sync.Mutex
 
 	detectMu   sync.Mutex
 	detected   []detectedAdapter
@@ -44,8 +47,8 @@ type Manager struct {
 
 type sessionStarter func(context.Context, string, Plan, StartOptions) (*Session, error)
 
-func NewManager(root string) *Manager {
-	return newManager(root, knownAdapters, resolveAdapterCommand, startSession)
+func NewManager(root string, adapters ...AdapterDescriptor) *Manager {
+	return newManager(root, adapters, resolveAdapterCommand, startSession)
 }
 
 // SetTerminalLauncher connects the protocol client to the editor's PTY host.
@@ -57,7 +60,7 @@ func (m *Manager) SetTerminalLauncher(launcher TerminalLauncher) {
 	m.mu.Unlock()
 }
 
-func newManager(root string, adapters []Adapter, lookup func(string) string, starter sessionStarter) *Manager {
+func newManager(root string, adapters []AdapterDescriptor, lookup func(string) string, starter sessionStarter) *Manager {
 	return &Manager{
 		root:        filepath.Clean(root),
 		adapters:    cloneAdapters(adapters),
@@ -79,7 +82,7 @@ func (m *Manager) detect(ctx context.Context) ([]detectedAdapter, error) {
 
 	var detected []detectedAdapter
 	for _, candidate := range m.adapters {
-		projects, err := detectProjects(ctx, m.root, candidate.Markers)
+		projects, err := detectProjects(ctx, m.root, candidate.Markers, candidate.SourceExtensions)
 		if err != nil {
 			return nil, fmt.Errorf("detect %s projects: %w", candidate.Language, err)
 		}
@@ -87,6 +90,9 @@ func (m *Manager) detect(ctx context.Context) ([]detectedAdapter, error) {
 			continue
 		}
 		command := m.lookup(candidate.Command)
+		if command == "" {
+			command = resolveWorkspaceAdapterCommand(m.root, candidate.Command)
+		}
 		if command == "" {
 			continue
 		}
@@ -98,12 +104,13 @@ func (m *Manager) detect(ctx context.Context) ([]detectedAdapter, error) {
 	return cloneDetected(detected), nil
 }
 
-func cloneAdapters(values []Adapter) []Adapter {
-	cloned := make([]Adapter, len(values))
+func cloneAdapters(values []AdapterDescriptor) []AdapterDescriptor {
+	cloned := make([]AdapterDescriptor, len(values))
 	for i, value := range values {
 		cloned[i] = value
 		cloned[i].Args = slices.Clone(value.Args)
 		cloned[i].Markers = slices.Clone(value.Markers)
+		cloned[i].SourceExtensions = slices.Clone(value.SourceExtensions)
 		cloned[i].Defaults = maps.Clone(value.Defaults)
 		cloned[i].ConfigurationPaths = slices.Clone(value.ConfigurationPaths)
 	}
@@ -114,7 +121,7 @@ func cloneDetected(values []detectedAdapter) []detectedAdapter {
 	cloned := make([]detectedAdapter, len(values))
 	for i, value := range values {
 		cloned[i] = value
-		cloned[i].adapter = cloneAdapters([]Adapter{value.adapter})[0]
+		cloned[i].adapter = cloneAdapters([]AdapterDescriptor{value.adapter})[0]
 		cloned[i].projects = slices.Clone(value.projects)
 	}
 	return cloned
@@ -133,7 +140,7 @@ func (m *Manager) Adapters(ctx context.Context) ([]AdapterInfo, error) {
 			Command:            value.adapter.Command,
 			Projects:           slices.Clone(value.projects),
 			ConfigurationPaths: slices.Clone(value.adapter.ConfigurationPaths),
-			ConfigurationHint:  value.adapter.ConfigurationHint,
+			ConsoleConfigKey:   value.adapter.ConsoleConfigKey,
 			TerminalStrategy:   value.adapter.TerminalStrategy,
 		})
 	}
@@ -141,10 +148,17 @@ func (m *Manager) Adapters(ctx context.Context) ([]AdapterInfo, error) {
 }
 
 func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, error) {
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
+
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
 		return nil, errors.New("DAP manager is closed")
+	}
+	if active := m.sessions[m.active]; active != nil && active.Status().State != StateTerminated {
+		m.mu.Unlock()
+		return nil, ErrActiveSession
 	}
 	combinedBreakpoints := make(map[string][]SourceBreakpoint, len(options.Breakpoints)+len(m.breakpoints))
 	for path, breakpoints := range options.Breakpoints {
@@ -274,9 +288,12 @@ func resolvePlan(workspace string, selected detectedAdapter, options StartOption
 		return Plan{}, err
 	}
 	if _, exists := arguments["name"]; !exists {
-		arguments["name"] = "Wingman AI debug"
+		arguments["name"] = "Wingman debug"
 	}
 	arguments["request"] = requestName
+	if selected.adapter.ConsoleConfigKey != "" {
+		arguments[selected.adapter.ConsoleConfigKey] = string(console)
+	}
 
 	target, _ := arguments["program"].(string)
 	mode, _ := arguments["mode"].(string)
@@ -560,6 +577,22 @@ func resolveAdapterCommand(command string) string {
 	for _, dir := range dirs {
 		for _, name := range commandNames(command) {
 			path := filepath.Join(dir, name)
+			if executableFile(path) {
+				return path
+			}
+		}
+	}
+	return ""
+}
+
+func resolveWorkspaceAdapterCommand(workspace, command string) string {
+	for _, directory := range []string{".venv", "venv", "env"} {
+		bin := "bin"
+		if runtime.GOOS == "windows" {
+			bin = "Scripts"
+		}
+		for _, name := range commandNames(command) {
+			path := filepath.Join(workspace, directory, bin, name)
 			if executableFile(path) {
 				return path
 			}

@@ -8,12 +8,17 @@ import (
 	"strings"
 )
 
-func detectProjects(ctx context.Context, workspace string, markers []string) ([]string, error) {
+func detectProjects(ctx context.Context, workspace string, markers, sourceExtensions []string) ([]string, error) {
 	markerSet := make(map[string]bool, len(markers))
 	for _, marker := range markers {
 		markerSet[marker] = true
 	}
+	extensionSet := make(map[string]bool, len(sourceExtensions))
+	for _, extension := range sourceExtensions {
+		extensionSet[strings.ToLower(extension)] = true
+	}
 	seen := make(map[string]bool)
+	sourceFound := false
 	var projects []string
 	err := filepath.WalkDir(workspace, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -30,6 +35,9 @@ func detectProjects(ctx context.Context, workspace string, markers []string) ([]
 			}
 			return nil
 		}
+		if extensionSet[strings.ToLower(filepath.Ext(entry.Name()))] {
+			sourceFound = true
+		}
 		if !markerSet[entry.Name()] {
 			return nil
 		}
@@ -42,6 +50,9 @@ func detectProjects(ctx context.Context, workspace string, markers []string) ([]
 	})
 	if err != nil {
 		return nil, err
+	}
+	if sourceFound && !seen[workspace] {
+		projects = append(projects, workspace)
 	}
 	slices.Sort(projects)
 	return projects, nil

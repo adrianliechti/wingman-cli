@@ -1,8 +1,8 @@
 // Package dap provides workspace-scoped Debug Adapter Protocol sessions.
 //
-// Adapter-specific launch semantics stay outside this package. The AI supplies
-// a DAP configuration object; this package discovers adapters, frames messages,
-// and manages generic protocol state.
+// Adapter-specific launch semantics stay outside this package. This package
+// discovers adapter processes, frames messages, and manages generic protocol
+// state.
 package dap
 
 import (
@@ -57,9 +57,9 @@ type TerminalLauncher interface {
 	LaunchTerminal(context.Context, TerminalLaunch) (TerminalProcess, error)
 }
 
-// Adapter describes how to start one debug adapter. Command is resolved to an
-// executable before a Plan reaches the session layer.
-type Adapter struct {
+// AdapterDescriptor describes how to start one debug adapter process. Command
+// is resolved to an executable before a Plan reaches the session layer.
+type AdapterDescriptor struct {
 	Name               string
 	Language           string
 	AdapterID          string
@@ -68,9 +68,10 @@ type Adapter struct {
 	Transport          Transport
 	ReadyPrefix        string
 	Markers            []string
+	SourceExtensions   []string
 	Defaults           map[string]any
 	ConfigurationPaths []ConfigurationPath
-	ConfigurationHint  string
+	ConsoleConfigKey   string
 	TerminalStrategy   TerminalStrategy
 }
 
@@ -84,18 +85,18 @@ type ConfigurationPath struct {
 	Directory bool   `json:"directory,omitempty"`
 }
 
-// AdapterInfo is the detection result exposed to callers and the AI planner.
+// AdapterInfo is the detection result exposed to callers and launch planners.
 type AdapterInfo struct {
 	Name               string              `json:"name"`
 	Language           string              `json:"language"`
 	Command            string              `json:"command"`
 	Projects           []string            `json:"projects"`
 	ConfigurationPaths []ConfigurationPath `json:"configuration_paths,omitempty"`
-	ConfigurationHint  string              `json:"configuration_hint,omitempty"`
+	ConsoleConfigKey   string              `json:"console_config_key,omitempty"`
 	TerminalStrategy   TerminalStrategy    `json:"terminal_strategy,omitempty"`
 }
 
-// StartOptions carries an AI-generated DAP launch or attach configuration.
+// StartOptions carries a reviewed DAP launch or attach configuration.
 // Configuration is intentionally open-ended because DAP delegates these
 // arguments to each adapter.
 type StartOptions struct {
@@ -125,7 +126,7 @@ type FunctionBreakpoint struct {
 
 // Plan is the resolved, internal form used to start an adapter process.
 type Plan struct {
-	Adapter    Adapter
+	Adapter    AdapterDescriptor
 	ProjectDir string
 	Target     string
 	Mode       string
