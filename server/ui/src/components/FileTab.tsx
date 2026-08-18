@@ -107,9 +107,6 @@ export function FileTab({
 			monaco: monacoRef.current,
 			editor: editorRef.current,
 			path: file.path,
-			onAccepted: async () => {
-				await lspBridgeRef.current?.organizeImports();
-			},
 		});
 	}, [document.external, file, tabEnabled]);
 

@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/adrianliechti/wingman-agent/internal/testenv"
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
@@ -35,16 +34,19 @@ func TestEditorTabPromptProvidesBoundedEditContext(t *testing.T) {
 	for _, want := range []string{
 		"File: pkg/example.go\n",
 		"Cursor: 12:8\n",
-		"Edit window: lines 2-22\n",
-		"Edit markers: <EDIT_START> <EDIT_END>\n",
+		"Focus: lines 1-26 (<AREA_START> <AREA_END>)\n",
+		"Writable: lines 10-17 (<EDIT_START> <EDIT_END>)\n",
 		"Cursor marker: <CURSOR>\n",
 		"<RECENT_CHANGE>\n",
-		"OLD_TEXT:\nold ",
-		"NEW_TEXT:\nline",
+		"--- pkg/example.go\n+++ pkg/example.go\n@@ line 12 @@",
+		"-old  12",
+		"+line 12",
 		"<CURRENT_FILE>\n",
-		"<EDIT_START>line 02",
+		"<AREA_START>\nline 01",
+		"<EDIT_START>\nline 10",
 		"line 12<CURSOR>",
-		"<EDIT_END>line 23",
+		"<EDIT_END>",
+		"<AREA_END>",
 	} {
 		if !strings.Contains(prompt.text, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt.text)
@@ -60,6 +62,31 @@ func TestEditorTabPromptProvidesBoundedEditContext(t *testing.T) {
 	}
 	if len(prompt.text) > editorTabMaxPrompt {
 		t.Fatalf("prompt length = %d, max = %d", len(prompt.text), editorTabMaxPrompt)
+	}
+}
+
+func TestEditorTabPromptKeepsSmallFileTailVisible(t *testing.T) {
+	content := "package main\n\nfunc main() {\n\tcfg := loadConfig()\n\tcfg.Address = \"127.0.0.1\"\n\n\ts, err := server.New(cfg)\n\tif err != nil {\n\t\tpanic(err)\n\t}\n\notel.Setup()\n\tif err := s.ListenAndServe(); err != nil {\n\t\tpanic(err)\n\t}\n}\n"
+	prompt, err := buildEditorTabPrompt(editorTabRequest{
+		Path:            "main.go",
+		Content:         content,
+		PreviousContent: content,
+		Line:            5,
+		Column:          7,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"otel.Setup()",
+		"s.ListenAndServe()",
+	} {
+		if strings.Count(prompt.text, want) != 1 {
+			t.Fatalf("prompt should contain %q once:\n%s", want, prompt.text)
+		}
+	}
+	if !strings.Contains(editorTabInstructions, "repeat code already in CURRENT_FILE") {
+		t.Fatal("Tab instructions must explicitly prohibit duplicating existing code")
 	}
 }
 
@@ -85,6 +112,30 @@ func TestEditorTabPromptAvoidsCursorMarkerCollisions(t *testing.T) {
 	}
 }
 
+func TestEditorTabPromptAvoidsMarkersFromDeletedText(t *testing.T) {
+	previous := "<EDIT_START><CURSOR><EDIT_END><OMITTED>\nvalue := 1\n"
+	content := "value := 1\n"
+	prompt, err := buildEditorTabPrompt(editorTabRequest{
+		Path:            "main.go",
+		Content:         content,
+		PreviousContent: previous,
+		Line:            1,
+		Column:          11,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Writable: lines 1-2 (<EDIT_START_1> <EDIT_END_1>)",
+		"Cursor marker: <CURSOR_1>",
+		"Omission marker: <OMITTED_1>",
+	} {
+		if !strings.Contains(prompt.text, want) {
+			t.Fatalf("prompt missing collision-safe marker %q:\n%s", want, prompt.text)
+		}
+	}
+}
+
 func TestEditorTabPromptPreservesAnEmptyPreviousDocument(t *testing.T) {
 	prompt, err := buildEditorTabPrompt(editorTabRequest{
 		Path:            "new.go",
@@ -96,7 +147,7 @@ func TestEditorTabPromptPreservesAnEmptyPreviousDocument(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(prompt.text, "<RECENT_CHANGE>\nOLD_TEXT:\n(empty)\nNEW_TEXT:\nx\n</RECENT_CHANGE>") {
+	if !strings.Contains(prompt.text, "<RECENT_CHANGE>\n--- new.go\n+++ new.go\n@@ line 1 @@\n-\n+x\n</RECENT_CHANGE>") {
 		t.Fatalf("empty original document was not preserved:\n%s", prompt.text)
 	}
 }
@@ -121,8 +172,8 @@ func TestEditorTabPromptKeepsDistantRecentRename(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"OLD_TEXT:\nuser",
-		"NEW_TEXT:\naccount",
+		"-\tuserName := \"Ada\"",
+		"+\taccountName := \"Ada\"",
 		"println(userName)<CURSOR>",
 	} {
 		if !strings.Contains(prompt.text, want) {
@@ -157,8 +208,8 @@ func TestEditorTabPromptBoundsLargeFilesWithoutLosingHeaderOrCursor(t *testing.T
 	for _, want := range []string{
 		"package example",
 		`import "fmt"`,
-		"OLD_TEXT:\nprior",
-		"NEW_TEXT:\nitem",
+		"-var prior0001 = fmt.Sprint(1)",
+		"+var item0001 = fmt.Sprint(1)",
 		cursorText + "<CURSOR>",
 		"<OMITTED>",
 	} {
@@ -214,6 +265,143 @@ func TestEditorTabPredictionReturnsMultilineInlineEdit(t *testing.T) {
 	}
 	if edit.ExpectedText != "one()\n\ttwo()" || !strings.Contains(edit.InsertText, "if ready") {
 		t.Fatalf("edit = %+v", edit)
+	}
+}
+
+func TestEditorTabPredictionDropsReemittedContextAroundCursorEdit(t *testing.T) {
+	content := "if\n\nh := make(textproto.MIMEHeader)\nh.Set(\"A\", a)\nh.Set(\"B\", b)\n"
+	prompt, err := buildEditorTabPrompt(editorTabRequest{
+		Path:            "client.go",
+		Content:         content,
+		PreviousContent: strings.TrimPrefix(content, "if"),
+		Line:            1,
+		Column:          3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := "if file.Content == nil || len(file.Content) == 0 {\n" +
+		"\treturn nil, errors.New(\"file content is empty\")\n}\n\n" +
+		"h := make(textproto.MIMEHeader)\nh.Set(\"A\", a)\nh.Set(\"B\", changed)\n"
+	edit := editorTabPrediction(content, prompt, updated)
+	if edit == nil {
+		t.Fatal("cursor edit was discarded")
+	}
+	if edit.Range.StartLine != 1 || edit.Range.StartColumn != 3 || edit.ExpectedText != "" {
+		t.Fatalf("edit range is not minimal: %+v", edit)
+	}
+	if !strings.Contains(edit.InsertText, "file.Content") || strings.Contains(edit.InsertText, "h :=") {
+		t.Fatalf("edit includes re-emitted context: %+v", edit)
+	}
+}
+
+func TestEditorTabChangeAroundCursorRecognizesReemittedLastLine(t *testing.T) {
+	original := "\tout.\n" +
+		"\tout.WriteString(content[areaStart:blockStart])\n" +
+		"\tout.WriteString(markers.start)\n" +
+		"\tout.WriteString(content[blockStart:cursor])\n" +
+		"\tout.WriteString(markers.cursor)\n" +
+		"\tout.WriteString(content[cursor:blockEnd])\n"
+	updated := "\tout.\n\tout.WriteString(content[cursor:blockEnd])\n"
+	change, ok := editorTabChangeAroundCursor(original, updated, len("\tout."))
+	if !ok {
+		t.Fatal("change was not found")
+	}
+	if insert := updated[change.AfterStart:change.AfterEnd]; insert != "" {
+		t.Fatalf("re-emitted last line became replacement text %q", insert)
+	}
+	if expected := original[change.BeforeStart:change.BeforeEnd]; !strings.Contains(expected, "markers.start") || strings.Contains(expected, "cursor:blockEnd") {
+		t.Fatalf("wrong deleted lines %q", expected)
+	}
+}
+
+func TestEditorTabChangeAroundCursorSeparatesFormattingFromNextEdit(t *testing.T) {
+	original := "\tcontextBudget := sourceBudget - headerBudget\n\textra := localBudget - areaBytes\n"
+	updated := "contextBudget := sourceBudget - headerBudget\n\textra := contextBudget - areaBytes\n"
+	cursor := len("\tcontextBudget := sourceBudget - headerBudget")
+	change, ok := editorTabChangeAroundCursor(original, updated, cursor)
+	if !ok {
+		t.Fatal("change was not found")
+	}
+	if expected := original[change.BeforeStart:change.BeforeEnd]; expected != "local" {
+		t.Fatalf("expected text = %q, want the semantic follow-up only", expected)
+	}
+	if insert := updated[change.AfterStart:change.AfterEnd]; insert != "context" {
+		t.Fatalf("insert text = %q, want the semantic follow-up only", insert)
+	}
+}
+
+func TestEditorTabPredictionDoesNotUndoRecentInsertion(t *testing.T) {
+	content := "if\nnext()\n"
+	prompt, err := buildEditorTabPrompt(editorTabRequest{
+		Path:            "main.go",
+		Content:         content,
+		PreviousContent: "next()\n",
+		Line:            1,
+		Column:          3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edit := editorTabPrediction(content, prompt, "next()\n"); edit != nil {
+		t.Fatalf("recent user insertion was deleted: %+v", edit)
+	}
+}
+
+func TestEditorTabPredictionAllowsUnrelatedDeletion(t *testing.T) {
+	previous := "new\nkeep\nobsolete\n"
+	content := "new value\nkeep\nobsolete\n"
+	prompt, err := buildEditorTabPrompt(editorTabRequest{
+		Path:            "main.go",
+		Content:         content,
+		PreviousContent: previous,
+		Line:            3,
+		Column:          len("obsolete") + 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit := editorTabPrediction(content, prompt, "new value\nkeep\n\n")
+	if edit == nil || edit.ExpectedText != "obsolete" || edit.InsertText != "" {
+		t.Fatalf("unrelated deletion was discarded: %+v", edit)
+	}
+}
+
+func TestEditorTabPromptKeepsDistantDeclarationsReadOnly(t *testing.T) {
+	content := "func (c *Client) Extract() {}\n\none\ntwo\nthree\nfour\nfive\nsix\nif\n"
+	prompt, err := buildEditorTabPrompt(editorTabRequest{
+		Path:            "client.go",
+		Content:         content,
+		PreviousContent: strings.TrimSuffix(content, "if\n") + "\n",
+		Line:            9,
+		Column:          3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(prompt.block, "func (c *Client) Extract") {
+		t.Fatalf("distant declaration became writable:\n%s", prompt.block)
+	}
+	if count := strings.Count(prompt.text, "func (c *Client) Extract"); count != 1 {
+		t.Fatalf("declaration appears %d times in prompt, want once:\n%s", count, prompt.text)
+	}
+}
+
+func TestEditorTabPredictionAllowsUsefulLongInsertion(t *testing.T) {
+	content := "value := 1\n"
+	prompt, err := buildEditorTabPrompt(editorTabRequest{
+		Path:            "main.go",
+		Content:         content,
+		PreviousContent: content,
+		Line:            1,
+		Column:          len("value := 1") + 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := prompt.block + "\nif ready {\n\tone()\n\ttwo()\n\tthree()\n\tfour()\n\tfive()\n\tsix()\n}"
+	if edit := editorTabPrediction(content, prompt, updated); edit == nil {
+		t.Fatal("useful multiline insertion was discarded")
 	}
 }
 
@@ -291,6 +479,9 @@ func TestEditorTabPredictionNormalizesModelArtifacts(t *testing.T) {
 	if edit == nil || edit.InsertText != " beta" || edit.ExpectedText != "" {
 		t.Fatalf("normalized edit = %+v", edit)
 	}
+	if edit := editorTabPrediction(content, prompt, prompt.omitMarker+"alpha beta"); edit != nil {
+		t.Fatalf("omitted source marker produced edit: %+v", edit)
+	}
 }
 
 func TestEditorTabPredictionRejectsUnsafeOutput(t *testing.T) {
@@ -307,7 +498,8 @@ func TestEditorTabPredictionRejectsUnsafeOutput(t *testing.T) {
 	}
 	for _, output := range []string{
 		strings.Repeat("x", editorTabMaxOutput+1),
-		"alpha\n1\n2\n3\n4\n5\n6\n7\n8\n9\n",
+		prompt.areaStartMarker + "alpha",
+		prompt.areaEndMarker + "alpha",
 	} {
 		if edit := editorTabPrediction(content, prompt, output); edit != nil {
 			t.Fatalf("unsafe output produced edit: %+v", edit)
@@ -385,11 +577,11 @@ func TestEditorTabGenerationTargetUsesCompatibleLowestEffort(t *testing.T) {
 
 func TestHandleEditorTab(t *testing.T) {
 	s := &Server{tab: &editorTabService{
-		complete: func(_ context.Context, prompt string) (string, error) {
+		complete: func(_ context.Context, prompt string) (editorTabCompletion, error) {
 			if !strings.Contains(prompt, "abc<CURSOR>") {
 				t.Fatalf("prompt = %q", prompt)
 			}
-			return "abcd", nil
+			return editorTabCompletion{UpdatedWindow: "abcd", EditIntent: "high"}, nil
 		},
 	}}
 	s.tabEnabled.Store(true)
@@ -409,6 +601,49 @@ func TestHandleEditorTab(t *testing.T) {
 	}
 }
 
+func TestEditorTabFiltersLowIntent(t *testing.T) {
+	s := &editorTabService{
+		complete: func(context.Context, string) (editorTabCompletion, error) {
+			return editorTabCompletion{UpdatedWindow: "value.String()", EditIntent: "low"}, nil
+		},
+	}
+	response, err := s.predict(context.Background(), editorTabRequest{
+		Path:            "main.go",
+		Content:         "value.",
+		PreviousContent: "value",
+		Line:            1,
+		Column:          7,
+		Version:         4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Version != 4 || response.Edit != nil {
+		t.Fatalf("low-confidence response was shown: %+v", response)
+	}
+}
+
+func TestEditorTabShowsMediumIntentByDefault(t *testing.T) {
+	s := &editorTabService{
+		complete: func(context.Context, string) (editorTabCompletion, error) {
+			return editorTabCompletion{UpdatedWindow: "value.String()", EditIntent: "medium"}, nil
+		},
+	}
+	response, err := s.predict(context.Background(), editorTabRequest{
+		Path:            "main.go",
+		Content:         "value.",
+		PreviousContent: "value",
+		Line:            1,
+		Column:          7,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Edit == nil || response.Edit.InsertText != "String()" {
+		t.Fatalf("medium-confidence response was hidden: %+v", response)
+	}
+}
+
 func TestHandleEditorTabPropagatesDistantRename(t *testing.T) {
 	lines := []string{"package main", "", "func main() {", "\tuserName := \"Ada\""}
 	for index := 0; index < 30; index++ {
@@ -418,16 +653,19 @@ func TestHandleEditorTabPropagatesDistantRename(t *testing.T) {
 	lines = append(lines, "\tprintln(userName)", "}")
 	previous := strings.Join(lines, "\n") + "\n"
 	content := strings.Replace(previous, "userName :=", "accountName :=", 1)
-	_, _, _, _, block := editorLineWindow(content, useLine, editorTabEditRadius)
+	_, _, _, _, block := editorLineWindow(content, useLine, editorTabEditLinesAbove, editorTabEditLinesBelow)
 
 	s := &Server{tab: &editorTabService{
-		complete: func(_ context.Context, prompt string) (string, error) {
-			for _, want := range []string{"OLD_TEXT:\nuser", "NEW_TEXT:\naccount", "println(userName)<CURSOR>"} {
+		complete: func(_ context.Context, prompt string) (editorTabCompletion, error) {
+			for _, want := range []string{"-\tuserName := \"Ada\"", "+\taccountName := \"Ada\"", "println(userName)<CURSOR>"} {
 				if !strings.Contains(prompt, want) {
 					t.Fatalf("model prompt missing %q:\n%s", want, prompt)
 				}
 			}
-			return strings.Replace(block, "println(userName)", "println(accountName)", 1), nil
+			return editorTabCompletion{
+				UpdatedWindow: strings.Replace(block, "println(userName)", "println(accountName)", 1),
+				EditIntent:    "high",
+			}, nil
 		},
 	}}
 	s.tabEnabled.Store(true)
@@ -472,9 +710,9 @@ func TestHandleEditorTabPropagatesDistantRename(t *testing.T) {
 func TestHandleEditorTabHonorsDisabledSetting(t *testing.T) {
 	called := false
 	s := &Server{tab: &editorTabService{
-		complete: func(context.Context, string) (string, error) {
+		complete: func(context.Context, string) (editorTabCompletion, error) {
 			called = true
-			return "", nil
+			return editorTabCompletion{}, nil
 		},
 	}}
 	request := httptest.NewRequest(http.MethodPost, "/api/editor/tab", strings.NewReader(`{}`))
@@ -488,23 +726,23 @@ func TestHandleEditorTabHonorsDisabledSetting(t *testing.T) {
 	}
 }
 
-func TestEditorTabRequestGuardLimitsStartsAndConcurrency(t *testing.T) {
+func TestEditorTabRequestsCancelOlderRequest(t *testing.T) {
 	s := &Server{}
-	started := time.Unix(1, 0)
-	if !s.beginEditorTabRequest(started) {
-		t.Fatal("first request was rejected")
+	first, finishFirst := s.beginEditorTabRequest(context.Background())
+	second, finishSecond := s.beginEditorTabRequest(context.Background())
+	select {
+	case <-first.Done():
+	default:
+		t.Fatal("older request was not cancelled")
 	}
-	if s.beginEditorTabRequest(started.Add(editorTabMinRequestGap)) {
-		t.Fatal("concurrent request was accepted")
+	if err := second.Err(); err != nil {
+		t.Fatalf("newest request was cancelled: %v", err)
 	}
-	s.endEditorTabRequest()
-	if s.beginEditorTabRequest(started.Add(editorTabMinRequestGap - time.Nanosecond)) {
-		t.Fatal("request inside the minimum gap was accepted")
+	finishFirst()
+	if err := second.Err(); err != nil {
+		t.Fatalf("finishing the older request cancelled the newest: %v", err)
 	}
-	if !s.beginEditorTabRequest(started.Add(editorTabMinRequestGap)) {
-		t.Fatal("request at the minimum gap was rejected")
-	}
-	s.endEditorTabRequest()
+	finishSecond()
 }
 
 func TestHandleEditorTabSettingsPersistsPreference(t *testing.T) {

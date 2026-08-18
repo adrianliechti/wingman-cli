@@ -90,14 +90,14 @@ type Server struct {
 	taskPumpMu sync.Mutex
 	taskPumps  map[*task.Registry]bool
 
-	terminals      *terminal.Manager
-	preview        *filePreviewServer
-	tab            *editorTabService
-	tabSettingsMu  sync.Mutex
-	tabEnabled     atomic.Bool
-	tabRequestMu   sync.Mutex
-	tabRequesting  bool
-	tabLastRequest time.Time
+	terminals        *terminal.Manager
+	preview          *filePreviewServer
+	tab              *editorTabService
+	tabSettingsMu    sync.Mutex
+	tabEnabled       atomic.Bool
+	tabRequestMu     sync.Mutex
+	tabRequestID     uint64
+	tabRequestCancel context.CancelFunc
 
 	summariesMu sync.Mutex
 	summaries   *summaryStore
@@ -156,6 +156,7 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 		return option.ID
 	}
 	s.tab = newEditorTabService(cfg)
+	s.tabEnabled.Store(true)
 	if userSettings, loadErr := settings.Load(); loadErr == nil {
 		s.tabEnabled.Store(userSettings.EditorTabCompletion)
 	}

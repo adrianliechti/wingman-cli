@@ -5,9 +5,6 @@ const MAX_DOCUMENT_LENGTH = 1 << 20;
 const BURST_GAP_MS = 1_000;
 const RECENT_EDIT_MS = 10_000;
 const REQUEST_DEBOUNCE_MS = 350;
-// This is start-to-start. A normal request taking longer than 1.5 seconds adds
-// no further delay before the next eligible request.
-const MIN_REQUEST_GAP_MS = 1_500;
 // Ordinary typing and cursor movement cancel stale work much sooner. This is
 // only a transport safety valve for a request whose editor state stayed valid.
 const REQUEST_TIMEOUT_MS = 6_000;
@@ -41,7 +38,6 @@ interface MonacoTabOptions {
 	monaco: Monaco;
 	editor: MonacoTypes.editor.IStandaloneCodeEditor;
 	path: string;
-	onAccepted?: () => void | Promise<void>;
 }
 
 export interface MonacoTabBridge {
@@ -52,21 +48,18 @@ export function createMonacoTabBridge({
 	monaco,
 	editor,
 	path,
-	onAccepted,
 }: MonacoTabOptions): MonacoTabBridge {
 	const model = editor.getModel();
 	if (!model) return { dispose() {} };
 
 	const disposables: MonacoTypes.IDisposable[] = [];
 	const cache = new Map<string, TabPredictionEdit | null>();
-	const cursorTrigger =
-		new monaco.Emitter<MonacoTypes.languages.IInlineCompletionChangeHint | void>();
+	const cursorTrigger = new monaco.Emitter<void>();
 	let disposed = false;
 	let engaged = false;
 	let previousValue = model.getValue();
 	let burstBefore = previousValue;
 	let lastChangeAt = 0;
-	let lastRequestAt = 0;
 	let activeController: AbortController | null = null;
 	let activeRequestKey: string | null = null;
 	let postAcceptScheduled = false;
@@ -86,7 +79,6 @@ export function createMonacoTabBridge({
 		postAcceptScheduled = true;
 		window.setTimeout(() => {
 			postAcceptScheduled = false;
-			if (!disposed) void onAccepted?.();
 		}, 0);
 	};
 
@@ -94,7 +86,12 @@ export function createMonacoTabBridge({
 		model.onDidChangeContent((event) => {
 			const current = model.getValue();
 			abortActiveRequest();
-			if (replacesEntireTabDocument(event, previousValue.length)) {
+			if (
+				postAcceptScheduled ||
+				event.isUndoing ||
+				event.isRedoing ||
+				replacesEntireTabDocument(event, previousValue.length)
+			) {
 				engaged = false;
 				burstBefore = current;
 			} else {
@@ -120,7 +117,7 @@ export function createMonacoTabBridge({
 			// Let Monaco publish the new selection before asking this provider to
 			// refresh; the event itself owns debouncing and cancellation.
 			window.setTimeout(() => {
-				if (!disposed) cursorTrigger.fire({ data: { reason: "cursor" } });
+				if (!disposed) cursorTrigger.fire();
 			}, 0);
 		}),
 		cursorTrigger,
@@ -143,6 +140,7 @@ export function createMonacoTabBridge({
 					engaged = false;
 				if (
 					disposed ||
+					token.isCancellationRequested ||
 					candidateModel !== model ||
 					!engaged ||
 					candidateModel.getValueLength() > MAX_DOCUMENT_LENGTH ||
@@ -155,31 +153,16 @@ export function createMonacoTabBridge({
 
 				const content = candidateModel.getValue();
 				if (content === burstBefore) return empty;
+				const previousContent = burstBefore;
 				const version = candidateModel.getVersionId();
 				const key = tabCacheKey(
 					path,
 					content,
-					burstBefore,
+					previousContent,
 					position.lineNumber,
 					position.column,
 				);
 				if (activeRequestKey === key) return empty;
-				if (!cache.has(key)) {
-					const requestGap = Math.max(
-						0,
-						MIN_REQUEST_GAP_MS - (Date.now() - lastRequestAt),
-					);
-					if (requestGap > 0 && !(await waitForTabDelay(requestGap, token)))
-						return empty;
-					if (
-						disposed ||
-						!engaged ||
-						activeRequestKey === key ||
-						candidateModel.getVersionId() !== version ||
-						candidateModel.getValue() !== content
-					)
-						return empty;
-				}
 
 				let edit = cache.get(key);
 				if (edit === undefined) {
@@ -187,7 +170,6 @@ export function createMonacoTabBridge({
 					abortActiveRequest();
 					activeController = controller;
 					activeRequestKey = key;
-					lastRequestAt = Date.now();
 					const cancellation = token.onCancellationRequested(() =>
 						controller.abort(),
 					);
@@ -202,7 +184,7 @@ export function createMonacoTabBridge({
 							body: JSON.stringify({
 								path,
 								content,
-								previous_content: burstBefore,
+								previous_content: previousContent,
 								line: position.lineNumber,
 								column: position.column,
 								version,
@@ -232,8 +214,7 @@ export function createMonacoTabBridge({
 				if (
 					!edit ||
 					token.isCancellationRequested ||
-					candidateModel.getVersionId() !== version ||
-					candidateModel.getValue() !== content
+					candidateModel.getVersionId() !== version
 				) {
 					return empty;
 				}
@@ -248,8 +229,7 @@ export function createMonacoTabBridge({
 					edit.expected_text === "" &&
 					range.isEmpty() &&
 					range.getStartPosition().equals(position);
-				const isInlineEdit =
-					!insertionAtCursor || edit.insert_text.includes("\n");
+				const isInlineEdit = !insertionAtCursor;
 				return {
 					items: [
 						{
@@ -275,6 +255,12 @@ export function createMonacoTabBridge({
 					monaco.languages.InlineCompletionEndOfLifeReasonKind.Accepted
 				) {
 					handleAccepted();
+				} else if (
+					reason.kind ===
+					monaco.languages.InlineCompletionEndOfLifeReasonKind.Rejected
+				) {
+					engaged = false;
+					abortActiveRequest();
 				}
 			},
 			disposeInlineCompletions() {},
@@ -410,25 +396,4 @@ function rememberTabPrediction(
 	if (cache.size <= 48) return;
 	const oldest = cache.keys().next().value;
 	if (oldest !== undefined) cache.delete(oldest);
-}
-
-function waitForTabDelay(
-	delay: number,
-	token: MonacoTypes.CancellationToken,
-): Promise<boolean> {
-	if (token.isCancellationRequested) return Promise.resolve(false);
-	return new Promise((resolve) => {
-		let settled = false;
-		let timer = 0;
-		let cancellation: MonacoTypes.IDisposable | undefined;
-		const finish = (ready: boolean) => {
-			if (settled) return;
-			settled = true;
-			window.clearTimeout(timer);
-			cancellation?.dispose();
-			resolve(ready);
-		};
-		timer = window.setTimeout(() => finish(true), delay);
-		cancellation = token.onCancellationRequested(() => finish(false));
-	});
 }

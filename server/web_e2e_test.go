@@ -62,9 +62,12 @@ func emitE2ETextResponse(w http.ResponseWriter, id, text string) {
 	fmt.Fprint(w, "data: [DONE]\n\n")
 }
 
-func emitE2ETabResponse(w http.ResponseWriter, updatedWindow string) {
+func emitE2ETabResponse(w http.ResponseWriter, updatedWindow, editIntent string) {
 	w.Header().Set("Content-Type", "application/json")
-	structured, _ := json.Marshal(map[string]string{"updated_window": updatedWindow})
+	structured, _ := json.Marshal(map[string]string{
+		"updated_window": updatedWindow,
+		"edit_intent":    editIntent,
+	})
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"id":     "resp_tab",
 		"object": "response",
@@ -82,7 +85,7 @@ func emitE2ETabResponse(w http.ResponseWriter, updatedWindow string) {
 }
 
 func emitE2ETabNoop(w http.ResponseWriter) {
-	emitE2ETabResponse(w, "")
+	emitE2ETabResponse(w, "", "no_edit")
 }
 
 func (m *webE2EModel) handleTool(w http.ResponseWriter) {
@@ -193,16 +196,20 @@ func (m *webE2EModel) handler(w http.ResponseWriter, r *http.Request) {
 	case "/v1/responses":
 		m.requests.Add(1)
 		body, _ := io.ReadAll(r.Body)
-		if strings.Contains(string(body), "You are Wingman Tab") {
+		if strings.Contains(string(body), `"updated_window"`) && strings.Contains(string(body), `"edit_intent"`) {
 			var request struct {
 				Input string `json:"input"`
 			}
 			_ = json.Unmarshal(body, &request)
 			if strings.Contains(request.Input, "File: tab-effectiveness.go") &&
-				strings.Contains(request.Input, "OLD_TEXT:\nuser") &&
-				strings.Contains(request.Input, "NEW_TEXT:\naccount") &&
+				strings.Contains(request.Input, "-    userName := \"Ada\"") &&
+				strings.Contains(request.Input, "+    accountName := \"Ada\"") &&
 				strings.Contains(request.Input, "println(userName)") {
-				emitE2ETabResponse(w, "package main\n\nfunc display() {\n    accountName := \"Ada\"\n    prepare()\n    validate()\n    println(accountName)\n}\n")
+				emitE2ETabResponse(
+					w,
+					"    accountName := \"Ada\"\n    prepare()\n    validate()\n    println(accountName)\n}\n",
+					"high",
+				)
 				return
 			}
 			emitE2ETabNoop(w)

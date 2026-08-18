@@ -1601,9 +1601,6 @@ test("Tab propagates a recent rename through the real model endpoint", async ({
 }) => {
 	await setEditorTabCompletion(request, true);
 	await openTabFixture(page, /tab-effectiveness\.go/, 'userName := "Ada"');
-	// The e2e server is shared across browser cases, so respect the production
-	// start-rate guard even if another test just completed a Tab request.
-	await page.waitForTimeout(1_600);
 
 	let predictionRequests = 0;
 	const predictionBodies: Array<{
@@ -1673,7 +1670,7 @@ test("Tab propagates a recent rename through the real model endpoint", async ({
 	).toHaveCount(0);
 	// Acceptance is the end of this edit burst: Monaco may ask its providers
 	// again for the changed model, but that must not purchase another result.
-	await page.waitForTimeout(1_700);
+	await page.waitForTimeout(700);
 	expect(
 		predictionRequests,
 		`Tab prediction requests: ${JSON.stringify(predictionBodies)}`,
@@ -1696,24 +1693,6 @@ test("Tab stays idle until an edit and accepts a cursor completion", async ({
 }) => {
 	await setEditorTabCompletion(request, true);
 	let predictions = 0;
-	const sourceActions: string[] = [];
-	await page.route(/\/api\/lsp\/capabilities\?/, async (route) => {
-		const response = await route.fetch();
-		const capabilities = (await response.json()) as Record<string, unknown>;
-		await route.fulfill({
-			response,
-			json: {
-				...capabilities,
-				language_server: true,
-				code_actions: true,
-			},
-		});
-	});
-	await page.route(/\/api\/lsp\/code-actions$/, async (route) => {
-		const body = route.request().postDataJSON() as { only?: string[] };
-		if (body.only?.[0]) sourceActions.push(body.only[0]);
-		await route.fulfill({ json: { actions: [], documents: {} } });
-	});
 	await page.route(/\/api\/editor\/tab$/, async (route) => {
 		predictions++;
 		const body = route.request().postDataJSON() as {
@@ -1772,9 +1751,8 @@ test("Tab stays idle until an edit and accepts a cursor completion", async ({
 	await expect(
 		page.locator(".view-line", { hasText: "price * quantity" }).first(),
 	).toBeVisible();
-	await expect
-		.poll(() => sourceActions)
-		.toEqual(["source.addMissingImports", "source.organizeImports"]);
+	await page.waitForTimeout(700);
+	expect(predictions).toBe(1);
 });
 
 test("Tab renders and accepts a real multiline Monaco inline edit", async ({
