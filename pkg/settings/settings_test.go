@@ -3,6 +3,7 @@ package settings
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/adrianliechti/wingman-agent/internal/testenv"
@@ -18,8 +19,12 @@ func TestSettingsDefaultAndUpdate(t *testing.T) {
 	if len(initial.Workspaces) != 0 {
 		t.Fatalf("initial workspaces = %q, want none", initial.Workspaces)
 	}
+	if !initial.EditorTabCompletion {
+		t.Fatal("editor.tab.completion is disabled by default")
+	}
 
 	updated, err := Update(func(value *Settings) {
+		value.EditorTabCompletion = false
 		value.AddWorkspace("first")
 	})
 	if err != nil {
@@ -27,6 +32,13 @@ func TestSettingsDefaultAndUpdate(t *testing.T) {
 	}
 	if len(updated.Workspaces) != 1 || updated.Workspaces[0] != "first" {
 		t.Fatalf("workspaces = %q, want first", updated.Workspaces)
+	}
+	loaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.EditorTabCompletion {
+		t.Fatal("disabled editor.tab.completion was not persisted")
 	}
 
 	path := filepath.Join(home, "config.json")
@@ -36,6 +48,32 @@ func TestSettingsDefaultAndUpdate(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("config permissions = %o, want 600", info.Mode().Perm())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"editor.tab.completion": false`) {
+		t.Fatalf("disabled editor.tab.completion was omitted from %s", data)
+	}
+}
+
+func TestSettingsMissingTabPreferenceDefaultsOn(t *testing.T) {
+	home := testenv.WingmanHome(t)
+	if err := os.WriteFile(
+		filepath.Join(home, "config.json"),
+		[]byte(`{"workspaces":["first"]}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.EditorTabCompletion {
+		t.Fatal("missing editor.tab.completion did not default on")
 	}
 }
 

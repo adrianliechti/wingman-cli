@@ -3,10 +3,11 @@ import type * as MonacoTypes from "monaco-editor";
 
 const MAX_DOCUMENT_LENGTH = 1 << 20;
 const BURST_GAP_MS = 1_000;
+const MIN_REQUEST_GAP_MS = 1_500;
 // Ordinary typing and cursor movement cancel stale work much sooner. This is
 // only a transport safety valve for a request whose editor state stayed valid.
 const REQUEST_TIMEOUT_MS = 6_000;
-const MIN_DEBOUNCE_MS = 100;
+const MIN_DEBOUNCE_MS = 250;
 const MAX_DEBOUNCE_MS = 700;
 
 interface TabPredictionRange {
@@ -61,9 +62,11 @@ export function createMonacoTabBridge({
 	let previousValue = model.getValue();
 	let burstBefore = previousValue;
 	let lastChangeAt = 0;
-	let debounceMs = 220;
+	let debounceMs = 350;
 	let rejectionUntil = 0;
+	let lastRequestAt = 0;
 	let activeController: AbortController | null = null;
+	let activeRequestKey: string | null = null;
 	let cursorTriggerTimer: number | null = null;
 	let postAcceptScheduled = false;
 
@@ -87,7 +90,7 @@ export function createMonacoTabBridge({
 		model.onDidChangeContent((event) => {
 			const current = model.getValue();
 			abortActiveRequest();
-			if (event.isFlush) {
+			if (replacesEntireTabDocument(event, previousValue.length)) {
 				engaged = false;
 				burstBefore = current;
 			} else {
@@ -136,6 +139,7 @@ export function createMonacoTabBridge({
 				if (!selection?.isEmpty()) return empty;
 
 				const content = candidateModel.getValue();
+				if (content === burstBefore) return empty;
 				const version = candidateModel.getVersionId();
 				const key = tabCacheKey(
 					path,
@@ -144,8 +148,17 @@ export function createMonacoTabBridge({
 					position.lineNumber,
 					position.column,
 				);
-				if (!cache.has(key) && !(await waitForTabDebounce(debounceMs, token))) {
-					return empty;
+				if (activeRequestKey === key) return empty;
+				if (!cache.has(key)) {
+					const requestGap = Math.max(
+						0,
+						MIN_REQUEST_GAP_MS - (Date.now() - lastRequestAt),
+					);
+					if (
+						!(await waitForTabDebounce(Math.max(debounceMs, requestGap), token))
+					)
+						return empty;
+					if (activeRequestKey === key) return empty;
 				}
 
 				let edit = cache.get(key);
@@ -153,6 +166,8 @@ export function createMonacoTabBridge({
 					const controller = new AbortController();
 					abortActiveRequest();
 					activeController = controller;
+					activeRequestKey = key;
+					lastRequestAt = Date.now();
 					const cancellation = token.onCancellationRequested(() =>
 						controller.abort(),
 					);
@@ -190,6 +205,7 @@ export function createMonacoTabBridge({
 						window.clearTimeout(timeout);
 						cancellation.dispose();
 						if (activeController === controller) activeController = null;
+						if (activeRequestKey === key) activeRequestKey = null;
 					}
 				}
 
@@ -212,7 +228,8 @@ export function createMonacoTabBridge({
 					edit.expected_text === "" &&
 					range.isEmpty() &&
 					range.getStartPosition().equals(position);
-				const isInlineEdit = !insertionAtCursor;
+				const isInlineEdit =
+					!insertionAtCursor || edit.insert_text.includes("\n");
 				return {
 					items: [
 						{
@@ -266,6 +283,20 @@ export function createMonacoTabBridge({
 			cache.clear();
 		},
 	};
+}
+
+interface TabContentChangeEvent {
+	isFlush: boolean;
+	changes: readonly { rangeOffset: number; rangeLength: number }[];
+}
+
+export function replacesEntireTabDocument(
+	event: TabContentChangeEvent,
+	previousLength: number,
+): boolean {
+	if (event.isFlush || event.changes.length !== 1) return event.isFlush;
+	const [change] = event.changes;
+	return change.rangeOffset === 0 && change.rangeLength === previousLength;
 }
 
 function emptyTabCompletions(): TabInlineCompletions {

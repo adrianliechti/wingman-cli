@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isTabPredictionResponse, tabCacheKey } from "../src/monacoTab.ts";
+import {
+	isTabPredictionResponse,
+	replacesEntireTabDocument,
+	tabCacheKey,
+} from "../src/monacoTab.ts";
 
 test("validates the Tab wire response", () => {
 	assert.equal(
@@ -72,4 +76,21 @@ test("cache keys include both sides of the recent edit", () => {
 	assert.notEqual(base, tabCacheKey("main.go", "after!", "before", 2, 4));
 	assert.notEqual(base, tabCacheKey("main.go", "after", "before!", 2, 4));
 	assert.notEqual(base, tabCacheKey("main.go", "after", "before", 3, 4));
+});
+
+test("recognizes synchronized whole-document replacements", () => {
+	assert.equal(
+		replacesEntireTabDocument(
+			{ isFlush: false, changes: [{ rangeOffset: 0, rangeLength: 12 }] },
+			12,
+		),
+		true,
+	);
+	assert.equal(
+		replacesEntireTabDocument(
+			{ isFlush: false, changes: [{ rangeOffset: 3, rangeLength: 2 }] },
+			12,
+		),
+		false,
+	);
 });

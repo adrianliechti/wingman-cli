@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/code/agents"
+	"github.com/adrianliechti/wingman-agent/pkg/settings"
 	"github.com/adrianliechti/wingman-agent/pkg/system"
 	"github.com/adrianliechti/wingman-agent/pkg/terminal"
 	"github.com/adrianliechti/wingman-agent/pkg/watch"
@@ -88,9 +90,14 @@ type Server struct {
 	taskPumpMu sync.Mutex
 	taskPumps  map[*task.Registry]bool
 
-	terminals *terminal.Manager
-	preview   *filePreviewServer
-	tab       *editorTabService
+	terminals      *terminal.Manager
+	preview        *filePreviewServer
+	tab            *editorTabService
+	tabSettingsMu  sync.Mutex
+	tabEnabled     atomic.Bool
+	tabRequestMu   sync.Mutex
+	tabRequesting  bool
+	tabLastRequest time.Time
 
 	summariesMu sync.Mutex
 	summaries   *summaryStore
@@ -149,6 +156,9 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 		return option.ID
 	}
 	s.tab = newEditorTabService(cfg)
+	if userSettings, loadErr := settings.Load(); loadErr == nil {
+		s.tabEnabled.Store(userSettings.EditorTabCompletion)
+	}
 	s.agent = wa
 	s.turns = code.NewTurnManager(tool.WithProgressSink(serverCtx, s.onToolProgress), wa, s.handleTurnEvent)
 
@@ -423,6 +433,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Get("/file", s.handleLSPExternalFile)
 		})
 		r.Post("/editor/tab", s.handleEditorTab)
+		r.Post("/settings/editor.tab.completion", s.handleEditorTabSettings)
 		r.Get("/skills", s.handleSkills)
 		r.Get("/capabilities", s.handleCapabilities)
 		r.Get("/ws", s.handleWebSocketURL)
@@ -788,15 +799,16 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, _ *http.Request) {
 	ws := s.workspace
 	_, isCoder := s.activeAgent().(*codeagent.Agent)
 	caps := map[string]any{
-		"lsp":            ws.HasLSP(),
-		"diffs":          ws.HasChanges(),
-		"git":            ws.HasChanges(),
-		"git_init":       isCoder && !ws.HasChanges(),
-		"tasks":          isCoder,
-		"terminal":       terminal.Supported(),
-		"tab":            s.tab != nil,
-		"platform":       runtime.GOOS,
-		"workspace_name": filepath.Base(ws.RootPath),
+		"lsp":                   ws.HasLSP(),
+		"diffs":                 ws.HasChanges(),
+		"git":                   ws.HasChanges(),
+		"git_init":              isCoder && !ws.HasChanges(),
+		"tasks":                 isCoder,
+		"terminal":              terminal.Supported(),
+		"tab":                   s.tab != nil,
+		"editor.tab.completion": s.tab != nil && s.tabEnabled.Load(),
+		"platform":              runtime.GOOS,
+		"workspace_name":        filepath.Base(ws.RootPath),
 	}
 	writeJSON(w, caps)
 }

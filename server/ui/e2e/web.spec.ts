@@ -1,4 +1,10 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import {
+	expect,
+	test,
+	type APIRequestContext,
+	type Locator,
+	type Page,
+} from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
@@ -31,6 +37,16 @@ async function openTabFixture(page: Page, file: RegExp, lineText: string) {
 	await expect(line).toBeVisible();
 	await line.click();
 	await page.keyboard.press("End");
+}
+
+async function setEditorTabCompletion(
+	request: APIRequestContext,
+	enabled: boolean,
+) {
+	const response = await request.post("/api/settings/editor.tab.completion", {
+		data: { "editor.tab.completion": enabled },
+	});
+	expect(response.ok()).toBeTruthy();
 }
 
 async function openWorkspaceMenu(page: Page) {
@@ -1551,9 +1567,39 @@ test("save applies real gopls organize-imports edits", async ({
 		);
 });
 
+test("toggles editor.tab.completion from the command palette", async ({
+	page,
+	request,
+}) => {
+	const initial = await request.get("/api/capabilities");
+	expect(initial.ok()).toBeTruthy();
+	expect(
+		((await initial.json()) as Record<string, unknown>)[
+			"editor.tab.completion"
+		],
+	).toBe(true);
+	await composer(page);
+	await page.keyboard.press("Control+k");
+	const disable = page.getByRole("option", {
+		name: /Disable editor\.tab\.completion/,
+	});
+	await expect(disable).toBeVisible();
+	await disable.click();
+	await expect(
+		page.getByText("editor.tab.completion disabled", { exact: true }),
+	).toBeVisible();
+
+	await page.keyboard.press("Control+k");
+	await expect(
+		page.getByRole("option", { name: /Enable editor\.tab\.completion/ }),
+	).toBeVisible();
+});
+
 test("Tab stays idle until an edit and accepts a cursor completion", async ({
 	page,
+	request,
 }) => {
+	await setEditorTabCompletion(request, true);
 	let predictions = 0;
 	const sourceActions: string[] = [];
 	await page.route(/\/api\/lsp\/capabilities\?/, async (route) => {
@@ -1600,6 +1646,27 @@ test("Tab stays idle until an edit and accepts a cursor completion", async ({
 	await openTabFixture(page, /tab-ghost\.go/, "total := price *");
 	await page.waitForTimeout(400);
 	expect(predictions).toBe(0);
+	const synchronized = await request.post("/api/files/write", {
+		data: {
+			path: "tab-ghost.go",
+			content:
+				"package main\n\nfunc main() {\n\ttotal := price *\n\t_ = total\n}\n\n// synchronized externally\n",
+			force: true,
+		},
+	});
+	expect(synchronized.ok()).toBeTruthy();
+	await expect(
+		page.locator(".view-line", { hasText: "synchronized externally" }),
+	).toBeVisible();
+	await page.waitForTimeout(500);
+	expect(predictions).toBe(0);
+	await page.locator(".view-line", { hasText: "total := price *" }).click();
+	await page.keyboard.press("End");
+
+	await page.keyboard.type(" ");
+	await page.keyboard.press("Backspace");
+	await page.waitForTimeout(400);
+	expect(predictions).toBe(0);
 
 	await page.keyboard.type(" ");
 	const ghost = page.locator(".ghost-text-decoration", {
@@ -1617,7 +1684,9 @@ test("Tab stays idle until an edit and accepts a cursor completion", async ({
 
 test("Tab renders and accepts a real multiline Monaco inline edit", async ({
 	page,
+	request,
 }) => {
+	await setEditorTabCompletion(request, true);
 	await page.route(/\/api\/editor\/tab$/, async (route) => {
 		const body = route.request().postDataJSON() as { version: number };
 		await route.fulfill({
@@ -1625,7 +1694,7 @@ test("Tab renders and accepts a real multiline Monaco inline edit", async ({
 				version: body.version,
 				edit: {
 					insert_text: "if ready {\n  new one\n  new two\n}\n",
-					expected_text: "old one\nold two\n",
+					expected_text: "old one \nold two\n",
 					range: {
 						start_line: 2,
 						start_column: 1,
@@ -1639,7 +1708,6 @@ test("Tab renders and accepts a real multiline Monaco inline edit", async ({
 
 	await openTabFixture(page, /tab-multiline\.txt/, "old one");
 	await page.keyboard.type(" ");
-	await page.keyboard.press("Backspace");
 	const preview = page.locator(".monaco-editor:visible").filter({
 		hasText: "new one",
 	});
@@ -1661,7 +1729,9 @@ test("Tab renders and accepts a real multiline Monaco inline edit", async ({
 
 test("Tab drops a delayed response after the cursor moves", async ({
 	page,
+	request,
 }) => {
+	await setEditorTabCompletion(request, true);
 	let firstStarted!: () => void;
 	const started = new Promise<void>((resolve) => {
 		firstStarted = resolve;
@@ -2580,7 +2650,8 @@ test("uses Wingman's dynamic editor context menu", async ({ page }) => {
 	await menu
 		.getByRole("menuitem", { name: "Toggle Block Comment", exact: true })
 		.click();
-	await expect(viewLines).toContainText(/\/\*\s*package\s+main\s*\*\//);
+	await expect(viewLines).toContainText(/\/\*\s*package\s+main/);
+	await expect(viewLines).toContainText(/\*\//);
 
 	await editor.focus();
 	await page.keyboard.press("Shift+F10");

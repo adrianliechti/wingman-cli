@@ -13,23 +13,26 @@ import (
 	"unicode/utf8"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/settings"
 )
 
 const (
 	editorTabContextRadius       = 150
 	editorTabEditRadius          = 10
+	editorTabMaxPath             = 4 << 10
 	editorTabMaxDocument         = 1 << 20
-	editorTabMaxContext          = 64 << 10
-	editorTabMaxBlock            = 32 << 10
-	editorTabMaxChange           = 8 << 10
-	editorTabMaxOutput           = 32 << 10
+	editorTabMaxContext          = 32 << 10
+	editorTabMaxBlock            = 8 << 10
+	editorTabMaxChange           = 4 << 10
+	editorTabMaxOutput           = 10 << 10
 	editorTabRequestLimit        = 2*editorTabMaxDocument + 32<<10
+	editorTabMinRequestGap       = 1500 * time.Millisecond
 	editorTabDefaultCursorMarker = "<CURSOR>"
 )
 
 const editorTabInstructions = `You are Wingman Tab, a low-latency next-edit prediction engine.
 Predict the single most likely source edit the developer will make immediately after their recent change.
-The input contains broader file context, the edit window before and after the recent change, its exact minimal text diff, and the cursor.
+The input contains broader file context, the edit window before the recent change, its exact minimal text diff, and the current window with the cursor.
 Return the complete current edit window with that one next edit applied in updated_window.
 Preserve all unchanged text byte-for-byte. Prefer a small, obvious continuation or follow-up edit.
 Treat RECENT_CHANGE as the strongest intent signal. High-confidence edits include finishing incomplete syntax at the cursor and propagating a just-performed local rename to an immediately related use.
@@ -101,9 +104,10 @@ func newEditorTabService(cfg *agent.Config) *editorTabService {
 func newEditorTabServiceForModel(cfg *agent.Config, model string) *editorTabService {
 	service := &editorTabService{modelOverride: strings.TrimSpace(model)}
 	service.complete = func(ctx context.Context, prompt string) (string, error) {
+		modelID, effort := resolveGenerationTarget(cfg, "utility", service.modelOverride)
 		result, err := cfg.Generate(ctx, agent.GenerateOptions{
-			Model:           service.modelOverride,
-			Effort:          "none",
+			Model:           modelID,
+			Effort:          effort,
 			Instructions:    editorTabInstructions,
 			Input:           prompt,
 			OutputSchema:    editorTabOutputSchema,
@@ -139,7 +143,9 @@ func (s *editorTabService) predict(ctx context.Context, input editorTabRequest) 
 }
 
 func buildEditorTabPrompt(input editorTabRequest) (editorTabPrompt, error) {
-	if input.Path == "" || strings.ContainsAny(input.Path, "\r\n") {
+	if input.Path == "" ||
+		len(input.Path) > editorTabMaxPath ||
+		strings.ContainsAny(input.Path, "\r\n") {
 		return editorTabPrompt{}, editorTabInputError{message: "invalid path"}
 	}
 	if len(input.Content) > editorTabMaxDocument || len(input.PreviousContent) > editorTabMaxDocument {
@@ -183,7 +189,6 @@ func buildEditorTabPrompt(input editorTabRequest) (editorTabPrompt, error) {
 	)
 	writeEditorTabPromptBlock(&out, "FILE_CONTEXT", fileContext)
 	writeEditorTabPromptBlock(&out, "RECENT_EDIT_BEFORE", previousBlock)
-	writeEditorTabPromptBlock(&out, "RECENT_EDIT_AFTER", block)
 	writeEditorTabPromptBlock(&out, "RECENT_CHANGE", editorTabRecentChange(previousBlock, block))
 	writeEditorTabPromptBlock(&out, "CURRENT_WINDOW", withCursor)
 
@@ -416,12 +421,21 @@ func (s *Server) handleEditorTab(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Tab is not configured", http.StatusNotFound)
 		return
 	}
+	if !s.tabEnabled.Load() {
+		http.Error(w, "Tab is disabled", http.StatusForbidden)
+		return
+	}
 	var request editorTabRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, editorTabRequestLimit))
 	if err := decoder.Decode(&request); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
 	}
+	if !s.beginEditorTabRequest(time.Now()) {
+		http.Error(w, "Tab prediction rate limited", http.StatusTooManyRequests)
+		return
+	}
+	defer s.endEditorTabRequest()
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	response, err := s.tab.predict(ctx, request)
@@ -439,4 +453,56 @@ func (s *Server) handleEditorTab(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, response)
+}
+
+func (s *Server) beginEditorTabRequest(now time.Time) bool {
+	s.tabRequestMu.Lock()
+	defer s.tabRequestMu.Unlock()
+	if s.tabRequesting ||
+		(!s.tabLastRequest.IsZero() && now.Sub(s.tabLastRequest) < editorTabMinRequestGap) {
+		return false
+	}
+	s.tabRequesting = true
+	s.tabLastRequest = now
+	return true
+}
+
+func (s *Server) endEditorTabRequest() {
+	s.tabRequestMu.Lock()
+	s.tabRequesting = false
+	s.tabRequestMu.Unlock()
+}
+
+func (s *Server) handleEditorTabSettings(w http.ResponseWriter, r *http.Request) {
+	if s.tab == nil {
+		http.Error(w, "Tab is not configured", http.StatusNotFound)
+		return
+	}
+	var request struct {
+		Enabled *bool `json:"editor.tab.completion"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	if request.Enabled == nil {
+		http.Error(w, "editor.tab.completion is required", http.StatusBadRequest)
+		return
+	}
+	s.tabSettingsMu.Lock()
+	updated, err := settings.Update(func(value *settings.Settings) {
+		value.EditorTabCompletion = *request.Enabled
+	})
+	if err == nil {
+		s.tabEnabled.Store(updated.EditorTabCompletion)
+	}
+	s.tabSettingsMu.Unlock()
+	if err != nil {
+		http.Error(w, "could not save editor.tab.completion", http.StatusInternalServerError)
+		return
+	}
+	s.broadcast(Frame{Type: EvtCapabilitiesChanged})
+	writeJSON(w, map[string]bool{"editor.tab.completion": updated.EditorTabCompletion})
 }

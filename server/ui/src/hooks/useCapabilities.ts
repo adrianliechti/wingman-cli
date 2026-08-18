@@ -9,6 +9,7 @@ interface Capabilities {
 	tasks?: boolean;
 	terminal?: boolean;
 	tab?: boolean;
+	"editor.tab.completion"?: boolean;
 	platform?: string;
 	workspace_name?: string;
 	notice?: string;

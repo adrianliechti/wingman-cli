@@ -13,6 +13,7 @@ import {
 	Plus,
 	Save,
 	Search,
+	Sparkles,
 	SquareTerminal,
 	Wrench,
 } from "lucide-react";
@@ -271,7 +272,33 @@ export default function App() {
 	const showProblems = capabilities?.lsp ?? false;
 	const showAgents = capabilities?.tasks ?? false;
 	const showTerminal = capabilities?.terminal ?? false;
-	const tabEnabled = capabilities?.tab ?? false;
+	const tabAvailable = capabilities?.tab ?? false;
+	const tabEnabled =
+		tabAvailable && (capabilities?.["editor.tab.completion"] ?? false);
+	const toggleEditorTabCompletion = useCallback(async () => {
+		try {
+			const response = await fetch("/api/settings/editor.tab.completion", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					"editor.tab.completion": !tabEnabled,
+				}),
+			});
+			if (!response.ok) throw new Error(await response.text());
+			toast({
+				title: `editor.tab.completion ${tabEnabled ? "disabled" : "enabled"}`,
+				description: tabEnabled
+					? undefined
+					: "Completions use model requests while you type.",
+			});
+		} catch (error) {
+			toast({
+				title: "Could not change editor.tab.completion",
+				description: String(error),
+				tone: "error",
+			});
+		}
+	}, [tabEnabled, toast]);
 	const [requestedRightTab, setRequestedRightTab] = useState<RightTab>("files");
 	const [workspaceSearching, setWorkspaceSearching] = useState(false);
 	const [searchFocusKey, setSearchFocusKey] = useState(0);
@@ -1575,6 +1602,15 @@ export default function App() {
 				run: () => void createTerminal(),
 			});
 		}
+		if (tabAvailable) {
+			actions.push({
+				id: "editor.tab.completion",
+				label: `${tabEnabled ? "Disable" : "Enable"} editor.tab.completion`,
+				hint: `${tabEnabled ? "On" : "Off"} · uses model requests while typing`,
+				icon: <Sparkles size={12} className="text-fg-dim shrink-0" />,
+				run: () => void toggleEditorTabCompletion(),
+			});
+		}
 		actions.push({
 			id: "find-in-files",
 			label: "Find in files",
@@ -1610,6 +1646,9 @@ export default function App() {
 		handleNewSession,
 		showChanges,
 		showTerminal,
+		tabAvailable,
+		tabEnabled,
+		toggleEditorTabCompletion,
 		toggleSidebar,
 		toggleRightPanel,
 		showRightPanel,

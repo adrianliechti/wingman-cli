@@ -1,4 +1,4 @@
-// Package settings stores desktop launcher state.
+// Package settings stores user preferences and desktop launcher state.
 package settings
 
 import (
@@ -15,7 +15,8 @@ import (
 const MaxWorkspaces = 3
 
 type Settings struct {
-	Workspaces []string `json:"workspaces,omitempty"`
+	EditorTabCompletion bool     `json:"editor.tab.completion"`
+	Workspaces          []string `json:"workspaces,omitempty"`
 }
 
 func (s *Settings) AddWorkspace(path string) {
@@ -75,14 +76,14 @@ func Update(update func(*Settings)) (Settings, error) {
 }
 
 func load() (Settings, error) {
-	var value Settings
+	value := Settings{EditorTabCompletion: true}
 	path, err := path()
 	if err != nil {
 		return Settings{}, err
 	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return Settings{}, nil
+		return value, nil
 	}
 	if err != nil {
 		return Settings{}, err

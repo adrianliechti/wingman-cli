@@ -223,8 +223,14 @@ OpenAI-compatible backend at `http://localhost:4242/v1`.
 
 ### User Data
 
-Editor AI completion is enabled whenever the server advertises Tab support.
-Wingman's `~/.wingman/config.json` stores recent launcher workspaces only;
+`editor.tab.completion` is on by default and can be disabled or re-enabled from
+the command palette. The preference is stored in `~/.wingman/config.json`.
+Completions use model requests while you type; requests are edit-gated,
+debounced, and limited server-wide to one active request and one start every
+1.5 seconds.
+
+Wingman's `~/.wingman/config.json` stores this preference and recent launcher
+workspaces only;
 backend URLs and authentication tokens are read from environment variables and
 are never persisted in this file.
 Set `WINGMAN_HOME` to relocate the complete `~/.wingman` directory, including
