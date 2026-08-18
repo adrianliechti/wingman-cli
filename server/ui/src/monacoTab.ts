@@ -3,12 +3,14 @@ import type * as MonacoTypes from "monaco-editor";
 
 const MAX_DOCUMENT_LENGTH = 1 << 20;
 const BURST_GAP_MS = 1_000;
+const RECENT_EDIT_MS = 10_000;
+const REQUEST_DEBOUNCE_MS = 350;
+// This is start-to-start. A normal request taking longer than 1.5 seconds adds
+// no further delay before the next eligible request.
 const MIN_REQUEST_GAP_MS = 1_500;
 // Ordinary typing and cursor movement cancel stale work much sooner. This is
 // only a transport safety valve for a request whose editor state stayed valid.
 const REQUEST_TIMEOUT_MS = 6_000;
-const MIN_DEBOUNCE_MS = 250;
-const MAX_DEBOUNCE_MS = 700;
 
 interface TabPredictionRange {
 	start_line: number;
@@ -57,17 +59,16 @@ export function createMonacoTabBridge({
 
 	const disposables: MonacoTypes.IDisposable[] = [];
 	const cache = new Map<string, TabPredictionEdit | null>();
+	const cursorTrigger =
+		new monaco.Emitter<MonacoTypes.languages.IInlineCompletionChangeHint | void>();
 	let disposed = false;
 	let engaged = false;
 	let previousValue = model.getValue();
 	let burstBefore = previousValue;
 	let lastChangeAt = 0;
-	let debounceMs = 350;
-	let rejectionUntil = 0;
 	let lastRequestAt = 0;
 	let activeController: AbortController | null = null;
 	let activeRequestKey: string | null = null;
-	let cursorTriggerTimer: number | null = null;
 	let postAcceptScheduled = false;
 
 	function abortActiveRequest() {
@@ -75,16 +76,19 @@ export function createMonacoTabBridge({
 		activeController = null;
 	}
 
-	function handleAccepted() {
+	const handleAccepted = () => {
 		if (disposed || postAcceptScheduled) return;
+		const current = model.getValue();
+		engaged = false;
+		burstBefore = current;
+		previousValue = current;
+		abortActiveRequest();
 		postAcceptScheduled = true;
-		debounceMs = Math.max(MIN_DEBOUNCE_MS, debounceMs - 30);
-		rejectionUntil = 0;
 		window.setTimeout(() => {
 			postAcceptScheduled = false;
 			if (!disposed) void onAccepted?.();
 		}, 0);
-	}
+	};
 
 	disposables.push(
 		model.onDidChangeContent((event) => {
@@ -101,23 +105,33 @@ export function createMonacoTabBridge({
 			}
 			previousValue = current;
 		}),
-		editor.onDidChangeCursorPosition(() => {
-			abortActiveRequest();
+		editor.onDidChangeCursorPosition((event) => {
 			if (disposed || !engaged) return;
-			if (cursorTriggerTimer !== null) window.clearTimeout(cursorTriggerTimer);
-			cursorTriggerTimer = window.setTimeout(() => {
-				cursorTriggerTimer = null;
-				if (!disposed)
-					void editor.getAction("editor.action.inlineSuggest.trigger")?.run();
+			if (Date.now() - lastChangeAt > RECENT_EDIT_MS) {
+				engaged = false;
+				return;
+			}
+			if (
+				event.source === "inlineCompletions.jump" ||
+				event.source === "inlineCompletionAccept"
+			)
+				return;
+			abortActiveRequest();
+			// Let Monaco publish the new selection before asking this provider to
+			// refresh; the event itself owns debouncing and cancellation.
+			window.setTimeout(() => {
+				if (!disposed) cursorTrigger.fire({ data: { reason: "cursor" } });
 			}, 0);
 		}),
+		cursorTrigger,
 	);
 
 	disposables.push(
 		monaco.languages.registerInlineCompletionsProvider(model.getLanguageId(), {
 			groupId: "wingman.tab",
 			displayName: "Wingman Tab",
-			debounceDelayMs: 0,
+			debounceDelayMs: REQUEST_DEBOUNCE_MS,
+			onDidChangeInlineCompletions: cursorTrigger.event,
 			async provideInlineCompletions(
 				candidateModel: MonacoTypes.editor.ITextModel,
 				position: MonacoTypes.Position,
@@ -125,13 +139,14 @@ export function createMonacoTabBridge({
 				token: MonacoTypes.CancellationToken,
 			): Promise<TabInlineCompletions> {
 				const empty = emptyTabCompletions();
+				if (engaged && Date.now() - lastChangeAt > RECENT_EDIT_MS)
+					engaged = false;
 				if (
 					disposed ||
 					candidateModel !== model ||
 					!engaged ||
 					candidateModel.getValueLength() > MAX_DOCUMENT_LENGTH ||
-					context.selectedSuggestionInfo ||
-					Date.now() < rejectionUntil
+					context.selectedSuggestionInfo
 				) {
 					return empty;
 				}
@@ -154,11 +169,16 @@ export function createMonacoTabBridge({
 						0,
 						MIN_REQUEST_GAP_MS - (Date.now() - lastRequestAt),
 					);
+					if (requestGap > 0 && !(await waitForTabDelay(requestGap, token)))
+						return empty;
 					if (
-						!(await waitForTabDebounce(Math.max(debounceMs, requestGap), token))
+						disposed ||
+						!engaged ||
+						activeRequestKey === key ||
+						candidateModel.getVersionId() !== version ||
+						candidateModel.getValue() !== content
 					)
 						return empty;
-					if (activeRequestKey === key) return empty;
 				}
 
 				let edit = cache.get(key);
@@ -255,18 +275,6 @@ export function createMonacoTabBridge({
 					monaco.languages.InlineCompletionEndOfLifeReasonKind.Accepted
 				) {
 					handleAccepted();
-					return;
-				}
-				if (
-					reason.kind ===
-						monaco.languages.InlineCompletionEndOfLifeReasonKind.Rejected ||
-					(reason.kind ===
-						monaco.languages.InlineCompletionEndOfLifeReasonKind.Ignored &&
-						"userTypingDisagreed" in reason &&
-						reason.userTypingDisagreed)
-				) {
-					debounceMs = Math.min(MAX_DEBOUNCE_MS, debounceMs + 90);
-					rejectionUntil = Date.now() + 750;
 				}
 			},
 			disposeInlineCompletions() {},
@@ -277,7 +285,6 @@ export function createMonacoTabBridge({
 		dispose() {
 			if (disposed) return;
 			disposed = true;
-			if (cursorTriggerTimer !== null) window.clearTimeout(cursorTriggerTimer);
 			abortActiveRequest();
 			for (const disposable of disposables) disposable.dispose();
 			cache.clear();
@@ -405,7 +412,7 @@ function rememberTabPrediction(
 	if (oldest !== undefined) cache.delete(oldest);
 }
 
-function waitForTabDebounce(
+function waitForTabDelay(
 	delay: number,
 	token: MonacoTypes.CancellationToken,
 ): Promise<boolean> {

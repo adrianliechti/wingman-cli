@@ -1595,6 +1595,101 @@ test("toggles editor.tab.completion from the command palette", async ({
 	).toBeVisible();
 });
 
+test("Tab propagates a recent rename through the real model endpoint", async ({
+	page,
+	request,
+}) => {
+	await setEditorTabCompletion(request, true);
+	await openTabFixture(page, /tab-effectiveness\.go/, 'userName := "Ada"');
+	// The e2e server is shared across browser cases, so respect the production
+	// start-rate guard even if another test just completed a Tab request.
+	await page.waitForTimeout(1_600);
+
+	let predictionRequests = 0;
+	const predictionBodies: Array<{
+		line: number;
+		column: number;
+		version: number;
+		content: string;
+		previous_content: string;
+	}> = [];
+	const isTabRequest = (candidate: { method(): string; url(): string }) =>
+		candidate.method() === "POST" &&
+		new URL(candidate.url()).pathname === "/api/editor/tab";
+	page.on("request", (candidate) => {
+		if (!isTabRequest(candidate)) return;
+		predictionRequests++;
+		predictionBodies.push(candidate.postDataJSON());
+	});
+	const tabRequest = page.waitForRequest(isTabRequest);
+	const tabResponse = page.waitForResponse(
+		(response) =>
+			response.request().method() === "POST" &&
+			new URL(response.url()).pathname === "/api/editor/tab",
+	);
+	const declaration = page
+		.locator(".view-line", { hasText: 'userName := "Ada"' })
+		.first();
+	await declaration.click();
+	await page.keyboard.press("Home");
+	for (let index = 0; index < "userName".length; index++) {
+		await page.keyboard.press("Shift+ArrowRight");
+	}
+	await page.keyboard.insertText("accountName");
+
+	const observed = await tabRequest;
+	const body = observed.postDataJSON() as {
+		content: string;
+		previous_content: string;
+	};
+	expect(body.previous_content).toContain('userName := "Ada"');
+	expect(body.content).toContain('accountName := "Ada"');
+	expect(body.content).toContain("println(userName)");
+	const response = (await (await tabResponse).json()) as {
+		edit: unknown;
+	};
+	expect(response.edit).toEqual({
+		insert_text: "account",
+		expected_text: "user",
+		range: {
+			start_line: 7,
+			start_column: 13,
+			end_line: 7,
+			end_column: 17,
+		},
+	});
+
+	await page.waitForTimeout(200);
+	await page.keyboard.press("Tab");
+	const correctedUse = page
+		.locator(".view-line:visible", { hasText: "println(accountName)" })
+		.first();
+	// Monaco either accepts immediately or first focuses its long-distance
+	// preview. In the latter presentation, the next Tab accepts the same item.
+	if (!(await correctedUse.isVisible())) await page.keyboard.press("Tab");
+	await expect(correctedUse).toBeVisible();
+	await expect(
+		page.locator(".view-line:visible", { hasText: "println(userName)" }),
+	).toHaveCount(0);
+	// Acceptance is the end of this edit burst: Monaco may ask its providers
+	// again for the changed model, but that must not purchase another result.
+	await page.waitForTimeout(1_700);
+	expect(
+		predictionRequests,
+		`Tab prediction requests: ${JSON.stringify(predictionBodies)}`,
+	).toBe(1);
+
+	await page.getByRole("button", { name: "Save file" }).click();
+	await expect
+		.poll(async () => {
+			const saved = await request.get(
+				"/api/files/read?path=tab-effectiveness.go",
+			);
+			return ((await saved.json()) as { content: string }).content;
+		})
+		.toContain("println(accountName)");
+});
+
 test("Tab stays idle until an edit and accepts a cursor completion", async ({
 	page,
 	request,

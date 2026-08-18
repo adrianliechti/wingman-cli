@@ -35,23 +35,31 @@ func TestEditorTabPromptProvidesBoundedEditContext(t *testing.T) {
 	for _, want := range []string{
 		"File: pkg/example.go\n",
 		"Cursor: 12:8\n",
-		"Cursor marker: <CURSOR>\n",
 		"Edit window: lines 2-22\n",
-		"<FILE_CONTEXT>\n",
-		"<RECENT_EDIT_BEFORE>\n",
-		"old  12",
+		"Edit markers: <EDIT_START> <EDIT_END>\n",
+		"Cursor marker: <CURSOR>\n",
 		"<RECENT_CHANGE>\n",
-		"OLD_TEXT:\nold",
+		"OLD_TEXT:\nold ",
 		"NEW_TEXT:\nline",
-		"<CURRENT_WINDOW>\n",
+		"<CURRENT_FILE>\n",
+		"<EDIT_START>line 02",
 		"line 12<CURSOR>",
+		"<EDIT_END>line 23",
 	} {
 		if !strings.Contains(prompt.text, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt.text)
 		}
 	}
-	if strings.Contains(prompt.text, "<RECENT_EDIT_AFTER>") {
-		t.Fatalf("prompt repeats the current edit window:\n%s", prompt.text)
+	for _, unwanted := range []string{"<FILE_CONTEXT>", "<RECENT_EDIT_BEFORE>", "<CURRENT_WINDOW>"} {
+		if strings.Contains(prompt.text, unwanted) {
+			t.Fatalf("prompt retains redundant block %q:\n%s", unwanted, prompt.text)
+		}
+	}
+	if count := strings.Count(prompt.text, "line 07"); count != 1 {
+		t.Fatalf("stable source line appears %d times, want once:\n%s", count, prompt.text)
+	}
+	if len(prompt.text) > editorTabMaxPrompt {
+		t.Fatalf("prompt length = %d, max = %d", len(prompt.text), editorTabMaxPrompt)
 	}
 }
 
@@ -88,8 +96,81 @@ func TestEditorTabPromptPreservesAnEmptyPreviousDocument(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(prompt.text, "<RECENT_EDIT_BEFORE>\n\n</RECENT_EDIT_BEFORE>") {
+	if !strings.Contains(prompt.text, "<RECENT_CHANGE>\nOLD_TEXT:\n(empty)\nNEW_TEXT:\nx\n</RECENT_CHANGE>") {
 		t.Fatalf("empty original document was not preserved:\n%s", prompt.text)
+	}
+}
+
+func TestEditorTabPromptKeepsDistantRecentRename(t *testing.T) {
+	lines := []string{"package main", "", "func main() {", "\tuserName := \"Ada\""}
+	for index := 0; index < 30; index++ {
+		lines = append(lines, fmt.Sprintf("\twork(%d)", index))
+	}
+	useLine := len(lines) + 1
+	lines = append(lines, "\tprintln(userName)", "}")
+	previous := strings.Join(lines, "\n") + "\n"
+	content := strings.Replace(previous, "userName :=", "accountName :=", 1)
+	prompt, err := buildEditorTabPrompt(editorTabRequest{
+		Path:            "main.go",
+		Content:         content,
+		PreviousContent: previous,
+		Line:            useLine,
+		Column:          len("\tprintln(userName)") + 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"OLD_TEXT:\nuser",
+		"NEW_TEXT:\naccount",
+		"println(userName)<CURSOR>",
+	} {
+		if !strings.Contains(prompt.text, want) {
+			t.Fatalf("prompt missing distant rename evidence %q:\n%s", want, prompt.text)
+		}
+	}
+}
+
+func TestEditorTabPromptBoundsLargeFilesWithoutLosingHeaderOrCursor(t *testing.T) {
+	lines := []string{"package example", "", `import "fmt"`, ""}
+	for index := 0; index < 7_000; index++ {
+		lines = append(lines, fmt.Sprintf("var item%04d = fmt.Sprint(%d)", index, index))
+	}
+	content := strings.Join(lines, "\n") + "\n"
+	previous := strings.Replace(content, "item0001", "prior0001", 1)
+	cursorIndex := 6_000
+	cursorLine := cursorIndex + 5
+	cursorText := fmt.Sprintf("var item%04d = fmt.Sprint(%d)", cursorIndex, cursorIndex)
+	prompt, err := buildEditorTabPrompt(editorTabRequest{
+		Path:            "large.go",
+		Content:         content,
+		PreviousContent: previous,
+		Line:            cursorLine,
+		Column:          len(cursorText) + 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prompt.text) > editorTabMaxPrompt {
+		t.Fatalf("prompt length = %d, max = %d", len(prompt.text), editorTabMaxPrompt)
+	}
+	for _, want := range []string{
+		"package example",
+		`import "fmt"`,
+		"OLD_TEXT:\nprior",
+		"NEW_TEXT:\nitem",
+		cursorText + "<CURSOR>",
+		"<OMITTED>",
+	} {
+		if !strings.Contains(prompt.text, want) {
+			t.Fatalf("bounded prompt missing %q", want)
+		}
+	}
+	if strings.Contains(prompt.text, "var item3000 =") {
+		t.Fatal("bounded prompt retained irrelevant middle-of-file source")
+	}
+	if count := strings.Count(prompt.text, cursorText); count != 1 {
+		t.Fatalf("cursor source appears %d times, want once", count)
 	}
 }
 
@@ -136,6 +217,34 @@ func TestEditorTabPredictionReturnsMultilineInlineEdit(t *testing.T) {
 	}
 }
 
+func TestEditorTabPredictionKeepsFollowUpEditMinimal(t *testing.T) {
+	previous := "package main\n\nfunc display() {\n    userName := \"Ada\"\n    println(userName)\n}\n"
+	content := strings.Replace(previous, "userName :=", "accountName :=", 1)
+	cursorLine := 4
+	cursorColumn := len(`    accountName := "Ada"`) + 1
+	prompt, err := buildEditorTabPrompt(editorTabRequest{
+		Path:            "main.go",
+		Content:         content,
+		PreviousContent: previous,
+		Line:            cursorLine,
+		Column:          cursorColumn,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := strings.Replace(prompt.block, "println(userName)", "println(accountName)", 1)
+	edit := editorTabPrediction(content, prompt, updated)
+	if edit == nil {
+		t.Fatal("follow-up prediction was discarded")
+	}
+	if edit.Range.StartLine != 5 || edit.Range.EndLine != 5 {
+		t.Fatalf("range = %+v, want a minimal next-line edit", edit.Range)
+	}
+	if edit.ExpectedText != "user" || edit.InsertText != "account" {
+		t.Fatalf("minimal edit = %+v", edit)
+	}
+}
+
 func TestEditorTabPredictionUsesUTF16Columns(t *testing.T) {
 	content := "value := \"😀\"\n"
 	prompt, err := buildEditorTabPrompt(editorTabRequest{
@@ -174,7 +283,11 @@ func TestEditorTabPredictionNormalizesModelArtifacts(t *testing.T) {
 	if edit := editorTabPrediction(content, prompt, "alpha"); edit != nil {
 		t.Fatalf("missing final newline became an edit: %+v", edit)
 	}
-	edit := editorTabPrediction(content, prompt, "alpha beta<CURSOR>")
+	edit := editorTabPrediction(
+		content,
+		prompt,
+		prompt.editStartMarker+"alpha beta"+prompt.cursorMarker+prompt.editEndMarker,
+	)
 	if edit == nil || edit.InsertText != " beta" || edit.ExpectedText != "" {
 		t.Fatalf("normalized edit = %+v", edit)
 	}
@@ -293,6 +406,66 @@ func TestHandleEditorTab(t *testing.T) {
 	}
 	if response.Version != 7 || response.Edit == nil || response.Edit.InsertText != "d" || response.Edit.Range.StartColumn != 4 {
 		t.Fatalf("response = %+v", response)
+	}
+}
+
+func TestHandleEditorTabPropagatesDistantRename(t *testing.T) {
+	lines := []string{"package main", "", "func main() {", "\tuserName := \"Ada\""}
+	for index := 0; index < 30; index++ {
+		lines = append(lines, fmt.Sprintf("\twork(%d)", index))
+	}
+	useLine := len(lines) + 1
+	lines = append(lines, "\tprintln(userName)", "}")
+	previous := strings.Join(lines, "\n") + "\n"
+	content := strings.Replace(previous, "userName :=", "accountName :=", 1)
+	_, _, _, _, block := editorLineWindow(content, useLine, editorTabEditRadius)
+
+	s := &Server{tab: &editorTabService{
+		complete: func(_ context.Context, prompt string) (string, error) {
+			for _, want := range []string{"OLD_TEXT:\nuser", "NEW_TEXT:\naccount", "println(userName)<CURSOR>"} {
+				if !strings.Contains(prompt, want) {
+					t.Fatalf("model prompt missing %q:\n%s", want, prompt)
+				}
+			}
+			return strings.Replace(block, "println(userName)", "println(accountName)", 1), nil
+		},
+	}}
+	s.tabEnabled.Store(true)
+	body, err := json.Marshal(editorTabRequest{
+		Path:            "main.go",
+		Content:         content,
+		PreviousContent: previous,
+		Line:            useLine,
+		Column:          len("\tprintln(userName)") + 1,
+		Version:         11,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/editor/tab", strings.NewReader(string(body)))
+	recorder := httptest.NewRecorder()
+	s.handleEditorTab(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response editorTabResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Edit == nil {
+		t.Fatal("rename follow-up did not produce an edit")
+	}
+	start, err := utf16PositionOffset(content, response.Edit.Range.StartLine, response.Edit.Range.StartColumn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	end, err := utf16PositionOffset(content, response.Edit.Range.EndLine, response.Edit.Range.EndColumn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := content[:start] + response.Edit.InsertText + content[end:]
+	if strings.Count(updated, "accountName") != 2 || strings.Contains(updated, "userName") {
+		t.Fatalf("applied completion did not propagate rename:\n%s", updated)
 	}
 }
 
