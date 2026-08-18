@@ -135,6 +135,22 @@ func TestResolvePlanResolvesOnlyDescriptorPathFields(t *testing.T) {
 	}
 }
 
+func TestWorkspacePathsRejectSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	escape := filepath.Join(root, "escape")
+	if err := os.Symlink(outside, escape); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+
+	if _, err := ResolveWorkspaceDirectory(root, "escape"); err == nil {
+		t.Fatal("symlinked project outside the workspace was accepted")
+	}
+	if _, err := ResolveConfigurationPaths(root, root, []ConfigurationPath{{Key: "program", Directory: true}}, map[string]any{"program": "escape"}); err == nil {
+		t.Fatal("symlinked configuration path outside the workspace was accepted")
+	}
+}
+
 func TestMergeSourceBreakpointsPreservesUserBreakpoint(t *testing.T) {
 	planned := []SourceBreakpoint{{Line: 18}, {Line: 30}}
 	editor := []SourceBreakpoint{{Line: 18, Condition: "ready"}, {Line: 24}}
@@ -150,11 +166,34 @@ func TestMergeSourceBreakpointsPreservesUserBreakpoint(t *testing.T) {
 
 func TestManagerRejectsSecondActiveSession(t *testing.T) {
 	manager := newManager(t.TempDir(), nil, func(string) string { return "" }, nil)
-	manager.sessions["active"] = &Session{state: StateRunning}
-	manager.active = "active"
+	manager.session = &Session{id: "active", state: StateRunning}
 
 	if _, err := manager.Start(context.Background(), StartOptions{}); !errors.Is(err, ErrActiveSession) {
 		t.Fatalf("Start error = %v, want ErrActiveSession", err)
+	}
+}
+
+func TestManagerStopClearsTheOnlySession(t *testing.T) {
+	manager := newManager(t.TempDir(), nil, func(string) string { return "" }, nil)
+	session := &Session{
+		id:           "finished",
+		state:        StateTerminated,
+		stop:         &Stop{Reason: "breakpoint"},
+		pending:      make(map[int]chan responseResult),
+		stateChanged: make(chan struct{}),
+		launchDone:   make(chan struct{}),
+	}
+	manager.session = session
+
+	if err := manager.Stop(context.Background(), "finished"); err != nil {
+		t.Fatal(err)
+	}
+	if manager.ActiveSession() != nil {
+		t.Fatal("stopped session remained active")
+	}
+	status := session.Status()
+	if status.Stop != nil || status.Error != "" {
+		t.Fatalf("normal stop status = %+v", status)
 	}
 }
 

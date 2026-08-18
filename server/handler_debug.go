@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -100,9 +100,21 @@ func (s *Server) handleDebugDiscovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targets, err := debugadapter.NewRegistry().DetectWorkspace(r.Context(), s.workspace.RootPath)
-	if err != nil && r.Context().Err() != nil {
-		http.Error(w, r.Context().Err().Error(), http.StatusRequestTimeout)
+	var currentFile string
+	if requested := strings.TrimSpace(r.URL.Query().Get("path")); requested != "" {
+		rel, ok := s.resolveExistingRegularFile(w, requested)
+		if !ok {
+			return
+		}
+		currentFile = rel
+	}
+	targets, err := s.detectDebugTargets(r.Context(), currentFile, true)
+	if err != nil {
+		code := http.StatusInternalServerError
+		if r.Context().Err() != nil {
+			code = http.StatusRequestTimeout
+		}
+		http.Error(w, err.Error(), code)
 		return
 	}
 	writeJSON(w, debugDiscoveryResponse{
@@ -183,7 +195,16 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targets, err := debugadapter.NewRegistry().DetectWorkspace(r.Context(), s.workspace.RootPath)
+	var currentFile string
+	if request.CurrentPath != "" {
+		rel, ok := s.resolveExistingRegularFile(w, request.CurrentPath)
+		if !ok {
+			return
+		}
+		currentFile = rel
+		request.CurrentPath = filepath.ToSlash(rel)
+	}
+	targets, err := s.detectDebugTargets(r.Context(), currentFile, request.TargetID == "")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -199,11 +220,6 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 		}
 		if selected == nil {
 			http.Error(w, "debug target is no longer available", http.StatusBadRequest)
-			return
-		}
-	}
-	if request.CurrentPath != "" {
-		if _, ok := s.resolveExistingRegularFile(w, request.CurrentPath); !ok {
 			return
 		}
 	}
@@ -263,16 +279,7 @@ func (s *Server) handleDebugStart(w http.ResponseWriter, r *http.Request) {
 		if err := s.validateDebugPlan(&plan, adapters); err != nil {
 			return err
 		}
-		if active := manager.ActiveSession(); active != nil {
-			state := active.Status().State
-			if state != dap.StateTerminated {
-				return dap.ErrActiveSession
-			}
-		}
-		options, err := s.debugStartOptions(plan)
-		if err != nil {
-			return err
-		}
+		options := s.debugStartOptions(plan)
 		session, err := manager.Start(r.Context(), options)
 		if err != nil {
 			return err
@@ -463,9 +470,8 @@ func (s *Server) handleDebugControl(w http.ResponseWriter, r *http.Request) {
 		case "pause":
 			err = session.Pause(r.Context(), body.ThreadID)
 		case "stop":
-			current := session.Status()
 			err = manager.Stop(r.Context(), body.SessionID)
-			current.State = dap.StateTerminated
+			current := session.Status()
 			status = &current
 		default:
 			return fmt.Errorf("unknown debug operation %q", body.Operation)
@@ -623,7 +629,26 @@ func decodeDebugJSON(w http.ResponseWriter, r *http.Request, target any) error {
 		http.Error(w, "invalid body: "+err.Error(), http.StatusBadRequest)
 		return err
 	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		http.Error(w, "invalid body: expected a single JSON value", http.StatusBadRequest)
+		return errors.New("request body contains more than one JSON value")
+	}
 	return nil
+}
+
+func (s *Server) detectDebugTargets(ctx context.Context, currentFile string, fallback bool) ([]debugadapter.Target, error) {
+	registry := debugadapter.NewRegistry()
+	if currentFile != "" {
+		source, err := s.workspace.Root.ReadFile(currentFile)
+		if err != nil {
+			return nil, err
+		}
+		targets, err := registry.DetectFile(filepath.ToSlash(currentFile), source)
+		if err != nil || len(targets) > 0 || !fallback {
+			return targets, err
+		}
+	}
+	return registry.DetectWorkspace(ctx, s.workspace.RootPath)
 }
 
 func publicDebugAdapters(root string, values []dap.AdapterInfo) []debugAdapter {
@@ -780,7 +805,7 @@ func normalizeDebugFrame(root string, frame *dap.StackFrame) {
 	frame.Source.Path = filepath.ToSlash(rel)
 }
 
-func (s *Server) debugStartOptions(plan debugLaunchPlan) (dap.StartOptions, error) {
+func (s *Server) debugStartOptions(plan debugLaunchPlan) dap.StartOptions {
 	options := dap.StartOptions{
 		Adapter:       plan.Adapter,
 		ProjectDir:    plan.ProjectDir,
@@ -790,15 +815,7 @@ func (s *Server) debugStartOptions(plan debugLaunchPlan) (dap.StartOptions, erro
 		Breakpoints:   make(map[string][]dap.SourceBreakpoint),
 	}
 	for _, breakpoint := range plan.Breakpoints {
-		rel, ok := s.workspaceRel(breakpoint.FilePath)
-		if !ok {
-			return options, fmt.Errorf("invalid breakpoint path %q", breakpoint.FilePath)
-		}
-		path := filepath.Join(s.workspace.RootPath, rel)
-		info, err := os.Stat(path)
-		if err != nil || !info.Mode().IsRegular() {
-			return options, fmt.Errorf("breakpoint path %q does not exist", breakpoint.FilePath)
-		}
+		path := filepath.Join(s.workspace.RootPath, filepath.FromSlash(breakpoint.FilePath))
 		options.Breakpoints[path] = append(options.Breakpoints[path], dap.SourceBreakpoint{
 			Line: breakpoint.Line, Column: breakpoint.Column, Condition: breakpoint.Condition,
 			HitCondition: breakpoint.HitCondition, LogMessage: breakpoint.LogMessage,
@@ -809,7 +826,7 @@ func (s *Server) debugStartOptions(plan debugLaunchPlan) (dap.StartOptions, erro
 			options.FunctionBreakpoints = append(options.FunctionBreakpoints, dap.FunctionBreakpoint{Name: name})
 		}
 	}
-	return options, nil
+	return options
 }
 
 func cloneJSONMap(value map[string]any) map[string]any {
@@ -860,11 +877,19 @@ func (s *Server) validateDebugPlan(plan *debugLaunchPlan, adapters []dap.Adapter
 	if plan.Configuration == nil {
 		plan.Configuration = map[string]any{}
 	}
-	project, err := debugWorkspaceDirectory(s.workspace.RootPath, plan.ProjectDir)
+	projectPath, err := dap.ResolveWorkspaceDirectory(s.workspace.RootPath, plan.ProjectDir)
 	if err != nil {
 		return err
 	}
-	plan.ProjectDir = project
+	project, err := filepath.Rel(s.workspace.RootPath, projectPath)
+	if err != nil {
+		return errors.New("project_dir must be inside the workspace")
+	}
+	if project == "." {
+		plan.ProjectDir = "."
+	} else {
+		plan.ProjectDir = filepath.ToSlash(project)
+	}
 	for index := range plan.Breakpoints {
 		breakpoint := &plan.Breakpoints[index]
 		if breakpoint.Line < 1 || breakpoint.Column < 0 {
@@ -880,7 +905,6 @@ func (s *Server) validateDebugPlan(plan *debugLaunchPlan, adapters []dap.Adapter
 		}
 		breakpoint.FilePath = filepath.ToSlash(rel)
 	}
-	projectPath := filepath.Join(s.workspace.RootPath, filepath.FromSlash(plan.ProjectDir))
 	if _, err := dap.ResolveConfigurationPaths(s.workspace.RootPath, projectPath, selectedAdapter.ConfigurationPaths, plan.Configuration); err != nil {
 		return err
 	}
@@ -896,27 +920,4 @@ func (s *Server) validateDebugPlan(plan *debugLaunchPlan, adapters []dap.Adapter
 		plan.FunctionBreakpoints = []string{}
 	}
 	return nil
-}
-
-func debugWorkspaceDirectory(root, value string) (string, error) {
-	value = strings.TrimSpace(value)
-	if value == "" || value == "." {
-		return ".", nil
-	}
-	if filepath.IsAbs(value) {
-		rel, err := filepath.Rel(root, value)
-		if err != nil {
-			return "", errors.New("project_dir must be inside the workspace")
-		}
-		value = rel
-	}
-	cleaned := filepath.Clean(filepath.FromSlash(value))
-	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
-		return "", errors.New("project_dir must be inside the workspace")
-	}
-	info, err := os.Stat(filepath.Join(root, cleaned))
-	if err != nil || !info.IsDir() {
-		return "", fmt.Errorf("project_dir %q is not a workspace directory", value)
-	}
-	return filepath.ToSlash(cleaned), nil
 }

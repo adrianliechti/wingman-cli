@@ -103,6 +103,18 @@ func (m *Manager) commandDir(value string) (string, error) {
 	if err != nil || !info.IsDir() {
 		return "", fmt.Errorf("terminal working directory %q is not a directory", value)
 	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve terminal workspace symlinks: %w", err)
+	}
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve terminal working directory symlinks: %w", err)
+	}
+	resolvedRel, err := filepath.Rel(resolvedRoot, resolvedDir)
+	if err != nil || resolvedRel == ".." || strings.HasPrefix(resolvedRel, ".."+string(filepath.Separator)) {
+		return "", errors.New("terminal working directory must stay inside the workspace after resolving symlinks")
+	}
 	return dir, nil
 }
 

@@ -142,8 +142,11 @@ export interface DebugInspection {
 	error?: string;
 }
 
-export async function discoverDebug(signal?: AbortSignal) {
-	return requestJSON<DebugDiscovery>("/api/debug/discovery", { signal });
+export async function discoverDebug(path?: string, signal?: AbortSignal) {
+	const query = path ? `?path=${encodeURIComponent(path)}` : "";
+	return requestJSON<DebugDiscovery>(`/api/debug/discovery${query}`, {
+		signal,
+	});
 }
 
 export async function discoverDebugTargets(

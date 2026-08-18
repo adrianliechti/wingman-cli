@@ -46,6 +46,33 @@ func TestDebugTargetsReturnsGoCodeLensCandidates(t *testing.T) {
 	}
 }
 
+func TestDebugTargetsRejectsTrailingJSON(t *testing.T) {
+	root := t.TempDir()
+	writeDebugTestFile(t, root, "main.go", "package main\n\nfunc main() {}\n")
+	app := newDebugTestServer(t, root)
+	request := httptest.NewRequest(http.MethodPost, "/api/debug/targets", bytes.NewBufferString(`{"path":"main.go"} {"path":"main.go"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestDetectDebugTargetsPrefersCurrentFile(t *testing.T) {
+	root := t.TempDir()
+	writeDebugTestFile(t, root, "main.go", "package main\n\nfunc main() {}\n")
+	writeDebugTestFile(t, root, "cmd/other/main.go", "package main\n\nfunc main() {}\n")
+	app := newDebugTestServer(t, root)
+	targets, err := app.detectDebugTargets(context.Background(), "main.go", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].Path != "main.go" {
+		t.Fatalf("targets = %#v", targets)
+	}
+}
+
 func TestDebugBreakpointsPersistWithoutActiveSession(t *testing.T) {
 	root := t.TempDir()
 	writeDebugTestFile(t, root, "main.go", "package main\n\nfunc main() {}\n")

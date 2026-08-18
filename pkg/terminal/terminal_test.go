@@ -3,6 +3,7 @@
 package terminal
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -54,6 +55,21 @@ func TestCreateCommandRejectsOutsideWorkingDirectory(t *testing.T) {
 	_, err := manager.CreateCommand(CommandSpec{Path: "/bin/sh", Dir: filepath.Dir(manager.dir)}, 80, 24)
 	if err == nil || !strings.Contains(err.Error(), "inside the workspace") {
 		t.Fatalf("outside working directory error = %v", err)
+	}
+}
+
+func TestCreateCommandRejectsSymlinkedOutsideWorkingDirectory(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	escape := filepath.Join(root, "escape")
+	if err := os.Symlink(outside, escape); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+	manager := NewManager(root)
+	defer manager.Close()
+	_, err := manager.CreateCommand(CommandSpec{Path: "/bin/sh", Dir: escape}, 80, 24)
+	if err == nil || !strings.Contains(err.Error(), "resolving symlinks") {
+		t.Fatalf("symlinked working directory error = %v", err)
 	}
 }
 

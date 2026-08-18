@@ -19,6 +19,8 @@ import (
 
 const maxOutputBytes = 64 * 1024
 
+var errSessionClosed = errors.New("debug session closed")
+
 type responseResult struct {
 	message godap.ResponseMessage
 	err     error
@@ -169,7 +171,9 @@ func (session *Session) Status() Status {
 		stop.HitBreakpointIDs = slices.Clone(session.stop.HitBreakpointIDs)
 		status.Stop = &stop
 	}
-	if session.terminalErr != nil && !errors.Is(session.terminalErr, io.EOF) {
+	if session.terminalErr != nil &&
+		!errors.Is(session.terminalErr, io.EOF) &&
+		!errors.Is(session.terminalErr, errSessionClosed) {
 		status.Error = session.terminalErr.Error()
 	}
 	return status
@@ -408,6 +412,7 @@ func (session *Session) handleEvent(message godap.EventMessage) {
 		session.mu.Lock()
 		session.exitCode = &exitCode
 		session.state = StateTerminated
+		session.stop = nil
 		session.notifyStateLocked()
 		session.mu.Unlock()
 		session.closeAfterTermination()
@@ -487,6 +492,9 @@ func terminalEnvironment(values map[string]any) (map[string]*string, error) {
 	}
 	result := make(map[string]*string, len(values))
 	for key, value := range values {
+		if strings.TrimSpace(key) == "" || strings.Contains(key, "=") {
+			return nil, fmt.Errorf("runInTerminal environment variable name %q is invalid", key)
+		}
 		if value == nil {
 			result[key] = nil
 			continue
@@ -561,6 +569,7 @@ func (session *Session) finish(err error) {
 		if session.state != StateTerminated {
 			session.state = StateTerminated
 		}
+		session.stop = nil
 		if err != nil {
 			session.terminalErr = err
 		}
@@ -935,7 +944,7 @@ func (session *Session) Close() {
 }
 
 func (session *Session) closeResources() {
-	session.closeResourcesWithError(errors.New("debug session closed"))
+	session.closeResourcesWithError(errSessionClosed)
 }
 
 func (session *Session) closeResourcesWithError(closeErr error) {

@@ -1,6 +1,5 @@
 import {
 	ArrowDownToDot,
-	Bug,
 	ChevronDown,
 	ChevronRight,
 	Loader2,
@@ -305,18 +304,10 @@ export function DebugTab({ onLaunch, onOpenFile, onStopped }: Props) {
 			)}
 
 			{!session && !inspection?.output ? (
-				<div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
-					<div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border-subtle bg-bg-surface text-fg-dim">
-						<Bug size={18} />
-					</div>
-					<div className="space-y-1">
-						<div className="text-[12px] font-medium text-fg">
-							No active session
-						</div>
-						<div className="max-w-56 text-[11px] leading-relaxed text-fg-dim">
-							Use Run or Debug above an entry point. Frames, variables, and
-							output will appear here.
-						</div>
+				<div className="flex flex-1 flex-col items-center justify-center gap-1 px-6 text-center">
+					<div className="text-[12px] text-fg-muted">No active session</div>
+					<div className="max-w-52 text-[10px] leading-relaxed text-fg-dim">
+						Use Run or Debug above an entry point.
 					</div>
 				</div>
 			) : (

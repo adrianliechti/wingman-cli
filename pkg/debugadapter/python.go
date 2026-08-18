@@ -64,7 +64,7 @@ func (pythonAdapter) Plan(request Request) (Plan, error) {
 	}
 	plan := Plan{
 		Title:      actionLabel(request.Action) + " " + request.Target.Name,
-		Summary:    fmt.Sprintf("%s the Python script %s.", actionLabel(request.Action), request.Target.Path),
+		Summary:    fmt.Sprintf("%s Python script %s.", actionLabel(request.Action), request.Target.Path),
 		ProjectDir: request.ProjectDir, Request: "launch", Console: "internalConsole", Configuration: configuration,
 	}
 	if request.Action == "run" {

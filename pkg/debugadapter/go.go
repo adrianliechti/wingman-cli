@@ -167,8 +167,10 @@ func (goAdapter) Plan(request Request) (Plan, error) {
 		return Plan{}, err
 	}
 	configuration := map[string]any{"mode": "debug", "program": program}
+	targetLabel := request.Target.Kind
 	switch request.Target.Kind {
 	case "main":
+		targetLabel = "entry point"
 	case "test", "fuzz", "example":
 		configuration["mode"] = "test"
 		configuration["args"] = []string{"-test.run", "^" + regexp.QuoteMeta(request.Target.Name) + "$"}
@@ -181,7 +183,7 @@ func (goAdapter) Plan(request Request) (Plan, error) {
 
 	plan := Plan{
 		Title:      actionLabel(request.Action) + " " + request.Target.Name,
-		Summary:    fmt.Sprintf("%s the Go %s %s.", actionLabel(request.Action), request.Target.Kind, request.Target.Name),
+		Summary:    fmt.Sprintf("%s Go %s %s.", actionLabel(request.Action), targetLabel, request.Target.Name),
 		ProjectDir: request.ProjectDir, Request: "launch", Console: "internalConsole", Configuration: configuration,
 	}
 	if request.Action == "run" {

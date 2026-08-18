@@ -39,8 +39,7 @@ type Manager struct {
 	detectedAt time.Time
 
 	mu          sync.Mutex
-	sessions    map[string]*Session
-	active      string
+	session     *Session
 	breakpoints map[string][]SourceBreakpoint
 	closed      bool
 }
@@ -66,7 +65,6 @@ func newManager(root string, adapters []AdapterDescriptor, lookup func(string) s
 		adapters:    cloneAdapters(adapters),
 		lookup:      lookup,
 		start:       starter,
-		sessions:    make(map[string]*Session),
 		breakpoints: make(map[string][]SourceBreakpoint),
 	}
 }
@@ -156,7 +154,7 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 		m.mu.Unlock()
 		return nil, errors.New("DAP manager is closed")
 	}
-	if active := m.sessions[m.active]; active != nil && active.Status().State != StateTerminated {
+	if m.session != nil && m.session.Status().State != StateTerminated {
 		m.mu.Unlock()
 		return nil, ErrActiveSession
 	}
@@ -199,9 +197,12 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 		session.Close()
 		return nil, errors.New("DAP manager is closed")
 	}
-	m.sessions[id] = session
-	m.active = id
+	previous := m.session
+	m.session = session
 	m.mu.Unlock()
+	if previous != nil {
+		previous.Close()
+	}
 	return session, nil
 }
 
@@ -347,6 +348,9 @@ func ResolveConfigurationPaths(workspace, projectDir string, fields []Configurat
 		if err != nil {
 			return nil, fmt.Errorf("configuration %s path %q does not exist", field.Key, value)
 		}
+		if err := ensureResolvedPathInside(workspace, path); err != nil {
+			return nil, fmt.Errorf("configuration %s path %q: %w", field.Key, value, err)
+		}
 		if field.Directory && !info.IsDir() {
 			return nil, fmt.Errorf("configuration %s path %q must be a directory", field.Key, value)
 		}
@@ -357,7 +361,7 @@ func ResolveConfigurationPaths(workspace, projectDir string, fields []Configurat
 
 func selectProjectDir(workspace string, projects []string, requested string, configuration map[string]any) (string, error) {
 	if strings.TrimSpace(requested) != "" {
-		path, err := workspaceDirectory(workspace, requested)
+		path, err := ResolveWorkspaceDirectory(workspace, requested)
 		if err != nil {
 			return "", err
 		}
@@ -399,7 +403,7 @@ func selectProjectDir(workspace string, projects []string, requested string, con
 	return "", fmt.Errorf("multiple adapter project roots found; set project_dir to one of: %s", strings.Join(relative, ", "))
 }
 
-func workspaceDirectory(workspace, value string) (string, error) {
+func ResolveWorkspaceDirectory(workspace, value string) (string, error) {
 	path := value
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(workspace, path)
@@ -419,7 +423,26 @@ func workspaceDirectory(workspace, value string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("project_dir %q is not a directory", value)
 	}
+	if err := ensureResolvedPathInside(workspace, abs); err != nil {
+		return "", fmt.Errorf("project_dir %q: %w", value, err)
+	}
 	return filepath.Clean(abs), nil
+}
+
+func ensureResolvedPathInside(workspace, path string) error {
+	resolvedWorkspace, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		return fmt.Errorf("resolve workspace symlinks: %w", err)
+	}
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return fmt.Errorf("resolve symlinks: %w", err)
+	}
+	rel, err := filepath.Rel(resolvedWorkspace, resolvedPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return errors.New("must stay inside the workspace after resolving symlinks")
+	}
+	return nil
 }
 
 func nearestProject(projects []string, target string) string {
@@ -442,17 +465,13 @@ func (m *Manager) Session(id string) (*Session, error) {
 	if m.closed {
 		return nil, errors.New("DAP manager is closed")
 	}
-	if id == "" {
-		id = m.active
-	}
-	if id == "" {
+	if m.session == nil {
 		return nil, errors.New("no debug session is active; start one first")
 	}
-	session := m.sessions[id]
-	if session == nil {
+	if id != "" && id != m.session.ID() {
 		return nil, fmt.Errorf("debug session %q not found", id)
 	}
-	return session, nil
+	return m.session, nil
 }
 
 // ActiveSession returns the most recently started session, if any. The
@@ -461,21 +480,10 @@ func (m *Manager) Session(id string) (*Session, error) {
 func (m *Manager) ActiveSession() *Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.closed || m.active == "" {
+	if m.closed {
 		return nil
 	}
-	return m.sessions[m.active]
-}
-
-func (m *Manager) Sessions() []Status {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	result := make([]Status, 0, len(m.sessions))
-	for _, session := range m.sessions {
-		result = append(result, session.Status())
-	}
-	slices.SortFunc(result, func(a, b Status) int { return a.StartedAt.Compare(b.StartedAt) })
-	return result
+	return m.session
 }
 
 // Breakpoints returns the editor-owned breakpoint set. These breakpoints are
@@ -493,7 +501,7 @@ func (m *Manager) SetBreakpoints(ctx context.Context, path string, values []Sour
 	if len(values) == 0 {
 		delete(m.breakpoints, path)
 	}
-	session := m.sessions[m.active]
+	session := m.session
 	m.mu.Unlock()
 	if session == nil || session.Status().State == StateTerminated {
 		return nil, nil
@@ -511,17 +519,8 @@ func (m *Manager) Stop(ctx context.Context, id string) error {
 		return err
 	}
 	m.mu.Lock()
-	delete(m.sessions, status.SessionID)
-	if m.active == status.SessionID {
-		m.active = ""
-		var newest time.Time
-		for candidateID, candidate := range m.sessions {
-			started := candidate.Status().StartedAt
-			if started.After(newest) {
-				newest = started
-				m.active = candidateID
-			}
-		}
+	if m.session == session {
+		m.session = nil
 	}
 	m.mu.Unlock()
 	return nil
@@ -534,14 +533,10 @@ func (m *Manager) Close() {
 		return
 	}
 	m.closed = true
-	sessions := make([]*Session, 0, len(m.sessions))
-	for _, session := range m.sessions {
-		sessions = append(sessions, session)
-	}
-	clear(m.sessions)
-	m.active = ""
+	session := m.session
+	m.session = nil
 	m.mu.Unlock()
-	for _, session := range sessions {
+	if session != nil {
 		session.Close()
 	}
 }

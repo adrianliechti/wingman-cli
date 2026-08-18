@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -44,7 +45,7 @@ func main() {
 			"program": filepath.Join(root, "main.go"),
 		},
 		Breakpoints: map[string][]SourceBreakpoint{
-			filepath.Join(root, "main.go"): {{Line: 10}},
+			filepath.Join(root, "main.go"): {{Line: 6}},
 		},
 	})
 	if err != nil {
@@ -64,6 +65,32 @@ func main() {
 	if len(frames) == 0 {
 		t.Fatal("Delve returned no stack frames")
 	}
+	scopes, err := session.Scopes(ctx, frames[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variables := loadLiveVariables(t, ctx, session, scopes)
+	if !slices.ContainsFunc(variables, func(variable Variable) bool {
+		return variable.Name == "value" && variable.Value == "41"
+	}) {
+		t.Fatalf("Delve did not return value=41: scopes=%+v variables=%+v", scopes, variables)
+	}
+}
+
+func loadLiveVariables(t *testing.T, ctx context.Context, session *Session, scopes []Scope) []Variable {
+	t.Helper()
+	var variables []Variable
+	for _, scope := range scopes {
+		if scope.VariablesReference <= 0 {
+			continue
+		}
+		values, err := session.Variables(ctx, scope.VariablesReference, 0, 200)
+		if err != nil {
+			t.Fatalf("load %q variables: %v", scope.Name, err)
+		}
+		variables = append(variables, values...)
+	}
+	return variables
 }
 
 // TestLiveDelveWorkspacePackage protects deterministic plans that use a
@@ -93,7 +120,7 @@ func TestLiveDelveWorkspacePackage(t *testing.T) {
 			"args":    []string{"--help"},
 		},
 		Breakpoints: map[string][]SourceBreakpoint{
-			filepath.Join(root, "cmd", "wingman", "main.go"): {{Line: 18}},
+			filepath.Join(root, "cmd", "wingman", "main.go"): {{Line: 23}},
 		},
 	})
 	if err != nil {
@@ -105,6 +132,23 @@ func TestLiveDelveWorkspacePackage(t *testing.T) {
 	}
 	if status.State != StateStopped {
 		t.Fatalf("status = %+v\noutput:\n%s", status, session.Output())
+	}
+	frames, _, err := session.StackTrace(ctx, 0, 0, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) == 0 {
+		t.Fatal("Delve returned no stack frames")
+	}
+	scopes, err := session.Scopes(ctx, frames[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	variables := loadLiveVariables(t, ctx, session, scopes)
+	if !slices.ContainsFunc(variables, func(variable Variable) bool {
+		return variable.Name == "args" && strings.Contains(variable.Value, "len: 1")
+	}) {
+		t.Fatalf("Delve did not return args: scopes=%+v variables=%+v", scopes, variables)
 	}
 }
 

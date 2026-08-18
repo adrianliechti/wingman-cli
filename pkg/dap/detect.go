@@ -63,7 +63,7 @@ func skipProjectDir(name string) bool {
 		return true
 	}
 	switch name {
-	case "node_modules", "vendor", "testdata", "target", "build", "dist", "__pycache__", "venv":
+	case "node_modules", "vendor", "testdata", "target", "build", "dist", "__pycache__", "venv", "env":
 		return true
 	default:
 		return false

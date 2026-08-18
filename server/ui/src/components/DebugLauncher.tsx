@@ -37,7 +37,13 @@ interface Props {
 	onStarted?: (session: DebugSession) => void;
 }
 
-type Phase = "loading" | "choose" | "planning" | "review" | "starting";
+type Phase =
+	| "loading"
+	| "choose"
+	| "planning"
+	| "review"
+	| "starting"
+	| "stopping";
 
 export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 	const requestRef = useRef<AbortController | null>(null);
@@ -98,7 +104,7 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 		setConfigurationText("{}");
 		setError("");
 
-		void discoverDebug(controller.signal)
+		void discoverDebug(seed?.currentPath, controller.signal)
 			.then((value) => {
 				if (controller.signal.aborted) return;
 				setDiscovery(value);
@@ -182,14 +188,17 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 	const stopCurrent = useCallback(async () => {
 		const current = discovery?.session;
 		if (!current) return;
+		setPhase("stopping");
 		setError("");
 		try {
 			await controlDebug("stop", current.session_id);
 			setDiscovery((value) =>
 				value ? { ...value, session: undefined } : value,
 			);
+			setPhase("choose");
 		} catch (cause) {
 			setError(errorMessage(cause));
+			setPhase("choose");
 		}
 	}, [discovery?.session]);
 
@@ -213,41 +222,21 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 	return (
 		<Dialog
 			open={open}
-			title={plan?.title || "Run and debug"}
+			title={
+				activeSession ? "Debug session active" : plan?.title || "Run and debug"
+			}
 			description={
-				phase === "review" && plan
-					? plan.summary
-					: "Choose a discovered target. Its language adapter prepares a deterministic launch configuration for review."
+				activeSession
+					? `${activeSession.language} · ${activeSession.adapter} · ${activeSession.state}`
+					: phase === "review" && plan
+						? plan.summary
+						: "Choose a target. Its language adapter prepares the launch configuration."
 			}
 			onClose={onClose}
 			initialFocus="first"
 		>
 			<div className="w-full space-y-3">
 				{phase === "loading" && <Busy label="Discovering debug adapters…" />}
-				{activeSession && phase !== "loading" && (
-					<div className="rounded-md border border-border bg-bg-surface p-3">
-						<div className="flex items-center gap-2 text-[12px] text-fg">
-							<Bug size={13} className="text-warning" />
-							<span className="font-medium">Debug session active</span>
-							<span className="ml-auto text-fg-dim">{activeSession.state}</span>
-						</div>
-						<div className="mt-1 text-[11px] text-fg-muted">
-							{activeSession.adapter} ·{" "}
-							{activeSession.mode || activeSession.request}
-						</div>
-						<div className="mt-3 flex justify-end">
-							<button
-								type="button"
-								className={dialogButtonClass}
-								onClick={() => void stopCurrent()}
-							>
-								<span className="flex items-center gap-1.5">
-									<Square size={11} /> Stop current session
-								</span>
-							</button>
-						</div>
-					</div>
-				)}
 
 				{!activeSession && phase === "choose" && (
 					<>
@@ -317,21 +306,17 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 					plan &&
 					(phase === "review" || phase === "starting") && (
 						<>
-							<div className="grid grid-cols-4 gap-2 rounded-md border border-border bg-bg-surface p-2.5 text-[11px]">
-								<PlanFact label="Adapter" value={plan.adapter} />
-								<PlanFact label="Project" value={plan.project_dir} />
-								<PlanFact label="Request" value={plan.request} />
-								<PlanFact
-									label="Console"
-									value={
-										plan.console === "integratedTerminal"
-											? "Terminal"
-											: "Debug output"
-									}
-								/>
+							<div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-fg-dim">
+								<span className="text-fg-muted">
+									{plannedAdapter?.language ?? "Debug"} · {plan.adapter}
+								</span>
+								<span aria-hidden="true">·</span>
+								<span className="min-w-0 truncate" title={plan.project_dir}>
+									{plan.project_dir}
+								</span>
 							</div>
 							<label className="block space-y-1 text-[11px] text-fg-muted">
-								<span>Program input and output</span>
+								<span>Output</span>
 								<select
 									value={plan.console}
 									onChange={(event) =>
@@ -350,16 +335,23 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 									)}
 								</select>
 							</label>
-							<label className="block space-y-1 text-[11px] text-fg-muted">
-								<span>Adapter configuration</span>
-								<textarea
-									value={configurationText}
-									onChange={(event) => setConfigurationText(event.target.value)}
-									rows={7}
-									spellCheck={false}
-									className={`${fieldClass} resize-y py-2 font-mono`}
-								/>
-							</label>
+							<details className="rounded-md border border-border-subtle bg-bg-surface/30 text-[11px] text-fg-muted">
+								<summary className="cursor-pointer px-2.5 py-2 marker:text-fg-dim hover:text-fg">
+									Advanced configuration
+								</summary>
+								<div className="border-t border-border-subtle p-2">
+									<textarea
+										aria-label="Adapter configuration"
+										value={configurationText}
+										onChange={(event) =>
+											setConfigurationText(event.target.value)
+										}
+										rows={6}
+										spellCheck={false}
+										className={`${fieldClass} resize-y py-2 font-mono`}
+									/>
+								</div>
+							</details>
 							{(plan.breakpoints.length > 0 ||
 								plan.function_breakpoints.length > 0) && (
 								<div className="rounded-md border border-border-subtle px-2.5 py-2 text-[11px] text-fg-muted">
@@ -374,9 +366,7 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 								</div>
 							)}
 							<div className="text-[10px] leading-relaxed text-fg-dim">
-								This configuration comes from the{" "}
-								{plannedAdapter?.language ?? "language"} adapter. Review paths
-								and arguments before starting; application code will execute.
+								Review before starting; this runs workspace code.
 							</div>
 						</>
 					)}
@@ -391,6 +381,21 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 					<button type="button" className={dialogButtonClass} onClick={onClose}>
 						Cancel
 					</button>
+					{activeSession && phase !== "loading" && (
+						<button
+							type="button"
+							className={`${dialogButtonClass} border-danger/40 text-danger hover:bg-danger/10`}
+							disabled={phase === "stopping"}
+							onClick={() => void stopCurrent()}
+						>
+							{phase === "stopping" ? (
+								<Loader2 size={12} className="animate-spin" />
+							) : (
+								<Square size={10} />
+							)}
+							{phase === "stopping" ? "Stopping…" : "Stop current session"}
+						</button>
+					)}
 					{!activeSession &&
 						phase === "choose" &&
 						(discovery?.adapters.length ?? 0) > 0 && (
@@ -443,17 +448,6 @@ function Busy({ label }: { label: string }) {
 	);
 }
 
-function PlanFact({ label, value }: { label: string; value: string }) {
-	return (
-		<div className="min-w-0">
-			<div className="text-fg-dim">{label}</div>
-			<div className="truncate text-fg" title={value}>
-				{value}
-			</div>
-		</div>
-	);
-}
-
 function isObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -463,4 +457,4 @@ function errorMessage(value: unknown) {
 }
 
 const fieldClass =
-	"w-full rounded-md border border-border bg-bg-input px-2.5 text-[12px] text-fg outline-none focus:border-border-strong";
+	"min-h-8 w-full rounded-md border border-border bg-bg-input px-2.5 text-[12px] text-fg outline-none focus:border-border-strong";
