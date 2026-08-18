@@ -1,4 +1,5 @@
 import {
+	Bug,
 	ChevronDown,
 	Compass,
 	Code2,
@@ -42,6 +43,10 @@ import {
 } from "./components/CommandPalette";
 import type { ModeOption } from "./components/ModePicker";
 import { DiffsPanel } from "./components/DiffsPanel";
+import {
+	DebugLauncher,
+	type DebugLauncherSeed,
+} from "./components/DebugLauncher";
 import { DiffTab } from "./components/DiffTab";
 import { CompareTab } from "./components/CompareTab";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -322,6 +327,9 @@ export default function App() {
 		useState<FilePathRequest | null>(null);
 	const [openFolderRequest, setOpenFolderRequest] = useState(false);
 	const [workspaceSwitching, setWorkspaceSwitching] = useState(false);
+	const [debugLauncher, setDebugLauncher] = useState<DebugLauncherSeed | null>(
+		null,
+	);
 
 	const runWorkspaceEdit = useCallback(
 		async (envelope: WorkspaceEditEnvelope, label: string) => {
@@ -816,6 +824,9 @@ export default function App() {
 	const openInsightsTab = useCallback(() => {
 		showCenterTab({ id: "graph", type: "graph", label: "Insights" }, "keep");
 	}, [showCenterTab]);
+	const openDebugLauncher = useCallback((seed: DebugLauncherSeed = {}) => {
+		setDebugLauncher({ ...seed });
+	}, []);
 
 	const closeTabNow = useCallback(
 		(id: string) => {
@@ -1588,6 +1599,15 @@ export default function App() {
 			run: openInsightsTab,
 		});
 		actions.push({
+			id: "run-debug",
+			label: "Run and debug",
+			icon: <Bug size={12} className="text-fg-dim shrink-0" />,
+			run: () =>
+				openDebugLauncher({
+					currentPath: activeTab.type === "file" ? activeTab.path : undefined,
+				}),
+		});
+		actions.push({
 			id: "show-files",
 			label: "Show files",
 			icon: <FileText size={12} className="text-fg-dim shrink-0" />,
@@ -1614,6 +1634,8 @@ export default function App() {
 		showRightPanel,
 		showWorkspaceSearch,
 		openInsightsTab,
+		openDebugLauncher,
+		activeTab,
 		createTerminal,
 		modes,
 		mode,
@@ -1727,6 +1749,12 @@ export default function App() {
 						onSearch={showWorkspaceSearch}
 						onCloseSearch={() => setWorkspaceSearching(false)}
 						onOpenInsights={openInsightsTab}
+						onOpenDebug={() =>
+							openDebugLauncher({
+								currentPath:
+									activeTab.type === "file" ? activeTab.path : undefined,
+							})
+						}
 						onFileSelect={(path, disposition) =>
 							openFile(path, undefined, undefined, undefined, disposition)
 						}
@@ -2207,6 +2235,13 @@ export default function App() {
 										}
 										onOpenFile={openFile}
 										onApplyWorkspaceEdit={requestWorkspaceEdit}
+										onLaunchDebug={(target, action) =>
+											openDebugLauncher({
+												target,
+												action,
+												currentPath: activeTab.path,
+											})
+										}
 										view={
 											fileViews[activeTab.id] ?? defaultFileView(activeTab.path)
 										}
@@ -2258,6 +2293,22 @@ export default function App() {
 					onOpenFile={openFile}
 				/>
 			)}
+
+			<DebugLauncher
+				open={debugLauncher !== null}
+				seed={debugLauncher ?? undefined}
+				onClose={() => setDebugLauncher(null)}
+				onStarted={(session) =>
+					toast({
+						title:
+							session.state === "stopped"
+								? "Debugger stopped at target"
+								: "Debug session started",
+						description: `${session.language} · ${session.adapter}`,
+						tone: "success",
+					})
+				}
+			/>
 
 			<Dialog
 				open={filePathRequest !== null}

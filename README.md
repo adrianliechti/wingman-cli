@@ -12,6 +12,7 @@ A powerful AI-powered coding assistant that runs directly in your terminal. Wing
 - **File Operations** — Read, write, edit, and search files in your codebase
 - **Shell Integration** — Execute shell commands with user approval
 - **LSP Integration** — Code intelligence via auto-detected language servers (definitions, references, diagnostics, call hierarchy, and more)
+- **AI-Assisted Debugging** — Debug Adapter Protocol sessions with adapter discovery, reviewed launch plans, breakpoints, stepping, and inline runtime values
 - **MCP Support** — Extend functionality with Model Context Protocol servers
 - **Multi-Model Support** — Works with any [OpenResponses API](https://www.openresponses.org) compatible endpoint with auto-selection
 - **Changes** — Git-backed working tree changes with a visual diff viewer
@@ -248,6 +249,35 @@ Add an `mcp.json` file to integrate with MCP servers:
 Remote (HTTP/SSE) servers are also supported via the `url` and optional `headers` fields.
 
 Configs are loaded from two locations and merged: `~/.wingman/mcp.json` (global, shared across all projects) and `./mcp.json` (project root). When a server name appears in both, the project config wins.
+
+### Debugging (experimental)
+
+The web editor includes a user-facing Debug launcher. Open it with the bug
+button beside **Insights** in the workspace panel, or use the inline **Run |
+Debug** actions above supported entry points. Wingman discovers installed
+adapters and runnable candidates, then asks the configured plan model to create
+an adapter-specific launch or attach configuration. The proposed target,
+arguments, paths, and breakpoints are shown for review before any application
+code executes; there is no `launch.json` builder or language launch policy in
+the DAP client.
+
+The initial experiment supports Go through [Delve](https://github.com/go-delve/delve/tree/master/Documentation/api/dap):
+
+```bash
+go install github.com/go-delve/delve/cmd/dlv@latest
+```
+
+Keep `dlv` on `PATH` (standard Go bin locations are also checked) and open a
+workspace containing `go.mod` or `go.work`. Go `main`, test, benchmark, fuzz,
+and example functions receive CodeLens actions. During a debug session, click
+Monaco's glyph margin to toggle source breakpoints; the editor shows the active
+stack frame, Continue/Pause/Step/Stop controls, and hover evaluation while
+stopped.
+
+The protocol session and transports are language-neutral. Adapter startup is a
+data descriptor, and editor target discovery uses independent language
+detectors, so another language can be added without changing the DAP client or
+AI planner.
 
 ## 🛠️ Built-in Tools
 

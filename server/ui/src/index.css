@@ -416,6 +416,26 @@ html[data-window-chrome="macos-overlay"] .window-titlebar {
 }
 
 /* Semantic Monaco token colors use app theme variables in both color modes. */
+.monaco-editor .wingman-debug-breakpoint {
+	background: radial-gradient(
+			circle at center,
+			var(--color-danger) 0 4px,
+			transparent 4.5px
+		)
+		center / 100% 100% no-repeat;
+}
+
+.monaco-editor .wingman-debug-current-frame {
+	background: var(--color-warning);
+	clip-path: polygon(20% 15%, 85% 50%, 20% 85%);
+}
+
+.monaco-editor .wingman-debug-current-line {
+	background: color-mix(in srgb, var(--color-warning) 10%, transparent);
+	box-shadow: inset 2px 0 0
+		color-mix(in srgb, var(--color-warning) 70%, transparent);
+}
+
 .md-token-comment {
 	color: var(--color-fg-dim);
 	font-style: italic;

@@ -1,6 +1,21 @@
 import Editor, { type OnMount } from "@monaco-editor/react";
-import { AlertTriangle, FileDigit, Loader2 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+	AlertTriangle,
+	Bug,
+	FileDigit,
+	Loader2,
+	Pause,
+	Play,
+	Square,
+} from "lucide-react";
+import {
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
+import type { DebugAction, DebugState, DebugTarget } from "../api/debug";
 import { useColorScheme } from "../hooks/useColorScheme";
 import type { OpenDocument, SaveResult } from "../hooks/useOpenDocuments";
 import {
@@ -8,6 +23,10 @@ import {
 	type MonacoLSPBridge,
 	revealEditorPosition,
 } from "../monacoLsp";
+import {
+	createMonacoDebugBridge,
+	type MonacoDebugBridge,
+} from "../monacoDebug";
 import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
 import type { ServerMessage } from "../types/protocol";
 import type { WorkspaceEditEnvelope } from "../workspaceEdit";
@@ -36,6 +55,7 @@ interface Props {
 		envelope: WorkspaceEditEnvelope,
 		label: string,
 	) => Promise<boolean>;
+	onLaunchDebug?: (target: DebugTarget, action: DebugAction) => void;
 	view?: "code" | "preview";
 }
 
@@ -50,14 +70,17 @@ export function FileTab({
 	onReload,
 	onOpenFile,
 	onApplyWorkspaceEdit,
+	onLaunchDebug,
 	view = "code",
 }: Props) {
 	const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
 	const contextMenuListenerRef = useRef<{ dispose(): void } | null>(null);
 	const lspBridgeRef = useRef<MonacoLSPBridge | null>(null);
+	const debugBridgeRef = useRef<MonacoDebugBridge | null>(null);
 	const diagnosticsTimerRef = useRef<number | null>(null);
 	const onOpenFileRef = useRef(onOpenFile);
 	const onApplyWorkspaceEditRef = useRef(onApplyWorkspaceEdit);
+	const onLaunchDebugRef = useRef(onLaunchDebug);
 	const onSaveRef = useRef(onSave);
 	const scheme = useColorScheme();
 	const [contextMenu, setContextMenu] = useState<{
@@ -66,8 +89,11 @@ export function FileTab({
 		altKey: boolean;
 	} | null>(null);
 	const [, setLanguageFeaturesRevision] = useState(0);
+	const [debugState, setDebugState] = useState<DebugState | null>(null);
+	const [debugControlError, setDebugControlError] = useState("");
 	onOpenFileRef.current = onOpenFile;
 	onApplyWorkspaceEditRef.current = onApplyWorkspaceEdit;
+	onLaunchDebugRef.current = onLaunchDebug;
 	onSaveRef.current = onSave;
 
 	const dirty = document.draft !== document.savedContent;
@@ -77,8 +103,25 @@ export function FileTab({
 		contextMenuListenerRef.current = null;
 		lspBridgeRef.current?.dispose();
 		lspBridgeRef.current = null;
+		debugBridgeRef.current?.dispose();
+		debugBridgeRef.current = null;
 		editorRef.current = null;
 	}, []);
+	const runDebugControl = useCallback(
+		async (
+			operation: "continue" | "next" | "stepIn" | "stepOut" | "pause" | "stop",
+		) => {
+			setDebugControlError("");
+			try {
+				await debugBridgeRef.current?.control(operation);
+			} catch (cause) {
+				setDebugControlError(
+					cause instanceof Error ? cause.message : String(cause),
+				);
+			}
+		},
+		[],
+	);
 
 	useEffect(() => {
 		const editor = editorRef.current;
@@ -189,6 +232,84 @@ export function FileTab({
 					{document.saveError}
 				</div>
 			)}
+			{debugState?.session && debugState.session.state !== "terminated" && (
+				<div className="flex h-8 shrink-0 items-center gap-1 border-b border-border-subtle bg-bg-surface/60 px-2 text-[11px] text-fg-muted">
+					<Bug size={12} className="mr-1 shrink-0 text-warning" />
+					<span className="max-w-40 truncate" title={debugState.frame?.name}>
+						{debugState.session.state === "stopped"
+							? debugState.frame?.name ||
+								debugState.session.stop?.reason ||
+								"Stopped"
+							: `${debugState.session.adapter} · running`}
+					</span>
+					{debugState.frame?.source?.path && (
+						<button
+							type="button"
+							className="min-w-0 truncate rounded px-1.5 py-0.5 text-fg-dim hover:bg-bg-hover hover:text-fg"
+							title={`${debugState.frame.source.path}:${debugState.frame.line}`}
+							onClick={() =>
+								onOpenFileRef.current?.(
+									debugState.frame!.source!.path!,
+									debugState.frame!.line,
+									debugState.frame!.column,
+								)
+							}
+						>
+							{debugState.frame.source.path}:{debugState.frame.line}
+						</button>
+					)}
+					<div className="flex-1" />
+					{debugControlError && (
+						<span
+							className="max-w-52 truncate text-danger"
+							title={debugControlError}
+						>
+							{debugControlError}
+						</span>
+					)}
+					{debugState.session.state === "stopped" ? (
+						<>
+							<DebugControlButton
+								label="Continue"
+								onClick={() => void runDebugControl("continue")}
+							>
+								<Play size={11} />
+							</DebugControlButton>
+							<DebugControlButton
+								label="Step over"
+								onClick={() => void runDebugControl("next")}
+							>
+								Over
+							</DebugControlButton>
+							<DebugControlButton
+								label="Step into"
+								onClick={() => void runDebugControl("stepIn")}
+							>
+								Into
+							</DebugControlButton>
+							<DebugControlButton
+								label="Step out"
+								onClick={() => void runDebugControl("stepOut")}
+							>
+								Out
+							</DebugControlButton>
+						</>
+					) : (
+						<DebugControlButton
+							label="Pause"
+							onClick={() => void runDebugControl("pause")}
+						>
+							<Pause size={11} />
+						</DebugControlButton>
+					)}
+					<DebugControlButton
+						label="Stop debugging"
+						onClick={() => void runDebugControl("stop")}
+					>
+						<Square size={10} />
+					</DebugControlButton>
+				</div>
+			)}
 			<div className="min-h-0 flex-1">
 				{previewKind === "html" && view === "preview" ? (
 					<iframe
@@ -276,6 +397,20 @@ export function FileTab({
 								},
 							);
 							if (!document.external) {
+								debugBridgeRef.current = createMonacoDebugBridge({
+									monaco,
+									editor,
+									path: file.path,
+									onLaunchTarget: (target, action) => {
+										void (async () => {
+											const saved = await onSaveRef.current();
+											if (saved.ok) {
+												onLaunchDebugRef.current?.(target, action);
+											}
+										})();
+									},
+									onStateChanged: setDebugState,
+								});
 								lspBridgeRef.current = createMonacoLSPBridge({
 									monaco,
 									editor,
@@ -299,7 +434,9 @@ export function FileTab({
 						onChange={(value) => onChange(value ?? "")}
 						options={{
 							contextmenu: false,
+							codeLens: true,
 							find: { addExtraSpaceOnTop: false },
+							glyphMargin: true,
 							minimap: { enabled: false },
 							fontSize: 12,
 							lineNumbers: "on",
@@ -327,6 +464,28 @@ export function FileTab({
 				/>
 			)}
 		</div>
+	);
+}
+
+function DebugControlButton({
+	label,
+	onClick,
+	children,
+}: {
+	label: string;
+	onClick: () => void;
+	children: ReactNode;
+}) {
+	return (
+		<button
+			type="button"
+			onClick={onClick}
+			title={label}
+			aria-label={label}
+			className="flex h-6 min-w-6 items-center justify-center rounded px-1.5 text-[10px] text-fg-dim hover:bg-bg-hover hover:text-fg"
+		>
+			{children}
+		</button>
 	);
 }
 
