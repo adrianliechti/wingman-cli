@@ -72,12 +72,11 @@ type debugScopeInspection struct {
 }
 
 type debugInspectionResponse struct {
-	Session *dap.Status            `json:"session,omitempty"`
-	Output  string                 `json:"output"`
-	Threads []dap.Thread           `json:"threads"`
-	Frames  []dap.StackFrame       `json:"frames"`
-	Scopes  []debugScopeInspection `json:"scopes"`
-	Error   string                 `json:"error,omitempty"`
+	Session *dap.Status      `json:"session,omitempty"`
+	Output  string           `json:"output"`
+	Threads []dap.Thread     `json:"threads"`
+	Frames  []dap.StackFrame `json:"frames"`
+	Error   string           `json:"error,omitempty"`
 }
 
 func (s *Server) handleDebugDiscovery(w http.ResponseWriter, r *http.Request) {
@@ -352,7 +351,6 @@ func (s *Server) handleDebugInspection(w http.ResponseWriter, r *http.Request) {
 		Output:  "",
 		Threads: []dap.Thread{},
 		Frames:  []dap.StackFrame{},
-		Scopes:  []debugScopeInspection{},
 	}
 	err := s.workspace.WithDAPManager(func(manager *dap.Manager) error {
 		session := manager.ActiveSession()
@@ -387,9 +385,6 @@ func (s *Server) handleDebugInspection(w http.ResponseWriter, r *http.Request) {
 			normalizeDebugFrame(s.workspace.RootPath, &frames[index])
 		}
 		response.Frames = frames
-		if len(frames) > 0 {
-			response.Scopes = inspectDebugScopes(requestCtx, session, frames[0].ID)
-		}
 		return nil
 	})
 	if err != nil {

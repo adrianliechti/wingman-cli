@@ -58,6 +58,8 @@ export function DebugTab({ onLaunch, onOpenFile, onStopped }: Props) {
 	const [inspection, setInspection] = useState<DebugInspection | null>(null);
 	const [selectedFrameID, setSelectedFrameID] = useState<number>();
 	const [scopes, setScopes] = useState<DebugScopeInspection[]>([]);
+	const [scopeLoading, setScopeLoading] = useState(false);
+	const [scopeError, setScopeError] = useState("");
 	const [error, setError] = useState("");
 	const [busy, setBusy] = useState(false);
 	selectedFrameRef.current = selectedFrameID;
@@ -101,13 +103,16 @@ export function DebugTab({ onLaunch, onOpenFile, onStopped }: Props) {
 			stopVersionRef.current = "";
 			setSelectedFrameID(undefined);
 			setScopes([]);
+			setScopeLoading(false);
+			setScopeError("");
 			return true;
 		}
 		const stopVersion = `${next.session.session_id}:${next.session.state_version}`;
 		if (stopVersion !== stopVersionRef.current) {
 			stopVersionRef.current = stopVersion;
 			setSelectedFrameID(next.frames[0].id);
-			setScopes(next.scopes);
+			setScopes([]);
+			setScopeError("");
 			const frame = next.frames[0];
 			if (frame.source?.path) {
 				onOpenFileRef.current(frame.source.path, frame.line, frame.column);
@@ -119,7 +124,6 @@ export function DebugTab({ onLaunch, onOpenFile, onStopped }: Props) {
 			next.frames.find((frame) => frame.id === selectedFrameRef.current) ??
 			next.frames[0];
 		setSelectedFrameID(selected.id);
-		if (selected.id === next.frames[0].id) setScopes(next.scopes);
 		return true;
 	}, []);
 
@@ -171,53 +175,84 @@ export function DebugTab({ onLaunch, onOpenFile, onStopped }: Props) {
 		if (output) output.scrollTop = output.scrollHeight;
 	}, [inspection?.output]);
 
-	const selectFrame = useCallback(
-		async (frame: DebugStackFrame) => {
-			const current = inspectionRef.current;
-			const session = current?.session;
-			if (!session || session.state !== "stopped") return;
-			setSelectedFrameID(frame.id);
-			if (frame.source?.path) {
-				onOpenFileRef.current(frame.source.path, frame.line, frame.column);
-			}
-			if (frame.id === current.frames[0]?.id) {
-				setScopes(current.scopes);
-				return;
-			}
+	const scopeSessionID = inspection?.session?.session_id;
+	const scopeSessionState = inspection?.session?.state;
+	const scopeStateVersion = inspection?.session?.state_version;
+	useEffect(() => {
+		if (
+			!scopeSessionID ||
+			scopeSessionState !== "stopped" ||
+			scopeStateVersion === undefined ||
+			!selectedFrameID
+		) {
 			scopeRequestRef.current?.abort();
-			const controller = new AbortController();
-			scopeRequestRef.current = controller;
-			const stateVersion = session.state_version;
-			const endBusy = beginBusy();
-			try {
-				const result = await track(
-					controller,
-					getDebugScopes(frame.id, session.session_id, controller.signal),
-				);
+			scopeRequestRef.current = null;
+			setScopeLoading(false);
+			return;
+		}
+
+		const controller = new AbortController();
+		scopeRequestRef.current?.abort();
+		scopeRequestRef.current = controller;
+		setScopes([]);
+		setScopeLoading(true);
+		setScopeError("");
+		void track(
+			controller,
+			getDebugScopes(selectedFrameID, scopeSessionID, controller.signal),
+		)
+			.then((result) => {
+				const current = inspectionRef.current?.session;
 				if (
 					!controller.signal.aborted &&
-					selectedFrameRef.current === frame.id &&
-					inspectionRef.current?.session?.session_id === session.session_id &&
-					inspectionRef.current.session.state_version === stateVersion &&
-					inspectionRef.current.session.state === "stopped"
+					current?.session_id === scopeSessionID &&
+					current.state_version === scopeStateVersion &&
+					current.state === "stopped" &&
+					selectedFrameRef.current === selectedFrameID
 				)
 					setScopes(result.scopes);
-			} catch (cause) {
-				if (!controller.signal.aborted) setError(errorMessage(cause));
-			} finally {
-				if (scopeRequestRef.current === controller)
+			})
+			.catch((cause) => {
+				if (!controller.signal.aborted) setScopeError(errorMessage(cause));
+			})
+			.finally(() => {
+				if (scopeRequestRef.current === controller) {
 					scopeRequestRef.current = null;
-				endBusy();
-			}
-		},
-		[beginBusy, track],
-	);
+					setScopeLoading(false);
+				}
+			});
+
+		return () => controller.abort();
+	}, [
+		scopeSessionID,
+		scopeSessionState,
+		scopeStateVersion,
+		selectedFrameID,
+		track,
+	]);
+
+	const selectFrame = useCallback((frame: DebugStackFrame) => {
+		const current = inspectionRef.current;
+		const session = current?.session;
+		if (!session || session.state !== "stopped") return;
+		if (frame.id === selectedFrameRef.current) return;
+		setScopes([]);
+		setScopeError("");
+		setSelectedFrameID(frame.id);
+		if (frame.source?.path) {
+			onOpenFileRef.current(frame.source.path, frame.line, frame.column);
+		}
+	}, []);
 
 	const control = useCallback(
 		async (operation: DebugOperation) => {
 			const session = inspectionRef.current?.session;
 			if (!session || session.state === "terminated") return;
 			scopeRequestRef.current?.abort();
+			scopeRequestRef.current = null;
+			setScopeLoading(false);
+			setScopeError("");
+			setScopes([]);
 			const endBusy = beginBusy();
 			setError("");
 			try {
@@ -234,7 +269,6 @@ export function DebugTab({ onLaunch, onOpenFile, onStopped }: Props) {
 							session: result.session,
 							threads: [],
 							frames: [],
-							scopes: [],
 						};
 						inspectionRef.current = terminated;
 						setInspection(terminated);
@@ -255,6 +289,7 @@ export function DebugTab({ onLaunch, onOpenFile, onStopped }: Props) {
 
 	const session = inspection?.session;
 	const stopped = session?.state === "stopped";
+	const soleScope = scopes.length === 1 ? scopes[0] : undefined;
 	return (
 		<div className="flex h-full min-h-0 flex-col bg-bg">
 			{session && (
@@ -346,20 +381,32 @@ export function DebugTab({ onLaunch, onOpenFile, onStopped }: Props) {
 					</section>
 
 					<section className="min-h-0 overflow-auto border-b border-border-subtle">
-						<SectionTitle>Variables</SectionTitle>
-						{scopes.length ? (
+						<SectionTitle>{soleScope?.scope.name || "Variables"}</SectionTitle>
+						{scopeLoading ? (
+							<div className="flex items-center gap-2 px-3 py-4 text-[11px] text-fg-dim">
+								<Loader2 size={11} className="animate-spin" /> Loading
+								variables…
+							</div>
+						) : scopeError ? (
+							<div className="px-3 py-3 text-[11px] leading-relaxed text-danger">
+								{scopeError}
+							</div>
+						) : scopes.length ? (
 							<div className="pb-2">
 								{scopes.map((scope, index) => (
 									<ScopeView
 										key={`${session?.session_id}:${session?.state_version}:${scope.scope.name}:${index}`}
 										inspection={scope}
 										sessionID={session?.session_id}
+										showHeader={!soleScope}
 									/>
 								))}
 							</div>
 						) : (
 							<EmptyDetail>
-								{stopped ? "No variables" : "Available while stopped"}
+								{stopped
+									? "No variables in this frame"
+									: "Available while stopped"}
 							</EmptyDetail>
 						)}
 					</section>
@@ -482,15 +529,23 @@ function Control({
 function ScopeView({
 	inspection,
 	sessionID,
+	showHeader,
 }: {
 	inspection: DebugScopeInspection;
 	sessionID?: string;
+	showHeader: boolean;
 }) {
 	return (
-		<div className="border-b border-border-subtle last:border-b-0">
-			<div className="sticky top-7 z-10 bg-bg-surface/90 px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-fg-dim backdrop-blur">
-				{inspection.scope.name || "Scope"}
-			</div>
+		<div
+			className={
+				showHeader ? "border-b border-border-subtle last:border-b-0" : ""
+			}
+		>
+			{showHeader && (
+				<div className="sticky top-7 z-10 bg-bg-surface/90 px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-fg-dim backdrop-blur">
+					{inspection.scope.name || "Scope"}
+				</div>
+			)}
 			{inspection.error ? (
 				<div className="px-3 py-2 text-[11px] text-danger">
 					{inspection.error}

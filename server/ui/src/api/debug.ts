@@ -138,7 +138,6 @@ export interface DebugInspection {
 	output: string;
 	threads: DebugThread[];
 	frames: DebugStackFrame[];
-	scopes: DebugScopeInspection[];
 	error?: string;
 }
 

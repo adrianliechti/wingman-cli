@@ -8,7 +8,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -114,8 +116,104 @@ func TestDebugInspectionWithoutActiveSession(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &inspection); err != nil {
 		t.Fatal(err)
 	}
-	if inspection.Session != nil || inspection.Output != "" || inspection.Threads == nil || inspection.Frames == nil || inspection.Scopes == nil {
+	if inspection.Session != nil || inspection.Output != "" || inspection.Threads == nil || inspection.Frames == nil {
 		t.Fatalf("inspection = %#v", inspection)
+	}
+}
+
+func TestLiveDebugInspectionReturnsGoVariables(t *testing.T) {
+	if os.Getenv("WINGMAN_LIVE_DAP") == "" {
+		t.Skip("set WINGMAN_LIVE_DAP=1 to run a real Delve session")
+	}
+	root := t.TempDir()
+	writeDebugTestFile(t, root, "go.mod", "module example.com/debuginspection\n\ngo 1.24\n")
+	writeDebugTestFile(t, root, "main.go", `package main
+
+import "fmt"
+
+func work(value int) int {
+	return value + 1
+}
+
+func main() {
+	fmt.Println(work(41))
+}
+`)
+	app := newDebugTestServer(t, root)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	var session *dap.Session
+	if err := app.workspace.WithDAPManager(func(manager *dap.Manager) error {
+		adapters, err := manager.Adapters(ctx)
+		if err != nil {
+			return err
+		}
+		if len(adapters) == 0 {
+			t.Skip("Delve is not installed")
+		}
+		session, err = manager.Start(ctx, dap.StartOptions{
+			Adapter: "delve",
+			Configuration: map[string]any{
+				"mode":    "debug",
+				"program": filepath.Join(root, "main.go"),
+			},
+			Breakpoints: map[string][]dap.SourceBreakpoint{
+				filepath.Join(root, "main.go"): {{Line: 6}},
+			},
+		})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	status := session.Status()
+	if status.State != dap.StateStopped {
+		status, _ = session.WaitForStop(ctx, session.StateEpoch())
+	}
+	if status.State != dap.StateStopped {
+		t.Fatalf("status = %+v\noutput:\n%s", status, session.Output())
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/debug/inspection", nil)
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var inspection debugInspectionResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &inspection); err != nil {
+		t.Fatal(err)
+	}
+	if inspection.Session == nil || len(inspection.Frames) == 0 {
+		t.Fatalf("inspection did not return stack frames: %#v", inspection)
+	}
+	scopesBody, err := json.Marshal(map[string]any{
+		"session_id": inspection.Session.SessionID,
+		"frame_id":   inspection.Frames[0].ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request = httptest.NewRequest(http.MethodPost, "/api/debug/scopes", bytes.NewReader(scopesBody))
+	request.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("scopes status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var result struct {
+		Scopes []debugScopeInspection `json:"scopes"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	var variables []dap.Variable
+	for _, scope := range result.Scopes {
+		variables = append(variables, scope.Variables...)
+	}
+	if !slices.ContainsFunc(variables, func(variable dap.Variable) bool {
+		return variable.Name == "value" && variable.Value == "41"
+	}) {
+		t.Fatalf("scopes did not return value=41: %#v", result.Scopes)
 	}
 }
 
