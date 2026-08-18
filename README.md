@@ -104,6 +104,123 @@ are merged with detected agents and replace a detected entry only when they use
 the same normalized name. The built-in **Wingman** entry continues to use the
 configured API backend.
 
+### Remote web workspaces
+
+The remote architecture uses the existing web server as the workspace runtime:
+
+```text
+local browser  -- forwarded HTTP + WebSocket -->  wingman server  -->  remote workspace
+                                                      |
+                                           agent, shell, Git, LSP, files
+```
+
+Keep the server beside the workspace and forward its port. This makes the web
+UI local while every workspace-sensitive operation, including terminal shells,
+runs remotely. It does not use ACP and needs no separate gateway or daemon.
+
+#### Desktop launcher (SSH)
+
+In the desktop app, choose **Add SSH...** and save the SSH destination
+(including `user@host` or an alias from `~/.ssh/config`), workspace path, and
+optional display name. Adding or editing a profile never connects. Select the
+saved workspace to open the separate connection dialog, enter a one-time
+password/key passphrase if needed, and connect. The launcher then performs the
+complete lifecycle:
+
+1. Connect with the system `ssh` client and existing key/agent configuration.
+2. Copy an installed `wingman`, or download the matching Linux/macOS release,
+   to the managed remote path `$HOME/.wingman/bin/wingman`.
+3. Start the remote web server on private random ports and forward both the UI
+   and isolated HTML-preview origins.
+4. Wait for `/healthz`, then proxy HTTP and WebSocket traffic into the app's
+   protected local origin.
+5. Stop the SSH session and remote server when the workspace/app closes.
+
+Public-key and SSH-agent authentication work with the connection password left
+empty. A supplied password/key passphrase is passed to OpenSSH through a
+private, short-lived askpass file, removed after authentication, and is never
+saved in the profile or placed in process arguments. Connect once in a terminal
+first when the host key is new so its fingerprint can be verified. The remote
+needs POSIX `sh` and `tar`; if Wingman is not installed, it also needs `curl` or
+`wget` and outbound access to GitHub Releases. A model gateway configured on
+local loopback is reverse-forwarded automatically, and the configured gateway
+token is delivered to the remote script over SSH stdin rather than placed in
+the local process arguments.
+
+During rollout, an older installed/published CLI is started in compatibility
+mode automatically. The web UI, agent, terminal, files, Git, and LSP still run
+remotely; only the separately forwarded HTML-preview origin requires a CLI with
+the new remote-server flags.
+
+#### Manual SSH
+
+If Wingman is already installed on the host, one command starts the server and
+the tunnel together:
+
+```bash
+ssh \
+  -L 9000:127.0.0.1:9000 \
+  -L 9001:127.0.0.1:9001 \
+  dev@example.com \
+  'exec wingman server --host 127.0.0.1 --port 9000 --preview-port 9001 --no-browser --cd /srv/project'
+```
+
+Then open <http://localhost:9000>. To avoid a system-wide installation, copy a
+single release binary for the server's operating system and architecture into
+the same launcher-managed location:
+
+```bash
+ssh dev@example.com 'mkdir -p ~/.wingman/bin'
+scp ./wingman dev@example.com:.wingman/bin/wingman
+ssh \
+  -L 9000:127.0.0.1:9000 \
+  -L 9001:127.0.0.1:9001 \
+  dev@example.com \
+  'chmod +x ~/.wingman/bin/wingman && exec ~/.wingman/bin/wingman server --host 127.0.0.1 --port 9000 --preview-port 9001 --no-browser --cd /srv/project'
+```
+
+Closing SSH stops that server. Run it under the remote host's normal process
+manager when sessions should remain available after the tunnel disconnects.
+
+#### Docker
+
+The repository image can host the same runtime. Bind Wingman on all container
+interfaces, but publish it only on the local host's loopback interface:
+
+```bash
+docker build -t wingman-agent .
+docker run --rm -it \
+  -p 127.0.0.1:9000:9000 \
+  -p 127.0.0.1:9001:9001 \
+  -v "$PWD:/workdir" \
+  -e OPENAI_API_KEY \
+  wingman-agent server --host 0.0.0.0 --port 9000 --preview-port 9001 --no-browser
+```
+
+The mounted workspace must be writable by the image's `wingman` user (UID
+1000). Forward any other model or Wingman backend environment variables the
+remote process needs in the same way.
+
+#### Kubernetes and development containers
+
+Run the binary in the workspace pod/container on a fixed port, then use the
+platform's standard forwarding mechanism. For an existing pod, for example:
+
+```bash
+kubectl cp ./wingman my-namespace/my-pod:/tmp/wingman
+kubectl exec -n my-namespace my-pod -- chmod +x /tmp/wingman
+kubectl exec -n my-namespace -it my-pod -- \
+  /tmp/wingman server --host 0.0.0.0 --port 9000 --preview-port 9001 --no-browser --cd /workspace
+
+# In another terminal:
+kubectl port-forward -n my-namespace pod/my-pod 9000:9000 9001:9001
+```
+
+`GET /healthz` is available for readiness checks. Wingman has no public-server
+authentication boundary yet, so do not expose the port on a public interface or
+Kubernetes Service; use SSH, a loopback-only container mapping, `kubectl
+port-forward`, or an authenticated reverse proxy.
+
 3. **Start chatting!** Ask Wingman to help with coding tasks:
 
 ```

@@ -30,8 +30,8 @@ type filePreviewServer struct {
 	close    sync.Once
 }
 
-func newFilePreviewServer(root *os.Root) (*filePreviewServer, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+func newFilePreviewServer(root *os.Root, host string, port int) (*filePreviewServer, error) {
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return nil, err
 	}

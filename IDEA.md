@@ -149,9 +149,19 @@ Benchmarks: [VS Code Extension Marketplace](https://code.visualstudio.com/docs/c
 
 ### P2: Remote and cloud development
 
-Add:
+The initial runtime boundary is intentionally small: one `wingman server`
+process lives beside the workspace and owns the agent, shell, files, Git, LSP,
+MCP, and session state. The web UI connects to its existing HTTP/WebSocket API
+through SSH, a loopback-only Docker port mapping, or `kubectl port-forward`.
+This preserves remote terminal behavior without an ACP filesystem/shell bridge
+or a second gateway protocol, and requires only a single copied executable.
+The desktop launcher stores SSH workspace profiles and owns bootstrap/download,
+port forwarding, readiness, same-origin HTTP/WebSocket proxying, and teardown.
 
-- SSH, development-container, and WSL-style remote workspaces.
+Build on that foundation with:
+
+- Equivalent launcher-managed lifecycle adapters for development containers,
+  Kubernetes, and WSL, plus explicit version pinning and upgrade controls.
 - Hosted agents that continue running while the client is offline.
 - Remote desktop access to agent environments.
 - Shareable logs, screenshots, videos, and other run artifacts.

@@ -5,16 +5,55 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 )
 
 const maxWorkspaces = 3
+const maxRemoteWorkspaces = 8
+
+const remoteKindSSH = "ssh"
+
+type RemoteWorkspace struct {
+	Kind string `json:"kind"`
+	Name string `json:"name,omitempty"`
+	Host string `json:"host"`
+	Path string `json:"path"`
+}
+
+func (r RemoteWorkspace) normalized() RemoteWorkspace {
+	r.Kind = strings.ToLower(strings.TrimSpace(r.Kind))
+	if r.Kind == "" {
+		r.Kind = remoteKindSSH
+	}
+	r.Name = strings.TrimSpace(r.Name)
+	r.Host = strings.TrimSpace(r.Host)
+	r.Path = strings.TrimSpace(r.Path)
+	return r
+}
+
+func (r RemoteWorkspace) key() string {
+	r = r.normalized()
+	return r.Kind + "://" + r.Host + "/" + strings.TrimPrefix(r.Path, "/")
+}
+
+func (r RemoteWorkspace) displayName() string {
+	if name := strings.TrimSpace(r.Name); name != "" {
+		return name
+	}
+	if name := path.Base(strings.TrimRight(r.Path, "/")); name != "." && name != "/" && name != "" {
+		return name
+	}
+	return r.Host
+}
 
 type Settings struct {
-	WingmanURL   string   `json:"url"`
-	WingmanToken string   `json:"token"`
-	LargeContext bool     `json:"large_context,omitempty"`
-	Workspaces   []string `json:"workspaces,omitempty"`
+	WingmanURL   string            `json:"url"`
+	WingmanToken string            `json:"token"`
+	LargeContext bool              `json:"large_context,omitempty"`
+	Workspaces   []string          `json:"workspaces,omitempty"`
+	Remotes      []RemoteWorkspace `json:"remotes,omitempty"`
 }
 
 func (s *Settings) AddWorkspace(path string) {
@@ -48,6 +87,40 @@ func (s *Settings) RemoveWorkspace(path string) {
 	}
 
 	s.Workspaces = filtered
+}
+
+func (s *Settings) AddRemote(remote RemoteWorkspace) {
+	remote = remote.normalized()
+	if remote.Host == "" || remote.Path == "" {
+		return
+	}
+
+	key := remote.key()
+	filtered := make([]RemoteWorkspace, 0, len(s.Remotes)+1)
+	filtered = append(filtered, remote)
+	for _, existing := range s.Remotes {
+		if existing.key() == key {
+			continue
+		}
+		filtered = append(filtered, existing.normalized())
+	}
+
+	if len(filtered) > maxRemoteWorkspaces {
+		filtered = filtered[:maxRemoteWorkspaces]
+	}
+
+	s.Remotes = filtered
+}
+
+func (s *Settings) RemoveRemote(key string) {
+	filtered := make([]RemoteWorkspace, 0, len(s.Remotes))
+	for _, remote := range s.Remotes {
+		if remote.key() == key {
+			continue
+		}
+		filtered = append(filtered, remote)
+	}
+	s.Remotes = filtered
 }
 
 func settingsPath() (string, error) {

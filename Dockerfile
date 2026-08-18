@@ -70,6 +70,9 @@ WORKDIR /workdir
 ENV HOME=/home/wingman
 ENV SHELL=/bin/bash
 
+# Used by `wingman server --host 0.0.0.0`; publishing remains opt-in.
+EXPOSE 9000 9001
+
 # Default: launch the agent TUI. Run interactively, e.g.
 #   docker run -it --rm -v "$PWD:/workdir" wingman-agent
 ENTRYPOINT ["wingman"]

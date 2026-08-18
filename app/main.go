@@ -24,12 +24,21 @@ var publicFS embed.FS
 
 type App struct {
 	mu     sync.Mutex
-	server *server.Server
+	server workspaceServer
 
 	launcher http.Handler
+
+	startRemote func(RemoteWorkspace, Settings, remoteCredentials) (workspaceServer, error)
 }
 
 func main() {
+	// OpenSSH invokes this executable as its graphical password helper when an
+	// SSH workspace was opened with a one-time credential. Handle that tiny
+	// helper mode before initializing the desktop shell.
+	if runSSHAskpass() {
+		return
+	}
+
 	// Repair PATH before anything detects agents via exec.LookPath: GUI
 	// launches (Finder/Dock) inherit a minimal PATH that hides Homebrew /
 	// ~/.local/bin CLIs like codex and copilot.
@@ -79,8 +88,8 @@ func main() {
 // ServeHTTP hands everything to the workspace server once one is open;
 // until then the launcher (start page + its API) answers. Both share the
 // window's origin — go-shell opens any other origin in the default browser,
-// and staying behind its session cookie keeps the workspace server
-// unreachable for other local processes.
+// and staying behind its session cookie keeps local and proxied remote
+// workspace servers unreachable for other local processes.
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// App-level commands stay available after a workspace is mounted so the
 	// native menu can select and switch folders without restarting the shell.
@@ -112,6 +121,10 @@ func (a *App) newLauncher() http.Handler {
 	mux.HandleFunc("GET /app/workspaces", a.handleWorkspaces)
 	mux.HandleFunc("POST /app/workspaces/remove", a.handleRemoveWorkspace)
 	mux.HandleFunc("POST /app/workspaces/open", a.handleOpenWorkspace)
+	mux.HandleFunc("GET /app/remotes", a.handleRemotes)
+	mux.HandleFunc("POST /app/remotes/save", a.handleSaveRemote)
+	mux.HandleFunc("POST /app/remotes/remove", a.handleRemoveRemote)
+	mux.HandleFunc("POST /app/remotes/open", a.handleOpenRemote)
 	mux.HandleFunc("POST /app/folder", a.handleSelectFolder)
 
 	return mux
@@ -138,6 +151,7 @@ func (a *App) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 
 	if current, err := loadSettings(); err == nil {
 		s.Workspaces = current.Workspaces
+		s.Remotes = current.Remotes
 	}
 
 	if err := saveSettings(s); err != nil {
@@ -148,6 +162,87 @@ func (a *App) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	s.Apply()
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *App) handleRemotes(w http.ResponseWriter, _ *http.Request) {
+	s, err := loadSettings()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	remotes := s.Remotes
+	if len(remotes) > maxRemoteWorkspaces {
+		remotes = remotes[:maxRemoteWorkspaces]
+	}
+	if remotes == nil {
+		remotes = []RemoteWorkspace{}
+	}
+	writeJSON(w, remotes)
+}
+
+func (a *App) handleRemoveRemote(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Key    string          `json:"key"`
+		Remote RemoteWorkspace `json:"remote"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil && !errors.Is(err, io.EOF) {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if request.Key == "" {
+		remote := request.Remote.normalized()
+		if remote.Host == "" || remote.Path == "" {
+			http.Error(w, "remote key is required", http.StatusBadRequest)
+			return
+		}
+		request.Key = remote.key()
+	}
+
+	s, err := loadSettings()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.RemoveRemote(request.Key)
+	if err := saveSettings(s); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, s.Remotes)
+}
+
+func (a *App) handleSaveRemote(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Remote   RemoteWorkspace `json:"remote"`
+		Previous RemoteWorkspace `json:"previous,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	request.Remote = request.Remote.normalized()
+	if err := validateRemote(request.Remote); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	request.Remote.Name = request.Remote.displayName()
+
+	s, err := loadSettings()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	previous := request.Previous.normalized()
+	if previous.Host != "" && previous.Path != "" {
+		s.RemoveRemote(previous.key())
+	}
+	s.AddRemote(request.Remote)
+	if err := saveSettings(s); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, s.Remotes)
 }
 
 func (a *App) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
@@ -236,6 +331,67 @@ func (a *App) handleOpenWorkspace(w http.ResponseWriter, r *http.Request) {
 		_ = saveSettings(s)
 	}
 
+	w.WriteHeader(http.StatusNoContent)
+
+	if current != nil {
+		go current.Close()
+	}
+}
+
+func (a *App) handleOpenRemote(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Remote   RemoteWorkspace `json:"remote"`
+		Password string          `json:"password,omitempty"`
+		Replace  bool            `json:"replace"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil && !errors.Is(err, io.EOF) {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	request.Remote = request.Remote.normalized()
+	if err := validateRemote(request.Remote); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	request.Remote.Name = request.Remote.displayName()
+
+	a.mu.Lock()
+	current := a.server
+	if current != nil && !request.Replace {
+		a.mu.Unlock()
+		http.Error(w, "workspace already open", http.StatusConflict)
+		return
+	}
+	a.mu.Unlock()
+
+	settings, err := loadSettings()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	starter := a.startRemote
+	if starter == nil {
+		starter = startRemoteWorkspace
+	}
+	srv, err := starter(request.Remote, settings, remoteCredentials{Password: request.Password})
+	request.Password = ""
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	a.mu.Lock()
+	if a.server != current {
+		a.mu.Unlock()
+		srv.Close()
+		http.Error(w, "workspace changed while connecting", http.StatusConflict)
+		return
+	}
+	a.server = srv
+	a.mu.Unlock()
+
+	settings.AddRemote(request.Remote)
+	_ = saveSettings(settings)
 	w.WriteHeader(http.StatusNoContent)
 
 	if current != nil {

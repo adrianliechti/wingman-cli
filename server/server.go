@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -45,11 +46,14 @@ var StaticFS, _ = fs.Sub(staticFiles, "static")
 const DefaultPort = 9000
 
 type ServerOptions struct {
-	NoBrowser bool
+	NoBrowser   bool
+	Host        string
+	PreviewPort int
 }
 
 type Server struct {
 	noBrowser bool
+	host      string
 
 	workspace *code.Workspace
 	config    *agent.Config
@@ -117,9 +121,14 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 		return nil, err
 	}
 	serverCtx, cancel := context.WithCancel(ctx)
+	host := strings.TrimSpace(opts.Host)
+	if host == "" {
+		host = "localhost"
+	}
 
 	s := &Server{
 		noBrowser:      opts.NoBrowser,
+		host:           host,
 		workspace:      ws,
 		config:         cfg,
 		ctx:            serverCtx,
@@ -134,7 +143,11 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 
 	s.terminals = terminal.NewManager(ws.RootPath)
 	s.terminals.SetExitHandler(s.onTerminalExit)
-	s.preview, err = newFilePreviewServer(ws.Root)
+	previewHost := s.host
+	if previewHost == "localhost" {
+		previewHost = "127.0.0.1"
+	}
+	s.preview, err = newFilePreviewServer(ws.Root, previewHost, opts.PreviewPort)
 	if err != nil {
 		cancel()
 		ws.Close()
@@ -271,7 +284,7 @@ func (s *Server) Run(ctx context.Context, port int) error {
 	}
 
 	srv := &http.Server{
-		Addr:    fmt.Sprintf("localhost:%d", resolvedPort),
+		Addr:    net.JoinHostPort(s.host, fmt.Sprint(resolvedPort)),
 		Handler: s,
 	}
 
@@ -283,7 +296,7 @@ func (s *Server) Run(ctx context.Context, port int) error {
 		srv.Close()
 	}()
 
-	url := fmt.Sprintf("http://localhost:%d", resolvedPort)
+	url := "http://" + net.JoinHostPort(browserHost(s.host), fmt.Sprint(resolvedPort))
 	fmt.Fprintf(os.Stderr, "Wingman running at %s\n", url)
 
 	if !s.noBrowser {
@@ -297,6 +310,12 @@ func (s *Server) Run(ctx context.Context, port int) error {
 }
 
 func (s *Server) registerRoutes(r chi.Router) {
+	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("ok\n"))
+	})
+
 	r.Route("/api", func(r chi.Router) {
 		r.Route("/files", func(r chi.Router) {
 			r.Get("/", s.handleFiles)
@@ -899,6 +918,14 @@ func resolvePort(port int) (int, error) {
 		return port, nil
 	}
 	return system.FreePort(DefaultPort)
+}
+
+func browserHost(host string) string {
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip != nil && ip.IsUnspecified() {
+		return "localhost"
+	}
+	return host
 }
 
 func (s *Server) constructBackend(name string) (code.Agent, error) {

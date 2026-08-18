@@ -192,14 +192,19 @@
 
       /* ============ Populated state ============ */
 
-      .layout.has-workspaces .dropzone {
+      .layout.has-workspaces .empty-actions {
         display: none;
+      }
+
+      .empty-actions {
+        display: flex;
+        gap: 0.75rem;
       }
 
       .workspaces {
         width: 280px;
         display: grid;
-        grid-template-columns: minmax(0, 1fr) 26px;
+        grid-template-columns: minmax(0, 1fr) 26px 26px;
         column-gap: 0.5rem;
         row-gap: 0.35rem;
         align-items: center;
@@ -245,6 +250,10 @@
         cursor: pointer;
         transition:
           background 0.1s ease;
+      }
+
+      .workspace-item.has-edit .workspace-open {
+        padding-right: 58px;
       }
 
       .workspace-open:hover:not(:disabled) {
@@ -305,9 +314,8 @@
         opacity: 0.8;
       }
 
-      .workspace-remove {
+      .workspace-action {
         position: absolute;
-        right: 5px;
         top: 50%;
         transform: translateY(-50%);
         width: 20px;
@@ -328,24 +336,31 @@
           background 0.1s ease;
       }
 
-      .workspace-item:hover .workspace-remove,
-      .workspace-item:focus-within .workspace-remove {
+      .workspace-action.remove {
+        right: 5px;
+      }
+
+      .workspace-action.edit {
+        right: 29px;
+      }
+
+      .workspace-item:hover .workspace-action,
+      .workspace-item:focus-within .workspace-action {
         opacity: 1;
       }
 
-      .workspace-remove:hover:not(:disabled) {
+      .workspace-action:hover:not(:disabled) {
         background: var(--bg-hover);
         color: var(--fg);
         border-color: transparent;
       }
 
-      .workspace-remove svg {
+      .workspace-action svg {
         width: 11px;
         height: 11px;
       }
 
       .workspace-add {
-        grid-column: 2;
         grid-row: 1;
         display: flex;
         align-items: center;
@@ -381,6 +396,14 @@
       .workspace-add svg {
         width: 14px;
         height: 14px;
+      }
+
+      .workspace-add.local {
+        grid-column: 2;
+      }
+
+      .workspace-add.remote {
+        grid-column: 3;
       }
 
       /* ============ Misc ============ */
@@ -560,6 +583,28 @@
         line-height: 1.4;
       }
 
+      .connection-summary {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+        padding: 0.75rem;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg);
+      }
+
+      .connection-name {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--fg);
+      }
+
+      .connection-location {
+        font-size: 11px;
+        color: var(--fg-muted);
+        overflow-wrap: anywhere;
+      }
+
       .field input {
         font: inherit;
         font-size: 13px;
@@ -636,6 +681,10 @@
         display: flex;
         align-items: center;
         gap: 0.3rem;
+        max-height: 8rem;
+        overflow: auto;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
       }
 
       .drawer-status svg {
@@ -658,20 +707,38 @@
           </picture>
         </aside>
         <main class="actions">
-          <button id="open-dropzone" class="dropzone" type="button">
-            <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M3 7a2 2 0 0 1 2-2h3.6a2 2 0 0 1 1.4.6l1 1a2 2 0 0 0 1.4.6H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-            </svg>
-            <span class="dropzone-title">Open Folder...</span>
-          </button>
+          <div class="empty-actions">
+            <button id="open-dropzone" class="dropzone" type="button">
+              <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 7a2 2 0 0 1 2-2h3.6a2 2 0 0 1 1.4.6l1 1a2 2 0 0 0 1.4.6H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+              </svg>
+              <span class="dropzone-title">Open Folder...</span>
+            </button>
+            <button id="remote-dropzone" class="dropzone" type="button">
+              <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="18" height="6" rx="2" />
+                <rect x="3" y="14" width="18" height="6" rx="2" />
+                <path d="M7 7h.01M7 17h.01M17 7h2M17 17h2" />
+              </svg>
+              <span class="dropzone-title">Add SSH...</span>
+            </button>
+          </div>
           <section id="workspaces" class="workspaces" aria-label="Workspaces">
             <h2 class="workspaces-title">Workspaces</h2>
             <div id="workspaces-list" class="workspaces-list"></div>
-            <button id="open-add" class="workspace-add" type="button" title="Open folder" aria-label="Open folder">
+            <button id="open-add" class="workspace-add local" type="button" title="Open local folder" aria-label="Open local folder">
               <span class="workspace-add-icon">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                   <line x1="12" y1="5" x2="12" y2="19"></line>
                   <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+              </span>
+            </button>
+            <button id="remote-add" class="workspace-add remote" type="button" title="Add SSH workspace" aria-label="Add SSH workspace">
+              <span class="workspace-add-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="4" width="18" height="6" rx="2" />
+                  <rect x="3" y="14" width="18" height="6" rx="2" />
                 </svg>
               </span>
             </button>
@@ -701,13 +768,13 @@
       </div>
       <div class="modal-body">
         <div class="field">
-          <label for="url">Wingman URL</label>
-          <p class="field-hint">Connect to a remote Wingman server. Leave empty to run locally.</p>
+          <label for="url">Model Gateway URL</label>
+          <p class="field-hint">Model backend used by local and remote Wingman agents. Leave empty for the default backend.</p>
           <input id="url" type="url" placeholder="https://..." autocomplete="off" spellcheck="false" />
         </div>
         <div class="field">
-          <label for="token">Wingman Token</label>
-          <p class="field-hint">Required only if the server enforces authentication.</p>
+          <label for="token">Gateway Token</label>
+          <p class="field-hint">Required only when the configured model gateway enforces authentication.</p>
           <div class="input-with-action">
             <input id="token" type="password" placeholder="optional" autocomplete="off" spellcheck="false" />
             <button type="button" id="token-toggle" class="input-action" aria-label="Show token" title="Show token"></button>
@@ -717,6 +784,70 @@
       <div class="modal-footer">
         <div id="drawer-status" class="drawer-status"></div>
         <button id="save">Save</button>
+      </div>
+    </dialog>
+
+    <dialog id="remote-dialog" class="modal">
+      <div class="modal-header">
+        <div class="modal-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="6" rx="2" />
+            <rect x="3" y="14" width="18" height="6" rx="2" />
+          </svg>
+          <h2 id="remote-title">Add SSH Workspace</h2>
+        </div>
+        <button id="remote-close" class="modal-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label for="remote-host">SSH Destination</label>
+          <p class="field-hint">A destination such as root@llm.dihei.io, or an alias from your SSH config. Existing keys and SSH-agent credentials are used automatically.</p>
+          <input id="remote-host" type="text" placeholder="dev@example.com" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="field">
+          <label for="remote-path">Workspace Path</label>
+          <p class="field-hint">Absolute path to the project on the remote host.</p>
+          <input id="remote-path" type="text" placeholder="/srv/project" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="field">
+          <label for="remote-name">Display Name</label>
+          <p class="field-hint">Optional; defaults to the workspace directory name.</p>
+          <input id="remote-name" type="text" placeholder="Project" autocomplete="off" spellcheck="false" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <div id="remote-status" class="drawer-status"></div>
+        <button id="remote-save">Save</button>
+      </div>
+    </dialog>
+
+    <dialog id="connect-dialog" class="modal">
+      <div class="modal-header">
+        <div class="modal-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 12h14M13 6l6 6-6 6" />
+          </svg>
+          <h2>Connect SSH Workspace</h2>
+        </div>
+        <button id="connect-close" class="modal-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="connection-summary">
+          <span id="connect-name" class="connection-name"></span>
+          <span id="connect-location" class="connection-location"></span>
+        </div>
+        <div class="field">
+          <label for="connect-password">Password or Key Passphrase</label>
+          <p class="field-hint">Optional and used only for this connection. Leave empty for SSH keys or an SSH agent.</p>
+          <div class="input-with-action">
+            <input id="connect-password" type="password" placeholder="optional" autocomplete="off" spellcheck="false" />
+            <button type="button" id="connect-password-toggle" class="input-action" aria-label="Show password" title="Show password"></button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <div id="connect-status" class="drawer-status"></div>
+        <button id="remote-connect">Connect</button>
       </div>
     </dialog>
 
@@ -744,6 +875,10 @@
       const GetWorkspaces = () => api("/app/workspaces");
       const RemoveWorkspace = (path) => api("/app/workspaces/remove", { path });
       const OpenWorkspace = (path) => api("/app/workspaces/open", { path });
+      const GetRemotes = () => api("/app/remotes");
+      const SaveRemote = (remote, previous = null) => api("/app/remotes/save", { remote, previous });
+      const RemoveRemote = (remote) => api("/app/remotes/remove", { remote });
+      const OpenRemote = (remote, password = "") => api("/app/remotes/open", { remote, password });
       const SelectFolder = async () => (await api("/app/folder", {}))?.path || "";
 
       const layoutEl = document.getElementById("layout");
@@ -751,7 +886,9 @@
 
       const dropzoneBtn = document.getElementById("open-dropzone");
       const addBtn = document.getElementById("open-add");
-      const openButtons = [dropzoneBtn, addBtn];
+      const remoteDropzoneBtn = document.getElementById("remote-dropzone");
+      const remoteAddBtn = document.getElementById("remote-add");
+      const openButtons = [dropzoneBtn, addBtn, remoteDropzoneBtn, remoteAddBtn];
 
       const workspacesListEl = document.getElementById("workspaces-list");
 
@@ -763,6 +900,24 @@
       const tokenToggle = document.getElementById("token-toggle");
       const saveBtn = document.getElementById("save");
       const drawerStatus = document.getElementById("drawer-status");
+
+      const remoteDialog = document.getElementById("remote-dialog");
+      const remoteTitle = document.getElementById("remote-title");
+      const remoteClose = document.getElementById("remote-close");
+      const remoteHostInput = document.getElementById("remote-host");
+      const remotePathInput = document.getElementById("remote-path");
+      const remoteNameInput = document.getElementById("remote-name");
+      const remoteSaveBtn = document.getElementById("remote-save");
+      const remoteStatus = document.getElementById("remote-status");
+
+      const connectDialog = document.getElementById("connect-dialog");
+      const connectClose = document.getElementById("connect-close");
+      const connectName = document.getElementById("connect-name");
+      const connectLocation = document.getElementById("connect-location");
+      const connectPasswordInput = document.getElementById("connect-password");
+      const connectPasswordToggle = document.getElementById("connect-password-toggle");
+      const remoteConnectBtn = document.getElementById("remote-connect");
+      const connectStatus = document.getElementById("connect-status");
 
       const CHECK_ICON =
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
@@ -794,6 +949,23 @@
         tokenToggle.setAttribute("aria-label", tokenToggle.title);
       });
 
+      function resetConnectPassword() {
+        connectPasswordInput.value = "";
+        connectPasswordInput.type = "password";
+        connectPasswordToggle.innerHTML = EYE_ICON;
+        connectPasswordToggle.title = "Show password";
+        connectPasswordToggle.setAttribute("aria-label", connectPasswordToggle.title);
+      }
+
+      resetConnectPassword();
+      connectPasswordToggle.addEventListener("click", () => {
+        const shown = connectPasswordInput.type === "text";
+        connectPasswordInput.type = shown ? "password" : "text";
+        connectPasswordToggle.innerHTML = shown ? EYE_ICON : EYE_OFF_ICON;
+        connectPasswordToggle.title = shown ? "Show password" : "Hide password";
+        connectPasswordToggle.setAttribute("aria-label", connectPasswordToggle.title);
+      });
+
       function basename(path) {
         if (!path) return "";
         const trimmed = path.replace(/[\/\\]+$/, "");
@@ -817,76 +989,124 @@
       const FOLDER_ICON =
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h3.6a2 2 0 0 1 1.4.6l1 1a2 2 0 0 0 1.4.6H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
 
+      const REMOTE_ICON =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01M17 7h2M17 17h2"/></svg>';
+
       const CLOSE_ICON =
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
 
-      function renderWorkspaces(workspaces) {
+      const EDIT_ICON =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4z"/></svg>';
+
+      function appendWorkspace({ title, subtitle, tooltip, icon, open, edit, editLabel, remove, removeLabel }) {
+        const item = document.createElement("div");
+        item.className = "workspace-item";
+        if (edit) item.classList.add("has-edit");
+
+        const openButton = document.createElement("button");
+        openButton.type = "button";
+        openButton.className = "workspace-open";
+        openButton.title = tooltip;
+        openButton.addEventListener("click", open);
+
+        const iconEl = document.createElement("span");
+        iconEl.className = "workspace-icon";
+        iconEl.innerHTML = icon;
+
+        const info = document.createElement("div");
+        info.className = "workspace-info";
+
+        const name = document.createElement("span");
+        name.className = "workspace-name";
+        name.textContent = title;
+
+        const sub = document.createElement("span");
+        sub.className = "workspace-path";
+        sub.textContent = subtitle;
+
+        info.appendChild(name);
+        info.appendChild(sub);
+        openButton.appendChild(iconEl);
+        openButton.appendChild(info);
+
+        let editButton = null;
+        if (edit) {
+          editButton = document.createElement("button");
+          editButton.type = "button";
+          editButton.className = "workspace-action edit";
+          editButton.title = editLabel;
+          editButton.setAttribute("aria-label", editLabel);
+          editButton.innerHTML = EDIT_ICON;
+          editButton.addEventListener("click", (event) => {
+            event.stopPropagation();
+            edit();
+          });
+        }
+
+        const removeButton = document.createElement("button");
+        removeButton.type = "button";
+        removeButton.className = "workspace-action remove";
+        removeButton.title = removeLabel;
+        removeButton.setAttribute("aria-label", removeLabel);
+        removeButton.innerHTML = CLOSE_ICON;
+        removeButton.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          removeButton.disabled = true;
+          try {
+            await remove();
+            await loadWorkspaces();
+          } catch (error) {
+            errEl.textContent = String(error);
+            removeButton.disabled = false;
+          }
+        });
+
+        item.appendChild(openButton);
+        if (editButton) item.appendChild(editButton);
+        item.appendChild(removeButton);
+        workspacesListEl.appendChild(item);
+      }
+
+      function renderWorkspaces(workspaces, remotes) {
         workspacesListEl.innerHTML = "";
-        const has = workspaces && workspaces.length > 0;
+        const has = (workspaces && workspaces.length > 0) || (remotes && remotes.length > 0);
         layoutEl.classList.toggle("empty", !has);
         layoutEl.classList.toggle("has-workspaces", has);
         if (!has) return;
 
         for (const path of workspaces) {
-          const item = document.createElement("div");
-          item.className = "workspace-item";
-
-          const open = document.createElement("button");
-          open.type = "button";
-          open.className = "workspace-open";
-          open.title = path;
-          open.addEventListener("click", () => openPath(path));
-
-          const icon = document.createElement("span");
-          icon.className = "workspace-icon";
-          icon.innerHTML = FOLDER_ICON;
-
-          const info = document.createElement("div");
-          info.className = "workspace-info";
-
-          const name = document.createElement("span");
-          name.className = "workspace-name";
-          name.textContent = basename(path) || path;
-
-          const sub = document.createElement("span");
-          sub.className = "workspace-path";
-          sub.textContent = prettyPath(path);
-
-          info.appendChild(name);
-          info.appendChild(sub);
-
-          const remove = document.createElement("button");
-          remove.type = "button";
-          remove.className = "workspace-remove";
-          remove.title = "Remove workspace";
-          remove.setAttribute("aria-label", "Remove workspace");
-          remove.innerHTML = CLOSE_ICON;
-          remove.addEventListener("click", async (e) => {
-            e.stopPropagation();
-            remove.disabled = true;
-            try {
-              await RemoveWorkspace(path);
-              await loadWorkspaces();
-            } catch (err) {
-              errEl.textContent = String(err);
-              remove.disabled = false;
-            }
+          appendWorkspace({
+            title: basename(path) || path,
+            subtitle: prettyPath(path),
+            tooltip: path,
+            icon: FOLDER_ICON,
+            open: () => openPath(path),
+            remove: () => RemoveWorkspace(path),
+            removeLabel: "Remove local workspace",
           });
+        }
 
-          open.appendChild(icon);
-          open.appendChild(info);
-          item.appendChild(open);
-          item.appendChild(remove);
-          workspacesListEl.appendChild(item);
+        for (const remote of remotes) {
+          appendWorkspace({
+            title: remote.name || basename(remote.path) || remote.host,
+            subtitle: `${remote.host}:${remote.path}`,
+            tooltip: `SSH ${remote.host}:${remote.path}`,
+            icon: REMOTE_ICON,
+            open: () => showConnectDialog(remote),
+            edit: () => showRemoteEditor(remote),
+            editLabel: "Edit remote workspace",
+            remove: () => RemoveRemote(remote),
+            removeLabel: "Remove remote workspace",
+          });
         }
       }
 
       async function loadWorkspaces() {
         try {
-          const workspaces = await GetWorkspaces();
-          renderWorkspaces(workspaces || []);
+          const [workspaces, remotes] = await Promise.all([GetWorkspaces(), GetRemotes()]);
+          renderWorkspaces(workspaces || [], remotes || []);
         } catch (e) {
-          renderWorkspaces([]);
+          renderWorkspaces([], []);
         }
       }
 
@@ -975,8 +1195,137 @@
         }
       }
 
+      function setRemoteStatus(message, isError = false) {
+        remoteStatus.textContent = message;
+        remoteStatus.classList.toggle("error", isError);
+      }
+
+      function setConnectStatus(message, isError = false) {
+        connectStatus.textContent = message;
+        connectStatus.classList.toggle("error", isError);
+      }
+
+      let editingRemote = null;
+      let isSavingRemote = false;
+      let connectingRemote = null;
+
+      function showRemoteEditor(remote = null) {
+        if (isOpening || isSavingRemote) return;
+        editingRemote = remote ? { ...remote } : null;
+        remoteTitle.textContent = remote ? "Edit SSH Workspace" : "Add SSH Workspace";
+        setRemoteStatus("");
+        if (remote) {
+          remoteHostInput.value = remote.host || "";
+          remotePathInput.value = remote.path || "";
+          remoteNameInput.value = remote.name || "";
+        } else {
+          remoteHostInput.value = "";
+          remotePathInput.value = "";
+          remoteNameInput.value = "";
+        }
+        if (!remoteDialog.open) remoteDialog.showModal();
+        remoteHostInput.focus();
+      }
+
+      async function saveRemoteProfile() {
+        if (isSavingRemote) return;
+        const remote = {
+          kind: "ssh",
+          host: remoteHostInput.value.trim(),
+          path: remotePathInput.value.trim(),
+          name: remoteNameInput.value.trim(),
+        };
+        if (!remote.host || !remote.path) {
+          setRemoteStatus("SSH destination and workspace path are required.", true);
+          return;
+        }
+
+        isSavingRemote = true;
+        remoteSaveBtn.disabled = true;
+        setRemoteStatus("Saving…");
+        try {
+          await SaveRemote(remote, editingRemote);
+          remoteDialog.close();
+          await loadWorkspaces();
+        } catch (error) {
+          setRemoteStatus(String(error), true);
+        } finally {
+          remoteSaveBtn.disabled = false;
+          isSavingRemote = false;
+        }
+      }
+
+      function showConnectDialog(remote) {
+        if (isOpening || !remote) return;
+        connectingRemote = { ...remote };
+        connectName.textContent = remote.name || basename(remote.path) || remote.host;
+        connectLocation.textContent = `${remote.host}:${remote.path}`;
+        setConnectStatus("");
+        resetConnectPassword();
+        if (!connectDialog.open) connectDialog.showModal();
+        connectPasswordInput.focus();
+      }
+
+      async function connectRemote() {
+        if (isOpening || !connectingRemote) return;
+        isOpening = true;
+        setOpenDisabled(true);
+        remoteConnectBtn.disabled = true;
+        errEl.textContent = "";
+        setConnectStatus("Starting remote Wingman and opening the SSH tunnel…");
+        try {
+          await OpenRemote(connectingRemote, connectPasswordInput.value);
+          window.location.replace("/");
+        } catch (error) {
+          setConnectStatus(String(error), true);
+          setOpenDisabled(false);
+          remoteConnectBtn.disabled = false;
+          isOpening = false;
+        }
+      }
+
       dropzoneBtn.addEventListener("click", pickAndOpen);
       addBtn.addEventListener("click", pickAndOpen);
+      remoteDropzoneBtn.addEventListener("click", () => showRemoteEditor());
+      remoteAddBtn.addEventListener("click", () => showRemoteEditor());
+      remoteClose.addEventListener("click", () => {
+        if (!isSavingRemote) remoteDialog.close();
+      });
+      remoteDialog.addEventListener("cancel", (event) => {
+        if (isSavingRemote) event.preventDefault();
+      });
+      remoteDialog.addEventListener("close", () => {
+        editingRemote = null;
+        setRemoteStatus("");
+      });
+      remoteDialog.addEventListener("click", (event) => {
+        if (event.target === remoteDialog && !isSavingRemote) remoteDialog.close();
+      });
+      remoteSaveBtn.addEventListener("click", saveRemoteProfile);
+      for (const input of [remoteHostInput, remotePathInput, remoteNameInput]) {
+        input.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") void saveRemoteProfile();
+        });
+      }
+
+      connectClose.addEventListener("click", () => {
+        if (!isOpening) connectDialog.close();
+      });
+      connectDialog.addEventListener("cancel", (event) => {
+        if (isOpening) event.preventDefault();
+      });
+      connectDialog.addEventListener("close", () => {
+        connectingRemote = null;
+        resetConnectPassword();
+        setConnectStatus("");
+      });
+      connectDialog.addEventListener("click", (event) => {
+        if (event.target === connectDialog && !isOpening) connectDialog.close();
+      });
+      remoteConnectBtn.addEventListener("click", connectRemote);
+      connectPasswordInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") void connectRemote();
+      });
       window.addEventListener("shell:command", (event) => {
         if (event.detail === "open-folder") void pickAndOpen();
       });
