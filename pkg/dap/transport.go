@@ -18,15 +18,24 @@ const adapterStartupTimeout = 30 * time.Second
 
 type adapterConnection struct {
 	io.ReadWriteCloser
-	cmd         *exec.Cmd
-	processDone <-chan error
-	closeOnce   sync.Once
+	cmd            *exec.Cmd
+	processDone    <-chan error
+	terminal       TerminalProcess
+	terminalCancel func()
+	terminalID     string
+	closeOnce      sync.Once
 }
 
 func (connection *adapterConnection) Close() error {
 	var closeErr error
 	connection.closeOnce.Do(func() {
 		closeErr = connection.ReadWriteCloser.Close()
+		if connection.terminalCancel != nil {
+			connection.terminalCancel()
+		}
+		if connection.terminal != nil {
+			closeErr = errors.Join(closeErr, connection.terminal.Close())
+		}
 		if connection.cmd != nil && connection.cmd.Process != nil {
 			_ = connection.cmd.Process.Kill()
 		}
@@ -51,7 +60,10 @@ func (connection *splitConnection) Close() error {
 	return errors.Join(connection.reader.Close(), connection.writer.Close())
 }
 
-func startAdapter(ctx context.Context, plan Plan, output func(string, string)) (*adapterConnection, error) {
+func startAdapter(ctx context.Context, plan Plan, output func(string, string), launcher TerminalLauncher) (*adapterConnection, error) {
+	if plan.Console == ConsoleIntegrated && plan.Adapter.TerminalStrategy == TerminalAdapterProcess {
+		return startAdapterInTerminal(ctx, plan, output, launcher)
+	}
 	cmd := exec.Command(plan.Adapter.Command, plan.Adapter.Args...)
 	cmd.Dir = plan.ProjectDir
 	cmd.Env = os.Environ()
@@ -99,22 +111,106 @@ func startAdapter(ctx context.Context, plan Plan, output func(string, string)) (
 		select {
 		case result := <-ready:
 			if result.err != nil {
-				_ = cmd.Process.Kill()
+				stopStartedAdapter(cmd)
 				return nil, fmt.Errorf("start debug adapter %s: %w", plan.Adapter.Name, result.err)
 			}
 			conn, err := (&net.Dialer{}).DialContext(startupCtx, "tcp", result.address)
 			if err != nil {
-				_ = cmd.Process.Kill()
+				stopStartedAdapter(cmd)
 				return nil, fmt.Errorf("connect to debug adapter %s at %s: %w", plan.Adapter.Name, result.address, err)
 			}
 			return runningConnection(cmd, conn), nil
 		case <-startupCtx.Done():
-			_ = cmd.Process.Kill()
+			stopStartedAdapter(cmd)
 			return nil, fmt.Errorf("start debug adapter %s: %w", plan.Adapter.Name, startupCtx.Err())
 		}
 	default:
 		return nil, fmt.Errorf("debug adapter %s uses unsupported transport %q", plan.Adapter.Name, plan.Adapter.Transport)
 	}
+}
+
+func startAdapterInTerminal(ctx context.Context, plan Plan, output func(string, string), launcher TerminalLauncher) (*adapterConnection, error) {
+	if launcher == nil {
+		return nil, errors.New("integrated terminal is not available")
+	}
+	if plan.Adapter.Transport != TransportTCP {
+		return nil, fmt.Errorf("debug adapter %s cannot run its %s protocol stream in a terminal", plan.Adapter.Name, plan.Adapter.Transport)
+	}
+	process, err := launcher.LaunchTerminal(ctx, TerminalLaunch{
+		Title: "Debug · " + plan.Adapter.Name,
+		Path:  plan.Adapter.Command,
+		Args:  plan.Adapter.Args,
+		Dir:   plan.ProjectDir,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("start debug adapter %s in terminal: %w", plan.Adapter.Name, err)
+	}
+
+	snapshot, chunks, cancelOutput := process.Subscribe()
+	reader, writer := io.Pipe()
+	go pipeTerminalOutput(writer, snapshot, chunks, cancelOutput)
+
+	ready := make(chan readyResult, 1)
+	go readTCPAdapterOutput(reader, plan.Adapter.ReadyPrefix, output, ready)
+	startupCtx, cancel := context.WithTimeout(ctx, adapterStartupTimeout)
+	defer cancel()
+	select {
+	case result := <-ready:
+		if result.err != nil {
+			_ = reader.Close()
+			cancelOutput()
+			_ = process.Close()
+			return nil, fmt.Errorf("start debug adapter %s: %w", plan.Adapter.Name, result.err)
+		}
+		connection, err := (&net.Dialer{}).DialContext(startupCtx, "tcp", result.address)
+		if err != nil {
+			_ = reader.Close()
+			cancelOutput()
+			_ = process.Close()
+			return nil, fmt.Errorf("connect to debug adapter %s at %s: %w", plan.Adapter.Name, result.address, err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			<-process.Done()
+			done <- nil
+			close(done)
+		}()
+		return &adapterConnection{
+			ReadWriteCloser: connection,
+			processDone:     done,
+			terminal:        process,
+			terminalCancel:  cancelOutput,
+			terminalID:      process.ID(),
+		}, nil
+	case <-startupCtx.Done():
+		_ = reader.Close()
+		cancelOutput()
+		_ = process.Close()
+		return nil, fmt.Errorf("start debug adapter %s: %w", plan.Adapter.Name, startupCtx.Err())
+	}
+}
+
+func pipeTerminalOutput(writer *io.PipeWriter, snapshot []byte, chunks <-chan []byte, cancel func()) {
+	defer writer.Close()
+	defer cancel()
+	if len(snapshot) > 0 {
+		if _, err := writer.Write(snapshot); err != nil {
+			return
+		}
+	}
+	for chunk := range chunks {
+		if _, err := writer.Write(chunk); err != nil {
+			return
+		}
+	}
+}
+
+func stopStartedAdapter(cmd *exec.Cmd) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
 }
 
 func runningConnection(cmd *exec.Cmd, connection io.ReadWriteCloser) *adapterConnection {
@@ -133,28 +229,28 @@ type readyResult struct {
 
 func readTCPAdapterOutput(reader io.Reader, prefix string, output func(string, string), ready chan<- readyResult) {
 	buffered := bufio.NewReader(reader)
-	reported := false
 	for {
 		line, err := buffered.ReadString('\n')
 		trimmed := strings.TrimSpace(line)
-		if !reported && strings.HasPrefix(trimmed, prefix) {
+		if strings.HasPrefix(trimmed, prefix) {
 			address := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
 			if address == "" {
 				ready <- readyResult{err: errors.New("adapter reported an empty listen address")}
-			} else {
-				ready <- readyResult{address: address}
+				return
 			}
-			reported = true
+			ready <- readyResult{address: address}
+			// The readiness banner is line-oriented, but debuggee output is not.
+			// Stream bytes from here so prompts and TUIs do not wait for a newline.
+			copyAdapterOutput(buffered, "stdout", output)
+			return
 		} else if line != "" {
 			output("stdout", line)
 		}
 		if err != nil {
-			if !reported {
-				if errors.Is(err, io.EOF) {
-					err = errors.New("adapter exited before reporting its listen address")
-				}
-				ready <- readyResult{err: err}
+			if errors.Is(err, io.EOF) {
+				err = errors.New("adapter exited before reporting its listen address")
 			}
+			ready <- readyResult{err: err}
 			return
 		}
 	}

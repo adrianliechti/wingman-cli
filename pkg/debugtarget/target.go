@@ -19,14 +19,15 @@ const (
 
 // Target is a source-level candidate that can seed the AI launch planner.
 type Target struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Detail   string `json:"detail,omitempty"`
-	Kind     string `json:"kind"`
-	Language string `json:"language"`
-	Path     string `json:"path"`
-	Line     int    `json:"line"`
-	Column   int    `json:"column"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Detail    string `json:"detail,omitempty"`
+	Kind      string `json:"kind"`
+	Language  string `json:"language"`
+	Path      string `json:"path"`
+	Directory string `json:"directory"`
+	Line      int    `json:"line"`
+	Column    int    `json:"column"`
 }
 
 // Detector recognizes target candidates for one or more source file types.

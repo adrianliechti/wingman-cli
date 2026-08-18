@@ -27,6 +27,10 @@ func (goDetector) Detect(path string, source []byte) ([]Target, error) {
 	}
 
 	isTestFile := strings.HasSuffix(strings.ToLower(path), "_test.go")
+	directory := filepath.ToSlash(filepath.Dir(filepath.FromSlash(path)))
+	if directory == "" {
+		directory = "."
+	}
 	var targets []Target
 	for _, declaration := range parsed.Decls {
 		function, ok := declaration.(*ast.FuncDecl)
@@ -57,14 +61,15 @@ func (goDetector) Detect(path string, source []byte) ([]Target, error) {
 		}
 		position := files.Position(function.Name.Pos())
 		targets = append(targets, Target{
-			ID:       fmt.Sprintf("go:%s:%d:%s", filepath.ToSlash(path), position.Line, name),
-			Name:     name,
-			Detail:   detail,
-			Kind:     kind,
-			Language: "Go",
-			Path:     filepath.ToSlash(path),
-			Line:     position.Line,
-			Column:   position.Column,
+			ID:        fmt.Sprintf("go:%s:%s:%s", filepath.ToSlash(path), kind, name),
+			Name:      name,
+			Detail:    detail,
+			Kind:      kind,
+			Language:  "Go",
+			Path:      filepath.ToSlash(path),
+			Directory: directory,
+			Line:      position.Line,
+			Column:    position.Column,
 		})
 	}
 

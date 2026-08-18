@@ -29,6 +29,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/code/agents"
+	"github.com/adrianliechti/wingman-agent/pkg/dap"
 	"github.com/adrianliechti/wingman-agent/pkg/system"
 	"github.com/adrianliechti/wingman-agent/pkg/terminal"
 	"github.com/adrianliechti/wingman-agent/pkg/watch"
@@ -147,6 +148,12 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 	s.turns = code.NewTurnManager(tool.WithProgressSink(serverCtx, s.onToolProgress), wa, s.handleTurnEvent)
 
 	ws.WarmUp()
+	if terminal.Supported() {
+		_ = ws.WithDAPManager(func(manager *dap.Manager) error {
+			manager.SetTerminalLauncher(s)
+			return nil
+		})
+	}
 
 	s.prevGit = ws.IsGitRepo()
 	s.prevLSP = ws.HasLSP()
@@ -422,9 +429,12 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Post("/plan", s.handleDebugPlan)
 			r.Post("/start", s.handleDebugStart)
 			r.Get("/state", s.handleDebugState)
+			r.Get("/inspection", s.handleDebugInspection)
 			r.Put("/breakpoints", s.handleDebugBreakpoints)
 			r.Post("/control", s.handleDebugControl)
 			r.Post("/evaluate", s.handleDebugEvaluate)
+			r.Post("/scopes", s.handleDebugScopes)
+			r.Post("/variables", s.handleDebugVariables)
 		})
 		r.Get("/skills", s.handleSkills)
 		r.Get("/capabilities", s.handleCapabilities)

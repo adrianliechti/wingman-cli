@@ -29,6 +29,7 @@ type Manager struct {
 	adapters []Adapter
 	lookup   func(string) string
 	start    sessionStarter
+	terminal TerminalLauncher
 
 	detectMu   sync.Mutex
 	detected   []detectedAdapter
@@ -45,6 +46,15 @@ type sessionStarter func(context.Context, string, Plan, StartOptions) (*Session,
 
 func NewManager(root string) *Manager {
 	return newManager(root, knownAdapters, resolveAdapterCommand, startSession)
+}
+
+// SetTerminalLauncher connects the protocol client to the editor's PTY host.
+// Passing nil disables integrated-terminal launches while leaving internal
+// console sessions available.
+func (m *Manager) SetTerminalLauncher(launcher TerminalLauncher) {
+	m.mu.Lock()
+	m.terminal = launcher
+	m.mu.Unlock()
 }
 
 func newManager(root string, adapters []Adapter, lookup func(string) string, starter sessionStarter) *Manager {
@@ -124,6 +134,7 @@ func (m *Manager) Adapters(ctx context.Context) ([]AdapterInfo, error) {
 			Projects:           slices.Clone(value.projects),
 			ConfigurationPaths: slices.Clone(value.adapter.ConfigurationPaths),
 			ConfigurationHint:  value.adapter.ConfigurationHint,
+			TerminalStrategy:   value.adapter.TerminalStrategy,
 		})
 	}
 	return result, nil
@@ -135,14 +146,16 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 		m.mu.Unlock()
 		return nil, errors.New("DAP manager is closed")
 	}
-	for path, breakpoints := range m.breakpoints {
-		if _, supplied := options.Breakpoints[path]; !supplied {
-			if options.Breakpoints == nil {
-				options.Breakpoints = make(map[string][]SourceBreakpoint)
-			}
-			options.Breakpoints[path] = slices.Clone(breakpoints)
-		}
+	combinedBreakpoints := make(map[string][]SourceBreakpoint, len(options.Breakpoints)+len(m.breakpoints))
+	for path, breakpoints := range options.Breakpoints {
+		combinedBreakpoints[filepath.Clean(path)] = slices.Clone(breakpoints)
 	}
+	for path, breakpoints := range m.breakpoints {
+		path = filepath.Clean(path)
+		combinedBreakpoints[path] = mergeSourceBreakpoints(combinedBreakpoints[path], breakpoints)
+	}
+	options.Breakpoints = combinedBreakpoints
+	options.terminalLauncher = m.terminal
 	m.mu.Unlock()
 
 	values, err := m.detect(ctx)
@@ -178,6 +191,33 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 	return session, nil
 }
 
+// mergeSourceBreakpoints keeps a plan's initial stops and folds in the
+// editor-owned set. At the same source position, the user's gutter breakpoint
+// wins so its condition or log message is preserved.
+func mergeSourceBreakpoints(planned, editor []SourceBreakpoint) []SourceBreakpoint {
+	result := slices.Clone(planned)
+	positions := make(map[[2]int]int, len(result))
+	for index, breakpoint := range result {
+		positions[[2]int{breakpoint.Line, breakpoint.Column}] = index
+	}
+	for _, breakpoint := range editor {
+		position := [2]int{breakpoint.Line, breakpoint.Column}
+		if index, exists := positions[position]; exists {
+			result[index] = breakpoint
+			continue
+		}
+		positions[position] = len(result)
+		result = append(result, breakpoint)
+	}
+	slices.SortFunc(result, func(left, right SourceBreakpoint) int {
+		if left.Line != right.Line {
+			return left.Line - right.Line
+		}
+		return left.Column - right.Column
+	})
+	return result
+}
+
 func selectAdapter(values []detectedAdapter, requested string) (detectedAdapter, error) {
 	requested = strings.TrimSpace(requested)
 	if requested != "" && requested != "auto" {
@@ -206,6 +246,16 @@ func resolvePlan(workspace string, selected detectedAdapter, options StartOption
 	}
 	if requestName != "launch" && requestName != "attach" {
 		return Plan{}, fmt.Errorf("request must be launch or attach (got %q)", options.Request)
+	}
+	console := options.Console
+	if console == "" {
+		console = ConsoleInternal
+	}
+	if console != ConsoleInternal && console != ConsoleIntegrated {
+		return Plan{}, fmt.Errorf("console must be %s or %s (got %q)", ConsoleInternal, ConsoleIntegrated, options.Console)
+	}
+	if console == ConsoleIntegrated && selected.adapter.TerminalStrategy == TerminalUnsupported {
+		return Plan{}, fmt.Errorf("debug adapter %s does not support an integrated terminal", selected.adapter.Name)
 	}
 
 	projectDir, err := selectProjectDir(workspace, selected.projects, options.ProjectDir, options.Configuration)
@@ -236,6 +286,7 @@ func resolvePlan(workspace string, selected detectedAdapter, options StartOption
 		Target:     target,
 		Mode:       mode,
 		Request:    requestName,
+		Console:    console,
 		Arguments:  arguments,
 	}, nil
 }
@@ -243,6 +294,13 @@ func resolvePlan(workspace string, selected detectedAdapter, options StartOption
 // ResolveConfigurationPaths validates and resolves the path fields declared by
 // an adapter descriptor. All other adapter configuration remains opaque.
 func ResolveConfigurationPaths(workspace, projectDir string, fields []ConfigurationPath, configuration map[string]any) (map[string]any, error) {
+	workspace, err := filepath.Abs(workspace)
+	if err != nil {
+		return nil, fmt.Errorf("resolve workspace path: %w", err)
+	}
+	if !filepath.IsAbs(projectDir) {
+		projectDir = filepath.Join(workspace, projectDir)
+	}
 	resolved := maps.Clone(configuration)
 	if resolved == nil {
 		resolved = make(map[string]any)

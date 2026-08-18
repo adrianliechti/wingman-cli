@@ -2,8 +2,11 @@ package terminal
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -20,6 +23,18 @@ const (
 )
 
 var ErrUnsupported = errors.New("terminal sessions are not supported on this platform")
+
+// CommandSpec describes a trusted, direct process launch inside a PTY. It is
+// intentionally separate from the public shell endpoint: editor services such
+// as DAP use it after the user has reviewed the operation, while browser input
+// can still only select from known shells.
+type CommandSpec struct {
+	Path  string
+	Args  []string
+	Dir   string
+	Env   map[string]*string
+	Title string
+}
 
 type Session struct {
 	id    string
@@ -45,15 +60,35 @@ func Supported() bool {
 }
 
 func newSession(id, shell, dir string, cols, rows int, onExit func(*Session)) (*Session, error) {
+	return newCommandSession(id, CommandSpec{Path: shell, Dir: dir}, cols, rows, onExit)
+}
+
+func newCommandSession(id string, spec CommandSpec, cols, rows int, onExit func(*Session)) (*Session, error) {
 	if !ptySupported {
 		return nil, ErrUnsupported
 	}
 
 	cols, rows = normalizeSize(cols, rows)
+	path := strings.TrimSpace(spec.Path)
+	if path == "" {
+		return nil, errors.New("terminal command is required")
+	}
+	dir := strings.TrimSpace(spec.Dir)
+	if dir == "" {
+		dir = "."
+	}
+	if strings.ContainsRune(path, filepath.Separator) && !filepath.IsAbs(path) {
+		path = filepath.Join(dir, path)
+	}
+	if resolved, err := exec.LookPath(path); err == nil {
+		path = resolved
+	} else if !filepath.IsAbs(path) {
+		return nil, fmt.Errorf("terminal command %q was not found", spec.Path)
+	}
 
-	cmd := exec.Command(shell)
+	cmd := exec.Command(path, spec.Args...)
 	cmd.Dir = dir
-	cmd.Env = terminalEnv()
+	cmd.Env = commandEnv(spec.Env)
 
 	f, err := startPTY(cmd, cols, rows)
 	if err != nil {
@@ -62,8 +97,8 @@ func newSession(id, shell, dir string, cols, rows int, onExit func(*Session)) (*
 
 	s := &Session{
 		id:    id,
-		title: shellName(shell),
-		shell: shell,
+		title: strings.TrimSpace(spec.Title),
+		shell: path,
 
 		cmd: cmd,
 		pty: f,
@@ -74,6 +109,9 @@ func newSession(id, shell, dir string, cols, rows int, onExit func(*Session)) (*
 
 		cols: cols,
 		rows: rows,
+	}
+	if s.title == "" {
+		s.title = shellName(path)
 	}
 
 	go s.read()
@@ -91,6 +129,13 @@ func (s *Session) Title() string {
 
 func (s *Session) Shell() string {
 	return s.shell
+}
+
+func (s *Session) ProcessID() int {
+	if s.cmd == nil || s.cmd.Process == nil {
+		return 0
+	}
+	return s.cmd.Process.Pid
 }
 
 func (s *Session) Size() (cols, rows int) {
@@ -278,4 +323,38 @@ func terminalEnv() []string {
 		"TERM_PROGRAM=wingman",
 		"WINGMAN=1",
 	)
+}
+
+func commandEnv(overrides map[string]*string) []string {
+	if len(overrides) == 0 {
+		return terminalEnv()
+	}
+	values := make(map[string]string)
+	for _, item := range terminalEnv() {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	for key, value := range overrides {
+		key = strings.TrimSpace(key)
+		if key == "" || strings.Contains(key, "=") {
+			continue
+		}
+		if value == nil {
+			delete(values, key)
+		} else {
+			values[key] = *value
+		}
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	result := make([]string, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, key+"="+values[key])
+	}
+	return result
 }

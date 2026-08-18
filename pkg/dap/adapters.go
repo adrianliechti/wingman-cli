@@ -6,14 +6,15 @@ package dap
 // protocol client, tool, and editor bridge remain unchanged.
 var knownAdapters = []Adapter{
 	{
-		Name:        "delve",
-		Language:    "Go",
-		AdapterID:   "go",
-		Command:     "dlv",
-		Args:        []string{"dap", "--listen=127.0.0.1:0"},
-		Transport:   TransportTCP,
-		ReadyPrefix: "DAP server listening at:",
-		Markers:     []string{"go.mod", "go.work"},
+		Name:             "delve",
+		Language:         "Go",
+		AdapterID:        "go",
+		Command:          "dlv",
+		Args:             []string{"dap", "--listen=127.0.0.1:0"},
+		Transport:        TransportTCP,
+		ReadyPrefix:      "DAP server listening at:",
+		TerminalStrategy: TerminalAdapterProcess,
+		Markers:          []string{"go.mod", "go.work"},
 		Defaults: map[string]any{
 			"type": "go",
 		},
@@ -24,6 +25,6 @@ var knownAdapters = []Adapter{
 			{Key: "coreFilePath"},
 			{Key: "traceDirPath", Directory: true},
 		},
-		ConfigurationHint: "launch: configuration requires mode (debug, test, exec, replay, or core) and program; attach: mode local with processId. program and other path fields are project-relative paths (for example ./cmd/server, not an import path). Delve also accepts args, cwd, env, buildFlags, stopOnEntry, and noDebug.",
+		ConfigurationHint: "launch: configuration requires mode (debug, test, exec, replay, or core) and program; attach: mode local with processId. program and other path fields are project-relative paths (for example ./cmd/server, not an import path). For a detected main or test, program is normally its directory; a single test uses mode test with an anchored -test.run argument. Delve also accepts args, cwd, env, buildFlags, stopOnEntry, and noDebug. Use integratedTerminal when the debuggee requires interactive stdin or a full-screen TUI; otherwise use internalConsole.",
 	},
 }

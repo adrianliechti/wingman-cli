@@ -1,7 +1,11 @@
 package terminal
 
 import (
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -51,6 +55,55 @@ func (m *Manager) Create(shell string, cols, rows int) (*Session, error) {
 	m.order = append(m.order, s.ID())
 
 	return s, nil
+}
+
+// CreateCommand starts a trusted editor-owned command directly in a PTY. The
+// working directory remains constrained to the manager's workspace.
+func (m *Manager) CreateCommand(spec CommandSpec, cols, rows int) (*Session, error) {
+	dir, err := m.commandDir(spec.Dir)
+	if err != nil {
+		return nil, err
+	}
+	spec.Dir = dir
+
+	// Held across creation so a process that exits immediately cannot run
+	// handleExit before the session is registered.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	session, err := newCommandSession(uuid.NewString(), spec, cols, rows, m.handleExit)
+	if err != nil {
+		return nil, err
+	}
+	m.sessions[session.ID()] = session
+	m.order = append(m.order, session.ID())
+	return session, nil
+}
+
+func (m *Manager) commandDir(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = m.dir
+	} else if !filepath.IsAbs(value) {
+		value = filepath.Join(m.dir, value)
+	}
+	dir, err := filepath.Abs(value)
+	if err != nil {
+		return "", fmt.Errorf("resolve terminal working directory: %w", err)
+	}
+	root, err := filepath.Abs(m.dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve terminal workspace: %w", err)
+	}
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", errors.New("terminal working directory must stay inside the workspace")
+	}
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return "", fmt.Errorf("terminal working directory %q is not a directory", value)
+	}
+	return dir, nil
 }
 
 func (m *Manager) Get(id string) *Session {

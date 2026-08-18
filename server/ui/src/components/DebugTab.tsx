@@ -1,0 +1,582 @@
+import {
+	ArrowDownToDot,
+	Bug,
+	ChevronDown,
+	ChevronRight,
+	Loader2,
+	Pause,
+	RedoDot,
+	RefreshCw,
+	Square,
+	StepBack,
+	StepForward,
+	UndoDot,
+} from "lucide-react";
+import {
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
+import {
+	controlDebug,
+	getDebugInspection,
+	getDebugScopes,
+	getDebugVariables,
+	type DebugInspection,
+	type DebugScopeInspection,
+	type DebugStackFrame,
+	type DebugVariable,
+} from "../api/debug";
+
+interface Props {
+	onLaunch: () => void;
+	onOpenFile: (path: string, line: number, column: number) => void;
+}
+
+type DebugOperation =
+	| "continue"
+	| "next"
+	| "stepIn"
+	| "stepOut"
+	| "stepBack"
+	| "pause"
+	| "stop";
+
+export function DebugTab({ onLaunch, onOpenFile }: Props) {
+	const requestsRef = useRef(new Set<AbortController>());
+	const selectedFrameRef = useRef<number | undefined>(undefined);
+	const stopVersionRef = useRef("");
+	const outputRef = useRef<HTMLPreElement | null>(null);
+	const [inspection, setInspection] = useState<DebugInspection | null>(null);
+	const [selectedFrameID, setSelectedFrameID] = useState<number>();
+	const [scopes, setScopes] = useState<DebugScopeInspection[]>([]);
+	const [error, setError] = useState("");
+	const [busy, setBusy] = useState(false);
+	selectedFrameRef.current = selectedFrameID;
+
+	const track = useCallback(
+		async <T,>(controller: AbortController, request: Promise<T>) => {
+			requestsRef.current.add(controller);
+			try {
+				return await request;
+			} finally {
+				requestsRef.current.delete(controller);
+			}
+		},
+		[],
+	);
+
+	const applyInspection = useCallback((next: DebugInspection) => {
+		setInspection((current) => {
+			if (!next.session && current?.session?.state === "terminated")
+				return current;
+			return next;
+		});
+		if (next.session?.state !== "stopped" || next.frames.length === 0) {
+			stopVersionRef.current = "";
+			setSelectedFrameID(undefined);
+			setScopes([]);
+			return;
+		}
+		const stopVersion = `${next.session.session_id}:${next.session.state_version}`;
+		if (stopVersion !== stopVersionRef.current) {
+			stopVersionRef.current = stopVersion;
+			setSelectedFrameID(next.frames[0].id);
+			setScopes(next.scopes);
+			return;
+		}
+		const selected =
+			next.frames.find((frame) => frame.id === selectedFrameRef.current) ??
+			next.frames[0];
+		setSelectedFrameID(selected.id);
+		if (selected.id === next.frames[0].id) setScopes(next.scopes);
+	}, []);
+
+	const refresh = useCallback(
+		async (showBusy = false) => {
+			const controller = new AbortController();
+			if (showBusy) setBusy(true);
+			try {
+				const next = await track(
+					controller,
+					getDebugInspection(controller.signal),
+				);
+				applyInspection(next);
+				if (next.error) setError(next.error);
+				else setError("");
+				return next;
+			} catch (cause) {
+				if (!controller.signal.aborted) setError(errorMessage(cause));
+				return null;
+			} finally {
+				if (showBusy) setBusy(false);
+			}
+		},
+		[applyInspection, track],
+	);
+
+	useEffect(() => {
+		let disposed = false;
+		let timer = 0;
+		const requests = requestsRef.current;
+		const poll = async () => {
+			const next = await refresh();
+			if (disposed) return;
+			const delay = next?.session?.state === "running" ? 600 : 1_500;
+			timer = window.setTimeout(() => void poll(), delay);
+		};
+		void poll();
+		return () => {
+			disposed = true;
+			window.clearTimeout(timer);
+			for (const request of requests) request.abort();
+			requests.clear();
+		};
+	}, [refresh]);
+
+	useEffect(() => {
+		const output = outputRef.current;
+		if (output) output.scrollTop = output.scrollHeight;
+	}, [inspection?.output]);
+
+	const selectFrame = useCallback(
+		async (frame: DebugStackFrame) => {
+			const session = inspection?.session;
+			if (!session || session.state !== "stopped") return;
+			setSelectedFrameID(frame.id);
+			if (frame.id === inspection.frames[0]?.id) {
+				setScopes(inspection.scopes);
+				return;
+			}
+			const controller = new AbortController();
+			setBusy(true);
+			try {
+				const result = await track(
+					controller,
+					getDebugScopes(frame.id, session.session_id, controller.signal),
+				);
+				if (!controller.signal.aborted) setScopes(result.scopes);
+			} catch (cause) {
+				if (!controller.signal.aborted) setError(errorMessage(cause));
+			} finally {
+				setBusy(false);
+			}
+		},
+		[inspection, track],
+	);
+
+	const control = useCallback(
+		async (operation: DebugOperation) => {
+			const session = inspection?.session;
+			if (!session || session.state === "terminated") return;
+			setBusy(true);
+			setError("");
+			try {
+				const result = await controlDebug(
+					operation,
+					session.session_id,
+					session.stop?.thread_id,
+				);
+				if (operation === "stop" && result.session) {
+					setInspection((current) =>
+						current
+							? {
+									...current,
+									session: result.session,
+									threads: [],
+									frames: [],
+									scopes: [],
+								}
+							: current,
+					);
+					setSelectedFrameID(undefined);
+					setScopes([]);
+				} else {
+					await refresh();
+				}
+			} catch (cause) {
+				setError(errorMessage(cause));
+			} finally {
+				setBusy(false);
+			}
+		},
+		[inspection?.session, refresh],
+	);
+
+	const session = inspection?.session;
+	const stopped = session?.state === "stopped";
+	return (
+		<div className="flex h-full min-h-0 flex-col bg-bg">
+			<div className="flex h-10 shrink-0 items-center gap-2 border-b border-border-subtle bg-bg-surface/40 px-3 text-[12px]">
+				<Bug size={14} className="text-warning" />
+				<span className="font-medium text-fg">Debug</span>
+				{session ? (
+					<>
+						<span className="rounded bg-bg-hover px-1.5 py-0.5 text-[10px] text-fg-muted">
+							{session.state}
+						</span>
+						<span className="truncate text-[11px] text-fg-dim">
+							{session.language} · {session.adapter}
+						</span>
+					</>
+				) : (
+					<span className="text-[11px] text-fg-dim">No active session</span>
+				)}
+				<div className="flex-1" />
+				{session && session.state !== "terminated" && (
+					<DebugControls
+						stopped={stopped}
+						supportsStepBack={session.capabilities.supports_step_back}
+						busy={busy}
+						onControl={(operation) => void control(operation)}
+					/>
+				)}
+				<button
+					type="button"
+					title="Refresh debugger state"
+					aria-label="Refresh debugger state"
+					onClick={() => void refresh(true)}
+					className="flex h-6 w-6 items-center justify-center rounded text-fg-dim hover:bg-bg-hover hover:text-fg"
+				>
+					{busy ? (
+						<Loader2 size={12} className="animate-spin" />
+					) : (
+						<RefreshCw size={12} />
+					)}
+				</button>
+			</div>
+
+			{!session && !inspection?.output ? (
+				<div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
+					<Bug size={24} className="text-fg-dim" />
+					<div className="max-w-sm text-[12px] text-fg-muted">
+						Start a reviewed debug session to inspect its call stack, variables,
+						and output here.
+					</div>
+					<button
+						type="button"
+						onClick={onLaunch}
+						className="h-7 rounded-md border border-border px-3 text-[11px] text-fg-muted hover:bg-bg-hover hover:text-fg"
+					>
+						Run and debug
+					</button>
+				</div>
+			) : (
+				<div className="grid min-h-0 flex-1 grid-cols-[minmax(180px,0.75fr)_minmax(260px,1.25fr)] grid-rows-[minmax(180px,1fr)_minmax(130px,0.7fr)]">
+					<section className="min-h-0 overflow-auto border-r border-border-subtle">
+						<SectionTitle>Call stack</SectionTitle>
+						{inspection?.frames.length ? (
+							<div className="py-1">
+								{inspection.frames.map((frame) => (
+									<button
+										type="button"
+										key={frame.id}
+										onClick={() => void selectFrame(frame)}
+										onDoubleClick={() => {
+											if (frame.source?.path)
+												onOpenFile(frame.source.path, frame.line, frame.column);
+										}}
+										className={`block w-full px-3 py-1.5 text-left text-[11px] hover:bg-bg-hover ${
+											selectedFrameID === frame.id
+												? "bg-bg-hover text-fg"
+												: "text-fg-muted"
+										}`}
+									>
+										<div className="truncate">{frame.name}</div>
+										{frame.source?.path && (
+											<div className="truncate text-[10px] text-fg-dim">
+												{frame.source.path}:{frame.line}
+											</div>
+										)}
+									</button>
+								))}
+							</div>
+						) : (
+							<EmptyDetail>
+								{stopped ? "No stack frames" : "Available while stopped"}
+							</EmptyDetail>
+						)}
+					</section>
+
+					<section className="min-h-0 overflow-auto">
+						<SectionTitle>Variables</SectionTitle>
+						{scopes.length ? (
+							<div className="pb-2">
+								{scopes.map((scope, index) => (
+									<ScopeView
+										key={`${session?.session_id}:${session?.state_version}:${scope.scope.name}:${index}`}
+										inspection={scope}
+										sessionID={session?.session_id}
+									/>
+								))}
+							</div>
+						) : (
+							<EmptyDetail>
+								{stopped ? "No variables" : "Available while stopped"}
+							</EmptyDetail>
+						)}
+					</section>
+
+					<section className="col-span-2 flex min-h-0 flex-col border-t border-border-subtle bg-black/10">
+						<SectionTitle>Debug output</SectionTitle>
+						<pre
+							ref={outputRef}
+							className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-[11px] leading-relaxed text-fg-muted select-text"
+						>
+							{inspection?.output || "No debugger output yet."}
+						</pre>
+					</section>
+				</div>
+			)}
+
+			{error && (
+				<div className="shrink-0 border-t border-danger/30 bg-danger/5 px-3 py-2 text-[11px] text-danger">
+					{error}
+				</div>
+			)}
+		</div>
+	);
+}
+
+function DebugControls({
+	stopped,
+	supportsStepBack,
+	busy,
+	onControl,
+}: {
+	stopped: boolean;
+	supportsStepBack: boolean;
+	busy: boolean;
+	onControl: (operation: DebugOperation) => void;
+}) {
+	return (
+		<div className="flex items-center gap-0.5">
+			{stopped ? (
+				<>
+					{supportsStepBack && (
+						<Control
+							label="Step back"
+							disabled={busy}
+							onClick={() => onControl("stepBack")}
+						>
+							<StepBack size={12} />
+						</Control>
+					)}
+					<Control
+						label="Continue"
+						disabled={busy}
+						onClick={() => onControl("continue")}
+					>
+						<StepForward size={12} />
+					</Control>
+					<Control
+						label="Step over"
+						disabled={busy}
+						onClick={() => onControl("next")}
+					>
+						<RedoDot size={12} />
+					</Control>
+					<Control
+						label="Step into"
+						disabled={busy}
+						onClick={() => onControl("stepIn")}
+					>
+						<ArrowDownToDot size={12} />
+					</Control>
+					<Control
+						label="Step out"
+						disabled={busy}
+						onClick={() => onControl("stepOut")}
+					>
+						<UndoDot size={12} />
+					</Control>
+				</>
+			) : (
+				<Control
+					label="Pause"
+					disabled={busy}
+					onClick={() => onControl("pause")}
+				>
+					<Pause size={11} />
+				</Control>
+			)}
+			<Control label="Stop" disabled={busy} onClick={() => onControl("stop")}>
+				<Square size={10} />
+			</Control>
+		</div>
+	);
+}
+
+function Control({
+	label,
+	disabled,
+	onClick,
+	children,
+}: {
+	label: string;
+	disabled: boolean;
+	onClick: () => void;
+	children: ReactNode;
+}) {
+	return (
+		<button
+			type="button"
+			disabled={disabled}
+			title={label}
+			aria-label={label}
+			onClick={onClick}
+			className="flex h-6 min-w-6 items-center justify-center rounded px-1.5 text-[10px] text-fg-dim hover:bg-bg-hover hover:text-fg disabled:opacity-40"
+		>
+			{children}
+		</button>
+	);
+}
+
+function ScopeView({
+	inspection,
+	sessionID,
+}: {
+	inspection: DebugScopeInspection;
+	sessionID?: string;
+}) {
+	return (
+		<div className="border-b border-border-subtle last:border-b-0">
+			<div className="sticky top-7 z-10 bg-bg-surface/90 px-3 py-1.5 text-[10px] font-medium uppercase tracking-wide text-fg-dim backdrop-blur">
+				{inspection.scope.name || "Scope"}
+			</div>
+			{inspection.error ? (
+				<div className="px-3 py-2 text-[11px] text-danger">
+					{inspection.error}
+				</div>
+			) : inspection.variables.length ? (
+				inspection.variables.map((variable, index) => (
+					<VariableRow
+						key={`${variable.name}:${index}`}
+						variable={variable}
+						sessionID={sessionID}
+						depth={0}
+					/>
+				))
+			) : (
+				<div className="px-3 py-2 text-[11px] text-fg-dim">Empty</div>
+			)}
+		</div>
+	);
+}
+
+function VariableRow({
+	variable,
+	sessionID,
+	depth,
+}: {
+	variable: DebugVariable;
+	sessionID?: string;
+	depth: number;
+}) {
+	const [expanded, setExpanded] = useState(false);
+	const [children, setChildren] = useState<DebugVariable[] | null>(null);
+	const [loading, setLoading] = useState(false);
+	const [error, setError] = useState("");
+	const controllerRef = useRef<AbortController | null>(null);
+	const reference = variable.variables_reference ?? 0;
+	useEffect(() => () => controllerRef.current?.abort(), []);
+
+	const toggle = async () => {
+		if (reference <= 0) return;
+		if (expanded) {
+			setExpanded(false);
+			return;
+		}
+		setExpanded(true);
+		if (children) return;
+		controllerRef.current?.abort();
+		const controller = new AbortController();
+		controllerRef.current = controller;
+		setLoading(true);
+		setError("");
+		try {
+			const result = await getDebugVariables(
+				reference,
+				sessionID,
+				controller.signal,
+			);
+			if (!controller.signal.aborted) setChildren(result.variables);
+		} catch (cause) {
+			if (!controller.signal.aborted) setError(errorMessage(cause));
+		} finally {
+			if (!controller.signal.aborted) setLoading(false);
+		}
+	};
+
+	return (
+		<div>
+			<button
+				type="button"
+				disabled={reference <= 0}
+				onClick={() => void toggle()}
+				className="grid w-full grid-cols-[minmax(100px,0.75fr)_minmax(120px,1.25fr)] items-start gap-2 px-3 py-1 text-left text-[11px] hover:bg-bg-hover disabled:hover:bg-transparent"
+				style={{ paddingLeft: `${12 + depth * 12}px` }}
+			>
+				<span className="flex min-w-0 items-center gap-1 text-fg-muted">
+					<span className="flex h-3 w-3 shrink-0 items-center justify-center text-fg-dim">
+						{loading ? (
+							<Loader2 size={10} className="animate-spin" />
+						) : reference > 0 ? (
+							expanded ? (
+								<ChevronDown size={10} />
+							) : (
+								<ChevronRight size={10} />
+							)
+						) : null}
+					</span>
+					<span className="truncate" title={variable.name}>
+						{variable.name}
+					</span>
+				</span>
+				<span className="min-w-0 break-words font-mono text-fg">
+					{variable.value}
+					{variable.type && (
+						<span className="ml-1 font-sans text-[10px] text-fg-dim">
+							{variable.type}
+						</span>
+					)}
+				</span>
+			</button>
+			{expanded && error && (
+				<div
+					className="py-1 pr-3 text-[10px] text-danger"
+					style={{ paddingLeft: `${28 + depth * 12}px` }}
+				>
+					{error}
+				</div>
+			)}
+			{expanded &&
+				children?.map((child, index) => (
+					<VariableRow
+						key={`${child.name}:${index}`}
+						variable={child}
+						sessionID={sessionID}
+						depth={depth + 1}
+					/>
+				))}
+		</div>
+	);
+}
+
+function SectionTitle({ children }: { children: ReactNode }) {
+	return (
+		<div className="sticky top-0 z-20 flex h-7 items-center border-b border-border-subtle bg-bg-surface/95 px-3 text-[10px] font-medium uppercase tracking-wide text-fg-dim backdrop-blur">
+			{children}
+		</div>
+	);
+}
+
+function EmptyDetail({ children }: { children: ReactNode }) {
+	return <div className="px-3 py-4 text-[11px] text-fg-dim">{children}</div>;
+}
+
+function errorMessage(value: unknown) {
+	return value instanceof Error ? value.message : String(value);
+}

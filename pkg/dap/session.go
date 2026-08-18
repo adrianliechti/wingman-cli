@@ -29,6 +29,11 @@ type outputBuffer struct {
 	content string
 }
 
+type terminalBinding struct {
+	process TerminalProcess
+	cancel  func()
+}
+
 func (buffer *outputBuffer) append(category, value string) {
 	if value == "" {
 		return
@@ -69,31 +74,42 @@ type Session struct {
 	stop         *Stop
 	exitCode     *int
 	terminalErr  error
+	capabilities Capabilities
+	terminalID   string
+	terminals    []terminalBinding
 	stateVersion uint64
 	stateChanged chan struct{}
 	initialized  chan struct{}
 	initOnce     sync.Once
+	launchDone   chan struct{}
+	launchOnce   sync.Once
 
-	alive      atomic.Bool
-	finishOnce sync.Once
-	closeOnce  sync.Once
+	alive         atomic.Bool
+	finishOnce    sync.Once
+	closeOnce     sync.Once
+	terminateOnce sync.Once
+
+	terminalLauncher TerminalLauncher
 }
 
 func startSession(ctx context.Context, id string, plan Plan, options StartOptions) (*Session, error) {
 	session := &Session{
-		id:           id,
-		plan:         plan,
-		startedAt:    time.Now(),
-		pending:      make(map[int]chan responseResult),
-		state:        StateStarting,
-		stateChanged: make(chan struct{}),
-		initialized:  make(chan struct{}),
+		id:               id,
+		plan:             plan,
+		startedAt:        time.Now(),
+		pending:          make(map[int]chan responseResult),
+		state:            StateStarting,
+		stateChanged:     make(chan struct{}),
+		initialized:      make(chan struct{}),
+		launchDone:       make(chan struct{}),
+		terminalLauncher: options.terminalLauncher,
 	}
-	connection, err := startAdapter(ctx, plan, session.output.append)
+	connection, err := startAdapter(ctx, plan, session.output.append, options.terminalLauncher)
 	if err != nil {
 		return nil, err
 	}
 	session.connection = connection
+	session.terminalID = connection.terminalID
 	session.alive.Store(true)
 	go session.readLoop()
 	go session.watchProcess()
@@ -121,6 +137,7 @@ func newConnectedSession(id string, plan Plan, connection io.ReadWriteCloser) *S
 		state:        StateStarting,
 		stateChanged: make(chan struct{}),
 		initialized:  make(chan struct{}),
+		launchDone:   make(chan struct{}),
 	}
 	session.alive.Store(true)
 	go session.readLoop()
@@ -133,15 +150,19 @@ func (session *Session) Status() Status {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	status := Status{
-		SessionID: session.id,
-		Adapter:   session.plan.Adapter.Name,
-		Language:  session.plan.Adapter.Language,
-		Target:    session.plan.Target,
-		Mode:      session.plan.Mode,
-		Request:   session.plan.Request,
-		State:     session.state,
-		ExitCode:  cloneInt(session.exitCode),
-		StartedAt: session.startedAt,
+		SessionID:    session.id,
+		Adapter:      session.plan.Adapter.Name,
+		Language:     session.plan.Adapter.Language,
+		Target:       session.plan.Target,
+		Mode:         session.plan.Mode,
+		Request:      session.plan.Request,
+		Console:      session.plan.Console,
+		TerminalID:   session.terminalID,
+		Capabilities: session.capabilities,
+		StateVersion: session.stateVersion,
+		State:        session.state,
+		ExitCode:     cloneInt(session.exitCode),
+		StartedAt:    session.startedAt,
 	}
 	if session.stop != nil {
 		stop := *session.stop
@@ -165,18 +186,20 @@ func cloneInt(value *int) *int {
 func (session *Session) Output() string { return session.output.String() }
 
 func (session *Session) initializeAndLaunch(ctx context.Context, options StartOptions) error {
+	defer session.launchOnce.Do(func() { close(session.launchDone) })
 	response, err := session.request(ctx, &godap.InitializeRequest{
 		Request: request("initialize"),
 		Arguments: godap.InitializeRequestArguments{
-			ClientID:               "wingman",
-			ClientName:             "Wingman",
-			AdapterID:              session.plan.Adapter.AdapterID,
-			Locale:                 "en-US",
-			LinesStartAt1:          true,
-			ColumnsStartAt1:        true,
-			PathFormat:             "path",
-			SupportsVariableType:   true,
-			SupportsVariablePaging: true,
+			ClientID:                     "wingman",
+			ClientName:                   "Wingman",
+			AdapterID:                    session.plan.Adapter.AdapterID,
+			Locale:                       "en-US",
+			LinesStartAt1:                true,
+			ColumnsStartAt1:              true,
+			PathFormat:                   "path",
+			SupportsVariableType:         true,
+			SupportsVariablePaging:       true,
+			SupportsRunInTerminalRequest: session.plan.Console == ConsoleIntegrated && session.terminalLauncher != nil,
 		},
 	})
 	if err != nil {
@@ -186,6 +209,9 @@ func (session *Session) initializeAndLaunch(ctx context.Context, options StartOp
 	if !ok {
 		return fmt.Errorf("initialize returned %T", response)
 	}
+	session.mu.Lock()
+	session.capabilities = Capabilities{SupportsStepBack: initialized.Body.SupportsStepBack}
+	session.mu.Unlock()
 	session.setState(StateConfiguring, nil)
 
 	arguments, err := json.Marshal(session.plan.Arguments)
@@ -354,7 +380,7 @@ func (session *Session) readLoop() {
 		case godap.EventMessage:
 			session.handleEvent(message)
 		case godap.RequestMessage:
-			session.respondUnsupported(message)
+			go session.handleAdapterRequest(message)
 		}
 	}
 }
@@ -384,32 +410,137 @@ func (session *Session) handleEvent(message godap.EventMessage) {
 		session.state = StateTerminated
 		session.notifyStateLocked()
 		session.mu.Unlock()
+		session.closeAfterTermination()
 	case *godap.TerminatedEvent:
 		session.setState(StateTerminated, nil)
+		session.closeAfterTermination()
 	case *godap.OutputEvent:
 		session.output.append(event.Body.Category, event.Body.Output)
 	}
 }
 
-func (session *Session) respondUnsupported(message godap.RequestMessage) {
-	session.writeMu.Lock()
-	defer session.writeMu.Unlock()
-	session.seq++
-	response := &godap.ErrorResponse{
+func (session *Session) closeAfterTermination() {
+	session.terminateOnce.Do(func() {
+		go func() {
+			<-session.launchDone
+			session.closeResourcesWithError(nil)
+		}()
+	})
+}
+
+func (session *Session) handleAdapterRequest(message godap.RequestMessage) {
+	if request, ok := message.(*godap.RunInTerminalRequest); ok {
+		session.respondRunInTerminal(request)
+		return
+	}
+	session.respondError(message.GetRequest(), "notSupported", "Wingman does not support adapter-initiated request {command}")
+}
+
+func (session *Session) respondRunInTerminal(request *godap.RunInTerminalRequest) {
+	if session.plan.Console != ConsoleIntegrated || session.terminalLauncher == nil {
+		session.respondError(&request.Request, "notSupported", "Integrated terminal launch is not available")
+		return
+	}
+	if request.Arguments.ArgsCanBeInterpretedByShell {
+		session.respondError(&request.Request, "notSupported", "Shell-interpreted terminal arguments are not supported")
+		return
+	}
+	if len(request.Arguments.Args) == 0 || strings.TrimSpace(request.Arguments.Args[0]) == "" {
+		session.respondError(&request.Request, "invalidArgs", "runInTerminal requires a command")
+		return
+	}
+	environment, err := terminalEnvironment(request.Arguments.Env)
+	if err != nil {
+		session.respondError(&request.Request, "invalidArgs", err.Error())
+		return
+	}
+	dir := strings.TrimSpace(request.Arguments.Cwd)
+	if dir == "" {
+		dir = session.plan.ProjectDir
+	}
+	process, err := session.terminalLauncher.LaunchTerminal(context.Background(), TerminalLaunch{
+		Title: request.Arguments.Title,
+		Path:  request.Arguments.Args[0],
+		Args:  slices.Clone(request.Arguments.Args[1:]),
+		Dir:   dir,
+		Env:   environment,
+	})
+	if err != nil {
+		session.respondError(&request.Request, "runInTerminal", err.Error())
+		return
+	}
+	session.trackTerminal(process)
+	session.respond(&godap.RunInTerminalResponse{
 		Response: godap.Response{
-			ProtocolMessage: godap.ProtocolMessage{Seq: session.seq, Type: "response"},
-			RequestSeq:      message.GetRequest().Seq,
+			ProtocolMessage: godap.ProtocolMessage{Type: "response"},
+			RequestSeq:      request.Seq,
+			Success:         true,
+			Command:         request.Command,
+		},
+		Body: godap.RunInTerminalResponseBody{ProcessId: process.ProcessID()},
+	})
+}
+
+func terminalEnvironment(values map[string]any) (map[string]*string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	result := make(map[string]*string, len(values))
+	for key, value := range values {
+		if value == nil {
+			result[key] = nil
+			continue
+		}
+		text, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("runInTerminal environment %q must be a string or null", key)
+		}
+		textCopy := text
+		result[key] = &textCopy
+	}
+	return result, nil
+}
+
+func (session *Session) trackTerminal(process TerminalProcess) {
+	snapshot, output, cancel := process.Subscribe()
+	session.mu.Lock()
+	session.terminalID = process.ID()
+	session.terminals = append(session.terminals, terminalBinding{process: process, cancel: cancel})
+	session.mu.Unlock()
+	if len(snapshot) > 0 {
+		session.output.append("stdout", string(snapshot))
+	}
+	go func() {
+		for chunk := range output {
+			session.output.append("stdout", string(chunk))
+		}
+	}()
+}
+
+func (session *Session) respondError(request *godap.Request, id, format string) {
+	session.respond(&godap.ErrorResponse{
+		Response: godap.Response{
+			ProtocolMessage: godap.ProtocolMessage{Type: "response"},
+			RequestSeq:      request.Seq,
 			Success:         false,
-			Command:         message.GetRequest().Command,
-			Message:         "notSupported",
+			Command:         request.Command,
+			Message:         id,
 		},
 		Body: godap.ErrorResponseBody{Error: &godap.ErrorMessage{
 			Id:        1,
-			Format:    "Wingman does not support adapter-initiated request {command}",
-			Variables: map[string]string{"command": message.GetRequest().Command},
+			Format:    format,
+			Variables: map[string]string{"command": request.Command},
 			ShowUser:  true,
 		}},
-	}
+	})
+}
+
+func (session *Session) respond(response godap.ResponseMessage) {
+	session.writeMu.Lock()
+	defer session.writeMu.Unlock()
+	session.seq++
+	response.GetResponse().Seq = session.seq
+	response.GetResponse().Type = "response"
 	_ = godap.WriteProtocolMessage(session.connection, response)
 }
 
@@ -579,6 +710,20 @@ func (session *Session) StepOut(ctx context.Context, threadID int) error {
 		return err
 	}
 	return session.resumeRequest(ctx, &godap.StepOutRequest{Request: request("stepOut"), Arguments: godap.StepOutArguments{ThreadId: threadID}})
+}
+
+func (session *Session) StepBack(ctx context.Context, threadID int) error {
+	if !session.Status().Capabilities.SupportsStepBack {
+		return fmt.Errorf("debug adapter %s does not support stepping backward", session.plan.Adapter.Name)
+	}
+	threadID, err := session.resolveThreadID(ctx, threadID)
+	if err != nil {
+		return err
+	}
+	return session.resumeRequest(ctx, &godap.StepBackRequest{
+		Request:   request("stepBack"),
+		Arguments: godap.StepBackArguments{ThreadId: threadID},
+	})
 }
 
 func (session *Session) resumeRequest(ctx context.Context, message godap.RequestMessage) error {
@@ -790,11 +935,24 @@ func (session *Session) Close() {
 }
 
 func (session *Session) closeResources() {
+	session.closeResourcesWithError(errors.New("debug session closed"))
+}
+
+func (session *Session) closeResourcesWithError(closeErr error) {
 	session.closeOnce.Do(func() {
+		session.launchOnce.Do(func() { close(session.launchDone) })
 		session.alive.Store(false)
 		if session.connection != nil {
 			_ = session.connection.Close()
 		}
-		session.finish(errors.New("debug session closed"))
+		session.mu.Lock()
+		terminals := slices.Clone(session.terminals)
+		session.terminals = nil
+		session.mu.Unlock()
+		for _, terminal := range terminals {
+			terminal.cancel()
+			_ = terminal.process.Close()
+		}
+		session.finish(closeErr)
 	})
 }

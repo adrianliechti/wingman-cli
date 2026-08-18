@@ -34,6 +34,7 @@ import {
 	usePanelRef,
 } from "react-resizable-panels";
 import { createWorkspaceFile } from "./api/files";
+import { getDebugState, type DebugSession } from "./api/debug";
 import { ChatPanel } from "./components/ChatPanel";
 import { Tab } from "./components/Tab";
 import {
@@ -47,6 +48,7 @@ import {
 	DebugLauncher,
 	type DebugLauncherSeed,
 } from "./components/DebugLauncher";
+import { DebugTab } from "./components/DebugTab";
 import { DiffTab } from "./components/DiffTab";
 import { CompareTab } from "./components/CompareTab";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -91,7 +93,15 @@ import {
 
 interface CenterTab {
 	id: string;
-	type: "chat" | "file" | "diff" | "compare" | "terminal" | "task" | "graph";
+	type:
+		| "chat"
+		| "file"
+		| "diff"
+		| "compare"
+		| "terminal"
+		| "task"
+		| "graph"
+		| "debug";
 	label: string;
 	path?: string;
 	diffLayer?: DiffLayer;
@@ -721,6 +731,42 @@ export default function App() {
 		[keepTab, openDocument, showCenterTab, tabs],
 	);
 
+	const revealedDebugStopRef = useRef("");
+	useEffect(() => {
+		let disposed = false;
+		let timer = 0;
+		let controller: AbortController | null = null;
+		const poll = async () => {
+			controller = new AbortController();
+			let delay = 2_000;
+			try {
+				const state = await getDebugState(undefined, controller.signal);
+				if (disposed) return;
+				if (state.session && state.session.state !== "terminated") delay = 500;
+				if (state.session?.state === "stopped" && state.frame?.source?.path) {
+					const stopKey = `${state.session.session_id}:${state.session.state_version}`;
+					if (stopKey !== revealedDebugStopRef.current) {
+						revealedDebugStopRef.current = stopKey;
+						openFile(
+							state.frame.source.path,
+							state.frame.line,
+							state.frame.column,
+						);
+					}
+				}
+			} catch {
+				// Debug support is best-effort; a later poll will recover.
+			}
+			if (!disposed) timer = window.setTimeout(() => void poll(), delay);
+		};
+		void poll();
+		return () => {
+			disposed = true;
+			window.clearTimeout(timer);
+			controller?.abort();
+		};
+	}, [openFile]);
+
 	const handleFileMove = useCallback(
 		(from: string, to: string) => {
 			moveDocuments(from, to);
@@ -824,6 +870,33 @@ export default function App() {
 	const openInsightsTab = useCallback(() => {
 		showCenterTab({ id: "graph", type: "graph", label: "Insights" }, "keep");
 	}, [showCenterTab]);
+	const openDebugTab = useCallback(() => {
+		showCenterTab({ id: "debug", type: "debug", label: "Debug" }, "keep");
+	}, [showCenterTab]);
+	const openDebugSessionTabs = useCallback((session: DebugSession) => {
+		const debugTab: CenterTab = {
+			id: "debug",
+			type: "debug",
+			label: "Debug",
+		};
+		const terminalTab: CenterTab | undefined = session.terminal_id
+			? {
+					id: `terminal:${session.terminal_id}`,
+					type: "terminal",
+					label: `Debug · ${session.adapter}`,
+					terminalId: session.terminal_id,
+				}
+			: undefined;
+		setTabs((current) => {
+			const next = [...current];
+			if (!next.some((tab) => tab.id === debugTab.id)) next.push(debugTab);
+			if (terminalTab && !next.some((tab) => tab.id === terminalTab.id)) {
+				next.push(terminalTab);
+			}
+			return withSessionFallback(next);
+		});
+		setActiveTabId(terminalTab?.id ?? debugTab.id);
+	}, []);
 	const openDebugLauncher = useCallback((seed: DebugLauncherSeed = {}) => {
 		setDebugLauncher({ ...seed });
 	}, []);
@@ -1608,6 +1681,12 @@ export default function App() {
 				}),
 		});
 		actions.push({
+			id: "open-debug",
+			label: "Open debug console",
+			icon: <Bug size={12} className="text-fg-dim shrink-0" />,
+			run: openDebugTab,
+		});
+		actions.push({
 			id: "show-files",
 			label: "Show files",
 			icon: <FileText size={12} className="text-fg-dim shrink-0" />,
@@ -1634,6 +1713,7 @@ export default function App() {
 		showRightPanel,
 		showWorkspaceSearch,
 		openInsightsTab,
+		openDebugTab,
 		openDebugLauncher,
 		activeTab,
 		createTerminal,
@@ -2193,6 +2273,14 @@ export default function App() {
 											openFile(path, line, column)
 										}
 									/>
+								) : activeTab.type === "debug" ? (
+									<DebugTab
+										key={activeTab.id}
+										onLaunch={() => openDebugLauncher()}
+										onOpenFile={(path, line, column) =>
+											openFile(path, line, column)
+										}
+									/>
 								) : activeTab.type === "compare" &&
 								  activeTab.compareBase &&
 								  activeTab.compareHead &&
@@ -2298,7 +2386,8 @@ export default function App() {
 				open={debugLauncher !== null}
 				seed={debugLauncher ?? undefined}
 				onClose={() => setDebugLauncher(null)}
-				onStarted={(session) =>
+				onStarted={(session) => {
+					openDebugSessionTabs(session);
 					toast({
 						title:
 							session.state === "stopped"
@@ -2306,8 +2395,8 @@ export default function App() {
 								: "Debug session started",
 						description: `${session.language} · ${session.adapter}`,
 						tone: "success",
-					})
-				}
+					});
+				}}
 			/>
 
 			<Dialog

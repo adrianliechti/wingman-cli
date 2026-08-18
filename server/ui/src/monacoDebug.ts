@@ -236,6 +236,8 @@ export function createMonacoDebugBridge({
 			}),
 			editor.onMouseDown((event) => {
 				if (
+					!event.event.leftButton ||
+					event.event.rightButton ||
 					event.target.type !==
 						monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN ||
 					!event.target.position

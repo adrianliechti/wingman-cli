@@ -73,6 +73,24 @@ func TestDebugBreakpointsPersistWithoutActiveSession(t *testing.T) {
 	}
 }
 
+func TestDebugInspectionWithoutActiveSession(t *testing.T) {
+	root := t.TempDir()
+	app := newDebugTestServer(t, root)
+	request := httptest.NewRequest(http.MethodGet, "/api/debug/inspection", nil)
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var inspection debugInspectionResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &inspection); err != nil {
+		t.Fatal(err)
+	}
+	if inspection.Session != nil || inspection.Output != "" || inspection.Threads == nil || inspection.Frames == nil || inspection.Scopes == nil {
+		t.Fatalf("inspection = %#v", inspection)
+	}
+}
+
 func TestValidateDebugPlanConstrainsWorkspacePaths(t *testing.T) {
 	root := t.TempDir()
 	writeDebugTestFile(t, root, "main.go", "package main\nfunc main() {}\n")

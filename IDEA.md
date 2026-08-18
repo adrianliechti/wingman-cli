@@ -14,7 +14,7 @@ Wingman already provides:
 - Streaming workspace search with regex, case, whole-word, and file filters, plus previewed revision-checked replacement at match, file, and workspace scope.
 - File editing, terminals, permission gates, multiple models, persistent agent sessions, and queued or steerable turns.
 - Git status, branches, comparisons, staging, commits, pull, and push.
-- An experimental DAP debugger foundation: AI-reviewed launch plans, Go/Delve adapter discovery, `Run | Debug` CodeLens for Go entry points and tests, gutter breakpoints, stepping controls, current-frame highlighting, and hover evaluation.
+- An experimental DAP debugger foundation: AI-reviewed launch plans, Go/Delve adapter discovery, `Run | Debug` CodeLens for Go entry points and tests, gutter breakpoints, capability-aware stepping, automatic stop navigation, hover evaluation, a Debug tab for output/call stack/scopes/variables, and PTY-backed interactive sessions.
 - Tasks and schedules, skills, plugins, MCP, lifecycle hooks, structural code intelligence, and subagents.
 
 ## Feature gaps
@@ -75,9 +75,10 @@ Benchmarks: [Cursor Design Mode](https://cursor.com/docs/agent/design-mode) and 
 ### P1: Full IDE debugging and testing
 
 The DAP foundation, Go/Delve experiment, AI launch wizard, source breakpoints,
-basic stepping controls, and inline evaluation are implemented. Remaining work:
+capability-aware stepping, inline evaluation, debugger inspection/output tab,
+and integrated-terminal execution are implemented. Remaining work:
 
-- Dedicated variables, watches, call-stack, debugger-output, and debug-console panels.
+- Watch expressions and an interactive evaluate/debug console.
 - Additional adapter descriptors and language target detectors.
 - Test discovery and a Test Explorer.
 - Suite-level run/debug controls and richer inline test results.

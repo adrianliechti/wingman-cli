@@ -121,6 +121,19 @@ func TestResolvePlanResolvesOnlyDescriptorPathFields(t *testing.T) {
 	}
 }
 
+func TestMergeSourceBreakpointsPreservesUserBreakpoint(t *testing.T) {
+	planned := []SourceBreakpoint{{Line: 18}, {Line: 30}}
+	editor := []SourceBreakpoint{{Line: 18, Condition: "ready"}, {Line: 24}}
+	merged := mergeSourceBreakpoints(planned, editor)
+	want := []SourceBreakpoint{{Line: 18, Condition: "ready"}, {Line: 24}, {Line: 30}}
+	if !reflect.DeepEqual(merged, want) {
+		t.Fatalf("merged breakpoints = %#v, want %#v", merged, want)
+	}
+	if planned[0].Condition != "" {
+		t.Fatalf("planned breakpoints were mutated: %#v", planned)
+	}
+}
+
 func writeTestFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

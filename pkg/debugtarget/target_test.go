@@ -18,8 +18,15 @@ func main() { helper() }
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(mainTargets) != 1 || mainTargets[0].Kind != "main" || mainTargets[0].Line != 4 {
+	if len(mainTargets) != 1 || mainTargets[0].Kind != "main" || mainTargets[0].Directory != "cmd/demo" || mainTargets[0].Line != 4 {
 		t.Fatalf("main targets = %#v", mainTargets)
+	}
+	shiftedTargets, err := registry.DetectFile("cmd/demo/main.go", []byte("package main\n\n\n\nfunc main() {}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shiftedTargets) != 1 || shiftedTargets[0].ID != mainTargets[0].ID || shiftedTargets[0].Line == mainTargets[0].Line {
+		t.Fatalf("target identity changed after a line shift: before=%#v after=%#v", mainTargets, shiftedTargets)
 	}
 
 	testTargets, err := registry.DetectFile("thing_test.go", []byte(`package thing

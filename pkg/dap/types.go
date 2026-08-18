@@ -6,6 +6,8 @@
 package dap
 
 import (
+	"context"
+	"io"
 	"time"
 )
 
@@ -15,6 +17,45 @@ const (
 	TransportStdio Transport = "stdio"
 	TransportTCP   Transport = "tcp"
 )
+
+type Console string
+
+const (
+	ConsoleInternal   Console = "internalConsole"
+	ConsoleIntegrated Console = "integratedTerminal"
+)
+
+// TerminalStrategy declares how an adapter integrates with an interactive
+// terminal. It is adapter metadata, not language-specific launcher logic.
+type TerminalStrategy string
+
+const (
+	TerminalUnsupported    TerminalStrategy = ""
+	TerminalAdapterProcess TerminalStrategy = "adapterProcess"
+	TerminalRunInTerminal  TerminalStrategy = "runInTerminal"
+)
+
+// TerminalLaunch is a direct, argument-preserving command requested by the
+// DAP host or by an adapter through the standard runInTerminal request.
+type TerminalLaunch struct {
+	Title string
+	Path  string
+	Args  []string
+	Dir   string
+	Env   map[string]*string
+}
+
+type TerminalProcess interface {
+	io.Closer
+	ID() string
+	ProcessID() int
+	Done() <-chan struct{}
+	Subscribe() (snapshot []byte, output <-chan []byte, cancel func())
+}
+
+type TerminalLauncher interface {
+	LaunchTerminal(context.Context, TerminalLaunch) (TerminalProcess, error)
+}
 
 // Adapter describes how to start one debug adapter. Command is resolved to an
 // executable before a Plan reaches the session layer.
@@ -30,6 +71,7 @@ type Adapter struct {
 	Defaults           map[string]any
 	ConfigurationPaths []ConfigurationPath
 	ConfigurationHint  string
+	TerminalStrategy   TerminalStrategy
 }
 
 // ConfigurationPath identifies an adapter-owned configuration field whose
@@ -50,6 +92,7 @@ type AdapterInfo struct {
 	Projects           []string            `json:"projects"`
 	ConfigurationPaths []ConfigurationPath `json:"configuration_paths,omitempty"`
 	ConfigurationHint  string              `json:"configuration_hint,omitempty"`
+	TerminalStrategy   TerminalStrategy    `json:"terminal_strategy,omitempty"`
 }
 
 // StartOptions carries an AI-generated DAP launch or attach configuration.
@@ -62,6 +105,8 @@ type StartOptions struct {
 	Configuration       map[string]any
 	Breakpoints         map[string][]SourceBreakpoint
 	FunctionBreakpoints []FunctionBreakpoint
+	Console             Console
+	terminalLauncher    TerminalLauncher
 }
 
 type SourceBreakpoint struct {
@@ -85,6 +130,7 @@ type Plan struct {
 	Target     string
 	Mode       string
 	Request    string
+	Console    Console
 	Arguments  map[string]any
 }
 
@@ -107,17 +153,25 @@ type Stop struct {
 }
 
 type Status struct {
-	SessionID string    `json:"session_id"`
-	Adapter   string    `json:"adapter"`
-	Language  string    `json:"language"`
-	Target    string    `json:"target,omitempty"`
-	Mode      string    `json:"mode,omitempty"`
-	Request   string    `json:"request"`
-	State     State     `json:"state"`
-	Stop      *Stop     `json:"stop,omitempty"`
-	ExitCode  *int      `json:"exit_code,omitempty"`
-	StartedAt time.Time `json:"started_at"`
-	Error     string    `json:"error,omitempty"`
+	SessionID    string       `json:"session_id"`
+	Adapter      string       `json:"adapter"`
+	Language     string       `json:"language"`
+	Target       string       `json:"target,omitempty"`
+	Mode         string       `json:"mode,omitempty"`
+	Request      string       `json:"request"`
+	Console      Console      `json:"console"`
+	TerminalID   string       `json:"terminal_id,omitempty"`
+	Capabilities Capabilities `json:"capabilities"`
+	StateVersion uint64       `json:"state_version"`
+	State        State        `json:"state"`
+	Stop         *Stop        `json:"stop,omitempty"`
+	ExitCode     *int         `json:"exit_code,omitempty"`
+	StartedAt    time.Time    `json:"started_at"`
+	Error        string       `json:"error,omitempty"`
+}
+
+type Capabilities struct {
+	SupportsStepBack bool `json:"supports_step_back"`
 }
 
 type Thread struct {

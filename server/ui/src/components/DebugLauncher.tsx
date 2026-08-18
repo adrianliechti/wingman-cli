@@ -1,4 +1,4 @@
-import { Bug, Loader2, Play, Sparkles, Square } from "lucide-react";
+import { Bug, Loader2, Play, Sparkles, Square, UndoDot } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	controlDebug,
@@ -188,6 +188,9 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 	const selectedTarget = discovery?.targets.find(
 		(target) => target.id === targetID,
 	);
+	const plannedAdapter = discovery?.adapters.find(
+		(item) => item.name === plan?.adapter,
+	);
 
 	return (
 		<Dialog
@@ -308,11 +311,39 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 					plan &&
 					(phase === "review" || phase === "starting") && (
 						<>
-							<div className="grid grid-cols-3 gap-2 rounded-md border border-border bg-bg-surface p-2.5 text-[11px]">
+							<div className="grid grid-cols-4 gap-2 rounded-md border border-border bg-bg-surface p-2.5 text-[11px]">
 								<PlanFact label="Adapter" value={plan.adapter} />
 								<PlanFact label="Project" value={plan.project_dir} />
 								<PlanFact label="Request" value={plan.request} />
+								<PlanFact
+									label="Console"
+									value={
+										plan.console === "integratedTerminal"
+											? "Terminal"
+											: "Debug output"
+									}
+								/>
 							</div>
+							<label className="block space-y-1 text-[11px] text-fg-muted">
+								<span>Program input and output</span>
+								<select
+									value={plan.console}
+									onChange={(event) =>
+										setPlan({
+											...plan,
+											console: event.target.value as DebugLaunchPlan["console"],
+										})
+									}
+									className={fieldClass}
+								>
+									<option value="internalConsole">Debug output</option>
+									{plannedAdapter?.integrated_terminal && (
+										<option value="integratedTerminal">
+											Integrated terminal (interactive/TUI)
+										</option>
+									)}
+								</select>
+							</label>
 							<label className="block space-y-1 text-[11px] text-fg-muted">
 								<span>Adapter configuration</span>
 								<textarea
@@ -344,7 +375,7 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 					)}
 
 				{error && (
-					<div className="rounded-md border border-danger/30 bg-danger/5 px-2.5 py-2 text-[11px] text-danger">
+					<div className="whitespace-pre-wrap break-words rounded-md border border-danger/30 bg-danger/5 px-2.5 py-2 text-[11px] text-danger">
 						{error}
 					</div>
 				)}
@@ -376,7 +407,9 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 									setPhase("choose");
 								}}
 							>
-								Back
+								<span className="flex items-center gap-1.5">
+									<UndoDot size={11} /> Back
+								</span>
 							</button>
 							<button
 								type="button"

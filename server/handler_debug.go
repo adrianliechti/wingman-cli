@@ -16,6 +16,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 	"github.com/adrianliechti/wingman-agent/pkg/debugtarget"
+	"github.com/adrianliechti/wingman-agent/pkg/terminal"
 )
 
 const (
@@ -30,10 +31,11 @@ const (
 var errActiveDebugSession = errors.New("a debug session is already active")
 
 type debugAdapter struct {
-	Name              string   `json:"name"`
-	Language          string   `json:"language"`
-	Projects          []string `json:"projects"`
-	ConfigurationHint string   `json:"configuration_hint,omitempty"`
+	Name               string   `json:"name"`
+	Language           string   `json:"language"`
+	Projects           []string `json:"projects"`
+	ConfigurationHint  string   `json:"configuration_hint,omitempty"`
+	IntegratedTerminal bool     `json:"integrated_terminal"`
 }
 
 type debugDiscoveryResponse struct {
@@ -58,6 +60,7 @@ type debugLaunchPlan struct {
 	Adapter             string                `json:"adapter"`
 	ProjectDir          string                `json:"project_dir"`
 	Request             string                `json:"request"`
+	Console             string                `json:"console"`
 	Configuration       map[string]any        `json:"configuration"`
 	Breakpoints         []debugPlanBreakpoint `json:"breakpoints"`
 	FunctionBreakpoints []string              `json:"function_breakpoints"`
@@ -69,6 +72,21 @@ type debugStateResponse struct {
 	Frame       *dap.StackFrame        `json:"frame,omitempty"`
 	Breakpoints []dap.SourceBreakpoint `json:"breakpoints"`
 	FrameError  string                 `json:"frame_error,omitempty"`
+}
+
+type debugScopeInspection struct {
+	Scope     dap.Scope      `json:"scope"`
+	Variables []dap.Variable `json:"variables"`
+	Error     string         `json:"error,omitempty"`
+}
+
+type debugInspectionResponse struct {
+	Session *dap.Status            `json:"session,omitempty"`
+	Output  string                 `json:"output"`
+	Threads []dap.Thread           `json:"threads"`
+	Frames  []dap.StackFrame       `json:"frames"`
+	Scopes  []debugScopeInspection `json:"scopes"`
+	Error   string                 `json:"error,omitempty"`
 }
 
 func (s *Server) handleDebugDiscovery(w http.ResponseWriter, r *http.Request) {
@@ -322,6 +340,58 @@ func (s *Server) handleDebugState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, response)
 }
 
+func (s *Server) handleDebugInspection(w http.ResponseWriter, r *http.Request) {
+	response := debugInspectionResponse{
+		Output:  "",
+		Threads: []dap.Thread{},
+		Frames:  []dap.StackFrame{},
+		Scopes:  []debugScopeInspection{},
+	}
+	err := s.workspace.WithDAPManager(func(manager *dap.Manager) error {
+		session := manager.ActiveSession()
+		if session == nil {
+			return nil
+		}
+		status := session.Status()
+		response.Session = &status
+		response.Output = session.Output()
+		if status.State != dap.StateStopped {
+			return nil
+		}
+
+		requestCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		threads, err := session.Threads(requestCtx)
+		if err != nil {
+			response.Error = err.Error()
+			return nil
+		}
+		response.Threads = threads
+		threadID := 0
+		if status.Stop != nil {
+			threadID = status.Stop.ThreadID
+		}
+		frames, _, err := session.StackTrace(requestCtx, threadID, 0, 100)
+		if err != nil {
+			response.Error = err.Error()
+			return nil
+		}
+		for index := range frames {
+			normalizeDebugFrame(s.workspace.RootPath, &frames[index])
+		}
+		response.Frames = frames
+		if len(frames) > 0 {
+			response.Scopes = inspectDebugScopes(requestCtx, session, frames[0].ID)
+		}
+		return nil
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, response)
+}
+
 func (s *Server) handleDebugBreakpoints(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Path        string                 `json:"path"`
@@ -388,6 +458,8 @@ func (s *Server) handleDebugControl(w http.ResponseWriter, r *http.Request) {
 			err = session.StepIn(r.Context(), body.ThreadID)
 		case "stepOut":
 			err = session.StepOut(r.Context(), body.ThreadID)
+		case "stepBack":
+			err = session.StepBack(r.Context(), body.ThreadID)
 		case "pause":
 			err = session.Pause(r.Context(), body.ThreadID)
 		case "stop":
@@ -450,6 +522,100 @@ func (s *Server) handleDebugEvaluate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, evaluation)
 }
 
+func (s *Server) handleDebugScopes(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		SessionID string `json:"session_id,omitempty"`
+		FrameID   int    `json:"frame_id"`
+	}
+	if err := decodeDebugJSON(w, r, &body); err != nil {
+		return
+	}
+	if body.FrameID <= 0 {
+		http.Error(w, "frame_id must be positive", http.StatusBadRequest)
+		return
+	}
+	var scopes []debugScopeInspection
+	err := s.workspace.WithDAPManager(func(manager *dap.Manager) error {
+		session, err := manager.Session(strings.TrimSpace(body.SessionID))
+		if err != nil {
+			return err
+		}
+		if session.Status().State != dap.StateStopped {
+			return errors.New("debug session must be stopped to inspect scopes")
+		}
+		scopes = inspectDebugScopes(r.Context(), session, body.FrameID)
+		return nil
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if scopes == nil {
+		scopes = []debugScopeInspection{}
+	}
+	writeJSON(w, map[string]any{"scopes": scopes})
+}
+
+func inspectDebugScopes(ctx context.Context, session *dap.Session, frameID int) []debugScopeInspection {
+	scopes, err := session.Scopes(ctx, frameID)
+	if err != nil {
+		return []debugScopeInspection{{Error: err.Error()}}
+	}
+	result := make([]debugScopeInspection, 0, len(scopes))
+	for _, scope := range scopes {
+		inspection := debugScopeInspection{Scope: scope, Variables: []dap.Variable{}}
+		if scope.VariablesReference > 0 {
+			variables, err := session.Variables(ctx, scope.VariablesReference, 0, 200)
+			if err != nil {
+				inspection.Error = err.Error()
+			} else {
+				inspection.Variables = variables
+			}
+		}
+		result = append(result, inspection)
+	}
+	return result
+}
+
+func (s *Server) handleDebugVariables(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		SessionID string `json:"session_id,omitempty"`
+		Reference int    `json:"variables_reference"`
+		Start     int    `json:"start,omitempty"`
+		Count     int    `json:"count,omitempty"`
+	}
+	if err := decodeDebugJSON(w, r, &body); err != nil {
+		return
+	}
+	if body.Reference <= 0 || body.Start < 0 || body.Count < 0 || body.Count > 500 {
+		http.Error(w, "invalid variables range", http.StatusBadRequest)
+		return
+	}
+	if body.Count == 0 {
+		body.Count = 200
+	}
+	var variables []dap.Variable
+	err := s.workspace.WithDAPManager(func(manager *dap.Manager) error {
+		session, err := manager.Session(strings.TrimSpace(body.SessionID))
+		if err != nil {
+			return err
+		}
+		if session.Status().State != dap.StateStopped {
+			return errors.New("debug session must be stopped to inspect variables")
+		}
+		variables, err = session.Variables(r.Context(), body.Reference, body.Start, body.Count)
+		return err
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if variables == nil {
+		variables = []dap.Variable{}
+	}
+	writeJSON(w, map[string]any{"variables": variables})
+}
+
 func decodeDebugJSON(w http.ResponseWriter, r *http.Request, target any) error {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, debugRequestLimit))
 	decoder.DisallowUnknownFields()
@@ -476,10 +642,11 @@ func publicDebugAdapters(root string, values []dap.AdapterInfo) []debugAdapter {
 			}
 		}
 		result = append(result, debugAdapter{
-			Name:              value.Name,
-			Language:          value.Language,
-			Projects:          projects,
-			ConfigurationHint: value.ConfigurationHint,
+			Name:               value.Name,
+			Language:           value.Language,
+			Projects:           projects,
+			ConfigurationHint:  value.ConfigurationHint,
+			IntegratedTerminal: value.TerminalStrategy != dap.TerminalUnsupported && terminal.Supported(),
 		})
 	}
 	if result == nil {
@@ -543,6 +710,7 @@ func (s *Server) debugStartOptions(plan debugLaunchPlan) (dap.StartOptions, erro
 		Adapter:       plan.Adapter,
 		ProjectDir:    plan.ProjectDir,
 		Request:       plan.Request,
+		Console:       dap.Console(plan.Console),
 		Configuration: cloneJSONMap(plan.Configuration),
 		Breakpoints:   make(map[string][]dap.SourceBreakpoint),
 	}
@@ -599,6 +767,16 @@ func (s *Server) validateDebugPlan(plan *debugLaunchPlan, adapters []dap.Adapter
 	}
 	if selectedAdapter == nil {
 		return fmt.Errorf("adapter %q is not available", plan.Adapter)
+	}
+	plan.Console = strings.TrimSpace(plan.Console)
+	if plan.Console == "" {
+		plan.Console = string(dap.ConsoleInternal)
+	}
+	if plan.Console != string(dap.ConsoleInternal) && plan.Console != string(dap.ConsoleIntegrated) {
+		return fmt.Errorf("console must be %s or %s", dap.ConsoleInternal, dap.ConsoleIntegrated)
+	}
+	if plan.Console == string(dap.ConsoleIntegrated) && (selectedAdapter.TerminalStrategy == dap.TerminalUnsupported || !terminal.Supported()) {
+		return fmt.Errorf("adapter %s cannot use an integrated terminal on this host", selectedAdapter.Name)
 	}
 	plan.Request = strings.ToLower(strings.TrimSpace(plan.Request))
 	if plan.Request != "launch" && plan.Request != "attach" {
@@ -672,6 +850,7 @@ func (s *Server) generateDebugPlan(ctx context.Context, request debugPlanRequest
 	instructions := `You create one reviewed Debug Adapter Protocol launch or attach plan for a local code workspace.
 The installed debug adapter owns all language-specific configuration semantics. Use only the adapter hints and workspace evidence provided. Never invent a path, target, function, process ID, command, or environment value.
 Return adapter-specific arguments in configuration_json as a JSON object string. Do not include request in that object. Use concrete paths interpreted from project_dir, never editor variables such as ${workspaceFolder}. Breakpoint file_path values are always workspace-relative.
+Choose internalConsole for ordinary programs. Choose integratedTerminal only when the user intent or target evidence indicates interactive stdin, terminal control sequences, or a full-screen TUI and the selected adapter advertises it.
 For action=debug and a selected source target, normally add a source breakpoint at that target so execution stops in useful code. For action=run, do not add breakpoints and use the adapter's no-debug configuration when its hint supports one.
 Keep the summary short and explain what will execute. If the intent asks to attach but gives no concrete process ID, produce a launch plan instead. Do not emit shell commands.`
 
@@ -688,7 +867,7 @@ Keep the summary short and explain what will execute. If the intent asks to atta
 	}
 	input.WriteString("Installed adapters:\n")
 	for _, adapter := range publicDebugAdapters(s.workspace.RootPath, adapters) {
-		fmt.Fprintf(&input, "- %s (%s), projects=%s\n  hint: %s\n", adapter.Name, adapter.Language, strings.Join(adapter.Projects, ", "), adapter.ConfigurationHint)
+		fmt.Fprintf(&input, "- %s (%s), projects=%s, integrated_terminal=%t\n  hint: %s\n", adapter.Name, adapter.Language, strings.Join(adapter.Projects, ", "), adapter.IntegratedTerminal, adapter.ConfigurationHint)
 	}
 	input.WriteString("\nWorkspace evidence:\n")
 	input.WriteString(evidence)
@@ -711,6 +890,7 @@ Keep the summary short and explain what will execute. If the intent asks to atta
 		Adapter             string                `json:"adapter"`
 		ProjectDir          string                `json:"project_dir"`
 		Request             string                `json:"request"`
+		Console             string                `json:"console"`
 		ConfigurationJSON   string                `json:"configuration_json"`
 		Breakpoints         []debugPlanBreakpoint `json:"breakpoints"`
 		FunctionBreakpoints []string              `json:"function_breakpoints"`
@@ -725,6 +905,7 @@ Keep the summary short and explain what will execute. If the intent asks to atta
 	return debugLaunchPlan{
 		Action: request.Action, Title: generated.Title, Summary: generated.Summary,
 		Adapter: generated.Adapter, ProjectDir: generated.ProjectDir, Request: generated.Request,
+		Console:       generated.Console,
 		Configuration: configuration, Breakpoints: generated.Breakpoints,
 		FunctionBreakpoints: generated.FunctionBreakpoints,
 	}, nil
@@ -743,6 +924,7 @@ func debugPlanOutputSchema(adapters []dap.AdapterInfo) map[string]any {
 			"adapter":            map[string]any{"type": "string", "enum": names},
 			"project_dir":        map[string]any{"type": "string"},
 			"request":            map[string]any{"type": "string", "enum": []string{"launch", "attach"}},
+			"console":            map[string]any{"type": "string", "enum": []string{string(dap.ConsoleInternal), string(dap.ConsoleIntegrated)}},
 			"configuration_json": map[string]any{"type": "string"},
 			"breakpoints": map[string]any{
 				"type": "array",
@@ -762,7 +944,7 @@ func debugPlanOutputSchema(adapters []dap.AdapterInfo) map[string]any {
 			},
 			"function_breakpoints": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 		},
-		"required":             []string{"title", "summary", "adapter", "project_dir", "request", "configuration_json", "breakpoints", "function_breakpoints"},
+		"required":             []string{"title", "summary", "adapter", "project_dir", "request", "console", "configuration_json", "breakpoints", "function_breakpoints"},
 		"additionalProperties": false,
 	}
 }
@@ -775,7 +957,7 @@ func (s *Server) debugPlanningEvidence(ctx context.Context, targets []debugtarge
 			fmt.Fprintf(&evidence, "- ... %d more candidates\n", len(targets)-index)
 			break
 		}
-		fmt.Fprintf(&evidence, "- %s: %s %s at %s:%d\n", target.ID, target.Kind, target.Name, target.Path, target.Line)
+		fmt.Fprintf(&evidence, "- %s: %s %s in %s at %s:%d\n", target.ID, target.Kind, target.Name, target.Directory, target.Path, target.Line)
 	}
 
 	manifest, err := debugWorkspaceManifest(ctx, s.workspace.RootPath)

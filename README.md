@@ -12,7 +12,7 @@ A powerful AI-powered coding assistant that runs directly in your terminal. Wing
 - **File Operations** — Read, write, edit, and search files in your codebase
 - **Shell Integration** — Execute shell commands with user approval
 - **LSP Integration** — Code intelligence via auto-detected language servers (definitions, references, diagnostics, call hierarchy, and more)
-- **AI-Assisted Debugging** — Debug Adapter Protocol sessions with adapter discovery, reviewed launch plans, breakpoints, stepping, and inline runtime values
+- **AI-Assisted Debugging** — Debug Adapter Protocol sessions with adapter discovery, reviewed launch plans, breakpoints, stepping, stack/variable inspection, output, and interactive terminals
 - **MCP Support** — Extend functionality with Model Context Protocol servers
 - **Multi-Model Support** — Works with any [OpenResponses API](https://www.openresponses.org) compatible endpoint with auto-selection
 - **Changes** — Git-backed working tree changes with a visual diff viewer
@@ -271,13 +271,27 @@ Keep `dlv` on `PATH` (standard Go bin locations are also checked) and open a
 workspace containing `go.mod` or `go.work`. Go `main`, test, benchmark, fuzz,
 and example functions receive CodeLens actions. During a debug session, click
 Monaco's glyph margin to toggle source breakpoints; the editor shows the active
-stack frame, Continue/Pause/Step/Stop controls, and hover evaluation while
-stopped.
+stack frame, automatically reveals each new stop, and provides
+Continue/Pause/Step/Stop controls and hover evaluation while stopped. Starting
+a session opens a dedicated **Debug** tab with debugger/debuggee output, the
+call stack, scopes, and recursively expandable variables.
 
-The protocol session and transports are language-neutral. Adapter startup is a
-data descriptor, and editor target discovery uses independent language
-detectors, so another language can be added without changing the DAP client or
-AI planner.
+Every reviewed plan also chooses where program I/O runs. **Debug output** uses
+the internal console and is appropriate for ordinary programs. **Integrated
+terminal** starts compatible adapters in Wingman's PTY and opens a terminal tab
+for stdin, ANSI output, resizing, and full-screen CLI/TUI programs. This is a
+generic DAP host policy rather than a Go detector rule. Adapter descriptors
+declare how they support it; the client also implements DAP `runInTerminal` for
+future adapters that request a client-owned terminal. When the debuggee exits,
+Wingman tears down the adapter cleanly and removes its terminal tab while the
+captured Debug output remains available.
+
+The protocol session and transports are language-neutral. Deterministic
+language detectors provide stable target facts (such as a Go test name and its
+package directory), while adapter descriptors validate and resolve declared
+path fields. The AI only composes the intent-specific adapter configuration.
+Another language can therefore be added without changing the DAP client or AI
+planner.
 
 ## 🛠️ Built-in Tools
 

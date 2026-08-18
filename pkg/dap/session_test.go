@@ -46,6 +46,9 @@ func TestSessionLaunchAndInspectionFlow(t *testing.T) {
 	if !ok || status.State != StateStopped || status.Stop == nil || status.Stop.ThreadID != 11 {
 		t.Fatalf("status = %+v, stopped = %v", status, ok)
 	}
+	if !status.Capabilities.SupportsStepBack {
+		t.Fatal("adapter step-back capability was not retained")
+	}
 	if adapter.sourceBreakpointLine != 7 || adapter.functionBreakpoint != "main.work" {
 		t.Fatalf("adapter breakpoints = line %d function %q", adapter.sourceBreakpointLine, adapter.functionBreakpoint)
 	}
@@ -88,6 +91,15 @@ func TestSessionLaunchAndInspectionFlow(t *testing.T) {
 	if !ok || status.State != StateStopped || status.Stop.Reason != "breakpoint" {
 		t.Fatalf("status after continue = %+v, stopped = %v", status, ok)
 	}
+
+	epoch = session.StateEpoch()
+	if err := session.StepBack(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+	status, ok = session.WaitForStop(ctx, epoch)
+	if !ok || status.State != StateStopped || status.Stop.Reason != "step" {
+		t.Fatalf("status after step back = %+v, stopped = %v", status, ok)
+	}
 }
 
 type fakeAdapter struct {
@@ -123,6 +135,7 @@ func (adapter *fakeAdapter) serve() {
 				Body: godap.Capabilities{
 					SupportsConfigurationDoneRequest: true,
 					SupportsFunctionBreakpoints:      true,
+					SupportsStepBack:                 true,
 				},
 			})
 		case *godap.LaunchRequest:
@@ -192,6 +205,12 @@ func (adapter *fakeAdapter) serve() {
 				Event: adapter.event("stopped"),
 				Body:  godap.StoppedEventBody{Reason: "breakpoint", ThreadId: 11, AllThreadsStopped: true},
 			})
+		case *godap.StepBackRequest:
+			adapter.send(&godap.StepBackResponse{Response: adapter.response(request.Seq, "stepBack")})
+			adapter.send(&godap.StoppedEvent{
+				Event: adapter.event("stopped"),
+				Body:  godap.StoppedEventBody{Reason: "step", ThreadId: 11, AllThreadsStopped: true},
+			})
 		case *godap.DisconnectRequest:
 			adapter.send(&godap.DisconnectResponse{Response: adapter.response(request.Seq, "disconnect")})
 			return
@@ -221,6 +240,8 @@ func (adapter *fakeAdapter) send(message godap.Message) {
 		message.GetResponse().Seq = adapter.seq
 	case godap.EventMessage:
 		message.GetEvent().Seq = adapter.seq
+	case godap.RequestMessage:
+		message.GetRequest().Seq = adapter.seq
 	}
 	if err := godap.WriteProtocolMessage(adapter.conn, message); err != nil {
 		adapter.t.Logf("fake adapter send: %v", err)

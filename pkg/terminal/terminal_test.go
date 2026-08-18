@@ -3,10 +3,59 @@
 package terminal
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestCreateCommandUsesWorkspacePTY(t *testing.T) {
+	root := t.TempDir()
+	manager := NewManager(root)
+	defer manager.Close()
+
+	value := "command-env-ok"
+	session, err := manager.CreateCommand(CommandSpec{
+		Path:  "/bin/sh",
+		Args:  []string{"-c", `printf '%s\n%s\n' "$WINGMAN_COMMAND_TEST" "$PWD"; read answer`},
+		Dir:   root,
+		Env:   map[string]*string{"WINGMAN_COMMAND_TEST": &value},
+		Title: "Debug command",
+	}, 100, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Title() != "Debug command" || session.ProcessID() <= 0 {
+		t.Fatalf("session = title %q pid %d", session.Title(), session.ProcessID())
+	}
+	snapshot, output, cancel := session.Subscribe()
+	defer cancel()
+	combined := make(chan []byte, 8)
+	if len(snapshot) > 0 {
+		combined <- snapshot
+	}
+	go func() {
+		for chunk := range output {
+			combined <- chunk
+		}
+		close(combined)
+	}()
+	if !readUntil(t, combined, value) {
+		t.Fatal("command environment was not printed")
+	}
+	if err := session.Write([]byte("done\r")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreateCommandRejectsOutsideWorkingDirectory(t *testing.T) {
+	manager := NewManager(t.TempDir())
+	defer manager.Close()
+	_, err := manager.CreateCommand(CommandSpec{Path: "/bin/sh", Dir: filepath.Dir(manager.dir)}, 80, 24)
+	if err == nil || !strings.Contains(err.Error(), "inside the workspace") {
+		t.Fatalf("outside working directory error = %v", err)
+	}
+}
 
 func TestSessionEchoAndExit(t *testing.T) {
 	m := NewManager(t.TempDir())
