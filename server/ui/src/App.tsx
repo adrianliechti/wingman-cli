@@ -14,7 +14,6 @@ import {
 	PanelRightOpen,
 	Plus,
 	RefreshCw,
-	Save,
 	Search,
 	Sparkles,
 	SquareTerminal,
@@ -23,6 +22,7 @@ import {
 import {
 	type CSSProperties,
 	type ErrorInfo,
+	type ReactNode,
 	useCallback,
 	useEffect,
 	useMemo,
@@ -40,7 +40,23 @@ import { createWorkspaceFile } from "./api/files";
 import { getInspectAvailability } from "./api/capabilities";
 import { controlDebug, getDebugSession, type DebugSession } from "./api/debug";
 import { ChatPanel } from "./components/ChatPanel";
-import { Tab } from "./components/Tab";
+import {
+	PaneDropZones,
+	type PaneZone,
+	TabStrip,
+	type TabStripItem,
+} from "./components/TabStrip";
+import {
+	type CenterTab,
+	chatTabId,
+	draftChatTab,
+	moveTab,
+	paneOf,
+	type PaneSide,
+	placeCenterTab,
+	syncDebugTab,
+	withSessionFallback,
+} from "./mainLayout";
 import {
 	CommandPalette,
 	type PaletteAction,
@@ -77,11 +93,7 @@ import { AgentPicker, BUILTIN_AGENT_ID } from "./components/AgentPicker";
 import { AgentSessions } from "./components/AgentSessions";
 import { useCapabilities } from "./hooks/useCapabilities";
 import { useOpenDocuments } from "./hooks/useOpenDocuments";
-import {
-	type ChatEntry,
-	type PromptReply,
-	useWebSocket,
-} from "./hooks/useWebSocket";
+import { type ChatEntry, useWebSocket } from "./hooks/useWebSocket";
 import type {
 	CompareMode,
 	DiffLayer,
@@ -102,34 +114,7 @@ import {
 	type WorkspaceEditSummary,
 } from "./workspaceEdit";
 
-interface CenterTab {
-	id: string;
-	type:
-		| "chat"
-		| "file"
-		| "diff"
-		| "compare"
-		| "terminal"
-		| "debug"
-		| "task"
-		| "graph";
-	label: string;
-	path?: string;
-	diffLayer?: DiffLayer;
-	compareBase?: string;
-	compareHead?: string;
-	compareMode?: CompareMode;
-	line?: number;
-	column?: number;
-	navigationKey?: number;
-	external?: boolean;
-	sessionId?: string;
-	terminalId?: string;
-	taskId?: string;
-	preview?: boolean;
-}
-
-type RightTab = "changes" | "files" | "inspect" | "agents";
+type WorkspaceTab = "changes" | "files" | "inspect" | "agents";
 type DebugContentView = "output" | "terminal";
 type CloseRequest = { kind: "file" | "terminal"; tab: CenterTab } | null;
 type SaveConflictRequest = { path: string; closeTabId?: string } | null;
@@ -163,6 +148,7 @@ const DEBUG_DETAILS_MIN_SIZE = 240;
 const DEBUG_DETAILS_MAX_SIZE = 480;
 
 const EMPTY_ENTRIES: never[] = [];
+const EMPTY_MODES: ModeOption[] = [];
 const EMPTY_USAGE = {
 	inputTokens: 0,
 	cachedTokens: 0,
@@ -178,40 +164,6 @@ const TERMINAL_SHELL_MENU_HINT = /Mac|iPhone|iPad/.test(navigator.platform)
 	? "Option-click"
 	: "Alt-click";
 
-const chatTabId = (sessionId: string) => `chat:${sessionId}`;
-
-function debugTab(): CenterTab {
-	return { id: "debug", type: "debug", label: "Debug" };
-}
-
-function syncDebugTab(
-	current: CenterTab[],
-	terminalId: string | undefined,
-	ensure: boolean,
-): CenterTab[] {
-	let changed = false;
-	let next = current;
-	if (terminalId) {
-		const filtered = current.filter(
-			(tab) => tab.type !== "terminal" || tab.terminalId !== terminalId,
-		);
-		if (filtered.length !== current.length) {
-			next = filtered;
-			changed = true;
-		}
-	}
-
-	const index = next.findIndex((tab) => tab.id === "debug");
-	if (index < 0) {
-		return ensure ? [...next, { ...debugTab(), terminalId }] : next;
-	}
-	if (next[index].terminalId === terminalId) return changed ? next : current;
-
-	const updated = [...next];
-	updated[index] = { ...updated[index], terminalId };
-	return updated;
-}
-
 function terminalShellName(name: string): string {
 	const knownNames: Record<string, string> = {
 		bash: "Bash",
@@ -223,60 +175,6 @@ function terminalShellName(name: string): string {
 		zsh: "Zsh",
 	};
 	return knownNames[name.toLowerCase()] ?? name;
-}
-
-function draftChatTab(): CenterTab {
-	return {
-		id: chatTabId(""),
-		type: "chat",
-		label: "Agent",
-		sessionId: "",
-	};
-}
-
-function withSessionFallback(tabs: CenterTab[]): CenterTab[] {
-	return tabs.some((tab) => tab.type === "chat")
-		? tabs
-		: [draftChatTab(), ...tabs];
-}
-
-function placeCenterTab(
-	current: CenterTab[],
-	candidate: CenterTab,
-	disposition: TabDisposition,
-	dirtyPaths: ReadonlySet<string>,
-): { tabs: CenterTab[]; replaced?: CenterTab } {
-	const existingIndex = current.findIndex((tab) => tab.id === candidate.id);
-	if (existingIndex >= 0) {
-		const existing = current[existingIndex];
-		if (disposition !== "keep" || !existing.preview) return { tabs: current };
-		const tabs = [...current];
-		tabs[existingIndex] = { ...existing, preview: undefined };
-		return { tabs };
-	}
-
-	const placed: CenterTab = {
-		...candidate,
-		preview: disposition === "preview" || undefined,
-	};
-	if (disposition === "keep") return { tabs: [...current, placed] };
-
-	const previewIndex = current.findIndex((tab) => tab.preview);
-	if (previewIndex < 0) return { tabs: [...current, placed] };
-	const previous = current[previewIndex];
-	if (
-		previous.type === "file" &&
-		previous.path &&
-		dirtyPaths.has(previous.path)
-	) {
-		const tabs = current.map((tab, index) =>
-			index === previewIndex ? { ...tab, preview: undefined } : tab,
-		);
-		return { tabs: [...tabs, placed] };
-	}
-	const tabs = [...current];
-	tabs[previewIndex] = placed;
-	return { tabs, replaced: previous };
 }
 
 function moveWorkspacePath(path: string, from: string, to: string): string {
@@ -376,7 +274,8 @@ export default function App() {
 			});
 		}
 	}, [tabEnabled, toast]);
-	const [requestedRightTab, setRequestedRightTab] = useState<RightTab>("files");
+	const [requestedWorkspaceTab, setRequestedWorkspaceTab] =
+		useState<WorkspaceTab>("files");
 	const [problemsRefreshKey, setProblemsRefreshKey] = useState(0);
 	const [workspaceSearching, setWorkspaceSearching] = useState(false);
 	const [searchFocusKey, setSearchFocusKey] = useState(0);
@@ -397,24 +296,10 @@ export default function App() {
 
 	const [tabs, setTabs] = useState<CenterTab[]>([draftChatTab()]);
 	const [activeTabId, setActiveTabId] = useState(chatTabId(""));
-	const tabListRef = useRef<HTMLDivElement>(null);
-	useEffect(() => {
-		const frame = requestAnimationFrame(() => {
-			const list = tabListRef.current;
-			const tab = list?.querySelector<HTMLElement>(
-				`[data-center-tab="${CSS.escape(activeTabId)}"]`,
-			);
-			if (!list || !tab) return;
-			const listRect = list.getBoundingClientRect();
-			const tabRect = tab.getBoundingClientRect();
-			if (tabRect.left < listRect.left) {
-				list.scrollLeft -= listRect.left - tabRect.left;
-			} else if (tabRect.right > listRect.right) {
-				list.scrollLeft += tabRect.right - listRect.right;
-			}
-		});
-		return () => cancelAnimationFrame(frame);
-	}, [activeTabId, tabs.length]);
+	const [dragTabId, setDragTabId] = useState<string | null>(null);
+	const [leftActiveId, setLeftActiveId] = useState(chatTabId(""));
+	const [rightActiveId, setRightActiveId] = useState("");
+	const activePaneRef = useRef<"right" | undefined>(undefined);
 	const [fileViews, setFileViews] = useState<Record<string, FileView>>({});
 	const [currentSessionId, setCurrentSessionId] = useState("");
 	const [paletteOpen, setPaletteOpen] = useState(false);
@@ -524,6 +409,7 @@ export default function App() {
 					type: "terminal",
 					label: entry.title,
 					terminalId: entry.id,
+					pane: activePaneRef.current,
 				};
 				setTabs((prev) =>
 					prev.some((item) => item.id === tab.id) ? prev : [...prev, tab],
@@ -626,6 +512,24 @@ export default function App() {
 	}, [createTerminal]);
 
 	const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
+	const leftTabs = tabs.filter((tab) => paneOf(tab) === "left");
+	const rightTabs = leftTabs.length
+		? tabs.filter((tab) => paneOf(tab) === "right")
+		: [];
+	const rightTab =
+		(activeTab.pane === "right"
+			? rightTabs.find((tab) => tab.id === activeTab.id)
+			: undefined) ??
+		rightTabs.find((tab) => tab.id === rightActiveId) ??
+		rightTabs[0];
+	const leftPool = leftTabs.length ? leftTabs : tabs;
+	const leftTab =
+		(activeTab.pane !== "right"
+			? leftPool.find((tab) => tab.id === activeTab.id)
+			: undefined) ??
+		leftPool.find((tab) => tab.id === leftActiveId) ??
+		leftPool[0] ??
+		activeTab;
 	const activeDocument =
 		activeTab.type === "file" && activeTab.path
 			? documents[activeTab.path]
@@ -658,22 +562,17 @@ export default function App() {
 								: "Show data preview";
 	const sessionId =
 		activeTab.type === "chat" ? (activeTab.sessionId ?? "") : currentSessionId;
-	const rightTab =
-		(requestedRightTab === "changes" && !showChanges) ||
-		(requestedRightTab === "agents" && !showAgents) ||
-		(requestedRightTab === "inspect" && !showInspect)
+	const workspaceTab =
+		(requestedWorkspaceTab === "changes" && !showChanges) ||
+		(requestedWorkspaceTab === "agents" && !showAgents) ||
+		(requestedWorkspaceTab === "inspect" && !showInspect)
 			? "files"
-			: requestedRightTab;
+			: requestedWorkspaceTab;
 
 	const activeSession = sessionId ? sessions[sessionId] : undefined;
 	const entries = activeSession?.entries ?? EMPTY_ENTRIES;
-	const sessionError = activeSession?.error ?? null;
 	const phase = activeSession?.phase ?? "idle";
 	const usage = activeSession?.usage ?? EMPTY_USAGE;
-	const prompt = activeSession?.prompt ?? null;
-	const pendingInputs = activeSession?.pendingInputs ?? EMPTY_ENTRIES;
-	const queuePaused = activeSession?.queuePaused ?? false;
-	const canSteer = activeSession?.canSteer ?? false;
 
 	const [agentId, setAgentId] = useState("");
 	const [switchingAgent, setSwitchingAgent] = useState<string | null>(null);
@@ -721,7 +620,7 @@ export default function App() {
 		(candidate: CenterTab, disposition: TabDisposition) => {
 			const placement = placeCenterTab(
 				tabs,
-				candidate,
+				{ ...candidate, pane: activeTab.pane },
 				disposition,
 				dirtyPaths,
 			);
@@ -739,7 +638,7 @@ export default function App() {
 			setTabs(withSessionFallback(placement.tabs));
 			activateTab(candidate);
 		},
-		[activateTab, closeDocument, dirtyPaths, tabs],
+		[activateTab, activeTab.pane, closeDocument, dirtyPaths, tabs],
 	);
 
 	const openChatTab = useCallback(
@@ -762,6 +661,7 @@ export default function App() {
 				type: "chat",
 				label: "Session",
 				sessionId: sid,
+				pane: draft?.pane,
 			};
 			if (draft) {
 				setTabs((current) =>
@@ -775,15 +675,6 @@ export default function App() {
 			showCenterTab(tab, disposition);
 		},
 		[activateTab, showCenterTab, tabs],
-	);
-
-	const handlePromptReply = useCallback(
-		(reply: PromptReply) => {
-			if (sessionId && prompt) {
-				respondPrompt(sessionId, prompt.id, reply);
-			}
-		},
-		[respondPrompt, sessionId, prompt],
 	);
 
 	const openFile = useCallback(
@@ -812,7 +703,7 @@ export default function App() {
 					);
 				}
 				if (disposition === "keep") keepTab(existing.id);
-				setActiveTabId(existing.id);
+				activateTab(existing);
 				return;
 			}
 			const label = path.split("/").pop() || path;
@@ -828,7 +719,7 @@ export default function App() {
 			};
 			showCenterTab(tab, disposition);
 		},
-		[keepTab, openDocument, showCenterTab, tabs],
+		[activateTab, keepTab, openDocument, showCenterTab, tabs],
 	);
 
 	const handleFileMove = useCallback(
@@ -841,6 +732,8 @@ export default function App() {
 				current.map((tab) => moveWorkspaceTab(tab, from, to)),
 			);
 			setActiveTabId((current) => movedTabs.get(current)?.id ?? current);
+			setLeftActiveId((current) => movedTabs.get(current)?.id ?? current);
+			setRightActiveId((current) => movedTabs.get(current)?.id ?? current);
 			setFileViews((current) => {
 				let changed = false;
 				const next = { ...current };
@@ -871,6 +764,7 @@ export default function App() {
 								label: task.description,
 								sessionId,
 								taskId: task.id,
+								pane: activePaneRef.current,
 							},
 						],
 			);
@@ -890,7 +784,7 @@ export default function App() {
 			);
 			if (existing) {
 				if (disposition === "keep") keepTab(existing.id);
-				setActiveTabId(existing.id);
+				activateTab(existing);
 				return;
 			}
 			const fileName = path.split("/").pop() || path;
@@ -904,7 +798,7 @@ export default function App() {
 			};
 			showCenterTab(tab, disposition);
 		},
-		[keepTab, showCenterTab, tabs],
+		[activateTab, keepTab, showCenterTab, tabs],
 	);
 
 	const openCompare = useCallback(
@@ -956,7 +850,9 @@ export default function App() {
 			!exitedDebugTerminalIDsRef.current.has(session.terminal_id)
 				? session.terminal_id
 				: undefined;
-		setTabs((current) => syncDebugTab(current, terminalId, active));
+		setTabs((current) =>
+			syncDebugTab(current, terminalId, active, activePaneRef.current),
+		);
 		if (!terminalId)
 			setDebugContentView((view) => (view === "terminal" ? "output" : view));
 	}, []);
@@ -1048,8 +944,14 @@ export default function App() {
 			});
 			if (activeTabId === id) {
 				const remaining = tabs.filter((t) => t.id !== id);
+				const paneIdx = tabs
+					.filter((t) => paneOf(t) === paneOf(closing))
+					.findIndex((t) => t.id === id);
+				const paneTabs = remaining.filter((t) => paneOf(t) === paneOf(closing));
 				const fallback = remaining.some((t) => t.type === "chat")
-					? (remaining[Math.min(idx, remaining.length - 1)] ?? draftChatTab())
+					? (paneTabs[Math.min(paneIdx, paneTabs.length - 1)] ??
+						remaining[Math.min(idx, remaining.length - 1)] ??
+						draftChatTab())
 					: draftChatTab();
 				activateTab(fallback);
 			}
@@ -1161,6 +1063,12 @@ export default function App() {
 								}
 							: tab,
 					),
+				);
+				setLeftActiveId((current) =>
+					current === request.sourceTabId ? nextId : current,
+				);
+				setRightActiveId((current) =>
+					current === request.sourceTabId ? nextId : current,
 				);
 				setFileViews((current) => {
 					if (!(request.sourceTabId in current)) return current;
@@ -1356,6 +1264,75 @@ export default function App() {
 		tabId?: string;
 	} | null>(null);
 
+	const openTabMenu = useCallback(
+		(x: number, y: number, tabId: string | undefined) => {
+			const tab = tabs.find((item) => item.id === tabId);
+			setTabMenu({
+				x,
+				y,
+				tabId: tab && isClosableTab(tab) ? tab.id : undefined,
+			});
+		},
+		[tabs],
+	);
+
+	const moveTabToPane = useCallback(
+		(tabId: string, side: PaneSide, index?: number) => {
+			const tab = tabs.find((item) => item.id === tabId);
+			if (!tab || paneOf(tab) === side) return;
+			if (side === "right" && leftTabs.length < 2) return;
+			setTabs((prev) =>
+				moveTab(
+					prev.map((item) =>
+						item.id === tabId
+							? {
+									...item,
+									pane: side === "right" ? "right" : undefined,
+									preview: undefined,
+								}
+							: item,
+					),
+					tabId,
+					index ?? prev.length,
+				),
+			);
+			activateTab(tab);
+		},
+		[activateTab, leftTabs, tabs],
+	);
+
+	// Each strip shows only its pane's tabs; drop positions are translated
+	// back to tabs-array positions, and cross-strip drops switch the pane.
+	const handleStripDrop = useCallback(
+		(side: PaneSide, stripIndex: number) => {
+			if (!dragTabId) return;
+			setDragTabId(null);
+			const dragged = tabs.find((tab) => tab.id === dragTabId);
+			if (!dragged) return;
+			const group = tabs.filter((tab) => paneOf(tab) === side);
+			const position = Math.min(stripIndex, group.length);
+			const index =
+				position < group.length
+					? tabs.findIndex((tab) => tab.id === group[position].id)
+					: tabs.length;
+			if (paneOf(dragged) === side) {
+				setTabs((prev) => moveTab(prev, dragTabId, index));
+			} else {
+				moveTabToPane(dragTabId, side, index);
+			}
+		},
+		[dragTabId, moveTabToPane, tabs],
+	);
+
+	const handleZoneDrop = useCallback(
+		(zone: PaneZone) => {
+			if (!dragTabId) return;
+			moveTabToPane(dragTabId, zone);
+			setDragTabId(null);
+		},
+		[dragTabId, moveTabToPane],
+	);
+
 	const closeTabs = useCallback(
 		async (ids: string[]) => {
 			for (const id of ids) {
@@ -1375,6 +1352,25 @@ export default function App() {
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
 	}, [requestCloseTab, activeTabId]);
+
+	// Monaco leaves Ctrl/Cmd+S unbound, so saves from any focus location land
+	// here; preventDefault also suppresses the browser's save dialog.
+	useEffect(() => {
+		const onKey = (event: KeyboardEvent) => {
+			if (
+				!(event.metaKey || event.ctrlKey) ||
+				event.shiftKey ||
+				event.altKey ||
+				event.key.toLowerCase() !== "s"
+			) {
+				return;
+			}
+			event.preventDefault();
+			if (canSaveFile && activeTab.path) void saveFile(activeTab.path);
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [canSaveFile, activeTab.path, saveFile]);
 
 	const terminateTerminal = useCallback(async () => {
 		const request = closeRequest;
@@ -1419,6 +1415,20 @@ export default function App() {
 		if (tabs.some((t) => t.id === activeTabId)) return;
 		activateTab(tabs[0] ?? draftChatTab());
 	}, [tabs, activeTabId, activateTab]);
+
+	useEffect(() => {
+		activePaneRef.current = activeTab.pane;
+		if (activeTab.pane === "right") setRightActiveId(activeTab.id);
+		else setLeftActiveId(activeTab.id);
+	}, [activeTab.id, activeTab.pane]);
+
+	useEffect(() => {
+		if (tabs.length === 0) return;
+		if (tabs.some((tab) => paneOf(tab) === "left")) return;
+		setTabs((prev) =>
+			prev.map((tab) => (tab.pane ? { ...tab, pane: undefined } : tab)),
+		);
+	}, [tabs]);
 
 	useEffect(() => {
 		if (!currentSessionId) return;
@@ -1595,31 +1605,42 @@ export default function App() {
 		// eslint-disable-next-line react-hooks/exhaustive-deps -- initial URL only
 	}, []);
 
-	const ensureSessionId = useCallback(async (): Promise<string> => {
-		if (sessionId) return sessionId;
+	const createSessionForDraft = useCallback(async (): Promise<string> => {
 		const res = await fetch("/api/sessions", { method: "POST" });
 		if (!res.ok) throw new Error("failed to allocate session");
 		const data = (await res.json()) as { id?: string };
 		if (!data.id) throw new Error("session id missing in response");
 		openChatTab(data.id, "keep", true);
 		return data.id;
-	}, [sessionId, openChatTab]);
+	}, [openChatTab]);
 
-	const handleSend = useCallback(
+	const sendForSession = useCallback(
 		async (
+			key: string,
 			text: string,
 			files?: string[],
 			images?: string[],
 			intent: TurnInputIntent = "follow_up",
 		): Promise<boolean> => {
 			try {
-				const sid = await ensureSessionId();
+				const sid = key || (await createSessionForDraft());
 				return sendChat(sid, text, files, images, intent);
 			} catch {
 				return false;
 			}
 		},
-		[sendChat, ensureSessionId],
+		[sendChat, createSessionForDraft],
+	);
+
+	const handleSend = useCallback(
+		(
+			text: string,
+			files?: string[],
+			images?: string[],
+			intent: TurnInputIntent = "follow_up",
+		): Promise<boolean> =>
+			sendForSession(sessionId, text, files, images, intent),
+		[sendForSession, sessionId],
 	);
 
 	const startInsightsAnalysis = useCallback(
@@ -1663,28 +1684,53 @@ export default function App() {
 		[focusChat, handleSend],
 	);
 
-	const [modes, setModes] = useState<ModeOption[]>([]);
-	const [mode, setMode] = useState<string>("");
+	const [modeStates, setModeStates] = useState<
+		Record<string, { modes: ModeOption[]; mode: string }>
+	>({});
+	const modeFetchesRef = useRef(new Set<string>());
+	const visibleSessionKeys = useMemo(() => {
+		const keys = new Set<string>([sessionId]);
+		for (const tab of [leftTab, rightTab]) {
+			if (tab?.type === "chat") keys.add(tab.sessionId ?? "");
+		}
+		return [...keys];
+	}, [leftTab, rightTab, sessionId]);
 
 	useEffect(() => {
-		const url = sessionId
-			? `/api/sessions/${encodeURIComponent(sessionId)}/mode`
-			: "/api/mode";
-		fetch(url)
-			.then((r) => r.json())
-			.then((data) => {
-				setModes(data.modes ?? []);
-				setMode(data.current ?? "");
-			})
-			.catch(() => {});
-	}, [sessionId]);
+		for (const key of visibleSessionKeys) {
+			if (key in modeStates || modeFetchesRef.current.has(key)) continue;
+			modeFetchesRef.current.add(key);
+			const url = key
+				? `/api/sessions/${encodeURIComponent(key)}/mode`
+				: "/api/mode";
+			fetch(url)
+				.then((r) => r.json())
+				.then((data) => {
+					setModeStates((prev) =>
+						key in prev
+							? prev
+							: {
+									...prev,
+									[key]: { modes: data.modes ?? [], mode: data.current ?? "" },
+								},
+					);
+				})
+				.catch(() => {})
+				.finally(() => {
+					modeFetchesRef.current.delete(key);
+				});
+		}
+	}, [visibleSessionKeys, modeStates]);
 
-	const selectMode = useCallback(
-		async (next: string) => {
-			const prev = mode;
+	const selectModeForSession = useCallback(
+		async (key: string, next: string) => {
+			const previous = modeStates[key]?.mode ?? "";
 			try {
-				const sid = await ensureSessionId();
-				setMode(next);
+				const sid = key || (await createSessionForDraft());
+				setModeStates((prev) => ({
+					...prev,
+					[key]: { modes: prev[key]?.modes ?? [], mode: next },
+				}));
 				const r = await fetch(`/api/sessions/${encodeURIComponent(sid)}/mode`, {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
@@ -1692,10 +1738,22 @@ export default function App() {
 				});
 				if (!r.ok) throw new Error(await r.text());
 				const data = await r.json();
-				setModes(data.modes ?? []);
-				setMode(data.current ?? next);
+				setModeStates((prev) => {
+					const state = {
+						modes: data.modes ?? [],
+						mode: data.current ?? next,
+					};
+					const nextStates = { ...prev, [sid]: state };
+					// The draft key must refetch for the next draft tab, not
+					// inherit the mode of the session this draft just became.
+					if (key !== sid) delete nextStates[key];
+					return nextStates;
+				});
 			} catch (error) {
-				setMode(prev);
+				setModeStates((prev) => ({
+					...prev,
+					[key]: { modes: prev[key]?.modes ?? [], mode: previous },
+				}));
 				toast({
 					title: "Could not change mode",
 					description: error instanceof Error ? error.message : String(error),
@@ -1703,14 +1761,14 @@ export default function App() {
 				});
 			}
 		},
-		[ensureSessionId, mode, toast],
+		[createSessionForDraft, modeStates, toast],
 	);
 
-	const handleCancel = useCallback(
-		(clear = false) => {
-			if (sessionId) cancel(sessionId, clear);
-		},
-		[cancel, sessionId],
+	const modes = modeStates[sessionId]?.modes ?? EMPTY_MODES;
+	const mode = modeStates[sessionId]?.mode ?? "";
+	const selectMode = useCallback(
+		(next: string) => selectModeForSession(sessionId, next),
+		[selectModeForSession, sessionId],
 	);
 
 	const [noticeDismissed, setNoticeDismissed] = useState(false);
@@ -1728,6 +1786,13 @@ export default function App() {
 		const width = Math.round(inPixels);
 		rightPanelWidthRef.current = width;
 		appRef.current?.style.setProperty("--right-panel-width", `${width}px`);
+	}, []);
+	const handleRightPaneResize = useCallback(({ inPixels }: PanelSize) => {
+		if (inPixels <= 0) return;
+		appRef.current?.style.setProperty(
+			"--right-pane-width",
+			`${Math.round(inPixels)}px`,
+		);
 	}, []);
 	const handleDebugDetailsResize = useCallback(({ inPixels }: PanelSize) => {
 		const visible = inPixels > 0;
@@ -1747,8 +1812,8 @@ export default function App() {
 		} else panel?.collapse();
 	}, [rightPanelRef]);
 	const showRightPanel = useCallback(
-		(tab: RightTab) => {
-			setRequestedRightTab(tab);
+		(tab: WorkspaceTab) => {
+			setRequestedWorkspaceTab(tab);
 			if (rightPanelRef.current?.isCollapsed()) {
 				rightPanelRef.current.resize(`${rightPanelWidthRef.current}px`);
 			}
@@ -1782,7 +1847,9 @@ export default function App() {
 			!exitedDebugTerminalIDsRef.current.has(debugSession.terminal_id)
 				? debugSession.terminal_id
 				: undefined;
-		setTabs((current) => syncDebugTab(current, terminalId, true));
+		setTabs((current) =>
+			syncDebugTab(current, terminalId, true, activePaneRef.current),
+		);
 		if (terminalId) setDebugContentView("terminal");
 		showDebugDetails();
 		setActiveTabId("debug");
@@ -1955,6 +2022,306 @@ export default function App() {
 		return text.length > 24 ? `${text.slice(0, 24)}…` : text;
 	};
 
+	const stripItem = (tab: CenterTab): TabStripItem => ({
+		tab,
+		label: tab.type === "chat" ? chatTabLabel(tab) : tab.label,
+		dirty: tab.type === "file" && !!tab.path && dirtyPaths.has(tab.path),
+		running:
+			tab.type === "chat" && tab.sessionId
+				? (sessions[tab.sessionId]?.phase ?? "idle") !== "idle"
+				: false,
+		closable: isClosableTab(tab),
+	});
+	const leftStripItems: TabStripItem[] = leftPool.map(stripItem);
+	const rightStripItems: TabStripItem[] = rightTabs.map(stripItem);
+
+	const renderTabContent = (tab: CenterTab): ReactNode => {
+		if (tab.type === "chat") {
+			const key = tab.sessionId ?? "";
+			const sess = key ? sessions[key] : undefined;
+			const modeState = modeStates[key];
+			return (
+				<ChatPanel
+					key={tab.id}
+					sessionId={key}
+					entries={sess?.entries ?? EMPTY_ENTRIES}
+					phase={sess?.phase ?? "idle"}
+					modes={modeState?.modes ?? EMPTY_MODES}
+					mode={modeState?.mode ?? ""}
+					onSelectMode={(next) => void selectModeForSession(key, next)}
+					onSend={(text, files, images, intent) =>
+						sendForSession(key, text, files, images, intent)
+					}
+					onCancel={(clear) => {
+						if (key) cancel(key, clear ?? false);
+					}}
+					pendingInputs={sess?.pendingInputs ?? EMPTY_ENTRIES}
+					queuePaused={sess?.queuePaused ?? false}
+					canSteer={sess?.canSteer ?? false}
+					onRemoveQueued={(id, state) => {
+						if (!key) return;
+						if (state === "queued" || state === "sending") {
+							removeQueued(key, id);
+						} else {
+							dismissPending(key, id);
+						}
+					}}
+					onUpdateQueued={(id, text, files, images) =>
+						key ? updateQueued(key, id, text, files, images) : false
+					}
+					onResumeQueue={() => {
+						if (key) resumeQueue(key);
+					}}
+					onClearQueue={() => {
+						if (key) clearQueue(key);
+					}}
+					loading={sessionLoad.loading && sessionLoad.id === key}
+					loadError={sessionLoad.id === key ? sessionLoad.error : null}
+					error={sess?.error ?? null}
+					onDismissError={() => {
+						if (key) dismissError(key);
+					}}
+					subscribe={subscribe}
+					prompt={sess?.prompt ?? null}
+					onPromptReply={(reply) => {
+						const pending = sess?.prompt;
+						if (key && pending) respondPrompt(key, pending.id, reply);
+					}}
+					seed={tab.id === activeTabId ? composerSeed : null}
+					toolProgress={toolProgress}
+				/>
+			);
+		}
+		if (tab.type === "debug") {
+			return (
+				<Group
+					id="debug-layout"
+					orientation="horizontal"
+					className="h-full min-h-0 min-w-0 overflow-hidden"
+				>
+					<Panel
+						id="debug-content"
+						minSize="160px"
+						className="relative min-h-0 min-w-0 overflow-hidden"
+					>
+						<div
+							className={debugContentView === "output" ? "h-full" : "hidden"}
+						>
+							<DebugOutputTab />
+						</div>
+						{tab.terminalId && (
+							<div
+								className={
+									debugContentView === "terminal" ? "h-full" : "hidden"
+								}
+							>
+								<TerminalView
+									id={tab.terminalId}
+									active={debugContentView === "terminal"}
+									onExit={handleDebugTerminalExit}
+									onTitle={setTerminalTitle}
+								/>
+							</div>
+						)}
+					</Panel>
+					<ResizeHandle
+						label="Resize debugger details"
+						hidden={!debugDetailsVisible}
+					/>
+					<Panel
+						id="debug-details"
+						panelRef={debugDetailsPanelRef}
+						defaultSize={
+							debugDetailsVisible ? `${debugDetailsWidthRef.current}px` : "0px"
+						}
+						minSize={`${DEBUG_DETAILS_MIN_SIZE}px`}
+						maxSize={`${DEBUG_DETAILS_MAX_SIZE}px`}
+						collapsedSize="0px"
+						collapsible
+						groupResizeBehavior="preserve-pixel-size"
+						onResize={handleDebugDetailsResize}
+						inert={!debugDetailsVisible}
+						className="h-full overflow-hidden border-l border-border-subtle"
+					>
+						<div className="h-full" aria-label="Debugger details">
+							<DebugTab
+								onOpenFile={(path, line, column) =>
+									openFile(path, line, column)
+								}
+								onStopped={showDebugDetails}
+								autoOpenSource={false}
+							/>
+						</div>
+					</Panel>
+				</Group>
+			);
+		}
+		if (tab.type === "terminal" && tab.terminalId) {
+			return (
+				<TerminalView
+					key={tab.terminalId}
+					id={tab.terminalId}
+					active
+					onExit={() => closeTabNow(tab.id)}
+					onTitle={setTerminalTitle}
+				/>
+			);
+		}
+		if (tab.type === "task" && tab.taskId) {
+			return (
+				<TaskTab
+					key={tab.id}
+					sessionId={tab.sessionId ?? ""}
+					taskId={tab.taskId}
+					subscribe={subscribe}
+				/>
+			);
+		}
+		if (tab.type === "graph") {
+			return (
+				<InsightsTab
+					key={tab.id}
+					onStartAnalysis={(command) => void startInsightsAnalysis(command)}
+					onOpenFile={(path, line, column) => openFile(path, line, column)}
+				/>
+			);
+		}
+		if (
+			tab.type === "compare" &&
+			tab.compareBase &&
+			tab.compareHead &&
+			tab.compareMode
+		) {
+			return (
+				<CompareTab
+					key={tab.id}
+					base={tab.compareBase}
+					head={tab.compareHead}
+					mode={tab.compareMode}
+					subscribe={subscribe}
+				/>
+			);
+		}
+		if (tab.type === "diff" && tab.path) {
+			return (
+				<DiffTab
+					path={tab.path}
+					layer={tab.diffLayer}
+					sessionId={sessionId}
+					subscribe={subscribe}
+					onDeleted={() => closeTabNow(tab.id)}
+				/>
+			);
+		}
+		if (tab.path && documents[tab.path]) {
+			return (
+				<FileTab
+					key={`${tab.id}:${tab.path}`}
+					document={documents[tab.path]}
+					tabEnabled={tabEnabled}
+					line={tab.line}
+					column={tab.column}
+					navigationKey={tab.navigationKey}
+					subscribe={subscribe}
+					onChange={(value) => {
+						keepTab(tab.id);
+						updateDraft(tab.path!, value);
+					}}
+					onSave={async () => {
+						return saveFile(tab.path!);
+					}}
+					onReload={() => void reloadDocument(tab.path!, tab.external ?? false)}
+					onOpenFile={openFile}
+					onApplyWorkspaceEdit={requestWorkspaceEdit}
+					onLaunchDebug={(target, action) => {
+						const currentPath = tab.path;
+						if (!currentPath) return;
+						if (debugSession && debugSession.state !== "terminated") {
+							showDebugger();
+							toast({
+								title: "Debug session already active",
+								description: "Stop it before starting another target.",
+							});
+							return;
+						}
+						openDebugLauncher({
+							target,
+							action,
+							currentPath,
+						});
+					}}
+					view={fileViews[tab.id] ?? defaultFileView(tab.path)}
+				/>
+			);
+		}
+		return null;
+	};
+
+	const renderPane = (tab: CenterTab | undefined): ReactNode => (
+		<div
+			className="relative h-full min-h-0 min-w-0 overflow-hidden bg-bg"
+			onPointerDownCapture={() => {
+				if (!tab) return;
+				if (tab.id !== activeTabId) activateTab(tab);
+				if (tab.preview) keepTab(tab.id);
+			}}
+			onKeyDownCapture={() => {
+				if (tab?.preview) keepTab(tab.id);
+			}}
+		>
+			<ErrorBoundary
+				key={tab?.id ?? "empty"}
+				fallback={(error, _reset, errorInfo) => (
+					<TabCrashed error={error} errorInfo={errorInfo} />
+				)}
+			>
+				{tab ? renderTabContent(tab) : null}
+			</ErrorBoundary>
+		</div>
+	);
+
+	const dragTab = dragTabId
+		? tabs.find((tab) => tab.id === dragTabId)
+		: undefined;
+	const renderCenterContent = (): ReactNode => (
+		<div className="relative h-full min-h-0 min-w-0 overflow-hidden">
+			{rightTab ? (
+				<Group
+					id="pane-split"
+					orientation="horizontal"
+					className="h-full min-h-0 min-w-0 overflow-hidden"
+				>
+					<Panel
+						id="pane-left"
+						minSize="160px"
+						className="min-h-0 min-w-0 overflow-hidden"
+					>
+						{renderPane(leftTab)}
+					</Panel>
+					<ResizeHandle label="Resize right pane" hidden={false} />
+					<Panel
+						id="pane-right"
+						minSize="160px"
+						defaultSize="35%"
+						onResize={handleRightPaneResize}
+						className="min-h-0 min-w-0 overflow-hidden border-l border-border-subtle"
+					>
+						{renderPane(rightTab)}
+					</Panel>
+				</Group>
+			) : (
+				renderPane(leftTab)
+			)}
+			{dragTab && (
+				<PaneDropZones
+					allowLeft={paneOf(dragTab) === "right"}
+					allowRight={paneOf(dragTab) === "left" && leftTabs.length > 1}
+					onDrop={handleZoneDrop}
+				/>
+			)}
+		</div>
+	);
+
 	const canCreateNew = !!(
 		sessionId && (sessions[sessionId]?.entries.length ?? 0) > 0
 	);
@@ -1972,41 +2339,147 @@ export default function App() {
 			subscribe={subscribe}
 		/>
 	);
+	const titlebarActions = (
+		<div
+			data-window-interactive
+			data-titlebar-actions
+			className="flex shrink-0 items-center pr-2"
+		>
+			{activeTab.type === "chat" &&
+				(usage.inputTokens > 0 || outputTokens > 0) && (
+					<UsageIndicator
+						inputTokens={usage.inputTokens}
+						cachedTokens={usage.cachedTokens}
+						outputTokens={outputTokens}
+						lastInputTokens={usage.lastInputTokens}
+						contextWindow={usage.contextWindow}
+						outputEstimated={streamEstimate > 0}
+					/>
+				)}
+			{canCreateNew && (
+				<button
+					type="button"
+					className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
+					onClick={handleNewSession}
+					title="New session"
+					aria-label="New session"
+				>
+					<Plus size={13} />
+				</button>
+			)}
+			{activePreviewKind && (
+				<button
+					type="button"
+					className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-bg-hover ${
+						activeFileView === "preview"
+							? "text-fg-muted"
+							: "text-fg-dim hover:text-fg-muted"
+					}`}
+					onClick={() => {
+						keepTab(activeTab.id);
+						setFileViews((prev) => ({
+							...prev,
+							[activeTab.id]: activeFileView === "preview" ? "code" : "preview",
+						}));
+					}}
+					title={previewToggleLabel}
+					aria-label={previewToggleLabel}
+				>
+					{activeFileView === "preview" ? (
+						<Code2 size={13} />
+					) : activePreviewKind === "html" ? (
+						<Globe2 size={13} />
+					) : (
+						<Eye size={13} />
+					)}
+				</button>
+			)}
+			{activeTab.type === "debug" && (
+				<>
+					<button
+						type="button"
+						className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-bg-hover hover:text-fg-muted ${debugDetailsVisible ? "text-fg-muted" : "text-fg-dim"}`}
+						onClick={toggleDebugDetails}
+						title={
+							debugDetailsVisible
+								? "Hide debugger details"
+								: "Show debugger details"
+						}
+						aria-label={
+							debugDetailsVisible
+								? "Hide debugger details"
+								: "Show debugger details"
+						}
+					>
+						<Bug size={13} />
+					</button>
+					{activeTab.terminalId && (
+						<button
+							type="button"
+							className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
+							onClick={() =>
+								setDebugContentView((view) =>
+									view === "terminal" ? "output" : "terminal",
+								)
+							}
+							title={
+								debugContentView === "terminal"
+									? "Show debug output"
+									: "Show terminal"
+							}
+							aria-label={
+								debugContentView === "terminal"
+									? "Show debug output"
+									: "Show terminal"
+							}
+						>
+							{debugContentView === "terminal" ? (
+								<MonitorPlay size={13} />
+							) : (
+								<Monitor size={13} />
+							)}
+						</button>
+					)}
+				</>
+			)}
+		</div>
+	);
+
 	const workspaceTabs = (
 		<div
 			className="flex h-10 w-full min-w-0 shrink-0 items-stretch overflow-hidden"
 			role="tablist"
 			aria-label="Workspace panels"
 		>
-			<RightTabButton
-				active={rightTab === "files"}
-				onClick={() => setRequestedRightTab("files")}
+			<WorkspaceTabButton
+				active={workspaceTab === "files"}
+				onClick={() => setRequestedWorkspaceTab("files")}
 			>
 				Files
-			</RightTabButton>
+			</WorkspaceTabButton>
 			{showChanges && (
-				<RightTabButton
-					active={rightTab === "changes"}
-					onClick={() => setRequestedRightTab("changes")}
+				<WorkspaceTabButton
+					active={workspaceTab === "changes"}
+					onClick={() => setRequestedWorkspaceTab("changes")}
 				>
 					Changes
-				</RightTabButton>
+				</WorkspaceTabButton>
 			)}
 			{showInspect && (
-				<RightTabButton
-					active={rightTab === "inspect"}
-					onClick={() => setRequestedRightTab("inspect")}
+				<WorkspaceTabButton
+					active={workspaceTab === "inspect"}
+					onClick={() => setRequestedWorkspaceTab("inspect")}
 				>
 					Inspect
-				</RightTabButton>
+				</WorkspaceTabButton>
 			)}
 			{showAgents && (
-				<RightTabButton
-					active={rightTab === "agents"}
-					onClick={() => setRequestedRightTab("agents")}
+				<WorkspaceTabButton
+					active={workspaceTab === "agents"}
+					onClick={() => setRequestedWorkspaceTab("agents")}
 				>
 					Agents
-				</RightTabButton>
+				</WorkspaceTabButton>
 			)}
 			<div className="flex-1" />
 		</div>
@@ -2021,7 +2494,9 @@ export default function App() {
 				role="tabpanel"
 			>
 				<div
-					className={rightTab === "inspect" ? "flex h-full flex-col" : "hidden"}
+					className={
+						workspaceTab === "inspect" ? "flex h-full flex-col" : "hidden"
+					}
 				>
 					<div className="flex h-9 shrink-0 items-center border-b border-border-subtle bg-bg-surface/20 px-3">
 						<span className="text-[10px] font-medium uppercase tracking-wide text-fg-dim">
@@ -2046,13 +2521,14 @@ export default function App() {
 						/>
 					</div>
 				</div>
-				{rightTab === "inspect" ? null : rightTab === "agents" && showAgents ? (
+				{workspaceTab === "inspect" ? null : workspaceTab === "agents" &&
+				  showAgents ? (
 					<TasksPanel
 						sessionId={sessionId}
 						subscribe={subscribe}
 						onOpenTask={openTask}
 					/>
-				) : rightTab === "changes" && showChanges ? (
+				) : workspaceTab === "changes" && showChanges ? (
 					<DiffsPanel
 						sessionId={sessionId}
 						git={capabilities?.git ?? false}
@@ -2105,6 +2581,7 @@ export default function App() {
 				{
 					"--left-panel-width": `${LEFT_PANEL_DEFAULT_SIZE}px`,
 					"--right-panel-width": `${rightPanelDefaultWidth}px`,
+					"--right-pane-width": "0px",
 				} as CSSProperties
 			}
 		>
@@ -2178,67 +2655,18 @@ export default function App() {
 					)}
 				</div>
 
-				<div
-					ref={tabListRef}
-					className="tab-strip flex min-w-[80px] flex-1 items-stretch overflow-x-auto overscroll-x-contain scrollbar-none"
-					role="tablist"
-					aria-label="Open tabs"
-					onContextMenu={(event) => {
-						event.preventDefault();
-						const tabElement = (event.target as Element).closest<HTMLElement>(
-							"[data-center-tab]",
-						);
-						const tab = tabs.find(
-							(item) => item.id === tabElement?.dataset.centerTab,
-						);
-						setTabMenu({
-							x: event.clientX,
-							y: event.clientY,
-							tabId: tab && isClosableTab(tab) ? tab.id : undefined,
-						});
-					}}
-				>
-					{tabs.map((tab, tabIndex) => {
-						const active = tab.id === activeTabId;
-						const closable = isClosableTab(tab);
-						const isDirty =
-							tab.type === "file" && !!tab.path && dirtyPaths.has(tab.path);
-						const running =
-							tab.type === "chat" && tab.sessionId
-								? (sessions[tab.sessionId]?.phase ?? "idle") !== "idle"
-								: false;
-						const label = tab.type === "chat" ? chatTabLabel(tab) : tab.label;
-						return (
-							<Tab
-								key={tab.id}
-								id={tab.id}
-								kind={tab.type}
-								label={label}
-								active={active}
-								preview={!!tab.preview}
-								closable={closable}
-								dirty={isDirty}
-								running={running}
-								position={tabIndex}
-								count={tabs.length}
-								onActivate={() => activateTab(tab)}
-								onNavigate={(next) => {
-									const target = tabs[next];
-									activateTab(target);
-									requestAnimationFrame(() =>
-										tabListRef.current
-											?.querySelector<HTMLElement>(
-												`[data-center-tab="${CSS.escape(target.id)}"]`,
-											)
-											?.focus(),
-									);
-								}}
-								onClose={() => void requestCloseTab(tab.id)}
-								onKeepOpen={() => keepTab(tab.id)}
-							/>
-						);
-					})}
-				</div>
+				<TabStrip
+					items={leftStripItems}
+					activeTabId={leftTab.id}
+					dragTabId={dragTabId}
+					onActivate={activateTab}
+					onClose={(tab) => void requestCloseTab(tab.id)}
+					onKeepOpen={keepTab}
+					onContextMenu={openTabMenu}
+					onDragStart={setDragTabId}
+					onDragEnd={() => setDragTabId(null)}
+					onDropTab={(index) => handleStripDrop("left", index)}
+				/>
 				{tabMenu && (
 					<TabContextMenu
 						x={tabMenu.x}
@@ -2246,6 +2674,11 @@ export default function App() {
 						tabId={tabMenu.tabId}
 						tabCount={tabs.length}
 						preview={!!tabs.find((tab) => tab.id === tabMenu.tabId)?.preview}
+						pane={paneOf(
+							tabs.find((tab) => tab.id === tabMenu.tabId) ?? leftTab,
+						)}
+						canMoveRight={leftTabs.length > 1}
+						onMove={moveTabToPane}
 						onClose={() => setTabMenu(null)}
 						onKeepOpen={keepTab}
 						onCloseTab={(id) => void closeTabs([id])}
@@ -2258,138 +2691,32 @@ export default function App() {
 					/>
 				)}
 
-				<div
-					data-window-interactive
-					data-titlebar-actions
-					className="flex shrink-0 items-center pr-2"
-				>
-					{activeTab.type === "chat" &&
-						(usage.inputTokens > 0 || outputTokens > 0) && (
-							<UsageIndicator
-								inputTokens={usage.inputTokens}
-								cachedTokens={usage.cachedTokens}
-								outputTokens={outputTokens}
-								lastInputTokens={usage.lastInputTokens}
-								contextWindow={usage.contextWindow}
-								outputEstimated={streamEstimate > 0}
-							/>
-						)}
-					{canCreateNew && (
-						<button
-							type="button"
-							className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
-							onClick={handleNewSession}
-							title="New session"
-							aria-label="New session"
-						>
-							<Plus size={13} />
-						</button>
-					)}
-					{activeTab.type === "file" &&
-						activeTab.path &&
-						activeDocument &&
-						!activeDocument.external &&
-						!activeDocument.file?.binary && (
-							<button
-								type="button"
-								className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted disabled:cursor-default disabled:opacity-35 disabled:hover:bg-transparent"
-								disabled={
-									activeDocument.saving || !dirtyPaths.has(activeTab.path)
-								}
-								onClick={() => void saveFile(activeTab.path!)}
-								title={
-									activeDocument.saving
-										? "Saving file…"
-										: dirtyPaths.has(activeTab.path)
-											? "Save file (Ctrl+S)"
-											: "No changes to save"
-								}
-								aria-label="Save file"
-							>
-								{activeDocument.saving ? (
-									<Loader2 size={13} className="animate-spin" />
-								) : (
-									<Save size={13} />
-								)}
-							</button>
-						)}
-					{activePreviewKind && (
-						<button
-							type="button"
-							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-bg-hover ${
-								activeFileView === "preview"
-									? "text-fg-muted"
-									: "text-fg-dim hover:text-fg-muted"
-							}`}
-							onClick={() => {
-								keepTab(activeTab.id);
-								setFileViews((prev) => ({
-									...prev,
-									[activeTab.id]:
-										activeFileView === "preview" ? "code" : "preview",
-								}));
-							}}
-							title={previewToggleLabel}
-							aria-label={previewToggleLabel}
-						>
-							{activeFileView === "preview" ? (
-								<Code2 size={13} />
-							) : activePreviewKind === "html" ? (
-								<Globe2 size={13} />
-							) : (
-								<Eye size={13} />
-							)}
-						</button>
-					)}
-					{activeTab.type === "debug" && (
-						<>
-							<button
-								type="button"
-								className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-bg-hover hover:text-fg-muted ${debugDetailsVisible ? "text-fg-muted" : "text-fg-dim"}`}
-								onClick={toggleDebugDetails}
-								title={
-									debugDetailsVisible
-										? "Hide debugger details"
-										: "Show debugger details"
-								}
-								aria-label={
-									debugDetailsVisible
-										? "Hide debugger details"
-										: "Show debugger details"
-								}
-							>
-								<Bug size={13} />
-							</button>
-							{activeTab.terminalId && (
-								<button
-									type="button"
-									className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
-									onClick={() =>
-										setDebugContentView((view) =>
-											view === "terminal" ? "output" : "terminal",
-										)
-									}
-									title={
-										debugContentView === "terminal"
-											? "Show debug output"
-											: "Show terminal"
-									}
-									aria-label={
-										debugContentView === "terminal"
-											? "Show debug output"
-											: "Show terminal"
-									}
-								>
-									{debugContentView === "terminal" ? (
-										<MonitorPlay size={13} />
-									) : (
-										<Monitor size={13} />
-									)}
-								</button>
-							)}
-						</>
-					)}
-				</div>
+				{activeTab.pane !== "right" && titlebarActions}
+				{rightTab && (
+					<div
+						className="flex shrink-0 items-stretch overflow-hidden"
+						style={{
+							width: `max(0px, calc(var(--right-pane-width) - ${
+								rightPanelDocked ? 0 : showTerminal ? 80 : 40
+							}px))`,
+						}}
+					>
+						<TabStrip
+							items={rightStripItems}
+							activeTabId={rightTab.id}
+							dragTabId={dragTabId}
+							ariaLabel="Right pane tabs"
+							onActivate={activateTab}
+							onClose={(tab) => void requestCloseTab(tab.id)}
+							onKeepOpen={keepTab}
+							onContextMenu={openTabMenu}
+							onDragStart={setDragTabId}
+							onDragEnd={() => setDragTabId(null)}
+							onDropTab={(index) => handleStripDrop("right", index)}
+						/>
+						{activeTab.pane === "right" && titlebarActions}
+					</div>
+				)}
 				<div
 					data-window-interactive
 					data-titlebar-right-panel
@@ -2485,229 +2812,8 @@ export default function App() {
 					className="flex min-w-0 flex-col overflow-hidden bg-bg"
 				>
 					<main className="flex flex-1 flex-col overflow-hidden min-h-0 bg-bg">
-						<div
-							className="flex-1 overflow-hidden"
-							onPointerDownCapture={() => {
-								if (activeTab.preview) keepTab(activeTab.id);
-							}}
-							onKeyDownCapture={() => {
-								if (activeTab.preview) keepTab(activeTab.id);
-							}}
-						>
-							<ErrorBoundary
-								key={activeTab.id}
-								fallback={(error, _reset, errorInfo) => (
-									<TabCrashed error={error} errorInfo={errorInfo} />
-								)}
-							>
-								{activeTab.type === "chat" ? (
-									<ChatPanel
-										key={activeTab.id}
-										sessionId={activeTab.sessionId ?? ""}
-										entries={entries}
-										phase={phase}
-										modes={modes}
-										mode={mode}
-										onSelectMode={selectMode}
-										onSend={handleSend}
-										onCancel={handleCancel}
-										pendingInputs={pendingInputs}
-										queuePaused={queuePaused}
-										canSteer={canSteer}
-										onRemoveQueued={(id, state) => {
-											if (!sessionId) return;
-											if (state === "queued" || state === "sending") {
-												removeQueued(sessionId, id);
-											} else {
-												dismissPending(sessionId, id);
-											}
-										}}
-										onUpdateQueued={(id, text, files, images) =>
-											sessionId
-												? updateQueued(sessionId, id, text, files, images)
-												: false
-										}
-										onResumeQueue={() => {
-											if (sessionId) resumeQueue(sessionId);
-										}}
-										onClearQueue={() => {
-											if (sessionId) clearQueue(sessionId);
-										}}
-										loading={
-											sessionLoad.loading && sessionLoad.id === sessionId
-										}
-										loadError={
-											sessionLoad.id === sessionId ? sessionLoad.error : null
-										}
-										error={sessionError}
-										onDismissError={() => {
-											if (sessionId) dismissError(sessionId);
-										}}
-										subscribe={subscribe}
-										prompt={prompt}
-										onPromptReply={handlePromptReply}
-										seed={composerSeed}
-										toolProgress={toolProgress}
-									/>
-								) : activeTab.type === "debug" ? (
-									<Group
-										id="debug-layout"
-										orientation="horizontal"
-										className="h-full min-h-0 min-w-0 overflow-hidden"
-									>
-										<Panel
-											id="debug-content"
-											minSize="160px"
-											className="relative min-h-0 min-w-0 overflow-hidden"
-										>
-											<div
-												className={
-													debugContentView === "output" ? "h-full" : "hidden"
-												}
-											>
-												<DebugOutputTab />
-											</div>
-											{activeTab.terminalId && (
-												<div
-													className={
-														debugContentView === "terminal"
-															? "h-full"
-															: "hidden"
-													}
-												>
-													<TerminalView
-														id={activeTab.terminalId}
-														active={debugContentView === "terminal"}
-														onExit={handleDebugTerminalExit}
-														onTitle={setTerminalTitle}
-													/>
-												</div>
-											)}
-										</Panel>
-										<ResizeHandle
-											label="Resize debugger details"
-											hidden={!debugDetailsVisible}
-										/>
-										<Panel
-											id="debug-details"
-											panelRef={debugDetailsPanelRef}
-											defaultSize={
-												debugDetailsVisible
-													? `${debugDetailsWidthRef.current}px`
-													: "0px"
-											}
-											minSize={`${DEBUG_DETAILS_MIN_SIZE}px`}
-											maxSize={`${DEBUG_DETAILS_MAX_SIZE}px`}
-											collapsedSize="0px"
-											collapsible
-											groupResizeBehavior="preserve-pixel-size"
-											onResize={handleDebugDetailsResize}
-											inert={!debugDetailsVisible}
-											className="h-full overflow-hidden border-l border-border-subtle"
-										>
-											<div className="h-full" aria-label="Debugger details">
-												<DebugTab
-													onOpenFile={(path, line, column) =>
-														openFile(path, line, column)
-													}
-													onStopped={showDebugDetails}
-													autoOpenSource={false}
-												/>
-											</div>
-										</Panel>
-									</Group>
-								) : activeTab.type === "terminal" && activeTab.terminalId ? (
-									<TerminalView
-										key={activeTab.terminalId}
-										id={activeTab.terminalId}
-										active
-										onExit={() => closeTabNow(activeTab.id)}
-										onTitle={setTerminalTitle}
-									/>
-								) : activeTab.type === "task" && activeTab.taskId ? (
-									<TaskTab
-										key={activeTab.id}
-										sessionId={activeTab.sessionId ?? ""}
-										taskId={activeTab.taskId}
-										subscribe={subscribe}
-									/>
-								) : activeTab.type === "graph" ? (
-									<InsightsTab
-										key={activeTab.id}
-										onStartAnalysis={(command) =>
-											void startInsightsAnalysis(command)
-										}
-										onOpenFile={(path, line, column) =>
-											openFile(path, line, column)
-										}
-									/>
-								) : activeTab.type === "compare" &&
-								  activeTab.compareBase &&
-								  activeTab.compareHead &&
-								  activeTab.compareMode ? (
-									<CompareTab
-										key={activeTab.id}
-										base={activeTab.compareBase}
-										head={activeTab.compareHead}
-										mode={activeTab.compareMode}
-										subscribe={subscribe}
-									/>
-								) : activeTab.type === "diff" && activeTab.path ? (
-									<DiffTab
-										path={activeTab.path}
-										layer={activeTab.diffLayer}
-										sessionId={sessionId}
-										subscribe={subscribe}
-										onDeleted={() => closeTabNow(activeTab.id)}
-									/>
-								) : activeTab.path && documents[activeTab.path] ? (
-									<FileTab
-										key={`${activeTab.id}:${activeTab.path}`}
-										document={documents[activeTab.path]}
-										tabEnabled={tabEnabled}
-										line={activeTab.line}
-										column={activeTab.column}
-										navigationKey={activeTab.navigationKey}
-										subscribe={subscribe}
-										onChange={(value) => {
-											keepTab(activeTab.id);
-											updateDraft(activeTab.path!, value);
-										}}
-										onSave={async () => {
-											return saveFile(activeTab.path!);
-										}}
-										onReload={() =>
-											void reloadDocument(
-												activeTab.path!,
-												activeTab.external ?? false,
-											)
-										}
-										onOpenFile={openFile}
-										onApplyWorkspaceEdit={requestWorkspaceEdit}
-										onLaunchDebug={(target, action) => {
-											const currentPath = activeTab.path;
-											if (!currentPath) return;
-											if (debugSession && debugSession.state !== "terminated") {
-												showDebugger();
-												toast({
-													title: "Debug session already active",
-													description:
-														"Stop it before starting another target.",
-												});
-												return;
-											}
-											openDebugLauncher({
-												target,
-												action,
-												currentPath,
-											});
-										}}
-										view={
-											fileViews[activeTab.id] ?? defaultFileView(activeTab.path)
-										}
-									/>
-								) : null}
-							</ErrorBoundary>
+						<div className="min-h-0 flex-1 overflow-hidden">
+							{renderCenterContent()}
 						</div>
 					</main>
 				</Panel>
@@ -3111,6 +3217,9 @@ function TabContextMenu({
 	tabId,
 	tabCount,
 	preview,
+	pane,
+	canMoveRight,
+	onMove,
 	onClose,
 	onKeepOpen,
 	onCloseTab,
@@ -3122,6 +3231,9 @@ function TabContextMenu({
 	tabId?: string;
 	tabCount: number;
 	preview: boolean;
+	pane: PaneSide;
+	canMoveRight: boolean;
+	onMove: (id: string, side: PaneSide) => void;
 	onClose: () => void;
 	onKeepOpen: (id: string) => void;
 	onCloseTab: (id: string) => void;
@@ -3132,6 +3244,11 @@ function TabContextMenu({
 	if (tabId) {
 		if (preview) {
 			items.push({ label: "Keep Open", run: () => onKeepOpen(tabId) });
+		}
+		if (pane === "right") {
+			items.push({ label: "Move Left", run: () => onMove(tabId, "left") });
+		} else if (canMoveRight) {
+			items.push({ label: "Move Right", run: () => onMove(tabId, "right") });
 		}
 		items.push({ label: "Close", run: () => onCloseTab(tabId) });
 		items.push({
@@ -3169,7 +3286,7 @@ function TabContextMenu({
 	);
 }
 
-function RightTabButton({
+function WorkspaceTabButton({
 	active,
 	onClick,
 	children,

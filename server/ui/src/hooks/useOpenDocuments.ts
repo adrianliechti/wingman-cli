@@ -216,6 +216,12 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 				return { ok: true };
 			}
 			flushLSPChange(path);
+			// Saving a clean buffer is a no-op; save participants must not get a
+			// chance to rewrite an unmodified file on disk.
+			if (document.draft === document.savedContent) {
+				queueLSPEvent("save", path, document.draft);
+				return { ok: true };
+			}
 			await runEditorSaveParticipants(path);
 			document = documentsRef.current[path];
 			if (!document || document.external || document.file?.binary) {
