@@ -139,6 +139,23 @@ func TestSessionClosesConnectionAfterUnexpectedEOF(t *testing.T) {
 	}
 }
 
+func TestSessionReportsPlainEOFAsUnexpectedWhileRunning(t *testing.T) {
+	connection := &unexpectedEOFConnection{closed: make(chan struct{}), readErr: io.EOF}
+	session := newConnectedSession("eof", Plan{
+		Adapter: AdapterDescriptor{Name: "fake", Language: "Test"},
+	}, connection)
+
+	select {
+	case <-connection.closed:
+	case <-time.After(time.Second):
+		t.Fatal("session left the failed adapter connection open")
+	}
+	status := session.Status()
+	if status.State != StateTerminated || !strings.Contains(status.Error, "connection closed unexpectedly") {
+		t.Fatalf("status = %+v", status)
+	}
+}
+
 func TestSessionAllowsLaunchResponseBeforeInitializedEvent(t *testing.T) {
 	client, server := net.Pipe()
 	adapter := newFakeAdapter(t, server)
@@ -299,8 +316,9 @@ func TestSessionDisconnectForcesCleanupWhenAdapterDoesNotRespond(t *testing.T) {
 }
 
 type unexpectedEOFConnection struct {
-	closed chan struct{}
-	once   sync.Once
+	closed  chan struct{}
+	once    sync.Once
+	readErr error
 }
 
 type blockingDAPConnection struct {
@@ -324,6 +342,9 @@ func (connection *blockingDAPConnection) Close() error {
 }
 
 func (connection *unexpectedEOFConnection) Read([]byte) (int, error) {
+	if connection.readErr != nil {
+		return 0, connection.readErr
+	}
 	return 0, io.ErrUnexpectedEOF
 }
 

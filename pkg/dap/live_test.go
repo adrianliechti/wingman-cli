@@ -226,6 +226,60 @@ func main() {
 	requireNoDebugArtifacts(t, root)
 }
 
+func TestLiveDelveTerminalManagerCloseCleansProcess(t *testing.T) {
+	if os.Getenv("WINGMAN_LIVE_DAP") == "" {
+		t.Skip("set WINGMAN_LIVE_DAP=1 to run a real Delve session")
+	}
+	if resolveAdapterCommand("dlv") == "" {
+		t.Skip("dlv is not installed")
+	}
+
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/dapclose\n\ngo 1.24\n")
+	writeTestFile(t, filepath.Join(root, "main.go"), `package main
+
+import (
+	"bufio"
+	"fmt"
+	"os"
+)
+
+func main() {
+	fmt.Print("waiting> ")
+	_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
+}
+`)
+
+	terminals := terminal.NewManager(root)
+	defer terminals.Close()
+	manager := NewManager(root, liveDelveAdapter())
+	manager.SetTerminalLauncher(liveTerminalLauncher{manager: terminals})
+	defer manager.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	session, err := manager.Start(ctx, StartOptions{
+		IO: IOTerminal,
+		Configuration: map[string]any{
+			"mode":    "debug",
+			"program": filepath.Join(root, "main.go"),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalID := session.Status().TerminalID
+	if terminalID == "" || !waitForSessionOutput(ctx, session, "waiting>") {
+		t.Fatalf("terminal session did not start: status=%+v output=%q", session.Status(), session.Output())
+	}
+
+	manager.Close()
+	if !waitForTerminalRemoval(ctx, terminals, terminalID) {
+		t.Fatalf("manager close left Delve terminal %q running", terminalID)
+	}
+	requireNoDebugArtifacts(t, root)
+}
+
 type liveTerminalLauncher struct {
 	manager *terminal.Manager
 }
@@ -237,6 +291,8 @@ func liveDelveAdapter() AdapterDescriptor {
 		ReadyPrefix: "DAP server listening at:", Markers: []string{"go.mod", "go.work"},
 		ConfigurationPaths: []ConfigurationPath{{Key: "program"}, {Key: "cwd", Directory: true}},
 		TerminalStrategy:   TerminalAdapterProcess,
+		IOConfigKey:        "outputMode",
+		IOValues:           map[IOMode]string{IOOutput: "remote", IOTerminal: "local"},
 	}
 }
 

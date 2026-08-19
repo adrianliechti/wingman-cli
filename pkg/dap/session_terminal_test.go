@@ -76,6 +76,19 @@ func TestRunInTerminalRequestUsesConfiguredHost(t *testing.T) {
 	}
 }
 
+func TestTrackTerminalClosesProcessAfterSessionTermination(t *testing.T) {
+	process := newFakeTerminalProcess()
+	session := &Session{state: StateTerminated}
+	if session.trackTerminal(process) {
+		t.Fatal("terminated session accepted a new terminal")
+	}
+	select {
+	case <-process.Done():
+	default:
+		t.Fatal("terminal launched during shutdown was left running")
+	}
+}
+
 func serveRunInTerminalAdapter(adapter *fakeAdapter) error {
 	message, err := godap.ReadProtocolMessage(adapter.reader)
 	if err != nil {

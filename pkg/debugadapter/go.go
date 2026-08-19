@@ -40,6 +40,11 @@ func (goAdapter) Descriptor() dap.AdapterDescriptor {
 			{Key: "coreFilePath"},
 			{Key: "traceDirPath", Directory: true},
 		},
+		IOConfigKey: "outputMode",
+		IOValues: map[dap.IOMode]string{
+			dap.IOOutput:   "remote",
+			dap.IOTerminal: "local",
+		},
 	}
 }
 
@@ -182,9 +187,13 @@ func (goAdapter) Plan(request Request) (Plan, error) {
 	}
 
 	plan := Plan{
-		Title:      actionLabel(request.Action) + " " + request.Target.Name,
-		Summary:    fmt.Sprintf("%s Go %s %s.", actionLabel(request.Action), targetLabel, request.Target.Name),
-		ProjectDir: request.ProjectDir, Request: "launch", IO: dap.IOOutput, Configuration: configuration,
+		Title:            actionLabel(request.Action) + " " + request.Target.Name,
+		Summary:          fmt.Sprintf("%s Go %s %s.", actionLabel(request.Action), targetLabel, request.Target.Name),
+		ProjectDir:       request.ProjectDir,
+		Request:          "launch",
+		IO:               dap.IOOutput,
+		SupportsTerminal: true,
+		Configuration:    configuration,
 	}
 	if request.Action == "run" {
 		configuration["noDebug"] = true

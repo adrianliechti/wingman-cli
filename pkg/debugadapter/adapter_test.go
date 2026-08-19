@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -20,7 +21,7 @@ func TestGoAdapterPlansSingleTestDeterministically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.ProjectDir != "services/api" || plan.Configuration["mode"] != "test" || plan.Configuration["program"] != "." {
+	if plan.ProjectDir != "services/api" || plan.Configuration["mode"] != "test" || plan.Configuration["program"] != "." || !plan.SupportsTerminal {
 		t.Fatalf("plan = %#v", plan)
 	}
 	wantArgs := []string{"-test.run", `^TestHTTP_200$`}
@@ -29,6 +30,13 @@ func TestGoAdapterPlansSingleTestDeterministically(t *testing.T) {
 	}
 	if len(plan.Breakpoints) != 1 || plan.Breakpoints[0].Line != 18 {
 		t.Fatalf("breakpoints = %#v", plan.Breakpoints)
+	}
+}
+
+func TestGoAdapterMapsOutputAndTerminalModesToDelve(t *testing.T) {
+	descriptor := (goAdapter{}).Descriptor()
+	if descriptor.IOConfigKey != "outputMode" || descriptor.IOValues["output"] != "remote" || descriptor.IOValues["terminal"] != "local" {
+		t.Fatalf("Go I/O descriptor = %#v", descriptor)
 	}
 }
 
@@ -47,9 +55,17 @@ func TestPythonAdapterPlansWorkspaceRelativeScript(t *testing.T) {
 	if plan.Configuration["program"] != "main.py" || plan.Configuration["noDebug"] != true || len(plan.Breakpoints) != 0 {
 		t.Fatalf("plan = %#v", plan)
 	}
+	if _, forced := plan.Configuration["redirectOutput"]; forced {
+		t.Fatalf("Python plan overrides debugpy's console-specific output policy: %#v", plan.Configuration)
+	}
 }
 
-func TestRustAdapterPlansCargoBinary(t *testing.T) {
+func TestRustAdapterPlansConcreteCargoBinary(t *testing.T) {
+	descriptor := (rustAdapter{}).Descriptor()
+	if descriptor.Transport != "stdio" || len(descriptor.Args) != 0 || descriptor.ReadyPrefix != "" {
+		t.Fatalf("CodeLLDB descriptor = %#v", descriptor)
+	}
+
 	root := t.TempDir()
 	project := filepath.Join(root, "rust-app")
 	if err := os.MkdirAll(project, 0o755); err != nil {
@@ -65,15 +81,83 @@ func TestRustAdapterPlansCargoBinary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cargo, ok := plan.Configuration["cargo"].(map[string]any)
-	if !ok {
-		t.Fatalf("cargo configuration = %#v", plan.Configuration["cargo"])
+	executable := "sample-app"
+	if runtime.GOOS == "windows" {
+		executable += ".exe"
 	}
-	if want := []string{"build", "--bin", "sample-app"}; !reflect.DeepEqual(cargo["args"], want) {
-		t.Fatalf("cargo args = %#v, want %#v", cargo["args"], want)
+	wantProgram := filepath.ToSlash(filepath.Join("target", "debug", executable))
+	if plan.Configuration["program"] != wantProgram || !strings.Contains(plan.Summary, "cargo build --bin sample-app") || !plan.SupportsTerminal {
+		t.Fatalf("unbuilt plan = %#v", plan)
+	}
+	if _, leakedExtensionConfig := plan.Configuration["cargo"]; leakedExtensionConfig {
+		t.Fatalf("plan sent CodeLLDB's extension-only cargo configuration: %#v", plan.Configuration)
 	}
 	if len(plan.Breakpoints) != 1 {
 		t.Fatalf("breakpoints = %#v", plan.Breakpoints)
+	}
+
+	built := filepath.Join(project, filepath.FromSlash(wantProgram))
+	if err := os.MkdirAll(filepath.Dir(built), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(built, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plan, err = NewRegistry().Plan("Rust", Request{
+		Action: "debug", WorkspaceDir: root, ProjectDir: "rust-app",
+		Target: Target{Name: "main", Kind: "main", Language: "Rust", Path: "rust-app/src/main.rs", Line: 1, Column: 4},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plan.Summary, "cargo build") {
+		t.Fatalf("built plan still asks for a build: %#v", plan)
+	}
+}
+
+func TestRustAdapterResolvesCargoTargetsFromProjectManifest(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "rust-app")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `[package]
+name = "sample-app"
+
+[[bin]]
+name = "worker"
+path = "tools/worker.rs"
+
+[[example]]
+name = "tour"
+path = "showcase/tour.rs"
+`
+	if err := os.WriteFile(filepath.Join(project, "Cargo.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		path        string
+		programPath string
+		buildHint   string
+	}{
+		{path: "tools/worker.rs", programPath: filepath.Join("target", "debug", "worker"), buildHint: "cargo build --bin worker"},
+		{path: "showcase/tour.rs", programPath: filepath.Join("target", "debug", "examples", "tour"), buildHint: "cargo build --example tour"},
+	} {
+		plan, err := NewRegistry().Plan("Rust", Request{
+			Action: "debug", WorkspaceDir: root, ProjectDir: "rust-app",
+			Target: Target{Name: "entry", Kind: "main", Language: "Rust", Path: filepath.ToSlash(filepath.Join("rust-app", test.path)), Line: 1, Column: 4},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantProgram := filepath.ToSlash(test.programPath)
+		if runtime.GOOS == "windows" {
+			wantProgram += ".exe"
+		}
+		if plan.Configuration["program"] != wantProgram || !strings.Contains(plan.Summary, test.buildHint) {
+			t.Errorf("%s plan = %#v", test.path, plan)
+		}
 	}
 }
 
@@ -98,7 +182,21 @@ func TestDotnetAdapterPlansExistingOrExpectedAssembly(t *testing.T) {
 	if plan.Configuration["program"] != filepath.ToSlash(filepath.Join("bin", "Debug", "net8.0", "Demo.dll")) || !strings.Contains(plan.Summary, "dotnet build") {
 		t.Fatalf("unbuilt plan = %#v", plan)
 	}
+	if plan.SupportsTerminal {
+		t.Fatalf("NetCoreDbg plan advertises unsupported runInTerminal: %#v", plan)
+	}
+	descriptor := (dotnetAdapter{}).Descriptor()
+	if descriptor.TerminalStrategy != "" || descriptor.IOConfigKey != "" {
+		t.Fatalf("NetCoreDbg descriptor advertises unsupported terminal configuration: %#v", descriptor)
+	}
 
+	stale := filepath.Join(project, "bin", "Debug", "net7.0", "Demo.dll")
+	if err := os.MkdirAll(filepath.Dir(stale), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale, []byte("stale assembly"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	built := filepath.Join(project, "bin", "Debug", "net8.0", "Demo.dll")
 	if err := os.MkdirAll(filepath.Dir(built), 0o755); err != nil {
 		t.Fatal(err)
@@ -112,6 +210,9 @@ func TestDotnetAdapterPlansExistingOrExpectedAssembly(t *testing.T) {
 	}
 	if strings.Contains(plan.Summary, "dotnet build") {
 		t.Fatalf("built plan still asks for a build: %#v", plan)
+	}
+	if plan.Configuration["program"] != filepath.ToSlash(filepath.Join("bin", "Debug", "net8.0", "Demo.dll")) {
+		t.Fatalf("plan selected a stale target framework assembly: %#v", plan)
 	}
 }
 
@@ -131,7 +232,7 @@ func TestViteAdapterPlansConfiguredPort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Configuration["type"] != "pwa-chrome" || plan.Configuration["url"] != "http://localhost:4173" || len(plan.Breakpoints) != 0 {
+	if plan.Configuration["type"] != "pwa-chrome" || plan.Configuration["url"] != "http://localhost:4173" || len(plan.Breakpoints) != 0 || plan.SupportsTerminal {
 		t.Fatalf("plan = %#v", plan)
 	}
 }
@@ -204,7 +305,10 @@ func TestRegistryUsesExplicitJavaScriptDebugServer(t *testing.T) {
 	found := false
 	for _, descriptor := range registry.Descriptors() {
 		if descriptor.Name == "vscode-js-debug" {
-			found = descriptor.Command == "node" && reflect.DeepEqual(descriptor.Args, []string{server, "0", "127.0.0.1"})
+			found = descriptor.Command == "node" &&
+				descriptor.Transport == "tcp" &&
+				descriptor.ReadyPrefix == "Debug server listening at " &&
+				reflect.DeepEqual(descriptor.Args, []string{server, "0", "127.0.0.1"})
 		}
 	}
 	if !found {

@@ -25,7 +25,7 @@ export function DebugOutputTab() {
 				// from discovery; it remains useful until another session starts.
 				setOutput(next.output);
 			}
-			setError(next.error ?? "");
+			setError(next.session?.error || next.error || "");
 			return next;
 		} catch (cause) {
 			if (!controller.signal.aborted) setError(errorMessage(cause));

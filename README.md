@@ -287,22 +287,24 @@ go install github.com/go-delve/delve/cmd/dlv@latest
 python -m pip install debugpy
 ```
 
-Keep `dlv`, `debugpy-adapter`, `codelldb`, and `netcoredbg` on `PATH`. Wingman
-also checks common workspace virtual environments, user tool directories,
-Mason installs, and VS Code/Cursor extension directories. Java requires
-`jdtls` plus the java-debug plug-in JAR; installed VS Code/Cursor and Mason
-bundles are detected automatically, or set `WINGMAN_JAVA_DEBUG_BUNDLE` to the
-JAR. For JavaScript, use a vscode-js-debug standalone release or an editor/Mason
-installation; `WINGMAN_JS_DEBUG_SERVER` can point directly to
-`dapDebugServer.js`, and `WINGMAN_JS_DEBUG_ADAPTER` can name a compatible
-wrapper executable.
+Keep `dlv`, `codelldb`, and `netcoredbg` on `PATH`. For Python, Wingman uses a
+`debugpy-adapter` from `PATH` or a project virtual environment, and can also
+reuse the adapter bundled by an installed `ms-python.debugpy` extension.
+Wingman checks common user tool directories, Mason installs, and compatible
+VS Code/Cursor extension directories. Java requires `jdtls` plus the java-debug
+plug-in JAR; installed VS Code/Cursor and Mason bundles are detected
+automatically, or set `WINGMAN_JAVA_DEBUG_BUNDLE` to the JAR. For JavaScript,
+use a vscode-js-debug standalone release, compatible editor bundle containing
+`dapDebugServer.js`, or Mason installation; `WINGMAN_JS_DEBUG_SERVER` can point
+directly to `dapDebugServer.js`, and `WINGMAN_JS_DEBUG_ADAPTER` can name a
+compatible wrapper executable.
 
-C# launch plans use an existing Debug DLL and otherwise show the expected path;
-run `dotnet build` before launching an unbuilt sample. TypeScript entry files run
-directly on Node, using a project-local `tsx` executable when present. React/Vite
-browser plans launch Chrome at the configured port (5173 by default),
-so start the Vite dev server first. Runnable samples for every adapter live in
-[`examples/debug`](examples/debug).
+Rust and C# launch plans use existing debug build output and otherwise show the
+expected executable path; run `cargo build` or `dotnet build` before launching
+an unbuilt sample. TypeScript entry files run on Node using a project-local
+`tsx` executable when present. React/Vite browser plans launch Chrome at the
+configured port (5173 by default), so start the Vite dev server first. Runnable
+samples for every adapter live in [`examples/debug`](examples/debug).
 
 Supported entry points receive CodeLens actions. During a session, click
 Monaco's glyph margin to toggle source breakpoints. The Debug details pane shows

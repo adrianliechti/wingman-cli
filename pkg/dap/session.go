@@ -410,6 +410,9 @@ func (session *Session) readLoop() {
 	for {
 		message, err := readDAPMessage(reader)
 		if err != nil {
+			if errors.Is(err, io.EOF) && session.Status().State != StateTerminated {
+				err = errors.New("debug adapter connection closed unexpectedly")
+			}
 			session.closeResourcesWithError(err)
 			return
 		}
@@ -550,7 +553,14 @@ func (session *Session) respondRunInTerminal(request *godap.RunInTerminalRequest
 		session.respondError(&request.Request, "runInTerminal", err.Error())
 		return
 	}
-	session.trackTerminal(process)
+	if process == nil {
+		session.respondError(&request.Request, "runInTerminal", "Terminal launcher returned no process")
+		return
+	}
+	if !session.trackTerminal(process) {
+		session.respondError(&request.Request, "runInTerminal", "Debug session is stopping")
+		return
+	}
 	session.respond(&godap.RunInTerminalResponse{
 		Response: godap.Response{
 			ProtocolMessage: godap.ProtocolMessage{Type: "response"},
@@ -585,9 +595,15 @@ func terminalEnvironment(values map[string]any) (map[string]*string, error) {
 	return result, nil
 }
 
-func (session *Session) trackTerminal(process TerminalProcess) {
+func (session *Session) trackTerminal(process TerminalProcess) bool {
 	snapshot, output, cancel := process.Subscribe()
 	session.mu.Lock()
+	if !session.alive.Load() || session.state == StateTerminated {
+		session.mu.Unlock()
+		cancel()
+		_ = process.Close()
+		return false
+	}
 	session.terminalID = process.ID()
 	session.terminals = append(session.terminals, terminalBinding{process: process, cancel: cancel})
 	session.mu.Unlock()
@@ -599,6 +615,7 @@ func (session *Session) trackTerminal(process TerminalProcess) {
 			session.output.append("stdout", string(chunk))
 		}
 	}()
+	return true
 }
 
 func (session *Session) respondError(request *godap.Request, id, format string) {

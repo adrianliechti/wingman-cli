@@ -1,6 +1,5 @@
 import {
 	Bug,
-	ChevronDown,
 	Compass,
 	Code2,
 	Eye,
@@ -174,6 +173,9 @@ const EMPTY_USAGE = {
 const TERMINAL_SHORTCUT = /Mac|iPhone|iPad/.test(navigator.platform)
 	? "⌃⌥T"
 	: "Ctrl+Alt+T";
+const TERMINAL_SHELL_MENU_HINT = /Mac|iPhone|iPad/.test(navigator.platform)
+	? "Option-click"
+	: "Alt-click";
 
 const chatTabId = (sessionId: string) => `chat:${sessionId}`;
 
@@ -409,6 +411,7 @@ export default function App() {
 		useState<DebugContentView>("output");
 	const [debugDetailsVisible, setDebugDetailsVisible] = useState(true);
 	const [debugSession, setDebugSession] = useState<DebugSession>();
+	const debugSessionRef = useRef<DebugSession>();
 	const [debugControlBusy, setDebugControlBusy] = useState(false);
 
 	const runWorkspaceEdit = useCallback(
@@ -907,6 +910,14 @@ export default function App() {
 		setDebugLauncher({ ...seed });
 	}, []);
 	const applyDebugSession = useCallback((session?: DebugSession) => {
+		const current = debugSessionRef.current;
+		if (
+			session &&
+			current?.session_id === session.session_id &&
+			session.state_version < current.state_version
+		)
+			return;
+		debugSessionRef.current = session;
 		setDebugSession(session);
 		if (session?.terminal_id)
 			debugTerminalIDsRef.current.add(session.terminal_id);
@@ -2338,17 +2349,19 @@ export default function App() {
 							)}
 						</>
 					)}
+					{showTerminal && (
+						<TerminalLauncher
+							shells={terminalShells}
+							onCreate={(shell) => void createTerminal(shell)}
+						/>
+					)}
 				</div>
 				<div
 					data-window-interactive
 					data-titlebar-right-panel
 					className="flex shrink-0 items-center overflow-hidden pr-2 pl-0"
 					style={{
-						width: rightPanelDocked
-							? "var(--right-panel-width)"
-							: showTerminal
-								? "72px"
-								: "40px",
+						width: rightPanelDocked ? "var(--right-panel-width)" : "40px",
 					}}
 				>
 					{rightPanelCollapsed && (
@@ -2371,12 +2384,6 @@ export default function App() {
 						</div>
 					)}
 					{!rightPanelDocked && <div className="min-w-0 flex-1" />}
-					{showTerminal && (
-						<TerminalLauncher
-							shells={terminalShells}
-							onCreate={(shell) => void createTerminal(shell)}
-						/>
-					)}
 				</div>
 			</header>
 			{showNotice && (
@@ -3169,7 +3176,7 @@ function TerminalLauncher({
 	const [open, setOpen] = useState(false);
 	const launcherRef = useRef<HTMLDivElement>(null);
 
-	const label = shells[0]?.name ?? "shell";
+	const label = terminalShellName(shells[0]?.name ?? "shell");
 	const hasChoices = shells.length > 1;
 
 	return (
@@ -3179,27 +3186,21 @@ function TerminalLauncher({
 		>
 			<button
 				type="button"
-				className={`flex h-8 items-center justify-center text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted ${
-					hasChoices ? "w-5 rounded-l-md" : "w-8 rounded-md"
-				}`}
-				onClick={() => onCreate()}
-				title={`New ${label} terminal`}
+				className="flex h-8 w-8 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
+				onClick={(event) => {
+					if (event.altKey && hasChoices) {
+						setOpen(true);
+						return;
+					}
+					onCreate();
+				}}
+				title={`New ${label} terminal${hasChoices ? ` · ${TERMINAL_SHELL_MENU_HINT} to choose shell` : ""}`}
+				aria-label={`New ${label} terminal`}
+				aria-haspopup={hasChoices ? "menu" : undefined}
+				aria-expanded={hasChoices ? open : undefined}
 			>
 				<SquareTerminal size={13} />
 			</button>
-			{hasChoices && (
-				<button
-					type="button"
-					className="flex h-8 w-3 items-center justify-center rounded-r-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
-					onClick={() => setOpen((value) => !value)}
-					title="New terminal with another shell"
-					aria-label="Select shell"
-					aria-haspopup="menu"
-					aria-expanded={open}
-				>
-					<ChevronDown size={9} />
-				</button>
-			)}
 			<FloatingMenu
 				open={open}
 				onOpenChange={setOpen}

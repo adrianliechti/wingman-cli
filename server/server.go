@@ -208,8 +208,8 @@ func (s *Server) Close() {
 		}
 		s.background.Wait()
 		s.preview.Close()
-		s.terminals.Close()
 		s.workspace.Close()
+		s.terminals.Close()
 	})
 }
 

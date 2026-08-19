@@ -201,12 +201,13 @@ func nodePlan(request Request) (Plan, error) {
 		}
 	}
 	plan := Plan{
-		Title:         actionLabel(request.Action) + " " + request.Target.Name,
-		Summary:       fmt.Sprintf("%s %s.", actionLabel(request.Action), request.Target.Detail),
-		ProjectDir:    request.ProjectDir,
-		Request:       "launch",
-		IO:            dap.IOOutput,
-		Configuration: configuration,
+		Title:            actionLabel(request.Action) + " " + request.Target.Name,
+		Summary:          fmt.Sprintf("%s %s.", actionLabel(request.Action), request.Target.Detail),
+		ProjectDir:       request.ProjectDir,
+		Request:          "launch",
+		IO:               dap.IOOutput,
+		SupportsTerminal: true,
+		Configuration:    configuration,
 	}
 	if request.Action == "run" {
 		configuration["noDebug"] = true

@@ -73,8 +73,8 @@ export function DebugTab({
 				current?.session?.session_id === next.session.session_id &&
 				current.session.state_version === next.session.state_version
 			) {
-				// Output is rendered in its own tab. While the debugger state is
-				// unchanged, retain this inspector tree so expanded locals do not get
+				// Output is rendered in the other Debug view. While the debugger state
+				// is unchanged, retain this inspector tree so expanded locals do not get
 				// remounted by the polling loop.
 				return false;
 			}
@@ -120,7 +120,8 @@ export function DebugTab({
 				getDebugInspection(controller.signal),
 			);
 			if (sequence !== refreshSequenceRef.current) return null;
-			if (applyInspection(next)) setError(next.error ?? "");
+			applyInspection(next);
+			setError(next.session?.error || next.error || "");
 			return next;
 		} catch (cause) {
 			if (!controller.signal.aborted) setError(errorMessage(cause));

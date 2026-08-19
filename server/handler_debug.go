@@ -183,7 +183,7 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 	plan := debugLaunchPlan{
 		Action: request.Action, Title: profile.Title, Summary: profile.Summary,
 		Adapter: adapterInfo[0].Name, ProjectDir: profile.ProjectDir, Request: profile.Request,
-		TerminalAvailable: adapterInfo[0].TerminalStrategy != dap.TerminalUnsupported && terminal.Supported(),
+		TerminalAvailable: profile.SupportsTerminal && adapterInfo[0].TerminalStrategy != dap.TerminalUnsupported && terminal.Supported(),
 		IO:                string(profile.IO), Configuration: profile.Configuration,
 		FunctionBreakpoints: profile.FunctionBreakpoints,
 	}

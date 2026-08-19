@@ -117,12 +117,16 @@ func (pythonAdapter) Plan(request Request) (Plan, error) {
 		return Plan{}, err
 	}
 	configuration := map[string]any{
-		"program": program, "cwd": ".", "justMyCode": true, "redirectOutput": true,
+		"program": program, "cwd": ".", "justMyCode": true,
 	}
 	plan := Plan{
-		Title:      actionLabel(request.Action) + " " + request.Target.Name,
-		Summary:    fmt.Sprintf("%s Python script %s.", actionLabel(request.Action), request.Target.Path),
-		ProjectDir: request.ProjectDir, Request: "launch", IO: dap.IOOutput, Configuration: configuration,
+		Title:            actionLabel(request.Action) + " " + request.Target.Name,
+		Summary:          fmt.Sprintf("%s Python script %s.", actionLabel(request.Action), request.Target.Path),
+		ProjectDir:       request.ProjectDir,
+		Request:          "launch",
+		IO:               dap.IOOutput,
+		SupportsTerminal: true,
+		Configuration:    configuration,
 	}
 	if request.Action == "run" {
 		configuration["noDebug"] = true

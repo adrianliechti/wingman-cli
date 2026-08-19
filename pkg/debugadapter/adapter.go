@@ -54,6 +54,7 @@ type Plan struct {
 	ProjectDir          string
 	Request             string
 	IO                  dap.IOMode
+	SupportsTerminal    bool
 	Configuration       map[string]any
 	Breakpoints         []Breakpoint
 	FunctionBreakpoints []string

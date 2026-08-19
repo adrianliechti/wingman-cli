@@ -223,8 +223,8 @@ func (w *Workspace) WarmUp() {
 			w.mu.Unlock()
 			w.dapLifeMu.Unlock()
 			w.lspLifeMu.Unlock()
-			languageService.Close()
 			dapManager.Close()
+			languageService.Close()
 			if changesManager != nil {
 				changesManager.Close()
 			}
@@ -379,11 +379,13 @@ func (w *Workspace) Close() {
 	if mcpRefreshCancel != nil {
 		mcpRefreshCancel()
 	}
-	if languageService != nil {
-		languageService.Close()
-	}
+	// Java's debug adapter is hosted by JDT LS, so DAP must disconnect while
+	// the language service is still available.
 	if dapManager != nil {
 		dapManager.Close()
+	}
+	if languageService != nil {
+		languageService.Close()
 	}
 	w.dapLifeMu.Unlock()
 	w.lspLifeMu.Unlock()

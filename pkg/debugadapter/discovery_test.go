@@ -155,8 +155,16 @@ async fn main() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(targets) != 1 || targets[0].Language != "Rust" || targets[0].Name != "report" || targets[0].Kind != "bin" || targets[0].Line != 4 {
+	if len(targets) != 1 || targets[0].Language != "Rust" || targets[0].Name != "report" || targets[0].Kind != "main" || targets[0].Line != 4 {
 		t.Fatalf("targets = %#v", targets)
+	}
+
+	targets, err = NewRegistry().DetectFile("examples/debug/rust/src/main.rs", []byte("fn main() {}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].Name != "main" || targets[0].Kind != "main" {
+		t.Fatalf("workspace folder names changed Rust source detection: %#v", targets)
 	}
 }
 
@@ -257,5 +265,38 @@ func TestRegistryDetectWorkspaceSkipsGeneratedTrees(t *testing.T) {
 	}
 	if len(targets) != 2 || targets[0].Path != "app.py" || targets[1].Path != "cmd/a/main.go" {
 		t.Fatalf("targets = %#v", targets)
+	}
+}
+
+func TestCheckedInDebuggerSamplesExposeRunnableTargets(t *testing.T) {
+	tests := []struct {
+		path     string
+		language string
+		kind     string
+	}{
+		{path: "examples/debug/go/main.go", language: "Go", kind: "main"},
+		{path: "examples/debug/python/main.py", language: "Python", kind: "script"},
+		{path: "examples/debug/java/src/main/java/example/App.java", language: "Java", kind: "main"},
+		{path: "examples/debug/rust/src/main.rs", language: "Rust", kind: "main"},
+		{path: "examples/debug/dotnet/Program.cs", language: dotnetLanguage, kind: "main"},
+		{path: "examples/debug/typescript/src/main.ts", language: javascriptLanguage, kind: "node"},
+		{path: "examples/debug/react-vite/vite.config.ts", language: javascriptLanguage, kind: "vite"},
+	}
+
+	registry := NewRegistry()
+	for _, test := range tests {
+		t.Run(test.language+"/"+test.kind, func(t *testing.T) {
+			contents, err := os.ReadFile(filepath.Join("..", "..", filepath.FromSlash(test.path)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			targets, err := registry.DetectFile(test.path, contents)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(targets) != 1 || targets[0].Language != test.language || targets[0].Kind != test.kind {
+				t.Fatalf("targets = %#v, want one %s %s target", targets, test.language, test.kind)
+			}
+		})
 	}
 }

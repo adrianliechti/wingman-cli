@@ -2515,7 +2515,7 @@ test("stops the active debugger when the Debug tab closes", async ({
 			},
 		});
 	});
-	await page.route(/\/api\/debug\/inspection$/, async (route) => {
+	await page.route(/\/api\/debug\/inspection(?:\?[^#]*)?$/, async (route) => {
 		await route.fulfill({
 			json: { session, output: "ready\n", threads: [], frames: [] },
 		});
@@ -2523,7 +2523,7 @@ test("stops the active debugger when the Debug tab closes", async ({
 	await page.route(/\/api\/debug\/session$/, async (route) => {
 		await route.fulfill({ json: { session } });
 	});
-	await page.route(/\/api\/debug\/state$/, async (route) => {
+	await page.route(/\/api\/debug\/state(?:\?[^#]*)?$/, async (route) => {
 		await route.fulfill({
 			json: { available: true, session, breakpoints: [] },
 		});

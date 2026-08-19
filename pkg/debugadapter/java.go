@@ -162,12 +162,13 @@ func (javaAdapter) Plan(request Request) (Plan, error) {
 		configuration["projectName"] = projectName
 	}
 	plan := Plan{
-		Title:         actionLabel(request.Action) + " " + request.Target.Name,
-		Summary:       fmt.Sprintf("%s Java main class %s.", actionLabel(request.Action), request.Target.Name),
-		ProjectDir:    request.ProjectDir,
-		Request:       "launch",
-		IO:            dap.IOOutput,
-		Configuration: configuration,
+		Title:            actionLabel(request.Action) + " " + request.Target.Name,
+		Summary:          fmt.Sprintf("%s Java main class %s.", actionLabel(request.Action), request.Target.Name),
+		ProjectDir:       request.ProjectDir,
+		Request:          "launch",
+		IO:               dap.IOOutput,
+		SupportsTerminal: true,
+		Configuration:    configuration,
 	}
 	if request.Action == "run" {
 		configuration["noDebug"] = true

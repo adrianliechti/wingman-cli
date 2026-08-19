@@ -36,7 +36,6 @@ func (dotnetAdapter) Descriptor() dap.AdapterDescriptor {
 		Command:          "netcoredbg",
 		Args:             []string{"--interpreter=vscode"},
 		Transport:        dap.TransportStdio,
-		TerminalStrategy: dap.TerminalRunInTerminal,
 		Markers:          []string{"*.csproj", "*.sln", "*.slnx", "global.json"},
 		SourceExtensions: []string{".cs"},
 		Defaults:         map[string]any{"type": "coreclr"},
@@ -44,8 +43,6 @@ func (dotnetAdapter) Descriptor() dap.AdapterDescriptor {
 			{Key: "program", AllowMissing: true},
 			{Key: "cwd", Directory: true},
 		},
-		IOConfigKey: "console",
-		IOValues:    vscodeIOValues(),
 	}
 }
 
@@ -241,9 +238,6 @@ func dotnetProgramPath(projectRoot, projectFile string, metadata dotnetProjectMe
 		assembly = strings.TrimSuffix(filepath.Base(projectFile), filepath.Ext(projectFile))
 	}
 	fileName := assembly + ".dll"
-	if existing := findBuiltDotnetAssembly(projectRoot, fileName); existing != "" {
-		return existing, true
-	}
 	output := metadata.OutputPath
 	if output == "" || strings.Contains(output, "$(") {
 		output = filepath.Join("bin", "Debug")
@@ -252,7 +246,14 @@ func dotnetProgramPath(projectRoot, projectFile string, metadata dotnetProjectMe
 	if metadata.TargetFramework != "" && !strings.Contains(output, metadata.TargetFramework) {
 		output = filepath.Join(output, metadata.TargetFramework)
 	}
-	return filepath.Join(projectRoot, filepath.FromSlash(output), fileName), false
+	expected := filepath.Join(projectRoot, filepath.FromSlash(output), fileName)
+	if info, err := os.Stat(expected); err == nil && !info.IsDir() {
+		return expected, true
+	}
+	if existing := findBuiltDotnetAssembly(projectRoot, fileName); existing != "" {
+		return existing, true
+	}
+	return expected, false
 }
 
 func findBuiltDotnetAssembly(projectRoot, fileName string) string {
