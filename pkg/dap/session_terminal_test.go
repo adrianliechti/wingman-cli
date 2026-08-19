@@ -25,7 +25,7 @@ func TestRunInTerminalRequestUsesConfiguredHost(t *testing.T) {
 		Adapter:    AdapterDescriptor{Name: "fake", Language: "Test", AdapterID: "fake", TerminalStrategy: TerminalRunInTerminal},
 		ProjectDir: "/workspace",
 		Request:    "launch",
-		Console:    ConsoleIntegrated,
+		IO:         IOTerminal,
 		Arguments:  map[string]any{"request": "launch"},
 	}
 	session := newConnectedSession("terminal-test", plan, client)
@@ -49,7 +49,7 @@ func TestRunInTerminalRequestUsesConfiguredHost(t *testing.T) {
 		t.Fatal("adapter terminal request was not handled")
 	}
 	status := session.Status()
-	if status.TerminalID != process.ID() || status.Console != ConsoleIntegrated {
+	if status.TerminalID != process.ID() || status.IO != IOTerminal {
 		t.Fatalf("session status = %+v", status)
 	}
 	if !strings.Contains(session.Output(), "terminal ready") {
@@ -62,7 +62,7 @@ func TestRunInTerminalRequestUsesConfiguredHost(t *testing.T) {
 			t.Fatalf("natural termination status = %+v", status)
 		}
 	case <-ctx.Done():
-		t.Fatal("natural termination did not close the integrated terminal")
+		t.Fatal("natural termination did not close the terminal")
 	}
 
 	session.Close()

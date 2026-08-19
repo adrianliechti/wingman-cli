@@ -29,7 +29,8 @@ func (pythonAdapter) Descriptor() dap.AdapterDescriptor {
 			{Key: "program"},
 			{Key: "cwd", Directory: true},
 		},
-		ConsoleConfigKey: "console",
+		IOConfigKey: "console",
+		IOValues:    vscodeIOValues(),
 	}
 }
 
@@ -65,7 +66,7 @@ func (pythonAdapter) Plan(request Request) (Plan, error) {
 	plan := Plan{
 		Title:      actionLabel(request.Action) + " " + request.Target.Name,
 		Summary:    fmt.Sprintf("%s Python script %s.", actionLabel(request.Action), request.Target.Path),
-		ProjectDir: request.ProjectDir, Request: "launch", Console: "internalConsole", Configuration: configuration,
+		ProjectDir: request.ProjectDir, Request: "launch", IO: dap.IOOutput, Configuration: configuration,
 	}
 	if request.Action == "run" {
 		configuration["noDebug"] = true

@@ -72,6 +72,147 @@ func TestPythonAdapterFindsExplicitAndConventionalScripts(t *testing.T) {
 	}
 }
 
+func TestJavaAdapterFindsQualifiedMainClass(t *testing.T) {
+	targets, err := NewRegistry().DetectFile("src/main/java/demo/App.java", []byte(`package demo;
+
+public final class App {
+    String example = "public static void main(String[] args)";
+    public static void main(String... args) {
+        System.out.println("ready");
+    }
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].Language != "Java" || targets[0].Name != "demo.App" || targets[0].Line != 5 {
+		t.Fatalf("targets = %#v", targets)
+	}
+}
+
+func TestJavaAdapterRejectsNonPublicMainAndNamesNestedClass(t *testing.T) {
+	targets, err := NewRegistry().DetectFile("src/demo/App.java", []byte(`package demo;
+public class App {
+    static void main(String[] ignored) {}
+    public static class Nested {
+        public static void main(String args[]) {}
+    }
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].Name != "demo.App$Nested" || targets[0].Line != 5 {
+		t.Fatalf("targets = %#v", targets)
+	}
+}
+
+func TestJavaAdapterDoesNotTreatSiblingClassAsEnclosing(t *testing.T) {
+	targets, err := NewRegistry().DetectFile("src/demo/App.java", []byte(`package demo;
+class Helper {}
+public class App {
+    public static void main(String[] args) {}
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].Name != "demo.App" {
+		t.Fatalf("targets = %#v", targets)
+	}
+}
+
+func TestRustAdapterFindsCargoEntrypoints(t *testing.T) {
+	targets, err := NewRegistry().DetectFile("src/bin/report.rs", []byte(`const EXAMPLE: &str = "fn main() {}";
+
+#[tokio::main]
+async fn main() {
+    println!("ready");
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].Language != "Rust" || targets[0].Name != "report" || targets[0].Kind != "bin" || targets[0].Line != 4 {
+		t.Fatalf("targets = %#v", targets)
+	}
+}
+
+func TestDotnetAdapterFindsMainAndTopLevelPrograms(t *testing.T) {
+	registry := NewRegistry()
+	targets, err := registry.DetectFile("Console/Program.cs", []byte(`namespace ConsoleApp;
+public static class Program {
+    public static async Task<int> Main(string[] args) {
+        await Task.Yield();
+        return 0;
+    }
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].Language != dotnetLanguage || targets[0].Line != 3 {
+		t.Fatalf("main targets = %#v", targets)
+	}
+
+	targets, err = registry.DetectFile("TopLevel/Program.cs", []byte(`using System;
+
+var message = "ready";
+Console.WriteLine(message);
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].Detail != ".NET top-level program" || targets[0].Line != 3 {
+		t.Fatalf("top-level targets = %#v", targets)
+	}
+
+	targets, err = registry.DetectFile("Library/Program.cs", []byte(`public class Program
+{
+    public string Message => "not an entry point";
+}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 0 {
+		t.Fatalf("type-only Program.cs targets = %#v", targets)
+	}
+}
+
+func TestJavaScriptAdapterFindsNodeAndViteTargets(t *testing.T) {
+	registry := NewRegistry()
+	targets, err := registry.DetectFile("tools/main.ts", []byte(`const message: string = "ready";
+console.log(message);
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].Language != javascriptLanguage || targets[0].Kind != "node" {
+		t.Fatalf("TypeScript targets = %#v", targets)
+	}
+
+	targets, err = registry.DetectFile("web/vite.config.ts", []byte(`import { defineConfig } from "vite";
+export default defineConfig({ server: { port: 4173 } });
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].Kind != "vite" || targets[0].Line != 1 {
+		t.Fatalf("Vite targets = %#v", targets)
+	}
+
+	targets, err = registry.DetectFile("web/src/main.tsx", []byte(`import { createRoot } from "react-dom/client";
+createRoot(document.body).render(<main />);
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 0 {
+		t.Fatalf("React source was mistaken for a Node entry point: %#v", targets)
+	}
+}
+
 func TestRegistryDetectWorkspaceSkipsGeneratedTrees(t *testing.T) {
 	root := t.TempDir()
 	write := func(path, content string) {

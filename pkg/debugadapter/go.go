@@ -184,7 +184,7 @@ func (goAdapter) Plan(request Request) (Plan, error) {
 	plan := Plan{
 		Title:      actionLabel(request.Action) + " " + request.Target.Name,
 		Summary:    fmt.Sprintf("%s Go %s %s.", actionLabel(request.Action), targetLabel, request.Target.Name),
-		ProjectDir: request.ProjectDir, Request: "launch", Console: "internalConsole", Configuration: configuration,
+		ProjectDir: request.ProjectDir, Request: "launch", IO: dap.IOOutput, Configuration: configuration,
 	}
 	if request.Action == "run" {
 		configuration["noDebug"] = true

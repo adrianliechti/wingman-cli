@@ -1,0 +1,8 @@
+{
+  "name": "wingman-debug-typescript",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.ts"
+  }
+}

@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,7 +38,7 @@ func (connection *adapterConnection) Close() error {
 			closeErr = errors.Join(closeErr, connection.terminal.Close())
 		}
 		if connection.cmd != nil && connection.cmd.Process != nil {
-			_ = connection.cmd.Process.Kill()
+			killAdapterProcess(connection.cmd)
 		}
 	})
 	return closeErr
@@ -60,13 +61,27 @@ func (connection *splitConnection) Close() error {
 	return errors.Join(connection.reader.Close(), connection.writer.Close())
 }
 
-func startAdapter(ctx context.Context, plan Plan, output func(string, string), launcher TerminalLauncher) (*adapterConnection, error) {
-	if plan.Console == ConsoleIntegrated && plan.Adapter.TerminalStrategy == TerminalAdapterProcess {
+func startAdapter(ctx context.Context, plan Plan, output func(string, string), launcher TerminalLauncher, connector AdapterConnector) (*adapterConnection, error) {
+	if plan.Adapter.Transport == TransportConnect {
+		if connector == nil {
+			return nil, fmt.Errorf("debug adapter %s requires a host connection provider", plan.Adapter.Name)
+		}
+		connection, err := connector.ConnectAdapter(ctx, plan)
+		if err != nil {
+			return nil, fmt.Errorf("connect to debug adapter %s: %w", plan.Adapter.Name, err)
+		}
+		if connection == nil {
+			return nil, fmt.Errorf("connect to debug adapter %s: connector returned no stream", plan.Adapter.Name)
+		}
+		return &adapterConnection{ReadWriteCloser: connection}, nil
+	}
+	if plan.IO == IOTerminal && plan.Adapter.TerminalStrategy == TerminalAdapterProcess {
 		return startAdapterInTerminal(ctx, plan, output, launcher)
 	}
 	cmd := exec.Command(plan.Adapter.Command, plan.Adapter.Args...)
 	cmd.Dir = plan.ProjectDir
 	cmd.Env = os.Environ()
+	configureAdapterProcess(cmd)
 
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
@@ -114,10 +129,15 @@ func startAdapter(ctx context.Context, plan Plan, output func(string, string), l
 				stopStartedAdapter(cmd)
 				return nil, fmt.Errorf("start debug adapter %s: %w", plan.Adapter.Name, result.err)
 			}
-			conn, err := (&net.Dialer{}).DialContext(startupCtx, "tcp", result.address)
+			address, err := normalizeAdapterAddress(result.address)
 			if err != nil {
 				stopStartedAdapter(cmd)
-				return nil, fmt.Errorf("connect to debug adapter %s at %s: %w", plan.Adapter.Name, result.address, err)
+				return nil, fmt.Errorf("start debug adapter %s: %w", plan.Adapter.Name, err)
+			}
+			conn, err := (&net.Dialer{}).DialContext(startupCtx, "tcp", address)
+			if err != nil {
+				stopStartedAdapter(cmd)
+				return nil, fmt.Errorf("connect to debug adapter %s at %s: %w", plan.Adapter.Name, address, err)
 			}
 			return runningConnection(cmd, conn), nil
 		case <-startupCtx.Done():
@@ -131,7 +151,7 @@ func startAdapter(ctx context.Context, plan Plan, output func(string, string), l
 
 func startAdapterInTerminal(ctx context.Context, plan Plan, output func(string, string), launcher TerminalLauncher) (*adapterConnection, error) {
 	if launcher == nil {
-		return nil, errors.New("integrated terminal is not available")
+		return nil, errors.New("terminal is not available")
 	}
 	if plan.Adapter.Transport != TransportTCP {
 		return nil, fmt.Errorf("debug adapter %s cannot run its %s protocol stream in a terminal", plan.Adapter.Name, plan.Adapter.Transport)
@@ -162,12 +182,19 @@ func startAdapterInTerminal(ctx context.Context, plan Plan, output func(string, 
 			_ = process.Close()
 			return nil, fmt.Errorf("start debug adapter %s: %w", plan.Adapter.Name, result.err)
 		}
-		connection, err := (&net.Dialer{}).DialContext(startupCtx, "tcp", result.address)
+		address, err := normalizeAdapterAddress(result.address)
 		if err != nil {
 			_ = reader.Close()
 			cancelOutput()
 			_ = process.Close()
-			return nil, fmt.Errorf("connect to debug adapter %s at %s: %w", plan.Adapter.Name, result.address, err)
+			return nil, fmt.Errorf("start debug adapter %s: %w", plan.Adapter.Name, err)
+		}
+		connection, err := (&net.Dialer{}).DialContext(startupCtx, "tcp", address)
+		if err != nil {
+			_ = reader.Close()
+			cancelOutput()
+			_ = process.Close()
+			return nil, fmt.Errorf("connect to debug adapter %s at %s: %w", plan.Adapter.Name, address, err)
 		}
 		done := make(chan error, 1)
 		go func() {
@@ -190,6 +217,37 @@ func startAdapterInTerminal(ctx context.Context, plan Plan, output func(string, 
 	}
 }
 
+func normalizeAdapterAddress(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", errors.New("adapter reported an empty listen address")
+	}
+	if port, err := strconv.Atoi(value); err == nil {
+		if port < 1 || port > 65535 {
+			return "", fmt.Errorf("adapter reported invalid listen port %q", value)
+		}
+		return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), nil
+	}
+	host, portValue, err := net.SplitHostPort(value)
+	if err != nil {
+		return "", fmt.Errorf("adapter reported invalid listen address %q", value)
+	}
+	port, err := strconv.Atoi(portValue)
+	if err != nil || port < 1 || port > 65535 {
+		return "", fmt.Errorf("adapter reported invalid listen address %q", value)
+	}
+	if host != "" && !strings.EqualFold(host, "localhost") {
+		ip := net.ParseIP(host)
+		if ip != nil && !ip.IsUnspecified() && !ip.IsLoopback() {
+			return "", fmt.Errorf("adapter reported non-loopback listen address %q", value)
+		}
+		if ip == nil {
+			return "", fmt.Errorf("adapter reported non-loopback listen address %q", value)
+		}
+	}
+	return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), nil
+}
+
 func pipeTerminalOutput(writer *io.PipeWriter, snapshot []byte, chunks <-chan []byte, cancel func()) {
 	defer writer.Close()
 	defer cancel()
@@ -209,7 +267,7 @@ func stopStartedAdapter(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
-	_ = cmd.Process.Kill()
+	killAdapterProcess(cmd)
 	_ = cmd.Wait()
 }
 

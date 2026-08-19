@@ -27,12 +27,13 @@ type detectedAdapter struct {
 }
 
 type Manager struct {
-	root     string
-	adapters []AdapterDescriptor
-	lookup   func(string) string
-	start    sessionStarter
-	terminal TerminalLauncher
-	startMu  sync.Mutex
+	root      string
+	adapters  []AdapterDescriptor
+	lookup    func(string) string
+	start     sessionStarter
+	terminal  TerminalLauncher
+	connector AdapterConnector
+	startMu   sync.Mutex
 
 	detectMu   sync.Mutex
 	detected   []detectedAdapter
@@ -51,11 +52,19 @@ func NewManager(root string, adapters ...AdapterDescriptor) *Manager {
 }
 
 // SetTerminalLauncher connects the protocol client to the editor's PTY host.
-// Passing nil disables integrated-terminal launches while leaving internal
-// console sessions available.
+// Passing nil disables terminal launches while leaving captured-output
+// sessions available.
 func (m *Manager) SetTerminalLauncher(launcher TerminalLauncher) {
 	m.mu.Lock()
 	m.terminal = launcher
+	m.mu.Unlock()
+}
+
+// SetAdapterConnector installs the host bridge used by adapters such as Java,
+// whose DAP socket is created by a language server rather than an executable.
+func (m *Manager) SetAdapterConnector(connector AdapterConnector) {
+	m.mu.Lock()
+	m.connector = connector
 	m.mu.Unlock()
 }
 
@@ -92,6 +101,14 @@ func (m *Manager) detect(ctx context.Context) ([]detectedAdapter, error) {
 			command = resolveWorkspaceAdapterCommand(m.root, candidate.Command)
 		}
 		if command == "" {
+			for _, project := range projects {
+				command = resolveWorkspaceAdapterCommand(project, candidate.Command)
+				if command != "" {
+					break
+				}
+			}
+		}
+		if command == "" {
 			continue
 		}
 		candidate.Command = command
@@ -111,6 +128,7 @@ func cloneAdapters(values []AdapterDescriptor) []AdapterDescriptor {
 		cloned[i].SourceExtensions = slices.Clone(value.SourceExtensions)
 		cloned[i].Defaults = maps.Clone(value.Defaults)
 		cloned[i].ConfigurationPaths = slices.Clone(value.ConfigurationPaths)
+		cloned[i].IOValues = maps.Clone(value.IOValues)
 	}
 	return cloned
 }
@@ -138,7 +156,7 @@ func (m *Manager) Adapters(ctx context.Context) ([]AdapterInfo, error) {
 			Command:            value.adapter.Command,
 			Projects:           slices.Clone(value.projects),
 			ConfigurationPaths: slices.Clone(value.adapter.ConfigurationPaths),
-			ConsoleConfigKey:   value.adapter.ConsoleConfigKey,
+			IOConfigKey:        value.adapter.IOConfigKey,
 			TerminalStrategy:   value.adapter.TerminalStrategy,
 		})
 	}
@@ -168,6 +186,7 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 	}
 	options.Breakpoints = combinedBreakpoints
 	options.terminalLauncher = m.terminal
+	options.adapterConnector = m.connector
 	m.mu.Unlock()
 
 	values, err := m.detect(ctx)
@@ -184,6 +203,12 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 	plan, err := resolvePlan(m.root, selected, options)
 	if err != nil {
 		return nil, err
+	}
+	// Prefer the selected project's virtual environment or node_modules binary
+	// over a workspace-wide fallback found during discovery. This matters in
+	// monorepos where projects intentionally pin different adapter versions.
+	if command := resolveWorkspaceAdapterCommand(plan.ProjectDir, m.registeredCommand(selected.adapter.Name)); command != "" {
+		plan.Adapter.Command = command
 	}
 
 	id := uuid.NewString()[:8]
@@ -204,6 +229,15 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 		previous.Close()
 	}
 	return session, nil
+}
+
+func (m *Manager) registeredCommand(name string) string {
+	for _, adapter := range m.adapters {
+		if strings.EqualFold(adapter.Name, name) {
+			return adapter.Command
+		}
+	}
+	return ""
 }
 
 // mergeSourceBreakpoints keeps a plan's initial stops and folds in the
@@ -262,15 +296,15 @@ func resolvePlan(workspace string, selected detectedAdapter, options StartOption
 	if requestName != "launch" && requestName != "attach" {
 		return Plan{}, fmt.Errorf("request must be launch or attach (got %q)", options.Request)
 	}
-	console := options.Console
-	if console == "" {
-		console = ConsoleInternal
+	ioMode := options.IO
+	if ioMode == "" {
+		ioMode = IOOutput
 	}
-	if console != ConsoleInternal && console != ConsoleIntegrated {
-		return Plan{}, fmt.Errorf("console must be %s or %s (got %q)", ConsoleInternal, ConsoleIntegrated, options.Console)
+	if ioMode != IOOutput && ioMode != IOTerminal {
+		return Plan{}, fmt.Errorf("I/O mode must be %s or %s (got %q)", IOOutput, IOTerminal, options.IO)
 	}
-	if console == ConsoleIntegrated && selected.adapter.TerminalStrategy == TerminalUnsupported {
-		return Plan{}, fmt.Errorf("debug adapter %s does not support an integrated terminal", selected.adapter.Name)
+	if ioMode == IOTerminal && selected.adapter.TerminalStrategy == TerminalUnsupported {
+		return Plan{}, fmt.Errorf("debug adapter %s does not support a terminal", selected.adapter.Name)
 	}
 
 	projectDir, err := selectProjectDir(workspace, selected.projects, options.ProjectDir, options.Configuration)
@@ -292,11 +326,19 @@ func resolvePlan(workspace string, selected detectedAdapter, options StartOption
 		arguments["name"] = "Wingman debug"
 	}
 	arguments["request"] = requestName
-	if selected.adapter.ConsoleConfigKey != "" {
-		arguments[selected.adapter.ConsoleConfigKey] = string(console)
+	if selected.adapter.IOConfigKey != "" {
+		value := string(ioMode)
+		if mapped := selected.adapter.IOValues[ioMode]; mapped != "" {
+			value = mapped
+		}
+		arguments[selected.adapter.IOConfigKey] = value
 	}
 
-	target, _ := arguments["program"].(string)
+	targetKey := selected.adapter.TargetConfigKey
+	if targetKey == "" {
+		targetKey = "program"
+	}
+	target, _ := arguments[targetKey].(string)
 	mode, _ := arguments["mode"].(string)
 	return Plan{
 		Adapter:    selected.adapter,
@@ -304,7 +346,7 @@ func resolvePlan(workspace string, selected detectedAdapter, options StartOption
 		Target:     target,
 		Mode:       mode,
 		Request:    requestName,
-		Console:    console,
+		IO:         ioMode,
 		Arguments:  arguments,
 	}, nil
 }
@@ -344,19 +386,50 @@ func ResolveConfigurationPaths(workspace, projectDir string, fields []Configurat
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return nil, fmt.Errorf("configuration %s must stay inside the workspace", field.Key)
 		}
-		info, err := os.Stat(path)
-		if err != nil {
+		info, statErr := os.Stat(path)
+		if statErr != nil && (!field.AllowMissing || !errors.Is(statErr, os.ErrNotExist)) {
 			return nil, fmt.Errorf("configuration %s path %q does not exist", field.Key, value)
 		}
-		if err := ensureResolvedPathInside(workspace, path); err != nil {
+		if err := ensurePotentialPathInside(workspace, path, field.AllowMissing); err != nil {
 			return nil, fmt.Errorf("configuration %s path %q: %w", field.Key, value, err)
 		}
-		if field.Directory && !info.IsDir() {
+		if statErr == nil && field.Directory && !info.IsDir() {
 			return nil, fmt.Errorf("configuration %s path %q must be a directory", field.Key, value)
 		}
 		resolved[field.Key] = filepath.Clean(path)
 	}
 	return resolved, nil
+}
+
+func ensurePotentialPathInside(workspace, path string, allowMissing bool) error {
+	if !allowMissing {
+		return ensureResolvedPathInside(workspace, path)
+	}
+	probe := path
+	for {
+		if _, err := os.Lstat(probe); err == nil {
+			if err := ensureResolvedPathInside(workspace, probe); err != nil {
+				return err
+			}
+			if probe != path {
+				info, err := os.Stat(probe)
+				if err != nil {
+					return fmt.Errorf("inspect existing parent: %w", err)
+				}
+				if !info.IsDir() {
+					return errors.New("existing parent is not a directory")
+				}
+			}
+			return nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect path: %w", err)
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			return errors.New("no existing parent directory")
+		}
+		probe = parent
+	}
 }
 
 func selectProjectDir(workspace string, projects []string, requested string, configuration map[string]any) (string, error) {
@@ -515,14 +588,15 @@ func (m *Manager) Stop(ctx context.Context, id string) error {
 		return err
 	}
 	status := session.Status()
-	if err := session.Disconnect(ctx, true); err != nil && status.State != StateTerminated {
-		return err
-	}
+	disconnectErr := session.Disconnect(ctx, true)
 	m.mu.Lock()
 	if m.session == session {
 		m.session = nil
 	}
 	m.mu.Unlock()
+	if disconnectErr != nil && status.State != StateTerminated {
+		return disconnectErr
+	}
 	return nil
 }
 
@@ -561,10 +635,25 @@ func resolveAdapterCommand(command string) string {
 	if home, err := os.UserHomeDir(); err == nil {
 		dirs = append(dirs,
 			filepath.Join(home, "go", "bin"),
+			filepath.Join(home, ".cargo", "bin"),
+			filepath.Join(home, ".dotnet", "tools"),
+			filepath.Join(home, ".bun", "bin"),
 			filepath.Join(home, ".local", "bin"),
+			filepath.Join(home, ".local", "share", "nvim", "mason", "bin"),
+			filepath.Join(home, ".npm-global", "bin"),
 			filepath.Join(home, ".local", "share", "mise", "shims"),
 			filepath.Join(home, ".asdf", "shims"),
 		)
+		if runtime.GOOS == "windows" {
+			if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+				dirs = append(dirs, filepath.Join(localAppData, "nvim-data", "mason", "bin"))
+			}
+		}
+		if command == "codelldb" {
+			if path := resolveCodeLLDB(home); path != "" {
+				return path
+			}
+		}
 	}
 	if runtime.GOOS != "windows" {
 		dirs = append(dirs, "/opt/homebrew/bin", "/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin")
@@ -580,11 +669,45 @@ func resolveAdapterCommand(command string) string {
 	return ""
 }
 
+func resolveCodeLLDB(home string) string {
+	dataHome := os.Getenv("XDG_DATA_HOME")
+	if dataHome == "" {
+		dataHome = filepath.Join(home, ".local", "share")
+	}
+	patterns := []string{
+		filepath.Join(home, ".vscode", "extensions", "vadimcn.vscode-lldb-*", "adapter"),
+		filepath.Join(home, ".vscode-insiders", "extensions", "vadimcn.vscode-lldb-*", "adapter"),
+		filepath.Join(home, ".cursor", "extensions", "vadimcn.vscode-lldb-*", "adapter"),
+		filepath.Join(home, ".windsurf", "extensions", "vadimcn.vscode-lldb-*", "adapter"),
+		filepath.Join(dataHome, "nvim", "mason", "packages", "codelldb", "extension", "adapter"),
+	}
+	var directories []string
+	for _, pattern := range patterns {
+		matches, _ := filepath.Glob(pattern)
+		directories = append(directories, matches...)
+	}
+	slices.Sort(directories)
+	for index := len(directories) - 1; index >= 0; index-- {
+		for _, name := range commandNames("codelldb") {
+			path := filepath.Join(directories[index], name)
+			if executableFile(path) {
+				return path
+			}
+		}
+	}
+	return ""
+}
+
 func resolveWorkspaceAdapterCommand(workspace, command string) string {
-	for _, directory := range []string{".venv", "venv", "env"} {
+	for _, directory := range []string{".venv", "venv", "env", filepath.Join("node_modules", ".bin")} {
 		bin := "bin"
+		if directory == filepath.Join("node_modules", ".bin") {
+			bin = ""
+		}
 		if runtime.GOOS == "windows" {
-			bin = "Scripts"
+			if bin != "" {
+				bin = "Scripts"
+			}
 		}
 		for _, name := range commandNames(command) {
 			path := filepath.Join(workspace, directory, bin, name)

@@ -35,3 +35,25 @@ func TestTCPAdapterOutputStreamsPromptWithoutNewline(t *testing.T) {
 	}
 	_ = writer.Close()
 }
+
+func TestNormalizeAdapterAddressUsesLoopback(t *testing.T) {
+	values := map[string]string{
+		"4711":         "127.0.0.1:4711",
+		"0.0.0.0:4711": "127.0.0.1:4711",
+		"[::]:4711":    "127.0.0.1:4711",
+	}
+	for input, want := range values {
+		got, err := normalizeAdapterAddress(input)
+		if err != nil {
+			t.Fatalf("normalizeAdapterAddress(%q): %v", input, err)
+		}
+		if got != want {
+			t.Fatalf("normalizeAdapterAddress(%q) = %q, want %q", input, got, want)
+		}
+	}
+	for _, input := range []string{"", "0", "70000", "localhost", "remote.example:4711", "remote.example:abc"} {
+		if _, err := normalizeAdapterAddress(input); err == nil {
+			t.Fatalf("normalizeAdapterAddress(%q) succeeded", input)
+		}
+	}
+}

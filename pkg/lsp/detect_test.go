@@ -1,11 +1,32 @@
 package lsp
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 )
+
+func TestManagerInitializationOptionsAreStableSessionIdentity(t *testing.T) {
+	manager := NewManager(t.TempDir(), WithServerInitializationOptions("jdtls", map[string]any{
+		"bundles": []string{"java-debug.jar"},
+	}))
+	encoded := manager.initializationOptions["jdtls"]
+	var decoded map[string][]string
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if got := decoded["bundles"]; len(got) != 1 || got[0] != "java-debug.jar" {
+		t.Fatalf("initialization options = %#v", decoded)
+	}
+	plain := Server{Command: "jdtls"}
+	configured := plain
+	configured.InitializationOptions = encoded
+	if serverKey(plain) == serverKey(configured) {
+		t.Fatal("servers with different initialization options shared an identity")
+	}
+}
 
 func TestFindCommandIn(t *testing.T) {
 	dir := t.TempDir()

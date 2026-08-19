@@ -1,12 +1,5 @@
 export type DebugAction = "run" | "debug";
 
-export interface DebugAdapter {
-	name: string;
-	language: string;
-	projects: string[];
-	integrated_terminal: boolean;
-}
-
 export interface DebugTarget {
 	id: string;
 	name: string;
@@ -24,6 +17,7 @@ export interface DebugStop {
 	description?: string;
 	thread_id?: number;
 	all_threads_stopped?: boolean;
+	hit_breakpoint_ids?: number[];
 }
 
 export interface DebugSession {
@@ -33,7 +27,7 @@ export interface DebugSession {
 	target?: string;
 	mode?: string;
 	request: string;
-	console: "internalConsole" | "integratedTerminal";
+	io: "output" | "terminal";
 	terminal_id?: string;
 	capabilities: {
 		supports_step_back: boolean;
@@ -44,12 +38,6 @@ export interface DebugSession {
 	exit_code?: number;
 	started_at: string;
 	error?: string;
-}
-
-export interface DebugDiscovery {
-	adapters: DebugAdapter[];
-	targets: DebugTarget[];
-	session?: DebugSession;
 }
 
 export interface DebugPlanBreakpoint {
@@ -66,9 +54,10 @@ export interface DebugLaunchPlan {
 	title: string;
 	summary: string;
 	adapter: string;
+	terminal_available: boolean;
 	project_dir: string;
 	request: "launch" | "attach";
-	console: "internalConsole" | "integratedTerminal";
+	io: "output" | "terminal";
 	configuration: Record<string, unknown>;
 	breakpoints: DebugPlanBreakpoint[];
 	function_breakpoints: string[];
@@ -102,6 +91,16 @@ export interface DebugEvaluation {
 	result: string;
 	type?: string;
 	variables_reference?: number;
+	named_variables?: number;
+	indexed_variables?: number;
+}
+
+export interface DebugBreakpoint {
+	id?: number;
+	verified: boolean;
+	message?: string;
+	line?: number;
+	column?: number;
 }
 
 export interface DebugThread {
@@ -141,13 +140,6 @@ export interface DebugInspection {
 	error?: string;
 }
 
-export async function discoverDebug(path?: string, signal?: AbortSignal) {
-	const query = path ? `?path=${encodeURIComponent(path)}` : "";
-	return requestJSON<DebugDiscovery>(`/api/debug/discovery${query}`, {
-		signal,
-	});
-}
-
 export async function discoverDebugTargets(
 	path: string,
 	content: string,
@@ -164,9 +156,8 @@ export async function discoverDebugTargets(
 export async function generateDebugPlan(
 	request: {
 		action: DebugAction;
-		adapter?: string;
-		target_id?: string;
-		current_path?: string;
+		target_id: string;
+		current_path: string;
 	},
 	signal?: AbortSignal,
 ) {
@@ -195,8 +186,20 @@ export async function getDebugState(path?: string, signal?: AbortSignal) {
 	return requestJSON<DebugState>(`/api/debug/state${query}`, { signal });
 }
 
+export async function getDebugSession(signal?: AbortSignal) {
+	return requestJSON<{ session?: DebugSession }>("/api/debug/session", {
+		signal,
+	});
+}
+
 export async function getDebugInspection(signal?: AbortSignal) {
 	return requestJSON<DebugInspection>("/api/debug/inspection", { signal });
+}
+
+export async function getDebugOutput(signal?: AbortSignal) {
+	return requestJSON<DebugInspection>("/api/debug/inspection?details=false", {
+		signal,
+	});
 }
 
 export async function setDebugBreakpoints(
@@ -204,15 +207,15 @@ export async function setDebugBreakpoints(
 	breakpoints: DebugSourceBreakpoint[],
 	signal?: AbortSignal,
 ) {
-	return requestJSON<{ breakpoints: DebugSourceBreakpoint[] }>(
-		"/api/debug/breakpoints",
-		{
-			method: "PUT",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ path, breakpoints }),
-			signal,
-		},
-	);
+	return requestJSON<{
+		breakpoints: DebugSourceBreakpoint[];
+		resolved: DebugBreakpoint[];
+	}>("/api/debug/breakpoints", {
+		method: "PUT",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ path, breakpoints }),
+		signal,
+	});
 }
 
 export async function controlDebug(

@@ -13,7 +13,7 @@ import (
 // limited to the user's configured shells.
 func (s *Server) LaunchTerminal(_ context.Context, launch dap.TerminalLaunch) (dap.TerminalProcess, error) {
 	if s.terminals == nil || !terminal.Supported() {
-		return nil, errors.New("integrated terminals are not supported on this host")
+		return nil, errors.New("terminals are not supported on this host")
 	}
 	process, err := s.terminals.CreateCommand(terminal.CommandSpec{
 		Path:  launch.Path,

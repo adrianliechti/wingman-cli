@@ -75,6 +75,10 @@ func main() {
 	}) {
 		t.Fatalf("Delve did not return value=41: scopes=%+v variables=%+v", scopes, variables)
 	}
+	if err := manager.Stop(ctx, session.ID()); err != nil {
+		t.Fatalf("stop Delve session: %v", err)
+	}
+	requireNoDebugArtifacts(t, root)
 }
 
 func loadLiveVariables(t *testing.T, ctx context.Context, session *Session, scopes []Scope) []Variable {
@@ -152,7 +156,7 @@ func TestLiveDelveWorkspacePackage(t *testing.T) {
 	}
 }
 
-func TestLiveDelveIntegratedTerminal(t *testing.T) {
+func TestLiveDelveTerminal(t *testing.T) {
 	if os.Getenv("WINGMAN_LIVE_DAP") == "" {
 		t.Skip("set WINGMAN_LIVE_DAP=1 to run a real Delve session")
 	}
@@ -187,7 +191,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	session, err := manager.Start(ctx, StartOptions{
-		Console: ConsoleIntegrated,
+		IO: IOTerminal,
 		Configuration: map[string]any{
 			"mode":    "debug",
 			"program": filepath.Join(root, "main.go"),
@@ -197,7 +201,7 @@ func main() {
 		t.Fatal(err)
 	}
 	status := session.Status()
-	if status.TerminalID == "" || status.Console != ConsoleIntegrated {
+	if status.TerminalID == "" || status.IO != IOTerminal {
 		t.Fatalf("status = %+v", status)
 	}
 	terminalSession := terminals.Get(status.TerminalID)
@@ -219,6 +223,7 @@ func main() {
 	if !waitForTerminalRemoval(ctx, terminals, status.TerminalID) {
 		t.Fatalf("debug adapter terminal %q remained open", status.TerminalID)
 	}
+	requireNoDebugArtifacts(t, root)
 }
 
 type liveTerminalLauncher struct {
@@ -283,5 +288,23 @@ func waitForTerminalRemoval(ctx context.Context, manager *terminal.Manager, id s
 			return false
 		case <-ticker.C:
 		}
+	}
+}
+
+func requireNoDebugArtifacts(t *testing.T, root string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		matches, err := filepath.Glob(filepath.Join(root, "__debug_bin*"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(matches) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Delve left debug binaries behind: %v", matches)
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 }

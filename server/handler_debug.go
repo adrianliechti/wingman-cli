@@ -22,19 +22,6 @@ const (
 	debugStateRequestBudget = 2 * time.Second
 )
 
-type debugAdapter struct {
-	Name               string   `json:"name"`
-	Language           string   `json:"language"`
-	Projects           []string `json:"projects"`
-	IntegratedTerminal bool     `json:"integrated_terminal"`
-}
-
-type debugDiscoveryResponse struct {
-	Adapters []debugAdapter        `json:"adapters"`
-	Targets  []debugadapter.Target `json:"targets"`
-	Session  *dap.Status           `json:"session,omitempty"`
-}
-
 type debugPlanBreakpoint struct {
 	FilePath     string `json:"file_path"`
 	Line         int    `json:"line"`
@@ -49,9 +36,10 @@ type debugLaunchPlan struct {
 	Title               string                `json:"title"`
 	Summary             string                `json:"summary"`
 	Adapter             string                `json:"adapter"`
+	TerminalAvailable   bool                  `json:"terminal_available"`
 	ProjectDir          string                `json:"project_dir"`
 	Request             string                `json:"request"`
-	Console             string                `json:"console"`
+	IO                  string                `json:"io"`
 	Configuration       map[string]any        `json:"configuration"`
 	Breakpoints         []debugPlanBreakpoint `json:"breakpoints"`
 	FunctionBreakpoints []string              `json:"function_breakpoints"`
@@ -63,6 +51,10 @@ type debugStateResponse struct {
 	Frame       *dap.StackFrame        `json:"frame,omitempty"`
 	Breakpoints []dap.SourceBreakpoint `json:"breakpoints"`
 	FrameError  string                 `json:"frame_error,omitempty"`
+}
+
+type debugSessionResponse struct {
+	Session *dap.Status `json:"session,omitempty"`
 }
 
 type debugScopeInspection struct {
@@ -77,50 +69,6 @@ type debugInspectionResponse struct {
 	Threads []dap.Thread     `json:"threads"`
 	Frames  []dap.StackFrame `json:"frames"`
 	Error   string           `json:"error,omitempty"`
-}
-
-func (s *Server) handleDebugDiscovery(w http.ResponseWriter, r *http.Request) {
-	var adapterInfo []dap.AdapterInfo
-	var session *dap.Status
-	err := s.workspace.WithDAPManager(func(manager *dap.Manager) error {
-		values, err := manager.Adapters(r.Context())
-		if err != nil {
-			return err
-		}
-		adapterInfo = values
-		if active := manager.ActiveSession(); active != nil {
-			status := active.Status()
-			session = &status
-		}
-		return nil
-	})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
-	}
-
-	var currentFile string
-	if requested := strings.TrimSpace(r.URL.Query().Get("path")); requested != "" {
-		rel, ok := s.resolveExistingRegularFile(w, requested)
-		if !ok {
-			return
-		}
-		currentFile = rel
-	}
-	targets, err := s.detectDebugTargets(r.Context(), currentFile, true)
-	if err != nil {
-		code := http.StatusInternalServerError
-		if r.Context().Err() != nil {
-			code = http.StatusRequestTimeout
-		}
-		http.Error(w, err.Error(), code)
-		return
-	}
-	writeJSON(w, debugDiscoveryResponse{
-		Adapters: publicDebugAdapters(s.workspace.RootPath, adapterInfo),
-		Targets:  nonNilDebugTargets(targets),
-		Session:  session,
-	})
 }
 
 func (s *Server) handleDebugTargets(w http.ResponseWriter, r *http.Request) {
@@ -156,9 +104,8 @@ func (s *Server) handleDebugTargets(w http.ResponseWriter, r *http.Request) {
 
 type debugPlanRequest struct {
 	Action      string `json:"action"`
-	Adapter     string `json:"adapter,omitempty"`
-	TargetID    string `json:"target_id,omitempty"`
-	CurrentPath string `json:"current_path,omitempty"`
+	TargetID    string `json:"target_id"`
+	CurrentPath string `json:"current_path"`
 }
 
 func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
@@ -174,6 +121,12 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "action must be run or debug", http.StatusBadRequest)
 		return
 	}
+	request.TargetID = strings.TrimSpace(request.TargetID)
+	request.CurrentPath = strings.TrimSpace(request.CurrentPath)
+	if request.TargetID == "" || request.CurrentPath == "" {
+		http.Error(w, "target_id and current_path are required", http.StatusBadRequest)
+		return
+	}
 	var adapterInfo []dap.AdapterInfo
 	err := s.workspace.WithDAPManager(func(manager *dap.Manager) error {
 		values, err := manager.Adapters(r.Context())
@@ -184,50 +137,31 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	adapterInfo, err = selectDebugAdapters(adapterInfo, request.Adapter)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
 	if len(adapterInfo) == 0 {
 		http.Error(w, "no debug adapter detected in this workspace", http.StatusNotFound)
 		return
 	}
 
-	var currentFile string
-	if request.CurrentPath != "" {
-		rel, ok := s.resolveExistingRegularFile(w, request.CurrentPath)
-		if !ok {
-			return
-		}
-		currentFile = rel
-		request.CurrentPath = filepath.ToSlash(rel)
+	currentFile, ok := s.resolveExistingRegularFile(w, request.CurrentPath)
+	if !ok {
+		return
 	}
-	targets, err := s.detectDebugTargets(r.Context(), currentFile, request.TargetID == "")
+	targets, err := s.detectDebugTargets(currentFile)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	var selected *debugadapter.Target
-	if request.TargetID != "" {
-		for i := range targets {
-			if targets[i].ID == request.TargetID {
-				candidate := targets[i]
-				selected = &candidate
-				break
-			}
-		}
-		if selected == nil {
-			http.Error(w, "debug target is no longer available", http.StatusBadRequest)
-			return
+	for i := range targets {
+		if targets[i].ID == request.TargetID {
+			candidate := targets[i]
+			selected = &candidate
+			break
 		}
 	}
 	if selected == nil {
-		selected, err = selectDeterministicDebugTarget(targets, request.CurrentPath, adapterInfo)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
+		http.Error(w, "debug target is no longer available", http.StatusBadRequest)
+		return
 	}
 	adapterInfo, err = selectTargetDebugAdapter(adapterInfo, *selected)
 	if err != nil {
@@ -240,7 +174,7 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	profile, err := debugadapter.NewRegistry().Plan(adapterInfo[0].Language, debugadapter.Request{
-		Action: request.Action, ProjectDir: projectDir, Target: *selected,
+		Action: request.Action, WorkspaceDir: s.workspace.RootPath, ProjectDir: projectDir, Target: *selected,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
@@ -249,7 +183,8 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 	plan := debugLaunchPlan{
 		Action: request.Action, Title: profile.Title, Summary: profile.Summary,
 		Adapter: adapterInfo[0].Name, ProjectDir: profile.ProjectDir, Request: profile.Request,
-		Console: profile.Console, Configuration: profile.Configuration,
+		TerminalAvailable: adapterInfo[0].TerminalStrategy != dap.TerminalUnsupported && terminal.Supported(),
+		IO:                string(profile.IO), Configuration: profile.Configuration,
 		FunctionBreakpoints: profile.FunctionBreakpoints,
 	}
 	for _, breakpoint := range profile.Breakpoints {
@@ -297,6 +232,22 @@ func (s *Server) handleDebugStart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status)
 }
 
+func (s *Server) handleDebugSession(w http.ResponseWriter, _ *http.Request) {
+	response := debugSessionResponse{}
+	err := s.workspace.WithDAPManager(func(manager *dap.Manager) error {
+		if session := manager.ActiveSession(); session != nil {
+			status := session.Status()
+			response.Session = &status
+		}
+		return nil
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, response)
+}
+
 func (s *Server) handleDebugState(w http.ResponseWriter, r *http.Request) {
 	var sourcePath string
 	if requested := r.URL.Query().Get("path"); requested != "" {
@@ -308,18 +259,19 @@ func (s *Server) handleDebugState(w http.ResponseWriter, r *http.Request) {
 	}
 	response := debugStateResponse{Breakpoints: []dap.SourceBreakpoint{}}
 	err := s.workspace.WithDAPManager(func(manager *dap.Manager) error {
-		adapters, err := manager.Adapters(r.Context())
-		if err != nil {
-			return err
-		}
-		response.Available = len(adapters) > 0
 		if sourcePath != "" {
 			response.Breakpoints = manager.Breakpoints(sourcePath)
 		}
 		session := manager.ActiveSession()
 		if session == nil {
+			adapters, err := manager.Adapters(r.Context())
+			if err != nil {
+				return err
+			}
+			response.Available = len(adapters) > 0
 			return nil
 		}
+		response.Available = true
 		status := session.Status()
 		response.Session = &status
 		if status.State != dap.StateStopped {
@@ -360,6 +312,9 @@ func (s *Server) handleDebugInspection(w http.ResponseWriter, r *http.Request) {
 		status := session.Status()
 		response.Session = &status
 		response.Output = session.Output()
+		if r.URL.Query().Get("details") == "false" {
+			return nil
+		}
 		if status.State != dap.StateStopped {
 			return nil
 		}
@@ -631,95 +586,12 @@ func decodeDebugJSON(w http.ResponseWriter, r *http.Request, target any) error {
 	return nil
 }
 
-func (s *Server) detectDebugTargets(ctx context.Context, currentFile string, fallback bool) ([]debugadapter.Target, error) {
-	registry := debugadapter.NewRegistry()
-	if currentFile != "" {
-		source, err := s.workspace.Root.ReadFile(currentFile)
-		if err != nil {
-			return nil, err
-		}
-		targets, err := registry.DetectFile(filepath.ToSlash(currentFile), source)
-		if err != nil || len(targets) > 0 || !fallback {
-			return targets, err
-		}
+func (s *Server) detectDebugTargets(currentFile string) ([]debugadapter.Target, error) {
+	source, err := s.workspace.Root.ReadFile(currentFile)
+	if err != nil {
+		return nil, err
 	}
-	return registry.DetectWorkspace(ctx, s.workspace.RootPath)
-}
-
-func publicDebugAdapters(root string, values []dap.AdapterInfo) []debugAdapter {
-	result := make([]debugAdapter, 0, len(values))
-	for _, value := range values {
-		projects := make([]string, 0, len(value.Projects))
-		for _, project := range value.Projects {
-			rel, err := filepath.Rel(root, project)
-			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-				continue
-			}
-			if rel == "." {
-				projects = append(projects, ".")
-			} else {
-				projects = append(projects, filepath.ToSlash(rel))
-			}
-		}
-		result = append(result, debugAdapter{
-			Name:               value.Name,
-			Language:           value.Language,
-			Projects:           projects,
-			IntegratedTerminal: value.TerminalStrategy != dap.TerminalUnsupported && terminal.Supported(),
-		})
-	}
-	if result == nil {
-		return []debugAdapter{}
-	}
-	return result
-}
-
-func selectDebugAdapters(values []dap.AdapterInfo, requested string) ([]dap.AdapterInfo, error) {
-	requested = strings.TrimSpace(requested)
-	if requested == "" || requested == "auto" {
-		return values, nil
-	}
-	for _, value := range values {
-		if strings.EqualFold(value.Name, requested) || strings.EqualFold(value.Language, requested) {
-			return []dap.AdapterInfo{value}, nil
-		}
-	}
-	return nil, fmt.Errorf("debug adapter %q is not available", requested)
-}
-
-func selectDeterministicDebugTarget(values []debugadapter.Target, currentPath string, adapters []dap.AdapterInfo) (*debugadapter.Target, error) {
-	languages := make(map[string]bool, len(adapters))
-	for _, adapter := range adapters {
-		languages[strings.ToLower(adapter.Language)] = true
-	}
-	currentPath = strings.TrimSpace(currentPath)
-	if currentPath != "" {
-		currentPath = filepath.ToSlash(filepath.Clean(filepath.FromSlash(currentPath)))
-	}
-	candidates := make([]debugadapter.Target, 0, len(values))
-	current := make([]debugadapter.Target, 0, 1)
-	for _, target := range values {
-		if !languages[strings.ToLower(target.Language)] {
-			continue
-		}
-		candidates = append(candidates, target)
-		if currentPath != "" && target.Path == currentPath {
-			current = append(current, target)
-		}
-	}
-	if len(current) == 1 {
-		return &current[0], nil
-	}
-	if len(current) > 1 {
-		return nil, fmt.Errorf("choose one of the %d debug targets in %s", len(current), currentPath)
-	}
-	if len(candidates) == 1 {
-		return &candidates[0], nil
-	}
-	if len(candidates) == 0 {
-		return nil, errors.New("no deterministic debug target was found for an installed adapter")
-	}
-	return nil, fmt.Errorf("choose a debug target; %d runnable targets were found", len(candidates))
+	return debugadapter.NewRegistry().DetectFile(filepath.ToSlash(currentFile), source)
 }
 
 func selectTargetDebugAdapter(values []dap.AdapterInfo, target debugadapter.Target) ([]dap.AdapterInfo, error) {
@@ -805,7 +677,7 @@ func (s *Server) debugStartOptions(plan debugLaunchPlan) dap.StartOptions {
 		Adapter:       plan.Adapter,
 		ProjectDir:    plan.ProjectDir,
 		Request:       plan.Request,
-		Console:       dap.Console(plan.Console),
+		IO:            dap.IOMode(plan.IO),
 		Configuration: cloneJSONMap(plan.Configuration),
 		Breakpoints:   make(map[string][]dap.SourceBreakpoint),
 	}
@@ -855,15 +727,15 @@ func (s *Server) validateDebugPlan(plan *debugLaunchPlan, adapters []dap.Adapter
 	if selectedAdapter == nil {
 		return fmt.Errorf("adapter %q is not available", plan.Adapter)
 	}
-	plan.Console = strings.TrimSpace(plan.Console)
-	if plan.Console == "" {
-		plan.Console = string(dap.ConsoleInternal)
+	plan.IO = strings.TrimSpace(plan.IO)
+	if plan.IO == "" {
+		plan.IO = string(dap.IOOutput)
 	}
-	if plan.Console != string(dap.ConsoleInternal) && plan.Console != string(dap.ConsoleIntegrated) {
-		return fmt.Errorf("console must be %s or %s", dap.ConsoleInternal, dap.ConsoleIntegrated)
+	if plan.IO != string(dap.IOOutput) && plan.IO != string(dap.IOTerminal) {
+		return fmt.Errorf("I/O mode must be %s or %s", dap.IOOutput, dap.IOTerminal)
 	}
-	if plan.Console == string(dap.ConsoleIntegrated) && (selectedAdapter.TerminalStrategy == dap.TerminalUnsupported || !terminal.Supported()) {
-		return fmt.Errorf("adapter %s cannot use an integrated terminal on this host", selectedAdapter.Name)
+	if plan.IO == string(dap.IOTerminal) && (selectedAdapter.TerminalStrategy == dap.TerminalUnsupported || !terminal.Supported()) {
+		return fmt.Errorf("adapter %s cannot use a terminal on this host", selectedAdapter.Name)
 	}
 	plan.Request = strings.ToLower(strings.TrimSpace(plan.Request))
 	if plan.Request != "launch" && plan.Request != "attach" {

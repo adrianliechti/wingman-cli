@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -44,6 +45,38 @@ func TestDetectProjectsUsesSourceFileAsWorkspaceFallback(t *testing.T) {
 	}
 }
 
+func TestDetectProjectsDoesNotAddFallbackBesideNestedMarker(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "services", "api")
+	writeTestFile(t, filepath.Join(project, "api.csproj"), "<Project />\n")
+	writeTestFile(t, filepath.Join(project, "Program.cs"), "Console.WriteLine(\"ready\");\n")
+
+	projects, err := detectProjects(context.Background(), root, []string{"*.csproj"}, []string{".cs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(projects, []string{project}) {
+		t.Fatalf("projects = %v, want only %v", projects, project)
+	}
+}
+
+func TestDetectProjectsKeepsFallbackForSourcesOutsideNestedMarker(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "services", "api")
+	writeTestFile(t, filepath.Join(project, "pyproject.toml"), "[project]\n")
+	writeTestFile(t, filepath.Join(project, "main.py"), "print('nested')\n")
+	writeTestFile(t, filepath.Join(root, "tools.py"), "print('root')\n")
+
+	projects, err := detectProjects(context.Background(), root, []string{"pyproject.toml"}, []string{".py"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{root, project}
+	if !reflect.DeepEqual(projects, want) {
+		t.Fatalf("projects = %v, want %v", projects, want)
+	}
+}
+
 func TestResolvePlanPassesAdapterConfigurationThrough(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "service")
@@ -77,6 +110,33 @@ func TestResolvePlanPassesAdapterConfigurationThrough(t *testing.T) {
 	}
 	if _, changed := configuration["name"]; changed {
 		t.Fatal("resolvePlan mutated the caller configuration")
+	}
+}
+
+func TestResolvePlanMapsIOAndUsesAdapterTargetKey(t *testing.T) {
+	root := t.TempDir()
+	selected := detectedAdapter{
+		adapter: AdapterDescriptor{
+			Name:            "codelldb",
+			TargetConfigKey: "mainClass",
+			IOConfigKey:     "terminal",
+			IOValues: map[IOMode]string{
+				IOOutput:   "console",
+				IOTerminal: "integrated",
+			},
+			TerminalStrategy: TerminalRunInTerminal,
+		},
+		projects: []string{root},
+	}
+	plan, err := resolvePlan(root, selected, StartOptions{
+		IO:            IOTerminal,
+		Configuration: map[string]any{"mainClass": "demo.App"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Target != "demo.App" || plan.Arguments["terminal"] != "integrated" {
+		t.Fatalf("plan = %#v", plan)
 	}
 }
 
@@ -151,6 +211,43 @@ func TestWorkspacePathsRejectSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestConfigurationPathCanAllowMissingBuildOutput(t *testing.T) {
+	root := t.TempDir()
+	configuration, err := ResolveConfigurationPaths(root, root, []ConfigurationPath{{Key: "program", AllowMissing: true}}, map[string]any{
+		"program": filepath.Join("bin", "Debug", "net8.0", "app.dll"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(root, "bin", "Debug", "net8.0", "app.dll")
+	if configuration["program"] != want {
+		t.Fatalf("program = %#v, want %q", configuration["program"], want)
+	}
+}
+
+func TestMissingConfigurationPathRejectsSymlinkedParentEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "bin")); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+	if _, err := ResolveConfigurationPaths(root, root, []ConfigurationPath{{Key: "program", AllowMissing: true}}, map[string]any{
+		"program": filepath.Join("bin", "Debug", "app.dll"),
+	}); err == nil {
+		t.Fatal("missing path below an escaping symlink was accepted")
+	}
+}
+
+func TestMissingConfigurationPathRejectsFileAsParent(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "bin"), "not a directory\n")
+	if _, err := ResolveConfigurationPaths(root, root, []ConfigurationPath{{Key: "program", AllowMissing: true}}, map[string]any{
+		"program": filepath.Join("bin", "app.dll"),
+	}); err == nil {
+		t.Fatal("missing path below a regular file was accepted")
+	}
+}
+
 func TestMergeSourceBreakpointsPreservesUserBreakpoint(t *testing.T) {
 	planned := []SourceBreakpoint{{Line: 18}, {Line: 30}}
 	editor := []SourceBreakpoint{{Line: 18, Condition: "ready"}, {Line: 24}}
@@ -170,6 +267,52 @@ func TestManagerRejectsSecondActiveSession(t *testing.T) {
 
 	if _, err := manager.Start(context.Background(), StartOptions{}); !errors.Is(err, ErrActiveSession) {
 		t.Fatalf("Start error = %v, want ErrActiveSession", err)
+	}
+}
+
+func TestResolveCodeLLDBFindsEditorExtension(t *testing.T) {
+	home := t.TempDir()
+	name := "codelldb"
+	if runtime.GOOS == "windows" {
+		name = "codelldb.exe"
+	}
+	path := filepath.Join(home, ".vscode", "extensions", "vadimcn.vscode-lldb-1.11.0", "adapter", name)
+	writeTestFile(t, path, "adapter\n")
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveCodeLLDB(home); got != path {
+		t.Fatalf("resolveCodeLLDB = %q, want %q", got, path)
+	}
+}
+
+func TestManagerFindsAdapterInNestedProjectEnvironment(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "services", "api")
+	writeTestFile(t, filepath.Join(project, "pyproject.toml"), "[project]\n")
+	writeTestFile(t, filepath.Join(project, "main.py"), "print('ready')\n")
+	binDir := "bin"
+	adapterName := "debugpy-adapter"
+	if runtime.GOOS == "windows" {
+		binDir = "Scripts"
+		adapterName += ".exe"
+	}
+	adapterPath := filepath.Join(project, ".venv", binDir, adapterName)
+	writeTestFile(t, adapterPath, "adapter\n")
+	if err := os.Chmod(adapterPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := newManager(root, []AdapterDescriptor{{
+		Name: "debugpy", Command: "debugpy-adapter",
+		Markers: []string{"pyproject.toml"}, SourceExtensions: []string{".py"},
+	}}, func(string) string { return "" }, nil)
+	values, err := manager.detect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 1 || values[0].adapter.Command != adapterPath {
+		t.Fatalf("detected adapters = %#v, want nested command %q", values, adapterPath)
 	}
 }
 

@@ -1,17 +1,13 @@
+import { Bug, Check, Loader2, Monitor, MonitorPlay, Play } from "lucide-react";
 import {
-	ArrowLeft,
-	ArrowRight,
-	Bug,
-	Loader2,
-	Play,
-	Square,
-} from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
 import {
-	controlDebug,
-	discoverDebug,
 	type DebugAction,
-	type DebugDiscovery,
 	type DebugLaunchPlan,
 	type DebugSession,
 	type DebugTarget,
@@ -25,9 +21,9 @@ import {
 } from "./ui/Feedback";
 
 export interface DebugLauncherSeed {
-	action?: DebugAction;
-	target?: DebugTarget;
-	currentPath?: string;
+	action: DebugAction;
+	target: DebugTarget;
+	currentPath: string;
 }
 
 interface Props {
@@ -37,121 +33,58 @@ interface Props {
 	onStarted?: (session: DebugSession) => void;
 }
 
-type Phase =
-	| "loading"
-	| "choose"
-	| "planning"
-	| "review"
-	| "starting"
-	| "stopping";
+type Phase = "planning" | "review" | "starting" | "error";
 
 export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 	const requestRef = useRef<AbortController | null>(null);
-	const [phase, setPhase] = useState<Phase>("loading");
-	const [discovery, setDiscovery] = useState<DebugDiscovery | null>(null);
-	const [action, setAction] = useState<DebugAction>("debug");
-	const [adapter, setAdapter] = useState("");
-	const [targetID, setTargetID] = useState("");
+	const [phase, setPhase] = useState<Phase>("planning");
 	const [plan, setPlan] = useState<DebugLaunchPlan | null>(null);
+	const [pauseAtEntry, setPauseAtEntry] = useState(false);
 	const [configurationText, setConfigurationText] = useState("{}");
 	const [error, setError] = useState("");
-
-	const requestPlan = useCallback(
-		async (
-			values: {
-				action: DebugAction;
-				adapter?: string;
-				targetID?: string;
-			},
-			signal?: AbortSignal,
-		) => {
-			setPhase("planning");
-			setError("");
-			try {
-				const generated = await generateDebugPlan(
-					{
-						action: values.action,
-						adapter: values.adapter || undefined,
-						target_id: values.targetID || undefined,
-						current_path: seed?.currentPath,
-					},
-					signal,
-				);
-				setPlan(generated);
-				setConfigurationText(JSON.stringify(generated.configuration, null, 2));
-				setPhase("review");
-			} catch (cause) {
-				if (signal?.aborted) return;
-				setError(errorMessage(cause));
-				setPhase("choose");
-			}
-		},
-		[seed?.currentPath],
-	);
 
 	useEffect(() => {
 		if (!open) return;
 		requestRef.current?.abort();
 		const controller = new AbortController();
 		requestRef.current = controller;
-		const initialAction = seed?.action ?? "debug";
-		setPhase("loading");
-		setDiscovery(null);
-		setAction(initialAction);
-		setAdapter("");
-		setTargetID(seed?.target?.id ?? "");
+		setPhase("planning");
 		setPlan(null);
+		setPauseAtEntry(false);
 		setConfigurationText("{}");
 		setError("");
 
-		void discoverDebug(seed?.currentPath, controller.signal)
-			.then((value) => {
+		if (!seed) {
+			setError("Choose Run or Debug beside a runnable entry point.");
+			setPhase("error");
+			return () => controller.abort();
+		}
+
+		void generateDebugPlan(
+			{
+				action: seed.action,
+				target_id: seed.target.id,
+				current_path: seed.currentPath,
+			},
+			controller.signal,
+		)
+			.then((generated) => {
 				if (controller.signal.aborted) return;
-				setDiscovery(value);
-				const selectedAdapter =
-					value.adapters.find(
-						(item) =>
-							seed?.target &&
-							item.language.toLowerCase() ===
-								seed.target.language.toLowerCase(),
-					)?.name ??
-					value.adapters[0]?.name ??
-					"";
-				setAdapter(selectedAdapter);
-				if (
-					seed?.target &&
-					selectedAdapter &&
-					(!value.session || value.session.state === "terminated")
-				) {
-					void requestPlan(
-						{
-							action: initialAction,
-							adapter: selectedAdapter,
-							targetID: seed.target.id,
-						},
-						controller.signal,
-					);
-				} else {
-					setPhase("choose");
-				}
+				setPlan(generated);
+				setPauseAtEntry(
+					generated.breakpoints.length > 0 ||
+						generated.function_breakpoints.length > 0,
+				);
+				setConfigurationText(JSON.stringify(generated.configuration, null, 2));
+				setPhase("review");
 			})
 			.catch((cause) => {
 				if (controller.signal.aborted) return;
 				setError(errorMessage(cause));
-				setPhase("choose");
+				setPhase("error");
 			});
-		return () => {
-			controller.abort();
-			requestRef.current?.abort();
-		};
-	}, [open, requestPlan, seed]);
-
-	const generate = useCallback(() => {
-		requestRef.current?.abort();
-		const controller = new AbortController();
-		requestRef.current = controller;
-		void requestPlan({ action, adapter, targetID }, controller.signal);
-	}, [action, adapter, requestPlan, targetID]);
+		return () => controller.abort();
+	}, [open, seed]);
 
 	const start = useCallback(async () => {
 		if (!plan) return;
@@ -159,13 +92,14 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 		try {
 			configuration = JSON.parse(configurationText);
 		} catch {
-			setError("Configuration must be valid JSON.");
+			setError("Adapter options must be valid JSON.");
 			return;
 		}
 		if (!isObject(configuration)) {
-			setError("Configuration must be a JSON object.");
+			setError("Adapter options must be a JSON object.");
 			return;
 		}
+
 		requestRef.current?.abort();
 		const controller = new AbortController();
 		requestRef.current = controller;
@@ -173,7 +107,12 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 		setError("");
 		try {
 			const session = await startDebugPlan(
-				{ ...plan, configuration },
+				{
+					...plan,
+					configuration,
+					breakpoints: pauseAtEntry ? plan.breakpoints : [],
+					function_breakpoints: pauseAtEntry ? plan.function_breakpoints : [],
+				},
 				controller.signal,
 			);
 			onStarted?.(session);
@@ -183,193 +122,76 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 			setError(errorMessage(cause));
 			setPhase("review");
 		}
-	}, [configurationText, onClose, onStarted, plan]);
-
-	const stopCurrent = useCallback(async () => {
-		const current = discovery?.session;
-		if (!current) return;
-		setPhase("stopping");
-		setError("");
-		try {
-			await controlDebug("stop", current.session_id);
-			setDiscovery((value) =>
-				value ? { ...value, session: undefined } : value,
-			);
-			setPhase("choose");
-		} catch (cause) {
-			setError(errorMessage(cause));
-			setPhase("choose");
-		}
-	}, [discovery?.session]);
-
-	const activeSession =
-		discovery?.session && discovery.session.state !== "terminated"
-			? discovery.session
-			: undefined;
-	const selectedAdapter = discovery?.adapters.find(
-		(item) => item.name === adapter,
-	);
-	const compatibleTargets =
-		discovery?.targets.filter(
-			(target) =>
-				target.language.toLowerCase() ===
-				selectedAdapter?.language.toLowerCase(),
-		) ?? [];
-	const plannedAdapter = discovery?.adapters.find(
-		(item) => item.name === plan?.adapter,
-	);
+	}, [configurationText, onClose, onStarted, pauseAtEntry, plan]);
 
 	return (
 		<Dialog
 			open={open}
 			title={
-				activeSession ? "Debug session active" : plan?.title || "Run and debug"
-			}
-			description={
-				activeSession
-					? `${activeSession.language} · ${activeSession.adapter} · ${activeSession.state}`
-					: phase === "review" && plan
-						? plan.summary
-						: "Choose a target. Its language adapter prepares the launch configuration."
+				plan?.title ?? (seed?.action === "run" ? "Run target" : "Debug target")
 			}
 			onClose={onClose}
 			initialFocus="first"
 		>
 			<div className="w-full space-y-3">
-				{phase === "loading" && <Busy label="Discovering debug adapters…" />}
-
-				{!activeSession && phase === "choose" && (
-					<>
-						{discovery && discovery.adapters.length === 0 ? (
-							<div className="rounded-md border border-warning/30 bg-warning/5 p-3 text-[12px] text-fg-muted">
-								No compatible debug adapter was found. Install Delve for Go or
-								debugpy for Python, then make sure its executable is on PATH or
-								in the workspace virtual environment.
-							</div>
-						) : (
-							<>
-								<div className="grid grid-cols-2 gap-2">
-									<label className="space-y-1 text-[11px] text-fg-muted">
-										<span>Action</span>
-										<select
-											value={action}
-											onChange={(event) =>
-												setAction(event.target.value as DebugAction)
-											}
-											className={fieldClass}
-										>
-											<option value="debug">Debug</option>
-											<option value="run">Run without stopping</option>
-										</select>
-									</label>
-									<label className="space-y-1 text-[11px] text-fg-muted">
-										<span>Adapter</span>
-										<select
-											value={adapter}
-											onChange={(event) => {
-												setAdapter(event.target.value);
-												setTargetID("");
-											}}
-											className={fieldClass}
-										>
-											{discovery?.adapters.map((item) => (
-												<option key={item.name} value={item.name}>
-													{item.language} · {item.name}
-												</option>
-											))}
-										</select>
-									</label>
-								</div>
-								<label className="block space-y-1 text-[11px] text-fg-muted">
-									<span>Target</span>
-									<select
-										value={targetID}
-										onChange={(event) => setTargetID(event.target.value)}
-										className={fieldClass}
-									>
-										<option value="">Auto-select current target</option>
-										{compatibleTargets.map((target) => (
-											<option key={target.id} value={target.id}>
-												{target.name} · {target.path}:{target.line}
-											</option>
-										))}
-									</select>
-								</label>
-							</>
-						)}
-					</>
-				)}
-
 				{phase === "planning" && <Busy label="Preparing launch…" />}
 
-				{!activeSession &&
-					plan &&
-					(phase === "review" || phase === "starting") && (
-						<>
-							<div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-fg-dim">
-								<span className="text-fg-muted">
-									{plannedAdapter?.language ?? "Debug"} · {plan.adapter}
-								</span>
-								<span aria-hidden="true">·</span>
-								<span className="min-w-0 truncate" title={plan.project_dir}>
-									{plan.project_dir}
-								</span>
+				{plan && (phase === "review" || phase === "starting") && (
+					<>
+						<div className="space-y-1.5">
+							<div className="text-[10px] font-medium uppercase tracking-wide text-fg-dim">
+								Program I/O
 							</div>
-							<label className="block space-y-1 text-[11px] text-fg-muted">
-								<span>Output</span>
-								<select
-									value={plan.console}
-									onChange={(event) =>
-										setPlan({
-											...plan,
-											console: event.target.value as DebugLaunchPlan["console"],
-										})
-									}
-									className={fieldClass}
-								>
-									<option value="internalConsole">Debug output</option>
-									{plannedAdapter?.integrated_terminal && (
-										<option value="integratedTerminal">
-											Integrated terminal (interactive/TUI)
-										</option>
-									)}
-								</select>
-							</label>
-							<details className="rounded-md border border-border-subtle bg-bg-surface/30 text-[11px] text-fg-muted">
-								<summary className="cursor-pointer px-2.5 py-2 marker:text-fg-dim hover:text-fg">
-									Advanced configuration
-								</summary>
-								<div className="border-t border-border-subtle p-2">
-									<textarea
-										aria-label="Adapter configuration"
-										value={configurationText}
-										onChange={(event) =>
-											setConfigurationText(event.target.value)
-										}
-										rows={6}
-										spellCheck={false}
-										className={`${fieldClass} resize-y py-2 font-mono`}
+							<div
+								className={`grid gap-1 ${plan.terminal_available ? "grid-cols-2" : "grid-cols-1"}`}
+							>
+								<ActionChoice
+									selected={plan.io === "output"}
+									icon={<MonitorPlay size={12} />}
+									label="Debug output"
+									detail="Capture in the Debug tab"
+									onClick={() => setPlan({ ...plan, io: "output" })}
+								/>
+								{plan.terminal_available && (
+									<ActionChoice
+										selected={plan.io === "terminal"}
+										icon={<Monitor size={12} />}
+										label="Terminal"
+										detail="Interactive input and TUIs"
+										onClick={() => setPlan({ ...plan, io: "terminal" })}
 									/>
-								</div>
-							</details>
-							{(plan.breakpoints.length > 0 ||
-								plan.function_breakpoints.length > 0) && (
-								<div className="rounded-md border border-border-subtle px-2.5 py-2 text-[11px] text-fg-muted">
-									{plan.breakpoints.map((breakpoint) => (
-										<div key={`${breakpoint.file_path}:${breakpoint.line}`}>
-											Stop at {breakpoint.file_path}:{breakpoint.line}
-										</div>
-									))}
-									{plan.function_breakpoints.map((name) => (
-										<div key={name}>Stop in {name}</div>
-									))}
-								</div>
-							)}
-							<div className="text-[10px] leading-relaxed text-fg-dim">
-								Review before starting; this runs workspace code.
+								)}
 							</div>
-						</>
-					)}
+						</div>
+						{(plan.breakpoints.length > 0 ||
+							plan.function_breakpoints.length > 0) && (
+							<ToggleOption
+								selected={pauseAtEntry}
+								label="Pause at entry"
+								detail={entryBreakpointLabel(plan)}
+								onClick={() => setPauseAtEntry((current) => !current)}
+							/>
+						)}
+						<details className="rounded-md border border-border-subtle bg-bg-surface/30 text-[11px] text-fg-muted">
+							<summary className="cursor-pointer px-2.5 py-2 marker:text-fg-dim hover:text-fg">
+								Adapter options (JSON)
+							</summary>
+							<div className="space-y-2 border-t border-border-subtle p-2">
+								<div className="text-[10px] leading-relaxed text-fg-dim">
+									Adapter-defined DAP launch arguments.
+								</div>
+								<textarea
+									aria-label="Adapter launch options"
+									value={configurationText}
+									onChange={(event) => setConfigurationText(event.target.value)}
+									rows={6}
+									spellCheck={false}
+									className={`${fieldClass} resize-y py-2 font-mono`}
+								/>
+							</div>
+						</details>
+					</>
+				)}
 
 				{error && (
 					<div className="whitespace-pre-wrap break-words rounded-md border border-danger/30 bg-danger/5 px-2.5 py-2 text-[11px] text-danger">
@@ -381,53 +203,15 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 					<button type="button" className={dialogButtonClass} onClick={onClose}>
 						Cancel
 					</button>
-					{activeSession && phase !== "loading" && (
+					{phase === "review" && plan && (
 						<button
 							type="button"
-							className={`${dialogButtonClass} border-danger/40 text-danger hover:bg-danger/10`}
-							disabled={phase === "stopping"}
-							onClick={() => void stopCurrent()}
+							className={dialogPrimaryButtonClass}
+							onClick={() => void start()}
 						>
-							{phase === "stopping" ? (
-								<Loader2 size={12} className="animate-spin" />
-							) : (
-								<Square size={10} />
-							)}
-							{phase === "stopping" ? "Stopping…" : "Stop current session"}
+							{plan.action === "run" ? <Play size={12} /> : <Bug size={12} />}
+							{plan.action === "run" ? "Run" : "Start debugging"}
 						</button>
-					)}
-					{!activeSession &&
-						phase === "choose" &&
-						(discovery?.adapters.length ?? 0) > 0 && (
-							<button
-								type="button"
-								className={dialogPrimaryButtonClass}
-								onClick={generate}
-							>
-								Review launch <ArrowRight size={12} />
-							</button>
-						)}
-					{!activeSession && phase === "review" && plan && (
-						<>
-							<button
-								type="button"
-								className={dialogButtonClass}
-								onClick={() => {
-									setPlan(null);
-									setPhase("choose");
-								}}
-							>
-								<ArrowLeft size={12} /> Back
-							</button>
-							<button
-								type="button"
-								className={dialogPrimaryButtonClass}
-								onClick={() => void start()}
-							>
-								{plan.action === "run" ? <Play size={12} /> : <Bug size={12} />}
-								{plan.action === "run" ? "Run" : "Start debugging"}
-							</button>
-						</>
 					)}
 					{phase === "starting" && (
 						<button type="button" className={dialogPrimaryButtonClass} disabled>
@@ -440,16 +224,101 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 	);
 }
 
+function ActionChoice({
+	selected,
+	icon,
+	label,
+	detail,
+	onClick,
+}: {
+	selected: boolean;
+	icon: ReactNode;
+	label: string;
+	detail: string;
+	onClick: () => void;
+}) {
+	return (
+		<button
+			type="button"
+			aria-pressed={selected}
+			onClick={onClick}
+			className={`flex min-w-0 items-start gap-2 rounded-md border px-2.5 py-2 text-left transition-colors ${
+				selected
+					? "border-accent/50 bg-accent/10 text-fg"
+					: "border-transparent text-fg-muted hover:border-border-subtle hover:bg-bg-hover hover:text-fg"
+			}`}
+		>
+			<span
+				className={`mt-0.5 shrink-0 ${selected ? "text-accent" : "text-fg-dim"}`}
+			>
+				{icon}
+			</span>
+			<span className="min-w-0">
+				<span className="block text-[11.5px] font-medium">{label}</span>
+				<span className="mt-0.5 block truncate text-[9.5px] text-fg-dim">
+					{detail}
+				</span>
+			</span>
+		</button>
+	);
+}
+
+function ToggleOption({
+	selected,
+	label,
+	detail,
+	onClick,
+}: {
+	selected: boolean;
+	label: string;
+	detail: string;
+	onClick: () => void;
+}) {
+	return (
+		<button
+			type="button"
+			aria-pressed={selected}
+			onClick={onClick}
+			className="flex w-full min-w-0 items-center gap-2.5 rounded-md border border-border-subtle bg-bg-surface/30 px-2.5 py-2 text-left text-fg-muted transition-colors hover:border-border-strong hover:bg-bg-hover hover:text-fg"
+		>
+			<span
+				className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
+					selected
+						? "border-accent bg-accent text-bg"
+						: "border-border-strong bg-bg-input"
+				}`}
+			>
+				{selected && <Check size={10} strokeWidth={3} />}
+			</span>
+			<span className="min-w-0 flex-1">
+				<span className="block text-[11.5px] font-medium">{label}</span>
+				<span className="mt-0.5 block truncate text-[9.5px] text-fg-dim">
+					{detail}
+				</span>
+			</span>
+		</button>
+	);
+}
+
 function Busy({ label }: { label: string }) {
 	return (
-		<div className="flex items-center justify-center gap-2 py-8 text-[12px] text-fg-muted">
-			<Loader2 size={14} className="animate-spin" /> {label}
+		<div className="flex items-center gap-2 rounded-md border border-border-subtle bg-bg-surface/30 px-3 py-3 text-[11px] text-fg-muted">
+			<Loader2 size={12} className="animate-spin" /> {label}
 		</div>
 	);
 }
 
+function entryBreakpointLabel(plan: DebugLaunchPlan) {
+	if (plan.breakpoints.length === 1) {
+		const breakpoint = plan.breakpoints[0];
+		return `${breakpoint.file_path}:${breakpoint.line}`;
+	}
+	const count = plan.breakpoints.length + plan.function_breakpoints.length;
+	return `${count} generated entry breakpoints`;
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
+	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function errorMessage(value: unknown) {
@@ -457,4 +326,4 @@ function errorMessage(value: unknown) {
 }
 
 const fieldClass =
-	"min-h-8 w-full rounded-md border border-border bg-bg-input px-2.5 text-[12px] text-fg outline-none focus:border-border-strong";
+	"w-full rounded-md border border-border-subtle bg-bg-input px-2.5 text-[11px] text-fg outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/20";

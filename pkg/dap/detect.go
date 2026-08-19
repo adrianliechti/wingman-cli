@@ -11,14 +11,14 @@ import (
 func detectProjects(ctx context.Context, workspace string, markers, sourceExtensions []string) ([]string, error) {
 	markerSet := make(map[string]bool, len(markers))
 	for _, marker := range markers {
-		markerSet[marker] = true
+		markerSet[strings.ToLower(marker)] = true
 	}
 	extensionSet := make(map[string]bool, len(sourceExtensions))
 	for _, extension := range sourceExtensions {
 		extensionSet[strings.ToLower(extension)] = true
 	}
 	seen := make(map[string]bool)
-	sourceFound := false
+	sourceDirs := make(map[string]bool)
 	var projects []string
 	err := filepath.WalkDir(workspace, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -36,9 +36,9 @@ func detectProjects(ctx context.Context, workspace string, markers, sourceExtens
 			return nil
 		}
 		if extensionSet[strings.ToLower(filepath.Ext(entry.Name()))] {
-			sourceFound = true
+			sourceDirs[filepath.Dir(path)] = true
 		}
-		if !markerSet[entry.Name()] {
+		if !matchesProjectMarker(entry.Name(), markerSet) {
 			return nil
 		}
 		dir := filepath.Dir(path)
@@ -51,11 +51,38 @@ func detectProjects(ctx context.Context, workspace string, markers, sourceExtens
 	if err != nil {
 		return nil, err
 	}
-	if sourceFound && !seen[workspace] {
-		projects = append(projects, workspace)
+	for sourceDir := range sourceDirs {
+		covered := false
+		for _, project := range projects {
+			rel, err := filepath.Rel(project, sourceDir)
+			if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				covered = true
+				break
+			}
+		}
+		if !covered && !seen[workspace] {
+			projects = append(projects, workspace)
+			break
+		}
 	}
 	slices.Sort(projects)
 	return projects, nil
+}
+
+func matchesProjectMarker(name string, markers map[string]bool) bool {
+	name = strings.ToLower(name)
+	if markers[name] {
+		return true
+	}
+	for marker := range markers {
+		if !strings.ContainsAny(marker, "*?[") {
+			continue
+		}
+		if matched, err := filepath.Match(marker, name); err == nil && matched {
+			return true
+		}
+	}
+	return false
 }
 
 func skipProjectDir(name string) bool {

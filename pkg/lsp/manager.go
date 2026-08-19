@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -21,9 +22,28 @@ type Manager struct {
 	closed     bool
 	mu         sync.Mutex
 
-	detectMu   sync.Mutex
-	roots      []projectRoot
-	detectedAt time.Time
+	detectMu              sync.Mutex
+	roots                 []projectRoot
+	detectedAt            time.Time
+	initializationOptions map[string][]byte
+}
+
+type ManagerOption func(*Manager)
+
+// WithServerInitializationOptions adds opaque initialization options to every
+// detected server with the given name. The options are marshalled once and
+// copied into each server descriptor before a session starts.
+func WithServerInitializationOptions(name string, value any) ManagerOption {
+	return func(manager *Manager) {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return
+		}
+		if manager.initializationOptions == nil {
+			manager.initializationOptions = make(map[string][]byte)
+		}
+		manager.initializationOptions[name] = encoded
+	}
 }
 
 type sessionStart struct {
@@ -34,14 +54,20 @@ type sessionStart struct {
 
 const detectionCacheTTL = 30 * time.Second
 
-func NewManager(workingDir string) *Manager {
-	return &Manager{
+func NewManager(workingDir string, options ...ManagerOption) *Manager {
+	manager := &Manager{
 		workingDir: workingDir,
 		sessions:   make(map[string]*Session),
 		starting:   make(map[string]*sessionStart),
 		restarts:   make(map[string]int),
 		warming:    make(map[string]bool),
 	}
+	for _, option := range options {
+		if option != nil {
+			option(manager)
+		}
+	}
+	return manager
 }
 
 func (m *Manager) WorkingDir() string {
@@ -53,6 +79,11 @@ func (m *Manager) detect() []projectRoot {
 	defer m.detectMu.Unlock()
 	if m.detectedAt.IsZero() || time.Since(m.detectedAt) >= detectionCacheTTL {
 		m.roots = detectAll(m.workingDir)
+		for index := range m.roots {
+			if options := m.initializationOptions[m.roots[index].Server.Name]; len(options) > 0 {
+				m.roots[index].Server.InitializationOptions = slices.Clone(options)
+			}
+		}
 		m.detectedAt = time.Now()
 	}
 	return slices.Clone(m.roots)
@@ -132,7 +163,7 @@ func projectKey(project projectRoot) string {
 }
 
 func serverKey(server Server) string {
-	return server.Command + "\x00" + strings.Join(server.Args, "\x00")
+	return server.Command + "\x00" + strings.Join(server.Args, "\x00") + "\x00" + string(server.InitializationOptions)
 }
 
 func (m *Manager) GetSession(ctx context.Context, filePath string) (*Session, error) {

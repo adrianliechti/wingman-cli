@@ -14,15 +14,18 @@ import (
 type Transport string
 
 const (
-	TransportStdio Transport = "stdio"
-	TransportTCP   Transport = "tcp"
+	TransportStdio   Transport = "stdio"
+	TransportTCP     Transport = "tcp"
+	TransportConnect Transport = "connect"
 )
 
-type Console string
+// IOMode controls where the debuggee reads input and writes program output.
+// Adapter-specific launch values are mapped at the descriptor boundary.
+type IOMode string
 
 const (
-	ConsoleInternal   Console = "internalConsole"
-	ConsoleIntegrated Console = "integratedTerminal"
+	IOOutput   IOMode = "output"
+	IOTerminal IOMode = "terminal"
 )
 
 // TerminalStrategy declares how an adapter integrates with an interactive
@@ -57,6 +60,10 @@ type TerminalLauncher interface {
 	LaunchTerminal(context.Context, TerminalLaunch) (TerminalProcess, error)
 }
 
+type AdapterConnector interface {
+	ConnectAdapter(context.Context, Plan) (io.ReadWriteCloser, error)
+}
+
 // AdapterDescriptor describes how to start one debug adapter process. Command
 // is resolved to an executable before a Plan reaches the session layer.
 type AdapterDescriptor struct {
@@ -71,7 +78,9 @@ type AdapterDescriptor struct {
 	SourceExtensions   []string
 	Defaults           map[string]any
 	ConfigurationPaths []ConfigurationPath
-	ConsoleConfigKey   string
+	IOConfigKey        string
+	IOValues           map[IOMode]string
+	TargetConfigKey    string
 	TerminalStrategy   TerminalStrategy
 }
 
@@ -81,8 +90,9 @@ type AdapterDescriptor struct {
 // adapter. Fields that are commands, module names, or other opaque strings are
 // deliberately not listed.
 type ConfigurationPath struct {
-	Key       string `json:"key"`
-	Directory bool   `json:"directory,omitempty"`
+	Key          string `json:"key"`
+	Directory    bool   `json:"directory,omitempty"`
+	AllowMissing bool   `json:"allow_missing,omitempty"`
 }
 
 // AdapterInfo is the detection result exposed to callers and launch planners.
@@ -92,7 +102,7 @@ type AdapterInfo struct {
 	Command            string              `json:"command"`
 	Projects           []string            `json:"projects"`
 	ConfigurationPaths []ConfigurationPath `json:"configuration_paths,omitempty"`
-	ConsoleConfigKey   string              `json:"console_config_key,omitempty"`
+	IOConfigKey        string              `json:"io_config_key,omitempty"`
 	TerminalStrategy   TerminalStrategy    `json:"terminal_strategy,omitempty"`
 }
 
@@ -106,8 +116,9 @@ type StartOptions struct {
 	Configuration       map[string]any
 	Breakpoints         map[string][]SourceBreakpoint
 	FunctionBreakpoints []FunctionBreakpoint
-	Console             Console
+	IO                  IOMode
 	terminalLauncher    TerminalLauncher
+	adapterConnector    AdapterConnector
 }
 
 type SourceBreakpoint struct {
@@ -131,7 +142,7 @@ type Plan struct {
 	Target     string
 	Mode       string
 	Request    string
-	Console    Console
+	IO         IOMode
 	Arguments  map[string]any
 }
 
@@ -160,7 +171,7 @@ type Status struct {
 	Target       string       `json:"target,omitempty"`
 	Mode         string       `json:"mode,omitempty"`
 	Request      string       `json:"request"`
-	Console      Console      `json:"console"`
+	IO           IOMode       `json:"io"`
 	TerminalID   string       `json:"terminal_id,omitempty"`
 	Capabilities Capabilities `json:"capabilities"`
 	StateVersion uint64       `json:"state_version"`

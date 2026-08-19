@@ -200,8 +200,16 @@ func (w *Workspace) WarmUp() {
 			changesManager = changes.New(w.RootPath)
 		}
 
-		languageService := language.New(w.RootPath, filepath.Join(projectGraphDir(w.RootPath), "graph.json"))
-		dapManager := dap.NewManager(w.RootPath, debugadapter.NewRegistry().Descriptors()...)
+		debugRegistry := debugadapter.NewRegistry()
+		var languageOptions []lsp.ManagerOption
+		if bundles := debugRegistry.JDTLSBundles(); len(bundles) > 0 {
+			languageOptions = append(languageOptions, lsp.WithServerInitializationOptions("jdtls", map[string]any{
+				"bundles": bundles,
+			}))
+		}
+		languageService := language.New(w.RootPath, filepath.Join(projectGraphDir(w.RootPath), "graph.json"), languageOptions...)
+		dapManager := dap.NewManager(w.RootPath, debugRegistry.Descriptors()...)
+		dapManager.SetAdapterConnector(debugadapter.NewConnector(languageService))
 		graphEngine := languageService.Graph()
 		lspTools := lsptool.NewTools(languageService)
 		graphTools := graphtool.NewTools(graphEngine)

@@ -3,6 +3,8 @@ package dap
 import (
 	"bufio"
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -120,9 +122,188 @@ func TestSessionClosesConnectionAfterUnexpectedEOF(t *testing.T) {
 	}
 }
 
+func TestSessionAllowsLaunchResponseBeforeInitializedEvent(t *testing.T) {
+	client, server := net.Pipe()
+	adapter := newFakeAdapter(t, server)
+	done := make(chan error, 1)
+	go func() {
+		defer server.Close()
+		message, err := godap.ReadProtocolMessage(adapter.reader)
+		if err != nil {
+			done <- err
+			return
+		}
+		initialize := message.(*godap.InitializeRequest)
+		adapter.send(&godap.InitializeResponse{Response: adapter.response(initialize.Seq, "initialize")})
+		message, err = godap.ReadProtocolMessage(adapter.reader)
+		if err != nil {
+			done <- err
+			return
+		}
+		launch := message.(*godap.LaunchRequest)
+		adapter.send(&godap.LaunchResponse{Response: adapter.response(launch.Seq, "launch")})
+		time.Sleep(10 * time.Millisecond)
+		adapter.send(&godap.InitializedEvent{Event: adapter.event("initialized")})
+		done <- nil
+	}()
+
+	session := newConnectedSession("early-launch", Plan{
+		Adapter:   AdapterDescriptor{Name: "fake", Language: "Test"},
+		Request:   "launch",
+		Arguments: map[string]any{"request": "launch"},
+	}, client)
+	defer session.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := session.initializeAndLaunch(ctx, StartOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionSendsLaunchBeforeConfigurationWhenAdapterInitializesEarly(t *testing.T) {
+	client, server := net.Pipe()
+	adapter := newFakeAdapter(t, server)
+	done := make(chan error, 1)
+	go func() {
+		defer server.Close()
+		message, err := godap.ReadProtocolMessage(adapter.reader)
+		if err != nil {
+			done <- err
+			return
+		}
+		initialize := message.(*godap.InitializeRequest)
+		adapter.send(&godap.InitializeResponse{
+			Response: adapter.response(initialize.Seq, "initialize"),
+			Body: godap.Capabilities{
+				SupportsConfigurationDoneRequest: true,
+			},
+		})
+		adapter.send(&godap.InitializedEvent{Event: adapter.event("initialized")})
+
+		message, err = godap.ReadProtocolMessage(adapter.reader)
+		if err != nil {
+			done <- err
+			return
+		}
+		launch, ok := message.(*godap.LaunchRequest)
+		if !ok {
+			done <- fmt.Errorf("request after early initialized event = %T, want launch", message)
+			return
+		}
+		message, err = godap.ReadProtocolMessage(adapter.reader)
+		if err != nil {
+			done <- err
+			return
+		}
+		configurationDone, ok := message.(*godap.ConfigurationDoneRequest)
+		if !ok {
+			done <- fmt.Errorf("request after launch = %T, want configurationDone", message)
+			return
+		}
+		adapter.send(&godap.ConfigurationDoneResponse{Response: adapter.response(configurationDone.Seq, "configurationDone")})
+		adapter.send(&godap.LaunchResponse{Response: adapter.response(launch.Seq, "launch")})
+		done <- nil
+	}()
+
+	session := newConnectedSession("early-initialized", Plan{
+		Adapter:   AdapterDescriptor{Name: "fake", Language: "Test"},
+		Request:   "launch",
+		Arguments: map[string]any{"request": "launch"},
+	}, client)
+	defer session.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := session.initializeAndLaunch(ctx, StartOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionCleanAdapterExitIsUnexpectedWhileRunning(t *testing.T) {
+	processDone := make(chan error, 1)
+	connection := &unexpectedEOFConnection{closed: make(chan struct{})}
+	session := &Session{
+		plan:         Plan{Adapter: AdapterDescriptor{Name: "fake", Language: "Test"}},
+		connection:   &adapterConnection{ReadWriteCloser: connection, processDone: processDone},
+		pending:      make(map[int]chan responseResult),
+		state:        StateRunning,
+		stateChanged: make(chan struct{}),
+		launchDone:   make(chan struct{}),
+	}
+	session.alive.Store(true)
+	processDone <- nil
+	close(processDone)
+	session.watchProcess()
+	status := session.Status()
+	if status.State != StateTerminated || !strings.Contains(status.Error, "exited unexpectedly") {
+		t.Fatalf("status = %+v", status)
+	}
+}
+
+func TestSessionFinishWakesPendingRequestsWithClosedError(t *testing.T) {
+	wait := make(chan responseResult, 1)
+	session := &Session{
+		pending:      map[int]chan responseResult{1: wait},
+		state:        StateRunning,
+		stateChanged: make(chan struct{}),
+	}
+	session.finish(nil)
+	result := <-wait
+	if !errors.Is(result.err, errSessionClosed) {
+		t.Fatalf("pending error = %v, want errSessionClosed", result.err)
+	}
+}
+
+func TestSessionDisconnectForcesCleanupWhenAdapterDoesNotRespond(t *testing.T) {
+	connection := &blockingDAPConnection{closed: make(chan struct{})}
+	session := newConnectedSession("blocked-disconnect", Plan{
+		Adapter: AdapterDescriptor{Name: "fake", Language: "Test"},
+	}, connection)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	if err := session.Disconnect(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-connection.closed:
+	default:
+		t.Fatal("timed-out disconnect left the adapter connection open")
+	}
+	status := session.Status()
+	if status.State != StateTerminated || status.Error != "" {
+		t.Fatalf("status = %+v", status)
+	}
+}
+
 type unexpectedEOFConnection struct {
 	closed chan struct{}
 	once   sync.Once
+}
+
+type blockingDAPConnection struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (connection *blockingDAPConnection) Read([]byte) (int, error) {
+	<-connection.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (connection *blockingDAPConnection) Write([]byte) (int, error) {
+	<-connection.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (connection *blockingDAPConnection) Close() error {
+	connection.once.Do(func() { close(connection.closed) })
+	return nil
 }
 
 func (connection *unexpectedEOFConnection) Read([]byte) (int, error) {

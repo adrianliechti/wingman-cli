@@ -17,13 +17,23 @@ import (
 	godap "github.com/google/go-dap"
 )
 
-const maxOutputBytes = 64 * 1024
+const (
+	maxOutputBytes         = 64 * 1024
+	disconnectTimeout      = 3 * time.Second
+	adapterExitGracePeriod = time.Second
+)
 
 var errSessionClosed = errors.New("debug session closed")
 
 type responseResult struct {
 	message godap.ResponseMessage
 	err     error
+}
+
+type pendingRequest struct {
+	seq      int
+	command  string
+	response <-chan responseResult
 }
 
 type outputBuffer struct {
@@ -85,6 +95,7 @@ type Session struct {
 	initOnce     sync.Once
 	launchDone   chan struct{}
 	launchOnce   sync.Once
+	resourceDone chan struct{}
 
 	alive         atomic.Bool
 	finishOnce    sync.Once
@@ -104,9 +115,10 @@ func startSession(ctx context.Context, id string, plan Plan, options StartOption
 		stateChanged:     make(chan struct{}),
 		initialized:      make(chan struct{}),
 		launchDone:       make(chan struct{}),
+		resourceDone:     make(chan struct{}),
 		terminalLauncher: options.terminalLauncher,
 	}
-	connection, err := startAdapter(ctx, plan, session.output.append, options.terminalLauncher)
+	connection, err := startAdapter(ctx, plan, session.output.append, options.terminalLauncher, options.adapterConnector)
 	if err != nil {
 		return nil, err
 	}
@@ -140,6 +152,7 @@ func newConnectedSession(id string, plan Plan, connection io.ReadWriteCloser) *S
 		stateChanged: make(chan struct{}),
 		initialized:  make(chan struct{}),
 		launchDone:   make(chan struct{}),
+		resourceDone: make(chan struct{}),
 	}
 	session.alive.Store(true)
 	go session.readLoop()
@@ -158,7 +171,7 @@ func (session *Session) Status() Status {
 		Target:       session.plan.Target,
 		Mode:         session.plan.Mode,
 		Request:      session.plan.Request,
-		Console:      session.plan.Console,
+		IO:           session.plan.IO,
 		TerminalID:   session.terminalID,
 		Capabilities: session.capabilities,
 		StateVersion: session.stateVersion,
@@ -203,7 +216,7 @@ func (session *Session) initializeAndLaunch(ctx context.Context, options StartOp
 			PathFormat:                   "path",
 			SupportsVariableType:         true,
 			SupportsVariablePaging:       true,
-			SupportsRunInTerminalRequest: session.plan.Console == ConsoleIntegrated && session.terminalLauncher != nil,
+			SupportsRunInTerminalRequest: session.plan.IO == IOTerminal && session.terminalLauncher != nil,
 		},
 	})
 	if err != nil {
@@ -222,34 +235,49 @@ func (session *Session) initializeAndLaunch(ctx context.Context, options StartOp
 	if err != nil {
 		return fmt.Errorf("encode launch arguments: %w", err)
 	}
+	var startMessage godap.RequestMessage
+	switch session.plan.Request {
+	case "attach":
+		startMessage = &godap.AttachRequest{
+			Request:   request("attach"),
+			Arguments: arguments,
+		}
+	default:
+		startMessage = &godap.LaunchRequest{
+			Request:   request("launch"),
+			Arguments: arguments,
+		}
+	}
+	startPending, err := session.sendRequest(startMessage)
+	if err != nil {
+		return err
+	}
 	startResult := make(chan error, 1)
 	go func() {
-		var requestErr error
-		switch session.plan.Request {
-		case "attach":
-			_, requestErr = session.request(ctx, &godap.AttachRequest{
-				Request:   request("attach"),
-				Arguments: arguments,
-			})
-		default:
-			_, requestErr = session.request(ctx, &godap.LaunchRequest{
-				Request:   request("launch"),
-				Arguments: arguments,
-			})
-		}
+		_, requestErr := session.awaitRequest(ctx, startPending)
 		startResult <- requestErr
 	}()
 
-	select {
-	case <-session.initialized:
-	case requestErr := <-startResult:
-		if requestErr != nil {
-			return requestErr
+	startResponseReceived := false
+	startResponse := (<-chan error)(startResult)
+	for {
+		select {
+		case <-session.initialized:
+			goto configure
+		case requestErr := <-startResponse:
+			if requestErr != nil {
+				return requestErr
+			}
+			// Some conforming adapters acknowledge launch before emitting the
+			// initialized event. Keep waiting for the configuration barrier.
+			startResponseReceived = true
+			startResponse = nil
+		case <-ctx.Done():
+			return ctx.Err()
 		}
-		return fmt.Errorf("adapter answered %s before announcing initialized", session.plan.Request)
-	case <-ctx.Done():
-		return ctx.Err()
 	}
+
+configure:
 
 	breakpointSets := make(map[string][]SourceBreakpoint, len(options.Breakpoints))
 	for path, breakpoints := range options.Breakpoints {
@@ -280,13 +308,15 @@ func (session *Session) initializeAndLaunch(ctx context.Context, options StartOp
 		}
 	}
 
-	select {
-	case requestErr := <-startResult:
-		if requestErr != nil {
-			return requestErr
+	if !startResponseReceived {
+		select {
+		case requestErr := <-startResult:
+			if requestErr != nil {
+				return requestErr
+			}
+		case <-ctx.Done():
+			return ctx.Err()
 		}
-	case <-ctx.Done():
-		return ctx.Err()
 	}
 
 	status := session.Status()
@@ -301,12 +331,20 @@ func request(command string) godap.Request {
 }
 
 func (session *Session) request(ctx context.Context, message godap.RequestMessage) (godap.ResponseMessage, error) {
+	pending, err := session.sendRequest(message)
+	if err != nil {
+		return nil, err
+	}
+	return session.awaitRequest(ctx, pending)
+}
+
+func (session *Session) sendRequest(message godap.RequestMessage) (pendingRequest, error) {
 	if !session.alive.Load() {
 		status := session.Status()
 		if status.Error != "" {
-			return nil, fmt.Errorf("debug session is closed: %s", status.Error)
+			return pendingRequest{}, fmt.Errorf("debug session is closed: %s", status.Error)
 		}
-		return nil, errors.New("debug session is closed")
+		return pendingRequest{}, errors.New("debug session is closed")
 	}
 
 	session.writeMu.Lock()
@@ -322,23 +360,26 @@ func (session *Session) request(ctx context.Context, message godap.RequestMessag
 	session.writeMu.Unlock()
 	if err != nil {
 		session.removePending(seq)
-		return nil, fmt.Errorf("send %s: %w", message.GetRequest().Command, err)
+		return pendingRequest{}, fmt.Errorf("send %s: %w", message.GetRequest().Command, err)
 	}
+	return pendingRequest{seq: seq, command: message.GetRequest().Command, response: wait}, nil
+}
 
+func (session *Session) awaitRequest(ctx context.Context, pending pendingRequest) (godap.ResponseMessage, error) {
 	select {
-	case result := <-wait:
+	case result := <-pending.response:
 		if result.err != nil {
 			return nil, result.err
 		}
 		if result.message == nil {
-			return nil, fmt.Errorf("%s returned an empty response", message.GetRequest().Command)
+			return nil, fmt.Errorf("%s returned an empty response", pending.command)
 		}
 		if response := result.message.GetResponse(); !response.Success {
 			return nil, dapResponseError(result.message)
 		}
 		return result.message, nil
 	case <-ctx.Done():
-		session.removePending(seq)
+		session.removePending(pending.seq)
 		return nil, ctx.Err()
 	}
 }
@@ -428,7 +469,14 @@ func (session *Session) closeAfterTermination() {
 	session.terminateOnce.Do(func() {
 		go func() {
 			<-session.launchDone
-			session.closeResourcesWithError(nil)
+			grace := time.NewTimer(adapterExitGracePeriod)
+			defer grace.Stop()
+			select {
+			case <-session.resourceDone:
+				return
+			case <-grace.C:
+				session.closeResourcesWithError(nil)
+			}
 		}()
 	})
 }
@@ -442,8 +490,8 @@ func (session *Session) handleAdapterRequest(message godap.RequestMessage) {
 }
 
 func (session *Session) respondRunInTerminal(request *godap.RunInTerminalRequest) {
-	if session.plan.Console != ConsoleIntegrated || session.terminalLauncher == nil {
-		session.respondError(&request.Request, "notSupported", "Integrated terminal launch is not available")
+	if session.plan.IO != IOTerminal || session.terminalLauncher == nil {
+		session.respondError(&request.Request, "notSupported", "Terminal launch is not available")
 		return
 	}
 	if request.Arguments.ArgsCanBeInterpretedByShell {
@@ -557,9 +605,19 @@ func (session *Session) watchProcess() {
 		return
 	}
 	err, ok := <-session.connection.processDone
-	if ok && err != nil && session.Status().State != StateTerminated {
-		session.closeResourcesWithError(fmt.Errorf("debug adapter exited: %w", err))
+	if !ok {
+		return
 	}
+	if session.Status().State == StateTerminated {
+		session.closeResourcesWithError(nil)
+		return
+	}
+	if err == nil {
+		err = errors.New("debug adapter exited unexpectedly")
+	} else {
+		err = fmt.Errorf("debug adapter exited: %w", err)
+	}
+	session.closeResourcesWithError(err)
 }
 
 func (session *Session) finish(err error) {
@@ -580,8 +638,15 @@ func (session *Session) finish(err error) {
 		pending := session.pending
 		session.pending = make(map[int]chan responseResult)
 		session.pendingMu.Unlock()
+		pendingErr := err
+		if pendingErr == nil {
+			pendingErr = errSessionClosed
+		}
 		for _, wait := range pending {
-			wait <- responseResult{err: err}
+			wait <- responseResult{err: pendingErr}
+		}
+		if session.resourceDone != nil {
+			close(session.resourceDone)
 		}
 	})
 }
@@ -926,14 +991,47 @@ func (session *Session) EvaluateContext(ctx context.Context, expression string, 
 }
 
 func (session *Session) Disconnect(ctx context.Context, terminate bool) error {
-	var requestErr error
-	if session.alive.Load() {
-		_, requestErr = session.request(ctx, &godap.DisconnectRequest{
+	if !session.alive.Load() {
+		session.closeResources()
+		return nil
+	}
+
+	// Stop is a local ownership boundary: mark the session terminated before
+	// asking the adapter so a clean adapter exit cannot be mistaken for a crash.
+	session.setState(StateTerminated, nil)
+	disconnectCtx, cancel := context.WithTimeout(ctx, disconnectTimeout)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := session.request(disconnectCtx, &godap.DisconnectRequest{
 			Request:   request("disconnect"),
 			Arguments: &godap.DisconnectArguments{TerminateDebuggee: terminate},
 		})
+		result <- err
+	}()
+
+	var requestErr error
+	select {
+	case requestErr = <-result:
+	case <-disconnectCtx.Done():
+		requestErr = disconnectCtx.Err()
+	}
+	if requestErr == nil {
+		grace := time.NewTimer(adapterExitGracePeriod)
+		defer grace.Stop()
+		select {
+		case <-session.resourceDone:
+			return nil
+		case <-grace.C:
+		case <-disconnectCtx.Done():
+		}
 	}
 	session.closeResources()
+	if errors.Is(requestErr, context.Canceled) || errors.Is(requestErr, context.DeadlineExceeded) {
+		// The graceful handshake timed out, but all locally owned adapter,
+		// debuggee, and terminal resources were forcibly closed.
+		return nil
+	}
 	return requestErr
 }
 

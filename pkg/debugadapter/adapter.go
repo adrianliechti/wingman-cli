@@ -36,9 +36,10 @@ type Target struct {
 }
 
 type Request struct {
-	Action     string
-	ProjectDir string
-	Target     Target
+	Action       string
+	WorkspaceDir string
+	ProjectDir   string
+	Target       Target
 }
 
 type Breakpoint struct {
@@ -52,7 +53,7 @@ type Plan struct {
 	Summary             string
 	ProjectDir          string
 	Request             string
-	Console             string
+	IO                  dap.IOMode
 	Configuration       map[string]any
 	Breakpoints         []Breakpoint
 	FunctionBreakpoints []string
@@ -73,8 +74,22 @@ type Registry struct {
 	byLanguage map[string]LanguageAdapter
 }
 
+func vscodeIOValues() map[dap.IOMode]string {
+	return map[dap.IOMode]string{
+		dap.IOOutput:   "internalConsole",
+		dap.IOTerminal: "integratedTerminal",
+	}
+}
+
 func NewRegistry() *Registry {
-	return NewRegistryWith(goAdapter{}, pythonAdapter{})
+	return NewRegistryWith(
+		goAdapter{},
+		pythonAdapter{},
+		newJavaAdapter(),
+		rustAdapter{},
+		dotnetAdapter{},
+		newJavaScriptAdapter(),
+	)
 }
 
 func NewRegistryWith(adapters ...LanguageAdapter) *Registry {
@@ -94,11 +109,31 @@ func NewRegistryWith(adapters ...LanguageAdapter) *Registry {
 func (registry *Registry) Descriptors() []dap.AdapterDescriptor {
 	result := make([]dap.AdapterDescriptor, 0, len(registry.adapters))
 	for _, adapter := range registry.adapters {
-		if adapter != nil {
-			result = append(result, adapter.Descriptor())
+		if adapter == nil {
+			continue
+		}
+		descriptor := adapter.Descriptor()
+		// A language can still participate in source-target discovery while its
+		// optional adapter installation is absent. Empty commands are therefore
+		// deliberately omitted from runtime discovery.
+		if strings.TrimSpace(descriptor.Command) != "" {
+			result = append(result, descriptor)
 		}
 	}
 	return result
+}
+
+// JDTLSBundles returns Java debug plug-ins that must be loaded when JDT LS is
+// initialized. The Java DAP server is supplied by this bundle, not by a
+// standalone executable.
+func (registry *Registry) JDTLSBundles() []string {
+	for _, adapter := range registry.adapters {
+		java, ok := adapter.(javaAdapter)
+		if ok {
+			return slices.Clone(java.bundles)
+		}
+	}
+	return nil
 }
 
 func (registry *Registry) Plan(language string, request Request) (Plan, error) {

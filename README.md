@@ -252,46 +252,80 @@ Configs are loaded from two locations and merged: `~/.wingman/mcp.json` (global,
 
 ### Debugging (experimental)
 
-The web editor groups **Diagnostics** and **Debug** under a compact **Inspect**
-workspace view, keeping Files separate. Open Debug there or use the inline
-**Run | Debug** actions above supported entry points. Wingman discovers
-installed adapters and runnable targets, then prepares a deterministic
-language-specific launch configuration. The target, arguments, paths, and
-breakpoints are shown for review before any application code executes.
+The web editor keeps each session in one center **Debug** tab. **Debug output**
+is its default view; interactive sessions start in a terminal view and can
+switch back to output from the tab toolbar. A collapsible, resizable details
+pane in that same tab contains variables above the call stack. While a session
+is active, its transport controls replace the passive workspace name in the
+Files header, so continue, pause, stepping, and stop remain available while a
+source file is open. The right-hand **Inspect** view is reserved for LSP
+diagnostics.
 
-Go uses [Delve](https://github.com/go-delve/delve/tree/master/Documentation/api/dap),
-and Python uses [debugpy](https://github.com/microsoft/debugpy):
+The inline **Run | Debug** CodeLens actions above supported entry points are the
+only way to create a session. The selected entry point determines the adapter
+and target; there is no separate adapter/target picker or command-palette launch
+path. Wingman prepares a deterministic language-specific configuration and
+shows its I/O mode, adapter-defined arguments, and initial pause for review
+before application code executes.
+
+Supported launch profiles and their adapters are:
+
+| Language/runtime | Adapter | Detected targets |
+|------------------|---------|------------------|
+| Go | [Delve](https://github.com/go-delve/delve/tree/master/Documentation/api/dap) | `main`, test, benchmark, fuzz, and runnable example functions |
+| Python | [debugpy](https://github.com/microsoft/debugpy) | Explicit `__main__` guards and conventional scripts |
+| Java | [Microsoft java-debug](https://github.com/microsoft/java-debug) through JDT LS | Qualified `public static void main` classes |
+| Rust | [CodeLLDB](https://github.com/vadimcn/codelldb) | Cargo binaries and examples |
+| C#/.NET | [NetCoreDbg](https://github.com/Samsung/netcoredbg) | `Main` methods and top-level `Program.cs` files |
+| JavaScript/TypeScript | [vscode-js-debug](https://github.com/microsoft/vscode-js-debug) | Node entry files and explicit direct-execution guards |
+| React/Vite | vscode-js-debug's Chrome profile | Vite configurations, using the configured or default dev-server port |
+
+Install Delve and debugpy directly:
 
 ```bash
 go install github.com/go-delve/delve/cmd/dlv@latest
 python -m pip install debugpy
 ```
 
-Keep `dlv` or `debugpy-adapter` on `PATH`; Wingman also checks common workspace
-virtual-environment directories for debugpy. Go `main`, test, benchmark, fuzz,
-and example functions receive CodeLens actions. Python files with an explicit
-`__main__` guard, plus conventional entry files such as `main.py` and `app.py`,
-receive the same actions. During a session, click Monaco's glyph margin to
-toggle source breakpoints. Inspect automatically switches to Debug at each new
-stop and shows the active stack frame, Continue/Pause/Step/Stop,
-hover evaluation, debugger output, scopes, and recursively expandable
-variables without replacing the source editor.
+Keep `dlv`, `debugpy-adapter`, `codelldb`, and `netcoredbg` on `PATH`. Wingman
+also checks common workspace virtual environments, user tool directories,
+Mason installs, and VS Code/Cursor extension directories. Java requires
+`jdtls` plus the java-debug plug-in JAR; installed VS Code/Cursor and Mason
+bundles are detected automatically, or set `WINGMAN_JAVA_DEBUG_BUNDLE` to the
+JAR. For JavaScript, use a vscode-js-debug standalone release or an editor/Mason
+installation; `WINGMAN_JS_DEBUG_SERVER` can point directly to
+`dapDebugServer.js`, and `WINGMAN_JS_DEBUG_ADAPTER` can name a compatible
+wrapper executable.
 
-Every reviewed plan also chooses where program I/O runs. **Debug output** uses
-the internal console and is appropriate for ordinary programs. **Integrated
-terminal** starts compatible adapters in Wingman's PTY and opens a terminal tab
-for stdin, ANSI output, resizing, and full-screen CLI/TUI programs. This is a
-generic DAP host policy rather than a Go detector rule. Adapter descriptors
-declare how they support it; the client also implements DAP `runInTerminal` for
-future adapters that request a client-owned terminal. When the debuggee exits,
-Wingman tears down the adapter cleanly and removes its terminal tab while the
-captured Debug output remains available.
+C# launch plans use an existing Debug DLL and otherwise show the expected path;
+run `dotnet build` before launching an unbuilt sample. TypeScript entry files run
+directly on Node, using a project-local `tsx` executable when present. React/Vite
+browser plans launch Chrome at the configured port (5173 by default),
+so start the Vite dev server first. Runnable samples for every adapter live in
+[`examples/debug`](examples/debug).
+
+Supported entry points receive CodeLens actions. During a session, click
+Monaco's glyph margin to toggle source breakpoints. The Debug details pane shows
+recursively expandable variables above the call stack. Polling preserves
+expanded variable rows until debugger state actually changes. Closing the Debug
+tab stops the active session. Adapter-defined launch arguments remain available
+as documented JSON under **Adapter options**.
+
+Every reviewed plan also chooses where program I/O runs. **Debug output**
+captures ordinary program output in the Debug tab. **Terminal** starts
+compatible adapters in Wingman's PTY and opens the terminal view inside that
+same tab for stdin, ANSI output, resizing, and full-screen CLI/TUI programs.
+This is a generic DAP host policy rather than a Go detector rule.
+Adapter descriptors declare how they support it; the client also implements DAP
+`runInTerminal` for future adapters that request a client-owned terminal. When
+the debuggee exits, Wingman tears down the adapter cleanly and switches back to
+the retained Debug output.
 
 The protocol session and transports are language-neutral. Each language adapter
-owns its source-target detector, deterministic launch policy, and passive DAP
-process descriptor. The generic DAP client only validates paths, starts the
-declared process, and manages protocol state. Another language can therefore be
-added as one cohesive adapter without changing the session client.
+owns its source-target detector, deterministic launch policy, and DAP endpoint
+descriptor. The generic DAP client validates paths, connects to or starts the
+declared endpoint, and manages protocol state. Another language can therefore
+be added as one cohesive adapter without changing the session client.
 
 ## 🛠️ Built-in Tools
 
@@ -590,7 +624,7 @@ wingman server [--port 9000]
 
 This starts an HTTP server at `http://localhost:9000` (or another available
 port) with a React UI featuring a chat panel, file browser, diff viewer,
-diagnostics panel, an integrated terminal (multiple
+diagnostics panel, a terminal (multiple
 xterm.js sessions, shell of your choice, `Ctrl+Alt+T`), and session management.
 `Ctrl+P` opens the command palette — same shortcut as the TUI command center
 (`Cmd/Ctrl+K` works too). The server uses WebSockets for real-time streaming.

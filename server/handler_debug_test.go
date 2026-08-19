@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,12 +62,27 @@ func TestDebugTargetsRejectsTrailingJSON(t *testing.T) {
 	}
 }
 
-func TestDetectDebugTargetsPrefersCurrentFile(t *testing.T) {
+func TestDebugPlanRequiresCodeLensTarget(t *testing.T) {
+	root := t.TempDir()
+	app := newDebugTestServer(t, root)
+	request := httptest.NewRequest(http.MethodPost, "/api/debug/plan", bytes.NewBufferString(`{"action":"debug"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "target_id and current_path are required") {
+		t.Fatalf("body = %q", response.Body.String())
+	}
+}
+
+func TestDetectDebugTargetsUsesCurrentFile(t *testing.T) {
 	root := t.TempDir()
 	writeDebugTestFile(t, root, "main.go", "package main\n\nfunc main() {}\n")
 	writeDebugTestFile(t, root, "cmd/other/main.go", "package main\n\nfunc main() {}\n")
 	app := newDebugTestServer(t, root)
-	targets, err := app.detectDebugTargets(context.Background(), "main.go", true)
+	targets, err := app.detectDebugTargets("main.go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,6 +134,24 @@ func TestDebugInspectionWithoutActiveSession(t *testing.T) {
 	}
 	if inspection.Session != nil || inspection.Output != "" || inspection.Threads == nil || inspection.Frames == nil {
 		t.Fatalf("inspection = %#v", inspection)
+	}
+}
+
+func TestDebugSessionWithoutActiveSession(t *testing.T) {
+	root := t.TempDir()
+	app := newDebugTestServer(t, root)
+	request := httptest.NewRequest(http.MethodGet, "/api/debug/session", nil)
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var result debugSessionResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Session != nil {
+		t.Fatalf("session = %#v", result.Session)
 	}
 }
 
@@ -237,20 +271,6 @@ func TestValidateDebugPlanConstrainsWorkspacePaths(t *testing.T) {
 	plan.Configuration["program"] = "../outside"
 	if err := app.validateDebugPlan(&plan, adapters); err == nil {
 		t.Fatal("outside program path was accepted")
-	}
-}
-
-func TestSelectDeterministicDebugTargetUsesCurrentFileAndInstalledLanguage(t *testing.T) {
-	targets := []debugadapter.Target{
-		{ID: "go:main", Language: "Go", Path: "cmd/main.go"},
-		{ID: "python:main", Language: "Python", Path: "tools/main.py"},
-	}
-	selected, err := selectDeterministicDebugTarget(targets, "tools/main.py", []dap.AdapterInfo{{Language: "Python"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if selected.ID != "python:main" {
-		t.Fatalf("selected = %#v", selected)
 	}
 }
 
