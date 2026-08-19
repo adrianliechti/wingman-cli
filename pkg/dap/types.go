@@ -72,6 +72,8 @@ type AdapterDescriptor struct {
 	AdapterID          string
 	Command            string
 	Args               []string
+	FallbackCommand    string
+	FallbackArgs       []string
 	Transport          Transport
 	ReadyPrefix        string
 	Markers            []string

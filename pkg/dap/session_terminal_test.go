@@ -121,6 +121,15 @@ func serveRunInTerminalAdapter(adapter *fakeAdapter) error {
 	adapter.send(&godap.LaunchResponse{Response: adapter.response(launch.Seq, "launch")})
 	adapter.send(&godap.ExitedEvent{Event: adapter.event("exited"), Body: godap.ExitedEventBody{ExitCode: 0}})
 	adapter.send(&godap.TerminatedEvent{Event: adapter.event("terminated")})
+	message, err = godap.ReadProtocolMessage(adapter.reader)
+	if err != nil {
+		return fmt.Errorf("read final disconnect: %w", err)
+	}
+	disconnect, ok := message.(*godap.DisconnectRequest)
+	if !ok || !disconnect.Arguments.TerminateDebuggee {
+		return fmt.Errorf("request after termination = %#v, want terminating disconnect", message)
+	}
+	adapter.send(&godap.DisconnectResponse{Response: adapter.response(disconnect.Seq, "disconnect")})
 	if _, err := godap.ReadProtocolMessage(adapter.reader); err == nil {
 		return errors.New("client left the adapter connection open after termination")
 	}

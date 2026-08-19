@@ -2,6 +2,7 @@ package dap
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,22 @@ import (
 
 	godap "github.com/google/go-dap"
 )
+
+func TestReadDAPMessageAcceptsAdapterSpecificEvent(t *testing.T) {
+	var wire bytes.Buffer
+	payload := []byte(`{"seq":4,"type":"event","event":"debugpySockets","body":{"sockets":[]}}`)
+	if err := godap.WriteBaseMessage(&wire, payload); err != nil {
+		t.Fatal(err)
+	}
+	message, err := readDAPMessage(bufio.NewReader(&wire))
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, ok := message.(*godap.Event)
+	if !ok || event.Event != "debugpySockets" || event.Seq != 4 {
+		t.Fatalf("message = %#v", message)
+	}
+}
 
 func TestSessionLaunchAndInspectionFlow(t *testing.T) {
 	client, server := net.Pipe()

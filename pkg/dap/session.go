@@ -408,7 +408,7 @@ func dapResponseError(message godap.ResponseMessage) error {
 func (session *Session) readLoop() {
 	reader := bufio.NewReader(session.connection)
 	for {
-		message, err := godap.ReadProtocolMessage(reader)
+		message, err := readDAPMessage(reader)
 		if err != nil {
 			session.closeResourcesWithError(err)
 			return
@@ -428,6 +428,41 @@ func (session *Session) readLoop() {
 			go session.handleAdapterRequest(message)
 		}
 	}
+}
+
+// readDAPMessage preserves extension compatibility. google/go-dap provides
+// concrete types for the standard protocol, but adapters are explicitly
+// allowed to add events and requests. Decode unknown extensions to their base
+// envelope so callers can ignore custom events or reject custom requests
+// without terminating an otherwise healthy session.
+func readDAPMessage(reader *bufio.Reader) (godap.Message, error) {
+	content, err := godap.ReadBaseMessage(reader)
+	if err != nil {
+		return nil, err
+	}
+	message, err := godap.DecodeProtocolMessage(content)
+	if err == nil {
+		return message, nil
+	}
+	var fieldErr *godap.DecodeProtocolMessageFieldError
+	if !errors.As(err, &fieldErr) {
+		return nil, err
+	}
+	var generic godap.Message
+	switch fieldErr.SubType {
+	case "Event":
+		generic = &godap.Event{}
+	case "Request":
+		generic = &godap.Request{}
+	case "Response":
+		generic = &godap.Response{}
+	default:
+		return nil, err
+	}
+	if err := json.Unmarshal(content, generic); err != nil {
+		return nil, err
+	}
+	return generic, nil
 }
 
 func (session *Session) handleEvent(message godap.EventMessage) {
@@ -469,14 +504,7 @@ func (session *Session) closeAfterTermination() {
 	session.terminateOnce.Do(func() {
 		go func() {
 			<-session.launchDone
-			grace := time.NewTimer(adapterExitGracePeriod)
-			defer grace.Stop()
-			select {
-			case <-session.resourceDone:
-				return
-			case <-grace.C:
-				session.closeResourcesWithError(nil)
-			}
+			_ = session.Disconnect(context.Background(), true)
 		}()
 	})
 }

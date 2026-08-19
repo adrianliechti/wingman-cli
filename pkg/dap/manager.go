@@ -96,16 +96,11 @@ func (m *Manager) detect(ctx context.Context) ([]detectedAdapter, error) {
 		if len(projects) == 0 {
 			continue
 		}
-		command := m.lookup(candidate.Command)
-		if command == "" {
-			command = resolveWorkspaceAdapterCommand(m.root, candidate.Command)
-		}
-		if command == "" {
-			for _, project := range projects {
-				command = resolveWorkspaceAdapterCommand(project, candidate.Command)
-				if command != "" {
-					break
-				}
+		command := m.resolveDetectedCommand(candidate.Command, projects)
+		if command == "" && candidate.FallbackCommand != "" {
+			command = m.resolveDetectedCommand(candidate.FallbackCommand, projects)
+			if command != "" {
+				candidate.Args = slices.Clone(candidate.FallbackArgs)
 			}
 		}
 		if command == "" {
@@ -124,6 +119,7 @@ func cloneAdapters(values []AdapterDescriptor) []AdapterDescriptor {
 	for i, value := range values {
 		cloned[i] = value
 		cloned[i].Args = slices.Clone(value.Args)
+		cloned[i].FallbackArgs = slices.Clone(value.FallbackArgs)
 		cloned[i].Markers = slices.Clone(value.Markers)
 		cloned[i].SourceExtensions = slices.Clone(value.SourceExtensions)
 		cloned[i].Defaults = maps.Clone(value.Defaults)
@@ -131,6 +127,24 @@ func cloneAdapters(values []AdapterDescriptor) []AdapterDescriptor {
 		cloned[i].IOValues = maps.Clone(value.IOValues)
 	}
 	return cloned
+}
+
+func (m *Manager) resolveDetectedCommand(command string, projects []string) string {
+	if command == "" {
+		return ""
+	}
+	if resolved := m.lookup(command); resolved != "" {
+		return resolved
+	}
+	if resolved := resolveWorkspaceAdapterCommand(m.root, command); resolved != "" {
+		return resolved
+	}
+	for _, project := range projects {
+		if resolved := resolveWorkspaceAdapterCommand(project, command); resolved != "" {
+			return resolved
+		}
+	}
+	return ""
 }
 
 func cloneDetected(values []detectedAdapter) []detectedAdapter {
@@ -207,8 +221,11 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 	// Prefer the selected project's virtual environment or node_modules binary
 	// over a workspace-wide fallback found during discovery. This matters in
 	// monorepos where projects intentionally pin different adapter versions.
-	if command := resolveWorkspaceAdapterCommand(plan.ProjectDir, m.registeredCommand(selected.adapter.Name)); command != "" {
-		plan.Adapter.Command = command
+	if registered := m.registeredAdapter(selected.adapter.Name); registered != nil {
+		if command := resolveWorkspaceAdapterCommand(plan.ProjectDir, registered.Command); command != "" {
+			plan.Adapter.Command = command
+			plan.Adapter.Args = slices.Clone(registered.Args)
+		}
 	}
 
 	id := uuid.NewString()[:8]
@@ -231,13 +248,14 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 	return session, nil
 }
 
-func (m *Manager) registeredCommand(name string) string {
+func (m *Manager) registeredAdapter(name string) *AdapterDescriptor {
 	for _, adapter := range m.adapters {
 		if strings.EqualFold(adapter.Name, name) {
-			return adapter.Command
+			value := cloneAdapters([]AdapterDescriptor{adapter})[0]
+			return &value
 		}
 	}
-	return ""
+	return nil
 }
 
 // mergeSourceBreakpoints keeps a plan's initial stops and folds in the

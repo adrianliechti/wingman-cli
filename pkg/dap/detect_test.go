@@ -316,6 +316,30 @@ func TestManagerFindsAdapterInNestedProjectEnvironment(t *testing.T) {
 	}
 }
 
+func TestManagerUsesDescriptorFallbackCommand(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "pyproject.toml"), "[project]\n")
+	writeTestFile(t, filepath.Join(root, "main.py"), "print('ready')\n")
+	fallbackPath := filepath.Join(root, "python-for-debugpy")
+	manager := newManager(root, []AdapterDescriptor{{
+		Name: "debugpy", Command: "debugpy-adapter",
+		FallbackCommand: "python3", FallbackArgs: []string{"/editor/debugpy/adapter"},
+		Markers: []string{"pyproject.toml"}, SourceExtensions: []string{".py"},
+	}}, func(command string) string {
+		if command == "python3" {
+			return fallbackPath
+		}
+		return ""
+	}, nil)
+	values, err := manager.detect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 1 || values[0].adapter.Command != fallbackPath || !reflect.DeepEqual(values[0].adapter.Args, []string{"/editor/debugpy/adapter"}) {
+		t.Fatalf("detected adapters = %#v", values)
+	}
+}
+
 func TestManagerStopClearsTheOnlySession(t *testing.T) {
 	manager := newManager(t.TempDir(), nil, func(string) string { return "" }, nil)
 	session := &Session{
