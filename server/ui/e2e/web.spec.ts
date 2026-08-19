@@ -1537,7 +1537,7 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 	).toBe("drag");
 	expect(
 		await toolbar
-			.getByLabel(/sessions/)
+			.getByLabel("Show Agent Sessions")
 			.evaluate((element) =>
 				getComputedStyle(element)
 					.getPropertyValue("--shell-window-drag")
@@ -1578,7 +1578,9 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 	await expect(workspaceFrame).toHaveCSS("border-radius", "10px");
 	await expect(workspaceFrame).toHaveCSS("border-left-width", "0px");
 	await expect(
-		page.getByRole("separator", { name: /Resize .* panel/ }),
+		page.getByRole("separator", {
+			name: /^Resize (Agent Sessions|Workspace Panel)$/,
+		}),
 	).toHaveCount(2);
 	await expect(toolbar.locator("[data-titlebar-left-panel]")).toHaveCSS(
 		"width",
@@ -1621,10 +1623,10 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 		"240px",
 	);
 	await expect(
-		toolbar.getByRole("button", { name: "Hide sessions" }),
+		toolbar.getByRole("button", { name: "Hide Agent Sessions" }),
 	).toHaveCount(0);
 	await expect(
-		toolbar.getByRole("button", { name: "Hide workspace panel" }),
+		toolbar.getByRole("button", { name: "Hide Workspace Panel" }),
 	).toHaveCount(0);
 	await expect
 		.poll(async () => {
@@ -1712,7 +1714,7 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 	await expect(workspaceFrame).toHaveCSS("opacity", "0");
 	await expect(toolbar.locator("[data-titlebar-right-panel]")).toHaveCSS(
 		"width",
-		"40px",
+		"80px",
 	);
 	await expect(workspaceTabs).toHaveCount(0);
 	await toolbar.getByRole("button", { name: "Show Workspace Panel" }).click();

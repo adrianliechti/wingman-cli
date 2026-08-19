@@ -17,6 +17,7 @@ type Manager struct {
 	mu       sync.Mutex
 	order    []string
 	sessions map[string]*Session
+	closed   bool
 
 	onExit func(id string)
 }
@@ -44,6 +45,9 @@ func (m *Manager) Create(shell string, cols, rows int) (*Session, error) {
 	// handleExit before the session is registered.
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.closed {
+		return nil, errors.New("terminal manager is closed")
+	}
 
 	s, err := newSession(uuid.NewString(), resolved, m.dir, cols, rows, m.handleExit)
 
@@ -70,6 +74,9 @@ func (m *Manager) CreateCommand(spec CommandSpec, cols, rows int) (*Session, err
 	// handleExit before the session is registered.
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.closed {
+		return nil, errors.New("terminal manager is closed")
+	}
 
 	session, err := newCommandSession(uuid.NewString(), spec, cols, rows, m.handleExit)
 	if err != nil {
@@ -147,6 +154,11 @@ func (m *Manager) Remove(id string) bool {
 
 func (m *Manager) Close() {
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	m.closed = true
 	sessions := make([]*Session, 0, len(m.sessions))
 	for _, s := range m.sessions {
 		sessions = append(sessions, s)

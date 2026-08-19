@@ -101,6 +101,7 @@ type Session struct {
 	finishOnce    sync.Once
 	closeOnce     sync.Once
 	terminateOnce sync.Once
+	disconnectMu  sync.Mutex
 
 	terminalLauncher TerminalLauncher
 }
@@ -1036,6 +1037,9 @@ func (session *Session) EvaluateContext(ctx context.Context, expression string, 
 }
 
 func (session *Session) Disconnect(ctx context.Context, terminate bool) error {
+	session.disconnectMu.Lock()
+	defer session.disconnectMu.Unlock()
+
 	if !session.alive.Load() {
 		session.closeResources()
 		return nil

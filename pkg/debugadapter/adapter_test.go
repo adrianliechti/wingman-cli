@@ -71,10 +71,18 @@ func TestRustAdapterPlansConcreteCargoBinary(t *testing.T) {
 	if err := os.MkdirAll(project, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(project, "Cargo.toml"), []byte("[package]\nname = \"sample-app\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	plan, err := NewRegistry().Plan("Rust", Request{
+	registry := NewRegistryWith(rustAdapter{loadMetadata: func(projectDir string) (cargoMetadata, error) {
+		if !sameCargoPath(projectDir, project) {
+			t.Fatalf("metadata project = %q, want %q", projectDir, project)
+		}
+		return cargoMetadata{
+			TargetDirectory: filepath.Join(project, "target"),
+			Packages: []cargoMetadataPackage{{Targets: []cargoMetadataTarget{{
+				Name: "sample-app", Kind: []string{"bin"}, SrcPath: filepath.Join(project, "src", "main.rs"),
+			}}}},
+		}, nil
+	}})
+	plan, err := registry.Plan("Rust", Request{
 		Action: "debug", WorkspaceDir: root, ProjectDir: "rust-app",
 		Target: Target{Name: "main", Kind: "main", Language: "Rust", Path: "rust-app/src/main.rs", Line: 1, Column: 4},
 	})
@@ -103,7 +111,7 @@ func TestRustAdapterPlansConcreteCargoBinary(t *testing.T) {
 	if err := os.WriteFile(built, []byte("binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	plan, err = NewRegistry().Plan("Rust", Request{
+	plan, err = registry.Plan("Rust", Request{
 		Action: "debug", WorkspaceDir: root, ProjectDir: "rust-app",
 		Target: Target{Name: "main", Kind: "main", Language: "Rust", Path: "rust-app/src/main.rs", Line: 1, Column: 4},
 	})
@@ -115,26 +123,21 @@ func TestRustAdapterPlansConcreteCargoBinary(t *testing.T) {
 	}
 }
 
-func TestRustAdapterResolvesCargoTargetsFromProjectManifest(t *testing.T) {
+func TestRustAdapterResolvesCargoTargetsFromMetadata(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "rust-app")
 	if err := os.MkdirAll(project, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	manifest := `[package]
-name = "sample-app"
-
-[[bin]]
-name = "worker"
-path = "tools/worker.rs"
-
-[[example]]
-name = "tour"
-path = "showcase/tour.rs"
-`
-	if err := os.WriteFile(filepath.Join(project, "Cargo.toml"), []byte(manifest), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	registry := NewRegistryWith(rustAdapter{loadMetadata: func(string) (cargoMetadata, error) {
+		return cargoMetadata{
+			TargetDirectory: filepath.Join(project, "target"),
+			Packages: []cargoMetadataPackage{{Targets: []cargoMetadataTarget{
+				{Name: "worker", Kind: []string{"bin"}, SrcPath: filepath.Join(project, "tools", "worker.rs")},
+				{Name: "tour", Kind: []string{"example"}, SrcPath: filepath.Join(project, "showcase", "tour.rs")},
+			}}},
+		}, nil
+	}})
 
 	for _, test := range []struct {
 		path        string
@@ -144,7 +147,7 @@ path = "showcase/tour.rs"
 		{path: "tools/worker.rs", programPath: filepath.Join("target", "debug", "worker"), buildHint: "cargo build --bin worker"},
 		{path: "showcase/tour.rs", programPath: filepath.Join("target", "debug", "examples", "tour"), buildHint: "cargo build --example tour"},
 	} {
-		plan, err := NewRegistry().Plan("Rust", Request{
+		plan, err := registry.Plan("Rust", Request{
 			Action: "debug", WorkspaceDir: root, ProjectDir: "rust-app",
 			Target: Target{Name: "entry", Kind: "main", Language: "Rust", Path: filepath.ToSlash(filepath.Join("rust-app", test.path)), Line: 1, Column: 4},
 		})
@@ -158,6 +161,51 @@ path = "showcase/tour.rs"
 		if plan.Configuration["program"] != wantProgram || !strings.Contains(plan.Summary, test.buildHint) {
 			t.Errorf("%s plan = %#v", test.path, plan)
 		}
+	}
+}
+
+func TestRustAdapterUsesCargoMetadataTargetDirectory(t *testing.T) {
+	if resolveCargoExecutable() == "" {
+		t.Skip("cargo is not installed")
+	}
+	root := t.TempDir()
+	project := filepath.Join(root, "rust-app")
+	if err := os.MkdirAll(filepath.Join(project, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(project, ".cargo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "Cargo.toml"), []byte("[package]\nname = \"sample-app\"\nversion = \"0.0.0\"\nedition = \"2024\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "src", "main.rs"), []byte("fn main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, ".cargo", "config.toml"), []byte("[build]\ntarget-dir = \"artifacts\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	metadata, err := loadCargoMetadata(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := NewRegistryWith(rustAdapter{loadMetadata: func(string) (cargoMetadata, error) {
+		return metadata, nil
+	}})
+	plan, err := registry.Plan("Rust", Request{
+		Action: "debug", WorkspaceDir: root, ProjectDir: "rust-app",
+		Target: Target{Name: "main", Kind: "main", Language: "Rust", Path: "rust-app/src/main.rs", Line: 1, Column: 4},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.ToSlash(filepath.Join("artifacts", "debug", "sample-app"))
+	if runtime.GOOS == "windows" {
+		want += ".exe"
+	}
+	if plan.Configuration["program"] != want {
+		t.Fatalf("Cargo target directory %q produced program %#v, want %q", metadata.TargetDirectory, plan.Configuration["program"], want)
 	}
 }
 
@@ -197,6 +245,14 @@ func TestDotnetAdapterPlansExistingOrExpectedAssembly(t *testing.T) {
 	if err := os.WriteFile(stale, []byte("stale assembly"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	plan, err = NewRegistry().Plan(dotnetLanguage, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Configuration["program"] != filepath.ToSlash(filepath.Join("bin", "Debug", "net8.0", "Demo.dll")) || !strings.Contains(plan.Summary, "dotnet build") {
+		t.Fatalf("plan selected a stale target framework assembly: %#v", plan)
+	}
+
 	built := filepath.Join(project, "bin", "Debug", "net8.0", "Demo.dll")
 	if err := os.MkdirAll(filepath.Dir(built), 0o755); err != nil {
 		t.Fatal(err)

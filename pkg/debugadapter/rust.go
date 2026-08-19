@@ -1,38 +1,44 @@
 package debugadapter
 
 import (
-	"bufio"
 	"bytes"
-	"errors"
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 )
 
-var (
-	rustMainPattern           = regexp.MustCompile(`\bfn\s+main\s*(?:<[^>{}\n]*>)?\s*\(`)
-	cargoTablePattern         = regexp.MustCompile(`^\s*\[\s*([^]]+?)\s*]\s*$`)
-	cargoTargetTablePattern   = regexp.MustCompile(`^\s*\[\[\s*(bin|example)\s*]]\s*$`)
-	cargoStringSettingPattern = regexp.MustCompile(`^\s*(name|path)\s*=\s*["']([^"']+)["']`)
-)
+const cargoMetadataTimeout = 10 * time.Second
 
-type cargoManifestTarget struct {
-	Kind string
-	Name string
-	Path string
+var rustMainPattern = regexp.MustCompile(`\bfn\s+main\s*(?:<[^>{}\n]*>)?\s*\(`)
+
+type cargoMetadata struct {
+	Packages        []cargoMetadataPackage `json:"packages"`
+	TargetDirectory string                 `json:"target_directory"`
 }
 
-type cargoManifest struct {
-	PackageName string
-	Targets     []cargoManifestTarget
+type cargoMetadataPackage struct {
+	Targets []cargoMetadataTarget `json:"targets"`
 }
 
-type rustAdapter struct{}
+type cargoMetadataTarget struct {
+	Name    string   `json:"name"`
+	Kind    []string `json:"kind"`
+	SrcPath string   `json:"src_path"`
+}
+
+type rustAdapter struct {
+	loadMetadata func(projectDir string) (cargoMetadata, error)
+}
 
 func (rustAdapter) Language() string { return "Rust" }
 
@@ -92,29 +98,47 @@ func (rustAdapter) Detect(path string, source []byte) ([]Target, error) {
 	}}, nil
 }
 
-func (rustAdapter) Plan(request Request) (Plan, error) {
+func (adapter rustAdapter) Plan(request Request) (Plan, error) {
 	if request.Target.Kind != "main" {
 		return Plan{}, fmt.Errorf("unsupported Rust debug target kind %q", request.Target.Kind)
 	}
-	name, kind, err := rustCargoTarget(request)
+	projectDir, err := rustProjectDir(request)
 	if err != nil {
 		return Plan{}, err
 	}
-	program, exists := rustProgramPath(request, name, kind)
+	loader := adapter.loadMetadata
+	if loader == nil {
+		loader = loadCargoMetadata
+	}
+	metadata, err := loader(projectDir)
+	if err != nil {
+		return Plan{}, err
+	}
+	target, kind, err := rustCargoTarget(request, metadata)
+	if err != nil {
+		return Plan{}, err
+	}
+	program, exists, err := rustProgramPath(request, metadata.TargetDirectory, target.Name, kind)
+	if err != nil {
+		return Plan{}, err
+	}
+
 	configuration := map[string]any{
 		"program": program,
 		"cwd":     ".",
 	}
-	summary := fmt.Sprintf("%s Rust %s %s.", actionLabel(request.Action), kind, name)
+	targetLabel := "executable"
+	buildTarget := "--bin " + target.Name
+	if kind == "example" {
+		targetLabel = "example"
+		buildTarget = "--example " + target.Name
+	}
+	summary := fmt.Sprintf("%s Rust %s %s.", actionLabel(request.Action), targetLabel, target.Name)
 	if !exists {
-		buildTarget := "--bin " + name
-		if kind == "example" {
-			buildTarget = "--example " + name
-		}
 		summary += fmt.Sprintf(" Build it with cargo build %s first; the expected executable is %s.", buildTarget, filepath.ToSlash(program))
 	}
 	plan := Plan{
-		Title:            actionLabel(request.Action) + " " + name,
+		Title:            actionLabel(request.Action) + " " + target.Name,
 		Summary:          summary,
 		ProjectDir:       request.ProjectDir,
 		Request:          "launch",
@@ -130,8 +154,116 @@ func (rustAdapter) Plan(request Request) (Plan, error) {
 	return plan, nil
 }
 
-func rustProgramPath(request Request, name, kind string) (string, bool) {
-	path := filepath.Join("target", "debug")
+func loadCargoMetadata(projectDir string) (cargoMetadata, error) {
+	cargo := resolveCargoExecutable()
+	if cargo == "" {
+		return cargoMetadata{}, fmt.Errorf("Cargo was not found; install Rust or add cargo to PATH")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cargoMetadataTimeout)
+	defer cancel()
+	manifest := filepath.Join(projectDir, "Cargo.toml")
+	command := exec.CommandContext(ctx, cargo,
+		"metadata", "--no-deps", "--format-version=1", "--manifest-path", manifest,
+	)
+	command.Dir = projectDir
+	output, err := command.Output()
+	if err != nil {
+		if ctx.Err() != nil {
+			return cargoMetadata{}, fmt.Errorf("read Cargo metadata: %w", ctx.Err())
+		}
+		detail := ""
+		if exit, ok := err.(*exec.ExitError); ok {
+			detail = strings.TrimSpace(string(exit.Stderr))
+		}
+		if detail != "" {
+			return cargoMetadata{}, fmt.Errorf("read Cargo metadata: %s", detail)
+		}
+		return cargoMetadata{}, fmt.Errorf("read Cargo metadata: %w", err)
+	}
+	var metadata cargoMetadata
+	if err := json.Unmarshal(output, &metadata); err != nil {
+		return cargoMetadata{}, fmt.Errorf("decode Cargo metadata: %w", err)
+	}
+	if strings.TrimSpace(metadata.TargetDirectory) == "" {
+		return cargoMetadata{}, fmt.Errorf("Cargo metadata did not report a target directory")
+	}
+	return metadata, nil
+}
+
+func resolveCargoExecutable() string {
+	if configured := strings.TrimSpace(os.Getenv("CARGO")); configured != "" {
+		if path, err := exec.LookPath(configured); err == nil {
+			return path
+		}
+	}
+	if path, err := exec.LookPath("cargo"); err == nil {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	name := "cargo"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	path := filepath.Join(home, ".cargo", "bin", name)
+	if info, err := os.Stat(path); err == nil && !info.IsDir() && (runtime.GOOS == "windows" || info.Mode()&0o111 != 0) {
+		return path
+	}
+	return ""
+}
+
+func rustCargoTarget(request Request, metadata cargoMetadata) (cargoMetadataTarget, string, error) {
+	targetPath := request.Target.Path
+	if !filepath.IsAbs(targetPath) {
+		targetPath = filepath.Join(request.WorkspaceDir, filepath.FromSlash(targetPath))
+	}
+	targetPath, err := filepath.Abs(targetPath)
+	if err != nil {
+		return cargoMetadataTarget{}, "", fmt.Errorf("resolve Rust target path: %w", err)
+	}
+	for _, pkg := range metadata.Packages {
+		for _, target := range pkg.Targets {
+			if !sameCargoPath(target.SrcPath, targetPath) {
+				continue
+			}
+			for _, kind := range []string{"bin", "example"} {
+				if slices.Contains(target.Kind, kind) {
+					return target, kind, nil
+				}
+			}
+			return cargoMetadataTarget{}, "", fmt.Errorf("Rust entry point %s is a Cargo %s target, not an executable or example", request.Target.Path, strings.Join(target.Kind, ", "))
+		}
+	}
+	return cargoMetadataTarget{}, "", fmt.Errorf("Rust entry point %s is not a Cargo executable target", request.Target.Path)
+}
+
+func sameCargoPath(left, right string) bool {
+	left, leftErr := canonicalCargoPath(filepath.FromSlash(left))
+	right, rightErr := canonicalCargoPath(filepath.FromSlash(right))
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
+}
+
+func rustProgramPath(request Request, targetDirectory, name, kind string) (string, bool, error) {
+	projectDir, err := rustProjectDir(request)
+	if err != nil {
+		return "", false, err
+	}
+	if !filepath.IsAbs(targetDirectory) {
+		targetDirectory = filepath.Join(projectDir, filepath.FromSlash(targetDirectory))
+	}
+	targetDirectory, err = canonicalCargoPath(targetDirectory)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve Cargo target directory: %w", err)
+	}
+	path := filepath.Join(targetDirectory, "debug")
 	if kind == "example" {
 		path = filepath.Join(path, "examples")
 	}
@@ -140,120 +272,66 @@ func rustProgramPath(request Request, name, kind string) (string, bool) {
 	}
 	path = filepath.Join(path, name)
 
+	workspaceDir := request.WorkspaceDir
+	if strings.TrimSpace(workspaceDir) == "" {
+		workspaceDir = projectDir
+	}
+	workspaceDir, err = canonicalCargoPath(workspaceDir)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve Rust workspace: %w", err)
+	}
+	workspaceRelative, err := filepath.Rel(workspaceDir, path)
+	if err != nil || workspaceRelative == ".." || strings.HasPrefix(workspaceRelative, ".."+string(filepath.Separator)) {
+		return "", false, fmt.Errorf("Cargo target directory must stay inside the workspace")
+	}
+	program, err := filepath.Rel(projectDir, path)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve Cargo executable: %w", err)
+	}
+	info, statErr := os.Stat(path)
+	return filepath.ToSlash(program), statErr == nil && !info.IsDir(), nil
+}
+
+func rustProjectDir(request Request) (string, error) {
 	projectDir := request.ProjectDir
-	if !filepath.IsAbs(projectDir) && request.WorkspaceDir != "" {
+	if !filepath.IsAbs(projectDir) {
 		projectDir = filepath.Join(request.WorkspaceDir, filepath.FromSlash(projectDir))
 	}
-	info, err := os.Stat(filepath.Join(projectDir, path))
-	return filepath.ToSlash(path), err == nil && !info.IsDir()
+	projectDir, err := canonicalCargoPath(projectDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve Cargo project: %w", err)
+	}
+	return projectDir, nil
 }
 
-func rustCargoTarget(request Request) (string, string, error) {
-	relativePath, err := projectPath(request.ProjectDir, request.Target.Path)
+// Cargo canonicalizes paths in its JSON output. Resolve the existing prefix of
+// a possibly unbuilt output path so comparisons remain correct through
+// symlinked temporary/workspace directories as well.
+func canonicalCargoPath(value string) (string, error) {
+	path, err := filepath.Abs(filepath.Clean(value))
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
-	relativePath = filepath.ToSlash(filepath.Clean(filepath.FromSlash(relativePath)))
-	manifest, err := readCargoManifest(request)
-	if err != nil {
-		return "", "", err
-	}
-	for _, target := range manifest.Targets {
-		if target.Path == "" || filepath.ToSlash(filepath.Clean(filepath.FromSlash(target.Path))) != relativePath {
-			continue
-		}
-		name := target.Name
-		if name == "" {
-			name = rustConventionalTargetName(relativePath)
-		}
-		if name == "" {
-			return "", "", fmt.Errorf("Cargo %s target for %s has no name", target.Kind, relativePath)
-		}
-		return name, target.Kind, nil
-	}
-
-	parts := strings.Split(relativePath, "/")
-	switch {
-	case relativePath == "src/main.rs":
-		if manifest.PackageName == "" {
-			return "", "", errors.New("Cargo package name is required for src/main.rs")
-		}
-		return manifest.PackageName, "bin", nil
-	case len(parts) == 3 && parts[0] == "src" && parts[1] == "bin" && strings.HasSuffix(parts[2], ".rs"):
-		return strings.TrimSuffix(parts[2], ".rs"), "bin", nil
-	case len(parts) == 4 && parts[0] == "src" && parts[1] == "bin" && parts[3] == "main.rs":
-		return parts[2], "bin", nil
-	case len(parts) == 2 && parts[0] == "examples" && strings.HasSuffix(parts[1], ".rs"):
-		return strings.TrimSuffix(parts[1], ".rs"), "example", nil
-	case len(parts) == 3 && parts[0] == "examples" && parts[2] == "main.rs":
-		return parts[1], "example", nil
-	default:
-		return "", "", fmt.Errorf("Rust entry point %s is not a Cargo binary target; add a [[bin]] or [[example]] path in Cargo.toml", relativePath)
-	}
-}
-
-func rustConventionalTargetName(path string) string {
-	parts := strings.Split(filepath.ToSlash(path), "/")
-	if len(parts) == 0 {
-		return ""
-	}
-	name := strings.TrimSuffix(parts[len(parts)-1], filepath.Ext(parts[len(parts)-1]))
-	if name == "main" && len(parts) >= 2 {
-		name = parts[len(parts)-2]
-	}
-	return name
-}
-
-func readCargoManifest(request Request) (cargoManifest, error) {
-	projectDir := request.ProjectDir
-	if !filepath.IsAbs(projectDir) && request.WorkspaceDir != "" {
-		projectDir = filepath.Join(request.WorkspaceDir, filepath.FromSlash(projectDir))
-	}
-	contents, err := os.ReadFile(filepath.Join(projectDir, "Cargo.toml"))
-	if err != nil {
-		return cargoManifest{}, fmt.Errorf("read Cargo.toml: %w", err)
-	}
-	manifest := cargoManifest{}
-	section := ""
-	var target *cargoManifestTarget
-	flushTarget := func() {
-		if target != nil {
-			manifest.Targets = append(manifest.Targets, *target)
-			target = nil
-		}
-	}
-	scanner := bufio.NewScanner(bytes.NewReader(contents))
-	for scanner.Scan() {
-		line := strings.TrimSpace(strings.SplitN(scanner.Text(), "#", 2)[0])
-		if match := cargoTargetTablePattern.FindStringSubmatch(line); len(match) == 2 {
-			flushTarget()
-			section = ""
-			target = &cargoManifestTarget{Kind: match[1]}
-			continue
-		}
-		if match := cargoTablePattern.FindStringSubmatch(line); len(match) == 2 {
-			flushTarget()
-			section = strings.TrimSpace(match[1])
-			continue
-		}
-		match := cargoStringSettingPattern.FindStringSubmatch(line)
-		if len(match) != 3 {
-			continue
-		}
-		if target != nil {
-			switch match[1] {
-			case "name":
-				target.Name = match[2]
-			case "path":
-				target.Path = filepath.ToSlash(filepath.Clean(filepath.FromSlash(match[2])))
+	probe := path
+	var missing []string
+	for {
+		if _, err := os.Lstat(probe); err == nil {
+			resolved, err := filepath.EvalSymlinks(probe)
+			if err != nil {
+				return "", err
 			}
-		} else if section == "package" && match[1] == "name" && manifest.PackageName == "" {
-			manifest.PackageName = match[2]
+			for index := len(missing) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, missing[index])
+			}
+			return filepath.Clean(resolved), nil
+		} else if !os.IsNotExist(err) {
+			return "", err
 		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			return path, nil
+		}
+		missing = append(missing, filepath.Base(probe))
+		probe = parent
 	}
-	flushTarget()
-	if err := scanner.Err(); err != nil {
-		return cargoManifest{}, fmt.Errorf("read Cargo.toml: %w", err)
-	}
-	return manifest, nil
 }

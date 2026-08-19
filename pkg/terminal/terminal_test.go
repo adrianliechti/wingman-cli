@@ -73,6 +73,15 @@ func TestCreateCommandRejectsSymlinkedOutsideWorkingDirectory(t *testing.T) {
 	}
 }
 
+func TestManagerRejectsCreationAfterClose(t *testing.T) {
+	manager := NewManager(t.TempDir())
+	manager.Close()
+
+	if _, err := manager.CreateCommand(CommandSpec{Path: "/bin/sh"}, DefaultCols, DefaultRows); err == nil {
+		t.Fatal("CreateCommand succeeded after manager shutdown")
+	}
+}
+
 func TestSessionEchoAndExit(t *testing.T) {
 	m := NewManager(t.TempDir())
 	defer m.Close()

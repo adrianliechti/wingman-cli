@@ -168,7 +168,6 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 							<ToggleOption
 								selected={pauseAtEntry}
 								label="Pause at entry"
-								detail={entryBreakpointLabel(plan)}
 								onClick={() => setPauseAtEntry((current) => !current)}
 							/>
 						)}
@@ -266,12 +265,10 @@ function ActionChoice({
 function ToggleOption({
 	selected,
 	label,
-	detail,
 	onClick,
 }: {
 	selected: boolean;
 	label: string;
-	detail: string;
 	onClick: () => void;
 }) {
 	return (
@@ -290,12 +287,7 @@ function ToggleOption({
 			>
 				{selected && <Check size={10} strokeWidth={3} />}
 			</span>
-			<span className="min-w-0 flex-1">
-				<span className="block text-[11.5px] font-medium">{label}</span>
-				<span className="mt-0.5 block truncate text-[9.5px] text-fg-dim">
-					{detail}
-				</span>
-			</span>
+			<span className="min-w-0 flex-1 text-[11.5px] font-medium">{label}</span>
 		</button>
 	);
 }
@@ -306,15 +298,6 @@ function Busy({ label }: { label: string }) {
 			<Loader2 size={12} className="animate-spin" /> {label}
 		</div>
 	);
-}
-
-function entryBreakpointLabel(plan: DebugLaunchPlan) {
-	if (plan.breakpoints.length === 1) {
-		const breakpoint = plan.breakpoints[0];
-		return `${breakpoint.file_path}:${breakpoint.line}`;
-	}
-	const count = plan.breakpoints.length + plan.function_breakpoints.length;
-	return `${count} generated entry breakpoints`;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

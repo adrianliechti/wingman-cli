@@ -250,13 +250,13 @@ func dotnetProgramPath(projectRoot, projectFile string, metadata dotnetProjectMe
 	if info, err := os.Stat(expected); err == nil && !info.IsDir() {
 		return expected, true
 	}
-	if existing := findBuiltDotnetAssembly(projectRoot, fileName); existing != "" {
+	if existing := findBuiltDotnetAssembly(projectRoot, fileName, metadata.TargetFramework); existing != "" {
 		return existing, true
 	}
 	return expected, false
 }
 
-func findBuiltDotnetAssembly(projectRoot, fileName string) string {
+func findBuiltDotnetAssembly(projectRoot, fileName, targetFramework string) string {
 	binDir := filepath.Join(projectRoot, "bin")
 	var candidates []string
 	_ = filepath.WalkDir(binDir, func(path string, entry fs.DirEntry, err error) error {
@@ -270,7 +270,7 @@ func findBuiltDotnetAssembly(projectRoot, fileName string) string {
 			}
 			return nil
 		}
-		if strings.EqualFold(entry.Name(), fileName) {
+		if strings.EqualFold(entry.Name(), fileName) && pathContainsSegment(path, targetFramework) {
 			candidates = append(candidates, path)
 		}
 		return nil
@@ -290,4 +290,16 @@ func findBuiltDotnetAssembly(projectRoot, fileName string) string {
 		return ""
 	}
 	return candidates[0]
+}
+
+func pathContainsSegment(path, segment string) bool {
+	if segment == "" {
+		return true
+	}
+	for _, part := range strings.Split(filepath.Clean(path), string(filepath.Separator)) {
+		if strings.EqualFold(part, segment) {
+			return true
+		}
+	}
+	return false
 }

@@ -411,7 +411,7 @@ export default function App() {
 		useState<DebugContentView>("output");
 	const [debugDetailsVisible, setDebugDetailsVisible] = useState(true);
 	const [debugSession, setDebugSession] = useState<DebugSession>();
-	const debugSessionRef = useRef<DebugSession>();
+	const debugSessionRef = useRef<DebugSession | undefined>(undefined);
 	const [debugControlBusy, setDebugControlBusy] = useState(false);
 
 	const runWorkspaceEdit = useCallback(
@@ -2349,19 +2349,17 @@ export default function App() {
 							)}
 						</>
 					)}
-					{showTerminal && (
-						<TerminalLauncher
-							shells={terminalShells}
-							onCreate={(shell) => void createTerminal(shell)}
-						/>
-					)}
 				</div>
 				<div
 					data-window-interactive
 					data-titlebar-right-panel
 					className="flex shrink-0 items-center overflow-hidden pr-2 pl-0"
 					style={{
-						width: rightPanelDocked ? "var(--right-panel-width)" : "40px",
+						width: rightPanelDocked
+							? "var(--right-panel-width)"
+							: showTerminal
+								? "80px"
+								: "40px",
 					}}
 				>
 					{rightPanelCollapsed && (
@@ -2384,6 +2382,12 @@ export default function App() {
 						</div>
 					)}
 					{!rightPanelDocked && <div className="min-w-0 flex-1" />}
+					{showTerminal && (
+						<TerminalLauncher
+							shells={terminalShells}
+							onCreate={(shell) => void createTerminal(shell)}
+						/>
+					)}
 				</div>
 			</header>
 			{showNotice && (

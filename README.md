@@ -299,12 +299,14 @@ use a vscode-js-debug standalone release, compatible editor bundle containing
 directly to `dapDebugServer.js`, and `WINGMAN_JS_DEBUG_ADAPTER` can name a
 compatible wrapper executable.
 
-Rust and C# launch plans use existing debug build output and otherwise show the
-expected executable path; run `cargo build` or `dotnet build` before launching
-an unbuilt sample. TypeScript entry files run on Node using a project-local
-`tsx` executable when present. React/Vite browser plans launch Chrome at the
-configured port (5173 by default), so start the Vite dev server first. Runnable
-samples for every adapter live in [`examples/debug`](examples/debug).
+Rust target names, kinds, and output directories come from Cargo's
+machine-readable metadata. Rust and C# launch plans use existing debug build
+output and otherwise show the expected executable path; run `cargo build` or
+`dotnet build` before launching an unbuilt sample. TypeScript entry files run on
+Node using a project-local `tsx` executable when present. React/Vite browser
+plans launch Chrome at the configured port (5173 by default), so start the Vite
+dev server first. Runnable samples for every adapter live in
+[`examples/debug`](examples/debug).
 
 Supported entry points receive CodeLens actions. During a session, click
 Monaco's glyph margin to toggle source breakpoints. The Debug details pane shows
