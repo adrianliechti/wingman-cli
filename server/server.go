@@ -30,6 +30,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/code/agents"
+	"github.com/adrianliechti/wingman-agent/pkg/dap"
 	"github.com/adrianliechti/wingman-agent/pkg/settings"
 	"github.com/adrianliechti/wingman-agent/pkg/system"
 	"github.com/adrianliechti/wingman-agent/pkg/terminal"
@@ -105,6 +106,7 @@ type Server struct {
 	files           *watch.Monitor
 	prevGit         bool
 	prevLSP         bool
+	prevDebug       bool
 	prevFingerprint uint64
 }
 
@@ -164,9 +166,16 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 	s.turns = code.NewTurnManager(tool.WithProgressSink(serverCtx, s.onToolProgress), wa, s.handleTurnEvent)
 
 	ws.WarmUp()
+	if terminal.Supported() {
+		_ = ws.WithDAPManager(func(manager *dap.Manager) error {
+			manager.SetTerminalLauncher(s)
+			return nil
+		})
+	}
 
 	s.prevGit = ws.IsGitRepo()
 	s.prevLSP = ws.HasLSP()
+	s.prevDebug = s.debugAvailable(serverCtx)
 	s.files = watch.New(watch.Options{Active: s.hasClients}, s.checkWorkspace)
 	s.background.Go(func() {
 		s.files.Run(serverCtx)
@@ -216,8 +225,8 @@ func (s *Server) Close() {
 		}
 		s.background.Wait()
 		s.preview.Close()
-		s.terminals.Close()
 		s.workspace.Close()
+		s.terminals.Close()
 	})
 }
 
@@ -432,6 +441,19 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Post("/formatting/on-type", s.handleLSPOnTypeFormatting)
 			r.Post("/inlay-hints", s.handleLSPInlayHints)
 			r.Get("/file", s.handleLSPExternalFile)
+		})
+		r.Route("/debug", func(r chi.Router) {
+			r.Post("/targets", s.handleDebugTargets)
+			r.Post("/plan", s.handleDebugPlan)
+			r.Post("/start", s.handleDebugStart)
+			r.Get("/session", s.handleDebugSession)
+			r.Get("/state", s.handleDebugState)
+			r.Get("/inspection", s.handleDebugInspection)
+			r.Put("/breakpoints", s.handleDebugBreakpoints)
+			r.Post("/control", s.handleDebugControl)
+			r.Post("/evaluate", s.handleDebugEvaluate)
+			r.Post("/scopes", s.handleDebugScopes)
+			r.Post("/variables", s.handleDebugVariables)
 		})
 		r.Post("/editor/tab", s.handleEditorTab)
 		r.Post("/settings/editor.tab.completion", s.handleEditorTabSettings)
@@ -796,22 +818,53 @@ func (s *Server) handleSetEffort(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"effort": body.Effort})
 }
 
-func (s *Server) handleCapabilities(w http.ResponseWriter, _ *http.Request) {
+type capabilitiesResponse struct {
+	Git           bool   `json:"git"`
+	GitInit       bool   `json:"git_init"`
+	LSP           bool   `json:"lsp"`
+	Debug         bool   `json:"debug"`
+	Diffs         bool   `json:"diffs"`
+	Tasks         bool   `json:"tasks"`
+	Terminal      bool   `json:"terminal"`
+	Tab           bool   `json:"tab"`
+	EditorTab     bool   `json:"editor.tab.completion"`
+	Platform      string `json:"platform"`
+	WorkspaceName string `json:"workspace_name"`
+	Notice        string `json:"notice,omitempty"`
+}
+
+func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	ws := s.workspace
 	_, isCoder := s.activeAgent().(*codeagent.Agent)
-	caps := map[string]any{
-		"lsp":                   ws.HasLSP(),
-		"diffs":                 ws.HasChanges(),
-		"git":                   ws.HasChanges(),
-		"git_init":              isCoder && !ws.HasChanges(),
-		"tasks":                 isCoder,
-		"terminal":              terminal.Supported(),
-		"tab":                   s.tab != nil,
-		"editor.tab.completion": s.tab != nil && s.tabEnabled.Load(),
-		"platform":              runtime.GOOS,
-		"workspace_name":        filepath.Base(ws.RootPath),
+	hasChanges := ws.HasChanges()
+	caps := capabilitiesResponse{
+		Git:           hasChanges,
+		GitInit:       isCoder && !hasChanges,
+		LSP:           ws.HasLSP(),
+		Debug:         s.debugAvailable(r.Context()),
+		Diffs:         hasChanges,
+		Tasks:         isCoder,
+		Terminal:      terminal.Supported(),
+		Tab:           s.tab != nil,
+		EditorTab:     s.tab != nil && s.tabEnabled.Load(),
+		Platform:      runtime.GOOS,
+		WorkspaceName: filepath.Base(ws.RootPath),
 	}
 	writeJSON(w, caps)
+}
+
+func (s *Server) debugAvailable(ctx context.Context) bool {
+	available := false
+	_ = s.workspace.WithDAPManager(func(manager *dap.Manager) error {
+		if session := manager.ActiveSession(); session != nil && session.Status().State != dap.StateTerminated {
+			available = true
+			return nil
+		}
+		adapters, err := manager.Adapters(ctx)
+		available = err == nil && len(adapters) > 0
+		return nil
+	})
+	return available
 }
 
 func (s *Server) hasClients() bool {
@@ -845,6 +898,12 @@ func (s *Server) checkWorkspace() {
 		if lspNow {
 			s.broadcast(Frame{Type: EvtDiagnosticsChanged})
 		}
+	}
+
+	debugNow := s.debugAvailable(s.ctx)
+	if debugNow != s.prevDebug {
+		s.prevDebug = debugNow
+		s.broadcast(Frame{Type: EvtCapabilitiesChanged})
 	}
 
 	if !ws.HasChanges() {

@@ -1,0 +1,12 @@
+{
+  "name": "wingman-debug-typescript",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/main.ts"
+  },
+  "devDependencies": {
+    "tsx": "latest",
+    "typescript": "latest"
+  }
+}

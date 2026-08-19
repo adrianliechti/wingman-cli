@@ -654,8 +654,9 @@ func (s *Session) initialize(ctx context.Context) error {
 	processID := int32(os.Getpid())
 	rootURI := lspuri.MustParse(s.rootURI)
 	params := &protocol.InitializeParams{
-		ProcessID: &processID,
-		RootURI:   &rootURI,
+		ProcessID:             &processID,
+		RootURI:               &rootURI,
+		InitializationOptions: protocol.LSPAny(s.server.InitializationOptions),
 		Capabilities: protocol.ClientCapabilities{
 			Workspace: &protocol.WorkspaceClientCapabilities{
 				WorkspaceEdit: &protocol.WorkspaceEditClientCapabilities{

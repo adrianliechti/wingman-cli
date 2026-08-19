@@ -20,7 +20,7 @@ interface Props {
 	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 }
 
-export function Sidebar({
+export function AgentSessions({
 	currentSessionId,
 	onSessionSelect,
 	onSessionDelete,
