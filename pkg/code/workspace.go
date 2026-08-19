@@ -24,6 +24,8 @@ import (
 	lsptool "github.com/adrianliechti/wingman-agent/pkg/agent/tool/lsp"
 	toolmcp "github.com/adrianliechti/wingman-agent/pkg/agent/tool/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/changes"
+	"github.com/adrianliechti/wingman-agent/pkg/dap"
+	"github.com/adrianliechti/wingman-agent/pkg/debugadapter"
 	"github.com/adrianliechti/wingman-agent/pkg/graph"
 	"github.com/adrianliechti/wingman-agent/pkg/language"
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
@@ -67,6 +69,7 @@ type Workspace struct {
 	MCP *mcp.Manager
 
 	Language *language.Service
+	DAP      *dap.Manager
 	Changes  *changes.Manager
 
 	warmupOnce sync.Once
@@ -85,6 +88,7 @@ type Workspace struct {
 	// lifetime lock separate from workspace state so close does not block
 	// unrelated workspace readers.
 	lspLifeMu sync.RWMutex
+	dapLifeMu sync.RWMutex
 
 	memoryMu          sync.Mutex
 	memoryCache       string
@@ -196,7 +200,16 @@ func (w *Workspace) WarmUp() {
 			changesManager = changes.New(w.RootPath)
 		}
 
-		languageService := language.New(w.RootPath, filepath.Join(projectGraphDir(w.RootPath), "graph.json"))
+		debugRegistry := debugadapter.NewRegistry()
+		var languageOptions []lsp.ManagerOption
+		if bundles := debugRegistry.JDTLSBundles(); len(bundles) > 0 {
+			languageOptions = append(languageOptions, lsp.WithServerInitializationOptions("jdtls", map[string]any{
+				"bundles": bundles,
+			}))
+		}
+		languageService := language.New(w.RootPath, filepath.Join(projectGraphDir(w.RootPath), "graph.json"), languageOptions...)
+		dapManager := dap.NewManager(w.RootPath, debugRegistry.Descriptors()...)
+		dapManager.SetAdapterConnector(debugadapter.NewConnector(languageService))
 		graphEngine := languageService.Graph()
 		lspTools := lsptool.NewTools(languageService)
 		graphTools := graphtool.NewTools(graphEngine)
@@ -204,10 +217,13 @@ func (w *Workspace) WarmUp() {
 		lspTools = w.protectLSPTools(lspTools)
 
 		w.lspLifeMu.Lock()
+		w.dapLifeMu.Lock()
 		w.mu.Lock()
 		if w.closed {
 			w.mu.Unlock()
+			w.dapLifeMu.Unlock()
 			w.lspLifeMu.Unlock()
+			dapManager.Close()
 			languageService.Close()
 			if changesManager != nil {
 				changesManager.Close()
@@ -216,10 +232,12 @@ func (w *Workspace) WarmUp() {
 		}
 		w.Changes = changesManager
 		w.Language = languageService
+		w.DAP = dapManager
 		w.lspTools = lspTools
 		w.graphTools = graphTools
 		w.warmed = true
 		w.mu.Unlock()
+		w.dapLifeMu.Unlock()
 		w.lspLifeMu.Unlock()
 
 		languageService.WarmUp()
@@ -330,21 +348,25 @@ func flattenMCPTools(byServer map[string][]tool.Tool) []tool.Tool {
 
 func (w *Workspace) Close() {
 	w.lspLifeMu.Lock()
+	w.dapLifeMu.Lock()
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
+		w.dapLifeMu.Unlock()
 		w.lspLifeMu.Unlock()
 		return
 	}
 	w.closed = true
 	mcpManager := w.MCP
 	languageService := w.Language
+	dapManager := w.DAP
 	changesManager := w.Changes
 	root := w.Root
 	scratchPath := w.ScratchPath
 	mcpRefreshCancel := w.mcpRefreshCancel
 	w.MCP = nil
 	w.Language = nil
+	w.DAP = nil
 	w.Changes = nil
 	w.mcpToolsByServer = nil
 	w.mcpRefreshCancel = nil
@@ -357,9 +379,15 @@ func (w *Workspace) Close() {
 	if mcpRefreshCancel != nil {
 		mcpRefreshCancel()
 	}
+	// Java's debug adapter is hosted by JDT LS, so DAP must disconnect while
+	// the language service is still available.
+	if dapManager != nil {
+		dapManager.Close()
+	}
 	if languageService != nil {
 		languageService.Close()
 	}
+	w.dapLifeMu.Unlock()
 	w.lspLifeMu.Unlock()
 
 	if mcpManager != nil {
@@ -1022,6 +1050,23 @@ func (w *Workspace) ManagedTools() (mcpTools, lspTools, graphTools []tool.Tool) 
 	lspTools = append([]tool.Tool(nil), w.lspTools...)
 	graphTools = append([]tool.Tool(nil), w.graphTools...)
 	return
+}
+
+// WithDAPManager keeps the workspace's debugger alive for the duration of fn.
+// DAP is an editor service, not an agent tool; callers use this boundary from
+// explicit user-facing launch and inspection workflows.
+func (w *Workspace) WithDAPManager(fn func(*dap.Manager) error) error {
+	w.dapLifeMu.RLock()
+	defer w.dapLifeMu.RUnlock()
+
+	w.mu.RLock()
+	manager := w.DAP
+	closed := w.closed
+	w.mu.RUnlock()
+	if closed || manager == nil {
+		return errors.New("debug service unavailable")
+	}
+	return fn(manager)
 }
 
 func (w *Workspace) HasLSP() bool {

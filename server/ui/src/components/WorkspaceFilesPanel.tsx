@@ -1,4 +1,5 @@
 import { Lightbulb, Search, X } from "lucide-react";
+import type { ReactNode } from "react";
 import type { ServerMessage } from "../types/protocol";
 import type { TabDisposition } from "../types/tabs";
 import type { WorkspaceEditEnvelope } from "../workspaceEdit";
@@ -7,6 +8,7 @@ import { SearchPanel } from "./SearchPanel";
 
 interface Props {
 	workspaceName: string;
+	headerContent?: ReactNode;
 	searching: boolean;
 	searchFocusKey: number;
 	onSearch: () => void;
@@ -30,6 +32,7 @@ interface Props {
 
 export function WorkspaceFilesPanel({
 	workspaceName,
+	headerContent,
 	searching,
 	searchFocusKey,
 	onSearch,
@@ -45,12 +48,20 @@ export function WorkspaceFilesPanel({
 	return (
 		<div className="flex h-full min-h-0 flex-col overflow-hidden">
 			<div className="flex h-9 shrink-0 items-center gap-2 border-b border-border-subtle bg-bg-surface/20 px-3">
-				<span
-					className="min-w-0 flex-1 truncate text-[10px] font-medium uppercase tracking-wider text-fg-dim"
-					title={searching ? "Workspace search" : workspaceName}
-				>
-					{searching ? "Search" : workspaceName || "Files"}
-				</span>
+				{searching ? (
+					<span className="min-w-0 flex-1 truncate text-[10px] font-medium uppercase tracking-wider text-fg-dim">
+						Search
+					</span>
+				) : headerContent ? (
+					headerContent
+				) : (
+					<span
+						className="min-w-0 flex-1 truncate text-[10px] font-medium uppercase tracking-wider text-fg-dim"
+						title={workspaceName}
+					>
+						{workspaceName || "Files"}
+					</span>
+				)}
 				<button
 					type="button"
 					onClick={onOpenInsights}

@@ -133,6 +133,7 @@ func TestGitAPIInitCreatesRepository(t *testing.T) {
 		t.Fatalf("status before init = %d, want %d", res.StatusCode, http.StatusNotFound)
 	}
 	caps := getCapabilities(t, web.URL)
+	assertRequiredCapabilityTypes(t, caps)
 	if caps["git"] != false || caps["diffs"] != false || caps["git_init"] != true {
 		t.Fatalf("capabilities before init = %v", caps)
 	}
@@ -372,6 +373,20 @@ func getCapabilities(t *testing.T, baseURL string) map[string]any {
 		t.Fatal(err)
 	}
 	return caps
+}
+
+func assertRequiredCapabilityTypes(t *testing.T, caps map[string]any) {
+	t.Helper()
+	for _, name := range []string{"git", "git_init", "lsp", "debug", "diffs", "tasks", "terminal"} {
+		if _, ok := caps[name].(bool); !ok {
+			t.Errorf("capability %q = %#v, want non-null boolean", name, caps[name])
+		}
+	}
+	for _, name := range []string{"platform", "workspace_name"} {
+		if _, ok := caps[name].(string); !ok {
+			t.Errorf("capability %q = %#v, want non-null string", name, caps[name])
+		}
+	}
 }
 
 func getGitStatus(t *testing.T, baseURL string) GitStatus {

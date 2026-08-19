@@ -1,17 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
+import type { Capabilities } from "../api/capabilities";
 import type { ServerMessage } from "../types/protocol";
-
-interface Capabilities {
-	git: boolean;
-	git_init?: boolean;
-	lsp: boolean;
-	diffs: boolean;
-	tasks?: boolean;
-	terminal?: boolean;
-	platform?: string;
-	workspace_name?: string;
-	notice?: string;
-}
 
 type Subscribe = (handler: (msg: ServerMessage) => void) => () => void;
 

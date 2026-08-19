@@ -1,11 +1,50 @@
 package lsp
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"go.lsp.dev/protocol"
 )
+
+func TestManagerInitializationOptionsAreStableSessionIdentity(t *testing.T) {
+	manager := NewManager(t.TempDir(), WithServerInitializationOptions("jdtls", map[string]any{
+		"bundles": []string{"java-debug.jar"},
+	}))
+	encoded := manager.initializationOptions["jdtls"]
+	var decoded map[string][]string
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if got := decoded["bundles"]; len(got) != 1 || got[0] != "java-debug.jar" {
+		t.Fatalf("initialization options = %#v", decoded)
+	}
+	plain := Server{Command: "jdtls"}
+	configured := plain
+	configured.InitializationOptions = encoded
+	if serverKey(plain) == serverKey(configured) {
+		t.Fatal("servers with different initialization options shared an identity")
+	}
+
+	wire, err := json.Marshal(struct {
+		Options protocol.LSPAny `json:"initializationOptions"`
+	}{Options: protocol.LSPAny(encoded)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Options map[string][]string `json:"initializationOptions"`
+	}
+	if err := json.Unmarshal(wire, &payload); err != nil {
+		t.Fatalf("initialization options were not encoded as an object: %s: %v", wire, err)
+	}
+	if got := payload.Options["bundles"]; len(got) != 1 || got[0] != "java-debug.jar" {
+		t.Fatalf("wire initialization options = %s", wire)
+	}
+}
 
 func TestFindCommandIn(t *testing.T) {
 	dir := t.TempDir()

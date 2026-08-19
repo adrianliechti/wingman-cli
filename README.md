@@ -12,6 +12,7 @@ A powerful AI-powered coding assistant that runs directly in your terminal. Wing
 - **File Operations** — Read, write, edit, and search files in your codebase
 - **Shell Integration** — Execute shell commands with user approval
 - **LSP Integration** — Code intelligence via auto-detected language servers (definitions, references, diagnostics, call hierarchy, and more)
+- **Integrated Debugging** — Debug Adapter Protocol sessions with deterministic launch profiles, breakpoints, stepping, stack/variable inspection, output, and interactive terminals
 - **MCP Support** — Extend functionality with Model Context Protocol servers
 - **Multi-Model Support** — Works with any [OpenResponses API](https://www.openresponses.org) compatible endpoint with auto-selection
 - **Changes** — Git-backed working tree changes with a visual diff viewer
@@ -248,6 +249,87 @@ Add an `mcp.json` file to integrate with MCP servers:
 Remote (HTTP/SSE) servers are also supported via the `url` and optional `headers` fields.
 
 Configs are loaded from two locations and merged: `~/.wingman/mcp.json` (global, shared across all projects) and `./mcp.json` (project root). When a server name appears in both, the project config wins.
+
+### Debugging (experimental)
+
+The web editor keeps each session in one center **Debug** tab. **Debug output**
+is its default view; interactive sessions start in a terminal view and can
+switch back to output from the tab toolbar. A collapsible, resizable details
+pane in that same tab contains variables above the call stack. While a session
+is active, its transport controls replace the passive workspace name in the
+Files header, so continue, pause, stepping, and stop remain available while a
+source file is open. The right-hand **Inspect** view is reserved for LSP
+diagnostics.
+
+The inline **Run | Debug** CodeLens actions above supported entry points are the
+only way to create a session. The selected entry point determines the adapter
+and target; there is no separate adapter/target picker or command-palette launch
+path. Wingman prepares a deterministic language-specific configuration and
+shows its I/O mode, adapter-defined arguments, and initial pause for review
+before application code executes.
+
+Supported launch profiles and their adapters are:
+
+| Language/runtime | Adapter | Detected targets |
+|------------------|---------|------------------|
+| Go | [Delve](https://github.com/go-delve/delve/tree/master/Documentation/api/dap) | `main`, test, benchmark, fuzz, and runnable example functions |
+| Python | [debugpy](https://github.com/microsoft/debugpy) | Explicit `__main__` guards and conventional scripts |
+| Java | [Microsoft java-debug](https://github.com/microsoft/java-debug) through JDT LS | Qualified `public static void main` classes |
+| Rust | [CodeLLDB](https://github.com/vadimcn/codelldb) | Cargo binaries and examples |
+| C#/.NET | [NetCoreDbg](https://github.com/Samsung/netcoredbg) | `Main` methods and top-level `Program.cs` files |
+| JavaScript/TypeScript | [vscode-js-debug](https://github.com/microsoft/vscode-js-debug) | Node entry files and explicit direct-execution guards |
+| React/Vite | vscode-js-debug's Chrome profile | Vite configurations, using the configured or default dev-server port |
+
+Install Delve and debugpy directly:
+
+```bash
+go install github.com/go-delve/delve/cmd/dlv@latest
+python -m pip install debugpy
+```
+
+Keep `dlv`, `codelldb`, and `netcoredbg` on `PATH`. For Python, Wingman uses a
+`debugpy-adapter` from `PATH` or a project virtual environment, and can also
+reuse the adapter bundled by an installed `ms-python.debugpy` extension.
+Wingman checks common user tool directories, Mason installs, and compatible
+VS Code/Cursor extension directories. Java requires `jdtls` plus the java-debug
+plug-in JAR; installed VS Code/Cursor and Mason bundles are detected
+automatically, or set `WINGMAN_JAVA_DEBUG_BUNDLE` to the JAR. For JavaScript,
+use a vscode-js-debug standalone release, compatible editor bundle containing
+`dapDebugServer.js`, or Mason installation; `WINGMAN_JS_DEBUG_SERVER` can point
+directly to `dapDebugServer.js`, and `WINGMAN_JS_DEBUG_ADAPTER` can name a
+compatible wrapper executable.
+
+Rust target names, kinds, and output directories come from Cargo's
+machine-readable metadata. Rust and C# launch plans use existing debug build
+output and otherwise show the expected executable path; run `cargo build` or
+`dotnet build` before launching an unbuilt sample. TypeScript entry files run on
+Node using a project-local `tsx` executable when present. React/Vite browser
+plans launch Chrome at the configured port (5173 by default), so start the Vite
+dev server first. Runnable samples for every adapter live in
+[`examples/debug`](examples/debug).
+
+Supported entry points receive CodeLens actions. During a session, click
+Monaco's glyph margin to toggle source breakpoints. The Debug details pane shows
+recursively expandable variables above the call stack. Polling preserves
+expanded variable rows until debugger state actually changes. Closing the Debug
+tab stops the active session. Adapter-defined launch arguments remain available
+as documented JSON under **Adapter options**.
+
+Every reviewed plan also chooses where program I/O runs. **Debug output**
+captures ordinary program output in the Debug tab. **Terminal** starts
+compatible adapters in Wingman's PTY and opens the terminal view inside that
+same tab for stdin, ANSI output, resizing, and full-screen CLI/TUI programs.
+This is a generic DAP host policy rather than a Go detector rule.
+Adapter descriptors declare how they support it; the client also implements DAP
+`runInTerminal` for future adapters that request a client-owned terminal. When
+the debuggee exits, Wingman tears down the adapter cleanly and switches back to
+the retained Debug output.
+
+The protocol session and transports are language-neutral. Each language adapter
+owns its source-target detector, deterministic launch policy, and DAP endpoint
+descriptor. The generic DAP client validates paths, connects to or starts the
+declared endpoint, and manages protocol state. Another language can therefore
+be added as one cohesive adapter without changing the session client.
 
 ## 🛠️ Built-in Tools
 
@@ -546,7 +628,7 @@ wingman server [--port 9000]
 
 This starts an HTTP server at `http://localhost:9000` (or another available
 port) with a React UI featuring a chat panel, file browser, diff viewer,
-diagnostics panel, an integrated terminal (multiple
+diagnostics panel, a terminal (multiple
 xterm.js sessions, shell of your choice, `Ctrl+Alt+T`), and session management.
 `Ctrl+P` opens the command palette — same shortcut as the TUI command center
 (`Cmd/Ctrl+K` works too). The server uses WebSockets for real-time streaming.

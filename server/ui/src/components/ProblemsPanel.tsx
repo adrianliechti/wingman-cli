@@ -4,7 +4,6 @@ import {
 	FileCode2,
 	Info,
 	Loader2,
-	RefreshCw,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
@@ -16,6 +15,7 @@ import type {
 interface Props {
 	onOpenFile: (path: string, line: number, column?: number) => void;
 	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
+	refreshKey?: number;
 }
 
 interface DiagnosticGroup {
@@ -68,7 +68,11 @@ function SeverityIcon({ severity }: { severity: DiagnosticEntry["severity"] }) {
 	}
 }
 
-export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
+export function ProblemsPanel({
+	onOpenFile,
+	subscribe,
+	refreshKey = 0,
+}: Props) {
 	const [diagnostics, setDiagnostics] = useState<DiagnosticEntry[]>([]);
 	const [coverage, setCoverage] = useState<WorkspaceDiagnostics | null>(null);
 	const [loading, setLoading] = useState(true);
@@ -132,7 +136,7 @@ export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
 				window.clearTimeout(refreshTimerRef.current);
 			}
 		};
-	}, [load]);
+	}, [load, refreshKey]);
 
 	useEffect(() => {
 		if (!subscribe) return;
@@ -156,44 +160,8 @@ export function ProblemsPanel({ onOpenFile, subscribe }: Props) {
 		};
 	}, [subscribe, load]);
 
-	const coverageTitle = coverage
-		? [
-				`${diagnostics.length} ${diagnostics.length === 1 ? "problem" : "problems"} in ${groups.length} ${groups.length === 1 ? "file" : "files"}`,
-				`${coverage.checked_files} source files checked`,
-				...(coverage.unavailable_servers.length > 0
-					? [`unavailable: ${coverage.unavailable_servers.join(", ")}`]
-					: []),
-			].join(" · ")
-		: "";
-
 	return (
 		<div className="flex h-full flex-col overflow-hidden bg-transparent">
-			<div className="h-9 px-3 flex items-center gap-2 shrink-0 border-b border-border-subtle bg-bg-surface/20">
-				<span className="text-[11px] text-fg-muted">Diagnostics</span>
-				{diagnostics.length > 0 && (
-					<span
-						className="min-w-4 h-4 px-1 rounded-full bg-bg-active text-[9px] leading-4 text-center text-fg-dim tabular-nums"
-						title={coverageTitle}
-					>
-						{diagnostics.length}
-					</span>
-				)}
-				<div className="flex-1" />
-				<button
-					type="button"
-					disabled={loading}
-					onClick={() => void load()}
-					title="Refresh diagnostics"
-					aria-label="Refresh diagnostics"
-					className="w-6 h-6 flex items-center justify-center rounded text-fg-dim hover:text-fg hover:bg-bg-hover disabled:opacity-50"
-				>
-					{loading || coverage?.analyzing ? (
-						<Loader2 size={11} className="animate-spin" />
-					) : (
-						<RefreshCw size={11} />
-					)}
-				</button>
-			</div>
 			<div className="flex-1 overflow-y-auto px-1 py-1.5">
 				{error && (
 					<div className="mx-2 mb-1 px-2 py-1.5 rounded bg-danger/5 text-[10px] text-danger/80">

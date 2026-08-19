@@ -258,7 +258,7 @@ test("reuses and promotes preview tabs while browsing sessions", async ({
 	);
 
 	const input = await composer(page);
-	await page.getByLabel("Show sessions").click();
+	await page.getByLabel("Show Agent Sessions").click();
 	const tabs = page
 		.getByRole("tablist", { name: "Open tabs" })
 		.getByRole("tab");
@@ -335,7 +335,7 @@ test("restores Agent when the last session preview is replaced", async ({
 	await input.press("Enter");
 	const initialSession = page.locator('[data-center-tab="chat:"]');
 	await expect(initialSession).toBeVisible();
-	await page.getByLabel("Show sessions").click();
+	await page.getByLabel("Show Agent Sessions").click();
 	const previewRow = page.locator('[data-session-id="sole-session-preview"]');
 	const previewTab = page.locator(
 		'[data-center-tab="chat:sole-session-preview"]',
@@ -378,7 +378,7 @@ test("uses canonical product names for agents", async ({ page }) => {
 	});
 
 	await composer(page);
-	await page.getByLabel("Show sessions").click();
+	await page.getByLabel("Show Agent Sessions").click();
 	const picker = page.getByTitle("Agent: OpenCode");
 	await expect(picker).toBeVisible();
 	await picker.click();
@@ -398,10 +398,14 @@ test("groups diagnostics by file and opens individual problems", async ({
 		await route.fulfill({
 			json: {
 				git: false,
+				git_init: false,
 				lsp: true,
+				debug: false,
 				diffs: false,
 				tasks: false,
 				terminal: true,
+				platform: "linux",
+				workspace_name: "workspace",
 			},
 		});
 	});
@@ -452,8 +456,12 @@ test("groups diagnostics by file and opens individual problems", async ({
 	await composer(page);
 	await page
 		.getByRole("tablist", { name: "Workspace panels" })
-		.getByRole("tab", { name: "Problems" })
+		.getByRole("tab", { name: "Inspect" })
 		.click();
+	await expect(page.getByText("Diagnostics", { exact: true })).toBeVisible();
+	await expect(
+		page.getByRole("tablist", { name: "Inspector views" }),
+	).toHaveCount(0);
 	const completionGroup = page.locator('[data-problem-file="completion.go"]');
 	const nestedGroup = page.locator('[data-problem-file="nested/example.go"]');
 	await expect(completionGroup.locator("[data-problem-entry]")).toHaveCount(2);
@@ -1097,7 +1105,7 @@ test("keeps the session context menu above panel clipping", async ({
 		await route.fulfill({ json: { agent: "wingman", canDelete: true } });
 	});
 	await composer(page);
-	await page.getByLabel("Show sessions").click();
+	await page.getByLabel("Show Agent Sessions").click();
 
 	const session = page.getByTitle("Menu clipping check");
 	await expect(
@@ -1478,7 +1486,7 @@ test("keeps scheduled-agent actions above inspector clipping", async ({
 		});
 	});
 	await composer(page);
-	await page.getByLabel("Show sessions").click();
+	await page.getByLabel("Show Agent Sessions").click();
 	await page.getByTitle("Agent menu check").click();
 	await page
 		.getByRole("tablist", { name: "Workspace panels" })
@@ -1529,7 +1537,7 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 	).toBe("drag");
 	expect(
 		await toolbar
-			.getByLabel(/sessions/)
+			.getByLabel("Show Agent Sessions")
 			.evaluate((element) =>
 				getComputedStyle(element)
 					.getPropertyValue("--shell-window-drag")
@@ -1550,7 +1558,7 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 			element.closest("[data-window-titlebar]")?.getAttribute("aria-label"),
 		),
 	).toBe("Window toolbar");
-	await expect(toolbar.getByLabel("Show sessions")).toBeVisible();
+	await expect(toolbar.getByLabel("Show Agent Sessions")).toBeVisible();
 	await expect(toolbar.getByLabel(/workspace panel/)).toHaveCount(0);
 	await expect(page.locator('[data-layout-panel="sessions"]')).toHaveCSS(
 		"width",
@@ -1570,7 +1578,9 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 	await expect(workspaceFrame).toHaveCSS("border-radius", "10px");
 	await expect(workspaceFrame).toHaveCSS("border-left-width", "0px");
 	await expect(
-		page.getByRole("separator", { name: /Resize .* panel/ }),
+		page.getByRole("separator", {
+			name: /^Resize (Agent Sessions|Workspace Panel)$/,
+		}),
 	).toHaveCount(2);
 	await expect(toolbar.locator("[data-titlebar-left-panel]")).toHaveCSS(
 		"width",
@@ -1584,10 +1594,10 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 		name: "Workspace panels",
 	});
 	const sessionsHandle = page.getByRole("separator", {
-		name: "Resize sessions panel",
+		name: "Resize Agent Sessions",
 	});
 	const workspaceHandle = page.getByRole("separator", {
-		name: "Resize workspace panel",
+		name: "Resize Workspace Panel",
 	});
 	await expect(workspaceTabs).toBeVisible();
 	expect(
@@ -1602,7 +1612,7 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 			.locator('[data-panel-content="workspace"]')
 			.getByRole("tablist", { name: "Workspace panels" }),
 	).toHaveCount(0);
-	await toolbar.getByRole("button", { name: "Show sessions" }).click();
+	await toolbar.getByRole("button", { name: "Show Agent Sessions" }).click();
 	await expect(page.locator('[data-layout-panel="sessions"]')).toHaveCSS(
 		"width",
 		"240px",
@@ -1613,26 +1623,26 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 		"240px",
 	);
 	await expect(
-		toolbar.getByRole("button", { name: "Hide sessions" }),
+		toolbar.getByRole("button", { name: "Hide Agent Sessions" }),
 	).toHaveCount(0);
 	await expect(
-		toolbar.getByRole("button", { name: "Hide workspace panel" }),
+		toolbar.getByRole("button", { name: "Hide Workspace Panel" }),
 	).toHaveCount(0);
 	await expect
 		.poll(async () => {
 			const titlebarPanel = await toolbar
 				.locator("[data-titlebar-left-panel]")
 				.boundingBox();
-			const sidebar = await page
+			const leftPanel = await page
 				.locator('[data-layout-panel="sessions"]')
 				.boundingBox();
 			const frame = await sessionsFrame.boundingBox();
 			const firstTab = await tabStrip.getByRole("tab").first().boundingBox();
-			if (!titlebarPanel || !sidebar || !frame || !firstTab) return false;
-			const divider = sidebar.x + sidebar.width;
+			if (!titlebarPanel || !leftPanel || !frame || !firstTab) return false;
+			const divider = leftPanel.x + leftPanel.width;
 			return (
 				Math.abs(titlebarPanel.x + titlebarPanel.width - divider) <= 1 &&
-				Math.abs(frame.x - sidebar.x) <= 1 &&
+				Math.abs(frame.x - leftPanel.x) <= 1 &&
 				Math.abs(frame.x + frame.width - divider) <= 1 &&
 				Math.abs(firstTab.x - divider) <= 1
 			);
@@ -1680,7 +1690,7 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 		await expect(sessionsContent).toHaveCSS("width", "240px");
 		await expect(sessionsContent).toHaveCSS("opacity", "0");
 		await expect(sessionsFrame).toHaveCSS("opacity", "0");
-		await toolbar.getByRole("button", { name: "Show sessions" }).click();
+		await toolbar.getByRole("button", { name: "Show Agent Sessions" }).click();
 		await expect(toolbar.getByTitle(/^Agent:/)).toBeVisible();
 		await expect(sessions).toHaveCSS("width", "240px");
 		await expect(sessionsContent).toHaveCSS("width", "240px");
@@ -1704,10 +1714,10 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 	await expect(workspaceFrame).toHaveCSS("opacity", "0");
 	await expect(toolbar.locator("[data-titlebar-right-panel]")).toHaveCSS(
 		"width",
-		"40px",
+		"80px",
 	);
 	await expect(workspaceTabs).toHaveCount(0);
-	await toolbar.getByRole("button", { name: "Show workspace panel" }).click();
+	await toolbar.getByRole("button", { name: "Show Workspace Panel" }).click();
 	await expect(workspace).toHaveCSS("width", "280px");
 	await expect(workspaceContent).toHaveCSS("width", "280px");
 	await expect(workspaceContent).toHaveCSS("opacity", "1");
@@ -1734,14 +1744,14 @@ test("resizes borderless desktop panels within their limits", async ({
 }) => {
 	await composer(page);
 	const toolbar = page.getByLabel("Window toolbar");
-	await toolbar.getByRole("button", { name: "Show sessions" }).click();
+	await toolbar.getByRole("button", { name: "Show Agent Sessions" }).click();
 	const sessions = page.locator('[data-layout-panel="sessions"]');
 	const workspace = page.locator('[data-layout-panel="workspace"]');
 	const sessionsHandle = page.getByRole("separator", {
-		name: "Resize sessions panel",
+		name: "Resize Agent Sessions",
 	});
 	const workspaceHandle = page.getByRole("separator", {
-		name: "Resize workspace panel",
+		name: "Resize Workspace Panel",
 	});
 
 	await expect(sessionsHandle).toHaveCSS(
@@ -1964,9 +1974,9 @@ test("renders streaming Markdown with lazy Monaco highlighting", async ({
 		goBlock.getByRole("button", { name: "Copy code" }),
 	).toBeVisible();
 
-	const mermaidBlock = markdown.locator(
-		'[data-markdown-code][data-language="mermaid"]',
-	).first();
+	const mermaidBlock = markdown
+		.locator('[data-markdown-code][data-language="mermaid"]')
+		.first();
 	await expect(mermaidBlock.locator("[data-mermaid-preview]")).toBeVisible();
 	await mermaidBlock
 		.getByRole("button", { name: "Show Mermaid source" })
@@ -1980,7 +1990,9 @@ test("renders streaming Markdown with lazy Monaco highlighting", async ({
 	const c4Image = c4Block.locator("[data-mermaid-preview] img");
 	await expect(c4Image).toBeVisible();
 	await expect
-		.poll(() => c4Image.evaluate((image: HTMLImageElement) => image.naturalWidth))
+		.poll(() =>
+			c4Image.evaluate((image: HTMLImageElement) => image.naturalWidth),
+		)
 		.toBeGreaterThan(0);
 	await expect(markdown).toContainText("Math stays literal: $x^2$.");
 	await expect(
@@ -2445,9 +2457,19 @@ test("uses accessible desktop panels and command navigation", async ({
 	await expect(
 		page.getByRole("dialog", { name: "Command palette" }),
 	).toBeVisible();
+	const palette = page.getByRole("dialog", { name: "Command palette" });
 	await expect(
-		page.getByRole("combobox", { name: "Search commands" }),
+		palette.getByRole("combobox", { name: "Search commands" }),
 	).toBeFocused();
+	await expect(
+		palette.getByText("Show Agent Sessions", { exact: true }),
+	).toBeVisible();
+	await expect(
+		palette.getByText("Hide Workspace Panel", { exact: true }),
+	).toBeVisible();
+	await expect(
+		palette.getByText(/^New Terminal(?: \(.+\))?$/).first(),
+	).toBeVisible();
 	await page.keyboard.press("Escape");
 
 	const results = await new AxeBuilder({ page })
@@ -2459,4 +2481,115 @@ test("uses accessible desktop panels and command navigation", async ({
 				violation.impact === "serious" || violation.impact === "critical",
 		),
 	).toEqual([]);
+});
+
+test("stops the active debugger when the Debug tab closes", async ({
+	page,
+}) => {
+	let session = {
+		session_id: "debug-session-1",
+		adapter: "delve",
+		language: "Go",
+		target: "./cmd/example",
+		mode: "debug",
+		request: "launch",
+		io: "terminal",
+		terminal_id: "debug-terminal-1",
+		capabilities: { supports_step_back: false },
+		state_version: 3,
+		state: "running",
+		started_at: "2026-08-19T10:00:00Z",
+	};
+	const controls: Array<Record<string, unknown>> = [];
+
+	await page.route(/\/api\/capabilities$/, async (route) => {
+		await route.fulfill({
+			json: {
+				git: false,
+				git_init: false,
+				lsp: false,
+				debug: true,
+				diffs: false,
+				tasks: false,
+				terminal: true,
+				platform: "linux",
+				workspace_name: "workspace",
+			},
+		});
+	});
+	await page.route(/\/api\/debug\/inspection(?:\?[^#]*)?$/, async (route) => {
+		await route.fulfill({
+			json: { session, output: "ready\n", threads: [], frames: [] },
+		});
+	});
+	await page.route(/\/api\/debug\/session$/, async (route) => {
+		await route.fulfill({ json: { session } });
+	});
+	await page.route(/\/api\/debug\/state(?:\?[^#]*)?$/, async (route) => {
+		await route.fulfill({
+			json: { available: true, session, breakpoints: [] },
+		});
+	});
+	await page.route(/\/api\/debug\/control$/, async (route) => {
+		controls.push(route.request().postDataJSON());
+		session = { ...session, state: "terminated", state_version: 4 };
+		await route.fulfill({
+			json: { session },
+		});
+	});
+
+	await composer(page);
+	const debugTab = page.locator('[data-center-tab="debug"]');
+	await expect(debugTab).toBeVisible();
+	await debugTab.click();
+	await expect(
+		page.locator('[data-center-tab="terminal:debug-terminal-1"]'),
+	).toHaveCount(0);
+	const details = page.getByLabel("Debugger details", { exact: true });
+	await expect(details).toBeVisible();
+	const initialWidth = (await details.boundingBox())?.width ?? 0;
+	const resizeHandle = page.getByRole("separator", {
+		name: "Resize debugger details",
+	});
+	const handleBox = await resizeHandle.boundingBox();
+	if (!handleBox) throw new Error("debugger resize handle is not visible");
+	await page.mouse.move(
+		handleBox.x + handleBox.width / 2,
+		handleBox.y + handleBox.height / 2,
+	);
+	await page.mouse.down();
+	await page.mouse.move(handleBox.x - 60, handleBox.y + handleBox.height / 2);
+	await page.mouse.up();
+	await expect
+		.poll(async () => (await details.boundingBox())?.width ?? 0)
+		.toBeGreaterThan(initialWidth + 30);
+	await page.getByRole("button", { name: "Hide debugger details" }).click();
+	await expect(details).toBeHidden();
+	await page.getByRole("button", { name: "Show debugger details" }).click();
+	await expect(details).toBeVisible();
+
+	await page.getByRole("treeitem", { name: /completion\.go/ }).click();
+	await expect(
+		page.locator('[data-center-tab="file:completion.go"]'),
+	).toBeVisible();
+	await expect(
+		page.getByRole("toolbar", { name: "Debug controls" }),
+	).toBeVisible();
+	await expect(page.getByRole("button", { name: "Pause" })).toBeVisible();
+	await debugTab.click();
+	await page.getByRole("button", { name: "Show terminal" }).click();
+	await expect(
+		page.getByRole("button", { name: "Show debug output" }),
+	).toBeVisible();
+	await page.getByRole("button", { name: "Show debug output" }).click();
+	await expect(page.getByLabel("Debug output")).toBeVisible();
+	await debugTab.hover();
+	await page.getByTitle("Close Debug", { exact: true }).click();
+
+	await expect.poll(() => controls.length).toBe(1);
+	expect(controls[0]).toMatchObject({
+		operation: "stop",
+		session_id: session.session_id,
+	});
+	await expect(debugTab).toHaveCount(0);
 });

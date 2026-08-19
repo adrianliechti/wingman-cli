@@ -1,6 +1,7 @@
 import Editor, { type OnMount } from "@monaco-editor/react";
 import { AlertTriangle, FileDigit, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { DebugAction, DebugTarget } from "../api/debug";
 import { useColorScheme } from "../hooks/useColorScheme";
 import type { OpenDocument, SaveResult } from "../hooks/useOpenDocuments";
 import {
@@ -8,6 +9,10 @@ import {
 	type MonacoLSPBridge,
 	revealEditorPosition,
 } from "../monacoLsp";
+import {
+	createMonacoDebugBridge,
+	type MonacoDebugBridge,
+} from "../monacoDebug";
 import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
 import type { ServerMessage } from "../types/protocol";
 import type { WorkspaceEditEnvelope } from "../workspaceEdit";
@@ -36,6 +41,7 @@ interface Props {
 		envelope: WorkspaceEditEnvelope,
 		label: string,
 	) => Promise<boolean>;
+	onLaunchDebug?: (target: DebugTarget, action: DebugAction) => void;
 	view?: "code" | "preview";
 }
 
@@ -50,14 +56,17 @@ export function FileTab({
 	onReload,
 	onOpenFile,
 	onApplyWorkspaceEdit,
+	onLaunchDebug,
 	view = "code",
 }: Props) {
 	const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
 	const contextMenuListenerRef = useRef<{ dispose(): void } | null>(null);
 	const lspBridgeRef = useRef<MonacoLSPBridge | null>(null);
+	const debugBridgeRef = useRef<MonacoDebugBridge | null>(null);
 	const diagnosticsTimerRef = useRef<number | null>(null);
 	const onOpenFileRef = useRef(onOpenFile);
 	const onApplyWorkspaceEditRef = useRef(onApplyWorkspaceEdit);
+	const onLaunchDebugRef = useRef(onLaunchDebug);
 	const onSaveRef = useRef(onSave);
 	const scheme = useColorScheme();
 	const [contextMenu, setContextMenu] = useState<{
@@ -68,6 +77,7 @@ export function FileTab({
 	const [, setLanguageFeaturesRevision] = useState(0);
 	onOpenFileRef.current = onOpenFile;
 	onApplyWorkspaceEditRef.current = onApplyWorkspaceEdit;
+	onLaunchDebugRef.current = onLaunchDebug;
 	onSaveRef.current = onSave;
 
 	const dirty = document.draft !== document.savedContent;
@@ -77,6 +87,8 @@ export function FileTab({
 		contextMenuListenerRef.current = null;
 		lspBridgeRef.current?.dispose();
 		lspBridgeRef.current = null;
+		debugBridgeRef.current?.dispose();
+		debugBridgeRef.current = null;
 		editorRef.current = null;
 	}, []);
 
@@ -276,6 +288,19 @@ export function FileTab({
 								},
 							);
 							if (!document.external) {
+								debugBridgeRef.current = createMonacoDebugBridge({
+									monaco,
+									editor,
+									path: file.path,
+									onLaunchTarget: (target, action) => {
+										void (async () => {
+											const saved = await onSaveRef.current();
+											if (saved.ok) {
+												onLaunchDebugRef.current?.(target, action);
+											}
+										})();
+									},
+								});
 								lspBridgeRef.current = createMonacoLSPBridge({
 									monaco,
 									editor,
@@ -299,7 +324,9 @@ export function FileTab({
 						onChange={(value) => onChange(value ?? "")}
 						options={{
 							contextmenu: false,
+							codeLens: true,
 							find: { addExtraSpaceOnTop: false },
+							glyphMargin: true,
 							minimap: { enabled: false },
 							fontSize: 12,
 							lineNumbers: "on",

@@ -20,10 +20,10 @@ type Service struct {
 	closed bool
 }
 
-func New(root, graphStorePath string) *Service {
+func New(root, graphStorePath string, managerOptions ...lsp.ManagerOption) *Service {
 	service := &Service{
 		root:    root,
-		manager: lsp.NewManager(root),
+		manager: lsp.NewManager(root, managerOptions...),
 	}
 	service.graph = graph.New(root, graphStorePath, graph.WithResolver(&lspResolver{service: service}))
 	return service
