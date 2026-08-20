@@ -17,6 +17,9 @@ import (
 )
 
 var excludedDirs = map[string]bool{
+	".git":         true,
+	".hg":          true,
+	".svn":         true,
 	"node_modules": true,
 	"__pycache__":  true,
 	".venv":        true,
@@ -26,6 +29,11 @@ var excludedDirs = map[string]bool{
 	"target":       true,
 	".next":        true,
 	".cache":       true,
+}
+
+var excludedFiles = []string{
+	".DS_Store",
+	"Thumbs.db",
 }
 
 var extToLanguage = map[string]string{
@@ -105,7 +113,7 @@ func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 	for _, entry := range entries {
 		name := entry.Name()
 
-		if strings.HasPrefix(name, ".") {
+		if isExcludedFile(name) {
 			continue
 		}
 
@@ -136,6 +144,15 @@ func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, files)
+}
+
+func isExcludedFile(name string) bool {
+	for _, excluded := range excludedFiles {
+		if strings.EqualFold(name, excluded) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleFilesSearch(w http.ResponseWriter, r *http.Request) {

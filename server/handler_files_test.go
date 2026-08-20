@@ -16,6 +16,76 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 )
 
+func TestFileListingExcludesMetadataAndIncludesHiddenEntries(t *testing.T) {
+	t.Setenv("WINGMAN_URL", "http://localhost:1")
+	workDir := t.TempDir()
+	for _, name := range []string{
+		"visible.txt",
+		".gitignore",
+		".DS_Store",
+		".ds_store",
+		"Thumbs.db",
+		"thumbs.db",
+		"backup.crswap",
+	} {
+		if err := os.WriteFile(filepath.Join(workDir, name), []byte(name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(workDir, ".github"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".git", ".svn", ".hg"} {
+		if err := os.Mkdir(filepath.Join(workDir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	app, err := New(context.Background(), workDir, &ServerOptions{NoBrowser: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	web := httptest.NewServer(app)
+	defer web.Close()
+
+	res, err := http.Get(web.URL + "/api/files")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("listing status = %d, want %d", res.StatusCode, http.StatusOK)
+	}
+
+	var entries []FileEntry
+	if err := json.NewDecoder(res.Body).Decode(&entries); err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		got[entry.Name] = true
+	}
+	for _, name := range []string{"visible.txt", ".gitignore", ".github", "backup.crswap"} {
+		if !got[name] {
+			t.Errorf("listing does not include %q: %#v", name, entries)
+		}
+	}
+	for _, name := range []string{
+		".git",
+		".svn",
+		".hg",
+		".DS_Store",
+		".ds_store",
+		"Thumbs.db",
+		"thumbs.db",
+	} {
+		if got[name] {
+			t.Errorf("listing includes excluded entry %q: %#v", name, entries)
+		}
+	}
+}
+
 func TestFileCreateAndConflictAwareWrite(t *testing.T) {
 	t.Setenv("WINGMAN_URL", "http://localhost:1")
 	workDir := t.TempDir()
