@@ -361,10 +361,6 @@ export function FileTab({
 											Promise.resolve(false),
 									);
 								void loadDiagnostics();
-								editor.addCommand(
-									monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
-									() => void onSaveRef.current(),
-								);
 							}
 							revealEditorPosition(editor, line, column);
 						}}

@@ -35,6 +35,8 @@ export function Tab({
 	onNavigate,
 	onClose,
 	onKeepOpen,
+	onDragStart,
+	onDragEnd,
 }: {
 	id: string;
 	kind: TabKind;
@@ -50,6 +52,8 @@ export function Tab({
 	onNavigate: (position: number) => void;
 	onClose: () => void;
 	onKeepOpen: () => void;
+	onDragStart?: () => void;
+	onDragEnd?: () => void;
 }) {
 	const Icon =
 		kind === "chat"
@@ -74,6 +78,13 @@ export function Tab({
 			tabIndex={active ? 0 : -1}
 			data-center-tab={id}
 			data-tab-preview={preview || undefined}
+			draggable={!!onDragStart}
+			onDragStart={(event) => {
+				event.dataTransfer.setData("text/plain", id);
+				event.dataTransfer.effectAllowed = "move";
+				onDragStart?.();
+			}}
+			onDragEnd={onDragEnd}
 			className={`group relative flex shrink-0 items-center gap-1.5 px-3 py-0 text-[12px] transition-colors ${
 				active ? "text-fg" : "text-fg-dim hover:text-fg-muted"
 			} ${active ? "bg-bg-surface/50" : ""} ${preview ? "italic" : ""}`}

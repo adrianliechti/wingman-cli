@@ -191,6 +191,55 @@ test("keeps the empty draft tab non-closable", async ({ page }) => {
 	await expect(page.locator(`[data-center-tab="${draftId}"]`)).toHaveCount(1);
 });
 
+test("moves tabs between the left and right pane groups", async ({ page }) => {
+	const input = await composer(page);
+	await page.getByRole("treeitem", { name: /editable\.txt/ }).click();
+	const fileTab = page.locator('[data-center-tab="file:editable.txt"]');
+	await expect(fileTab).toBeVisible();
+	await expect(input).toBeHidden();
+
+	await fileTab.click({ button: "right" });
+	await page.getByRole("menuitem", { name: "Move Right" }).click();
+	const leftStrip = page.getByRole("tablist", { name: "Open tabs" });
+	const rightStrip = page.getByRole("tablist", { name: "Right pane tabs" });
+	await expect(
+		rightStrip.locator('[data-center-tab="file:editable.txt"]'),
+	).toBeVisible();
+	await expect(
+		leftStrip.locator('[data-center-tab="file:editable.txt"]'),
+	).toHaveCount(0);
+	await expect(input).toBeVisible();
+	const editorBox = await page.locator(".monaco-editor").first().boundingBox();
+	const inputBox = await input.boundingBox();
+	expect(editorBox && inputBox && editorBox.x > inputBox.x).toBe(true);
+	const movedBox = await fileTab.boundingBox();
+	expect(
+		movedBox && editorBox ? Math.abs(movedBox.x - editorBox.x) : 999,
+	).toBeLessThanOrEqual(32);
+
+	// files opened while the right pane has focus join the right group
+	await page.getByRole("treeitem", { name: /completion\.go/ }).click();
+	const completionTab = rightStrip.locator(
+		'[data-center-tab="file:completion.go"]',
+	);
+	await expect(completionTab).toBeVisible();
+	await expect(
+		leftStrip.locator('[data-center-tab="file:completion.go"]'),
+	).toHaveCount(0);
+
+	await completionTab.click({ button: "right" });
+	await page.getByRole("menuitem", { name: "Close", exact: true }).click();
+	await expect(completionTab).toHaveCount(0);
+
+	await fileTab.click({ button: "right" });
+	await page.getByRole("menuitem", { name: "Move Left" }).click();
+	await expect(rightStrip).toHaveCount(0);
+	await expect(
+		leftStrip.locator('[data-center-tab="file:editable.txt"]'),
+	).toBeVisible();
+	await expect(input).toBeHidden();
+});
+
 test("reuses and promotes preview tabs while browsing files", async ({
 	page,
 }) => {
@@ -1229,10 +1278,13 @@ test("creates, saves, refreshes, and protects files changed on disk", async ({
 	await expect(editor).toBeVisible();
 	await editor.click();
 	await page.keyboard.type("package main\n\nfunc initialVersion() {}\n");
-	const save = page.getByRole("button", { name: "Save file" });
-	await expect(save).toBeEnabled();
-	await save.click();
-	await expect(save).toHaveAttribute("title", "No changes to save");
+	const createdTab = page.getByRole("tab", { name: /web-created\.go/ });
+	await expect(createdTab).toHaveAttribute("aria-label", /unsaved changes/);
+	await page.keyboard.press("ControlOrMeta+S");
+	await expect(createdTab).not.toHaveAttribute(
+		"aria-label",
+		/unsaved changes/,
+	);
 
 	let read = await request.get("/api/files/read?path=web-created.go");
 	expect(read.ok()).toBeTruthy();
@@ -1262,7 +1314,8 @@ test("creates, saves, refreshes, and protects files changed on disk", async ({
 	);
 	await expect(conflictBanner).toBeVisible();
 
-	await save.click();
+	await editor.click();
+	await page.keyboard.press("ControlOrMeta+S");
 	const overwriteDialog = page.getByRole("dialog", {
 		name: "Overwrite newer file?",
 	});
@@ -1340,9 +1393,10 @@ test("creates, saves, refreshes, and protects files changed on disk", async ({
 	await editor.click();
 	await page.keyboard.press("Control+End");
 	await page.keyboard.type("\nfunc savedAfterMove() {}\n");
-	await expect(save).toBeEnabled();
-	await save.click();
-	await expect(save).toHaveAttribute("title", "No changes to save");
+	await page.keyboard.press("ControlOrMeta+S");
+	await expect(
+		page.getByRole("tab", { name: /web-created\.go/ }),
+	).not.toHaveAttribute("aria-label", /unsaved changes/);
 	const movedRead = await request.get(
 		"/api/files/read?path=web-folder%2Fweb-created.go",
 	);
@@ -1525,9 +1579,7 @@ test("save awaits LSP actions that add and remove Go imports", async ({
 	await page.keyboard.insertText(
 		'package main\n\nimport "os"\n\nfunc main() { fmt.Println("ok") }\n',
 	);
-	const save = page.getByRole("button", { name: "Save file" });
-	await expect(save).toBeEnabled();
-	await save.click();
+	await page.keyboard.press("ControlOrMeta+S");
 	await expect
 		.poll(() => sourceActions)
 		.toEqual(["source.addMissingImports", "source.organizeImports"]);
@@ -1562,7 +1614,7 @@ test("save applies real gopls organize-imports edits", async ({
 	await page.keyboard.insertText(
 		'package main\n\nimport "os"\n\nfunc main() { fmt.Println("ok") }\n',
 	);
-	await page.getByRole("button", { name: "Save file" }).click();
+	await page.keyboard.press("ControlOrMeta+S");
 	await expect
 		.poll(async () => {
 			const response = await request.get(
@@ -1684,7 +1736,7 @@ test("Tab propagates a recent rename through the real model endpoint", async ({
 		`Tab prediction requests: ${JSON.stringify(predictionBodies)}`,
 	).toBe(1);
 
-	await page.getByRole("button", { name: "Save file" }).click();
+	await page.keyboard.press("ControlOrMeta+S");
 	await expect
 		.poll(async () => {
 			const saved = await request.get(
