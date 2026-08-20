@@ -16,6 +16,7 @@ import {
 	RefreshCw,
 	Save,
 	Search,
+	Sparkles,
 	SquareTerminal,
 	Wrench,
 } from "lucide-react";
@@ -348,6 +349,33 @@ export default function App() {
 		getInspectAvailability(capabilities);
 	const showAgents = capabilities?.tasks ?? false;
 	const showTerminal = capabilities?.terminal ?? false;
+	const tabAvailable = capabilities?.tab ?? false;
+	const tabEnabled =
+		tabAvailable && (capabilities?.["editor.tab.completion"] ?? false);
+	const toggleEditorTabCompletion = useCallback(async () => {
+		try {
+			const response = await fetch("/api/settings/editor.tab.completion", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					"editor.tab.completion": !tabEnabled,
+				}),
+			});
+			if (!response.ok) throw new Error(await response.text());
+			toast({
+				title: `editor.tab.completion ${tabEnabled ? "disabled" : "enabled"}`,
+				description: tabEnabled
+					? undefined
+					: "Completions use model requests while you type.",
+			});
+		} catch (error) {
+			toast({
+				title: "Could not change editor.tab.completion",
+				description: String(error),
+				tone: "error",
+			});
+		}
+	}, [tabEnabled, toast]);
 	const [requestedRightTab, setRequestedRightTab] = useState<RightTab>("files");
 	const [problemsRefreshKey, setProblemsRefreshKey] = useState(0);
 	const [workspaceSearching, setWorkspaceSearching] = useState(false);
@@ -1849,6 +1877,15 @@ export default function App() {
 				}
 			}
 		}
+		if (tabAvailable) {
+			actions.push({
+				id: "editor.tab.completion",
+				label: `${tabEnabled ? "Disable" : "Enable"} editor.tab.completion`,
+				hint: `${tabEnabled ? "On" : "Off"} · uses model requests while typing`,
+				icon: <Sparkles size={12} className="text-fg-dim shrink-0" />,
+				run: () => void toggleEditorTabCompletion(),
+			});
+		}
 		actions.push({
 			id: "find-in-files",
 			label: "Find in files",
@@ -1884,6 +1921,9 @@ export default function App() {
 		handleNewSession,
 		showChanges,
 		showTerminal,
+		tabAvailable,
+		tabEnabled,
+		toggleEditorTabCompletion,
 		leftPanelCollapsed,
 		rightPanelCollapsed,
 		terminalShells,
@@ -2624,6 +2664,7 @@ export default function App() {
 									<FileTab
 										key={`${activeTab.id}:${activeTab.path}`}
 										document={documents[activeTab.path]}
+										tabEnabled={tabEnabled}
 										line={activeTab.line}
 										column={activeTab.column}
 										navigationKey={activeTab.navigationKey}

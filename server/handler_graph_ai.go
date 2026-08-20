@@ -12,6 +12,7 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/graph"
+	"github.com/adrianliechti/wingman-agent/pkg/model"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -26,20 +27,28 @@ const (
 // summarizing and ranking need no deliberation, so the cheapest effort wins.
 // Unknown capability keeps effort unset rather than guessing.
 func (s *Server) generationTarget(role string) (model, effort string) {
-	if s.config.SubagentModel != nil {
-		if option, ok := s.config.SubagentModel(role); ok {
-			if len(option.Efforts) > 0 {
-				effort = option.Efforts[0]
-			}
-			if option.ID != "" {
-				return option.ID, effort
-			}
+	return resolveGenerationTarget(s.config, role, "")
+}
+
+func resolveGenerationTarget(cfg *agent.Config, role, override string) (modelID, effort string) {
+	modelID = strings.TrimSpace(override)
+	var efforts []string
+	if modelID == "" && cfg.RoleModel != nil {
+		if option, ok := cfg.RoleModel(role); ok && option.ID != "" {
+			modelID = strings.TrimSpace(option.ID)
+			efforts = option.Efforts
 		}
 	}
-	if role == "" && s.config.Model != nil {
-		model = s.config.Model()
+	if modelID == "" && (role == "" || role == "utility") && cfg.Model != nil {
+		modelID = strings.TrimSpace(cfg.Model())
 	}
-	return model, effort
+	if len(efforts) == 0 {
+		efforts = model.ProfileFor(modelID).Efforts
+	}
+	if len(efforts) > 0 {
+		effort = efforts[0]
+	}
+	return modelID, effort
 }
 
 type summaryEntry struct {

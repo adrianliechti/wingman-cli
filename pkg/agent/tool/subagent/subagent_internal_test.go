@@ -289,7 +289,7 @@ func TestApplyModelOverrides(t *testing.T) {
 	cfg := &agent.Config{
 		Model:  func() string { return "session-model" },
 		Effort: func() string { return "medium" },
-		SubagentModel: func(role string) (agent.ModelOption, bool) {
+		RoleModel: func(role string) (agent.ModelOption, bool) {
 			opt, ok := roles[role]
 			return opt, ok
 		},
@@ -360,7 +360,7 @@ func TestApplyModelOverrides(t *testing.T) {
 	}
 
 	cfg.Model = func() string { return "session-model" }
-	cfg.SubagentModel = nil
+	cfg.RoleModel = nil
 	if err := applyModelOverrides(cfg, map[string]any{"model": "plan", "effort": "max"}, ""); err != nil {
 		t.Fatal(err)
 	}

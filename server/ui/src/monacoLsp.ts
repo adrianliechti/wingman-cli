@@ -80,6 +80,7 @@ interface BridgeOptions {
 
 export interface MonacoLSPBridge {
 	refreshDiagnostics(): Promise<void>;
+	organizeImports(): Promise<boolean>;
 	supports(feature: MonacoLanguageFeature): boolean;
 	dispose(): void;
 }
@@ -135,6 +136,11 @@ export function createMonacoLSPBridge({
 	let diagnosticsController: AbortController | null = null;
 	let workspaceURI = "";
 	let activeCapabilities: LSPEditorCapabilities | null = null;
+	let appliedCodeActions = 0;
+	let resolveCapabilitiesReady!: () => void;
+	const capabilitiesReady = new Promise<void>((resolve) => {
+		resolveCapabilitiesReady = resolve;
+	});
 	const lspCommandID = `wingman.lsp.command.${++bridgeSequence}`;
 
 	type CodeActionPayload = {
@@ -160,8 +166,8 @@ export function createMonacoLSPBridge({
 		}
 	}
 
-	async function runCodeAction(payload: CodeActionPayload) {
-		if (!sourceModel || disposed) return;
+	async function runCodeAction(payload: CodeActionPayload): Promise<boolean> {
+		if (!sourceModel || disposed) return false;
 		let action = payload.action;
 		let documents = payload.documents;
 		if (
@@ -181,7 +187,7 @@ export function createMonacoLSPBridge({
 					},
 					controller.signal,
 				);
-				if (!resolved) return;
+				if (!resolved) return false;
 				action = resolved.action;
 				documents = resolved.documents;
 			} finally {
@@ -193,17 +199,73 @@ export function createMonacoLSPBridge({
 				{ edit: action.edit, documents },
 				action.title,
 			);
-			if (!applied) return;
+			if (!applied) return false;
+			appliedCodeActions++;
 		}
 		const command = isLSPCommand(action) ? action : action.command;
 		if (command) await executeLSPCommand(command);
+		return (!isLSPCommand(action) && action.edit !== undefined) || !!command;
+	}
+
+	async function waitForModelChange(version: number) {
+		if (!sourceModel || sourceModel.getVersionId() !== version) return;
+		await new Promise<void>((resolve) => {
+			let settled = false;
+			let timeout = 0;
+			let listener: MonacoTypes.IDisposable | null = null;
+			const finish = () => {
+				if (settled) return;
+				settled = true;
+				window.clearTimeout(timeout);
+				listener?.dispose();
+				resolve();
+			};
+			listener = sourceModel!.onDidChangeContent(finish);
+			timeout = window.setTimeout(finish, 750);
+		});
+	}
+
+	async function runSourceAction(kind: string): Promise<boolean> {
+		if (!sourceModel || disposed) return false;
+		const controller = new AbortController();
+		requests.add(controller);
+		try {
+			const response = await postJSON<LSPCodeActionsResponse>(
+				"/api/lsp/code-actions",
+				{
+					...documentRequest(file.path, sourceModel),
+					range: protocolRange(sourceModel.getFullModelRange()),
+					only: [kind],
+					trigger_kind: 1,
+				},
+				controller.signal,
+			);
+			if (!response || disposed) return false;
+			for (const action of response.actions) {
+				if (!isLSPCommand(action) && action.disabled) continue;
+				const version = sourceModel.getVersionId();
+				const executed = await runCodeAction({
+					action,
+					documents: response.documents,
+					resolve: activeCapabilities?.code_action_resolve ?? false,
+				});
+				if (!executed) continue;
+				await waitForModelChange(version);
+				return true;
+			}
+			return false;
+		} catch {
+			return false;
+		} finally {
+			requests.delete(controller);
+		}
 	}
 
 	disposables.push(
 		monaco.editor.registerCommand(
 			lspCommandID,
 			(_accessor: unknown, payload: CodeActionPayload) =>
-				void runCodeAction(payload),
+				runCodeAction(payload),
 		),
 	);
 
@@ -909,7 +971,12 @@ export function createMonacoLSPBridge({
 		void getEditorCapabilities(file.path, controller.signal)
 			.then((capabilities) => registerLanguageProviders(capabilities))
 			.catch(() => registerLanguageProviders(structuralCapabilities))
-			.finally(() => requests.delete(controller));
+			.finally(() => {
+				requests.delete(controller);
+				resolveCapabilitiesReady();
+			});
+	} else {
+		resolveCapabilitiesReady();
 	}
 
 	if (onOpenFile) {
@@ -940,6 +1007,15 @@ export function createMonacoLSPBridge({
 	}
 
 	return {
+		async organizeImports() {
+			await capabilitiesReady;
+			if (disposed || !activeCapabilities?.code_actions || !sourceModel)
+				return false;
+			const before = appliedCodeActions;
+			await runSourceAction("source.addMissingImports");
+			await runSourceAction("source.organizeImports");
+			return appliedCodeActions !== before;
+		},
 		async refreshDiagnostics() {
 			if (disposed || !sourceModel) return;
 			diagnosticsController?.abort();

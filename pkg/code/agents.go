@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
+
+	"github.com/adrianliechti/wingman-agent/pkg/layout"
 )
 
 const BuiltinAgentName = "wingman"
@@ -21,11 +22,7 @@ type AgentDef struct {
 }
 
 func agentsConfigPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".wingman", "agents.json"), nil
+	return layout.WingmanPath("agents.json")
 }
 
 func HasAgentsConfig() bool {

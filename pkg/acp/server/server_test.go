@@ -17,6 +17,7 @@ import (
 
 	acpsdk "github.com/coder/acp-go-sdk"
 
+	"github.com/adrianliechti/wingman-agent/internal/testenv"
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
@@ -191,7 +192,7 @@ func (*recordingClient) WaitForTerminalExit(context.Context, acpsdk.WaitForTermi
 }
 
 func TestACPDeleteListedSessionWithoutLoading(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testenv.WingmanHome(t)
 	cwd := t.TempDir()
 	dir := code.SessionsDir(cwd)
 	const id = "listed-session"
@@ -236,12 +237,12 @@ func TestACPDeleteListedSessionWithoutLoading(t *testing.T) {
 }
 
 func TestACPTaskTurnWritesFileAndReportsUsage(t *testing.T) {
-	home := t.TempDir()
+	testenv.UserHome(t)
+	testenv.WingmanHome(t)
 	workdir := filepath.Join(t.TempDir(), "app")
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HOME", home)
 	unsetEnv(t, "WINGMAN_URL")
 	unsetEnv(t, "WINGMAN_TOKEN")
 	unsetEnv(t, "WINGMAN_MODEL")

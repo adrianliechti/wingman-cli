@@ -12,6 +12,7 @@ import (
 
 	acpsdk "github.com/coder/acp-go-sdk"
 
+	"github.com/adrianliechti/wingman-agent/internal/testenv"
 	"github.com/adrianliechti/wingman-agent/pkg/acp/internal/acptest"
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 )
@@ -27,8 +28,8 @@ type contractServer struct {
 
 func newContractServer(t *testing.T) acptest.Agent {
 	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testenv.UserHome(t)
+	testenv.WingmanHome(t)
 	unsetEnv(t, "WINGMAN_URL")
 	unsetEnv(t, "WINGMAN_TOKEN")
 	unsetEnv(t, "WINGMAN_MODEL")

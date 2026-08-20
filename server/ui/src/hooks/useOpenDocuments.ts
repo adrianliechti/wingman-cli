@@ -4,6 +4,7 @@ import {
 	writeWorkspaceFile,
 	writeWorkspaceFiles,
 } from "../api/files";
+import { runEditorSaveParticipants } from "../editorSaveParticipants";
 import { syncLSPDocument, type LSPDocumentEvent } from "../api/lsp";
 import type { FileContent, ServerMessage } from "../types/protocol";
 import {
@@ -210,10 +211,18 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 
 	const saveDocument = useCallback(
 		async (path: string, force = false): Promise<SaveResult> => {
-			const document = documentsRef.current[path];
+			let document = documentsRef.current[path];
 			if (!document || document.external || document.file?.binary) {
 				return { ok: true };
 			}
+			flushLSPChange(path);
+			await runEditorSaveParticipants(path);
+			document = documentsRef.current[path];
+			if (!document || document.external || document.file?.binary) {
+				return { ok: true };
+			}
+			// A source action can update the active Monaco model while the save is
+			// waiting, so synchronize and persist the newest buffer.
 			flushLSPChange(path);
 			if (document.draft === document.savedContent) {
 				queueLSPEvent("save", path, document.draft);

@@ -12,6 +12,7 @@ A powerful AI-powered coding assistant that runs directly in your terminal. Wing
 - **File Operations** — Read, write, edit, and search files in your codebase
 - **Shell Integration** — Execute shell commands with user approval
 - **LSP Integration** — Code intelligence via auto-detected language servers (definitions, references, diagnostics, call hierarchy, and more)
+- **Predictive Tab Edits** — Low-latency inline and multiline next-edit suggestions in the web editor, with import cleanup through the active language server
 - **Integrated Debugging** — Debug Adapter Protocol sessions with deterministic launch profiles, breakpoints, stepping, stack/variable inspection, output, and interactive terminals
 - **MCP Support** — Extend functionality with Model Context Protocol servers
 - **Multi-Model Support** — Works with any [OpenResponses API](https://www.openresponses.org) compatible endpoint with auto-selection
@@ -207,6 +208,7 @@ OpenAI-compatible backend at `http://localhost:4242/v1`.
 | `WINGMAN_MODEL` | Coding model; takes priority over `OPENAI_DEFAULT_MODEL` |
 | `WINGMAN_MODEL_PLAN` | Plan-mode model (default: largest available, e.g. Opus/Sol) |
 | `WINGMAN_MODEL_UTILITY` | Model for recaps and compaction summaries (default: smallest available, e.g. Haiku/Luna) |
+| `WINGMAN_MODEL_TAB` | Optional model override for web-editor Tab predictions (default: the utility role, then the current coding model) |
 | `WINGMAN_EFFORT` | Coding reasoning effort: `none`/`low`/`medium`/`high`/`xhigh`/`max` (default: `high`) |
 | `WINGMAN_EFFORT_PLAN` | Plan-mode reasoning effort (default: `xhigh` on large models, else `high`) |
 | `WINGMAN_LARGE_CONTEXT` | `1` compacts against the model's full context window instead of stopping at the provider's long-context price threshold |
@@ -217,7 +219,24 @@ OpenAI-compatible backend at `http://localhost:4242/v1`.
 |----------|-------------|
 | `WINGMAN_SANDBOX` | `off` lifts the workspace path restriction from the file tools |
 | `WINGMAN_ELICITATION` | Headless (ACP) sessions: `accept` or `cancel` answers elicitation prompts automatically |
+| `WINGMAN_HOME` | Overrides the `~/.wingman` directory for all Wingman-owned user data |
 | `WINGMAN_<AGENT>_PATH` | Path override for an external agent binary (e.g. `WINGMAN_CODEX_PATH`) |
+
+### User Data
+
+`editor.tab.completion` is on by default and can be disabled or re-enabled from
+the command palette. The preference is stored in `~/.wingman/config.json`.
+Completions use model requests while you type; requests are edit-gated,
+debounced, and limited server-wide to one active request and one start every
+1.5 seconds.
+
+Wingman's `~/.wingman/config.json` stores this preference and recent launcher
+workspaces only;
+backend URLs and authentication tokens are read from environment variables and
+are never persisted in this file.
+Set `WINGMAN_HOME` to relocate the complete `~/.wingman` directory, including
+settings, project memory and sessions, global MCP configuration, skills,
+plugins, and plugin data.
 
 ### Project Configuration
 

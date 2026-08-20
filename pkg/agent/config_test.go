@@ -64,3 +64,30 @@ func TestContextWindowFor(t *testing.T) {
 		}
 	}
 }
+
+func TestUtilityModelNameUsesRoleModelThenMainFallback(t *testing.T) {
+	cfg := &Config{
+		Model: func() string { return "main-model" },
+		RoleModel: func(role string) (ModelOption, bool) {
+			if role != "utility" {
+				t.Fatalf("role = %q, want utility", role)
+			}
+			return ModelOption{ID: "utility-model"}, true
+		},
+	}
+	if got := cfg.utilityModelName(); got != "utility-model" {
+		t.Fatalf("utility model = %q", got)
+	}
+
+	cfg.RoleModel = func(string) (ModelOption, bool) {
+		return ModelOption{}, false
+	}
+	if got := cfg.utilityModelName(); got != "main-model" {
+		t.Fatalf("utility fallback = %q", got)
+	}
+
+	derived := cfg.Derive()
+	if derived.RoleModel == nil || derived.utilityModelName() != "main-model" {
+		t.Fatal("derived config lost its role resolver or main fallback")
+	}
+}

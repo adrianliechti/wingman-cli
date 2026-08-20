@@ -12,12 +12,16 @@ import (
 	"github.com/go-git/go-git/v5"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/adrianliechti/wingman-agent/internal/testenv"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	wingmcp "github.com/adrianliechti/wingman-agent/pkg/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/skill"
 )
 
 func TestWarmUpCreatesLSPManagerOutsideGitRepository(t *testing.T) {
+	testenv.UserHome(t)
+	testenv.WingmanHome(t)
+
 	w, err := NewWorkspace(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -27,6 +31,61 @@ func TestWarmUpCreatesLSPManagerOutsideGitRepository(t *testing.T) {
 	w.WarmUp()
 	if w.Language == nil {
 		t.Fatal("language service was not created")
+	}
+}
+
+func TestNewWorkspaceNormalizesRelativeRoot(t *testing.T) {
+	testenv.UserHome(t)
+	testenv.WingmanHome(t)
+
+	parent := t.TempDir()
+	workDir := filepath.Join(parent, "project")
+	if err := os.Mkdir(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(parent)
+
+	w, err := NewWorkspace("project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	if w.RootPath != workDir {
+		t.Fatalf("RootPath = %q, want %q", w.RootPath, workDir)
+	}
+	if got, want := projectKey("project"), projectKey(workDir); got != want {
+		t.Fatalf("relative project key = %q, want %q", got, want)
+	}
+}
+
+func TestWingmanHomeOwnsPersonalWorkspaceState(t *testing.T) {
+	home := testenv.WingmanHome(t)
+	workDir := t.TempDir()
+	agentsPath, err := agentsConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	projectDir := filepath.Join(home, "projects", projectKey(workDir))
+	tests := map[string]struct {
+		got  string
+		want string
+	}{
+		"agents config":     {agentsPath, filepath.Join(home, "agents.json")},
+		"global MCP config": {globalMCPConfigPath(), filepath.Join(home, "mcp.json")},
+		"project state":     {projectStateDir(workDir), projectDir},
+		"memory":            {projectMemoryDir(workDir), filepath.Join(projectDir, "memory")},
+		"graph":             {projectGraphDir(workDir), filepath.Join(projectDir, "graph")},
+		"project plugins":   {projectPluginDataDir(workDir), filepath.Join(projectDir, "plugin-data")},
+		"personal plugins":  {personalPluginDataDir(), filepath.Join(home, "plugin-data")},
+		"sessions":          {SessionsDir(workDir), filepath.Join(projectDir, "sessions")},
+	}
+
+	for name, test := range tests {
+		if test.got != test.want {
+			t.Errorf("%s path = %q, want %q", name, test.got, test.want)
+		}
 	}
 }
 
@@ -450,9 +509,9 @@ func TestLoadBundledSkillsIncludesCoreWorkflows(t *testing.T) {
 }
 
 func TestPersonalSkillOverridesManagedBundledSnapshot(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	personalDir := filepath.Join(home, ".wingman", "skills", "skill-creator")
+	testenv.UserHome(t)
+	home := testenv.WingmanHome(t)
+	personalDir := filepath.Join(home, "skills", "skill-creator")
 	if err := os.MkdirAll(personalDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -475,15 +534,14 @@ Use the personal workflow.`)
 	if override == nil || override.Bundled || override.Description != "Personal override" {
 		t.Fatalf("personal override was not selected: %#v", override)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".wingman", "skills", ".system")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(home, "skills", ".system")); !os.IsNotExist(err) {
 		t.Fatalf("bundled snapshot leaked into personal discovery root: %v", err)
 	}
 }
 
 func TestNewWorkspaceLoadsPluginComponents(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	testenv.UserHome(t)
+	testenv.WingmanHome(t)
 
 	work := t.TempDir()
 
@@ -548,9 +606,8 @@ Summarize it.`)
 }
 
 func TestNewWorkspaceProjectConfigOverridesPluginServer(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	testenv.UserHome(t)
+	testenv.WingmanHome(t)
 
 	work := t.TempDir()
 
@@ -587,9 +644,8 @@ func TestNewWorkspaceProjectConfigOverridesPluginServer(t *testing.T) {
 }
 
 func TestNewWorkspaceDedupesPluginServerMatchingProjectConfig(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	testenv.UserHome(t)
+	testenv.WingmanHome(t)
 
 	work := t.TempDir()
 

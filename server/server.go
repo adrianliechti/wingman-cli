@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -30,6 +31,7 @@ import (
 	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/code/agents"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
+	"github.com/adrianliechti/wingman-agent/pkg/settings"
 	"github.com/adrianliechti/wingman-agent/pkg/system"
 	"github.com/adrianliechti/wingman-agent/pkg/terminal"
 	"github.com/adrianliechti/wingman-agent/pkg/watch"
@@ -89,8 +91,14 @@ type Server struct {
 	taskPumpMu sync.Mutex
 	taskPumps  map[*task.Registry]bool
 
-	terminals *terminal.Manager
-	preview   *filePreviewServer
+	terminals        *terminal.Manager
+	preview          *filePreviewServer
+	tab              *editorTabService
+	tabSettingsMu    sync.Mutex
+	tabEnabled       atomic.Bool
+	tabRequestMu     sync.Mutex
+	tabRequestID     uint64
+	tabRequestCancel context.CancelFunc
 
 	summariesMu sync.Mutex
 	summaries   *summaryStore
@@ -119,7 +127,6 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 		return nil, err
 	}
 	serverCtx, cancel := context.WithCancel(ctx)
-
 	s := &Server{
 		noBrowser:      opts.NoBrowser,
 		workspace:      ws,
@@ -145,6 +152,16 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 
 	wa := codeagent.New(ws, cfg, nil)
 	wa.SetUI(s)
+	cfg.RoleModel = wa.RoleModel
+	cfg.Model = func() string {
+		option, _ := wa.RoleModel("")
+		return option.ID
+	}
+	s.tab = newEditorTabService(cfg)
+	s.tabEnabled.Store(true)
+	if userSettings, loadErr := settings.Load(); loadErr == nil {
+		s.tabEnabled.Store(userSettings.EditorTabCompletion)
+	}
 	s.agent = wa
 	s.turns = code.NewTurnManager(tool.WithProgressSink(serverCtx, s.onToolProgress), wa, s.handleTurnEvent)
 
@@ -438,6 +455,8 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Post("/scopes", s.handleDebugScopes)
 			r.Post("/variables", s.handleDebugVariables)
 		})
+		r.Post("/editor/tab", s.handleEditorTab)
+		r.Post("/settings/editor.tab.completion", s.handleEditorTabSettings)
 		r.Get("/skills", s.handleSkills)
 		r.Get("/capabilities", s.handleCapabilities)
 		r.Get("/ws", s.handleWebSocketURL)
@@ -807,6 +826,8 @@ type capabilitiesResponse struct {
 	Diffs         bool   `json:"diffs"`
 	Tasks         bool   `json:"tasks"`
 	Terminal      bool   `json:"terminal"`
+	Tab           bool   `json:"tab"`
+	EditorTab     bool   `json:"editor.tab.completion"`
 	Platform      string `json:"platform"`
 	WorkspaceName string `json:"workspace_name"`
 	Notice        string `json:"notice,omitempty"`
@@ -824,6 +845,8 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		Diffs:         hasChanges,
 		Tasks:         isCoder,
 		Terminal:      terminal.Supported(),
+		Tab:           s.tab != nil,
+		EditorTab:     s.tab != nil && s.tabEnabled.Load(),
 		Platform:      runtime.GOOS,
 		WorkspaceName: filepath.Base(ws.RootPath),
 	}

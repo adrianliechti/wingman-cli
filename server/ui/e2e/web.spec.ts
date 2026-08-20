@@ -1,5 +1,12 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import {
+	expect,
+	test,
+	type APIRequestContext,
+	type Locator,
+	type Page,
+} from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -20,6 +27,26 @@ async function composer(page: Page) {
 	const input = page.getByPlaceholder("Message Wingman…");
 	await expect(input).toBeVisible();
 	return input;
+}
+
+async function openTabFixture(page: Page, file: RegExp, lineText: string) {
+	await composer(page);
+	await page.getByRole("treeitem", { name: file }).click();
+	await expect(page.locator(".monaco-editor")).toBeVisible();
+	const line = page.locator(".view-line", { hasText: lineText }).first();
+	await expect(line).toBeVisible();
+	await line.click();
+	await page.keyboard.press("End");
+}
+
+async function setEditorTabCompletion(
+	request: APIRequestContext,
+	enabled: boolean,
+) {
+	const response = await request.post("/api/settings/editor.tab.completion", {
+		data: { "editor.tab.completion": enabled },
+	});
+	expect(response.ok()).toBeTruthy();
 }
 
 async function openWorkspaceMenu(page: Page) {
@@ -1414,6 +1441,435 @@ test("uses Monaco's live buffer for automatic completion and parameter hints", a
 	);
 });
 
+test("save awaits LSP actions that add and remove Go imports", async ({
+	page,
+	request,
+}) => {
+	let workspaceURI = "";
+	const sourceActions: string[] = [];
+	await page.route(/\/api\/lsp\/capabilities\?/, async (route) => {
+		const response = await route.fetch();
+		const capabilities = (await response.json()) as Record<string, unknown>;
+		workspaceURI = String(capabilities.workspace_uri ?? "");
+		await route.fulfill({
+			response,
+			json: {
+				...capabilities,
+				language_server: true,
+				code_actions: true,
+			},
+		});
+	});
+	await page.route(/\/api\/lsp\/code-actions$/, async (route) => {
+		const body = route.request().postDataJSON() as {
+			content: string;
+			only?: string[];
+		};
+		const kind = body.only?.[0] ?? "";
+		if (kind) sourceActions.push(kind);
+		const documentURI = `${workspaceURI.replace(/\/$/, "")}/completion.go`;
+		const edit =
+			kind === "source.addMissingImports"
+				? {
+						changes: {
+							[documentURI]: [
+								{
+									range: {
+										start: { line: 2, character: 0 },
+										end: { line: 2, character: 0 },
+									},
+									newText: 'import "fmt"\n',
+								},
+							],
+						},
+					}
+				: {
+						changes: {
+							[documentURI]: [
+								{
+									range: {
+										start: { line: 2, character: 0 },
+										end: { line: 4, character: 0 },
+									},
+									newText: 'import "fmt"\n',
+								},
+							],
+						},
+					};
+		await route.fulfill({
+			json: {
+				actions: [
+					{
+						title: kind,
+						kind,
+						edit,
+					},
+				],
+				documents: {
+					[documentURI]: {
+						path: "completion.go",
+						revision: createHash("sha256").update(body.content).digest("hex"),
+						exists: true,
+					},
+				},
+			},
+		});
+	});
+
+	await composer(page);
+	await page.getByRole("treeitem", { name: /completion\.go/ }).click();
+	const editor = page.locator(".monaco-editor").first();
+	await expect(editor).toBeVisible();
+	await editor.click();
+	await page.keyboard.press("ControlOrMeta+A");
+	await page.keyboard.insertText(
+		'package main\n\nimport "os"\n\nfunc main() { fmt.Println("ok") }\n',
+	);
+	const save = page.getByRole("button", { name: "Save file" });
+	await expect(save).toBeEnabled();
+	await save.click();
+	await expect
+		.poll(() => sourceActions)
+		.toEqual(["source.addMissingImports", "source.organizeImports"]);
+	const read = await request.get("/api/files/read?path=completion.go");
+	const saved = (await read.json()) as { content: string };
+	expect(saved.content).toContain('import "fmt"');
+	expect(saved.content).not.toContain('import "os"');
+});
+
+test("save applies real gopls organize-imports edits", async ({
+	page,
+	request,
+}) => {
+	const capabilitiesResponse = await request.get(
+		"/api/lsp/capabilities?path=organize-imports.go",
+	);
+	const capabilities = (await capabilitiesResponse.json()) as {
+		language_server?: boolean;
+		code_actions?: boolean;
+	};
+	test.skip(
+		!capabilities.language_server || !capabilities.code_actions,
+		"gopls is not available in this environment",
+	);
+
+	await composer(page);
+	await page.getByRole("treeitem", { name: /organize-imports\.go/ }).click();
+	const editor = page.locator(".monaco-editor").first();
+	await expect(editor).toBeVisible();
+	await editor.click();
+	await page.keyboard.press("ControlOrMeta+A");
+	await page.keyboard.insertText(
+		'package main\n\nimport "os"\n\nfunc main() { fmt.Println("ok") }\n',
+	);
+	await page.getByRole("button", { name: "Save file" }).click();
+	await expect
+		.poll(async () => {
+			const response = await request.get(
+				"/api/files/read?path=organize-imports.go",
+			);
+			return ((await response.json()) as { content: string }).content;
+		})
+		.toBe(
+			'package main\n\nimport "fmt"\n\nfunc main() { fmt.Println("ok") }\n',
+		);
+});
+
+test("toggles editor.tab.completion from the command palette", async ({
+	page,
+	request,
+}) => {
+	const initial = await request.get("/api/capabilities");
+	expect(initial.ok()).toBeTruthy();
+	expect(
+		((await initial.json()) as Record<string, unknown>)[
+			"editor.tab.completion"
+		],
+	).toBe(true);
+	await composer(page);
+	await page.keyboard.press("Control+k");
+	const disable = page.getByRole("option", {
+		name: /Disable editor\.tab\.completion/,
+	});
+	await expect(disable).toBeVisible();
+	await disable.click();
+	await expect(
+		page.getByText("editor.tab.completion disabled", { exact: true }),
+	).toBeVisible();
+
+	await page.keyboard.press("Control+k");
+	await expect(
+		page.getByRole("option", { name: /Enable editor\.tab\.completion/ }),
+	).toBeVisible();
+});
+
+test("Tab propagates a recent rename through the real model endpoint", async ({
+	page,
+	request,
+}) => {
+	await setEditorTabCompletion(request, true);
+	await openTabFixture(page, /tab-effectiveness\.go/, 'userName := "Ada"');
+
+	let predictionRequests = 0;
+	const predictionBodies: Array<{
+		line: number;
+		column: number;
+		version: number;
+		content: string;
+		previous_content: string;
+	}> = [];
+	const isTabRequest = (candidate: { method(): string; url(): string }) =>
+		candidate.method() === "POST" &&
+		new URL(candidate.url()).pathname === "/api/editor/tab";
+	page.on("request", (candidate) => {
+		if (!isTabRequest(candidate)) return;
+		predictionRequests++;
+		predictionBodies.push(candidate.postDataJSON());
+	});
+	const tabRequest = page.waitForRequest(isTabRequest);
+	const tabResponse = page.waitForResponse(
+		(response) =>
+			response.request().method() === "POST" &&
+			new URL(response.url()).pathname === "/api/editor/tab",
+	);
+	const declaration = page
+		.locator(".view-line", { hasText: 'userName := "Ada"' })
+		.first();
+	await declaration.click();
+	await page.keyboard.press("Home");
+	for (let index = 0; index < "userName".length; index++) {
+		await page.keyboard.press("Shift+ArrowRight");
+	}
+	await page.keyboard.insertText("accountName");
+
+	const observed = await tabRequest;
+	const body = observed.postDataJSON() as {
+		content: string;
+		previous_content: string;
+	};
+	expect(body.previous_content).toContain('userName := "Ada"');
+	expect(body.content).toContain('accountName := "Ada"');
+	expect(body.content).toContain("println(userName)");
+	const response = (await (await tabResponse).json()) as {
+		edit: unknown;
+	};
+	expect(response.edit).toEqual({
+		insert_text: "account",
+		expected_text: "user",
+		range: {
+			start_line: 7,
+			start_column: 13,
+			end_line: 7,
+			end_column: 17,
+		},
+	});
+
+	await page.waitForTimeout(200);
+	await page.keyboard.press("Tab");
+	const correctedUse = page
+		.locator(".view-line:visible", { hasText: "println(accountName)" })
+		.first();
+	// Monaco either accepts immediately or first focuses its long-distance
+	// preview. In the latter presentation, the next Tab accepts the same item.
+	if (!(await correctedUse.isVisible())) await page.keyboard.press("Tab");
+	await expect(correctedUse).toBeVisible();
+	await expect(
+		page.locator(".view-line:visible", { hasText: "println(userName)" }),
+	).toHaveCount(0);
+	// Acceptance is the end of this edit burst: Monaco may ask its providers
+	// again for the changed model, but that must not purchase another result.
+	await page.waitForTimeout(700);
+	expect(
+		predictionRequests,
+		`Tab prediction requests: ${JSON.stringify(predictionBodies)}`,
+	).toBe(1);
+
+	await page.getByRole("button", { name: "Save file" }).click();
+	await expect
+		.poll(async () => {
+			const saved = await request.get(
+				"/api/files/read?path=tab-effectiveness.go",
+			);
+			return ((await saved.json()) as { content: string }).content;
+		})
+		.toContain("println(accountName)");
+});
+
+test("Tab stays idle until an edit and accepts a cursor completion", async ({
+	page,
+	request,
+}) => {
+	await setEditorTabCompletion(request, true);
+	let predictions = 0;
+	await page.route(/\/api\/editor\/tab$/, async (route) => {
+		predictions++;
+		const body = route.request().postDataJSON() as {
+			line: number;
+			column: number;
+			version: number;
+		};
+		await route.fulfill({
+			json: {
+				version: body.version,
+				edit: {
+					insert_text: "quantity",
+					expected_text: "",
+					range: {
+						start_line: body.line,
+						start_column: body.column,
+						end_line: body.line,
+						end_column: body.column,
+					},
+				},
+			},
+		});
+	});
+
+	await openTabFixture(page, /tab-ghost\.go/, "total := price *");
+	await page.waitForTimeout(400);
+	expect(predictions).toBe(0);
+	const synchronized = await request.post("/api/files/write", {
+		data: {
+			path: "tab-ghost.go",
+			content:
+				"package main\n\nfunc main() {\n\ttotal := price *\n\t_ = total\n}\n\n// synchronized externally\n",
+			force: true,
+		},
+	});
+	expect(synchronized.ok()).toBeTruthy();
+	await expect(
+		page.locator(".view-line", { hasText: "synchronized externally" }),
+	).toBeVisible();
+	await page.waitForTimeout(500);
+	expect(predictions).toBe(0);
+	await page.locator(".view-line", { hasText: "total := price *" }).click();
+	await page.keyboard.press("End");
+
+	await page.keyboard.type(" ");
+	await page.keyboard.press("Backspace");
+	await page.waitForTimeout(400);
+	expect(predictions).toBe(0);
+
+	await page.keyboard.type(" ");
+	const ghost = page.locator(".ghost-text-decoration", {
+		hasText: "quantity",
+	});
+	await expect(ghost).toBeVisible();
+	await page.keyboard.press("Tab");
+	await expect(
+		page.locator(".view-line", { hasText: "price * quantity" }).first(),
+	).toBeVisible();
+	await page.waitForTimeout(700);
+	expect(predictions).toBe(1);
+});
+
+test("Tab renders and accepts a real multiline Monaco inline edit", async ({
+	page,
+	request,
+}) => {
+	await setEditorTabCompletion(request, true);
+	await page.route(/\/api\/editor\/tab$/, async (route) => {
+		const body = route.request().postDataJSON() as { version: number };
+		await route.fulfill({
+			json: {
+				version: body.version,
+				edit: {
+					insert_text: "if ready {\n  new one\n  new two\n}\n",
+					expected_text: "old one \nold two\n",
+					range: {
+						start_line: 2,
+						start_column: 1,
+						end_line: 4,
+						end_column: 1,
+					},
+				},
+			},
+		});
+	});
+
+	await openTabFixture(page, /tab-multiline\.txt/, "old one");
+	await page.keyboard.type(" ");
+	const preview = page.locator(".monaco-editor:visible").filter({
+		hasText: "new one",
+	});
+	await expect(preview.first()).toBeVisible();
+	await expect
+		.poll(() => page.locator(".monaco-editor:visible").count())
+		.toBeGreaterThan(1);
+	await page.keyboard.press("Tab");
+	await expect
+		.poll(() => page.locator(".monaco-editor:visible").count())
+		.toBe(1);
+	await expect(
+		page.locator(".view-line", { hasText: "if ready" }).first(),
+	).toBeVisible();
+	await expect(page.locator(".view-line", { hasText: "old one" })).toHaveCount(
+		0,
+	);
+});
+
+test("Tab drops a delayed response after the cursor moves", async ({
+	page,
+	request,
+}) => {
+	await setEditorTabCompletion(request, true);
+	let firstStarted!: () => void;
+	const started = new Promise<void>((resolve) => {
+		firstStarted = resolve;
+	});
+	await page.route(/\/api\/editor\/tab$/, async (route) => {
+		const body = route.request().postDataJSON() as {
+			line: number;
+			column: number;
+			version: number;
+		};
+		const first = body.line === 1;
+		if (first) {
+			firstStarted();
+			await new Promise((resolve) => setTimeout(resolve, 900));
+		}
+		try {
+			await route.fulfill({
+				json: {
+					version: body.version,
+					edit: {
+						insert_text: first ? "oldValue" : " newValue",
+						expected_text: "",
+						range: {
+							start_line: body.line,
+							start_column: body.column,
+							end_line: body.line,
+							end_column: body.column,
+						},
+					},
+				},
+			});
+		} catch {
+			// The cursor move is expected to abort the first routed request.
+		}
+	});
+
+	await openTabFixture(page, /tab-stale\.txt/, "first :=");
+	await page.keyboard.type(" ");
+	await started;
+	const second = page.locator(".view-line", { hasText: "second :=" }).first();
+	await second.click();
+	await page.keyboard.press("End");
+	const currentGhost = page.locator(".ghost-text-decoration", {
+		hasText: "newValue",
+	});
+	await expect(currentGhost).toBeVisible();
+	await page.waitForTimeout(1_000);
+	await expect(currentGhost).toBeVisible();
+	await expect(
+		page.locator(".ghost-text-decoration", { hasText: "oldValue" }),
+	).toHaveCount(0);
+	await page.keyboard.press("Tab");
+	await expect(
+		page.locator(".view-line", { hasText: "second := newValue" }).first(),
+	).toBeVisible();
+});
+
 test("keeps composer pickers visible in a constrained window", async ({
 	page,
 }) => {
@@ -2175,6 +2631,11 @@ test("uses Wingman's dynamic editor context menu", async ({ page }) => {
 			menu.getByRole("menuitem", { name: item, exact: true }),
 		).toBeVisible();
 	}
+	for (const item of ["Toggle Line Comment", "Toggle Block Comment"]) {
+		const action = menu.getByRole("menuitem", { name: item, exact: true });
+		await expect(action).toBeVisible();
+		await expect(action).toBeEnabled();
+	}
 	for (const item of [
 		"Go to Definition",
 		"Go to Implementations",
@@ -2242,9 +2703,46 @@ test("uses Wingman's dynamic editor context menu", async ({ page }) => {
 		.getByRole("menuitem", { name: "Go to Definition", exact: true })
 		.click();
 	await expect.poll(() => definitionRequested).toBe(true);
-	await editor.focus();
+	const viewLines = editor.locator(".view-lines");
+	const packageLine = editor
+		.locator(".view-line")
+		.filter({ hasText: "package main" })
+		.first();
+	await packageLine.click();
+	await page.keyboard.press("Home");
 	await page.keyboard.press("Shift+F10");
 	await expect(menu).toBeVisible();
+
+	await menu
+		.getByRole("menuitem", { name: "Toggle Line Comment", exact: true })
+		.click();
+	await expect(viewLines).toContainText("// package main");
+
+	await packageLine.click();
+	await page.keyboard.press("Home");
+	await page.keyboard.press("Shift+F10");
+	await menu
+		.getByRole("menuitem", { name: "Toggle Line Comment", exact: true })
+		.click();
+	await expect(viewLines).not.toContainText("// package main");
+	await expect(viewLines).toContainText("package main");
+
+	await editor.focus();
+	await page.keyboard.press("ControlOrMeta+A");
+	await page.keyboard.press("Shift+F10");
+	await menu
+		.getByRole("menuitem", { name: "Toggle Block Comment", exact: true })
+		.click();
+	await expect(viewLines).toContainText(/\/\*\s*package\s+main/);
+	await expect(viewLines).toContainText(/\*\//);
+
+	await editor.focus();
+	await page.keyboard.press("Shift+F10");
+	await menu
+		.getByRole("menuitem", { name: "Toggle Block Comment", exact: true })
+		.click();
+	await expect(viewLines).not.toContainText(/\/\*|\*\//);
+	await expect(viewLines).toContainText("package main");
 });
 
 test("routes native File menu commands through shared file handling", async ({

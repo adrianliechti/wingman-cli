@@ -319,10 +319,7 @@ func TestQueuedEchoMovesIntoTranscriptWhenTurnBecomesActive(t *testing.T) {
 }
 
 func TestActivateSessionResetsTurnState(t *testing.T) {
-	ws, err := code.NewWorkspace(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	ws := newTestWorkspace(t, t.TempDir())
 
 	a := &App{agent: codeagent.New(ws, &agent.Config{}, nil), sessionID: "old", sessionEpoch: 3}
 	a.phase.Store(int32(PhaseStreaming))

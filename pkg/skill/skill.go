@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"go.yaml.in/yaml/v4"
+
+	"github.com/adrianliechti/wingman-agent/pkg/layout"
 )
 
 type Skill struct {
@@ -289,16 +291,13 @@ func Discover(root string) ([]Skill, error) {
 }
 
 func DiscoverPersonal() ([]Skill, error) {
-	if _, err := os.UserHomeDir(); err != nil {
+	sources := layout.PersonalRoots("skills")
+	if len(sources) == 0 {
+		_, err := os.UserHomeDir()
 		return nil, err
 	}
 
-	home, _ := os.UserHomeDir()
-	return discover([]string{
-		filepath.Join(home, ".wingman", "skills"),
-		filepath.Join(home, ".agents", "skills"),
-		filepath.Join(home, ".claude", "skills"),
-	}, ""), nil
+	return discover(sources, ""), nil
 }
 
 func MustDiscoverPersonal() []Skill {

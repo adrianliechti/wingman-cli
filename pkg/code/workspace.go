@@ -28,6 +28,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/debugadapter"
 	"github.com/adrianliechti/wingman-agent/pkg/graph"
 	"github.com/adrianliechti/wingman-agent/pkg/language"
+	"github.com/adrianliechti/wingman-agent/pkg/layout"
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 	"github.com/adrianliechti/wingman-agent/pkg/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/plugin"
@@ -96,6 +97,11 @@ type Workspace struct {
 }
 
 func NewWorkspace(workDir string) (*Workspace, error) {
+	workDir, err := filepath.Abs(workDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve workspace root: %w", err)
+	}
+
 	root, err := os.OpenRoot(workDir)
 	if err != nil {
 		return nil, fmt.Errorf("open workspace root: %w", err)
@@ -1108,6 +1114,9 @@ func projectKey(workingDir string) string {
 	if root == "" {
 		root = workingDir
 	}
+	if absolute, err := filepath.Abs(root); err == nil {
+		root = absolute
+	}
 
 	sanitized := filepath.Clean(root)
 
@@ -1123,44 +1132,40 @@ func projectKey(workingDir string) string {
 }
 
 func globalMCPConfigPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
+	path, _ := layout.WingmanPath("mcp.json")
+	return path
+}
+
+func projectStateDir(workingDir string) string {
+	path, err := layout.WingmanPath("projects", projectKey(workingDir))
+	if err == nil {
+		return path
 	}
 
-	return filepath.Join(home, ".wingman", "mcp.json")
+	return filepath.Join(os.TempDir(), ".wingman", "projects", projectKey(workingDir))
 }
 
 func projectMemoryDir(workingDir string) string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = os.TempDir()
-	}
-
-	return filepath.Join(home, ".wingman", "projects", projectKey(workingDir), "memory")
+	return filepath.Join(projectStateDir(workingDir), "memory")
 }
 
 func projectGraphDir(workingDir string) string {
-	return filepath.Join(filepath.Dir(projectMemoryDir(workingDir)), "graph")
+	return filepath.Join(projectStateDir(workingDir), "graph")
 }
 
 // projectPluginDataDir holds PLUGIN_DATA for plugins installed in the project,
 // alongside that project's other state so it survives plugin updates.
 func projectPluginDataDir(workingDir string) string {
-	return filepath.Join(filepath.Dir(projectMemoryDir(workingDir)), "plugin-data")
+	return filepath.Join(projectStateDir(workingDir), "plugin-data")
 }
 
 func personalPluginDataDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-
-	return filepath.Join(home, ".wingman", "plugin-data")
+	path, _ := layout.WingmanPath("plugin-data")
+	return path
 }
 
 func SessionsDir(workingDir string) string {
-	return filepath.Join(filepath.Dir(projectMemoryDir(workingDir)), "sessions")
+	return filepath.Join(projectStateDir(workingDir), "sessions")
 }
 
 func findCanonicalGitRoot(dir string) string {
