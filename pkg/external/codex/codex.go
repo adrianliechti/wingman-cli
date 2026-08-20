@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"strings"
@@ -16,17 +17,17 @@ func BinPath() string {
 func BuildArgs(cfg *CodexConfig) []string {
 	url := strings.TrimRight(cfg.BaseURL, "/") + "/v1"
 
-	return []string{
-		"--config", "agents.enabled=false",
+	args := []string{
+		"--config", "agents.enabled=true",
 		"--config", "features.multi_agent_v2=false",
 
-		"--config", "model=\"" + cfg.Model + "\"",
 		"--config", "model_provider=\"wingman\"",
 		"--config", "model_providers.wingman.name=\"Wingman\"",
-		"--config", "model_providers.wingman.base_url=\"" + url + "\"",
+		"--config", "model_providers.wingman.base_url=" + tomlString(url),
 		"--config", "model_providers.wingman.env_key=\"WINGMAN_TOKEN\"",
 		"--config", "model_providers.wingman.wire_api=\"responses\"",
 		"--config", "model_providers.wingman.requires_openai_auth=false",
+		"--config", "model_providers.wingman.supports_websockets=false",
 
 		"--config", "feedback.enabled=false",
 		"--config", "analytics.enabled=false",
@@ -44,6 +45,17 @@ func BuildArgs(cfg *CodexConfig) []string {
 		"--config", "tui.show_tooltips=false",
 		"--config", "check_for_update_on_startup=false",
 	}
+
+	if cfg.ModelCatalog != "" {
+		args = append(args, "--config", "model_catalog_json="+tomlString(cfg.ModelCatalog))
+	}
+
+	return args
+}
+
+func tomlString(value string) string {
+	data, _ := json.Marshal(value)
+	return string(data)
 }
 
 func BuildEnv(parent []string, cfg *CodexConfig) []string {
@@ -74,6 +86,12 @@ func Run(ctx context.Context, args []string, options *Options) error {
 	if err != nil {
 		return err
 	}
+
+	cleanup, err := PrepareModelCatalog(cfg)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 
 	args = append(BuildArgs(cfg), args...)
 

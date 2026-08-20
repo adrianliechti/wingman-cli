@@ -151,8 +151,13 @@ func runACPCodex(ctx context.Context, args []string) {
 		Effort: effort,
 		Env:    os.Environ(),
 	}
+	cleanup := func() {}
 	if backend == acpBackendWingman {
 		cfg, err := codexcli.NewConfig(ctx, nil)
+		if err != nil {
+			fatal(err)
+		}
+		cleanup, err = codexcli.PrepareModelCatalog(cfg)
 		if err != nil {
 			fatal(err)
 		}
@@ -160,7 +165,9 @@ func runACPCodex(ctx context.Context, args []string) {
 		opts.ExtraArgs = codexcli.BuildArgs(cfg)
 	}
 
-	if err := codex.Run(ctx, opts, os.Stdin, os.Stdout, acpLogger(debug)); err != nil {
+	err = codex.Run(ctx, opts, os.Stdin, os.Stdout, acpLogger(debug))
+	cleanup()
+	if err != nil {
 		fatal(err)
 	}
 }

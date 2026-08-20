@@ -138,6 +138,19 @@ func TestToolInfoEditProducesDiff(t *testing.T) {
 	}
 }
 
+func TestToolInfoSkillIncludesName(t *testing.T) {
+	info := toolInfoFromToolUse("Skill", json.RawMessage(`{"skill":"commits","args":"--all"}`), "/proj")
+	if info.title != "Load skill: commits" {
+		t.Errorf("title = %q, want %q", info.title, "Load skill: commits")
+	}
+	if info.kind != acp.ToolKindOther {
+		t.Errorf("kind = %q, want other", info.kind)
+	}
+	if len(info.content) != 0 {
+		t.Errorf("content = %#v, want none", info.content)
+	}
+}
+
 func TestToolInfoReadTitleAndLocation(t *testing.T) {
 	input := json.RawMessage(`{"file_path":"/proj/pkg/x.go","offset":10,"limit":5}`)
 	info := toolInfoFromToolUse("Read", input, "/proj")

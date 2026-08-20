@@ -263,6 +263,17 @@ func toolInfoFromToolUse(name string, rawInput json.RawMessage, cwd string) tool
 		}
 		return toolInfo{title: "Ready to code?", kind: acp.ToolKindSwitchMode, content: content}
 
+	case "Skill":
+		var in struct {
+			Skill string `json:"skill"`
+		}
+		_ = json.Unmarshal(rawInput, &in)
+		title := "Load skill"
+		if in.Skill != "" {
+			title += ": " + in.Skill
+		}
+		return toolInfo{title: title, kind: acp.ToolKindOther}
+
 	case "AskUserQuestion":
 		title := "Asking for your input"
 		if qs := parseAskQuestions(rawInput); len(qs) > 0 {

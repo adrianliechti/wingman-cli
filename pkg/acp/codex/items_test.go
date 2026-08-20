@@ -40,6 +40,35 @@ func TestJoinReasoning(t *testing.T) {
 	}
 }
 
+func TestCompactionToolCalls(t *testing.T) {
+	start := compactionStartToolCall("compact-1")
+	if start.ToolCall == nil {
+		t.Fatal("missing compaction start")
+	}
+	if start.ToolCall.Title != "Compact conversation" || start.ToolCall.Kind != acp.ToolKindThink || start.ToolCall.Status != acp.ToolCallStatusInProgress {
+		t.Errorf("start = %#v", start.ToolCall)
+	}
+	if meta, ok := start.ToolCall.Meta["contextCompaction"].(map[string]any); !ok || meta["version"] != 1 {
+		t.Errorf("start meta = %#v", start.ToolCall.Meta)
+	}
+
+	complete := compactionCompleteToolCall("compact-1")
+	if complete.ToolCallUpdate == nil || complete.ToolCallUpdate.Title == nil || *complete.ToolCallUpdate.Title != "Compact conversation" {
+		t.Fatalf("complete = %#v", complete.ToolCallUpdate)
+	}
+	if complete.ToolCallUpdate.Status == nil || *complete.ToolCallUpdate.Status != acp.ToolCallStatusCompleted {
+		t.Errorf("complete status = %#v", complete.ToolCallUpdate.Status)
+	}
+	if meta, ok := complete.ToolCallUpdate.Meta["contextCompaction"].(map[string]any); !ok || meta["version"] != 1 {
+		t.Errorf("complete meta = %#v", complete.ToolCallUpdate.Meta)
+	}
+
+	history := completedCompactionToolCall("compact-2")
+	if history.ToolCall == nil || history.ToolCall.Status != acp.ToolCallStatusCompleted || history.ToolCall.Kind != acp.ToolKindThink {
+		t.Errorf("history = %#v", history.ToolCall)
+	}
+}
+
 func TestImageGenStatus(t *testing.T) {
 	cases := map[string]acp.ToolCallStatus{
 		"completed":  acp.ToolCallStatusCompleted,

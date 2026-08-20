@@ -19,7 +19,6 @@ func TestCurrentProviderModels(t *testing.T) {
 		{"minimax-m3", "MiniMax M3", ClassLarge, 1_000_000, 128_000},
 		{"MiniMax-M3", "MiniMax M3", ClassLarge, 1_000_000, 128_000},
 		{"grok-4.6", "Grok 4.6", ClassLarge, 500_000, 500_000},
-		{"gpt-5.4-nano", "GPT 5.4 Nano", ClassSmall, 400_000, 128_000},
 	}
 
 	for _, tc := range cases {
@@ -49,7 +48,7 @@ func TestCurrentProviderModelAvailability(t *testing.T) {
 		ids = append(ids, m.ID)
 	}
 
-	if want := []string{"gpt-5.4-nano", "glm-5.3", "kimi-k3", "MiniMax-M3", "grok-4.6"}; !slices.Equal(ids, want) {
+	if want := []string{"glm-5.3", "kimi-k3", "MiniMax-M3", "grok-4.6"}; !slices.Equal(ids, want) {
 		t.Fatalf("Available() ids = %v, want %v", ids, want)
 	}
 }
@@ -77,10 +76,10 @@ func TestCurrentProviderModelClassification(t *testing.T) {
 	}
 }
 
-func TestRemovedKimiModelsAreNotInCatalog(t *testing.T) {
-	for _, id := range []string{"kimi-k2.6", "kimi-k2.7-code-highspeed"} {
+func TestRemovedModelsAreNotInCatalog(t *testing.T) {
+	for _, id := range []string{"gpt-5.4-nano", "kimi-k2.6", "kimi-k2.7-code-highspeed"} {
 		if _, ok := Find(id); ok {
-			t.Errorf("removed Kimi model %q is still in the catalog", id)
+			t.Errorf("removed model %q is still in the catalog", id)
 		}
 	}
 }

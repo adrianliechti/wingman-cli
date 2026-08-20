@@ -240,15 +240,6 @@ var Models = []Model{
 		Context: 400000,
 		Output:  128000,
 	},
-	{
-		ID: "gpt-5.4-nano",
-
-		Name:  "GPT 5.4 Nano",
-		Class: ClassSmall,
-
-		Context: 400000,
-		Output:  128000,
-	},
 
 	{
 		ID: "gpt-5.3-codex",

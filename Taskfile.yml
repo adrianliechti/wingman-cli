@@ -3,6 +3,11 @@
 version: "3"
 
 tasks:
+  generate:codex-models:
+    desc: Refresh the embedded Codex model catalog from upstream
+    cmds:
+      - curl -fsSL https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json -o pkg/external/codex/models.json
+
   ui:
     desc: Build the web UI assets
     dir: server/ui

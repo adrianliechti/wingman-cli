@@ -673,6 +673,11 @@ and authentication. `WINGMAN_URL` is required. These wrappers are deliberately
 Wingman-backed and are separate from the native subscription-backed
 `wingman --agent <name>` modes.
 
+The Codex wrapper also supplies an embedded model catalog filtered to the
+OpenAI models advertised by the Wingman backend, so Codex's in-app `/model`
+selector remains available with the correct model-specific instructions and
+tool metadata.
+
 ## 📊 Terminal-Bench
 
 Wingman can run Terminal-Bench tasks through Harbor's generic ACP agent runner.
