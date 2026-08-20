@@ -43,7 +43,9 @@ func resolveGenerationTarget(cfg *agent.Config, role, override string) (modelID,
 		modelID = strings.TrimSpace(cfg.Model())
 	}
 	if len(efforts) == 0 {
-		efforts = model.ProfileFor(modelID).Efforts
+		if modelEntry, ok := model.Find(modelID); ok {
+			efforts = modelEntry.Efforts
+		}
 	}
 	if len(efforts) > 0 {
 		effort = efforts[0]

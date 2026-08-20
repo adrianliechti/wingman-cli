@@ -26,7 +26,7 @@ func TestVariantFor(t *testing.T) {
 	for _, id := range []string{
 		"gpt-5.6-sol", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.2", "gpt-5.1", "gpt-4o",
 		"claude-opus-5", "claude-opus-4-8", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-6", "claude-fable-5", "claude-mythos-5",
-		"gemini-3.6-flash", "glm-5.3", "glm-4.7-flash", "kimi-k3", "kimi-k2.7-code", "minimax-m3", "grok-4.6",
+		"gemini-3.7-flash", "gemini-3.6-flash", "glm-5.3", "glm-5.2", "kimi-k3", "minimax-m3", "grok-4.6",
 	} {
 		v := VariantFor(id)
 
@@ -69,13 +69,10 @@ func TestVariantFor(t *testing.T) {
 	if VariantFor("gpt-5.4-mini").Agent == VariantFor("gpt-5.4").Agent {
 		t.Error("GPT-5.4 Mini should keep its model-specific prompt")
 	}
-
-	if VariantFor("glm-5.3").Agent != VariantFor("glm-4.7-flash").Agent {
+	if VariantFor("glm-5.3").Agent != VariantFor("glm-5.2").Agent {
 		t.Error("GLM models should share the GLM family prompt")
 	}
-	if VariantFor("kimi-k3").Agent != VariantFor("kimi-k2.7-code").Agent {
-		t.Error("Kimi models should share the Kimi family prompt")
-	}
+
 	if VariantFor("minimax-m2.7").Agent != VariantFor("minimax-m3").Agent {
 		t.Error("MiniMax models should share the MiniMax family prompt")
 	}
@@ -106,9 +103,7 @@ func TestBuildInstructionsRendersModelTemplate(t *testing.T) {
 		"gpt-5.1-codex",
 		"gemini-3.6-flash",
 		"glm-5.3",
-		"glm-4.7-flash",
 		"kimi-k3",
-		"kimi-k2.7-code",
 		"minimax-m3",
 		"grok-4.6",
 	} {
@@ -266,6 +261,26 @@ func TestAgentPromptPolicy(t *testing.T) {
 	}
 }
 
+func TestReferenceSpecificCopyrightHeaderGuidance(t *testing.T) {
+	const guidance = "never add copyright or license headers unless specifically requested"
+
+	for _, id := range []string{"gpt-5.1-codex", "gpt-5.2"} {
+		t.Run(id+"/present", func(t *testing.T) {
+			if agent := strings.ToLower(VariantFor(id).Agent); !strings.Contains(agent, guidance) {
+				t.Errorf("agent prompt missing reference guidance %q", guidance)
+			}
+		})
+	}
+
+	for _, id := range []string{"gpt-5.6-sol", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"} {
+		t.Run(id+"/absent", func(t *testing.T) {
+			if agent := strings.ToLower(VariantFor(id).Agent); strings.Contains(agent, guidance) {
+				t.Errorf("agent prompt contains guidance absent from its reference: %q", guidance)
+			}
+		})
+	}
+}
+
 func TestFallbackAgentContract(t *testing.T) {
 	agent := strings.ToLower(VariantFor("some-unknown-model").Agent)
 
@@ -332,26 +347,6 @@ func TestNewModelPromptsExcludeVendorHarnessInstructions(t *testing.T) {
 				if strings.Contains(agent, unwanted) {
 					t.Errorf("agent prompt contains vendor-specific harness instruction %q", unwanted)
 				}
-			}
-		})
-	}
-}
-
-func TestReferenceSpecificCopyrightHeaderGuidance(t *testing.T) {
-	const guidance = "never add copyright or license headers unless specifically requested"
-
-	for _, id := range []string{"gpt-5.1-codex", "gpt-5.2"} {
-		t.Run(id+"/present", func(t *testing.T) {
-			if agent := strings.ToLower(VariantFor(id).Agent); !strings.Contains(agent, guidance) {
-				t.Errorf("agent prompt missing reference guidance %q", guidance)
-			}
-		})
-	}
-
-	for _, id := range []string{"gpt-5.6-sol", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"} {
-		t.Run(id+"/absent", func(t *testing.T) {
-			if agent := strings.ToLower(VariantFor(id).Agent); strings.Contains(agent, guidance) {
-				t.Errorf("agent prompt contains guidance absent from its reference: %q", guidance)
 			}
 		})
 	}

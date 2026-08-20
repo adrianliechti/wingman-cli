@@ -94,7 +94,7 @@ func buildModelCatalog(modelIDs []string) ([]byte, error) {
 		if id != templateID && !(id == "gpt-5.6" && templateID == "gpt-5.6-sol") {
 			entry["description"] = "OpenAI model available through Wingman."
 			if m, ok := model.Find(id); ok {
-				entry["context_window"] = model.ProfileFor(id).ContextWindow(false)
+				entry["context_window"] = m.ContextTokens()
 				entry["max_context_window"] = m.ContextTokens()
 			}
 		}

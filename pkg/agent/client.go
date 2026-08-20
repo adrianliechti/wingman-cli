@@ -12,7 +12,6 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
-	"github.com/adrianliechti/wingman-agent/pkg/model"
 )
 
 // streamIdleTimeout bounds the wait for the next stream event; reasoning
@@ -84,14 +83,13 @@ func (e *responseFailure) Error() string {
 }
 
 type request struct {
-	model           string
-	effort          string
-	effortPlacement model.ReasoningEffortPlacement
-	instructions    string
-	cacheKey        string
-	messages        []Message
-	tools           []tool.Tool
-	outputSchema    map[string]any
+	model        string
+	effort       string
+	instructions string
+	cacheKey     string
+	messages     []Message
+	tools        []tool.Tool
+	outputSchema map[string]any
 }
 
 type response struct {
@@ -127,21 +125,16 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 	}
 
 	if r.effort != "" {
-		if r.effortPlacement == model.ReasoningEffortAtRoot {
-			params.SetExtraFields(map[string]any{"reasoning_effort": r.effort})
-		} else {
-			rp := responses.ReasoningParam{}
+		rp := responses.ReasoningParam{}
+		rp.Effort = shared.ReasoningEffort(r.effort)
 
-			rp.Effort = shared.ReasoningEffort(r.effort)
-
-			// "auto" yields the richest summary the model supports; skipped for
-			// "none" since no reasoning happens that could be summarized.
-			if r.effort != "none" {
-				rp.Summary = shared.ReasoningSummaryAuto
-			}
-
-			params.Reasoning = rp
+		// "auto" yields the richest summary the model supports; skipped for
+		// "none" since no reasoning happens that could be summarized.
+		if r.effort != "none" {
+			rp.Summary = shared.ReasoningSummaryAuto
 		}
+
+		params.Reasoning = rp
 	}
 
 	if r.outputSchema != nil {

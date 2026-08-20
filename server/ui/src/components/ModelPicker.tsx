@@ -1,12 +1,13 @@
-import { Brain } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ServerMessage } from "../types/protocol";
+import { ModelProviderIcon } from "./ModelProviderIcon";
 import { useToast } from "./ui/Feedback";
 import { FloatingSurface } from "./ui/Floating";
 
 interface ModelInfo {
 	id: string;
 	name: string;
+	namespace?: string;
 }
 
 interface Props {
@@ -128,6 +129,10 @@ export function ModelPicker({ sessionId, subscribe }: Props) {
 		const match = models.find((m) => m.id === model);
 		return match?.name || model;
 	}, [models, model]);
+	const currentNamespace = useMemo(
+		() => models.find((m) => m.id === model)?.namespace,
+		[models, model],
+	);
 
 	const defaultEffort = useMemo(
 		() =>
@@ -215,7 +220,11 @@ export function ModelPicker({ sessionId, subscribe }: Props) {
 				aria-haspopup="dialog"
 				aria-expanded={open}
 			>
-				<Brain size={12} className="shrink-0" />
+				<ModelProviderIcon
+					namespace={currentNamespace}
+					size={12}
+					className="shrink-0"
+				/>
 				<span className="truncate">{currentName}</span>
 				{effort !== "auto" && effort !== "default" && (
 					<>
@@ -247,14 +256,19 @@ export function ModelPicker({ sessionId, subscribe }: Props) {
 								role="option"
 								aria-selected={m.id === model}
 								key={m.id}
-								className={`block w-full text-left px-3 py-1.5 text-[12px] cursor-pointer whitespace-nowrap transition-colors ${
+								className={`flex items-center gap-2 w-full text-left px-3 py-1.5 text-[12px] cursor-pointer whitespace-nowrap transition-colors ${
 									m.id === model
 										? "text-fg bg-bg-active"
 										: "text-fg-muted hover:text-fg hover:bg-bg-hover"
 								}`}
 								onClick={() => selectModel(m.id)}
 							>
-								{m.name}
+								<ModelProviderIcon
+									namespace={m.namespace}
+									size={13}
+									className="shrink-0"
+								/>
+								<span>{m.name}</span>
 							</button>
 						))
 					)}

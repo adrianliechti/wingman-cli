@@ -235,7 +235,7 @@ func (a *Agent) roleModelLocked(s *sessionState, name string) (string, bool) {
 		current = a.classModelLocked(modelClassByRole[role])
 	}
 
-	if role != modelRoleUtility {
+	if role != modelRoleUtility && a.upstreamModels != nil {
 		available := model.Available(a.upstreamModels)
 		if len(available) > 0 && !slices.ContainsFunc(available, func(m model.Model) bool { return m.ID == current }) {
 			current = available[0].ID
@@ -254,10 +254,8 @@ func (a *Agent) roleModel(s *sessionState, role string) (harness.ModelOption, bo
 	if !ok {
 		return harness.ModelOption{}, false
 	}
-	return harness.ModelOption{
-		ID:      id,
-		Efforts: slices.Clone(model.ProfileFor(id).Efforts),
-	}, true
+	m, _ := model.Find(id)
+	return harness.ModelOption{ID: id, Efforts: slices.Clone(m.Efforts)}, true
 }
 
 // RoleModel resolves "main", "plan", or "utility" without a session.
@@ -343,7 +341,8 @@ func (a *Agent) FetchModels(ctx context.Context) {
 var effortValues = []string{"auto", "none", "low", "medium", "high", "xhigh", "max"}
 
 func effortValuesFor(id string) []string {
-	if supported := model.ProfileFor(id).Efforts; len(supported) > 0 {
+	m, _ := model.Find(id)
+	if supported := m.Efforts; len(supported) > 0 {
 		return append([]string{"auto"}, supported...)
 	}
 	return effortValues
@@ -379,7 +378,8 @@ func (a *Agent) effortFor(s *sessionState) string {
 		return a.effortByRole[role]
 	}
 	current, _ := a.roleModelLocked(s, string(role))
-	if effort := model.ProfileFor(current).DefaultEffort; effort != "" {
+	m, _ := model.Find(current)
+	if effort := m.Effort; effort != "" {
 		return effort
 	}
 	// xhigh is the planning default only where a large model backs it.
@@ -401,7 +401,8 @@ func (a *Agent) SetEffort(_ context.Context, sessionID, value string) error {
 	a.modelMu.Lock()
 	role := activeModelRole(s)
 	currentModel, _ := a.roleModelLocked(s, string(role))
-	if supported := model.ProfileFor(currentModel).Efforts; value != "" && len(supported) > 0 && !slices.Contains(supported, value) {
+	m, _ := model.Find(currentModel)
+	if supported := m.Efforts; value != "" && len(supported) > 0 && !slices.Contains(supported, value) {
 		a.modelMu.Unlock()
 		return fmt.Errorf("effort %q is not supported by %s (supported: %s)", value, currentModel, strings.Join(supported, ", "))
 	}

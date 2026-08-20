@@ -343,7 +343,7 @@ func TestApplyModelOverrides(t *testing.T) {
 		t.Fatalf("effort = %q, want clamp against the inherited model", cfg.Effort())
 	}
 
-	roles[""] = agent.ModelOption{ID: "kimi-k3", Efforts: []string{"low", "high", "max"}}
+	roles[""] = agent.ModelOption{ID: "custom-reasoner", Efforts: []string{"low", "high", "max"}}
 	if err := applyModelOverrides(cfg, map[string]any{"effort": "medium"}, ""); err != nil {
 		t.Fatal(err)
 	}

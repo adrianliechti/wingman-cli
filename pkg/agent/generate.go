@@ -9,8 +9,6 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
 	"github.com/openai/openai-go/v3/shared"
-
-	"github.com/adrianliechti/wingman-agent/pkg/model"
 )
 
 // GenerateOptions describes a stateless, tool-free model request. It is used
@@ -61,12 +59,7 @@ func (c *Config) Generate(ctx context.Context, opts GenerateOptions) (GenerateRe
 		params.Text.Format = format
 	}
 	if effort := strings.TrimSpace(opts.Effort); effort != "" {
-		profile := model.ProfileFor(modelID)
-		if profile.ReasoningEffortPlacement == model.ReasoningEffortAtRoot {
-			params.SetExtraFields(map[string]any{"reasoning_effort": effort})
-		} else {
-			params.Reasoning.Effort = shared.ReasoningEffort(effort)
-		}
+		params.Reasoning.Effort = shared.ReasoningEffort(effort)
 	}
 
 	resp, err := c.client.Responses.New(ctx, params)

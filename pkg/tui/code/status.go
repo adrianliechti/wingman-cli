@@ -71,7 +71,7 @@ func (a *App) contextLeftPercent() (int, bool) {
 	window := a.contextWindow
 	if window <= 0 {
 		_, currentModel := a.agent.Models(a.sessionID)
-		window = int64(agent.ContextWindowFor(currentModel, false))
+		window = int64(agent.ContextWindowFor(currentModel))
 	}
 	if window <= 0 {
 		return 0, false

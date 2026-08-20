@@ -1,6 +1,6 @@
 # Smart Editor Feature Gaps
 
-Comparison captured on 2026-08-15 against VS Code, Cursor, AWS Kiro, and Google Antigravity.
+Comparison captured on 2026-08-15 against VS Code, Cursor, AWS Kiro, and Google Antigravity. Implementation status was re-audited on 2026-08-21 against `main` and the active feature branches.
 
 Kiro is an AWS product. Google Antigravity 2.0 is positioned more as a standalone agent command center than as a conventional editor.
 
@@ -9,6 +9,7 @@ Kiro is an AWS product. Google Antigravity 2.0 is positioned more as a standalon
 Wingman already provides:
 
 - Monaco-based editing with HTML, SVG, Markdown, Mermaid, and structured-data previews.
+- Two-pane editor groups with scrollable tab strips, preview and pinned tabs, drag reordering, cross-pane moves, contextual close controls, and unsaved-change protection.
 - Zero-config detection of ~50 language servers with LSP completion, navigation, references, rename, code actions, semantic tokens, formatting, diagnostics, and inlay hints, plus a tree-sitter fallback for navigation, hover, and completion when no server covers a file.
 - Predictive Tab editing with edit-gated ghost text, nearby multiline next edits, stale-result cancellation, and awaited LSP import cleanup on save or acceptance.
 - Revision-checked file writes with atomic multi-file batches and post-edit diagnostics fed back to the agent.
@@ -103,9 +104,9 @@ Benchmark: [Kiro Specs](https://kiro.dev/docs/specs/).
 
 ### P1: Editor ergonomics and personalization
 
-Add:
+Two-pane editor groups, tab drag-reordering, cross-pane movement, preview tabs,
+and Keep Open pinning are implemented. Remaining work:
 
-- Split view and editor groups; tab drag-reorder and pinning.
 - Persisted editor state (open tabs, layout, panel sizes) across reloads.
 - A settings UI, configurable keybindings, and a theme picker.
 - Outline view and breadcrumbs.
@@ -154,9 +155,18 @@ Benchmarks: [VS Code Extension Marketplace](https://code.visualstudio.com/docs/c
 
 ### P2: Remote and cloud development
 
-Add:
+SSH remote workspaces are implemented on `origin/feature/remote`, but are not yet
+on `main`. The branch runs one `wingman server` beside the remote workspace so
+the agent, shell, files, Git, LSP, MCP, and session state remain remote. The
+desktop launcher manages saved SSH profiles, remote binary bootstrap, port
+forwarding, readiness, same-origin HTTP/WebSocket proxying, optional one-time
+credential handoff, and teardown. Manual loopback forwarding also supports
+Docker and Kubernetes access without a second gateway protocol.
 
-- SSH, development-container, and WSL-style remote workspaces.
+Build on that branch with:
+
+- Launcher-managed lifecycle adapters for development containers, Kubernetes,
+  and WSL, plus explicit version pinning and upgrade controls.
 - Hosted agents that continue running while the client is offline.
 - Remote desktop access to agent environments.
 - Shareable logs, screenshots, videos, and other run artifacts.
@@ -190,11 +200,15 @@ Benchmark: [VS Code Settings Sync](https://code.visualstudio.com/docs/configure/
 
 ## Recommended implementation order
 
+Next: automatic Git-native checkpoints with per-hunk accept or reject. This is
+the safety and provenance layer needed before isolated parallel sessions add
+more concurrent change streams.
+
 1. Automatic checkpoints with per-hunk accept or reject.
 2. Worktree-isolated agent sessions with merge-back.
 3. Browser control and screenshot-based UI verification.
 4. Structured specifications and task artifacts.
 5. AI editing beyond the completed Tab foundation.
-6. Debugger and Test Explorer.
+6. Test Explorer, coverage, watch expressions, and a debug console.
 
 Items 1–3 close the most visible remaining gaps with Cursor and VS Code without requiring Wingman to reproduce the entire VS Code extension ecosystem. Predictive Tab editing already uses the configured utility role through the existing Responses endpoint and does not require a dedicated FIM model.

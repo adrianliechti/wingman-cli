@@ -438,7 +438,7 @@ func (s *Server) usageFrame(a code.Agent, sid string, u agent.Usage) Frame {
 
 	if f.ContextWindow <= 0 && u.LastInputTokens > 0 {
 		_, model := a.Models(sid)
-		f.ContextWindow = int64(agent.ContextWindowFor(model, false))
+		f.ContextWindow = int64(agent.ContextWindowFor(model))
 	}
 
 	return f

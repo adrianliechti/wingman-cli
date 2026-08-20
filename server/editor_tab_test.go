@@ -554,13 +554,13 @@ func TestEditorTabGenerationTargetUsesCompatibleLowestEffort(t *testing.T) {
 				return agent.ModelOption{}, false
 			}
 			return agent.ModelOption{
-				ID:      "kimi-k3",
+				ID:      "custom-reasoner",
 				Efforts: []string{"low", "high", "max"},
 			}, true
 		},
 	}
 	modelID, effort := resolveGenerationTarget(cfg, "utility", "")
-	if modelID != "kimi-k3" || effort != "low" {
+	if modelID != "custom-reasoner" || effort != "low" {
 		t.Fatalf("utility target = %q/%q", modelID, effort)
 	}
 	modelID, effort = resolveGenerationTarget(cfg, "utility", "gpt-5.6-luna")

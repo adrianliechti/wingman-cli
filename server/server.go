@@ -614,7 +614,7 @@ func (s *Server) sendSessionSnapshot(sid string, messages []agent.Message, u age
 	}
 	if a := s.activeAgent(); a != nil && frame.ContextWindow <= 0 && u.LastInputTokens > 0 {
 		_, model := a.Models(sid)
-		frame.ContextWindow = int64(agent.ContextWindowFor(model, false))
+		frame.ContextWindow = int64(agent.ContextWindowFor(model))
 	}
 	s.sendSession(sid, frame)
 }
@@ -762,7 +762,11 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 	available, _ := a.Models("")
 	result := make([]map[string]string, 0, len(available))
 	for _, m := range available {
-		result = append(result, map[string]string{"id": m.ID, "name": m.Name})
+		result = append(result, map[string]string{
+			"id":        m.ID,
+			"name":      m.Name,
+			"namespace": m.Namespace,
+		})
 	}
 	writeJSON(w, result)
 }

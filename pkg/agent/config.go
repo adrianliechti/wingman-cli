@@ -26,12 +26,10 @@ const (
 	DefaultReserveTokens = 32_000
 )
 
-func ContextWindowFor(id string, largeContext bool) int {
-	if window := model.ProfileFor(id).ContextWindow(largeContext); window > 0 {
-		return window
-	}
+func ContextWindowFor(id string) int {
 	if candidate, ok := model.Find(id); ok {
-		if window := candidate.ContextTokens(); window > 0 {
+		window := candidate.ContextTokens()
+		if window > 0 {
 			return window
 		}
 	}
@@ -81,11 +79,6 @@ type Config struct {
 
 	ContextWindow int
 
-	// LargeContext compacts against the model's full hardware window instead
-	// of stopping at the provider's long-context price threshold (e.g. 2x
-	// input pricing on GPT-5.4/5.5 beyond 272k input tokens).
-	LargeContext bool
-
 	ReserveTokens int
 }
 
@@ -119,7 +112,6 @@ func (c *Config) Derive() *Config {
 		ToolTimeout:      c.ToolTimeout,
 
 		ContextWindow: c.ContextWindow,
-		LargeContext:  c.LargeContext,
 		ReserveTokens: c.ReserveTokens,
 	}
 }
@@ -181,10 +173,7 @@ func (c *Config) Models(ctx context.Context) ([]ModelInfo, error) {
 func DefaultConfig() (*Config, error) {
 	client := createClient()
 
-	cfg := &Config{
-		client:       &client,
-		LargeContext: envBool("WINGMAN_LARGE_CONTEXT"),
-	}
+	cfg := &Config{client: &client}
 
 	if model := DefaultModel(); model != "" {
 		cfg.Model = func() string { return model }
@@ -237,15 +226,6 @@ func effortFromEnv(name string) string {
 	}
 }
 
-func envBool(name string) bool {
-	switch strings.ToLower(os.Getenv(name)) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
-}
-
 func SandboxDisabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("WINGMAN_SANDBOX"))) {
 	case "off", "false", "0", "no", "disabled":
@@ -256,36 +236,81 @@ func SandboxDisabled() bool {
 }
 
 func createClient() openai.Client {
-	if url, ok := os.LookupEnv("WINGMAN_URL"); ok {
-		baseURL := strings.TrimRight(url, "/") + "/v1"
-
-		token, _ := os.LookupEnv("WINGMAN_TOKEN")
-
-		if token == "" {
-			token = "-"
-		}
-
-		return openai.NewClient(
-			option.WithBaseURL(baseURL),
-			option.WithAPIKey(token),
-		)
-	}
-
-	if token, ok := os.LookupEnv("OPENAI_API_KEY"); ok {
-		baseURL := "https://api.openai.com/v1"
-
-		if url, ok := os.LookupEnv("OPENAI_BASE_URL"); ok {
-			baseURL = url
-		}
-
-		return openai.NewClient(
-			option.WithBaseURL(baseURL),
-			option.WithAPIKey(token),
-		)
-	}
-
+	baseURL, token := clientConfig()
 	return openai.NewClient(
-		option.WithBaseURL("http://localhost:4242/v1"),
-		option.WithAPIKey("-"),
+		option.WithBaseURL(baseURL),
+		option.WithAPIKey(token),
 	)
+}
+
+func clientConfig() (baseURL, token string) {
+	providers := []func() (string, string, bool){
+		wingmanConfig,
+		openAIConfig,
+		openRouterConfig,
+		ollamaConfig,
+	}
+
+	for _, config := range providers {
+		if baseURL, token, ok := config(); ok {
+			return baseURL, token
+		}
+	}
+
+	return "http://localhost:4242/v1", "-"
+}
+
+func wingmanConfig() (baseURL, token string, ok bool) {
+	url, ok := os.LookupEnv("WINGMAN_URL")
+	if !ok {
+		return "", "", false
+	}
+
+	token = os.Getenv("WINGMAN_TOKEN")
+	if token == "" {
+		token = "-"
+	}
+
+	return strings.TrimRight(url, "/") + "/v1", token, true
+}
+
+func openAIConfig() (baseURL, token string, ok bool) {
+	token, ok = os.LookupEnv("OPENAI_API_KEY")
+	if !ok {
+		return "", "", false
+	}
+
+	baseURL = os.Getenv("OPENAI_BASE_URL")
+	if baseURL == "" {
+		baseURL = "https://api.openai.com/v1"
+	}
+
+	return baseURL, token, true
+}
+
+func openRouterConfig() (baseURL, token string, ok bool) {
+	token, ok = os.LookupEnv("OPENROUTER_API_KEY")
+	if !ok {
+		return "", "", false
+	}
+
+	return "https://openrouter.ai/api/v1", token, true
+}
+
+func ollamaConfig() (baseURL, token string, ok bool) {
+	host := os.Getenv("OLLAMA_HOST")
+	token = os.Getenv("OLLAMA_API_KEY")
+	if host == "" && token == "" {
+		return "", "", false
+	}
+	if host == "" {
+		host = "https://ollama.com"
+	} else if !strings.Contains(host, "://") {
+		host = "http://" + host
+	}
+	if token == "" {
+		token = "-"
+	}
+
+	return strings.TrimRight(host, "/") + "/v1", token, true
 }

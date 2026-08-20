@@ -189,17 +189,21 @@ Web UI; `--backend wingman` is the explicit opt-in to provider overrides.
 
 ### Environment Variables
 
-**Backend** — connect to a Wingman server, or any OpenAI-compatible API:
+**Backend** — connect to a Wingman server, Ollama, or any OpenAI-compatible API:
 
 | Variable | Description |
 |----------|-------------|
-| `WINGMAN_URL` | Wingman server URL (takes priority over the OpenAI variables) |
+| `WINGMAN_URL` | Wingman server URL (takes priority over Ollama and OpenAI variables) |
 | `WINGMAN_TOKEN` | Wingman server authentication token |
 | `OPENAI_API_KEY` | API key for an OpenAI-compatible backend |
 | `OPENAI_BASE_URL` | OpenAI-compatible API endpoint (default: `https://api.openai.com/v1`) |
+| `OPENROUTER_API_KEY` | OpenRouter API key; connects to `https://openrouter.ai/api/v1` |
+| `OLLAMA_HOST` | Ollama server host; used when Wingman, OpenAI, and OpenRouter backends are unset |
+| `OLLAMA_API_KEY` | Optional Ollama API key; selects `https://ollama.com/v1` when `OLLAMA_HOST` is unset |
 
-When neither `WINGMAN_URL` nor `OPENAI_API_KEY` is set, Wingman connects to an
-OpenAI-compatible backend at `http://localhost:4242/v1`.
+Provider priority is `WINGMAN_URL`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, then Ollama
+(`OLLAMA_HOST` or `OLLAMA_API_KEY`). When none is set, Wingman connects to an OpenAI-compatible
+backend at `http://localhost:4242/v1`.
 
 **Models & Reasoning** — every value is optional; unset values are chosen automatically by role (plan → largest available model, code → medium, utilities → smallest):
 

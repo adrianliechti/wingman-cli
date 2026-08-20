@@ -1,5 +1,6 @@
-import { Brain, File, MessageSquare, Sparkles } from "lucide-react";
+import { File, MessageSquare, Sparkles } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { ModelProviderIcon } from "./ModelProviderIcon";
 import { useToast } from "./ui/Feedback";
 
 export interface PaletteAction {
@@ -13,6 +14,7 @@ export interface PaletteAction {
 interface ModelInfo {
 	id: string;
 	name: string;
+	namespace?: string;
 }
 
 export interface PaletteSkill {
@@ -139,7 +141,13 @@ export function CommandPalette({
 				key: `model:${m.id}`,
 				group: "Model",
 				label: `Switch to ${m.name}`,
-				icon: <Brain size={12} className="text-fg-dim shrink-0" />,
+				icon: (
+					<ModelProviderIcon
+						namespace={m.namespace}
+						size={12}
+						className="text-fg-dim shrink-0"
+					/>
+				),
 				run: () => {
 					void fetch(`${apiBase}/model`, {
 						method: "POST",

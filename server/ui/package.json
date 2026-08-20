@@ -31,6 +31,7 @@
 		"react": "^19.2.8",
 		"react-dom": "^19.2.8",
 		"react-resizable-panels": "^4.12.2",
+		"simple-icons": "^16.28.0",
 		"smol-toml": "^1.8.0",
 		"tailwindcss": "^4.3.3",
 		"vscode-languageserver-types": "^3.18.0",

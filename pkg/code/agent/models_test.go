@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"slices"
 	"testing"
 
 	"github.com/adrianliechti/wingman-agent/pkg/model"
@@ -100,6 +99,10 @@ func TestRoleModelPreservesUtilityDiscoveryAndAvailabilityRules(t *testing.T) {
 	if got := roleModelID(t, a, nil, "utility"); got != "configured-utility" {
 		t.Fatalf("configured utility model = %q", got)
 	}
+	a.modelByRole[modelRoleMain] = "qwen3.8:27b-mlx"
+	if got := roleModelID(t, a, nil, ""); got != "qwen3.8:27b-mlx" {
+		t.Fatalf("configured main model before discovery = %q", got)
+	}
 
 	a.upstreamModels = map[string]bool{"gpt-5.6-luna": true}
 	a.modelByRole[modelRoleMain] = "missing-main"
@@ -133,28 +136,6 @@ func TestEffortDefaultsByRole(t *testing.T) {
 	s.setMode(modeAgent)
 	if got := a.effortFor(s); got != "medium" {
 		t.Fatalf("code effort = %q, want medium", got)
-	}
-}
-
-func TestKimiK3EffortProfile(t *testing.T) {
-	a := upstreamAgent("kimi-k3")
-	s := &sessionState{}
-	a.sessions["sid"] = s
-
-	if got := a.effortFor(s); got != "max" {
-		t.Fatalf("Kimi K3 default effort = %q, want max", got)
-	}
-	if current, options := a.Effort("sid"); current != "auto" || !slices.Equal(options, []string{"auto", "low", "high", "max"}) {
-		t.Fatalf("Kimi K3 effort selector = %q, %v", current, options)
-	}
-	if err := a.SetEffort(context.Background(), "sid", "medium"); err == nil {
-		t.Fatal("Kimi K3 accepted unsupported medium effort")
-	}
-	if err := a.SetEffort(context.Background(), "sid", "low"); err != nil {
-		t.Fatalf("Kimi K3 rejected low effort: %v", err)
-	}
-	if option, ok := a.roleModel(s, ""); !ok || option.ID != "kimi-k3" || !slices.Equal(option.Efforts, []string{"low", "high", "max"}) {
-		t.Fatalf("Kimi K3 subagent option = %+v, ok=%v", option, ok)
 	}
 }
 

@@ -15,7 +15,6 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/hook"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
-	"github.com/adrianliechti/wingman-agent/pkg/model"
 )
 
 var errYieldStopped = errors.New("yield stopped")
@@ -175,7 +174,6 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 			if a.Config.Model != nil {
 				modelID = a.Model()
 			}
-
 			a.dropForeignReasoning(modelID)
 
 			effort := ""
@@ -206,14 +204,13 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 			}
 
 			req := &request{
-				model:           modelID,
-				effort:          effort,
-				effortPlacement: model.ProfileFor(modelID).ReasoningEffortPlacement,
-				instructions:    instructions,
-				cacheKey:        a.CacheKey,
-				messages:        a.requestMessages(),
-				tools:           tools,
-				outputSchema:    outputSchema,
+				model:        modelID,
+				effort:       effort,
+				instructions: instructions,
+				cacheKey:     a.CacheKey,
+				messages:     a.requestMessages(),
+				tools:        tools,
+				outputSchema: outputSchema,
 			}
 
 			resp, err := complete(ctx, a.client, req, yield)
@@ -496,7 +493,7 @@ func (a *Agent) compactionOvershoot(model string, lastInputTokens int64) int64 {
 		return 0
 	}
 	if window == 0 {
-		window = ContextWindowFor(model, a.Config.LargeContext)
+		window = ContextWindowFor(model)
 	}
 
 	reserve := a.Config.ReserveTokens
