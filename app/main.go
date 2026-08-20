@@ -40,8 +40,10 @@ func main() {
 	app.launcher = app.newLauncher()
 
 	err := shell.Run(shell.Options{
-		Title:   "Wingman Agent",
-		Handler: app,
+		Title: "Wingman Agent",
+
+		Handler:    app,
+		OnShutdown: app.shutdown,
 
 		Width:  1280,
 		Height: 768,
@@ -69,8 +71,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	app.shutdown()
 }
 
 // ServeHTTP hands everything to the workspace server once one is open;
