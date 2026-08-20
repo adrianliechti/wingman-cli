@@ -19,8 +19,9 @@ type Options struct {
 
 	Effort string
 
-	Dir string
-	Env []string
+	Path string
+	Dir  string
+	Env  []string
 
 	ExtraArgs []string
 
@@ -28,7 +29,10 @@ type Options struct {
 }
 
 func Spawn(ctx context.Context, opts Options) (*Agent, error) {
-	codexPath := codexcli.BinPath()
+	codexPath := opts.Path
+	if codexPath == "" {
+		codexPath = codexcli.BinPath()
+	}
 
 	args := append(append([]string{}, opts.ExtraArgs...), "app-server")
 	cmd := exec.CommandContext(ctx, codexPath, args...)

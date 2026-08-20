@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	acpcommon "github.com/adrianliechti/wingman-agent/pkg/acp"
+	picli "github.com/adrianliechti/wingman-agent/pkg/external/pi"
 )
 
 type Options struct {
@@ -40,6 +41,9 @@ type Agent struct {
 var _ acp.Agent = (*Agent)(nil)
 
 func New(opts Options) *Agent {
+	if opts.Path == "" {
+		opts.Path = picli.BinPath()
+	}
 	return &Agent{
 		opts:     opts,
 		sessions: map[acp.SessionId]*session{},
