@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"slices"
 
-	wingmancode "github.com/adrianliechti/wingman-agent/pkg/code"
+	corecode "github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/theme"
 )
 
@@ -32,7 +32,7 @@ func (a *App) showSessionPicker(back bool) {
 				}
 			}
 			sessions = filtered
-			slices.SortFunc(sessions, func(a, b wingmancode.SessionInfo) int {
+			slices.SortFunc(sessions, func(a, b corecode.SessionInfo) int {
 				return cmp.Compare(b.UpdatedAt.UnixNano(), a.UpdatedAt.UnixNano())
 			})
 
@@ -45,7 +45,7 @@ func (a *App) showSessionPicker(back bool) {
 			}
 
 			items := make([]PopupItem, 0, len(sessions))
-			byID := make(map[string]wingmancode.SessionInfo, len(sessions))
+			byID := make(map[string]corecode.SessionInfo, len(sessions))
 			for _, session := range sessions {
 				label := session.Title
 				if label == "" {
@@ -83,7 +83,7 @@ func shortSessionID(id string) string {
 	return id[:8]
 }
 
-func (a *App) loadSessionInfo(info wingmancode.SessionInfo) {
+func (a *App) loadSessionInfo(info corecode.SessionInfo) {
 	t := theme.Default
 	previousID := a.sessionID
 	if err := a.agent.LoadSession(a.ctx, info.ID); err != nil {

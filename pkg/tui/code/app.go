@@ -92,7 +92,7 @@ type App struct {
 
 	elicitMu     sync.Mutex
 	promptActive bool
-	confirmAll   atomic.Bool
+	confirmAll   sync.Map // session ID -> struct{}
 	askActive    bool
 	askMessage   string
 	askHeader    []string

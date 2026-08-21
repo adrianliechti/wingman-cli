@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	ts "github.com/odvcencio/gotreesitter"
+	"github.com/odvcencio/gotreesitter"
 	"github.com/odvcencio/gotreesitter/grammars"
 )
 
@@ -24,7 +24,7 @@ func TestImportQueriesCompile(t *testing.T) {
 		if entry == nil {
 			t.Fatalf("no grammar detected for %s", lang)
 		}
-		if _, err := ts.NewQuery(query, entry.Language()); err != nil {
+		if _, err := gotreesitter.NewQuery(query, entry.Language()); err != nil {
 			t.Errorf("import query for %s failed to compile: %v", lang, err)
 		}
 	}

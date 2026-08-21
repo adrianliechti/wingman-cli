@@ -12,7 +12,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	ts "github.com/odvcencio/gotreesitter"
+	"github.com/odvcencio/gotreesitter"
 	"github.com/odvcencio/gotreesitter/grammars"
 )
 
@@ -42,13 +42,13 @@ type Symbol struct {
 var navExtractors = sync.Pool{New: func() any {
 	return &navExtractor{
 		extractor:    newExtractor(),
-		highlighters: make(map[string]*ts.Highlighter),
+		highlighters: make(map[string]*gotreesitter.Highlighter),
 	}
 }}
 
 type navExtractor struct {
 	*extractor
-	highlighters map[string]*ts.Highlighter
+	highlighters map[string]*gotreesitter.Highlighter
 }
 
 // FileSymbols extracts a nested outline from a single buffer without touching
@@ -153,8 +153,8 @@ func DocumentHighlights(filename string, src []byte, line, col int) []SymRange {
 
 	li := newLineIndex(src)
 	var result []SymRange
-	var visit func(*ts.Node)
-	visit = func(node *ts.Node) {
+	var visit func(*gotreesitter.Node)
+	visit = func(node *gotreesitter.Node) {
 		if node == nil {
 			return
 		}
@@ -211,14 +211,14 @@ func SemanticTokens(filename string, src []byte) []SemanticToken {
 	defer navExtractors.Put(ex)
 	highlighter := ex.highlighters[entry.Name]
 	if highlighter == nil {
-		options := []ts.HighlighterOption{}
+		options := []gotreesitter.HighlighterOption{}
 		if entry.TokenSourceFactory != nil {
-			options = append(options, ts.WithTokenSourceFactory(func(source []byte) ts.TokenSource {
+			options = append(options, gotreesitter.WithTokenSourceFactory(func(source []byte) gotreesitter.TokenSource {
 				return entry.TokenSourceFactory(source, entry.Language())
 			}))
 		}
 		var err error
-		highlighter, err = ts.NewHighlighter(entry.Language(), entry.HighlightQuery, options...)
+		highlighter, err = gotreesitter.NewHighlighter(entry.Language(), entry.HighlightQuery, options...)
 		if err != nil {
 			return nil
 		}
@@ -642,7 +642,7 @@ func (ex *extractor) identifierAt(entry *grammars.LangEntry, src []byte, line, c
 	return ""
 }
 
-func isIdentifierNode(language *ts.Language, node *ts.Node, src []byte) bool {
+func isIdentifierNode(language *gotreesitter.Language, node *gotreesitter.Node, src []byte) bool {
 	if node == nil || !node.IsNamed() || node.ChildCount() != 0 || !isIdentifier(node.Text(src)) {
 		return false
 	}
