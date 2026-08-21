@@ -17,6 +17,7 @@ import {
 	useState,
 } from "react";
 import { useColorScheme } from "../hooks/useColorScheme";
+import { type Skill, useSkills } from "../hooks/useSkills";
 import type {
 	ChatEntry,
 	PendingPrompt,
@@ -32,7 +33,7 @@ import { buildTurns, findEntryElement, type Turn } from "./chat/turns";
 import { FilePicker } from "./FilePicker";
 import { ModelPicker } from "./ModelPicker";
 import { ModePicker, type ModeOption } from "./ModePicker";
-import { SkillPicker, type Skill } from "./SkillPicker";
+import { SkillPicker } from "./SkillPicker";
 import { TurnQueue } from "./TurnQueue";
 
 interface Props {
@@ -65,9 +66,6 @@ interface Props {
 	loadError?: string | null;
 	error?: string | null;
 	onDismissError?: () => void;
-	subscribe?: (
-		handler: (msg: import("../types/protocol").ServerMessage) => void,
-	) => () => void;
 	prompt?: PendingPrompt | null;
 	onPromptReply?: (reply: PromptReply) => void;
 	seed?: { text: string; nonce: number } | null;
@@ -124,7 +122,6 @@ export function ChatPanel({
 	loadError,
 	error,
 	onDismissError,
-	subscribe,
 	prompt,
 	onPromptReply,
 	seed,
@@ -133,7 +130,6 @@ export function ChatPanel({
 	const scheme = useColorScheme();
 	const [input, setInput] = useState("");
 	const [caret, setCaret] = useState(0);
-	const [skills, setSkills] = useState<Skill[]>([]);
 	const [skillActive, setSkillActive] = useState(0);
 	const [dismissedToken, setDismissedToken] = useState<string | null>(null);
 	const [files, setFiles] = useState<string[]>([]);
@@ -274,24 +270,7 @@ export function ChatPanel({
 		: null;
 
 	const tokenOpen = !!skillToken;
-	useEffect(() => {
-		if (!tokenOpen) return;
-		let cancelled = false;
-		const skillsURL = sessionId
-			? `/api/skills?session=${encodeURIComponent(sessionId)}`
-			: "/api/skills";
-		fetch(skillsURL)
-			.then((r) => (r.ok ? r.json() : []))
-			.then((data: Skill[]) => {
-				if (!cancelled) setSkills(data);
-			})
-			.catch(() => {
-				if (!cancelled) setSkills([]);
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, [tokenOpen, sessionId]);
+	const skills = useSkills(sessionId, tokenOpen);
 
 	const skillQuery = skillToken ? skillToken.query.toLowerCase() : null;
 	const skillMatches = useMemo(() => {
@@ -953,7 +932,7 @@ export function ChatPanel({
 										current={mode}
 										onSelect={onSelectMode}
 									/>
-									<ModelPicker sessionId={sessionId} subscribe={subscribe} />
+									<ModelPicker sessionId={sessionId} />
 								</div>
 
 								<div className="flex items-center gap-0">

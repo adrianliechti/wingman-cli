@@ -260,7 +260,7 @@ func executeScript(ctx context.Context, a code.Agent, opts scriptOptions, prompt
 
 	input := []agent.Content{{Text: prompt}}
 	if ws := a.Workspace(); ws != nil {
-		for _, invocation := range skill.Invocations(opts.Prompt, ws.Skills) {
+		for _, invocation := range skill.Invocations(opts.Prompt, ws.Skills()) {
 			block, err := invocation.Instructions(ws.RootPath)
 			if err != nil {
 				return fmt.Errorf("load skill %q: %w", invocation.Skill.Name, err)

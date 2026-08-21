@@ -2,10 +2,12 @@ package code
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 
-	"github.com/adrianliechti/wingman-agent/pkg/skill"
+	"github.com/adrianliechti/wingman-agent/internal/testenv"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/inline"
 )
 
@@ -66,12 +68,25 @@ func TestSlashCommandLabelIncludesArgumentHint(t *testing.T) {
 }
 
 func TestHintedSkillCompletionShowsAndWaitsForArguments(t *testing.T) {
+	testenv.UserHome(t)
+	testenv.WingmanHome(t)
+	workDir := t.TempDir()
+	skillDir := filepath.Join(workDir, ".agents", "skills", "migrate")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(`---
+name: migrate
+description: Migrate a component.
+arguments: component from to
+---
+Migrate the requested component.
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
 	agent := newUITestAgent(nil)
-	agent.workspace.Skills = []skill.Skill{{
-		Name:        "migrate",
-		Description: "Migrate a component.",
-		Arguments:   []string{"component", "from", "to"},
-	}}
+	agent.workspace.RootPath = workDir
 	a := &App{ctx: context.Background(), agent: agent, editor: NewEditor()}
 	a.editor.SetText("/mig")
 	a.syncCommandPopup()

@@ -1,3 +1,7 @@
+import { queryOptions } from "@tanstack/react-query";
+import { fetchJSON } from "./http.ts";
+import { queryKeys } from "./query.ts";
+
 export interface Capabilities {
 	git: boolean;
 	git_init: boolean;
@@ -12,6 +16,12 @@ export interface Capabilities {
 	workspace_name: string;
 	notice?: string;
 }
+
+export const capabilitiesQuery = queryOptions({
+	queryKey: queryKeys.capabilities,
+	queryFn: ({ signal }) =>
+		fetchJSON<Capabilities>("/api/capabilities", { signal }),
+});
 
 export interface InspectAvailability {
 	inspect: boolean;

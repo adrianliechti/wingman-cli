@@ -87,7 +87,9 @@ func (a *App) findBuiltin(query string) *slashCommand {
 
 func (a *App) skillCommands() []slashCommand {
 	var cmds []slashCommand
-	skills := a.agent.Workspace().Skills
+	workspace := a.agent.Workspace()
+	workspace.RefreshSkills()
+	skills := workspace.Skills()
 	for i := range skills {
 		s := &skills[i]
 
@@ -281,7 +283,9 @@ func (a *App) submitInput() {
 		return
 	}
 
-	skills := a.agent.Workspace().Skills
+	workspace := a.agent.Workspace()
+	workspace.RefreshSkills()
+	skills := workspace.Skills()
 
 	if name, ok := skill.ParseSlashCommand(query); ok && skill.FindSkill(name, skills) == nil && !a.hasAgentCommand(name) {
 		a.editor.SetText("")

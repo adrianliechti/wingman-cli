@@ -1,15 +1,10 @@
+import { useQuery } from "@tanstack/react-query";
 import { Loader2, MessageSquare, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
-import type { ServerMessage } from "../types/protocol";
+import { useState } from "react";
+import { agentQueries } from "../api/agents";
+import { sessionQueries, type SessionInfo } from "../api/sessions";
 import type { TabDisposition } from "../types/tabs";
 import { FloatingMenu } from "./ui/Floating";
-
-interface SessionInfo {
-	id: string;
-	title?: string;
-	created_at: string;
-	updated_at: string;
-}
 
 interface Props {
 	currentSessionId: string;
@@ -17,7 +12,6 @@ interface Props {
 	onSessionDelete?: (id: string, title: string) => void;
 	runningSessionIds?: Set<string>;
 	switchingAgent?: string | null;
-	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 }
 
 export function AgentSessions({
@@ -26,44 +20,9 @@ export function AgentSessions({
 	onSessionDelete,
 	runningSessionIds,
 	switchingAgent,
-	subscribe,
 }: Props) {
-	const [sessions, setSessions] = useState<SessionInfo[]>([]);
-	const [canDelete, setCanDelete] = useState(false);
-
-	const loadSessions = useCallback(async () => {
-		try {
-			const res = await fetch("/api/sessions");
-			const data: SessionInfo[] = await res.json();
-			setSessions(data);
-		} catch {
-			setSessions([]);
-		}
-	}, []);
-
-	const loadAgent = useCallback(() => {
-		fetch("/api/agent")
-			.then((r) => r.json())
-			.then((data) => setCanDelete(data.canDelete ?? false))
-			.catch(() => {});
-	}, []);
-
-	useEffect(() => {
-		loadSessions();
-		loadAgent();
-	}, [loadSessions, loadAgent]);
-
-	useEffect(() => {
-		if (!subscribe) return;
-		return subscribe((msg) => {
-			if (msg.type === "sessions_changed") {
-				loadSessions();
-			} else if (msg.type === "agent_changed") {
-				loadAgent();
-				loadSessions();
-			}
-		});
-	}, [subscribe, loadSessions, loadAgent]);
+	const sessions = useQuery(sessionQueries.list()).data ?? [];
+	const canDelete = useQuery(agentQueries.current()).data?.canDelete ?? false;
 
 	const [menu, setMenu] = useState<{
 		id: string;

@@ -1,5 +1,6 @@
 import type { Monaco } from "@monaco-editor/react";
 import type * as MonacoTypes from "monaco-editor";
+import { getTabPrediction } from "./api/editor.ts";
 
 const MAX_DOCUMENT_LENGTH = 1 << 20;
 const BURST_GAP_MS = 1_000;
@@ -178,21 +179,17 @@ export function createMonacoTabBridge({
 						REQUEST_TIMEOUT_MS,
 					);
 					try {
-						const response = await fetch("/api/editor/tab", {
-							method: "POST",
-							headers: { "Content-Type": "application/json" },
-							body: JSON.stringify({
+						const result = await getTabPrediction(
+							{
 								path,
 								content,
 								previous_content: previousContent,
 								line: position.lineNumber,
 								column: position.column,
 								version,
-							}),
-							signal: controller.signal,
-						});
-						if (!response.ok) return empty;
-						const result: unknown = await response.json();
+							},
+							controller.signal,
+						);
 						if (
 							!isTabPredictionResponse(result) ||
 							result.version !== version

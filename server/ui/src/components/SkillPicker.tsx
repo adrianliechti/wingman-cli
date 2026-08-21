@@ -1,11 +1,6 @@
 import { Sparkles } from "lucide-react";
+import type { Skill } from "../hooks/useSkills";
 import { FloatingSurface } from "./ui/Floating";
-
-export interface Skill {
-	name: string;
-	description?: string;
-	input_hint?: string;
-}
 
 interface Props {
 	anchor: Element | null;

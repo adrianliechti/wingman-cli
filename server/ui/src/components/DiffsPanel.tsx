@@ -1,3 +1,4 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 	ArrowDownToLine,
 	ArrowUpFromLine,
@@ -24,15 +25,22 @@ import {
 	Separator,
 	usePanelRef,
 } from "react-resizable-panels";
+import { listDiffs, revertDiff } from "../api/diffs";
+import {
+	getGitBranches,
+	getGitStatus,
+	initializeGitRepository,
+	runGitAction,
+	type GitAction,
+} from "../api/git";
+import { queryKeys } from "../api/query";
 import type {
 	DiffEntry,
 	DiffLayer,
 	CompareMode,
 	GitBranch as GitBranchInfo,
-	GitBranches,
 	GitFileStatus,
 	GitStatus,
-	ServerMessage,
 } from "../types/protocol";
 import type { TabDisposition } from "../types/tabs";
 import { Dialog, dialogButtonClass } from "./ui/Feedback";
@@ -55,7 +63,6 @@ interface Props {
 		disposition?: TabDisposition,
 	) => void;
 	onOpenFile?: (path: string, disposition?: TabDisposition) => void;
-	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 }
 
 interface MenuState {
@@ -78,6 +85,7 @@ const EMPTY_GIT_STATUS: GitStatus = {
 	has_remote: false,
 	files: [],
 };
+const EMPTY_BRANCHES: GitBranchInfo[] = [];
 
 export function DiffsPanel({
 	sessionId,
@@ -86,71 +94,55 @@ export function DiffsPanel({
 	onOpenDiff,
 	onOpenCompare,
 	onOpenFile,
-	subscribe,
 }: Props) {
-	const [diffs, setDiffs] = useState<DiffEntry[]>([]);
-	const [gitStatus, setGitStatus] = useState<GitStatus>(EMPTY_GIT_STATUS);
-	const [loaded, setLoaded] = useState(false);
+	const queryClient = useQueryClient();
+	const changesQuery = useQuery<GitStatus | DiffEntry[]>({
+		queryKey: git ? queryKeys.git.status : queryKeys.diffs.list(sessionId),
+		enabled: git || !canInit,
+		queryFn: ({ signal }) =>
+			git ? getGitStatus(signal) : listDiffs({ sessionId, signal }),
+	});
+	const diffs = git
+		? []
+		: ((changesQuery.data as DiffEntry[] | undefined) ?? []);
+	const gitStatus = git
+		? ((changesQuery.data as GitStatus | undefined) ?? EMPTY_GIT_STATUS)
+		: EMPTY_GIT_STATUS;
+	const loaded = (!git && canInit) || !changesQuery.isPending;
 	const [menu, setMenu] = useState<MenuState | null>(null);
 	const [busy, setBusy] = useState("");
 	const [message, setMessage] = useState("");
-	const [error, setError] = useState("");
+	const [operationError, setError] = useState("");
+	const error =
+		operationError ||
+		(changesQuery.error instanceof Error
+			? changesQuery.error.message
+			: changesQuery.error
+				? String(changesQuery.error)
+				: "");
 	const [notice, setNotice] = useState("");
 	const [revertTarget, setRevertTarget] = useState<DiffEntry | null>(null);
-	const qs = sessionId ? `?session=${encodeURIComponent(sessionId)}` : "";
-
-	const load = useCallback(async () => {
-		if (!git && canInit) {
-			setLoaded(true);
-			return;
-		}
-		try {
-			const res = await fetch(git ? "/api/git/status" : `/api/diffs${qs}`);
-			if (!res.ok) throw new Error(await responseError(res));
-			if (git) setGitStatus((await res.json()) as GitStatus);
-			else setDiffs((await res.json()) as DiffEntry[]);
-			setError("");
-		} catch (e) {
-			if (git) setGitStatus(EMPTY_GIT_STATUS);
-			else setDiffs([]);
-			setError(e instanceof Error ? e.message : String(e));
-		} finally {
-			setLoaded(true);
-		}
-	}, [git, canInit, qs]);
-
-	useEffect(() => {
-		setLoaded(false);
-		void load();
-	}, [load]);
+	const load = useCallback(
+		() =>
+			queryClient.invalidateQueries({
+				queryKey: git ? queryKeys.git.all : queryKeys.diffs.all,
+			}),
+		[git, queryClient],
+	);
 	useEffect(() => {
 		if (!notice) return;
 		const timeout = window.setTimeout(() => setNotice(""), 3000);
 		return () => window.clearTimeout(timeout);
 	}, [notice]);
-	useEffect(() => {
-		if (!subscribe) return;
-		return subscribe((msg) => {
-			if (msg.type === "diffs_changed") void load();
-		});
-	}, [subscribe, load]);
 
 	const request = useCallback(
-		async (action: string, body?: unknown) => {
+		async (action: GitAction, body?: unknown) => {
 			setBusy(action);
 			setError("");
 			setNotice("");
 			try {
-				const res = await fetch(`/api/git/${action}`, {
-					method: "POST",
-					headers: body ? { "Content-Type": "application/json" } : undefined,
-					body: body ? JSON.stringify(body) : undefined,
-				});
-				if (!res.ok) throw new Error(await responseError(res));
-				if (res.headers.get("content-type")?.includes("application/json")) {
-					const data = (await res.json()) as { output?: string };
-					if (data.output) setNotice(data.output);
-				}
+				const output = await runGitAction(action, body);
+				if (output) setNotice(output);
 				await load();
 				return true;
 			} catch (e) {
@@ -171,14 +163,9 @@ export function DiffsPanel({
 	const confirmRevert = async () => {
 		const diff = revertTarget;
 		if (!diff) return;
-		const params = new URLSearchParams({ path: diff.path });
-		if (sessionId) params.set("session", sessionId);
 		setBusy("revert");
 		try {
-			const res = await fetch(`/api/diffs/revert?${params.toString()}`, {
-				method: "POST",
-			});
-			if (!res.ok) throw new Error(await responseError(res));
+			await revertDiff(diff.path, sessionId);
 			await load();
 			setRevertTarget(null);
 		} catch (e) {
@@ -207,7 +194,6 @@ export function DiffsPanel({
 					onOpenDiff={onOpenDiff}
 					onOpenCompare={onOpenCompare}
 					onOpenFile={onOpenFile}
-					subscribe={subscribe}
 					onCommit={async () => {
 						if (await request("commit", { message })) setMessage("");
 					}}
@@ -289,6 +275,7 @@ export function DiffsPanel({
 }
 
 function GitInitPrompt() {
+	const queryClient = useQueryClient();
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
 
@@ -296,10 +283,14 @@ function GitInitPrompt() {
 		setBusy(true);
 		setError("");
 		try {
-			const res = await fetch("/api/git/init", { method: "POST" });
-			if (!res.ok) throw new Error(await responseError(res));
+			await initializeGitRepository();
+			await Promise.all([
+				queryClient.invalidateQueries({ queryKey: queryKeys.capabilities }),
+				queryClient.invalidateQueries({ queryKey: queryKeys.git.all }),
+			]);
 		} catch (e) {
 			setError(e instanceof Error ? e.message : String(e));
+		} finally {
 			setBusy(false);
 		}
 	};
@@ -384,7 +375,6 @@ function GitChanges({
 	onOpenDiff,
 	onOpenCompare,
 	onOpenFile,
-	subscribe,
 	onCommit,
 	onRevert,
 }: {
@@ -395,7 +385,7 @@ function GitChanges({
 	error: string;
 	notice: string;
 	onMessage: (value: string) => void;
-	onRequest: (action: string, body?: unknown) => Promise<boolean>;
+	onRequest: (action: GitAction, body?: unknown) => Promise<boolean>;
 	onOpenDiff?: (
 		path: string,
 		layer?: DiffLayer,
@@ -408,7 +398,6 @@ function GitChanges({
 		disposition?: TabDisposition,
 	) => void;
 	onOpenFile?: (path: string, disposition?: TabDisposition) => void;
-	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 	onCommit: () => Promise<void>;
 	onRevert: (file: GitFileStatus) => void;
 }) {
@@ -685,7 +674,6 @@ function GitChanges({
 						<GitHistoryPanel
 							open={historyOpen}
 							disabled={disabled}
-							subscribe={subscribe}
 							onCompare={onOpenCompare}
 							onToggle={toggleHistory}
 						/>
@@ -704,46 +692,49 @@ function BranchPicker({
 }: {
 	status: GitStatus;
 	disabled: boolean;
-	onRequest: (action: string, body?: unknown) => Promise<boolean>;
+	onRequest: (action: GitAction, body?: unknown) => Promise<boolean>;
 	onCompare?: (base: string, head: string, mode: CompareMode) => void;
 }) {
 	const buttonRef = useRef<HTMLButtonElement>(null);
 	const searchRef = useRef<HTMLInputElement>(null);
 	const [open, setOpen] = useState(false);
-	const [loading, setLoading] = useState(false);
-	const [branches, setBranches] = useState<GitBranchInfo[]>([]);
-	const [warning, setWarning] = useState("");
-	const [loadError, setLoadError] = useState("");
 	const [query, setQuery] = useState("");
 	const [creating, setCreating] = useState(false);
 	const [newBranch, setNewBranch] = useState("");
-
-	const loadBranches = useCallback(async (refresh = true) => {
-		setLoading(true);
-		setLoadError("");
-		try {
-			const res = await fetch(
-				`/api/git/branches?refresh=${refresh ? "1" : "0"}`,
-			);
-			if (!res.ok) throw new Error(await responseError(res));
-			const data = (await res.json()) as GitBranches;
-			setBranches(data.branches);
-			setWarning(data.warning || "");
-		} catch (e) {
-			setLoadError(e instanceof Error ? e.message : String(e));
-		} finally {
-			setLoading(false);
-		}
-	}, []);
+	const branchesQuery = useQuery({
+		queryKey: queryKeys.git.branches(false),
+		enabled: false,
+		queryFn: ({ signal }) => getGitBranches(false, signal),
+	});
+	const refreshedBranchesQuery = useQuery({
+		queryKey: queryKeys.git.branches(true),
+		enabled: false,
+		queryFn: ({ signal }) => getGitBranches(true, signal),
+	});
+	const refetchBranches = branchesQuery.refetch;
+	const refetchRemoteBranches = refreshedBranchesQuery.refetch;
+	const branchData =
+		refreshedBranchesQuery.dataUpdatedAt >= branchesQuery.dataUpdatedAt
+			? refreshedBranchesQuery.data
+			: branchesQuery.data;
+	const branches = branchData?.branches ?? EMPTY_BRANCHES;
+	const warning = branchData?.warning ?? "";
+	const branchError = refreshedBranchesQuery.error ?? branchesQuery.error;
+	const loadError = branchError
+		? branchError instanceof Error
+			? branchError.message
+			: String(branchError)
+		: "";
+	const loading = branchesQuery.isFetching || refreshedBranchesQuery.isFetching;
 
 	useEffect(() => {
 		if (!open) return;
 		void (async () => {
-			await loadBranches(false);
-			await loadBranches(true);
+			await refetchBranches();
+			await refetchRemoteBranches();
 		})();
 		requestAnimationFrame(() => searchRef.current?.focus());
-	}, [open, loadBranches]);
+	}, [open, refetchBranches, refetchRemoteBranches]);
 
 	const filtered = useMemo(() => {
 		const needle = query.trim().toLowerCase();
@@ -831,7 +822,7 @@ function BranchPicker({
 						<button
 							type="button"
 							disabled={loading}
-							onClick={() => void loadBranches(true)}
+							onClick={() => void refetchRemoteBranches()}
 							title="Fetch and refresh branches"
 							className="w-7 h-full flex items-center justify-center text-fg-dim hover:text-fg disabled:opacity-40"
 						>
@@ -1285,10 +1276,6 @@ function statusColor(status: string, conflict?: boolean) {
 	if (status === "A" || status === "?") return "text-success";
 	if (status === "D") return "text-danger";
 	return "text-warning";
-}
-
-async function responseError(res: Response) {
-	return (await res.text()).trim() || `${res.status} ${res.statusText}`;
 }
 
 function DiffMenuItem({

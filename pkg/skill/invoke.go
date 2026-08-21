@@ -35,8 +35,8 @@ func Invocations(text string, skills []Skill) []Invocation {
 	var invs []Invocation
 	seen := make(map[string]bool)
 
-	// Claude-style leading slash invocations may be stacked. The text after the
-	// last recognized leading skill is passed unchanged to each stacked skill.
+	// Leading slash or Codex-style dollar invocations may be stacked. The text
+	// after the last recognized skill is passed unchanged to each stacked skill.
 	leading, args := leadingInvocations(text, skills)
 	for _, s := range leading {
 		key := strings.ToLower(s.Qualified())
@@ -65,7 +65,7 @@ func leadingInvocations(text string, skills []Skill) ([]*Skill, string) {
 	position := 0
 	var leading []*Skill
 
-	for len(leading) < maxStacked && position < len(text) && text[position] == '/' {
+	for len(leading) < maxStacked && position < len(text) && (text[position] == '/' || text[position] == '$') {
 		end := position + 1
 		for end < len(text) && !strings.ContainsRune(" \t\r\n", rune(text[end])) {
 			end++

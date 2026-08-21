@@ -1,6 +1,7 @@
+import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
-import { useEffect, useState } from "react";
-import { type GraphInsights, fetchGraphInsights } from "../../api/insights";
+import { fetchGraphInsights } from "../../api/insights";
+import { queryKeys } from "../../api/query";
 
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -83,28 +84,20 @@ function BarRow({
 }
 
 export function ActivityView({
-	refreshKey,
 	onOpenFile,
 }: {
-	refreshKey: number;
 	onOpenFile: (path: string, line?: number) => void;
 }) {
-	const [insights, setInsights] = useState<GraphInsights | null>(null);
-	const [error, setError] = useState<string | null>(null);
-
-	useEffect(() => {
-		const controller = new AbortController();
-		setError(null);
-		fetchGraphInsights(controller.signal)
-			.then(setInsights)
-			.catch((loadError: unknown) => {
-				if (controller.signal.aborted) return;
-				setError(
-					loadError instanceof Error ? loadError.message : "Load failed",
-				);
-			});
-		return () => controller.abort();
-	}, [refreshKey]);
+	const query = useQuery({
+		queryKey: queryKeys.insights.activity,
+		queryFn: ({ signal }) => fetchGraphInsights(signal),
+	});
+	const insights = query.data ?? null;
+	const error = query.error
+		? query.error instanceof Error
+			? query.error.message
+			: "Load failed"
+		: null;
 
 	if (error) {
 		return (
@@ -251,7 +244,9 @@ export function ActivityView({
 							{entry.recent_authors.length > 0 && (
 								<span
 									title={entry.recent_authors
-										.map((author) => `${author.name}: ${author.commits} commits`)
+										.map(
+											(author) => `${author.name}: ${author.commits} commits`,
+										)
 										.join("\n")}
 									className="max-w-52 shrink truncate text-[10px] text-fg-muted"
 								>

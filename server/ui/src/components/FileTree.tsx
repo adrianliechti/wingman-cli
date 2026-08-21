@@ -1,3 +1,4 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 	ChevronDown,
 	ChevronRight,
@@ -16,8 +17,18 @@ import {
 	Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createWorkspaceFile } from "../api/files";
-import type { FileEntry, ServerMessage } from "../types/protocol";
+import {
+	copyWorkspaceFile,
+	createWorkspaceFile,
+	deleteWorkspaceFile,
+	getAbsoluteWorkspacePath,
+	isWorkspaceFileConflict,
+	fileQueries,
+	moveWorkspaceFile,
+	revealWorkspaceFile,
+} from "../api/files";
+import { queryKeys } from "../api/query";
+import type { FileEntry } from "../types/protocol";
 import type { TabDisposition } from "../types/tabs";
 import { getDeviconClass } from "../utils/fileIcons";
 import { Dialog, dialogButtonClass, useToast } from "./ui/Feedback";
@@ -27,7 +38,6 @@ interface Props {
 	onFileSelect: (path: string, disposition?: TabDisposition) => void;
 	onFileMove?: (from: string, to: string) => void;
 	platform?: string;
-	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 }
 
 interface TreeNode extends FileEntry {
@@ -53,13 +63,9 @@ interface FileClipboard {
 	operation: "copy" | "cut";
 }
 
-export function FileTree({
-	onFileSelect,
-	onFileMove,
-	platform,
-	subscribe,
-}: Props) {
+export function FileTree({ onFileSelect, onFileMove, platform }: Props) {
 	const toast = useToast();
+	const queryClient = useQueryClient();
 	const [nodes, setNodes] = useState<TreeNode[]>([]);
 	const [menu, setMenu] = useState<MenuState | null>(null);
 	const [renaming, setRenaming] = useState<string | null>(null);
@@ -81,72 +87,89 @@ export function FileTree({
 		nodesRef.current = nodes;
 	});
 
-	const loadDir = useCallback(async (dirPath: string): Promise<TreeNode[]> => {
-		const res = await fetch(
-			`/api/files?path=${encodeURIComponent(dirPath || "")}`,
-		);
-		if (!res.ok)
-			throw new Error((await res.text()).trim() || "Failed to load files.");
-		const files: FileEntry[] = await res.json();
+	const rootQuery = useQuery(fileQueries.tree(""));
 
-		return files
+	const asTreeNodes = useCallback((files: FileEntry[]): TreeNode[] => {
+		return [...files]
 			.sort((a, b) => {
 				if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
 				return a.name.localeCompare(b.name);
 			})
 			.map((f) => ({ ...f, expanded: false, loaded: false }));
 	}, []);
+	const loadDir = useCallback(
+		async (dirPath: string): Promise<TreeNode[]> =>
+			asTreeNodes(await queryClient.fetchQuery(fileQueries.tree(dirPath))),
+		[asTreeNodes, queryClient],
+	);
+
+	const rebuild = useCallback(
+		async (root: TreeNode[]) => {
+			const request = ++refreshRef.current;
+			const refreshLevel = async (
+				fresh: TreeNode[],
+				prev: TreeNode[],
+			): Promise<TreeNode[]> => {
+				const prevByPath = new Map(prev.map((n) => [n.path, n]));
+				const result: TreeNode[] = [];
+				for (const f of fresh) {
+					const old = prevByPath.get(f.path);
+					if (old?.is_dir && old.expanded && old.loaded && old.children) {
+						const newChildren = await refreshLevel(
+							await loadDir(f.path),
+							old.children,
+						);
+						result.push({
+							...f,
+							expanded: true,
+							loaded: true,
+							children: newChildren,
+						});
+					} else {
+						result.push({ ...f, expanded: false, loaded: false });
+					}
+				}
+				return result;
+			};
+			try {
+				const next = await refreshLevel(root, nodesRef.current);
+				if (refreshRef.current === request) setNodes(next);
+			} catch (error) {
+				if (refreshRef.current !== request) return;
+				toast({
+					title: "Could not refresh files",
+					description: String(error),
+					tone: "error",
+				});
+			}
+		},
+		[loadDir, toast],
+	);
+
+	useEffect(() => {
+		if (!rootQuery.data) return;
+		void rebuild(asTreeNodes(rootQuery.data));
+	}, [asTreeNodes, rebuild, rootQuery.data, rootQuery.dataUpdatedAt]);
+	useEffect(() => {
+		if (!rootQuery.error) return;
+		toast({
+			title: "Could not refresh files",
+			description:
+				rootQuery.error instanceof Error
+					? rootQuery.error.message
+					: String(rootQuery.error),
+			tone: "error",
+		});
+	}, [rootQuery.error, toast]);
 
 	const refresh = useCallback(async () => {
-		const request = ++refreshRef.current;
-		const refreshLevel = async (
-			path: string,
-			prev: TreeNode[],
-		): Promise<TreeNode[]> => {
-			const fresh = await loadDir(path);
-			const prevByPath = new Map(prev.map((n) => [n.path, n]));
-			const result: TreeNode[] = [];
-			for (const f of fresh) {
-				const old = prevByPath.get(f.path);
-				if (old?.is_dir && old.expanded && old.loaded && old.children) {
-					const newChildren = await refreshLevel(f.path, old.children);
-					result.push({
-						...f,
-						expanded: true,
-						loaded: true,
-						children: newChildren,
-					});
-				} else {
-					result.push({ ...f, expanded: false, loaded: false });
-				}
-			}
-			return result;
-		};
-		try {
-			const next = await refreshLevel("", nodesRef.current);
-			if (refreshRef.current === request) setNodes(next);
-		} catch (error) {
-			if (refreshRef.current !== request) return;
-			toast({
-				title: "Could not refresh files",
-				description: String(error),
-				tone: "error",
-			});
-		}
-	}, [loadDir, toast]);
-
-	useEffect(() => {
-		void refresh();
-	}, [refresh]);
-
-	useEffect(() => {
-		if (!subscribe) return;
-		return subscribe((msg) => {
-			if (msg.type === "files_changed") {
-				refresh();
-			}
-		});
-	}, [subscribe, refresh]);
+		await Promise.all([
+			queryClient.invalidateQueries({ queryKey: queryKeys.files.all }),
+			queryClient.invalidateQueries({
+				queryKey: queryKeys.insights.overview,
+			}),
+		]);
+	}, [queryClient]);
 
 	const toggleDir = useCallback(
 		async (path: string) => {
@@ -202,25 +225,14 @@ export function FileTree({
 
 		renameSubmittingRef.current = true;
 		try {
-			const res = await fetch("/api/files/rename", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ from: node.path, to }),
-			});
-			if (res.ok) {
-				setFileClipboard((current) =>
-					current
-						? { ...current, path: movePath(current.path, node.path, to) }
-						: current,
-				);
-				onFileMove?.(node.path, to);
-				return;
-			}
-			toast({
-				title: "Rename failed",
-				description: await res.text(),
-				tone: "error",
-			});
+			await moveWorkspaceFile(node.path, to);
+			setFileClipboard((current) =>
+				current
+					? { ...current, path: movePath(current.path, node.path, to) }
+					: current,
+			);
+			onFileMove?.(node.path, to);
+			await refresh();
 		} catch (error) {
 			toast({
 				title: "Rename failed",
@@ -307,14 +319,12 @@ export function FileTree({
 	const confirmDelete = async () => {
 		const node = deleteTarget;
 		if (!node) return;
-		const res = await fetch(
-			`/api/files?path=${encodeURIComponent(node.path)}`,
-			{ method: "DELETE" },
-		);
-		if (!res.ok) {
+		try {
+			await deleteWorkspaceFile(node.path);
+		} catch (error) {
 			toast({
 				title: "Delete failed",
-				description: await res.text(),
+				description: error instanceof Error ? error.message : String(error),
 				tone: "error",
 			});
 			return;
@@ -323,6 +333,7 @@ export function FileTree({
 			current && isSameOrChild(current.path, node.path) ? null : current,
 		);
 		setDeleteTarget(null);
+		await refresh();
 	};
 
 	const handleDuplicate = async (node: TreeNode) => {
@@ -338,16 +349,15 @@ export function FileTree({
 			const suffix = i === 1 ? " copy" : ` copy ${i}`;
 			const candidate = `${stem}${suffix}${ext}`;
 			const to = parent ? `${parent}/${candidate}` : candidate;
-			const res = await fetch("/api/files/copy", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ from: node.path, to }),
-			});
-			if (res.ok) return;
-			if (res.status !== 409) {
+			try {
+				await copyWorkspaceFile(node.path, to);
+				await refresh();
+				return;
+			} catch (error) {
+				if (isWorkspaceFileConflict(error)) continue;
 				toast({
 					title: "Duplicate failed",
-					description: await res.text(),
+					description: error instanceof Error ? error.message : String(error),
 					tone: "error",
 				});
 				return;
@@ -365,11 +375,7 @@ export function FileTree({
 		try {
 			let value = node.path;
 			if (!relative) {
-				const res = await fetch(
-					`/api/files/path?path=${encodeURIComponent(node.path)}`,
-				);
-				if (!res.ok) throw new Error(await res.text());
-				value = ((await res.json()) as { path: string }).path;
+				value = await getAbsoluteWorkspacePath(node.path);
 			}
 			await navigator.clipboard.writeText(value);
 		} catch (error) {
@@ -384,12 +390,7 @@ export function FileTree({
 	const handleReveal = async (node: TreeNode) => {
 		setMenu(null);
 		try {
-			const res = await fetch("/api/files/reveal", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ path: node.path }),
-			});
-			if (!res.ok) throw new Error(await res.text());
+			await revealWorkspaceFile(node.path);
 		} catch (error) {
 			toast({
 				title: "Could not reveal path",
@@ -446,25 +447,21 @@ export function FileTree({
 					const name = copiedName(sourceName, clipboard.directory, attempt);
 					destination = parent ? `${parent}/${name}` : name;
 				}
-				const res = await fetch(
-					clipboard.operation === "cut"
-						? "/api/files/rename"
-						: "/api/files/copy",
-					{
-						method: "POST",
-						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify({ from: sourcePath, to: destination }),
-					},
-				);
-				if (res.ok) break;
-				if (
-					clipboard.operation === "copy" &&
-					res.status === 409 &&
-					attempt < 50
-				) {
-					continue;
+				try {
+					await (clipboard.operation === "cut"
+						? moveWorkspaceFile(sourcePath, destination)
+						: copyWorkspaceFile(sourcePath, destination));
+					break;
+				} catch (error) {
+					if (
+						clipboard.operation === "copy" &&
+						isWorkspaceFileConflict(error) &&
+						attempt < 50
+					) {
+						continue;
+					}
+					throw error;
 				}
-				throw new Error((await res.text()).trim() || "File operation failed.");
 			}
 			if (clipboard.operation === "cut") {
 				onFileMove?.(sourcePath, destination);

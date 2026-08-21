@@ -1,79 +1,73 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ServerMessage } from "../types/protocol";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useMemo, useRef, useState } from "react";
+import {
+	modelQueries,
+	setCurrentEffort,
+	setCurrentModel,
+	type EffortState,
+	type ModelInfo,
+} from "../api/models";
+import { queryKeys } from "../api/query";
 import { ModelProviderIcon } from "./ModelProviderIcon";
 import { useToast } from "./ui/Feedback";
 import { FloatingSurface } from "./ui/Floating";
 
-interface ModelInfo {
-	id: string;
-	name: string;
-	namespace?: string;
-}
-
 interface Props {
 	sessionId?: string;
-	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 }
 
-export function ModelPicker({ sessionId, subscribe }: Props) {
+const EMPTY_MODELS: ModelInfo[] = [];
+const EMPTY_EFFORTS: string[] = [];
+
+export function ModelPicker({ sessionId }: Props) {
 	const toast = useToast();
-	const [model, setModel] = useState("");
-	const [models, setModels] = useState<ModelInfo[]>([]);
-	const [effort, setEffort] = useState("auto");
-	const [effortOptions, setEffortOptions] = useState<string[]>([]);
+	const queryClient = useQueryClient();
+	const models = useQuery(modelQueries.list()).data ?? EMPTY_MODELS;
+	const currentModel = useQuery(modelQueries.current(sessionId)).data;
+	const currentEffort = useQuery(modelQueries.effort(sessionId)).data;
+	const model = currentModel?.model ?? "";
+	const effort = currentEffort?.effort || "auto";
+	const effortOptions = Array.isArray(currentEffort?.options)
+		? currentEffort.options
+		: EMPTY_EFFORTS;
 	const [open, setOpen] = useState(false);
 	const [dragPct, setDragPct] = useState<number | null>(null);
 	const [dragging, setDragging] = useState(false);
 	const btnRef = useRef<HTMLButtonElement>(null);
 	const trackRef = useRef<HTMLDivElement>(null);
 
-	const applyEffort = useCallback((v: unknown) => {
-		if (typeof v === "string" && v !== "") {
-			setEffort(v);
-		} else {
-			setEffort("auto");
-		}
-	}, []);
-
-	const loadModels = useCallback(() => {
-		fetch("/api/models")
-			.then((r) => r.json())
-			.then((data: ModelInfo[]) => setModels(data))
-			.catch(() => setModels([]));
-	}, []);
-
-	const apiBase = sessionId
-		? `/api/sessions/${encodeURIComponent(sessionId)}`
-		: "/api";
-
-	const loadCurrent = useCallback(() => {
-		fetch(`${apiBase}/model`)
-			.then((r) => r.json())
-			.then((data) => setModel(data.model || ""))
-			.catch(() => {});
-		fetch(`${apiBase}/effort`)
-			.then((r) => r.json())
-			.then((data) => {
-				applyEffort(data.effort);
-				setEffortOptions(Array.isArray(data.options) ? data.options : []);
-			})
-			.catch(() => {});
-	}, [applyEffort, apiBase]);
-
-	useEffect(() => {
-		loadCurrent();
-		loadModels();
-	}, [loadCurrent, loadModels]);
-
-	useEffect(() => {
-		if (!subscribe) return;
-		return subscribe((msg) => {
-			if (msg.type === "agent_changed" || msg.type === "model_changed") {
-				loadCurrent();
-				loadModels();
-			}
-		});
-	}, [subscribe, loadCurrent, loadModels]);
+	const modelMutation = useMutation({
+		mutationFn: (id: string) => setCurrentModel(id, sessionId),
+		onSuccess: (data, id) => {
+			queryClient.setQueryData(queryKeys.models.current(sessionId), {
+				model: data.model || id,
+			});
+		},
+		onError: (error) =>
+			toast({
+				title: "Could not change model",
+				description: String(error),
+				tone: "error",
+			}),
+	});
+	const effortMutation = useMutation({
+		mutationFn: (value: string) => setCurrentEffort(value, sessionId),
+		onSuccess: (data, value) => {
+			queryClient.setQueryData<EffortState>(
+				queryKeys.models.effort(sessionId),
+				(current) => ({
+					...current,
+					effort: data.effort || value,
+				}),
+			);
+		},
+		onError: (error) =>
+			toast({
+				title: "Could not change effort",
+				description: String(error),
+				tone: "error",
+			}),
+	});
 
 	const toggle = useCallback(() => {
 		setOpen((v) => !v);
@@ -81,48 +75,16 @@ export function ModelPicker({ sessionId, subscribe }: Props) {
 
 	const selectModel = useCallback(
 		(id: string) => {
-			fetch(`${apiBase}/model`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ model: id }),
-			})
-				.then(async (r) => {
-					if (!r.ok) throw new Error(await r.text());
-					return r.json();
-				})
-				.then((data) => setModel(data.model || id))
-				.catch((error) =>
-					toast({
-						title: "Could not change model",
-						description: String(error),
-						tone: "error",
-					}),
-				);
+			modelMutation.mutate(id);
 		},
-		[apiBase, toast],
+		[modelMutation],
 	);
 
 	const selectEffort = useCallback(
 		(value: string) => {
-			fetch(`${apiBase}/effort`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ effort: value }),
-			})
-				.then(async (r) => {
-					if (!r.ok) throw new Error(await r.text());
-					return r.json();
-				})
-				.then((data) => applyEffort(data.effort))
-				.catch((error) =>
-					toast({
-						title: "Could not change effort",
-						description: String(error),
-						tone: "error",
-					}),
-				);
+			effortMutation.mutate(value);
 		},
-		[applyEffort, apiBase, toast],
+		[effortMutation],
 	);
 
 	const currentName = useMemo(() => {
