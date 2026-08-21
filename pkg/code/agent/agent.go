@@ -34,10 +34,9 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/websearch"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/code/prompt"
-	"github.com/adrianliechti/wingman-agent/pkg/layout"
 	"github.com/adrianliechti/wingman-agent/pkg/model"
 	"github.com/adrianliechti/wingman-agent/pkg/session"
-	skillpkg "github.com/adrianliechti/wingman-agent/pkg/skill"
+	"github.com/adrianliechti/wingman-agent/pkg/skill"
 	"github.com/adrianliechti/wingman-agent/pkg/text"
 )
 
@@ -801,14 +800,11 @@ func (a *Agent) buildSession() *sessionState {
 		truncation.New(ws.ScratchPath),
 	)
 
-	var allowedReadRoots []string
-	for _, sk := range ws.Skills {
-		if sk.Location != "" && filepath.IsAbs(sk.Location) {
-			allowedReadRoots = append(allowedReadRoots, sk.Location)
+	allowedReadRoots := skill.DiscoveryRoots(ws.RootPath)
+	for _, sk := range ws.Skills() {
+		if path := sk.AbsoluteDir(ws.RootPath); path != "" {
+			allowedReadRoots = append(allowedReadRoots, path)
 		}
-	}
-	if path, err := layout.WingmanPath("skills"); err == nil {
-		allowedReadRoots = append(allowedReadRoots, path)
 	}
 	allowedReadRoots = append(allowedReadRoots, ws.ScratchPath)
 
@@ -1256,7 +1252,7 @@ func (s *sessionState) instructionsData() prompt.SectionData {
 		Shell:               localShell(),
 		MemoryDir:           ws.MemoryPath,
 		MemoryContent:       ws.MemoryContent(),
-		Skills:              skillpkg.FormatForPrompt(ws.Skills),
+		Skills:              skill.FormatForPrompt(ws.Skills()),
 		ProjectInstructions: s.projectInstructions(),
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -64,8 +65,6 @@ type Workspace struct {
 	MemoryPath  string
 	ScratchPath string
 
-	Skills []skill.Skill
-
 	Plugins []plugin.Plugin
 
 	MCP     *mcp.Manager
@@ -96,6 +95,11 @@ type Workspace struct {
 	memoryMu          sync.Mutex
 	memoryCache       string
 	memoryFingerprint string
+
+	skillsMu      sync.RWMutex
+	skillsRefresh sync.Mutex
+	baseSkills    []skill.Skill
+	skills        []skill.Skill
 }
 
 func NewWorkspace(workDir string) (*Workspace, error) {
@@ -135,7 +139,8 @@ func NewWorkspace(workDir string) (*Workspace, error) {
 
 	personal := skill.MustDiscoverPersonal()
 	discovered := skill.MustDiscover(workDir)
-	mergedSkills := skill.Merge(skill.Merge(skill.Merge(bundled, plugin.Skills(plugins)), personal), discovered)
+	baseSkills := skill.Merge(bundled, plugin.Skills(plugins))
+	mergedSkills := skill.Merge(skill.Merge(baseSkills, personal), discovered)
 	reportShadowedPluginSkills(mergedSkills)
 
 	mcpManager := loadMCP(workDir, plugins)
@@ -145,12 +150,58 @@ func NewWorkspace(workDir string) (*Workspace, error) {
 		RootPath:    workDir,
 		MemoryPath:  memoryDir,
 		ScratchPath: scratchDir,
-		Skills:      mergedSkills,
 		Plugins:     plugins,
 		MCP:         mcpManager,
+		baseSkills:  baseSkills,
+		skills:      mergedSkills,
 	}
 	workspace.Browser = browser.NewService(mcpManager, workDir)
 	return workspace, nil
+}
+
+// Skills returns a stable snapshot of the current skill catalog.
+func (w *Workspace) Skills() []skill.Skill {
+	w.skillsMu.RLock()
+	defer w.skillsMu.RUnlock()
+	return cloneSkills(w.skills)
+}
+
+func cloneSkills(skills []skill.Skill) []skill.Skill {
+	result := slices.Clone(skills)
+	for i := range result {
+		result[i].Metadata = maps.Clone(result[i].Metadata)
+		result[i].AllowedTools = slices.Clone(result[i].AllowedTools)
+		result[i].Arguments = slices.Clone(result[i].Arguments)
+	}
+	return result
+}
+
+// RefreshSkills rediscovers personal and project Agent Skills and atomically
+// replaces the catalog when its metadata or precedence changed. Plugin skills
+// stay fixed because reloading a plugin also affects hooks, MCP, and permissions.
+func (w *Workspace) RefreshSkills() bool {
+	w.skillsRefresh.Lock()
+	defer w.skillsRefresh.Unlock()
+
+	personal, err := skill.RediscoverPersonal()
+	if err != nil {
+		return false
+	}
+	project, err := skill.Rediscover(w.RootPath)
+	if err != nil {
+		return false
+	}
+	next := skill.Merge(skill.Merge(w.baseSkills, personal), project)
+
+	w.skillsMu.Lock()
+	if reflect.DeepEqual(w.skills, next) {
+		w.skillsMu.Unlock()
+		return false
+	}
+	w.skills = next
+	w.skillsMu.Unlock()
+
+	return true
 }
 
 // loadMCP layers the project and global configs over the servers plugins

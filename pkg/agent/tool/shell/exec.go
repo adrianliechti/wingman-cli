@@ -198,6 +198,11 @@ type execSession struct {
 	mu      sync.Mutex
 	unread  bytes.Buffer
 	dropped int
+
+	inputMu        sync.Mutex
+	pendingInput   string
+	inputOverflow  bool
+	inputUncertain bool
 }
 
 func (s *execSession) Write(p []byte) (int, error) {
@@ -529,29 +534,41 @@ func executeExecSession(ctx context.Context, m *ExecManager, elicit *tool.Elicit
 	input, _ := args["input"].(string)
 	input = decodeInput(input)
 
-	if input == "\u0003" && !s.tty {
-		if err := s.interrupt(); err != nil {
-			return tool.Result{}, fmt.Errorf("cannot interrupt on this platform; use kill instead: %w", err)
+	if input == "\u0003" {
+		s.inputMu.Lock()
+		s.pendingInput = ""
+		s.inputOverflow = false
+		s.inputUncertain = false
+		s.inputMu.Unlock()
+		if !s.tty {
+			if err := s.interrupt(); err != nil {
+				return tool.Result{}, fmt.Errorf("cannot interrupt on this platform; use kill instead: %w", err)
+			}
+		} else if _, err := io.WriteString(s.stdin, input); err != nil {
+			return tool.Result{}, fmt.Errorf("failed to write interrupt to stdin: %w", err)
 		}
 	} else if input != "" {
-		if err := confirmIfDangerous(ctx, elicit, appr, strings.TrimRight(input, "\n"), IsDangerousCommand(input)); err != nil {
-			return tool.Result{}, err
-		}
-
-		if _, err := io.WriteString(s.stdin, input); err != nil {
-			if s.exited() {
-				m.remove(id)
-				result := completedSessionResult(s)
-				result.Content += " (input was not delivered)"
-				return result, nil
+		if result, err := writeSessionInput(ctx, m, id, s, elicit, appr, input); err != nil || result != nil {
+			if result != nil {
+				return *result, err
 			}
-			return tool.Result{}, fmt.Errorf("failed to write to stdin: %w", err)
+			return tool.Result{}, err
 		}
 	}
 
 	if eof, _ := args["eof"].(bool); eof {
+		if err := confirmPendingSessionInput(ctx, s, elicit, appr); err != nil {
+			return tool.Result{}, err
+		}
 		if s.tty {
-			io.WriteString(s.stdin, "\x04")
+			if _, err := io.WriteString(s.stdin, "\x04"); err != nil && !s.exited() {
+				return tool.Result{}, fmt.Errorf("failed to send EOF to terminal: %w", err)
+			}
+			// Readline treats Ctrl-D on a non-empty buffer as delete-char, not
+			// EOF. Unless the process exits, its resulting line is unknowable.
+			s.inputMu.Lock()
+			s.inputUncertain = true
+			s.inputMu.Unlock()
 		} else {
 			s.stdin.Close()
 		}
@@ -573,6 +590,140 @@ func executeExecSession(ctx context.Context, m *ExecManager, elicit *tool.Elicit
 		return tool.Text(fmt.Sprintf("(no new output; session %d still running)", id)), nil
 	}
 	return tool.Text(sessionResult(output, fmt.Sprintf("Session %d still running", id))), nil
+}
+
+func writeSessionInput(ctx context.Context, m *ExecManager, id int, s *execSession, elicit *tool.Elicitation, appr *Approvals, input string) (*tool.Result, error) {
+	// Serialize input writes and retain the current logical line. Without this,
+	// an agent can submit "r" and "m -rf ...\n" in separate calls while each
+	// individual call looks harmless to the classifier.
+	s.inputMu.Lock()
+	defer s.inputMu.Unlock()
+
+	combined := applyInputEditing(s.pendingInput, input)
+	submitted, remainder := splitSubmittedInput(combined)
+	immediateControl := hasImmediateTerminalControl(input)
+	dangerous := immediateControl || s.inputUncertain
+	approvalText := strings.TrimRight(submitted, "\r\n")
+	if dangerous && approvalText == "" {
+		approvalText = s.pendingInput + input
+	}
+	if immediateControl {
+		approvalText += "  [input contains an active terminal control]"
+	}
+	if s.inputUncertain {
+		approvalText += "  [terminal input state is unknown]"
+	}
+	if submitted != "" {
+		dangerous = dangerous || s.inputOverflow || IsDangerousCommand(submitted)
+		if s.inputOverflow {
+			approvalText += "  [input line exceeded classifier limit]"
+		}
+	}
+	approvalCache := appr
+	if immediateControl || s.inputUncertain || s.inputOverflow {
+		// Control keys, unknown readline state, and truncated input are
+		// state-dependent; identical text is not an identical capability.
+		approvalCache = NewApprovals()
+	}
+	if err := confirmIfDangerous(ctx, elicit, approvalCache, approvalText, dangerous); err != nil {
+		return nil, err
+	}
+
+	if _, err := io.WriteString(s.stdin, input); err != nil {
+		if s.exited() {
+			m.remove(id)
+			result := completedSessionResult(s)
+			result.Content += " (input was not delivered)"
+			return &result, nil
+		}
+		return nil, fmt.Errorf("failed to write to stdin: %w", err)
+	}
+
+	s.inputOverflow = len(remainder) > maxClassifiableBytes
+	if s.inputOverflow {
+		remainder = remainder[:maxClassifiableBytes]
+	}
+	s.pendingInput = remainder
+	s.inputUncertain = terminalInputUncertainAfter(s.inputUncertain, input)
+	return nil, nil
+}
+
+func confirmPendingSessionInput(ctx context.Context, s *execSession, elicit *tool.Elicitation, appr *Approvals) error {
+	s.inputMu.Lock()
+	defer s.inputMu.Unlock()
+	if s.pendingInput == "" && !s.inputOverflow && !s.inputUncertain {
+		return nil
+	}
+	text := s.pendingInput
+	if s.inputOverflow {
+		text += "  [input line exceeded classifier limit]"
+	}
+	if s.inputUncertain {
+		text += "  [terminal input state is unknown]"
+	}
+	approvalCache := appr
+	if s.inputOverflow || s.inputUncertain {
+		approvalCache = NewApprovals()
+	}
+	return confirmIfDangerous(ctx, elicit, approvalCache, text, s.inputOverflow || s.inputUncertain || IsDangerousCommand(s.pendingInput))
+}
+
+func hasImmediateTerminalControl(input string) bool {
+	for _, r := range input {
+		if isUnmodelledTerminalControl(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func isUnmodelledTerminalControl(r rune) bool {
+	switch r {
+	case '\n', '\r', '\b', '\x7f', '\x15':
+		return false
+	}
+	return r < ' '
+}
+
+// A newline after an unmodelled key submits the unknown readline buffer and
+// restores a known empty line. A later control key makes it uncertain again.
+func terminalInputUncertainAfter(uncertain bool, input string) bool {
+	for _, r := range input {
+		switch {
+		case r == '\n' || r == '\r':
+			uncertain = false
+		case isUnmodelledTerminalControl(r):
+			uncertain = true
+		}
+	}
+	return uncertain
+}
+
+func applyInputEditing(pending, input string) string {
+	line := []rune(pending)
+	for _, r := range input {
+		switch r {
+		case '\b', '\x7f':
+			if len(line) > 0 && line[len(line)-1] != '\n' && line[len(line)-1] != '\r' {
+				line = line[:len(line)-1]
+			}
+		case '\x15': // Ctrl-U: erase back to the current line boundary.
+			for len(line) > 0 && line[len(line)-1] != '\n' && line[len(line)-1] != '\r' {
+				line = line[:len(line)-1]
+			}
+		default:
+			line = append(line, r)
+		}
+	}
+	return string(line)
+}
+
+func splitSubmittedInput(input string) (submitted, remainder string) {
+	last := strings.LastIndexAny(input, "\r\n")
+	if last < 0 {
+		return "", input
+	}
+	return input[:last+1], input[last+1:]
 }
 
 func completedSessionResult(s *execSession) tool.Result {

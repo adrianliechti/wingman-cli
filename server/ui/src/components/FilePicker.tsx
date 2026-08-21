@@ -1,11 +1,9 @@
+import { useQuery } from "@tanstack/react-query";
 import { File } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { fileQueries } from "../api/files";
+import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { FloatingSurface } from "./ui/Floating";
-
-interface Hit {
-	path: string;
-	name: string;
-}
 
 interface Props {
 	anchor: Element | null;
@@ -15,33 +13,14 @@ interface Props {
 
 export function FilePicker({ anchor, onSelect, onClose }: Props) {
 	const [query, setQuery] = useState("");
-	const [hits, setHits] = useState<Hit[]>([]);
 	const [active, setActive] = useState(0);
 	const inputRef = useRef<HTMLInputElement>(null);
+	const debouncedQuery = useDebouncedValue(query, 80);
+	const hits = useQuery(fileQueries.search(debouncedQuery)).data ?? [];
 
 	useEffect(() => {
 		inputRef.current?.focus();
 	}, []);
-
-	useEffect(() => {
-		let cancelled = false;
-		const t = setTimeout(() => {
-			fetch(`/api/files/search?q=${encodeURIComponent(query)}`)
-				.then((r) => (r.ok ? r.json() : []))
-				.then((data: Hit[]) => {
-					if (cancelled) return;
-					setHits(data);
-					setActive(0);
-				})
-				.catch(() => {
-					if (!cancelled) setHits([]);
-				});
-		}, 80);
-		return () => {
-			cancelled = true;
-			clearTimeout(t);
-		};
-	}, [query]);
 
 	const onKey = (e: React.KeyboardEvent) => {
 		if (e.key === "Escape") {
@@ -76,7 +55,10 @@ export function FilePicker({ anchor, onSelect, onClose }: Props) {
 					ref={inputRef}
 					type="text"
 					value={query}
-					onChange={(e) => setQuery(e.target.value)}
+					onChange={(e) => {
+						setQuery(e.target.value);
+						setActive(0);
+					}}
 					onKeyDown={onKey}
 					placeholder="Search files…"
 					className="w-full bg-transparent text-fg text-[12px] outline-none placeholder:text-fg-dim"

@@ -199,6 +199,10 @@ interface TerminalsChangedMessage {
 	type: "terminals_changed";
 }
 
+interface SkillsChangedMessage {
+	type: "skills_changed";
+}
+
 interface CapabilitiesChangedMessage {
 	type: "capabilities_changed";
 }
@@ -280,7 +284,8 @@ export type ServerMessage =
 	| TurnInputMessage
 	| TurnQueueMessage
 	| TasksChangedMessage
-	| TerminalsChangedMessage;
+	| TerminalsChangedMessage
+	| SkillsChangedMessage;
 
 export type Phase = "idle" | "thinking" | "streaming" | "tool_running";
 

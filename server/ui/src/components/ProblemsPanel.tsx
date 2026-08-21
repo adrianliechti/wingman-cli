@@ -1,3 +1,4 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 	AlertCircle,
 	AlertTriangle,
@@ -5,16 +6,13 @@ import {
 	Info,
 	Loader2,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type {
-	DiagnosticEntry,
-	ServerMessage,
-	WorkspaceDiagnostics,
-} from "../types/protocol";
+import { useEffect, useMemo } from "react";
+import { getWorkspaceDiagnostics } from "../api/lsp";
+import { queryKeys } from "../api/query";
+import type { DiagnosticEntry } from "../types/protocol";
 
 interface Props {
 	onOpenFile: (path: string, line: number, column?: number) => void;
-	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 	refreshKey?: number;
 }
 
@@ -26,6 +24,8 @@ interface DiagnosticGroup {
 	errors: number;
 	warnings: number;
 }
+
+const EMPTY_DIAGNOSTICS: DiagnosticEntry[] = [];
 
 function groupDiagnostics(diagnostics: DiagnosticEntry[]): DiagnosticGroup[] {
 	const groups = new Map<string, DiagnosticGroup>();
@@ -68,97 +68,26 @@ function SeverityIcon({ severity }: { severity: DiagnosticEntry["severity"] }) {
 	}
 }
 
-export function ProblemsPanel({
-	onOpenFile,
-	subscribe,
-	refreshKey = 0,
-}: Props) {
-	const [diagnostics, setDiagnostics] = useState<DiagnosticEntry[]>([]);
-	const [coverage, setCoverage] = useState<WorkspaceDiagnostics | null>(null);
-	const [loading, setLoading] = useState(true);
-	const [error, setError] = useState<string | null>(null);
-	const requestRef = useRef<AbortController | null>(null);
-	const refreshTimerRef = useRef<number | null>(null);
+export function ProblemsPanel({ onOpenFile, refreshKey = 0 }: Props) {
+	const queryClient = useQueryClient();
+	const query = useQuery({
+		queryKey: queryKeys.diagnostics.workspace,
+		queryFn: ({ signal }) => getWorkspaceDiagnostics(signal),
+		refetchInterval: (current) =>
+			current.state.data?.analyzing ? 3000 : false,
+	});
+	const coverage = query.data ?? null;
+	const diagnostics = coverage?.diagnostics ?? EMPTY_DIAGNOSTICS;
+	const loading = query.isPending || query.isFetching;
+	const error = query.error ? "Refresh failed" : null;
 	const groups = useMemo(() => groupDiagnostics(diagnostics), [diagnostics]);
 
-	const load = useCallback(async () => {
-		if (refreshTimerRef.current !== null) {
-			window.clearTimeout(refreshTimerRef.current);
-			refreshTimerRef.current = null;
-		}
-		requestRef.current?.abort();
-		const controller = new AbortController();
-		requestRef.current = controller;
-		setLoading(true);
-		setError(null);
-		try {
-			const res = await fetch("/api/lsp/diagnostics", {
-				signal: controller.signal,
-			});
-			if (controller.signal.aborted) return;
-			if (!res.ok) {
-				setError(`Refresh failed (${res.status})`);
-				return;
-			}
-			const data = (await res.json()) as WorkspaceDiagnostics;
-			if (controller.signal.aborted) return;
-			setCoverage(data);
-			setDiagnostics(data.diagnostics);
-			if (data.analyzing) {
-				refreshTimerRef.current = window.setTimeout(() => {
-					refreshTimerRef.current = null;
-					void load();
-				}, 3000);
-			}
-		} catch (requestError) {
-			if (
-				requestRef.current === controller &&
-				!(
-					requestError instanceof DOMException &&
-					requestError.name === "AbortError"
-				)
-			) {
-				setError("Refresh failed");
-			}
-		} finally {
-			if (requestRef.current === controller) {
-				requestRef.current = null;
-				setLoading(false);
-			}
-		}
-	}, []);
-
 	useEffect(() => {
-		void load();
-		return () => {
-			requestRef.current?.abort();
-			if (refreshTimerRef.current !== null) {
-				window.clearTimeout(refreshTimerRef.current);
-			}
-		};
-	}, [load, refreshKey]);
-
-	useEffect(() => {
-		if (!subscribe) return;
-		const unsubscribe = subscribe((msg) => {
-			if (msg.type === "diagnostics_changed") {
-				if (refreshTimerRef.current !== null) {
-					window.clearTimeout(refreshTimerRef.current);
-				}
-				refreshTimerRef.current = window.setTimeout(() => {
-					refreshTimerRef.current = null;
-					void load();
-				}, 250);
-			}
+		if (refreshKey === 0) return;
+		void queryClient.invalidateQueries({
+			queryKey: queryKeys.diagnostics.workspace,
 		});
-		return () => {
-			unsubscribe();
-			if (refreshTimerRef.current !== null) {
-				window.clearTimeout(refreshTimerRef.current);
-				refreshTimerRef.current = null;
-			}
-		};
-	}, [subscribe, load]);
+	}, [queryClient, refreshKey]);
 
 	return (
 		<div className="flex h-full flex-col overflow-hidden bg-transparent">

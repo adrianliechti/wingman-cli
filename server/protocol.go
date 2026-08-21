@@ -58,6 +58,7 @@ const (
 	EvtTasksChanged        = "tasks_changed"
 	EvtTerminalsChanged    = "terminals_changed"
 	EvtBrowserChanged      = "browser_changed"
+	EvtSkillsChanged       = "skills_changed"
 )
 
 const (

@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import {
 	ChevronDown,
 	ChevronRight,
@@ -9,8 +10,10 @@ import {
 	Loader2,
 } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { CompareMode, GitCommit, ServerMessage } from "../types/protocol";
+import { useEffect, useRef, useState } from "react";
+import { getGitHistory } from "../api/git";
+import { queryKeys } from "../api/query";
+import type { CompareMode, GitCommit } from "../types/protocol";
 import type { TabDisposition } from "../types/tabs";
 import { FloatingMenu } from "./ui/Floating";
 
@@ -27,23 +30,32 @@ interface CommitMenu {
 	commit: GitCommit;
 }
 
+const EMPTY_COMMITS: GitCommit[] = [];
+
 export function GitHistoryPanel({
 	open,
 	disabled,
-	subscribe,
 	onCompare,
 	onToggle,
 }: {
 	open: boolean;
 	disabled: boolean;
-	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 	onCompare: OpenCompare;
 	onToggle: () => void;
 }) {
-	const [loading, setLoading] = useState(false);
-	const [loaded, setLoaded] = useState(false);
-	const [error, setError] = useState("");
-	const [commits, setCommits] = useState<GitCommit[]>([]);
+	const historyQuery = useQuery({
+		queryKey: queryKeys.git.history,
+		enabled: open,
+		staleTime: 0,
+		queryFn: ({ signal }) => getGitHistory(signal),
+	});
+	const loading = historyQuery.isPending || historyQuery.isFetching;
+	const error = historyQuery.error
+		? historyQuery.error instanceof Error
+			? historyQuery.error.message
+			: String(historyQuery.error)
+		: "";
+	const commits = historyQuery.data ?? EMPTY_COMMITS;
 	const [selection, setSelection] = useState<string[]>([]);
 	const [menu, setMenu] = useState<CommitMenu | null>(null);
 	const [alternateCopy, setAlternateCopy] = useState(false);
@@ -56,36 +68,10 @@ export function GitHistoryPanel({
 		overscan: 8,
 	});
 
-	const load = useCallback(async () => {
-		setLoading(true);
-		setError("");
-		try {
-			const response = await fetch("/api/git/history");
-			if (!response.ok) throw new Error(await responseError(response));
-			const history = (await response.json()) as GitCommit[];
-			const hashes = new Set(history.map((commit) => commit.hash));
-			setCommits(history);
-			setSelection((current) => current.filter((hash) => hashes.has(hash)));
-			setLoaded(true);
-		} catch (e) {
-			setError(e instanceof Error ? e.message : String(e));
-		} finally {
-			setLoading(false);
-		}
-	}, []);
-
 	useEffect(() => {
-		if (open && !loaded && !loading) void load();
-	}, [open, loaded, loading, load]);
-	useEffect(() => {
-		if (!subscribe) return;
-		return subscribe((message) => {
-			if (message.type === "diffs_changed") {
-				setLoaded(false);
-				if (open) void load();
-			}
-		});
-	}, [load, open, subscribe]);
+		const hashes = new Set(commits.map((commit) => commit.hash));
+		setSelection((current) => current.filter((hash) => hashes.has(hash)));
+	}, [commits]);
 	useEffect(() => {
 		if (!menu) return;
 		const update = (event: KeyboardEvent) => setAlternateCopy(event.altKey);
@@ -356,11 +342,4 @@ function formatCommitDate(value: string) {
 		month: "short",
 		day: "numeric",
 	}).format(date);
-}
-
-async function responseError(response: Response) {
-	return (
-		(await response.text()).trim() ||
-		`${response.status} ${response.statusText}`
-	);
 }

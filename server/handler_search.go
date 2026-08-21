@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
-	pathpkg "path"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -273,7 +273,7 @@ func splitWorkspaceSearchGlobs(value string) []string {
 
 func matchesWorkspaceSearchGlob(patterns []string, filePath string) bool {
 	for _, pattern := range patterns {
-		if matched, _ := doublestar.Match(pattern, pathpkg.Base(filePath)); matched {
+		if matched, _ := doublestar.Match(pattern, path.Base(filePath)); matched {
 			return true
 		}
 		if matched, _ := doublestar.Match(pattern, filePath); matched {
@@ -335,7 +335,7 @@ func newWorkspaceSearchIgnore(fsys fs.FS) *workspaceSearchIgnore {
 func (c *workspaceSearchIgnore) matches(filePath string, directory bool) bool {
 	dir := filePath
 	if !directory {
-		dir = pathpkg.Dir(filePath)
+		dir = path.Dir(filePath)
 	}
 	patterns := c.patternsFor(dir)
 	return len(patterns) > 0 && gitignore.NewMatcher(patterns).Match(strings.Split(filePath, "/"), directory)
@@ -347,7 +347,7 @@ func (c *workspaceSearchIgnore) patternsFor(dir string) []gitignore.Pattern {
 	}
 	var parent []gitignore.Pattern
 	if dir != "." && dir != "/" {
-		parent = c.patternsFor(pathpkg.Dir(dir))
+		parent = c.patternsFor(path.Dir(dir))
 	}
 	local := loadWorkspaceSearchIgnore(c.fsys, workspaceSearchDomain(dir))
 	if len(local) == 0 {
@@ -362,7 +362,7 @@ func (c *workspaceSearchIgnore) patternsFor(dir string) []gitignore.Pattern {
 func loadWorkspaceSearchIgnore(fsys fs.FS, domain []string) []gitignore.Pattern {
 	ignorePath := ".gitignore"
 	if len(domain) > 0 {
-		ignorePath = pathpkg.Join(append(append([]string{}, domain...), ".gitignore")...)
+		ignorePath = path.Join(append(append([]string{}, domain...), ".gitignore")...)
 	}
 	file, err := fsys.Open(ignorePath)
 	if err != nil {

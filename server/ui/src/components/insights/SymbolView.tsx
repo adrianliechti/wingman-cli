@@ -1,10 +1,8 @@
+import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ExternalLink, Loader2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import {
-	type GraphNeighborhood,
-	type GraphNode,
-	fetchGraphSymbol,
-} from "../../api/insights";
+import { useMemo } from "react";
+import { type GraphNode, fetchGraphSymbol } from "../../api/insights";
+import { queryKeys } from "../../api/query";
 import { PanZoomCanvas } from "../PanZoomCanvas";
 import { nodeLocation, nodeTargetLine } from "./nodes";
 import { KindBadge } from "./shared";
@@ -148,49 +146,29 @@ function SideCard({
 
 export function SymbolView({
 	focus,
-	refreshKey,
 	canGoBack,
 	onBack,
 	onExplore,
 	onOpenFile,
 }: {
 	focus: { id?: string; name?: string; file?: string } | null;
-	refreshKey: number;
 	canGoBack: boolean;
 	onBack: () => void;
 	onExplore: (node: GraphNode) => void;
 	onOpenFile: (path: string, line?: number) => void;
 }) {
-	const [neighborhood, setNeighborhood] = useState<GraphNeighborhood | null>(
-		null,
-	);
-	const [loading, setLoading] = useState(false);
-	const [error, setError] = useState<string | null>(null);
-
-	useEffect(() => {
-		if (!focus) {
-			setNeighborhood(null);
-			return;
-		}
-		const controller = new AbortController();
-		setLoading(true);
-		setError(null);
-		setNeighborhood(null);
-		fetchGraphSymbol(focus, controller.signal)
-			.then((result) => {
-				if (controller.signal.aborted) return;
-				setNeighborhood(result);
-				setLoading(false);
-			})
-			.catch((loadError: unknown) => {
-				if (controller.signal.aborted) return;
-				setError(
-					loadError instanceof Error ? loadError.message : "Load failed",
-				);
-				setLoading(false);
-			});
-		return () => controller.abort();
-	}, [focus, refreshKey]);
+	const query = useQuery({
+		queryKey: queryKeys.insights.symbol(focus ?? {}),
+		enabled: !!focus,
+		queryFn: ({ signal }) => fetchGraphSymbol(focus ?? {}, signal),
+	});
+	const neighborhood = query.data ?? null;
+	const loading = query.isPending;
+	const error = query.error
+		? query.error instanceof Error
+			? query.error.message
+			: "Load failed"
+		: null;
 
 	const layout = useMemo(() => {
 		if (!neighborhood) return null;

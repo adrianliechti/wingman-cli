@@ -86,7 +86,6 @@ export function WorkspaceFilesPanel({
 					onFileSelect={onFileSelect}
 					onFileMove={onFileMove}
 					platform={platform}
-					subscribe={subscribe}
 				/>
 			</div>
 			<div className={searching ? "min-h-0 flex-1" : "hidden"}>

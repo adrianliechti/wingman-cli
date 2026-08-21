@@ -1,6 +1,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { useEffect, useRef } from "react";
+import { getTerminalWebSocketURL } from "../api/websocket";
 import { useColorScheme } from "../hooks/useColorScheme";
 
 interface Props {
@@ -43,10 +44,7 @@ export function TerminalView({ id, active, onExit, onTitle }: Props) {
 		termRef.current = term;
 		fitRef.current = fit;
 
-		const proto = location.protocol === "https:" ? "wss:" : "ws:";
-		const ws = new WebSocket(
-			`${proto}//${location.host}/api/terminals/${encodeURIComponent(id)}/ws`,
-		);
+		const ws = new WebSocket(getTerminalWebSocketURL(id));
 		ws.binaryType = "arraybuffer";
 
 		const pending: string[] = [];

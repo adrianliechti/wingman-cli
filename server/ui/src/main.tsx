@@ -1,4 +1,5 @@
 import { loader } from "@monaco-editor/react";
+import { QueryClientProvider } from "@tanstack/react-query";
 import * as monaco from "monaco-editor";
 import editorWorker from "monaco-editor/editor/editor.worker?worker";
 import { StandaloneServices } from "monaco-editor/editor/standalone/browser/standaloneServices";
@@ -11,6 +12,7 @@ import { createRoot } from "react-dom/client";
 import "./devicon-slim.css";
 import "./index.css";
 import App from "./App.tsx";
+import { serverQueryClient } from "./api/query.ts";
 import { AppCrashed } from "./AppCrashed.tsx";
 import { ErrorBoundary } from "./components/ErrorBoundary.tsx";
 import { ToastProvider } from "./components/ui/Feedback.tsx";
@@ -104,14 +106,16 @@ if (
 
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>
-		<ErrorBoundary
-			fallback={(error, _reset, errorInfo) => (
-				<AppCrashed error={error} errorInfo={errorInfo} />
-			)}
-		>
-			<ToastProvider>
-				<App />
-			</ToastProvider>
-		</ErrorBoundary>
+		<QueryClientProvider client={serverQueryClient}>
+			<ErrorBoundary
+				fallback={(error, _reset, errorInfo) => (
+					<AppCrashed error={error} errorInfo={errorInfo} />
+				)}
+			>
+				<ToastProvider>
+					<App />
+				</ToastProvider>
+			</ErrorBoundary>
+		</QueryClientProvider>
 	</StrictMode>,
 );

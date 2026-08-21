@@ -1,28 +1,28 @@
 import { DiffEditor } from "@monaco-editor/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
+import { listDiffs } from "../api/diffs";
+import { queryKeys } from "../api/query";
 import { useColorScheme } from "../hooks/useColorScheme";
 import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
-import type { DiffEntry, DiffLayer, ServerMessage } from "../types/protocol";
+import type { DiffLayer } from "../types/protocol";
 
 interface Props {
 	path: string;
 	layer?: DiffLayer;
 	sessionId: string;
-	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 	onDeleted?: () => void;
 }
 
-export function DiffTab({
-	path,
-	layer,
-	sessionId,
-	subscribe,
-	onDeleted,
-}: Props) {
-	const [diff, setDiff] = useState<DiffEntry | null>(null);
-	const [loading, setLoading] = useState(true);
-	const [error, setError] = useState<string | null>(null);
+export function DiffTab({ path, layer, sessionId, onDeleted }: Props) {
 	const scheme = useColorScheme();
+	const query = useQuery({
+		queryKey: queryKeys.diffs.list(sessionId, layer, path),
+		queryFn: ({ signal }) => listDiffs({ sessionId, layer, path, signal }),
+	});
+	const diff = query.data?.find((entry) => entry.path === path) ?? null;
+	const loading = query.isPending;
+	const error = query.error ? String(query.error) : null;
 
 	const onDeletedRef = useRef(onDeleted);
 	useEffect(() => {
@@ -30,48 +30,17 @@ export function DiffTab({
 	});
 	const hadDiffRef = useRef(false);
 
-	const load = useCallback(async () => {
-		try {
-			const params = new URLSearchParams({ path });
-			if (layer) params.set("layer", layer);
-			if (sessionId) params.set("session", sessionId);
-			const res = await fetch(`/api/diffs?${params.toString()}`);
-			if (!res.ok) {
-				setError("failed to load diffs");
-				setLoading(false);
-				return;
-			}
-			const data: DiffEntry[] = await res.json();
-			const match = data.find((d) => d.path === path) || null;
-			if (!match && hadDiffRef.current) {
-				onDeletedRef.current?.();
-				return;
-			}
-			if (match) hadDiffRef.current = true;
-			setDiff(match);
-			setError(null);
-			setLoading(false);
-		} catch (e) {
-			setError(String(e));
-			setLoading(false);
-		}
-	}, [path, layer, sessionId]);
-
 	useEffect(() => {
 		hadDiffRef.current = false;
-		setLoading(true);
-		setError(null);
-		load();
-	}, [load]);
+	}, [layer, path, sessionId]);
 
 	useEffect(() => {
-		if (!subscribe) return;
-		return subscribe((msg) => {
-			if (msg.type === "diffs_changed") {
-				load();
-			}
-		});
-	}, [subscribe, load]);
+		if (diff) {
+			hadDiffRef.current = true;
+		} else if (query.data && hadDiffRef.current && !query.isFetching) {
+			onDeletedRef.current?.();
+		}
+	}, [diff, query.data, query.isFetching]);
 
 	if (loading) {
 		return (
