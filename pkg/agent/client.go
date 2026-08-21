@@ -18,6 +18,39 @@ import (
 // models can be quiet for minutes between items, so it is generous.
 const streamIdleTimeout = 5 * time.Minute
 
+const (
+	partialArgsInterval  = 100 * time.Millisecond
+	partialArgsMinGrowth = 64
+)
+
+type pendingToolCall struct {
+	id            string
+	name          string
+	args          []byte
+	lastYield     time.Time
+	lastYieldSize int
+}
+
+func (p *pendingToolCall) message() Message {
+	return Message{
+		Role:    RoleAssistant,
+		Content: []Content{{ToolCall: &ToolCall{ID: p.id, Name: p.name, Args: string(p.args), Partial: true}}},
+	}
+}
+
+func (p *pendingToolCall) snapshotReady(now time.Time) bool {
+	if now.Sub(p.lastYield) < partialArgsInterval {
+		return false
+	}
+	growth := len(p.args) - p.lastYieldSize
+	return growth >= max(partialArgsMinGrowth, p.lastYieldSize/4)
+}
+
+func (p *pendingToolCall) markSnapshot(now time.Time) {
+	p.lastYield = now
+	p.lastYieldSize = len(p.args)
+}
+
 // streamFailure records whether a streamed request produced visible output
 // before its transport failed. The response is not committed and tool calls
 // are not executed until a terminal event arrives, so retrying remains safe;
@@ -56,6 +89,7 @@ type request struct {
 	cacheKey     string
 	messages     []Message
 	tools        []tool.Tool
+	outputSchema map[string]any
 }
 
 type response struct {
@@ -92,7 +126,6 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 
 	if r.effort != "" {
 		rp := responses.ReasoningParam{}
-
 		rp.Effort = shared.ReasoningEffort(r.effort)
 
 		// "auto" yields the richest summary the model supports; skipped for
@@ -102,6 +135,20 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 		}
 
 		params.Reasoning = rp
+	}
+
+	if r.outputSchema != nil {
+		if len(r.outputSchema) == 0 {
+			format := shared.NewResponseFormatJSONObjectParam()
+			params.Text.Format.OfJSONObject = &format
+		} else {
+			format := responses.ResponseFormatTextConfigParamOfJSONSchema(
+				"response",
+				r.outputSchema,
+			)
+			format.OfJSONSchema.Strict = openai.Bool(true)
+			params.Text.Format = format
+		}
 	}
 
 	// A stalled stream (no events at all) would otherwise hang the turn
@@ -116,6 +163,8 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 
 	var outputItems []responses.ResponseInputItemUnionParam
 	var usageDelta Usage
+
+	pendingCalls := map[int64]*pendingToolCall{}
 
 	incomplete := false
 	incompleteReason := ""
@@ -153,6 +202,49 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 
 			if !yield(msg, nil) {
 				return nil, errYieldStopped
+			}
+
+		case responses.ResponseOutputItemAddedEvent:
+			if item, ok := e.Item.AsAny().(responses.ResponseFunctionToolCall); ok && item.CallID != "" {
+				pending := &pendingToolCall{
+					id:            item.CallID,
+					name:          item.Name,
+					args:          []byte(item.Arguments),
+					lastYield:     time.Now(),
+					lastYieldSize: len(item.Arguments),
+				}
+				pendingCalls[e.OutputIndex] = pending
+
+				if !yield(pending.message(), nil) {
+					return nil, errYieldStopped
+				}
+			}
+
+		case responses.ResponseFunctionCallArgumentsDeltaEvent:
+			if pending := pendingCalls[e.OutputIndex]; pending != nil {
+				pending.args = append(pending.args, e.Delta...)
+
+				now := time.Now()
+				if pending.snapshotReady(now) {
+					pending.markSnapshot(now)
+
+					if !yield(pending.message(), nil) {
+						return nil, errYieldStopped
+					}
+				}
+			}
+
+		case responses.ResponseFunctionCallArgumentsDoneEvent:
+			if pending := pendingCalls[e.OutputIndex]; pending != nil {
+				delete(pendingCalls, e.OutputIndex)
+				pending.args = []byte(e.Arguments)
+				if e.Name != "" {
+					pending.name = e.Name
+				}
+
+				if !yield(pending.message(), nil) {
+					return nil, errYieldStopped
+				}
 			}
 
 		case responses.ResponseOutputItemDoneEvent:

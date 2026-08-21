@@ -9,11 +9,11 @@ import (
 	"testing"
 
 	. "github.com/adrianliechti/wingman-agent/pkg/agent/tool/lsp"
-	corelsp "github.com/adrianliechti/wingman-agent/pkg/lsp"
+	"github.com/adrianliechti/wingman-agent/pkg/language"
 )
 
 func TestNewToolsExposesSingleLSPTool(t *testing.T) {
-	tools := NewTools(nil)
+	tools := NewTools(newTestManager(t))
 	if len(tools) != 1 {
 		t.Fatalf("len(NewTools) = %d, want 1", len(tools))
 	}
@@ -183,7 +183,7 @@ func TestLSPToolRejectsOutOfRangeLine(t *testing.T) {
 }
 
 func TestLSPToolRejectsDirectories(t *testing.T) {
-	manager := corelsp.NewManager(t.TempDir())
+	manager := newLanguageService(t, t.TempDir())
 	lspTool := NewTools(manager)[0]
 
 	_, err := lspTool.Execute(context.Background(), map[string]any{
@@ -202,7 +202,7 @@ func TestLSPToolRejectsPathsOutsideWorkspace(t *testing.T) {
 		t.Fatalf("write outside file: %v", err)
 	}
 
-	lspTool := NewTools(corelsp.NewManager(tmpDir))[0]
+	lspTool := NewTools(newLanguageService(t, tmpDir))[0]
 
 	_, err := lspTool.Execute(context.Background(), map[string]any{
 		"operation": "documentSymbol",
@@ -221,11 +221,18 @@ func TestLSPToolRejectsPathsOutsideWorkspace(t *testing.T) {
 	}
 }
 
-func newTestManager(t *testing.T) *corelsp.Manager {
+func newTestManager(t *testing.T) *language.Service {
 	t.Helper()
 	tmpDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(tmpDir, "main.go"), []byte("package main\n"), 0644); err != nil {
 		t.Fatalf("write test file: %v", err)
 	}
-	return corelsp.NewManager(tmpDir)
+	return newLanguageService(t, tmpDir)
+}
+
+func newLanguageService(t *testing.T, root string) *language.Service {
+	t.Helper()
+	service := language.New(root, filepath.Join(t.TempDir(), "graph.json"))
+	t.Cleanup(service.Close)
+	return service
 }

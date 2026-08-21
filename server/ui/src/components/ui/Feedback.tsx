@@ -210,7 +210,9 @@ export function Dialog({
 }
 
 export const dialogButtonClass =
-	"h-8 rounded-md border border-border px-3 text-[12px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus";
+	"inline-flex h-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-bg-surface px-3 text-[12px] font-medium text-fg-muted transition-colors hover:border-border-strong hover:bg-bg-hover hover:text-fg disabled:pointer-events-none disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus";
+
+export const dialogPrimaryButtonClass = `${dialogButtonClass} border-button-primary-border bg-button-primary text-button-primary-fg shadow-sm hover:border-button-primary-border hover:bg-button-primary-hover hover:text-button-primary-fg`;
 
 function getFocusable(root: HTMLElement | null): HTMLElement[] {
 	if (!root) return [];

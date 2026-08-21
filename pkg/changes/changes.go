@@ -12,16 +12,13 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
+	"syscall"
 
-	"github.com/go-git/go-billy/v5/osfs"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	formatdiff "github.com/go-git/go-git/v5/plumbing/format/diff"
 	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/go-git/go-git/v5/storage/filesystem"
 	utildiff "github.com/go-git/go-git/v5/utils/diff"
 )
 
@@ -37,11 +34,12 @@ const (
 )
 
 type FileDiff struct {
-	Path     string
-	Status   FileStatus
-	Patch    string
-	Original string
-	Modified string
+	Path         string
+	OriginalPath string
+	Status       FileStatus
+	Patch        string
+	Original     string
+	Modified     string
 }
 
 type DiffLayer string
@@ -62,8 +60,6 @@ type statusEntry struct {
 
 type Manager struct {
 	workingDir string
-	gitDir     string
-	native     bool
 	prefix     string
 
 	repo     *git.Repository
@@ -76,14 +72,12 @@ type Manager struct {
 	closed bool
 }
 
-func New(workingDir, gitDir string, native bool) *Manager {
+func New(workingDir string) *Manager {
 	if absolute, err := filepath.Abs(workingDir); err == nil {
 		workingDir = absolute
 	}
 	m := &Manager{
 		workingDir: workingDir,
-		gitDir:     gitDir,
-		native:     native,
 		initDone:   make(chan struct{}),
 	}
 	go m.init()
@@ -93,69 +87,31 @@ func New(workingDir, gitDir string, native bool) *Manager {
 func (m *Manager) init() {
 	defer close(m.initDone)
 
-	if m.native {
-		repo, err := git.PlainOpenWithOptions(m.workingDir, &git.PlainOpenOptions{
-			DetectDotGit:          true,
-			EnableDotGitCommonDir: true,
-		})
-		if err != nil {
-			m.initErr = fmt.Errorf("open Git repository: %w", err)
-			return
-		}
-		worktree, err := repo.Worktree()
-		if err != nil {
-			m.initErr = fmt.Errorf("open Git worktree: %w", err)
-			return
-		}
-		root, err := repositoryRoot(m.workingDir)
-		if err != nil {
-			m.initErr = err
-			return
-		}
-		rel, err := filepath.Rel(root, m.workingDir)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			m.initErr = errors.New("workspace is outside the Git worktree")
-			return
-		}
-		if rel != "." {
-			m.prefix = filepath.ToSlash(rel) + "/"
-		}
-		m.repo = repo
-		m.worktree = worktree
-		return
-	}
-
-	if m.gitDir == "" {
-		m.initErr = errors.New("shadow Git directory is required")
-		return
-	}
-	if err := os.MkdirAll(m.gitDir, 0o755); err != nil {
-		m.initErr = fmt.Errorf("create shadow Git repository: %w", err)
-		return
-	}
-	storage := filesystem.NewStorage(osfs.New(m.gitDir), cache.NewObjectLRUDefault())
-	repo, err := git.Init(storage, osfs.New(m.workingDir))
+	repo, err := git.PlainOpenWithOptions(m.workingDir, &git.PlainOpenOptions{
+		DetectDotGit:          true,
+		EnableDotGitCommonDir: true,
+	})
 	if err != nil {
-		m.initErr = fmt.Errorf("initialize shadow Git repository: %w", err)
+		m.initErr = fmt.Errorf("open Git repository: %w", err)
 		return
 	}
 	worktree, err := repo.Worktree()
 	if err != nil {
-		m.initErr = fmt.Errorf("open shadow Git worktree: %w", err)
+		m.initErr = fmt.Errorf("open Git worktree: %w", err)
 		return
 	}
-	if err := worktree.AddWithOptions(&git.AddOptions{All: true}); err != nil {
-		m.initErr = fmt.Errorf("snapshot workspace: %w", err)
+	root, err := repositoryRoot(m.workingDir)
+	if err != nil {
+		m.initErr = err
 		return
 	}
-	signature := &object.Signature{Name: "wingman", Email: "wingman@local", When: time.Now()}
-	if _, err := worktree.Commit("Workspace baseline", &git.CommitOptions{
-		Author:            signature,
-		Committer:         signature,
-		AllowEmptyCommits: true,
-	}); err != nil {
-		m.initErr = fmt.Errorf("commit workspace baseline: %w", err)
+	rel, err := filepath.Rel(root, m.workingDir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		m.initErr = errors.New("workspace is outside the Git worktree")
 		return
+	}
+	if rel != "." {
+		m.prefix = filepath.ToSlash(rel) + "/"
 	}
 	m.repo = repo
 	m.worktree = worktree
@@ -270,66 +226,10 @@ func (m *Manager) Revert(ctx context.Context, path string) error {
 	if match == nil {
 		return errors.New("no change for path")
 	}
-	if m.native {
-		if match.worktree == git.Unmodified {
-			return errors.New("path has no unstaged change")
-		}
-		return m.restoreWorktreeFromIndex(match.path)
+	if match.worktree == git.Unmodified {
+		return errors.New("path has no unstaged change")
 	}
-
-	paths := []string{match.path}
-	if match.originalPath != "" && match.originalPath != match.path {
-		paths = append(paths, match.originalPath)
-	}
-	objectPaths := make([]string, 0, len(paths))
-	for _, item := range paths {
-		objectPaths = append(objectPaths, m.objectPath(item))
-	}
-
-	head, err := m.headTree()
-	if err != nil {
-		return err
-	}
-	if head != nil {
-		if err := m.worktree.Reset(&git.ResetOptions{Mode: git.HardReset, Files: objectPaths}); err != nil {
-			return fmt.Errorf("restore change: %w", err)
-		}
-		// A hard reset intentionally leaves unrelated untracked files alone,
-		// but an explicitly reverted path that is absent from HEAD must go.
-		for _, item := range paths {
-			_, _, exists, err := treeFile(m.repo, head, m.objectPath(item))
-			if err != nil {
-				return err
-			}
-			if !exists {
-				if err := m.remove(item); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	}
-
-	index, err := m.repo.Storer.Index()
-	if err != nil {
-		return fmt.Errorf("read Git index: %w", err)
-	}
-	for _, objectPath := range objectPaths {
-		for {
-			if _, err := index.Remove(objectPath); err != nil {
-				break
-			}
-		}
-	}
-	if err := m.repo.Storer.SetIndex(index); err != nil {
-		return fmt.Errorf("update Git index: %w", err)
-	}
-	for _, item := range paths {
-		if err := m.remove(item); err != nil {
-			return err
-		}
-	}
-	return nil
+	return m.restoreWorktreeFromIndex(match.path)
 }
 
 func (m *Manager) Fingerprint(ctx context.Context) uint64 {
@@ -382,7 +282,7 @@ func (m *Manager) fileDiff(ctx context.Context, head *object.Tree, entry statusE
 	if err != nil {
 		return FileDiff{}, err
 	}
-	working, workingMode, workingExists, err := workingFile(filepath.Join(m.workingDir, filepath.FromSlash(entry.path)))
+	working, workingMode, workingExists, err := m.worktreeFile(entry.path)
 	if err != nil {
 		return FileDiff{}, err
 	}
@@ -421,7 +321,7 @@ func (m *Manager) fileDiff(ctx context.Context, head *object.Tree, entry statusE
 		return FileDiff{}, err
 	}
 
-	diff := FileDiff{Path: entry.path, Status: status, Patch: patch}
+	diff := FileDiff{Path: entry.path, OriginalPath: entry.originalPath, Status: status, Patch: patch}
 	if !isBinary(original) && !isBinary(modified) {
 		diff.Original = string(original)
 		diff.Modified = string(modified)
@@ -546,17 +446,57 @@ func treeFile(repo *git.Repository, tree *object.Tree, path string) ([]byte, fil
 		return nil, filemode.Empty, false, nil
 	}
 	entry, err := tree.FindEntry(path)
-	if errors.Is(err, object.ErrEntryNotFound) {
+	if errors.Is(err, object.ErrEntryNotFound) || errors.Is(err, object.ErrDirectoryNotFound) {
 		return nil, filemode.Empty, false, nil
+	}
+	if errors.Is(err, plumbing.ErrObjectNotFound) {
+		// FindEntry tries to load every intermediate component as a tree. If
+		// one is a file, go-git returns ErrObjectNotFound even though the
+		// repository is healthy and the requested path is simply absent.
+		blocked, lookupErr := treePathBlockedByFile(repo, tree, path)
+		if lookupErr != nil {
+			return nil, filemode.Empty, false, fmt.Errorf("inspect tree entry %s: %w", path, lookupErr)
+		}
+		if blocked {
+			return nil, filemode.Empty, false, nil
+		}
 	}
 	if err != nil {
 		return nil, filemode.Empty, false, fmt.Errorf("read tree entry %s: %w", path, err)
+	}
+	if entry.Mode == filemode.Dir {
+		return nil, filemode.Empty, false, nil
 	}
 	data, err := blobContents(repo, entry.Hash, entry.Mode)
 	if err != nil {
 		return nil, filemode.Empty, false, fmt.Errorf("read HEAD file %s: %w", path, err)
 	}
 	return data, entry.Mode, true, nil
+}
+
+func treePathBlockedByFile(repo *git.Repository, tree *object.Tree, path string) (bool, error) {
+	parts := strings.Split(path, "/")
+	for _, part := range parts[:len(parts)-1] {
+		var entry *object.TreeEntry
+		for i := range tree.Entries {
+			if tree.Entries[i].Name == part {
+				entry = &tree.Entries[i]
+				break
+			}
+		}
+		if entry == nil {
+			return false, nil
+		}
+		if entry.Mode != filemode.Dir {
+			return true, nil
+		}
+		var err error
+		tree, err = object.GetTree(repo.Storer, entry.Hash)
+		if err != nil {
+			return false, err
+		}
+	}
+	return false, nil
 }
 
 func blobContents(repo *git.Repository, hash plumbing.Hash, mode filemode.FileMode) ([]byte, error) {
@@ -577,7 +517,7 @@ func blobContents(repo *git.Repository, hash plumbing.Hash, mode filemode.FileMo
 
 func workingFile(path string) ([]byte, filemode.FileMode, bool, error) {
 	info, err := os.Lstat(path)
-	if os.IsNotExist(err) {
+	if isMissingPathError(err) {
 		return nil, filemode.Empty, false, nil
 	}
 	if err != nil {
@@ -596,6 +536,53 @@ func workingFile(path string) ([]byte, filemode.FileMode, bool, error) {
 	}
 	data, err := os.ReadFile(path)
 	return data, mode, true, err
+}
+
+func (m *Manager) worktreeFile(path string) ([]byte, filemode.FileMode, bool, error) {
+	blocked, err := worktreePathBlockedByFile(m.workingDir, path)
+	if err != nil {
+		return nil, filemode.Empty, false, err
+	}
+	if blocked {
+		return nil, filemode.Empty, false, nil
+	}
+	data, mode, exists, err := workingFile(filepath.Join(m.workingDir, filepath.FromSlash(path)))
+	if err != nil || !exists || mode != filemode.Submodule {
+		return data, mode, exists, err
+	}
+	indexed, indexedMode, indexedExists, err := m.indexFile(m.objectPath(path))
+	if err != nil {
+		return nil, filemode.Empty, false, err
+	}
+	if indexedExists && indexedMode == filemode.Submodule {
+		return indexed, indexedMode, true, nil
+	}
+	return nil, filemode.Empty, false, nil
+}
+
+func worktreePathBlockedByFile(root, path string) (bool, error) {
+	parts := strings.Split(filepath.FromSlash(path), string(filepath.Separator))
+	current := root
+	for _, part := range parts[:len(parts)-1] {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if isMissingPathError(err) {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		// Git treats symlinks as files. Do not follow one in an intermediate
+		// component when a directory-to-symlink change removes nested paths.
+		if !info.IsDir() {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func isMissingPathError(err error) bool {
+	return os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR)
 }
 
 func (m *Manager) scopePath(path string) (string, bool) {

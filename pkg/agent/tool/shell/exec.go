@@ -185,8 +185,9 @@ type execSession struct {
 	interrupt   func() error
 	stdin       io.WriteCloser
 
-	done    chan struct{}
-	exitErr error
+	done     chan struct{}
+	exitErr  error
+	exitedAt time.Time
 
 	// backgrounded and waiters are lifecycle state guarded by the manager mutex:
 	// exit notifications fire only for backgrounded sessions no tool call is
@@ -197,6 +198,11 @@ type execSession struct {
 	mu      sync.Mutex
 	unread  bytes.Buffer
 	dropped int
+
+	inputMu        sync.Mutex
+	pendingInput   string
+	inputOverflow  bool
+	inputUncertain bool
 }
 
 func (s *execSession) Write(p []byte) (int, error) {
@@ -275,7 +281,7 @@ func (s *execSession) exitNotice() string {
 	return "Command completed"
 }
 
-func ExecTools(manager *ExecManager, workDir string, extraWritableRoots []string, elicit *tool.Elicitation, appr *Approvals) []tool.Tool {
+func ExecTools(manager *ExecManager, workDir string, elicit *tool.Elicitation, appr *Approvals, opts *Options) []tool.Tool {
 	if appr == nil {
 		appr = NewApprovals()
 	}
@@ -327,8 +333,8 @@ func ExecTools(manager *ExecManager, workDir string, extraWritableRoots []string
 				"additionalProperties": false,
 			},
 
-			Execute: func(ctx context.Context, args map[string]any) (string, error) {
-				return executeExecCommand(ctx, manager, workDir, extraWritableRoots, elicit, appr, args)
+			Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
+				return executeExecCommand(ctx, manager, workDir, elicit, appr, opts, args)
 			},
 		},
 		{
@@ -351,24 +357,24 @@ func ExecTools(manager *ExecManager, workDir string, extraWritableRoots []string
 				"additionalProperties": false,
 			},
 
-			Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 				return executeExecSession(ctx, manager, elicit, appr, args)
 			},
 		},
 	}
 }
 
-func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, extraWritableRoots []string, elicit *tool.Elicitation, appr *Approvals, args map[string]any) (string, error) {
+func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, elicit *tool.Elicitation, appr *Approvals, opts *Options, args map[string]any) (tool.Result, error) {
 	command, ok := args["command"].(string)
 
 	if !ok || command == "" {
-		return "", fmt.Errorf("command is required")
+		return tool.Result{}, fmt.Errorf("command is required")
 	}
 
 	wait := defaultExecWait
 	if value, present, err := tool.NonNegIntArg(args, "wait"); present {
 		if err != nil {
-			return "", err
+			return tool.Result{}, err
 		}
 		wait = value
 	}
@@ -378,11 +384,11 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, ext
 
 	dir, err := resolveWorkdir(workDir, args)
 	if err != nil {
-		return "", err
+		return tool.Result{}, err
 	}
 
 	if err := confirmDangerous(ctx, elicit, appr, args, approvalWorkdir(workDir, dir)); err != nil {
-		return "", err
+		return tool.Result{}, err
 	}
 
 	tty, _ := args["tty"].(bool)
@@ -392,12 +398,14 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, ext
 
 	sctx, cancel := context.WithCancel(context.Background())
 
-	cmd, err := buildCommand(sctx, command, dir, sandboxOptions{WorkspaceDir: workDir, ExtraWritableRoots: extraWritableRoots})
+	cmd, err := buildToolCommand(sctx, command, workDir, dir, opts)
 	if err != nil {
 		cancel()
-		return "", err
+		return tool.Result{}, err
 	}
-	cmd.Env = append(cmd.Env, "NO_COLOR=1", "PAGER=cat", "GIT_PAGER=cat")
+	cmd.Env = setEnvironment(cmd.Env, "NO_COLOR", "1")
+	cmd.Env = setEnvironment(cmd.Env, "PAGER", "cat")
+	cmd.Env = setEnvironment(cmd.Env, "GIT_PAGER", "cat")
 
 	description, _ := args["description"].(string)
 
@@ -415,7 +423,7 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, ext
 		master, err := startTTY(cmd)
 		if err != nil {
 			cancel()
-			return "", fmt.Errorf("failed to start command: %w", err)
+			return tool.Result{}, fmt.Errorf("failed to start command: %w", err)
 		}
 		s.stdin = master
 
@@ -426,12 +434,14 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, ext
 		}()
 		go func() {
 			err := cmd.Wait()
+			exitedAt := time.Now()
 			select {
 			case <-copyDone:
 			case <-time.After(2 * time.Second):
 			}
 			master.Close()
 			s.exitErr = err
+			s.exitedAt = exitedAt
 			close(s.done)
 			m.notifyExit(s)
 		}()
@@ -439,7 +449,7 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, ext
 		stdin, err := cmd.StdinPipe()
 		if err != nil {
 			cancel()
-			return "", err
+			return tool.Result{}, err
 		}
 		s.stdin = stdin
 		cmd.Stdout = s
@@ -447,11 +457,12 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, ext
 
 		if err := cmd.Start(); err != nil {
 			cancel()
-			return "", fmt.Errorf("failed to start command: %w", err)
+			return tool.Result{}, fmt.Errorf("failed to start command: %w", err)
 		}
 
 		go func() {
 			s.exitErr = cmd.Wait()
+			s.exitedAt = time.Now()
 			close(s.done)
 			m.notifyExit(s)
 		}()
@@ -459,7 +470,7 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, ext
 
 	id, err := m.add(s)
 	if err != nil {
-		return "", err
+		return tool.Result{}, err
 	}
 
 	timer := time.NewTimer(time.Duration(wait) * time.Second)
@@ -468,7 +479,7 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, ext
 	select {
 	case <-s.done:
 		m.remove(id)
-		return sessionResult(s.drain(), s.exitNotice()), nil
+		return completedSessionResult(s), nil
 	case <-timer.C:
 	case <-ctx.Done():
 	}
@@ -476,18 +487,18 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, ext
 	m.markBackgrounded(s)
 
 	notice := fmt.Sprintf("Still running with session_id %d — use exec_session to poll output, send input, or kill it", id)
-	return sessionResult(s.drain(), notice), nil
+	return tool.Text(sessionResult(s.drain(), notice)), nil
 }
 
-func executeExecSession(ctx context.Context, m *ExecManager, elicit *tool.Elicitation, appr *Approvals, args map[string]any) (string, error) {
+func executeExecSession(ctx context.Context, m *ExecManager, elicit *tool.Elicitation, appr *Approvals, args map[string]any) (tool.Result, error) {
 	id, ok := tool.IntArg(args, "session_id")
 	if !ok {
-		return "", fmt.Errorf("session_id is required")
+		return tool.Result{}, fmt.Errorf("session_id is required")
 	}
 
 	s := m.get(id)
 	if s == nil {
-		return "", fmt.Errorf("no session with id %d (it may have exited and been cleaned up)", id)
+		return tool.Result{}, fmt.Errorf("no session with id %d (it may have exited and been cleaned up)", id)
 	}
 
 	m.beginWait(s)
@@ -496,7 +507,7 @@ func executeExecSession(ctx context.Context, m *ExecManager, elicit *tool.Elicit
 	wait := defaultSessionWait
 	if value, present, err := tool.NonNegIntArg(args, "wait"); present {
 		if err != nil {
-			return "", err
+			return tool.Result{}, err
 		}
 		wait = value
 	}
@@ -521,33 +532,47 @@ func executeExecSession(ctx context.Context, m *ExecManager, elicit *tool.Elicit
 		}
 
 		m.remove(id)
-		return sessionResult(s.drain(), notice), nil
+		return tool.Text(sessionResult(s.drain(), notice)), nil
 	}
 
 	input, _ := args["input"].(string)
 	input = decodeInput(input)
 
-	if input == "\u0003" && !s.tty {
-		if err := s.interrupt(); err != nil {
-			return "", fmt.Errorf("cannot interrupt on this platform; use kill instead: %w", err)
+	if input == "\u0003" {
+		s.inputMu.Lock()
+		s.pendingInput = ""
+		s.inputOverflow = false
+		s.inputUncertain = false
+		s.inputMu.Unlock()
+		if !s.tty {
+			if err := s.interrupt(); err != nil {
+				return tool.Result{}, fmt.Errorf("cannot interrupt on this platform; use kill instead: %w", err)
+			}
+		} else if _, err := io.WriteString(s.stdin, input); err != nil {
+			return tool.Result{}, fmt.Errorf("failed to write interrupt to stdin: %w", err)
 		}
 	} else if input != "" {
-		if err := confirmIfDangerous(ctx, elicit, appr, strings.TrimRight(input, "\n"), IsDangerousCommand(input)); err != nil {
-			return "", err
-		}
-
-		if _, err := io.WriteString(s.stdin, input); err != nil {
-			if s.exited() {
-				m.remove(id)
-				return sessionResult(s.drain(), s.exitNotice()+" (input was not delivered)"), nil
+		if result, err := writeSessionInput(ctx, m, id, s, elicit, appr, input); err != nil || result != nil {
+			if result != nil {
+				return *result, err
 			}
-			return "", fmt.Errorf("failed to write to stdin: %w", err)
+			return tool.Result{}, err
 		}
 	}
 
 	if eof, _ := args["eof"].(bool); eof {
+		if err := confirmPendingSessionInput(ctx, s, elicit, appr); err != nil {
+			return tool.Result{}, err
+		}
 		if s.tty {
-			io.WriteString(s.stdin, "\x04")
+			if _, err := io.WriteString(s.stdin, "\x04"); err != nil && !s.exited() {
+				return tool.Result{}, fmt.Errorf("failed to send EOF to terminal: %w", err)
+			}
+			// Readline treats Ctrl-D on a non-empty buffer as delete-char, not
+			// EOF. Unless the process exits, its resulting line is unknowable.
+			s.inputMu.Lock()
+			s.inputUncertain = true
+			s.inputMu.Unlock()
 		} else {
 			s.stdin.Close()
 		}
@@ -559,16 +584,170 @@ func executeExecSession(ctx context.Context, m *ExecManager, elicit *tool.Elicit
 	select {
 	case <-s.done:
 		m.remove(id)
-		return sessionResult(s.drain(), s.exitNotice()), nil
+		return completedSessionResult(s), nil
 	case <-timer.C:
 	case <-ctx.Done():
 	}
 
 	output := s.drain()
 	if output == "" {
-		return fmt.Sprintf("(no new output; session %d still running)", id), nil
+		return tool.Text(fmt.Sprintf("(no new output; session %d still running)", id)), nil
 	}
-	return sessionResult(output, fmt.Sprintf("Session %d still running", id)), nil
+	return tool.Text(sessionResult(output, fmt.Sprintf("Session %d still running", id))), nil
+}
+
+func writeSessionInput(ctx context.Context, m *ExecManager, id int, s *execSession, elicit *tool.Elicitation, appr *Approvals, input string) (*tool.Result, error) {
+	// Serialize input writes and retain the current logical line. Without this,
+	// an agent can submit "r" and "m -rf ...\n" in separate calls while each
+	// individual call looks harmless to the classifier.
+	s.inputMu.Lock()
+	defer s.inputMu.Unlock()
+
+	combined := applyInputEditing(s.pendingInput, input)
+	submitted, remainder := splitSubmittedInput(combined)
+	immediateControl := hasImmediateTerminalControl(input)
+	dangerous := immediateControl || s.inputUncertain
+	approvalText := strings.TrimRight(submitted, "\r\n")
+	if dangerous && approvalText == "" {
+		approvalText = s.pendingInput + input
+	}
+	if immediateControl {
+		approvalText += "  [input contains an active terminal control]"
+	}
+	if s.inputUncertain {
+		approvalText += "  [terminal input state is unknown]"
+	}
+	if submitted != "" {
+		dangerous = dangerous || s.inputOverflow || IsDangerousCommand(submitted)
+		if s.inputOverflow {
+			approvalText += "  [input line exceeded classifier limit]"
+		}
+	}
+	approvalCache := appr
+	if immediateControl || s.inputUncertain || s.inputOverflow {
+		// Control keys, unknown readline state, and truncated input are
+		// state-dependent; identical text is not an identical capability.
+		approvalCache = NewApprovals()
+	}
+	if err := confirmIfDangerous(ctx, elicit, approvalCache, approvalText, dangerous); err != nil {
+		return nil, err
+	}
+
+	if _, err := io.WriteString(s.stdin, input); err != nil {
+		if s.exited() {
+			m.remove(id)
+			result := completedSessionResult(s)
+			result.Content += " (input was not delivered)"
+			return &result, nil
+		}
+		return nil, fmt.Errorf("failed to write to stdin: %w", err)
+	}
+
+	s.inputOverflow = len(remainder) > maxClassifiableBytes
+	if s.inputOverflow {
+		remainder = remainder[:maxClassifiableBytes]
+	}
+	s.pendingInput = remainder
+	s.inputUncertain = terminalInputUncertainAfter(s.inputUncertain, input)
+	return nil, nil
+}
+
+func confirmPendingSessionInput(ctx context.Context, s *execSession, elicit *tool.Elicitation, appr *Approvals) error {
+	s.inputMu.Lock()
+	defer s.inputMu.Unlock()
+	if s.pendingInput == "" && !s.inputOverflow && !s.inputUncertain {
+		return nil
+	}
+	text := s.pendingInput
+	if s.inputOverflow {
+		text += "  [input line exceeded classifier limit]"
+	}
+	if s.inputUncertain {
+		text += "  [terminal input state is unknown]"
+	}
+	approvalCache := appr
+	if s.inputOverflow || s.inputUncertain {
+		approvalCache = NewApprovals()
+	}
+	return confirmIfDangerous(ctx, elicit, approvalCache, text, s.inputOverflow || s.inputUncertain || IsDangerousCommand(s.pendingInput))
+}
+
+func hasImmediateTerminalControl(input string) bool {
+	for _, r := range input {
+		if isUnmodelledTerminalControl(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func isUnmodelledTerminalControl(r rune) bool {
+	switch r {
+	case '\n', '\r', '\b', '\x7f', '\x15':
+		return false
+	}
+	return r < ' '
+}
+
+// A newline after an unmodelled key submits the unknown readline buffer and
+// restores a known empty line. A later control key makes it uncertain again.
+func terminalInputUncertainAfter(uncertain bool, input string) bool {
+	for _, r := range input {
+		switch {
+		case r == '\n' || r == '\r':
+			uncertain = false
+		case isUnmodelledTerminalControl(r):
+			uncertain = true
+		}
+	}
+	return uncertain
+}
+
+func applyInputEditing(pending, input string) string {
+	line := []rune(pending)
+	for _, r := range input {
+		switch r {
+		case '\b', '\x7f':
+			if len(line) > 0 && line[len(line)-1] != '\n' && line[len(line)-1] != '\r' {
+				line = line[:len(line)-1]
+			}
+		case '\x15': // Ctrl-U: erase back to the current line boundary.
+			for len(line) > 0 && line[len(line)-1] != '\n' && line[len(line)-1] != '\r' {
+				line = line[:len(line)-1]
+			}
+		default:
+			line = append(line, r)
+		}
+	}
+	return string(line)
+}
+
+func splitSubmittedInput(input string) (submitted, remainder string) {
+	last := strings.LastIndexAny(input, "\r\n")
+	if last < 0 {
+		return "", input
+	}
+	return input[:last+1], input[last+1:]
+}
+
+func completedSessionResult(s *execSession) tool.Result {
+	duration := s.exitedAt.Sub(s.started)
+	if s.exitedAt.IsZero() {
+		duration = time.Since(s.started)
+	}
+	result := tool.Result{
+		Content: sessionResult(s.drain(), s.exitNotice()),
+		IsError: s.exitErr != nil,
+		Metadata: map[string]any{
+			"duration_ms": duration.Milliseconds(),
+		},
+	}
+	if exitErr, ok := errors.AsType[*exec.ExitError](s.exitErr); ok {
+		result.Metadata["exit_code"] = exitErr.ExitCode()
+	} else if s.exitErr == nil {
+		result.Metadata["exit_code"] = 0
+	}
+	return result
 }
 
 func classifyExecSession(args map[string]any) tool.Effect {

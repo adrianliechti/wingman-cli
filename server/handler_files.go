@@ -2,7 +2,10 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -14,6 +17,9 @@ import (
 )
 
 var excludedDirs = map[string]bool{
+	".git":         true,
+	".hg":          true,
+	".svn":         true,
 	"node_modules": true,
 	"__pycache__":  true,
 	".venv":        true,
@@ -23,6 +29,11 @@ var excludedDirs = map[string]bool{
 	"target":       true,
 	".next":        true,
 	".cache":       true,
+}
+
+var excludedFiles = []string{
+	".DS_Store",
+	"Thumbs.db",
 }
 
 var extToLanguage = map[string]string{
@@ -49,13 +60,19 @@ var extToLanguage = map[string]string{
 	".yaml":       "yaml",
 	".yml":        "yaml",
 	".json":       "json",
+	".csv":        "plaintext",
+	".tsv":        "plaintext",
 	".xml":        "xml",
+	".svg":        "xml",
 	".html":       "html",
 	".htm":        "html",
 	".css":        "css",
 	".scss":       "scss",
 	".sql":        "sql",
 	".md":         "markdown",
+	".markdown":   "markdown",
+	".mmd":        "plaintext",
+	".mermaid":    "plaintext",
 	".toml":       "toml",
 	".ini":        "ini",
 	".cfg":        "ini",
@@ -96,7 +113,7 @@ func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 	for _, entry := range entries {
 		name := entry.Name()
 
-		if strings.HasPrefix(name, ".") {
+		if isExcludedFile(name) {
 			continue
 		}
 
@@ -127,6 +144,15 @@ func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, files)
+}
+
+func isExcludedFile(name string) bool {
+	for _, excluded := range excludedFiles {
+		if strings.EqualFold(name, excluded) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleFilesSearch(w http.ResponseWriter, r *http.Request) {
@@ -194,16 +220,6 @@ func (s *Server) handleFileRead(w http.ResponseWriter, r *http.Request) {
 
 	size := int64(len(data))
 
-	if strings.EqualFold(filepath.Ext(filePath), ".svg") {
-		writeJSON(w, FileContent{
-			Path:   filePath,
-			Binary: true,
-			Mime:   "image/svg+xml",
-			Size:   size,
-		})
-		return
-	}
-
 	if isBinary(data) {
 		head := data
 		if len(head) > 512 {
@@ -211,10 +227,11 @@ func (s *Server) handleFileRead(w http.ResponseWriter, r *http.Request) {
 		}
 		mime := http.DetectContentType(head)
 		writeJSON(w, FileContent{
-			Path:   filePath,
-			Binary: true,
-			Mime:   mime,
-			Size:   size,
+			Path:     filePath,
+			Revision: fileRevision(data),
+			Binary:   true,
+			Mime:     mime,
+			Size:     size,
 		})
 		return
 	}
@@ -223,8 +240,13 @@ func (s *Server) handleFileRead(w http.ResponseWriter, r *http.Request) {
 		Path:     filePath,
 		Content:  string(data),
 		Language: languageForPath(filePath),
+		Revision: fileRevision(data),
 		Size:     size,
 	})
+}
+
+func fileRevision(data []byte) string {
+	return fmt.Sprintf("%x", sha256.Sum256(data))
 }
 
 func languageForPath(filePath string) string {
@@ -253,21 +275,45 @@ func isBinary(data []byte) bool {
 
 func (s *Server) handleFileWrite(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Path    string `json:"path"`
-		Content string `json:"content"`
+		Path     string `json:"path"`
+		Content  string `json:"content"`
+		Revision string `json:"revision"`
+		Force    bool   `json:"force"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
 	}
+	s.fileWriteMu.Lock()
+	defer s.fileWriteMu.Unlock()
 
 	rel, ok := s.resolveExistingRegularFile(w, body.Path)
 	if !ok {
 		return
 	}
-	info, _ := s.workspace.Root.Lstat(rel)
+	info, err := s.workspace.Root.Lstat(rel)
+	if err != nil {
+		http.Error(w, "file not found", http.StatusNotFound)
+		return
+	}
+	if !body.Force {
+		if body.Revision == "" {
+			http.Error(w, "revision is required", http.StatusBadRequest)
+			return
+		}
+		current, err := s.workspace.Root.ReadFile(rel)
+		if err != nil {
+			http.Error(w, "file not found", http.StatusNotFound)
+			return
+		}
+		if fileRevision(current) != body.Revision {
+			http.Error(w, "file changed on disk", http.StatusConflict)
+			return
+		}
+	}
 
-	if err := s.workspace.Root.WriteFile(rel, []byte(body.Content), info.Mode().Perm()); err != nil {
+	content := []byte(body.Content)
+	if err := s.workspace.Root.WriteFile(rel, content, info.Mode().Perm()); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -276,7 +322,182 @@ func (s *Server) handleFileWrite(w http.ResponseWriter, r *http.Request) {
 	if s.workspace.HasLSP() {
 		s.broadcast(Frame{Type: EvtDiagnosticsChanged})
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, struct {
+		Revision string `json:"revision"`
+	}{Revision: fileRevision(content)})
+}
+
+type fileBatchWrite struct {
+	Path     string `json:"path"`
+	Content  string `json:"content"`
+	Revision string `json:"revision"`
+}
+
+// handleFileWriteBatch applies text-only workspace edits as one guarded unit.
+// Every revision is validated before the first write; a later write failure
+// restores all earlier files from their in-memory snapshots.
+func (s *Server) handleFileWriteBatch(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Files []fileBatchWrite `json:"files"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	if len(body.Files) == 0 {
+		http.Error(w, "at least one file is required", http.StatusBadRequest)
+		return
+	}
+
+	type snapshot struct {
+		rel     string
+		content []byte
+		mode    fs.FileMode
+	}
+	snapshots := make([]snapshot, 0, len(body.Files))
+	seen := make(map[string]bool, len(body.Files))
+
+	s.fileWriteMu.Lock()
+	defer s.fileWriteMu.Unlock()
+
+	for _, file := range body.Files {
+		rel, ok := s.workspaceRel(file.Path)
+		if !ok || seen[rel] {
+			http.Error(w, "invalid or duplicate path", http.StatusBadRequest)
+			return
+		}
+		seen[rel] = true
+		if file.Revision == "" {
+			http.Error(w, "revision is required", http.StatusBadRequest)
+			return
+		}
+		info, err := s.workspace.Root.Lstat(rel)
+		if err != nil || !info.Mode().IsRegular() {
+			http.Error(w, "file not found", http.StatusNotFound)
+			return
+		}
+		current, err := s.workspace.Root.ReadFile(rel)
+		if err != nil {
+			http.Error(w, "file not found", http.StatusNotFound)
+			return
+		}
+		if fileRevision(current) != file.Revision {
+			http.Error(w, "file changed on disk", http.StatusConflict)
+			return
+		}
+		snapshots = append(snapshots, snapshot{rel: rel, content: current, mode: info.Mode().Perm()})
+	}
+
+	for index, file := range body.Files {
+		if err := s.workspace.Root.WriteFile(snapshots[index].rel, []byte(file.Content), snapshots[index].mode); err != nil {
+			// Restore the failing file too: a failed write may already have
+			// truncated or partially replaced its contents.
+			rollbackErrs := make([]error, 0, index+1)
+			for rollback := index; rollback >= 0; rollback-- {
+				old := snapshots[rollback]
+				if restoreErr := s.workspace.Root.WriteFile(old.rel, old.content, old.mode); restoreErr != nil {
+					rollbackErrs = append(rollbackErrs, restoreErr)
+				}
+			}
+			http.Error(w, errors.Join(append([]error{err}, rollbackErrs...)...).Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	revisions := make(map[string]string, len(body.Files))
+	for _, file := range body.Files {
+		revisions[file.Path] = fileRevision([]byte(file.Content))
+	}
+	s.flushFiles()
+	if s.workspace.HasLSP() {
+		s.broadcast(Frame{Type: EvtDiagnosticsChanged})
+	}
+	writeJSON(w, struct {
+		Revisions map[string]string `json:"revisions"`
+	}{Revisions: revisions})
+}
+
+func (s *Server) handleFileCreate(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Path      string  `json:"path"`
+		Content   *string `json:"content"`
+		Directory bool    `json:"directory"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+
+	rel, ok := s.workspaceRel(body.Path)
+	if !ok {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	if body.Directory {
+		if body.Content != nil {
+			http.Error(w, "a directory cannot have file content", http.StatusBadRequest)
+			return
+		}
+		if err := s.workspace.Root.Mkdir(rel, 0o755); err != nil {
+			switch {
+			case errors.Is(err, fs.ErrExist):
+				http.Error(w, "path already exists", http.StatusConflict)
+			case errors.Is(err, fs.ErrNotExist):
+				http.Error(w, "parent directory not found", http.StatusNotFound)
+			default:
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+			return
+		}
+		s.flushFiles()
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	file, err := s.workspace.Root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		switch {
+		case errors.Is(err, fs.ErrExist):
+			http.Error(w, "file already exists", http.StatusConflict)
+		case errors.Is(err, fs.ErrNotExist):
+			http.Error(w, "parent directory not found", http.StatusNotFound)
+		default:
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
+	if body.Content != nil {
+		if _, err := io.WriteString(file, *body.Content); err != nil {
+			_ = file.Close()
+			_ = s.workspace.Root.Remove(rel)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if err := file.Close(); err != nil {
+		_ = s.workspace.Root.Remove(rel)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	s.flushFiles()
+	if s.workspace.HasLSP() {
+		s.broadcast(Frame{Type: EvtDiagnosticsChanged})
+	}
+	if body.Content == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	filePath := filepath.ToSlash(rel)
+	content := []byte(*body.Content)
+	writeJSON(w, FileContent{
+		Path:     filePath,
+		Content:  *body.Content,
+		Language: languageForPath(filePath),
+		Revision: fileRevision(content),
+		Size:     int64(len(content)),
+	})
 }
 
 func (s *Server) workspaceRel(p string) (string, bool) {
@@ -298,14 +519,8 @@ func (s *Server) workspaceDirRel(p string) (string, bool) {
 }
 
 func (s *Server) resolveExistingRegularFile(w http.ResponseWriter, p string) (string, bool) {
-	rel, ok := s.workspaceRel(p)
+	rel, info, ok := s.resolveExistingPath(w, p)
 	if !ok {
-		http.Error(w, "invalid path", http.StatusBadRequest)
-		return "", false
-	}
-	info, err := s.workspace.Root.Lstat(rel)
-	if err != nil {
-		http.Error(w, "file not found", http.StatusNotFound)
 		return "", false
 	}
 	if info.IsDir() {
@@ -317,6 +532,63 @@ func (s *Server) resolveExistingRegularFile(w http.ResponseWriter, p string) (st
 		return "", false
 	}
 	return rel, true
+}
+
+func (s *Server) resolveExistingPath(w http.ResponseWriter, p string) (string, os.FileInfo, bool) {
+	rel, ok := s.workspaceRel(p)
+	if !ok {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return "", nil, false
+	}
+	info, err := s.workspace.Root.Lstat(rel)
+	if err != nil {
+		http.Error(w, "path not found", http.StatusNotFound)
+		return "", nil, false
+	}
+	return rel, info, true
+}
+
+func (s *Server) handleFilePath(w http.ResponseWriter, r *http.Request) {
+	rel, _, ok := s.resolveExistingPath(w, r.URL.Query().Get("path"))
+	if !ok {
+		return
+	}
+	absolute, err := filepath.Abs(filepath.Join(s.workspace.RootPath, rel))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, struct {
+		Path     string `json:"path"`
+		Relative string `json:"relative"`
+	}{
+		Path:     absolute,
+		Relative: filepath.ToSlash(rel),
+	})
+}
+
+func (s *Server) handleFileReveal(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	rel, info, ok := s.resolveExistingPath(w, body.Path)
+	if !ok {
+		return
+	}
+	absolute, err := filepath.Abs(filepath.Join(s.workspace.RootPath, rel))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := revealPath(absolute, info.IsDir()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleFileDelete(w http.ResponseWriter, r *http.Request) {
@@ -355,9 +627,21 @@ func (s *Server) handleFileRename(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid to path", http.StatusBadRequest)
 		return
 	}
+	fromInfo, err := s.workspace.Root.Lstat(fromRel)
+	if err != nil {
+		http.Error(w, "source not found", http.StatusNotFound)
+		return
+	}
+	if fromInfo.IsDir() && strings.HasPrefix(filepath.ToSlash(toRel), filepath.ToSlash(fromRel)+"/") {
+		http.Error(w, "cannot move a folder into itself", http.StatusBadRequest)
+		return
+	}
 
 	if _, err := s.workspace.Root.Lstat(toRel); err == nil {
 		http.Error(w, "destination already exists", http.StatusConflict)
+		return
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -395,6 +679,9 @@ func (s *Server) handleFileCopy(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := root.Lstat(toRel); err == nil {
 		http.Error(w, "destination already exists", http.StatusConflict)
+		return
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 

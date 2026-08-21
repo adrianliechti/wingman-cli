@@ -1,3 +1,7 @@
-{{- if .ProjectInstructions -}}
+Project instruction files such as `AGENTS.md` and `CLAUDE.md` may appear at any directory level. A file applies to the directory tree rooted where it lives; deeper files override broader ones, and direct system, developer, and user instructions override project files. Before touching files in a deeper or different directory, check for applicable instruction files there.
+{{- if .ProjectInstructions}}
+
+Instructions already loaded from the working directory and its ancestors, ordered broadest to most specific:
+
 {{.ProjectInstructions}}
 {{- end}}

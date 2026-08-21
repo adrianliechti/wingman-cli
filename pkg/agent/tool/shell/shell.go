@@ -16,34 +16,138 @@ import (
 )
 
 const (
-	defaultTimeout = 120
-	maxOutputBytes = 16 * 1024 * 1024
+	defaultTimeout       = 120
+	maxOutputBytes       = 16 * 1024 * 1024
+	maxSpillBytes        = 256 * 1024 * 1024
+	outputHeadBytes      = 4 * 1024
+	outputTailBytes      = 8 * 1024
+	outputTranscriptMode = 0600
 )
 
 var errCommandTimeout = errors.New("command timeout")
 
 type cappedBuffer struct {
-	buf     bytes.Buffer
-	dropped int
+	buf        bytes.Buffer
+	head       []byte
+	tail       []byte
+	total      int64
+	dropped    int64
+	overflow   bool
+	scratchDir string
+	spillLimit int64
+	spill      *os.File
+	spillPath  string
+	spillSize  int64
+}
+
+func newCappedBuffer(scratchDir string) *cappedBuffer {
+	return &cappedBuffer{scratchDir: scratchDir}
 }
 
 func (b *cappedBuffer) Write(p []byte) (int, error) {
-	if remaining := maxOutputBytes - b.buf.Len(); remaining > 0 {
-		n := min(len(p), remaining)
-		b.buf.Write(p[:n])
-		b.dropped += len(p) - n
+	b.total += int64(len(p))
+	if len(b.head) < outputHeadBytes {
+		n := min(len(p), outputHeadBytes-len(b.head))
+		b.head = append(b.head, p[:n]...)
+	}
+	b.tail = append(b.tail, p...)
+	if over := len(b.tail) - outputTailBytes; over > 0 {
+		copy(b.tail, b.tail[over:])
+		b.tail = b.tail[:outputTailBytes]
+	}
+
+	if !b.overflow {
+		if b.buf.Len()+len(p) <= maxOutputBytes {
+			_, _ = b.buf.Write(p)
+			return len(p), nil
+		}
+		b.overflow = true
+		b.startSpill()
+		if b.spill != nil {
+			b.writeSpill(b.buf.Bytes())
+		}
+		if b.spill != nil {
+			// The inline buffer is freed only once its bytes are on disk;
+			// without a transcript it stays as the model-visible output.
+			b.buf = bytes.Buffer{}
+		}
+	}
+
+	if b.spill != nil {
+		b.writeSpill(p)
 	} else {
-		b.dropped += len(p)
+		b.dropped += int64(len(p))
 	}
 	return len(p), nil
 }
 
-func (b *cappedBuffer) result() string {
-	out := b.buf.String()
-	if b.dropped > 0 {
-		out += fmt.Sprintf("\n\n[output capped at %dMB; %d further bytes dropped]", maxOutputBytes/(1024*1024), b.dropped)
+func (b *cappedBuffer) startSpill() {
+	if b.scratchDir == "" {
+		return
 	}
-	return out
+	f, err := os.CreateTemp(b.scratchDir, "shell-output-*.log")
+	if err != nil {
+		return
+	}
+	_ = f.Chmod(outputTranscriptMode)
+	b.spill = f
+	b.spillPath = f.Name()
+}
+
+func (b *cappedBuffer) writeSpill(p []byte) {
+	limit := b.spillLimit
+	if limit == 0 {
+		limit = maxSpillBytes
+	}
+	if room := limit - b.spillSize; int64(len(p)) > room {
+		keep := max(room, 0)
+		b.dropped += int64(len(p)) - keep
+		p = p[:keep]
+	}
+	if len(p) == 0 {
+		return
+	}
+	n, err := b.spill.Write(p)
+	b.spillSize += int64(n)
+	if err != nil || n != len(p) {
+		_ = b.spill.Close()
+		_ = os.Remove(b.spillPath)
+		b.spill = nil
+		b.spillPath = ""
+	}
+}
+
+func (b *cappedBuffer) result() string {
+	if b.spill != nil {
+		_ = b.spill.Close()
+		b.spill = nil
+	}
+
+	if !b.overflow {
+		return b.buf.String()
+	}
+
+	var out strings.Builder
+
+	if b.buf.Len() > 0 {
+		out.Write(b.buf.Bytes())
+		fmt.Fprintf(&out, "\n\n[output exceeded %dMB; %d trailing bytes dropped (no scratch directory for a full transcript)]", maxOutputBytes/(1024*1024), b.dropped)
+		return out.String()
+	}
+
+	out.Write(b.head)
+	out.WriteString("\n\n[... middle output omitted ...]\n\n")
+	out.Write(b.tail)
+	middleBytes := b.total - int64(len(b.head)) - int64(len(b.tail))
+	fmt.Fprintf(&out, "\n\n[output exceeded %dMB; %d middle bytes omitted from inline output", maxOutputBytes/(1024*1024), middleBytes)
+	switch {
+	case b.spillPath != "" && b.dropped > 0:
+		fmt.Fprintf(&out, "; first %d bytes of raw output saved to %s", b.spillSize, b.spillPath)
+	case b.spillPath != "":
+		fmt.Fprintf(&out, "; full raw output saved to %s", b.spillPath)
+	}
+	out.WriteString("]")
+	return out.String()
 }
 
 const (
@@ -56,7 +160,7 @@ const (
 // non-blank line as display-only progress. os/exec serializes Write calls when
 // stdout and stderr share one writer, so no locking is needed.
 type progressBuffer struct {
-	cappedBuffer
+	*cappedBuffer
 	report func(string)
 
 	partial []byte
@@ -64,6 +168,9 @@ type progressBuffer struct {
 }
 
 func (b *progressBuffer) Write(p []byte) (int, error) {
+	if b.cappedBuffer == nil {
+		b.cappedBuffer = &cappedBuffer{}
+	}
 	b.cappedBuffer.Write(p)
 
 	if b.report == nil {
@@ -114,7 +221,7 @@ func safetyGuardLine(elicit *tool.Elicitation) string {
 	return "- Safety guard: routine mutating commands run directly, but destructive or privilege-escalating commands require user confirmation first. An approved command re-runs without re-asking for the rest of the session."
 }
 
-func Tools(workDir string, extraWritableRoots []string, elicit *tool.Elicitation, appr *Approvals) []tool.Tool {
+func Tools(workDir string, elicit *tool.Elicitation, appr *Approvals, opts *Options) []tool.Tool {
 	if appr == nil {
 		appr = NewApprovals()
 	}
@@ -149,23 +256,23 @@ func Tools(workDir string, extraWritableRoots []string, elicit *tool.Elicitation
 			"additionalProperties": false,
 		},
 
-		Execute: func(ctx context.Context, args map[string]any) (string, error) {
-			return executeShell(ctx, workDir, extraWritableRoots, elicit, appr, args)
+		Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
+			return executeShell(ctx, workDir, elicit, appr, opts, args)
 		},
 	}}
 }
 
-func executeShell(ctx context.Context, workDir string, extraWritableRoots []string, elicit *tool.Elicitation, appr *Approvals, args map[string]any) (string, error) {
+func executeShell(ctx context.Context, workDir string, elicit *tool.Elicitation, appr *Approvals, opts *Options, args map[string]any) (tool.Result, error) {
 	command, ok := args["command"].(string)
 
 	if !ok || command == "" {
-		return "", fmt.Errorf("command is required")
+		return tool.Result{}, fmt.Errorf("command is required")
 	}
 
 	timeout := defaultTimeout
 	if value, present, err := tool.OptionalIntArg(args, "timeout"); present {
 		if err != nil {
-			return "", err
+			return tool.Result{}, err
 		}
 		timeout = value
 	}
@@ -179,67 +286,80 @@ func executeShell(ctx context.Context, workDir string, extraWritableRoots []stri
 
 	dir, err := resolveWorkdir(workDir, args)
 	if err != nil {
-		return "", err
+		return tool.Result{}, err
 	}
 
 	if err := confirmDangerous(ctx, elicit, appr, args, approvalWorkdir(workDir, dir)); err != nil {
-		return "", err
+		return tool.Result{}, err
 	}
 
 	ctx, cancel := context.WithTimeoutCause(ctx, time.Duration(timeout)*time.Second, errCommandTimeout)
 	defer cancel()
 
-	cmd, err := buildCommand(ctx, command, dir, sandboxOptions{WorkspaceDir: workDir, ExtraWritableRoots: extraWritableRoots})
+	cmd, err := buildToolCommand(ctx, command, workDir, dir, opts)
 	if err != nil {
-		return "", err
+		return tool.Result{}, err
 	}
 
-	output := &progressBuffer{report: tool.Progress(ctx)}
+	scratchDir := ""
+	if opts != nil {
+		scratchDir = opts.ScratchDir
+	}
+	output := &progressBuffer{cappedBuffer: newCappedBuffer(scratchDir), report: tool.Progress(ctx)}
 	cmd.Stdout = output
 	cmd.Stderr = output
 
 	started := time.Now()
 	runErr := cmd.Run()
 	elapsed := time.Since(started)
+	result := sanitizeOutput(output.result())
+	metadata := map[string]any{
+		"duration_ms": elapsed.Milliseconds(),
+	}
+	if output.overflow {
+		metadata["truncated"] = true
+		metadata["output_bytes"] = output.total
+		if output.spillPath != "" {
+			metadata["artifact_path"] = output.spillPath
+		}
+	}
 
-	return formatShellResult(ctx, timeout, sanitizeOutput(output.result()), runErr, elapsed), nil
-}
-
-// formatShellResult turns a command's outcome into the text returned to the
-// model: a timeout notice, an exit-code/failure notice, or the plain output
-// on success.
-func formatShellResult(ctx context.Context, timeout int, result string, runErr error, elapsed time.Duration) string {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		metadata["timed_out"] = true
 		notice := fmt.Sprintf("Command timed out after %d seconds", timeout)
 		if !errors.Is(context.Cause(ctx), errCommandTimeout) {
 			notice = "Command aborted: the tool call deadline expired before the command finished"
 		}
 		if result == "" {
-			return notice
+			return tool.Result{Content: notice, IsError: true, Metadata: metadata}, nil
 		}
-		return result + "\n\n" + notice
+		return tool.Result{Content: result + "\n\n" + notice, IsError: true, Metadata: metadata}, nil
 	}
 
 	if runErr != nil {
 		notice := ""
 		if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
+			metadata["exit_code"] = exitErr.ExitCode()
 			notice = fmt.Sprintf("Command exited with code %d%s", exitErr.ExitCode(), wallTimeNote(elapsed))
 		} else {
 			notice = fmt.Sprintf("Command failed to run: %v", runErr)
 		}
 		if result == "" {
-			return notice
+			result = notice
+		} else {
+			result += "\n\n" + notice
 		}
-		return result + "\n\n" + notice
+		return tool.Result{Content: result, IsError: true, Metadata: metadata}, nil
 	}
 
+	metadata["exit_code"] = 0
 	if result == "" {
-		return fmt.Sprintf("(command completed with no output%s)", wallTimeNote(elapsed))
+		return tool.Result{Content: fmt.Sprintf("(command completed with no output%s)", wallTimeNote(elapsed)), Metadata: metadata}, nil
 	}
 	if note := wallTimeNote(elapsed); note != "" {
 		result += fmt.Sprintf("\n\n(completed%s)", note)
 	}
-	return result
+	return tool.Result{Content: result, Metadata: metadata}, nil
 }
 
 // wallTimeNote reports the runtime for slow commands only — it helps the
@@ -287,13 +407,10 @@ func resolveWorkdir(workDir string, args map[string]any) (string, error) {
 // Command builds an *exec.Cmd that runs a script with the same
 // interpreter the shell tool uses on this platform.
 func Command(ctx context.Context, command, workingDir string) (*exec.Cmd, error) {
-	return buildCommand(ctx, command, workingDir, sandboxOptions{WorkspaceDir: workingDir})
+	return buildCommandWithEnvironment(ctx, command, workingDir, os.Environ(), sandboxOptions{WorkspaceDir: workingDir})
 }
 
-// sandboxOptions configures how buildCommand runs a command relative to the
-// workspace sandbox, kept as a struct instead of positional parameters since
-// callers (the shell tool, its escalation retry, exec_command) each need a
-// different subset.
+// sandboxOptions configures how commands run relative to the workspace sandbox.
 type sandboxOptions struct {
 	// WorkspaceDir is the sandbox boundary commands may write within.
 	WorkspaceDir string
@@ -302,7 +419,15 @@ type sandboxOptions struct {
 	ExtraWritableRoots []string
 }
 
-func buildCommand(ctx context.Context, command, workingDir string, opts sandboxOptions) (*exec.Cmd, error) {
+func buildToolCommand(ctx context.Context, command, workspaceDir, workingDir string, opts *Options) (*exec.Cmd, error) {
+	sandboxOpts := sandboxOptions{WorkspaceDir: workspaceDir}
+	if opts != nil {
+		sandboxOpts.ExtraWritableRoots = opts.ExtraWritableRoots
+	}
+	return buildCommandWithEnvironment(ctx, command, workingDir, environmentForTools(opts), sandboxOpts)
+}
+
+func buildCommandWithEnvironment(ctx context.Context, command, workingDir string, environment []string, opts sandboxOptions) (*exec.Cmd, error) {
 	var cmd *exec.Cmd
 	sandboxed := false
 
@@ -332,12 +457,10 @@ func buildCommand(ctx context.Context, command, workingDir string, opts sandboxO
 	}
 
 	cmd.Dir = workingDir
-	cmd.Env = append(os.Environ(),
-		"GIT_EDITOR=true",
-		"WINGMAN=1",
-	)
+	cmd.Env = setEnvironment(environment, "GIT_EDITOR", "true")
+	cmd.Env = setEnvironment(cmd.Env, "WINGMAN", "1")
 	if sandboxed {
-		cmd.Env = append(cmd.Env, workspaceSandboxActiveEnv+"=1")
+		cmd.Env = setEnvironment(cmd.Env, workspaceSandboxActiveEnv, "1")
 	}
 
 	setupProcessGroup(cmd)

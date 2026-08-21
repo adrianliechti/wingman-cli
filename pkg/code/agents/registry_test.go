@@ -9,6 +9,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/adrianliechti/wingman-agent/internal/testenv"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 )
 
@@ -32,14 +33,13 @@ func registrationIDs(registrations []Registration) []string {
 	return ids
 }
 
-func setTestHome(t *testing.T, dir string) {
+func isolateHomes(t *testing.T) (string, string) {
 	t.Helper()
-	t.Setenv("HOME", dir)
-	t.Setenv("USERPROFILE", dir)
+	return testenv.UserHome(t), testenv.WingmanHome(t)
 }
 
 func TestNativeOptionsPreserveEnvironmentWithoutProviderOverrides(t *testing.T) {
-	setTestHome(t, t.TempDir())
+	isolateHomes(t)
 	env := []string{
 		"PATH=/usr/bin",
 		"ANTHROPIC_API_KEY=anthropic-key",
@@ -95,8 +95,7 @@ func TestDetectedHonorsExternalPathOverrides(t *testing.T) {
 }
 
 func TestAvailableMergesConfiguredAndDetectedAgents(t *testing.T) {
-	home := t.TempDir()
-	setTestHome(t, home)
+	_, home := isolateHomes(t)
 	t.Setenv("WINGMAN_CODEX_PATH", fakeExecutable(t, "codex"))
 
 	custom := fakeExecutable(t, "custom-acp")
@@ -109,7 +108,7 @@ func TestAvailableMergesConfiguredAndDetectedAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(home, ".wingman")
+	dir := home
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -136,9 +135,7 @@ func TestAvailableMergesConfiguredAndDetectedAgents(t *testing.T) {
 }
 
 func TestAvailableReportsMalformedConfiguration(t *testing.T) {
-	home := t.TempDir()
-	setTestHome(t, home)
-	dir := filepath.Join(home, ".wingman")
+	_, dir := isolateHomes(t)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -152,9 +149,7 @@ func TestAvailableReportsMalformedConfiguration(t *testing.T) {
 }
 
 func TestAvailableReportsIncompleteEntries(t *testing.T) {
-	home := t.TempDir()
-	setTestHome(t, home)
-	dir := filepath.Join(home, ".wingman")
+	_, dir := isolateHomes(t)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}

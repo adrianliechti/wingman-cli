@@ -22,6 +22,25 @@ func TestNormalizeSessionConfig(t *testing.T) {
 	}
 }
 
+func TestDefaultModelDescriptionShowsResolvedModel(t *testing.T) {
+	models := []ModelEntry{
+		{ID: "default", Name: "Default", Description: "Recommended", ResolvedModel: "claude-sonnet-5"},
+		{ID: "sonnet", Name: "Claude Sonnet 5", ResolvedModel: "claude-sonnet-5"},
+	}
+	option := modelConfigOption(models, "default")
+	entries := *option.Select.Options.Ungrouped
+	if entries[0].Description == nil || *entries[0].Description != "Claude Sonnet 5" {
+		t.Fatalf("default description = %v", entries[0].Description)
+	}
+
+	models[1].ResolvedModel = "other"
+	option = modelConfigOption(models, "default")
+	entries = *option.Select.Options.Ungrouped
+	if entries[0].Description == nil || *entries[0].Description != "claude-sonnet-5" {
+		t.Fatalf("fallback description = %v", entries[0].Description)
+	}
+}
+
 func TestSessionModesExposeNormalizedModes(t *testing.T) {
 	state := buildSessionModeState("")
 	if state.CurrentModeId != "agent" {

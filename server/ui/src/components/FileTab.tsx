@@ -1,6 +1,12 @@
-import Editor, { type OnMount } from "@monaco-editor/react";
+import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
 import { AlertTriangle, FileDigit, Loader2 } from "lucide-react";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { DebugAction, DebugTarget } from "../api/debug";
+import {
+	workspaceFileDownloadURL,
+	workspaceFilePreviewURL,
+} from "../api/files";
+import { registerEditorSaveParticipant } from "../editorSaveParticipants";
 import { useColorScheme } from "../hooks/useColorScheme";
 import type { OpenDocument, SaveResult } from "../hooks/useOpenDocuments";
 import {
@@ -8,8 +14,19 @@ import {
 	type MonacoLSPBridge,
 	revealEditorPosition,
 } from "../monacoLsp";
+import {
+	createMonacoDebugBridge,
+	type MonacoDebugBridge,
+} from "../monacoDebug";
+import { createMonacoTabBridge, type MonacoTabBridge } from "../monacoTab";
 import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
 import type { ServerMessage } from "../types/protocol";
+import type { WorkspaceEditEnvelope } from "../workspaceEdit";
+import { textPreviewKind } from "../utils/filePreview";
+import { DataPreview } from "./DataPreview";
+import { EditorContextMenu } from "./EditorContextMenu";
+import { MarkdownContent } from "./MarkdownContent";
+import { MermaidPreview } from "./MermaidPreview";
 
 interface Props {
 	document: OpenDocument;
@@ -20,14 +37,19 @@ interface Props {
 	onChange: (value: string) => void;
 	onSave: () => Promise<SaveResult>;
 	onReload: () => void;
-	onKeepVersion: () => void;
 	onOpenFile?: (
 		path: string,
 		line: number,
 		column: number,
 		external?: boolean,
 	) => void;
+	onApplyWorkspaceEdit?: (
+		envelope: WorkspaceEditEnvelope,
+		label: string,
+	) => Promise<boolean>;
+	onLaunchDebug?: (target: DebugTarget, action: DebugAction) => void;
 	view?: "code" | "preview";
+	tabEnabled?: boolean;
 }
 
 export function FileTab({
@@ -39,23 +61,70 @@ export function FileTab({
 	onChange,
 	onSave,
 	onReload,
-	onKeepVersion,
 	onOpenFile,
+	onApplyWorkspaceEdit,
+	onLaunchDebug,
 	view = "code",
+	tabEnabled = false,
 }: Props) {
 	const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
+	const monacoRef = useRef<Monaco | null>(null);
+	const contextMenuListenerRef = useRef<{ dispose(): void } | null>(null);
+	const saveParticipantDisposeRef = useRef<(() => void) | null>(null);
 	const lspBridgeRef = useRef<MonacoLSPBridge | null>(null);
+	const debugBridgeRef = useRef<MonacoDebugBridge | null>(null);
+	const tabBridgeRef = useRef<MonacoTabBridge | null>(null);
 	const diagnosticsTimerRef = useRef<number | null>(null);
-	const documentRef = useRef(document);
 	const onOpenFileRef = useRef(onOpenFile);
+	const onApplyWorkspaceEditRef = useRef(onApplyWorkspaceEdit);
+	const onLaunchDebugRef = useRef(onLaunchDebug);
 	const onSaveRef = useRef(onSave);
 	const scheme = useColorScheme();
-	documentRef.current = document;
+	const [contextMenu, setContextMenu] = useState<{
+		x: number;
+		y: number;
+		altKey: boolean;
+	} | null>(null);
+	const [, setLanguageFeaturesRevision] = useState(0);
 	onOpenFileRef.current = onOpenFile;
+	onApplyWorkspaceEditRef.current = onApplyWorkspaceEdit;
+	onLaunchDebugRef.current = onLaunchDebug;
 	onSaveRef.current = onSave;
 
 	const dirty = document.draft !== document.savedContent;
 	const file = document.file;
+	const disposeEditorIntegration = useCallback(() => {
+		contextMenuListenerRef.current?.dispose();
+		contextMenuListenerRef.current = null;
+		saveParticipantDisposeRef.current?.();
+		saveParticipantDisposeRef.current = null;
+		lspBridgeRef.current?.dispose();
+		lspBridgeRef.current = null;
+		debugBridgeRef.current?.dispose();
+		debugBridgeRef.current = null;
+		tabBridgeRef.current?.dispose();
+		tabBridgeRef.current = null;
+		editorRef.current = null;
+		monacoRef.current = null;
+	}, []);
+	const refreshTabIntegration = useCallback(() => {
+		tabBridgeRef.current?.dispose();
+		tabBridgeRef.current = null;
+		if (
+			!tabEnabled ||
+			document.external ||
+			!file ||
+			!editorRef.current ||
+			!monacoRef.current
+		) {
+			return;
+		}
+		tabBridgeRef.current = createMonacoTabBridge({
+			monaco: monacoRef.current,
+			editor: editorRef.current,
+			path: file.path,
+		});
+	}, [document.external, file, tabEnabled]);
 
 	useEffect(() => {
 		const editor = editorRef.current;
@@ -68,11 +137,24 @@ export function FileTab({
 			if (diagnosticsTimerRef.current !== null) {
 				window.clearTimeout(diagnosticsTimerRef.current);
 			}
-			lspBridgeRef.current?.dispose();
-			lspBridgeRef.current = null;
-			editorRef.current = null;
+			disposeEditorIntegration();
 		};
-	}, []);
+	}, [disposeEditorIntegration]);
+
+	useEffect(() => {
+		refreshTabIntegration();
+		return () => {
+			tabBridgeRef.current?.dispose();
+			tabBridgeRef.current = null;
+		};
+	}, [refreshTabIntegration]);
+
+	useEffect(() => {
+		if (view !== "code") {
+			setContextMenu(null);
+			disposeEditorIntegration();
+		}
+	}, [disposeEditorIntegration, view]);
 
 	const loadDiagnostics = useCallback(async () => {
 		await lspBridgeRef.current?.refreshDiagnostics();
@@ -128,8 +210,17 @@ export function FileTab({
 
 	if (file.binary) return <BinaryPreview file={file} />;
 
-	const isHtml = file.language === "html" || /\.html?$/i.test(file.path);
-	const previewSrc = `/api/files/preview?path=${encodeURIComponent(file.path)}`;
+	const previewKind = textPreviewKind(file.path);
+	const dataFormat =
+		previewKind === "json" ||
+		previewKind === "yaml" ||
+		previewKind === "toml" ||
+		previewKind === "xml" ||
+		previewKind === "csv" ||
+		previewKind === "tsv"
+			? previewKind
+			: null;
+	const previewSrc = workspaceFilePreviewURL(file.path);
 	return (
 		<div className="flex h-full min-h-0 flex-col">
 			{document.conflict && (
@@ -145,13 +236,6 @@ export function FileTab({
 					>
 						Reload from disk
 					</button>
-					<button
-						type="button"
-						onClick={onKeepVersion}
-						className="rounded px-2 py-1 hover:bg-warning/10"
-					>
-						Keep my version
-					</button>
 				</div>
 			)}
 			{document.saveError && (
@@ -160,7 +244,7 @@ export function FileTab({
 				</div>
 			)}
 			<div className="min-h-0 flex-1">
-				{isHtml && view === "preview" ? (
+				{previewKind === "html" && view === "preview" ? (
 					<iframe
 						key={document.revision}
 						src={previewSrc}
@@ -169,6 +253,26 @@ export function FileTab({
 						referrerPolicy="no-referrer"
 						className="h-full w-full border-0 bg-bg"
 						style={{ colorScheme: scheme }}
+					/>
+				) : previewKind === "svg" && view === "preview" ? (
+					<ImagePreview src={previewSrc} name={file.path} />
+				) : previewKind === "markdown" && view === "preview" ? (
+					<div className="h-full overflow-auto bg-bg">
+						<article
+							data-markdown-document
+							aria-label={`Preview of ${file.path}`}
+							className="mx-auto max-w-4xl px-8 py-7 text-[13px] leading-relaxed select-text"
+						>
+							<MarkdownContent text={document.draft} />
+						</article>
+					</div>
+				) : previewKind === "mermaid" && view === "preview" ? (
+					<MermaidPreview text={document.draft} path={file.path} />
+				) : dataFormat && view === "preview" ? (
+					<DataPreview
+						text={document.draft}
+						format={dataFormat}
+						path={file.path}
 					/>
 				) : (
 					<Editor
@@ -179,32 +283,97 @@ export function FileTab({
 						theme={wingmanThemeName(scheme)}
 						beforeMount={defineWingmanThemes}
 						onMount={(editor, monaco) => {
+							disposeEditorIntegration();
 							editorRef.current = editor;
-							lspBridgeRef.current?.dispose();
+							monacoRef.current = monaco;
+							refreshTabIntegration();
+							// Wingman owns the command surface; keep Monaco's standalone
+							// palette shortcuts from opening a second command UI.
+							editor.addCommand(monaco.KeyCode.F1, () => {});
+							editor.addCommand(
+								monaco.KeyMod.CtrlCmd |
+									monaco.KeyMod.Shift |
+									monaco.KeyCode.KeyP,
+								() => {},
+							);
+							contextMenuListenerRef.current = editor.onContextMenu((event) => {
+								const position = event.target.position;
+								if (!position) return;
+								event.event.preventDefault();
+								event.event.stopPropagation();
+								const selection = editor.getSelection();
+								if (!selection?.containsPosition(position)) {
+									editor.setPosition(position);
+								}
+								editor.focus();
+								setContextMenu({
+									x: event.event.posx,
+									y: event.event.posy,
+									altKey: event.event.altKey,
+								});
+							});
+							editor.addCommand(
+								monaco.KeyMod.Shift | monaco.KeyCode.F10,
+								() => {
+									editor.focus();
+									const position = editor.getPosition();
+									const visible =
+										position && editor.getScrolledVisiblePosition(position);
+									const bounds = editor.getDomNode()?.getBoundingClientRect();
+									if (!bounds) return;
+									setContextMenu({
+										x: bounds.left + (visible?.left ?? 8),
+										y:
+											bounds.top +
+											(visible?.top ?? 8) +
+											(visible?.height ?? 16),
+										altKey: false,
+									});
+								},
+							);
 							if (!document.external) {
+								debugBridgeRef.current = createMonacoDebugBridge({
+									monaco,
+									editor,
+									path: file.path,
+									onLaunchTarget: (target, action) => {
+										void (async () => {
+											const saved = await onSaveRef.current();
+											if (saved.ok) {
+												onLaunchDebugRef.current?.(target, action);
+											}
+										})();
+									},
+								});
 								lspBridgeRef.current = createMonacoLSPBridge({
 									monaco,
 									editor,
 									file,
-									getDirtyContent: () => {
-										const current = documentRef.current;
-										return current.draft !== current.savedContent
-											? current.draft
-											: undefined;
-									},
+									onCapabilitiesChanged: () =>
+										setLanguageFeaturesRevision((revision) => revision + 1),
 									onOpenFile: (path, row, col, external) =>
 										onOpenFileRef.current?.(path, row, col, external),
+									onApplyWorkspaceEdit: (envelope, label) =>
+										onApplyWorkspaceEditRef.current?.(envelope, label) ??
+										Promise.resolve(false),
 								});
+								saveParticipantDisposeRef.current =
+									registerEditorSaveParticipant(
+										file.path,
+										() =>
+											lspBridgeRef.current?.organizeImports() ??
+											Promise.resolve(false),
+									);
 								void loadDiagnostics();
-								editor.addCommand(
-									monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
-									() => void onSaveRef.current(),
-								);
 							}
 							revealEditorPosition(editor, line, column);
 						}}
 						onChange={(value) => onChange(value ?? "")}
 						options={{
+							contextmenu: false,
+							codeLens: true,
+							find: { addExtraSpaceOnTop: false },
+							glyphMargin: true,
 							minimap: { enabled: false },
 							fontSize: 12,
 							lineNumbers: "on",
@@ -212,11 +381,25 @@ export function FileTab({
 							wordWrap: "on",
 							renderWhitespace: "none",
 							padding: { top: 8 },
+							suggestOnTriggerCharacters: true,
+							parameterHints: { enabled: true },
 							readOnly: document.external,
 						}}
 					/>
 				)}
 			</div>
+			{contextMenu && editorRef.current && (
+				<EditorContextMenu
+					editor={editorRef.current}
+					openAt={contextMenu}
+					readOnly={document.external}
+					initialAltKey={contextMenu.altKey}
+					supportsLanguageFeature={(feature) =>
+						lspBridgeRef.current?.supports(feature) ?? false
+					}
+					onClose={() => setContextMenu(null)}
+				/>
+			)}
 		</div>
 	);
 }
@@ -227,25 +410,25 @@ function BinaryPreview({
 	file: import("../types/protocol").FileContent;
 }) {
 	const mime = file.mime ?? "application/octet-stream";
-	const src = `/api/files/download?path=${encodeURIComponent(file.path)}`;
+	const src = workspaceFileDownloadURL(file.path);
 	return (
 		<div className="h-full w-full overflow-auto bg-bg">
-			<PreviewBody mime={mime} src={src} />
+			<PreviewBody mime={mime} src={src} name={file.path} />
 		</div>
 	);
 }
 
-function PreviewBody({ mime, src }: { mime: string; src: string }) {
+function PreviewBody({
+	mime,
+	src,
+	name,
+}: {
+	mime: string;
+	src: string;
+	name: string;
+}) {
 	if (mime.startsWith("image/")) {
-		return (
-			<div className="flex h-full w-full items-center justify-center p-6">
-				<img
-					src={src}
-					alt=""
-					className="max-h-full max-w-full object-contain"
-				/>
-			</div>
-		);
+		return <ImagePreview src={src} name={name} />;
 	}
 	if (mime.startsWith("video/")) {
 		return (
@@ -278,6 +461,25 @@ function PreviewBody({ mime, src }: { mime: string; src: string }) {
 		);
 	}
 	return <UnknownBinary />;
+}
+
+function ImagePreview({ src, name }: { src: string; name: string }) {
+	return (
+		<div
+			data-image-preview
+			className="flex h-full min-h-0 w-full items-center justify-center overflow-auto p-6"
+		>
+			<img
+				src={src}
+				alt={name}
+				className="h-auto w-auto object-contain"
+				style={{
+					maxWidth: "min(100%, 1024px)",
+					maxHeight: "min(100%, 800px)",
+				}}
+			/>
+		</div>
+	);
 }
 
 function UnknownBinary() {

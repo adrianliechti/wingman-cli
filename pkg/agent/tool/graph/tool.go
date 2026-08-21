@@ -112,39 +112,39 @@ func graphTool(engine *graph.Engine) tool.Tool {
 			"required":             []string{"operation"},
 			"additionalProperties": false,
 		},
-		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			operation, _ := args["operation"].(string)
 
 			switch operation {
 			case "index":
 				status, err := engine.Index(ctx)
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
-				return fmt.Sprintf("Indexed %d source files: %d definitions, %d call edges%s.%s",
-					status.Files, status.Nodes, status.Edges, edgeBreakdown(engine.EdgeStats()), formatCoverage(status.Skipped)), nil
+				return tool.Text(fmt.Sprintf("Indexed %d source files: %d definitions, %d call edges%s.%s",
+					status.Files, status.Nodes, status.Edges, edgeBreakdown(engine.EdgeStats()), formatCoverage(status.Skipped))), nil
 
 			case "status":
 				st := engine.StatusOrLoad()
 				if !st.Indexed {
-					return "Not indexed yet. Run operation \"index\" (or any query auto-builds it).", nil
+					return tool.Text("Not indexed yet. Run operation \"index\" (or any query auto-builds it)."), nil
 				}
 				freshness := "fresh"
 				if engine.IsStale(ctx) {
 					freshness = "stale — the next graph query will refresh it"
 				}
-				return fmt.Sprintf("Indexed at %s (%s): %d source files, %d definitions, %d call edges%s.%s",
-					st.IndexedAt.Format(time.RFC3339), freshness, st.Files, st.Nodes, st.Edges, edgeBreakdown(engine.EdgeStats()), formatCoverage(st.Skipped)), nil
+				return tool.Text(fmt.Sprintf("Indexed at %s (%s): %d source files, %d definitions, %d call edges%s.%s",
+					st.IndexedAt.Format(time.RFC3339), freshness, st.Files, st.Nodes, st.Edges, edgeBreakdown(engine.EdgeStats()), formatCoverage(st.Skipped))), nil
 
 			case "search":
 				query, _ := args["query"].(string)
 				limit, _, err := tool.NonNegIntArg(args, "limit")
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
 				offset, _, err := tool.NonNegIntArg(args, "offset")
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
 				opts := graph.SearchOpts{
 					Query:  query,
@@ -155,18 +155,18 @@ func graphTool(engine *graph.Engine) tool.Tool {
 				}
 				res, err := engine.SearchPage(ctx, opts)
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
-				return formatSearchResult(res), nil
+				return tool.Text(formatSearchResult(res)), nil
 
 			case "search_content":
 				limit, _, err := tool.NonNegIntArg(args, "limit")
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
 				offset, _, err := tool.NonNegIntArg(args, "offset")
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
 				res, err := engine.SearchContent(ctx, graph.ContentSearchOpts{
 					Pattern:    stringArg(args, "pattern"),
@@ -178,47 +178,47 @@ func graphTool(engine *graph.Engine) tool.Tool {
 					Offset:     offset,
 				})
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
-				return formatContentSearch(res), nil
+				return tool.Text(formatContentSearch(res)), nil
 
 			case "trace":
 				symbol := strings.TrimSpace(stringArg(args, "symbol"))
 				if symbol == "" {
-					return "", fmt.Errorf("symbol is required for trace")
+					return tool.Result{}, fmt.Errorf("symbol is required for trace")
 				}
 				callers := stringArg(args, "direction") == "callers"
 				depth, _ := tool.IntArg(args, "depth")
 				res, err := engine.Trace(ctx, symbol, strings.TrimSpace(stringArg(args, "target")), stringArg(args, "file"), callers, depth)
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
-				return formatTrace(res, callers), nil
+				return tool.Text(formatTrace(res, callers)), nil
 
 			case "architecture":
 				arch, err := engine.Architecture(ctx)
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
-				return formatArch(arch), nil
+				return tool.Text(formatArch(arch)), nil
 
 			case "dead_code":
 				limit, _ := tool.IntArg(args, "limit")
 				nodes, err := engine.DeadCode(ctx, limit)
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
 				if len(nodes) == 0 {
-					return "No dead code found (every callable has a detected caller).", nil
+					return tool.Text("No dead code found (every callable has a detected caller)."), nil
 				}
-				return formatNodes(nodes), nil
+				return tool.Text(formatNodes(nodes)), nil
 
 			case "changes":
 				changes, err := engine.DetectChanges(ctx, strings.TrimSpace(stringArg(args, "since")))
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
-				return formatChanges(changes), nil
+				return tool.Text(formatChanges(changes)), nil
 
 			case "deps":
 				target := strings.TrimSpace(stringArg(args, "file"))
@@ -226,74 +226,74 @@ func graphTool(engine *graph.Engine) tool.Tool {
 					target = strings.TrimSpace(stringArg(args, "symbol"))
 				}
 				if target == "" {
-					return "", fmt.Errorf("file (a module/dir or file path) is required for deps")
+					return tool.Result{}, fmt.Errorf("file (a module/dir or file path) is required for deps")
 				}
 				depth, _ := tool.IntArg(args, "depth")
 				res, err := engine.Deps(ctx, target, depth)
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
-				return formatDeps(res), nil
+				return tool.Text(formatDeps(res)), nil
 
 			case "hierarchy":
 				symbol := strings.TrimSpace(stringArg(args, "symbol"))
 				if symbol == "" {
-					return "", fmt.Errorf("symbol is required for hierarchy")
+					return tool.Result{}, fmt.Errorf("symbol is required for hierarchy")
 				}
 				res, err := engine.Hierarchy(ctx, symbol, stringArg(args, "file"))
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
-				return formatHierarchy(res), nil
+				return tool.Text(formatHierarchy(res)), nil
 
 			case "snippet":
 				symbol := strings.TrimSpace(stringArg(args, "symbol"))
 				if symbol == "" {
-					return "", fmt.Errorf("symbol is required for snippet")
+					return tool.Result{}, fmt.Errorf("symbol is required for snippet")
 				}
 				snip, err := engine.Snippet(ctx, symbol, stringArg(args, "file"))
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
-				return fmt.Sprintf("%s\n%s", nodeLabel(snip.Node), snip.Code) + othersNote(snip.Others), nil
+				return tool.Text(fmt.Sprintf("%s\n%s", nodeLabel(snip.Node), snip.Code) + othersNote(snip.Others)), nil
 
 			case "tests":
 				symbol := strings.TrimSpace(stringArg(args, "symbol"))
 				if symbol == "" {
-					return "", fmt.Errorf("symbol is required for tests")
+					return tool.Result{}, fmt.Errorf("symbol is required for tests")
 				}
 				res, err := engine.Tests(ctx, symbol, stringArg(args, "file"))
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
-				return formatTests(res), nil
+				return tool.Text(formatTests(res)), nil
 
 			case "co_changes":
 				file := strings.TrimSpace(stringArg(args, "file"))
 				if file == "" {
-					return "", fmt.Errorf("file is required for co_changes")
+					return tool.Result{}, fmt.Errorf("file is required for co_changes")
 				}
 				limit, _ := tool.IntArg(args, "limit")
 				res, err := engine.CoChanges(ctx, file, limit)
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
-				return formatCoChanges(res), nil
+				return tool.Text(formatCoChanges(res)), nil
 
 			case "find_similar":
 				symbol := strings.TrimSpace(stringArg(args, "symbol"))
 				if symbol == "" {
-					return "", fmt.Errorf("symbol is required for find_similar")
+					return tool.Result{}, fmt.Errorf("symbol is required for find_similar")
 				}
 				limit, _ := tool.IntArg(args, "limit")
 				res, err := engine.Similar(ctx, symbol, stringArg(args, "file"), limit)
 				if err != nil {
-					return "", err
+					return tool.Result{}, err
 				}
-				return formatSimilar(res), nil
+				return tool.Text(formatSimilar(res)), nil
 
 			default:
-				return "", fmt.Errorf("operation must be one of: index, status, search, search_content, trace, architecture, dead_code, changes, deps, hierarchy, snippet, tests, co_changes, find_similar")
+				return tool.Result{}, fmt.Errorf("operation must be one of: index, status, search, search_content, trace, architecture, dead_code, changes, deps, hierarchy, snippet, tests, co_changes, find_similar")
 			}
 		},
 	}

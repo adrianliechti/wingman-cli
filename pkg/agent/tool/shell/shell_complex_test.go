@@ -20,7 +20,7 @@ func runShell(t *testing.T, command string) string {
 	if err != nil {
 		t.Fatalf("shell Execute error: %v", err)
 	}
-	return result
+	return result.Content
 }
 
 func TestComplex_MultiLineScript(t *testing.T) {
@@ -183,11 +183,11 @@ func TestComplex_Timeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "timed out") {
-		t.Errorf("expected timeout message, got: %q", result)
+	if !strings.Contains(result.Content, "timed out") {
+		t.Errorf("expected timeout message, got: %q", result.Content)
 	}
-	if !strings.Contains(result, "partial") {
-		t.Errorf("expected partial output preserved, got: %q", result)
+	if !strings.Contains(result.Content, "partial") {
+		t.Errorf("expected partial output preserved, got: %q", result.Content)
 	}
 }
 
@@ -200,8 +200,8 @@ func TestComplex_IntegerTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "ok") {
-		t.Fatalf("expected command output, got: %q", result)
+	if !strings.Contains(result.Content, "ok") {
+		t.Fatalf("expected command output, got: %q", result.Content)
 	}
 }
 
@@ -225,7 +225,7 @@ func TestComplex_NonPositiveTimeoutUsesDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "ok") {
-		t.Fatalf("expected command output, got: %q", result)
+	if !strings.Contains(result.Content, "ok") {
+		t.Fatalf("expected command output, got: %q", result.Content)
 	}
 }

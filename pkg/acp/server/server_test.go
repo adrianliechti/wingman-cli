@@ -17,6 +17,7 @@ import (
 
 	acpsdk "github.com/coder/acp-go-sdk"
 
+	"github.com/adrianliechti/wingman-agent/internal/testenv"
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
@@ -31,6 +32,30 @@ type recordingClient struct {
 	completeIDs   []acpsdk.ToolCallId
 	permissionIDs []acpsdk.ToolCallId
 	updates       chan struct{}
+}
+
+func TestNotifyContentPreservesToolFailureStatus(t *testing.T) {
+	var update acpsdk.SessionUpdate
+	notifyContent(func(got acpsdk.SessionUpdate) { update = got }, agent.RoleAssistant, agent.Content{
+		ToolResult: &agent.ToolResult{ID: "call-1", Name: "shell", Content: "failed", IsError: true},
+	})
+
+	if update.ToolCallUpdate == nil || update.ToolCallUpdate.Status == nil {
+		t.Fatalf("tool update = %+v", update.ToolCallUpdate)
+	}
+	if got := *update.ToolCallUpdate.Status; got != acpsdk.ToolCallStatusFailed {
+		t.Fatalf("tool status = %q, want %q", got, acpsdk.ToolCallStatusFailed)
+	}
+}
+
+func TestNotifyContentIgnoresPartialToolCall(t *testing.T) {
+	called := false
+	notifyContent(func(acpsdk.SessionUpdate) { called = true }, agent.RoleAssistant, agent.Content{
+		ToolCall: &agent.ToolCall{ID: "call-1", Name: "shell", Partial: true},
+	})
+	if called {
+		t.Fatal("partial tool call was sent to ACP")
+	}
 }
 
 func TestClassifyPromptStreamError(t *testing.T) {
@@ -167,7 +192,7 @@ func (*recordingClient) WaitForTerminalExit(context.Context, acpsdk.WaitForTermi
 }
 
 func TestACPDeleteListedSessionWithoutLoading(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testenv.WingmanHome(t)
 	cwd := t.TempDir()
 	dir := code.SessionsDir(cwd)
 	const id = "listed-session"
@@ -212,12 +237,12 @@ func TestACPDeleteListedSessionWithoutLoading(t *testing.T) {
 }
 
 func TestACPTaskTurnWritesFileAndReportsUsage(t *testing.T) {
-	home := t.TempDir()
+	testenv.UserHome(t)
+	testenv.WingmanHome(t)
 	workdir := filepath.Join(t.TempDir(), "app")
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HOME", home)
 	unsetEnv(t, "WINGMAN_URL")
 	unsetEnv(t, "WINGMAN_TOKEN")
 	unsetEnv(t, "WINGMAN_MODEL")

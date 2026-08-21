@@ -28,8 +28,8 @@ func TestWriteAndReadNormalizeAbsoluteWorkspacePaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read absolute workspace path: %v", err)
 	}
-	if !strings.Contains(result, "hello") {
-		t.Fatalf("read result = %q, want content", result)
+	if !strings.Contains(result.Content, "hello") {
+		t.Fatalf("read result = %q, want content", result.Content)
 	}
 }
 
@@ -93,8 +93,8 @@ func TestSandboxWildcardRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wildcard root read failed: %v", err)
 	}
-	if !strings.Contains(out, "system config") {
-		t.Errorf("expected file content, got: %s", out)
+	if !strings.Contains(out.Content, "system config") {
+		t.Errorf("expected file content, got: %s", out.Content)
 	}
 }
 
@@ -171,7 +171,7 @@ func TestEditReturnsLineDiff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("edit: %v", err)
 	}
-	if !strings.Contains(result, "-2 old") || !strings.Contains(result, "+2 new") {
-		t.Fatalf("expected line-numbered diff, got: %q", result)
+	if !strings.Contains(result.Content, "-2 old") || !strings.Contains(result.Content, "+2 new") {
+		t.Fatalf("expected line-numbered diff, got: %q", result.Content)
 	}
 }

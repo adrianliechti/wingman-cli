@@ -101,6 +101,7 @@ interface ToolCallMessage extends SessionMessage {
 	name: string;
 	args: string;
 	hint: string;
+	partial?: boolean;
 }
 
 interface ToolResultMessage extends SessionMessage {
@@ -198,6 +199,10 @@ interface TerminalsChangedMessage {
 	type: "terminals_changed";
 }
 
+interface SkillsChangedMessage {
+	type: "skills_changed";
+}
+
 interface CapabilitiesChangedMessage {
 	type: "capabilities_changed";
 }
@@ -274,7 +279,8 @@ export type ServerMessage =
 	| TurnInputMessage
 	| TurnQueueMessage
 	| TasksChangedMessage
-	| TerminalsChangedMessage;
+	| TerminalsChangedMessage
+	| SkillsChangedMessage;
 
 export type Phase = "idle" | "thinking" | "streaming" | "tool_running";
 
@@ -319,6 +325,7 @@ export interface FileContent {
 	path: string;
 	content?: string;
 	language?: string;
+	revision: string;
 	binary?: boolean;
 	mime?: string;
 	size: number;
@@ -326,6 +333,7 @@ export interface FileContent {
 
 export interface DiffEntry {
 	path: string;
+	original_path?: string;
 	status: "added" | "modified" | "deleted";
 	patch: string;
 	original?: string;
@@ -334,6 +342,7 @@ export interface DiffEntry {
 }
 
 export type DiffLayer = "staged" | "unstaged";
+export type CompareMode = "direct" | "merge-base";
 
 export interface GitFileStatus {
 	path: string;
@@ -365,6 +374,24 @@ export interface GitBranches {
 	warning?: string;
 }
 
+export interface GitCommit {
+	hash: string;
+	parents: string[];
+	summary: string;
+	author: string;
+	authored_at: string;
+	refs: string[];
+}
+
+export interface GitCompare {
+	base: string;
+	head: string;
+	base_hash: string;
+	head_hash: string;
+	merge_base_hash?: string;
+	files: DiffEntry[];
+}
+
 export interface TaskEntry {
 	id: string;
 	description: string;
@@ -373,6 +400,18 @@ export interface TaskEntry {
 	activity?: string;
 	elapsed_seconds: number;
 	seq: number;
+}
+
+export interface ScheduleEntry {
+	id: string;
+	prompt: string;
+	schedule: string;
+	status: string;
+	script?: boolean;
+	next_run?: string;
+	next_in?: string;
+	last_run?: string;
+	failures?: number;
 }
 
 export interface TaskDetail extends TaskEntry {

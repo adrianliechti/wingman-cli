@@ -56,22 +56,22 @@ func editTool(root *os.Root, tracker *contentTracker, freshness *Freshness, allo
 			"additionalProperties": false,
 		},
 
-		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			pathArg, ok := args["file_path"].(string)
 
 			if !ok || pathArg == "" {
-				return "", fmt.Errorf("file_path is required")
+				return tool.Result{}, fmt.Errorf("file_path is required")
 			}
 
 			workingDir := root.Name()
 			target, err := resolveFileTarget(pathArg, workingDir, allowedWriteRoots, "edit file")
 			if err != nil {
-				return "", err
+				return tool.Result{}, err
 			}
 
 			ops, err := parseEditOps(args)
 			if err != nil {
-				return "", err
+				return tool.Result{}, err
 			}
 
 			info, err := statFileTarget(root, target)
@@ -79,28 +79,31 @@ func editTool(root *os.Root, tracker *contentTracker, freshness *Freshness, allo
 			switch {
 			case exists:
 				if info.IsDir() {
-					return "", fmt.Errorf("cannot edit file: path %q is a directory", pathArg)
+					return tool.Result{}, fmt.Errorf("cannot edit file: path %q is a directory", pathArg)
+				}
+				if !info.Mode().IsRegular() {
+					return tool.Result{}, fmt.Errorf("cannot edit file: path %q is not a regular file", pathArg)
 				}
 			case !os.IsNotExist(err):
-				return "", fmt.Errorf("stat file %q: %w", pathArg, err)
+				return tool.Result{}, fmt.Errorf("stat file %q: %w", pathArg, err)
 			case ops[0].oldText != "":
-				return "", fmt.Errorf("cannot edit %s: file does not exist", pathArg)
+				return tool.Result{}, fmt.Errorf("cannot edit %s: file does not exist", pathArg)
 			}
 
 			if exists && freshness.stale(ctx, target, info) {
-				return "", fmt.Errorf("cannot edit %s: the file changed on disk after you last read it (edited externally or by another agent) — `read` it again first and take the changes into account", pathArg)
+				return tool.Result{}, fmt.Errorf("cannot edit %s: the file changed on disk after you last read it (edited externally or by another agent) — `read` it again first and take the changes into account", pathArg)
 			}
 
 			var contentBytes []byte
 			if exists {
 				contentBytes, err = readFileTarget(root, target)
 				if err != nil {
-					return "", fmt.Errorf("read file %q: %w", pathArg, err)
+					return tool.Result{}, fmt.Errorf("read file %q: %w", pathArg, err)
 				}
 			}
 
 			if len(contentBytes) > MaxEditFileBytes {
-				return "", fmt.Errorf("file %s is %d bytes; edits are capped at %d bytes — use `write` for full rewrites or narrow the change", pathArg, len(contentBytes), MaxEditFileBytes)
+				return tool.Result{}, fmt.Errorf("file %s is %d bytes; edits are capped at %d bytes — use `write` for full rewrites or narrow the change", pathArg, len(contentBytes), MaxEditFileBytes)
 			}
 
 			bom, content := stripBom(string(contentBytes))
@@ -112,16 +115,16 @@ func editTool(root *os.Root, tracker *contentTracker, freshness *Freshness, allo
 				newContent, err = applyEditOp(newContent, op, pathArg)
 				if err != nil {
 					if len(ops) > 1 {
-						return "", fmt.Errorf("edits[%d]: %w (no edits were applied)", i, err)
+						return tool.Result{}, fmt.Errorf("edits[%d]: %w (no edits were applied)", i, err)
 					}
-					return "", err
+					return tool.Result{}, err
 				}
 			}
 
 			finalContent := bom + restoreLineEndings(newContent, originalEnding)
 
 			if err := writeFileTarget(root, target, finalContent); err != nil {
-				return "", fmt.Errorf("write file %q: %w", pathArg, err)
+				return tool.Result{}, fmt.Errorf("write file %q: %w", pathArg, err)
 			}
 
 			tracker.record([]byte(finalContent))
@@ -130,9 +133,9 @@ func editTool(root *os.Root, tracker *contentTracker, freshness *Freshness, allo
 			diff := generateDiffString(normalizedContent, newContent)
 
 			if len(ops) > 1 {
-				return fmt.Sprintf("Successfully applied %d edits to %s.\n\n%s", len(ops), pathArg, diff), nil
+				return tool.Text(fmt.Sprintf("Successfully applied %d edits to %s.\n\n%s", len(ops), pathArg, diff)), nil
 			}
-			return fmt.Sprintf("Successfully replaced text in %s.\n\n%s", pathArg, diff), nil
+			return tool.Text(fmt.Sprintf("Successfully replaced text in %s.\n\n%s", pathArg, diff)), nil
 		},
 	}
 }

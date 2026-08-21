@@ -40,7 +40,7 @@ func (a *Agent) ContextStats() ContextStats {
 
 		stats.Window = a.ContextWindow
 		if stats.Window <= 0 {
-			stats.Window = ContextWindowFor(stats.Model, a.LargeContext)
+			stats.Window = ContextWindowFor(stats.Model)
 		}
 
 		if a.Instructions != nil {

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/adrianliechti/wingman-agent/internal/testenv"
+
 	. "github.com/adrianliechti/wingman-agent/pkg/agent/tool/subagent"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
@@ -58,9 +60,8 @@ func TestParseDefinitionDefaultsAndValidation(t *testing.T) {
 }
 
 func TestDiscoverProjectOverridesPersonal(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	home := testenv.UserHome(t)
+	wingmanHome := testenv.WingmanHome(t)
 
 	work := t.TempDir()
 
@@ -70,7 +71,7 @@ func TestDiscoverProjectOverridesPersonal(t *testing.T) {
 		"---\nname: db-expert\ndescription: claude dupe\n---\nignored")
 	writeDefinition(t, filepath.Join(home, ".claude", "agents", "personal.md"),
 		"---\nname: reviewer-2\ndescription: personal agent\naccess: read-only\n---\npersonal instructions")
-	writeDefinition(t, filepath.Join(home, ".wingman", "agents", "broken.md"),
+	writeDefinition(t, filepath.Join(wingmanHome, "agents", "broken.md"),
 		"no frontmatter at all")
 
 	defs := Discover(work)

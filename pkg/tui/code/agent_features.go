@@ -6,7 +6,8 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/task"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
-	core "github.com/adrianliechti/wingman-agent/pkg/code"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/schedule"
+	corecode "github.com/adrianliechti/wingman-agent/pkg/code"
 )
 
 type modelFetcher interface {
@@ -30,15 +31,19 @@ type taskProvider interface {
 	RunningTaskCount() int
 }
 
+type scheduleProvider interface {
+	Schedules(string) *schedule.MemoryStore
+}
+
 type toolProvider interface {
 	Tools(string) []tool.Tool
 }
 
 type uiAwareAgent interface {
-	SetUI(core.UI)
+	SetUI(corecode.UI)
 }
 
-func setAgentUI(a core.Agent, ui core.UI) {
+func setAgentUI(a corecode.Agent, ui corecode.UI) {
 	if aware, ok := a.(uiAwareAgent); ok {
 		aware.SetUI(ui)
 	}

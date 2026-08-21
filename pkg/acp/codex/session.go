@@ -517,10 +517,7 @@ func replayItem(send func(acp.SessionUpdate), raw json.RawMessage, toolOutputs m
 		}
 
 	case "contextCompaction":
-		send(acp.StartToolCall(acp.ToolCallId(probe.ID), "Context compacted",
-			acp.WithStartKind(acp.ToolKindOther),
-			acp.WithStartStatus(acp.ToolCallStatusCompleted),
-		))
+		send(completedCompactionToolCall(probe.ID))
 
 	case "exitedReviewMode":
 		var it struct {

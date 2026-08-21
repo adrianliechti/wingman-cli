@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/acp/internal/acptest"
-	acp "github.com/coder/acp-go-sdk"
+	"github.com/coder/acp-go-sdk"
 )
 
 func TestPrepareMCPBridgeConfiguresStdioServers(t *testing.T) {

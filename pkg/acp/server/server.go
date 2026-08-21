@@ -804,6 +804,9 @@ func (s *Server) replayMessages(ctx context.Context, sid acpsdk.SessionId, messa
 func notifyContent(notify func(acpsdk.SessionUpdate), role agent.MessageRole, c agent.Content) {
 	switch {
 	case c.ToolCall != nil:
+		if c.ToolCall.Partial {
+			return
+		}
 		raw := parseRawInput(c.ToolCall.Args)
 		opts := []acpsdk.ToolCallStartOpt{
 			acpsdk.WithStartKind(mapKind(c.ToolCall.Name)),
@@ -819,9 +822,13 @@ func notifyContent(notify func(acpsdk.SessionUpdate), role agent.MessageRole, c 
 			opts...,
 		))
 	case c.ToolResult != nil:
+		status := acpsdk.ToolCallStatusCompleted
+		if c.ToolResult.IsError {
+			status = acpsdk.ToolCallStatusFailed
+		}
 		notify(acpsdk.UpdateToolCall(
 			acpsdk.ToolCallId(c.ToolResult.ID),
-			acpsdk.WithUpdateStatus(acpsdk.ToolCallStatusCompleted),
+			acpsdk.WithUpdateStatus(status),
 			acpsdk.WithUpdateContent([]acpsdk.ToolCallContent{
 				acpsdk.ToolContent(acpsdk.TextBlock(c.ToolResult.Content)),
 			}),

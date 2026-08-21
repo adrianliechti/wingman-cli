@@ -4,6 +4,7 @@
 package model
 
 import (
+	"os"
 	"slices"
 	"strings"
 )
@@ -20,17 +21,24 @@ const (
 )
 
 type Model struct {
-	Name  string
-	Class Class
-
 	ID string
 
-	Aliases []string
+	Aliases   []string
+	Namespace string
+
+	Name        string
+	Description string
+
+	Class Class
 
 	Input  int
 	Output int
 
-	Context int
+	Context          int
+	ContextThreshold int
+
+	Effort  string
+	Efforts []string
 }
 
 func (m Model) InputTokens() int {
@@ -50,16 +58,30 @@ func (m Model) OutputTokens() int {
 }
 
 func (m Model) ContextTokens() int {
-	if m.Context > 0 {
-		return m.Context
+	context := m.Context
+	if context == 0 {
+		context = m.Input + m.Output
 	}
 
-	return m.Input + m.Output
+	large := false
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("WINGMAN_LARGE_CONTEXT"))) {
+	case "1", "true", "yes", "on":
+		large = true
+	}
+
+	if !large && m.ContextThreshold > 0 && m.ContextThreshold < context {
+		return m.ContextThreshold
+	}
+
+	return context
 }
 
 func (m Model) ids() []string {
 	return append([]string{m.ID}, m.Aliases...)
 }
+
+var gptEfforts = []string{"none", "low", "medium", "high", "xhigh"}
+var gpt56Efforts = []string{"none", "low", "medium", "high", "xhigh", "max"}
 
 // Models lists every known model in preference order: the first entry of a
 // family, filter or class is the one picked automatically.
@@ -69,381 +91,554 @@ var Models = []Model{
 	{
 		ID: "claude-sonnet-5",
 
-		Name:  "Claude Sonnet 5",
+		Namespace: "anthropic",
+
+		Name: "Claude Sonnet 5",
+
 		Class: ClassMedium,
 
+		Output: 128000,
+
 		Context: 1000000,
-		Output:  128000,
 	},
 	{
 		ID: "claude-opus-5",
 
-		Name:  "Claude Opus 5",
+		Namespace: "anthropic",
+
+		Name: "Claude Opus 5",
+
 		Class: ClassLarge,
 
+		Output: 128000,
+
 		Context: 1000000,
-		Output:  128000,
 	},
 
 	{
 		ID: "claude-opus-4-8",
 
-		Name:  "Claude Opus 4.8",
+		Namespace: "anthropic",
+
+		Name: "Claude Opus 4.8",
+
 		Class: ClassLarge,
 
+		Output: 128000,
+
 		Context: 1000000,
-		Output:  128000,
 	},
 
 	{
 		ID: "claude-opus-4-7",
 
-		Name:  "Claude Opus 4.7",
+		Namespace: "anthropic",
+
+		Name: "Claude Opus 4.7",
+
 		Class: ClassLarge,
 
+		Output: 128000,
+
 		Context: 1000000,
-		Output:  128000,
 	},
 
 	{
 		ID: "claude-sonnet-4-6",
 
-		Name:  "Claude Sonnet 4.6",
+		Namespace: "anthropic",
+
+		Name: "Claude Sonnet 4.6",
+
 		Class: ClassMedium,
 
+		Output: 128000,
+
 		Context: 1000000,
-		Output:  128000,
 	},
 	{
 		ID: "claude-opus-4-6",
 
-		Name:  "Claude Opus 4.6",
+		Namespace: "anthropic",
+
+		Name: "Claude Opus 4.6",
+
 		Class: ClassLarge,
 
+		Output: 128000,
+
 		Context: 1000000,
-		Output:  128000,
 	},
 	{
 		ID: "claude-haiku-4-6",
 
-		Name:  "Claude Haiku 4.6",
+		Namespace: "anthropic",
+
+		Name: "Claude Haiku 4.6",
+
 		Class: ClassSmall,
 
+		Output: 64000,
+
 		Context: 200000,
-		Output:  64000,
 	},
 
 	{
 		ID: "claude-sonnet-4-5",
 
-		Name:  "Claude Sonnet 4.5",
+		Namespace: "anthropic",
+
+		Name: "Claude Sonnet 4.5",
+
 		Class: ClassMedium,
 
+		Output: 64000,
+
 		Context: 200000,
-		Output:  64000,
 	},
 	{
 		ID: "claude-opus-4-5",
 
-		Name:  "Claude Opus 4.5",
+		Namespace: "anthropic",
+
+		Name: "Claude Opus 4.5",
+
 		Class: ClassLarge,
 
+		Output: 64000,
+
 		Context: 200000,
-		Output:  64000,
 	},
 	{
 		ID: "claude-haiku-4-5",
 
-		Name:  "Claude Haiku 4.5",
+		Namespace: "anthropic",
+
+		Name: "Claude Haiku 4.5",
+
 		Class: ClassSmall,
 
+		Output: 64000,
+
 		Context: 200000,
-		Output:  64000,
 	},
 
 	{
 		ID: "claude-fable-5",
 
-		Name:  "Claude Fable 5",
+		Namespace: "anthropic",
+
+		Name: "Claude Fable 5",
+
 		Class: ClassLarge,
 
+		Output: 128000,
+
 		Context: 1000000,
-		Output:  128000,
 	},
 	{
 		ID: "claude-mythos-5",
 
-		Name:  "Claude Mythos 5",
+		Namespace: "anthropic",
+
+		Name: "Claude Mythos 5",
+
 		Class: ClassLarge,
 
+		Output: 128000,
+
 		Context: 1000000,
-		Output:  128000,
 	},
 
 	// OpenAI
 
 	{
-		ID:      "gpt-5.6-sol",
-		Aliases: []string{"gpt-5.6"},
+		ID: "gpt-5.6-sol",
 
-		Name:  "GPT 5.6 Sol",
+		Aliases:   []string{"gpt-5.6"},
+		Namespace: "openai",
+
+		Name: "GPT 5.6 Sol",
+
 		Class: ClassLarge,
 
-		Context: 1050000,
-		Output:  128000,
+		Output: 128000,
+
+		Context:          1050000,
+		ContextThreshold: 272_000,
+
+		Efforts: gpt56Efforts,
 	},
 	{
 		ID: "gpt-5.6-terra",
 
-		Name:  "GPT 5.6 Terra",
+		Namespace: "openai",
+
+		Name: "GPT 5.6 Terra",
+
 		Class: ClassMedium,
 
-		Context: 1050000,
-		Output:  128000,
+		Output: 128000,
+
+		Context:          1050000,
+		ContextThreshold: 272_000,
+
+		Efforts: gpt56Efforts,
 	},
 	{
 		ID: "gpt-5.6-luna",
 
-		Name:  "GPT 5.6 Luna",
+		Namespace: "openai",
+
+		Name: "GPT 5.6 Luna",
+
 		Class: ClassSmall,
 
-		Context: 1050000,
-		Output:  128000,
+		Output: 128000,
+
+		Context:          1050000,
+		ContextThreshold: 272_000,
+
+		Efforts: gpt56Efforts,
 	},
 
 	{
 		ID: "gpt-5.5",
 
-		Name:  "GPT 5.5",
+		Namespace: "openai",
+
+		Name: "GPT 5.5",
+
 		Class: ClassMedium,
 
-		Context: 1050000,
-		Output:  128000,
+		Output: 128000,
+
+		Context:          1050000,
+		ContextThreshold: 272_000,
+
+		Efforts: gptEfforts,
 	},
 
 	{
 		ID: "gpt-5.4",
 
-		Name:  "GPT 5.4",
+		Namespace: "openai",
+
+		Name: "GPT 5.4",
+
 		Class: ClassMedium,
 
-		Context: 1050000,
-		Output:  128000,
+		Output: 128000,
+
+		Context:          1050000,
+		ContextThreshold: 272_000,
+
+		Efforts: gptEfforts,
 	},
 	{
 		ID: "gpt-5.4-mini",
 
-		Name:  "GPT 5.4 Mini",
+		Namespace: "openai",
+
+		Name: "GPT 5.4 Mini",
+
 		Class: ClassSmall,
 
+		Output: 128000,
+
 		Context: 400000,
-		Output:  128000,
+
+		Efforts: gptEfforts,
 	},
 
 	{
 		ID: "gpt-5.3-codex",
 
-		Name:  "GPT 5.3 Codex",
+		Namespace: "openai",
+
+		Name: "GPT 5.3 Codex",
+
 		Class: ClassMedium,
 
+		Output: 128000,
+
 		Context: 400000,
-		Output:  128000,
+
+		Efforts: gptEfforts,
 	},
 	{
 		ID: "gpt-5.3-codex-spark",
 
-		Name:  "GPT 5.3 Codex Spark",
+		Namespace: "openai",
+
+		Name: "GPT 5.3 Codex Spark",
+
 		Class: ClassSmall,
 
+		Output: 32000,
+
 		Context: 128000,
-		Output:  32000,
+
+		Efforts: gptEfforts,
 	},
 
 	{
 		ID: "gpt-5.2-codex",
 
-		Name:  "GPT 5.2 Codex",
+		Namespace: "openai",
+
+		Name: "GPT 5.2 Codex",
+
 		Class: ClassMedium,
 
+		Output: 128000,
+
 		Context: 400000,
-		Output:  128000,
+
+		Efforts: gptEfforts,
 	},
 	{
 		ID: "gpt-5.2",
 
-		Name:  "GPT 5.2",
+		Namespace: "openai",
+
+		Name: "GPT 5.2",
+
 		Class: ClassMedium,
 
+		Output: 128000,
+
 		Context: 400000,
-		Output:  128000,
+
+		Efforts: gptEfforts,
 	},
 
 	{
 		ID: "gpt-5.1-codex-max",
 
-		Name:  "GPT 5.1 Codex Max",
+		Namespace: "openai",
+
+		Name: "GPT 5.1 Codex Max",
+
 		Class: ClassMedium,
 
+		Output: 128000,
+
 		Context: 400000,
-		Output:  128000,
+
+		Efforts: gptEfforts,
 	},
 	{
 		ID: "gpt-5.1-codex",
 
-		Name:  "GPT 5.1 Codex",
+		Namespace: "openai",
+
+		Name: "GPT 5.1 Codex",
+
 		Class: ClassMedium,
 
+		Output: 128000,
+
 		Context: 400000,
-		Output:  128000,
+
+		Efforts: gptEfforts,
 	},
 	{
 		ID: "gpt-5.1-codex-mini",
 
-		Name:  "GPT 5.1 Codex Mini",
+		Namespace: "openai",
+
+		Name: "GPT 5.1 Codex Mini",
+
 		Class: ClassSmall,
 
+		Output: 128000,
+
 		Context: 400000,
-		Output:  128000,
+
+		Efforts: gptEfforts,
 	},
 	{
 		ID: "gpt-5.1",
 
-		Name:  "GPT 5.1",
+		Namespace: "openai",
+
+		Name: "GPT 5.1",
+
 		Class: ClassMedium,
 
+		Output: 128000,
+
 		Context: 400000,
-		Output:  128000,
+
+		Efforts: gptEfforts,
 	},
 
 	{
 		ID: "gpt-5-codex",
 
-		Name:  "GPT 5 Codex",
+		Namespace: "openai",
+
+		Name: "GPT 5 Codex",
+
 		Class: ClassMedium,
 
+		Output: 128000,
+
 		Context: 400000,
-		Output:  128000,
+
+		Efforts: gptEfforts,
 	},
 	{
 		ID: "gpt-5",
 
-		Name:  "GPT 5",
+		Namespace: "openai",
+
+		Name: "GPT 5",
+
 		Class: ClassMedium,
 
+		Output: 128000,
+
 		Context: 400000,
-		Output:  128000,
+
+		Efforts: gptEfforts,
 	},
 	{
 		ID: "gpt-5-mini",
 
-		Name:  "GPT 5 Mini",
+		Namespace: "openai",
+
+		Name: "GPT 5 Mini",
+
 		Class: ClassSmall,
 
+		Output: 128000,
+
 		Context: 400000,
-		Output:  128000,
+
+		Efforts: gptEfforts,
 	},
 
 	// Google
 
 	{
-		ID: "gemini-3.6-flash",
+		ID: "gemini-3.7-flash",
 
-		Name:  "Gemini 3.6 Flash",
+		Namespace: "google",
+
+		Name: "Gemini 3.7 Flash",
+
 		Class: ClassMedium,
 
 		Input:  1048576,
 		Output: 65536,
+
+		ContextThreshold: 200_000,
 	},
 
 	{
-		ID:      "gemini-3.5-flash",
-		Aliases: []string{"gemini-3-flash-preview"},
+		ID: "gemini-3.6-flash",
 
-		Name:  "Gemini 3.5 Flash",
+		Namespace: "google",
+
+		Name: "Gemini 3.6 Flash",
+
 		Class: ClassMedium,
 
 		Input:  1048576,
 		Output: 65536,
+
+		ContextThreshold: 200_000,
+	},
+
+	{
+		ID: "gemini-3.5-flash",
+
+		Aliases:   []string{"gemini-3-flash-preview"},
+		Namespace: "google",
+
+		Name: "Gemini 3.5 Flash",
+
+		Class: ClassMedium,
+
+		Input:  1048576,
+		Output: 65536,
+
+		ContextThreshold: 200_000,
 	},
 	{
 		ID: "gemini-3.5-flash-lite",
 
-		Name:  "Gemini 3.5 Flash Lite",
+		Namespace: "google",
+
+		Name: "Gemini 3.5 Flash Lite",
+
 		Class: ClassSmall,
 
 		Input:  1048576,
 		Output: 65536,
+
+		ContextThreshold: 200_000,
 	},
 
 	{
-		ID:      "gemini-3.1-pro",
-		Aliases: []string{"gemini-3.1-pro-preview"},
+		ID: "gemini-3.1-pro",
 
-		Name:  "Gemini 3.1 Pro",
+		Aliases:   []string{"gemini-3.1-pro-preview"},
+		Namespace: "google",
+
+		Name: "Gemini 3.1 Pro",
+
 		Class: ClassLarge,
 
 		Input:  1048576,
 		Output: 65536,
+
+		ContextThreshold: 200_000,
 	},
 	{
 		ID: "gemini-3.1-flash-lite",
 
-		Name:  "Gemini 3.1 Flash Lite",
+		Namespace: "google",
+
+		Name: "Gemini 3.1 Flash Lite",
+
 		Class: ClassSmall,
 
 		Input:  1048576,
 		Output: 65536,
+
+		ContextThreshold: 200_000,
 	},
 
 	// Z.ai
 
 	{
-		ID: "glm-5.2",
+		ID: "glm-5.3",
 
-		Name:  "GLM 5.2",
+		Namespace: "z-ai",
+
+		Name: "GLM 5.3",
+
 		Class: ClassMedium,
+
+		Output: 131072,
 
 		Context: 1000000,
-		Output:  131072,
 	},
-
 	{
-		ID: "glm-5.1",
+		ID: "glm-5.2",
 
-		Name:  "GLM 5.1",
+		Namespace: "z-ai",
+
+		Name: "GLM 5.2",
+
 		Class: ClassMedium,
 
-		Context: 200000,
-		Output:  131072,
-	},
+		Output: 131072,
 
-	{
-		ID: "glm-5",
-
-		Name:  "GLM 5",
-		Class: ClassMedium,
-
-		Context: 204800,
-		Output:  131072,
-	},
-
-	{
-		ID: "glm-4.7",
-
-		Name:  "GLM 4.7",
-		Class: ClassMedium,
-
-		Context: 204800,
-		Output:  131072,
-	},
-	{
-		ID: "glm-4.7-flash",
-
-		Name:  "GLM 4.7 Flash",
-		Class: ClassSmall,
-
-		Context: 200000,
-		Output:  131072,
+		Context: 1000000,
 	},
 
 	// DeepSeek
@@ -451,43 +646,72 @@ var Models = []Model{
 	{
 		ID: "deepseek-v4-pro",
 
-		Name:  "DeepSeek V4 Pro",
+		Namespace: "deepseek",
+
+		Name: "DeepSeek V4 Pro",
+
 		Class: ClassLarge,
 
+		Output: 384000,
+
 		Context: 1000000,
-		Output:  384000,
+	},
+	{
+		ID: "deepseek-v4-flash-0731",
+
+		Namespace: "deepseek",
+
+		Name: "DeepSeek V4 Flash 0731",
+
+		Class: ClassSmall,
+
+		Output: 384000,
+
+		Context: 1000000,
 	},
 	{
 		ID: "deepseek-v4-flash",
 
-		Name:  "DeepSeek V4 Flash",
+		Namespace: "deepseek",
+
+		Name: "DeepSeek V4 Flash",
+
 		Class: ClassSmall,
 
+		Output: 384000,
+
 		Context: 1000000,
-		Output:  384000,
 	},
 
 	// Mistral
 
 	{
-		ID:      "mistral-medium",
-		Aliases: []string{"mistral-medium-latest", "mistral-medium-2604"},
+		ID: "mistral-medium",
 
-		Name:  "Mistral Medium 3.5",
+		Aliases:   []string{"mistral-medium-latest", "mistral-medium-2604"},
+		Namespace: "mistralai",
+
+		Name: "Mistral Medium 3.5",
+
 		Class: ClassMedium,
 
+		Output: 262144,
+
 		Context: 262144,
-		Output:  262144,
 	},
 	{
-		ID:      "mistral-small",
-		Aliases: []string{"mistral-small-latest", "mistral-small-2603"},
+		ID: "mistral-small",
 
-		Name:  "Mistral Small 4",
+		Aliases:   []string{"mistral-small-latest", "mistral-small-2603"},
+		Namespace: "mistralai",
+
+		Name: "Mistral Small 4",
+
 		Class: ClassSmall,
 
+		Output: 256000,
+
 		Context: 256000,
-		Output:  256000,
 	},
 
 	// Moonshot
@@ -495,124 +719,124 @@ var Models = []Model{
 	{
 		ID: "kimi-k3",
 
-		Name:  "Kimi K3",
+		Namespace: "moonshotai",
+
+		Name: "Kimi K3",
+
 		Class: ClassLarge,
 
+		Output: 131072,
+
 		Context: 1048576,
-		Output:  131072,
 	},
 
+	// MiniMax
+
 	{
-		ID: "kimi-k2.7-code",
+		ID: "minimax-m3",
 
-		Name:  "Kimi K2.7 Code",
-		Class: ClassMedium,
+		Aliases:   []string{"MiniMax-M3"},
+		Namespace: "minimax",
 
-		Context: 262144,
-		Output:  262144,
+		Name: "MiniMax M3",
+
+		Class: ClassLarge,
+
+		Output: 128000,
+
+		Context:          1000000,
+		ContextThreshold: 512_000,
 	},
-	{
-		ID: "kimi-k2.7-code-highspeed",
 
-		Name:  "Kimi K2.7 Code HighSpeed",
-		Class: ClassSmall,
-
-		Context: 262144,
-		Output:  262144,
-	},
+	// xAI
 
 	{
-		ID: "kimi-k2.6",
+		ID: "grok-4.6",
 
-		Name:  "Kimi K2.6",
-		Class: ClassMedium,
+		Namespace: "x-ai",
 
-		Context: 262144,
-		Output:  262144,
+		Name: "Grok 4.6",
+
+		Class: ClassLarge,
+
+		Output: 500000,
+
+		Context:          500000,
+		ContextThreshold: 200_000,
 	},
 
 	// Alibaba
 
 	{
-		ID: "qwen3.7-max",
+		ID: "qwen3.8-max",
 
-		Name:  "Qwen 3.7 Max",
+		Aliases:   []string{"qwen3.8-2.4t-a95b"},
+		Namespace: "qwen",
+
+		Name: "Qwen 3.8 Max",
+
 		Class: ClassLarge,
 
-		Context: 1000000,
-		Output:  65536,
-	},
-	{
-		ID:      "qwen3.7-plus",
-		Aliases: []string{"qwen3.7"},
-
-		Name:  "Qwen 3.7 Plus",
-		Class: ClassMedium,
+		Output: 131072,
 
 		Context: 1000000,
-		Output:  65536,
+	},
+	{
+		ID: "qwen3.8",
+
+		Aliases:   []string{"qwen3.8-27b"},
+		Namespace: "qwen",
+
+		Name: "Qwen 3.8",
+
+		Class: ClassMedium,
+
+		Output: 65536,
+
+		Context: 262144,
 	},
 
 	{
-		ID:      "qwen3.6-plus",
-		Aliases: []string{"qwen3.6"},
+		ID: "qwen3.7-max",
 
-		Name:  "Qwen 3.6",
-		Class: ClassMedium,
+		Namespace: "qwen",
+
+		Name: "Qwen 3.7 Max",
+
+		Class: ClassLarge,
+
+		Output: 65536,
 
 		Context: 1000000,
-		Output:  65536,
 	},
 	{
-		ID: "qwen3.6-flash",
+		ID: "qwen3.7-plus",
 
-		Name:  "Qwen 3.6 Flash",
-		Class: ClassSmall,
+		Aliases:   []string{"qwen3.7"},
+		Namespace: "qwen",
+
+		Name: "Qwen 3.7 Plus",
+
+		Class: ClassMedium,
+
+		Output: 65536,
 
 		Context: 1000000,
-		Output:  65536,
 	},
 
 	{
-		ID:      "qwen3.5-plus",
-		Aliases: []string{"qwen3.5"},
+		ID: "qwen3.5-plus",
 
-		Name:  "Qwen 3.5",
+		Aliases:   []string{"qwen3.5"},
+		Namespace: "qwen",
+
+		Name: "Qwen 3.5",
+
 		Class: ClassMedium,
+
+		Output: 65536,
 
 		Context: 1000000,
-		Output:  65536,
-	},
-
-	{
-		ID:      "qwen3-coder-plus",
-		Aliases: []string{"qwen3-coder-next", "qwen3-coder"},
-
-		Name:  "Qwen 3 Coder",
-		Class: ClassMedium,
-
-		Context: 1048576,
-		Output:  65536,
-	},
-	{
-		ID: "qwen3-coder-flash",
-
-		Name:  "Qwen 3 Coder Flash",
-		Class: ClassSmall,
-
-		Context: 1048576,
-		Output:  65536,
-	},
-	{
-		ID:      "qwen3-next",
-		Aliases: []string{"qwen3"},
-
-		Name:  "Qwen 3",
-		Class: ClassMedium,
-
-		Input:   126976,
-		Output:  32768,
-		Context: 131072,
 	},
 }
 
@@ -624,18 +848,27 @@ func Available(available map[string]bool) []Model {
 		return slices.Clone(Models)
 	}
 
-	out := make([]Model, 0, len(Models))
+	ids := make([]string, 0, len(available))
+	for id, enabled := range available {
+		if enabled {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
 
-	for _, m := range Models {
-		for _, id := range m.ids() {
-			if !available[id] {
-				continue
-			}
+	resolved := make(map[int]string)
+	for _, id := range ids {
+		index, _, ok := find(id)
+		if ok {
+			resolved[index] = id
+		}
+	}
 
+	out := make([]Model, 0, len(resolved))
+	for index, m := range Models {
+		if id, ok := resolved[index]; ok {
 			m.ID = id
 			out = append(out, m)
-
-			break
 		}
 	}
 
@@ -643,14 +876,55 @@ func Available(available map[string]bool) []Model {
 }
 
 func Find(id string) (Model, bool) {
-	for _, m := range Models {
-		if slices.Contains(m.ids(), id) {
-			m.ID = id
-			return m, true
+	_, m, ok := find(id)
+	if ok {
+		m.ID = id
+	}
+	return m, ok
+}
+
+func find(id string) (int, Model, bool) {
+	matchID := id
+	namespace := ""
+	if prefix, suffix, ok := strings.Cut(matchID, "/"); ok {
+		namespace = strings.TrimPrefix(prefix, "~")
+		matchID = suffix
+	}
+
+	matchIndex := -1
+	matchLength := 0
+
+	for index, m := range Models {
+		if namespace != "" && !strings.EqualFold(m.Namespace, namespace) {
+			continue
+		}
+		for _, candidate := range m.ids() {
+			if modelIDPrefix(matchID, candidate) && len(candidate) > matchLength {
+				matchIndex = index
+				matchLength = len(candidate)
+			}
 		}
 	}
 
-	return Model{}, false
+	if matchIndex < 0 {
+		return 0, Model{}, false
+	}
+	return matchIndex, Models[matchIndex], true
+}
+
+func modelIDPrefix(id, prefix string) bool {
+	if len(id) < len(prefix) || !strings.EqualFold(id[:len(prefix)], prefix) {
+		return false
+	}
+	if len(id) == len(prefix) {
+		return true
+	}
+
+	return id[len(prefix)] == ':'
+}
+
+func Normalize(id string) string {
+	return strings.ReplaceAll(strings.ToLower(id), ".", "-")
 }
 
 func Name(id string) string {
@@ -696,15 +970,4 @@ func ClassOf(id string) Class {
 	}
 
 	return ClassMedium
-}
-
-// EffortBounds returns the reasoning-effort range a model supports; empty
-// means unbounded on that side. Callers clamp out-of-range requests to the
-// nearest bound instead of failing. Only known constraints are listed.
-func EffortBounds(id string) (lowest, highest string) {
-	if Family(id) == "gpt" {
-		return "", "xhigh"
-	}
-
-	return "", ""
 }

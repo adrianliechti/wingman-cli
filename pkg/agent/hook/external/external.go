@@ -20,7 +20,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/hook"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/shell"
-	wingmanhttp "github.com/adrianliechti/wingman-agent/pkg/httpclient"
+	"github.com/adrianliechti/wingman-agent/pkg/httpclient"
 )
 
 const (
@@ -458,7 +458,7 @@ func (h Handler) post(ctx context.Context, input []byte) runResult {
 			return ""
 		})
 	}
-	client, err := wingmanhttp.WithOriginHeaders(http.DefaultClient, h.URL, headers)
+	client, err := httpclient.WithOriginHeaders(http.DefaultClient, h.URL, headers)
 	if err != nil {
 		return runResult{exitCode: -1, err: err}
 	}

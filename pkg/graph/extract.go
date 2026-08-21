@@ -4,7 +4,7 @@ import (
 	"path"
 	"strings"
 
-	ts "github.com/odvcencio/gotreesitter"
+	"github.com/odvcencio/gotreesitter"
 )
 
 var importQueries = map[string]string{
@@ -63,24 +63,24 @@ type rawHierRef struct {
 }
 
 type auxExtractor struct {
-	importQ map[string]*ts.Query
-	hierQ   map[string]*ts.Query
+	importQ map[string]*gotreesitter.Query
+	hierQ   map[string]*gotreesitter.Query
 }
 
 func newAuxExtractor() *auxExtractor {
 	return &auxExtractor{
-		importQ: map[string]*ts.Query{},
-		hierQ:   map[string]*ts.Query{},
+		importQ: map[string]*gotreesitter.Query{},
+		hierQ:   map[string]*gotreesitter.Query{},
 	}
 }
 
-func (ax *auxExtractor) query(lang string, langObj *ts.Language, srcs map[string]string, cache map[string]*ts.Query) *ts.Query {
+func (ax *auxExtractor) query(lang string, langObj *gotreesitter.Language, srcs map[string]string, cache map[string]*gotreesitter.Query) *gotreesitter.Query {
 	if q, ok := cache[lang]; ok {
 		return q
 	}
-	var q *ts.Query
+	var q *gotreesitter.Query
 	if s := srcs[lang]; s != "" {
-		if compiled, err := ts.NewQuery(s, langObj); err == nil {
+		if compiled, err := gotreesitter.NewQuery(s, langObj); err == nil {
 			q = compiled
 		}
 	}
@@ -90,7 +90,7 @@ func (ax *auxExtractor) query(lang string, langObj *ts.Language, srcs map[string
 
 // extractFromTree runs the import and hierarchy queries against an
 // already-parsed tree, so the caller can share a single parse with the tagger.
-func (ax *auxExtractor) extractFromTree(lang string, langObj *ts.Language, root *ts.Node, src []byte) ([]rawImport, []rawHierRef) {
+func (ax *auxExtractor) extractFromTree(lang string, langObj *gotreesitter.Language, root *gotreesitter.Node, src []byte) ([]rawImport, []rawHierRef) {
 	iq := ax.query(lang, langObj, importQueries, ax.importQ)
 	hq := ax.query(lang, langObj, hierarchyQueries, ax.hierQ)
 	if iq == nil && hq == nil {
@@ -99,12 +99,7 @@ func (ax *auxExtractor) extractFromTree(lang string, langObj *ts.Language, root 
 
 	var imps []rawImport
 	if iq != nil {
-		cur := iq.Exec(root, langObj, src)
-		for {
-			m, ok := cur.NextMatch()
-			if !ok {
-				break
-			}
+		for _, m := range iq.ExecuteNode(root, langObj, src) {
 			for _, cap := range m.Captures {
 				text := cap.Node.Text(src)
 				var norm string
@@ -126,12 +121,7 @@ func (ax *auxExtractor) extractFromTree(lang string, langObj *ts.Language, root 
 
 	var hiers []rawHierRef
 	if hq != nil {
-		cur := hq.Exec(root, langObj, src)
-		for {
-			m, ok := cur.NextMatch()
-			if !ok {
-				break
-			}
+		for _, m := range hq.ExecuteNode(root, langObj, src) {
 			for _, cap := range m.Captures {
 				kind := EdgeInherits
 				if cap.Name == "implements" {
@@ -171,14 +161,22 @@ func resolveImport(fromFile, norm string, rel bool, localDirs map[string]bool) s
 	}
 
 	best := ""
-	for d := range localDirs {
-		if d == "." {
-			continue
-		}
-		if norm == d || strings.HasSuffix(norm, "/"+d) {
-			if len(d) > len(best) {
-				best = d
+	match := func(target string) {
+		for d := range localDirs {
+			if d == "." {
+				continue
 			}
+			if target == d || strings.HasSuffix(target, "/"+d) {
+				if len(d) > len(best) {
+					best = d
+				}
+			}
+		}
+	}
+	match(norm)
+	if best == "" {
+		if parent := path.Dir(norm); parent != "." && parent != "/" {
+			match(parent)
 		}
 	}
 	return best

@@ -45,30 +45,34 @@ func (s *Server) handleDiffs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := []DiffEntry{}
+	result := make([]DiffEntry, 0, len(diffs))
 	for _, d := range diffs {
 		if onlyPath != "" && d.Path != onlyPath {
 			continue
 		}
-		status := "modified"
-		switch d.Status {
-		case changes.StatusAdded:
-			status = "added"
-		case changes.StatusDeleted:
-			status = "deleted"
-		}
-
-		result = append(result, DiffEntry{
-			Path:     d.Path,
-			Status:   status,
-			Patch:    d.Patch,
-			Original: d.Original,
-			Modified: d.Modified,
-			Language: extToLanguage[strings.ToLower(filepath.Ext(d.Path))],
-		})
+		result = append(result, diffEntry(d))
 	}
 
 	writeJSON(w, result)
+}
+
+func diffEntry(d changes.FileDiff) DiffEntry {
+	status := "modified"
+	switch d.Status {
+	case changes.StatusAdded:
+		status = "added"
+	case changes.StatusDeleted:
+		status = "deleted"
+	}
+	return DiffEntry{
+		Path:         d.Path,
+		OriginalPath: d.OriginalPath,
+		Status:       status,
+		Patch:        d.Patch,
+		Original:     d.Original,
+		Modified:     d.Modified,
+		Language:     extToLanguage[strings.ToLower(filepath.Ext(d.Path))],
+	}
 }
 
 func (s *Server) handleDiffRevert(w http.ResponseWriter, r *http.Request) {

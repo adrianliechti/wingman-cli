@@ -286,7 +286,7 @@ func TestShellElicitationOnlyPromptsForDangerousCommands(t *testing.T) {
 			return false, nil
 		},
 	}
-	shellTool := Tools(workDir, nil, elicit, nil)[0]
+	shellTool := Tools(workDir, elicit, nil, nil)[0]
 
 	if _, err := shellTool.Execute(ctx, map[string]any{"command": "printf hi > out.txt"}); err != nil {
 		t.Fatalf("benign mutating command failed: %v", err)
@@ -319,7 +319,7 @@ func TestShellApprovalRememberedForSession(t *testing.T) {
 			return true, nil
 		},
 	}
-	shellTool := Tools(workDir, nil, elicit, nil)[0]
+	shellTool := Tools(workDir, elicit, nil, nil)[0]
 
 	for range 2 {
 		if _, err := shellTool.Execute(ctx, map[string]any{"command": "rm -rf missing-dir"}); err != nil {
@@ -348,7 +348,7 @@ func TestShellApprovalDistinguishesQuotedWhitespace(t *testing.T) {
 			return true, nil
 		},
 	}
-	shellTool := Tools(t.TempDir(), nil, elicit, nil)[0]
+	shellTool := Tools(t.TempDir(), elicit, nil, nil)[0]
 
 	shellTool.Execute(ctx, map[string]any{"command": `rm -rf "missing a  b"`})
 	shellTool.Execute(ctx, map[string]any{"command": `rm -rf "missing a b"`})
@@ -384,7 +384,7 @@ func TestShellSandboxDenialIsFinal(t *testing.T) {
 			return true, nil
 		},
 	}
-	shellTool := Tools(workDir, nil, elicit, nil)[0]
+	shellTool := Tools(workDir, elicit, nil, nil)[0]
 
 	outside := filepath.Join(home, fmt.Sprintf(".wingman-sandbox-test-%d-%d", os.Getpid(), time.Now().UnixNano()))
 	command := "touch " + shellQuote(outside) + " && rm -f " + shellQuote(outside)
@@ -397,8 +397,8 @@ func TestShellSandboxDenialIsFinal(t *testing.T) {
 	if confirmCalls != 0 {
 		t.Fatalf("confirm called %d times, want 0 (a denial must never offer to lift the sandbox)", confirmCalls)
 	}
-	if !strings.Contains(result, "Command exited with code") {
-		t.Fatalf("write outside the workspace was not denied: %q", result)
+	if !strings.Contains(result.Content, "Command exited with code") {
+		t.Fatalf("write outside the workspace was not denied: %q", result.Content)
 	}
 }
 

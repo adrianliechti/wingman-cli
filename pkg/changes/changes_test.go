@@ -9,63 +9,9 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
-
-func TestShadowRepositoryDiffAndRevert(t *testing.T) {
-	t.Setenv("PATH", "")
-	dir := t.TempDir()
-	writeFile(t, dir, "kept.txt", "before\n")
-	writeFile(t, dir, "deleted.txt", "delete me\n")
-
-	m := New(dir, filepath.Join(t.TempDir(), "changes.git"), false)
-	defer m.Close()
-	if diffs, err := m.Diffs(context.Background()); err != nil || len(diffs) != 0 {
-		t.Fatalf("initial diffs = %+v, %v", diffs, err)
-	}
-
-	writeFile(t, dir, "kept.txt", "after\n")
-	writeFile(t, dir, "added.txt", "added\n")
-	if err := os.Remove(filepath.Join(dir, "deleted.txt")); err != nil {
-		t.Fatal(err)
-	}
-
-	diffs, err := m.Diffs(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	byPath := map[string]FileDiff{}
-	for _, diff := range diffs {
-		byPath[diff.Path] = diff
-	}
-	if len(byPath) != 3 {
-		t.Fatalf("diffs = %+v", diffs)
-	}
-	if got := byPath["kept.txt"]; got.Status != StatusModified || got.Original != "before\n" || got.Modified != "after\n" {
-		t.Fatalf("modified diff = %+v", got)
-	}
-	if got := byPath["added.txt"]; got.Status != StatusAdded || !strings.Contains(got.Patch, "+added") {
-		t.Fatalf("added diff = %+v", got)
-	}
-	if got := byPath["deleted.txt"]; got.Status != StatusDeleted {
-		t.Fatalf("deleted diff = %+v", got)
-	}
-
-	for _, path := range []string{"kept.txt", "added.txt", "deleted.txt"} {
-		if err := m.Revert(context.Background(), path); err != nil {
-			t.Fatalf("revert %s: %v", path, err)
-		}
-	}
-	if got := readFile(t, dir, "kept.txt"); got != "before\n" {
-		t.Fatalf("kept.txt = %q", got)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "added.txt")); !os.IsNotExist(err) {
-		t.Fatalf("added.txt still exists: %v", err)
-	}
-	if got := readFile(t, dir, "deleted.txt"); got != "delete me\n" {
-		t.Fatalf("deleted.txt = %q", got)
-	}
-}
 
 func TestNativeRepositoryFingerprintIncludesIndexAndHead(t *testing.T) {
 	dir := t.TempDir()
@@ -74,7 +20,7 @@ func TestNativeRepositoryFingerprintIncludesIndexAndHead(t *testing.T) {
 	stage(t, repo, "file.txt")
 	commit(t, repo, "initial")
 
-	m := New(dir, "", true)
+	m := New(dir)
 	defer m.Close()
 	clean := m.Fingerprint(context.Background())
 
@@ -106,7 +52,7 @@ func TestNativeRepositoryShowsStagedOnlyContent(t *testing.T) {
 	stage(t, repo, "file.txt")
 	writeFile(t, dir, "file.txt", "one\n")
 
-	m := New(dir, "", true)
+	m := New(dir)
 	defer m.Close()
 	diffs, err := m.Diffs(context.Background())
 	if err != nil {
@@ -127,7 +73,7 @@ func TestNativeRepositoryDiffLayersAndRevertPreservesIndex(t *testing.T) {
 	stage(t, repo, "file.txt")
 	writeFile(t, dir, "file.txt", "three\n")
 
-	m := New(dir, "", true)
+	m := New(dir)
 	defer m.Close()
 	staged, err := m.Diff(context.Background(), "file.txt", DiffStaged)
 	if err != nil || staged.Original != "one\n" || staged.Modified != "two\n" {
@@ -159,7 +105,7 @@ func TestNativeRepositoryRevertRejectsStagedOnlyChange(t *testing.T) {
 	writeFile(t, dir, "file.txt", "content\n")
 	stage(t, repo, "file.txt")
 
-	m := New(dir, "", true)
+	m := New(dir)
 	defer m.Close()
 	if err := m.Revert(context.Background(), "file.txt"); err == nil {
 		t.Fatal("staged-only revert succeeded")
@@ -182,7 +128,7 @@ func TestNativeSubdirectoryCommitRejectsStagedChangesOutsideScope(t *testing.T) 
 	stage(t, repo, "sub/inside.txt")
 	stage(t, repo, "outside.txt")
 
-	m := New(filepath.Join(dir, "sub"), "", true)
+	m := New(filepath.Join(dir, "sub"))
 	defer m.Close()
 	_, err := m.Commit(context.Background(), "scoped commit")
 	if err == nil || !strings.Contains(err.Error(), "outside.txt") {
@@ -202,7 +148,7 @@ func TestNativeRepositoryFromSubdirectory(t *testing.T) {
 	commit(t, repo, "initial")
 
 	subdir := filepath.Join(dir, "sub")
-	m := New(subdir, "", true)
+	m := New(subdir)
 	defer m.Close()
 	writeFile(t, dir, "sub/file.txt", "two\n")
 
@@ -212,6 +158,234 @@ func TestNativeRepositoryFromSubdirectory(t *testing.T) {
 	}
 	if len(diffs) != 1 || diffs[0].Path != "file.txt" || diffs[0].Original != "one\n" || diffs[0].Modified != "two\n" {
 		t.Fatalf("diffs = %+v", diffs)
+	}
+}
+
+func TestNativeRepositoryCompareAndHistory(t *testing.T) {
+	dir := t.TempDir()
+	repo := initRepository(t, dir)
+	writeFile(t, dir, "shared.txt", "base\n")
+	stage(t, repo, "shared.txt")
+	commit(t, repo, "initial")
+	head, err := repo.Head()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mainBranch := head.Name()
+
+	worktree, err := repo.Worktree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	featureBranch := plumbing.NewBranchReferenceName("feature/compare")
+	if err := worktree.Checkout(&git.CheckoutOptions{Branch: featureBranch, Create: true}); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dir, "feature.txt", "feature\n")
+	stage(t, repo, "feature.txt")
+	commit(t, repo, "feature commit\n\nDetails")
+	if err := worktree.Checkout(&git.CheckoutOptions{Branch: mainBranch}); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dir, "main.txt", "main\n")
+	stage(t, repo, "main.txt")
+	commit(t, repo, "main commit")
+
+	m := New(dir)
+	defer m.Close()
+	root, err := m.Compare(context.Background(), EmptyTreeRevision, head.Hash().String(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.BaseHash != "" || root.HeadHash != head.Hash().String() || len(root.Diffs) != 1 || root.Diffs[0].Path != "shared.txt" || root.Diffs[0].Status != StatusAdded {
+		t.Fatalf("root comparison = %+v", root)
+	}
+	direct, err := m.Compare(context.Background(), mainBranch.Short(), featureBranch.Short(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if direct.MergeBaseHash != "" || len(direct.Diffs) != 2 {
+		t.Fatalf("direct comparison = %+v", direct)
+	}
+	if direct.Diffs[0].Path != "feature.txt" || direct.Diffs[0].Status != StatusAdded || direct.Diffs[0].Modified != "feature\n" {
+		t.Fatalf("feature diff = %+v", direct.Diffs[0])
+	}
+	if direct.Diffs[1].Path != "main.txt" || direct.Diffs[1].Status != StatusDeleted || direct.Diffs[1].Original != "main\n" {
+		t.Fatalf("main diff = %+v", direct.Diffs[1])
+	}
+
+	pullRequest, err := m.Compare(context.Background(), mainBranch.Short(), featureBranch.Short(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pullRequest.MergeBaseHash == "" || len(pullRequest.Diffs) != 1 || pullRequest.Diffs[0].Path != "feature.txt" {
+		t.Fatalf("merge-base comparison = %+v", pullRequest)
+	}
+
+	writeFile(t, dir, "shared.txt", "working tree\n")
+	writeFile(t, dir, "untracked.txt", "local\n")
+	workingTree, err := m.Compare(context.Background(), mainBranch.Short(), WorktreeRevision, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workingTree.HeadHash == "" || len(workingTree.Diffs) != 2 {
+		t.Fatalf("working tree comparison = %+v", workingTree)
+	}
+	workingDiffs := map[string]FileDiff{}
+	for _, diff := range workingTree.Diffs {
+		workingDiffs[diff.Path] = diff
+	}
+	if workingDiffs["shared.txt"].Modified != "working tree\n" || workingDiffs["untracked.txt"].Status != StatusAdded {
+		t.Fatalf("working tree diffs = %+v", workingDiffs)
+	}
+
+	history, err := m.History(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 3 {
+		t.Fatalf("history = %+v", history)
+	}
+	refs := map[string]bool{}
+	for _, entry := range history {
+		if entry.Refs == nil {
+			t.Fatalf("history refs must encode as an empty list: %+v", entry)
+		}
+		if entry.Summary == "feature commit" && entry.Author == "test" {
+			refs[strings.Join(entry.Refs, ",")] = true
+		}
+	}
+	if !refs[featureBranch.Short()] {
+		t.Fatalf("feature ref missing from history: %+v", history)
+	}
+	if _, err := m.Compare(context.Background(), "missing", featureBranch.Short(), false); err == nil {
+		t.Fatal("comparison with a missing ref succeeded")
+	}
+}
+
+func TestNativeRepositoryCompareWorktreeWithFileInNewDirectory(t *testing.T) {
+	dir := t.TempDir()
+	repo := initRepository(t, dir)
+	writeFile(t, dir, "README.md", "base\n")
+	stage(t, repo, "README.md")
+	commit(t, repo, "initial")
+	base, err := repo.Head()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, dir, "examples/coding-router.yaml", "router: coding\n")
+	stage(t, repo, "examples/coding-router.yaml")
+	commit(t, repo, "add coding router")
+
+	m := New(dir)
+	defer m.Close()
+	comparison, err := m.Compare(context.Background(), base.Hash().String(), WorktreeRevision, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(comparison.Diffs) != 1 {
+		t.Fatalf("working tree comparison = %+v", comparison)
+	}
+	diff := comparison.Diffs[0]
+	if diff.Path != "examples/coding-router.yaml" || diff.Status != StatusAdded || diff.Modified != "router: coding\n" {
+		t.Fatalf("nested added file diff = %+v", diff)
+	}
+}
+
+func TestNativeRepositoryComparePathTypeChanges(t *testing.T) {
+	t.Run("file to directory", func(t *testing.T) {
+		dir := t.TempDir()
+		repo := initRepository(t, dir)
+		writeFile(t, dir, "entry", "file\n")
+		stage(t, repo, "entry")
+		commit(t, repo, "file")
+		base, err := repo.Head()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		remove(t, repo, "entry")
+		writeFile(t, dir, "entry/nested.txt", "nested\n")
+		stage(t, repo, "entry/nested.txt")
+		commit(t, repo, "directory")
+
+		assertComparePaths(t, dir, base.Hash().String(),
+			map[string]FileStatus{"entry": StatusDeleted, "entry/nested.txt": StatusAdded})
+	})
+
+	t.Run("directory to file", func(t *testing.T) {
+		dir := t.TempDir()
+		repo := initRepository(t, dir)
+		writeFile(t, dir, "entry/nested.txt", "nested\n")
+		stage(t, repo, "entry/nested.txt")
+		commit(t, repo, "directory")
+		base, err := repo.Head()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		remove(t, repo, "entry/nested.txt")
+		if err := os.Remove(filepath.Join(dir, "entry")); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, dir, "entry", "file\n")
+		stage(t, repo, "entry")
+		commit(t, repo, "file")
+
+		assertComparePaths(t, dir, base.Hash().String(),
+			map[string]FileStatus{"entry": StatusAdded, "entry/nested.txt": StatusDeleted})
+	})
+
+	t.Run("directory to symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		repo := initRepository(t, dir)
+		writeFile(t, dir, "entry/nested.txt", "entry\n")
+		writeFile(t, dir, "target/nested.txt", "target\n")
+		stage(t, repo, "entry/nested.txt")
+		stage(t, repo, "target/nested.txt")
+		commit(t, repo, "directory")
+		base, err := repo.Head()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		remove(t, repo, "entry/nested.txt")
+		if err := os.Remove(filepath.Join(dir, "entry")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("target", filepath.Join(dir, "entry")); err != nil {
+			t.Fatal(err)
+		}
+		stage(t, repo, "entry")
+		commit(t, repo, "symlink")
+
+		assertComparePaths(t, dir, base.Hash().String(),
+			map[string]FileStatus{"entry": StatusAdded, "entry/nested.txt": StatusDeleted})
+	})
+}
+
+func assertComparePaths(t *testing.T, dir, base string, want map[string]FileStatus) {
+	t.Helper()
+	m := New(dir)
+	defer m.Close()
+	for name, head := range map[string]string{"commit": "HEAD", "worktree": WorktreeRevision} {
+		comparison, err := m.Compare(context.Background(), base, head, false)
+		if err != nil {
+			t.Fatalf("%s comparison: %v", name, err)
+		}
+		got := make(map[string]FileStatus, len(comparison.Diffs))
+		for _, diff := range comparison.Diffs {
+			got[diff.Path] = diff.Status
+		}
+		if len(got) != len(want) {
+			t.Fatalf("%s comparison paths = %+v, want %+v", name, got, want)
+		}
+		for path, status := range want {
+			if got[path] != status {
+				t.Fatalf("%s comparison path %q status = %v, want %v", name, path, got[path], status)
+			}
+		}
 	}
 }
 
@@ -251,6 +425,17 @@ func stage(t *testing.T, repo *git.Repository, path string) {
 		t.Fatal(err)
 	}
 	if _, err := worktree.Add(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func remove(t *testing.T, repo *git.Repository, path string) {
+	t.Helper()
+	worktree, err := repo.Worktree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := worktree.Remove(path); err != nil {
 		t.Fatal(err)
 	}
 }

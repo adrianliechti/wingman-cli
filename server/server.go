@@ -12,9 +12,12 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -27,6 +30,8 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/code/agents"
+	"github.com/adrianliechti/wingman-agent/pkg/dap"
+	"github.com/adrianliechti/wingman-agent/pkg/settings"
 	"github.com/adrianliechti/wingman-agent/pkg/system"
 	"github.com/adrianliechti/wingman-agent/pkg/terminal"
 	"github.com/adrianliechti/wingman-agent/pkg/watch"
@@ -81,16 +86,28 @@ type Server struct {
 
 	lspExternalMu    sync.Mutex
 	lspExternalPaths map[string]bool
+	fileWriteMu      sync.Mutex
 
 	taskPumpMu sync.Mutex
 	taskPumps  map[*task.Registry]bool
 
-	terminals *terminal.Manager
-	preview   *filePreviewServer
+	terminals        *terminal.Manager
+	preview          *filePreviewServer
+	tab              *editorTabService
+	tabSettingsMu    sync.Mutex
+	tabEnabled       atomic.Bool
+	tabRequestMu     sync.Mutex
+	tabRequestID     uint64
+	tabRequestCancel context.CancelFunc
+
+	summariesMu sync.Mutex
+	summaries   *summaryStore
 
 	files           *watch.Monitor
+	skillFiles      *watch.Monitor
 	prevGit         bool
 	prevLSP         bool
+	prevDebug       bool
 	prevFingerprint uint64
 }
 
@@ -111,7 +128,6 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 		return nil, err
 	}
 	serverCtx, cancel := context.WithCancel(ctx)
-
 	s := &Server{
 		noBrowser:      opts.NoBrowser,
 		workspace:      ws,
@@ -137,16 +153,40 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 
 	wa := codeagent.New(ws, cfg, nil)
 	wa.SetUI(s)
+	cfg.RoleModel = wa.RoleModel
+	cfg.Model = func() string {
+		option, _ := wa.RoleModel("")
+		return option.ID
+	}
+	s.tab = newEditorTabService(cfg)
+	s.tabEnabled.Store(true)
+	if userSettings, loadErr := settings.Load(); loadErr == nil {
+		s.tabEnabled.Store(userSettings.EditorTabCompletion)
+	}
 	s.agent = wa
 	s.turns = code.NewTurnManager(tool.WithProgressSink(serverCtx, s.onToolProgress), wa, s.handleTurnEvent)
 
 	ws.WarmUp()
+	if terminal.Supported() {
+		_ = ws.WithDAPManager(func(manager *dap.Manager) error {
+			manager.SetTerminalLauncher(s)
+			return nil
+		})
+	}
 
 	s.prevGit = ws.IsGitRepo()
 	s.prevLSP = ws.HasLSP()
+	s.prevDebug = s.debugAvailable(serverCtx)
 	s.files = watch.New(watch.Options{Active: s.hasClients}, s.checkWorkspace)
 	s.background.Go(func() {
 		s.files.Run(serverCtx)
+	})
+	s.skillFiles = watch.New(watch.Options{
+		Fallback: 2 * time.Second,
+		Active:   s.hasClients,
+	}, s.refreshSkills)
+	s.background.Go(func() {
+		s.skillFiles.Run(serverCtx)
 	})
 
 	s.background.Go(func() {
@@ -193,8 +233,8 @@ func (s *Server) Close() {
 		}
 		s.background.Wait()
 		s.preview.Close()
-		s.terminals.Close()
 		s.workspace.Close()
+		s.terminals.Close()
 	})
 }
 
@@ -294,14 +334,19 @@ func (s *Server) registerRoutes(r chi.Router) {
 	r.Route("/api", func(r chi.Router) {
 		r.Route("/files", func(r chi.Router) {
 			r.Get("/", s.handleFiles)
+			r.Post("/", s.handleFileCreate)
 			r.Delete("/", s.handleFileDelete)
 			r.Get("/read", s.handleFileRead)
 			r.Get("/search", s.handleFilesSearch)
+			r.Post("/content-search", s.handleWorkspaceSearch)
+			r.Get("/path", s.handleFilePath)
 			r.Get("/download", s.handleFileDownload)
 			r.Get("/preview", s.handleFilePreview)
+			r.Post("/reveal", s.handleFileReveal)
 			r.Post("/rename", s.handleFileRename)
 			r.Post("/copy", s.handleFileCopy)
 			r.Post("/write", s.handleFileWrite)
+			r.Post("/write-batch", s.handleFileWriteBatch)
 		})
 
 		r.Route("/diffs", func(r chi.Router) {
@@ -310,8 +355,11 @@ func (s *Server) registerRoutes(r chi.Router) {
 		})
 
 		r.Route("/git", func(r chi.Router) {
+			r.Post("/init", s.handleGitInit)
 			r.Get("/status", s.handleGitStatus)
 			r.Get("/branches", s.handleGitBranches)
+			r.Get("/history", s.handleGitHistory)
+			r.Get("/compare", s.handleGitCompare)
 			r.Post("/branches", s.handleGitCreateBranch)
 			r.Post("/checkout", s.handleGitCheckoutBranch)
 			r.Post("/stage", s.handleGitStage)
@@ -336,6 +384,10 @@ func (s *Server) registerRoutes(r chi.Router) {
 				r.Get("/tasks", s.handleTasks)
 				r.Get("/tasks/{taskID}", s.handleTask)
 				r.Post("/tasks/{taskID}/stop", s.handleTaskStop)
+				r.Get("/schedules", s.handleSchedules)
+				r.Delete("/schedules/{scheduleID}", s.handleScheduleDelete)
+				r.Post("/schedules/{scheduleID}/pause", s.handleSchedulePause)
+				r.Post("/schedules/{scheduleID}/resume", s.handleScheduleResume)
 			})
 		})
 
@@ -359,7 +411,20 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.HandleFunc("/{id}/ws", s.handleTerminalWebSocket)
 		})
 
+		r.Route("/graph", func(r chi.Router) {
+			r.Get("/overview", s.handleGraphOverview)
+			r.Post("/index", s.handleGraphIndex)
+			r.Get("/search", s.handleGraphSearch)
+			r.Post("/content-search", s.handleGraphContentSearch)
+			r.Get("/symbol", s.handleGraphSymbol)
+			r.Get("/modules", s.handleGraphModules)
+			r.Get("/insights", s.handleGraphInsights)
+			r.Post("/summaries", s.handleGraphSummaries)
+		})
+
 		r.Route("/lsp", func(r chi.Router) {
+			r.Get("/capabilities", s.handleLSPEditorCapabilities)
+			r.Post("/document", s.handleLSPDocumentLifecycle)
 			r.Get("/diagnostics", s.handleDiagnostics)
 			r.Post("/diagnostics", s.handleLSPFileDiagnostics)
 			r.Post("/definition", s.handleLSPDefinition)
@@ -367,9 +432,39 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Post("/implementations", s.handleLSPImplementations)
 			r.Post("/references", s.handleLSPReferences)
 			r.Post("/hover", s.handleLSPHover)
+			r.Post("/completions", s.handleLSPCompletions)
+			r.Post("/completions/resolve", s.handleLSPCompletionResolve)
+			r.Post("/signature-help", s.handleLSPSignatureHelp)
 			r.Post("/document-symbols", s.handleLSPDocumentSymbols)
+			r.Post("/document-highlights", s.handleLSPDocumentHighlights)
+			r.Post("/folding-ranges", s.handleLSPFoldingRanges)
+			r.Post("/semantic-tokens", s.handleLSPSemanticTokens)
+			r.Post("/rename/prepare", s.handleLSPPrepareRename)
+			r.Post("/rename", s.handleLSPRename)
+			r.Post("/code-actions", s.handleLSPCodeActions)
+			r.Post("/code-actions/resolve", s.handleLSPCodeActionResolve)
+			r.Post("/execute-command", s.handleLSPExecuteCommand)
+			r.Post("/formatting", s.handleLSPFormatting)
+			r.Post("/formatting/range", s.handleLSPRangeFormatting)
+			r.Post("/formatting/on-type", s.handleLSPOnTypeFormatting)
+			r.Post("/inlay-hints", s.handleLSPInlayHints)
 			r.Get("/file", s.handleLSPExternalFile)
 		})
+		r.Route("/debug", func(r chi.Router) {
+			r.Post("/targets", s.handleDebugTargets)
+			r.Post("/plan", s.handleDebugPlan)
+			r.Post("/start", s.handleDebugStart)
+			r.Get("/session", s.handleDebugSession)
+			r.Get("/state", s.handleDebugState)
+			r.Get("/inspection", s.handleDebugInspection)
+			r.Put("/breakpoints", s.handleDebugBreakpoints)
+			r.Post("/control", s.handleDebugControl)
+			r.Post("/evaluate", s.handleDebugEvaluate)
+			r.Post("/scopes", s.handleDebugScopes)
+			r.Post("/variables", s.handleDebugVariables)
+		})
+		r.Post("/editor/tab", s.handleEditorTab)
+		r.Post("/settings/editor.tab.completion", s.handleEditorTabSettings)
 		r.Get("/skills", s.handleSkills)
 		r.Get("/capabilities", s.handleCapabilities)
 		r.Get("/ws", s.handleWebSocketURL)
@@ -527,7 +622,7 @@ func (s *Server) sendSessionSnapshot(sid string, messages []agent.Message, u age
 	}
 	if a := s.activeAgent(); a != nil && frame.ContextWindow <= 0 && u.LastInputTokens > 0 {
 		_, model := a.Models(sid)
-		frame.ContextWindow = int64(agent.ContextWindowFor(model, false))
+		frame.ContextWindow = int64(agent.ContextWindowFor(model))
 	}
 	s.sendSession(sid, frame)
 }
@@ -675,7 +770,11 @@ func (s *Server) handleModels(w http.ResponseWriter, _ *http.Request) {
 	available, _ := a.Models("")
 	result := make([]map[string]string, 0, len(available))
 	for _, m := range available {
-		result = append(result, map[string]string{"id": m.ID, "name": m.Name})
+		result = append(result, map[string]string{
+			"id":        m.ID,
+			"name":      m.Name,
+			"namespace": m.Namespace,
+		})
 	}
 	writeJSON(w, result)
 }
@@ -731,17 +830,53 @@ func (s *Server) handleSetEffort(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"effort": body.Effort})
 }
 
-func (s *Server) handleCapabilities(w http.ResponseWriter, _ *http.Request) {
+type capabilitiesResponse struct {
+	Git           bool   `json:"git"`
+	GitInit       bool   `json:"git_init"`
+	LSP           bool   `json:"lsp"`
+	Debug         bool   `json:"debug"`
+	Diffs         bool   `json:"diffs"`
+	Tasks         bool   `json:"tasks"`
+	Terminal      bool   `json:"terminal"`
+	Tab           bool   `json:"tab"`
+	EditorTab     bool   `json:"editor.tab.completion"`
+	Platform      string `json:"platform"`
+	WorkspaceName string `json:"workspace_name"`
+	Notice        string `json:"notice,omitempty"`
+}
+
+func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	ws := s.workspace
 	_, isCoder := s.activeAgent().(*codeagent.Agent)
-	caps := map[string]any{
-		"lsp":      ws.HasLSP(),
-		"diffs":    ws.HasChanges(),
-		"git":      ws.HasNativeGit(),
-		"tasks":    isCoder,
-		"terminal": terminal.Supported(),
+	hasChanges := ws.HasChanges()
+	caps := capabilitiesResponse{
+		Git:           hasChanges,
+		GitInit:       isCoder && !hasChanges,
+		LSP:           ws.HasLSP(),
+		Debug:         s.debugAvailable(r.Context()),
+		Diffs:         hasChanges,
+		Tasks:         isCoder,
+		Terminal:      terminal.Supported(),
+		Tab:           s.tab != nil,
+		EditorTab:     s.tab != nil && s.tabEnabled.Load(),
+		Platform:      runtime.GOOS,
+		WorkspaceName: filepath.Base(ws.RootPath),
 	}
 	writeJSON(w, caps)
+}
+
+func (s *Server) debugAvailable(ctx context.Context) bool {
+	available := false
+	_ = s.workspace.WithDAPManager(func(manager *dap.Manager) error {
+		if session := manager.ActiveSession(); session != nil && session.Status().State != dap.StateTerminated {
+			available = true
+			return nil
+		}
+		adapters, err := manager.Adapters(ctx)
+		available = err == nil && len(adapters) > 0
+		return nil
+	})
+	return available
 }
 
 func (s *Server) hasClients() bool {
@@ -752,6 +887,7 @@ func (s *Server) hasClients() bool {
 
 func (s *Server) flushFiles() {
 	s.files.Flush()
+	s.broadcast(Frame{Type: EvtFilesChanged})
 }
 
 func (s *Server) checkWorkspace() {
@@ -776,7 +912,17 @@ func (s *Server) checkWorkspace() {
 		}
 	}
 
+	debugNow := s.debugAvailable(s.ctx)
+	if debugNow != s.prevDebug {
+		s.prevDebug = debugNow
+		s.broadcast(Frame{Type: EvtCapabilitiesChanged})
+	}
+
 	if !ws.HasChanges() {
+		s.broadcast(Frame{Type: EvtFilesChanged})
+		if ws.HasLSP() {
+			s.broadcast(Frame{Type: EvtDiagnosticsChanged})
+		}
 		return
 	}
 	fp := ws.ChangesFingerprint(s.ctx)
@@ -787,6 +933,12 @@ func (s *Server) checkWorkspace() {
 		if ws.HasLSP() {
 			s.broadcast(Frame{Type: EvtDiagnosticsChanged})
 		}
+	}
+}
+
+func (s *Server) refreshSkills() {
+	if s.workspace.RefreshSkills() {
+		s.broadcast(Frame{Type: EvtSkillsChanged})
 	}
 }
 

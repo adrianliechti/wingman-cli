@@ -244,17 +244,36 @@ func subAgentCompleteToolCall(raw json.RawMessage) (acp.SessionUpdate, bool) {
 // contextCompaction ------------------------------------------------------------
 
 func compactionStartToolCall(id string) acp.SessionUpdate {
-	return acp.StartToolCall(acp.ToolCallId(id), "Context compacting",
-		acp.WithStartKind(acp.ToolKindOther),
+	u := acp.StartToolCall(acp.ToolCallId(id), "Compact conversation",
+		acp.WithStartKind(acp.ToolKindThink),
 		acp.WithStartStatus(acp.ToolCallStatusInProgress),
 	)
+	u.ToolCall.Meta = contextCompactionMeta()
+	return u
 }
 
 func compactionCompleteToolCall(id string) acp.SessionUpdate {
-	return acp.UpdateToolCall(acp.ToolCallId(id),
-		acp.WithUpdateTitle("Context compacted"),
+	u := acp.UpdateToolCall(acp.ToolCallId(id),
+		acp.WithUpdateTitle("Compact conversation"),
 		acp.WithUpdateStatus(acp.ToolCallStatusCompleted),
 	)
+	u.ToolCallUpdate.Meta = contextCompactionMeta()
+	return u
+}
+
+func completedCompactionToolCall(id string) acp.SessionUpdate {
+	u := acp.StartToolCall(acp.ToolCallId(id), "Compact conversation",
+		acp.WithStartKind(acp.ToolKindThink),
+		acp.WithStartStatus(acp.ToolCallStatusCompleted),
+	)
+	u.ToolCall.Meta = contextCompactionMeta()
+	return u
+}
+
+func contextCompactionMeta() map[string]any {
+	return map[string]any{
+		"contextCompaction": map[string]any{"version": 1},
+	}
 }
 
 // webSearch -------------------------------------------------------------------

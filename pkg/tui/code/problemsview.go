@@ -9,13 +9,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/adrianliechti/wingman-agent/pkg/lsp"
+	"github.com/adrianliechti/wingman-agent/pkg/language"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/theme"
 )
 
 type fileDiagnostics struct {
 	Path        string
-	Diagnostics []lsp.Diagnostic
+	Diagnostics []language.Diagnostic
 	Errors      int
 	Warnings    int
 }
@@ -41,7 +41,7 @@ func (a *App) showDiagnosticsView() {
 	}()
 }
 
-func (a *App) showDiagnosticsOverlay(files []fileDiagnostics, report lsp.WorkspaceDiagnosticsReport, collectErr error) {
+func (a *App) showDiagnosticsOverlay(files []fileDiagnostics, report language.WorkspaceReport, collectErr error) {
 	t := theme.Default
 	coverage, partial := diagnosticsCoverage(report)
 	partial = partial || collectErr != nil
@@ -102,11 +102,11 @@ func (a *App) showDiagnosticsOverlay(files []fileDiagnostics, report lsp.Workspa
 			severityLabel := "Hint"
 
 			switch d.Severity {
-			case lsp.DiagnosticSeverityError:
+			case language.SeverityError:
 				severityColor, severityLabel = t.Red, "Error"
-			case lsp.DiagnosticSeverityWarning:
+			case language.SeverityWarning:
 				severityColor, severityLabel = t.Yellow, "Warning"
-			case lsp.DiagnosticSeverityInformation:
+			case language.SeverityInformation:
 				severityColor, severityLabel = t.Cyan, "Info"
 			}
 
@@ -134,7 +134,7 @@ func (a *App) showDiagnosticsOverlay(files []fileDiagnostics, report lsp.Workspa
 	a.openOverlay(newTwoPaneOverlay("problems", status, len(files), item, content, search))
 }
 
-func (a *App) collectDiagnostics(ctx context.Context) ([]fileDiagnostics, lsp.WorkspaceDiagnosticsReport, error) {
+func (a *App) collectDiagnostics(ctx context.Context) ([]fileDiagnostics, language.WorkspaceReport, error) {
 	workDir := a.agent.Workspace().RootPath
 	var files []fileDiagnostics
 
@@ -149,9 +149,9 @@ func (a *App) collectDiagnostics(ctx context.Context) ([]fileDiagnostics, lsp.Wo
 			Diagnostics: diags,
 		}
 		for _, d := range diags {
-			if d.Severity == lsp.DiagnosticSeverityError {
+			if d.Severity == language.SeverityError {
 				fd.Errors++
-			} else if d.Severity == lsp.DiagnosticSeverityWarning {
+			} else if d.Severity == language.SeverityWarning {
 				fd.Warnings++
 			}
 		}
@@ -168,7 +168,7 @@ func (a *App) collectDiagnostics(ctx context.Context) ([]fileDiagnostics, lsp.Wo
 	return files, report, ctx.Err()
 }
 
-func diagnosticsCoverage(report lsp.WorkspaceDiagnosticsReport) (string, bool) {
+func diagnosticsCoverage(report language.WorkspaceReport) (string, bool) {
 	total := fmt.Sprintf("%d", report.DiscoveredFiles)
 	if report.DiscoveryTruncated {
 		total += "+"

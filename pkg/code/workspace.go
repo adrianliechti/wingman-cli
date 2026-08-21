@@ -9,12 +9,14 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/google/uuid"
 	"go.yaml.in/yaml/v4"
 
@@ -23,7 +25,11 @@ import (
 	lsptool "github.com/adrianliechti/wingman-agent/pkg/agent/tool/lsp"
 	toolmcp "github.com/adrianliechti/wingman-agent/pkg/agent/tool/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/changes"
+	"github.com/adrianliechti/wingman-agent/pkg/dap"
+	"github.com/adrianliechti/wingman-agent/pkg/debugadapter"
 	"github.com/adrianliechti/wingman-agent/pkg/graph"
+	"github.com/adrianliechti/wingman-agent/pkg/language"
+	"github.com/adrianliechti/wingman-agent/pkg/layout"
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 	"github.com/adrianliechti/wingman-agent/pkg/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/plugin"
@@ -58,20 +64,19 @@ type Workspace struct {
 	MemoryPath  string
 	ScratchPath string
 
-	Skills []skill.Skill
-
 	Plugins []plugin.Plugin
 
 	MCP *mcp.Manager
 
-	LSP     *lsp.Manager
-	Changes *changes.Manager
-	Graph   *graph.Engine
+	Language *language.Service
+	DAP      *dap.Manager
+	Changes  *changes.Manager
 
 	warmupOnce sync.Once
 
 	mu               sync.RWMutex
 	closed           bool
+	warmed           bool
 	mcpToolsByServer map[string][]tool.Tool
 	lspTools         []tool.Tool
 	graphTools       []tool.Tool
@@ -83,13 +88,24 @@ type Workspace struct {
 	// lifetime lock separate from workspace state so close does not block
 	// unrelated workspace readers.
 	lspLifeMu sync.RWMutex
+	dapLifeMu sync.RWMutex
 
 	memoryMu          sync.Mutex
 	memoryCache       string
 	memoryFingerprint string
+
+	skillsMu      sync.RWMutex
+	skillsRefresh sync.Mutex
+	baseSkills    []skill.Skill
+	skills        []skill.Skill
 }
 
 func NewWorkspace(workDir string) (*Workspace, error) {
+	workDir, err := filepath.Abs(workDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve workspace root: %w", err)
+	}
+
 	root, err := os.OpenRoot(workDir)
 	if err != nil {
 		return nil, fmt.Errorf("open workspace root: %w", err)
@@ -121,7 +137,8 @@ func NewWorkspace(workDir string) (*Workspace, error) {
 
 	personal := skill.MustDiscoverPersonal()
 	discovered := skill.MustDiscover(workDir)
-	mergedSkills := skill.Merge(skill.Merge(skill.Merge(bundled, plugin.Skills(plugins)), personal), discovered)
+	baseSkills := skill.Merge(bundled, plugin.Skills(plugins))
+	mergedSkills := skill.Merge(skill.Merge(baseSkills, personal), discovered)
 	reportShadowedPluginSkills(mergedSkills)
 
 	mcpManager := loadMCP(workDir, plugins)
@@ -131,10 +148,56 @@ func NewWorkspace(workDir string) (*Workspace, error) {
 		RootPath:    workDir,
 		MemoryPath:  memoryDir,
 		ScratchPath: scratchDir,
-		Skills:      mergedSkills,
 		Plugins:     plugins,
 		MCP:         mcpManager,
+		baseSkills:  baseSkills,
+		skills:      mergedSkills,
 	}, nil
+}
+
+// Skills returns a stable snapshot of the current skill catalog.
+func (w *Workspace) Skills() []skill.Skill {
+	w.skillsMu.RLock()
+	defer w.skillsMu.RUnlock()
+	return cloneSkills(w.skills)
+}
+
+func cloneSkills(skills []skill.Skill) []skill.Skill {
+	result := slices.Clone(skills)
+	for i := range result {
+		result[i].Metadata = maps.Clone(result[i].Metadata)
+		result[i].AllowedTools = slices.Clone(result[i].AllowedTools)
+		result[i].Arguments = slices.Clone(result[i].Arguments)
+	}
+	return result
+}
+
+// RefreshSkills rediscovers personal and project Agent Skills and atomically
+// replaces the catalog when its metadata or precedence changed. Plugin skills
+// stay fixed because reloading a plugin also affects hooks, MCP, and permissions.
+func (w *Workspace) RefreshSkills() bool {
+	w.skillsRefresh.Lock()
+	defer w.skillsRefresh.Unlock()
+
+	personal, err := skill.RediscoverPersonal()
+	if err != nil {
+		return false
+	}
+	project, err := skill.Rediscover(w.RootPath)
+	if err != nil {
+		return false
+	}
+	next := skill.Merge(skill.Merge(w.baseSkills, personal), project)
+
+	w.skillsMu.Lock()
+	if reflect.DeepEqual(w.skills, next) {
+		w.skillsMu.Unlock()
+		return false
+	}
+	w.skills = next
+	w.skillsMu.Unlock()
+
+	return true
 }
 
 // loadMCP layers the project and global configs over the servers plugins
@@ -189,39 +252,52 @@ func reportShadowedPluginSkills(skills []skill.Skill) {
 
 func (w *Workspace) WarmUp() {
 	w.warmupOnce.Do(func() {
-		nativeGit := isGitRepo(w.RootPath)
-		changesManager := changes.New(w.RootPath, w.nextShadowGitDir(), nativeGit)
+		var changesManager *changes.Manager
+		if isGitRepo(w.RootPath) {
+			changesManager = changes.New(w.RootPath)
+		}
 
-		lspManager := lsp.NewManager(w.RootPath)
-		lspTools := lsptool.NewTools(lspManager)
-
-		graphEngine := graph.New(w.RootPath, filepath.Join(projectGraphDir(w.RootPath), "graph.json"), graph.WithResolver(&lspResolver{ws: w}))
+		debugRegistry := debugadapter.NewRegistry()
+		var languageOptions []lsp.ManagerOption
+		if bundles := debugRegistry.JDTLSBundles(); len(bundles) > 0 {
+			languageOptions = append(languageOptions, lsp.WithServerInitializationOptions("jdtls", map[string]any{
+				"bundles": bundles,
+			}))
+		}
+		languageService := language.New(w.RootPath, filepath.Join(projectGraphDir(w.RootPath), "graph.json"), languageOptions...)
+		dapManager := dap.NewManager(w.RootPath, debugRegistry.Descriptors()...)
+		dapManager.SetAdapterConnector(debugadapter.NewConnector(languageService))
+		graphEngine := languageService.Graph()
+		lspTools := lsptool.NewTools(languageService)
 		graphTools := graphtool.NewTools(graphEngine)
 
 		lspTools = w.protectLSPTools(lspTools)
 
 		w.lspLifeMu.Lock()
+		w.dapLifeMu.Lock()
 		w.mu.Lock()
 		if w.closed {
 			w.mu.Unlock()
+			w.dapLifeMu.Unlock()
 			w.lspLifeMu.Unlock()
-			if lspManager != nil {
-				lspManager.Close()
+			dapManager.Close()
+			languageService.Close()
+			if changesManager != nil {
+				changesManager.Close()
 			}
-			changesManager.Close()
 			return
 		}
 		w.Changes = changesManager
-		w.LSP = lspManager
+		w.Language = languageService
+		w.DAP = dapManager
 		w.lspTools = lspTools
-		w.Graph = graphEngine
 		w.graphTools = graphTools
+		w.warmed = true
 		w.mu.Unlock()
+		w.dapLifeMu.Unlock()
 		w.lspLifeMu.Unlock()
 
-		if lspManager != nil {
-			lspManager.WarmUpServers()
-		}
+		languageService.WarmUp()
 	})
 }
 
@@ -329,23 +405,26 @@ func flattenMCPTools(byServer map[string][]tool.Tool) []tool.Tool {
 
 func (w *Workspace) Close() {
 	w.lspLifeMu.Lock()
+	w.dapLifeMu.Lock()
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
+		w.dapLifeMu.Unlock()
 		w.lspLifeMu.Unlock()
 		return
 	}
 	w.closed = true
 	mcpManager := w.MCP
-	lspManager := w.LSP
+	languageService := w.Language
+	dapManager := w.DAP
 	changesManager := w.Changes
 	root := w.Root
 	scratchPath := w.ScratchPath
 	mcpRefreshCancel := w.mcpRefreshCancel
 	w.MCP = nil
-	w.LSP = nil
+	w.Language = nil
+	w.DAP = nil
 	w.Changes = nil
-	w.Graph = nil
 	w.mcpToolsByServer = nil
 	w.mcpRefreshCancel = nil
 	w.lspTools = nil
@@ -357,9 +436,15 @@ func (w *Workspace) Close() {
 	if mcpRefreshCancel != nil {
 		mcpRefreshCancel()
 	}
-	if lspManager != nil {
-		lspManager.Close()
+	// Java's debug adapter is hosted by JDT LS, so DAP must disconnect while
+	// the language service is still available.
+	if dapManager != nil {
+		dapManager.Close()
 	}
+	if languageService != nil {
+		languageService.Close()
+	}
+	w.dapLifeMu.Unlock()
 	w.lspLifeMu.Unlock()
 
 	if mcpManager != nil {
@@ -380,154 +465,299 @@ func (w *Workspace) IsGitRepo() bool { return isGitRepo(w.RootPath) }
 
 func (w *Workspace) SyncProjectMode() {
 	w.mu.RLock()
-	available := !w.closed && w.Changes != nil
+	available := !w.closed && w.warmed
 	w.mu.RUnlock()
 	if !available {
 		return
 	}
 
-	nativeGit := isGitRepo(w.RootPath)
-	nextChanges := changes.New(w.RootPath, w.nextShadowGitDir(), nativeGit)
+	var nextChanges *changes.Manager
+	if isGitRepo(w.RootPath) {
+		nextChanges = changes.New(w.RootPath)
+	}
 
 	w.mu.Lock()
-	if w.closed || w.Changes == nil {
+	if w.closed || !w.warmed {
 		w.mu.Unlock()
-		nextChanges.Close()
+		if nextChanges != nil {
+			nextChanges.Close()
+		}
 		return
 	}
 	previousChanges := w.Changes
 	w.Changes = nextChanges
 	w.mu.Unlock()
-	previousChanges.Close()
+	if previousChanges != nil {
+		previousChanges.Close()
+	}
 }
 
-// lspManager returns the LSP manager; callers must hold lspLifeMu for the
-// duration of any call into it.
-func (w *Workspace) lspManager() *lsp.Manager {
+// SyncEditorDocument drives the explicit editor document lifecycle. Feature
+// requests still carry the current buffer as a recovery mechanism, but normal
+// synchronization no longer depends on the user invoking a language feature.
+func (w *Workspace) SyncEditorDocument(ctx context.Context, filePath, content string, saved bool) error {
 	w.mu.RLock()
-	defer w.mu.RUnlock()
-	return w.LSP
+	service := w.Language
+	w.mu.RUnlock()
+	if service == nil {
+		return nil
+	}
+	return service.SyncDocument(ctx, filePath, content, saved)
 }
 
-// withLSPDocument runs fn against the session owning filePath after syncing the
-// document, holding the LSP lifetime lock for the duration of the call.
-func (w *Workspace) withLSPDocument(ctx context.Context, filePath string, content *string, fn func(*lsp.Session, string) error) error {
-	w.lspLifeMu.RLock()
-	defer w.lspLifeMu.RUnlock()
-
-	manager := w.lspManager()
-	if manager == nil {
-		return fmt.Errorf("language server unavailable")
+func (w *Workspace) CloseEditorDocument(ctx context.Context, filePath string) error {
+	w.mu.RLock()
+	service := w.Language
+	w.mu.RUnlock()
+	if service == nil {
+		return nil
 	}
-
-	session, err := manager.GetSession(ctx, filePath)
-	if err != nil {
-		return err
-	}
-	uri, err := syncEditorDocument(ctx, session, filePath, content)
-	if err != nil {
-		return err
-	}
-	return fn(session, uri)
+	return service.CloseDocument(ctx, filePath)
 }
 
-func (w *Workspace) Diagnostics(ctx context.Context) lsp.WorkspaceDiagnosticsReport {
-	w.lspLifeMu.RLock()
-	defer w.lspLifeMu.RUnlock()
-
-	manager := w.lspManager()
-	if manager == nil {
-		return lsp.WorkspaceDiagnosticsReport{}
+func (w *Workspace) EditorLSPCapabilities(ctx context.Context, filePath string) (lsp.ServerCapabilities, bool, error) {
+	w.mu.RLock()
+	service := w.Language
+	w.mu.RUnlock()
+	if service == nil {
+		return lsp.ServerCapabilities{}, false, nil
 	}
-	return manager.CollectAllDiagnostics(ctx)
+	return service.Capabilities(ctx, filePath)
+}
+
+func (w *Workspace) EditorLSPDocumentContent(filePath string) (string, bool) {
+	w.mu.RLock()
+	service := w.Language
+	w.mu.RUnlock()
+	if service == nil {
+		return "", false
+	}
+	return service.DocumentContent(filePath)
+}
+
+func (w *Workspace) Diagnostics(ctx context.Context) language.WorkspaceReport {
+	w.mu.RLock()
+	service := w.Language
+	w.mu.RUnlock()
+	if service == nil {
+		return language.WorkspaceReport{}
+	}
+	return service.Diagnostics(ctx)
 }
 
 // FileDiagnostics returns diagnostics for one disk file or in-memory editor
 // buffer. The boolean is false when the server has not produced a result yet.
-func (w *Workspace) FileDiagnostics(ctx context.Context, filePath string, content *string) ([]lsp.Diagnostic, bool, error) {
-	var diagnostics []lsp.Diagnostic
-	var known bool
-	err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
-		diagnostics, known = session.WaitForDiagnostics(ctx, uri, 2*time.Second)
-		return nil
-	})
-	if err != nil {
-		return nil, false, err
+func (w *Workspace) FileDiagnostics(ctx context.Context, filePath string, content *string) ([]language.Diagnostic, bool, error) {
+	w.mu.RLock()
+	service := w.Language
+	w.mu.RUnlock()
+	if service == nil {
+		return nil, false, fmt.Errorf("language service unavailable")
 	}
-	return diagnostics, known, nil
+	return service.FileDiagnostics(ctx, filePath, content)
 }
 
-// DefinitionLocations resolves a position in a disk file or in-memory editor
-// buffer using the language server associated with the file.
-func (w *Workspace) DefinitionLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.DefLocation, error) {
-	return w.locationRequest(ctx, filePath, content, func(session *lsp.Session, uri string) ([]lsp.DefLocation, error) {
-		return session.DefinitionLocations(ctx, uri, line, column)
-	})
+func (w *Workspace) languageService() (*language.Service, error) {
+	w.mu.RLock()
+	service := w.Language
+	w.mu.RUnlock()
+	if service == nil {
+		return nil, fmt.Errorf("language service unavailable")
+	}
+	return service, nil
 }
 
-func (w *Workspace) TypeDefinitionLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.DefLocation, error) {
-	return w.locationRequest(ctx, filePath, content, func(session *lsp.Session, uri string) ([]lsp.DefLocation, error) {
-		return session.TypeDefinitionLocations(ctx, uri, line, column)
-	})
-}
-
-func (w *Workspace) ImplementationLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.DefLocation, error) {
-	return w.locationRequest(ctx, filePath, content, func(session *lsp.Session, uri string) ([]lsp.DefLocation, error) {
-		return session.ImplementationLocations(ctx, uri, line, column)
-	})
-}
-
-func (w *Workspace) ReferenceLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.DefLocation, error) {
-	return w.locationRequest(ctx, filePath, content, func(session *lsp.Session, uri string) ([]lsp.DefLocation, error) {
-		return session.ReferenceLocations(ctx, uri, line, column)
-	})
-}
-
-func (w *Workspace) locationRequest(ctx context.Context, filePath string, content *string, request func(*lsp.Session, string) ([]lsp.DefLocation, error)) ([]lsp.DefLocation, error) {
-	var locations []lsp.DefLocation
-	err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
-		var err error
-		locations, err = request(session, uri)
-		return err
-	})
+func (w *Workspace) GraphEngine() (*graph.Engine, error) {
+	service, err := w.languageService()
 	if err != nil {
 		return nil, err
 	}
-	return locations, nil
+	return service.Graph(), nil
+}
+
+func (w *Workspace) GraphStateDir() string {
+	return projectGraphDir(w.RootPath)
+}
+
+// DefinitionLocations resolves a position in a disk file or in-memory editor
+// buffer using the language server associated with the file, falling back to
+// the tree-sitter graph index when no server covers it.
+func (w *Workspace) DefinitionLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.Location, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.DefinitionLocations(ctx, filePath, content, line, column)
+}
+
+func (w *Workspace) TypeDefinitionLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.Location, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.TypeDefinitionLocations(ctx, filePath, content, line, column)
+}
+
+func (w *Workspace) ImplementationLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.Location, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.ImplementationLocations(ctx, filePath, content, line, column)
+}
+
+func (w *Workspace) ReferenceLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.Location, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.ReferenceLocations(ctx, filePath, content, line, column)
 }
 
 func (w *Workspace) HoverInformation(ctx context.Context, filePath string, content *string, line, column int) (string, error) {
-	var contents string
-	err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
-		var err error
-		contents, err = session.HoverInformation(ctx, uri, line, column)
-		return err
-	})
+	service, err := w.languageService()
 	if err != nil {
 		return "", err
 	}
-	return contents, nil
+	return service.Hover(ctx, filePath, content, line, column)
+}
+
+// CompletionItems asks the file's language server first and falls back to
+// symbols extracted from the current buffer with tree-sitter when completion
+// is unavailable.
+func (w *Workspace) CompletionItems(ctx context.Context, filePath string, content *string, line, column int, completionContext *lsp.CompletionContext) (lsp.CompletionList, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return lsp.CompletionList{}, err
+	}
+	return service.CompletionItems(ctx, filePath, content, line, column, completionContext)
+}
+
+func (w *Workspace) ResolveCompletionItem(ctx context.Context, filePath string, content *string, item lsp.CompletionItem) (lsp.CompletionItem, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return lsp.CompletionItem{}, err
+	}
+	return service.ResolveCompletionItem(ctx, filePath, content, item)
+}
+
+func (w *Workspace) SignatureHelp(ctx context.Context, filePath string, content *string, line, column int, signatureContext *lsp.SignatureHelpContext) (*lsp.SignatureHelp, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.SignatureHelp(ctx, filePath, content, line, column, signatureContext)
+}
+
+func (w *Workspace) PrepareRename(ctx context.Context, filePath string, content *string, line, column int) (lsp.PrepareRenameResult, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.PrepareRename(ctx, filePath, content, line, column)
+}
+
+func (w *Workspace) Rename(ctx context.Context, filePath string, content *string, line, column int, newName string) (*lsp.WorkspaceEdit, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.Rename(ctx, filePath, content, line, column, newName)
+}
+
+func (w *Workspace) CodeActions(
+	ctx context.Context,
+	filePath string,
+	content *string,
+	selection lsp.Range,
+	only []lsp.CodeActionKind,
+	trigger lsp.CodeActionTriggerKind,
+) ([]lsp.CommandOrCodeAction, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.CodeActions(ctx, filePath, content, selection, only, trigger)
+}
+
+func (w *Workspace) ResolveCodeAction(ctx context.Context, filePath string, content *string, action lsp.CodeAction) (*lsp.CodeAction, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.ResolveCodeAction(ctx, filePath, content, action)
+}
+
+func (w *Workspace) ExecuteLSPCommand(ctx context.Context, filePath string, content *string, command lsp.Command) (any, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.ExecuteCommand(ctx, filePath, content, command)
+}
+
+func (w *Workspace) Formatting(ctx context.Context, filePath string, content *string, options lsp.FormattingOptions) ([]lsp.TextEdit, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.Formatting(ctx, filePath, content, options)
+}
+
+func (w *Workspace) RangeFormatting(ctx context.Context, filePath string, content *string, selection lsp.Range, options lsp.FormattingOptions) ([]lsp.TextEdit, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.RangeFormatting(ctx, filePath, content, selection, options)
+}
+
+func (w *Workspace) OnTypeFormatting(ctx context.Context, filePath string, content *string, line, column int, character string, options lsp.FormattingOptions) ([]lsp.TextEdit, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.OnTypeFormatting(ctx, filePath, content, line, column, character, options)
+}
+
+func (w *Workspace) InlayHints(ctx context.Context, filePath string, content *string, selection lsp.Range) ([]lsp.InlayHint, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.InlayHints(ctx, filePath, content, selection)
 }
 
 func (w *Workspace) DocumentSymbolItems(ctx context.Context, filePath string, content *string) ([]lsp.DocumentSymbol, []lsp.SymbolInformation, error) {
-	var docSymbols []lsp.DocumentSymbol
-	var symInfos []lsp.SymbolInformation
-	err := w.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
-		var err error
-		docSymbols, symInfos, err = session.DocumentSymbolItems(ctx, uri)
-		return err
-	})
+	service, err := w.languageService()
 	if err != nil {
 		return nil, nil, err
 	}
-	return docSymbols, symInfos, nil
+	return service.DocumentSymbols(ctx, filePath, content)
 }
 
-func syncEditorDocument(ctx context.Context, session *lsp.Session, filePath string, content *string) (string, error) {
-	if content != nil {
-		return session.SyncDocument(ctx, filePath, *content)
+func (w *Workspace) DocumentHighlights(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.DocumentHighlight, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
 	}
-	return session.OpenDocument(ctx, filePath)
+	return service.DocumentHighlights(ctx, filePath, content, line, column)
+}
+
+func (w *Workspace) FoldingRanges(ctx context.Context, filePath string, content *string) ([]lsp.FoldingRange, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.FoldingRanges(ctx, filePath, content)
+}
+
+func (w *Workspace) SemanticTokens(ctx context.Context, filePath string, content *string) ([]language.SemanticToken, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, err
+	}
+	return service.SemanticTokens(ctx, filePath, content)
 }
 
 func (w *Workspace) WithEditDiagnostics(tools []tool.Tool) []tool.Tool {
@@ -540,14 +770,14 @@ func (w *Workspace) WithEditDiagnostics(tools []tool.Tool) []tool.Tool {
 		if execute == nil {
 			continue
 		}
-		wrapped[i].Execute = func(ctx context.Context, args map[string]any) (string, error) {
+		wrapped[i].Execute = func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			out, err := execute(ctx, args)
 			if err != nil {
 				return out, err
 			}
 			path, _ := args["file_path"].(string)
 			if note := w.postEditDiagnostics(ctx, path); note != "" {
-				out += "\n\n" + note
+				out.Content += "\n\n" + note
 			}
 			return out, nil
 		}
@@ -563,15 +793,13 @@ func (w *Workspace) postEditDiagnostics(ctx context.Context, path string) string
 		path = filepath.Join(w.RootPath, path)
 	}
 
-	w.lspLifeMu.RLock()
-	defer w.lspLifeMu.RUnlock()
-
-	manager := w.lspManager()
-	if manager == nil {
+	w.mu.RLock()
+	service := w.Language
+	w.mu.RUnlock()
+	if service == nil {
 		return ""
 	}
-
-	return manager.PostEditDiagnostics(ctx, path)
+	return service.PostEditDiagnostics(ctx, path)
 }
 
 func (w *Workspace) protectLSPTools(tools []tool.Tool) []tool.Tool {
@@ -581,7 +809,7 @@ func (w *Workspace) protectLSPTools(tools []tool.Tool) []tool.Tool {
 		if execute == nil {
 			continue
 		}
-		protected[i].Execute = func(ctx context.Context, args map[string]any) (string, error) {
+		protected[i].Execute = func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			w.lspLifeMu.RLock()
 			defer w.lspLifeMu.RUnlock()
 			return execute(ctx, args)
@@ -617,10 +845,53 @@ func (w *Workspace) RevertChange(ctx context.Context, path string) error {
 	return w.Changes.Revert(ctx, path)
 }
 
-func (w *Workspace) HasNativeGit() bool {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-	return w.Changes != nil && w.Changes.IsNativeGit()
+func (w *Workspace) GitInit() error {
+	if isGitRepo(w.RootPath) {
+		return errors.New("workspace is already a Git repository")
+	}
+	if err := removeDanglingGitPointer(w.RootPath); err != nil {
+		return err
+	}
+	if _, err := git.PlainInitWithOptions(w.RootPath, &git.PlainInitOptions{
+		InitOptions: git.InitOptions{DefaultBranch: plumbing.Main},
+	}); err != nil {
+		return fmt.Errorf("initialize Git repository: %w", err)
+	}
+	w.SyncProjectMode()
+	return nil
+}
+
+func removeDanglingGitPointer(dir string) error {
+	path := filepath.Join(dir, git.GitDirName)
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect .git: %w", err)
+	}
+	if info.IsDir() {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("workspace contains an unusable .git file: %w", err)
+	}
+	target, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "gitdir:")
+	if !ok {
+		return errors.New("workspace contains a .git file that is not a Git repository; remove it and try again")
+	}
+	target = strings.TrimSpace(target)
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(dir, target)
+	}
+	if _, err := os.Stat(target); err == nil {
+		return errors.New("workspace .git file points to an existing external Git directory; remove it manually to reinitialize")
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("remove stale .git file: %w", err)
+	}
+	return nil
 }
 
 func (w *Workspace) GitStatus(ctx context.Context) (changes.GitStatus, error) {
@@ -639,6 +910,24 @@ func (w *Workspace) GitBranches(ctx context.Context, refresh bool) ([]changes.Gi
 		return nil, "", changes.ErrNotGitRepository
 	}
 	return w.Changes.Branches(ctx, refresh)
+}
+
+func (w *Workspace) GitHistory(ctx context.Context) ([]changes.GitCommit, error) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.Changes == nil {
+		return nil, changes.ErrNotGitRepository
+	}
+	return w.Changes.History(ctx)
+}
+
+func (w *Workspace) GitCompare(ctx context.Context, base, head string, mergeBase bool) (changes.CompareResult, error) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.Changes == nil {
+		return changes.CompareResult{}, changes.ErrNotGitRepository
+	}
+	return w.Changes.Compare(ctx, base, head, mergeBase)
 }
 
 func (w *Workspace) GitCreateBranch(ctx context.Context, name string) error {
@@ -702,10 +991,6 @@ func (w *Workspace) GitPush(ctx context.Context) (string, error) {
 		return "", changes.ErrNotGitRepository
 	}
 	return w.Changes.Push(ctx)
-}
-
-func (w *Workspace) nextShadowGitDir() string {
-	return filepath.Join(w.ScratchPath, "changes-"+uuid.NewString()+".git")
 }
 
 func (w *Workspace) MemoryContent() string {
@@ -824,12 +1109,28 @@ func (w *Workspace) ManagedTools() (mcpTools, lspTools, graphTools []tool.Tool) 
 	return
 }
 
-func (w *Workspace) HasLSP() bool {
-	w.lspLifeMu.RLock()
-	defer w.lspLifeMu.RUnlock()
+// WithDAPManager keeps the workspace's debugger alive for the duration of fn.
+// DAP is an editor service, not an agent tool; callers use this boundary from
+// explicit user-facing launch and inspection workflows.
+func (w *Workspace) WithDAPManager(fn func(*dap.Manager) error) error {
+	w.dapLifeMu.RLock()
+	defer w.dapLifeMu.RUnlock()
 
-	manager := w.lspManager()
-	return manager != nil && len(manager.DetectServers()) > 0
+	w.mu.RLock()
+	manager := w.DAP
+	closed := w.closed
+	w.mu.RUnlock()
+	if closed || manager == nil {
+		return errors.New("debug service unavailable")
+	}
+	return fn(manager)
+}
+
+func (w *Workspace) HasLSP() bool {
+	w.mu.RLock()
+	service := w.Language
+	w.mu.RUnlock()
+	return service != nil && service.HasLSP()
 }
 
 func (w *Workspace) HasChanges() bool {
@@ -864,6 +1165,9 @@ func projectKey(workingDir string) string {
 	if root == "" {
 		root = workingDir
 	}
+	if absolute, err := filepath.Abs(root); err == nil {
+		root = absolute
+	}
 
 	sanitized := filepath.Clean(root)
 
@@ -879,44 +1183,40 @@ func projectKey(workingDir string) string {
 }
 
 func globalMCPConfigPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
+	path, _ := layout.WingmanPath("mcp.json")
+	return path
+}
+
+func projectStateDir(workingDir string) string {
+	path, err := layout.WingmanPath("projects", projectKey(workingDir))
+	if err == nil {
+		return path
 	}
 
-	return filepath.Join(home, ".wingman", "mcp.json")
+	return filepath.Join(os.TempDir(), ".wingman", "projects", projectKey(workingDir))
 }
 
 func projectMemoryDir(workingDir string) string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = os.TempDir()
-	}
-
-	return filepath.Join(home, ".wingman", "projects", projectKey(workingDir), "memory")
+	return filepath.Join(projectStateDir(workingDir), "memory")
 }
 
 func projectGraphDir(workingDir string) string {
-	return filepath.Join(filepath.Dir(projectMemoryDir(workingDir)), "graph")
+	return filepath.Join(projectStateDir(workingDir), "graph")
 }
 
 // projectPluginDataDir holds PLUGIN_DATA for plugins installed in the project,
 // alongside that project's other state so it survives plugin updates.
 func projectPluginDataDir(workingDir string) string {
-	return filepath.Join(filepath.Dir(projectMemoryDir(workingDir)), "plugin-data")
+	return filepath.Join(projectStateDir(workingDir), "plugin-data")
 }
 
 func personalPluginDataDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-
-	return filepath.Join(home, ".wingman", "plugin-data")
+	path, _ := layout.WingmanPath("plugin-data")
+	return path
 }
 
 func SessionsDir(workingDir string) string {
-	return filepath.Join(filepath.Dir(projectMemoryDir(workingDir)), "sessions")
+	return filepath.Join(projectStateDir(workingDir), "sessions")
 }
 
 func findCanonicalGitRoot(dir string) string {

@@ -42,11 +42,11 @@ func GlobTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 			"additionalProperties": false,
 		},
 
-		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			pattern, ok := args["pattern"].(string)
 
 			if !ok || strings.TrimSpace(pattern) == "" {
-				return "", fmt.Errorf("pattern is required")
+				return tool.Result{}, fmt.Errorf("pattern is required")
 			}
 			searchDir := "."
 
@@ -58,22 +58,22 @@ func GlobTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 
 			target, pattern, err := resolveGlobSearch(searchDir, pattern, workingDir, root, allowedReadRoots)
 			if err != nil {
-				return "", err
+				return tool.Result{}, err
 			}
 			defer target.Close()
 
 			if _, err := doublestar.Match(pattern, ""); err != nil {
-				return "", fmt.Errorf("invalid glob pattern: %w", err)
+				return tool.Result{}, fmt.Errorf("invalid glob pattern: %w", err)
 			}
 
 			info, err := target.Root.Stat(target.SearchDirFS)
 
 			if err != nil {
-				return "", fmt.Errorf("stat path %q: %w", searchDir, err)
+				return tool.Result{}, fmt.Errorf("stat path %q: %w", searchDir, err)
 			}
 
 			if !info.IsDir() {
-				return "", fmt.Errorf("path is not a directory: %s", searchDir)
+				return tool.Result{}, fmt.Errorf("path is not a directory: %s", searchDir)
 			}
 
 			fsys := vcsFilteredFS{target.Root.FS()}
@@ -100,13 +100,13 @@ func GlobTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 			}, doublestar.WithFilesOnly(), doublestar.WithNoFollow())
 
 			if err != nil && err != filepath.SkipAll {
-				return "", fmt.Errorf("failed to search directory: %w", err)
+				return tool.Result{}, fmt.Errorf("failed to search directory: %w", err)
 			}
 
 			totalMatches := len(results)
 
 			if totalMatches == 0 {
-				return "No files found", nil
+				return tool.Text("No files found"), nil
 			}
 
 			slices.SortFunc(results, func(a, b fileResult) int {
@@ -132,7 +132,7 @@ func GlobTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 				output += "\n(Results are truncated. Consider using a more specific path or pattern.)"
 			}
 
-			return output, nil
+			return tool.Text(output), nil
 		},
 	}
 }

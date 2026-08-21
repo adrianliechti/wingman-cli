@@ -1174,6 +1174,7 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 			Name:    prior.name,
 			Args:    prior.args,
 			Content: body,
+			IsError: status == acpsdk.ToolCallStatusFailed,
 		}}, ""), true
 
 	}
@@ -1644,7 +1645,15 @@ func (a *Agent) refreshConfig(sess *sessionState, options []acpsdk.SessionConfig
 			modelOptID = string(opt.Select.Id)
 			modelID = string(opt.Select.CurrentValue)
 			for _, v := range values {
-				models = append(models, model.Model{ID: string(v.Value), Name: v.Name})
+				description := ""
+				if v.Description != nil {
+					description = *v.Description
+				}
+				models = append(models, model.Model{
+					ID:          string(v.Value),
+					Name:        v.Name,
+					Description: description,
+				})
 			}
 		case string(acpsdk.SessionConfigOptionCategoryThoughtLevel), effortConfigID:
 			effortOptID = string(opt.Select.Id)

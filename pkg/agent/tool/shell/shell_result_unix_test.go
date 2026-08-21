@@ -17,8 +17,8 @@ func TestShellReportsEmptyOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result != "(command completed with no output)" {
-		t.Fatalf("got %q", result)
+	if result.Content != "(command completed with no output)" {
+		t.Fatalf("got %q", result.Content)
 	}
 }
 
@@ -35,11 +35,22 @@ func TestShellWorkdir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result, "/sub") {
-		t.Fatalf("expected command to run in sub dir, got %q", result)
+	if !strings.Contains(result.Content, "/sub") {
+		t.Fatalf("expected command to run in sub dir, got %q", result.Content)
 	}
 
 	if _, err := shellTool.Execute(context.Background(), map[string]any{"command": "pwd", "workdir": "missing"}); err == nil {
 		t.Fatal("expected error for missing workdir")
+	}
+}
+
+func TestShellStructuredFailure(t *testing.T) {
+	shellTool := Tools(t.TempDir(), nil, nil, nil)[0]
+	result, err := shellTool.Execute(context.Background(), map[string]any{"command": "exit 7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError || result.Metadata["exit_code"] != 7 {
+		t.Fatalf("structured result = %+v", result.Content)
 	}
 }

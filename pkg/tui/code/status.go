@@ -71,7 +71,7 @@ func (a *App) contextLeftPercent() (int, bool) {
 	window := a.contextWindow
 	if window <= 0 {
 		_, currentModel := a.agent.Models(a.sessionID)
-		window = int64(agent.ContextWindowFor(currentModel, false))
+		window = int64(agent.ContextWindowFor(currentModel))
 	}
 	if window <= 0 {
 		return 0, false
@@ -98,6 +98,12 @@ func (a *App) footerLine(width int) string {
 		} else if running > 1 {
 			right = append(right, colored(t.Cyan, fmt.Sprintf("%d agents", running)))
 		}
+	}
+
+	if scheduled := a.activeScheduleCount(); scheduled == 1 {
+		right = append(right, colored(t.Cyan, "1 scheduled"))
+	} else if scheduled > 1 {
+		right = append(right, colored(t.Cyan, fmt.Sprintf("%d scheduled", scheduled)))
 	}
 
 	showFreshUsage := a.getPhase() == PhaseIdle && time.Now().Before(a.usageVisibleUntil)

@@ -4,11 +4,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/adrianliechti/wingman-agent/pkg/lsp"
+	"github.com/adrianliechti/wingman-agent/pkg/language"
 )
 
 func TestDiagnosticsCoverageComplete(t *testing.T) {
-	coverage, partial := diagnosticsCoverage(lsp.WorkspaceDiagnosticsReport{
+	coverage, partial := diagnosticsCoverage(language.WorkspaceReport{
 		CheckedFiles:    3,
 		DiscoveredFiles: 3,
 	})
@@ -21,7 +21,7 @@ func TestDiagnosticsCoverageComplete(t *testing.T) {
 }
 
 func TestDiagnosticsCoverageExplainsPartialResults(t *testing.T) {
-	coverage, partial := diagnosticsCoverage(lsp.WorkspaceDiagnosticsReport{
+	coverage, partial := diagnosticsCoverage(language.WorkspaceReport{
 		CheckedFiles:       4,
 		DiscoveredFiles:    10,
 		DiscoveryTruncated: true,

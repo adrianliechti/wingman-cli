@@ -23,8 +23,8 @@ func TestExecExitNotifiesBackgroundedSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "Still running") {
-		t.Fatalf("expected backgrounded session, got %q", out)
+	if !strings.Contains(out.Content, "Still running") {
+		t.Fatalf("expected backgrounded session, got %q", out.Content)
 	}
 
 	select {
@@ -61,8 +61,8 @@ func TestExecExitInlineDeliverySuppressesNotification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "done") || !strings.Contains(out, "Command completed") {
-		t.Fatalf("expected inline exit delivery, got %q", out)
+	if !strings.Contains(out.Content, "done") || !strings.Contains(out.Content, "Command completed") {
+		t.Fatalf("expected inline exit delivery, got %q", out.Content)
 	}
 
 	select {

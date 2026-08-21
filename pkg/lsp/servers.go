@@ -6,12 +6,13 @@ import (
 )
 
 type Server struct {
-	Name                string
-	Command             string
-	Args                []string
-	Languages           []string
-	LanguageID          string
-	MinimumMajorVersion int
+	Name                  string
+	Command               string
+	Args                  []string
+	Languages             []string
+	LanguageID            string
+	MinimumMajorVersion   int
+	InitializationOptions []byte
 }
 
 func (s Server) LanguageIDForPath(path string) string {

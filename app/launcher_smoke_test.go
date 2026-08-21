@@ -7,12 +7,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/adrianliechti/wingman-agent/internal/testenv"
 )
 
 func TestLauncherSmoke(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	testenv.UserHome(t)
+	home := testenv.WingmanHome(t)
+	t.Setenv("WINGMAN_URL", "https://example.com")
+	t.Setenv("WINGMAN_TOKEN", "secret")
 
 	app := &App{}
 	app.launcher = app.newLauncher()
@@ -33,22 +36,16 @@ func TestLauncherSmoke(t *testing.T) {
 
 	if rec := get("/"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Wingman Agent") {
 		t.Fatalf("start page: %d", rec.Code)
+	} else if !strings.Contains(rec.Body.String(), "--shell-window-drag: drag") {
+		t.Fatal("start page has no macOS window drag region")
 	}
 
 	if rec := get("/app/workspaces"); rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "null" {
 		t.Fatalf("workspaces: %d %q", rec.Code, rec.Body.String())
 	}
 
-	if rec := post("/app/settings", `{"url":"https://example.com","token":"secret"}`); rec.Code != http.StatusNoContent {
-		t.Fatalf("save settings: %d %q", rec.Code, rec.Body.String())
-	}
-
-	if rec := get("/app/settings"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "https://example.com") {
-		t.Fatalf("settings: %d %q", rec.Code, rec.Body.String())
-	}
-
-	if _, err := os.Stat(filepath.Join(home, ".wingman", "config.json")); err != nil {
-		t.Fatalf("config not written: %v", err)
+	if rec := get("/app/settings"); rec.Code != http.StatusNotFound {
+		t.Fatalf("removed settings endpoint: %d %q", rec.Code, rec.Body.String())
 	}
 
 	if rec := post("/app/workspaces/remove", `{}`); rec.Code != http.StatusBadRequest {
@@ -60,9 +57,16 @@ func TestLauncherSmoke(t *testing.T) {
 	if rec := post("/app/workspaces/open", `{"path":"`+workspace+`"}`); rec.Code != http.StatusNoContent {
 		t.Fatalf("open workspace: %d %q", rec.Code, rec.Body.String())
 	}
+	config, err := os.ReadFile(filepath.Join(home, "config.json"))
+	if err != nil {
+		t.Fatalf("config not written: %v", err)
+	}
+	if strings.Contains(string(config), "url") || strings.Contains(string(config), "token") || strings.Contains(string(config), "secret") {
+		t.Fatalf("config contains connection credentials: %s", config)
+	}
 
-	if rec := get("/app/workspaces"); rec.Code == http.StatusOK && strings.Contains(rec.Body.String(), "/app/") {
-		t.Fatalf("launcher still answering after open")
+	if rec := get("/app/workspaces"); rec.Code != http.StatusOK {
+		t.Fatalf("app commands unavailable after open: %d", rec.Code)
 	}
 
 	if rec := get("/api/capabilities"); rec.Code != http.StatusOK {
@@ -71,6 +75,11 @@ func TestLauncherSmoke(t *testing.T) {
 
 	if rec := post("/app/workspaces/open", `{"path":"`+workspace+`"}`); rec.Code == http.StatusNoContent {
 		t.Fatalf("second open should fail")
+	}
+
+	replacement := t.TempDir()
+	if rec := post("/app/workspaces/open", `{"path":"`+replacement+`","replace":true}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("replace workspace: %d %q", rec.Code, rec.Body.String())
 	}
 
 	app.shutdown()

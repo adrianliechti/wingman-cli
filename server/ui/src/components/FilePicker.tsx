@@ -1,59 +1,26 @@
+import { useQuery } from "@tanstack/react-query";
 import { File } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-
-interface Hit {
-	path: string;
-	name: string;
-}
+import { fileQueries } from "../api/files";
+import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import { FloatingSurface } from "./ui/Floating";
 
 interface Props {
+	anchor: Element | null;
 	onSelect: (path: string) => void;
 	onClose: () => void;
 }
 
-export function FilePicker({ onSelect, onClose }: Props) {
+export function FilePicker({ anchor, onSelect, onClose }: Props) {
 	const [query, setQuery] = useState("");
-	const [hits, setHits] = useState<Hit[]>([]);
 	const [active, setActive] = useState(0);
 	const inputRef = useRef<HTMLInputElement>(null);
-	const containerRef = useRef<HTMLDivElement>(null);
+	const debouncedQuery = useDebouncedValue(query, 80);
+	const hits = useQuery(fileQueries.search(debouncedQuery)).data ?? [];
 
 	useEffect(() => {
 		inputRef.current?.focus();
 	}, []);
-
-	useEffect(() => {
-		let cancelled = false;
-		const t = setTimeout(() => {
-			fetch(`/api/files/search?q=${encodeURIComponent(query)}`)
-				.then((r) => (r.ok ? r.json() : []))
-				.then((data: Hit[]) => {
-					if (cancelled) return;
-					setHits(data);
-					setActive(0);
-				})
-				.catch(() => {
-					if (!cancelled) setHits([]);
-				});
-		}, 80);
-		return () => {
-			cancelled = true;
-			clearTimeout(t);
-		};
-	}, [query]);
-
-	useEffect(() => {
-		const onClick = (e: MouseEvent) => {
-			if (
-				containerRef.current &&
-				!containerRef.current.contains(e.target as Node)
-			) {
-				onClose();
-			}
-		};
-		document.addEventListener("mousedown", onClick);
-		return () => document.removeEventListener("mousedown", onClick);
-	}, [onClose]);
 
 	const onKey = (e: React.KeyboardEvent) => {
 		if (e.key === "Escape") {
@@ -73,16 +40,25 @@ export function FilePicker({ onSelect, onClose }: Props) {
 	};
 
 	return (
-		<div
-			ref={containerRef}
-			className="absolute bottom-full mb-1 left-0 w-[360px] max-w-[90vw] bg-bg-elevated/95 backdrop-blur-sm border border-border rounded-md shadow-xl z-50 overflow-hidden"
+		<FloatingSurface
+			open
+			onOpenChange={(open) => !open && onClose()}
+			reference={anchor}
+			placement="top-start"
+			role="dialog"
+			label="Find a file"
+			focusOnOpen
+			className="z-[100] w-[360px] bg-bg-elevated/95 backdrop-blur-sm border border-border rounded-md shadow-xl overflow-hidden"
 		>
 			<div className="px-3 py-2 border-b border-border-subtle">
 				<input
 					ref={inputRef}
 					type="text"
 					value={query}
-					onChange={(e) => setQuery(e.target.value)}
+					onChange={(e) => {
+						setQuery(e.target.value);
+						setActive(0);
+					}}
 					onKeyDown={onKey}
 					placeholder="Search files…"
 					className="w-full bg-transparent text-fg text-[12px] outline-none placeholder:text-fg-dim"
@@ -123,6 +99,6 @@ export function FilePicker({ onSelect, onClose }: Props) {
 					})
 				)}
 			</div>
-		</div>
+		</FloatingSurface>
 	);
 }

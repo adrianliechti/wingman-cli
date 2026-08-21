@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/adrianliechti/wingman-agent/internal/testenv"
 	"github.com/adrianliechti/wingman-agent/pkg/acp/internal/acptest"
 )
 
@@ -20,7 +21,7 @@ func TestACPContract(t *testing.T) {
 
 func newContractAgent(t *testing.T) acptest.Agent {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
+	testenv.UserHome(t)
 	script, dir, env := acptest.CommandHelper(t, "TestClaudeContractHelper", "CLAUDE_CONTRACT_HELPER")
 	return New(Options{Path: script, Cwd: dir, Env: env})
 }

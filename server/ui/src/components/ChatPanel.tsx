@@ -17,6 +17,7 @@ import {
 	useState,
 } from "react";
 import { useColorScheme } from "../hooks/useColorScheme";
+import { type Skill, useSkills } from "../hooks/useSkills";
 import type {
 	ChatEntry,
 	PendingPrompt,
@@ -32,7 +33,7 @@ import { buildTurns, findEntryElement, type Turn } from "./chat/turns";
 import { FilePicker } from "./FilePicker";
 import { ModelPicker } from "./ModelPicker";
 import { ModePicker, type ModeOption } from "./ModePicker";
-import { SkillPicker, type Skill } from "./SkillPicker";
+import { SkillPicker } from "./SkillPicker";
 import { TurnQueue } from "./TurnQueue";
 
 interface Props {
@@ -65,9 +66,6 @@ interface Props {
 	loadError?: string | null;
 	error?: string | null;
 	onDismissError?: () => void;
-	subscribe?: (
-		handler: (msg: import("../types/protocol").ServerMessage) => void,
-	) => () => void;
 	prompt?: PendingPrompt | null;
 	onPromptReply?: (reply: PromptReply) => void;
 	seed?: { text: string; nonce: number } | null;
@@ -124,7 +122,6 @@ export function ChatPanel({
 	loadError,
 	error,
 	onDismissError,
-	subscribe,
 	prompt,
 	onPromptReply,
 	seed,
@@ -133,7 +130,6 @@ export function ChatPanel({
 	const scheme = useColorScheme();
 	const [input, setInput] = useState("");
 	const [caret, setCaret] = useState(0);
-	const [skills, setSkills] = useState<Skill[]>([]);
 	const [skillActive, setSkillActive] = useState(0);
 	const [dismissedToken, setDismissedToken] = useState<string | null>(null);
 	const [files, setFiles] = useState<string[]>([]);
@@ -143,11 +139,27 @@ export function ChatPanel({
 	const [sendError, setSendError] = useState<string | null>(null);
 	const inputError = sendError ?? error;
 	const [editingQueueId, setEditingQueueId] = useState<string | null>(null);
+	const queueSettling =
+		pendingInputs.length > 0 &&
+		pendingInputs.every((item) => item.state === "sending");
+	const [revealSettling, setRevealSettling] = useState(false);
+	useEffect(() => {
+		if (!queueSettling) {
+			setRevealSettling(false);
+			return;
+		}
+		const timer = setTimeout(() => setRevealSettling(true), 400);
+		return () => clearTimeout(timer);
+	}, [queueSettling]);
+	const showQueue =
+		pendingInputs.length > 0 && (!queueSettling || revealSettling);
 	const containerRef = useRef<HTMLDivElement>(null);
 	const contentRef = useRef<HTMLDivElement>(null);
 	const spacerRef = useRef<HTMLDivElement>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const imageInputRef = useRef<HTMLInputElement>(null);
+	const composerRef = useRef<HTMLDivElement>(null);
+	const filePickerButtonRef = useRef<HTMLButtonElement>(null);
 	const turns = useMemo(() => buildTurns(entries), [entries]);
 
 	const submitPendingRef = useRef(false);
@@ -258,24 +270,7 @@ export function ChatPanel({
 		: null;
 
 	const tokenOpen = !!skillToken;
-	useEffect(() => {
-		if (!tokenOpen) return;
-		let cancelled = false;
-		const skillsURL = sessionId
-			? `/api/skills?session=${encodeURIComponent(sessionId)}`
-			: "/api/skills";
-		fetch(skillsURL)
-			.then((r) => (r.ok ? r.json() : []))
-			.then((data: Skill[]) => {
-				if (!cancelled) setSkills(data);
-			})
-			.catch(() => {
-				if (!cancelled) setSkills([]);
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, [tokenOpen, sessionId]);
+	const skills = useSkills(sessionId, tokenOpen);
 
 	const skillQuery = skillToken ? skillToken.query.toLowerCase() : null;
 	const skillMatches = useMemo(() => {
@@ -718,7 +713,7 @@ export function ChatPanel({
 				</div>
 			)}
 			<div
-				className={`h-full overflow-y-auto [overflow-anchor:none] ${pendingInputs.length > 0 ? "pb-56" : "pb-24"}`}
+				className={`h-full overflow-y-auto [overflow-anchor:none] ${showQueue ? "pb-56" : "pb-24"}`}
 				ref={containerRef}
 			>
 				{loading && entries.length === 0 ? (
@@ -769,7 +764,7 @@ export function ChatPanel({
 			<div className="absolute bottom-0 left-0 right-0 z-20">
 				<div className="h-6 bg-gradient-to-t from-bg to-transparent pointer-events-none" />
 				<div className="mx-auto w-full max-w-4xl bg-bg px-4 pb-3">
-					{pendingInputs.length > 0 && (
+					{showQueue && (
 						<TurnQueue
 							items={pendingInputs}
 							paused={queuePaused}
@@ -802,7 +797,11 @@ export function ChatPanel({
 							onReply={onPromptReply}
 						/>
 					) : (
-						<div data-chat-composer className="relative rounded-xl">
+						<div
+							ref={composerRef}
+							data-chat-composer
+							className="relative rounded-xl"
+						>
 							{editingQueueId && (
 								<div className="flex items-center justify-between px-2.5 pt-2 text-[10px] text-warning font-mono">
 									<span>Editing queued message</span>
@@ -817,6 +816,7 @@ export function ChatPanel({
 							)}
 							{showSkills && (
 								<SkillPicker
+									anchor={composerRef.current}
 									skills={skillMatches}
 									active={activeSkill}
 									onSelect={selectSkill}
@@ -900,6 +900,7 @@ export function ChatPanel({
 								<div className="flex items-center gap-0 min-w-0">
 									<div className="relative flex items-center">
 										<button
+											ref={filePickerButtonRef}
 											type="button"
 											className="w-7 h-7 flex items-center justify-center rounded text-fg-dim hover:text-fg hover:bg-bg-hover cursor-pointer transition-colors"
 											onClick={() => setShowPicker((s) => !s)}
@@ -909,6 +910,7 @@ export function ChatPanel({
 										</button>
 										{showPicker && (
 											<FilePicker
+												anchor={filePickerButtonRef.current}
 												onSelect={addFile}
 												onClose={() => setShowPicker(false)}
 											/>
@@ -930,7 +932,7 @@ export function ChatPanel({
 										current={mode}
 										onSelect={onSelectMode}
 									/>
-									<ModelPicker sessionId={sessionId} subscribe={subscribe} />
+									<ModelPicker sessionId={sessionId} />
 								</div>
 
 								<div className="flex items-center gap-0">

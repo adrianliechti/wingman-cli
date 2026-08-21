@@ -1,0 +1,222 @@
+# Smart Editor Feature Gaps
+
+Comparison captured on 2026-08-15 against VS Code, Cursor, AWS Kiro, and Google Antigravity. Implementation status was re-audited on 2026-08-21 against `main` and the active feature branches.
+
+Kiro is an AWS product. Google Antigravity 2.0 is positioned more as a standalone agent command center than as a conventional editor.
+
+## Current strengths
+
+Wingman already provides:
+
+- Monaco-based editing with HTML, SVG, Markdown, Mermaid, and structured-data previews.
+- Two-pane editor groups with scrollable tab strips, preview and pinned tabs, drag reordering, cross-pane moves, contextual close controls, and unsaved-change protection.
+- Zero-config detection of ~50 language servers with LSP completion, navigation, references, rename, code actions, semantic tokens, formatting, diagnostics, and inlay hints, plus a tree-sitter fallback for navigation, hover, and completion when no server covers a file.
+- Predictive Tab editing with edit-gated ghost text, nearby multiline next edits, stale-result cancellation, and awaited LSP import cleanup on save or acceptance.
+- Revision-checked file writes with atomic multi-file batches and post-edit diagnostics fed back to the agent.
+- Streaming workspace search with regex, case, whole-word, and file filters, plus previewed revision-checked replacement at match, file, and workspace scope.
+- File editing, terminals, permission gates, multiple models, persistent agent sessions, and queued or steerable turns.
+- Git status, branches, comparisons, staging, commits, pull, and push.
+- An experimental DAP debugger foundation: deterministic Go, Python, Java, Rust, .NET/C#, TypeScript, and React/Vite launch profiles; `Run | Debug` CodeLens; gutter breakpoints; capability-aware stepping; automatic stop navigation; hover evaluation; one Debug tab with output and terminal views; variables and call-stack inspection; and PTY-backed interactive sessions.
+- Tasks and schedules, runtime-refreshable Agent Skills (including `.agents/skills`
+  compatibility), plugins, MCP, lifecycle hooks, structural code intelligence,
+  and subagents.
+
+## Feature gaps
+
+### P1: AI editing beyond Tab
+
+Predictive completion and nearby multiline next-edit suggestions are implemented. Remaining extensions are:
+
+- Coordinated multi-file suggestions and cross-file transitions.
+- Selection-based inline chat and transformations.
+- Optional diagnostic and surrounding-file context, gated by quality evaluations.
+- Terminal command generation and terminal-output-to-chat context.
+- AI-generated commit messages in the commit box.
+
+Benchmarks: [Cursor Tab](https://cursor.com/help/ai-features/tab) and [VS Code AI-powered suggestions](https://code.visualstudio.com/docs/editing/ai-powered-suggestions).
+
+### P2: Git-native granular review
+
+Do not reintroduce automatic filesystem checkpoints or shadow repositories. They
+were slow, duplicate Git poorly, and behave badly for non-Git folders. For Git
+repositories only, build on ordinary commits, refs, and diffs to add:
+
+- Per-turn change provenance.
+- Accept or reject individual files, hunks, and lines.
+- A safe merge flow for partially accepted agent changes.
+- Optional user-created restore points and turn forks backed by Git refs.
+
+Non-Git folders remain checkpoint-free unless the user explicitly initializes a
+repository.
+
+Benchmarks: [VS Code chat checkpoints](https://code.visualstudio.com/docs/chat/chat-checkpoints) and [Cursor Agent](https://cursor.com/docs/agent/overview).
+
+### P0: Isolated parallel agents
+
+Subagents currently share the same working tree, which can cause conflicting edits. Add:
+
+- A Git worktree per agent or session.
+- Conflict detection and a merge-back workflow.
+- Parallel session management across workspaces.
+- Optional isolated cloud sandboxes for asynchronous or offline work.
+- Multi-repository sessions and remote monitoring.
+
+Benchmarks: [VS Code agent sessions](https://code.visualstudio.com/docs/agents/agents-window), [Cursor Cloud Agents](https://cursor.com/docs/cloud-agent), [Kiro Web](https://kiro.dev/docs/web/using-the-agent/), and [Antigravity projects](https://www.antigravity.google/docs/features).
+
+### P1: Browser and visual-development agent
+
+Add:
+
+- An agent-controlled browser and Chrome DevTools integration.
+- DOM element selection and visual annotations.
+- Screenshot and video capture for verification.
+- Visual regression and responsive-layout checks.
+- Design-mode changes based on selected page elements.
+- Optional voice input for visual editing workflows.
+
+Benchmarks: [Cursor Design Mode](https://cursor.com/docs/agent/design-mode) and [Antigravity features](https://www.antigravity.google/docs/features).
+
+### P1: Full IDE debugging and testing
+
+The DAP foundation, deterministic Go/Delve, Python/debugpy, Java/java-debug,
+Rust/CodeLLDB, .NET/NetCoreDbg, and JavaScript/vscode-js-debug adapters, reviewed
+launch setup, source breakpoints, capability-aware stepping, inline evaluation,
+persistent debugger inspection, and terminal execution are implemented.
+Remaining work:
+
+- Watch expressions and an interactive evaluate/debug console.
+- Additional adapter descriptors and language target detectors beyond the
+  currently supported profiles.
+- Test discovery and a Test Explorer.
+- Suite-level run/debug controls and richer inline test results.
+- Coverage visualization and inline results.
+- Notebook support where applicable.
+
+Benchmarks: [VS Code debugging](https://code.visualstudio.com/docs/debugtest/debugging) and [VS Code testing](https://code.visualstudio.com/docs/debugtest/testing).
+
+### P1: Structured specifications and artifacts
+
+Plan mode exists, and runtime skill refresh now lets external SDD toolchains such
+as Spec Kit contribute ordinary `.agents/skills` commands without a Wingman-
+specific adapter or restart. This is command compatibility, not a first-class
+specification model. Add:
+
+- Structured requirements, design, and task documents.
+- Acceptance criteria and traceability from requirement to implementation.
+- Dependency-aware tasks with tracked execution state.
+- Reviewable plans and implementation artifacts with inline comments.
+- Optional property-based correctness criteria.
+
+Benchmark: [Kiro Specs](https://kiro.dev/docs/specs/).
+
+### P1: Editor ergonomics and personalization
+
+Two-pane editor groups, tab drag-reordering, cross-pane movement, preview tabs,
+and Keep Open pinning are implemented. Remaining work:
+
+- Persisted editor state (open tabs, layout, panel sizes) across reloads.
+- A settings UI, configurable keybindings, and a theme picker.
+- Outline view and breadcrumbs.
+- Go to Symbol in Workspace — the capability is advertised but no HTTP route exists (`server/handler_lsp.go`).
+- Notebook (.ipynb) support.
+
+Benchmark: [VS Code user interface](https://code.visualstudio.com/docs/getstarted/userinterface).
+
+### P1: Advanced Git and collaboration
+
+Add:
+
+- A three-way merge-conflict editor.
+- Hunk- and line-level staging, amend, and git status decorations in the file tree.
+- Stash, rebase, cherry-pick, and worktree management.
+- Blame and file timeline views.
+- Pull request and issue integration.
+- Automated pull-request review and suggested fixes.
+- Shared agent sessions and team review flows.
+
+Benchmarks: [VS Code source control](https://code.visualstudio.com/docs/sourcecontrol/overview) and [Cursor documentation](https://cursor.com/docs).
+
+### P1: Semantic context and passive memory
+
+The existing structural code graph is a strong foundation. Add:
+
+- Embedding-based natural-language repository search.
+- Indexed documentation, issues, pull requests, and history.
+- Automatically proposed project memories with user approval.
+- Project-scoped memory management and deletion controls.
+- Context freshness and index-status indicators.
+
+Benchmark: [Cursor Memories](https://cursor.com/docs/context/memories).
+
+### P2: Extension and plugin distribution
+
+Plugins, skills, MCP, and hooks exist, but distribution is mostly manual. Add:
+
+- A searchable marketplace.
+- One-click installation and OAuth connection flows.
+- Dependency, version, compatibility, and update management.
+- Dynamic on-demand activation of plugins and MCP servers.
+- Ratings, trust indicators, permission declarations, and publisher verification.
+
+Benchmarks: [VS Code Extension Marketplace](https://code.visualstudio.com/docs/configure/extensions/extension-marketplace) and [Kiro Powers](https://kiro.dev/docs/powers/).
+
+### P2: Remote and cloud development
+
+SSH remote workspaces are implemented on `origin/feature/remote`, but are not yet
+on `main`. The branch runs one `wingman server` beside the remote workspace so
+the agent, shell, files, Git, LSP, MCP, and session state remain remote. The
+desktop launcher manages saved SSH profiles, remote binary bootstrap, port
+forwarding, readiness, same-origin HTTP/WebSocket proxying, optional one-time
+credential handoff, and teardown. Manual loopback forwarding also supports
+Docker and Kubernetes access without a second gateway protocol.
+
+Build on that branch with:
+
+- Launcher-managed lifecycle adapters for development containers, Kubernetes,
+  and WSL, plus explicit version pinning and upgrade controls.
+- Hosted agents that continue running while the client is offline.
+- Remote desktop access to agent environments.
+- Shareable logs, screenshots, videos, and other run artifacts.
+- Web and mobile monitoring of remote sessions.
+
+Benchmarks: [VS Code Remote Development](https://code.visualstudio.com/docs/remote/remote-overview?azure-portal=true) and [Cursor Cloud Agents](https://cursor.com/docs/cloud-agent).
+
+### P2: Event-driven automation and integrations
+
+Local schedules and lifecycle hooks exist. Add:
+
+- GitHub, GitLab, Slack, Linear, Jira, and webhook triggers.
+- File-create, file-save, and file-delete hooks.
+- Cloud agents triggered by pull requests, issues, incidents, or messages.
+- Durable automation history, retries, and notifications.
+- Memory and reusable context across automation runs.
+
+Benchmarks: [Kiro Hooks](https://kiro.dev/docs/hooks/) and [Cursor Automations](https://cursor.com/blog/automations).
+
+### P2: Team and enterprise controls
+
+Add:
+
+- Organization policies for models, tools, plugins, and permissions.
+- SSO, audit logs, usage reporting, and budgets.
+- Centrally managed settings and profiles.
+- Settings, keybinding, snippet, task, and extension synchronization.
+- Shared instructions and approved integrations.
+
+Benchmark: [VS Code Settings Sync](https://code.visualstudio.com/docs/configure/settings-sync).
+
+## Recommended implementation order
+
+Next: a thin structured-specification artifact view that treats requirements,
+designs, and tasks as ordinary project files while external generators remain
+skill-driven. This keeps SDD compatibility loosely coupled instead of embedding
+one vendor's workflow.
+
+1. Structured specification artifacts over refreshed Agent Skills.
+2. Worktree-isolated agent sessions with merge-back.
+3. Browser control and screenshot-based UI verification.
+4. Git-native per-hunk review and provenance.
+5. AI editing beyond the completed Tab foundation.
+6. Test Explorer, coverage, watch expressions, and a debug console.
+
+Items 1–3 close the most visible remaining gaps with Cursor and VS Code without requiring Wingman to reproduce the entire VS Code extension ecosystem. Predictive Tab editing already uses the configured utility role through the existing Responses endpoint and does not require a dedicated FIM model.

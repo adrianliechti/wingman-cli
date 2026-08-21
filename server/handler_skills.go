@@ -14,11 +14,12 @@ type SkillEntry struct {
 	InputHint   string `json:"input_hint,omitempty"`
 }
 
-// skillBlocks expands the skills text invokes — a leading "/name args"
-// command or inline /name mentions — into hidden instruction blocks.
+// skillBlocks expands leading or inline /skill and $skill invocations into
+// hidden instruction blocks.
 func (s *Server) skillBlocks(text string) []string {
+	s.refreshSkills()
 	var blocks []string
-	for _, inv := range skill.Invocations(text, s.workspace.Skills) {
+	for _, inv := range skill.Invocations(text, s.workspace.Skills()) {
 		block, err := inv.Instructions(s.workspace.RootPath)
 		if err != nil {
 			continue
@@ -29,13 +30,18 @@ func (s *Server) skillBlocks(text string) []string {
 }
 
 func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
-	skills := s.workspace.Skills
+	s.refreshSkills()
+	skills := s.workspace.Skills()
 	result := make([]SkillEntry, 0, len(skills))
 	for _, sk := range skills {
+		hint := sk.InvocationHint()
+		if hint == "" {
+			hint = "[optional arguments]"
+		}
 		result = append(result, SkillEntry{
 			Name:        sk.Name,
 			Description: sk.Description,
-			InputHint:   "[optional arguments]",
+			InputHint:   hint,
 		})
 	}
 	if active := s.activeAgent(); active != nil {

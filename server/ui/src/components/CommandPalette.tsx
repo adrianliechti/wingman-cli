@@ -1,5 +1,13 @@
-import { Brain, File, MessageSquare, Sparkles } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { File, MessageSquare, Sparkles } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { fileQueries, type FileHit } from "../api/files";
+import { modelQueries, setCurrentModel, type ModelInfo } from "../api/models";
+import { queryKeys } from "../api/query";
+import { sessionQueries, type SessionInfo } from "../api/sessions";
+import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import { type Skill, useSkills } from "../hooks/useSkills";
+import { ModelProviderIcon } from "./ModelProviderIcon";
 import { useToast } from "./ui/Feedback";
 
 export interface PaletteAction {
@@ -10,27 +18,7 @@ export interface PaletteAction {
 	run: () => void;
 }
 
-interface ModelInfo {
-	id: string;
-	name: string;
-}
-
-export interface PaletteSkill {
-	name: string;
-	description?: string;
-	input_hint?: string;
-}
-
-interface SessionEntry {
-	id: string;
-	title?: string;
-	updated_at: string;
-}
-
-interface FileHit {
-	path: string;
-	name: string;
-}
+export type PaletteSkill = Skill;
 
 interface Item {
 	key: string;
@@ -40,6 +28,10 @@ interface Item {
 	icon?: React.ReactNode;
 	run: () => void;
 }
+
+const EMPTY_MODELS: ModelInfo[] = [];
+const EMPTY_SESSIONS: SessionInfo[] = [];
+const EMPTY_FILES: FileHit[] = [];
 
 interface Props {
 	sessionId?: string;
@@ -59,61 +51,41 @@ export function CommandPalette({
 	onOpenFile,
 }: Props) {
 	const toast = useToast();
+	const queryClient = useQueryClient();
 	const listId = useId();
 	const [query, setQuery] = useState("");
-	const [skills, setSkills] = useState<PaletteSkill[]>([]);
-	const [sessionList, setSessionList] = useState<SessionEntry[]>([]);
-	const [files, setFiles] = useState<FileHit[]>([]);
-	const [models, setModels] = useState<ModelInfo[]>([]);
-	const [currentModel, setCurrentModel] = useState("");
 	const [active, setActive] = useState(0);
 	const listRef = useRef<HTMLDivElement>(null);
+	const skills = useSkills(sessionId);
+	const sessionList = useQuery(sessionQueries.list()).data ?? EMPTY_SESSIONS;
+	const models = useQuery(modelQueries.list()).data ?? EMPTY_MODELS;
+	const currentModel =
+		useQuery(modelQueries.current(sessionId)).data?.model ?? "";
+	const debouncedQuery = useDebouncedValue(query.trim(), 80);
+	const fileQuery = useQuery({
+		...fileQueries.search(debouncedQuery),
+		enabled: debouncedQuery.length >= 2,
+	});
+	const files =
+		debouncedQuery.length >= 2
+			? (fileQuery.data ?? EMPTY_FILES).slice(0, 8)
+			: EMPTY_FILES;
 
-	const apiBase = sessionId
-		? `/api/sessions/${encodeURIComponent(sessionId)}`
-		: "/api";
-
-	useEffect(() => {
-		const skillsURL = sessionId
-			? `/api/skills?session=${encodeURIComponent(sessionId)}`
-			: "/api/skills";
-		fetch(skillsURL)
-			.then((r) => (r.ok ? r.json() : []))
-			.then((data: PaletteSkill[]) => setSkills(data ?? []))
-			.catch(() => setSkills([]));
-		fetch("/api/sessions")
-			.then((r) => (r.ok ? r.json() : []))
-			.then((data: SessionEntry[]) => setSessionList(data ?? []))
-			.catch(() => setSessionList([]));
-		fetch("/api/models")
-			.then((r) => (r.ok ? r.json() : []))
-			.then((data: ModelInfo[]) => setModels(data ?? []))
-			.catch(() => setModels([]));
-		fetch(`${apiBase}/model`)
-			.then((r) => (r.ok ? r.json() : {}))
-			.then((data: { model?: string }) => setCurrentModel(data.model || ""))
-			.catch(() => {});
-	}, [apiBase, sessionId]);
-
-	useEffect(() => {
-		const q = query.trim();
-		if (q.length < 2) return;
-		let cancelled = false;
-		const t = setTimeout(() => {
-			fetch(`/api/files/search?q=${encodeURIComponent(q)}`)
-				.then((r) => (r.ok ? r.json() : []))
-				.then((data: FileHit[]) => {
-					if (!cancelled) setFiles((data ?? []).slice(0, 8));
-				})
-				.catch(() => {
-					if (!cancelled) setFiles([]);
-				});
-		}, 80);
-		return () => {
-			cancelled = true;
-			clearTimeout(t);
-		};
-	}, [query]);
+	const switchModel = useMutation({
+		mutationFn: (model: string) => setCurrentModel(model, sessionId),
+		onSuccess: (data, model) => {
+			queryClient.setQueryData(queryKeys.models.current(sessionId), {
+				model: data.model || model,
+			});
+		},
+		onError: (error) => {
+			toast({
+				title: "Could not change model",
+				description: String(error),
+				tone: "error",
+			});
+		},
+	});
 
 	const items = useMemo<Item[]>(() => {
 		const q = query.trim().toLowerCase();
@@ -139,23 +111,15 @@ export function CommandPalette({
 				key: `model:${m.id}`,
 				group: "Model",
 				label: `Switch to ${m.name}`,
-				icon: <Brain size={12} className="text-fg-dim shrink-0" />,
+				icon: (
+					<ModelProviderIcon
+						namespace={m.namespace}
+						size={12}
+						className="text-fg-dim shrink-0"
+					/>
+				),
 				run: () => {
-					void fetch(`${apiBase}/model`, {
-						method: "POST",
-						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify({ model: m.id }),
-					})
-						.then(async (response) => {
-							if (!response.ok) throw new Error(await response.text());
-						})
-						.catch((error) => {
-							toast({
-								title: "Could not change model",
-								description: String(error),
-								tone: "error",
-							});
-						});
+					switchModel.mutate(m.id);
 				},
 			});
 		}
@@ -199,18 +163,16 @@ export function CommandPalette({
 		files,
 		models,
 		currentModel,
-		apiBase,
 		onRunSkill,
 		onSelectSession,
 		onOpenFile,
-		toast,
+		switchModel,
 	]);
 
 	const [prevQuery, setPrevQuery] = useState(query);
 	if (prevQuery !== query) {
 		setPrevQuery(query);
 		setActive(0);
-		if (query.trim().length < 2 && files.length > 0) setFiles([]);
 	}
 
 	useEffect(() => {

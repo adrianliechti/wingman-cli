@@ -274,7 +274,7 @@ func truncateTitle(s string) string {
 	return s[:max-1] + "…"
 }
 
-func replayHistory(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, cwd string) error {
+func replayHistory(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, cwd string, plan *taskPlan) error {
 	dir := projectDirFor(cwd)
 	if dir == "" {
 		return nil
@@ -288,10 +288,10 @@ func replayHistory(ctx context.Context, conn *acp.AgentSideConnection, sid acp.S
 		return err
 	}
 	defer f.Close()
-	return streamHistory(ctx, conn, sid, cwd, f)
+	return streamHistory(ctx, conn, sid, cwd, f, plan)
 }
 
-func streamHistory(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, cwd string, r io.Reader) error {
+func streamHistory(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, cwd string, r io.Reader, plan *taskPlan) error {
 	cache := toolUseCache{}
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
@@ -309,11 +309,11 @@ func streamHistory(ctx context.Context, conn *acp.AgentSideConnection, sid acp.S
 		}
 		switch env.Type {
 		case "user":
-			if err := replayUserMessage(ctx, conn, sid, env.Message, cache, env.ParentToolUseID); err != nil {
+			if err := replayUserMessage(ctx, conn, sid, env.Message, cache, plan, env.ParentToolUseID); err != nil {
 				return err
 			}
 		case "assistant":
-			if err := emitAssistant(ctx, conn, sid, env.Message, cwd, cache, nil, nil, nil, env.ParentToolUseID); err != nil {
+			if err := emitAssistant(ctx, conn, sid, env.Message, cwd, cache, nil, nil, plan, env.ParentToolUseID); err != nil {
 				return err
 			}
 		}
@@ -337,7 +337,7 @@ func stripMarkerTags(text string) (string, bool) {
 	return stripped, true
 }
 
-func replayUserMessage(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, raw json.RawMessage, cache toolUseCache, parentToolUseID string) error {
+func replayUserMessage(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, raw json.RawMessage, cache toolUseCache, plan *taskPlan, parentToolUseID string) error {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -388,6 +388,14 @@ func replayUserMessage(ctx context.Context, conn *acp.AgentSideConnection, sid a
 				continue
 			}
 			name := cache[b.ToolUseID]
+			if applyTaskPlanResult(plan, name, b) {
+				if err := conn.SessionUpdate(ctx, acp.SessionNotification{
+					SessionId: sid,
+					Update:    acp.UpdatePlan(plan.entries()...),
+				}); err != nil {
+					return err
+				}
+			}
 			if isPlanTool(name) {
 				continue
 			}

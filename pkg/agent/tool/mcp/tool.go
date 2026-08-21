@@ -80,7 +80,7 @@ func convertTool(serverName string, session *sdkmcp.ClientSession, mcpTool sdkmc
 		Description: text.TruncateHead(mcpTool.Description, maxDescriptionBytes),
 		Effect:      tool.StaticEffect(effect),
 		Parameters:  schemaToParams(serverName, mcpTool),
-		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			return callTool(ctx, session, mcpTool.Name, args)
 		},
 	}
@@ -109,7 +109,7 @@ func schemaToParams(serverName string, mcpTool sdkmcp.Tool) map[string]any {
 	return params
 }
 
-func callTool(ctx context.Context, session *sdkmcp.ClientSession, name string, args map[string]any) (string, error) {
+func callTool(ctx context.Context, session *sdkmcp.ClientSession, name string, args map[string]any) (tool.Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, callToolTimeout)
 	defer cancel()
 
@@ -119,14 +119,21 @@ func callTool(ctx context.Context, session *sdkmcp.ClientSession, name string, a
 	})
 
 	if err != nil {
-		return "", fmt.Errorf("MCP tool call failed: %w", err)
+		return tool.Result{}, fmt.Errorf("MCP tool call failed: %w", err)
 	}
 
+	content := extractText(result.Content)
+
+	// The provider codec transmits only the content string, so the failure
+	// marker must live in the text for the model to see it.
 	if result.IsError {
-		return "", fmt.Errorf("MCP tool returned error: %s", extractText(result.Content))
+		if content == "" {
+			content = "(no error details)"
+		}
+		return tool.Error("error: MCP tool returned error: " + content), nil
 	}
 
-	return extractText(result.Content), nil
+	return tool.Text(content), nil
 }
 
 func extractText(content []sdkmcp.Content) string {

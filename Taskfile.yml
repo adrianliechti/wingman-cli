@@ -2,7 +2,14 @@
 
 version: "3"
 
+dotenv: [".env"]
+
 tasks:
+  generate:codex-models:
+    desc: Refresh the embedded Codex model catalog from upstream
+    cmds:
+      - curl -fsSL https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json -o pkg/external/codex/models.json
+
   ui:
     desc: Build the web UI assets
     dir: server/ui
@@ -33,11 +40,6 @@ tasks:
     cmds:
       - go run ./cmd/wingman
 
-  run:claw:
-    desc: Run the claw multi-agent runner (TUI)
-    cmds:
-      - go run ./cmd/wingman claw
-
   run:web:
     desc: Run the web server
     deps: [ui]
@@ -52,11 +54,25 @@ tasks:
       - go tool appbundle -name "Wingman Agent" -id com.adrianliechti.wingman-agent -description "Wingman Agent" -company "Adrian Liechti" -copyright "© Adrian Liechti" -package .
 
   run:app:
-    desc: Build and launch the desktop app
+    desc: Build and launch the desktop app with web inspection enabled
     deps: [build:app]
     dir: app
     cmds:
-      - open -n "build/bin/Wingman Agent.app"
+      - open -n --env WINGMAN_DEBUG=1 "build/bin/Wingman Agent.app"
+
+  run:app:ollama:
+    desc: Build and launch the desktop app against local Ollama
+    deps: [build:app]
+    dir: app
+    cmds:
+      - env -u WINGMAN_URL -u OPENAI_API_KEY -u OPENROUTER_API_KEY -u OLLAMA_API_KEY open -n --env WINGMAN_DEBUG=1 --env OLLAMA_HOST=http://127.0.0.1:11434 "build/bin/Wingman Agent.app"
+
+  run:app:openrouter:
+    desc: Build and launch the desktop app against OpenRouter
+    deps: [build:app]
+    dir: app
+    cmds:
+      - env -u WINGMAN_URL -u OPENAI_API_KEY open -n --env WINGMAN_DEBUG=1 --env OPENROUTER_API_KEY="$OPENROUTER_API_KEY" "build/bin/Wingman Agent.app"
 
   install:cli:
     desc: Build and install the CLI to GOPATH/bin or GOBIN

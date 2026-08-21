@@ -8,8 +8,17 @@ import (
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/task"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
+
+func TestReviewAgentsDefaultToPlanModel(t *testing.T) {
+	for _, name := range []string{"code-reviewer", "security"} {
+		if got := subagentTypes[name].Model; got != "plan" {
+			t.Errorf("%s model = %q, want plan", name, got)
+		}
+	}
+}
 
 func TestVerificationToolFilterRejectsUnknownAndMutatingTools(t *testing.T) {
 	tests := []struct {
@@ -93,7 +102,7 @@ func TestToolsForTypeFiltersExplore(t *testing.T) {
 	all := []tool.Tool{
 		{Name: "read", Effect: tool.StaticEffect(tool.EffectReadOnly)},
 		{Name: "write", Effect: tool.StaticEffect(tool.EffectMutates)},
-		{Name: "shell", Effect: tool.StaticEffect(tool.EffectDynamic), Execute: func(context.Context, map[string]any) (string, error) { return "ok", nil }},
+		{Name: "shell", Effect: tool.StaticEffect(tool.EffectDynamic), Execute: func(context.Context, map[string]any) (tool.Result, error) { return tool.Text("ok"), nil }},
 		{Name: "elicit", Hidden: true, Effect: tool.StaticEffect(tool.EffectReadOnly)},
 	}
 
@@ -125,9 +134,9 @@ func TestExploreWrapsDynamicToolsAsReadOnly(t *testing.T) {
 			}
 			return tool.EffectMutates
 		},
-		Execute: func(context.Context, map[string]any) (string, error) {
+		Execute: func(context.Context, map[string]any) (tool.Result, error) {
 			called = true
-			return "ran", nil
+			return tool.Text("ran"), nil
 		},
 	}
 
@@ -138,8 +147,8 @@ func TestExploreWrapsDynamicToolsAsReadOnly(t *testing.T) {
 	wrapped := filtered[0]
 
 	out, err := wrapped.Execute(context.Background(), map[string]any{"safe": true})
-	if err != nil || out != "ran" {
-		t.Fatalf("read-only call: got (%q, %v), want (ran, nil)", out, err)
+	if err != nil || out.Content != "ran" {
+		t.Fatalf("read-only call: got (%q, %v), want (ran, nil)", out.Content, err)
 	}
 	if !called {
 		t.Error("original executor must have run on read-only path")
@@ -175,7 +184,7 @@ func TestSpecializedReadOnlyAgentsFilterLikeExplore(t *testing.T) {
 	all := []tool.Tool{
 		{Name: "read", Effect: tool.StaticEffect(tool.EffectReadOnly)},
 		{Name: "write", Effect: tool.StaticEffect(tool.EffectMutates)},
-		{Name: "shell", Effect: tool.StaticEffect(tool.EffectDynamic), Execute: func(context.Context, map[string]any) (string, error) { return "ok", nil }},
+		{Name: "shell", Effect: tool.StaticEffect(tool.EffectDynamic), Execute: func(context.Context, map[string]any) (tool.Result, error) { return tool.Text("ok"), nil }},
 	}
 
 	for _, name := range []string{"code-architect", "code-reviewer"} {
@@ -254,16 +263,33 @@ func TestRunTrailer(t *testing.T) {
 	}
 }
 
+func TestUpdateTaskActivityIgnoresPartialToolCall(t *testing.T) {
+	tk := &task.Task{}
+	updateTaskActivity(tk, agent.Message{Content: []agent.Content{{ToolCall: &agent.ToolCall{
+		ID: "call-1", Name: "shell", Args: `{"command":"go te`, Partial: true,
+	}}}})
+	if activity := tk.Activity(); activity != "" {
+		t.Fatalf("partial activity = %q", activity)
+	}
+
+	updateTaskActivity(tk, agent.Message{Content: []agent.Content{{ToolCall: &agent.ToolCall{
+		ID: "call-1", Name: "shell", Args: `{"command":"go test"}`,
+	}}}})
+	if activity := tk.Activity(); activity != "shell go test" {
+		t.Fatalf("definitive activity = %q", activity)
+	}
+}
+
 func TestApplyModelOverrides(t *testing.T) {
 	roles := map[string]agent.ModelOption{
 		"plan":    {ID: "large-model"},
-		"utility": {ID: "gpt-small", MaxEffort: "xhigh"},
-		"":        {ID: "gpt-session", MaxEffort: "xhigh"},
+		"utility": {ID: "gpt-small", Efforts: []string{"none", "low", "medium", "high", "xhigh"}},
+		"":        {ID: "gpt-session", Efforts: []string{"none", "low", "medium", "high", "xhigh"}},
 	}
 	cfg := &agent.Config{
 		Model:  func() string { return "session-model" },
 		Effort: func() string { return "medium" },
-		SubagentModel: func(role string) (agent.ModelOption, bool) {
+		RoleModel: func(role string) (agent.ModelOption, bool) {
 			opt, ok := roles[role]
 			return opt, ok
 		},
@@ -317,6 +343,14 @@ func TestApplyModelOverrides(t *testing.T) {
 		t.Fatalf("effort = %q, want clamp against the inherited model", cfg.Effort())
 	}
 
+	roles[""] = agent.ModelOption{ID: "custom-reasoner", Efforts: []string{"low", "high", "max"}}
+	if err := applyModelOverrides(cfg, map[string]any{"effort": "medium"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Effort() != "low" {
+		t.Fatalf("effort = %q, want unsupported middle effort clamped down", cfg.Effort())
+	}
+
 	cfg.Effort = func() string { return "max" }
 	if err := applyModelOverrides(cfg, map[string]any{"model": "utility"}, ""); err != nil {
 		t.Fatal(err)
@@ -326,7 +360,7 @@ func TestApplyModelOverrides(t *testing.T) {
 	}
 
 	cfg.Model = func() string { return "session-model" }
-	cfg.SubagentModel = nil
+	cfg.RoleModel = nil
 	if err := applyModelOverrides(cfg, map[string]any{"model": "plan", "effort": "max"}, ""); err != nil {
 		t.Fatal(err)
 	}

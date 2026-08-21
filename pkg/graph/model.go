@@ -37,7 +37,20 @@ type Node struct {
 	File      string `json:"file"`
 	StartLine int    `json:"start_line"`
 	EndLine   int    `json:"end_line"`
+	NameLine  int    `json:"name_line,omitempty"`
+	NameCol   int    `json:"name_col,omitempty"`
 	Lang      string `json:"lang"`
+}
+
+// Ref is a name usage site (call, inherits or implements clause) with an
+// LSP-style zero-based line and UTF-16 column.
+type Ref struct {
+	Name string   `json:"name"`
+	File string   `json:"file"`
+	Line int      `json:"line"`
+	Col  int      `json:"col"`
+	Kind EdgeKind `json:"kind"`
+	Lang string   `json:"lang"`
 }
 
 type Edge struct {

@@ -14,10 +14,12 @@ import (
 	"time"
 )
 
-type projectRoot struct {
+type Project struct {
 	Dir    string
 	Server Server
 }
+
+type projectRoot = Project
 
 // skippedDirs are never descended into. Dot-prefixed directories are skipped
 // separately, so only their non-hidden counterparts are listed here.
@@ -39,6 +41,8 @@ var projectBinDirs = []string{
 	filepath.Join("venv", "Scripts"),
 	filepath.Join("vendor", "bin"),
 }
+
+const serverVersionProbeTimeout = 5 * time.Second
 
 func resolveCommand(dir, workingDir, command string) string {
 	cur := filepath.Clean(dir)
@@ -170,7 +174,7 @@ func serverVersionSupported(server Server, command string) bool {
 		return true
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), serverVersionProbeTimeout)
 	defer cancel()
 	output, err := exec.CommandContext(ctx, command, "--version").CombinedOutput()
 	if err != nil {

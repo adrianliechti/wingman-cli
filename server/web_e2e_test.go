@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +18,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/adrianliechti/wingman-agent/internal/testenv"
 )
 
 type webE2EModel struct {
@@ -57,6 +60,32 @@ func emitE2ETextResponse(w http.ResponseWriter, id, text string) {
 		},
 	})
 	fmt.Fprint(w, "data: [DONE]\n\n")
+}
+
+func emitE2ETabResponse(w http.ResponseWriter, updatedWindow, editIntent string) {
+	w.Header().Set("Content-Type", "application/json")
+	structured, _ := json.Marshal(map[string]string{
+		"updated_window": updatedWindow,
+		"edit_intent":    editIntent,
+	})
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"id":     "resp_tab",
+		"object": "response",
+		"status": "completed",
+		"output": []any{map[string]any{
+			"id": "msg_tab", "type": "message", "role": "assistant", "status": "completed",
+			"content": []any{map[string]any{
+				"type": "output_text", "text": string(structured), "annotations": []any{},
+			}},
+		}},
+		"usage": map[string]any{
+			"input_tokens": 8, "input_tokens_details": map[string]any{"cached_tokens": 0}, "output_tokens": 2,
+		},
+	})
+}
+
+func emitE2ETabNoop(w http.ResponseWriter) {
+	emitE2ETabResponse(w, "", "no_edit")
 }
 
 func (m *webE2EModel) handleTool(w http.ResponseWriter) {
@@ -167,6 +196,25 @@ func (m *webE2EModel) handler(w http.ResponseWriter, r *http.Request) {
 	case "/v1/responses":
 		m.requests.Add(1)
 		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), `"updated_window"`) && strings.Contains(string(body), `"edit_intent"`) {
+			var request struct {
+				Input string `json:"input"`
+			}
+			_ = json.Unmarshal(body, &request)
+			if strings.Contains(request.Input, "File: tab-effectiveness.go") &&
+				strings.Contains(request.Input, "-    userName := \"Ada\"") &&
+				strings.Contains(request.Input, "+    accountName := \"Ada\"") &&
+				strings.Contains(request.Input, "println(userName)") {
+				emitE2ETabResponse(
+					w,
+					"    accountName := \"Ada\"\n    prepare()\n    validate()\n    println(accountName)\n}\n",
+					"high",
+				)
+				return
+			}
+			emitE2ETabNoop(w)
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		switch {
 		case strings.Contains(string(body), "create e2e-result.txt"):
@@ -185,6 +233,8 @@ func (m *webE2EModel) handler(w http.ResponseWriter, r *http.Request) {
 			m.handleSteer(w, r)
 		case strings.Contains(string(body), "pick a color"):
 			m.handleAsk(w, body)
+		case strings.Contains(string(body), "render markdown"):
+			emitE2ETextResponse(w, "msg_markdown", "# Migration result\n\n- [x] Streaming\n\n| Language | Status |\n| --- | --- |\n| Go | ready |\n\n```go\npackage main\n\nfunc main() { println(\"ok\") }\n```\n\n```mermaid\ngraph TD; A-->B\n```\n\n```mermaid\nC4Context\n    Person(dev, \"Developer\", \"Uses the app\")\n    System(app, \"Application\", \"Does useful work\")\n    Rel(dev, app, \"Uses\")\n```\n\nMath stays literal: $x^2$.\n\n[Documentation](https://example.com/docs)")
 		default:
 			http.Error(w, "unknown e2e prompt", http.StatusBadRequest)
 		}
@@ -214,6 +264,7 @@ func (m *webE2EModel) handler(w http.ResponseWriter, r *http.Request) {
 }
 
 func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
+	testenv.WingmanHome(t)
 	workDir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(workDir, "theme-preview.html"),
@@ -223,10 +274,80 @@ func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
+		filepath.Join(workDir, "readme-preview.md"),
+		[]byte("# Markdown preview\n\nRendered **in the browser**.\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(workDir, "logo-preview.svg"),
+		[]byte(`<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"><rect width="40" height="30" fill="rebeccapurple"/></svg>`),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	pixelPNG, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "pixel.png"), pixelPNG, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previewFiles := map[string]string{
+		"data-preview.json": `{ "project": "wingman", "features": ["preview", "edit"] }`,
+		"data-preview.yaml": "project: wingman\nfeatures:\n  - preview\n  - edit\n",
+		"data-preview.toml": "project = \"wingman\"\nfeatures = [\"preview\", \"edit\"]\n[server]\nport = 8080\n",
+		"data-preview.xml":  "<config><project>wingman</project><preview enabled=\"true\"><format>xml</format><format>svg</format></preview></config>",
+		"data-preview.csv":  "name,status\nmarkdown,ready\nsvg,ready\n",
+		"data-preview.tsv":  "name\tstatus\njson\tready\nyaml\tready\n",
+		"flow-preview.mmd":  "flowchart LR\n  Source --> Preview\n  Preview --> Browser\n",
+	}
+	for name, content := range previewFiles {
+		if err := os.WriteFile(filepath.Join(workDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(
 		filepath.Join(workDir, "editable.txt"),
 		[]byte("original\n"),
 		0o644,
 	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(workDir, "completion.go"),
+		[]byte("package main\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(workDir, "organize-imports.go"),
+		[]byte("package main\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	tabFiles := map[string]string{
+		"tab-effectiveness.go": "package main\n\nfunc display() {\n    userName := \"Ada\"\n    prepare()\n    validate()\n    println(userName)\n}\n",
+		"tab-ghost.go":         "package main\n\nfunc main() {\n\ttotal := price *\n\t_ = total\n}\n",
+		"tab-multiline.txt":    "first\nold one\nold two\nlast\n",
+		"tab-stale.txt":        "first :=\nsecond :=\n",
+	}
+	for name, content := range tabFiles {
+		if err := os.WriteFile(filepath.Join(workDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(
+		filepath.Join(workDir, "go.mod"),
+		[]byte("module example.com/wingman-e2e\n\ngo 1.24\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(workDir, "nested"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	model := &webE2EModel{
@@ -250,15 +371,24 @@ func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
 	web := httptest.NewServer(app)
 	defer web.Close()
 
-	cmd := exec.CommandContext(ctx, "npx", "playwright", "test", "e2e/web.spec.ts", "--config", "playwright.config.ts")
+	playwrightArgs := []string{"playwright", "test", "e2e/web.spec.ts", "--config", "playwright.config.ts"}
+	grepPattern := os.Getenv("E2E_GREP")
+	if grepPattern != "" {
+		playwrightArgs = append(playwrightArgs, "--grep", grepPattern)
+	}
+	cmd := exec.CommandContext(ctx, "npx", playwrightArgs...)
 	cmd.Dir = filepath.Join("ui")
 	cmd.Env = append(os.Environ(),
 		"E2E_BASE_URL="+web.URL,
 		"E2E_CONTROL_URL="+modelServer.URL,
+		"E2E_WORKSPACE="+workDir,
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("playwright after %d model requests: %v\n%s", model.requests.Load(), err, output)
+	}
+	if grepPattern != "" {
+		return
 	}
 
 	content, err := os.ReadFile(model.filePath)

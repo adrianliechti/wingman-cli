@@ -1,22 +1,12 @@
 package server
 
 import (
-	"fmt"
 	"os"
 	"testing"
+
+	"github.com/adrianliechti/wingman-agent/internal/testenv"
 )
 
 func TestMain(m *testing.M) {
-	home, err := os.MkdirTemp("", "wingman-server-test-home-")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	if err := os.Setenv("HOME", home); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	code := m.Run()
-	_ = os.RemoveAll(home)
-	os.Exit(code)
+	os.Exit(testenv.RunWithWingmanHome(m.Run))
 }

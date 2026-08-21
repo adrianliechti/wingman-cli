@@ -27,6 +27,7 @@ import (
 	elicittool "github.com/adrianliechti/wingman-agent/pkg/agent/tool/elicit"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/fetch"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/fs"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/schedule"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/shell"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/subagent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/todo"
@@ -35,7 +36,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/code/prompt"
 	"github.com/adrianliechti/wingman-agent/pkg/model"
 	"github.com/adrianliechti/wingman-agent/pkg/session"
-	skillpkg "github.com/adrianliechti/wingman-agent/pkg/skill"
+	"github.com/adrianliechti/wingman-agent/pkg/skill"
 	"github.com/adrianliechti/wingman-agent/pkg/text"
 )
 
@@ -52,11 +53,8 @@ type Agent struct {
 	sessionsDir string
 
 	modelMu        sync.Mutex
-	modelID        string
-	planModelID    string
-	utilityModelID string
-	effortID       string
-	planEffortID   string
+	modelByRole    map[modelRole]string
+	effortByRole   map[modelRole]string
 	upstreamModels map[string]bool
 
 	mu       sync.Mutex
@@ -70,18 +68,19 @@ type sessionState struct {
 	parent *Agent
 	aa     *harness.Agent
 
-	modelID      string
-	planModelID  string
-	effortID     string
-	planEffortID string
+	modelByRole  map[modelRole]string
+	effortByRole map[modelRole]string
 
 	// mode is switchable while a turn is running, so it is read from the turn
 	// goroutine and written from the UI one.
 	mode        atomic.Value // sessionMode
-	baseTools   []tool.Tool
+	toolSet     *tool.Set
 	turnTools   atomic.Value // []tool.Tool, pinned for the running turn
 	execManager *shell.ExecManager
 	tasks       *task.Registry
+
+	schedules   *schedule.MemoryStore
+	scheduleSeq atomic.Uint64
 
 	freshness *fs.Freshness
 	watchStop chan struct{}
@@ -102,11 +101,23 @@ type sessionState struct {
 
 type sessionMode string
 
+type modelRole string
+
 const (
 	modeAgent      sessionMode = code.AgentModeID
 	modePlan       sessionMode = code.PlanModeID
 	modeUnattended sessionMode = code.UnattendedModeID
+
+	modelRoleMain    modelRole = "main"
+	modelRolePlan    modelRole = "plan"
+	modelRoleUtility modelRole = "utility"
 )
+
+var modelClassByRole = map[modelRole]model.Class{
+	modelRoleMain:    model.ClassMedium,
+	modelRolePlan:    model.ClassLarge,
+	modelRoleUtility: model.ClassSmall,
+}
 
 func (s *sessionState) currentMode() sessionMode {
 	if mode, ok := s.mode.Load().(sessionMode); ok && mode != "" {
@@ -121,16 +132,21 @@ func (s *sessionState) setMode(mode sessionMode) {
 
 func New(ws *code.Workspace, cfg *harness.Config, ui code.UI) *Agent {
 	a := &Agent{
-		workspace:      ws,
-		cfg:            cfg,
-		ui:             ui,
-		modelID:        harness.DefaultModel(),
-		planModelID:    harness.DefaultPlanModel(),
-		utilityModelID: harness.DefaultUtilityModel(),
-		effortID:       harness.DefaultEffort(),
-		planEffortID:   harness.DefaultPlanEffort(),
-		sessionsDir:    filepath.Join(filepath.Dir(ws.MemoryPath), "sessions"),
-		sessions:       map[string]*sessionState{},
+		workspace: ws,
+		cfg:       cfg,
+		ui:        ui,
+		modelByRole: map[modelRole]string{
+			modelRoleMain:    harness.DefaultModel(),
+			modelRolePlan:    harness.DefaultPlanModel(),
+			modelRoleUtility: harness.DefaultUtilityModel(),
+		},
+		effortByRole: map[modelRole]string{
+			modelRoleMain:    harness.DefaultEffort(),
+			modelRolePlan:    harness.DefaultPlanEffort(),
+			modelRoleUtility: "",
+		},
+		sessionsDir: filepath.Join(filepath.Dir(ws.MemoryPath), "sessions"),
+		sessions:    map[string]*sessionState{},
 	}
 	a.prompts = &tool.Elicitation{Elicit: a.elicit, Confirm: a.confirm}
 
@@ -170,47 +186,82 @@ func (a *Agent) currentUI() code.UI {
 }
 
 func (a *Agent) Models(sessionID string) ([]model.Model, string) {
-	return a.modelsFor(a.session(sessionID))
-}
-
-func (a *Agent) modelsFor(s *sessionState) ([]model.Model, string) {
+	s := a.session(sessionID)
 	a.modelMu.Lock()
 	defer a.modelMu.Unlock()
-	return a.modelsLocked(s)
+	available := model.Available(a.upstreamModels)
+	current, _ := a.roleModelLocked(s, "")
+	return available, current
 }
 
-func (a *Agent) modelsLocked(s *sessionState) ([]model.Model, string) {
-	available := model.Available(a.upstreamModels)
+func activeModelRole(s *sessionState) modelRole {
+	if s != nil && s.currentMode() == modePlan {
+		return modelRolePlan
+	}
+	return modelRoleMain
+}
 
-	planMode := s != nil && s.currentMode() == modePlan
+func resolvedModelRole(s *sessionState, name string) (modelRole, bool) {
+	role := modelRole(name)
+	if role == "" {
+		role = activeModelRole(s)
+	}
+	_, ok := modelClassByRole[role]
+	return role, ok
+}
 
-	// Model choices are role-scoped: plan mode never inherits the coding
-	// model — an unset plan model selects a large one automatically.
+// roleModelLocked applies the same resolution order to every model role:
+// session override, agent setting, then class-based selection. Utility waits
+// for model discovery before making a class-based pick and deliberately keeps
+// an explicit model even when it is absent from the discovered catalog.
+func (a *Agent) roleModelLocked(s *sessionState, name string) (string, bool) {
+	role, ok := resolvedModelRole(s, name)
+	if !ok {
+		return "", false
+	}
+
 	current := ""
-	if planMode {
-		current = a.planModelID
-		if s.planModelID != "" {
-			current = s.planModelID
-		}
-	} else {
-		current = a.modelID
-		if s != nil && s.modelID != "" {
-			current = s.modelID
-		}
+	if s != nil {
+		current = s.modelByRole[role]
 	}
-
 	if current == "" {
-		class := model.ClassMedium
-		if planMode {
-			class = model.ClassLarge
+		current = a.modelByRole[role]
+	}
+	if current == "" {
+		if role == modelRoleUtility && a.upstreamModels == nil {
+			return "", false
 		}
-		current = a.classModelLocked(class)
+		current = a.classModelLocked(modelClassByRole[role])
 	}
 
-	if len(available) > 0 && !slices.ContainsFunc(available, func(m model.Model) bool { return m.ID == current }) {
-		current = available[0].ID
+	if role != modelRoleUtility && a.upstreamModels != nil {
+		available := model.Available(a.upstreamModels)
+		if len(available) > 0 && !slices.ContainsFunc(available, func(m model.Model) bool { return m.ID == current }) {
+			current = available[0].ID
+		}
 	}
-	return available, current
+	if current == "" {
+		return "", false
+	}
+	return current, true
+}
+
+func (a *Agent) roleModel(s *sessionState, role string) (harness.ModelOption, bool) {
+	a.modelMu.Lock()
+	defer a.modelMu.Unlock()
+	id, ok := a.roleModelLocked(s, role)
+	if !ok {
+		return harness.ModelOption{}, false
+	}
+	m, _ := model.Find(id)
+	return harness.ModelOption{ID: id, Efforts: slices.Clone(m.Efforts)}, true
+}
+
+// RoleModel resolves "main", "plan", or "utility" without a session.
+// An empty role selects main; session-derived configs replace this with a
+// resolver whose empty role follows the session's active mode.
+func (a *Agent) RoleModel(role string) (harness.ModelOption, bool) {
+	return a.roleModel(nil, role)
 }
 
 // classModelLocked returns the first available model of the wanted class,
@@ -241,68 +292,32 @@ func (a *Agent) classModelLocked(class model.Class) string {
 	return pick(class, "")
 }
 
-// utilityModel returns the model for internal utility calls (recaps,
-// compaction summaries): the smallest available, or empty for the main model.
-func (a *Agent) utilityModel() string {
-	a.modelMu.Lock()
-	defer a.modelMu.Unlock()
-	if a.utilityModelID != "" {
-		return a.utilityModelID
-	}
-	return a.classModelLocked(model.ClassSmall)
-}
-
-// subagentRoleModel resolves the model roles the agent tool may launch
-// subagents on: "plan" and "utility" follow the same explicit-override-else-
-// class-pick logic as the session roles, "" names the currently inherited
-// model so effort overrides clamp against its bounds.
-func (a *Agent) subagentRoleModel(s *sessionState, role string) (harness.ModelOption, bool) {
-	id := ""
-	switch role {
-	case "plan":
-		a.modelMu.Lock()
-		id = a.planModelID
-		if s.planModelID != "" {
-			id = s.planModelID
-		}
-		if id == "" {
-			id = a.classModelLocked(model.ClassLarge)
-		}
-		a.modelMu.Unlock()
-	case "utility":
-		id = a.utilityModel()
-	case "":
-		_, id = a.modelsFor(s)
-	}
-
-	if id == "" {
-		return harness.ModelOption{}, false
-	}
-
-	lowest, highest := model.EffortBounds(id)
-	return harness.ModelOption{ID: id, MinEffort: lowest, MaxEffort: highest}, true
-}
-
 // SetModel applies to the session's current role: picking a model while in
 // plan mode configures planning, otherwise coding.
 func (a *Agent) SetModel(_ context.Context, sessionID, id string) error {
 	s := a.session(sessionID)
 	a.modelMu.Lock()
+	role := activeModelRole(s)
+	if a.modelByRole == nil {
+		a.modelByRole = map[modelRole]string{}
+	}
+	if a.effortByRole == nil {
+		a.effortByRole = map[modelRole]string{}
+	}
+	a.modelByRole[role] = id
+	a.effortByRole[role] = ""
 	// Switching models resets the reasoning effort to the new model's default:
 	// a level the previous model allowed (e.g. "max") may exceed what this one
 	// supports, so drop back to the default instead of carrying it over.
-	if s != nil && s.currentMode() == modePlan {
-		a.planModelID = id
-		a.planEffortID = ""
-		s.planModelID = id
-		s.planEffortID = ""
-	} else {
-		a.modelID = id
-		a.effortID = ""
-		if s != nil {
-			s.modelID = id
-			s.effortID = ""
+	if s != nil {
+		if s.modelByRole == nil {
+			s.modelByRole = map[modelRole]string{}
 		}
+		if s.effortByRole == nil {
+			s.effortByRole = map[modelRole]string{}
+		}
+		s.modelByRole[role] = id
+		s.effortByRole[role] = ""
 	}
 	a.modelMu.Unlock()
 	return nil
@@ -324,51 +339,51 @@ func (a *Agent) FetchModels(ctx context.Context) {
 
 var effortValues = []string{"auto", "none", "low", "medium", "high", "xhigh", "max"}
 
+func effortValuesFor(id string) []string {
+	m, _ := model.Find(id)
+	if supported := m.Efforts; len(supported) > 0 {
+		return append([]string{"auto"}, supported...)
+	}
+	return effortValues
+}
+
 func (a *Agent) Effort(sessionID string) (string, []string) {
 	s := a.session(sessionID)
 	a.modelMu.Lock()
-	var current string
-	if s != nil && s.currentMode() == modePlan {
-		current = s.planEffortID
-		if current == "" {
-			current = a.planEffortID
-		}
-	} else if s != nil && s.effortID != "" {
-		current = s.effortID
-	} else {
-		current = a.effortID
+	role := activeModelRole(s)
+	currentModel, _ := a.roleModelLocked(s, string(role))
+	current := ""
+	if s != nil {
+		current = s.effortByRole[role]
+	}
+	if current == "" {
+		current = a.effortByRole[role]
 	}
 	a.modelMu.Unlock()
 	if current == "" {
 		current = "auto"
 	}
-	return current, slices.Clone(effortValues)
+	return current, slices.Clone(effortValuesFor(currentModel))
 }
 
 func (a *Agent) effortFor(s *sessionState) string {
 	a.modelMu.Lock()
 	defer a.modelMu.Unlock()
-	// Effort choices are role-scoped like models: plan mode never inherits
-	// the coding effort.
-	if s != nil && s.currentMode() == modePlan {
-		if s.planEffortID != "" {
-			return s.planEffortID
-		}
-		if a.planEffortID != "" {
-			return a.planEffortID
-		}
-		// xhigh only where a large model backs it.
-		if _, current := a.modelsLocked(s); model.ClassOf(current) == model.ClassLarge {
-			return "xhigh"
-		}
-		return "high"
+	role := activeModelRole(s)
+	if s != nil && s.effortByRole[role] != "" {
+		return s.effortByRole[role]
 	}
-
-	if s != nil && s.effortID != "" {
-		return s.effortID
+	if a.effortByRole[role] != "" {
+		return a.effortByRole[role]
 	}
-	if a.effortID != "" {
-		return a.effortID
+	current, _ := a.roleModelLocked(s, string(role))
+	m, _ := model.Find(current)
+	if effort := m.Effort; effort != "" {
+		return effort
+	}
+	// xhigh is the planning default only where a large model backs it.
+	if role == modelRolePlan && model.ClassOf(current) == model.ClassLarge {
+		return "xhigh"
 	}
 	return "high"
 }
@@ -383,14 +398,22 @@ func (a *Agent) SetEffort(_ context.Context, sessionID, value string) error {
 	}
 	s := a.session(sessionID)
 	a.modelMu.Lock()
-	if s != nil && s.currentMode() == modePlan {
-		a.planEffortID = value
-		s.planEffortID = value
-	} else {
-		a.effortID = value
-		if s != nil {
-			s.effortID = value
+	role := activeModelRole(s)
+	currentModel, _ := a.roleModelLocked(s, string(role))
+	m, _ := model.Find(currentModel)
+	if supported := m.Efforts; value != "" && len(supported) > 0 && !slices.Contains(supported, value) {
+		a.modelMu.Unlock()
+		return fmt.Errorf("effort %q is not supported by %s (supported: %s)", value, currentModel, strings.Join(supported, ", "))
+	}
+	if a.effortByRole == nil {
+		a.effortByRole = map[modelRole]string{}
+	}
+	a.effortByRole[role] = value
+	if s != nil {
+		if s.effortByRole == nil {
+			s.effortByRole = map[modelRole]string{}
 		}
+		s.effortByRole[role] = value
 	}
 	a.modelMu.Unlock()
 	return nil
@@ -570,6 +593,16 @@ func (a *Agent) Tasks(id string) *task.Registry {
 	return s.tasks
 }
 
+// Schedules exposes the session's scheduled tasks so UI surfaces can list
+// them alongside its background agents.
+func (a *Agent) Schedules(id string) *schedule.MemoryStore {
+	s := a.session(id)
+	if s == nil {
+		return nil
+	}
+	return s.schedules
+}
+
 // RunningTaskCount sums running background agents across every live session,
 // so quitting warns about agents outside the currently viewed session too.
 func (a *Agent) RunningTaskCount() int {
@@ -698,22 +731,23 @@ func (a *Agent) Tools(id string) []tool.Tool {
 func (a *Agent) buildSession() *sessionState {
 	sessionCfg := a.cfg.Derive()
 	s := &sessionState{
-		parent: a,
-		aa:     &harness.Agent{Config: sessionCfg},
+		parent:       a,
+		aa:           &harness.Agent{Config: sessionCfg},
+		modelByRole:  map[modelRole]string{},
+		effortByRole: map[modelRole]string{modelRoleUtility: ""},
 	}
 	s.setMode(modeAgent)
 	sessionCfg.Tools = s.tools
 	sessionCfg.Instructions = s.instructions
 	sessionCfg.Model = func() string {
-		_, current := a.modelsFor(s)
-		return current
+		option, _ := a.roleModel(s, "")
+		return option.ID
 	}
 	sessionCfg.Effort = func() string {
 		return a.effortFor(s)
 	}
-	sessionCfg.UtilityModel = a.utilityModel
-	sessionCfg.SubagentModel = func(role string) (harness.ModelOption, bool) {
-		return a.subagentRoleModel(s, role)
+	sessionCfg.RoleModel = func(role string) (harness.ModelOption, bool) {
+		return a.roleModel(s, role)
 	}
 	elicit := a.prompts
 	ws := a.workspace
@@ -766,14 +800,11 @@ func (a *Agent) buildSession() *sessionState {
 		truncation.New(ws.ScratchPath),
 	)
 
-	var allowedReadRoots []string
-	for _, sk := range ws.Skills {
-		if sk.Location != "" && filepath.IsAbs(sk.Location) {
-			allowedReadRoots = append(allowedReadRoots, sk.Location)
+	allowedReadRoots := skill.DiscoveryRoots(ws.RootPath)
+	for _, sk := range ws.Skills() {
+		if path := sk.AbsoluteDir(ws.RootPath); path != "" {
+			allowedReadRoots = append(allowedReadRoots, path)
 		}
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		allowedReadRoots = append(allowedReadRoots, filepath.Join(home, ".wingman", "skills"))
 	}
 	allowedReadRoots = append(allowedReadRoots, ws.ScratchPath)
 
@@ -805,6 +836,7 @@ func (a *Agent) buildSession() *sessionState {
 		s.tasks.Publish(execExitEvent(e))
 	})
 	s.freshness = fs.NewFreshness(ws.Root)
+	s.schedules = schedule.NewMemoryStore()
 	s.watchStop = make(chan struct{})
 	approvals := shell.NewApprovals()
 
@@ -820,21 +852,39 @@ func (a *Agent) buildSession() *sessionState {
 	)
 
 	go s.watchFileChanges()
+	go s.runSchedules()
 
-	s.baseTools = slices.Concat(
+	shellOpts := &shell.Options{
+		ScratchDir:         ws.ScratchPath,
+		ExtraWritableRoots: []string{ws.MemoryPath},
+	}
+
+	baseTools := slices.Concat(
 		ws.WithEditDiagnostics(fs.Tools(ws.Root, &fs.Options{
 			AllowedReadRoots:  allowedReadRoots,
 			AllowedWriteRoots: allowedWriteRoots,
 			Freshness:         s.freshness,
 		})),
-		shell.Tools(ws.RootPath, []string{ws.MemoryPath}, elicit, approvals),
-		shell.ExecTools(s.execManager, ws.RootPath, []string{ws.MemoryPath}, elicit, approvals),
+		shell.Tools(ws.RootPath, elicit, approvals, shellOpts),
+		shell.ExecTools(s.execManager, ws.RootPath, elicit, approvals, shellOpts),
 		todo.Tools(),
+		schedule.Tools(s.schedules),
 		elicittool.Tools(elicit),
 		fetch.Tools(elicit, sessionCfg.Utility),
 		websearch.Tools(elicit),
 		subagent.Tools(sessionCfg, s.subagentContext, s.tasks, subagent.Discover(ws.RootPath)...),
 	)
+	s.toolSet = tool.NewSet(baseTools...)
+	// Close runs in reverse: tasks first so background subagents are canceled
+	// before their shared exec sessions are killed.
+	s.toolSet.Own("exec manager", func() error {
+		s.execManager.Close()
+		return nil
+	})
+	s.toolSet.Own("task registry", func() error {
+		s.tasks.Close()
+		return nil
+	})
 	return s
 }
 
@@ -1023,8 +1073,7 @@ func (s *sessionState) close() {
 		fn()
 	}
 	close(s.watchStop)
-	s.tasks.Close()
-	s.execManager.Close()
+	_ = s.toolSet.Close()
 
 	if hooks := s.aa.Hooks.SessionEnd; len(hooks) > 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1111,7 +1160,7 @@ func formatFileChangeNotice(paths []string) string {
 }
 
 func (s *sessionState) tools() []tool.Tool {
-	tools := append([]tool.Tool{}, s.baseTools...)
+	tools := s.toolSet.Slice()
 	tools = append(tools, s.managedTools()...)
 	switch s.currentMode() {
 	case modePlan:
@@ -1156,47 +1205,92 @@ func planModeTools(tools []tool.Tool) []tool.Tool {
 	return filtered
 }
 
-func planModeEffectExecute(t tool.Tool) func(context.Context, map[string]any) (string, error) {
-	return func(ctx context.Context, args map[string]any) (string, error) {
+func planModeEffectExecute(t tool.Tool) func(context.Context, map[string]any) (tool.Result, error) {
+	return func(ctx context.Context, args map[string]any) (tool.Result, error) {
 		if t.Effect == nil || t.Effect(args) != tool.EffectReadOnly {
-			return "", fmt.Errorf("plan mode only allows read-only tool calls")
+			return tool.Result{}, fmt.Errorf("plan mode only allows read-only tool calls")
 		}
 		return t.Execute(ctx, args)
 	}
 }
 
 func (s *sessionState) instructions() string {
-	return BuildInstructions(s.instructionsData())
+	option, _ := s.parent.roleModel(s, "")
+	return BuildInstructions(option.ID, s.instructionsData())
 }
 
 func (s *sessionState) subagentContext() string {
 	return prompt.BuildAgentContext(s.instructionsData())
 }
 
-func BuildInstructions(data prompt.SectionData) string {
-	base := prompt.Instructions
+func BuildInstructions(modelID string, data prompt.SectionData) string {
+	variant := prompt.VariantFor(modelID)
+	selected, ok := model.Find(modelID)
+	if !ok {
+		selected.ID = modelID
+		selected.Name = modelID
+	}
+	data.Model = selected
+
+	base := variant.Agent
 	if data.PlanMode {
-		base = prompt.Planning
+		base = variant.Plan
 	} else if data.UnattendedMode {
-		base += "\n\n" + prompt.Unattended
+		base += "\n\n" + variant.Unattended
 	}
 	return prompt.BuildInstructions(base, data)
 }
 
 func (s *sessionState) instructionsData() prompt.SectionData {
 	ws := s.parent.workspace
+	now := time.Now()
 	return prompt.SectionData{
 		PlanMode:            s.currentMode() == modePlan,
 		UnattendedMode:      s.currentMode() == modeUnattended,
-		Date:                time.Now().Format("January 2, 2006"),
+		Date:                now.Format("2006-01-02"),
+		Timezone:            localTimezone(now),
 		OS:                  runtime.GOOS,
 		Arch:                runtime.GOARCH,
 		WorkingDir:          ws.RootPath,
+		Shell:               localShell(),
 		MemoryDir:           ws.MemoryPath,
 		MemoryContent:       ws.MemoryContent(),
-		Skills:              skillpkg.FormatForPrompt(ws.Skills),
+		Skills:              skill.FormatForPrompt(ws.Skills()),
 		ProjectInstructions: s.projectInstructions(),
 	}
+}
+
+func localShell() string {
+	for _, name := range []string{"SHELL", "COMSPEC"} {
+		if shell := strings.TrimSpace(os.Getenv(name)); shell != "" {
+			return filepath.Base(shell)
+		}
+	}
+	return ""
+}
+
+func localTimezone(now time.Time) string {
+	if timezone := strings.TrimPrefix(strings.TrimSpace(os.Getenv("TZ")), ":"); timezone != "" && !filepath.IsAbs(timezone) {
+		return timezone
+	}
+	if timezone := now.Location().String(); timezone != "" && timezone != "Local" {
+		return timezone
+	}
+	if target, err := filepath.EvalSymlinks("/etc/localtime"); err == nil {
+		const marker = "/zoneinfo/"
+		normalized := filepath.ToSlash(target)
+		if index := strings.LastIndex(normalized, marker); index >= 0 {
+			return normalized[index+len(marker):]
+		}
+	}
+
+	name, offset := now.Zone()
+	sign := "+"
+	if offset < 0 {
+		sign = "-"
+		offset = -offset
+	}
+	return fmt.Sprintf("%s (UTC%s%02d:%02d)", name, sign, offset/3600, offset%3600/60)
 }
 
 const projectInstructionsMaxBytes = 25 * 1024

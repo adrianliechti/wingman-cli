@@ -21,6 +21,7 @@ const (
 	DefaultMaxLines = 2000
 	DefaultMaxBytes = 48 * 1024
 
+	MaxReadFileBytes = 10 * 1024 * 1024
 	MaxEditFileBytes = 10 * 1024 * 1024
 )
 
@@ -211,6 +212,20 @@ func readFileTarget(root *os.Root, target fileTarget) ([]byte, error) {
 		return content, err
 	}
 	return os.ReadFile(target.AbsPath)
+}
+
+func openFileTarget(root *os.Root, target fileTarget) (*os.File, error) {
+	if target.InWorkspace {
+		f, err := root.Open(target.RelPath)
+		if err != nil {
+			if fr, sub, ok := fallbackRoot(root.Name(), target.RelPath); ok {
+				defer fr.Close()
+				return fr.Open(sub)
+			}
+		}
+		return f, err
+	}
+	return os.Open(target.AbsPath)
 }
 
 func writeFileTarget(root *os.Root, target fileTarget, content string) error {

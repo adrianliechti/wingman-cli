@@ -14,7 +14,8 @@ func fetchTool(t *testing.T) func(map[string]any) (string, error) {
 	t.Helper()
 	tl := Tools(nil, nil)[0]
 	return func(args map[string]any) (string, error) {
-		return tl.Execute(t.Context(), args)
+		result, err := tl.Execute(t.Context(), args)
+		return result.Content, err
 	}
 }
 
@@ -122,7 +123,8 @@ func TestFetchExtractsWithPrompt(t *testing.T) {
 	}
 	tl := Tools(nil, extract)[0]
 
-	out, err := tl.Execute(t.Context(), map[string]any{"url": server.URL, "prompt": "latest version?"})
+	result, err := tl.Execute(t.Context(), map[string]any{"url": server.URL, "prompt": "latest version?"})
+	out := result.Content
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +141,8 @@ func TestFetchExtractsWithPrompt(t *testing.T) {
 		return "", context.DeadlineExceeded
 	}
 	tl = Tools(nil, failing)[0]
-	out, err = tl.Execute(t.Context(), map[string]any{"url": server.URL, "prompt": "latest version?"})
+	result, err = tl.Execute(t.Context(), map[string]any{"url": server.URL, "prompt": "latest version?"})
+	out = result.Content
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,8 +171,8 @@ func TestFetchHostApprovalGate(t *testing.T) {
 	}
 
 	allow = true
-	if out, err := tl.Execute(t.Context(), map[string]any{"url": server.URL}); err != nil || out != "ok" {
-		t.Fatalf("approved fetch = %q, %v", out, err)
+	if result, err := tl.Execute(t.Context(), map[string]any{"url": server.URL}); err != nil || result.Content != "ok" {
+		t.Fatalf("approved fetch = %q, %v", result.Content, err)
 	}
 	if _, err := tl.Execute(t.Context(), map[string]any{"url": server.URL + "/again"}); err != nil {
 		t.Fatalf("remembered approval fetch err = %v", err)

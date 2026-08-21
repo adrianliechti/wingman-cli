@@ -165,14 +165,7 @@ func emitAssistant(ctx context.Context, conn *acp.AgentSideConnection, sid acp.S
 				case "TaskCreate":
 					plan.noteCreate(b.ID, b.Input)
 				case "TaskUpdate":
-					if plan.noteUpdate(b.Input) {
-						if err := conn.SessionUpdate(ctx, acp.SessionNotification{
-							SessionId: sid,
-							Update:    acp.UpdatePlan(plan.entries()...),
-						}); err != nil {
-							return err
-						}
-					}
+					plan.noteUpdate(b.ID, b.Input)
 				}
 			}
 			if plan != nil && isPlanTool(b.Name) {
@@ -251,7 +244,7 @@ func emitToolResults(ctx context.Context, conn *acp.AgentSideConnection, sid acp
 			continue
 		}
 		name := cache[b.ToolUseID]
-		if plan != nil && name == "TaskCreate" && plan.completeCreate(b.ToolUseID, extractToolResultText(b.Content)) {
+		if applyTaskPlanResult(plan, name, b) {
 			if err := conn.SessionUpdate(ctx, acp.SessionNotification{
 				SessionId: sid,
 				Update:    acp.UpdatePlan(plan.entries()...),
@@ -293,6 +286,23 @@ func emitToolResults(ctx context.Context, conn *acp.AgentSideConnection, sid acp
 		}
 	}
 	return nil
+}
+
+func applyTaskPlanResult(plan *taskPlan, name string, result cliMsgBlock) bool {
+	if plan == nil {
+		return false
+	}
+	text := extractToolResultText(result.Content)
+	switch name {
+	case "TaskCreate":
+		return plan.completeCreate(result.ToolUseID, text, result.IsError)
+	case "TaskUpdate":
+		return plan.completeUpdate(result.ToolUseID, text, result.IsError)
+	case "TaskList":
+		return plan.applyTaskList(text, result.IsError)
+	default:
+		return false
+	}
 }
 
 func withClaudeToolMeta(update *acp.SessionUpdate, toolName, parentToolUseID string) {

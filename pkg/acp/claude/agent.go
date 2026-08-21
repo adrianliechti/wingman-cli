@@ -130,7 +130,10 @@ func (a *Agent) ensureModels(ctx context.Context) {
 	a.modelsLoaded = true
 }
 
-func (a *Agent) sendAvailableCommands(id acp.SessionId) {
+func (a *Agent) sendAvailableCommands(s *session) {
+	if s == nil {
+		return
+	}
 	a.modelsMu.Lock()
 	cmds := a.commands
 	a.modelsMu.Unlock()
@@ -139,8 +142,13 @@ func (a *Agent) sendAvailableCommands(id acp.SessionId) {
 	}
 
 	go func() {
+		// Model discovery can finish just before a session is closed or replaced.
+		// Do not publish its deferred command list to a stale session ID.
+		if a.lookup(s.id) != s || a.conn == nil {
+			return
+		}
 		_ = a.conn.SessionUpdate(context.Background(), acp.SessionNotification{
-			SessionId: id,
+			SessionId: s.id,
 			Update: acp.SessionUpdate{AvailableCommandsUpdate: &acp.SessionAvailableCommandsUpdate{
 				SessionUpdate:     "available_commands_update",
 				AvailableCommands: cmds,
@@ -209,7 +217,7 @@ func (a *Agent) NewSession(ctx context.Context, params acp.NewSessionRequest) (a
 	a.mu.Lock()
 	a.sessions[id] = s
 	a.mu.Unlock()
-	a.sendAvailableCommands(id)
+	a.sendAvailableCommands(s)
 
 	return acp.NewSessionResponse{
 		SessionId:     id,
@@ -342,7 +350,7 @@ func (a *Agent) ResumeSession(ctx context.Context, params acp.ResumeSessionReque
 	}
 	a.ensureModels(ctx)
 	s := a.adoptSession(params.SessionId, cwd, additional, params.McpServers, string(params.SessionId), false)
-	a.sendAvailableCommands(params.SessionId)
+	a.sendAvailableCommands(s)
 	return acp.ResumeSessionResponse{
 		Modes:         buildSessionModeState(s.mode),
 		ConfigOptions: buildConfigOptions(a.models, s.modelID, s.effort),
@@ -362,10 +370,10 @@ func (a *Agent) LoadSession(ctx context.Context, params acp.LoadSessionRequest) 
 	}
 	a.ensureModels(ctx)
 	s := a.adoptSession(params.SessionId, cwd, additional, params.McpServers, string(params.SessionId), false)
-	if err := replayHistory(ctx, a.conn, params.SessionId, cwd); err != nil {
+	if err := replayHistory(ctx, a.conn, params.SessionId, cwd, s.plan); err != nil {
 		return acp.LoadSessionResponse{}, fmt.Errorf("replay history: %w", err)
 	}
-	a.sendAvailableCommands(params.SessionId)
+	a.sendAvailableCommands(s)
 	return acp.LoadSessionResponse{
 		Modes:         buildSessionModeState(s.mode),
 		ConfigOptions: buildConfigOptions(a.models, s.modelID, s.effort),

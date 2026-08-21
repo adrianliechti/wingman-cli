@@ -15,6 +15,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/task"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
+	"github.com/adrianliechti/wingman-agent/pkg/layout"
 	"github.com/adrianliechti/wingman-agent/pkg/tui"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/ansi"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/clipboard"
@@ -91,7 +92,7 @@ type App struct {
 
 	elicitMu     sync.Mutex
 	promptActive bool
-	confirmAll   atomic.Bool
+	confirmAll   sync.Map // session ID -> struct{}
 	askActive    bool
 	askMessage   string
 	askHeader    []string
@@ -133,6 +134,7 @@ type streamSnapshot struct {
 	toolName      string
 	toolArgs      string
 	toolHint      string
+	toolPartial   bool
 	toolProgress  string
 	toolResult    *agent.ToolResult
 	text          string
@@ -316,7 +318,7 @@ func (a *App) deliverTaskResults(sessionID string, batch []task.Event) {
 		}
 		a.flushToolGap()
 		for _, ev := range batch {
-			a.appendChat(cellNotice(fmt.Sprintf("%s %s %s (%s, %s)", ev.Label(), ev.ID, ev.Verb(), ev.Description, ev.Elapsed.Round(time.Second)), taskResultColor(ev.Status), a.width()))
+			a.appendChat(cellNotice(ev.Notice(), taskResultColor(ev.Status), a.width()))
 		}
 		a.invalidate()
 	})
@@ -373,12 +375,11 @@ func saveExecutablePath() {
 		return
 	}
 
-	home, err := os.UserHomeDir()
+	dir, err := layout.WingmanPath()
 	if err != nil {
 		return
 	}
 
-	dir := filepath.Join(home, ".wingman")
 	os.MkdirAll(dir, 0755)
 
 	os.WriteFile(filepath.Join(dir, "path"), []byte(path), 0644)

@@ -57,6 +57,7 @@ const (
 	EvtTurnQueue           = "turn_queue"
 	EvtTasksChanged        = "tasks_changed"
 	EvtTerminalsChanged    = "terminals_changed"
+	EvtSkillsChanged       = "skills_changed"
 )
 
 const (
@@ -82,6 +83,7 @@ type Frame struct {
 	Position int              `json:"position,omitempty"`
 	Paused   bool             `json:"paused,omitempty"`
 	CanSteer bool             `json:"can_steer,omitempty"`
+	Partial  bool             `json:"partial,omitempty"`
 	Queue    []TurnQueueEntry `json:"queue,omitempty"`
 
 	PromptID     string             `json:"prompt_id,omitempty"`
@@ -158,6 +160,7 @@ type FileContent struct {
 	Path     string `json:"path"`
 	Content  string `json:"content,omitempty"`
 	Language string `json:"language,omitempty"`
+	Revision string `json:"revision"`
 
 	Binary bool   `json:"binary,omitempty"`
 	Mime   string `json:"mime,omitempty"`
@@ -165,12 +168,13 @@ type FileContent struct {
 }
 
 type DiffEntry struct {
-	Path     string `json:"path"`
-	Status   string `json:"status"`
-	Patch    string `json:"patch"`
-	Original string `json:"original,omitempty"`
-	Modified string `json:"modified,omitempty"`
-	Language string `json:"language,omitempty"`
+	Path         string `json:"path"`
+	OriginalPath string `json:"original_path,omitempty"`
+	Status       string `json:"status"`
+	Patch        string `json:"patch"`
+	Original     string `json:"original,omitempty"`
+	Modified     string `json:"modified,omitempty"`
+	Language     string `json:"language,omitempty"`
 }
 
 type SessionEntry struct {

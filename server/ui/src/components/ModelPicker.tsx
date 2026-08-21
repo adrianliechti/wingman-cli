@@ -1,78 +1,73 @@
-import { Brain } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ServerMessage } from "../types/protocol";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useMemo, useRef, useState } from "react";
+import {
+	modelQueries,
+	setCurrentEffort,
+	setCurrentModel,
+	type EffortState,
+	type ModelInfo,
+} from "../api/models";
+import { queryKeys } from "../api/query";
+import { ModelProviderIcon } from "./ModelProviderIcon";
 import { useToast } from "./ui/Feedback";
-
-interface ModelInfo {
-	id: string;
-	name: string;
-}
+import { FloatingSurface } from "./ui/Floating";
 
 interface Props {
 	sessionId?: string;
-	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 }
 
-export function ModelPicker({ sessionId, subscribe }: Props) {
+const EMPTY_MODELS: ModelInfo[] = [];
+const EMPTY_EFFORTS: string[] = [];
+
+export function ModelPicker({ sessionId }: Props) {
 	const toast = useToast();
-	const [model, setModel] = useState("");
-	const [models, setModels] = useState<ModelInfo[]>([]);
-	const [effort, setEffort] = useState("auto");
-	const [effortOptions, setEffortOptions] = useState<string[]>([]);
+	const queryClient = useQueryClient();
+	const models = useQuery(modelQueries.list()).data ?? EMPTY_MODELS;
+	const currentModel = useQuery(modelQueries.current(sessionId)).data;
+	const currentEffort = useQuery(modelQueries.effort(sessionId)).data;
+	const model = currentModel?.model ?? "";
+	const effort = currentEffort?.effort || "auto";
+	const effortOptions = Array.isArray(currentEffort?.options)
+		? currentEffort.options
+		: EMPTY_EFFORTS;
 	const [open, setOpen] = useState(false);
 	const [dragPct, setDragPct] = useState<number | null>(null);
 	const [dragging, setDragging] = useState(false);
-	const popRef = useRef<HTMLDivElement>(null);
 	const btnRef = useRef<HTMLButtonElement>(null);
 	const trackRef = useRef<HTMLDivElement>(null);
 
-	const applyEffort = useCallback((v: unknown) => {
-		if (typeof v === "string" && v !== "") {
-			setEffort(v);
-		} else {
-			setEffort("auto");
-		}
-	}, []);
-
-	const loadModels = useCallback(() => {
-		fetch("/api/models")
-			.then((r) => r.json())
-			.then((data: ModelInfo[]) => setModels(data))
-			.catch(() => setModels([]));
-	}, []);
-
-	const apiBase = sessionId
-		? `/api/sessions/${encodeURIComponent(sessionId)}`
-		: "/api";
-
-	const loadCurrent = useCallback(() => {
-		fetch(`${apiBase}/model`)
-			.then((r) => r.json())
-			.then((data) => setModel(data.model || ""))
-			.catch(() => {});
-		fetch(`${apiBase}/effort`)
-			.then((r) => r.json())
-			.then((data) => {
-				applyEffort(data.effort);
-				setEffortOptions(Array.isArray(data.options) ? data.options : []);
-			})
-			.catch(() => {});
-	}, [applyEffort, apiBase]);
-
-	useEffect(() => {
-		loadCurrent();
-		loadModels();
-	}, [loadCurrent, loadModels]);
-
-	useEffect(() => {
-		if (!subscribe) return;
-		return subscribe((msg) => {
-			if (msg.type === "agent_changed" || msg.type === "model_changed") {
-				loadCurrent();
-				loadModels();
-			}
-		});
-	}, [subscribe, loadCurrent, loadModels]);
+	const modelMutation = useMutation({
+		mutationFn: (id: string) => setCurrentModel(id, sessionId),
+		onSuccess: (data, id) => {
+			queryClient.setQueryData(queryKeys.models.current(sessionId), {
+				model: data.model || id,
+			});
+		},
+		onError: (error) =>
+			toast({
+				title: "Could not change model",
+				description: String(error),
+				tone: "error",
+			}),
+	});
+	const effortMutation = useMutation({
+		mutationFn: (value: string) => setCurrentEffort(value, sessionId),
+		onSuccess: (data, value) => {
+			queryClient.setQueryData<EffortState>(
+				queryKeys.models.effort(sessionId),
+				(current) => ({
+					...current,
+					effort: data.effort || value,
+				}),
+			);
+		},
+		onError: (error) =>
+			toast({
+				title: "Could not change effort",
+				description: String(error),
+				tone: "error",
+			}),
+	});
 
 	const toggle = useCallback(() => {
 		setOpen((v) => !v);
@@ -80,71 +75,26 @@ export function ModelPicker({ sessionId, subscribe }: Props) {
 
 	const selectModel = useCallback(
 		(id: string) => {
-			fetch(`${apiBase}/model`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ model: id }),
-			})
-				.then(async (r) => {
-					if (!r.ok) throw new Error(await r.text());
-					return r.json();
-				})
-				.then((data) => setModel(data.model || id))
-				.catch((error) =>
-					toast({
-						title: "Could not change model",
-						description: String(error),
-						tone: "error",
-					}),
-				);
+			modelMutation.mutate(id);
 		},
-		[apiBase, toast],
+		[modelMutation],
 	);
 
 	const selectEffort = useCallback(
 		(value: string) => {
-			fetch(`${apiBase}/effort`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ effort: value }),
-			})
-				.then(async (r) => {
-					if (!r.ok) throw new Error(await r.text());
-					return r.json();
-				})
-				.then((data) => applyEffort(data.effort))
-				.catch((error) =>
-					toast({
-						title: "Could not change effort",
-						description: String(error),
-						tone: "error",
-					}),
-				);
+			effortMutation.mutate(value);
 		},
-		[applyEffort, apiBase, toast],
+		[effortMutation],
 	);
-
-	useEffect(() => {
-		if (!open) return;
-		const handler = (e: MouseEvent) => {
-			const target = e.target as Node;
-			if (
-				popRef.current &&
-				!popRef.current.contains(target) &&
-				btnRef.current &&
-				!btnRef.current.contains(target)
-			) {
-				setOpen(false);
-			}
-		};
-		document.addEventListener("mousedown", handler);
-		return () => document.removeEventListener("mousedown", handler);
-	}, [open]);
 
 	const currentName = useMemo(() => {
 		const match = models.find((m) => m.id === model);
 		return match?.name || model;
 	}, [models, model]);
+	const currentNamespace = useMemo(
+		() => models.find((m) => m.id === model)?.namespace,
+		[models, model],
+	);
 
 	const defaultEffort = useMemo(
 		() =>
@@ -232,7 +182,11 @@ export function ModelPicker({ sessionId, subscribe }: Props) {
 				aria-haspopup="dialog"
 				aria-expanded={open}
 			>
-				<Brain size={12} className="shrink-0" />
+				<ModelProviderIcon
+					namespace={currentNamespace}
+					size={12}
+					className="shrink-0"
+				/>
 				<span className="truncate">{currentName}</span>
 				{effort !== "auto" && effort !== "default" && (
 					<>
@@ -241,85 +195,91 @@ export function ModelPicker({ sessionId, subscribe }: Props) {
 					</>
 				)}
 			</button>
-			{open && (
+			<FloatingSurface
+				open={open}
+				onOpenChange={setOpen}
+				reference={btnRef.current}
+				placement="top-start"
+				role="dialog"
+				label="Model and reasoning effort"
+				className="z-[100] min-w-[240px] max-w-[360px] bg-bg-elevated/95 backdrop-blur-sm border border-border rounded-md shadow-xl"
+			>
 				<div
-					ref={popRef}
-					role="dialog"
-					aria-label="Model and reasoning effort"
-					className="absolute bottom-full mb-1 left-0 min-w-[240px] max-w-[360px] bg-bg-elevated/95 backdrop-blur-sm border border-border rounded-md shadow-xl z-50"
+					className="py-1 max-h-[260px] overflow-y-auto"
+					role="listbox"
+					aria-label="Model"
 				>
-					<div
-						className="py-1 max-h-[260px] overflow-y-auto"
-						role="listbox"
-						aria-label="Model"
-					>
-						{models.length === 0 ? (
-							<div className="px-3 py-2 text-[12px] text-fg-dim">Loading…</div>
-						) : (
-							models.map((m) => (
-								<button
-									type="button"
-									role="option"
-									aria-selected={m.id === model}
-									key={m.id}
-									className={`block w-full text-left px-3 py-1.5 text-[12px] cursor-pointer whitespace-nowrap transition-colors ${
-										m.id === model
-											? "text-fg bg-bg-active"
-											: "text-fg-muted hover:text-fg hover:bg-bg-hover"
-									}`}
-									onClick={() => selectModel(m.id)}
-								>
-									{m.name}
-								</button>
-							))
-						)}
-					</div>
-					{efforts.length > 0 && (
-						<div className="border-t border-border px-3 h-9 flex items-center">
-							<div
-								ref={trackRef}
-								onPointerDown={handlePointerDown}
-								className="relative flex-1 h-6 flex items-center cursor-pointer touch-none"
+					{models.length === 0 ? (
+						<div className="px-3 py-2 text-[12px] text-fg-dim">Loading…</div>
+					) : (
+						models.map((m) => (
+							<button
+								type="button"
+								role="option"
+								aria-selected={m.id === model}
+								key={m.id}
+								className={`flex items-center gap-2 w-full text-left px-3 py-1.5 text-[12px] cursor-pointer whitespace-nowrap transition-colors ${
+									m.id === model
+										? "text-fg bg-bg-active"
+										: "text-fg-muted hover:text-fg hover:bg-bg-hover"
+								}`}
+								onClick={() => selectModel(m.id)}
 							>
-								<div className="absolute inset-x-0 h-[2px] rounded-full bg-bg-active" />
-								<div
-									className="absolute left-0 h-[2px] rounded-full bg-fg-muted/70"
-									style={{ width: `${pct}%` }}
+								<ModelProviderIcon
+									namespace={m.namespace}
+									size={13}
+									className="shrink-0"
 								/>
-								<div className="absolute inset-0 flex items-center justify-between pointer-events-none">
-									{steps.map((v, i) => (
-										<span
-											key={v}
-											className={`w-[3px] h-[3px] rounded-full transition-colors ${
-												i <= previewIndex ? "bg-fg-muted/70" : "bg-fg-dim/40"
-											}`}
-										/>
-									))}
-								</div>
-								<div
-									role="slider"
-									tabIndex={0}
-									aria-label="Reasoning effort"
-									aria-valuemin={0}
-									aria-valuemax={steps.length - 1}
-									aria-valuenow={previewIndex}
-									aria-valuetext={knobLabel}
-									onKeyDown={handleKeyDown}
-									className={`absolute top-1/2 flex items-center justify-center h-5 px-1.5 rounded-[5px] bg-fg text-bg text-[10px] font-semibold capitalize leading-none whitespace-nowrap shadow-sm cursor-grab active:cursor-grabbing ${
-										dragging ? "" : "transition-[left] duration-150 ease-out"
-									}`}
-									style={{
-										left: `${pct}%`,
-										transform: `translate(-${pct}%, -50%)`,
-									}}
-								>
-									{knobLabel}
-								</div>
-							</div>
-						</div>
+								<span>{m.name}</span>
+							</button>
+						))
 					)}
 				</div>
-			)}
+				{efforts.length > 0 && (
+					<div className="border-t border-border px-3 h-9 flex items-center">
+						<div
+							ref={trackRef}
+							onPointerDown={handlePointerDown}
+							className="relative flex-1 h-6 flex items-center cursor-pointer touch-none"
+						>
+							<div className="absolute inset-x-0 h-[2px] rounded-full bg-bg-active" />
+							<div
+								className="absolute left-0 h-[2px] rounded-full bg-fg-muted/70"
+								style={{ width: `${pct}%` }}
+							/>
+							<div className="absolute inset-0 flex items-center justify-between pointer-events-none">
+								{steps.map((v, i) => (
+									<span
+										key={v}
+										className={`w-[3px] h-[3px] rounded-full transition-colors ${
+											i <= previewIndex ? "bg-fg-muted/70" : "bg-fg-dim/40"
+										}`}
+									/>
+								))}
+							</div>
+							<div
+								role="slider"
+								tabIndex={0}
+								aria-label="Reasoning effort"
+								aria-valuemin={0}
+								aria-valuemax={steps.length - 1}
+								aria-valuenow={previewIndex}
+								aria-valuetext={knobLabel}
+								onKeyDown={handleKeyDown}
+								className={`absolute top-1/2 flex items-center justify-center h-5 px-1.5 rounded-[5px] bg-fg text-bg text-[10px] font-semibold capitalize leading-none whitespace-nowrap shadow-sm cursor-grab active:cursor-grabbing ${
+									dragging ? "" : "transition-[left] duration-150 ease-out"
+								}`}
+								style={{
+									left: `${pct}%`,
+									transform: `translate(-${pct}%, -50%)`,
+								}}
+							>
+								{knobLabel}
+							</div>
+						</div>
+					</div>
+				)}
+			</FloatingSurface>
 		</div>
 	);
 }

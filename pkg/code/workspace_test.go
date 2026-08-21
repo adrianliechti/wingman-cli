@@ -6,18 +6,23 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-git/go-git/v5"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/adrianliechti/wingman-agent/internal/testenv"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	wingmcp "github.com/adrianliechti/wingman-agent/pkg/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/skill"
 )
 
 func TestWarmUpCreatesLSPManagerOutsideGitRepository(t *testing.T) {
+	testenv.UserHome(t)
+	testenv.WingmanHome(t)
+
 	w, err := NewWorkspace(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -25,8 +30,186 @@ func TestWarmUpCreatesLSPManagerOutsideGitRepository(t *testing.T) {
 	defer w.Close()
 
 	w.WarmUp()
-	if w.LSP == nil {
-		t.Fatal("LSP manager was not created")
+	if w.Language == nil {
+		t.Fatal("language service was not created")
+	}
+}
+
+func TestWorkspaceRefreshSkillsPreservesPrecedence(t *testing.T) {
+	home := testenv.UserHome(t)
+	testenv.WingmanHome(t)
+
+	personalDir := filepath.Join(home, ".agents", "skills", "speckit-specify")
+	if err := os.MkdirAll(personalDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(personalDir, "SKILL.md"), `---
+name: speckit-specify
+description: Personal specification workflow
+---
+Use the personal workflow.`)
+
+	workDir := t.TempDir()
+	ws, err := NewWorkspace(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+
+	initial := skill.FindSkill("speckit-specify", ws.Skills())
+	if initial == nil || initial.Description != "Personal specification workflow" {
+		t.Fatalf("initial skill = %#v", initial)
+	}
+
+	projectDir := filepath.Join(workDir, ".agents", "skills", "speckit-specify")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(projectDir, "SKILL.md"), `---
+name: speckit-specify
+description: Project specification workflow
+metadata:
+  source: project
+---
+Use the project workflow.`)
+	if !ws.RefreshSkills() {
+		t.Fatal("RefreshSkills reported no project addition")
+	}
+
+	project := skill.FindSkill("speckit-specify", ws.Skills())
+	if project == nil || project.Description != "Project specification workflow" {
+		t.Fatalf("project skill = %#v", project)
+	}
+
+	snapshot := ws.Skills()
+	projectInSnapshot := skill.FindSkill("speckit-specify", snapshot)
+	projectInSnapshot.Description = "mutated snapshot"
+	projectInSnapshot.Metadata["source"] = "mutated snapshot"
+	if current := skill.FindSkill("speckit-specify", ws.Skills()); current.Description != "Project specification workflow" {
+		t.Fatalf("snapshot mutation changed catalog: %#v", current)
+	}
+	if current := skill.FindSkill("speckit-specify", ws.Skills()); current.Metadata["source"] != "project" {
+		t.Fatalf("snapshot metadata mutation changed catalog: %#v", current.Metadata)
+	}
+
+	mustWrite(t, filepath.Join(projectDir, "SKILL.md"), `---
+name: speckit-specify
+description: Updated project specification workflow
+---
+Use the updated project workflow.`)
+	if !ws.RefreshSkills() {
+		t.Fatal("RefreshSkills reported no metadata update")
+	}
+	if current := skill.FindSkill("speckit-specify", ws.Skills()); current == nil || current.Description != "Updated project specification workflow" {
+		t.Fatalf("updated skill = %#v", current)
+	}
+
+	if err := os.RemoveAll(projectDir); err != nil {
+		t.Fatal(err)
+	}
+	if !ws.RefreshSkills() {
+		t.Fatal("RefreshSkills reported no project removal")
+	}
+	restored := skill.FindSkill("speckit-specify", ws.Skills())
+	if restored == nil || restored.Description != "Personal specification workflow" {
+		t.Fatalf("restored skill = %#v", restored)
+	}
+	if ws.RefreshSkills() {
+		t.Fatal("unchanged catalog reported a refresh")
+	}
+}
+
+func TestWorkspaceSkillsSnapshotIsSafeDuringRefresh(t *testing.T) {
+	testenv.UserHome(t)
+	testenv.WingmanHome(t)
+
+	workDir := t.TempDir()
+	skillDir := filepath.Join(workDir, ".agents", "skills", "speckit-plan")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(skillDir, "SKILL.md"), `---
+name: speckit-plan
+description: Build an implementation plan
+---
+Build the plan.`)
+
+	ws, err := NewWorkspace(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+
+	var readers sync.WaitGroup
+	for range 4 {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for range 100 {
+				skills := ws.Skills()
+				_ = skill.FormatForPrompt(skills)
+				_ = skill.FindSkill("speckit-plan", skills)
+			}
+		}()
+	}
+	for range 25 {
+		ws.RefreshSkills()
+	}
+	readers.Wait()
+}
+
+func TestNewWorkspaceNormalizesRelativeRoot(t *testing.T) {
+	testenv.UserHome(t)
+	testenv.WingmanHome(t)
+
+	parent := t.TempDir()
+	workDir := filepath.Join(parent, "project")
+	if err := os.Mkdir(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(parent)
+
+	w, err := NewWorkspace("project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	if w.RootPath != workDir {
+		t.Fatalf("RootPath = %q, want %q", w.RootPath, workDir)
+	}
+	if got, want := projectKey("project"), projectKey(workDir); got != want {
+		t.Fatalf("relative project key = %q, want %q", got, want)
+	}
+}
+
+func TestWingmanHomeOwnsPersonalWorkspaceState(t *testing.T) {
+	home := testenv.WingmanHome(t)
+	workDir := t.TempDir()
+	agentsPath, err := agentsConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	projectDir := filepath.Join(home, "projects", projectKey(workDir))
+	tests := map[string]struct {
+		got  string
+		want string
+	}{
+		"agents config":     {agentsPath, filepath.Join(home, "agents.json")},
+		"global MCP config": {globalMCPConfigPath(), filepath.Join(home, "mcp.json")},
+		"project state":     {projectStateDir(workDir), projectDir},
+		"memory":            {projectMemoryDir(workDir), filepath.Join(projectDir, "memory")},
+		"graph":             {projectGraphDir(workDir), filepath.Join(projectDir, "graph")},
+		"project plugins":   {projectPluginDataDir(workDir), filepath.Join(projectDir, "plugin-data")},
+		"personal plugins":  {personalPluginDataDir(), filepath.Join(home, "plugin-data")},
+		"sessions":          {SessionsDir(workDir), filepath.Join(projectDir, "sessions")},
+	}
+
+	for name, test := range tests {
+		if test.got != test.want {
+			t.Errorf("%s path = %q, want %q", name, test.got, test.want)
+		}
 	}
 }
 
@@ -109,8 +292,8 @@ func waitForMCPToolNames(t *testing.T, w *Workspace, want ...string) {
 func TestWithEditDiagnosticsWrapsOnlyEditAndWrite(t *testing.T) {
 	w := &Workspace{RootPath: t.TempDir()}
 
-	execute := func(ctx context.Context, args map[string]any) (string, error) {
-		return "diff output", nil
+	execute := func(ctx context.Context, args map[string]any) (tool.Result, error) {
+		return tool.Text("diff output"), nil
 	}
 	tools := w.WithEditDiagnostics([]tool.Tool{
 		{Name: "edit", Execute: execute},
@@ -123,8 +306,8 @@ func TestWithEditDiagnosticsWrapsOnlyEditAndWrite(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", tl.Name, err)
 		}
-		if out != "diff output" {
-			t.Fatalf("%s output = %q, want passthrough with no LSP manager", tl.Name, out)
+		if out.Content != "diff output" {
+			t.Fatalf("%s output = %q, want passthrough with no LSP manager", tl.Name, out.Content)
 		}
 	}
 }
@@ -135,10 +318,10 @@ func TestProtectedLSPCallDoesNotHoldWorkspaceStateLock(t *testing.T) {
 	release := make(chan struct{})
 	tools := w.protectLSPTools([]tool.Tool{{
 		Name: "lsp",
-		Execute: func(context.Context, map[string]any) (string, error) {
+		Execute: func(context.Context, map[string]any) (tool.Result, error) {
 			close(started)
 			<-release
-			return "ok", nil
+			return tool.Text("ok"), nil
 		},
 	}})
 
@@ -407,7 +590,7 @@ func TestLoadBundledSkillsIncludesCoreWorkflows(t *testing.T) {
 			t.Errorf("skill %q has empty content", sk.Name)
 		}
 		switch sk.Name {
-		case "architecture", "code-review", "commit", "debug", "feature-dev", "patch", "pull-request", "security-review", "test", "threat-model", "triage", "vuln-scan":
+		case "architecture", "code-review", "commit", "debug", "feature-dev", "patch", "pull-request", "security-review", "system-design", "test", "threat-model", "triage", "vuln-scan":
 			if !strings.Contains(sk.Content, "$ARGUMENTS") {
 				t.Errorf("argument-taking skill %q does not expose Claude-compatible $ARGUMENTS", sk.Name)
 			}
@@ -437,6 +620,7 @@ func TestLoadBundledSkillsIncludesCoreWorkflows(t *testing.T) {
 		"security-review",
 		"skill-creator",
 		"simplify",
+		"system-design",
 		"test",
 		"threat-model",
 		"triage",
@@ -449,9 +633,9 @@ func TestLoadBundledSkillsIncludesCoreWorkflows(t *testing.T) {
 }
 
 func TestPersonalSkillOverridesManagedBundledSnapshot(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	personalDir := filepath.Join(home, ".wingman", "skills", "skill-creator")
+	testenv.UserHome(t)
+	home := testenv.WingmanHome(t)
+	personalDir := filepath.Join(home, "skills", "skill-creator")
 	if err := os.MkdirAll(personalDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -474,15 +658,14 @@ Use the personal workflow.`)
 	if override == nil || override.Bundled || override.Description != "Personal override" {
 		t.Fatalf("personal override was not selected: %#v", override)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".wingman", "skills", ".system")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(home, "skills", ".system")); !os.IsNotExist(err) {
 		t.Fatalf("bundled snapshot leaked into personal discovery root: %v", err)
 	}
 }
 
 func TestNewWorkspaceLoadsPluginComponents(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	testenv.UserHome(t)
+	testenv.WingmanHome(t)
 
 	work := t.TempDir()
 
@@ -517,12 +700,13 @@ Summarize it.`)
 		t.Fatalf("plugins = %#v", ws.Plugins)
 	}
 
-	summarize := skill.FindSkill("summarize", ws.Skills)
+	skills := ws.Skills()
+	summarize := skill.FindSkill("summarize", skills)
 	if summarize == nil || summarize.Plugin != "reports" {
 		t.Fatalf("plugin skill was not merged: %#v", summarize)
 	}
 
-	if skill.FindSkill("reports:summarize", ws.Skills) == nil {
+	if skill.FindSkill("reports:summarize", skills) == nil {
 		t.Fatalf("qualified plugin skill is not resolvable")
 	}
 
@@ -534,7 +718,7 @@ Summarize it.`)
 		t.Fatalf("servers = %#v", ws.MCP.Servers)
 	}
 
-	prompt := skill.FormatForPrompt(ws.Skills)
+	prompt := skill.FormatForPrompt(skills)
 	if !strings.Contains(prompt, "<name>reports:summarize</name>") {
 		t.Fatalf("plugin skill is not advertised to the model:\n%s", prompt)
 	}
@@ -547,9 +731,8 @@ Summarize it.`)
 }
 
 func TestNewWorkspaceProjectConfigOverridesPluginServer(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	testenv.UserHome(t)
+	testenv.WingmanHome(t)
 
 	work := t.TempDir()
 
@@ -586,9 +769,8 @@ func TestNewWorkspaceProjectConfigOverridesPluginServer(t *testing.T) {
 }
 
 func TestNewWorkspaceDedupesPluginServerMatchingProjectConfig(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	testenv.UserHome(t)
+	testenv.WingmanHome(t)
 
 	work := t.TempDir()
 

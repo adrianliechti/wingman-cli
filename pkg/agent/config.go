@@ -13,6 +13,7 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/hook"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/model"
 )
 
 const (
@@ -25,66 +26,22 @@ const (
 	DefaultReserveTokens = 32_000
 )
 
-// modelContextWindows maps model-ID prefixes to two compaction budgets:
-// window stays under the provider's long-context price threshold; large is
-// the full hardware window for models where it exceeds that threshold.
-// Verified 2026-07: current Claude models (Opus 4.6+, Sonnet 4.6+, Fable 5)
-// take 1M input tokens at flat per-token rates — no long-context premium;
-// Haiku and pre-4.6 models are 200k hardware (Sonnet 4.5's 1M beta bills 2x
-// above 200k and needs a beta header, so it stays capped). GPT-5.4/5.5 have
-// 1M-class windows but bill 2x input / 1.5x output for the whole session
-// once input exceeds 272k; GPT-5.6 (sol/terra/luna) keeps the short/long
-// pricing split with an unpublished threshold, so it inherits the 272k
-// budget. Codex and earlier GPT-5.x are 400k total, flat.
-// Gemini bills ~2x above 200k prompts.
-var modelContextWindows = []struct {
-	prefix string
-	window int // budget under the long-context price threshold
-	large  int // full hardware window when it exceeds the budget (0 = same)
-}{
-	{"claude-haiku", 200_000, 0},
-	{"claude-opus-4-5", 200_000, 0},
-	{"claude-opus-4-1", 200_000, 0},
-	{"claude-opus-4-0", 200_000, 0},
-	{"claude-sonnet-4-5", 200_000, 0},
-	{"claude-sonnet-4-0", 200_000, 0},
-	{"claude-3", 200_000, 0},
-	{"claude-", 1_000_000, 0},
-
-	{"gpt-5.6", 272_000, 1_000_000},
-	{"gpt-5.5", 272_000, 1_000_000},
-	{"gpt-5.4", 272_000, 1_000_000},
-	{"gpt-5", 400_000, 0},
-	{"gpt-4.1", 1_000_000, 0},
-	{"gpt-4o", 128_000, 0},
-	{"o3", 200_000, 0},
-	{"o4", 200_000, 0},
-
-	{"gemini-", 200_000, 1_000_000},
-}
-
-func ContextWindowFor(model string, largeContext bool) int {
-	model = strings.ToLower(model)
-
-	for _, e := range modelContextWindows {
-		if strings.HasPrefix(model, e.prefix) {
-			if largeContext && e.large > e.window {
-				return e.large
-			}
-			return e.window
+func ContextWindowFor(id string) int {
+	if candidate, ok := model.Find(id); ok {
+		window := candidate.ContextTokens()
+		if window > 0 {
+			return window
 		}
 	}
 
 	return DefaultContextWindow
 }
 
-// ModelOption is a resolved model for a per-subagent override. MinEffort and
-// MaxEffort bound the reasoning efforts the model supports; empty means
-// unbounded on that side.
+// ModelOption is a resolved model role. Efforts lists the supported reasoning
+// efforts in ascending order; empty means unrestricted.
 type ModelOption struct {
-	ID        string
-	MinEffort string
-	MaxEffort string
+	ID      string
+	Efforts []string
 }
 
 type Config struct {
@@ -95,15 +52,11 @@ type Config struct {
 	Tools        func() []tool.Tool
 	Instructions func() string
 
-	// UtilityModel, when set and non-empty, handles internal utility calls
-	// (compaction summaries, recaps) instead of the main model.
-	UtilityModel func() string
-
-	// SubagentModel resolves a model role for per-subagent overrides: "plan"
-	// and "utility" name the session's role models, "" the currently
-	// inherited model (consulted for effort clamping). ok=false or an empty
-	// ID keep the inherited model. Nil disables overrides and clamping.
-	SubagentModel func(role string) (ModelOption, bool)
+	// RoleModel resolves "main", "plan", and "utility" role models. An empty
+	// role names the currently inherited model and is used for effort clamping.
+	// ok=false or an empty ID keeps the inherited model. Nil disables role
+	// overrides.
+	RoleModel func(role string) (ModelOption, bool)
 
 	// CacheKey routes provider-side prompt caching; keep it stable per
 	// conversation (e.g. the session ID) to maximize prefix-cache hits.
@@ -126,23 +79,17 @@ type Config struct {
 
 	ContextWindow int
 
-	// LargeContext compacts against the model's full hardware window instead
-	// of stopping at the provider's long-context price threshold (e.g. 2x
-	// input pricing on GPT-5.4/5.5 beyond 272k input tokens).
-	LargeContext bool
-
 	ReserveTokens int
 }
 
 func (c *Config) Derive() *Config {
 	return &Config{
-		client:        c.client,
-		Model:         c.Model,
-		Effort:        c.Effort,
-		Tools:         c.Tools,
-		Instructions:  c.Instructions,
-		UtilityModel:  c.UtilityModel,
-		SubagentModel: c.SubagentModel,
+		client:       c.client,
+		Model:        c.Model,
+		Effort:       c.Effort,
+		Tools:        c.Tools,
+		Instructions: c.Instructions,
+		RoleModel:    c.RoleModel,
 
 		CacheKey: c.CacheKey,
 
@@ -165,15 +112,14 @@ func (c *Config) Derive() *Config {
 		ToolTimeout:      c.ToolTimeout,
 
 		ContextWindow: c.ContextWindow,
-		LargeContext:  c.LargeContext,
 		ReserveTokens: c.ReserveTokens,
 	}
 }
 
 func (c *Config) utilityModelName() string {
-	if c.UtilityModel != nil {
-		if model := c.UtilityModel(); model != "" {
-			return model
+	if c.RoleModel != nil {
+		if option, ok := c.RoleModel("utility"); ok && option.ID != "" {
+			return option.ID
 		}
 	}
 	if c.Model != nil {
@@ -227,10 +173,7 @@ func (c *Config) Models(ctx context.Context) ([]ModelInfo, error) {
 func DefaultConfig() (*Config, error) {
 	client := createClient()
 
-	cfg := &Config{
-		client:       &client,
-		LargeContext: envBool("WINGMAN_LARGE_CONTEXT"),
-	}
+	cfg := &Config{client: &client}
 
 	if model := DefaultModel(); model != "" {
 		cfg.Model = func() string { return model }
@@ -283,15 +226,6 @@ func effortFromEnv(name string) string {
 	}
 }
 
-func envBool(name string) bool {
-	switch strings.ToLower(os.Getenv(name)) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
-}
-
 func SandboxDisabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("WINGMAN_SANDBOX"))) {
 	case "off", "false", "0", "no", "disabled":
@@ -302,36 +236,81 @@ func SandboxDisabled() bool {
 }
 
 func createClient() openai.Client {
-	if url, ok := os.LookupEnv("WINGMAN_URL"); ok {
-		baseURL := strings.TrimRight(url, "/") + "/v1"
-
-		token, _ := os.LookupEnv("WINGMAN_TOKEN")
-
-		if token == "" {
-			token = "-"
-		}
-
-		return openai.NewClient(
-			option.WithBaseURL(baseURL),
-			option.WithAPIKey(token),
-		)
-	}
-
-	if token, ok := os.LookupEnv("OPENAI_API_KEY"); ok {
-		baseURL := "https://api.openai.com/v1"
-
-		if url, ok := os.LookupEnv("OPENAI_BASE_URL"); ok {
-			baseURL = url
-		}
-
-		return openai.NewClient(
-			option.WithBaseURL(baseURL),
-			option.WithAPIKey(token),
-		)
-	}
-
+	baseURL, token := clientConfig()
 	return openai.NewClient(
-		option.WithBaseURL("http://localhost:4242/v1"),
-		option.WithAPIKey("-"),
+		option.WithBaseURL(baseURL),
+		option.WithAPIKey(token),
 	)
+}
+
+func clientConfig() (baseURL, token string) {
+	providers := []func() (string, string, bool){
+		wingmanConfig,
+		openAIConfig,
+		openRouterConfig,
+		ollamaConfig,
+	}
+
+	for _, config := range providers {
+		if baseURL, token, ok := config(); ok {
+			return baseURL, token
+		}
+	}
+
+	return "http://localhost:4242/v1", "-"
+}
+
+func wingmanConfig() (baseURL, token string, ok bool) {
+	url, ok := os.LookupEnv("WINGMAN_URL")
+	if !ok {
+		return "", "", false
+	}
+
+	token = os.Getenv("WINGMAN_TOKEN")
+	if token == "" {
+		token = "-"
+	}
+
+	return strings.TrimRight(url, "/") + "/v1", token, true
+}
+
+func openAIConfig() (baseURL, token string, ok bool) {
+	token, ok = os.LookupEnv("OPENAI_API_KEY")
+	if !ok {
+		return "", "", false
+	}
+
+	baseURL = os.Getenv("OPENAI_BASE_URL")
+	if baseURL == "" {
+		baseURL = "https://api.openai.com/v1"
+	}
+
+	return baseURL, token, true
+}
+
+func openRouterConfig() (baseURL, token string, ok bool) {
+	token, ok = os.LookupEnv("OPENROUTER_API_KEY")
+	if !ok {
+		return "", "", false
+	}
+
+	return "https://openrouter.ai/api/v1", token, true
+}
+
+func ollamaConfig() (baseURL, token string, ok bool) {
+	host := os.Getenv("OLLAMA_HOST")
+	token = os.Getenv("OLLAMA_API_KEY")
+	if host == "" && token == "" {
+		return "", "", false
+	}
+	if host == "" {
+		host = "https://ollama.com"
+	} else if !strings.Contains(host, "://") {
+		host = "http://" + host
+	}
+	if token == "" {
+		token = "-"
+	}
+
+	return strings.TrimRight(host, "/") + "/v1", token, true
 }

@@ -40,22 +40,22 @@ func writeTool(root *os.Root, tracker *contentTracker, freshness *Freshness, all
 			"additionalProperties": false,
 		},
 
-		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			pathArg, ok := args["file_path"].(string)
 
 			if !ok || pathArg == "" {
-				return "", fmt.Errorf("file_path is required")
+				return tool.Result{}, fmt.Errorf("file_path is required")
 			}
 
 			content, ok := args["content"].(string)
 			if !ok {
-				return "", fmt.Errorf("content is required")
+				return tool.Result{}, fmt.Errorf("content is required")
 			}
 
 			workingDir := root.Name()
 			target, err := resolveFileTarget(pathArg, workingDir, allowedWriteRoots, "write file")
 			if err != nil {
-				return "", err
+				return tool.Result{}, err
 			}
 
 			isNew := true
@@ -63,11 +63,14 @@ func writeTool(root *os.Root, tracker *contentTracker, freshness *Freshness, all
 			switch {
 			case err == nil:
 				if info.IsDir() {
-					return "", fmt.Errorf("cannot write file: path %q is a directory", pathArg)
+					return tool.Result{}, fmt.Errorf("cannot write file: path %q is a directory", pathArg)
+				}
+				if !info.Mode().IsRegular() {
+					return tool.Result{}, fmt.Errorf("cannot write file: path %q is not a regular file", pathArg)
 				}
 				isNew = false
 			case !os.IsNotExist(err):
-				return "", fmt.Errorf("stat file %q: %w", pathArg, err)
+				return tool.Result{}, fmt.Errorf("stat file %q: %w", pathArg, err)
 			}
 
 			var oldContent []byte
@@ -76,18 +79,18 @@ func writeTool(root *os.Root, tracker *contentTracker, freshness *Freshness, all
 			}
 
 			if len(oldContent) > 0 && !isBinaryContent(oldContent) && !tracker.knows(oldContent) {
-				return "", fmt.Errorf("cannot overwrite %s: its current content has not been read in this session — `read` it first", pathArg)
+				return tool.Result{}, fmt.Errorf("cannot overwrite %s: its current content has not been read in this session — `read` it first", pathArg)
 			}
 
 			if err := writeFileTarget(root, target, content); err != nil {
-				return "", fmt.Errorf("write file %q: %w", pathArg, err)
+				return tool.Result{}, fmt.Errorf("write file %q: %w", pathArg, err)
 			}
 
 			tracker.record([]byte(content))
 			freshness.record(ctx, target)
 
 			if isNew {
-				return fmt.Sprintf("Created %s (%d bytes written)", pathArg, len(content)), nil
+				return tool.Text(fmt.Sprintf("Created %s (%d bytes written)", pathArg, len(content))), nil
 			}
 
 			result := fmt.Sprintf("Updated %s (%d bytes written)", pathArg, len(content))
@@ -100,7 +103,7 @@ func writeTool(root *os.Root, tracker *contentTracker, freshness *Freshness, all
 				}
 			}
 
-			return result, nil
+			return tool.Text(result), nil
 		},
 	}
 }
