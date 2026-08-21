@@ -17,7 +17,9 @@ Wingman already provides:
 - File editing, terminals, permission gates, multiple models, persistent agent sessions, and queued or steerable turns.
 - Git status, branches, comparisons, staging, commits, pull, and push.
 - An experimental DAP debugger foundation: deterministic Go, Python, Java, Rust, .NET/C#, TypeScript, and React/Vite launch profiles; `Run | Debug` CodeLens; gutter breakpoints; capability-aware stepping; automatic stop navigation; hover evaluation; one Debug tab with output and terminal views; variables and call-stack inspection; and PTY-backed interactive sessions.
-- Tasks and schedules, skills, plugins, MCP, lifecycle hooks, structural code intelligence, and subagents.
+- Tasks and schedules, runtime-refreshable Agent Skills (including `.agents/skills`
+  compatibility), plugins, MCP, lifecycle hooks, structural code intelligence,
+  and subagents.
 
 ## Feature gaps
 
@@ -33,17 +35,19 @@ Predictive completion and nearby multiline next-edit suggestions are implemented
 
 Benchmarks: [Cursor Tab](https://cursor.com/help/ai-features/tab) and [VS Code AI-powered suggestions](https://code.visualstudio.com/docs/editing/ai-powered-suggestions).
 
-### P0: Agent checkpoints and granular review
+### P2: Git-native granular review
 
-Add:
+Do not reintroduce automatic filesystem checkpoints or shadow repositories. They
+were slow, duplicate Git poorly, and behave badly for non-Git folders. For Git
+repositories only, build on ordinary commits, refs, and diffs to add:
 
-- Automatic checkpoints before agent changes.
-- Rewind, redo, and fork from a previous turn.
 - Per-turn change provenance.
 - Accept or reject individual files, hunks, and lines.
 - A safe merge flow for partially accepted agent changes.
+- Optional user-created restore points and turn forks backed by Git refs.
 
-Constraint: must be native git only — the shadow-repo approach was tried and removed; non-git folders need explicit init.
+Non-Git folders remain checkpoint-free unless the user explicitly initializes a
+repository.
 
 Benchmarks: [VS Code chat checkpoints](https://code.visualstudio.com/docs/chat/chat-checkpoints) and [Cursor Agent](https://cursor.com/docs/agent/overview).
 
@@ -92,7 +96,10 @@ Benchmarks: [VS Code debugging](https://code.visualstudio.com/docs/debugtest/deb
 
 ### P1: Structured specifications and artifacts
 
-Plan mode exists, but specifications are not first-class project objects. Add:
+Plan mode exists, and runtime skill refresh now lets external SDD toolchains such
+as Spec Kit contribute ordinary `.agents/skills` commands without a Wingman-
+specific adapter or restart. This is command compatibility, not a first-class
+specification model. Add:
 
 - Structured requirements, design, and task documents.
 - Acceptance criteria and traceability from requirement to implementation.
@@ -200,14 +207,15 @@ Benchmark: [VS Code Settings Sync](https://code.visualstudio.com/docs/configure/
 
 ## Recommended implementation order
 
-Next: automatic Git-native checkpoints with per-hunk accept or reject. This is
-the safety and provenance layer needed before isolated parallel sessions add
-more concurrent change streams.
+Next: a thin structured-specification artifact view that treats requirements,
+designs, and tasks as ordinary project files while external generators remain
+skill-driven. This keeps SDD compatibility loosely coupled instead of embedding
+one vendor's workflow.
 
-1. Automatic checkpoints with per-hunk accept or reject.
+1. Structured specification artifacts over refreshed Agent Skills.
 2. Worktree-isolated agent sessions with merge-back.
 3. Browser control and screenshot-based UI verification.
-4. Structured specifications and task artifacts.
+4. Git-native per-hunk review and provenance.
 5. AI editing beyond the completed Tab foundation.
 6. Test Explorer, coverage, watch expressions, and a debug console.
 

@@ -114,6 +114,19 @@ func TestStackedSlashSkillsShareTrailingArguments(t *testing.T) {
 	}
 }
 
+func TestLeadingDollarSkillsReceiveTrailingArguments(t *testing.T) {
+	skills := []Skill{{Name: "speckit-specify"}, {Name: "speckit-plan"}}
+	invs := Invocations(`$speckit-specify $speckit-plan "authentication flow"`, skills)
+	if len(invs) != 2 {
+		t.Fatalf("invocations = %#v", invs)
+	}
+	for _, inv := range invs {
+		if inv.Args != `"authentication flow"` {
+			t.Fatalf("%s args = %q", inv.Skill.Name, inv.Args)
+		}
+	}
+}
+
 func TestInstructionsIdentifySkillResourceDirectory(t *testing.T) {
 	projectDir := t.TempDir()
 	skillDir := filepath.Join(projectDir, ".agents", "skills", "resourceful")

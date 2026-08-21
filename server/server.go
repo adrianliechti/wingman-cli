@@ -104,6 +104,7 @@ type Server struct {
 	summaries   *summaryStore
 
 	files           *watch.Monitor
+	skillFiles      *watch.Monitor
 	prevGit         bool
 	prevLSP         bool
 	prevDebug       bool
@@ -179,6 +180,13 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 	s.files = watch.New(watch.Options{Active: s.hasClients}, s.checkWorkspace)
 	s.background.Go(func() {
 		s.files.Run(serverCtx)
+	})
+	s.skillFiles = watch.New(watch.Options{
+		Fallback: 2 * time.Second,
+		Active:   s.hasClients,
+	}, s.refreshSkills)
+	s.background.Go(func() {
+		s.skillFiles.Run(serverCtx)
 	})
 
 	s.background.Go(func() {
@@ -925,6 +933,12 @@ func (s *Server) checkWorkspace() {
 		if ws.HasLSP() {
 			s.broadcast(Frame{Type: EvtDiagnosticsChanged})
 		}
+	}
+}
+
+func (s *Server) refreshSkills() {
+	if s.workspace.RefreshSkills() {
+		s.broadcast(Frame{Type: EvtSkillsChanged})
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,6 +33,129 @@ func TestWarmUpCreatesLSPManagerOutsideGitRepository(t *testing.T) {
 	if w.Language == nil {
 		t.Fatal("language service was not created")
 	}
+}
+
+func TestWorkspaceRefreshSkillsPreservesPrecedence(t *testing.T) {
+	home := testenv.UserHome(t)
+	testenv.WingmanHome(t)
+
+	personalDir := filepath.Join(home, ".agents", "skills", "speckit-specify")
+	if err := os.MkdirAll(personalDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(personalDir, "SKILL.md"), `---
+name: speckit-specify
+description: Personal specification workflow
+---
+Use the personal workflow.`)
+
+	workDir := t.TempDir()
+	ws, err := NewWorkspace(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+
+	initial := skill.FindSkill("speckit-specify", ws.Skills())
+	if initial == nil || initial.Description != "Personal specification workflow" {
+		t.Fatalf("initial skill = %#v", initial)
+	}
+
+	projectDir := filepath.Join(workDir, ".agents", "skills", "speckit-specify")
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(projectDir, "SKILL.md"), `---
+name: speckit-specify
+description: Project specification workflow
+metadata:
+  source: project
+---
+Use the project workflow.`)
+	if !ws.RefreshSkills() {
+		t.Fatal("RefreshSkills reported no project addition")
+	}
+
+	project := skill.FindSkill("speckit-specify", ws.Skills())
+	if project == nil || project.Description != "Project specification workflow" {
+		t.Fatalf("project skill = %#v", project)
+	}
+
+	snapshot := ws.Skills()
+	projectInSnapshot := skill.FindSkill("speckit-specify", snapshot)
+	projectInSnapshot.Description = "mutated snapshot"
+	projectInSnapshot.Metadata["source"] = "mutated snapshot"
+	if current := skill.FindSkill("speckit-specify", ws.Skills()); current.Description != "Project specification workflow" {
+		t.Fatalf("snapshot mutation changed catalog: %#v", current)
+	}
+	if current := skill.FindSkill("speckit-specify", ws.Skills()); current.Metadata["source"] != "project" {
+		t.Fatalf("snapshot metadata mutation changed catalog: %#v", current.Metadata)
+	}
+
+	mustWrite(t, filepath.Join(projectDir, "SKILL.md"), `---
+name: speckit-specify
+description: Updated project specification workflow
+---
+Use the updated project workflow.`)
+	if !ws.RefreshSkills() {
+		t.Fatal("RefreshSkills reported no metadata update")
+	}
+	if current := skill.FindSkill("speckit-specify", ws.Skills()); current == nil || current.Description != "Updated project specification workflow" {
+		t.Fatalf("updated skill = %#v", current)
+	}
+
+	if err := os.RemoveAll(projectDir); err != nil {
+		t.Fatal(err)
+	}
+	if !ws.RefreshSkills() {
+		t.Fatal("RefreshSkills reported no project removal")
+	}
+	restored := skill.FindSkill("speckit-specify", ws.Skills())
+	if restored == nil || restored.Description != "Personal specification workflow" {
+		t.Fatalf("restored skill = %#v", restored)
+	}
+	if ws.RefreshSkills() {
+		t.Fatal("unchanged catalog reported a refresh")
+	}
+}
+
+func TestWorkspaceSkillsSnapshotIsSafeDuringRefresh(t *testing.T) {
+	testenv.UserHome(t)
+	testenv.WingmanHome(t)
+
+	workDir := t.TempDir()
+	skillDir := filepath.Join(workDir, ".agents", "skills", "speckit-plan")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(skillDir, "SKILL.md"), `---
+name: speckit-plan
+description: Build an implementation plan
+---
+Build the plan.`)
+
+	ws, err := NewWorkspace(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+
+	var readers sync.WaitGroup
+	for range 4 {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for range 100 {
+				skills := ws.Skills()
+				_ = skill.FormatForPrompt(skills)
+				_ = skill.FindSkill("speckit-plan", skills)
+			}
+		}()
+	}
+	for range 25 {
+		ws.RefreshSkills()
+	}
+	readers.Wait()
 }
 
 func TestNewWorkspaceNormalizesRelativeRoot(t *testing.T) {
@@ -576,12 +700,13 @@ Summarize it.`)
 		t.Fatalf("plugins = %#v", ws.Plugins)
 	}
 
-	summarize := skill.FindSkill("summarize", ws.Skills)
+	skills := ws.Skills()
+	summarize := skill.FindSkill("summarize", skills)
 	if summarize == nil || summarize.Plugin != "reports" {
 		t.Fatalf("plugin skill was not merged: %#v", summarize)
 	}
 
-	if skill.FindSkill("reports:summarize", ws.Skills) == nil {
+	if skill.FindSkill("reports:summarize", skills) == nil {
 		t.Fatalf("qualified plugin skill is not resolvable")
 	}
 
@@ -593,7 +718,7 @@ Summarize it.`)
 		t.Fatalf("servers = %#v", ws.MCP.Servers)
 	}
 
-	prompt := skill.FormatForPrompt(ws.Skills)
+	prompt := skill.FormatForPrompt(skills)
 	if !strings.Contains(prompt, "<name>reports:summarize</name>") {
 		t.Fatalf("plugin skill is not advertised to the model:\n%s", prompt)
 	}

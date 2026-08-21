@@ -280,14 +280,7 @@ func splitArguments(value string) []string {
 }
 
 func Discover(root string) ([]Skill, error) {
-	sources := []string{filepath.Join(root, ".wingman", "skills")}
-	for _, dir := range skillDirsThroughRepo(root, ".agents") {
-		sources = append(sources, dir)
-	}
-	for _, dir := range skillDirsThroughRepo(root, ".claude") {
-		sources = append(sources, dir)
-	}
-	return discover(sources, root), nil
+	return discover(projectDiscoveryRoots(root), root, true), nil
 }
 
 func DiscoverPersonal() ([]Skill, error) {
@@ -297,12 +290,48 @@ func DiscoverPersonal() ([]Skill, error) {
 		return nil, err
 	}
 
-	return discover(sources, ""), nil
+	return discover(sources, "", true), nil
 }
 
 func MustDiscoverPersonal() []Skill {
 	skills, _ := DiscoverPersonal()
 	return skills
+}
+
+// Rediscover repeats project discovery without reprinting diagnostics already
+// reported at startup. It is intended for runtime catalog reconciliation.
+func Rediscover(root string) ([]Skill, error) {
+	return discover(projectDiscoveryRoots(root), root, false), nil
+}
+
+// RediscoverPersonal repeats personal discovery without reprinting diagnostics
+// already reported at startup.
+func RediscoverPersonal() ([]Skill, error) {
+	sources := layout.PersonalRoots("skills")
+	if len(sources) == 0 {
+		_, err := os.UserHomeDir()
+		return nil, err
+	}
+	return discover(sources, "", false), nil
+}
+
+// DiscoveryRoots returns every directory that can contribute skills to a
+// workspace. Callers use it to grant narrow resource access before a root is
+// created, so skills generated after a session starts remain usable.
+func DiscoveryRoots(root string) []string {
+	roots := projectDiscoveryRoots(root)
+	return append(roots, layout.PersonalRoots("skills")...)
+}
+
+func projectDiscoveryRoots(root string) []string {
+	sources := []string{filepath.Join(root, ".wingman", "skills")}
+	for _, dir := range skillDirsThroughRepo(root, ".agents") {
+		sources = append(sources, dir)
+	}
+	for _, dir := range skillDirsThroughRepo(root, ".claude") {
+		sources = append(sources, dir)
+	}
+	return sources
 }
 
 // LoadDir loads skills beneath dir. Directories without SKILL.md are grouping
@@ -311,6 +340,10 @@ func MustDiscoverPersonal() []Skill {
 // Symlinked directories are followed once, with their resolved paths used to
 // prevent cycles.
 func LoadDir(dir string) []Skill {
+	return loadDir(dir, true)
+}
+
+func loadDir(dir string, report bool) []Skill {
 	var skills []Skill
 	visited := make(map[string]bool)
 
@@ -334,7 +367,9 @@ func LoadDir(dir string) []Skill {
 		if info, err := os.Stat(skillFile); err == nil && info.Mode().IsRegular() {
 			sk, err := LoadFile(skillFile)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "skill: skipped %s: %v\n", skillFile, err)
+				if report {
+					fmt.Fprintf(os.Stderr, "skill: skipped %s: %v\n", skillFile, err)
+				}
 				return
 			}
 			skills = append(skills, sk)
@@ -390,16 +425,18 @@ func skillDirsThroughRepo(root, configDir string) []string {
 	return dirs
 }
 
-func discover(sources []string, relativeTo string) []Skill {
+func discover(sources []string, relativeTo string, report bool) []Skill {
 	var skills []Skill
 	seen := make(map[string]string)
 
 	for _, source := range sources {
-		for _, sk := range LoadDir(source) {
+		for _, sk := range loadDir(source, report) {
 			key := strings.ToLower(sk.Name)
 
 			if winner, ok := seen[key]; ok {
-				fmt.Fprintf(os.Stderr, "skill: %s in %s is shadowed by %s\n", sk.Name, sk.Location, winner)
+				if report {
+					fmt.Fprintf(os.Stderr, "skill: %s in %s is shadowed by %s\n", sk.Name, sk.Location, winner)
+				}
 				continue
 			}
 			seen[key] = sk.Location

@@ -1095,6 +1095,7 @@ export function useWebSocket() {
 					sub({ type: "files_changed" });
 					sub({ type: "diagnostics_changed" });
 					sub({ type: "capabilities_changed" });
+					sub({ type: "skills_changed" });
 				}
 			};
 

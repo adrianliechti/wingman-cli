@@ -1,5 +1,7 @@
 import { File, MessageSquare, Sparkles } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { type Skill, useSkills } from "../hooks/useSkills";
+import type { ServerMessage } from "../types/protocol";
 import { ModelProviderIcon } from "./ModelProviderIcon";
 import { useToast } from "./ui/Feedback";
 
@@ -17,11 +19,7 @@ interface ModelInfo {
 	namespace?: string;
 }
 
-export interface PaletteSkill {
-	name: string;
-	description?: string;
-	input_hint?: string;
-}
+export type PaletteSkill = Skill;
 
 interface SessionEntry {
 	id: string;
@@ -50,6 +48,7 @@ interface Props {
 	onRunSkill: (skill: PaletteSkill) => void;
 	onSelectSession: (id: string) => void;
 	onOpenFile: (path: string) => void;
+	subscribe?: (handler: (message: ServerMessage) => void) => () => void;
 }
 
 export function CommandPalette({
@@ -59,30 +58,23 @@ export function CommandPalette({
 	onRunSkill,
 	onSelectSession,
 	onOpenFile,
+	subscribe,
 }: Props) {
 	const toast = useToast();
 	const listId = useId();
 	const [query, setQuery] = useState("");
-	const [skills, setSkills] = useState<PaletteSkill[]>([]);
 	const [sessionList, setSessionList] = useState<SessionEntry[]>([]);
 	const [files, setFiles] = useState<FileHit[]>([]);
 	const [models, setModels] = useState<ModelInfo[]>([]);
 	const [currentModel, setCurrentModel] = useState("");
 	const [active, setActive] = useState(0);
 	const listRef = useRef<HTMLDivElement>(null);
+	const skills = useSkills(sessionId, subscribe);
 
 	const apiBase = sessionId
 		? `/api/sessions/${encodeURIComponent(sessionId)}`
 		: "/api";
-
 	useEffect(() => {
-		const skillsURL = sessionId
-			? `/api/skills?session=${encodeURIComponent(sessionId)}`
-			: "/api/skills";
-		fetch(skillsURL)
-			.then((r) => (r.ok ? r.json() : []))
-			.then((data: PaletteSkill[]) => setSkills(data ?? []))
-			.catch(() => setSkills([]));
 		fetch("/api/sessions")
 			.then((r) => (r.ok ? r.json() : []))
 			.then((data: SessionEntry[]) => setSessionList(data ?? []))

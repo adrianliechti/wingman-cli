@@ -2857,6 +2857,7 @@ export default function App() {
 					onRunSkill={runSkill}
 					onSelectSession={(id) => void handleSessionSelect(id, "keep")}
 					onOpenFile={openFile}
+					subscribe={subscribe}
 				/>
 			)}
 
