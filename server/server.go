@@ -140,6 +140,11 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 		turnMeta:       map[string]map[string]ClientMessage{},
 		turnUsage:      map[string]agent.Usage{},
 	}
+	if ws.Browser != nil {
+		ws.Browser.SetChangeHandler(func() {
+			s.broadcast(Frame{Type: EvtBrowserChanged})
+		})
+	}
 
 	s.terminals = terminal.NewManager(ws.RootPath)
 	s.terminals.SetExitHandler(s.onTerminalExit)
@@ -454,6 +459,15 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Post("/evaluate", s.handleDebugEvaluate)
 			r.Post("/scopes", s.handleDebugScopes)
 			r.Post("/variables", s.handleDebugVariables)
+		})
+		r.Route("/browser", func(r chi.Router) {
+			r.Get("/", s.handleBrowserStatus)
+			r.Post("/connect", s.handleBrowserConnect)
+			r.Post("/select", s.handleBrowserSelect)
+			r.Post("/open", s.handleBrowserOpen)
+			r.Get("/snapshot", s.handleBrowserSnapshot)
+			r.Get("/page", s.handleBrowserPageInfo)
+			r.Get("/screenshot", s.handleBrowserScreenshot)
 		})
 		r.Post("/editor/tab", s.handleEditorTab)
 		r.Post("/settings/editor.tab.completion", s.handleEditorTabSettings)
@@ -831,6 +845,7 @@ type capabilitiesResponse struct {
 	Tasks         bool   `json:"tasks"`
 	Terminal      bool   `json:"terminal"`
 	Tab           bool   `json:"tab"`
+	Browser       bool   `json:"browser"`
 	EditorTab     bool   `json:"editor.tab.completion"`
 	Platform      string `json:"platform"`
 	WorkspaceName string `json:"workspace_name"`
@@ -850,6 +865,7 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		Tasks:         isCoder,
 		Terminal:      terminal.Supported(),
 		Tab:           s.tab != nil,
+		Browser:       ws.Browser != nil,
 		EditorTab:     s.tab != nil && s.tabEnabled.Load(),
 		Platform:      runtime.GOOS,
 		WorkspaceName: filepath.Base(ws.RootPath),

@@ -7,6 +7,7 @@ export interface Capabilities {
 	tasks: boolean;
 	terminal: boolean;
 	tab: boolean;
+	browser: boolean;
 	"editor.tab.completion": boolean;
 	platform: string;
 	workspace_name: string;

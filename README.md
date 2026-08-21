@@ -273,6 +273,44 @@ Remote (HTTP/SSE) servers are also supported via the `url` and optional `headers
 
 Configs are loaded from two locations and merged: `~/.wingman/mcp.json` (global, shared across all projects) and `./mcp.json` (project root). When a server name appears in both, the project config wins.
 
+### Browser workspace
+
+The web/desktop UI has a first-class **Browser** center tab. It keeps a live
+screenshot, page information, and the current DOM/accessibility snapshot next
+to the editor, and can send that exact evidence to an agent. Browser actions
+performed by the agent refresh the workspace, so both sides work against the
+same browser session instead of exchanging hand-written descriptions.
+
+The workspace is part of the same web application hosted by `go-shell`; it
+does not add a second native webview or JavaScript bridge. The inspected page
+runs in the provider-controlled browser and is projected into Wingman as shared
+visual and DOM evidence. This preserves one agent/UI browser session and avoids
+the CSP, cookie, and split-state problems of embedding arbitrary sites in an
+iframe.
+
+Wingman delegates browser semantics to maintained MCP servers and manages them
+for the lifetime of the code workspace:
+
+- **[Chrome DevTools MCP](https://github.com/ChromeDevTools/chrome-devtools-mcp)**
+  uses the official `chrome-devtools-mcp` package for
+  Puppeteer automation, auto-waiting, console/network inspection, performance,
+  accessibility snapshots, and screenshots. It requires current stable Google
+  Chrome plus Node.js LTS/npm. Choosing **Download and connect** is the explicit
+  opt-in to let `npx` obtain the package. Wingman uses an isolated temporary
+  Chrome profile and disables MCP usage statistics, update checks, and CrUX
+  lookups.
+- **[Safari MCP](https://webkit.org/blog/18136/introducing-the-safari-mcp-server-for-web-developers/)**
+  uses the `safaridriver --mcp` server included with Safari 27+
+  or Safari Technology Preview 247+. Enable **Show features for web developers**
+  and **Allow remote automation and external agents** in Safari before
+  connecting. Safari's server and captured data stay local until Wingman sends
+  selected context to the configured model.
+
+An equivalent Chrome or Safari server already present in `mcp.json` is reused
+instead of duplicated. Connecting a built-in provider also exposes its native
+MCP tools to the workspace agent; closing the code workspace stops the managed
+MCP process and its isolated browser profile.
+
 ### Debugging (experimental)
 
 The web editor keeps each session in one center **Debug** tab. **Debug output**

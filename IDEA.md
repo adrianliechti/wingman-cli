@@ -61,11 +61,13 @@ Benchmarks: [VS Code agent sessions](https://code.visualstudio.com/docs/agents/a
 
 ### P1: Browser and visual-development agent
 
-Add:
+The first browser workspace is implemented with auto-discovered Chrome DevTools
+MCP and Safari MCP providers, shared agent/UI sessions, DOM/accessibility
+snapshots, screenshots, and direct browser-context handoff to chat. Remaining:
 
-- An agent-controlled browser and Chrome DevTools integration.
 - DOM element selection and visual annotations.
-- Screenshot and video capture for verification.
+- Video capture surfaced in the workspace (the Chrome provider already exposes
+  screencast tools when enabled).
 - Visual regression and responsive-layout checks.
 - Design-mode changes based on selected page elements.
 - Optional voice input for visual editing workflows.

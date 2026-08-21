@@ -3,6 +3,7 @@ package mcp
 import (
 	"cmp"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -122,7 +123,7 @@ func callTool(ctx context.Context, session *sdkmcp.ClientSession, name string, a
 		return tool.Result{}, fmt.Errorf("MCP tool call failed: %w", err)
 	}
 
-	content := extractText(result.Content)
+	content := extractContent(result.Content)
 
 	// The provider codec transmits only the content string, so the failure
 	// marker must live in the text for the model to see it.
@@ -136,13 +137,26 @@ func callTool(ctx context.Context, session *sdkmcp.ClientSession, name string, a
 	return tool.Text(content), nil
 }
 
-func extractText(content []sdkmcp.Content) string {
+func extractContent(content []sdkmcp.Content) string {
 	var parts []string
+	var image string
 
 	for _, c := range content {
-		if text, ok := c.(*sdkmcp.TextContent); ok {
+		switch value := c.(type) {
+		case *sdkmcp.TextContent:
+			text := value
 			parts = append(parts, text.Text)
+		case *sdkmcp.ImageContent:
+			if image == "" && value.MIMEType != "" && len(value.Data) > 0 {
+				image = "data:" + value.MIMEType + ";base64," + base64.StdEncoding.EncodeToString(value.Data)
+			}
 		}
+	}
+	// Tool results have one model-visible content string. For screenshot tools,
+	// the attached image is the useful result; returning its data URL lets the
+	// agent codec forward it as an actual input image instead of dropping it.
+	if image != "" {
+		return image
 	}
 
 	return strings.Join(parts, "\n")

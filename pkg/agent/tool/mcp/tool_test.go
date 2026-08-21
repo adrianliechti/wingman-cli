@@ -9,6 +9,16 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+func TestExtractContentForwardsImageResult(t *testing.T) {
+	content := []sdkmcp.Content{
+		&sdkmcp.TextContent{Text: "screenshot captured"},
+		&sdkmcp.ImageContent{MIMEType: "image/png", Data: []byte("png")},
+	}
+	if got, want := extractContent(content), "data:image/png;base64,cG5n"; got != want {
+		t.Fatalf("extractContent = %q, want %q", got, want)
+	}
+}
+
 func TestToolsForServerCollectsAllPages(t *testing.T) {
 	server := sdkmcp.NewServer(
 		&sdkmcp.Implementation{Name: "test", Version: "1.0.0"},

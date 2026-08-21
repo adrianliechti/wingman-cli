@@ -23,6 +23,7 @@ import (
 	graphtool "github.com/adrianliechti/wingman-agent/pkg/agent/tool/graph"
 	lsptool "github.com/adrianliechti/wingman-agent/pkg/agent/tool/lsp"
 	toolmcp "github.com/adrianliechti/wingman-agent/pkg/agent/tool/mcp"
+	"github.com/adrianliechti/wingman-agent/pkg/browser"
 	"github.com/adrianliechti/wingman-agent/pkg/changes"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 	"github.com/adrianliechti/wingman-agent/pkg/debugadapter"
@@ -67,7 +68,8 @@ type Workspace struct {
 
 	Plugins []plugin.Plugin
 
-	MCP *mcp.Manager
+	MCP     *mcp.Manager
+	Browser *browser.Service
 
 	Language *language.Service
 	DAP      *dap.Manager
@@ -138,7 +140,7 @@ func NewWorkspace(workDir string) (*Workspace, error) {
 
 	mcpManager := loadMCP(workDir, plugins)
 
-	return &Workspace{
+	workspace := &Workspace{
 		Root:        root,
 		RootPath:    workDir,
 		MemoryPath:  memoryDir,
@@ -146,7 +148,9 @@ func NewWorkspace(workDir string) (*Workspace, error) {
 		Skills:      mergedSkills,
 		Plugins:     plugins,
 		MCP:         mcpManager,
-	}, nil
+	}
+	workspace.Browser = browser.NewService(mcpManager, workDir)
+	return workspace, nil
 }
 
 // loadMCP layers the project and global configs over the servers plugins
@@ -161,10 +165,6 @@ func loadMCP(workDir string, plugins []plugin.Plugin) *mcp.Manager {
 	manager, _ := mcp.Load(globalMCPConfigPath(), filepath.Join(workDir, "mcp.json"))
 
 	if manager == nil {
-		if len(servers) == 0 {
-			return nil
-		}
-
 		manager = mcp.NewManager(&mcp.Config{Servers: map[string]mcp.ServerConfig{}})
 	}
 
@@ -364,6 +364,7 @@ func (w *Workspace) Close() {
 	}
 	w.closed = true
 	mcpManager := w.MCP
+	browserService := w.Browser
 	languageService := w.Language
 	dapManager := w.DAP
 	changesManager := w.Changes
@@ -371,6 +372,7 @@ func (w *Workspace) Close() {
 	scratchPath := w.ScratchPath
 	mcpRefreshCancel := w.mcpRefreshCancel
 	w.MCP = nil
+	w.Browser = nil
 	w.Language = nil
 	w.DAP = nil
 	w.Changes = nil
@@ -379,6 +381,9 @@ func (w *Workspace) Close() {
 	w.lspTools = nil
 	w.graphTools = nil
 	w.mu.Unlock()
+	if browserService != nil {
+		browserService.SetChangeHandler(nil)
+	}
 	if mcpManager != nil {
 		mcpManager.SetToolListChangedHandler(nil)
 	}

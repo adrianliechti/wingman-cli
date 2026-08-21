@@ -3,6 +3,7 @@ import {
 	Bug,
 	FileText,
 	GitCompare,
+	Globe2,
 	Lightbulb,
 	Loader2,
 	MessageSquare,
@@ -18,7 +19,8 @@ export type TabKind =
 	| "terminal"
 	| "debug"
 	| "task"
-	| "graph";
+	| "graph"
+	| "browser";
 
 export function Tab({
 	id,
@@ -68,7 +70,9 @@ export function Tab({
 							? Bot
 							: kind === "graph"
 								? Lightbulb
-								: FileText;
+								: kind === "browser"
+									? Globe2
+									: FileText;
 
 	return (
 		<button

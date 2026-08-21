@@ -40,6 +40,7 @@ import { createWorkspaceFile } from "./api/files";
 import { getInspectAvailability } from "./api/capabilities";
 import { controlDebug, getDebugSession, type DebugSession } from "./api/debug";
 import { ChatPanel } from "./components/ChatPanel";
+import { BrowserWorkspace } from "./components/BrowserWorkspace";
 import {
 	PaneDropZones,
 	type PaneZone,
@@ -247,6 +248,7 @@ export default function App() {
 		getInspectAvailability(capabilities);
 	const showAgents = capabilities?.tasks ?? false;
 	const showTerminal = capabilities?.terminal ?? false;
+	const showBrowser = capabilities?.browser ?? false;
 	const tabAvailable = capabilities?.tab ?? false;
 	const tabEnabled =
 		tabAvailable && (capabilities?.["editor.tab.completion"] ?? false);
@@ -827,6 +829,9 @@ export default function App() {
 
 	const openInsightsTab = useCallback(() => {
 		showCenterTab({ id: "graph", type: "graph", label: "Insights" }, "keep");
+	}, [showCenterTab]);
+	const openBrowserWorkspace = useCallback(() => {
+		showCenterTab({ id: "browser", type: "browser", label: "Browser" }, "keep");
 	}, [showCenterTab]);
 	const openDebugLauncher = useCallback((seed: DebugLauncherSeed) => {
 		setDebugLauncher({ ...seed });
@@ -1944,6 +1949,14 @@ export default function App() {
 				}
 			}
 		}
+		if (showBrowser) {
+			actions.push({
+				id: "browser-workspace",
+				label: "Open Browser workspace",
+				icon: <Globe2 size={12} className="text-fg-dim shrink-0" />,
+				run: openBrowserWorkspace,
+			});
+		}
 		if (tabAvailable) {
 			actions.push({
 				id: "editor.tab.completion",
@@ -1988,6 +2001,7 @@ export default function App() {
 		handleNewSession,
 		showChanges,
 		showTerminal,
+		showBrowser,
 		tabAvailable,
 		tabEnabled,
 		toggleEditorTabCompletion,
@@ -1999,6 +2013,7 @@ export default function App() {
 		showRightPanel,
 		showWorkspaceSearch,
 		openInsightsTab,
+		openBrowserWorkspace,
 		createTerminal,
 		modes,
 		mode,
@@ -2186,6 +2201,24 @@ export default function App() {
 				/>
 			);
 		}
+		if (tab.type === "browser") {
+			return (
+				<BrowserWorkspace
+					key={tab.id}
+					subscribe={subscribe}
+					onSendToAgent={async (text, image) => {
+						const sent = await sendForSession(
+							sessionId,
+							text,
+							undefined,
+							image ? [image] : undefined,
+						);
+						if (sent) toast({ title: "Browser context sent to agent" });
+						return sent;
+					}}
+				/>
+			);
+		}
 		if (
 			tab.type === "compare" &&
 			tab.compareBase &&
@@ -2365,6 +2398,17 @@ export default function App() {
 					aria-label="New session"
 				>
 					<Plus size={13} />
+				</button>
+			)}
+			{showBrowser && activeTab.type !== "browser" && (
+				<button
+					type="button"
+					className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
+					onClick={openBrowserWorkspace}
+					title="Open Browser workspace"
+					aria-label="Open Browser workspace"
+				>
+					<Globe2 size={13} />
 				</button>
 			)}
 			{activePreviewKind && (

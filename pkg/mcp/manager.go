@@ -27,8 +27,9 @@ type Manager struct {
 
 	toolListChanged atomic.Pointer[ToolListChangedFunc]
 
-	mu       sync.RWMutex
-	sessions map[string]*mcp.ClientSession
+	connectMu sync.Mutex
+	mu        sync.RWMutex
+	sessions  map[string]*mcp.ClientSession
 }
 
 type ToolListChangedFunc func(serverName string)
@@ -73,10 +74,19 @@ func Load(paths ...string) (*Manager, error) {
 }
 
 func (m *Manager) Connect(ctx context.Context) error {
+	m.connectMu.Lock()
+	defer m.connectMu.Unlock()
 	var errs []error
 
-	for _, name := range slices.Sorted(maps.Keys(m.Servers)) {
-		if err := m.connect(ctx, name, m.Servers[name]); err != nil {
+	servers := m.ServerConfigs()
+	for _, name := range slices.Sorted(maps.Keys(servers)) {
+		// Dynamic providers may have connected after Connect was scheduled but
+		// before it acquired connectMu. Keep the manager idempotent so that race
+		// does not launch a second server process and orphan the first session.
+		if m.Session(name) != nil {
+			continue
+		}
+		if err := m.connect(ctx, name, servers[name]); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -85,12 +95,21 @@ func (m *Manager) Connect(ctx context.Context) error {
 }
 
 func (m *Manager) AddServer(ctx context.Context, name string, server ServerConfig) error {
+	m.connectMu.Lock()
+	defer m.connectMu.Unlock()
+	m.mu.Lock()
 	if m.Servers == nil {
 		m.Servers = make(map[string]ServerConfig)
 	}
-
 	m.Servers[name] = server
-	return m.connect(ctx, name, server)
+	m.mu.Unlock()
+	if err := m.connect(ctx, name, server); err != nil {
+		return err
+	}
+	if handler := m.toolListChanged.Load(); handler != nil {
+		(*handler)(name)
+	}
+	return nil
 }
 
 func (m *Manager) AddSession(name string, session *mcp.ClientSession) {
@@ -109,12 +128,27 @@ func (m *Manager) SetToolListChangedHandler(handler ToolListChangedFunc) {
 }
 
 func (m *Manager) Close() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.connectMu.Lock()
+	defer m.connectMu.Unlock()
 
-	for _, s := range m.sessions {
+	m.mu.Lock()
+	sessions := m.sessions
+	m.sessions = make(map[string]*mcp.ClientSession)
+	m.mu.Unlock()
+
+	for _, s := range sessions {
 		s.Close()
 	}
+}
+
+// ServerConfigs returns a stable copy of the configured MCP servers.
+func (m *Manager) ServerConfigs() map[string]ServerConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make(map[string]ServerConfig, len(m.Servers))
+	maps.Copy(result, m.Servers)
+	return result
 }
 
 func (m *Manager) Sessions() map[string]*mcp.ClientSession {

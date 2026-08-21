@@ -207,6 +207,10 @@ interface AgentChangedMessage {
 	type: "agent_changed";
 }
 
+interface BrowserChangedMessage {
+	type: "browser_changed";
+}
+
 export type TurnInputIntent = "follow_up" | "steer";
 export type TurnInputState =
 	| "sending"
@@ -271,6 +275,7 @@ export type ServerMessage =
 	| DiagnosticsChangedMessage
 	| CapabilitiesChangedMessage
 	| AgentChangedMessage
+	| BrowserChangedMessage
 	| ModelChangedMessage
 	| TurnInputMessage
 	| TurnQueueMessage

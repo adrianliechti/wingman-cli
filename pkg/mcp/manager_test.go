@@ -50,6 +50,36 @@ func TestManagerForwardsToolListChangedWithServerName(t *testing.T) {
 	}
 }
 
+func TestManagerConnectKeepsExistingDynamicSession(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	clientTransport, serverTransport := sdkmcp.NewInMemoryTransports()
+	server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "test", Version: "1.0.0"}, nil)
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "wingman", Version: "1.0.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewManager(&Config{Servers: map[string]ServerConfig{
+		"dynamic": {Command: "definitely-not-a-real-mcp-command"},
+	}})
+	manager.AddSession("dynamic", clientSession)
+	defer manager.Close()
+
+	if err := manager.Connect(ctx); err != nil {
+		t.Fatalf("Connect tried to replace an existing dynamic session: %v", err)
+	}
+	if manager.Session("dynamic") != clientSession {
+		t.Fatal("Connect replaced the existing dynamic session")
+	}
+}
+
 func TestCreateCommandTransportIncludesServerEnvironment(t *testing.T) {
 	t.Setenv("MCP_PARENT", "parent")
 	transport, err := createTransport(ServerConfig{

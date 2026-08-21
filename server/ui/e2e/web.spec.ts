@@ -1281,10 +1281,7 @@ test("creates, saves, refreshes, and protects files changed on disk", async ({
 	const createdTab = page.getByRole("tab", { name: /web-created\.go/ });
 	await expect(createdTab).toHaveAttribute("aria-label", /unsaved changes/);
 	await page.keyboard.press("ControlOrMeta+S");
-	await expect(createdTab).not.toHaveAttribute(
-		"aria-label",
-		/unsaved changes/,
-	);
+	await expect(createdTab).not.toHaveAttribute("aria-label", /unsaved changes/);
 
 	let read = await request.get("/api/files/read?path=web-created.go");
 	expect(read.ok()).toBeTruthy();
@@ -2634,6 +2631,23 @@ test("follows the system theme in browser previews", async ({ page }) => {
 	await expect(preview).toHaveCSS("color-scheme", "light");
 	await page.reload();
 	await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+});
+
+test("opens the browser workspace with managed MCP providers", async ({
+	page,
+}) => {
+	await composer(page);
+	await page.getByTitle("Open Browser workspace").click();
+
+	await expect(page.getByRole("tab", { name: "Browser" })).toBeVisible();
+	await expect(
+		page.getByRole("heading", { name: "Browser workspace" }),
+	).toBeVisible();
+	await expect(
+		page.getByText("Chrome DevTools", { exact: true }),
+	).toBeVisible();
+	await expect(page.getByText("Safari", { exact: true })).toBeVisible();
+	await expect(page.getByText(/Browser profiles are isolated/)).toBeVisible();
 });
 
 test("renders markdown files in a browser preview", async ({ page }) => {
