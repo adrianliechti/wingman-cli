@@ -1,3 +1,5 @@
+import { fetchJSON } from "./http.ts";
+
 export type GraphNodeKind =
 	| "function"
 	| "method"
@@ -171,32 +173,23 @@ export interface GraphInsights {
 	churn: GraphChurnStat[];
 }
 
-async function request<T>(input: string, init?: RequestInit): Promise<T> {
-	const response = await fetch(input, init);
-	if (!response.ok) {
-		const detail = (await response.text()).trim();
-		throw new Error(detail || `Request failed (${response.status}).`);
-	}
-	return (await response.json()) as T;
-}
-
 export function fetchGraphOverview(signal?: AbortSignal) {
-	return request<GraphOverview>("/api/graph/overview", { signal });
+	return fetchJSON<GraphOverview>("/api/graph/overview", { signal });
 }
 
 export function reindexGraph(signal?: AbortSignal) {
-	return request<GraphStatus>("/api/graph/index", {
+	return fetchJSON<GraphStatus>("/api/graph/index", {
 		method: "POST",
 		signal,
 	});
 }
 
 export function fetchGraphModules(signal?: AbortSignal) {
-	return request<GraphModules>("/api/graph/modules", { signal });
+	return fetchJSON<GraphModules>("/api/graph/modules", { signal });
 }
 
 export function fetchGraphInsights(signal?: AbortSignal) {
-	return request<GraphInsights>("/api/graph/insights", { signal });
+	return fetchJSON<GraphInsights>("/api/graph/insights", { signal });
 }
 
 export function fetchGraphSummaries(
@@ -204,7 +197,7 @@ export function fetchGraphSummaries(
 	cachedOnly?: boolean,
 	signal?: AbortSignal,
 ) {
-	return request<{ summaries: Record<string, string> }>(
+	return fetchJSON<{ summaries: Record<string, string> }>(
 		"/api/graph/summaries",
 		{
 			method: "POST",
@@ -232,7 +225,9 @@ export function searchGraphSymbols(
 	if (options.sort) params.set("sort", options.sort);
 	if (options.limit) params.set("limit", String(options.limit));
 	if (options.offset) params.set("offset", String(options.offset));
-	return request<GraphSearchResult>(`/api/graph/search?${params}`, { signal });
+	return fetchJSON<GraphSearchResult>(`/api/graph/search?${params}`, {
+		signal,
+	});
 }
 
 export function searchGraphContent(
@@ -248,7 +243,7 @@ export function searchGraphContent(
 	},
 	signal?: AbortSignal,
 ) {
-	return request<GraphContentSearchResult>("/api/graph/content-search", {
+	return fetchJSON<GraphContentSearchResult>("/api/graph/content-search", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(options),
@@ -264,5 +259,7 @@ export function fetchGraphSymbol(
 	if (options.id) params.set("id", options.id);
 	if (options.name) params.set("name", options.name);
 	if (options.file) params.set("file", options.file);
-	return request<GraphNeighborhood>(`/api/graph/symbol?${params}`, { signal });
+	return fetchJSON<GraphNeighborhood>(`/api/graph/symbol?${params}`, {
+		signal,
+	});
 }

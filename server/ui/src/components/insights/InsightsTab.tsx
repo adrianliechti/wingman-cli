@@ -1,3 +1,4 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 	AlertTriangle,
 	ChevronDown,
@@ -10,10 +11,10 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	type GraphNode,
-	type GraphOverview,
 	fetchGraphOverview,
 	reindexGraph,
 } from "../../api/insights";
+import { queryKeys } from "../../api/query";
 import { ActivityView } from "./ActivityView";
 import { FloatingMenu } from "../ui/Floating";
 import { ModuleMap } from "./ModuleMap";
@@ -33,7 +34,6 @@ interface InsightsTabMemory {
 	view: GraphView;
 	focus: Focus | null;
 	history: Focus[];
-	overview?: GraphOverview;
 	mapSelection?: string;
 	searchSeed?: { query?: string; file?: string };
 }
@@ -82,16 +82,27 @@ export function InsightsTab({
 }) {
 	const [view, setView] = useState<GraphView>(memory.view);
 	const [focus, setFocus] = useState<Focus | null>(memory.focus);
-	const [overview, setOverview] = useState<GraphOverview | null>(
-		memory.overview ?? null,
-	);
-	const [loading, setLoading] = useState(!memory.overview);
-	const [indexing, setIndexing] = useState(false);
-	const [indexRevision, setIndexRevision] = useState(0);
-	const [error, setError] = useState<string | null>(null);
-	const requestRef = useRef<AbortController | null>(null);
 	const analysisButtonRef = useRef<HTMLButtonElement | null>(null);
 	const [analysisOpen, setAnalysisOpen] = useState(false);
+	const queryClient = useQueryClient();
+	const overviewQuery = useQuery({
+		queryKey: queryKeys.insights.overview,
+		queryFn: ({ signal }) => fetchGraphOverview(signal),
+	});
+	const reindexMutation = useMutation({
+		mutationFn: () => reindexGraph(),
+		onSuccess: () =>
+			queryClient.invalidateQueries({ queryKey: queryKeys.insights.all }),
+	});
+	const overview = overviewQuery.data ?? null;
+	const loading = overviewQuery.isPending;
+	const indexing = reindexMutation.isPending;
+	const queryError = reindexMutation.error ?? overviewQuery.error;
+	const error = queryError
+		? queryError instanceof Error
+			? queryError.message
+			: "Load failed"
+		: null;
 
 	useEffect(() => {
 		memory.view = view;
@@ -99,36 +110,6 @@ export function InsightsTab({
 	useEffect(() => {
 		memory.focus = focus;
 	}, [focus]);
-
-	const load = useCallback(async (reindex: boolean) => {
-		requestRef.current?.abort();
-		const controller = new AbortController();
-		requestRef.current = controller;
-		if (reindex) setIndexing(true);
-		setError(null);
-		try {
-			if (reindex) await reindexGraph(controller.signal);
-			const result = await fetchGraphOverview(controller.signal);
-			if (controller.signal.aborted) return;
-			memory.overview = result;
-			setOverview(result);
-			if (reindex) setIndexRevision((value) => value + 1);
-		} catch (loadError) {
-			if (controller.signal.aborted) return;
-			setError(loadError instanceof Error ? loadError.message : "Load failed");
-		} finally {
-			if (requestRef.current === controller) {
-				requestRef.current = null;
-				setLoading(false);
-				setIndexing(false);
-			}
-		}
-	}, []);
-
-	useEffect(() => {
-		void load(false);
-		return () => requestRef.current?.abort();
-	}, [load]);
 
 	const explore = useCallback((node: GraphNode) => {
 		setFocus((previous) => {
@@ -213,7 +194,7 @@ export function InsightsTab({
 				<button
 					type="button"
 					disabled={indexing || loading}
-					onClick={() => void load(true)}
+					onClick={() => reindexMutation.mutate()}
 					title={refreshTitle}
 					aria-label="Re-index codebase"
 					className="flex h-6 w-6 items-center justify-center rounded text-fg-dim hover:bg-bg-hover hover:text-fg disabled:opacity-50"
@@ -260,8 +241,17 @@ export function InsightsTab({
 			{error && overview && (
 				<div className="flex shrink-0 items-center gap-1.5 border-b border-danger/20 bg-danger/5 px-3 py-1.5 text-[10px] text-danger/90">
 					<AlertTriangle size={11} className="shrink-0" />
-					<span className="min-w-0 flex-1 truncate">Could not refresh insights: {error}</span>
-					<button type="button" onClick={() => void load(false)} className="shrink-0 text-fg-muted hover:text-fg">
+					<span className="min-w-0 flex-1 truncate">
+						Could not refresh insights: {error}
+					</span>
+					<button
+						type="button"
+						onClick={() => {
+							reindexMutation.reset();
+							void overviewQuery.refetch();
+						}}
+						className="shrink-0 text-fg-muted hover:text-fg"
+					>
 						Try again
 					</button>
 				</div>
@@ -271,9 +261,7 @@ export function InsightsTab({
 					loading && !overview ? (
 						<div className="flex h-full items-center justify-center gap-1.5 text-[11px] text-fg-dim">
 							<Loader2 size={11} className="animate-spin" />
-							<span>
-								Indexing codebase…
-							</span>
+							<span>Indexing codebase…</span>
 						</div>
 					) : error ? (
 						<div className="grid h-full place-items-center px-6 text-center text-[11px] text-danger/80">
@@ -289,20 +277,15 @@ export function InsightsTab({
 					) : null
 				) : view === "map" ? (
 					<ModuleMap
-						refreshKey={indexRevision}
 						initialSelection={memory.mapSelection}
 						onSearchModule={searchModule}
 					/>
 				) : view === "activity" ? (
-					<ActivityView
-						refreshKey={indexRevision}
-						onOpenFile={onOpenFile}
-					/>
+					<ActivityView onOpenFile={onOpenFile} />
 				) : (
 					<div className="h-full">
 						<div className={focus ? "hidden" : "h-full"}>
 							<SearchView
-								refreshKey={indexRevision}
 								seed={memory.searchSeed}
 								onExplore={explore}
 								onOpenFile={onOpenFile}
@@ -310,7 +293,6 @@ export function InsightsTab({
 						</div>
 						{focus && (
 							<SymbolView
-								refreshKey={indexRevision}
 								focus={focus}
 								canGoBack
 								onBack={goBack}

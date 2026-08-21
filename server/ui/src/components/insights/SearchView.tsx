@@ -1,15 +1,16 @@
+import { useQuery } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { CaseSensitive, Loader2, Regex, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	type GraphContentHit,
-	type GraphContentSearchResult,
 	type GraphNode,
 	type GraphRawContentHit,
-	type GraphSearchResult,
 	searchGraphContent,
 	searchGraphSymbols,
 } from "../../api/insights";
+import { queryKeys } from "../../api/query";
+import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { nodeTargetLine } from "./nodes";
 import { KindBadge, NodeRow } from "./shared";
 
@@ -29,6 +30,7 @@ const SYMBOL_KINDS = [
 // stable and let the virtualizer limit DOM work instead of growing the scroll
 // range page by page.
 const ALL_RESULTS = -1;
+const SEARCH_GC_TIME = 60_000;
 
 type ContentRow =
 	| { type: "hit"; hit: GraphContentHit }
@@ -40,12 +42,10 @@ export type SearchMode = "symbols" | "content";
 
 export function SearchView({
 	seed,
-	refreshKey,
 	onExplore,
 	onOpenFile,
 }: {
 	seed?: { query?: string; file?: string };
-	refreshKey: number;
 	onExplore: (node: GraphNode) => void;
 	onOpenFile: (path: string, line?: number) => void;
 }) {
@@ -56,72 +56,74 @@ export function SearchView({
 	const [regex, setRegex] = useState(false);
 	const [caseSensitive, setCaseSensitive] = useState(false);
 	const [sort, setSort] = useState("relevance");
-	const [symbols, setSymbols] = useState<GraphSearchResult | null>(null);
-	const [content, setContent] = useState<GraphContentSearchResult | null>(null);
-	const [loading, setLoading] = useState(false);
-	const [error, setError] = useState<string | null>(null);
-	const requestRef = useRef<AbortController | null>(null);
 	const inputRef = useRef<HTMLInputElement | null>(null);
 	const resultsRef = useRef<HTMLDivElement | null>(null);
+	const search = useMemo(
+		() => ({ mode, query, kind, file, regex, caseSensitive, sort }),
+		[caseSensitive, file, kind, mode, query, regex, sort],
+	);
+	const debounced = useDebouncedValue(search, 250);
+	const settled = debounced === search;
+	const symbolOptions = useMemo(
+		() => ({
+			query: debounced.query.trim(),
+			kind: debounced.kind,
+			file: debounced.file,
+			sort: debounced.sort,
+			limit: ALL_RESULTS,
+		}),
+		[debounced],
+	);
+	const contentOptions = useMemo(
+		() => ({
+			pattern: debounced.query,
+			regex: debounced.regex,
+			ignore_case: !debounced.caseSensitive,
+			file: debounced.file,
+			sort: debounced.sort,
+			limit: ALL_RESULTS,
+		}),
+		[debounced],
+	);
+	const symbolsQuery = useQuery({
+		queryKey: queryKeys.insights.symbolSearch(symbolOptions),
+		enabled: settled && mode === "symbols",
+		gcTime: SEARCH_GC_TIME,
+		queryFn: ({ signal }) => searchGraphSymbols(symbolOptions, signal),
+	});
+	const contentQuery = useQuery({
+		queryKey: queryKeys.insights.contentSearch(contentOptions),
+		enabled: settled && mode === "content" && !!query.trim(),
+		gcTime: SEARCH_GC_TIME,
+		queryFn: ({ signal }) => searchGraphContent(contentOptions, signal),
+	});
+	const activeQuery = mode === "symbols" ? symbolsQuery : contentQuery;
+	const symbols =
+		settled && mode === "symbols" ? (symbolsQuery.data ?? null) : null;
+	const content =
+		settled && mode === "content" ? (contentQuery.data ?? null) : null;
+	const loading = settled && activeQuery.isFetching;
+	const error =
+		settled && activeQuery.error
+			? activeQuery.error instanceof Error
+				? activeQuery.error.message
+				: "Search failed"
+			: null;
 
 	useEffect(() => {
 		inputRef.current?.focus();
 	}, []);
 
 	useEffect(() => {
-		requestRef.current?.abort();
 		resultsRef.current?.scrollTo({ top: 0 });
-		if (mode === "content" && !query.trim()) {
-			setContent(null);
-			setLoading(false);
-			setError(null);
-			return;
-		}
-		if (mode === "symbols") setSymbols(null);
-		else setContent(null);
-		const controller = new AbortController();
-		requestRef.current = controller;
-		const timer = window.setTimeout(() => {
-			setLoading(true);
-			setError(null);
-			const request =
-				mode === "symbols"
-					? searchGraphSymbols(
-							{ query: query.trim(), kind, file, sort, limit: ALL_RESULTS },
-							controller.signal,
-						).then(setSymbols)
-					: searchGraphContent(
-							{
-								pattern: query,
-								regex,
-								ignore_case: !caseSensitive,
-								file,
-								sort,
-								limit: ALL_RESULTS,
-							},
-							controller.signal,
-						).then(setContent);
-			request
-				.then(() => setLoading(false))
-				.catch((searchError: unknown) => {
-					if (controller.signal.aborted) return;
-					setError(
-						searchError instanceof Error
-							? searchError.message
-							: "Search failed",
-					);
-					setLoading(false);
-				});
-		}, 250);
-		return () => {
-			window.clearTimeout(timer);
-			controller.abort();
-		};
-	}, [mode, query, kind, file, regex, caseSensitive, sort, refreshKey]);
+	}, [search]);
 
 	const contentRows = useMemo<ContentRow[]>(() => {
 		if (!content) return [];
-		const rows: ContentRow[] = content.hits.map((hit) => ({ type: "hit", hit }));
+		const rows: ContentRow[] = content.hits.map((hit) => ({
+			type: "hit",
+			hit,
+		}));
 		if ((content.raw?.length ?? 0) > 0) {
 			rows.push({ type: "raw-heading" });
 			for (const hit of content.raw ?? []) rows.push({ type: "raw", hit });
@@ -297,14 +299,18 @@ export function SearchView({
 			)}
 			{mode === "symbols" && symbols && (
 				<div className="shrink-0 border-b border-border-subtle px-3 py-1.5 text-[10px] text-fg-dim">
-					{symbols.total.toLocaleString()} {symbols.total === 1 ? "symbol" : "symbols"}
+					{symbols.total.toLocaleString()}{" "}
+					{symbols.total === 1 ? "symbol" : "symbols"}
 				</div>
 			)}
 			{mode === "content" && content && (
 				<div className="shrink-0 border-b border-border-subtle px-3 py-1.5 text-[10px] text-fg-dim">
-					{content.total_line_hits.toLocaleString()} matching {content.total_line_hits === 1 ? "line" : "lines"} ·{" "}
-					{content.total_results.toLocaleString()} {content.total_results === 1 ? "definition" : "definitions"}
-					{content.total_raw_results > 0 && ` · ${content.total_raw_results.toLocaleString()} other locations`}
+					{content.total_line_hits.toLocaleString()} matching{" "}
+					{content.total_line_hits === 1 ? "line" : "lines"} ·{" "}
+					{content.total_results.toLocaleString()}{" "}
+					{content.total_results === 1 ? "definition" : "definitions"}
+					{content.total_raw_results > 0 &&
+						` · ${content.total_raw_results.toLocaleString()} other locations`}
 				</div>
 			)}
 			<div ref={resultsRef} className="min-h-0 flex-1 overflow-y-auto">
@@ -314,7 +320,10 @@ export function SearchView({
 					</div>
 				)}
 				{mode === "symbols" && symbols && symbols.nodes.length > 0 && (
-					<div className="relative w-full" style={{ height: symbolVirtualizer.getTotalSize() }}>
+					<div
+						className="relative w-full"
+						style={{ height: symbolVirtualizer.getTotalSize() }}
+					>
 						{symbolVirtualItems.map((item) => {
 							const node = symbols.nodes[item.index];
 							if (!node) return null;
@@ -322,9 +331,16 @@ export function SearchView({
 								<div
 									key={item.key}
 									className="absolute top-0 left-0 w-full"
-									style={{ height: item.size, transform: `translateY(${item.start}px)` }}
+									style={{
+										height: item.size,
+										transform: `translateY(${item.start}px)`,
+									}}
 								>
-									<NodeRow node={node} onOpen={openNode} onExplore={onExplore} />
+									<NodeRow
+										node={node}
+										onOpen={openNode}
+										onExplore={onExplore}
+									/>
 								</div>
 							);
 						})}
@@ -332,7 +348,8 @@ export function SearchView({
 				)}
 				{mode === "content" && !content && !error && (
 					<div className="px-3 py-6 text-center text-[11px] text-fg-dim">
-						Matches are grouped by the definition that contains them and ranked by relevance.
+						Matches are grouped by the definition that contains them and ranked
+						by relevance.
 					</div>
 				)}
 				{mode === "content" && content && contentRows.length === 0 && (
@@ -341,7 +358,10 @@ export function SearchView({
 					</div>
 				)}
 				{mode === "content" && content && contentRows.length > 0 && (
-					<div className="relative w-full" style={{ height: contentVirtualizer.getTotalSize() }}>
+					<div
+						className="relative w-full"
+						style={{ height: contentVirtualizer.getTotalSize() }}
+					>
 						{contentVirtualItems.map((item) => {
 							const row = contentRows[item.index];
 							if (!row) return null;
@@ -349,7 +369,10 @@ export function SearchView({
 								<div
 									key={item.key}
 									className="absolute top-0 left-0 w-full"
-									style={{ height: item.size, transform: `translateY(${item.start}px)` }}
+									style={{
+										height: item.size,
+										transform: `translateY(${item.start}px)`,
+									}}
 								>
 									{row.type === "hit" ? (
 										<div className="group flex h-full w-full items-center gap-1.5 border-b border-border-subtle/60 px-2 text-[11px] hover:bg-bg-hover">
@@ -357,14 +380,25 @@ export function SearchView({
 											<button
 												type="button"
 												title={`${row.hit.node.file}:${row.hit.match_lines[0] ?? row.hit.node.start_line}`}
-												onClick={() => onOpenFile(row.hit.node.file, row.hit.match_lines[0] ?? row.hit.node.start_line)}
+												onClick={() =>
+													onOpenFile(
+														row.hit.node.file,
+														row.hit.match_lines[0] ?? row.hit.node.start_line,
+													)
+												}
 												className="flex min-w-0 flex-1 items-baseline gap-1.5 text-left"
 											>
-												<span className="truncate text-fg-muted group-hover:text-fg">{row.hit.node.name}</span>
-												<span className="min-w-0 truncate font-mono text-[9px] text-fg-dim">{row.hit.node.file}</span>
+												<span className="truncate text-fg-muted group-hover:text-fg">
+													{row.hit.node.name}
+												</span>
+												<span className="min-w-0 truncate font-mono text-[9px] text-fg-dim">
+													{row.hit.node.file}
+												</span>
 											</button>
 											<span className="shrink-0 text-[10px] text-fg-dim tabular-nums">
-												{row.hit.match_lines.length} {row.hit.match_lines.length === 1 ? "line" : "lines"} · {row.hit.callers} in
+												{row.hit.match_lines.length}{" "}
+												{row.hit.match_lines.length === 1 ? "line" : "lines"} ·{" "}
+												{row.hit.callers} in
 											</span>
 											<button
 												type="button"
@@ -376,7 +410,9 @@ export function SearchView({
 											</button>
 										</div>
 									) : row.type === "raw-heading" ? (
-										<div className="flex h-full items-end px-3 pb-1.5 text-[10px] text-fg-dim">Other matching lines</div>
+										<div className="flex h-full items-end px-3 pb-1.5 text-[10px] text-fg-dim">
+											Other matching lines
+										</div>
 									) : row.type === "raw" ? (
 										<button
 											type="button"
@@ -384,11 +420,17 @@ export function SearchView({
 											onClick={() => onOpenFile(row.hit.file, row.hit.line)}
 											className="flex h-full w-full items-center gap-1.5 border-b border-border-subtle/60 px-2 text-left hover:bg-bg-hover"
 										>
-											<span className="shrink-0 font-mono text-[9px] text-fg-dim">{row.hit.file}:{row.hit.line}</span>
-											<span className="min-w-0 flex-1 truncate font-mono text-[10px] text-fg-muted">{row.hit.content}</span>
+											<span className="shrink-0 font-mono text-[9px] text-fg-dim">
+												{row.hit.file}:{row.hit.line}
+											</span>
+											<span className="min-w-0 flex-1 truncate font-mono text-[10px] text-fg-muted">
+												{row.hit.content}
+											</span>
 										</button>
 									) : (
-										<div className="flex h-full items-center px-3 text-[10px] text-fg-dim">First {row.count} ungrouped matches shown</div>
+										<div className="flex h-full items-center px-3 text-[10px] text-fg-dim">
+											First {row.count} ungrouped matches shown
+										</div>
 									)}
 								</div>
 							);

@@ -2,6 +2,10 @@ import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
 import { AlertTriangle, FileDigit, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DebugAction, DebugTarget } from "../api/debug";
+import {
+	workspaceFileDownloadURL,
+	workspaceFilePreviewURL,
+} from "../api/files";
 import { registerEditorSaveParticipant } from "../editorSaveParticipants";
 import { useColorScheme } from "../hooks/useColorScheme";
 import type { OpenDocument, SaveResult } from "../hooks/useOpenDocuments";
@@ -216,7 +220,7 @@ export function FileTab({
 		previewKind === "tsv"
 			? previewKind
 			: null;
-	const previewSrc = `/api/files/preview?path=${encodeURIComponent(file.path)}`;
+	const previewSrc = workspaceFilePreviewURL(file.path);
 	return (
 		<div className="flex h-full min-h-0 flex-col">
 			{document.conflict && (
@@ -406,7 +410,7 @@ function BinaryPreview({
 	file: import("../types/protocol").FileContent;
 }) {
 	const mime = file.mime ?? "application/octet-stream";
-	const src = `/api/files/download?path=${encodeURIComponent(file.path)}`;
+	const src = workspaceFileDownloadURL(file.path);
 	return (
 		<div className="h-full w-full overflow-auto bg-bg">
 			<PreviewBody mime={mime} src={src} name={file.path} />

@@ -1,11 +1,13 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Search, Sparkles } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
 	type GraphModules,
 	type GraphModuleStat,
 	fetchGraphModules,
 	fetchGraphSummaries,
 } from "../../api/insights";
+import { queryKeys } from "../../api/query";
 import { PanZoomCanvas } from "../PanZoomCanvas";
 
 const MAX_MODULES = 300;
@@ -231,104 +233,84 @@ function layoutModules(data: GraphModules) {
 
 export function ModuleMap({
 	initialSelection,
-	refreshKey,
 	onSearchModule,
 }: {
 	initialSelection?: string;
-	refreshKey: number;
 	onSearchModule: (path: string) => void;
 }) {
-	const [data, setData] = useState<GraphModules | null>(null);
-	const [error, setError] = useState<string | null>(null);
-	const [selected, setSelected] = useState<string | null>(
+	const queryClient = useQueryClient();
+	const modulesQuery = useQuery({
+		queryKey: queryKeys.insights.modules,
+		queryFn: ({ signal }) => fetchGraphModules(signal),
+	});
+	const data = modulesQuery.data ?? null;
+	const error = modulesQuery.error
+		? modulesQuery.error instanceof Error
+			? modulesQuery.error.message
+			: "Load failed"
+		: null;
+	const layout = useMemo(() => (data ? layoutModules(data) : null), [data]);
+	const [selectedValue, setSelected] = useState<string | null>(
 		initialSelection ?? null,
 	);
-	const [hovered, setHovered] = useState<string | null>(null);
-	const [summaries, setSummaries] = useState<Record<string, string>>({});
-	const [summaryLoading, setSummaryLoading] = useState(false);
-	const [summaryError, setSummaryError] = useState<string | null>(null);
-	const summaryRequestRef = useRef<AbortController | null>(null);
-
-	useEffect(() => {
-		const controller = new AbortController();
-		setData(null);
-		setError(null);
-		fetchGraphModules(controller.signal)
-			.then(setData)
-			.catch((loadError: unknown) => {
-				if (controller.signal.aborted) return;
-				setError(
-					loadError instanceof Error ? loadError.message : "Load failed",
-				);
-			});
-		return () => controller.abort();
-	}, [refreshKey]);
-
-	useEffect(() => {
+	const [selectionSeed, setSelectionSeed] = useState(initialSelection);
+	if (selectionSeed !== initialSelection) {
+		setSelectionSeed(initialSelection);
 		if (initialSelection) setSelected(initialSelection);
-	}, [initialSelection]);
-
-	useEffect(() => {
-		summaryRequestRef.current?.abort();
-		summaryRequestRef.current = null;
-		setSummaryLoading(false);
-		setSummaryError(null);
-	}, [selected]);
-
-	useEffect(() => {
-		if (!data) return;
-		const controller = new AbortController();
-		setSummaries({});
-		const ordered = [...data.modules]
-			.sort((a, b) => b.nodes - a.nodes)
-			.slice(0, MAX_MODULES)
-			.map((module) => module.path);
-		fetchGraphSummaries(ordered, true, controller.signal)
-			.then(({ summaries: cached }) =>
-				setSummaries((previous) => ({ ...previous, ...cached })),
-			)
-			.catch(() => {});
-		return () => controller.abort();
-	}, [data]);
-
-	useEffect(() => () => summaryRequestRef.current?.abort(), []);
-
-	const summarizeSelected = async () => {
-		if (!selected) return;
-		summaryRequestRef.current?.abort();
-		const controller = new AbortController();
-		summaryRequestRef.current = controller;
-		setSummaryLoading(true);
-		setSummaryError(null);
-		try {
-			const result = await fetchGraphSummaries([selected], false, controller.signal);
-			if (controller.signal.aborted) return;
-			const summary = result.summaries[selected];
+	}
+	const selected =
+		selectedValue &&
+		layout &&
+		!layout.placed.some((entry) => entry.module.path === selectedValue)
+			? null
+			: selectedValue;
+	const [hovered, setHovered] = useState<string | null>(null);
+	const summaryModules = useMemo(
+		() =>
+			data
+				? [...data.modules]
+						.sort((a, b) => b.nodes - a.nodes)
+						.slice(0, MAX_MODULES)
+						.map((module) => module.path)
+				: [],
+		[data],
+	);
+	const summariesQuery = useQuery({
+		queryKey: queryKeys.insights.summaries(summaryModules, true),
+		enabled: summaryModules.length > 0,
+		queryFn: ({ signal }) => fetchGraphSummaries(summaryModules, true, signal),
+	});
+	const summaries = summariesQuery.data?.summaries ?? {};
+	const summaryMutation = useMutation({
+		mutationFn: async (path: string) => {
+			const result = await fetchGraphSummaries([path], false);
+			const summary = result.summaries[path];
 			if (!summary) throw new Error("No description was generated.");
-			setSummaries((previous) => ({ ...previous, [selected]: summary }));
-		} catch (loadError) {
-			if (controller.signal.aborted) return;
-			setSummaryError(
-				loadError instanceof Error ? loadError.message : "Description failed",
+			return { path, summary };
+		},
+		onSuccess: ({ path, summary }) => {
+			queryClient.setQueryData<{ summaries: Record<string, string> }>(
+				queryKeys.insights.summaries(summaryModules, true),
+				(current) => ({
+					summaries: { ...current?.summaries, [path]: summary },
+				}),
 			);
-		} finally {
-			if (summaryRequestRef.current === controller) {
-				summaryRequestRef.current = null;
-				setSummaryLoading(false);
-			}
-		}
-	};
+		},
+	});
+	const summaryLoading =
+		summariesQuery.isFetching ||
+		(summaryMutation.isPending && summaryMutation.variables === selected);
+	const summaryError =
+		summaryMutation.variables === selected && summaryMutation.error
+			? summaryMutation.error instanceof Error
+				? summaryMutation.error.message
+				: "Description failed"
+			: null;
 
-	const layout = useMemo(() => (data ? layoutModules(data) : null), [data]);
-	useEffect(() => {
-		if (
-			selected &&
-			layout &&
-			!layout.placed.some((entry) => entry.module.path === selected)
-		) {
-			setSelected(null);
-		}
-	}, [layout, selected]);
+	const summarizeSelected = () => {
+		if (!selected) return;
+		summaryMutation.mutate(selected);
+	};
 
 	const focus = hovered ?? selected;
 
@@ -420,7 +402,9 @@ export function ModuleMap({
 								</button>
 							)}
 							{summaryError && (
-								<div className="mt-1 text-[9px] text-danger/80">{summaryError}</div>
+								<div className="mt-1 text-[9px] text-danger/80">
+									{summaryError}
+								</div>
 							)}
 							<div className="mt-2 flex items-center gap-3 border-t border-border-subtle pt-2">
 								<button
@@ -479,10 +463,26 @@ export function ModuleMap({
 				height={Math.max(1, layout.height)}
 			>
 				<defs>
-					<marker id="module-arrow-out" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto">
+					<marker
+						id="module-arrow-out"
+						viewBox="0 0 8 8"
+						refX="7"
+						refY="4"
+						markerWidth="5"
+						markerHeight="5"
+						orient="auto"
+					>
 						<path d="M 0 0 L 8 4 L 0 8 z" fill="var(--color-info)" />
 					</marker>
-					<marker id="module-arrow-in" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto">
+					<marker
+						id="module-arrow-in"
+						viewBox="0 0 8 8"
+						refX="7"
+						refY="4"
+						markerWidth="5"
+						markerHeight="5"
+						orient="auto"
+					>
 						<path d="M 0 0 L 8 4 L 0 8 z" fill="var(--color-purple)" />
 					</marker>
 				</defs>

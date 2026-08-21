@@ -66,9 +66,6 @@ interface Props {
 	loadError?: string | null;
 	error?: string | null;
 	onDismissError?: () => void;
-	subscribe?: (
-		handler: (msg: import("../types/protocol").ServerMessage) => void,
-	) => () => void;
 	prompt?: PendingPrompt | null;
 	onPromptReply?: (reply: PromptReply) => void;
 	seed?: { text: string; nonce: number } | null;
@@ -125,7 +122,6 @@ export function ChatPanel({
 	loadError,
 	error,
 	onDismissError,
-	subscribe,
 	prompt,
 	onPromptReply,
 	seed,
@@ -274,7 +270,7 @@ export function ChatPanel({
 		: null;
 
 	const tokenOpen = !!skillToken;
-	const skills = useSkills(sessionId, subscribe, tokenOpen);
+	const skills = useSkills(sessionId, tokenOpen);
 
 	const skillQuery = skillToken ? skillToken.query.toLowerCase() : null;
 	const skillMatches = useMemo(() => {
@@ -936,7 +932,7 @@ export function ChatPanel({
 										current={mode}
 										onSelect={onSelectMode}
 									/>
-									<ModelPicker sessionId={sessionId} subscribe={subscribe} />
+									<ModelPicker sessionId={sessionId} />
 								</div>
 
 								<div className="flex items-center gap-0">

@@ -1,4 +1,24 @@
-import type { FileContent } from "../types/protocol";
+import { queryOptions } from "@tanstack/react-query";
+import type { FileContent, FileEntry } from "../types/protocol";
+import { APIError, fetchJSON, fetchOK } from "./http.ts";
+import { queryKeys } from "./query.ts";
+
+export interface FileHit {
+	path: string;
+	name: string;
+}
+
+export function workspaceFilePreviewURL(path: string): string {
+	return `/api/files/preview?path=${encodeURIComponent(path)}`;
+}
+
+export function workspaceFileDownloadURL(path: string): string {
+	return `/api/files/download?path=${encodeURIComponent(path)}`;
+}
+
+export function isWorkspaceFileConflict(error: unknown): boolean {
+	return error instanceof APIError && error.status === 409;
+}
 
 export interface CreateFileOptions {
 	content?: string;
@@ -25,6 +45,69 @@ export interface BatchWriteFileInput {
 export type BatchWriteFileResult =
 	| { ok: true; revisions: Record<string, string> }
 	| { ok: false; conflict: true; error: string };
+
+export async function deleteWorkspaceFile(path: string): Promise<void> {
+	await fetchOK(`/api/files?path=${encodeURIComponent(path)}`, {
+		method: "DELETE",
+	});
+}
+
+export async function moveWorkspaceFile(
+	from: string,
+	to: string,
+): Promise<void> {
+	await fetchOK("/api/files/rename", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ from, to }),
+	});
+}
+
+export async function copyWorkspaceFile(
+	from: string,
+	to: string,
+): Promise<void> {
+	await fetchOK("/api/files/copy", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ from, to }),
+	});
+}
+
+export async function getAbsoluteWorkspacePath(path: string): Promise<string> {
+	const result = await fetchJSON<{ path: string }>(
+		`/api/files/path?path=${encodeURIComponent(path)}`,
+	);
+	return result.path;
+}
+
+export async function revealWorkspaceFile(path: string): Promise<void> {
+	await fetchOK("/api/files/reveal", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ path }),
+	});
+}
+
+export const fileQueries = {
+	tree: (path: string) =>
+		queryOptions({
+			queryKey: queryKeys.files.tree(path),
+			queryFn: ({ signal }) =>
+				fetchJSON<FileEntry[]>(`/api/files?path=${encodeURIComponent(path)}`, {
+					signal,
+				}),
+		}),
+	search: (query: string) =>
+		queryOptions({
+			queryKey: queryKeys.files.search(query),
+			queryFn: ({ signal }) =>
+				fetchJSON<FileHit[]>(
+					`/api/files/search?q=${encodeURIComponent(query)}`,
+					{ signal },
+				),
+		}),
+};
 
 export async function readWorkspaceFile(
 	path: string,

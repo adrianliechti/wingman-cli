@@ -1,8 +1,9 @@
 import { Compass, Wrench } from "lucide-react";
 import { useRef, useState } from "react";
+import type { ModeOption } from "../api/sessions";
 import { FloatingMenu } from "./ui/Floating";
 
-export type ModeOption = { id: string; name: string; description?: string };
+export type { ModeOption } from "../api/sessions";
 
 function isPlanLike(id: string): boolean {
 	return /plan|read|only/i.test(id);

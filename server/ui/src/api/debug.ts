@@ -1,3 +1,5 @@
+import { fetchJSON } from "./http.ts";
+
 export type DebugAction = "run" | "debug";
 
 export interface DebugTarget {
@@ -145,7 +147,7 @@ export async function discoverDebugTargets(
 	content: string,
 	signal?: AbortSignal,
 ) {
-	return requestJSON<{ targets: DebugTarget[] }>("/api/debug/targets", {
+	return fetchJSON<{ targets: DebugTarget[] }>("/api/debug/targets", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ path, content }),
@@ -161,7 +163,7 @@ export async function generateDebugPlan(
 	},
 	signal?: AbortSignal,
 ) {
-	return requestJSON<DebugLaunchPlan>("/api/debug/plan", {
+	return fetchJSON<DebugLaunchPlan>("/api/debug/plan", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(request),
@@ -173,7 +175,7 @@ export async function startDebugPlan(
 	plan: DebugLaunchPlan,
 	signal?: AbortSignal,
 ) {
-	return requestJSON<DebugSession>("/api/debug/start", {
+	return fetchJSON<DebugSession>("/api/debug/start", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(plan),
@@ -183,21 +185,21 @@ export async function startDebugPlan(
 
 export async function getDebugState(path?: string, signal?: AbortSignal) {
 	const query = path ? `?path=${encodeURIComponent(path)}` : "";
-	return requestJSON<DebugState>(`/api/debug/state${query}`, { signal });
+	return fetchJSON<DebugState>(`/api/debug/state${query}`, { signal });
 }
 
 export async function getDebugSession(signal?: AbortSignal) {
-	return requestJSON<{ session?: DebugSession }>("/api/debug/session", {
+	return fetchJSON<{ session?: DebugSession }>("/api/debug/session", {
 		signal,
 	});
 }
 
 export async function getDebugInspection(signal?: AbortSignal) {
-	return requestJSON<DebugInspection>("/api/debug/inspection", { signal });
+	return fetchJSON<DebugInspection>("/api/debug/inspection", { signal });
 }
 
 export async function getDebugOutput(signal?: AbortSignal) {
-	return requestJSON<DebugInspection>("/api/debug/inspection?details=false", {
+	return fetchJSON<DebugInspection>("/api/debug/inspection?details=false", {
 		signal,
 	});
 }
@@ -207,7 +209,7 @@ export async function setDebugBreakpoints(
 	breakpoints: DebugSourceBreakpoint[],
 	signal?: AbortSignal,
 ) {
-	return requestJSON<{
+	return fetchJSON<{
 		breakpoints: DebugSourceBreakpoint[];
 		resolved: DebugBreakpoint[];
 	}>("/api/debug/breakpoints", {
@@ -231,7 +233,7 @@ export async function controlDebug(
 	threadId?: number,
 	signal?: AbortSignal,
 ) {
-	return requestJSON<{ session?: DebugSession }>("/api/debug/control", {
+	return fetchJSON<{ session?: DebugSession }>("/api/debug/control", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({
@@ -250,7 +252,7 @@ export async function evaluateDebug(
 	frameId?: number,
 	signal?: AbortSignal,
 ) {
-	return requestJSON<DebugEvaluation>("/api/debug/evaluate", {
+	return fetchJSON<DebugEvaluation>("/api/debug/evaluate", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({
@@ -268,7 +270,7 @@ export async function getDebugScopes(
 	sessionId?: string,
 	signal?: AbortSignal,
 ) {
-	return requestJSON<{ scopes: DebugScopeInspection[] }>("/api/debug/scopes", {
+	return fetchJSON<{ scopes: DebugScopeInspection[] }>("/api/debug/scopes", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ frame_id: frameId, session_id: sessionId }),
@@ -281,7 +283,7 @@ export async function getDebugVariables(
 	sessionId?: string,
 	signal?: AbortSignal,
 ) {
-	return requestJSON<{ variables: DebugVariable[] }>("/api/debug/variables", {
+	return fetchJSON<{ variables: DebugVariable[] }>("/api/debug/variables", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({
@@ -291,13 +293,4 @@ export async function getDebugVariables(
 		}),
 		signal,
 	});
-}
-
-async function requestJSON<T>(input: RequestInfo | URL, init?: RequestInit) {
-	const response = await fetch(input, init);
-	if (!response.ok) {
-		const message = (await response.text()).trim();
-		throw new Error(message || `Request failed (${response.status})`);
-	}
-	return (await response.json()) as T;
 }

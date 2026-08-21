@@ -1,14 +1,9 @@
+import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
-import {
-	useCallback,
-	useEffect,
-	useLayoutEffect,
-	useMemo,
-	useRef,
-	useState,
-} from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
+import { queryKeys } from "../api/query";
+import { getTask } from "../api/tasks";
 import { messagesToEntries } from "../hooks/useWebSocket";
-import type { ServerMessage, TaskDetail } from "../types/protocol";
 import { MarkdownContent } from "./MarkdownContent";
 import { TurnView } from "./chat/TurnView";
 import { buildTurns } from "./chat/turns";
@@ -16,50 +11,25 @@ import { buildTurns } from "./chat/turns";
 interface Props {
 	sessionId: string;
 	taskId: string;
-	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 }
 
 const noAnchor = () => {};
 
-export function TaskTab({ sessionId, taskId, subscribe }: Props) {
-	const [detail, setDetail] = useState<TaskDetail | null>(null);
-	const [error, setError] = useState<string | null>(null);
-	const loadedRef = useRef(false);
-
-	const load = useCallback(async () => {
-		if (!sessionId) return;
-		try {
-			const res = await fetch(`/api/sessions/${sessionId}/tasks/${taskId}`);
-			if (!res.ok) {
-				if (!loadedRef.current) setError("Agent no longer available.");
-				return;
-			}
-			loadedRef.current = true;
-			setDetail(await res.json());
-			setError(null);
-		} catch {
-			if (!loadedRef.current) setError("Failed to load agent.");
-		}
-	}, [sessionId, taskId]);
-
-	useEffect(() => {
-		load();
-	}, [load]);
-
-	useEffect(() => {
-		if (!subscribe) return;
-		return subscribe((msg) => {
-			if (msg.type === "tasks_changed") load();
-		});
-	}, [subscribe, load]);
-
+export function TaskTab({ sessionId, taskId }: Props) {
+	const query = useQuery({
+		queryKey: queryKeys.tasks.detail(sessionId, taskId),
+		enabled: !!sessionId,
+		queryFn: ({ signal }) => getTask(sessionId, taskId, signal),
+		refetchInterval: (current) =>
+			current.state.data?.status === "running" ? 3000 : false,
+	});
+	const detail = query.data ?? null;
+	const error = query.error
+		? detail
+			? null
+			: "Agent no longer available."
+		: null;
 	const running = detail?.status === "running";
-
-	useEffect(() => {
-		if (!running) return;
-		const timer = setInterval(load, 3000);
-		return () => clearInterval(timer);
-	}, [running, load]);
 
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const stickRef = useRef(true);

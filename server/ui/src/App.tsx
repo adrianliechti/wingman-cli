@@ -1,4 +1,10 @@
 import {
+	useMutation,
+	useQueries,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
+import {
 	Bug,
 	Compass,
 	Code2,
@@ -36,9 +42,29 @@ import {
 	Separator,
 	usePanelRef,
 } from "react-resizable-panels";
-import { createWorkspaceFile } from "./api/files";
+import { agentQueries, setCurrentAgent } from "./api/agents";
 import { getInspectAvailability } from "./api/capabilities";
 import { controlDebug, getDebugSession, type DebugSession } from "./api/debug";
+import { createWorkspaceFile } from "./api/files";
+import { queryKeys } from "./api/query";
+import {
+	createSession,
+	deleteSession,
+	loadSession,
+	sessionQueries,
+	setMode,
+	type ModeOption,
+	type ModeState,
+	type SessionInfo,
+} from "./api/sessions";
+import { setEditorTabCompletion } from "./api/settings";
+import {
+	deleteTerminal,
+	getTerminal,
+	startTerminal,
+	terminalQueries,
+} from "./api/terminals";
+import { chooseWorkspaceFolder, replaceWorkspace } from "./api/workspaces";
 import { ChatPanel } from "./components/ChatPanel";
 import {
 	PaneDropZones,
@@ -62,7 +88,6 @@ import {
 	type PaletteAction,
 	type PaletteSkill,
 } from "./components/CommandPalette";
-import type { ModeOption } from "./components/ModePicker";
 import { DiffsPanel } from "./components/DiffsPanel";
 import {
 	DebugLauncher,
@@ -93,6 +118,7 @@ import { AgentPicker, BUILTIN_AGENT_ID } from "./components/AgentPicker";
 import { AgentSessions } from "./components/AgentSessions";
 import { useCapabilities } from "./hooks/useCapabilities";
 import { useOpenDocuments } from "./hooks/useOpenDocuments";
+import { useServerQueryInvalidation } from "./hooks/useServerQueryInvalidation";
 import { type ChatEntry, useWebSocket } from "./hooks/useWebSocket";
 import type {
 	CompareMode,
@@ -149,6 +175,7 @@ const DEBUG_DETAILS_MAX_SIZE = 480;
 
 const EMPTY_ENTRIES: never[] = [];
 const EMPTY_MODES: ModeOption[] = [];
+const EMPTY_SHELLS: ShellEntry[] = [];
 const EMPTY_USAGE = {
 	inputTokens: 0,
 	cachedTokens: 0,
@@ -227,7 +254,15 @@ export default function App() {
 		clearSessions,
 		subscribe,
 	} = useWebSocket();
+	useServerQueryInvalidation(subscribe, connected);
+	const queryClient = useQueryClient();
 	const toast = useToast();
+	const createSessionMutation = useMutation({
+		mutationFn: createSession,
+		onSuccess: () => {
+			void queryClient.invalidateQueries({ queryKey: queryKeys.sessions.all });
+		},
+	}).mutateAsync;
 	const {
 		documents,
 		dirtyPaths,
@@ -241,7 +276,7 @@ export default function App() {
 		moveDocuments,
 		applyWorkspaceEdit,
 	} = useOpenDocuments(subscribe);
-	const capabilities = useCapabilities(subscribe);
+	const capabilities = useCapabilities();
 	const showChanges = !!(capabilities?.diffs || capabilities?.git_init);
 	const { inspect: showInspect, debug: showDebug } =
 		getInspectAvailability(capabilities);
@@ -252,14 +287,10 @@ export default function App() {
 		tabAvailable && (capabilities?.["editor.tab.completion"] ?? false);
 	const toggleEditorTabCompletion = useCallback(async () => {
 		try {
-			const response = await fetch("/api/settings/editor.tab.completion", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					"editor.tab.completion": !tabEnabled,
-				}),
+			await setEditorTabCompletion(!tabEnabled);
+			void queryClient.invalidateQueries({
+				queryKey: queryKeys.capabilities,
 			});
-			if (!response.ok) throw new Error(await response.text());
 			toast({
 				title: `editor.tab.completion ${tabEnabled ? "disabled" : "enabled"}`,
 				description: tabEnabled
@@ -273,7 +304,7 @@ export default function App() {
 				tone: "error",
 			});
 		}
-	}, [tabEnabled, toast]);
+	}, [queryClient, tabEnabled, toast]);
 	const [requestedWorkspaceTab, setRequestedWorkspaceTab] =
 		useState<WorkspaceTab>("files");
 	const [problemsRefreshKey, setProblemsRefreshKey] = useState(0);
@@ -289,7 +320,15 @@ export default function App() {
 	const rightPanelRef = usePanelRef();
 	const debugDetailsPanelRef = usePanelRef();
 	const debugDetailsWidthRef = useRef(DEBUG_DETAILS_MIN_SIZE);
-	const [terminalShells, setTerminalShells] = useState<ShellEntry[]>([]);
+	const terminalShells =
+		useQuery({
+			...terminalQueries.shells(),
+			enabled: showTerminal,
+		}).data ?? EMPTY_SHELLS;
+	const terminalsQuery = useQuery({
+		...terminalQueries.list(),
+		enabled: showTerminal,
+	});
 	const terminalCreatingRef = useRef(false);
 	const debugTerminalIDsRef = useRef(new Set<string>());
 	const exitedDebugTerminalIDsRef = useRef(new Set<string>());
@@ -392,18 +431,14 @@ export default function App() {
 			if (terminalCreatingRef.current) return;
 			terminalCreatingRef.current = true;
 			try {
-				const response = await fetch("/api/terminals", {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ shell, cols: 80, rows: 24 }),
-				});
-				if (!response.ok) {
-					throw new Error(
-						(await response.text()).trim() ||
-							`Failed to create terminal (${response.status}).`,
-					);
-				}
-				const entry = (await response.json()) as TerminalEntry;
+				const entry = await startTerminal(shell);
+				queryClient.setQueryData<TerminalEntry[]>(
+					queryKeys.terminals.list,
+					(current = []) =>
+						current.some((terminal) => terminal.id === entry.id)
+							? current
+							: [...current, entry],
+				);
 				const tab: CenterTab = {
 					id: `terminal:${entry.id}`,
 					type: "terminal",
@@ -425,34 +460,12 @@ export default function App() {
 				terminalCreatingRef.current = false;
 			}
 		},
-		[toast],
+		[queryClient, toast],
 	);
 
 	useEffect(() => {
-		if (!showTerminal) return;
-		let cancelled = false;
-		fetch("/api/terminals/shells")
-			.then((response) => (response.ok ? response.json() : []))
-			.then((shells: ShellEntry[]) => {
-				if (!cancelled) setTerminalShells(shells);
-			})
-			.catch(() => {
-				if (!cancelled) setTerminalShells([]);
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, [showTerminal]);
-
-	const reloadTerminals = useCallback(async () => {
-		let entries: TerminalEntry[];
-		try {
-			const response = await fetch("/api/terminals");
-			if (!response.ok) return;
-			entries = (await response.json()) as TerminalEntry[];
-		} catch {
-			return;
-		}
+		if (!showTerminal || !terminalsQuery.data) return;
+		const entries = terminalsQuery.data;
 		const ids = new Set(entries.map((entry) => entry.id));
 		setTabs((prev) => {
 			const next = prev.filter(
@@ -473,15 +486,7 @@ export default function App() {
 			}
 			return next;
 		});
-	}, []);
-
-	useEffect(() => {
-		if (!showTerminal) return;
-		void reloadTerminals();
-		return subscribe((msg) => {
-			if (msg.type === "terminals_changed") void reloadTerminals();
-		});
-	}, [showTerminal, subscribe, reloadTerminals]);
+	}, [showTerminal, terminalsQuery.data]);
 
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
@@ -574,19 +579,8 @@ export default function App() {
 	const phase = activeSession?.phase ?? "idle";
 	const usage = activeSession?.usage ?? EMPTY_USAGE;
 
-	const [agentId, setAgentId] = useState("");
+	const agentId = useQuery(agentQueries.current()).data?.agent ?? "";
 	const [switchingAgent, setSwitchingAgent] = useState<string | null>(null);
-	const loadAgent = useCallback(async (): Promise<string> => {
-		try {
-			const r = await fetch("/api/agent");
-			const data = (await r.json()) as { agent?: string };
-			const id = data.agent || BUILTIN_AGENT_ID;
-			setAgentId(id);
-			return id;
-		} catch {
-			return "";
-		}
-	}, []);
 
 	const deepLinkRef = useRef<string | null>(null);
 
@@ -831,74 +825,56 @@ export default function App() {
 	const openDebugLauncher = useCallback((seed: DebugLauncherSeed) => {
 		setDebugLauncher({ ...seed });
 	}, []);
-	const applyDebugSession = useCallback((session?: DebugSession) => {
-		const current = debugSessionRef.current;
-		if (
-			session &&
-			current?.session_id === session.session_id &&
-			session.state_version < current.state_version
-		)
-			return;
-		debugSessionRef.current = session;
-		setDebugSession(session);
-		if (session?.terminal_id)
-			debugTerminalIDsRef.current.add(session.terminal_id);
-		const active = !!session && session.state !== "terminated";
-		const terminalId =
-			active &&
-			session.terminal_id &&
-			!exitedDebugTerminalIDsRef.current.has(session.terminal_id)
-				? session.terminal_id
-				: undefined;
-		setTabs((current) =>
-			syncDebugTab(current, terminalId, active, activePaneRef.current),
-		);
-		if (!terminalId)
-			setDebugContentView((view) => (view === "terminal" ? "output" : view));
-	}, []);
+	const applyDebugSession = useCallback(
+		(session?: DebugSession) => {
+			const current = debugSessionRef.current;
+			if (
+				session &&
+				current?.session_id === session.session_id &&
+				session.state_version < current.state_version
+			)
+				return;
+			debugSessionRef.current = session;
+			setDebugSession(session);
+			if (session?.terminal_id)
+				debugTerminalIDsRef.current.add(session.terminal_id);
+			const active = !!session && session.state !== "terminated";
+			const terminalId =
+				active &&
+				session.terminal_id &&
+				!exitedDebugTerminalIDsRef.current.has(session.terminal_id)
+					? session.terminal_id
+					: undefined;
+			setTabs((current) =>
+				syncDebugTab(current, terminalId, active, activePaneRef.current),
+			);
+			if (!terminalId)
+				setDebugContentView((view) => (view === "terminal" ? "output" : view));
+			queryClient.setQueryData(queryKeys.debug.session, { session });
+		},
+		[queryClient],
+	);
+	const debugSessionQuery = useQuery({
+		queryKey: queryKeys.debug.session,
+		enabled: showDebug,
+		staleTime: 0,
+		queryFn: ({ signal }) => getDebugSession(signal),
+		refetchInterval: (current) => {
+			const session = current.state.data?.session;
+			if (!session || session.state === "terminated") return false;
+			return session.state === "running" ? 500 : 1_250;
+		},
+	});
 
 	useEffect(() => {
 		if (!showDebug) {
 			applyDebugSession(undefined);
 			return;
 		}
-		const controller = new AbortController();
-		void getDebugSession(controller.signal)
-			.then((result) => applyDebugSession(result.session))
-			.catch(() => {
-				// Session discovery is retried when a locally started session begins.
-			});
-		return () => controller.abort();
-	}, [applyDebugSession, showDebug]);
-
-	const debugSessionID = debugSession?.session_id;
-	const debugSessionState = debugSession?.state;
-	useEffect(() => {
-		if (!showDebug || !debugSessionID || debugSessionState === "terminated")
-			return;
-		let disposed = false;
-		let timer = 0;
-		let request: AbortController | null = null;
-		const poll = async () => {
-			request = new AbortController();
-			try {
-				const result = await getDebugSession(request.signal);
-				if (disposed) return;
-				applyDebugSession(result.session);
-				if (!result.session || result.session.state === "terminated") return;
-				const delay = result.session.state === "running" ? 500 : 1_250;
-				timer = window.setTimeout(() => void poll(), delay);
-			} catch {
-				if (!disposed) timer = window.setTimeout(() => void poll(), 2_000);
-			}
-		};
-		timer = window.setTimeout(() => void poll(), 400);
-		return () => {
-			disposed = true;
-			window.clearTimeout(timer);
-			request?.abort();
-		};
-	}, [applyDebugSession, debugSessionID, debugSessionState, showDebug]);
+		if (debugSessionQuery.data) {
+			applyDebugSession(debugSessionQuery.data.session);
+		}
+	}, [applyDebugSession, debugSessionQuery.data, showDebug]);
 
 	const handleDebugControl = useCallback(
 		async (operation: DebugOperation) => {
@@ -963,20 +939,16 @@ export default function App() {
 		async (tab: CenterTab) => {
 			if (!tab.terminalId) return;
 			try {
-				const response = await fetch(
-					`/api/terminals/${encodeURIComponent(tab.terminalId)}`,
-					{ method: "DELETE" },
-				);
-				if (!response.ok && response.status !== 404) {
-					throw new Error(
-						(await response.text()).trim() ||
-							`Failed to close terminal (${response.status}).`,
-					);
-				}
+				await deleteTerminal(tab.terminalId);
 				setCloseRequest((current) =>
 					current?.kind === "terminal" && current.tab.id === tab.id
 						? null
 						: current,
+				);
+				queryClient.setQueryData<TerminalEntry[]>(
+					queryKeys.terminals.list,
+					(current = []) =>
+						current.filter((entry) => entry.id !== tab.terminalId),
 				);
 				closeTabNow(tab.id);
 			} catch (error) {
@@ -987,7 +959,7 @@ export default function App() {
 				});
 			}
 		},
-		[closeTabNow, toast],
+		[closeTabNow, queryClient, toast],
 	);
 
 	const saveFile = useCallback(
@@ -1096,32 +1068,13 @@ export default function App() {
 		if (workspaceSwitching) return;
 		setWorkspaceSwitching(true);
 		try {
-			const selected = await fetch("/app/folder", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: "{}",
-			});
-			if (!selected.ok) {
-				throw new Error(
-					(await selected.text()).trim() || "Could not select a folder.",
-				);
-			}
-			const { path } = (await selected.json()) as { path?: string };
+			const path = await chooseWorkspaceFolder();
 			if (!path) {
 				setWorkspaceSwitching(false);
 				return;
 			}
 
-			const opened = await fetch("/app/workspaces/open", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ path, replace: true }),
-			});
-			if (!opened.ok) {
-				throw new Error(
-					(await opened.text()).trim() || "Could not open the folder.",
-				);
-			}
+			await replaceWorkspace(path);
 			window.location.replace("/");
 		} catch (error) {
 			setWorkspaceSwitching(false);
@@ -1195,7 +1148,11 @@ export default function App() {
 			if (!tab || !isClosableTab(tab)) return;
 			if (tab.type === "debug") {
 				try {
-					const current = await getDebugSession();
+					const current = await queryClient.fetchQuery({
+						queryKey: queryKeys.debug.session,
+						queryFn: ({ signal }) => getDebugSession(signal),
+						staleTime: 0,
+					});
 					if (current.session && current.session.state !== "terminated") {
 						const result = await controlDebug(
 							"stop",
@@ -1221,20 +1178,11 @@ export default function App() {
 			if (tab.type === "terminal" && tab.terminalId) {
 				try {
 					for (let attempt = 0; attempt < 2; attempt++) {
-						const response = await fetch(
-							`/api/terminals/${encodeURIComponent(tab.terminalId)}`,
-						);
-						if (response.status === 404) {
+						const terminal = await getTerminal(tab.terminalId);
+						if (!terminal) {
 							closeTabNow(tab.id);
 							return;
 						}
-						if (!response.ok) {
-							throw new Error(
-								(await response.text()).trim() ||
-									`Failed to inspect terminal (${response.status}).`,
-							);
-						}
-						const terminal = (await response.json()) as TerminalEntry;
 						if (!terminal.busy) {
 							await closeTerminal(tab);
 							return;
@@ -1255,7 +1203,15 @@ export default function App() {
 			}
 			closeTabNow(id);
 		},
-		[applyDebugSession, closeTabNow, closeTerminal, dirtyPaths, tabs, toast],
+		[
+			applyDebugSession,
+			closeTabNow,
+			closeTerminal,
+			dirtyPaths,
+			queryClient,
+			tabs,
+			toast,
+		],
 	);
 
 	const [tabMenu, setTabMenu] = useState<{
@@ -1445,11 +1401,8 @@ export default function App() {
 
 	const handleNewSession = useCallback(async () => {
 		try {
-			const res = await fetch("/api/sessions", { method: "POST" });
-			if (!res.ok) throw new Error(await res.text());
-			const data = (await res.json()) as { id?: string };
-			if (!data.id) return;
-			openChatTab(data.id, "keep", true);
+			const id = await createSessionMutation();
+			openChatTab(id, "keep", true);
 		} catch (error) {
 			toast({
 				title: "Could not create session",
@@ -1457,7 +1410,7 @@ export default function App() {
 				tone: "error",
 			});
 		}
-	}, [openChatTab, toast]);
+	}, [createSessionMutation, openChatTab, toast]);
 
 	const handleSessionDeleted = useCallback(
 		(id: string) => {
@@ -1469,19 +1422,16 @@ export default function App() {
 		[removeSession, tabs, closeTabNow],
 	);
 
-	const deleteSession = useCallback(async () => {
+	const confirmSessionDelete = useCallback(async () => {
 		if (!sessionDelete) return;
 		try {
-			const response = await fetch(`/api/sessions/${sessionDelete.id}`, {
-				method: "DELETE",
-			});
-			if (!response.ok) {
-				throw new Error(
-					(await response.text()).trim() ||
-						`Failed to delete session (${response.status}).`,
-				);
-			}
+			await deleteSession(sessionDelete.id);
 			const id = sessionDelete.id;
+			queryClient.setQueryData(
+				queryKeys.sessions.list,
+				(current: SessionInfo[] = []) =>
+					current.filter((session) => session.id !== id),
+			);
 			setSessionDelete(null);
 			handleSessionDeleted(id);
 		} catch (error) {
@@ -1491,7 +1441,7 @@ export default function App() {
 				tone: "error",
 			});
 		}
-	}, [handleSessionDeleted, sessionDelete, toast]);
+	}, [handleSessionDeleted, queryClient, sessionDelete, toast]);
 
 	const [sessionLoad, setSessionLoad] = useState<{
 		id: string;
@@ -1516,16 +1466,12 @@ export default function App() {
 			if (!request) {
 				request = (async () => {
 					try {
-						const res = await fetch(`/api/sessions/${id}/load`, {
-							method: "POST",
-						});
-						if (res.ok) return null;
-						return (
-							(await res.text()).trim() ||
-							`Failed to load session (${res.status}).`
-						);
-					} catch {
-						return "Failed to load session.";
+						await loadSession(id);
+						return null;
+					} catch (error) {
+						return error instanceof Error
+							? error.message
+							: "Failed to load session.";
 					}
 				})();
 				sessionLoadRequestsRef.current.set(id, request);
@@ -1546,7 +1492,6 @@ export default function App() {
 		if (!subscribe) return;
 		return subscribe((msg) => {
 			if (msg.type !== "agent_changed") return;
-			void loadAgent();
 			clearSessions();
 			setTabs((prev) => [
 				draftChatTab(),
@@ -1562,13 +1507,7 @@ export default function App() {
 				void handleNewSession();
 			}
 		});
-	}, [
-		subscribe,
-		clearSessions,
-		loadAgent,
-		handleSessionSelect,
-		handleNewSession,
-	]);
+	}, [subscribe, clearSessions, handleSessionSelect, handleNewSession]);
 
 	useEffect(() => {
 		const [agent, sid] = window.location.pathname
@@ -1577,42 +1516,33 @@ export default function App() {
 			.map(decodeURIComponent);
 		(async () => {
 			deepLinkRef.current = sid ?? null;
-			const current = await loadAgent();
-			if (!current) {
-				deepLinkRef.current = null;
-				return;
-			}
-			if (!agent || agent === current) {
-				if (sid) void handleSessionSelect(sid);
-				deepLinkRef.current = null;
-				return;
-			}
 			try {
-				const res = await fetch("/api/agent", {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ agent }),
-				});
-				if (!res.ok) {
+				const currentState = await queryClient.fetchQuery(
+					agentQueries.current(),
+				);
+				const current = currentState.agent || BUILTIN_AGENT_ID;
+				if (!agent || agent === current) {
+					if (sid) void handleSessionSelect(sid);
 					deepLinkRef.current = null;
 					return;
 				}
-				setAgentId(agent);
+				await setCurrentAgent(agent);
+				await queryClient.invalidateQueries({
+					queryKey: queryKeys.agents.current,
+					exact: true,
+				});
 			} catch {
 				deepLinkRef.current = null;
 			}
 		})();
 		// eslint-disable-next-line react-hooks/exhaustive-deps -- initial URL only
-	}, []);
+	}, [queryClient]);
 
 	const createSessionForDraft = useCallback(async (): Promise<string> => {
-		const res = await fetch("/api/sessions", { method: "POST" });
-		if (!res.ok) throw new Error("failed to allocate session");
-		const data = (await res.json()) as { id?: string };
-		if (!data.id) throw new Error("session id missing in response");
-		openChatTab(data.id, "keep", true);
-		return data.id;
-	}, [openChatTab]);
+		const id = await createSessionMutation();
+		openChatTab(id, "keep", true);
+		return id;
+	}, [createSessionMutation, openChatTab]);
 
 	const sendForSession = useCallback(
 		async (
@@ -1646,12 +1576,9 @@ export default function App() {
 	const startInsightsAnalysis = useCallback(
 		async (command: string) => {
 			try {
-				const response = await fetch("/api/sessions", { method: "POST" });
-				if (!response.ok) throw new Error(await response.text());
-				const data = (await response.json()) as { id?: string };
-				if (!data.id) throw new Error("Session id missing in response");
-				openChatTab(data.id, "keep");
-				if (!sendChat(data.id, command)) {
+				const id = await createSessionMutation();
+				openChatTab(id, "keep");
+				if (!sendChat(id, command)) {
 					throw new Error("The chat connection is not ready");
 				}
 			} catch (error) {
@@ -1662,7 +1589,7 @@ export default function App() {
 				});
 			}
 		},
-		[openChatTab, sendChat, toast],
+		[createSessionMutation, openChatTab, sendChat, toast],
 	);
 
 	const focusChat = useCallback(() => {
@@ -1684,10 +1611,6 @@ export default function App() {
 		[focusChat, handleSend],
 	);
 
-	const [modeStates, setModeStates] = useState<
-		Record<string, { modes: ModeOption[]; mode: string }>
-	>({});
-	const modeFetchesRef = useRef(new Set<string>());
 	const visibleSessionKeys = useMemo(() => {
 		const keys = new Set<string>([sessionId]);
 		for (const tab of [leftTab, rightTab]) {
@@ -1695,65 +1618,44 @@ export default function App() {
 		}
 		return [...keys];
 	}, [leftTab, rightTab, sessionId]);
-
-	useEffect(() => {
-		for (const key of visibleSessionKeys) {
-			if (key in modeStates || modeFetchesRef.current.has(key)) continue;
-			modeFetchesRef.current.add(key);
-			const url = key
-				? `/api/sessions/${encodeURIComponent(key)}/mode`
-				: "/api/mode";
-			fetch(url)
-				.then((r) => r.json())
-				.then((data) => {
-					setModeStates((prev) =>
-						key in prev
-							? prev
-							: {
-									...prev,
-									[key]: { modes: data.modes ?? [], mode: data.current ?? "" },
-								},
-					);
-				})
-				.catch(() => {})
-				.finally(() => {
-					modeFetchesRef.current.delete(key);
-				});
-		}
-	}, [visibleSessionKeys, modeStates]);
+	const modeQueries = useQueries({
+		queries: visibleSessionKeys.map((key) => sessionQueries.mode(key)),
+	});
+	const modeStates = useMemo<Record<string, ModeState>>(
+		() =>
+			Object.fromEntries(
+				visibleSessionKeys.flatMap((key, index) => {
+					const data = modeQueries[index]?.data;
+					return data ? [[key, data]] : [];
+				}),
+			),
+		[modeQueries, visibleSessionKeys],
+	);
 
 	const selectModeForSession = useCallback(
 		async (key: string, next: string) => {
-			const previous = modeStates[key]?.mode ?? "";
+			const previous = queryClient.getQueryData<ModeState>(
+				queryKeys.modes.current(key),
+			);
 			try {
 				const sid = key || (await createSessionForDraft());
-				setModeStates((prev) => ({
-					...prev,
-					[key]: { modes: prev[key]?.modes ?? [], mode: next },
-				}));
-				const r = await fetch(`/api/sessions/${encodeURIComponent(sid)}/mode`, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ mode: next }),
+				queryClient.setQueryData<ModeState>(queryKeys.modes.current(key), {
+					modes: previous?.modes ?? [],
+					mode: next,
 				});
-				if (!r.ok) throw new Error(await r.text());
-				const data = await r.json();
-				setModeStates((prev) => {
-					const state = {
-						modes: data.modes ?? [],
-						mode: data.current ?? next,
-					};
-					const nextStates = { ...prev, [sid]: state };
-					// The draft key must refetch for the next draft tab, not
-					// inherit the mode of the session this draft just became.
-					if (key !== sid) delete nextStates[key];
-					return nextStates;
+				const data = await setMode(sid, next);
+				queryClient.setQueryData<ModeState>(queryKeys.modes.current(sid), {
+					modes: data.modes,
+					mode: data.mode,
 				});
+				if (key !== sid) {
+					queryClient.removeQueries({
+						queryKey: queryKeys.modes.current(key),
+						exact: true,
+					});
+				}
 			} catch (error) {
-				setModeStates((prev) => ({
-					...prev,
-					[key]: { modes: prev[key]?.modes ?? [], mode: previous },
-				}));
+				queryClient.setQueryData(queryKeys.modes.current(key), previous);
 				toast({
 					title: "Could not change mode",
 					description: error instanceof Error ? error.message : String(error),
@@ -1761,7 +1663,7 @@ export default function App() {
 				});
 			}
 		},
-		[createSessionForDraft, modeStates, toast],
+		[createSessionForDraft, queryClient, toast],
 	);
 
 	const modes = modeStates[sessionId]?.modes ?? EMPTY_MODES;
@@ -2081,7 +1983,6 @@ export default function App() {
 					onDismissError={() => {
 						if (key) dismissError(key);
 					}}
-					subscribe={subscribe}
 					prompt={sess?.prompt ?? null}
 					onPromptReply={(reply) => {
 						const pending = sess?.prompt;
@@ -2173,7 +2074,6 @@ export default function App() {
 					key={tab.id}
 					sessionId={tab.sessionId ?? ""}
 					taskId={tab.taskId}
-					subscribe={subscribe}
 				/>
 			);
 		}
@@ -2198,7 +2098,6 @@ export default function App() {
 					base={tab.compareBase}
 					head={tab.compareHead}
 					mode={tab.compareMode}
-					subscribe={subscribe}
 				/>
 			);
 		}
@@ -2208,7 +2107,6 @@ export default function App() {
 					path={tab.path}
 					layer={tab.diffLayer}
 					sessionId={sessionId}
-					subscribe={subscribe}
 					onDeleted={() => closeTabNow(tab.id)}
 				/>
 			);
@@ -2336,7 +2234,6 @@ export default function App() {
 			onSessionDelete={(id, title) => setSessionDelete({ id, title })}
 			runningSessionIds={runningSessionIds}
 			switchingAgent={switchingAgent}
-			subscribe={subscribe}
 		/>
 	);
 	const titlebarActions = (
@@ -2516,18 +2413,13 @@ export default function App() {
 					<div className="relative min-h-0 flex-1 overflow-hidden">
 						<ProblemsPanel
 							onOpenFile={openFile}
-							subscribe={subscribe}
 							refreshKey={problemsRefreshKey}
 						/>
 					</div>
 				</div>
 				{workspaceTab === "inspect" ? null : workspaceTab === "agents" &&
 				  showAgents ? (
-					<TasksPanel
-						sessionId={sessionId}
-						subscribe={subscribe}
-						onOpenTask={openTask}
-					/>
+					<TasksPanel sessionId={sessionId} onOpenTask={openTask} />
 				) : workspaceTab === "changes" && showChanges ? (
 					<DiffsPanel
 						sessionId={sessionId}
@@ -2538,7 +2430,6 @@ export default function App() {
 						onOpenFile={(path, disposition) =>
 							openFile(path, undefined, undefined, undefined, disposition)
 						}
-						subscribe={subscribe}
 					/>
 				) : (
 					<WorkspaceFilesPanel
@@ -2635,10 +2526,7 @@ export default function App() {
 				>
 					{leftPanelDocked && (
 						<div data-titlebar-agent className="min-w-0 flex-1 overflow-hidden">
-							<AgentPicker
-								subscribe={subscribe}
-								onSwitchingChange={setSwitchingAgent}
-							/>
+							<AgentPicker onSwitchingChange={setSwitchingAgent} />
 						</div>
 					)}
 					{!leftPanelDocked && <div className="min-w-0 flex-1" />}
@@ -2857,7 +2745,6 @@ export default function App() {
 					onRunSkill={runSkill}
 					onSelectSession={(id) => void handleSessionSelect(id, "keep")}
 					onOpenFile={openFile}
-					subscribe={subscribe}
 				/>
 			)}
 
@@ -3127,7 +3014,7 @@ export default function App() {
 				<button
 					type="button"
 					className={`${dialogButtonClass} border-danger/40 text-danger hover:bg-danger/10`}
-					onClick={() => void deleteSession()}
+					onClick={() => void confirmSessionDelete()}
 				>
 					Delete
 				</button>

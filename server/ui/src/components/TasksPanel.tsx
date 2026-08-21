@@ -1,3 +1,4 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 	AlertCircle,
 	Bot,
@@ -12,28 +13,22 @@ import {
 	Square,
 	Trash2,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
-import type {
-	ScheduleEntry,
-	ServerMessage,
-	TaskEntry,
-} from "../types/protocol";
+import { useState } from "react";
+import { queryKeys } from "../api/query";
+import {
+	deleteSchedule,
+	listSchedules,
+	listTasks,
+	setSchedulePaused,
+	stopTask,
+} from "../api/tasks";
+import type { ScheduleEntry, TaskEntry } from "../types/protocol";
 import { formatElapsed } from "../utils/tasks";
 import { Dialog, dialogButtonClass, useToast } from "./ui/Feedback";
 import { FloatingMenu } from "./ui/Floating";
 
-// Mutating schedule tools whose results should refresh the panel; list_tasks
-// is read-only and excluded.
-const SCHEDULE_TOOLS = new Set([
-	"schedule_task",
-	"pause_task",
-	"resume_task",
-	"remove_task",
-]);
-
 interface Props {
 	sessionId: string;
-	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 	onOpenTask?: (task: TaskEntry) => void;
 }
 
@@ -41,88 +36,56 @@ type MenuState =
 	| { x: number; y: number; kind: "schedule"; schedule: ScheduleEntry }
 	| { x: number; y: number; kind: "task"; task: TaskEntry };
 
-export function TasksPanel({ sessionId, subscribe, onOpenTask }: Props) {
+export function TasksPanel({ sessionId, onOpenTask }: Props) {
 	const toast = useToast();
-	const [tasks, setTasks] = useState<TaskEntry[]>([]);
-	const [schedules, setSchedules] = useState<ScheduleEntry[]>([]);
-	const [error, setError] = useState<string | null>(null);
+	const queryClient = useQueryClient();
+	const tasksQuery = useQuery({
+		queryKey: queryKeys.tasks.list(sessionId),
+		enabled: !!sessionId,
+		queryFn: ({ signal }) => listTasks(sessionId, signal),
+		refetchInterval: (query) =>
+			query.state.data?.some((task) => task.status === "running")
+				? 3000
+				: false,
+	});
+	const schedulesQuery = useQuery({
+		queryKey: queryKeys.tasks.schedules(sessionId),
+		enabled: !!sessionId,
+		queryFn: ({ signal }) => listSchedules(sessionId, signal),
+		refetchInterval: (query) =>
+			(query.state.data?.length ?? 0) > 0 ? 30000 : false,
+	});
+	const tasks = tasksQuery.data ?? [];
+	const schedules = schedulesQuery.data ?? [];
+	const queryError = tasksQuery.error ?? schedulesQuery.error;
+	const error = queryError
+		? queryError instanceof Error
+			? queryError.message
+			: String(queryError)
+		: null;
 	const [menu, setMenu] = useState<MenuState | null>(null);
 	const [deleteTarget, setDeleteTarget] = useState<ScheduleEntry | null>(null);
-
-	const load = useCallback(async () => {
-		if (!sessionId) {
-			setTasks([]);
-			setSchedules([]);
-			setError(null);
-			return;
-		}
-		try {
-			const [taskRes, scheduleRes] = await Promise.all([
-				fetch(`/api/sessions/${sessionId}/tasks`),
-				fetch(`/api/sessions/${sessionId}/schedules`),
-			]);
-			if (!taskRes.ok) {
-				throw new Error(`Could not load agents (${taskRes.status}).`);
-			}
-			setTasks(await taskRes.json());
-			setSchedules(scheduleRes.ok ? await scheduleRes.json() : []);
-			setError(null);
-		} catch (loadError) {
-			setError(
-				loadError instanceof Error ? loadError.message : String(loadError),
-			);
-		}
-	}, [sessionId]);
-
-	useEffect(() => {
-		load();
-	}, [load]);
-
-	useEffect(() => {
-		if (!subscribe) return;
-		return subscribe((msg) => {
-			if (msg.type === "tasks_changed") {
-				load();
-			} else if (
-				msg.type === "tool_result" &&
-				(msg.name === "agent" ||
-					msg.name === "task_send" ||
-					msg.name === "task_stop" ||
-					SCHEDULE_TOOLS.has(msg.name))
-			) {
-				load();
-			}
+	const refresh = () =>
+		queryClient.invalidateQueries({
+			queryKey: queryKeys.tasks.session(sessionId),
 		});
-	}, [subscribe, load]);
-
-	const anyRunning = tasks.some((t) => t.status === "running");
-
-	useEffect(() => {
-		if (!anyRunning) return;
-		const timer = setInterval(load, 3000);
-		return () => clearInterval(timer);
-	}, [anyRunning, load]);
-
-	// Keep the "in 42m" countdowns honest without polling when nothing is due.
-	useEffect(() => {
-		if (schedules.length === 0) return;
-		const timer = setInterval(load, 30000);
-		return () => clearInterval(timer);
-	}, [schedules.length, load]);
+	const removeMutation = useMutation({
+		mutationFn: (id: string) => deleteSchedule(sessionId, id),
+		onSuccess: refresh,
+	});
+	const scheduleStatusMutation = useMutation({
+		mutationFn: ({ id, action }: { id: string; action: "pause" | "resume" }) =>
+			setSchedulePaused(sessionId, id, action === "pause"),
+		onSuccess: refresh,
+	});
+	const stopMutation = useMutation({
+		mutationFn: (id: string) => stopTask(sessionId, id),
+		onSuccess: refresh,
+	});
 
 	const removeSchedule = async (id: string) => {
 		try {
-			const response = await fetch(
-				`/api/sessions/${sessionId}/schedules/${id}`,
-				{ method: "DELETE" },
-			);
-			if (!response.ok) {
-				throw new Error(
-					(await response.text()).trim() ||
-						`Could not remove the scheduled task (${response.status}).`,
-				);
-			}
-			void load();
+			await removeMutation.mutateAsync(id);
 		} catch (removeError) {
 			toast({
 				title: "Scheduled task is still there",
@@ -137,17 +100,7 @@ export function TasksPanel({ sessionId, subscribe, onOpenTask }: Props) {
 
 	const setScheduleStatus = async (id: string, action: "pause" | "resume") => {
 		try {
-			const response = await fetch(
-				`/api/sessions/${sessionId}/schedules/${id}/${action}`,
-				{ method: "POST" },
-			);
-			if (!response.ok) {
-				throw new Error(
-					(await response.text()).trim() ||
-						`Could not ${action} the scheduled task (${response.status}).`,
-				);
-			}
-			void load();
+			await scheduleStatusMutation.mutateAsync({ id, action });
 		} catch (statusError) {
 			toast({
 				title: `Scheduled task was not ${action}d`,
@@ -162,17 +115,7 @@ export function TasksPanel({ sessionId, subscribe, onOpenTask }: Props) {
 
 	const stop = async (id: string) => {
 		try {
-			const response = await fetch(
-				`/api/sessions/${sessionId}/tasks/${id}/stop`,
-				{ method: "POST" },
-			);
-			if (!response.ok) {
-				throw new Error(
-					(await response.text()).trim() ||
-						`Could not stop agent (${response.status}).`,
-				);
-			}
-			void load();
+			await stopMutation.mutateAsync(id);
 		} catch (stopError) {
 			toast({
 				title: "Agent is still running",

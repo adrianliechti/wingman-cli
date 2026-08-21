@@ -1,53 +1,29 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bot, ChevronDown, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ServerMessage } from "../types/protocol";
+import { agentQueries, setCurrentAgent, type AgentInfo } from "../api/agents";
+import { queryKeys } from "../api/query";
 import { formatAgentName } from "../utils/agents";
 import { useToast } from "./ui/Feedback";
 import { FloatingMenu } from "./ui/Floating";
 
-interface AgentInfo {
-	id: string;
-	name: string;
-}
-
 export const BUILTIN_AGENT_ID = "wingman";
+const EMPTY_AGENTS: AgentInfo[] = [];
 
 interface Props {
-	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 	onSwitchingChange?: (target: string | null) => void;
 }
 
-export function AgentPicker({ subscribe, onSwitchingChange }: Props) {
+export function AgentPicker({ onSwitchingChange }: Props) {
 	const toast = useToast();
-	const [agents, setAgents] = useState<AgentInfo[]>([]);
-	const [current, setCurrent] = useState(BUILTIN_AGENT_ID);
+	const queryClient = useQueryClient();
+	const agents = useQuery(agentQueries.list()).data ?? EMPTY_AGENTS;
+	const current =
+		useQuery(agentQueries.current()).data?.agent || BUILTIN_AGENT_ID;
 	const [open, setOpen] = useState(false);
 	const [switching, setSwitching] = useState<string | null>(null);
 	const btnRef = useRef<HTMLButtonElement>(null);
-
-	const load = useCallback(() => {
-		fetch("/api/agents")
-			.then((r) => r.json())
-			.then((data: AgentInfo[]) => setAgents(data))
-			.catch(() => setAgents([]));
-		fetch("/api/agent")
-			.then((r) => r.json())
-			.then((data) => setCurrent(data.agent || BUILTIN_AGENT_ID))
-			.catch(() => {});
-	}, []);
-
-	useEffect(() => {
-		load();
-	}, [load]);
-
-	useEffect(() => {
-		if (!subscribe) return;
-		return subscribe((msg) => {
-			if (msg.type === "agent_changed") {
-				load();
-			}
-		});
-	}, [subscribe, load]);
+	const switchAgent = useMutation({ mutationFn: setCurrentAgent });
 
 	useEffect(() => {
 		onSwitchingChange?.(switching);
@@ -64,18 +40,11 @@ export function AgentPicker({ subscribe, onSwitchingChange }: Props) {
 			setSwitching(id);
 			setOpen(false);
 			try {
-				const r = await fetch("/api/agent", {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ agent: id }),
+				await switchAgent.mutateAsync(id);
+				await queryClient.invalidateQueries({
+					queryKey: queryKeys.agents.current,
+					exact: true,
 				});
-				if (!r.ok) {
-					throw new Error(
-						(await r.text()).trim() || `${r.status} ${r.statusText}`,
-					);
-				}
-				const data = (await r.json()) as { agent?: string };
-				setCurrent(data.agent || id);
 			} catch (e) {
 				const msg = e instanceof Error ? e.message : String(e);
 				toast({
@@ -88,7 +57,7 @@ export function AgentPicker({ subscribe, onSwitchingChange }: Props) {
 				setSwitching(null);
 			}
 		},
-		[current, switching, toast],
+		[current, queryClient, switchAgent, switching, toast],
 	);
 
 	const displayedName = useMemo(() => {

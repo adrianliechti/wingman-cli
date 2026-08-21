@@ -1,71 +1,42 @@
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import type { Range } from "@tanstack/react-virtual";
+import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type {
-	CompareMode,
-	DiffEntry,
-	GitCompare,
-	ServerMessage,
-} from "../types/protocol";
+import { fetchGitComparison } from "../api/git";
+import { queryKeys } from "../api/query";
+import type { CompareMode, DiffEntry, GitCompare } from "../types/protocol";
 import { DiffView } from "./DiffTab";
 
 interface Props {
 	base: string;
 	head: string;
 	mode: CompareMode;
-	subscribe?: (handler: (msg: ServerMessage) => void) => () => void;
 }
 
-export function CompareTab({ base, head, mode, subscribe }: Props) {
-	const [comparison, setComparison] = useState<GitCompare | null>(null);
-	const [loading, setLoading] = useState(true);
-	const [failure, setFailure] = useState<Error | null>(null);
+export function CompareTab({ base, head, mode }: Props) {
 	const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+	const [collapsedFor, setCollapsedFor] = useState<GitCompare | null>(null);
+	const comparisonQuery = useQuery({
+		queryKey: queryKeys.git.compare(base, head, mode),
+		// Branch names and :worktree can resolve differently each time a tab opens.
+		staleTime: 0,
+		queryFn: ({ signal }) => fetchGitComparison(base, head, mode, signal),
+	});
+	const comparison = comparisonQuery.data ?? null;
+	const loading = comparisonQuery.isPending;
+	const failure = comparisonQuery.error;
 
-	const load = useCallback(async () => {
-		setLoading(true);
-		const params = new URLSearchParams({ base, head, mode });
-		const endpoint = `/api/git/compare?${params.toString()}`;
-		const requestContext = [
-			"Operation: Compare Git revisions",
-			`Request: GET ${endpoint}`,
-			`Base: ${base}`,
-			`Target: ${head}`,
-			`Mode: ${mode}`,
-		].join("\n");
-		try {
-			const response = await fetch(endpoint);
-			if (!response.ok) throw await responseError(response, requestContext);
-			const data = (await response.json()) as GitCompare;
-			setComparison(data);
-			setCollapsed(
-				new Set(
-					data.files
-						.filter((file) => !isSummaryOnlyChange(file) && isLargeChange(file))
-						.map((file) => file.path),
-				),
-			);
-			setFailure(null);
-		} catch (e) {
-			setComparison(null);
-			const error = withDiagnosticContext(e, requestContext);
-			console.error("Git comparison failed:", error, error.diagnosticContext);
-			setFailure(error);
-		} finally {
-			setLoading(false);
-		}
-	}, [base, head, mode]);
-
-	useEffect(() => {
-		void load();
-	}, [load]);
-	useEffect(() => {
-		if (!subscribe) return;
-		return subscribe((message) => {
-			if (message.type === "diffs_changed") void load();
-		});
-	}, [load, subscribe]);
+	if (comparison && comparison !== collapsedFor) {
+		setCollapsedFor(comparison);
+		setCollapsed(
+			new Set(
+				comparison.files
+					.filter((file) => !isSummaryOnlyChange(file) && isLargeChange(file))
+					.map((file) => file.path),
+			),
+		);
+	}
 
 	const totals = useMemo(
 		() => countChanges(comparison?.files ?? []),
@@ -430,35 +401,4 @@ function countFileChanges(file: DiffEntry) {
 		if (line.startsWith("-") && !line.startsWith("---")) deletions++;
 	}
 	return { additions, deletions };
-}
-
-type DiagnosticError = Error & { diagnosticContext: string };
-
-function withDiagnosticContext(
-	value: unknown,
-	context: string,
-): DiagnosticError {
-	const error = (
-		value instanceof Error ? value : new Error(String(value))
-	) as DiagnosticError;
-	error.diagnosticContext ||= context;
-	return error;
-}
-
-async function responseError(
-	response: Response,
-	requestContext: string,
-): Promise<DiagnosticError> {
-	const serverResponse = (await response.text()).trim();
-	const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
-	const error = new Error(serverResponse || status) as DiagnosticError;
-	error.name = "GitCompareRequestError";
-	error.diagnosticContext = [
-		requestContext,
-		`Response: HTTP ${status}`,
-		serverResponse ? `Server response:\n${serverResponse}` : "",
-	]
-		.filter(Boolean)
-		.join("\n\n");
-	return error;
 }
