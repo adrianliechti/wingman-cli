@@ -35,6 +35,6 @@ func openApp() error {
 	return cmd.Run()
 }
 
-func killApp() error {
-	return exec.Command("pkill", "-f", "Claude.app/Contents/MacOS/Claude").Run()
+func quitApp() error {
+	return exec.Command("osascript", "-e", `tell application "Claude" to quit`).Run()
 }

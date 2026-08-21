@@ -37,8 +37,8 @@ func openApp() error {
 	return exec.Command("powershell.exe", "-NoProfile", "-Command", "Start-Process -FilePath "+quotePowerShellString(path)).Run()
 }
 
-func killApp() error {
-	script := `Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force`
+func quitApp() error {
+	script := `Get-Process claude -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object { [void]$_.CloseMainWindow() }`
 	return exec.Command("powershell.exe", "-NoProfile", "-Command", script).Run()
 }
 

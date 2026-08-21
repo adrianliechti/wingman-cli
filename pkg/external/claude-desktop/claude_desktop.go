@@ -1,6 +1,7 @@
 package claudedesktop
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,10 @@ const (
 	profileID   = "00000000-0000-4000-8000-000000000424"
 )
 
+// Cowork needs unrestricted egress for user-configured plugins and MCP
+// servers. This override only applies while the Wingman profile is active.
+var coworkEgressAllowedHosts = []string{"*"}
+
 type Options = external.Options
 
 func Run(ctx context.Context, args []string, options *Options) error {
@@ -27,7 +32,7 @@ func Run(ctx context.Context, args []string, options *Options) error {
 	}
 
 	if restore {
-		if err := killClaude(); err != nil {
+		if err := quitClaude(); err != nil {
 			return err
 		}
 		if err := Restore(); err != nil {
@@ -38,7 +43,7 @@ func Run(ctx context.Context, args []string, options *Options) error {
 		return nil
 	}
 
-	if err := killClaude(); err != nil {
+	if err := quitClaude(); err != nil {
 		return err
 	}
 	if err := Configure(ctx, options); err != nil {
@@ -55,7 +60,7 @@ func Run(ctx context.Context, args []string, options *Options) error {
 
 	fmt.Fprintln(os.Stderr, "Restoring Claude Desktop to the usual Claude profile.")
 
-	if err := killClaude(); err != nil {
+	if err := quitClaude(); err != nil {
 		return err
 	}
 	if err := Restore(); err != nil {
@@ -83,18 +88,24 @@ func Configure(ctx context.Context, options *Options) error {
 		return err
 	}
 
-	if err := writeDeploymentMode(targets.normalConfig, "3p"); err != nil {
-		return err
-	}
+	return configureTargets(targets, cfg)
+}
 
+func configureTargets(targets targets, cfg gatewayConfig) error {
 	target := targets.thirdPartyProfile
-	if err := writeDeploymentMode(target.desktopConfig, "3p"); err != nil {
+	// Prepare the inactive profile completely before switching Claude to it. A
+	// malformed or unwritable profile must not strand Claude in third-party
+	// mode with only part of the Wingman configuration present.
+	if err := writeGatewayProfile(target.profile, cfg.BaseURL, cfg.AuthToken); err != nil {
 		return err
 	}
 	if err := writeMeta(target.meta); err != nil {
 		return err
 	}
-	if err := writeGatewayProfile(target.profile, cfg.BaseURL, cfg.AuthToken); err != nil {
+	if err := writeDeploymentMode(target.desktopConfig, "3p"); err != nil {
+		return err
+	}
+	if err := writeDeploymentMode(targets.normalConfig, "3p"); err != nil {
 		return err
 	}
 
@@ -238,6 +249,13 @@ func writeGatewayProfile(path, baseURL, authToken string) error {
 	cfg["inferenceGatewayAuthScheme"] = "bearer"
 	cfg["deploymentOrganizationUuid"] = profileID
 	cfg["disableDeploymentModeChooser"] = true
+	cfg["chatTabEnabled"] = true
+	cfg["coworkEgressAllowedHosts"] = coworkEgressAllowedHosts
+	cfg["disableEssentialTelemetry"] = true
+	cfg["disableNonessentialTelemetry"] = true
+	// Auto mode makes separate classifier requests through the configured
+	// provider. Keep it disabled until that contract is supported explicitly.
+	cfg["autoModeEnabled"] = false
 	delete(cfg, "inferenceModels")
 
 	return writeJSON(path, cfg)
@@ -292,7 +310,12 @@ func restoreProfile(path string) error {
 	delete(cfg, "inferenceGatewayBaseUrl")
 	delete(cfg, "inferenceGatewayApiKey")
 	delete(cfg, "inferenceGatewayAuthScheme")
+	delete(cfg, "deploymentOrganizationUuid")
 	delete(cfg, "inferenceModels")
+	delete(cfg, "coworkEgressAllowedHosts")
+	delete(cfg, "disableEssentialTelemetry")
+	delete(cfg, "disableNonessentialTelemetry")
+	delete(cfg, "autoModeEnabled")
 
 	return writeJSON(path, cfg)
 }
@@ -333,13 +356,45 @@ func writeJSON(path string, cfg any) error {
 		return err
 	}
 
-	if existing, err := os.ReadFile(path); err == nil && len(existing) > 0 {
-		if err := os.WriteFile(path+".bak", existing, 0644); err != nil {
+	mode := os.FileMode(0644)
+	if existing, err := os.ReadFile(path); err == nil {
+		if bytes.Equal(existing, data) {
+			return nil
+		}
+		if info, statErr := os.Stat(path); statErr == nil {
+			mode = info.Mode().Perm()
+		}
+		if err := os.WriteFile(path+".bak", existing, mode); err != nil {
 			return err
 		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 
-	return os.WriteFile(path, data, 0644)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".wingman-claude-desktop-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	return os.Rename(tmpPath, path)
 }
 
 func anySlice(value any) []any {
@@ -353,15 +408,15 @@ func anySlice(value any) []any {
 	}
 }
 
-func killClaude() error {
+func quitClaude() error {
 	if !isRunning() {
 		return nil
 	}
-	if err := killApp(); err != nil {
+	if err := quitApp(); err != nil {
 		if !isRunning() {
 			return nil
 		}
-		return fmt.Errorf("kill Claude Desktop: %w", err)
+		return fmt.Errorf("quit Claude Desktop: %w", err)
 	}
 
 	return waitForExit(30 * time.Second)

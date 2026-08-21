@@ -20,6 +20,6 @@ func openApp() error {
 	return supported()
 }
 
-func killApp() error {
+func quitApp() error {
 	return supported()
 }
