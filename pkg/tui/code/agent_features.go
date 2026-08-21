@@ -7,7 +7,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/task"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/schedule"
-	core "github.com/adrianliechti/wingman-agent/pkg/code"
+	corecode "github.com/adrianliechti/wingman-agent/pkg/code"
 )
 
 type modelFetcher interface {
@@ -40,10 +40,10 @@ type toolProvider interface {
 }
 
 type uiAwareAgent interface {
-	SetUI(core.UI)
+	SetUI(corecode.UI)
 }
 
-func setAgentUI(a core.Agent, ui core.UI) {
+func setAgentUI(a corecode.Agent, ui corecode.UI) {
 	if aware, ok := a.(uiAwareAgent); ok {
 		aware.SetUI(ui)
 	}

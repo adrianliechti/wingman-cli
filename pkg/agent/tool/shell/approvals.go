@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
@@ -36,7 +37,7 @@ func confirmIfDangerous(ctx context.Context, elicit *tool.Elicitation, appr *App
 
 	// Exact-match key (modulo surrounding whitespace): normalizing inner
 	// whitespace would conflate distinct quoted arguments.
-	key := strings.TrimSpace(text)
+	key := strings.Trim(text, " \t\n")
 
 	appr.mu.Lock()
 	seen := appr.seen[key]
@@ -46,7 +47,7 @@ func confirmIfDangerous(ctx context.Context, elicit *tool.Elicitation, appr *App
 		return nil
 	}
 
-	approved, err := elicit.Confirm(ctx, "❯ "+text)
+	approved, err := elicit.Confirm(ctx, "❯ "+approvalDisplayText(text))
 
 	if err != nil {
 		return fmt.Errorf("failed to get user approval: %w", err)
@@ -61,4 +62,27 @@ func confirmIfDangerous(ctx context.Context, elicit *tool.Elicitation, appr *App
 	appr.mu.Unlock()
 
 	return nil
+}
+
+// approvalDisplayText makes characters that can move, erase, or reorder a
+// terminal prompt visible without changing ordinary command formatting.
+func approvalDisplayText(text string) string {
+	var out strings.Builder
+	for _, r := range text {
+		switch r {
+		case '\n':
+			out.WriteRune(r)
+		case '\t':
+			out.WriteString(`\t`)
+		case '\r':
+			out.WriteString(`\r`)
+		default:
+			if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || (unicode.IsSpace(r) && r != ' ') {
+				fmt.Fprintf(&out, `\u{%04X}`, r)
+				continue
+			}
+			out.WriteRune(r)
+		}
+	}
+	return out.String()
 }

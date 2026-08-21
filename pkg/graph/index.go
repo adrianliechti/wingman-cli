@@ -15,7 +15,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	ts "github.com/odvcencio/gotreesitter"
+	"github.com/odvcencio/gotreesitter"
 	"github.com/odvcencio/gotreesitter/grammars"
 )
 
@@ -387,38 +387,38 @@ func parseFiles(ctx context.Context, root string, paths []string) ([]*fileResult
 // extractor holds the per-worker tree-sitter state. Taggers, parsers and
 // compiled queries are not safe for concurrent use, so each worker owns one.
 type extractor struct {
-	taggers map[string]*ts.Tagger
-	parsers map[string]*ts.Parser
+	taggers map[string]*gotreesitter.Tagger
+	parsers map[string]*gotreesitter.Parser
 	ax      *auxExtractor
 }
 
 func newExtractor() *extractor {
 	return &extractor{
-		taggers: map[string]*ts.Tagger{},
-		parsers: map[string]*ts.Parser{},
+		taggers: map[string]*gotreesitter.Tagger{},
+		parsers: map[string]*gotreesitter.Parser{},
 		ax:      newAuxExtractor(),
 	}
 }
 
-func (ex *extractor) parser(entry *grammars.LangEntry) *ts.Parser {
+func (ex *extractor) parser(entry *grammars.LangEntry) *gotreesitter.Parser {
 	p := ex.parsers[entry.Name]
 	if p == nil {
-		p = ts.NewParser(entry.Language())
+		p = gotreesitter.NewParser(entry.Language())
 		ex.parsers[entry.Name] = p
 	}
 	return p
 }
 
-func (ex *extractor) tagger(entry *grammars.LangEntry) *ts.Tagger {
+func (ex *extractor) tagger(entry *grammars.LangEntry) *gotreesitter.Tagger {
 	if t, ok := ex.taggers[entry.Name]; ok {
 		return t
 	}
-	var t *ts.Tagger
+	var t *gotreesitter.Tagger
 	if q := grammars.ResolveTagsQuery(*entry); q != "" {
 		if aug := tagsAugment[entry.Name]; aug != "" {
 			q += "\n" + aug
 		}
-		t, _ = ts.NewTagger(entry.Language(), q)
+		t, _ = gotreesitter.NewTagger(entry.Language(), q)
 	}
 	ex.taggers[entry.Name] = t
 	return t

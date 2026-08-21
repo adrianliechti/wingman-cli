@@ -7,11 +7,12 @@ import (
 	"strings"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	corecode "github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/theme"
 )
 
 func (a *App) Confirm(ctx context.Context, message string) (bool, error) {
-	if a.confirmAll.Load() {
+	if a.confirmAllForSession(ctx) {
 		return true, nil
 	}
 
@@ -41,7 +42,7 @@ func (a *App) Confirm(ctx context.Context, message string) (bool, error) {
 		a.recordPrompt("Confirm command", message, "Yes")
 		return true, nil
 	case "always":
-		a.confirmAll.Store(true)
+		a.rememberConfirmAll(ctx)
 		a.recordPrompt("Confirm command", message, "Always")
 		a.post(func() {
 			a.appendChat(cellNotice("Auto-approving commands for this session", theme.Default.BrBlack, a.width()))
@@ -51,6 +52,24 @@ func (a *App) Confirm(ctx context.Context, message string) (bool, error) {
 		a.recordPrompt("Confirm command", message, "No")
 		return false, nil
 	}
+}
+
+func (a *App) confirmationSessionID(ctx context.Context) string {
+	if id := corecode.SessionIDFromContext(ctx); id != "" {
+		return id
+	}
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
+	return a.sessionID
+}
+
+func (a *App) confirmAllForSession(ctx context.Context) bool {
+	_, ok := a.confirmAll.Load(a.confirmationSessionID(ctx))
+	return ok
+}
+
+func (a *App) rememberConfirmAll(ctx context.Context) {
+	a.confirmAll.Store(a.confirmationSessionID(ctx), struct{}{})
 }
 
 // recordPrompt writes the resolved question and its answer into the chat —

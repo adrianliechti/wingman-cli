@@ -13,7 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
-	textdiff "github.com/adrianliechti/wingman-agent/pkg/diff"
+	"github.com/adrianliechti/wingman-agent/pkg/diff"
 	"github.com/adrianliechti/wingman-agent/pkg/settings"
 )
 
@@ -599,16 +599,16 @@ func editorTabPrediction(content string, prompt editorTabPrompt, completion stri
 // select the relevant line hunk, then refine it to the semantic character hunk.
 // Multiple semantic character hunks stay together because the protocol returns
 // one coherent edit range.
-func editorTabChangeAroundCursor(original, updated string, cursor int) (textdiff.Hunk, bool) {
+func editorTabChangeAroundCursor(original, updated string, cursor int) (diff.Hunk, bool) {
 	const timeout = 50 * time.Millisecond
-	best, ok := editorTabClosestChange(textdiff.LineHunks(original, updated, timeout), cursor)
+	best, ok := editorTabClosestChange(diff.LineHunks(original, updated, timeout), cursor)
 	if !ok {
-		return textdiff.Hunk{}, false
+		return diff.Hunk{}, false
 	}
 
 	originalBlock := original[best.BeforeStart:best.BeforeEnd]
 	updatedBlock := updated[best.AfterStart:best.AfterEnd]
-	characterHunks := textdiff.CharacterHunks(originalBlock, updatedBlock, timeout)
+	characterHunks := diff.CharacterHunks(originalBlock, updatedBlock, timeout)
 	semanticHunks := characterHunks[:0]
 	for _, change := range characterHunks {
 		oldText := originalBlock[change.BeforeStart:change.BeforeEnd]
@@ -619,7 +619,7 @@ func editorTabChangeAroundCursor(original, updated string, cursor int) (textdiff
 		semanticHunks = append(semanticHunks, change)
 	}
 	if len(semanticHunks) == 0 {
-		return textdiff.Hunk{}, false
+		return diff.Hunk{}, false
 	}
 	change := semanticHunks[0]
 	if len(semanticHunks) > 1 {
@@ -642,9 +642,9 @@ func editorTabChangeAroundCursor(original, updated string, cursor int) (textdiff
 	return change, true
 }
 
-func editorTabClosestChange(hunks []textdiff.Hunk, cursor int) (textdiff.Hunk, bool) {
+func editorTabClosestChange(hunks []diff.Hunk, cursor int) (diff.Hunk, bool) {
 	if len(hunks) == 0 {
-		return textdiff.Hunk{}, false
+		return diff.Hunk{}, false
 	}
 	best := hunks[0]
 	bestRank, bestDistance := editorTabChangeDistance(best, cursor)
@@ -657,7 +657,7 @@ func editorTabClosestChange(hunks []textdiff.Hunk, cursor int) (textdiff.Hunk, b
 	return best, true
 }
 
-func editorTabChangeDistance(change textdiff.Hunk, cursor int) (rank, distance int) {
+func editorTabChangeDistance(change diff.Hunk, cursor int) (rank, distance int) {
 	if change.BeforeStart <= cursor && cursor <= change.BeforeEnd {
 		return 0, 0
 	}

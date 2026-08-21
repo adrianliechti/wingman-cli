@@ -135,7 +135,7 @@ var readOnlyCommands = map[string][]string{
 
 	"go": {"doc", "list", "version", "help"},
 
-	"git": {"status", "log", "diff", "show", "branch", "tag", "remote", "ls-files", "ls-tree", "rev-parse", "describe", "shortlog", "blame", "grep", "reflog", "stash list", "help", "version"},
+	"git": {"status", "log", "diff", "show", "branch", "tag", "remote", "ls-files", "ls-tree", "ls-remote", "rev-parse", "rev-list", "describe", "shortlog", "blame", "grep", "reflog", "stash list", "cat-file", "merge-base", "for-each-ref", "show-ref", "whatchanged", "check-ignore", "check-attr", "count-objects", "name-rev", "var", "help", "version"},
 
 	"gh": {"status", "repo view", "pr list", "pr view", "pr status", "pr diff", "issue list", "issue view", "issue status", "gist list", "gist view", "release list", "release view", "run list", "run view", "workflow list", "workflow view", "help", "version"},
 

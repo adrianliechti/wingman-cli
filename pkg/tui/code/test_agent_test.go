@@ -5,12 +5,12 @@ import (
 	"iter"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
-	wingmancode "github.com/adrianliechti/wingman-agent/pkg/code"
+	corecode "github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/model"
 )
 
 type uiTestAgent struct {
-	workspace *wingmancode.Workspace
+	workspace *corecode.Workspace
 	messages  []agent.Message
 	revision  uint64
 	snapshots int
@@ -19,12 +19,12 @@ type uiTestAgent struct {
 	effort    string
 	efforts   []string
 	mode      string
-	sessions  []wingmancode.SessionInfo
+	sessions  []corecode.SessionInfo
 }
 
 func newUITestAgent(messages []agent.Message) *uiTestAgent {
 	return &uiTestAgent{
-		workspace: &wingmancode.Workspace{RootPath: "/workspace"},
+		workspace: &corecode.Workspace{RootPath: "/workspace"},
 		messages:  messages,
 		model:     "gpt-5.6-sol",
 		effort:    "medium",
@@ -33,8 +33,8 @@ func newUITestAgent(messages []agent.Message) *uiTestAgent {
 	}
 }
 
-func (a *uiTestAgent) Name() string                      { return wingmancode.BuiltinAgentName }
-func (a *uiTestAgent) Workspace() *wingmancode.Workspace { return a.workspace }
+func (a *uiTestAgent) Name() string                   { return corecode.BuiltinAgentName }
+func (a *uiTestAgent) Workspace() *corecode.Workspace { return a.workspace }
 func (a *uiTestAgent) Models(string) ([]model.Model, string) {
 	if a.models != nil {
 		return append([]model.Model(nil), a.models...), a.model
@@ -52,30 +52,30 @@ func (a *uiTestAgent) SetEffort(_ context.Context, _ string, value string) error
 	a.effort = value
 	return nil
 }
-func (a *uiTestAgent) Modes(string) ([]wingmancode.Mode, string) {
-	return []wingmancode.Mode{
+func (a *uiTestAgent) Modes(string) ([]corecode.Mode, string) {
+	return []corecode.Mode{
 		{ID: "agent", Name: "Agent"},
 		{ID: "plan", Name: "Plan"},
-		wingmancode.UnattendedMode(),
+		corecode.UnattendedMode(),
 	}, a.mode
 }
 func (a *uiTestAgent) SetMode(_ context.Context, _, mode string) error {
 	a.mode = mode
 	return nil
 }
-func (a *uiTestAgent) ListSessions(context.Context) ([]wingmancode.SessionInfo, error) {
+func (a *uiTestAgent) ListSessions(context.Context) ([]corecode.SessionInfo, error) {
 	return a.sessions, nil
 }
 func (a *uiTestAgent) NewSession(context.Context) (string, error)  { return "new", nil }
 func (a *uiTestAgent) LoadSession(context.Context, string) error   { return nil }
 func (a *uiTestAgent) DeleteSession(context.Context, string) error { return nil }
 func (a *uiTestAgent) Messages(string) []agent.Message             { return a.messages }
-func (a *uiTestAgent) HistorySnapshot(string) wingmancode.HistorySnapshot {
+func (a *uiTestAgent) HistorySnapshot(string) corecode.HistorySnapshot {
 	a.snapshots++
-	return wingmancode.HistorySnapshot{Messages: agent.CloneMessages(a.messages), Revision: a.revision}
+	return corecode.HistorySnapshot{Messages: agent.CloneMessages(a.messages), Revision: a.revision}
 }
-func (a *uiTestAgent) HistoryVersion(string) wingmancode.HistoryVersion {
-	return wingmancode.HistoryVersion{Revision: a.revision, MessageCount: len(a.messages)}
+func (a *uiTestAgent) HistoryVersion(string) corecode.HistoryVersion {
+	return corecode.HistoryVersion{Revision: a.revision, MessageCount: len(a.messages)}
 }
 func (a *uiTestAgent) Usage(string) agent.Usage { return agent.Usage{} }
 func (a *uiTestAgent) Send(context.Context, string, []agent.Content) (iter.Seq2[agent.Message, error], error) {
