@@ -8,6 +8,30 @@ import (
 	"strings"
 )
 
+// AdapterRequirement describes the commands capable of serving one detected
+// debugger integration, in preference order.
+type AdapterRequirement struct {
+	Name     string
+	Commands []string
+}
+
+// DetectRequirements reports adapter needs independently of whether the
+// adapter executable is installed.
+func DetectRequirements(ctx context.Context, workspace string, adapters []AdapterDescriptor) ([]AdapterRequirement, error) {
+	var requirements []AdapterRequirement
+	for _, adapter := range adapters {
+		projects, err := detectProjects(ctx, workspace, adapter.Markers, adapter.SourceExtensions)
+		if err != nil {
+			return nil, err
+		}
+		if len(projects) == 0 || adapter.Command == "" {
+			continue
+		}
+		requirements = append(requirements, AdapterRequirement{Name: adapter.Name, Commands: []string{adapter.Command}})
+	}
+	return requirements, nil
+}
+
 func detectProjects(ctx context.Context, workspace string, markers, sourceExtensions []string) ([]string, error) {
 	markerSet := make(map[string]bool, len(markers))
 	for _, marker := range markers {

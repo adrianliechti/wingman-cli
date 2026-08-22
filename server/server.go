@@ -48,7 +48,8 @@ var StaticFS, _ = fs.Sub(staticFiles, "static")
 const DefaultPort = 9000
 
 type ServerOptions struct {
-	NoBrowser bool
+	NoBrowser           bool
+	disableManagedTools bool
 }
 
 type Server struct {
@@ -181,6 +182,17 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 	s.background.Go(func() {
 		s.files.Run(serverCtx)
 	})
+	if !opts.disableManagedTools {
+		s.background.Go(func() {
+			changed, updateErr := ws.UpdateManagedTools(serverCtx)
+			if updateErr != nil && serverCtx.Err() == nil {
+				fmt.Fprintf(os.Stderr, "managed tools warning: %v\n", updateErr)
+			}
+			if changed && serverCtx.Err() == nil {
+				s.files.Flush()
+			}
+		})
+	}
 	s.skillFiles = watch.New(watch.Options{
 		Fallback: 2 * time.Second,
 		Active:   s.hasClients,

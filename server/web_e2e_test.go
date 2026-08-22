@@ -363,7 +363,7 @@ func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	app, err := New(ctx, workDir, &ServerOptions{NoBrowser: true})
+	app, err := New(ctx, workDir, &ServerOptions{NoBrowser: true, disableManagedTools: true})
 	if err != nil {
 		t.Fatal(err)
 	}

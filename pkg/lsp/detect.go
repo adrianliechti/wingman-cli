@@ -37,8 +37,10 @@ var projectBinDirs = []string{
 	filepath.Join("node_modules", ".bin"),
 	filepath.Join(".venv", "bin"),
 	filepath.Join("venv", "bin"),
+	filepath.Join("env", "bin"),
 	filepath.Join(".venv", "Scripts"),
 	filepath.Join("venv", "Scripts"),
+	filepath.Join("env", "Scripts"),
 	filepath.Join("vendor", "bin"),
 }
 
@@ -191,7 +193,7 @@ func serverVersionSupported(server Server, command string) bool {
 	return false
 }
 
-func detectAll(workingDir string) []projectRoot {
+func detectAll(workingDir string, managedResolver func(string) string) []projectRoot {
 	index := indexWorkspace(workingDir)
 	commands := make(map[string]string)
 	versions := make(map[string]bool)
@@ -202,7 +204,7 @@ func detectAll(workingDir string) []projectRoot {
 	for _, project := range knownProjects {
 		for _, dir := range projectDirs(index, project) {
 			for _, candidate := range project.Servers {
-				server, ok := resolveServer(workingDir, dir, candidate, commands, versions)
+				server, ok := resolveServer(workingDir, dir, candidate, managedResolver, commands, versions)
 				if !ok {
 					continue
 				}
@@ -247,13 +249,19 @@ func projectDirs(index *workspaceIndex, project projectType) []string {
 	})
 }
 
-func resolveServer(workingDir, dir string, candidate Server, commands map[string]string, versions map[string]bool) (Server, bool) {
-	path := resolveCommand(dir, workingDir, candidate.Command)
+func resolveServer(workingDir, dir string, candidate Server, managedResolver func(string) string, commands map[string]string, versions map[string]bool) (Server, bool) {
+	path := ""
+	if managedResolver != nil {
+		path = managedResolver(candidate.Command)
+	}
+	if path == "" {
+		path = resolveCommand(dir, workingDir, candidate.Command)
+	}
 	if path == "" {
 		global, cached := commands[candidate.Command]
 		if !cached {
-			if _, err := exec.LookPath(candidate.Command); err == nil {
-				global = candidate.Command
+			if path, err := exec.LookPath(candidate.Command); err == nil {
+				global = path
 			} else {
 				global = resolveUserCommand(candidate.Command)
 			}

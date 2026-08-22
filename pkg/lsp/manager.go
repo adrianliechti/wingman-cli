@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -26,6 +27,7 @@ type Manager struct {
 	roots                 []projectRoot
 	detectedAt            time.Time
 	initializationOptions map[string][]byte
+	commandResolver       func(string) string
 }
 
 type ManagerOption func(*Manager)
@@ -43,6 +45,14 @@ func WithServerInitializationOptions(name string, value any) ManagerOption {
 			manager.initializationOptions = make(map[string][]byte)
 		}
 		manager.initializationOptions[name] = encoded
+	}
+}
+
+// WithCommandResolver checks an application-managed tool location before
+// project-local and PATH-based command discovery.
+func WithCommandResolver(resolve func(string) string) ManagerOption {
+	return func(manager *Manager) {
+		manager.commandResolver = resolve
 	}
 }
 
@@ -78,7 +88,7 @@ func (m *Manager) detect() []projectRoot {
 	m.detectMu.Lock()
 	defer m.detectMu.Unlock()
 	if m.detectedAt.IsZero() || time.Since(m.detectedAt) >= detectionCacheTTL {
-		m.roots = detectAll(m.workingDir)
+		m.roots = detectAll(m.workingDir, m.commandResolver)
 		for index := range m.roots {
 			if options := m.initializationOptions[m.roots[index].Server.Name]; len(options) > 0 {
 				m.roots[index].Server.InitializationOptions = slices.Clone(options)
@@ -87,6 +97,49 @@ func (m *Manager) detect() []projectRoot {
 		m.detectedAt = time.Now()
 	}
 	return slices.Clone(m.roots)
+}
+
+// InvalidateDetection makes newly installed or updated servers visible on the
+// next lookup without waiting for the detection cache TTL.
+func (m *Manager) InvalidateDetection() {
+	m.detectMu.Lock()
+	m.detectedAt = time.Time{}
+	m.detectMu.Unlock()
+}
+
+// SetServerInitializationOptions updates future sessions for a server. An
+// active session for that server is closed because LSP initialization options
+// cannot be changed after startup.
+func (m *Manager) SetServerInitializationOptions(name string, value any) error {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	m.detectMu.Lock()
+	if bytes.Equal(m.initializationOptions[name], encoded) {
+		m.detectMu.Unlock()
+		return nil
+	}
+	if m.initializationOptions == nil {
+		m.initializationOptions = make(map[string][]byte)
+	}
+	m.initializationOptions[name] = encoded
+	m.detectedAt = time.Time{}
+	m.detectMu.Unlock()
+
+	var stale []*Session
+	m.mu.Lock()
+	for key, session := range m.sessions {
+		if session != nil && strings.EqualFold(session.server.Name, name) {
+			stale = append(stale, session)
+			delete(m.sessions, key)
+		}
+	}
+	m.mu.Unlock()
+	for _, session := range stale {
+		session.Close()
+	}
+	return nil
 }
 
 func (m *Manager) FindServer(filePath string) *Server {

@@ -50,21 +50,20 @@ func runACP(ctx context.Context, args []string) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
 	target := "wingman"
-	if len(args) > 0 {
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+		printACPHelp()
+		return
+	}
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		target = args[0]
 		args = args[1:]
 	}
 
 	switch target {
-	case "--help", "-h", "help":
-		printACPHelp()
 	case "wingman":
-		if len(args) > 0 {
-			if args[0] == "--help" || args[0] == "-h" {
-				printACPHelp()
-				return
-			}
-			fatal(fmt.Errorf("wingman acp wingman does not accept arguments"))
+		fs := newFlags("wingman acp wingman")
+		if err := fs.Parse(args); err != nil {
+			fatal(err)
 		}
 		if err := server.Run(ctx, os.Stdin, os.Stdout); err != nil {
 			fatal(err)

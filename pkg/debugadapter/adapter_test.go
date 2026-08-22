@@ -60,6 +60,35 @@ func TestPythonAdapterPlansWorkspaceRelativeScript(t *testing.T) {
 	}
 }
 
+func TestPythonAdapterUsesProjectVirtualEnvironment(t *testing.T) {
+	project := t.TempDir()
+	bin := "bin"
+	name := "python"
+	if runtime.GOOS == "windows" {
+		bin = "Scripts"
+		name = "python.exe"
+	}
+	interpreter := filepath.Join(project, ".venv", bin, name)
+	if err := os.MkdirAll(filepath.Dir(interpreter), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(interpreter, []byte("python"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := NewRegistry().Plan("Python", Request{
+		Action: "debug", WorkspaceDir: project, ProjectDir: ".",
+		Target: Target{Name: "main.py", Kind: "script", Language: "Python", Path: "main.py", Directory: ".", Line: 1, Column: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{interpreter}
+	if got := plan.Configuration["python"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("python = %#v, want %#v", got, want)
+	}
+}
+
 func TestRustAdapterPlansConcreteCargoBinary(t *testing.T) {
 	descriptor := (rustAdapter{}).Descriptor()
 	if descriptor.Transport != "stdio" || len(descriptor.Args) != 0 || descriptor.ReadyPrefix != "" {
@@ -370,4 +399,19 @@ func TestRegistryUsesExplicitJavaScriptDebugServer(t *testing.T) {
 	if !found {
 		t.Fatal("explicit JavaScript debug server was not configured")
 	}
+}
+
+func TestRegistryUsesManagedJavaScriptAdapterByDefault(t *testing.T) {
+	t.Setenv("WINGMAN_JS_DEBUG_ADAPTER", "")
+	t.Setenv("WINGMAN_JS_DEBUG_SERVER", "")
+	for _, descriptor := range NewRegistry().Descriptors() {
+		if descriptor.Name != "vscode-js-debug" {
+			continue
+		}
+		if descriptor.Command != "js-debug-adapter" || !reflect.DeepEqual(descriptor.Args, []string{"0", "127.0.0.1"}) {
+			t.Fatalf("JavaScript adapter = %#v", descriptor)
+		}
+		return
+	}
+	t.Fatal("JavaScript adapter was not registered")
 }

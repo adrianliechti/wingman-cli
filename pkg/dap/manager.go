@@ -30,6 +30,7 @@ type Manager struct {
 	root      string
 	adapters  []AdapterDescriptor
 	lookup    func(string) string
+	managed   func(string) string
 	start     sessionStarter
 	terminal  TerminalLauncher
 	connector AdapterConnector
@@ -68,6 +69,33 @@ func (m *Manager) SetAdapterConnector(connector AdapterConnector) {
 	m.mu.Unlock()
 }
 
+// SetCommandResolver checks an application-managed tool location before the
+// host PATH and workspace-local adapter locations.
+func (m *Manager) SetCommandResolver(resolve func(string) string) {
+	m.detectMu.Lock()
+	m.managed = resolve
+	m.detectedAt = time.Time{}
+	m.detectMu.Unlock()
+}
+
+// SetAdapters replaces descriptors used by future discovery and sessions.
+// An already-running session is unaffected.
+func (m *Manager) SetAdapters(adapters ...AdapterDescriptor) {
+	m.detectMu.Lock()
+	m.adapters = cloneAdapters(adapters)
+	m.detected = nil
+	m.detectedAt = time.Time{}
+	m.detectMu.Unlock()
+}
+
+// InvalidateDetection makes newly installed or updated adapters visible on
+// the next lookup without waiting for the detection cache TTL.
+func (m *Manager) InvalidateDetection() {
+	m.detectMu.Lock()
+	m.detectedAt = time.Time{}
+	m.detectMu.Unlock()
+}
+
 func newManager(root string, adapters []AdapterDescriptor, lookup func(string) string, starter sessionStarter) *Manager {
 	return &Manager{
 		root:        filepath.Clean(root),
@@ -97,12 +125,6 @@ func (m *Manager) detect(ctx context.Context) ([]detectedAdapter, error) {
 			continue
 		}
 		command := m.resolveDetectedCommand(candidate.Command, projects)
-		if command == "" && candidate.FallbackCommand != "" {
-			command = m.resolveDetectedCommand(candidate.FallbackCommand, projects)
-			if command != "" {
-				candidate.Args = slices.Clone(candidate.FallbackArgs)
-			}
-		}
 		if command == "" {
 			continue
 		}
@@ -119,7 +141,6 @@ func cloneAdapters(values []AdapterDescriptor) []AdapterDescriptor {
 	for i, value := range values {
 		cloned[i] = value
 		cloned[i].Args = slices.Clone(value.Args)
-		cloned[i].FallbackArgs = slices.Clone(value.FallbackArgs)
 		cloned[i].Markers = slices.Clone(value.Markers)
 		cloned[i].SourceExtensions = slices.Clone(value.SourceExtensions)
 		cloned[i].Defaults = maps.Clone(value.Defaults)
@@ -133,16 +154,18 @@ func (m *Manager) resolveDetectedCommand(command string, projects []string) stri
 	if command == "" {
 		return ""
 	}
-	if resolved := m.lookup(command); resolved != "" {
-		return resolved
-	}
-	if resolved := resolveWorkspaceAdapterCommand(m.root, command); resolved != "" {
-		return resolved
-	}
-	for _, project := range projects {
-		if resolved := resolveWorkspaceAdapterCommand(project, command); resolved != "" {
+	if m.managed != nil {
+		if resolved := m.managed(command); resolved != "" {
 			return resolved
 		}
+	}
+	for _, project := range projects {
+		if resolved := resolveProjectAdapterCommand(project, m.root, command); resolved != "" {
+			return resolved
+		}
+	}
+	if m.lookup != nil {
+		return m.lookup(command)
 	}
 	return ""
 }
@@ -218,14 +241,13 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 	if err != nil {
 		return nil, err
 	}
-	// Prefer the selected project's virtual environment or node_modules binary
-	// over a workspace-wide fallback found during discovery. This matters in
-	// monorepos where projects intentionally pin different adapter versions.
 	if registered := m.registeredAdapter(selected.adapter.Name); registered != nil {
-		if command := resolveWorkspaceAdapterCommand(plan.ProjectDir, registered.Command); command != "" {
-			plan.Adapter.Command = command
-			plan.Adapter.Args = slices.Clone(registered.Args)
+		command := m.resolveProjectCommand(registered.Command, plan.ProjectDir)
+		if command == "" {
+			return nil, fmt.Errorf("debug adapter %s is not available for project %s", registered.Name, plan.ProjectDir)
 		}
+		plan.Adapter.Command = command
+		plan.Adapter.Args = slices.Clone(registered.Args)
 	}
 
 	id := uuid.NewString()[:8]
@@ -256,6 +278,21 @@ func (m *Manager) registeredAdapter(name string) *AdapterDescriptor {
 		}
 	}
 	return nil
+}
+
+func (m *Manager) resolveProjectCommand(command, project string) string {
+	if m.managed != nil {
+		if resolved := m.managed(command); resolved != "" {
+			return resolved
+		}
+	}
+	if resolved := resolveProjectAdapterCommand(project, m.root, command); resolved != "" {
+		return resolved
+	}
+	if m.lookup != nil {
+		return m.lookup(command)
+	}
+	return ""
 }
 
 // mergeSourceBreakpoints keeps a plan's initial stops and folds in the
@@ -650,27 +687,45 @@ func resolveAdapterCommand(command string) string {
 	if value := os.Getenv("GOPATH"); value != "" {
 		dirs = append(dirs, filepath.Join(value, "bin"))
 	}
-	if home, err := os.UserHomeDir(); err == nil {
+	if value := os.Getenv("PNPM_HOME"); value != "" {
+		dirs = append(dirs, value)
+	}
+	home, _ := os.UserHomeDir()
+	if home != "" {
 		dirs = append(dirs,
 			filepath.Join(home, "go", "bin"),
 			filepath.Join(home, ".cargo", "bin"),
+			filepath.Join(home, ".local", "bin"),
 			filepath.Join(home, ".dotnet", "tools"),
 			filepath.Join(home, ".bun", "bin"),
-			filepath.Join(home, ".local", "bin"),
-			filepath.Join(home, ".local", "share", "nvim", "mason", "bin"),
-			filepath.Join(home, ".npm-global", "bin"),
-			filepath.Join(home, ".local", "share", "mise", "shims"),
+			filepath.Join(home, ".deno", "bin"),
+			filepath.Join(home, ".volta", "bin"),
 			filepath.Join(home, ".asdf", "shims"),
+			filepath.Join(home, ".local", "share", "mise", "shims"),
+			filepath.Join(home, ".npm-global", "bin"),
 		)
 		if runtime.GOOS == "windows" {
+			dirs = append(dirs, filepath.Join(home, "scoop", "shims"))
+			if appData := os.Getenv("APPDATA"); appData != "" {
+				dirs = append(dirs, filepath.Join(appData, "npm"))
+			}
 			if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
-				dirs = append(dirs, filepath.Join(localAppData, "nvim-data", "mason", "bin"))
+				dirs = append(dirs,
+					filepath.Join(localAppData, "nvim-data", "mason", "bin"),
+					filepath.Join(localAppData, "pnpm"),
+					filepath.Join(localAppData, "Volta", "bin"),
+					filepath.Join(localAppData, "Microsoft", "WinGet", "Links"),
+				)
 			}
-		}
-		if command == "codelldb" {
-			if path := resolveCodeLLDB(home); path != "" {
-				return path
+			if programData := os.Getenv("PROGRAMDATA"); programData != "" {
+				dirs = append(dirs, filepath.Join(programData, "chocolatey", "bin"))
 			}
+		} else {
+			dirs = append(dirs,
+				filepath.Join(home, ".local", "share", "nvim", "mason", "bin"),
+				filepath.Join(home, "Library", "pnpm"),
+				filepath.Join(home, ".local", "share", "pnpm"),
+			)
 		}
 	}
 	if runtime.GOOS != "windows" {
@@ -687,48 +742,38 @@ func resolveAdapterCommand(command string) string {
 	return ""
 }
 
-func resolveCodeLLDB(home string) string {
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if dataHome == "" {
-		dataHome = filepath.Join(home, ".local", "share")
+func resolveProjectAdapterCommand(project, workspace, command string) string {
+	project = filepath.Clean(project)
+	workspace = filepath.Clean(workspace)
+	rel, err := filepath.Rel(workspace, project)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
 	}
-	patterns := []string{
-		filepath.Join(home, ".vscode", "extensions", "vadimcn.vscode-lldb-*", "adapter"),
-		filepath.Join(home, ".vscode-insiders", "extensions", "vadimcn.vscode-lldb-*", "adapter"),
-		filepath.Join(home, ".cursor", "extensions", "vadimcn.vscode-lldb-*", "adapter"),
-		filepath.Join(home, ".windsurf", "extensions", "vadimcn.vscode-lldb-*", "adapter"),
-		filepath.Join(dataHome, "nvim", "mason", "packages", "codelldb", "extension", "adapter"),
-	}
-	var directories []string
-	for _, pattern := range patterns {
-		matches, _ := filepath.Glob(pattern)
-		directories = append(directories, matches...)
-	}
-	slices.Sort(directories)
-	for index := len(directories) - 1; index >= 0; index-- {
-		for _, name := range commandNames("codelldb") {
-			path := filepath.Join(directories[index], name)
-			if executableFile(path) {
-				return path
-			}
+	for {
+		if resolved := resolveLocalAdapterCommand(project, command); resolved != "" {
+			return resolved
 		}
+		if project == workspace {
+			return ""
+		}
+		parent := filepath.Dir(project)
+		if parent == project {
+			return ""
+		}
+		project = parent
 	}
-	return ""
 }
 
-func resolveWorkspaceAdapterCommand(workspace, command string) string {
-	for _, directory := range []string{".venv", "venv", "env", filepath.Join("node_modules", ".bin")} {
-		bin := "bin"
-		if directory == filepath.Join("node_modules", ".bin") {
-			bin = ""
-		}
-		if runtime.GOOS == "windows" {
-			if bin != "" {
-				bin = "Scripts"
-			}
-		}
+func resolveLocalAdapterCommand(project, command string) string {
+	directories := []string{
+		filepath.Join("node_modules", ".bin"),
+		filepath.Join(".venv", "bin"), filepath.Join("venv", "bin"), filepath.Join("env", "bin"),
+		filepath.Join(".venv", "Scripts"), filepath.Join("venv", "Scripts"), filepath.Join("env", "Scripts"),
+		filepath.Join("vendor", "bin"),
+	}
+	for _, directory := range directories {
 		for _, name := range commandNames(command) {
-			path := filepath.Join(workspace, directory, bin, name)
+			path := filepath.Join(project, directory, name)
 			if executableFile(path) {
 				return path
 			}

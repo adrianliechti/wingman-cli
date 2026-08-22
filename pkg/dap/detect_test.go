@@ -270,22 +270,6 @@ func TestManagerRejectsSecondActiveSession(t *testing.T) {
 	}
 }
 
-func TestResolveCodeLLDBFindsEditorExtension(t *testing.T) {
-	home := t.TempDir()
-	name := "codelldb"
-	if runtime.GOOS == "windows" {
-		name = "codelldb.exe"
-	}
-	path := filepath.Join(home, ".vscode", "extensions", "vadimcn.vscode-lldb-1.11.0", "adapter", name)
-	writeTestFile(t, path, "adapter\n")
-	if err := os.Chmod(path, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if got := resolveCodeLLDB(home); got != path {
-		t.Fatalf("resolveCodeLLDB = %q, want %q", got, path)
-	}
-}
-
 func TestManagerFindsAdapterInNestedProjectEnvironment(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "services", "api")
@@ -297,7 +281,7 @@ func TestManagerFindsAdapterInNestedProjectEnvironment(t *testing.T) {
 		binDir = "Scripts"
 		adapterName += ".exe"
 	}
-	adapterPath := filepath.Join(project, ".venv", binDir, adapterName)
+	adapterPath := filepath.Join(root, "services", ".venv", binDir, adapterName)
 	writeTestFile(t, adapterPath, "adapter\n")
 	if err := os.Chmod(adapterPath, 0o755); err != nil {
 		t.Fatal(err)
@@ -316,27 +300,68 @@ func TestManagerFindsAdapterInNestedProjectEnvironment(t *testing.T) {
 	}
 }
 
-func TestManagerUsesDescriptorFallbackCommand(t *testing.T) {
+func TestManagerPrefersProjectAdapterOverPath(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, "pyproject.toml"), "[project]\n")
 	writeTestFile(t, filepath.Join(root, "main.py"), "print('ready')\n")
-	fallbackPath := filepath.Join(root, "python-for-debugpy")
+	name := "debugpy-adapter"
+	bin := "bin"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+		bin = "Scripts"
+	}
+	local := filepath.Join(root, ".venv", bin, name)
+	writeTestFile(t, local, "adapter\n")
+	if err := os.Chmod(local, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	manager := newManager(root, []AdapterDescriptor{{
-		Name: "debugpy", Command: "debugpy-adapter",
-		FallbackCommand: "python3", FallbackArgs: []string{"/editor/debugpy/adapter"},
-		Markers: []string{"pyproject.toml"}, SourceExtensions: []string{".py"},
-	}}, func(command string) string {
-		if command == "python3" {
-			return fallbackPath
-		}
-		return ""
-	}, nil)
+		Name: "debugpy", Command: "debugpy-adapter", Markers: []string{"pyproject.toml"}, SourceExtensions: []string{".py"},
+	}}, func(string) string { return filepath.Join(root, "path", "debugpy-adapter") }, nil)
 	values, err := manager.detect(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(values) != 1 || values[0].adapter.Command != fallbackPath || !reflect.DeepEqual(values[0].adapter.Args, []string{"/editor/debugpy/adapter"}) {
-		t.Fatalf("detected adapters = %#v", values)
+	if len(values) != 1 || values[0].adapter.Command != local {
+		t.Fatalf("detected adapters = %#v, want project command %q", values, local)
+	}
+}
+
+func TestManagerPrefersManagedAdapter(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/test\n")
+	managed := filepath.Join(root, "managed", "dlv")
+	manager := newManager(root, []AdapterDescriptor{{
+		Name: "delve", Command: "dlv", Markers: []string{"go.mod"}, SourceExtensions: []string{".go"},
+	}}, func(string) string { return filepath.Join(root, "path", "dlv") }, nil)
+	manager.SetCommandResolver(func(command string) string {
+		if command == "dlv" {
+			return managed
+		}
+		return ""
+	})
+
+	values, err := manager.detect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 1 || values[0].adapter.Command != managed {
+		t.Fatalf("detected adapters = %#v, want managed command %q", values, managed)
+	}
+}
+
+func TestDetectRequirementsDoesNotRequireInstalledAdapter(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "main.py"), "print('ready')\n")
+	requirements, err := DetectRequirements(context.Background(), root, []AdapterDescriptor{{
+		Name: "debugpy", Command: "debugpy-adapter", SourceExtensions: []string{".py"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []AdapterRequirement{{Name: "debugpy", Commands: []string{"debugpy-adapter"}}}
+	if !reflect.DeepEqual(requirements, want) {
+		t.Fatalf("requirements = %#v, want %#v", requirements, want)
 	}
 }
 

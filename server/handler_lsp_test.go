@@ -72,7 +72,7 @@ func TestLSPDefinitionRequestValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app, err := New(context.Background(), workDir, &ServerOptions{NoBrowser: true})
+	app, err := New(context.Background(), workDir, &ServerOptions{NoBrowser: true, disableManagedTools: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func greet() {}
 		t.Fatal(err)
 	}
 
-	app, err := New(context.Background(), workDir, &ServerOptions{NoBrowser: true})
+	app, err := New(context.Background(), workDir, &ServerOptions{NoBrowser: true, disableManagedTools: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func greet() {}
 
 func TestWorkspaceDiagnosticsResponseIncludesCoverage(t *testing.T) {
 	t.Setenv("WINGMAN_URL", "http://localhost:1")
-	app, err := New(context.Background(), t.TempDir(), &ServerOptions{NoBrowser: true})
+	app, err := New(context.Background(), t.TempDir(), &ServerOptions{NoBrowser: true, disableManagedTools: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +304,7 @@ func TestLSPFileDiagnosticsRequestValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app, err := New(context.Background(), workDir, &ServerOptions{NoBrowser: true})
+	app, err := New(context.Background(), workDir, &ServerOptions{NoBrowser: true, disableManagedTools: true})
 	if err != nil {
 		t.Fatal(err)
 	}

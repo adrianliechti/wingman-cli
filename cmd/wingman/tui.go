@@ -46,6 +46,8 @@ func runTUI(ctx context.Context, opts tuiOptions) {
 	}
 
 	defer ws.Close()
+	stopToolUpdate := startManagedToolUpdate(ctx, ws)
+	defer stopToolUpdate()
 
 	wa, err := newTUIAgent(ctx, ws, opts.Agent)
 	if err != nil {

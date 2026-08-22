@@ -7,11 +7,28 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+
+	"github.com/adrianliechti/wingman-agent/pkg/code"
 )
 
 func fatal(err error) {
 	fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 	os.Exit(1)
+}
+
+func startManagedToolUpdate(ctx context.Context, workspace *code.Workspace) func() {
+	updateCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, err := workspace.UpdateManagedTools(updateCtx); err != nil && updateCtx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "Managed tools warning: %v\n", err)
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 func main() {
@@ -89,10 +106,10 @@ Run targets:
   claude, claude-desktop, codex, copilot, gemini, goose, junie, opencode, pi
 
 TUI flags:
-  --agent, -a name  Use wingman or any detected/configured agent (default: wingman)
-  --continue, -c    Resume the agent's latest session
-  --resume, -r ID   Resume the specified session
-  --help, -h        Show this help
+  --agent, -a name     Use wingman or any detected/configured agent (default: wingman)
+  --continue, -c       Resume the agent's latest session
+  --resume, -r ID      Resume the specified session
+  --help, -h           Show this help
 
 Exec flags:
   --json                        Return the final response as a JSON object

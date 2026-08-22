@@ -32,8 +32,11 @@ type javaAdapter struct {
 	bundles []string
 }
 
-func newJavaAdapter() javaAdapter {
-	return javaAdapter{bundles: discoverJavaDebugBundles()}
+func newJavaAdapter(bundles ...string) javaAdapter {
+	if len(bundles) == 0 {
+		bundles = DiscoverJavaDebugBundles()
+	}
+	return javaAdapter{bundles: slices.Clone(bundles)}
 }
 
 func (javaAdapter) Language() string { return "Java" }
@@ -212,7 +215,10 @@ func hasWord(source []byte, word string) bool {
 	return pattern.Match(source)
 }
 
-func discoverJavaDebugBundles() []string {
+// DiscoverJavaDebugBundles returns the explicit user-provided JDT LS plug-in.
+// Wingman's managed bundle is supplied by the workspace and does not depend on
+// an editor extension directory.
+func DiscoverJavaDebugBundles() []string {
 	var explicit []string
 	for _, value := range filepath.SplitList(os.Getenv("WINGMAN_JAVA_DEBUG_BUNDLE")) {
 		value = strings.TrimSpace(value)
@@ -227,39 +233,7 @@ func discoverJavaDebugBundles() []string {
 		slices.Sort(explicit)
 		return slices.Compact(explicit)
 	}
-
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return nil
-	}
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if dataHome == "" {
-		dataHome = filepath.Join(home, ".local", "share")
-	}
-	patterns := []string{
-		filepath.Join(home, ".vscode", "extensions", "vscjava.vscode-java-debug-*", "server", "com.microsoft.java.debug.plugin-*.jar"),
-		filepath.Join(home, ".vscode-insiders", "extensions", "vscjava.vscode-java-debug-*", "server", "com.microsoft.java.debug.plugin-*.jar"),
-		filepath.Join(home, ".cursor", "extensions", "vscjava.vscode-java-debug-*", "server", "com.microsoft.java.debug.plugin-*.jar"),
-		filepath.Join(home, ".windsurf", "extensions", "vscjava.vscode-java-debug-*", "server", "com.microsoft.java.debug.plugin-*.jar"),
-		filepath.Join(dataHome, "nvim", "mason", "packages", "java-debug-adapter", "extension", "server", "com.microsoft.java.debug.plugin-*.jar"),
-	}
-	if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
-		patterns = append(patterns,
-			filepath.Join(localAppData, "nvim-data", "mason", "packages", "java-debug-adapter", "extension", "server", "com.microsoft.java.debug.plugin-*.jar"),
-		)
-	}
-	var matches []string
-	for _, pattern := range patterns {
-		values, _ := filepath.Glob(pattern)
-		matches = append(matches, values...)
-	}
-	slices.Sort(matches)
-	if len(matches) == 0 {
-		return nil
-	}
-	// Loading multiple installed versions registers the same extension points
-	// twice. The newest lexical extension/plugin version is the safe default.
-	return []string{matches[len(matches)-1]}
+	return nil
 }
 
 // Connector bridges host-created adapters into the language-neutral DAP

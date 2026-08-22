@@ -149,6 +149,8 @@ func runScript(ctx context.Context, opts scriptOptions) error {
 		return err
 	}
 	defer ws.Close()
+	stopToolUpdate := startManagedToolUpdate(ctx, ws)
+	defer stopToolUpdate()
 
 	a, err := agents.New(ctx, ws, opts.Agent, nil)
 	if err != nil {

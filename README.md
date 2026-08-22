@@ -303,24 +303,9 @@ Supported launch profiles and their adapters are:
 | JavaScript/TypeScript | [vscode-js-debug](https://github.com/microsoft/vscode-js-debug) | Node entry files and explicit direct-execution guards |
 | React/Vite | vscode-js-debug's Chrome profile | Vite configurations, using the configured or default dev-server port |
 
-Install Delve and debugpy directly:
-
-```bash
-go install github.com/go-delve/delve/cmd/dlv@latest
-python -m pip install debugpy
-```
-
-Keep `dlv`, `codelldb`, and `netcoredbg` on `PATH`. For Python, Wingman uses a
-`debugpy-adapter` from `PATH` or a project virtual environment, and can also
-reuse the adapter bundled by an installed `ms-python.debugpy` extension.
-Wingman checks common user tool directories, Mason installs, and compatible
-VS Code/Cursor extension directories. Java requires `jdtls` plus the java-debug
-plug-in JAR; installed VS Code/Cursor and Mason bundles are detected
-automatically, or set `WINGMAN_JAVA_DEBUG_BUNDLE` to the JAR. For JavaScript,
-use a vscode-js-debug standalone release, compatible editor bundle containing
-`dapDebugServer.js`, or Mason installation; `WINGMAN_JS_DEBUG_SERVER` can point
-directly to `dapDebugServer.js`, and `WINGMAN_JS_DEBUG_ADAPTER` can name a
-compatible wrapper executable.
+Wingman installs the latest debugger needed by the open workspace under
+`$WINGMAN_HOME/tools/<tool>` (normally `~/.wingman/tools/<tool>`). It checks for
+updates daily, replaces the active installation, and removes the old one.
 
 Rust target names, kinds, and output directories come from Cargo's
 machine-readable metadata. Rust and C# launch plans use existing debug build
@@ -370,9 +355,43 @@ Wingman comes with powerful built-in tools:
 | `schedule_task` | Schedule recurring or one-time work (interval, cron, or timestamp) that wakes the agent when due |
 | `lsp` | Code intelligence (definitions, references, diagnostics, symbols, call hierarchy) |
 
-### LSP Support
+### LSP and DAP installation
 
-Wingman automatically detects and connects to language servers based on project files. No configuration needed — if you have a language server installed, Wingman will use it.
+Wingman detects language servers from project files and installs the latest
+supported tools under `$WINGMAN_HOME/tools`. Package managers are used when an
+official package is available. Other installed servers are found in the
+project, common tool directories, and `PATH`. Language runtimes and SDKs remain
+external; current JDT LS releases require JDK 21 or newer.
+
+| Capability | Language | Executable | Install method | Source |
+|------------|----------|------------|----------------|--------|
+| LSP | Go | `gopls` | Go | [`golang.org/x/tools/gopls`](https://pkg.go.dev/golang.org/x/tools/gopls) |
+| DAP | Go | `dlv` | Go | [`github.com/go-delve/delve/cmd/dlv`](https://pkg.go.dev/github.com/go-delve/delve/cmd/dlv) |
+| LSP | Rust | `rust-analyzer` | Cargo | [`ra_ap_rust-analyzer`](https://crates.io/crates/ra_ap_rust-analyzer) |
+| LSP | C#/.NET | `csharp-ls` | .NET tool / NuGet | [`csharp-ls`](https://www.nuget.org/packages/csharp-ls) |
+| LSP | TypeScript/JavaScript | `typescript-language-server` | npm | [`typescript-language-server`](https://www.npmjs.com/package/typescript-language-server), [`typescript`](https://www.npmjs.com/package/typescript) |
+| DAP | TypeScript/JavaScript, React/Vite | `js-debug-adapter` | GitHub release | [`vscode-js-debug`](https://github.com/microsoft/vscode-js-debug/releases) |
+| LSP | Python | `basedpyright-langserver` | pip / PyPI | [`basedpyright`](https://pypi.org/project/basedpyright/) |
+| DAP | Python | `debugpy-adapter` | pip / PyPI | [`debugpy`](https://pypi.org/project/debugpy/) |
+| LSP | Java | `jdtls` | Eclipse archive | [Eclipse JDT LS milestones](https://download.eclipse.org/jdtls/milestones/) |
+| DAP | Java | java-debug plug-in | Verified Open VSX package | [Microsoft Java Debugger](https://open-vsx.org/extension/vscjava/vscode-java-debug) |
+| DAP | Rust | `codelldb` | GitHub release | [CodeLLDB](https://github.com/vadimcn/codelldb/releases) |
+| DAP | C#/.NET | `netcoredbg` | GitHub release | [NetCoreDbg](https://github.com/Samsung/netcoredbg/releases) |
+| LSP | PHP | `intelephense` | npm | [`intelephense`](https://www.npmjs.com/package/intelephense) |
+| LSP | Vue | `vue-language-server` | npm | [`@vue/language-server`](https://www.npmjs.com/package/@vue/language-server), [`typescript`](https://www.npmjs.com/package/typescript) |
+| LSP | Svelte | `svelteserver` | npm | [`svelte-language-server`](https://www.npmjs.com/package/svelte-language-server), [`typescript`](https://www.npmjs.com/package/typescript) |
+| LSP | Astro | `astro-ls` | npm | [`@astrojs/language-server`](https://www.npmjs.com/package/@astrojs/language-server), [`typescript`](https://www.npmjs.com/package/typescript) |
+| LSP | Bash | `bash-language-server` | npm | [`bash-language-server`](https://www.npmjs.com/package/bash-language-server) |
+| LSP | YAML | `yaml-language-server` | npm | [`yaml-language-server`](https://www.npmjs.com/package/yaml-language-server) |
+| LSP | Dockerfile | `docker-langserver` | npm | [`dockerfile-language-server-nodejs`](https://www.npmjs.com/package/dockerfile-language-server-nodejs) |
+| LSP | Prisma | `prisma` | npm | [`prisma`](https://www.npmjs.com/package/prisma) |
+
+Wingman resolves both LSP and DAP tools in this order: managed install,
+project-local install, `PATH`, then common user tool directories. Java's debug
+plug-in is loaded from Wingman's managed JDT LS install; set
+`WINGMAN_JAVA_DEBUG_BUNDLE` only to override it explicitly.
+
+### Additional LSP support
 
 | Language | Server | Detected By |
 |----------|--------|-------------|
@@ -382,7 +401,7 @@ Wingman automatically detects and connects to language servers based on project 
 | Python | `basedpyright`, `pyright`, `pylsp`, `jedi-language-server` | `pyproject.toml`, `requirements.txt` |
 | Rust | `rust-analyzer` | `Cargo.toml` |
 | C/C++ | `clangd`, `ccls` | `compile_commands.json`, `CMakeLists.txt` |
-| Java | `jdtls` | `pom.xml`, `build.gradle` |
+| Java | `jdtls` | `pom.xml`, `build.gradle`, `settings.gradle` |
 | C# | `omnisharp`, `csharp-ls` | `*.csproj`, `*.sln` |
 | F# | `fsautocomplete` | `*.fsproj`, `*.sln` |
 | Ruby | `ruby-lsp`, `solargraph` | `Gemfile` |
@@ -402,7 +421,7 @@ Wingman automatically detects and connects to language servers based on project 
 | Vue | `vue-language-server` | `package.json` |
 | Svelte | `svelteserver` | `package.json` |
 | Astro | `astro-ls` | `package.json` |
-| Bash | `bash-language-server` | `.bashrc`, `*.sh` |
+| Bash | `bash-language-server` | `.bashrc`, `*.sh`, `*.bash`, `*.zsh`, `*.ksh` |
 | Terraform | `terraform-ls` | `main.tf`, `.terraform` |
 | YAML | `yaml-language-server` | `.yamllint`, `docker-compose.yml` |
 | Docker | `docker-langserver` | `Dockerfile` |

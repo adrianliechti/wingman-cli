@@ -165,7 +165,7 @@ var knownProjects = []projectType{
 	},
 	{
 		Name:    "java",
-		Markers: []string{"pom.xml", "build.gradle", "build.gradle.kts", ".project", ".classpath"},
+		Markers: []string{"pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", ".project", ".classpath"},
 		Servers: []Server{
 			{
 				Name:       "jdtls",
@@ -404,7 +404,7 @@ var knownProjects = []projectType{
 	},
 	{
 		Name:    "bash",
-		Markers: []string{".bashrc", ".bash_profile", ".zshrc"},
+		Markers: []string{".bashrc", ".bash_profile", ".zshrc", "*.sh", "*.bash", "*.zsh", "*.ksh"},
 		Servers: []Server{
 			{
 				Name:       "bash-language-server",

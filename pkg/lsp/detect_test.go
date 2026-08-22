@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"slices"
 	"testing"
 
 	"go.lsp.dev/protocol"
@@ -187,12 +189,71 @@ func TestDetectAllPrefersNativeTypeScriptSevenLSP(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	roots := detectAll(root)
+	roots := detectAll(root, nil)
 	if len(roots) != 1 {
 		t.Fatalf("detected roots = %+v, want one TypeScript root", roots)
 	}
 	if roots[0].Server.Name != "typescript-go" || roots[0].Server.Command != tsc {
 		t.Fatalf("detected server = %+v, want native TypeScript server %q", roots[0].Server, tsc)
+	}
+}
+
+func TestDetectRequirementsDoesNotRequireInstalledServer(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	requirements := DetectRequirements(root)
+	if len(requirements) != 1 || requirements[0].Project != "go" || !reflect.DeepEqual(requirements[0].Commands, []string{"gopls"}) {
+		t.Fatalf("requirements = %+v", requirements)
+	}
+}
+
+func TestDetectRequirementsRecognizesSourceAndGradleMarkers(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		marker  string
+		project string
+		command string
+	}{
+		{name: "shell script", marker: "scripts/build.sh", project: "bash", command: "bash-language-server"},
+		{name: "Java Gradle settings", marker: "settings.gradle", project: "java", command: "jdtls"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, filepath.FromSlash(test.marker))
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			for _, requirement := range DetectRequirements(root) {
+				if requirement.Project == test.project && slices.Contains(requirement.Commands, test.command) {
+					return
+				}
+			}
+			t.Fatalf("%s requirement not detected: %+v", test.project, DetectRequirements(root))
+		})
+	}
+}
+
+func TestDetectAllPrefersManagedServer(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	managed := filepath.Join(root, "managed", "gopls")
+	roots := detectAll(root, func(command string) string {
+		if command == "gopls" {
+			return managed
+		}
+		return ""
+	})
+	if len(roots) != 1 || roots[0].Server.Command != managed {
+		t.Fatalf("roots = %+v, want managed command %q", roots, managed)
 	}
 }
 

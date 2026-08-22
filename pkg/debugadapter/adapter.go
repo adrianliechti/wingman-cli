@@ -82,11 +82,11 @@ func vscodeIOValues() map[dap.IOMode]string {
 	}
 }
 
-func NewRegistry() *Registry {
+func NewRegistry(javaBundles ...string) *Registry {
 	return NewRegistryWith(
 		goAdapter{},
-		newPythonAdapter(),
-		newJavaAdapter(),
+		pythonAdapter{},
+		newJavaAdapter(javaBundles...),
 		rustAdapter{},
 		dotnetAdapter{},
 		newJavaScriptAdapter(),

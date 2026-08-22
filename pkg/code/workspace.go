@@ -27,6 +27,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/changes"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 	"github.com/adrianliechti/wingman-agent/pkg/debugadapter"
+	"github.com/adrianliechti/wingman-agent/pkg/devtools"
 	"github.com/adrianliechti/wingman-agent/pkg/graph"
 	"github.com/adrianliechti/wingman-agent/pkg/language"
 	"github.com/adrianliechti/wingman-agent/pkg/layout"
@@ -66,7 +67,8 @@ type Workspace struct {
 
 	Plugins []plugin.Plugin
 
-	MCP *mcp.Manager
+	MCP      *mcp.Manager
+	DevTools *devtools.Manager
 
 	Language *language.Service
 	DAP      *dap.Manager
@@ -142,6 +144,7 @@ func NewWorkspace(workDir string) (*Workspace, error) {
 	reportShadowedPluginSkills(mergedSkills)
 
 	mcpManager := loadMCP(workDir, plugins)
+	managedTools, _ := devtools.New()
 
 	return &Workspace{
 		Root:        root,
@@ -150,6 +153,7 @@ func NewWorkspace(workDir string) (*Workspace, error) {
 		ScratchPath: scratchDir,
 		Plugins:     plugins,
 		MCP:         mcpManager,
+		DevTools:    managedTools,
 		baseSkills:  baseSkills,
 		skills:      mergedSkills,
 	}, nil
@@ -257,8 +261,11 @@ func (w *Workspace) WarmUp() {
 			changesManager = changes.New(w.RootPath)
 		}
 
-		debugRegistry := debugadapter.NewRegistry()
+		debugRegistry := debugadapter.NewRegistry(workspaceJavaDebugBundles(w.DevTools)...)
 		var languageOptions []lsp.ManagerOption
+		if w.DevTools != nil {
+			languageOptions = append(languageOptions, lsp.WithCommandResolver(w.DevTools.Resolve))
+		}
 		if bundles := debugRegistry.JDTLSBundles(); len(bundles) > 0 {
 			languageOptions = append(languageOptions, lsp.WithServerInitializationOptions("jdtls", map[string]any{
 				"bundles": bundles,
@@ -266,6 +273,9 @@ func (w *Workspace) WarmUp() {
 		}
 		languageService := language.New(w.RootPath, filepath.Join(projectGraphDir(w.RootPath), "graph.json"), languageOptions...)
 		dapManager := dap.NewManager(w.RootPath, debugRegistry.Descriptors()...)
+		if w.DevTools != nil {
+			dapManager.SetCommandResolver(w.DevTools.Resolve)
+		}
 		dapManager.SetAdapterConnector(debugadapter.NewConnector(languageService))
 		graphEngine := languageService.Graph()
 		lspTools := lsptool.NewTools(languageService)
@@ -299,6 +309,71 @@ func (w *Workspace) WarmUp() {
 
 		languageService.WarmUp()
 	})
+}
+
+// UpdateManagedTools installs the latest project-relevant language servers and
+// debug adapters. Successful updates invalidate discovery caches immediately;
+// JDT LS restarts when its debug plug-in changes, while other active protocol
+// sessions continue until their normal restart boundary.
+func (w *Workspace) UpdateManagedTools(ctx context.Context) (bool, error) {
+	w.mu.RLock()
+	manager := w.DevTools
+	root := w.RootPath
+	closed := w.closed
+	w.mu.RUnlock()
+	if closed || manager == nil {
+		return false, nil
+	}
+
+	var requirements []devtools.Requirement
+	for _, requirement := range lsp.DetectRequirements(root) {
+		requirements = append(requirements, devtools.Requirement{Alternatives: requirement.Commands})
+	}
+
+	registry := debugadapter.NewRegistry(workspaceJavaDebugBundles(manager)...)
+	adapterRequirements, detectErr := dap.DetectRequirements(ctx, root, registry.Descriptors())
+	for _, requirement := range adapterRequirements {
+		requirements = append(requirements, devtools.Requirement{Alternatives: requirement.Commands})
+	}
+	changed, updateErr := manager.Update(ctx, requirements)
+	if !changed {
+		return false, errors.Join(detectErr, updateErr)
+	}
+
+	w.lspLifeMu.RLock()
+	w.dapLifeMu.RLock()
+	w.mu.RLock()
+	languageService := w.Language
+	dapManager := w.DAP
+	closed = w.closed
+	w.mu.RUnlock()
+	if !closed {
+		updatedRegistry := debugadapter.NewRegistry(workspaceJavaDebugBundles(manager)...)
+		if languageService != nil {
+			if bundles := updatedRegistry.JDTLSBundles(); len(bundles) > 0 {
+				updateErr = errors.Join(updateErr, languageService.SetServerInitializationOptions("jdtls", map[string]any{
+					"bundles": bundles,
+				}))
+			}
+			languageService.InvalidateLSPDetection()
+		}
+		if dapManager != nil {
+			dapManager.SetAdapters(updatedRegistry.Descriptors()...)
+		}
+	}
+	w.dapLifeMu.RUnlock()
+	w.lspLifeMu.RUnlock()
+	return true, errors.Join(detectErr, updateErr)
+}
+
+func workspaceJavaDebugBundles(manager *devtools.Manager) []string {
+	if explicit := debugadapter.DiscoverJavaDebugBundles(); len(explicit) > 0 {
+		return explicit
+	}
+	if manager == nil {
+		return nil
+	}
+	return manager.JavaDebugBundles()
 }
 
 func (w *Workspace) InitMCP(ctx context.Context) error {

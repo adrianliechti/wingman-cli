@@ -4,31 +4,9 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"testing"
 )
-
-func TestPythonAdapterFindsEditorBundledDebugpy(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	adapterPath := filepath.Join(home, ".vscode", "extensions", "ms-python.debugpy-2026.6.0", "bundled", "libs", "debugpy", "adapter")
-	if err := os.MkdirAll(adapterPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(adapterPath, "__main__.py"), []byte("# adapter\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	descriptor := newPythonAdapter().Descriptor()
-	wantCommand := "python3"
-	if runtime.GOOS == "windows" {
-		wantCommand = "python"
-	}
-	if descriptor.FallbackCommand != wantCommand || len(descriptor.FallbackArgs) != 1 || descriptor.FallbackArgs[0] != adapterPath {
-		t.Fatalf("Python descriptor = %#v", descriptor)
-	}
-}
 
 func TestGoAdapterFindsMainAndTestTargets(t *testing.T) {
 	registry := NewRegistry()

@@ -19,7 +19,7 @@ func TestTerminalAPI(t *testing.T) {
 
 	ctx := t.Context()
 
-	app, err := New(ctx, t.TempDir(), &ServerOptions{NoBrowser: true})
+	app, err := New(ctx, t.TempDir(), &ServerOptions{NoBrowser: true, disableManagedTools: true})
 	if err != nil {
 		t.Fatal(err)
 	}

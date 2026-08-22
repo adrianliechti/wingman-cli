@@ -36,6 +36,7 @@ func Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	}
 	s := &Server{
 		config:      cfg,
+		manageTools: true,
 		sessions:    map[acpsdk.SessionId]*sessionEntry{},
 		sessionDirs: map[acpsdk.SessionId]string{},
 		workspaces:  map[string]*workspaceEntry{},
@@ -58,8 +59,9 @@ func Run(ctx context.Context, in io.Reader, out io.Writer) error {
 }
 
 type Server struct {
-	conn   *acpsdk.AgentSideConnection
-	config *agent.Config
+	conn        *acpsdk.AgentSideConnection
+	config      *agent.Config
+	manageTools bool
 
 	mu          sync.Mutex
 	sessions    map[acpsdk.SessionId]*sessionEntry
@@ -78,12 +80,14 @@ type sessionEntry struct {
 }
 
 type workspaceEntry struct {
-	ws    *code.Workspace
-	agent *codeagent.Agent
-	key   string
-	refs  int
-	ready chan struct{}
-	err   error
+	ws         *code.Workspace
+	agent      *codeagent.Agent
+	key        string
+	refs       int
+	ready      chan struct{}
+	err        error
+	toolCancel context.CancelFunc
+	toolDone   chan struct{}
 }
 
 func (s *Server) Initialize(_ context.Context, params acpsdk.InitializeRequest) (acpsdk.InitializeResponse, error) {
@@ -386,6 +390,17 @@ func (s *Server) acquireWorkspace(ctx context.Context, cwd string, requestedServ
 	s.mu.Unlock()
 
 	ws.WarmUp()
+	if s.manageTools {
+		toolCtx, cancelTools := context.WithCancel(context.Background())
+		w.toolCancel = cancelTools
+		w.toolDone = make(chan struct{})
+		go func() {
+			defer close(w.toolDone)
+			if _, err := ws.UpdateManagedTools(toolCtx); err != nil && toolCtx.Err() == nil {
+				slog.Warn("managed tools update failed", "cwd", cwd, "err", err)
+			}
+		}()
+	}
 	mcpCtx, cancelMCP := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	if err := ws.InitMCP(mcpCtx); err != nil {
 		missing := missingRequestedMCPServers(requested, ws.MCP.Sessions())
@@ -467,6 +482,12 @@ func (s *Server) releaseWorkspace(w *workspaceEntry) {
 	}
 	delete(s.workspaces, w.key)
 	s.mu.Unlock()
+	if w.toolCancel != nil {
+		w.toolCancel()
+	}
+	if w.toolDone != nil {
+		<-w.toolDone
+	}
 	_ = w.agent.Close()
 	w.ws.Close()
 }

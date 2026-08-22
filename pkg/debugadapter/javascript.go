@@ -35,7 +35,7 @@ func newJavaScriptAdapter() javaScriptAdapter {
 	if command := strings.TrimSpace(os.Getenv("WINGMAN_JS_DEBUG_ADAPTER")); command != "" {
 		return javaScriptAdapter{command: command, args: []string{"0", "127.0.0.1"}}
 	}
-	if server := discoverJavaScriptDebugServer(); server != "" {
+	if server := explicitJavaScriptDebugServer(); server != "" {
 		return javaScriptAdapter{command: "node", args: []string{server, "0", "127.0.0.1"}}
 	}
 	return javaScriptAdapter{command: "js-debug-adapter", args: []string{"0", "127.0.0.1"}}
@@ -274,44 +274,11 @@ func localTypeScriptRuntime(request Request) string {
 	return ""
 }
 
-func discoverJavaScriptDebugServer() string {
+func explicitJavaScriptDebugServer() string {
 	if explicit := strings.TrimSpace(os.Getenv("WINGMAN_JS_DEBUG_SERVER")); explicit != "" {
 		if info, err := os.Stat(explicit); err == nil && !info.IsDir() {
 			return filepath.Clean(explicit)
 		}
 	}
-	home, _ := os.UserHomeDir()
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if dataHome == "" && home != "" {
-		dataHome = filepath.Join(home, ".local", "share")
-	}
-	patterns := []string{
-		filepath.Join(home, ".vscode", "extensions", "ms-vscode.js-debug-*", "src", "dapDebugServer.js"),
-		filepath.Join(home, ".vscode", "extensions", "ms-vscode.js-debug-nightly-*", "src", "dapDebugServer.js"),
-		filepath.Join(home, ".cursor", "extensions", "ms-vscode.js-debug-*", "src", "dapDebugServer.js"),
-		filepath.Join(dataHome, "nvim", "mason", "packages", "js-debug-adapter", "js-debug", "src", "dapDebugServer.js"),
-		filepath.Join(dataHome, "nvim", "mason", "packages", "js-debug-adapter", "extension", "src", "dapDebugServer.js"),
-		filepath.Join("/Applications", "Visual Studio Code.app", "Contents", "Resources", "app", "extensions", "ms-vscode.js-debug", "src", "dapDebugServer.js"),
-		filepath.Join("/Applications", "Cursor.app", "Contents", "Resources", "app", "extensions", "ms-vscode.js-debug", "src", "dapDebugServer.js"),
-		filepath.Join("/usr", "share", "code", "resources", "app", "extensions", "ms-vscode.js-debug", "src", "dapDebugServer.js"),
-	}
-	if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
-		patterns = append(patterns,
-			filepath.Join(localAppData, "Programs", "Microsoft VS Code", "resources", "app", "extensions", "ms-vscode.js-debug", "src", "dapDebugServer.js"),
-			filepath.Join(localAppData, "Programs", "cursor", "resources", "app", "extensions", "ms-vscode.js-debug", "src", "dapDebugServer.js"),
-		)
-	}
-	var matches []string
-	for _, pattern := range patterns {
-		if strings.TrimSpace(pattern) == "" {
-			continue
-		}
-		values, _ := filepath.Glob(pattern)
-		matches = append(matches, values...)
-	}
-	slices.Sort(matches)
-	if len(matches) == 0 {
-		return ""
-	}
-	return matches[len(matches)-1]
+	return ""
 }
