@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -144,8 +145,17 @@ func (m *Manager) JavaDebugBundles() []string {
 }
 
 func javaDebugBundlesAt(root string) []string {
-	pattern := filepath.Join(root, "java-debug", "extension", "server", "com.microsoft.java.debug.plugin-*.jar")
-	matches, _ := filepath.Glob(pattern)
+	directory := filepath.Join(root, "java-debug", "extension", "server")
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return nil
+	}
+	var matches []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "com.microsoft.java.debug.plugin-") && strings.HasSuffix(entry.Name(), ".jar") {
+			matches = append(matches, filepath.Join(directory, entry.Name()))
+		}
+	}
 	slices.Sort(matches)
 	if len(matches) == 0 {
 		return nil

@@ -19,15 +19,19 @@ func fatal(err error) {
 func startManagedToolUpdate(ctx context.Context, workspace *code.Workspace) func() {
 	updateCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
+	var updateErr error
 	go func() {
 		defer close(done)
 		if _, err := workspace.UpdateManagedTools(updateCtx); err != nil && updateCtx.Err() == nil {
-			fmt.Fprintf(os.Stderr, "Managed tools warning: %v\n", err)
+			updateErr = err
 		}
 	}()
 	return func() {
 		cancel()
 		<-done
+		if updateErr != nil {
+			fmt.Fprintf(os.Stderr, "Managed tools warning: %v\n", updateErr)
+		}
 	}
 }
 

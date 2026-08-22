@@ -329,6 +329,13 @@ func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(
+		filepath.Join(workDir, "standalone-diagnostics.tsx"),
+		[]byte("import { createRoot } from \"react-dom/client\";\nconst view = <main>Hello</main>;\ncreateRoot(document.body).render(view);\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
 	tabFiles := map[string]string{
 		"tab-effectiveness.go": "package main\n\nfunc display() {\n    userName := \"Ada\"\n    prepare()\n    validate()\n    println(userName)\n}\n",
 		"tab-ghost.go":         "package main\n\nfunc main() {\n\ttotal := price *\n\t_ = total\n}\n",

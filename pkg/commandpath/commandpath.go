@@ -3,11 +3,11 @@
 package commandpath
 
 import (
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 var projectDirectories = []string{
@@ -50,7 +50,7 @@ func ResolveProject(project, workspace, command string) string {
 	project = filepath.Clean(project)
 	workspace = filepath.Clean(workspace)
 	rel, err := filepath.Rel(workspace, project)
-	if err != nil || rel == ".." || len(rel) > 3 && rel[:3] == ".."+string(filepath.Separator) {
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return ""
 	}
 	for {
@@ -85,7 +85,7 @@ func LookPath(command string) (string, error) {
 	if path := Find(userDirectories(), command); path != "" {
 		return path, nil
 	}
-	return "", errors.New("executable file not found")
+	return "", exec.ErrNotFound
 }
 
 func Resolve(command string) string {
@@ -124,14 +124,19 @@ func userDirectories() []string {
 	}
 	if runtime.GOOS == "windows" {
 		add(filepath.Join(home, "scoop", "shims"))
-		add(filepath.Join(os.Getenv("APPDATA"), "npm"))
-		local := os.Getenv("LOCALAPPDATA")
-		for _, path := range []string{
-			filepath.Join(local, "nvim-data", "mason", "bin"), filepath.Join(local, "pnpm"),
-			filepath.Join(local, "Volta", "bin"), filepath.Join(local, "Microsoft", "WinGet", "Links"),
-			filepath.Join(os.Getenv("PROGRAMDATA"), "chocolatey", "bin"),
-		} {
-			add(path)
+		if value := os.Getenv("APPDATA"); value != "" {
+			add(filepath.Join(value, "npm"))
+		}
+		if value := os.Getenv("LOCALAPPDATA"); value != "" {
+			for _, path := range []string{
+				filepath.Join(value, "nvim-data", "mason", "bin"), filepath.Join(value, "pnpm"),
+				filepath.Join(value, "Volta", "bin"), filepath.Join(value, "Microsoft", "WinGet", "Links"),
+			} {
+				add(path)
+			}
+		}
+		if value := os.Getenv("PROGRAMDATA"); value != "" {
+			add(filepath.Join(value, "chocolatey", "bin"))
 		}
 		return directories
 	}

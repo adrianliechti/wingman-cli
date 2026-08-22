@@ -152,7 +152,11 @@ func TestLiveNodePackageScript(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"scripts":{"server":"node server.js"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "server.js"), []byte(`console.log("wingman-node-package-ready")`), 0o644); err != nil {
+	program := filepath.Join(root, "server.js")
+	if err := os.WriteFile(program, []byte(`const message = "wingman-node-package-ready"
+console.log(message)
+setInterval(() => {}, 1000)
+`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	tools, err := devtools.New()
@@ -178,21 +182,34 @@ func TestLiveNodePackageScript(t *testing.T) {
 	session, err := manager.Start(ctx, dap.StartOptions{
 		Adapter: "vscode-js-debug", ProjectDir: root, Request: profile.Request,
 		Configuration: profile.Configuration, IO: profile.IO,
+		Breakpoints: map[string][]dap.SourceBreakpoint{program: {{Line: 2}}},
 	})
 	if err != nil {
 		t.Fatalf("start Node package script: %v\noutput:\n%s", err, failedSessionOutput(manager))
 	}
 	status := session.Status()
-	if status.State != dap.StateTerminated {
-		var stopped bool
-		status, stopped = session.WaitForStop(ctx, status.StateVersion)
-		if !stopped {
-			t.Fatalf("Node package script did not stop: %+v\noutput:\n%s", status, session.Output())
-		}
+	if status.State != dap.StateStopped {
+		status, _ = session.WaitForStop(ctx, status.StateVersion)
 	}
-	if status.State != dap.StateTerminated || !strings.Contains(session.Output(), "wingman-node-package-ready") {
-		t.Fatalf("Node package script did not complete normally: %+v\noutput:\n%s", status, session.Output())
+	if status.State != dap.StateStopped {
+		t.Fatalf("Node package script breakpoint was not reached: %+v\noutput:\n%s", status, session.Output())
 	}
+	frames, _, err := session.StackTrace(ctx, status.Stop.ThreadID, 0, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) == 0 || frames[0].Source == nil || !sameFile(frames[0].Source.Path, program) || frames[0].Line != 2 {
+		t.Fatalf("breakpoint frames = %+v", frames)
+	}
+	if err := manager.Stop(ctx, session.ID()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func sameFile(first, second string) bool {
+	firstInfo, firstErr := os.Stat(first)
+	secondInfo, secondErr := os.Stat(second)
+	return firstErr == nil && secondErr == nil && os.SameFile(firstInfo, secondInfo)
 }
 
 func failedSessionOutput(manager *dap.Manager) string {

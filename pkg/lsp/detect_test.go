@@ -189,7 +189,16 @@ func TestDetectAllPrefersNativeTypeScriptSevenLSP(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	roots := detectAll(root, nil)
+	managed := filepath.Join(t.TempDir(), "tsc")
+	if err := os.WriteFile(managed, []byte("#!/bin/sh\nprintf 'Version 6.0.0\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	roots := detectAll(root, func(command string) string {
+		if command == "tsc" {
+			return managed
+		}
+		return ""
+	})
 	if len(roots) != 1 {
 		t.Fatalf("detected roots = %+v, want one TypeScript root", roots)
 	}

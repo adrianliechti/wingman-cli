@@ -4,12 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 
+	"github.com/adrianliechti/wingman-agent/pkg/commandpath"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 )
 
@@ -70,7 +68,11 @@ func (pythonAdapter) Plan(request Request) (Plan, error) {
 	if request.WorkspaceDir != "" && !filepath.IsAbs(interpreterDir) {
 		interpreterDir = filepath.Join(request.WorkspaceDir, interpreterDir)
 	}
-	if interpreter := resolvePythonInterpreter(interpreterDir); interpreter != "" {
+	workspaceDir := request.WorkspaceDir
+	if workspaceDir == "" {
+		workspaceDir = interpreterDir
+	}
+	if interpreter := resolvePythonInterpreter(interpreterDir, workspaceDir); interpreter != "" {
 		configuration["python"] = []string{interpreter}
 	}
 	plan := Plan{
@@ -90,28 +92,12 @@ func (pythonAdapter) Plan(request Request) (Plan, error) {
 	return plan, nil
 }
 
-func resolvePythonInterpreter(projectDir string) string {
-	bin := "bin"
-	name := "python"
-	if runtime.GOOS == "windows" {
-		bin = "Scripts"
-		name = "python.exe"
+func resolvePythonInterpreter(projectDir, workspaceDir string) string {
+	if interpreter := commandpath.ResolveProject(projectDir, workspaceDir, "python"); interpreter != "" {
+		return interpreter
 	}
-	for _, environment := range []string{".venv", "venv", "env"} {
-		candidate := filepath.Join(projectDir, environment, bin, name)
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && (runtime.GOOS == "windows" || info.Mode()&0o111 != 0) {
-			if absolute, err := filepath.Abs(candidate); err == nil {
-				return absolute
-			}
-			return candidate
-		}
-	}
-	commands := []string{"python3", "python"}
-	if runtime.GOOS == "windows" {
-		commands = []string{"python", "python3"}
-	}
-	for _, command := range commands {
-		if path, err := exec.LookPath(command); err == nil {
+	for _, command := range []string{"python3", "python"} {
+		if path := commandpath.Resolve(command); path != "" {
 			return path
 		}
 	}

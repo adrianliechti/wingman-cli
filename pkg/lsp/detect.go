@@ -3,12 +3,12 @@ package lsp
 import (
 	"context"
 	"io/fs"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/commandpath"
@@ -134,41 +134,39 @@ func projectDirs(index *workspaceIndex, project projectType) []string {
 }
 
 func resolveServer(workingDir, dir string, candidate Server, managedResolver func(string) string, commands map[string]string, versions map[string]bool) (Server, bool) {
-	path := ""
-	if managedResolver != nil {
-		path = managedResolver(candidate.Command)
-	}
-	if path == "" {
-		path = resolveCommand(dir, workingDir, candidate.Command)
-	}
-	if path == "" {
-		global, cached := commands[candidate.Command]
-		if !cached {
-			if path, err := exec.LookPath(candidate.Command); err == nil {
-				global = path
-			} else {
-				global = resolveUserCommand(candidate.Command)
-			}
-			commands[candidate.Command] = global
+	var paths []string
+	add := func(path string) {
+		if path != "" && !slices.Contains(paths, path) {
+			paths = append(paths, path)
 		}
-		path = global
 	}
-	if path == "" {
-		return Server{}, false
+	add(resolveCommand(dir, workingDir, candidate.Command))
+	if managedResolver != nil {
+		add(managedResolver(candidate.Command))
 	}
-
-	versionKey := path + "\x00" + strconv.Itoa(candidate.MinimumMajorVersion)
-	supported, checked := versions[versionKey]
-	if !checked {
-		supported = serverVersionSupported(candidate, path)
-		versions[versionKey] = supported
+	global, cached := commands[candidate.Command]
+	if !cached {
+		if path, err := exec.LookPath(candidate.Command); err == nil {
+			global = path
+		} else {
+			global = resolveUserCommand(candidate.Command)
+		}
+		commands[candidate.Command] = global
 	}
-	if !supported {
-		return Server{}, false
+	add(global)
+	for _, path := range paths {
+		versionKey := path + "\x00" + strconv.Itoa(candidate.MinimumMajorVersion)
+		supported, checked := versions[versionKey]
+		if !checked {
+			supported = serverVersionSupported(candidate, path)
+			versions[versionKey] = supported
+		}
+		if supported {
+			candidate.Command = path
+			return candidate, true
+		}
 	}
-
-	candidate.Command = path
-	return candidate, true
+	return Server{}, false
 }
 
 type workspaceEntry struct {

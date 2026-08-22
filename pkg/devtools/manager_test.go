@@ -7,8 +7,10 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -149,6 +151,66 @@ func TestUpdateKeepsCurrentInstallationWhenInstallerFails(t *testing.T) {
 	}
 }
 
+func TestPythonCommandsRemainRunnableAfterActivation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper uses POSIX shell scripts")
+	}
+	root := t.TempDir()
+	manager := newManager(root)
+	manager.install = manager.installRecipe
+	manager.look = func(string) (string, error) { return "/usr/bin/python3", nil }
+	manager.run = func(_ context.Context, _ string, args []string, _ string, _ []string) ([]byte, error) {
+		if len(args) >= 3 && args[0] == "-m" && args[1] == "venv" {
+			stage := args[2]
+			if err := os.MkdirAll(filepath.Join(stage, "bin"), 0o755); err != nil {
+				return nil, err
+			}
+			return nil, os.WriteFile(filepath.Join(stage, "bin", "python"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), 0o755)
+		}
+		if len(args) >= 3 && args[0] == "-m" && args[1] == "pip" {
+			return nil, os.WriteFile(filepath.Join(root, "ignored"), nil, 0o600)
+		}
+		if len(args) == 2 && args[0] == "-c" {
+			return []byte(`{"debugpy-adapter":"debugpy.adapter:main"}`), nil
+		}
+		return nil, fmt.Errorf("unexpected Python command: %v", args)
+	}
+
+	changed, err := manager.Update(context.Background(), []Requirement{{Alternatives: []string{"debugpy-adapter"}}})
+	if err != nil || !changed {
+		t.Fatalf("Update = %v, %v", changed, err)
+	}
+	command := manager.Resolve("debugpy-adapter")
+	if command == "" {
+		t.Fatal("relocatable debugpy adapter was not resolved")
+	}
+	contents, err := os.ReadFile(command)
+	if err != nil || strings.Contains(string(contents), "-install-") {
+		t.Fatalf("launcher contains staging path: %q, %v", contents, err)
+	}
+	output, err := exec.Command(command, "--probe").CombinedOutput()
+	if err != nil || !strings.Contains(string(output), "--probe") {
+		t.Fatalf("activated launcher = %q, %v", output, err)
+	}
+}
+
+func TestResolveRejectsMissingShebangInterpreter(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows launchers do not use shebangs")
+	}
+	manager := newManager(t.TempDir())
+	path := filepath.Join(manager.root, "debugpy", "bin", "debugpy-adapter")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("#!/missing/staging/bin/python\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.Resolve("debugpy-adapter"); got != "" {
+		t.Fatalf("broken managed launcher resolved as %q", got)
+	}
+}
+
 func TestRecoverInterruptedUpdateRestoresPreviousInstallation(t *testing.T) {
 	root := t.TempDir()
 	backup := filepath.Join(root, ".gopls-old-backup")
@@ -174,6 +236,44 @@ func TestRecoverInterruptedUpdateRestoresPreviousInstallation(t *testing.T) {
 	}
 	if _, err := os.Stat(staleStage); !os.IsNotExist(err) {
 		t.Fatalf("stale stage remains: %v", err)
+	}
+}
+
+func TestRecoverInterruptedUpdateHandlesGlobCharactersInRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "tools[managed]")
+	backup := filepath.Join(root, ".gopls-old-backup")
+	if err := writeTestCommand(backup, "gopls"); err != nil {
+		t.Fatal(err)
+	}
+	if err := recoverInterruptedUpdate(root, "gopls"); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveInstalledCommand(filepath.Join(root, "gopls"), "gopls"); got == "" {
+		t.Fatal("backup below a root containing '[' was not restored")
+	}
+}
+
+func TestActivatePendingUpdateBeforeToolsStart(t *testing.T) {
+	root := t.TempDir()
+	manager := newManager(root)
+	if err := writeTestCommand(filepath.Join(root, "gopls"), "gopls"); err != nil {
+		t.Fatal(err)
+	}
+	pending := filepath.Join(root, ".gopls-pending")
+	if err := writeTestCommand(pending, "gopls"); err != nil {
+		t.Fatal(err)
+	}
+	command := resolveInstalledCommand(pending, "gopls")
+	if err := os.WriteFile(command, []byte("new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager.activatePendingUpdates()
+	active, err := os.ReadFile(resolveInstalledCommand(filepath.Join(root, "gopls"), "gopls"))
+	if err != nil || string(active) != "new" {
+		t.Fatalf("active pending update = %q, %v", active, err)
+	}
+	if _, err := os.Stat(pending); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending directory remains: %v", err)
 	}
 }
 

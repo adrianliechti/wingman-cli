@@ -1281,10 +1281,7 @@ test("creates, saves, refreshes, and protects files changed on disk", async ({
 	const createdTab = page.getByRole("tab", { name: /web-created\.go/ });
 	await expect(createdTab).toHaveAttribute("aria-label", /unsaved changes/);
 	await page.keyboard.press("ControlOrMeta+S");
-	await expect(createdTab).not.toHaveAttribute(
-		"aria-label",
-		/unsaved changes/,
-	);
+	await expect(createdTab).not.toHaveAttribute("aria-label", /unsaved changes/);
 
 	let read = await request.get("/api/files/read?path=web-created.go");
 	expect(read.ok()).toBeTruthy();
@@ -1493,6 +1490,32 @@ test("uses Monaco's live buffer for automatic completion and parameter hints", a
 	await expect(page.locator(".parameter-hints-widget:visible")).toContainText(
 		"consume(name string, count int)",
 	);
+});
+
+test("leaves TypeScript project diagnostics to the active language server", async ({
+	page,
+}) => {
+	await page.route(/\/api\/lsp\/capabilities\?/, async (route) => {
+		await route.fulfill({
+			json: {
+				workspace_uri: "file:///workspace",
+				language_server: true,
+			},
+		});
+	});
+	await page.route(/\/api\/lsp\/diagnostics$/, async (route) => {
+		await route.fulfill({ json: [] });
+	});
+
+	await composer(page);
+	await page
+		.getByRole("treeitem", { name: /standalone-diagnostics\.tsx/ })
+		.click();
+	const editor = page.locator(".monaco-editor");
+	await expect(editor).toBeVisible();
+	await expect(
+		editor.locator(".squiggly-error, .squiggly-warning"),
+	).toHaveCount(0);
 });
 
 test("save awaits LSP actions that add and remove Go imports", async ({

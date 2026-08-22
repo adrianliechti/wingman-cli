@@ -318,6 +318,7 @@ func TestManagerPrefersProjectAdapterOverPath(t *testing.T) {
 	manager := newManager(root, []AdapterDescriptor{{
 		Name: "debugpy", Command: "debugpy-adapter", Markers: []string{"pyproject.toml"}, SourceExtensions: []string{".py"},
 	}}, func(string) string { return filepath.Join(root, "path", "debugpy-adapter") }, nil)
+	manager.SetCommandResolver(func(string) string { return filepath.Join(root, "managed", "debugpy-adapter") })
 	values, err := manager.detect(context.Background())
 	if err != nil {
 		t.Fatal(err)

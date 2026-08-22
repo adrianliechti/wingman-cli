@@ -36,6 +36,10 @@ func (m *Manager) installJavaScript(ctx context.Context, item recipe, stage stri
 	if item.ID != "vscode-js-debug" {
 		return fmt.Errorf("unknown JavaScript tool %q", item.ID)
 	}
+	node, err := m.look("node")
+	if err != nil {
+		return errors.New("node is not installed")
+	}
 	metadata, err := m.fetch(ctx, javascriptReleaseURL)
 	if err != nil {
 		return fmt.Errorf("query latest vscode-js-debug release: %w", err)
@@ -69,19 +73,19 @@ func (m *Manager) installJavaScript(ctx context.Context, item recipe, stage stri
 	if info, err := os.Stat(server); err != nil || info.IsDir() {
 		return errors.New("standalone archive does not contain js-debug/src/dapDebugServer.js")
 	}
-	return writeJavaScriptLauncher(stage)
+	return writeJavaScriptLauncher(stage, node)
 }
 
-func writeJavaScriptLauncher(stage string) error {
+func writeJavaScriptLauncher(stage, node string) error {
 	directory := filepath.Join(stage, "bin")
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return err
 	}
 	if runtime.GOOS == "windows" {
-		contents := "@echo off\r\nnode \"%~dp0\\..\\js-debug\\src\\dapDebugServer.js\" %*\r\n"
+		contents := "@echo off\r\n\"" + node + "\" \"%~dp0\\..\\js-debug\\src\\dapDebugServer.js\" %*\r\n"
 		return os.WriteFile(filepath.Join(directory, "js-debug-adapter.cmd"), []byte(contents), 0o755)
 	}
-	contents := "#!/usr/bin/env node\nrequire('../js-debug/src/dapDebugServer.js');\n"
+	contents := "#!/bin/sh\nSCRIPT_DIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\nexec \"" + node + "\" \"$SCRIPT_DIR/../js-debug/src/dapDebugServer.js\" \"$@\"\n"
 	return os.WriteFile(filepath.Join(directory, "js-debug-adapter"), []byte(contents), 0o755)
 }
 

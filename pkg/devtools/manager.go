@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/adrianliechti/wingman-agent/pkg/commandpath"
 	"github.com/adrianliechti/wingman-agent/pkg/layout"
 )
 
@@ -102,6 +103,7 @@ func New() (*Manager, error) {
 	}
 	manager := newManager(root)
 	manager.install = manager.installRecipe
+	manager.activatePendingUpdates()
 	return manager, nil
 }
 
@@ -109,7 +111,7 @@ func newManager(root string) *Manager {
 	manager := &Manager{
 		root:      filepath.Clean(root),
 		now:       time.Now,
-		look:      exec.LookPath,
+		look:      commandpath.LookPath,
 		run:       runCommand,
 		fetch:     fetchURL,
 		byCommand: make(map[string]recipe),
@@ -330,7 +332,7 @@ func resolveInstalledCommand(root, command string) string {
 	for _, directory := range directories {
 		for _, name := range commandNames(command) {
 			candidate := filepath.Join(directory, name)
-			if executableFile(candidate) {
+			if runnableFile(candidate) {
 				return candidate
 			}
 		}
@@ -339,18 +341,43 @@ func resolveInstalledCommand(root, command string) string {
 }
 
 func commandNames(command string) []string {
-	if runtime.GOOS == "windows" {
-		return []string{command + ".exe", command + ".cmd", command + ".bat", command}
-	}
-	return []string{command}
+	return commandpath.Candidates(runtime.GOOS, command)
 }
 
 func executableFile(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
+	return commandpath.Executable(path)
+}
+
+func runnableFile(path string) bool {
+	if !executableFile(path) {
 		return false
 	}
-	return runtime.GOOS == "windows" || info.Mode()&0o111 != 0
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	buffer := make([]byte, 512)
+	count, _ := file.Read(buffer)
+	line := string(buffer[:count])
+	if !strings.HasPrefix(line, "#!") {
+		return true
+	}
+	if index := strings.IndexByte(line, '\n'); index >= 0 {
+		line = line[:index]
+	}
+	fields := strings.Fields(strings.TrimPrefix(line, "#!"))
+	if len(fields) == 0 || !filepath.IsAbs(fields[0]) || !executableFile(fields[0]) {
+		return false
+	}
+	if filepath.Base(fields[0]) == "env" && len(fields) > 1 {
+		_, err := commandpath.LookPath(fields[len(fields)-1])
+		return err == nil
+	}
+	return true
 }
 
 // replaceDirectory reports whether stage became the active installation. An
@@ -362,7 +389,17 @@ func replaceDirectory(stage, target string) (bool, error) {
 	if _, err := os.Stat(target); err == nil {
 		hadTarget = true
 		if err := os.Rename(target, backup); err != nil {
-			return false, err
+			pending := filepath.Join(filepath.Dir(target), "."+filepath.Base(target)+"-pending")
+			if filepath.Clean(stage) == filepath.Clean(pending) {
+				return false, err
+			}
+			if removeErr := os.RemoveAll(pending); removeErr != nil {
+				return false, errors.Join(err, removeErr)
+			}
+			if pendingErr := os.Rename(stage, pending); pendingErr != nil {
+				return false, errors.Join(err, pendingErr)
+			}
+			return false, fmt.Errorf("update is ready and will activate the next time Wingman starts: %w", err)
 		}
 	} else if !os.IsNotExist(err) {
 		return false, err
@@ -381,9 +418,29 @@ func replaceDirectory(stage, target string) (bool, error) {
 	return true, nil
 }
 
+func (m *Manager) activatePendingUpdates() {
+	if _, err := os.Stat(m.root); err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	release, err := acquireUpdateLock(ctx, m.root, m.now)
+	if err != nil {
+		return
+	}
+	defer release()
+	for _, item := range catalog {
+		pending := filepath.Join(m.root, "."+item.ID+"-pending")
+		if _, err := os.Stat(pending); err != nil {
+			continue
+		}
+		_, _ = replaceDirectory(pending, filepath.Join(m.root, item.ID))
+	}
+}
+
 func recoverInterruptedUpdate(root, id string) error {
 	target := filepath.Join(root, id)
-	backups, err := filepath.Glob(filepath.Join(root, "."+id+"-old-*"))
+	backups, err := pathsWithPrefix(root, "."+id+"-old-")
 	if err != nil {
 		return err
 	}
@@ -412,7 +469,7 @@ func recoverInterruptedUpdate(root, id string) error {
 			return err
 		}
 	}
-	stages, err := filepath.Glob(filepath.Join(root, "."+id+"-install-*"))
+	stages, err := pathsWithPrefix(root, "."+id+"-install-")
 	if err != nil {
 		return err
 	}
@@ -422,6 +479,21 @@ func recoverInterruptedUpdate(root, id string) error {
 		}
 	}
 	return nil
+}
+
+func pathsWithPrefix(root, prefix string) ([]string, error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), prefix) {
+			paths = append(paths, filepath.Join(root, entry.Name()))
+		}
+	}
+	slices.Sort(paths)
+	return paths, nil
 }
 
 func acquireUpdateLock(ctx context.Context, root string, now func() time.Time) (func(), error) {
@@ -517,6 +589,7 @@ func runCommand(ctx context.Context, name string, args []string, dir string, env
 	command := exec.CommandContext(ctx, name, args...)
 	command.Dir = dir
 	command.Env = env
+	command.WaitDelay = 3 * time.Second
 	return command.CombinedOutput()
 }
 

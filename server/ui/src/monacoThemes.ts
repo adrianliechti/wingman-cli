@@ -7,6 +7,21 @@ export function defineWingmanThemes(monaco: Monaco) {
 	if (registered) return;
 	registered = true;
 
+	// The standalone TypeScript worker has no workspace tsconfig.json or
+	// package graph. Keep syntax validation as a fallback, but leave semantic
+	// and suggestion diagnostics to the project-aware language server.
+	void import("monaco-editor/languages/features/typescript/register.js").then(
+		({ javascriptDefaults, typescriptDefaults }) => {
+			const diagnostics = {
+				noSemanticValidation: true,
+				noSuggestionDiagnostics: true,
+				noSyntaxValidation: false,
+			};
+			typescriptDefaults.setDiagnosticsOptions(diagnostics);
+			javascriptDefaults.setDiagnosticsOptions(diagnostics);
+		},
+	);
+
 	monaco.editor.defineTheme("wingman", {
 		base: "vs-dark",
 		inherit: true,

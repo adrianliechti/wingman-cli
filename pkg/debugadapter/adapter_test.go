@@ -89,6 +89,37 @@ func TestPythonAdapterUsesProjectVirtualEnvironment(t *testing.T) {
 	}
 }
 
+func TestPythonAdapterWalksUpToWorkspaceVirtualEnvironment(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "services", "api")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := "bin"
+	name := "python"
+	if runtime.GOOS == "windows" {
+		bin = "Scripts"
+		name = "python.exe"
+	}
+	interpreter := filepath.Join(root, ".venv", bin, name)
+	if err := os.MkdirAll(filepath.Dir(interpreter), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(interpreter, []byte("python"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := NewRegistry().Plan("Python", Request{
+		Action: "debug", WorkspaceDir: root, ProjectDir: filepath.Join("services", "api"),
+		Target: Target{Name: "main.py", Kind: "script", Language: "Python", Path: filepath.Join("services", "api", "main.py"), Directory: filepath.Join("services", "api"), Line: 1, Column: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.Configuration["python"]; !reflect.DeepEqual(got, []string{interpreter}) {
+		t.Fatalf("python = %#v, want workspace virtual environment", got)
+	}
+}
+
 func TestRustAdapterPlansConcreteCargoBinary(t *testing.T) {
 	descriptor := (rustAdapter{}).Descriptor()
 	if descriptor.Transport != "stdio" || len(descriptor.Args) != 0 || descriptor.ReadyPrefix != "" {
@@ -364,7 +395,7 @@ func TestPackageScriptPlansNodeServerWithoutBrowser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Configuration["type"] != "pwa-node" || plan.Configuration["runtimeExecutable"] != npm || !reflect.DeepEqual(plan.Configuration["runtimeArgs"], []string{"run", "server"}) || plan.Configuration["autoAttachChildProcesses"] != true || plan.PreLaunch != nil || !plan.SupportsTerminal {
+	if plan.Configuration["type"] != "pwa-node" || plan.Configuration["runtimeExecutable"] != npm || !reflect.DeepEqual(plan.Configuration["runtimeArgs"], []string{"run-script", "server"}) || plan.Configuration["autoAttachChildProcesses"] != true || plan.PreLaunch != nil || !plan.SupportsTerminal {
 		t.Fatalf("plan = %#v", plan)
 	}
 }

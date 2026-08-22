@@ -19,7 +19,7 @@ const adapterStartupTimeout = 30 * time.Second
 
 type adapterConnection struct {
 	io.ReadWriteCloser
-	address        string
+	children       AdapterConnector
 	cmd            *exec.Cmd
 	processDone    <-chan error
 	terminal       TerminalProcess
@@ -74,7 +74,7 @@ func startAdapter(ctx context.Context, plan Plan, output func(string, string), l
 		if connection == nil {
 			return nil, fmt.Errorf("connect to debug adapter %s: connector returned no stream", plan.Adapter.Name)
 		}
-		return &adapterConnection{ReadWriteCloser: connection}, nil
+		return &adapterConnection{ReadWriteCloser: connection, children: connector}, nil
 	}
 	if plan.IO == IOTerminal && plan.Adapter.TerminalStrategy == TerminalAdapterProcess {
 		return startAdapterInTerminal(ctx, plan, output, launcher)
@@ -141,7 +141,7 @@ func startAdapter(ctx context.Context, plan Plan, output func(string, string), l
 				return nil, fmt.Errorf("connect to debug adapter %s at %s: %w", plan.Adapter.Name, address, err)
 			}
 			connection := runningConnection(cmd, conn)
-			connection.address = address
+			connection.children = childAdapterConnector(address)
 			return connection, nil
 		case <-startupCtx.Done():
 			stopStartedAdapter(cmd)
@@ -207,7 +207,7 @@ func startAdapterInTerminal(ctx context.Context, plan Plan, output func(string, 
 		}()
 		return &adapterConnection{
 			ReadWriteCloser: connection,
-			address:         address,
+			children:        childAdapterConnector(address),
 			processDone:     done,
 			terminal:        process,
 			terminalCancel:  cancelOutput,
@@ -228,10 +228,10 @@ func (address childAdapterConnector) ConnectAdapter(ctx context.Context, _ Plan)
 }
 
 func (connection *adapterConnection) childConnector() AdapterConnector {
-	if connection == nil || connection.address == "" {
+	if connection == nil {
 		return nil
 	}
-	return childAdapterConnector(connection.address)
+	return connection.children
 }
 
 func normalizeAdapterAddress(value string) (string, error) {

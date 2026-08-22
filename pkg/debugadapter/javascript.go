@@ -353,7 +353,7 @@ func nodeScriptPlan(request Request) (Plan, error) {
 		"type":                     "pwa-node",
 		"cwd":                      ".",
 		"runtimeExecutable":        packageManagerPath,
-		"runtimeArgs":              []string{"run", request.Target.Name},
+		"runtimeArgs":              []string{"run-script", request.Target.Name},
 		"sourceMaps":               true,
 		"autoAttachChildProcesses": true,
 		"skipFiles":                []string{"<node_internals>/**"},

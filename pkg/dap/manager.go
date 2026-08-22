@@ -6,15 +6,15 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/adrianliechti/wingman-agent/pkg/commandpath"
 )
 
 const detectionCacheTTL = 30 * time.Second
@@ -154,13 +154,13 @@ func (m *Manager) resolveDetectedCommand(command string, projects []string) stri
 	if command == "" {
 		return ""
 	}
-	if m.managed != nil {
-		if resolved := m.managed(command); resolved != "" {
+	for _, project := range projects {
+		if resolved := resolveProjectAdapterCommand(project, m.root, command); resolved != "" {
 			return resolved
 		}
 	}
-	for _, project := range projects {
-		if resolved := resolveProjectAdapterCommand(project, m.root, command); resolved != "" {
+	if m.managed != nil {
+		if resolved := m.managed(command); resolved != "" {
 			return resolved
 		}
 	}
@@ -295,13 +295,13 @@ func (m *Manager) registeredAdapter(name string) *AdapterDescriptor {
 }
 
 func (m *Manager) resolveProjectCommand(command, project string) string {
+	if resolved := resolveProjectAdapterCommand(project, m.root, command); resolved != "" {
+		return resolved
+	}
 	if m.managed != nil {
 		if resolved := m.managed(command); resolved != "" {
 			return resolved
 		}
-	}
-	if resolved := resolveProjectAdapterCommand(project, m.root, command); resolved != "" {
-		return resolved
 	}
 	if m.lookup != nil {
 		return m.lookup(command)
@@ -695,128 +695,9 @@ func (m *Manager) Close() {
 }
 
 func resolveAdapterCommand(command string) string {
-	if filepath.IsAbs(command) {
-		if executableFile(command) {
-			return command
-		}
-		return ""
-	}
-	if path, err := exec.LookPath(command); err == nil {
-		return path
-	}
-	var dirs []string
-	if value := os.Getenv("GOBIN"); value != "" {
-		dirs = append(dirs, value)
-	}
-	if value := os.Getenv("GOPATH"); value != "" {
-		dirs = append(dirs, filepath.Join(value, "bin"))
-	}
-	if value := os.Getenv("PNPM_HOME"); value != "" {
-		dirs = append(dirs, value)
-	}
-	home, _ := os.UserHomeDir()
-	if home != "" {
-		dirs = append(dirs,
-			filepath.Join(home, "go", "bin"),
-			filepath.Join(home, ".cargo", "bin"),
-			filepath.Join(home, ".local", "bin"),
-			filepath.Join(home, ".dotnet", "tools"),
-			filepath.Join(home, ".bun", "bin"),
-			filepath.Join(home, ".deno", "bin"),
-			filepath.Join(home, ".volta", "bin"),
-			filepath.Join(home, ".asdf", "shims"),
-			filepath.Join(home, ".local", "share", "mise", "shims"),
-			filepath.Join(home, ".npm-global", "bin"),
-		)
-		if runtime.GOOS == "windows" {
-			dirs = append(dirs, filepath.Join(home, "scoop", "shims"))
-			if appData := os.Getenv("APPDATA"); appData != "" {
-				dirs = append(dirs, filepath.Join(appData, "npm"))
-			}
-			if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
-				dirs = append(dirs,
-					filepath.Join(localAppData, "nvim-data", "mason", "bin"),
-					filepath.Join(localAppData, "pnpm"),
-					filepath.Join(localAppData, "Volta", "bin"),
-					filepath.Join(localAppData, "Microsoft", "WinGet", "Links"),
-				)
-			}
-			if programData := os.Getenv("PROGRAMDATA"); programData != "" {
-				dirs = append(dirs, filepath.Join(programData, "chocolatey", "bin"))
-			}
-		} else {
-			dirs = append(dirs,
-				filepath.Join(home, ".local", "share", "nvim", "mason", "bin"),
-				filepath.Join(home, "Library", "pnpm"),
-				filepath.Join(home, ".local", "share", "pnpm"),
-			)
-		}
-	}
-	if runtime.GOOS != "windows" {
-		dirs = append(dirs, "/opt/homebrew/bin", "/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin")
-	}
-	for _, dir := range dirs {
-		for _, name := range commandNames(command) {
-			path := filepath.Join(dir, name)
-			if executableFile(path) {
-				return path
-			}
-		}
-	}
-	return ""
+	return commandpath.Resolve(command)
 }
 
 func resolveProjectAdapterCommand(project, workspace, command string) string {
-	project = filepath.Clean(project)
-	workspace = filepath.Clean(workspace)
-	rel, err := filepath.Rel(workspace, project)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return ""
-	}
-	for {
-		if resolved := resolveLocalAdapterCommand(project, command); resolved != "" {
-			return resolved
-		}
-		if project == workspace {
-			return ""
-		}
-		parent := filepath.Dir(project)
-		if parent == project {
-			return ""
-		}
-		project = parent
-	}
-}
-
-func resolveLocalAdapterCommand(project, command string) string {
-	directories := []string{
-		filepath.Join("node_modules", ".bin"),
-		filepath.Join(".venv", "bin"), filepath.Join("venv", "bin"), filepath.Join("env", "bin"),
-		filepath.Join(".venv", "Scripts"), filepath.Join("venv", "Scripts"), filepath.Join("env", "Scripts"),
-		filepath.Join("vendor", "bin"),
-	}
-	for _, directory := range directories {
-		for _, name := range commandNames(command) {
-			path := filepath.Join(project, directory, name)
-			if executableFile(path) {
-				return path
-			}
-		}
-	}
-	return ""
-}
-
-func commandNames(command string) []string {
-	if runtime.GOOS == "windows" {
-		return []string{command + ".exe", command + ".cmd", command + ".bat", command}
-	}
-	return []string{command}
-}
-
-func executableFile(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		return false
-	}
-	return runtime.GOOS == "windows" || info.Mode()&0o111 != 0
+	return commandpath.ResolveProject(project, workspace, command)
 }

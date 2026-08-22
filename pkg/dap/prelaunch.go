@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"sync"
@@ -28,6 +30,9 @@ func startDebugProcess(plan Plan, output func(string, string)) (*debugProcess, e
 	launch := plan.PreLaunch
 	if launch == nil {
 		return nil, nil
+	}
+	if err := ensureReadyAddressAvailable(launch.ReadyURL); err != nil {
+		return nil, err
 	}
 	cmd := exec.Command(launch.Command, launch.Args...)
 	cmd.Dir = plan.ProjectDir
@@ -55,6 +60,22 @@ func startDebugProcess(plan Plan, output func(string, string)) (*debugProcess, e
 		close(process.done)
 	}()
 	return process, nil
+}
+
+func ensureReadyAddressAvailable(address string) error {
+	if address == "" {
+		return nil
+	}
+	parsed, err := url.Parse(address)
+	if err != nil || parsed.Host == "" {
+		return nil
+	}
+	connection, err := net.DialTimeout("tcp", parsed.Host, 200*time.Millisecond)
+	if err != nil {
+		return nil
+	}
+	_ = connection.Close()
+	return fmt.Errorf("development server address %s is already in use", parsed.Host)
 }
 
 func (process *debugProcess) waitReady(ctx context.Context, address string) error {
