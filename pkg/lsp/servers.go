@@ -3,6 +3,8 @@ package lsp
 import (
 	"path/filepath"
 	"strings"
+
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 )
 
 type Server struct {
@@ -56,7 +58,7 @@ var knownProjects = []projectType{
 	},
 	{
 		Name:     "typescript",
-		Markers:  []string{"tsconfig.json", "jsconfig.json", "package.json", "package-lock.json", "bun.lockb", "yarn.lock", "pnpm-lock.yaml"},
+		Markers:  []string{"tsconfig.json", "jsconfig.json", "package.json", "package-lock.json", "bun.lock", "bun.lockb", "yarn.lock", "pnpm-lock.yaml"},
 		Excludes: []string{"deno.json", "deno.jsonc"},
 		Servers: []Server{
 			{
@@ -101,11 +103,14 @@ var knownProjects = []projectType{
 		Markers: []string{"Cargo.toml", "Cargo.lock"},
 		Servers: []Server{
 			{
-				Name:       "rust-analyzer",
-				Command:    "rust-analyzer",
-				Args:       []string{},
-				Languages:  []string{"rs"},
-				LanguageID: "rust",
+				Name:      "rust-analyzer",
+				Command:   "rust-analyzer",
+				Args:      []string{},
+				Languages: []string{"rs"},
+				// rustup ships a rust-analyzer proxy even when the component is
+				// missing; only a command that actually runs may satisfy detection.
+				MinimumMajorVersion: tooling.ProbeExecutes,
+				LanguageID:          "rust",
 			},
 		},
 	},
@@ -362,7 +367,7 @@ var knownProjects = []projectType{
 	},
 	{
 		Name:     "vue",
-		Markers:  []string{"package.json", "package-lock.json", "bun.lockb", "yarn.lock", "pnpm-lock.yaml"},
+		Markers:  []string{"package.json", "package-lock.json", "bun.lock", "bun.lockb", "yarn.lock", "pnpm-lock.yaml"},
 		Requires: []string{"*.vue"},
 		Servers: []Server{
 			{
@@ -376,7 +381,7 @@ var knownProjects = []projectType{
 	},
 	{
 		Name:     "svelte",
-		Markers:  []string{"package.json", "package-lock.json", "bun.lockb", "yarn.lock", "pnpm-lock.yaml"},
+		Markers:  []string{"package.json", "package-lock.json", "bun.lock", "bun.lockb", "yarn.lock", "pnpm-lock.yaml"},
 		Requires: []string{"*.svelte"},
 		Servers: []Server{
 			{
@@ -390,7 +395,7 @@ var knownProjects = []projectType{
 	},
 	{
 		Name:     "astro",
-		Markers:  []string{"package.json", "package-lock.json", "bun.lockb", "yarn.lock", "pnpm-lock.yaml"},
+		Markers:  []string{"package.json", "package-lock.json", "bun.lock", "bun.lockb", "yarn.lock", "pnpm-lock.yaml"},
 		Requires: []string{"*.astro"},
 		Servers: []Server{
 			{

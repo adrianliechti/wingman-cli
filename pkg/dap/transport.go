@@ -84,12 +84,9 @@ func startAdapter(ctx context.Context, plan Plan, output func(string, string), l
 	cmd := exec.Command(plan.Adapter.Command, plan.Adapter.Args...)
 	cmd.Dir = plan.ProjectDir
 	cmd.Env = tooling.Environment(plan.Adapter.Command, os.Environ())
+	cmd.Stderr = &outputWriter{category: "adapter stderr", output: output}
+	cmd.WaitDelay = 3 * time.Second
 	configureAdapterProcess(cmd)
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("debug adapter stderr: %w", err)
-	}
 
 	switch plan.Adapter.Transport {
 	case TransportStdio:
@@ -107,7 +104,6 @@ func startAdapter(ctx context.Context, plan Plan, output func(string, string), l
 			_ = stdout.Close()
 			return nil, fmt.Errorf("start debug adapter %s: %w", plan.Adapter.Name, err)
 		}
-		go copyAdapterOutput(stderr, "adapter stderr", output)
 		return runningConnection(cmd, &splitConnection{reader: stdout, writer: stdin}), nil
 
 	case TransportTCP:
@@ -119,7 +115,6 @@ func startAdapter(ctx context.Context, plan Plan, output func(string, string), l
 			_ = stdout.Close()
 			return nil, fmt.Errorf("start debug adapter %s: %w", plan.Adapter.Name, err)
 		}
-		go copyAdapterOutput(stderr, "adapter stderr", output)
 
 		ready := make(chan readyResult, 1)
 		go readTCPAdapterOutput(stdout, plan.Adapter.ReadyPrefix, output, ready)

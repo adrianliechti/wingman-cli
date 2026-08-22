@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 )
 
 var pythonRecipes = []recipe{
@@ -17,18 +19,18 @@ var pythonRecipes = []recipe{
 	{ID: "debugpy", Label: "Python debugger", Kind: installerPython, Packages: []string{"debugpy"}, Commands: []string{"debugpy-adapter"}},
 }
 
-func (m *Manager) installPython(ctx context.Context, item recipe, stage string) error {
+func (m *Manager) installPython(ctx context.Context, item recipe, stage string) (string, error) {
 	python := "python3"
 	if runtime.GOOS == "windows" {
 		python = "python"
 	}
 	python, err := m.look(python)
 	if err != nil {
-		return errors.New("python is not installed")
+		return "", errors.New("python is not installed")
 	}
 	workingDir := installWorkingDir(item, m.root)
 	if output, err := m.run(ctx, python, []string{"-m", "venv", stage}, workingDir, os.Environ()); err != nil {
-		return commandError(output, err)
+		return "", commandError(output, err)
 	}
 	venvPython := filepath.Join(stage, "bin", "python")
 	if runtime.GOOS == "windows" {
@@ -37,9 +39,9 @@ func (m *Manager) installPython(ctx context.Context, item recipe, stage string) 
 	args := []string{"-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade"}
 	args = append(args, item.Packages...)
 	if output, err := m.run(ctx, venvPython, args, workingDir, os.Environ()); err != nil {
-		return commandError(output, err)
+		return "", commandError(output, err)
 	}
-	return m.writePythonLaunchers(ctx, item, stage, venvPython)
+	return "", m.writePythonLaunchers(ctx, item, stage, venvPython)
 }
 
 var pythonEntryPointPattern = regexp.MustCompile(`^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$`)
@@ -63,7 +65,7 @@ func (m *Manager) writePythonLaunchers(ctx context.Context, item recipe, stage, 
 		if len(entry) == 0 || !pythonEntryPointPattern.MatchString(entry[0]) {
 			return fmt.Errorf("Python package did not provide a valid %s console script", command)
 		}
-		for _, name := range append(commandNames(command), command+"-script.py") {
+		for _, name := range append(tooling.Candidates(runtime.GOOS, command), command+"-script.py") {
 			if err := os.Remove(filepath.Join(directory, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}

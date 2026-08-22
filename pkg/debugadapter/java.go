@@ -18,7 +18,6 @@ import (
 	"strings"
 
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
-	"github.com/adrianliechti/wingman-agent/pkg/language"
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 )
 
@@ -29,14 +28,60 @@ var (
 )
 
 type javaAdapter struct {
-	bundles []string
+	bundles  []string
+	explicit bool
 }
 
-func newJavaAdapter(bundles ...string) javaAdapter {
-	if len(bundles) == 0 {
-		bundles = DiscoverJavaDebugBundles()
+func newJavaAdapter(tools ToolDirectory) javaAdapter {
+	if bundles := DiscoverJavaDebugBundles(); len(bundles) > 0 {
+		return javaAdapter{bundles: bundles, explicit: true}
 	}
-	return javaAdapter{bundles: slices.Clone(bundles)}
+	if tools != nil {
+		return javaAdapter{bundles: managedJavaDebugBundles(tools.ToolDir("jdtls"))}
+	}
+	return javaAdapter{}
+}
+
+// ServerInitialization loads the java-debug plug-in into JDT LS; the Java DAP
+// endpoint is served by that bundle rather than a standalone executable.
+func (adapter javaAdapter) ServerInitialization() (string, any) {
+	if len(adapter.bundles) == 0 {
+		return "", nil
+	}
+	return "jdtls", map[string]any{"bundles": slices.Clone(adapter.bundles)}
+}
+
+// ManagedOnlyCommands reports that a system jdtls cannot serve debugging: it
+// lacks the java-debug plug-in that the managed installation bundles.
+func (adapter javaAdapter) ManagedOnlyCommands() []string {
+	if adapter.explicit {
+		return nil
+	}
+	return []string{"jdtls"}
+}
+
+// managedJavaDebugBundles returns the newest java-debug plug-in of a managed
+// JDT LS installation.
+func managedJavaDebugBundles(root string) []string {
+	if root == "" {
+		return nil
+	}
+	directory := filepath.Join(root, "java-debug", "extension", "server")
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return nil
+	}
+	var matches []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "com.microsoft.java.debug.plugin-") && strings.HasSuffix(entry.Name(), ".jar") {
+			matches = append(matches, filepath.Join(directory, entry.Name()))
+		}
+	}
+	slices.Sort(matches)
+	if len(matches) == 0 {
+		return nil
+	}
+	return []string{matches[len(matches)-1]}
 }
 
 func (javaAdapter) Language() string { return "Java" }
@@ -236,18 +281,27 @@ func DiscoverJavaDebugBundles() []string {
 	return nil
 }
 
-// Connector bridges host-created adapters into the language-neutral DAP
-// manager. At present only java-debug needs this path.
-type Connector struct {
-	language *language.Service
+// CommandExecutor is the single language-service capability host connectors
+// need: running a workspace-scoped LSP command against a source file. The
+// composition layer injects the implementation so adapters never depend on
+// service wiring.
+type CommandExecutor interface {
+	ExecuteCommand(ctx context.Context, filePath string, content *string, command lsp.Command) (any, error)
 }
 
-func NewConnector(service *language.Service) *Connector {
-	return &Connector{language: service}
+// Connector bridges host-created adapters into the language-neutral DAP
+// manager. At present only java-debug needs this path: its DAP socket is
+// opened by JDT LS rather than a standalone executable.
+type Connector struct {
+	commands CommandExecutor
+}
+
+func NewConnector(commands CommandExecutor) *Connector {
+	return &Connector{commands: commands}
 }
 
 func (connector *Connector) ConnectAdapter(ctx context.Context, plan dap.Plan) (io.ReadWriteCloser, error) {
-	if connector == nil || connector.language == nil {
+	if connector == nil || connector.commands == nil {
 		return nil, errors.New("language service is unavailable")
 	}
 	if !strings.EqualFold(plan.Adapter.Name, "java-debug") {
@@ -257,7 +311,7 @@ func (connector *Connector) ConnectAdapter(ctx context.Context, plan dap.Plan) (
 	if err != nil {
 		return nil, err
 	}
-	result, err := connector.language.ExecuteCommand(ctx, source, nil, lsp.Command{
+	result, err := connector.commands.ExecuteCommand(ctx, source, nil, lsp.Command{
 		Command: "vscode.java.startDebugSession",
 	})
 	if err != nil {

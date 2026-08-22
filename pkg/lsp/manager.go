@@ -100,11 +100,15 @@ func (m *Manager) detect() []projectRoot {
 }
 
 // InvalidateDetection makes newly installed or updated servers visible on the
-// next lookup without waiting for the detection cache TTL.
+// next lookup without waiting for the detection cache TTL. Crash counters are
+// reset because an updated tool deserves a fresh restart budget.
 func (m *Manager) InvalidateDetection() {
 	m.detectMu.Lock()
 	m.detectedAt = time.Time{}
 	m.detectMu.Unlock()
+	m.mu.Lock()
+	clear(m.restarts)
+	m.mu.Unlock()
 }
 
 // SetServerInitializationOptions updates future sessions for a server. An

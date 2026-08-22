@@ -9,7 +9,7 @@ import (
 )
 
 func TestGoAdapterFindsMainAndTestTargets(t *testing.T) {
-	registry := NewRegistry()
+	registry := NewRegistry(nil)
 	mainTargets, err := registry.DetectFile("cmd/demo/main.go", []byte(`package main
 
 func helper() {}
@@ -46,7 +46,7 @@ func TestWrongSignature() {}
 }
 
 func TestPythonAdapterFindsExplicitAndConventionalScripts(t *testing.T) {
-	registry := NewRegistry()
+	registry := NewRegistry(nil)
 	targets, err := registry.DetectFile("tools/report.py", []byte("import json\n\nif __name__ == '__main__':\n    print(json.dumps({}))\n"))
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +73,7 @@ func TestPythonAdapterFindsExplicitAndConventionalScripts(t *testing.T) {
 }
 
 func TestJavaAdapterFindsQualifiedMainClass(t *testing.T) {
-	targets, err := NewRegistry().DetectFile("src/main/java/demo/App.java", []byte(`package demo;
+	targets, err := NewRegistry(nil).DetectFile("src/main/java/demo/App.java", []byte(`package demo;
 
 public final class App {
     String example = "public static void main(String[] args)";
@@ -91,7 +91,7 @@ public final class App {
 }
 
 func TestJavaAdapterRejectsNonPublicMainAndNamesNestedClass(t *testing.T) {
-	targets, err := NewRegistry().DetectFile("src/demo/App.java", []byte(`package demo;
+	targets, err := NewRegistry(nil).DetectFile("src/demo/App.java", []byte(`package demo;
 public class App {
     static void main(String[] ignored) {}
     public static class Nested {
@@ -108,7 +108,7 @@ public class App {
 }
 
 func TestJavaAdapterDoesNotTreatSiblingClassAsEnclosing(t *testing.T) {
-	targets, err := NewRegistry().DetectFile("src/demo/App.java", []byte(`package demo;
+	targets, err := NewRegistry(nil).DetectFile("src/demo/App.java", []byte(`package demo;
 class Helper {}
 public class App {
     public static void main(String[] args) {}
@@ -123,7 +123,7 @@ public class App {
 }
 
 func TestRustAdapterFindsCargoEntrypoints(t *testing.T) {
-	targets, err := NewRegistry().DetectFile("src/bin/report.rs", []byte(`const EXAMPLE: &str = "fn main() {}";
+	targets, err := NewRegistry(nil).DetectFile("src/bin/report.rs", []byte(`const EXAMPLE: &str = "fn main() {}";
 
 #[tokio::main]
 async fn main() {
@@ -137,7 +137,7 @@ async fn main() {
 		t.Fatalf("targets = %#v", targets)
 	}
 
-	targets, err = NewRegistry().DetectFile("examples/debug/rust/src/main.rs", []byte("fn main() {}\n"))
+	targets, err = NewRegistry(nil).DetectFile("examples/debug/rust/src/main.rs", []byte("fn main() {}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ async fn main() {
 }
 
 func TestDotnetAdapterFindsMainAndTopLevelPrograms(t *testing.T) {
-	registry := NewRegistry()
+	registry := NewRegistry(nil)
 	targets, err := registry.DetectFile("Console/Program.cs", []byte(`namespace ConsoleApp;
 public static class Program {
     public static async Task<int> Main(string[] args) {
@@ -189,7 +189,7 @@ Console.WriteLine(message);
 }
 
 func TestJavaScriptAdapterFindsNodeAndPackageScriptTargets(t *testing.T) {
-	registry := NewRegistry()
+	registry := NewRegistry(nil)
 	targets, err := registry.DetectFile("tools/main.ts", []byte(`const message: string = "ready";
 console.log(message);
 `))
@@ -250,7 +250,7 @@ func TestRegistryDetectWorkspaceSkipsGeneratedTrees(t *testing.T) {
 	write("app.py", "print('ready')\n")
 	write("vendor/ignored/main.go", "package main\nfunc main() {}\n")
 
-	targets, err := NewRegistry().DetectWorkspace(context.Background(), root)
+	targets, err := NewRegistry(nil).DetectWorkspace(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +275,7 @@ func TestCheckedInDebuggerSamplesExposeRunnableTargets(t *testing.T) {
 		{path: "examples/debug/react-vite/package.json", language: javascriptLanguage, kind: "browser-script"},
 	}
 
-	registry := NewRegistry()
+	registry := NewRegistry(nil)
 	for _, test := range tests {
 		t.Run(test.language+"/"+test.kind, func(t *testing.T) {
 			contents, err := os.ReadFile(filepath.Join("..", "..", filepath.FromSlash(test.path)))

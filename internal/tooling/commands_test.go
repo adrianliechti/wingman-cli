@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -110,5 +111,29 @@ func TestLookPathRejectsMissingAbsoluteCommand(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing")
 	if _, err := LookPath(path); err != exec.ErrNotFound {
 		t.Fatalf("LookPath error = %v, want exec.ErrNotFound", err)
+	}
+}
+
+func TestEnvironmentAddsUserDirectoryShebangInterpreter(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows launchers do not use shebangs")
+	}
+	interpreterDir := t.TempDir()
+	interpreter := filepath.Join(interpreterDir, "wingman-test-interp")
+	if err := os.WriteFile(interpreter, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOBIN", interpreterDir)
+
+	command := filepath.Join(t.TempDir(), "launcher")
+	if err := os.WriteFile(command, []byte("#!/usr/bin/env wingman-test-interp\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !Runnable(command) {
+		t.Fatal("launcher with a user-directory interpreter is not runnable")
+	}
+	environment := Environment(command, []string{"PATH=/usr/bin"})
+	if !pathContains(strings.TrimPrefix(environment[0], "PATH="), interpreterDir) {
+		t.Fatalf("environment PATH %q misses interpreter directory %q", environment[0], interpreterDir)
 	}
 }

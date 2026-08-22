@@ -136,8 +136,14 @@ func (dotnetAdapter) Plan(request Request) (Plan, error) {
 		"justMyCode": true,
 	}
 	summary := fmt.Sprintf("%s .NET entry point %s.", actionLabel(request.Action), request.Target.Path)
+	var preLaunch *dap.ProcessLaunch
 	if !exists {
-		summary = fmt.Sprintf("%s Build it with dotnet build first; the expected assembly is %s.", summary, filepath.ToSlash(relativeProgram))
+		if dotnet := absoluteCommandPath("dotnet"); dotnet != "" {
+			preLaunch = &dap.ProcessLaunch{Title: "dotnet build", Command: dotnet, Args: []string{"build"}, WaitForExit: true}
+			summary += " The project is built with dotnet build first."
+		} else {
+			summary = fmt.Sprintf("%s Build it with dotnet build first; the expected assembly is %s.", summary, filepath.ToSlash(relativeProgram))
+		}
 	}
 	plan := Plan{
 		Title:         actionLabel(request.Action) + " " + request.Target.Name,
@@ -146,6 +152,7 @@ func (dotnetAdapter) Plan(request Request) (Plan, error) {
 		Request:       "launch",
 		IO:            dap.IOOutput,
 		Configuration: configuration,
+		PreLaunch:     preLaunch,
 	}
 	if request.Action == "run" {
 		configuration["noDebug"] = true

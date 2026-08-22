@@ -135,8 +135,18 @@ func (adapter rustAdapter) Plan(request Request) (Plan, error) {
 		buildTarget = "--example " + target.Name
 	}
 	summary := fmt.Sprintf("%s Rust %s %s.", actionLabel(request.Action), targetLabel, target.Name)
+	var preLaunch *dap.ProcessLaunch
 	if !exists {
-		summary += fmt.Sprintf(" Build it with cargo build %s first; the expected executable is %s.", buildTarget, filepath.ToSlash(program))
+		if cargo := resolveCargoExecutable(); cargo != "" {
+			buildArgs := []string{"build", "--bin", target.Name}
+			if kind == "example" {
+				buildArgs = []string{"build", "--example", target.Name}
+			}
+			preLaunch = &dap.ProcessLaunch{Title: "cargo build", Command: cargo, Args: buildArgs, WaitForExit: true}
+			summary += fmt.Sprintf(" The %s is built with cargo build %s first.", targetLabel, buildTarget)
+		} else {
+			summary += fmt.Sprintf(" Build it with cargo build %s first; the expected executable is %s.", buildTarget, filepath.ToSlash(program))
+		}
 	}
 	plan := Plan{
 		Title:            actionLabel(request.Action) + " " + target.Name,
@@ -146,6 +156,7 @@ func (adapter rustAdapter) Plan(request Request) (Plan, error) {
 		IO:               dap.IOOutput,
 		SupportsTerminal: true,
 		Configuration:    configuration,
+		PreLaunch:        preLaunch,
 	}
 	if request.Action == "run" {
 		configuration["noDebug"] = true

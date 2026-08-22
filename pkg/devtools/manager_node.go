@@ -17,15 +17,15 @@ var nodeRecipes = []recipe{
 	{ID: "dockerfile-language-server", Label: "Dockerfile language tools", Kind: installerNPM, Packages: []string{"dockerfile-language-server-nodejs@latest"}, Commands: []string{"docker-langserver"}},
 }
 
-func (m *Manager) installNPM(ctx context.Context, item recipe, stage string) error {
+func (m *Manager) installNPM(ctx context.Context, item recipe, stage string) (string, error) {
 	npm, err := m.look("npm")
 	if err != nil {
-		return errors.New("npm is not installed")
+		return "", errors.New("npm is not installed")
 	}
 	args := []string{"install", "--prefix", stage, "--no-package-lock", "--no-audit", "--no-fund", "--omit=dev"}
 	args = append(args, item.Packages...)
 	if output, err := m.run(ctx, npm, args, installWorkingDir(item, stage), os.Environ()); err != nil {
-		return commandError(output, err)
+		return "", commandError(output, err)
 	}
-	return nil
+	return "", nil
 }

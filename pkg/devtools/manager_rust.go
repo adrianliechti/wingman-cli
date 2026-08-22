@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 )
 
 var rustRecipes = []recipe{
@@ -21,43 +23,44 @@ const (
 	codeLLDBReleaseURL     = "https://api.github.com/repos/vadimcn/codelldb/releases/latest"
 )
 
-func (m *Manager) installRustAnalyzer(ctx context.Context, item recipe, stage string) error {
+// installRustAnalyzer downloads the official release archive.
+func (m *Manager) installRustAnalyzer(ctx context.Context, item recipe, stage string) (string, error) {
 	if item.ID != "rust-analyzer" {
-		return fmt.Errorf("unknown Rust tool %q", item.ID)
+		return "", fmt.Errorf("unknown Rust tool %q", item.ID)
 	}
 	assetName, err := rustAnalyzerAssetName(runtime.GOOS, runtime.GOARCH)
 	if err != nil {
-		return err
+		return "", err
 	}
-	archive, err := m.githubAsset(ctx, rustAnalyzerReleaseURL, assetName)
+	archive, version, err := m.githubAsset(ctx, item, rustAnalyzerReleaseURL, assetName)
 	if err != nil {
-		return fmt.Errorf("download rust-analyzer: %w", err)
+		return "", fmt.Errorf("download rust-analyzer: %w", err)
 	}
 	directory := filepath.Join(stage, "bin")
 	if err := os.MkdirAll(directory, 0o755); err != nil {
-		return err
+		return "", err
 	}
 	name := "rust-analyzer"
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 		if err := extractZip(archive, directory); err != nil {
-			return fmt.Errorf("extract %s: %w", assetName, err)
+			return "", fmt.Errorf("extract %s: %w", assetName, err)
 		}
 	} else {
 		reader, err := gzip.NewReader(bytes.NewReader(archive))
 		if err != nil {
-			return fmt.Errorf("decompress %s: %w", assetName, err)
+			return "", fmt.Errorf("decompress %s: %w", assetName, err)
 		}
 		writeErr := writeArchiveFile(filepath.Join(directory, name), 0o755, reader)
 		closeErr := reader.Close()
 		if err := errors.Join(writeErr, closeErr); err != nil {
-			return fmt.Errorf("decompress %s: %w", assetName, err)
+			return "", fmt.Errorf("decompress %s: %w", assetName, err)
 		}
 	}
-	if !executableFile(filepath.Join(directory, name)) {
-		return errors.New("rust-analyzer release does not contain its native server")
+	if !tooling.Executable(filepath.Join(directory, name)) {
+		return "", errors.New("rust-analyzer release does not contain its native server")
 	}
-	return nil
+	return version, nil
 }
 
 func rustAnalyzerAssetName(goos, goarch string) (string, error) {
@@ -76,29 +79,29 @@ func rustAnalyzerAssetName(goos, goarch string) (string, error) {
 	return asset, nil
 }
 
-func (m *Manager) installCodeLLDB(ctx context.Context, item recipe, stage string) error {
+func (m *Manager) installCodeLLDB(ctx context.Context, item recipe, stage string) (string, error) {
 	if item.ID != "codelldb" {
-		return fmt.Errorf("unknown CodeLLDB tool %q", item.ID)
+		return "", fmt.Errorf("unknown CodeLLDB tool %q", item.ID)
 	}
 	assetName, err := codeLLDBAssetName(runtime.GOOS, runtime.GOARCH)
 	if err != nil {
-		return err
+		return "", err
 	}
-	archive, err := m.githubAsset(ctx, codeLLDBReleaseURL, assetName)
+	archive, version, err := m.githubAsset(ctx, item, codeLLDBReleaseURL, assetName)
 	if err != nil {
-		return fmt.Errorf("download CodeLLDB: %w", err)
+		return "", fmt.Errorf("download CodeLLDB: %w", err)
 	}
 	if err := extractZip(archive, stage); err != nil {
-		return fmt.Errorf("extract %s: %w", assetName, err)
+		return "", fmt.Errorf("extract %s: %w", assetName, err)
 	}
 	adapter := filepath.Join(stage, "extension", "adapter", "codelldb")
 	if runtime.GOOS == "windows" {
 		adapter += ".exe"
 	}
-	if !executableFile(adapter) {
-		return errors.New("CodeLLDB archive does not contain its native adapter")
+	if !tooling.Executable(adapter) {
+		return "", errors.New("CodeLLDB archive does not contain its native adapter")
 	}
-	return writeCodeLLDBLauncher(stage)
+	return version, writeCodeLLDBLauncher(stage)
 }
 
 func codeLLDBAssetName(goos, goarch string) (string, error) {

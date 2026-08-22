@@ -28,7 +28,8 @@ func DetectRequirements(workingDir string) []ServerRequirement {
 			if server.Command != "" && !slices.Contains(commands, server.Command) {
 				commands = append(commands, server.Command)
 			}
-			if server.MinimumMajorVersion > minimums[server.Command] {
+			current, exists := minimums[server.Command]
+			if server.MinimumMajorVersion != 0 && (!exists || server.MinimumMajorVersion > current) {
 				minimums[server.Command] = server.MinimumMajorVersion
 			}
 		}

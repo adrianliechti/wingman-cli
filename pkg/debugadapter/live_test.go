@@ -26,7 +26,7 @@ print(work(41))
 		t.Fatal(err)
 	}
 
-	registry := NewRegistry()
+	registry := NewRegistry(nil)
 	manager := dap.NewManager(root, registry.Descriptors()...)
 	defer manager.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -96,7 +96,7 @@ func TestLiveViteLaunchStartsPackageScript(t *testing.T) {
 	if tools.Resolve("js-debug-adapter") == "" || tools.Resolve("chrome-for-testing") == "" {
 		t.Skip("managed JavaScript debugger and Chrome for Testing are required")
 	}
-	registry := NewRegistry()
+	registry := NewRegistry(nil)
 	profile, err := registry.Plan(javascriptLanguage, Request{
 		Action: "debug", WorkspaceDir: root, ProjectDir: root,
 		BrowserExecutable: tools.Resolve("chrome-for-testing"),
@@ -166,7 +166,7 @@ setInterval(() => {}, 1000)
 	if tools.Resolve("js-debug-adapter") == "" {
 		t.Skip("managed JavaScript debugger is required")
 	}
-	registry := NewRegistry()
+	registry := NewRegistry(nil)
 	profile, err := registry.Plan(javascriptLanguage, Request{
 		Action: "debug", WorkspaceDir: root, ProjectDir: root,
 		Target: Target{Name: "server", Kind: "node-script", Language: javascriptLanguage, Path: filepath.Join(root, "package.json")},
@@ -217,4 +217,107 @@ func failedSessionOutput(manager *dap.Manager) string {
 		return session.Output()
 	}
 	return ""
+}
+
+func TestLiveNetCoreDbgAutoBuildLaunch(t *testing.T) {
+	if os.Getenv("WINGMAN_LIVE_DAP") == "" {
+		t.Skip("set WINGMAN_LIVE_DAP=1 to run a real NetCoreDbg session")
+	}
+	if absoluteCommandPath("dotnet") == "" {
+		t.Skip("dotnet is not installed")
+	}
+	t.Setenv("WINGMAN_HOME", t.TempDir())
+	tools, err := devtools.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+	if _, err := tools.Update(ctx, []devtools.Requirement{{Alternatives: []string{"netcoredbg"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if tools.Resolve("netcoredbg") == "" {
+		t.Fatal("managed netcoredbg was not installed")
+	}
+
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := `<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>LatestMajor</RollForward>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+</Project>
+`
+	source := `var value = Work(41);
+Console.WriteLine(value);
+
+static int Work(int input)
+{
+    return input + 1;
+}
+`
+	if err := os.WriteFile(filepath.Join(root, "LiveDebug.csproj"), []byte(project), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Program.cs"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	registry := NewRegistry(nil)
+	profile, err := registry.Plan(dotnetLanguage, Request{
+		Action: "debug", WorkspaceDir: root, ProjectDir: ".",
+		Target: Target{Name: "Program", Kind: "main", Language: dotnetLanguage, Path: "Program.cs", Directory: ".", Line: 1, Column: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.PreLaunch == nil || !profile.PreLaunch.WaitForExit {
+		t.Fatalf("unbuilt project did not plan an automatic build: %+v", profile.PreLaunch)
+	}
+
+	manager := dap.NewManager(root, registry.Descriptors()...)
+	manager.SetCommandResolver(tools.Resolve)
+	defer manager.Close()
+	session, err := manager.Start(ctx, dap.StartOptions{
+		Adapter:       "netcoredbg",
+		ProjectDir:    ".",
+		Configuration: profile.Configuration,
+		PreLaunch:     profile.PreLaunch,
+		Breakpoints: map[string][]dap.SourceBreakpoint{
+			filepath.Join(root, "Program.cs"): {{Line: 2}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := session.Status()
+	if status.State != dap.StateStopped {
+		status, _ = session.WaitForStop(ctx, 0)
+	}
+	if status.State != dap.StateStopped {
+		t.Fatalf("status = %+v\noutput:\n%s", status, session.Output())
+	}
+	frames, _, err := session.StackTrace(ctx, 0, 0, 5)
+	if err != nil || len(frames) == 0 {
+		t.Fatalf("frames = %+v, %v", frames, err)
+	}
+	evaluation, err := session.Evaluate(ctx, "value", frames[0].ID)
+	if err != nil || strings.TrimSpace(evaluation.Result) != "42" {
+		t.Fatalf("value = %+v, %v\noutput:\n%s", evaluation, err, session.Output())
+	}
+	if err := session.Continue(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+	status, _ = session.WaitForStop(ctx, status.StateVersion)
+	if status.State != dap.StateTerminated {
+		t.Fatalf("status after continue = %+v", status)
+	}
+	if !strings.Contains(session.Output(), "42") {
+		t.Fatalf("program output missing:\n%s", session.Output())
+	}
 }

@@ -2764,16 +2764,27 @@ export default function App() {
 					});
 				}}
 				onFailed={(message) => {
+					const previousID = debugSessionRef.current?.session_id;
 					void getDebugSession()
 						.then(({ session }) => {
-							if (session) {
+							// Only a session created by this launch attempt carries its
+							// failure output; a leftover session would hide the error.
+							if (session && session.session_id !== previousID) {
 								showDebugFailure(session);
 								return;
 							}
-							toast({ title: "Debugger could not start", description: message, tone: "error" });
+							toast({
+								title: "Debugger could not start",
+								description: message,
+								tone: "error",
+							});
 						})
 						.catch(() => {
-							toast({ title: "Debugger could not start", description: message, tone: "error" });
+							toast({
+								title: "Debugger could not start",
+								description: message,
+								tone: "error",
+							});
 						});
 				}}
 			/>
@@ -3047,9 +3058,44 @@ export default function App() {
 }
 
 function ManagedToolsFooter({ status }: { status?: ManagedToolsStatus }) {
+	const [dismissed, setDismissed] = useState("");
+	if (status?.state === "error") {
+		const tools = (status.unavailable ?? []).join(", ");
+		const key = tools || status.error || "error";
+		if (dismissed === key) return null;
+		const message = tools
+			? `Couldn't install ${tools}. Project and system tools still work.`
+			: "Automatic tool setup could not finish. Project and system tools still work.";
+		return (
+			<div
+				data-managed-tools-status
+				role="status"
+				aria-live="polite"
+				aria-atomic="true"
+				className="flex h-8 shrink-0 items-center gap-2 border-t border-warning/30 bg-warning/10 px-3 text-[10.5px] text-warning"
+			>
+				<span
+					className="min-w-0 flex-1 truncate"
+					title={status.error || message}
+				>
+					{message}
+				</span>
+				<button
+					type="button"
+					onClick={() => setDismissed(key)}
+					className="shrink-0 px-1 opacity-70 hover:opacity-100"
+					aria-label="Dismiss"
+				>
+					×
+				</button>
+			</div>
+		);
+	}
 	if (status?.state !== "installing") return null;
 
-	const message = status.label ? `Setting up ${status.label}…` : "Checking tools…";
+	const message = status.label
+		? `Setting up ${status.label}…`
+		: "Checking tools…";
 	const progress =
 		status.current && status.total ? `${status.current}/${status.total}` : "";
 	return (

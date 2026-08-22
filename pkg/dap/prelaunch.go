@@ -17,7 +17,10 @@ import (
 	"github.com/adrianliechti/wingman-agent/internal/tooling"
 )
 
-const preLaunchReadyTimeout = 60 * time.Second
+const (
+	preLaunchReadyTimeout = 60 * time.Second
+	preLaunchExitTimeout  = 5 * time.Minute
+)
 
 type debugProcess struct {
 	cmd      *exec.Cmd
@@ -36,24 +39,23 @@ func startDebugProcess(plan Plan, output func(string, string)) (*debugProcess, e
 	if err := ensureReadyAddressAvailable(launch.ReadyURL); err != nil {
 		return nil, err
 	}
+	stdoutCategory, stderrCategory := "dev server stdout", "dev server stderr"
+	if launch.WaitForExit {
+		stdoutCategory, stderrCategory = "stdout", "stderr"
+	}
 	cmd := exec.Command(launch.Command, launch.Args...)
 	cmd.Dir = plan.ProjectDir
 	cmd.Env = tooling.Environment(launch.Command, os.Environ())
+	// Writer-based output lets Wait drain the final lines; WaitDelay keeps a
+	// grandchild that inherited the pipes from blocking exit detection.
+	cmd.Stdout = &outputWriter{category: stdoutCategory, output: output}
+	cmd.Stderr = &outputWriter{category: stderrCategory, output: output}
+	cmd.WaitDelay = 3 * time.Second
 	configureAdapterProcess(cmd)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("%s output: %w", launch.Title, err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("%s error output: %w", launch.Title, err)
-	}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start %s: %w", launch.Title, err)
 	}
 	process := &debugProcess{cmd: cmd, done: make(chan struct{})}
-	go copyAdapterOutput(stdout, "dev server stdout", output)
-	go copyAdapterOutput(stderr, "dev server stderr", output)
 	go func() {
 		err := cmd.Wait()
 		process.mu.Lock()
@@ -62,6 +64,16 @@ func startDebugProcess(plan Plan, output func(string, string)) (*debugProcess, e
 		close(process.done)
 	}()
 	return process, nil
+}
+
+type outputWriter struct {
+	category string
+	output   func(string, string)
+}
+
+func (w *outputWriter) Write(p []byte) (int, error) {
+	w.output(w.category, string(p))
+	return len(p), nil
 }
 
 func ensureReadyAddressAvailable(address string) error {
@@ -110,6 +122,26 @@ func (process *debugProcess) waitReady(ctx context.Context, address string) erro
 			}
 			return readyCtx.Err()
 		}
+	}
+}
+
+func (process *debugProcess) waitExit(ctx context.Context, title string) error {
+	exitCtx, cancel := context.WithTimeout(ctx, preLaunchExitTimeout)
+	defer cancel()
+	select {
+	case <-process.done:
+		process.mu.Lock()
+		err := process.err
+		process.mu.Unlock()
+		if err != nil {
+			return fmt.Errorf("%s failed: %w", title, err)
+		}
+		return nil
+	case <-exitCtx.Done():
+		if errors.Is(exitCtx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("%s did not finish within %s", title, preLaunchExitTimeout)
+		}
+		return exitCtx.Err()
 	}
 }
 

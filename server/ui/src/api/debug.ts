@@ -68,6 +68,7 @@ export interface DebugLaunchPlan {
 		command: string;
 		args?: string[];
 		ready_url?: string;
+		wait_for_exit?: boolean;
 	};
 }
 

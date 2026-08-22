@@ -18,6 +18,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 )
 
 func TestNewUsesToolsDirectoryWithoutStoreSegment(t *testing.T) {
@@ -37,14 +39,14 @@ func TestUpdateSelectsPreferredManagedAlternativeAndRemovesOld(t *testing.T) {
 	manager := newManager(root)
 	manager.now = func() time.Time { return time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC) }
 	var installed []string
-	manager.install = func(_ context.Context, item recipe, stage string) error {
+	manager.install = func(_ context.Context, item recipe, stage string) (string, error) {
 		installed = append(installed, item.ID)
 		for _, command := range item.Commands {
 			if err := writeTestCommand(stage, command); err != nil {
-				return err
+				return "", err
 			}
 		}
-		return nil
+		return "", nil
 	}
 
 	old := filepath.Join(root, "typescript-language-server", "old.txt")
@@ -102,14 +104,14 @@ func TestUpdateSkipsFreshInstallation(t *testing.T) {
 	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
 	manager.now = func() time.Time { return now }
 	installCount := 0
-	manager.install = func(_ context.Context, item recipe, stage string) error {
+	manager.install = func(_ context.Context, item recipe, stage string) (string, error) {
 		installCount++
 		for _, command := range item.Commands {
 			if err := writeTestCommand(stage, command); err != nil {
-				return err
+				return "", err
 			}
 		}
-		return nil
+		return "", nil
 	}
 	requirements := []Requirement{{Alternatives: []string{"gopls"}}}
 
@@ -135,10 +137,10 @@ func TestUpdateSkipsFreshInstallation(t *testing.T) {
 func TestUpdateKeepsCurrentInstallationWhenInstallerFails(t *testing.T) {
 	root := t.TempDir()
 	manager := newManager(root)
-	manager.install = func(_ context.Context, item recipe, stage string) error {
-		return os.ErrPermission
+	manager.install = func(_ context.Context, item recipe, stage string) (string, error) {
+		return "", os.ErrPermission
 	}
-	current := filepath.Join(root, "gopls", "bin", commandNames("gopls")[0])
+	current := filepath.Join(root, "gopls", "bin", tooling.Candidates(runtime.GOOS, "gopls")[0])
 	if err := os.MkdirAll(filepath.Dir(current), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +166,7 @@ func TestUpdateSkipsManagedInstallWhenEveryProjectHasAnExternalTool(t *testing.T
 	workspace := t.TempDir()
 	projects := []string{filepath.Join(workspace, "one"), filepath.Join(workspace, "two")}
 	for _, project := range projects {
-		command := filepath.Join(project, "node_modules", ".bin", commandNames("typescript-language-server")[0])
+		command := filepath.Join(project, "node_modules", ".bin", tooling.Candidates(runtime.GOOS, "typescript-language-server")[0])
 		if err := os.MkdirAll(filepath.Dir(command), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -175,9 +177,9 @@ func TestUpdateSkipsManagedInstallWhenEveryProjectHasAnExternalTool(t *testing.T
 	manager := newManager(root)
 	manager.look = func(string) (string, error) { return "", exec.ErrNotFound }
 	installCount := 0
-	manager.install = func(context.Context, recipe, string) error {
+	manager.install = func(context.Context, recipe, string) (string, error) {
 		installCount++
-		return nil
+		return "", nil
 	}
 	changed, err := manager.Update(context.Background(), []Requirement{{
 		Alternatives: []string{"typescript-language-server"}, Workspace: workspace, Projects: projects,
@@ -196,7 +198,7 @@ func TestUpdateInstallsFallbackWhenOneProjectLacksExternalTool(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	local := filepath.Join(projects[0], "node_modules", ".bin", commandNames("typescript-language-server")[0])
+	local := filepath.Join(projects[0], "node_modules", ".bin", tooling.Candidates(runtime.GOOS, "typescript-language-server")[0])
 	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -205,13 +207,13 @@ func TestUpdateInstallsFallbackWhenOneProjectLacksExternalTool(t *testing.T) {
 	}
 	manager := newManager(root)
 	manager.look = func(string) (string, error) { return "", exec.ErrNotFound }
-	manager.install = func(_ context.Context, item recipe, stage string) error {
+	manager.install = func(_ context.Context, item recipe, stage string) (string, error) {
 		for _, command := range item.Commands {
 			if err := writeTestCommand(stage, command); err != nil {
-				return err
+				return "", err
 			}
 		}
-		return nil
+		return "", nil
 	}
 	changed, err := manager.Update(context.Background(), []Requirement{{
 		Alternatives: []string{"typescript-language-server"}, Workspace: workspace, Projects: projects,
@@ -236,13 +238,13 @@ func TestUpdateRejectsExternalCommandBelowMinimumVersion(t *testing.T) {
 	}
 	manager := newManager(root)
 	manager.look = func(string) (string, error) { return "", exec.ErrNotFound }
-	manager.install = func(_ context.Context, item recipe, stage string) error {
+	manager.install = func(_ context.Context, item recipe, stage string) (string, error) {
 		for _, command := range item.Commands {
 			if err := writeTestCommand(stage, command); err != nil {
-				return err
+				return "", err
 			}
 		}
-		return nil
+		return "", nil
 	}
 	changed, err := manager.Update(context.Background(), []Requirement{{
 		Alternatives: []string{"tsc", "typescript-language-server"}, Workspace: workspace, Projects: []string{workspace},
@@ -259,9 +261,9 @@ func TestUpdateBacksOffFailedMissingInstall(t *testing.T) {
 	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
 	manager.now = func() time.Time { return now }
 	attempts := 0
-	manager.install = func(context.Context, recipe, string) error {
+	manager.install = func(context.Context, recipe, string) (string, error) {
 		attempts++
-		return errors.New("registry blocked")
+		return "", errors.New("registry blocked")
 	}
 	requirements := []Requirement{{Alternatives: []string{"gopls"}}}
 	if _, err := manager.Update(context.Background(), requirements); !IsUnavailable(err) {
@@ -287,18 +289,18 @@ func TestUpdateDoesNotBackOffCancellation(t *testing.T) {
 	manager := newManager(root)
 	attempts := 0
 	ctx, cancel := context.WithCancel(context.Background())
-	manager.install = func(_ context.Context, item recipe, stage string) error {
+	manager.install = func(_ context.Context, item recipe, stage string) (string, error) {
 		attempts++
 		if attempts == 1 {
 			cancel()
-			return context.Canceled
+			return "", context.Canceled
 		}
 		for _, command := range item.Commands {
 			if err := writeTestCommand(stage, command); err != nil {
-				return err
+				return "", err
 			}
 		}
-		return nil
+		return "", nil
 	}
 	requirements := []Requirement{{Alternatives: []string{"gopls"}}}
 	if _, err := manager.Update(ctx, requirements); !errors.Is(err, context.Canceled) {
@@ -362,7 +364,7 @@ func TestNPMInstallUsesDetectedProjectForRegistryConfiguration(t *testing.T) {
 		}
 		return nil, nil
 	}
-	if err := manager.installRecipe(context.Background(), item, stage); err != nil {
+	if _, err := manager.installRecipe(context.Background(), item, stage); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -430,7 +432,7 @@ func TestResolveRejectsMissingShebangInterpreter(t *testing.T) {
 func TestRecoverInterruptedUpdateRestoresPreviousInstallation(t *testing.T) {
 	root := t.TempDir()
 	backup := filepath.Join(root, ".gopls-old-backup")
-	command := filepath.Join(backup, "bin", commandNames("gopls")[0])
+	command := filepath.Join(backup, "bin", tooling.Candidates(runtime.GOOS, "gopls")[0])
 	if err := os.MkdirAll(filepath.Dir(command), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +447,7 @@ func TestRecoverInterruptedUpdateRestoresPreviousInstallation(t *testing.T) {
 	if err := recoverInterruptedUpdate(root, "gopls"); err != nil {
 		t.Fatal(err)
 	}
-	restored := filepath.Join(root, "gopls", "bin", commandNames("gopls")[0])
+	restored := filepath.Join(root, "gopls", "bin", tooling.Candidates(runtime.GOOS, "gopls")[0])
 	data, err := os.ReadFile(restored)
 	if err != nil || string(data) != "previous" {
 		t.Fatalf("restored installation = %q, %v", data, err)
@@ -505,7 +507,7 @@ func TestRecoverInterruptedUpdateRestoresNewestBackup(t *testing.T) {
 		".gopls-old-a": {content: "newest", stamp: newTime},
 	} {
 		backup := filepath.Join(root, name)
-		command := filepath.Join(backup, "bin", commandNames("gopls")[0])
+		command := filepath.Join(backup, "bin", tooling.Candidates(runtime.GOOS, "gopls")[0])
 		if err := os.MkdirAll(filepath.Dir(command), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -520,7 +522,7 @@ func TestRecoverInterruptedUpdateRestoresNewestBackup(t *testing.T) {
 	if err := recoverInterruptedUpdate(root, "gopls"); err != nil {
 		t.Fatal(err)
 	}
-	command := filepath.Join(root, "gopls", "bin", commandNames("gopls")[0])
+	command := filepath.Join(root, "gopls", "bin", tooling.Candidates(runtime.GOOS, "gopls")[0])
 	data, err := os.ReadFile(command)
 	if err != nil || string(data) != "newest" {
 		t.Fatalf("restored installation = %q, %v", data, err)
@@ -529,7 +531,7 @@ func TestRecoverInterruptedUpdateRestoresNewestBackup(t *testing.T) {
 
 func TestUpdateLockReleasePreservesReplacementOwner(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, updateLockName)
+	path := filepath.Join(root, lockName)
 	release, err := acquireUpdateLock(context.Background(), root, time.Now)
 	if err != nil {
 		t.Fatal(err)
@@ -550,7 +552,7 @@ func TestUpdateLockReleasePreservesReplacementOwner(t *testing.T) {
 
 func TestUpdateLockRecoversLegacyStaleDirectory(t *testing.T) {
 	root := t.TempDir()
-	path := filepath.Join(root, updateLockName)
+	path := filepath.Join(root, lockName)
 	if err := os.Mkdir(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -621,7 +623,7 @@ func TestJavaScriptAdapterUsesVerifiedStandaloneRelease(t *testing.T) {
 		return archive, nil
 	}
 	stage := t.TempDir()
-	if err := manager.installRecipe(context.Background(), manager.byCommand["js-debug-adapter"], stage); err != nil {
+	if _, err := manager.installRecipe(context.Background(), manager.byCommand["js-debug-adapter"], stage); err != nil {
 		t.Fatal(err)
 	}
 	if got := resolveInstalledCommand(stage, "js-debug-adapter"); got == "" {
@@ -667,13 +669,13 @@ func TestChromeForTestingUsesPreferredPlatformArchive(t *testing.T) {
 		}
 	}
 	stage := t.TempDir()
-	if err := manager.installRecipe(context.Background(), manager.byCommand["chrome-for-testing"], stage); err != nil {
+	if _, err := manager.installRecipe(context.Background(), manager.byCommand["chrome-for-testing"], stage); err != nil {
 		t.Fatal(err)
 	}
 	if got := resolveInstalledCommand(stage, "chrome-for-testing"); got == "" {
 		t.Fatal("Chrome for Testing launcher was not installed")
 	}
-	if executable, err := chromeForTestingExecutable(stage, runtime.GOOS, runtime.GOARCH); err != nil || !executableFile(executable) {
+	if executable, err := chromeForTestingExecutable(stage, runtime.GOOS, runtime.GOARCH); err != nil || !tooling.Executable(executable) {
 		t.Fatalf("Chrome executable = %q, %v", executable, err)
 	}
 }
@@ -735,7 +737,7 @@ func TestCodeLLDBUsesVerifiedPlatformRelease(t *testing.T) {
 		return archive, nil
 	}
 	stage := t.TempDir()
-	if err := manager.installRecipe(context.Background(), manager.byCommand["codelldb"], stage); err != nil {
+	if _, err := manager.installRecipe(context.Background(), manager.byCommand["codelldb"], stage); err != nil {
 		t.Fatal(err)
 	}
 	if got := resolveInstalledCommand(stage, "codelldb"); got == "" {
@@ -776,7 +778,7 @@ func TestNetCoreDbgUsesVerifiedPlatformRelease(t *testing.T) {
 		return archive, nil
 	}
 	stage := t.TempDir()
-	if err := manager.installRecipe(context.Background(), manager.byCommand["netcoredbg"], stage); err != nil {
+	if _, err := manager.installRecipe(context.Background(), manager.byCommand["netcoredbg"], stage); err != nil {
 		t.Fatal(err)
 	}
 	if got := resolveInstalledCommand(stage, "netcoredbg"); got == "" {
@@ -820,7 +822,7 @@ func TestJavaInstallsLatestVerifiedJDTLSAndDebugBundle(t *testing.T) {
 		}
 	}
 	stage := t.TempDir()
-	if err := manager.installRecipe(context.Background(), manager.byCommand["jdtls"], stage); err != nil {
+	if _, err := manager.installRecipe(context.Background(), manager.byCommand["jdtls"], stage); err != nil {
 		t.Fatal(err)
 	}
 	if got := resolveInstalledCommand(stage, "jdtls"); got == "" {
@@ -841,6 +843,7 @@ func TestZipExtractorRejectsArchiveTraversal(t *testing.T) {
 func TestRustAnalyzerUsesVerifiedOfficialRelease(t *testing.T) {
 	manager := newManager(t.TempDir())
 	item := manager.byCommand["rust-analyzer"]
+	manager.look = func(string) (string, error) { return "", exec.ErrNotFound }
 	assetName, err := rustAnalyzerAssetName(runtime.GOOS, runtime.GOARCH)
 	if err != nil {
 		t.Skip(err)
@@ -868,8 +871,12 @@ func TestRustAnalyzerUsesVerifiedOfficialRelease(t *testing.T) {
 		return archive.Bytes(), nil
 	}
 	stage := t.TempDir()
-	if err := manager.installRecipe(context.Background(), item, stage); err != nil {
+	version, err := manager.installRecipe(context.Background(), item, stage)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if version != "https://example.test/rust-analyzer" {
+		t.Fatalf("version marker = %q", version)
 	}
 	if got := resolveInstalledCommand(stage, "rust-analyzer"); got == "" {
 		t.Fatal("rust-analyzer was not installed")
@@ -891,12 +898,25 @@ func TestCSharpLanguageServerUsesDotnetTool(t *testing.T) {
 		return nil, writeTestCommand(dir, "csharp-ls")
 	}
 	stage := t.TempDir()
-	if err := manager.installRecipe(context.Background(), item, stage); err != nil {
+	if _, err := manager.installRecipe(context.Background(), item, stage); err != nil {
 		t.Fatal(err)
 	}
-	wantArgs := []string{"tool", "install", "--tool-path", filepath.Join(stage, "bin"), "csharp-ls"}
+	wantArgs := []string{"tool", "install", "--tool-path", filepath.Join(stage, "tools"), "--allow-roll-forward", "csharp-ls"}
 	if !reflect.DeepEqual(gotArgs, wantArgs) {
 		t.Fatalf("args = %v, want %v", gotArgs, wantArgs)
+	}
+	launcher := resolveInstalledCommand(stage, "csharp-ls")
+	if launcher == "" {
+		t.Fatal("csharp-ls launcher was not installed")
+	}
+	if runtime.GOOS != "windows" {
+		contents, err := os.ReadFile(launcher)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(contents), "DOTNET_ROOT") || !strings.Contains(string(contents), "../tools/csharp-ls") {
+			t.Fatalf("launcher does not target the tool through DOTNET_ROOT:\n%s", contents)
+		}
 	}
 }
 
@@ -963,4 +983,158 @@ func testZip(t *testing.T, files map[string]testZipEntry) []byte {
 		t.Fatal(err)
 	}
 	return data.Bytes()
+}
+
+func TestUpdateSkipsUnchangedGitHubRelease(t *testing.T) {
+	archive := testTarGzip(t, map[string]string{
+		"js-debug/src/dapDebugServer.js": "console.log('adapter')\n",
+	})
+	assetURL := "https://github.example.test/js-debug-dap-v1.2.3.tar.gz"
+	metadata := fmt.Sprintf(`{"assets":[{"name":"js-debug-dap-v1.2.3.tar.gz","browser_download_url":%q}]}`, assetURL)
+
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	downloads := 0
+	manager := newManager(t.TempDir())
+	manager.install = manager.installRecipe
+	manager.now = func() time.Time { return now }
+	manager.look = func(string) (string, error) { return filepath.Join(t.TempDir(), "node"), nil }
+	manager.fetch = func(_ context.Context, address string) ([]byte, error) {
+		switch address {
+		case javascriptReleaseURL:
+			return []byte(metadata), nil
+		case assetURL:
+			downloads++
+			return archive, nil
+		default:
+			return nil, fmt.Errorf("unexpected URL %s", address)
+		}
+	}
+
+	requirements := []Requirement{{Alternatives: []string{"js-debug-adapter"}}}
+	if changed, err := manager.Update(context.Background(), requirements); err != nil || !changed {
+		t.Fatalf("first update = %v, %v", changed, err)
+	}
+	if downloads != 1 {
+		t.Fatalf("downloads after install = %d", downloads)
+	}
+
+	now = now.Add(25 * time.Hour)
+	if changed, err := manager.Update(context.Background(), requirements); err != nil || changed {
+		t.Fatalf("stale update = %v, %v", changed, err)
+	}
+	if downloads != 1 {
+		t.Fatalf("unchanged release was re-downloaded (%d downloads)", downloads)
+	}
+	if !manager.fresh(manager.byCommand["js-debug-adapter"]) {
+		t.Fatal("skipped update did not refresh the status stamp")
+	}
+
+	assetURL2 := "https://github.example.test/js-debug-dap-v1.2.4.tar.gz"
+	metadata = fmt.Sprintf(`{"assets":[{"name":"js-debug-dap-v1.2.4.tar.gz","browser_download_url":%q}]}`, assetURL2)
+	previous := manager.fetch
+	manager.fetch = func(ctx context.Context, address string) ([]byte, error) {
+		if address == assetURL2 {
+			downloads++
+			return archive, nil
+		}
+		return previous(ctx, address)
+	}
+	now = now.Add(25 * time.Hour)
+	if changed, err := manager.Update(context.Background(), requirements); err != nil || !changed {
+		t.Fatalf("new release update = %v, %v", changed, err)
+	}
+	if downloads != 2 {
+		t.Fatalf("new release was not downloaded (%d downloads)", downloads)
+	}
+}
+
+func TestUpdateDisabledByEnvironment(t *testing.T) {
+	t.Setenv("WINGMAN_MANAGED_TOOLS", "off")
+	root := filepath.Join(t.TempDir(), "tools")
+	manager := newManager(root)
+	manager.install = func(context.Context, recipe, string) (string, error) {
+		t.Fatal("installer ran while managed tools are disabled")
+		return "", nil
+	}
+	changed, err := manager.Update(context.Background(), []Requirement{{Alternatives: []string{"gopls"}}})
+	if err != nil || changed {
+		t.Fatalf("disabled update = %v, %v", changed, err)
+	}
+	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("disabled update created the tools directory")
+	}
+}
+
+func TestVerifySHA256AllowsMissingPublishedChecksum(t *testing.T) {
+	if err := verifySHA256([]byte("data"), ""); err != nil {
+		t.Fatalf("missing checksum was rejected: %v", err)
+	}
+	if err := verifySHA256([]byte("data"), "sha256:"); err != nil {
+		t.Fatalf("empty checksum was rejected: %v", err)
+	}
+	if err := verifySHA256([]byte("data"), "sha256:0000000000000000000000000000000000000000000000000000000000000000"); err == nil {
+		t.Fatal("wrong checksum was accepted")
+	}
+}
+
+func TestTarGzipExtractorHandlesPaxHeaderAndSymlink(t *testing.T) {
+	var data bytes.Buffer
+	compressor := gzip.NewWriter(&data)
+	writer := tar.NewWriter(compressor)
+	if err := writer.WriteHeader(&tar.Header{
+		Name: "pax_global_header", Typeflag: tar.TypeXGlobalHeader,
+		PAXRecords: map[string]string{"comment": "git archive"}, Format: tar.FormatPAX,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	contents := []byte("data")
+	if err := writer.WriteHeader(&tar.Header{Name: "dir/file.txt", Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(contents))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write(contents); err != nil {
+		t.Fatal(err)
+	}
+	withSymlink := runtime.GOOS != "windows"
+	if withSymlink {
+		if err := writer.WriteHeader(&tar.Header{Name: "dir/link", Typeflag: tar.TypeSymlink, Linkname: "file.txt"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := compressor.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	destination := t.TempDir()
+	if err := extractTarGzip(data.Bytes(), destination); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(destination, "dir", "file.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if withSymlink {
+		if resolved, err := os.ReadFile(filepath.Join(destination, "dir", "link")); err != nil || string(resolved) != "data" {
+			t.Fatalf("symlink contents = %q, %v", resolved, err)
+		}
+	}
+}
+
+func TestTarGzipExtractorRejectsEscapingSymlink(t *testing.T) {
+	var data bytes.Buffer
+	compressor := gzip.NewWriter(&data)
+	writer := tar.NewWriter(compressor)
+	if err := writer.WriteHeader(&tar.Header{Name: "dir/link", Typeflag: tar.TypeSymlink, Linkname: "../../escape"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := compressor.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := extractTarGzip(data.Bytes(), t.TempDir()); err == nil {
+		t.Fatal("escaping tar symlink was accepted")
+	}
 }

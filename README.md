@@ -294,8 +294,9 @@ Otherwise it installs the latest supported adapter under
 `$WINGMAN_HOME/tools/<tool>` (normally `~/.wingman/tools/<tool>`), checks it
 daily, and replaces the old version after an update.
 
-Click the editor gutter to add breakpoints. Closing the Debug tab stops the
-session. Runnable samples live in
+Unbuilt .NET and Rust targets are built with `dotnet build` or `cargo build`
+before the debugger launches. Click the editor gutter to add breakpoints.
+Closing the Debug tab stops the session. Runnable samples live in
 [`examples/debug`](examples/debug).
 
 ## 🛠️ Built-in Tools
@@ -347,10 +348,14 @@ external; current JDT LS releases require JDK 21 or newer.
 Resolution order is project-local, `PATH` and standard user tool directories,
 then Wingman's managed fallback. Existing external tools are not modified.
 Package-manager installs honor their normal proxy, registry, and project
-configuration. If automatic downloads are blocked, install the executable
-through your organization's normal software distribution and retry; Wingman
-will find it without a restart. Java's debug plug-in is loaded from the managed
-JDT LS install; `WINGMAN_JAVA_DEBUG_BUNDLE` provides an explicit alternative.
+configuration; direct downloads honor `HTTP(S)_PROXY` and use the system trust
+store, and GitHub release queries use `GITHUB_TOKEN` when set. If automatic
+downloads are blocked, install the executable through your organization's
+normal software distribution and retry; Wingman will find it without a
+restart. Set `WINGMAN_MANAGED_TOOLS=off` to disable automatic installation
+entirely; already-installed managed tools keep working. Java's debug plug-in
+is loaded from the managed JDT LS install; `WINGMAN_JAVA_DEBUG_BUNDLE`
+provides an explicit alternative.
 
 ### Additional LSP support
 

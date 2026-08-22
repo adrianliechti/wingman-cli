@@ -124,11 +124,14 @@ type StartOptions struct {
 
 // ProcessLaunch is a process owned by the debug session and started before
 // the adapter. ReadyURL, when set, must respond before the adapter launches.
+// WaitForExit instead runs the process to successful completion, such as a
+// build step.
 type ProcessLaunch struct {
-	Title    string   `json:"title"`
-	Command  string   `json:"command"`
-	Args     []string `json:"args,omitempty"`
-	ReadyURL string   `json:"ready_url,omitempty"`
+	Title       string   `json:"title"`
+	Command     string   `json:"command"`
+	Args        []string `json:"args,omitempty"`
+	ReadyURL    string   `json:"ready_url,omitempty"`
+	WaitForExit bool     `json:"wait_for_exit,omitempty"`
 }
 
 type SourceBreakpoint struct {

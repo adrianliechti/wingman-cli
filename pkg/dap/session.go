@@ -131,14 +131,23 @@ func startSession(ctx context.Context, id string, plan Plan, options StartOption
 		process, err := startDebugProcess(plan, session.output.append)
 		session.preLaunch = process
 		if err == nil {
-			err = process.waitReady(ctx, plan.PreLaunch.ReadyURL)
+			if plan.PreLaunch.WaitForExit {
+				err = process.waitExit(ctx, plan.PreLaunch.Title)
+			} else {
+				err = process.waitReady(ctx, plan.PreLaunch.ReadyURL)
+			}
 		}
 		if err != nil {
 			failure := friendlyStartError(plan, err, session.Output())
 			session.recordLaunchFailure(failure)
 			return session, failure
 		}
-		session.output.append("console", fmt.Sprintf("%s is ready at %s\n", plan.PreLaunch.Title, plan.PreLaunch.ReadyURL))
+		switch {
+		case plan.PreLaunch.WaitForExit:
+			session.output.append("console", fmt.Sprintf("%s finished\n", plan.PreLaunch.Title))
+		case plan.PreLaunch.ReadyURL != "":
+			session.output.append("console", fmt.Sprintf("%s is ready at %s\n", plan.PreLaunch.Title, plan.PreLaunch.ReadyURL))
+		}
 	}
 	connection, err := startAdapter(ctx, plan, session.output.append, options.terminalLauncher, options.adapterConnector)
 	if err != nil {
@@ -163,7 +172,7 @@ func startSession(ctx context.Context, id string, plan Plan, options StartOption
 
 func (session *Session) watchPreLaunch() {
 	process := session.preLaunch
-	if process == nil {
+	if process == nil || (session.plan.PreLaunch != nil && session.plan.PreLaunch.WaitForExit) {
 		return
 	}
 	<-process.done
@@ -185,6 +194,8 @@ func friendlyStartError(plan Plan, err error, output string) error {
 		return errors.New("The debugger could not reach the development server. Check that the package script starts successfully and that its port matches the debug URL.")
 	case strings.Contains(detail, "missing script"), strings.Contains(detail, "command not found"), strings.Contains(detail, "is not recognized as an internal or external command"):
 		return errors.New("The package script could not start. Check the script name, install the project dependencies, and try again.")
+	case strings.Contains(detail, "build failed:"):
+		return errors.New("The project build failed. Fix the build errors shown in the debug output and try again.")
 	default:
 		return fmt.Errorf("Could not start the %s debugger: %w", plan.Adapter.Language, err)
 	}

@@ -134,7 +134,7 @@ func (m *Manager) detect(ctx context.Context) ([]detectedAdapter, error) {
 		var availableProjects, missingProjects []string
 		command := ""
 		for _, project := range projects {
-			resolved := m.resolveProjectCommand(candidate.Command, project)
+			resolved := resolveProjectCommand(m.root, m.lookup, m.managed, candidate.Command, project)
 			if resolved == "" {
 				missingProjects = append(missingProjects, project)
 				continue
@@ -266,8 +266,8 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 	if err != nil {
 		return nil, err
 	}
-	if registered := m.registeredAdapter(selected.adapter.Name); registered != nil {
-		command := m.resolveProjectCommand(registered.Command, plan.ProjectDir)
+	if registered, managed := m.registeredAdapter(selected.adapter.Name); registered != nil {
+		command := resolveProjectCommand(m.root, m.lookup, managed, registered.Command, plan.ProjectDir)
 		if command == "" {
 			return nil, fmt.Errorf("debug adapter %s is not available for project %s", registered.Name, plan.ProjectDir)
 		}
@@ -309,24 +309,26 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 	return session, nil
 }
 
-func (m *Manager) registeredAdapter(name string) *AdapterDescriptor {
+func (m *Manager) registeredAdapter(name string) (*AdapterDescriptor, func(string) string) {
+	m.detectMu.Lock()
+	defer m.detectMu.Unlock()
 	for _, adapter := range m.adapters {
 		if strings.EqualFold(adapter.Name, name) {
 			value := cloneAdapters([]AdapterDescriptor{adapter})[0]
-			return &value
+			return &value, m.managed
 		}
 	}
-	return nil
+	return nil, m.managed
 }
 
-func (m *Manager) resolveProjectCommand(command, project string) string {
+func resolveProjectCommand(workspace string, lookup, managed func(string) string, command, project string) string {
 	if command == "" {
 		return ""
 	}
 	resolution := tooling.Resolver{
-		Workspace: m.root,
-		Lookup:    m.lookup,
-		Managed:   m.managed,
+		Workspace: workspace,
+		Lookup:    lookup,
+		Managed:   managed,
 	}.Resolve([]string{project}, command, nil)
 	return resolution.Path
 }

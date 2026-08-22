@@ -36,7 +36,13 @@ interface Props {
 
 type Phase = "planning" | "review" | "starting" | "error";
 
-export function DebugLauncher({ open, seed, onClose, onStarted, onFailed }: Props) {
+export function DebugLauncher({
+	open,
+	seed,
+	onClose,
+	onStarted,
+	onFailed,
+}: Props) {
 	const requestRef = useRef<AbortController | null>(null);
 	const [phase, setPhase] = useState<Phase>("planning");
 	const [plan, setPlan] = useState<DebugLaunchPlan | null>(null);
@@ -44,6 +50,10 @@ export function DebugLauncher({ open, seed, onClose, onStarted, onFailed }: Prop
 	const [configurationText, setConfigurationText] = useState("{}");
 	const [error, setError] = useState("");
 	const [attempt, setAttempt] = useState(0);
+
+	useEffect(() => {
+		if (!open) requestRef.current?.abort();
+	}, [open]);
 
 	useEffect(() => {
 		if (!open) return;
@@ -117,6 +127,7 @@ export function DebugLauncher({ open, seed, onClose, onStarted, onFailed }: Prop
 				},
 				controller.signal,
 			);
+			if (controller.signal.aborted) return;
 			onStarted?.(session);
 			onClose();
 		} catch (cause) {
@@ -332,7 +343,9 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function errorMessage(value: unknown) {
 	const message = value instanceof Error ? value.message : String(value);
-	return message ? message[0].toUpperCase() + message.slice(1) : "The debugger could not start.";
+	return message
+		? message[0].toUpperCase() + message.slice(1)
+		: "The debugger could not start.";
 }
 
 const fieldClass =

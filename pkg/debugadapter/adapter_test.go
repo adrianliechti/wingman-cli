@@ -10,7 +10,7 @@ import (
 )
 
 func TestGoAdapterPlansSingleTestDeterministically(t *testing.T) {
-	plan, err := NewRegistry().Plan("Go", Request{
+	plan, err := NewRegistry(nil).Plan("Go", Request{
 		Action:     "debug",
 		ProjectDir: "services/api",
 		Target: Target{
@@ -41,7 +41,7 @@ func TestGoAdapterMapsOutputAndTerminalModesToDelve(t *testing.T) {
 }
 
 func TestPythonAdapterPlansWorkspaceRelativeScript(t *testing.T) {
-	plan, err := NewRegistry().Plan("Python", Request{
+	plan, err := NewRegistry(nil).Plan("Python", Request{
 		Action:     "run",
 		ProjectDir: "services/api",
 		Target: Target{
@@ -76,7 +76,7 @@ func TestPythonAdapterUsesProjectVirtualEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plan, err := NewRegistry().Plan("Python", Request{
+	plan, err := NewRegistry(nil).Plan("Python", Request{
 		Action: "debug", WorkspaceDir: project, ProjectDir: ".",
 		Target: Target{Name: "main.py", Kind: "script", Language: "Python", Path: "main.py", Directory: ".", Line: 1, Column: 1},
 	})
@@ -108,7 +108,7 @@ func TestPythonAdapterWalksUpToWorkspaceVirtualEnvironment(t *testing.T) {
 	if err := os.WriteFile(interpreter, []byte("python"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := NewRegistry().Plan("Python", Request{
+	plan, err := NewRegistry(nil).Plan("Python", Request{
 		Action: "debug", WorkspaceDir: root, ProjectDir: filepath.Join("services", "api"),
 		Target: Target{Name: "main.py", Kind: "script", Language: "Python", Path: filepath.Join("services", "api", "main.py"), Directory: filepath.Join("services", "api"), Line: 1, Column: 1},
 	})
@@ -283,7 +283,7 @@ func TestDotnetAdapterPlansExistingOrExpectedAssembly(t *testing.T) {
 		Action: "debug", WorkspaceDir: root, ProjectDir: "dotnet-app",
 		Target: Target{Name: "Program", Kind: "main", Language: dotnetLanguage, Path: "dotnet-app/Program.cs", Line: 1, Column: 1},
 	}
-	plan, err := NewRegistry().Plan(dotnetLanguage, request)
+	plan, err := NewRegistry(nil).Plan(dotnetLanguage, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestDotnetAdapterPlansExistingOrExpectedAssembly(t *testing.T) {
 	if err := os.WriteFile(stale, []byte("stale assembly"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	plan, err = NewRegistry().Plan(dotnetLanguage, request)
+	plan, err = NewRegistry(nil).Plan(dotnetLanguage, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestDotnetAdapterPlansExistingOrExpectedAssembly(t *testing.T) {
 	if err := os.WriteFile(built, []byte("assembly"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	plan, err = NewRegistry().Plan(dotnetLanguage, request)
+	plan, err = NewRegistry(nil).Plan(dotnetLanguage, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +357,7 @@ func TestPackageScriptPlansViteServerAndManagedBrowser(t *testing.T) {
 	if err := os.WriteFile(browser, []byte("browser"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := NewRegistry().Plan(javascriptLanguage, Request{
+	plan, err := NewRegistry(nil).Plan(javascriptLanguage, Request{
 		Action: "debug", WorkspaceDir: root, ProjectDir: "web", BrowserExecutable: browser,
 		Target: Target{Name: "dev", Kind: "browser-script", Language: javascriptLanguage, Path: "web/package.json", Line: 1, Column: 1},
 	})
@@ -388,7 +388,7 @@ func TestPackageScriptPlansNodeServerWithoutBrowser(t *testing.T) {
 	}
 	t.Setenv("PATH", bin)
 
-	plan, err := NewRegistry().Plan(javascriptLanguage, Request{
+	plan, err := NewRegistry(nil).Plan(javascriptLanguage, Request{
 		Action: "debug", WorkspaceDir: root, ProjectDir: "api",
 		Target: Target{Name: "server", Kind: "node-script", Language: javascriptLanguage, Path: "api/package.json", Line: 1, Column: 1},
 	})
@@ -397,20 +397,6 @@ func TestPackageScriptPlansNodeServerWithoutBrowser(t *testing.T) {
 	}
 	if plan.Configuration["type"] != "pwa-node" || plan.Configuration["runtimeExecutable"] != npm || !reflect.DeepEqual(plan.Configuration["runtimeArgs"], []string{"run-script", "server"}) || plan.Configuration["autoAttachChildProcesses"] != true || plan.PreLaunch != nil || !plan.SupportsTerminal {
 		t.Fatalf("plan = %#v", plan)
-	}
-}
-
-func TestJavaDebugPortValidation(t *testing.T) {
-	for _, value := range []any{4711, float64(4711), "4711", map[string]any{"port": float64(4711)}} {
-		port, err := javaDebugPort(value)
-		if err != nil || port != 4711 {
-			t.Fatalf("javaDebugPort(%#v) = %d, %v", value, port, err)
-		}
-	}
-	for _, value := range []any{nil, 0, 65536, 12.5, "remote.example:4711"} {
-		if _, err := javaDebugPort(value); err == nil {
-			t.Fatalf("javaDebugPort(%#v) succeeded", value)
-		}
 	}
 }
 
@@ -424,7 +410,7 @@ func TestJavaAdapterPlansMavenProjectName(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(project, "pom.xml"), []byte(pom), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := NewRegistry().Plan("Java", Request{
+	plan, err := NewRegistry(nil).Plan("Java", Request{
 		Action: "debug", WorkspaceDir: root, ProjectDir: "java-app",
 		Target: Target{Name: "demo.App", Kind: "main", Language: "Java", Path: "java-app/src/main/java/demo/App.java", Line: 3, Column: 24},
 	})
@@ -443,9 +429,13 @@ func TestRegistryWiresInstalledJavaDebugBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("WINGMAN_JAVA_DEBUG_BUNDLE", bundle)
-	registry := NewRegistry()
-	if got := registry.JDTLSBundles(); !reflect.DeepEqual(got, []string{bundle}) {
-		t.Fatalf("JDT LS bundles = %#v", got)
+	registry := NewRegistry(nil)
+	want := map[string]any{"bundles": []string{bundle}}
+	if got := registry.ServerInitializations()["jdtls"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("jdtls initialization = %#v", got)
+	}
+	if got := registry.ManagedOnlyCommands(); len(got) != 0 {
+		t.Fatalf("explicit bundle still requires managed jdtls: %v", got)
 	}
 	found := false
 	for _, descriptor := range registry.Descriptors() {
@@ -464,7 +454,7 @@ func TestRegistryUsesExplicitJavaScriptDebugServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("WINGMAN_JS_DEBUG_SERVER", server)
-	registry := NewRegistry()
+	registry := NewRegistry(nil)
 	found := false
 	for _, descriptor := range registry.Descriptors() {
 		if descriptor.Name == "vscode-js-debug" {
@@ -482,7 +472,7 @@ func TestRegistryUsesExplicitJavaScriptDebugServer(t *testing.T) {
 func TestRegistryUsesManagedJavaScriptAdapterByDefault(t *testing.T) {
 	t.Setenv("WINGMAN_JS_DEBUG_ADAPTER", "")
 	t.Setenv("WINGMAN_JS_DEBUG_SERVER", "")
-	for _, descriptor := range NewRegistry().Descriptors() {
+	for _, descriptor := range NewRegistry(nil).Descriptors() {
 		if descriptor.Name != "vscode-js-debug" {
 			continue
 		}
@@ -492,4 +482,43 @@ func TestRegistryUsesManagedJavaScriptAdapterByDefault(t *testing.T) {
 		return
 	}
 	t.Fatal("JavaScript adapter was not registered")
+}
+
+func TestJavaDebugPortValidation(t *testing.T) {
+	for _, value := range []any{4711, float64(4711), "4711", map[string]any{"port": float64(4711)}} {
+		port, err := javaDebugPort(value)
+		if err != nil || port != 4711 {
+			t.Fatalf("javaDebugPort(%#v) = %d, %v", value, port, err)
+		}
+	}
+	for _, value := range []any{nil, 0, 65536, 12.5, "remote.example:4711"} {
+		if _, err := javaDebugPort(value); err == nil {
+			t.Fatalf("javaDebugPort(%#v) succeeded", value)
+		}
+	}
+}
+
+type toolDirStub map[string]string
+
+func (stub toolDirStub) ToolDir(id string) string { return stub[id] }
+
+func TestRegistryLoadsManagedJavaDebugBundle(t *testing.T) {
+	t.Setenv("WINGMAN_JAVA_DEBUG_BUNDLE", "")
+	root := t.TempDir()
+	server := filepath.Join(root, "java-debug", "extension", "server")
+	if err := os.MkdirAll(server, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	jar := filepath.Join(server, "com.microsoft.java.debug.plugin-0.53.0.jar")
+	if err := os.WriteFile(jar, []byte("jar"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	registry := NewRegistry(toolDirStub{"jdtls": root})
+	want := map[string]any{"bundles": []string{jar}}
+	if got := registry.ServerInitializations()["jdtls"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("jdtls initialization = %#v", got)
+	}
+	if got := registry.ManagedOnlyCommands(); !reflect.DeepEqual(got, []string{"jdtls"}) {
+		t.Fatalf("managed-only commands = %v", got)
+	}
 }

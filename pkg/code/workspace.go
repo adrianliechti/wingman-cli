@@ -79,6 +79,7 @@ type Workspace struct {
 	mu               sync.RWMutex
 	closed           bool
 	warmed           bool
+	debugRegistry    *debugadapter.Registry
 	mcpToolsByServer map[string][]tool.Tool
 	lspTools         []tool.Tool
 	graphTools       []tool.Tool
@@ -264,15 +265,13 @@ func (w *Workspace) WarmUp() {
 			changesManager = changes.New(w.RootPath)
 		}
 
-		debugRegistry := debugadapter.NewRegistry(workspaceJavaDebugBundles(w.DevTools)...)
+		debugRegistry := debugadapter.NewRegistry(w.DevTools)
 		var languageOptions []lsp.ManagerOption
 		if w.DevTools != nil {
 			languageOptions = append(languageOptions, lsp.WithCommandResolver(w.DevTools.Resolve))
 		}
-		if bundles := debugRegistry.JDTLSBundles(); len(bundles) > 0 {
-			languageOptions = append(languageOptions, lsp.WithServerInitializationOptions("jdtls", map[string]any{
-				"bundles": bundles,
-			}))
+		for server, options := range debugRegistry.ServerInitializations() {
+			languageOptions = append(languageOptions, lsp.WithServerInitializationOptions(server, options))
 		}
 		languageService := language.New(w.RootPath, filepath.Join(projectGraphDir(w.RootPath), "graph.json"), languageOptions...)
 		dapManager := dap.NewManager(w.RootPath, debugRegistry.Descriptors()...)
@@ -303,6 +302,7 @@ func (w *Workspace) WarmUp() {
 		w.Changes = changesManager
 		w.Language = languageService
 		w.DAP = dapManager
+		w.debugRegistry = debugRegistry
 		w.lspTools = lspTools
 		w.graphTools = graphTools
 		w.warmed = true
@@ -340,21 +340,25 @@ func (w *Workspace) UpdateManagedTools(ctx context.Context, tools ManagedToolSet
 
 	var requirements []devtools.Requirement
 	if tools&ManagedLSPTools != 0 {
-		explicitJavaDebug := len(debugadapter.DiscoverJavaDebugBundles()) > 0
+		managedOnly := make(map[string]bool)
+		for _, command := range w.DebugRegistry().ManagedOnlyCommands() {
+			managedOnly[command] = true
+		}
 		for _, requirement := range lsp.DetectRequirements(root) {
 			requirements = append(requirements, devtools.Requirement{
 				Alternatives: requirement.Commands, Workspace: root, Projects: requirement.Directories,
 				MinimumMajorVersions: requirement.MinimumMajorVersions,
-				ManagedOnly:          requirement.Project == "java" && !explicitJavaDebug,
+				ManagedOnly: slices.ContainsFunc(requirement.Commands, func(command string) bool {
+					return managedOnly[command]
+				}),
 			})
 		}
 	}
 
 	var detectErr error
 	if tools&ManagedDAPTools != 0 {
-		registry := debugadapter.NewRegistry(workspaceJavaDebugBundles(manager)...)
 		var adapterRequirements []dap.AdapterRequirement
-		adapterRequirements, detectErr = dap.DetectRequirements(ctx, root, registry.Descriptors())
+		adapterRequirements, detectErr = dap.DetectRequirements(ctx, root, w.DebugRegistry().Descriptors())
 		for _, requirement := range adapterRequirements {
 			requirements = append(requirements, devtools.Requirement{
 				Alternatives: requirement.Commands, Workspace: root, Projects: requirement.Projects,
@@ -374,12 +378,15 @@ func (w *Workspace) UpdateManagedTools(ctx context.Context, tools ManagedToolSet
 	closed = w.closed
 	w.mu.RUnlock()
 	if !closed {
-		updatedRegistry := debugadapter.NewRegistry(workspaceJavaDebugBundles(manager)...)
+		updatedRegistry := debugadapter.NewRegistry(manager)
+		w.mu.Lock()
+		if !w.closed {
+			w.debugRegistry = updatedRegistry
+		}
+		w.mu.Unlock()
 		if languageService != nil {
-			if bundles := updatedRegistry.JDTLSBundles(); len(bundles) > 0 {
-				updateErr = errors.Join(updateErr, languageService.SetServerInitializationOptions("jdtls", map[string]any{
-					"bundles": bundles,
-				}))
+			for server, options := range updatedRegistry.ServerInitializations() {
+				updateErr = errors.Join(updateErr, languageService.SetServerInitializationOptions(server, options))
 			}
 			languageService.InvalidateLSPDetection()
 		}
@@ -449,14 +456,18 @@ func (u *ManagedToolsUpdate) WaitContext(ctx context.Context) (bool, error) {
 	}
 }
 
-func workspaceJavaDebugBundles(manager *devtools.Manager) []string {
-	if explicit := debugadapter.DiscoverJavaDebugBundles(); len(explicit) > 0 {
-		return explicit
+// DebugRegistry returns the language debug adapters configured against the
+// workspace's managed tools. All frontends must plan and detect against this
+// registry so it matches the adapters the DAP manager runs.
+func (w *Workspace) DebugRegistry() *debugadapter.Registry {
+	w.mu.RLock()
+	registry := w.debugRegistry
+	manager := w.DevTools
+	w.mu.RUnlock()
+	if registry != nil {
+		return registry
 	}
-	if manager == nil {
-		return nil
-	}
-	return manager.JavaDebugBundles()
+	return debugadapter.NewRegistry(manager)
 }
 
 func (w *Workspace) InitMCP(ctx context.Context) error {
@@ -594,8 +605,8 @@ func (w *Workspace) Close() {
 	if mcpRefreshCancel != nil {
 		mcpRefreshCancel()
 	}
-	// Java's debug adapter is hosted by JDT LS, so DAP must disconnect while
-	// the language service is still available.
+	// Some debug adapters are hosted by a language server, so DAP must
+	// disconnect while the language service is still available.
 	if dapManager != nil {
 		dapManager.Close()
 	}

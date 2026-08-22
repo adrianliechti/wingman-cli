@@ -33,37 +33,68 @@ type openVSXExtension struct {
 	} `json:"files"`
 }
 
-func (m *Manager) installJava(ctx context.Context, item recipe, stage string) error {
+func (m *Manager) installJava(ctx context.Context, item recipe, stage string) (string, error) {
 	if item.ID != "jdtls" {
-		return fmt.Errorf("unknown Java tool %q", item.ID)
+		return "", fmt.Errorf("unknown Java tool %q", item.ID)
 	}
-	if err := m.installJDTLS(ctx, stage); err != nil {
-		return err
+	baseURL, filename, err := m.latestJDTLSArchive(ctx)
+	if err != nil {
+		return "", err
 	}
-	if err := m.installJavaDebug(ctx, stage); err != nil {
-		return err
+	extension, err := m.latestJavaDebug(ctx)
+	if err != nil {
+		return "", err
 	}
-	return nil
+	version := filename + "|" + extension.Files.Download
+	if version == m.installedVersion(item) {
+		return "", errUpToDate
+	}
+	if err := m.installJDTLS(ctx, stage, baseURL, filename); err != nil {
+		return "", err
+	}
+	if err := m.installJavaDebug(ctx, stage, extension); err != nil {
+		return "", err
+	}
+	return version, nil
 }
 
-func (m *Manager) installJDTLS(ctx context.Context, stage string) error {
+func (m *Manager) latestJDTLSArchive(ctx context.Context) (string, string, error) {
 	index, err := m.fetch(ctx, jdtlsMilestonesURL)
 	if err != nil {
-		return fmt.Errorf("query JDT LS milestones: %w", err)
+		return "", "", fmt.Errorf("query JDT LS milestones: %w", err)
 	}
 	version := latestJDTLSVersion(index)
 	if version == "" {
-		return errors.New("JDT LS milestone index contains no release")
+		return "", "", errors.New("JDT LS milestone index contains no release")
 	}
 	baseURL := jdtlsMilestonesURL + version + "/"
 	latest, err := m.fetch(ctx, baseURL+"latest.txt")
 	if err != nil {
-		return fmt.Errorf("query JDT LS %s archive: %w", version, err)
+		return "", "", fmt.Errorf("query JDT LS %s archive: %w", version, err)
 	}
 	filename := strings.TrimSpace(string(latest))
 	if filename != filepath.Base(filename) || !strings.HasPrefix(filename, "jdt-language-server-") || !strings.HasSuffix(filename, ".tar.gz") {
-		return fmt.Errorf("invalid JDT LS archive name %q", filename)
+		return "", "", fmt.Errorf("invalid JDT LS archive name %q", filename)
 	}
+	return baseURL, filename, nil
+}
+
+func (m *Manager) latestJavaDebug(ctx context.Context) (openVSXExtension, error) {
+	metadata, err := m.fetch(ctx, javaDebugLatestURL)
+	if err != nil {
+		return openVSXExtension{}, fmt.Errorf("query latest java-debug package: %w", err)
+	}
+	var extension openVSXExtension
+	if err := json.Unmarshal(metadata, &extension); err != nil {
+		return openVSXExtension{}, fmt.Errorf("decode latest java-debug package: %w", err)
+	}
+	if !extension.Verified || extension.Files.Download == "" || extension.Files.SHA256 == "" {
+		return openVSXExtension{}, errors.New("latest java-debug package is not verified or has no checksum")
+	}
+	return extension, nil
+}
+
+func (m *Manager) installJDTLS(ctx context.Context, stage, baseURL, filename string) error {
 	archive, err := m.fetch(ctx, baseURL+filename)
 	if err != nil {
 		return fmt.Errorf("download %s: %w", filename, err)
@@ -81,18 +112,7 @@ func (m *Manager) installJDTLS(ctx context.Context, stage string) error {
 	return nil
 }
 
-func (m *Manager) installJavaDebug(ctx context.Context, stage string) error {
-	metadata, err := m.fetch(ctx, javaDebugLatestURL)
-	if err != nil {
-		return fmt.Errorf("query latest java-debug package: %w", err)
-	}
-	var extension openVSXExtension
-	if err := json.Unmarshal(metadata, &extension); err != nil {
-		return fmt.Errorf("decode latest java-debug package: %w", err)
-	}
-	if !extension.Verified || extension.Files.Download == "" || extension.Files.SHA256 == "" {
-		return errors.New("latest java-debug package is not verified or has no checksum")
-	}
+func (m *Manager) installJavaDebug(ctx context.Context, stage string, extension openVSXExtension) error {
 	archive, err := m.fetch(ctx, extension.Files.Download)
 	if err != nil {
 		return fmt.Errorf("download java-debug package: %w", err)
@@ -134,14 +154,6 @@ func latestJDTLSVersion(index []byte) string {
 		return ""
 	}
 	return fmt.Sprintf("%d.%d.%d", best[0], best[1], best[2])
-}
-
-// JavaDebugBundles returns the managed java-debug plug-in for JDT LS.
-func (m *Manager) JavaDebugBundles() []string {
-	if m == nil {
-		return nil
-	}
-	return javaDebugBundlesAt(filepath.Join(m.root, "jdtls"))
 }
 
 func javaDebugBundlesAt(root string) []string {

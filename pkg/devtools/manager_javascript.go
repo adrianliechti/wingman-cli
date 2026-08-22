@@ -36,21 +36,21 @@ type chromeForTestingArchive struct {
 	URL      string `json:"url"`
 }
 
-func (m *Manager) installJavaScript(ctx context.Context, item recipe, stage string) error {
+func (m *Manager) installJavaScript(ctx context.Context, item recipe, stage string) (string, error) {
 	if item.ID != "vscode-js-debug" {
-		return fmt.Errorf("unknown JavaScript tool %q", item.ID)
+		return "", fmt.Errorf("unknown JavaScript tool %q", item.ID)
 	}
 	node, err := m.look("node")
 	if err != nil {
-		return errors.New("node is not installed")
+		return "", errors.New("node is not installed")
 	}
 	metadata, err := m.fetch(ctx, javascriptReleaseURL)
 	if err != nil {
-		return fmt.Errorf("query latest vscode-js-debug release: %w", err)
+		return "", fmt.Errorf("query latest vscode-js-debug release: %w", err)
 	}
 	var release githubRelease
 	if err := json.Unmarshal(metadata, &release); err != nil {
-		return fmt.Errorf("decode vscode-js-debug release: %w", err)
+		return "", fmt.Errorf("decode vscode-js-debug release: %w", err)
 	}
 	var asset *githubAsset
 	for i := range release.Assets {
@@ -61,23 +61,26 @@ func (m *Manager) installJavaScript(ctx context.Context, item recipe, stage stri
 		}
 	}
 	if asset == nil {
-		return errors.New("latest vscode-js-debug release has no standalone DAP archive")
+		return "", errors.New("latest vscode-js-debug release has no standalone DAP archive")
+	}
+	if asset.URL != "" && asset.URL == m.installedVersion(item) {
+		return "", errUpToDate
 	}
 	archive, err := m.fetch(ctx, asset.URL)
 	if err != nil {
-		return fmt.Errorf("download %s: %w", asset.Name, err)
+		return "", fmt.Errorf("download %s: %w", asset.Name, err)
 	}
 	if err := verifySHA256(archive, asset.Digest); err != nil {
-		return fmt.Errorf("verify %s: %w", asset.Name, err)
+		return "", fmt.Errorf("verify %s: %w", asset.Name, err)
 	}
 	if err := extractTarGzip(archive, stage); err != nil {
-		return fmt.Errorf("extract %s: %w", asset.Name, err)
+		return "", fmt.Errorf("extract %s: %w", asset.Name, err)
 	}
 	server := filepath.Join(stage, "js-debug", "src", "dapDebugServer.js")
 	if info, err := os.Stat(server); err != nil || info.IsDir() {
-		return errors.New("standalone archive does not contain js-debug/src/dapDebugServer.js")
+		return "", errors.New("standalone archive does not contain js-debug/src/dapDebugServer.js")
 	}
-	return writeJavaScriptLauncher(stage, node)
+	return asset.URL, writeJavaScriptLauncher(stage, node)
 }
 
 func writeJavaScriptLauncher(stage, node string) error {
@@ -93,41 +96,44 @@ func writeJavaScriptLauncher(stage, node string) error {
 	return os.WriteFile(filepath.Join(directory, "js-debug-adapter"), []byte(contents), 0o755)
 }
 
-func (m *Manager) installChromeForTesting(ctx context.Context, item recipe, stage string) error {
+func (m *Manager) installChromeForTesting(ctx context.Context, item recipe, stage string) (string, error) {
 	if item.ID != "chrome-for-testing" {
-		return fmt.Errorf("unknown browser tool %q", item.ID)
+		return "", fmt.Errorf("unknown browser tool %q", item.ID)
 	}
 	platform, err := chromeForTestingPlatform(runtime.GOOS, runtime.GOARCH)
 	if err != nil {
-		return err
+		return "", err
 	}
 	metadata, err := m.fetch(ctx, chromeForTestingReleaseURL)
 	if err != nil {
-		return fmt.Errorf("query latest Chrome for Testing release: %w", err)
+		return "", fmt.Errorf("query latest Chrome for Testing release: %w", err)
 	}
 	var release chromeForTestingRelease
 	if err := json.Unmarshal(metadata, &release); err != nil {
-		return fmt.Errorf("decode Chrome for Testing release: %w", err)
+		return "", fmt.Errorf("decode Chrome for Testing release: %w", err)
 	}
 	version, downloadURL := chromeForTestingDownload(release, platform)
 	if downloadURL == "" {
-		return fmt.Errorf("Chrome for Testing has no %s archive", platform)
+		return "", fmt.Errorf("Chrome for Testing has no %s archive", platform)
+	}
+	if downloadURL == m.installedVersion(item) {
+		return "", errUpToDate
 	}
 	archive, err := m.fetch(ctx, downloadURL)
 	if err != nil {
-		return fmt.Errorf("download Chrome for Testing %s: %w", version, err)
+		return "", fmt.Errorf("download Chrome for Testing %s: %w", version, err)
 	}
 	if err := extractZip(archive, stage); err != nil {
-		return fmt.Errorf("extract Chrome for Testing %s: %w", version, err)
+		return "", fmt.Errorf("extract Chrome for Testing %s: %w", version, err)
 	}
 	executable, err := chromeForTestingExecutable(stage, runtime.GOOS, runtime.GOARCH)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := os.Chmod(executable, 0o755); err != nil {
-		return fmt.Errorf("make Chrome for Testing executable: %w", err)
+		return "", fmt.Errorf("make Chrome for Testing executable: %w", err)
 	}
-	return writeChromeForTestingLauncher(stage, executable)
+	return downloadURL, writeChromeForTestingLauncher(stage, executable)
 }
 
 func chromeForTestingDownload(release chromeForTestingRelease, platform string) (string, string) {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -76,24 +77,56 @@ func (r Resolver) Resolve(projects []string, command string, accept func(string)
 	return Resolution{}
 }
 
+type versionProbeKey struct {
+	path     string
+	minimum  int
+	modified int64
+}
+
+var versionProbes sync.Map
+
+// ProbeExecutes requests only a successful --version run instead of a version
+// floor. It filters launchers that exist but cannot run, such as a rustup
+// proxy whose component is not installed.
+const ProbeExecutes = -1
+
 // MajorVersionAtLeast probes a command's conventional --version output.
+// Results are cached per executable modification time because probes spawn a
+// process and are repeated by detection refreshes.
 func MajorVersionAtLeast(ctx context.Context, command string, minimum int) bool {
-	if minimum <= 0 {
+	if minimum == 0 {
 		return true
+	}
+	var key versionProbeKey
+	cacheable := false
+	if filepath.IsAbs(command) {
+		if info, err := os.Stat(command); err == nil {
+			key = versionProbeKey{path: command, minimum: minimum, modified: info.ModTime().UnixNano()}
+			cacheable = true
+			if cached, ok := versionProbes.Load(key); ok {
+				return cached.(bool)
+			}
+		}
 	}
 	process := exec.CommandContext(ctx, command, "--version")
 	process.Env = Environment(command, os.Environ())
 	process.WaitDelay = 100 * time.Millisecond
 	output, err := process.CombinedOutput()
-	if err != nil {
-		return false
-	}
-	for _, field := range strings.Fields(string(output)) {
-		majorText := strings.SplitN(strings.TrimPrefix(field, "v"), ".", 2)[0]
-		major, err := strconv.Atoi(majorText)
-		if err == nil {
-			return major >= minimum
+	result := false
+	if err == nil && minimum < 0 {
+		result = true
+	} else if err == nil {
+		for _, field := range strings.Fields(string(output)) {
+			majorText := strings.SplitN(strings.TrimPrefix(field, "v"), ".", 2)[0]
+			major, atoiErr := strconv.Atoi(majorText)
+			if atoiErr == nil {
+				result = major >= minimum
+				break
+			}
 		}
 	}
-	return false
+	if cacheable && ctx.Err() == nil {
+		versionProbes.Store(key, result)
+	}
+	return result
 }

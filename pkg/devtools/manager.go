@@ -23,8 +23,8 @@ import (
 )
 
 const (
-	statusName          = ".wingman"
-	updateLockName      = ".update-lock"
+	statusName          = ".status"
+	lockName            = ".lock"
 	updateInterval      = 24 * time.Hour
 	retryInterval       = time.Hour
 	installTimeout      = 10 * time.Minute
@@ -157,7 +157,10 @@ func allRecipes() []recipe {
 }
 
 type commandRunner func(context.Context, string, []string, string, []string) ([]byte, error)
-type recipeInstaller func(context.Context, recipe, string) error
+
+// recipeInstaller returns the upstream version marker recorded in the status
+// file; installers whose package manager owns versioning return "".
+type recipeInstaller func(context.Context, recipe, string) (string, error)
 type fetcher func(context.Context, string) ([]byte, error)
 
 // Manager owns the latest-only managed tool directory.
@@ -212,6 +215,19 @@ func (m *Manager) CanManage(command string) bool {
 	return ok
 }
 
+// ToolDir returns the installation directory of a managed tool, if present.
+// Adapters use it to locate bundled files that accompany an executable.
+func (m *Manager) ToolDir(id string) string {
+	if m == nil {
+		return ""
+	}
+	root := filepath.Join(m.root, filepath.Base(id))
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		return ""
+	}
+	return root
+}
+
 // Resolve returns the absolute path of a managed command, if installed.
 func (m *Manager) Resolve(command string) string {
 	item, ok := m.byCommand[command]
@@ -226,6 +242,9 @@ func (m *Manager) Resolve(command string) string {
 // after a short backoff. Successful updates replace the prior directory and
 // remove it rather than accumulating versions.
 func (m *Manager) Update(ctx context.Context, requirements []Requirement, progress ...func(Progress)) (bool, error) {
+	if Disabled() {
+		return false, nil
+	}
 	select {
 	case m.updates <- struct{}{}:
 		defer func() { <-m.updates }()
@@ -292,7 +311,7 @@ func (m *Manager) Update(ctx context.Context, requirements []Requirement, progre
 			if !ready {
 				updateErrors = append(updateErrors, &UnavailableError{
 					Tool: item.ID,
-					Err:  fmt.Errorf("automatic installation was attempted recently; Wingman will retry after %s", retryInterval),
+					Err:  errors.New("automatic installation was attempted recently; Wingman will retry in about an hour"),
 				})
 			}
 			continue
@@ -382,16 +401,35 @@ func requirementWorkingDir(requirement Requirement) string {
 	return ""
 }
 
+// The status file holds the refresh timestamp on its first line and an
+// optional upstream version marker on its second.
+func readStatus(root string) (updatedAt time.Time, version string, err error) {
+	data, err := os.ReadFile(filepath.Join(root, statusName))
+	if err != nil {
+		return time.Time{}, "", err
+	}
+	stampLine, versionLine, _ := strings.Cut(string(data), "\n")
+	updatedAt, err = time.Parse(time.RFC3339Nano, strings.TrimSpace(stampLine))
+	if err != nil {
+		return time.Time{}, "", err
+	}
+	return updatedAt, strings.TrimSpace(versionLine), nil
+}
+
+func (m *Manager) writeStatus(root, version string) error {
+	content := m.now().UTC().Format(time.RFC3339Nano) + "\n"
+	if version != "" {
+		content += version + "\n"
+	}
+	return os.WriteFile(filepath.Join(root, statusName), []byte(content), 0o600)
+}
+
 func (m *Manager) fresh(item recipe) bool {
 	root := filepath.Join(m.root, item.ID)
 	if !installationReady(item, root) {
 		return false
 	}
-	data, err := os.ReadFile(filepath.Join(root, statusName))
-	if err != nil {
-		return false
-	}
-	updatedAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(data)))
+	updatedAt, _, err := readStatus(root)
 	if err != nil {
 		return false
 	}
@@ -414,17 +452,59 @@ func (m *Manager) updateOne(ctx context.Context, item recipe) (bool, error) {
 	}
 	installCtx, cancel := context.WithTimeout(ctx, installTimeout)
 	defer cancel()
-	if err := m.install(installCtx, item, stage); err != nil {
+	version, err := m.install(installCtx, item, stage)
+	if err != nil {
+		if errors.Is(err, errUpToDate) {
+			return false, m.refreshStatus(item)
+		}
 		return false, err
 	}
 	if !installationReady(item, stage) {
 		return false, errors.New("installer did not provide a complete tool")
 	}
-	updatedAt := m.now().UTC().Format(time.RFC3339Nano) + "\n"
-	if err := os.WriteFile(filepath.Join(stage, statusName), []byte(updatedAt), 0o600); err != nil {
+	if err := m.writeStatus(stage, version); err != nil {
 		return false, err
 	}
 	return replaceDirectory(stage, filepath.Join(m.root, item.ID))
+}
+
+// errUpToDate is returned by download-based installers when the release
+// metadata still matches the installed copy, so the archive is not fetched.
+var errUpToDate = errors.New("managed tool is up to date")
+
+func (m *Manager) refreshStatus(item recipe) error {
+	root := filepath.Join(m.root, item.ID)
+	_, version, err := readStatus(root)
+	if err != nil {
+		version = ""
+	}
+	return m.writeStatus(root, version)
+}
+
+// installedVersion returns the upstream version marker of a complete
+// installation. Incomplete installations report no version so they are always
+// reinstalled.
+func (m *Manager) installedVersion(item recipe) string {
+	root := filepath.Join(m.root, item.ID)
+	if !installationReady(item, root) {
+		return ""
+	}
+	_, version, err := readStatus(root)
+	if err != nil {
+		return ""
+	}
+	return version
+}
+
+// Disabled reports whether automatic installation is turned off. Existing
+// managed tools continue to resolve; only downloads and updates stop.
+func Disabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("WINGMAN_MANAGED_TOOLS"))) {
+	case "0", "false", "off", "disable", "disabled":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *Manager) retryPath(item recipe) string {
@@ -470,23 +550,36 @@ func installationReady(item recipe, root string) bool {
 		}
 	}
 	switch item.Kind {
+	case installerDotnet:
+		// The runtime-locating launcher fronts the apphost under tools/;
+		// installations from before that layout must be replaced.
+		for _, command := range item.Commands {
+			name := command
+			if runtime.GOOS == "windows" {
+				name += ".exe"
+			}
+			if !tooling.Executable(filepath.Join(root, "tools", name)) {
+				return false
+			}
+		}
+		return true
 	case installerJavaScript:
 		return regularFile(filepath.Join(root, "js-debug", "src", "dapDebugServer.js"))
 	case installerBrowser:
 		path, err := chromeForTestingExecutable(root, runtime.GOOS, runtime.GOARCH)
-		return err == nil && executableFile(path)
+		return err == nil && tooling.Executable(path)
 	case installerCodeLLDB:
 		name := "codelldb"
 		if runtime.GOOS == "windows" {
 			name += ".exe"
 		}
-		return executableFile(filepath.Join(root, "extension", "adapter", name))
+		return tooling.Executable(filepath.Join(root, "extension", "adapter", name))
 	case installerNetCoreDbg:
 		name := "netcoredbg"
 		if runtime.GOOS == "windows" {
 			name += ".exe"
 		}
-		return executableFile(filepath.Join(root, "netcoredbg", name))
+		return tooling.Executable(filepath.Join(root, "netcoredbg", name))
 	case installerJava:
 		return len(javaDebugBundlesAt(root)) > 0
 	default:
@@ -499,7 +592,7 @@ func regularFile(path string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
-func (m *Manager) installRecipe(ctx context.Context, item recipe, stage string) error {
+func (m *Manager) installRecipe(ctx context.Context, item recipe, stage string) (string, error) {
 	switch item.Kind {
 	case installerGo:
 		return m.installGo(ctx, item, stage)
@@ -532,7 +625,7 @@ func (m *Manager) installRecipe(ctx context.Context, item recipe, stage string) 
 		return m.installJava(ctx, item, stage)
 
 	default:
-		return fmt.Errorf("unsupported installer %q", item.Kind)
+		return "", fmt.Errorf("unsupported installer %q", item.Kind)
 	}
 }
 
@@ -543,26 +636,14 @@ func resolveInstalledCommand(root, command string) string {
 		filepath.Join(root, "node_modules", ".bin"),
 	}
 	for _, directory := range directories {
-		for _, name := range commandNames(command) {
+		for _, name := range tooling.Candidates(runtime.GOOS, command) {
 			candidate := filepath.Join(directory, name)
-			if runnableFile(candidate) {
+			if tooling.Runnable(candidate) {
 				return candidate
 			}
 		}
 	}
 	return ""
-}
-
-func commandNames(command string) []string {
-	return tooling.Candidates(runtime.GOOS, command)
-}
-
-func executableFile(path string) bool {
-	return tooling.Executable(path)
-}
-
-func runnableFile(path string) bool {
-	return tooling.Runnable(path)
 }
 
 // replaceDirectory reports whether stage became the active installation. An
@@ -682,7 +763,7 @@ func pathsWithPrefix(root, prefix string) ([]string, error) {
 }
 
 func acquireUpdateLock(ctx context.Context, root string, now func() time.Time) (func(), error) {
-	path := filepath.Join(root, updateLockName)
+	path := filepath.Join(root, lockName)
 	token := uuid.NewString()
 	for {
 		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)

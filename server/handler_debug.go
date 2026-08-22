@@ -100,7 +100,7 @@ func (s *Server) handleDebugTargets(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	targets, err := debugadapter.NewRegistry().DetectFile(filepath.ToSlash(rel), source)
+	targets, err := s.workspace.DebugRegistry().DetectFile(filepath.ToSlash(rel), source)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
@@ -195,7 +195,7 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	profile, err := debugadapter.NewRegistry().Plan(adapterInfo[0].Language, debugadapter.Request{
+	profile, err := s.workspace.DebugRegistry().Plan(adapterInfo[0].Language, debugadapter.Request{
 		Action: request.Action, WorkspaceDir: s.workspace.RootPath, ProjectDir: projectDir,
 		BrowserExecutable: browserExecutable, Target: *selected,
 	})
@@ -655,7 +655,7 @@ func (s *Server) detectDebugTargets(currentFile string) ([]debugadapter.Target, 
 	if err != nil {
 		return nil, err
 	}
-	return debugadapter.NewRegistry().DetectFile(filepath.ToSlash(currentFile), source)
+	return s.workspace.DebugRegistry().DetectFile(filepath.ToSlash(currentFile), source)
 }
 
 func selectTargetDebugAdapter(values []dap.AdapterInfo, target debugadapter.Target) ([]dap.AdapterInfo, error) {

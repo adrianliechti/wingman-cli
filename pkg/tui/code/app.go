@@ -419,7 +419,7 @@ func (a *App) setFooterHint(hint string) {
 
 const (
 	toastDuration             = 2500 * time.Millisecond
-	backgroundWarningDuration = 5 * time.Second
+	backgroundWarningDuration = 15 * time.Second
 )
 
 func (a *App) showToast(message string, color ansi.Color) {
