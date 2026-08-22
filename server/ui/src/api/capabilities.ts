@@ -15,6 +15,13 @@ export interface Capabilities {
 	platform: string;
 	workspace_name: string;
 	notice?: string;
+	managed_tools?: {
+		state: "installing" | "ready" | "error";
+		tool?: string;
+		current?: number;
+		total?: number;
+		error?: string;
+	};
 }
 
 export const capabilitiesQuery = queryOptions({

@@ -36,10 +36,11 @@ type Target struct {
 }
 
 type Request struct {
-	Action       string
-	WorkspaceDir string
-	ProjectDir   string
-	Target       Target
+	Action            string
+	WorkspaceDir      string
+	ProjectDir        string
+	BrowserExecutable string
+	Target            Target
 }
 
 type Breakpoint struct {
@@ -58,6 +59,7 @@ type Plan struct {
 	Configuration       map[string]any
 	Breakpoints         []Breakpoint
 	FunctionBreakpoints []string
+	PreLaunch           *dap.ProcessLaunch
 }
 
 // LanguageAdapter owns all stable language-specific behavior. Implementations

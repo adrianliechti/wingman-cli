@@ -31,6 +31,7 @@ import (
 	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/code/agents"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
+	"github.com/adrianliechti/wingman-agent/pkg/devtools"
 	"github.com/adrianliechti/wingman-agent/pkg/settings"
 	"github.com/adrianliechti/wingman-agent/pkg/system"
 	"github.com/adrianliechti/wingman-agent/pkg/terminal"
@@ -110,6 +111,9 @@ type Server struct {
 	prevLSP         bool
 	prevDebug       bool
 	prevFingerprint uint64
+
+	managedToolsMu sync.RWMutex
+	managedTools   managedToolsStatus
 }
 
 func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, error) {
@@ -183,10 +187,18 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 		s.files.Run(serverCtx)
 	})
 	if !opts.disableManagedTools {
+		s.setManagedToolsStatus(managedToolsStatus{State: "installing"})
 		s.background.Go(func() {
-			changed, updateErr := ws.UpdateManagedTools(serverCtx)
+			changed, updateErr := ws.UpdateManagedTools(serverCtx, func(progress devtools.Progress) {
+				s.setManagedToolsStatus(managedToolsStatus{
+					State: "installing", Tool: progress.Tool, Current: progress.Current, Total: progress.Total,
+				})
+			})
 			if updateErr != nil && serverCtx.Err() == nil {
 				fmt.Fprintf(os.Stderr, "managed tools warning: %v\n", updateErr)
+				s.setManagedToolsStatus(managedToolsStatus{State: "error", Error: updateErr.Error()})
+			} else {
+				s.setManagedToolsStatus(managedToolsStatus{State: "ready"})
 			}
 			if changed && serverCtx.Err() == nil {
 				s.files.Flush()
@@ -843,18 +855,40 @@ func (s *Server) handleSetEffort(w http.ResponseWriter, r *http.Request) {
 }
 
 type capabilitiesResponse struct {
-	Git           bool   `json:"git"`
-	GitInit       bool   `json:"git_init"`
-	LSP           bool   `json:"lsp"`
-	Debug         bool   `json:"debug"`
-	Diffs         bool   `json:"diffs"`
-	Tasks         bool   `json:"tasks"`
-	Terminal      bool   `json:"terminal"`
-	Tab           bool   `json:"tab"`
-	EditorTab     bool   `json:"editor.tab.completion"`
-	Platform      string `json:"platform"`
-	WorkspaceName string `json:"workspace_name"`
-	Notice        string `json:"notice,omitempty"`
+	Git           bool                `json:"git"`
+	GitInit       bool                `json:"git_init"`
+	LSP           bool                `json:"lsp"`
+	Debug         bool                `json:"debug"`
+	Diffs         bool                `json:"diffs"`
+	Tasks         bool                `json:"tasks"`
+	Terminal      bool                `json:"terminal"`
+	Tab           bool                `json:"tab"`
+	EditorTab     bool                `json:"editor.tab.completion"`
+	Platform      string              `json:"platform"`
+	WorkspaceName string              `json:"workspace_name"`
+	Notice        string              `json:"notice,omitempty"`
+	ManagedTools  *managedToolsStatus `json:"managed_tools,omitempty"`
+}
+
+type managedToolsStatus struct {
+	State   string `json:"state"`
+	Tool    string `json:"tool,omitempty"`
+	Current int    `json:"current,omitempty"`
+	Total   int    `json:"total,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+func (s *Server) setManagedToolsStatus(status managedToolsStatus) {
+	s.managedToolsMu.Lock()
+	s.managedTools = status
+	s.managedToolsMu.Unlock()
+	s.broadcast(Frame{Type: EvtCapabilitiesChanged})
+}
+
+func (s *Server) managedToolsStatus() managedToolsStatus {
+	s.managedToolsMu.RLock()
+	defer s.managedToolsMu.RUnlock()
+	return s.managedTools
 }
 
 func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
@@ -873,6 +907,12 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		EditorTab:     s.tab != nil && s.tabEnabled.Load(),
 		Platform:      runtime.GOOS,
 		WorkspaceName: filepath.Base(ws.RootPath),
+	}
+	if status := s.managedToolsStatus(); status.State != "" {
+		caps.ManagedTools = &status
+		if status.State == "error" {
+			caps.Notice = "Some language or debugger tools could not be installed: " + status.Error
+		}
 	}
 	writeJSON(w, caps)
 }

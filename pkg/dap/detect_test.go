@@ -389,6 +389,30 @@ func TestManagerStopClearsTheOnlySession(t *testing.T) {
 	}
 }
 
+func TestManagerRetainsFailedSessionForDebuggerOutput(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "package.json"), `{"scripts":{"dev":"vite"}}`)
+	adapterPath := filepath.Join(root, "js-debug-adapter")
+	writeTestFile(t, adapterPath, "adapter\n")
+	if err := os.Chmod(adapterPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("No supported Chromium browser was found.")
+	manager := newManager(root, []AdapterDescriptor{{
+		Name: "vscode-js-debug", Language: "JavaScript/TypeScript", Command: "js-debug-adapter", Markers: []string{"package.json"},
+	}}, func(string) string { return adapterPath }, func(_ context.Context, id string, plan Plan, _ StartOptions) (*Session, error) {
+		return &Session{id: id, plan: plan, state: StateTerminated, terminalErr: failure}, failure
+	})
+
+	if _, err := manager.Start(context.Background(), StartOptions{Adapter: "vscode-js-debug"}); !errors.Is(err, failure) {
+		t.Fatalf("Start error = %v, want %v", err, failure)
+	}
+	session := manager.ActiveSession()
+	if session == nil || session.Status().Error != failure.Error() {
+		t.Fatalf("failed session = %#v", session)
+	}
+}
+
 func writeTestFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

@@ -138,6 +138,12 @@ func extractZip(data []byte, destination string) error {
 			}
 			continue
 		}
+		if entry.Mode()&os.ModeSymlink != 0 {
+			if err := extractZipSymlink(entry, destination, target); err != nil {
+				return err
+			}
+			continue
+		}
 		if !entry.FileInfo().Mode().IsRegular() {
 			return fmt.Errorf("unsupported archive entry %q", entry.Name)
 		}
@@ -155,6 +161,31 @@ func extractZip(data []byte, destination string) error {
 		}
 	}
 	return nil
+}
+
+func extractZipSymlink(entry *zip.File, destination, target string) error {
+	source, err := entry.Open()
+	if err != nil {
+		return err
+	}
+	contents, readErr := io.ReadAll(source)
+	closeErr := source.Close()
+	if err := errors.Join(readErr, closeErr); err != nil {
+		return err
+	}
+	link := filepath.Clean(filepath.FromSlash(string(contents)))
+	if link == "." || filepath.IsAbs(link) {
+		return fmt.Errorf("archive symlink escapes destination: %q", entry.Name)
+	}
+	resolved := filepath.Clean(filepath.Join(filepath.Dir(target), link))
+	relative, err := filepath.Rel(destination, resolved)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("archive symlink escapes destination: %q", entry.Name)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	return os.Symlink(link, target)
 }
 
 func archiveTarget(destination, name string) (string, error) {

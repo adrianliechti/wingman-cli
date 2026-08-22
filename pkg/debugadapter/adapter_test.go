@@ -301,7 +301,7 @@ func TestDotnetAdapterPlansExistingOrExpectedAssembly(t *testing.T) {
 	}
 }
 
-func TestViteAdapterPlansConfiguredPort(t *testing.T) {
+func TestPackageScriptPlansViteServerAndManagedBrowser(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "web")
 	if err := os.MkdirAll(project, 0o755); err != nil {
@@ -310,14 +310,61 @@ func TestViteAdapterPlansConfiguredPort(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(project, "vite.config.ts"), []byte("export default { server: { port: 4173 } }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(project, "package.json"), []byte(`{"scripts":{"dev":"vite"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	npm := filepath.Join(bin, "npm")
+	if runtime.GOOS == "windows" {
+		npm += ".cmd"
+	}
+	if err := os.WriteFile(npm, []byte("exit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	browser := filepath.Join(root, "chrome-for-testing")
+	if err := os.WriteFile(browser, []byte("browser"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	plan, err := NewRegistry().Plan(javascriptLanguage, Request{
-		Action: "debug", WorkspaceDir: root, ProjectDir: "web",
-		Target: Target{Name: "Vite browser", Kind: "vite", Language: javascriptLanguage, Path: "web/vite.config.ts", Line: 1, Column: 1},
+		Action: "debug", WorkspaceDir: root, ProjectDir: "web", BrowserExecutable: browser,
+		Target: Target{Name: "dev", Kind: "browser-script", Language: javascriptLanguage, Path: "web/package.json", Line: 1, Column: 1},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Configuration["type"] != "pwa-chrome" || plan.Configuration["url"] != "http://localhost:4173" || len(plan.Breakpoints) != 0 || plan.SupportsTerminal {
+	if plan.Configuration["type"] != "pwa-chrome" || plan.Configuration["url"] != "http://localhost:4173" || plan.Configuration["runtimeExecutable"] != browser || plan.Configuration["server"] != nil || plan.PreLaunch == nil || plan.PreLaunch.Command != npm || !reflect.DeepEqual(plan.PreLaunch.Args, []string{"run", "dev"}) || plan.PreLaunch.ReadyURL != "http://localhost:4173" || len(plan.Breakpoints) != 0 || plan.SupportsTerminal {
+		t.Fatalf("plan = %#v", plan)
+	}
+}
+
+func TestPackageScriptPlansNodeServerWithoutBrowser(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "api")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "package.json"), []byte(`{"scripts":{"server":"tsx src/server.ts"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	npm := filepath.Join(bin, "npm")
+	if runtime.GOOS == "windows" {
+		npm += ".cmd"
+	}
+	if err := os.WriteFile(npm, []byte("exit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+
+	plan, err := NewRegistry().Plan(javascriptLanguage, Request{
+		Action: "debug", WorkspaceDir: root, ProjectDir: "api",
+		Target: Target{Name: "server", Kind: "node-script", Language: javascriptLanguage, Path: "api/package.json", Line: 1, Column: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Configuration["type"] != "pwa-node" || plan.Configuration["runtimeExecutable"] != npm || !reflect.DeepEqual(plan.Configuration["runtimeArgs"], []string{"run", "server"}) || plan.Configuration["autoAttachChildProcesses"] != true || plan.PreLaunch != nil || !plan.SupportsTerminal {
 		t.Fatalf("plan = %#v", plan)
 	}
 }

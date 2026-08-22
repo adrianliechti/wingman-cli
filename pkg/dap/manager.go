@@ -253,6 +253,20 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 	id := uuid.NewString()[:8]
 	session, err := m.start(ctx, id, plan, options)
 	if err != nil {
+		if session != nil {
+			m.mu.Lock()
+			if m.closed {
+				m.mu.Unlock()
+				session.Close()
+				return nil, errors.New("DAP manager is closed")
+			}
+			previous := m.session
+			m.session = session
+			m.mu.Unlock()
+			if previous != nil {
+				previous.Close()
+			}
+		}
 		return nil, err
 	}
 	m.mu.Lock()
@@ -403,7 +417,17 @@ func resolvePlan(workspace string, selected detectedAdapter, options StartOption
 		Request:    requestName,
 		IO:         ioMode,
 		Arguments:  arguments,
+		PreLaunch:  cloneProcessLaunch(options.PreLaunch),
 	}, nil
+}
+
+func cloneProcessLaunch(value *ProcessLaunch) *ProcessLaunch {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	clone.Args = slices.Clone(value.Args)
+	return &clone
 }
 
 // ResolveConfigurationPaths validates and resolves the path fields declared by

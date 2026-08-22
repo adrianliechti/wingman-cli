@@ -63,6 +63,12 @@ export interface DebugLaunchPlan {
 	configuration: Record<string, unknown>;
 	breakpoints: DebugPlanBreakpoint[];
 	function_breakpoints: string[];
+	prelaunch?: {
+		title: string;
+		command: string;
+		args?: string[];
+		ready_url?: string;
+	};
 }
 
 export interface DebugSourceBreakpoint {

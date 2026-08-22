@@ -188,7 +188,7 @@ Console.WriteLine(message);
 	}
 }
 
-func TestJavaScriptAdapterFindsNodeAndViteTargets(t *testing.T) {
+func TestJavaScriptAdapterFindsNodeAndPackageScriptTargets(t *testing.T) {
 	registry := NewRegistry()
 	targets, err := registry.DetectFile("tools/main.ts", []byte(`const message: string = "ready";
 console.log(message);
@@ -200,14 +200,27 @@ console.log(message);
 		t.Fatalf("TypeScript targets = %#v", targets)
 	}
 
-	targets, err = registry.DetectFile("web/vite.config.ts", []byte(`import { defineConfig } from "vite";
-export default defineConfig({ server: { port: 4173 } });
-`))
+	targets, err = registry.DetectFile("web/package.json", []byte(`{
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite --port 4173",
+    "preview": "vite preview",
+    "server": "tsx src/server.ts"
+  }
+}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(targets) != 1 || targets[0].Kind != "vite" || targets[0].Line != 1 {
-		t.Fatalf("Vite targets = %#v", targets)
+	if len(targets) != 2 || targets[0].Kind != "browser-script" || targets[0].Name != "dev" || targets[0].Line != 4 || targets[1].Kind != "node-script" || targets[1].Name != "server" || targets[1].Line != 6 {
+		t.Fatalf("package script targets = %#v", targets)
+	}
+
+	targets, err = registry.DetectFile("web/vite.config.ts", []byte(`export default { server: { port: 4173 } }`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 0 {
+		t.Fatalf("Vite config remained a launch target: %#v", targets)
 	}
 
 	targets, err = registry.DetectFile("web/src/main.tsx", []byte(`import { createRoot } from "react-dom/client";
@@ -258,7 +271,8 @@ func TestCheckedInDebuggerSamplesExposeRunnableTargets(t *testing.T) {
 		{path: "examples/debug/rust/src/main.rs", language: "Rust", kind: "main"},
 		{path: "examples/debug/dotnet/Program.cs", language: dotnetLanguage, kind: "main"},
 		{path: "examples/debug/typescript/src/main.ts", language: javascriptLanguage, kind: "node"},
-		{path: "examples/debug/react-vite/vite.config.ts", language: javascriptLanguage, kind: "vite"},
+		{path: "examples/debug/typescript/package.json", language: javascriptLanguage, kind: "node-script"},
+		{path: "examples/debug/react-vite/package.json", language: javascriptLanguage, kind: "browser-script"},
 	}
 
 	registry := NewRegistry()
@@ -276,5 +290,29 @@ func TestCheckedInDebuggerSamplesExposeRunnableTargets(t *testing.T) {
 				t.Fatalf("targets = %#v, want one %s %s target", targets, test.language, test.kind)
 			}
 		})
+	}
+}
+
+func TestRequiresChromiumFindsVitePackageScript(t *testing.T) {
+	root := t.TempDir()
+	writeDiscoveryTestFile(t, filepath.Join(root, "package.json"), `{"scripts":{"build":"vite build","server":"node src/server.js"}}`)
+	required, err := RequiresChromium(context.Background(), root)
+	if err != nil || required {
+		t.Fatalf("Node-only package RequiresChromium = %v, %v", required, err)
+	}
+	writeDiscoveryTestFile(t, filepath.Join(root, "apps", "web", "package.json"), `{"scripts":{"dev":"vite"}}`)
+	required, err = RequiresChromium(context.Background(), root)
+	if err != nil || !required {
+		t.Fatalf("Vite package RequiresChromium = %v, %v", required, err)
+	}
+}
+
+func writeDiscoveryTestFile(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

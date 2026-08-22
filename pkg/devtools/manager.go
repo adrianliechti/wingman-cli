@@ -38,6 +38,7 @@ const (
 	installerPython     installerKind = "python"
 	installerDotnet     installerKind = "dotnet"
 	installerJavaScript installerKind = "javascript"
+	installerBrowser    installerKind = "browser"
 	installerCodeLLDB   installerKind = "codelldb"
 	installerNetCoreDbg installerKind = "netcoredbg"
 	installerJava       installerKind = "java"
@@ -47,6 +48,13 @@ const (
 // command Wingman knows how to manage selects the installation recipe.
 type Requirement struct {
 	Alternatives []string
+}
+
+// Progress identifies the managed tool currently being checked or installed.
+type Progress struct {
+	Tool    string
+	Current int
+	Total   int
 }
 
 type recipe struct {
@@ -136,7 +144,7 @@ func (m *Manager) Resolve(command string) string {
 // installation is checked at most once per day; failed checks remain eligible
 // for the next run. Successful updates replace the prior directory and remove
 // it rather than accumulating versions.
-func (m *Manager) Update(ctx context.Context, requirements []Requirement) (bool, error) {
+func (m *Manager) Update(ctx context.Context, requirements []Requirement, progress ...func(Progress)) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -169,12 +177,17 @@ func (m *Manager) Update(ctx context.Context, requirements []Requirement) (bool,
 
 	changed := false
 	var updateErrors []error
-	for _, id := range ids {
+	for index, id := range ids {
 		if err := ctx.Err(); err != nil {
 			updateErrors = append(updateErrors, err)
 			break
 		}
 		item := selected[id]
+		for _, report := range progress {
+			if report != nil {
+				report(Progress{Tool: item.ID, Current: index + 1, Total: len(ids)})
+			}
+		}
 		if err := recoverInterruptedUpdate(m.root, item.ID); err != nil {
 			updateErrors = append(updateErrors, fmt.Errorf("recover %s: %w", item.ID, err))
 			continue
@@ -244,6 +257,9 @@ func installationReady(item recipe, root string) bool {
 	switch item.Kind {
 	case installerJavaScript:
 		return regularFile(filepath.Join(root, "js-debug", "src", "dapDebugServer.js"))
+	case installerBrowser:
+		path, err := chromeForTestingExecutable(root, runtime.GOOS, runtime.GOARCH)
+		return err == nil && executableFile(path)
 	case installerCodeLLDB:
 		name := "codelldb"
 		if runtime.GOOS == "windows" {
@@ -287,6 +303,9 @@ func (m *Manager) installRecipe(ctx context.Context, item recipe, stage string) 
 
 	case installerJavaScript:
 		return m.installJavaScript(ctx, item, stage)
+
+	case installerBrowser:
+		return m.installChromeForTesting(ctx, item, stage)
 
 	case installerCodeLLDB:
 		return m.installCodeLLDB(ctx, item, stage)

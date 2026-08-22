@@ -31,17 +31,19 @@ interface Props {
 	seed?: DebugLauncherSeed;
 	onClose: () => void;
 	onStarted?: (session: DebugSession) => void;
+	onFailed?: (message: string) => void;
 }
 
 type Phase = "planning" | "review" | "starting" | "error";
 
-export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
+export function DebugLauncher({ open, seed, onClose, onStarted, onFailed }: Props) {
 	const requestRef = useRef<AbortController | null>(null);
 	const [phase, setPhase] = useState<Phase>("planning");
 	const [plan, setPlan] = useState<DebugLaunchPlan | null>(null);
 	const [pauseAtEntry, setPauseAtEntry] = useState(false);
 	const [configurationText, setConfigurationText] = useState("{}");
 	const [error, setError] = useState("");
+	const [attempt, setAttempt] = useState(0);
 
 	useEffect(() => {
 		if (!open) return;
@@ -84,7 +86,7 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 				setPhase("error");
 			});
 		return () => controller.abort();
-	}, [open, seed]);
+	}, [attempt, open, seed]);
 
 	const start = useCallback(async () => {
 		if (!plan) return;
@@ -119,22 +121,37 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 			onClose();
 		} catch (cause) {
 			if (controller.signal.aborted) return;
-			setError(errorMessage(cause));
+			const message = errorMessage(cause);
+			if (onFailed) {
+				onFailed(message);
+				onClose();
+				return;
+			}
+			setError(message);
 			setPhase("review");
 		}
-	}, [configurationText, onClose, onStarted, pauseAtEntry, plan]);
+	}, [configurationText, onClose, onFailed, onStarted, pauseAtEntry, plan]);
 
 	return (
 		<Dialog
 			open={open}
 			title={
-				plan?.title ?? (seed?.action === "run" ? "Run target" : "Debug target")
+				plan?.title ??
+				`${seed?.action === "run" ? "Run" : "Debug"} ${seed?.target.name ?? "target"}`
 			}
 			onClose={onClose}
 			initialFocus="first"
 		>
 			<div className="w-full space-y-3">
-				{phase === "planning" && <Busy label="Preparing launch…" />}
+				{phase === "planning" && (
+					<Busy
+						label={
+							seed?.target.kind === "browser-script"
+								? "Preparing browser tools and development server…"
+								: "Preparing launch…"
+						}
+					/>
+				)}
 
 				{plan && (phase === "review" || phase === "starting") && (
 					<>
@@ -202,6 +219,15 @@ export function DebugLauncher({ open, seed, onClose, onStarted }: Props) {
 					<button type="button" className={dialogButtonClass} onClick={onClose}>
 						Cancel
 					</button>
+					{phase === "error" && seed && (
+						<button
+							type="button"
+							className={dialogPrimaryButtonClass}
+							onClick={() => setAttempt((value) => value + 1)}
+						>
+							Retry
+						</button>
+					)}
 					{phase === "review" && plan && (
 						<button
 							type="button"
@@ -305,7 +331,8 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function errorMessage(value: unknown) {
-	return value instanceof Error ? value.message : String(value);
+	const message = value instanceof Error ? value.message : String(value);
+	return message ? message[0].toUpperCase() + message.slice(1) : "The debugger could not start.";
 }
 
 const fieldClass =

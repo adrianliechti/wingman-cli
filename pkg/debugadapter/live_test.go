@@ -4,10 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
+	"github.com/adrianliechti/wingman-agent/pkg/devtools"
 )
 
 func TestLiveDebugpyLaunch(t *testing.T) {
@@ -77,4 +79,125 @@ print(work(41))
 	if err := manager.Stop(ctx, session.ID()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestLiveViteLaunchStartsPackageScript(t *testing.T) {
+	if os.Getenv("WINGMAN_LIVE_DAP") == "" {
+		t.Skip("set WINGMAN_LIVE_DAP=1 to run a real browser debug session")
+	}
+	root, err := filepath.Abs(filepath.Join("..", "..", "examples", "debug", "react-vite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, err := devtools.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tools.Resolve("js-debug-adapter") == "" || tools.Resolve("chrome-for-testing") == "" {
+		t.Skip("managed JavaScript debugger and Chrome for Testing are required")
+	}
+	registry := NewRegistry()
+	profile, err := registry.Plan(javascriptLanguage, Request{
+		Action: "debug", WorkspaceDir: root, ProjectDir: root,
+		BrowserExecutable: tools.Resolve("chrome-for-testing"),
+		Target:            Target{Name: "dev", Kind: "browser-script", Language: javascriptLanguage, Path: filepath.Join(root, "package.json")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.Configuration["runtimeArgs"] = []string{"--headless=new"}
+	manager := dap.NewManager(root, registry.Descriptors()...)
+	manager.SetCommandResolver(tools.Resolve)
+	defer manager.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	appSource := filepath.Join(root, "src", "main.tsx")
+	session, err := manager.Start(ctx, dap.StartOptions{
+		Adapter: "vscode-js-debug", ProjectDir: root, Request: profile.Request,
+		Configuration: profile.Configuration, IO: profile.IO, PreLaunch: profile.PreLaunch,
+		Breakpoints: map[string][]dap.SourceBreakpoint{appSource: {{Line: 5}}},
+	})
+	if err != nil {
+		t.Fatalf("start Vite browser session: %v\noutput:\n%s", err, failedSessionOutput(manager))
+	}
+	if output := session.Output(); !strings.Contains(output, "Development server is ready") || !strings.Contains(output, "VITE") {
+		t.Fatalf("Vite was not started by the session:\n%s", output)
+	}
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer stopCancel()
+	status := session.Status()
+	if status.State != dap.StateStopped {
+		status, _ = session.WaitForStop(stopCtx, status.StateVersion)
+	}
+	if status.State != dap.StateStopped {
+		t.Fatalf("App breakpoint was not reached: %+v\noutput:\n%s", status, session.Output())
+	}
+	frames, _, err := session.StackTrace(stopCtx, status.Stop.ThreadID, 0, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) == 0 || frames[0].Source == nil || filepath.Clean(frames[0].Source.Path) != appSource || frames[0].Line != 5 {
+		t.Fatalf("breakpoint frames = %+v", frames)
+	}
+	if err := manager.Stop(ctx, session.ID()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLiveNodePackageScript(t *testing.T) {
+	if os.Getenv("WINGMAN_LIVE_DAP") == "" {
+		t.Skip("set WINGMAN_LIVE_DAP=1 to run a real Node debug session")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"scripts":{"server":"node server.js"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "server.js"), []byte(`console.log("wingman-node-package-ready")`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tools, err := devtools.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tools.Resolve("js-debug-adapter") == "" {
+		t.Skip("managed JavaScript debugger is required")
+	}
+	registry := NewRegistry()
+	profile, err := registry.Plan(javascriptLanguage, Request{
+		Action: "debug", WorkspaceDir: root, ProjectDir: root,
+		Target: Target{Name: "server", Kind: "node-script", Language: javascriptLanguage, Path: filepath.Join(root, "package.json")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := dap.NewManager(root, registry.Descriptors()...)
+	manager.SetCommandResolver(tools.Resolve)
+	defer manager.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	session, err := manager.Start(ctx, dap.StartOptions{
+		Adapter: "vscode-js-debug", ProjectDir: root, Request: profile.Request,
+		Configuration: profile.Configuration, IO: profile.IO,
+	})
+	if err != nil {
+		t.Fatalf("start Node package script: %v\noutput:\n%s", err, failedSessionOutput(manager))
+	}
+	status := session.Status()
+	if status.State != dap.StateTerminated {
+		var stopped bool
+		status, stopped = session.WaitForStop(ctx, status.StateVersion)
+		if !stopped {
+			t.Fatalf("Node package script did not stop: %+v\noutput:\n%s", status, session.Output())
+		}
+	}
+	if status.State != dap.StateTerminated || !strings.Contains(session.Output(), "wingman-node-package-ready") {
+		t.Fatalf("Node package script did not complete normally: %+v\noutput:\n%s", status, session.Output())
+	}
+}
+
+func failedSessionOutput(manager *dap.Manager) string {
+	if session := manager.ActiveSession(); session != nil {
+		return session.Output()
+	}
+	return ""
 }

@@ -117,8 +117,18 @@ type StartOptions struct {
 	Breakpoints         map[string][]SourceBreakpoint
 	FunctionBreakpoints []FunctionBreakpoint
 	IO                  IOMode
+	PreLaunch           *ProcessLaunch
 	terminalLauncher    TerminalLauncher
 	adapterConnector    AdapterConnector
+}
+
+// ProcessLaunch is a process owned by the debug session and started before
+// the adapter. ReadyURL, when set, must respond before the adapter launches.
+type ProcessLaunch struct {
+	Title    string   `json:"title"`
+	Command  string   `json:"command"`
+	Args     []string `json:"args,omitempty"`
+	ReadyURL string   `json:"ready_url,omitempty"`
 }
 
 type SourceBreakpoint struct {
@@ -144,6 +154,7 @@ type Plan struct {
 	Request    string
 	IO         IOMode
 	Arguments  map[string]any
+	PreLaunch  *ProcessLaunch
 }
 
 type State string

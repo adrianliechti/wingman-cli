@@ -6,12 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/adrianliechti/wingman-agent/pkg/commandpath"
 )
 
 type Project struct {
@@ -33,142 +33,26 @@ var skippedDirs = map[string]bool{
 	"dist":         true,
 }
 
-var projectBinDirs = []string{
-	filepath.Join("node_modules", ".bin"),
-	filepath.Join(".venv", "bin"),
-	filepath.Join("venv", "bin"),
-	filepath.Join("env", "bin"),
-	filepath.Join(".venv", "Scripts"),
-	filepath.Join("venv", "Scripts"),
-	filepath.Join("env", "Scripts"),
-	filepath.Join("vendor", "bin"),
-}
-
 const serverVersionProbeTimeout = 5 * time.Second
 
 func resolveCommand(dir, workingDir, command string) string {
-	cur := filepath.Clean(dir)
-	root := filepath.Clean(workingDir)
-	for {
-		for _, sub := range projectBinDirs {
-			if found := findCommandIn([]string{filepath.Join(cur, sub)}, command); found != "" {
-				return found
-			}
-		}
-		if cur == root || !isSubPath(root, cur) {
-			return ""
-		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			return ""
-		}
-		cur = parent
-	}
+	return commandpath.ResolveProject(dir, workingDir, command)
 }
 
-// userBinDirs lists fixed, user-owned tool-install directories searched when a
-// server is not on PATH — the common case when wingman is launched from an IDE
-// or app bundle with a minimal environment. Only these trusted locations are
-// probed, never repo-controlled paths, and only for exact known server names.
-var userBinDirs = sync.OnceValue(func() []string {
-	var dirs []string
-
-	add := func(path string) {
-		if path == "" {
-			return
-		}
-		if info, err := os.Stat(path); err == nil && info.IsDir() {
-			dirs = append(dirs, path)
-		}
-	}
-
-	if gobin := os.Getenv("GOBIN"); gobin != "" {
-		add(gobin)
-	}
-	if gopath := os.Getenv("GOPATH"); gopath != "" {
-		add(filepath.Join(gopath, "bin"))
-	}
-	if pnpmHome := os.Getenv("PNPM_HOME"); pnpmHome != "" {
-		add(pnpmHome)
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return dirs
-	}
-
-	add(filepath.Join(home, "go", "bin"))
-	add(filepath.Join(home, ".cargo", "bin"))
-	add(filepath.Join(home, ".local", "bin"))
-	add(filepath.Join(home, ".dotnet", "tools"))
-	add(filepath.Join(home, ".bun", "bin"))
-	add(filepath.Join(home, ".deno", "bin"))
-	add(filepath.Join(home, ".volta", "bin"))
-	add(filepath.Join(home, ".asdf", "shims"))
-	add(filepath.Join(home, ".local", "share", "mise", "shims"))
-	add(filepath.Join(home, ".npm-global", "bin"))
-
-	if runtime.GOOS == "windows" {
-		add(filepath.Join(home, "scoop", "shims"))
-		if appData := os.Getenv("APPDATA"); appData != "" {
-			add(filepath.Join(appData, "npm"))
-		}
-		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
-			add(filepath.Join(localAppData, "nvim-data", "mason", "bin"))
-			add(filepath.Join(localAppData, "pnpm"))
-			add(filepath.Join(localAppData, "Volta", "bin"))
-			add(filepath.Join(localAppData, "Microsoft", "WinGet", "Links"))
-		}
-		if programData := os.Getenv("PROGRAMDATA"); programData != "" {
-			add(filepath.Join(programData, "chocolatey", "bin"))
-		}
-		return dirs
-	}
-
-	add(filepath.Join(home, ".local", "share", "nvim", "mason", "bin"))
-	add(filepath.Join(home, "Library", "pnpm"))
-	add(filepath.Join(home, ".local", "share", "pnpm"))
-	add("/opt/homebrew/bin")
-	add("/usr/local/bin")
-	add("/home/linuxbrew/.linuxbrew/bin")
-
-	return dirs
-})
-
 func resolveUserCommand(command string) string {
-	return findCommandIn(userBinDirs(), command)
+	return commandpath.Resolve(command)
 }
 
 func findCommandIn(dirs []string, command string) string {
-	names := commandCandidates(runtime.GOOS, command)
-
-	for _, dir := range dirs {
-		for _, name := range names {
-			candidate := filepath.Join(dir, name)
-			if isExecutableFile(candidate) {
-				return candidate
-			}
-		}
-	}
-	return ""
+	return commandpath.Find(dirs, command)
 }
 
 func commandCandidates(goos, command string) []string {
-	if goos == "windows" {
-		return []string{command + ".exe", command + ".cmd", command + ".bat", command}
-	}
-	return []string{command}
+	return commandpath.Candidates(goos, command)
 }
 
 func isExecutableFile(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		return false
-	}
-	if runtime.GOOS == "windows" {
-		return true
-	}
-	return info.Mode()&0o111 != 0
+	return commandpath.Executable(path)
 }
 
 func serverVersionSupported(server Server, command string) bool {

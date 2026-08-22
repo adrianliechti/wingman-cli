@@ -6,13 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 	"github.com/adrianliechti/wingman-agent/pkg/debugadapter"
+	"github.com/adrianliechti/wingman-agent/pkg/devtools"
 	"github.com/adrianliechti/wingman-agent/pkg/terminal"
 )
 
@@ -43,6 +48,7 @@ type debugLaunchPlan struct {
 	Configuration       map[string]any        `json:"configuration"`
 	Breakpoints         []debugPlanBreakpoint `json:"breakpoints"`
 	FunctionBreakpoints []string              `json:"function_breakpoints"`
+	PreLaunch           *dap.ProcessLaunch    `json:"prelaunch,omitempty"`
 }
 
 type debugStateResponse struct {
@@ -173,8 +179,20 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	browserExecutable := ""
+	if s.workspace.DevTools != nil {
+		browserExecutable = s.workspace.DevTools.Resolve("chrome-for-testing")
+	}
+	if selected.Kind == "browser-script" && browserExecutable == "" {
+		browserExecutable, err = s.ensureManagedBrowser(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+	}
 	profile, err := debugadapter.NewRegistry().Plan(adapterInfo[0].Language, debugadapter.Request{
-		Action: request.Action, WorkspaceDir: s.workspace.RootPath, ProjectDir: projectDir, Target: *selected,
+		Action: request.Action, WorkspaceDir: s.workspace.RootPath, ProjectDir: projectDir,
+		BrowserExecutable: browserExecutable, Target: *selected,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
@@ -186,6 +204,7 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 		TerminalAvailable: profile.SupportsTerminal && adapterInfo[0].TerminalStrategy != dap.TerminalUnsupported && terminal.Supported(),
 		IO:                string(profile.IO), Configuration: profile.Configuration,
 		FunctionBreakpoints: profile.FunctionBreakpoints,
+		PreLaunch:           profile.PreLaunch,
 	}
 	for _, breakpoint := range profile.Breakpoints {
 		plan.Breakpoints = append(plan.Breakpoints, debugPlanBreakpoint{
@@ -197,6 +216,34 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, plan)
+}
+
+func (s *Server) ensureManagedBrowser(ctx context.Context) (string, error) {
+	manager := s.workspace.DevTools
+	if manager == nil {
+		return "", errors.New("Chrome for Testing cannot be installed because managed tools are unavailable")
+	}
+	if executable := manager.Resolve("chrome-for-testing"); executable != "" {
+		return executable, nil
+	}
+	s.setManagedToolsStatus(managedToolsStatus{State: "installing", Tool: "chrome-for-testing", Current: 1, Total: 1})
+	_, err := manager.Update(ctx, []devtools.Requirement{{Alternatives: []string{"chrome-for-testing"}}}, func(progress devtools.Progress) {
+		s.setManagedToolsStatus(managedToolsStatus{
+			State: "installing", Tool: progress.Tool, Current: progress.Current, Total: progress.Total,
+		})
+	})
+	if err != nil {
+		s.setManagedToolsStatus(managedToolsStatus{State: "error", Error: err.Error()})
+		return "", fmt.Errorf("Chrome for Testing could not be installed: %w. Check the network connection and try again", err)
+	}
+	executable := manager.Resolve("chrome-for-testing")
+	if executable == "" {
+		err := errors.New("the installation completed without a browser executable")
+		s.setManagedToolsStatus(managedToolsStatus{State: "error", Error: err.Error()})
+		return "", fmt.Errorf("Chrome for Testing could not be installed: %w", err)
+	}
+	s.setManagedToolsStatus(managedToolsStatus{State: "ready"})
+	return executable, nil
 }
 
 func (s *Server) handleDebugStart(w http.ResponseWriter, r *http.Request) {
@@ -679,6 +726,7 @@ func (s *Server) debugStartOptions(plan debugLaunchPlan) dap.StartOptions {
 		Request:       plan.Request,
 		IO:            dap.IOMode(plan.IO),
 		Configuration: cloneJSONMap(plan.Configuration),
+		PreLaunch:     cloneDebugProcessLaunch(plan.PreLaunch),
 		Breakpoints:   make(map[string][]dap.SourceBreakpoint),
 	}
 	for _, breakpoint := range plan.Breakpoints {
@@ -694,6 +742,15 @@ func (s *Server) debugStartOptions(plan debugLaunchPlan) dap.StartOptions {
 		}
 	}
 	return options
+}
+
+func cloneDebugProcessLaunch(value *dap.ProcessLaunch) *dap.ProcessLaunch {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	clone.Args = slices.Clone(value.Args)
+	return &clone
 }
 
 func cloneJSONMap(value map[string]any) map[string]any {
@@ -744,6 +801,24 @@ func (s *Server) validateDebugPlan(plan *debugLaunchPlan, adapters []dap.Adapter
 	if plan.Configuration == nil {
 		plan.Configuration = map[string]any{}
 	}
+	if plan.PreLaunch != nil {
+		plan.PreLaunch.Title = strings.TrimSpace(plan.PreLaunch.Title)
+		plan.PreLaunch.Command = strings.TrimSpace(plan.PreLaunch.Command)
+		if plan.PreLaunch.Title == "" || plan.PreLaunch.Command == "" || !filepath.IsAbs(plan.PreLaunch.Command) {
+			return errors.New("prelaunch process requires a title and absolute command")
+		}
+		info, err := os.Stat(plan.PreLaunch.Command)
+		if err != nil || info.IsDir() {
+			return fmt.Errorf("prelaunch command %q is unavailable", plan.PreLaunch.Command)
+		}
+		if plan.PreLaunch.ReadyURL != "" {
+			readyURL, err := url.Parse(plan.PreLaunch.ReadyURL)
+			if err != nil || (readyURL.Scheme != "http" && readyURL.Scheme != "https") || !loopbackDebugHost(readyURL.Hostname()) {
+				return errors.New("prelaunch ready_url must be an HTTP URL on this machine")
+			}
+			plan.PreLaunch.ReadyURL = readyURL.String()
+		}
+	}
 	projectPath, err := dap.ResolveWorkspaceDirectory(s.workspace.RootPath, plan.ProjectDir)
 	if err != nil {
 		return err
@@ -787,4 +862,12 @@ func (s *Server) validateDebugPlan(plan *debugLaunchPlan, adapters []dap.Adapter
 		plan.FunctionBreakpoints = []string{}
 	}
 	return nil
+}
+
+func loopbackDebugHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

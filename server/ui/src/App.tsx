@@ -1767,6 +1767,18 @@ export default function App() {
 		},
 		[applyDebugSession, showDebugDetails],
 	);
+	const showDebugFailure = useCallback(
+		(session: DebugSession) => {
+			applyDebugSession(session);
+			setTabs((current) =>
+				syncDebugTab(current, undefined, true, activePaneRef.current),
+			);
+			setDebugContentView("output");
+			showDebugDetails();
+			setActiveTabId("debug");
+		},
+		[applyDebugSession, showDebugDetails],
+	);
 	const handleDebugTerminalExit = useCallback((id: string) => {
 		exitedDebugTerminalIDsRef.current.add(id);
 		setTabs((current) => syncDebugTab(current, undefined, false));
@@ -2476,6 +2488,22 @@ export default function App() {
 				} as CSSProperties
 			}
 		>
+			{capabilities?.managed_tools?.state === "installing" && (
+				<div className="absolute inset-0 z-[100] flex items-center justify-center bg-bg/85 backdrop-blur-sm">
+					<div className="flex max-w-sm flex-col items-center gap-3 rounded-xl border border-border-subtle bg-bg-surface px-8 py-7 text-center shadow-2xl">
+						<Loader2 size={22} className="animate-spin text-accent" />
+						<div className="text-[13px] font-medium text-fg">
+							{managedToolMessage(capabilities.managed_tools.tool)}
+						</div>
+						<div className="text-[11px] leading-relaxed text-fg-muted">
+							Downloading the latest tools for this project. Installed versions are reused and updated automatically.
+							{capabilities.managed_tools.total && capabilities.managed_tools.current
+								? ` (${capabilities.managed_tools.current}/${capabilities.managed_tools.total})`
+								: ""}
+						</div>
+					</div>
+				</div>
+			)}
 			<div
 				data-panel-frame="sessions"
 				aria-hidden="true"
@@ -2762,6 +2790,19 @@ export default function App() {
 						tone: "success",
 					});
 				}}
+				onFailed={(message) => {
+					void getDebugSession()
+						.then(({ session }) => {
+							if (session) {
+								showDebugFailure(session);
+								return;
+							}
+							toast({ title: "Debugger could not start", description: message, tone: "error" });
+						})
+						.catch(() => {
+							toast({ title: "Debugger could not start", description: message, tone: "error" });
+						});
+				}}
 			/>
 
 			<Dialog
@@ -3030,6 +3071,23 @@ export default function App() {
 			)}
 		</div>
 	);
+}
+
+function managedToolMessage(tool?: string) {
+	switch (tool) {
+		case "chrome-for-testing":
+			return "Installing Chrome for Testing…";
+		case "vscode-js-debug":
+			return "Installing the JavaScript debugger…";
+		case "codelldb":
+			return "Installing the Rust debugger…";
+		case "netcoredbg":
+			return "Installing the .NET debugger…";
+		case "java":
+			return "Installing Java language and debugger tools…";
+		default:
+			return tool ? `Installing ${tool}…` : "Preparing development tools…";
+	}
 }
 
 function formatTokens(n: number): string {

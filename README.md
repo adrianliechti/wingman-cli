@@ -275,23 +275,9 @@ Configs are loaded from two locations and merged: `~/.wingman/mcp.json` (global,
 
 ### Debugging (experimental)
 
-The web editor keeps each session in one center **Debug** tab. **Debug output**
-is its default view; interactive sessions start in a terminal view and can
-switch back to output from the tab toolbar. A collapsible, resizable details
-pane in that same tab contains variables above the call stack. While a session
-is active, its transport controls replace the passive workspace name in the
-Files header, so continue, pause, stepping, and stop remain available while a
-source file is open. The right-hand **Inspect** view is reserved for LSP
-diagnostics.
-
-The inline **Run | Debug** CodeLens actions above supported entry points are the
-only way to create a session. The selected entry point determines the adapter
-and target; there is no separate adapter/target picker or command-palette launch
-path. Wingman prepares a deterministic language-specific configuration and
-shows its I/O mode, adapter-defined arguments, and initial pause for review
-before application code executes.
-
-Supported launch profiles and their adapters are:
+Use the inline **Run | Debug** actions above a detected entry point. Wingman
+shows the launch options before starting and opens the session in a **Debug**
+tab with output, controls, variables, and the call stack.
 
 | Language/runtime | Adapter | Detected targets |
 |------------------|---------|------------------|
@@ -300,44 +286,20 @@ Supported launch profiles and their adapters are:
 | Java | [Microsoft java-debug](https://github.com/microsoft/java-debug) through JDT LS | Qualified `public static void main` classes |
 | Rust | [CodeLLDB](https://github.com/vadimcn/codelldb) | Cargo binaries and examples |
 | C#/.NET | [NetCoreDbg](https://github.com/Samsung/netcoredbg) | `Main` methods and top-level `Program.cs` files |
-| JavaScript/TypeScript | [vscode-js-debug](https://github.com/microsoft/vscode-js-debug) | Node entry files and explicit direct-execution guards |
-| React/Vite | vscode-js-debug's Chrome profile | Vite configurations, using the configured or default dev-server port |
+| JavaScript/TypeScript | [vscode-js-debug](https://github.com/microsoft/vscode-js-debug) | Node entry files and Node scripts in `package.json` |
+| React/Vite | vscode-js-debug browser profile | Vite development scripts in `package.json` |
 
 Wingman installs the latest debugger needed by the open workspace under
 `$WINGMAN_HOME/tools/<tool>` (normally `~/.wingman/tools/<tool>`). It checks for
 updates daily, replaces the active installation, and removes the old one.
 
-Rust target names, kinds, and output directories come from Cargo's
-machine-readable metadata. Rust and C# launch plans use existing debug build
-output and otherwise show the expected executable path; run `cargo build` or
-`dotnet build` before launching an unbuilt sample. TypeScript entry files run on
-Node using a project-local `tsx` executable when present. React/Vite browser
-plans launch Chrome at the configured port (5173 by default), so start the Vite
-dev server first. Runnable samples for every adapter live in
+For a Vite app, open `package.json` and run or debug its development script.
+Wingman starts the script with the project's npm, pnpm, yarn, or bun selection,
+then launches its managed Chrome for Testing at the script or Vite-configured
+port (5173 by default). Node server scripts work the same way without a browser.
+Click the editor gutter to add breakpoints. Closing the Debug tab stops the
+session. Runnable samples live in
 [`examples/debug`](examples/debug).
-
-Supported entry points receive CodeLens actions. During a session, click
-Monaco's glyph margin to toggle source breakpoints. The Debug details pane shows
-recursively expandable variables above the call stack. Polling preserves
-expanded variable rows until debugger state actually changes. Closing the Debug
-tab stops the active session. Adapter-defined launch arguments remain available
-as documented JSON under **Adapter options**.
-
-Every reviewed plan also chooses where program I/O runs. **Debug output**
-captures ordinary program output in the Debug tab. **Terminal** starts
-compatible adapters in Wingman's PTY and opens the terminal view inside that
-same tab for stdin, ANSI output, resizing, and full-screen CLI/TUI programs.
-This is a generic DAP host policy rather than a Go detector rule.
-Adapter descriptors declare how they support it; the client also implements DAP
-`runInTerminal` for future adapters that request a client-owned terminal. When
-the debuggee exits, Wingman tears down the adapter cleanly and switches back to
-the retained Debug output.
-
-The protocol session and transports are language-neutral. Each language adapter
-owns its source-target detector, deterministic launch policy, and DAP endpoint
-descriptor. The generic DAP client validates paths, connects to or starts the
-declared endpoint, and manages protocol state. Another language can therefore
-be added as one cohesive adapter without changing the session client.
 
 ## 🛠️ Built-in Tools
 
@@ -371,6 +333,7 @@ external; current JDT LS releases require JDK 21 or newer.
 | LSP | C#/.NET | `csharp-ls` | .NET tool / NuGet | [`csharp-ls`](https://www.nuget.org/packages/csharp-ls) |
 | LSP | TypeScript/JavaScript | `typescript-language-server` | npm | [`typescript-language-server`](https://www.npmjs.com/package/typescript-language-server), [`typescript`](https://www.npmjs.com/package/typescript) |
 | DAP | TypeScript/JavaScript, React/Vite | `js-debug-adapter` | GitHub release | [`vscode-js-debug`](https://github.com/microsoft/vscode-js-debug/releases) |
+| Browser runtime | React/Vite debugging | `chrome-for-testing` | Official stable archive | [Chrome for Testing](https://googlechromelabs.github.io/chrome-for-testing/) |
 | LSP | Python | `basedpyright-langserver` | pip / PyPI | [`basedpyright`](https://pypi.org/project/basedpyright/) |
 | DAP | Python | `debugpy-adapter` | pip / PyPI | [`debugpy`](https://pypi.org/project/debugpy/) |
 | LSP | Java | `jdtls` | Eclipse archive | [Eclipse JDT LS milestones](https://download.eclipse.org/jdtls/milestones/) |

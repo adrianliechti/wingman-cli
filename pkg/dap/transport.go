@@ -19,6 +19,7 @@ const adapterStartupTimeout = 30 * time.Second
 
 type adapterConnection struct {
 	io.ReadWriteCloser
+	address        string
 	cmd            *exec.Cmd
 	processDone    <-chan error
 	terminal       TerminalProcess
@@ -139,7 +140,9 @@ func startAdapter(ctx context.Context, plan Plan, output func(string, string), l
 				stopStartedAdapter(cmd)
 				return nil, fmt.Errorf("connect to debug adapter %s at %s: %w", plan.Adapter.Name, address, err)
 			}
-			return runningConnection(cmd, conn), nil
+			connection := runningConnection(cmd, conn)
+			connection.address = address
+			return connection, nil
 		case <-startupCtx.Done():
 			stopStartedAdapter(cmd)
 			return nil, fmt.Errorf("start debug adapter %s: %w", plan.Adapter.Name, startupCtx.Err())
@@ -204,6 +207,7 @@ func startAdapterInTerminal(ctx context.Context, plan Plan, output func(string, 
 		}()
 		return &adapterConnection{
 			ReadWriteCloser: connection,
+			address:         address,
 			processDone:     done,
 			terminal:        process,
 			terminalCancel:  cancelOutput,
@@ -215,6 +219,19 @@ func startAdapterInTerminal(ctx context.Context, plan Plan, output func(string, 
 		_ = process.Close()
 		return nil, fmt.Errorf("start debug adapter %s: %w", plan.Adapter.Name, startupCtx.Err())
 	}
+}
+
+type childAdapterConnector string
+
+func (address childAdapterConnector) ConnectAdapter(ctx context.Context, _ Plan) (io.ReadWriteCloser, error) {
+	return (&net.Dialer{}).DialContext(ctx, "tcp", string(address))
+}
+
+func (connection *adapterConnection) childConnector() AdapterConnector {
+	if connection == nil || connection.address == "" {
+		return nil
+	}
+	return childAdapterConnector(connection.address)
 }
 
 func normalizeAdapterAddress(value string) (string, error) {

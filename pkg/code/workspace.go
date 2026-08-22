@@ -315,7 +315,7 @@ func (w *Workspace) WarmUp() {
 // debug adapters. Successful updates invalidate discovery caches immediately;
 // JDT LS restarts when its debug plug-in changes, while other active protocol
 // sessions continue until their normal restart boundary.
-func (w *Workspace) UpdateManagedTools(ctx context.Context) (bool, error) {
+func (w *Workspace) UpdateManagedTools(ctx context.Context, progress ...func(devtools.Progress)) (bool, error) {
 	w.mu.RLock()
 	manager := w.DevTools
 	root := w.RootPath
@@ -335,9 +335,13 @@ func (w *Workspace) UpdateManagedTools(ctx context.Context) (bool, error) {
 	for _, requirement := range adapterRequirements {
 		requirements = append(requirements, devtools.Requirement{Alternatives: requirement.Commands})
 	}
-	changed, updateErr := manager.Update(ctx, requirements)
+	requiresBrowser, browserDetectErr := debugadapter.RequiresChromium(ctx, root)
+	if requiresBrowser {
+		requirements = append(requirements, devtools.Requirement{Alternatives: []string{"chrome-for-testing"}})
+	}
+	changed, updateErr := manager.Update(ctx, requirements, progress...)
 	if !changed {
-		return false, errors.Join(detectErr, updateErr)
+		return false, errors.Join(detectErr, browserDetectErr, updateErr)
 	}
 
 	w.lspLifeMu.RLock()
@@ -363,7 +367,7 @@ func (w *Workspace) UpdateManagedTools(ctx context.Context) (bool, error) {
 	}
 	w.dapLifeMu.RUnlock()
 	w.lspLifeMu.RUnlock()
-	return true, errors.Join(detectErr, updateErr)
+	return true, errors.Join(detectErr, browserDetectErr, updateErr)
 }
 
 func workspaceJavaDebugBundles(manager *devtools.Manager) []string {

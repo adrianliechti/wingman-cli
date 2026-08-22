@@ -259,7 +259,7 @@ func TestUpdateLockRecoversLegacyStaleDirectory(t *testing.T) {
 
 func TestCleanMachineCatalogIncludesRustDotnetAndJava(t *testing.T) {
 	manager := newManager(t.TempDir())
-	for _, command := range []string{"rust-analyzer", "codelldb", "csharp-ls", "netcoredbg", "jdtls", "js-debug-adapter"} {
+	for _, command := range []string{"rust-analyzer", "codelldb", "csharp-ls", "netcoredbg", "jdtls", "js-debug-adapter", "chrome-for-testing"} {
 		if !manager.CanManage(command) {
 			t.Errorf("CanManage(%q) = false", command)
 		}
@@ -297,6 +297,63 @@ func TestJavaScriptAdapterRejectsArchiveTraversal(t *testing.T) {
 	archive := testTarGzip(t, map[string]string{"../escape": "bad"})
 	if err := extractTarGzip(archive, t.TempDir()); err == nil {
 		t.Fatal("archive traversal was accepted")
+	}
+}
+
+func TestChromeForTestingUsesLatestStablePlatformArchive(t *testing.T) {
+	platform, err := chromeForTestingPlatform(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		t.Skip(err)
+	}
+	relativeExecutable, err := chromeForTestingExecutable("", runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relativeExecutable = strings.TrimPrefix(filepath.Clean(relativeExecutable), string(filepath.Separator))
+	archive := testZip(t, map[string]testZipEntry{
+		filepath.ToSlash(relativeExecutable): {contents: "browser", mode: 0o755},
+	})
+	downloadURL := "https://storage.example.test/chrome.zip"
+	metadata := fmt.Sprintf(`{"channels":{"Stable":{"version":"123.0.0.1","downloads":{"chrome":[{"platform":%q,"url":%q}]}}}}`, platform, downloadURL)
+
+	manager := newManager(t.TempDir())
+	manager.fetch = func(_ context.Context, address string) ([]byte, error) {
+		switch address {
+		case chromeForTestingReleaseURL:
+			return []byte(metadata), nil
+		case downloadURL:
+			return archive, nil
+		default:
+			return nil, fmt.Errorf("unexpected URL %s", address)
+		}
+	}
+	stage := t.TempDir()
+	if err := manager.installRecipe(context.Background(), manager.byCommand["chrome-for-testing"], stage); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveInstalledCommand(stage, "chrome-for-testing"); got == "" {
+		t.Fatal("Chrome for Testing launcher was not installed")
+	}
+	if executable, err := chromeForTestingExecutable(stage, runtime.GOOS, runtime.GOARCH); err != nil || !executableFile(executable) {
+		t.Fatalf("Chrome executable = %q, %v", executable, err)
+	}
+}
+
+func TestZipExtractorAllowsSafeRelativeSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require Windows developer mode")
+	}
+	archive := testZip(t, map[string]testZipEntry{
+		"app/Versions/1/app":   {contents: "browser", mode: 0o755},
+		"app/Versions/Current": {contents: "1", mode: os.ModeSymlink | 0o777},
+	})
+	root := t.TempDir()
+	if err := extractZip(archive, root); err != nil {
+		t.Fatal(err)
+	}
+	target, err := os.Readlink(filepath.Join(root, "app", "Versions", "Current"))
+	if err != nil || target != "1" {
+		t.Fatalf("symlink = %q, %v", target, err)
 	}
 }
 
