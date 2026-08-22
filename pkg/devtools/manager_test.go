@@ -914,7 +914,7 @@ func TestCSharpLanguageServerUsesDotnetTool(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(contents), "DOTNET_ROOT") || !strings.Contains(string(contents), "../tools/csharp-ls") {
+		if !strings.Contains(string(contents), "DOTNET_ROOT") || !strings.Contains(string(contents), "../tools/csharp-ls") || !strings.Contains(string(contents), "DOTNET_CMD='/sdk/dotnet'") {
 			t.Fatalf("launcher does not target the tool through DOTNET_ROOT:\n%s", contents)
 		}
 	}

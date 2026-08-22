@@ -653,14 +653,12 @@ func (session *Session) respondStartDebugging(request *godap.StartDebuggingReque
 		session.respondError(&request.Request, "startDebugging", err.Error())
 		return
 	}
-	child.mu.Lock()
-	child.parent = session
-	child.mu.Unlock()
-	session.mu.Lock()
-	previous := session.child
-	session.child = child
-	session.notifyStateLocked()
-	session.mu.Unlock()
+	previous, attached := session.attachChild(child)
+	if !attached {
+		child.Close()
+		session.respondError(&request.Request, "startDebugging", "The parent debug session ended while its child session was starting")
+		return
+	}
 	if previous != nil {
 		previous.Close()
 	}
@@ -670,6 +668,39 @@ func (session *Session) respondStartDebugging(request *godap.StartDebuggingReque
 		Success:         true,
 		Command:         request.Command,
 	}})
+}
+
+// attachChild transfers ownership only while the parent is still active. A
+// child can take long enough to start that the parent is closed concurrently;
+// installing it afterward would leak the child adapter and debuggee.
+func (session *Session) attachChild(child *Session) (*Session, bool) {
+	child.mu.Lock()
+	child.parent = session
+	child.mu.Unlock()
+
+	session.mu.Lock()
+	if !session.alive.Load() || session.state == StateTerminated {
+		session.mu.Unlock()
+		child.mu.Lock()
+		if child.parent == session {
+			child.parent = nil
+		}
+		child.mu.Unlock()
+		return nil, false
+	}
+	previous := session.child
+	session.child = child
+	session.notifyStateLocked()
+	session.mu.Unlock()
+
+	if previous != nil {
+		previous.mu.Lock()
+		if previous.parent == session {
+			previous.parent = nil
+		}
+		previous.mu.Unlock()
+	}
+	return previous, true
 }
 
 func (session *Session) childSession() *Session {
@@ -1362,6 +1393,11 @@ func (session *Session) closeResourcesWithError(closeErr error) {
 		session.terminals = nil
 		session.mu.Unlock()
 		if child != nil {
+			child.mu.Lock()
+			if child.parent == session {
+				child.parent = nil
+			}
+			child.mu.Unlock()
 			child.Close()
 		}
 		for _, terminal := range terminals {

@@ -156,7 +156,9 @@ func userDirectories() []string {
 	}
 	add(os.Getenv("GOBIN"))
 	if value := os.Getenv("GOPATH"); value != "" {
-		add(filepath.Join(value, "bin"))
+		for _, root := range filepath.SplitList(value) {
+			add(filepath.Join(root, "bin"))
+		}
 	}
 	add(os.Getenv("PNPM_HOME"))
 

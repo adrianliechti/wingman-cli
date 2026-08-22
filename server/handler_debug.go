@@ -343,7 +343,11 @@ func (s *Server) handleDebugState(w http.ResponseWriter, r *http.Request) {
 		}
 		requestCtx, cancel := context.WithTimeout(r.Context(), debugStateRequestBudget)
 		defer cancel()
-		frames, _, err := session.StackTrace(requestCtx, 0, 0, 1)
+		threadID := 0
+		if status.Stop != nil {
+			threadID = status.Stop.ThreadID
+		}
+		frames, _, err := session.StackTrace(requestCtx, threadID, 0, 1)
 		if err != nil {
 			response.FrameError = err.Error()
 			return nil

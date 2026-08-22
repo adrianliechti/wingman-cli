@@ -43,6 +43,7 @@ export const queryKeys = {
 	debug: {
 		all: ["server", "debug"] as const,
 		session: ["server", "debug", "session"] as const,
+		state: ["server", "debug", "state"] as const,
 		inspection: ["server", "debug", "inspection"] as const,
 		output: ["server", "debug", "output"] as const,
 		scopes: (sessionId: string, stateVersion: number, frameId: number) =>

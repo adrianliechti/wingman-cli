@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -77,36 +76,18 @@ func (r Resolver) Resolve(projects []string, command string, accept func(string)
 	return Resolution{}
 }
 
-type versionProbeKey struct {
-	path     string
-	minimum  int
-	modified int64
-}
-
-var versionProbes sync.Map
-
 // ProbeExecutes requests only a successful --version run instead of a version
 // floor. It filters launchers that exist but cannot run, such as a rustup
 // proxy whose component is not installed.
 const ProbeExecutes = -1
 
 // MajorVersionAtLeast probes a command's conventional --version output.
-// Results are cached per executable modification time because probes spawn a
-// process and are repeated by detection refreshes.
+// Callers cache the surrounding detection result when appropriate. The probe
+// itself deliberately stays live: shims and launchers can start or stop working
+// when their external runtime changes without the executable being modified.
 func MajorVersionAtLeast(ctx context.Context, command string, minimum int) bool {
 	if minimum == 0 {
 		return true
-	}
-	var key versionProbeKey
-	cacheable := false
-	if filepath.IsAbs(command) {
-		if info, err := os.Stat(command); err == nil {
-			key = versionProbeKey{path: command, minimum: minimum, modified: info.ModTime().UnixNano()}
-			cacheable = true
-			if cached, ok := versionProbes.Load(key); ok {
-				return cached.(bool)
-			}
-		}
 	}
 	process := exec.CommandContext(ctx, command, "--version")
 	process.Env = Environment(command, os.Environ())
@@ -124,9 +105,6 @@ func MajorVersionAtLeast(ctx context.Context, command string, minimum int) bool 
 				break
 			}
 		}
-	}
-	if cacheable && ctx.Err() == nil {
-		versionProbes.Store(key, result)
 	}
 	return result
 }

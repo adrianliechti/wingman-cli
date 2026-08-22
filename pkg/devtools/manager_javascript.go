@@ -92,7 +92,7 @@ func writeJavaScriptLauncher(stage, node string) error {
 		contents := "@echo off\r\n\"" + node + "\" \"%~dp0\\..\\js-debug\\src\\dapDebugServer.js\" %*\r\n"
 		return os.WriteFile(filepath.Join(directory, "js-debug-adapter.cmd"), []byte(contents), 0o755)
 	}
-	contents := "#!/bin/sh\nSCRIPT_DIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\nexec \"" + node + "\" \"$SCRIPT_DIR/../js-debug/src/dapDebugServer.js\" \"$@\"\n"
+	contents := "#!/bin/sh\nSCRIPT_DIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\nexec " + quotePOSIXShell(node) + " \"$SCRIPT_DIR/../js-debug/src/dapDebugServer.js\" \"$@\"\n"
 	return os.WriteFile(filepath.Join(directory, "js-debug-adapter"), []byte(contents), 0o755)
 }
 

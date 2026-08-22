@@ -323,8 +323,12 @@ func (m *Manager) Update(ctx context.Context, requirements []Requirement, progre
 				updateErrors = append(updateErrors, contextErr)
 				break
 			}
-			retryErr := m.deferRetry(item)
-			if !ready {
+			var retryErr error
+			if !updated {
+				retryErr = m.deferRetry(item)
+			}
+			available := ready || installationReady(item, filepath.Join(m.root, item.ID))
+			if !available {
 				err = &UnavailableError{Tool: item.ID, Err: err}
 			}
 			updateErrors = append(updateErrors, fmt.Errorf("update %s: %w", item.ID, errors.Join(err, retryErr)))
@@ -869,4 +873,8 @@ func commandError(output []byte, err error) error {
 		message = message[len(message)-max:]
 	}
 	return fmt.Errorf("%w: %s", err, message)
+}
+
+func quotePOSIXShell(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }

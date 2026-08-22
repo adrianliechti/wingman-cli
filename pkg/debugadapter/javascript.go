@@ -276,11 +276,14 @@ func nodePlan(request Request) (Plan, error) {
 		"sourceMaps": true,
 		"skipFiles":  []string{"<node_internals>/**"},
 	}
+	runtimeExecutable := ""
 	if isTypeScriptPath(request.Target.Path) {
-		if runtimeExecutable := localTypeScriptRuntime(request); runtimeExecutable != "" {
-			configuration["runtimeExecutable"] = runtimeExecutable
-		}
+		runtimeExecutable = localTypeScriptRuntime(request)
 	}
+	if runtimeExecutable == "" {
+		runtimeExecutable = tooling.Resolve("node")
+	}
+	setJavaScriptRuntime(configuration, runtimeExecutable)
 	plan := Plan{
 		Title:            actionLabel(request.Action) + " " + request.Target.Name,
 		Summary:          fmt.Sprintf("%s %s.", actionLabel(request.Action), request.Target.Detail),
@@ -356,6 +359,7 @@ func nodeScriptPlan(request Request) (Plan, error) {
 		"autoAttachChildProcesses": true,
 		"skipFiles":                []string{"<node_internals>/**"},
 	}
+	setJavaScriptRuntime(configuration, packageManagerPath)
 	plan := Plan{
 		Title:            fmt.Sprintf("%s %s run %s", actionLabel(request.Action), packageManager, request.Target.Name),
 		Summary:          fmt.Sprintf("%s the package.json %q Node.js script.", actionLabel(request.Action), request.Target.Name),
@@ -369,6 +373,24 @@ func nodeScriptPlan(request Request) (Plan, error) {
 		configuration["noDebug"] = true
 	}
 	return plan, nil
+}
+
+// setJavaScriptRuntime keeps an absolute npm/node/tsx launcher paired with the
+// PATH that makes its sibling or env-style interpreter executable. GUI apps
+// commonly discover these tools outside their inherited PATH.
+func setJavaScriptRuntime(configuration map[string]any, executable string) {
+	if executable == "" {
+		return
+	}
+	configuration["runtimeExecutable"] = executable
+	for _, item := range tooling.Environment(executable, os.Environ()) {
+		key, value, ok := strings.Cut(item, "=")
+		if !ok || (key != "PATH" && (runtime.GOOS != "windows" || !strings.EqualFold(key, "PATH"))) {
+			continue
+		}
+		configuration["env"] = map[string]string{"PATH": value}
+		return
+	}
 }
 
 func resolvePackageScript(request Request) (command, projectDir, packageManager, packageManagerPath string, err error) {

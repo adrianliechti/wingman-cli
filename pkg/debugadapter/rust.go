@@ -178,6 +178,8 @@ func loadCargoMetadata(projectDir string) (cargoMetadata, error) {
 		"metadata", "--no-deps", "--format-version=1", "--manifest-path", manifest,
 	)
 	command.Dir = projectDir
+	command.Env = tooling.Environment(cargo, os.Environ())
+	command.WaitDelay = 3 * time.Second
 	output, err := command.Output()
 	if err != nil {
 		if ctx.Err() != nil {

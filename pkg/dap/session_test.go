@@ -322,6 +322,39 @@ func TestSessionDisconnectForcesCleanupWhenAdapterDoesNotRespond(t *testing.T) {
 	}
 }
 
+func TestAttachChildRejectsTerminatedParent(t *testing.T) {
+	parent := &Session{state: StateTerminated, stateChanged: make(chan struct{})}
+	child := &Session{state: StateRunning, stateChanged: make(chan struct{})}
+	if previous, attached := parent.attachChild(child); attached || previous != nil {
+		t.Fatalf("attachChild = (%v, %v), want (nil, false)", previous, attached)
+	}
+	if child.parent != nil {
+		t.Fatal("rejected child retained its parent")
+	}
+	if parent.child != nil {
+		t.Fatal("terminated parent retained the rejected child")
+	}
+}
+
+func TestAttachChildReplacesOwnership(t *testing.T) {
+	parent := &Session{state: StateRunning, stateChanged: make(chan struct{})}
+	parent.alive.Store(true)
+	oldChild := &Session{state: StateRunning, stateChanged: make(chan struct{}), parent: parent}
+	newChild := &Session{state: StateRunning, stateChanged: make(chan struct{})}
+	parent.child = oldChild
+
+	previous, attached := parent.attachChild(newChild)
+	if !attached || previous != oldChild {
+		t.Fatalf("attachChild = (%p, %v), want (%p, true)", previous, attached, oldChild)
+	}
+	if parent.child != newChild || newChild.parent != parent {
+		t.Fatal("new child ownership was not connected")
+	}
+	if oldChild.parent != nil {
+		t.Fatal("replaced child retained its parent")
+	}
+}
+
 type unexpectedEOFConnection struct {
 	closed  chan struct{}
 	once    sync.Once

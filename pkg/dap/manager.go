@@ -580,6 +580,10 @@ func selectProjectDir(workspace string, projects []string, requested string, con
 }
 
 func ResolveWorkspaceDirectory(workspace, value string) (string, error) {
+	workspace, err := filepath.Abs(workspace)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace: %w", err)
+	}
 	path := value
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(workspace, path)

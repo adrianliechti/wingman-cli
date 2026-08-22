@@ -36,7 +36,23 @@ interface Props {
 
 type Phase = "planning" | "review" | "starting" | "error";
 
-export function DebugLauncher({
+export function DebugLauncher({ open, seed, ...callbacks }: Props) {
+	const requestKey = open
+		? seed
+			? JSON.stringify([seed.action, seed.target.id, seed.currentPath])
+			: "missing"
+		: "closed";
+	return (
+		<DebugLauncherContent
+			key={requestKey}
+			open={open}
+			seed={seed}
+			{...callbacks}
+		/>
+	);
+}
+
+function DebugLauncherContent({
 	open,
 	seed,
 	onClose,
@@ -44,39 +60,28 @@ export function DebugLauncher({
 	onFailed,
 }: Props) {
 	const requestRef = useRef<AbortController | null>(null);
-	const [phase, setPhase] = useState<Phase>("planning");
+	const [phase, setPhase] = useState<Phase>(seed ? "planning" : "error");
 	const [plan, setPlan] = useState<DebugLaunchPlan | null>(null);
 	const [pauseAtEntry, setPauseAtEntry] = useState(false);
 	const [configurationText, setConfigurationText] = useState("{}");
-	const [error, setError] = useState("");
+	const [error, setError] = useState(
+		seed ? "" : "Choose Run or Debug beside a runnable entry point.",
+	);
 	const [attempt, setAttempt] = useState(0);
+	const action = seed?.action;
+	const currentPath = seed?.currentPath;
+	const targetID = seed?.target.id;
 
 	useEffect(() => {
-		if (!open) requestRef.current?.abort();
-	}, [open]);
-
-	useEffect(() => {
-		if (!open) return;
-		requestRef.current?.abort();
+		if (!open || !action || currentPath === undefined || !targetID) return;
 		const controller = new AbortController();
 		requestRef.current = controller;
-		setPhase("planning");
-		setPlan(null);
-		setPauseAtEntry(false);
-		setConfigurationText("{}");
-		setError("");
-
-		if (!seed) {
-			setError("Choose Run or Debug beside a runnable entry point.");
-			setPhase("error");
-			return () => controller.abort();
-		}
 
 		void generateDebugPlan(
 			{
-				action: seed.action,
-				target_id: seed.target.id,
-				current_path: seed.currentPath,
+				action,
+				target_id: targetID,
+				current_path: currentPath,
 			},
 			controller.signal,
 		)
@@ -96,7 +101,22 @@ export function DebugLauncher({
 				setPhase("error");
 			});
 		return () => controller.abort();
-	}, [attempt, open, seed]);
+	}, [action, attempt, currentPath, open, targetID]);
+
+	const close = useCallback(() => {
+		requestRef.current?.abort();
+		onClose();
+	}, [onClose]);
+
+	const retry = useCallback(() => {
+		requestRef.current?.abort();
+		setPhase("planning");
+		setPlan(null);
+		setPauseAtEntry(false);
+		setConfigurationText("{}");
+		setError("");
+		setAttempt((value) => value + 1);
+	}, []);
 
 	const start = useCallback(async () => {
 		if (!plan) return;
@@ -129,19 +149,19 @@ export function DebugLauncher({
 			);
 			if (controller.signal.aborted) return;
 			onStarted?.(session);
-			onClose();
+			close();
 		} catch (cause) {
 			if (controller.signal.aborted) return;
 			const message = errorMessage(cause);
 			if (onFailed) {
 				onFailed(message);
-				onClose();
+				close();
 				return;
 			}
 			setError(message);
 			setPhase("review");
 		}
-	}, [configurationText, onClose, onFailed, onStarted, pauseAtEntry, plan]);
+	}, [close, configurationText, onFailed, onStarted, pauseAtEntry, plan]);
 
 	return (
 		<Dialog
@@ -150,7 +170,7 @@ export function DebugLauncher({
 				plan?.title ??
 				`${seed?.action === "run" ? "Run" : "Debug"} ${seed?.target.name ?? "target"}`
 			}
-			onClose={onClose}
+			onClose={close}
 			initialFocus="first"
 		>
 			<div className="w-full space-y-3">
@@ -227,14 +247,14 @@ export function DebugLauncher({
 				)}
 
 				<div className="flex justify-end gap-2 pt-1">
-					<button type="button" className={dialogButtonClass} onClick={onClose}>
+					<button type="button" className={dialogButtonClass} onClick={close}>
 						Cancel
 					</button>
 					{phase === "error" && seed && (
 						<button
 							type="button"
 							className={dialogPrimaryButtonClass}
-							onClick={() => setAttempt((value) => value + 1)}
+							onClick={retry}
 						>
 							Retry
 						</button>

@@ -211,6 +211,23 @@ func TestWorkspacePathsRejectSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestResolveWorkspaceDirectoryAcceptsRelativeWorkspace(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	project := filepath.Join(workspace, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	got, err := ResolveWorkspaceDirectory("workspace", "project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != project {
+		t.Fatalf("ResolveWorkspaceDirectory = %q, want %q", got, project)
+	}
+}
+
 func TestConfigurationPathCanAllowMissingBuildOutput(t *testing.T) {
 	root := t.TempDir()
 	configuration, err := ResolveConfigurationPaths(root, root, []ConfigurationPath{{Key: "program", AllowMissing: true}}, map[string]any{

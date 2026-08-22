@@ -26,18 +26,29 @@ func Environment(command string, environment []string) []string {
 	}
 	for index, item := range result {
 		key, value, ok := strings.Cut(item, "=")
-		if !ok || !strings.EqualFold(key, "PATH") {
+		if !ok || !sameEnvironmentKey(key, "PATH") {
 			continue
 		}
 		for _, directory := range directories {
 			if !pathContains(value, directory) {
-				value = directory + string(os.PathListSeparator) + value
+				if value == "" {
+					value = directory
+				} else {
+					value = directory + string(os.PathListSeparator) + value
+				}
 			}
 		}
 		result[index] = key + "=" + value
 		return result
 	}
 	return append(result, "PATH="+strings.Join(directories, string(os.PathListSeparator)))
+}
+
+func sameEnvironmentKey(left, right string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
 }
 
 // interpreterDirectory returns the user tool directory holding an env-style

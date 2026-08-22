@@ -24,6 +24,12 @@ func (m *Manager) installDotnet(ctx context.Context, item recipe, stage string) 
 	if err != nil {
 		return "", errors.New("dotnet is not installed")
 	}
+	if !filepath.IsAbs(dotnet) {
+		dotnet, err = filepath.Abs(dotnet)
+		if err != nil {
+			return "", fmt.Errorf("resolve dotnet: %w", err)
+		}
+	}
 	tools := filepath.Join(stage, "tools")
 	if err := os.MkdirAll(tools, 0o755); err != nil {
 		return "", err
@@ -42,7 +48,7 @@ func (m *Manager) installDotnet(ctx context.Context, item recipe, stage string) 
 		}
 	}
 	for _, command := range item.Commands {
-		if err := writeDotnetToolLauncher(stage, command); err != nil {
+		if err := writeDotnetToolLauncher(stage, command, dotnet); err != nil {
 			return "", err
 		}
 	}
@@ -52,7 +58,7 @@ func (m *Manager) installDotnet(ctx context.Context, item recipe, stage string) 
 // writeDotnetToolLauncher points the framework-dependent tool at the runtime
 // of whichever dotnet is installed. Homebrew and other relocated SDKs do not
 // register an install location, so the plain apphost cannot find them.
-func writeDotnetToolLauncher(stage, command string) error {
+func writeDotnetToolLauncher(stage, command, dotnet string) error {
 	directory := filepath.Join(stage, "bin")
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return err
@@ -63,8 +69,9 @@ func writeDotnetToolLauncher(stage, command string) error {
 	}
 	contents := "#!/bin/sh\n" +
 		"SCRIPT_DIR=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\n" +
+		"DOTNET_CMD=" + quotePOSIXShell(dotnet) + "\n" +
 		"if [ -z \"$DOTNET_ROOT\" ]; then\n" +
-		"  DOTNET_ROOT=$(dotnet --list-runtimes 2>/dev/null | sed -n 's/.*\\[\\(.*\\)\\/shared\\/.*/\\1/p' | head -n 1)\n" +
+		"  DOTNET_ROOT=$(\"$DOTNET_CMD\" --list-runtimes 2>/dev/null | sed -n 's/.*\\[\\(.*\\)\\/shared\\/.*/\\1/p' | head -n 1)\n" +
 		"  [ -n \"$DOTNET_ROOT\" ] && export DOTNET_ROOT\n" +
 		"fi\n" +
 		"exec \"$SCRIPT_DIR/../tools/" + command + "\" \"$@\"\n"

@@ -44,7 +44,7 @@ func WithServerInitializationOptions(name string, value any) ManagerOption {
 		if manager.initializationOptions == nil {
 			manager.initializationOptions = make(map[string][]byte)
 		}
-		manager.initializationOptions[name] = encoded
+		manager.initializationOptions[serverOptionsKey(name)] = encoded
 	}
 }
 
@@ -90,7 +90,7 @@ func (m *Manager) detect() []projectRoot {
 	if m.detectedAt.IsZero() || time.Since(m.detectedAt) >= detectionCacheTTL {
 		m.roots = detectAll(m.workingDir, m.commandResolver)
 		for index := range m.roots {
-			if options := m.initializationOptions[m.roots[index].Server.Name]; len(options) > 0 {
+			if options := m.initializationOptions[serverOptionsKey(m.roots[index].Server.Name)]; len(options) > 0 {
 				m.roots[index].Server.InitializationOptions = slices.Clone(options)
 			}
 		}
@@ -119,15 +119,16 @@ func (m *Manager) SetServerInitializationOptions(name string, value any) error {
 	if err != nil {
 		return err
 	}
+	optionsKey := serverOptionsKey(name)
 	m.detectMu.Lock()
-	if bytes.Equal(m.initializationOptions[name], encoded) {
+	if bytes.Equal(m.initializationOptions[optionsKey], encoded) {
 		m.detectMu.Unlock()
 		return nil
 	}
 	if m.initializationOptions == nil {
 		m.initializationOptions = make(map[string][]byte)
 	}
-	m.initializationOptions[name] = encoded
+	m.initializationOptions[optionsKey] = encoded
 	m.detectedAt = time.Time{}
 	m.detectMu.Unlock()
 
@@ -144,6 +145,18 @@ func (m *Manager) SetServerInitializationOptions(name string, value any) error {
 		session.Close()
 	}
 	return nil
+}
+
+func serverOptionsKey(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+// serverInitializationOptionsCurrentLocked reports whether a descriptor still
+// carries the manager's current options. Callers hold detectMu so an options
+// update cannot race the decision to publish a newly connected session.
+func (m *Manager) serverInitializationOptionsCurrentLocked(server Server) bool {
+	options, configured := m.initializationOptions[serverOptionsKey(server.Name)]
+	return !configured || bytes.Equal(server.InitializationOptions, options)
 }
 
 func (m *Manager) FindServer(filePath string) *Server {
@@ -288,9 +301,12 @@ func (m *Manager) getSession(ctx context.Context, project projectRoot) (*Session
 		}
 	}
 
+	m.detectMu.Lock()
 	m.mu.Lock()
 	if m.closed {
 		err = fmt.Errorf("LSP manager is closed")
+	} else if err == nil && !m.serverInitializationOptionsCurrentLocked(server) {
+		err = fmt.Errorf("LSP server %s initialization options changed during startup", server.Name)
 	}
 	if err == nil {
 		m.sessions[key] = session
@@ -303,6 +319,7 @@ func (m *Manager) getSession(ctx context.Context, project projectRoot) (*Session
 	delete(m.starting, key)
 	close(start.done)
 	m.mu.Unlock()
+	m.detectMu.Unlock()
 
 	if err != nil {
 		if session != nil {

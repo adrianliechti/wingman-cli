@@ -269,6 +269,40 @@ func TestRustAdapterUsesCargoMetadataTargetDirectory(t *testing.T) {
 	}
 }
 
+func TestCargoMetadataAddsCargoDirectoryToPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper uses POSIX scripts")
+	}
+	bin := t.TempDir()
+	cargo := filepath.Join(bin, "cargo")
+	helper := filepath.Join(bin, "wingman-cargo-metadata-helper")
+	if err := os.WriteFile(cargo, []byte("#!/bin/sh\nexec wingman-cargo-metadata-helper\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	helperContents := "#!/bin/sh\nprintf '{\"packages\":[],\"target_directory\":\"%s/target\"}\\n' \"$PWD\"\n"
+	if err := os.WriteFile(helper, []byte(helperContents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "Cargo.toml"), []byte("[package]\nname = \"sample\"\nversion = \"0.0.0\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CARGO", cargo)
+	t.Setenv("PATH", "/usr/bin:/bin")
+	metadata, err := loadCargoMetadata(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalProject, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(canonicalProject, "target")
+	if metadata.TargetDirectory != want {
+		t.Fatalf("target directory = %q, want %q", metadata.TargetDirectory, want)
+	}
+}
+
 func TestDotnetAdapterPlansExistingOrExpectedAssembly(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "dotnet-app")
@@ -397,6 +431,10 @@ func TestPackageScriptPlansNodeServerWithoutBrowser(t *testing.T) {
 	}
 	if plan.Configuration["type"] != "pwa-node" || plan.Configuration["runtimeExecutable"] != npm || !reflect.DeepEqual(plan.Configuration["runtimeArgs"], []string{"run-script", "server"}) || plan.Configuration["autoAttachChildProcesses"] != true || plan.PreLaunch != nil || !plan.SupportsTerminal {
 		t.Fatalf("plan = %#v", plan)
+	}
+	environment, ok := plan.Configuration["env"].(map[string]string)
+	if !ok || environment["PATH"] != bin {
+		t.Fatalf("runtime environment = %#v, want PATH %q", plan.Configuration["env"], bin)
 	}
 }
 

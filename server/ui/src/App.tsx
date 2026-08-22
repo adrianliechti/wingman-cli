@@ -47,7 +47,12 @@ import {
 	getInspectAvailability,
 	type ManagedToolsStatus,
 } from "./api/capabilities";
-import { controlDebug, getDebugSession, type DebugSession } from "./api/debug";
+import {
+	controlDebug,
+	getDebugSession,
+	getDebugState,
+	type DebugSession,
+} from "./api/debug";
 import { createWorkspaceFile } from "./api/files";
 import { queryKeys } from "./api/query";
 import {
@@ -367,6 +372,7 @@ export default function App() {
 	const [debugDetailsVisible, setDebugDetailsVisible] = useState(true);
 	const [debugSession, setDebugSession] = useState<DebugSession>();
 	const debugSessionRef = useRef<DebugSession | undefined>(undefined);
+	const followedDebugStopRef = useRef("");
 	const [debugControlBusy, setDebugControlBusy] = useState(false);
 
 	const runWorkspaceEdit = useCallback(
@@ -857,11 +863,11 @@ export default function App() {
 		},
 		[queryClient],
 	);
-	const debugSessionQuery = useQuery({
-		queryKey: queryKeys.debug.session,
+	const debugStateQuery = useQuery({
+		queryKey: queryKeys.debug.state,
 		enabled: showDebug,
 		staleTime: 0,
-		queryFn: ({ signal }) => getDebugSession(signal),
+		queryFn: ({ signal }) => getDebugState(undefined, signal),
 		refetchInterval: (current) => {
 			const session = current.state.data?.session;
 			if (!session || session.state === "terminated") return false;
@@ -874,10 +880,29 @@ export default function App() {
 			applyDebugSession(undefined);
 			return;
 		}
-		if (debugSessionQuery.data) {
-			applyDebugSession(debugSessionQuery.data.session);
+		if (debugStateQuery.data) {
+			applyDebugSession(debugStateQuery.data.session);
 		}
-	}, [applyDebugSession, debugSessionQuery.data, showDebug]);
+	}, [applyDebugSession, debugStateQuery.data, showDebug]);
+
+	useEffect(() => {
+		const state = debugStateQuery.data;
+		const session = state?.session;
+		const frame = state?.frame;
+		if (
+			session?.state !== "stopped" ||
+			debugSession?.session_id !== session.session_id ||
+			debugSession.state_version !== session.state_version ||
+			!frame?.source?.path ||
+			frame.line < 1
+		) {
+			return;
+		}
+		const stopKey = `${session.session_id}:${session.state_version}`;
+		if (followedDebugStopRef.current === stopKey) return;
+		followedDebugStopRef.current = stopKey;
+		openFile(frame.source.path, frame.line, Math.max(1, frame.column));
+	}, [debugSession, debugStateQuery.data, openFile]);
 
 	const handleDebugControl = useCallback(
 		async (operation: DebugOperation) => {
@@ -891,7 +916,13 @@ export default function App() {
 					session.session_id,
 					session.stop?.thread_id,
 				);
-				if (result.session) applyDebugSession(result.session);
+				if (result.session) {
+					applyDebugSession(result.session);
+					void queryClient.invalidateQueries({
+						queryKey: queryKeys.debug.state,
+						exact: true,
+					});
+				}
 			} catch (error) {
 				toast({
 					title: `Could not ${debugOperationLabel(operation)}`,
@@ -902,7 +933,7 @@ export default function App() {
 				setDebugControlBusy(false);
 			}
 		},
-		[applyDebugSession, debugControlBusy, debugSession, toast],
+		[applyDebugSession, debugControlBusy, debugSession, queryClient, toast],
 	);
 
 	const closeTabNow = useCallback(
@@ -1762,11 +1793,15 @@ export default function App() {
 			if (session.terminal_id)
 				exitedDebugTerminalIDsRef.current.delete(session.terminal_id);
 			applyDebugSession(session);
+			void queryClient.invalidateQueries({
+				queryKey: queryKeys.debug.state,
+				exact: true,
+			});
 			setDebugContentView(session.terminal_id ? "terminal" : "output");
 			showDebugDetails();
 			setActiveTabId("debug");
 		},
-		[applyDebugSession, showDebugDetails],
+		[applyDebugSession, queryClient, showDebugDetails],
 	);
 	const showDebugFailure = useCallback(
 		(session: DebugSession) => {
@@ -2063,7 +2098,6 @@ export default function App() {
 									openFile(path, line, column)
 								}
 								onStopped={showDebugDetails}
-								autoOpenSource={false}
 							/>
 						</div>
 					</Panel>
@@ -2474,7 +2508,10 @@ export default function App() {
 					/>
 				)}
 			</div>
-			<ManagedToolsFooter status={capabilities?.managed_tools} />
+			<ManagedToolsFooter
+				key={capabilities?.managed_tools?.state ?? "none"}
+				status={capabilities?.managed_tools}
+			/>
 		</aside>
 	);
 

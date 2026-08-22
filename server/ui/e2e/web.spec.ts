@@ -3166,3 +3166,75 @@ test("stops the active debugger when the Debug tab closes", async ({
 	});
 	await expect(debugTab).toHaveCount(0);
 });
+
+test("follows debugger stops into the source editor", async ({ page }) => {
+	const lines = Array.from({ length: 90 }, (_, index) =>
+		index === 69 ? "var breakpointTarget = 70" : `// line ${index + 1}`,
+	);
+	await writeFile(workspacePath("debug-follow.go"), `${lines.join("\n")}\n`);
+
+	let session = {
+		session_id: "debug-follow-session",
+		adapter: "delve",
+		language: "Go",
+		target: "./debug-follow.go",
+		mode: "debug",
+		request: "launch",
+		io: "output",
+		capabilities: { supports_step_back: false },
+		state_version: 1,
+		state: "running",
+		stop: undefined as { reason: string; thread_id: number } | undefined,
+		started_at: "2026-08-22T10:00:00Z",
+	};
+
+	await page.route(/\/api\/capabilities$/, async (route) => {
+		await route.fulfill({
+			json: {
+				git: false,
+				git_init: false,
+				lsp: false,
+				debug: true,
+				diffs: false,
+				tasks: false,
+				terminal: false,
+				platform: "linux",
+				workspace_name: "workspace",
+			},
+		});
+	});
+	await page.route(/\/api\/debug\/state(?:\?[^#]*)?$/, async (route) => {
+		await route.fulfill({
+			json: {
+				available: true,
+				session,
+				breakpoints: [],
+				frame:
+					session.state === "stopped"
+						? {
+								id: 21,
+								name: "main",
+								source: { path: "debug-follow.go" },
+								line: 70,
+								column: 5,
+							}
+						: undefined,
+			},
+		});
+	});
+
+	await composer(page);
+	await expect(page.locator('[data-center-tab="debug"]')).toBeVisible();
+	session = {
+		...session,
+		state: "stopped",
+		state_version: 2,
+		stop: { reason: "breakpoint", thread_id: 1 },
+	};
+
+	const sourceTab = page.locator('[data-center-tab="file:debug-follow.go"]');
+	await expect(sourceTab).toHaveAttribute("aria-selected", "true");
+	await expect(
+		page.locator(".view-line:visible", { hasText: "breakpointTarget = 70" }),
+	).toBeVisible();
+});

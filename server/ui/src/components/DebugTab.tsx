@@ -15,14 +15,9 @@ import { queryKeys } from "../api/query";
 interface Props {
 	onOpenFile: (path: string, line: number, column: number) => void;
 	onStopped?: () => void;
-	autoOpenSource?: boolean;
 }
 
-export function DebugTab({
-	onOpenFile,
-	onStopped,
-	autoOpenSource = true,
-}: Props) {
+export function DebugTab({ onOpenFile, onStopped }: Props) {
 	const inspectionQuery = useQuery<DebugInspection>({
 		queryKey: queryKeys.debug.inspection,
 		staleTime: 0,
@@ -60,12 +55,8 @@ export function DebugTab({
 		}
 		if (notifiedStopRef.current === stopVersion) return;
 		notifiedStopRef.current = stopVersion;
-		const frame = inspection?.frames[0];
-		if (autoOpenSource && frame?.source?.path) {
-			onOpenFile(frame.source.path, frame.line, frame.column);
-		}
 		onStopped?.();
-	}, [autoOpenSource, inspection, onOpenFile, onStopped, stopVersion]);
+	}, [onStopped, stopVersion]);
 
 	const scopeSessionID = inspection?.session?.session_id;
 	const scopeSessionState = inspection?.session?.state;

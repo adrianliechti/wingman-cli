@@ -84,6 +84,15 @@ func TestEnvironmentPrependsAbsoluteCommandDirectory(t *testing.T) {
 	}
 }
 
+func TestEnvironmentDoesNotAddCurrentDirectoryToEmptyPath(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "bin")
+	command := filepath.Join(directory, "tool")
+	environment := Environment(command, []string{"PATH="})
+	if want := "PATH=" + directory; environment[0] != want {
+		t.Fatalf("environment PATH = %q, want %q", environment[0], want)
+	}
+}
+
 func TestMajorVersionAtLeast(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test helper uses a POSIX script")
@@ -92,10 +101,67 @@ func TestMajorVersionAtLeast(t *testing.T) {
 	if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf 'Version 7.1.0\\n'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if !MajorVersionAtLeast(ctx, command, 7) || MajorVersionAtLeast(ctx, command, 8) {
 		t.Fatal("major version probe returned the wrong result")
+	}
+}
+
+func TestMajorVersionProbeReflectsRuntimeAvailability(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper uses a POSIX script")
+	}
+	directory := t.TempDir()
+	command := filepath.Join(directory, "runtime-backed")
+	marker := command + ".ready"
+	contents := "#!/bin/sh\n[ -f \"$0.ready\" ] || exit 1\nprintf 'Version 7.1.0\\n'\n"
+	if err := os.WriteFile(command, []byte(contents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if !MajorVersionAtLeast(ctx, command, ProbeExecutes) {
+		t.Fatal("available runtime was rejected")
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	if MajorVersionAtLeast(ctx, command, ProbeExecutes) {
+		t.Fatal("probe reused a stale successful result")
+	}
+	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !MajorVersionAtLeast(ctx, command, ProbeExecutes) {
+		t.Fatal("probe reused a stale failed result")
+	}
+}
+
+func TestLookPathSearchesEveryGOPATHEntry(t *testing.T) {
+	first := t.TempDir()
+	second := t.TempDir()
+	directory := filepath.Join(second, "bin")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	name := Candidates(runtime.GOOS, "wingman-gopath-test")[0]
+	command := filepath.Join(directory, name)
+	if err := os.WriteFile(command, []byte("test"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOBIN", "")
+	t.Setenv("GOPATH", strings.Join([]string{first, second}, string(os.PathListSeparator)))
+	t.Setenv("PATH", "")
+	got, err := LookPath("wingman-gopath-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != command {
+		t.Fatalf("LookPath = %q, want %q", got, command)
 	}
 }
 
@@ -135,5 +201,21 @@ func TestEnvironmentAddsUserDirectoryShebangInterpreter(t *testing.T) {
 	environment := Environment(command, []string{"PATH=/usr/bin"})
 	if !pathContains(strings.TrimPrefix(environment[0], "PATH="), interpreterDir) {
 		t.Fatalf("environment PATH %q misses interpreter directory %q", environment[0], interpreterDir)
+	}
+}
+
+func TestEnvironmentUsesCaseSensitivePathKeyOnUnix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows environment keys are case insensitive")
+	}
+	directory := filepath.Join(t.TempDir(), "bin")
+	command := filepath.Join(directory, "tool")
+	environment := Environment(command, []string{"Path=/wrong", "PATH=/usr/bin"})
+	if environment[0] != "Path=/wrong" {
+		t.Fatalf("unrelated Path variable changed to %q", environment[0])
+	}
+	want := "PATH=" + directory + string(os.PathListSeparator) + "/usr/bin"
+	if environment[1] != want {
+		t.Fatalf("environment PATH = %q, want %q", environment[1], want)
 	}
 }

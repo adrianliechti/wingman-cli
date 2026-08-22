@@ -38,3 +38,21 @@ func TestGetSessionStopsRestartingAfterRepeatedCrashes(t *testing.T) {
 		t.Fatalf("err = %v, want the restart cap to stay in effect", err)
 	}
 }
+
+func TestServerInitializationOptionsInvalidateOldDescriptor(t *testing.T) {
+	manager := NewManager(t.TempDir())
+	server := Server{Name: "jdtls", InitializationOptions: []byte(`{"bundles":[]}`)}
+
+	if err := manager.SetServerInitializationOptions("JDTLS", map[string]any{"bundles": []string{"debug.jar"}}); err != nil {
+		t.Fatal(err)
+	}
+	manager.detectMu.Lock()
+	current := manager.serverInitializationOptionsCurrentLocked(server)
+	manager.detectMu.Unlock()
+	if current {
+		t.Fatal("descriptor with old initialization options remained current")
+	}
+	if len(manager.initializationOptions["jdtls"]) == 0 {
+		t.Fatal("initialization options were not normalized by server name")
+	}
+}
