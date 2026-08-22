@@ -18,6 +18,8 @@ import (
 	"go.lsp.dev/jsonrpc2"
 	"go.lsp.dev/protocol"
 	lspuri "go.lsp.dev/uri"
+
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 )
 
 type Session struct {
@@ -67,7 +69,7 @@ const startupTimeout = 30 * time.Second
 func connect(ctx context.Context, workingDir string, server Server) (*Session, error) {
 	cmd := exec.Command(server.Command, server.Args...)
 	cmd.Dir = workingDir
-	cmd.Env = os.Environ()
+	cmd.Env = tooling.Environment(server.Command, os.Environ())
 	cmd.Stderr = io.Discard
 
 	setSysProcAttr(cmd)

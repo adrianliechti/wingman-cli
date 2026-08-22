@@ -17,22 +17,14 @@ func fatal(err error) {
 }
 
 func startManagedToolUpdate(ctx context.Context, workspace *code.Workspace) func() {
-	updateCtx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
-	var updateErr error
+	update := workspace.StartManagedToolsUpdate(ctx, code.ManagedLSPTools)
 	go func() {
-		defer close(done)
-		if _, err := workspace.UpdateManagedTools(updateCtx); err != nil && updateCtx.Err() == nil {
-			updateErr = err
-		}
-	}()
-	return func() {
-		cancel()
-		<-done
+		_, updateErr := update.Wait()
 		if updateErr != nil {
 			fmt.Fprintf(os.Stderr, "Managed tools warning: %v\n", updateErr)
 		}
-	}
+	}()
+	return update.Cancel
 }
 
 func main() {

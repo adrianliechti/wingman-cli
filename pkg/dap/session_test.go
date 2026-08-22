@@ -158,7 +158,7 @@ func TestSessionReportsPlainEOFAsUnexpectedWhileRunning(t *testing.T) {
 
 func TestFriendlyStartErrorExplainsMissingBrowser(t *testing.T) {
 	err := friendlyStartError(Plan{Adapter: AdapterDescriptor{Language: "JavaScript/TypeScript"}}, errors.New("connection closed"), `Unable to find an installation of the browser on your system`)
-	if got := err.Error(); !strings.Contains(got, "Chrome for Testing") || strings.Contains(got, "connection closed") {
+	if got := err.Error(); !strings.Contains(got, "CHROME_PATH") || strings.Contains(got, "connection closed") {
 		t.Fatalf("friendlyStartError = %q", got)
 	}
 }

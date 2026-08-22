@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 )
 
 const adapterStartupTimeout = 30 * time.Second
@@ -81,7 +83,7 @@ func startAdapter(ctx context.Context, plan Plan, output func(string, string), l
 	}
 	cmd := exec.Command(plan.Adapter.Command, plan.Adapter.Args...)
 	cmd.Dir = plan.ProjectDir
-	cmd.Env = os.Environ()
+	cmd.Env = tooling.Environment(plan.Adapter.Command, os.Environ())
 	configureAdapterProcess(cmd)
 
 	stderr, err := cmd.StderrPipe()

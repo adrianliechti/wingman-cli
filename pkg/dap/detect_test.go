@@ -328,7 +328,7 @@ func TestManagerPrefersProjectAdapterOverPath(t *testing.T) {
 	}
 }
 
-func TestManagerPrefersManagedAdapter(t *testing.T) {
+func TestManagerPrefersSystemAdapterOverManagedFallback(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/test\n")
 	managed := filepath.Join(root, "managed", "dlv")
@@ -346,8 +346,69 @@ func TestManagerPrefersManagedAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	want := filepath.Join(root, "path", "dlv")
+	if len(values) != 1 || values[0].adapter.Command != want {
+		t.Fatalf("detected adapters = %#v, want system command %q", values, want)
+	}
+}
+
+func TestManagerUsesManagedAdapterWhenSystemIsMissing(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/test\n")
+	managed := filepath.Join(root, "managed", "dlv")
+	manager := newManager(root, []AdapterDescriptor{{
+		Name: "delve", Command: "dlv", Markers: []string{"go.mod"}, SourceExtensions: []string{".go"},
+	}}, func(string) string { return "" }, nil)
+	manager.SetCommandResolver(func(command string) string {
+		if command == "dlv" {
+			return managed
+		}
+		return ""
+	})
+	values, err := manager.detect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(values) != 1 || values[0].adapter.Command != managed {
 		t.Fatalf("detected adapters = %#v, want managed command %q", values, managed)
+	}
+}
+
+func TestManagerKeepsProjectLocalAdapterScopedToItsProject(t *testing.T) {
+	root := t.TempDir()
+	projects := []string{filepath.Join(root, "one"), filepath.Join(root, "two")}
+	for _, project := range projects {
+		writeTestFile(t, filepath.Join(project, "pyproject.toml"), "[project]\n")
+		writeTestFile(t, filepath.Join(project, "main.py"), "print('ready')\n")
+	}
+	name := "debugpy-adapter"
+	directory := "bin"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+		directory = "Scripts"
+	}
+	local := filepath.Join(projects[0], ".venv", directory, name)
+	writeTestFile(t, local, "adapter\n")
+	if err := os.Chmod(local, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager := newManager(root, []AdapterDescriptor{{
+		Name: "debugpy", Language: "Python", Command: "debugpy-adapter",
+		Markers: []string{"pyproject.toml"}, SourceExtensions: []string{".py"},
+	}}, func(string) string { return "" }, nil)
+	values, err := manager.detect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 1 || !reflect.DeepEqual(values[0].projects, []string{projects[0]}) {
+		t.Fatalf("available projects = %#v", values)
+	}
+	missing, err := manager.MissingRequirements(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(missing) != 1 || !reflect.DeepEqual(missing[0].Projects, []string{projects[1]}) {
+		t.Fatalf("missing requirements = %#v", missing)
 	}
 }
 
@@ -360,7 +421,9 @@ func TestDetectRequirementsDoesNotRequireInstalledAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []AdapterRequirement{{Name: "debugpy", Commands: []string{"debugpy-adapter"}}}
+	want := []AdapterRequirement{{
+		Name: "debugpy", Commands: []string{"debugpy-adapter"}, Projects: []string{root},
+	}}
 	if !reflect.DeepEqual(requirements, want) {
 		t.Fatalf("requirements = %#v, want %#v", requirements, want)
 	}

@@ -144,7 +144,12 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(adapterInfo) == 0 {
-		http.Error(w, "no debug adapter detected in this workspace", http.StatusNotFound)
+		var missing []dap.AdapterRequirement
+		_ = s.workspace.WithDAPManager(func(manager *dap.Manager) error {
+			missing, _ = manager.MissingRequirements(r.Context())
+			return nil
+		})
+		http.Error(w, dap.MissingAdapterError(missing).Error(), http.StatusNotFound)
 		return
 	}
 
@@ -179,8 +184,8 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	browserExecutable := ""
-	if s.workspace.DevTools != nil {
+	browserExecutable := debugadapter.FindChromiumBrowser()
+	if browserExecutable == "" && s.workspace.DevTools != nil {
 		browserExecutable = s.workspace.DevTools.Resolve("chrome-for-testing")
 	}
 	if selected.Kind == "browser-script" && browserExecutable == "" {
@@ -226,20 +231,32 @@ func (s *Server) ensureManagedBrowser(ctx context.Context) (string, error) {
 	if executable := manager.Resolve("chrome-for-testing"); executable != "" {
 		return executable, nil
 	}
-	s.setManagedToolsStatus(managedToolsStatus{State: "installing", Tool: "chrome-for-testing", Current: 1, Total: 1})
-	_, err := manager.Update(ctx, []devtools.Requirement{{Alternatives: []string{"chrome-for-testing"}}}, func(progress devtools.Progress) {
+	s.setManagedToolsStatus(managedToolsStatus{
+		State: "installing", Tool: "chrome-for-testing", Label: devtools.ToolLabel("chrome-for-testing"), Current: 1, Total: 1,
+	})
+	_, err := manager.Update(ctx, []devtools.Requirement{{
+		Alternatives: []string{"chrome-for-testing"}, Workspace: s.workspace.RootPath,
+	}}, func(progress devtools.Progress) {
 		s.setManagedToolsStatus(managedToolsStatus{
-			State: "installing", Tool: progress.Tool, Current: progress.Current, Total: progress.Total,
+			State: "installing", Tool: progress.Tool, Label: progress.Label, Current: progress.Current, Total: progress.Total,
 		})
 	})
 	if err != nil {
-		s.setManagedToolsStatus(managedToolsStatus{State: "error", Error: err.Error()})
-		return "", fmt.Errorf("Chrome for Testing could not be installed: %w. Check the network connection and try again", err)
+		if ctx.Err() != nil {
+			s.setManagedToolsStatus(managedToolsStatus{State: "ready"})
+			return "", ctx.Err()
+		}
+		s.setManagedToolsStatus(managedToolsStatus{
+			State: "error", Error: err.Error(), Unavailable: devtools.ToolLabels(devtools.UnavailableTools(err)),
+		})
+		return "", fmt.Errorf("no Chromium browser is available and Chrome for Testing could not be installed: %w. Install Chrome, Chromium, Edge, or Brave with your normal software distribution, or set CHROME_PATH", err)
 	}
 	executable := manager.Resolve("chrome-for-testing")
 	if executable == "" {
 		err := errors.New("the installation completed without a browser executable")
-		s.setManagedToolsStatus(managedToolsStatus{State: "error", Error: err.Error()})
+		s.setManagedToolsStatus(managedToolsStatus{
+			State: "error", Error: err.Error(), Unavailable: []string{devtools.ToolLabel("chrome-for-testing")},
+		})
 		return "", fmt.Errorf("Chrome for Testing could not be installed: %w", err)
 	}
 	s.setManagedToolsStatus(managedToolsStatus{State: "ready"})

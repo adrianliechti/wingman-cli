@@ -3,7 +3,6 @@ package lsp
 import (
 	"context"
 	"io/fs"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -11,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/adrianliechti/wingman-agent/pkg/commandpath"
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 )
 
 type Project struct {
@@ -21,39 +20,7 @@ type Project struct {
 
 type projectRoot = Project
 
-// skippedDirs are never descended into. Dot-prefixed directories are skipped
-// separately, so only their non-hidden counterparts are listed here.
-var skippedDirs = map[string]bool{
-	"node_modules": true,
-	"vendor":       true,
-	"__pycache__":  true,
-	"venv":         true,
-	"target":       true,
-	"build":        true,
-	"dist":         true,
-}
-
 const serverVersionProbeTimeout = 5 * time.Second
-
-func resolveCommand(dir, workingDir, command string) string {
-	return commandpath.ResolveProject(dir, workingDir, command)
-}
-
-func resolveUserCommand(command string) string {
-	return commandpath.Resolve(command)
-}
-
-func findCommandIn(dirs []string, command string) string {
-	return commandpath.Find(dirs, command)
-}
-
-func commandCandidates(goos, command string) []string {
-	return commandpath.Candidates(goos, command)
-}
-
-func isExecutableFile(path string) bool {
-	return commandpath.Executable(path)
-}
 
 func serverVersionSupported(server Server, command string) bool {
 	if server.MinimumMajorVersion == 0 {
@@ -62,25 +29,25 @@ func serverVersionSupported(server Server, command string) bool {
 
 	ctx, cancel := context.WithTimeout(context.Background(), serverVersionProbeTimeout)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, command, "--version").CombinedOutput()
-	if err != nil {
-		return false
-	}
-
-	for _, field := range strings.Fields(string(output)) {
-		majorText := strings.SplitN(strings.TrimPrefix(field, "v"), ".", 2)[0]
-		major, err := strconv.Atoi(majorText)
-		if err == nil {
-			return major >= server.MinimumMajorVersion
-		}
-	}
-	return false
+	return tooling.MajorVersionAtLeast(ctx, command, server.MinimumMajorVersion)
 }
 
 func detectAll(workingDir string, managedResolver func(string) string) []projectRoot {
 	index := indexWorkspace(workingDir)
 	commands := make(map[string]string)
 	versions := make(map[string]bool)
+	resolver := tooling.Resolver{
+		Workspace: workingDir,
+		Managed:   managedResolver,
+		Lookup: func(command string) string {
+			if cached, ok := commands[command]; ok {
+				return cached
+			}
+			resolved := tooling.Resolve(command)
+			commands[command] = resolved
+			return resolved
+		},
+	}
 
 	var roots []projectRoot
 	seen := make(map[string]bool)
@@ -88,7 +55,7 @@ func detectAll(workingDir string, managedResolver func(string) string) []project
 	for _, project := range knownProjects {
 		for _, dir := range projectDirs(index, project) {
 			for _, candidate := range project.Servers {
-				server, ok := resolveServer(workingDir, dir, candidate, managedResolver, commands, versions)
+				server, ok := resolveServer(dir, candidate, resolver, versions)
 				if !ok {
 					continue
 				}
@@ -133,36 +100,16 @@ func projectDirs(index *workspaceIndex, project projectType) []string {
 	})
 }
 
-func resolveServer(workingDir, dir string, candidate Server, managedResolver func(string) string, commands map[string]string, versions map[string]bool) (Server, bool) {
-	var paths []string
-	add := func(path string) {
-		if path != "" && !slices.Contains(paths, path) {
-			paths = append(paths, path)
-		}
-	}
-	add(resolveCommand(dir, workingDir, candidate.Command))
-	if managedResolver != nil {
-		add(managedResolver(candidate.Command))
-	}
-	global, cached := commands[candidate.Command]
-	if !cached {
-		if path, err := exec.LookPath(candidate.Command); err == nil {
-			global = path
-		} else {
-			global = resolveUserCommand(candidate.Command)
-		}
-		commands[candidate.Command] = global
-	}
-	add(global)
-	for _, path := range paths {
-		versionKey := path + "\x00" + strconv.Itoa(candidate.MinimumMajorVersion)
+func resolveServer(dir string, candidate Server, resolver tooling.Resolver, versions map[string]bool) (Server, bool) {
+	for _, resolution := range resolver.Candidates([]string{dir}, candidate.Command) {
+		versionKey := resolution.Path + "\x00" + strconv.Itoa(candidate.MinimumMajorVersion)
 		supported, checked := versions[versionKey]
 		if !checked {
-			supported = serverVersionSupported(candidate, path)
+			supported = serverVersionSupported(candidate, resolution.Path)
 			versions[versionKey] = supported
 		}
 		if supported {
-			candidate.Command = path
+			candidate.Command = resolution.Path
 			return candidate, true
 		}
 	}
@@ -232,7 +179,7 @@ func indexWorkspace(workingDir string) *workspaceIndex {
 			}
 		}
 
-		if entry.IsDir() && (skippedDirs[name] || strings.HasPrefix(name, ".")) {
+		if entry.IsDir() && tooling.SkipDirectory(name) {
 			return filepath.SkipDir
 		}
 		return nil

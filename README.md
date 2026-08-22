@@ -289,14 +289,11 @@ tab with output, controls, variables, and the call stack.
 | JavaScript/TypeScript | [vscode-js-debug](https://github.com/microsoft/vscode-js-debug) | Node entry files and Node scripts in `package.json` |
 | React/Vite | vscode-js-debug browser profile | Vite development scripts in `package.json` |
 
-Wingman installs the latest debugger needed by the open workspace under
-`$WINGMAN_HOME/tools/<tool>` (normally `~/.wingman/tools/<tool>`). It checks for
-updates daily, replaces the active installation, and removes the old one.
+Wingman uses a project or system debugger when one is already installed.
+Otherwise it installs the latest supported adapter under
+`$WINGMAN_HOME/tools/<tool>` (normally `~/.wingman/tools/<tool>`), checks it
+daily, and replaces the old version after an update.
 
-For a Vite app, open `package.json` and run or debug its development script.
-Wingman starts the script with the project's npm, pnpm, yarn, or bun selection,
-then launches its managed Chrome for Testing at the script or Vite-configured
-port (5173 by default). Node server scripts work the same way without a browser.
 Click the editor gutter to add breakpoints. Closing the Debug tab stops the
 session. Runnable samples live in
 [`examples/debug`](examples/debug).
@@ -319,21 +316,20 @@ Wingman comes with powerful built-in tools:
 
 ### LSP and DAP installation
 
-Wingman detects language servers from project files and installs the latest
-supported tools under `$WINGMAN_HOME/tools`. Package managers are used when an
-official package is available. Other installed servers are found in the
-project, common tool directories, and `PATH`. Language runtimes and SDKs remain
+Wingman detects language servers from project files. It first checks the
+project, `PATH`, and standard user tool directories. Only a missing capability
+is installed under `$WINGMAN_HOME/tools`. Language runtimes and SDKs remain
 external; current JDT LS releases require JDK 21 or newer.
 
 | Capability | Language | Executable | Install method | Source |
 |------------|----------|------------|----------------|--------|
 | LSP | Go | `gopls` | Go | [`golang.org/x/tools/gopls`](https://pkg.go.dev/golang.org/x/tools/gopls) |
 | DAP | Go | `dlv` | Go | [`github.com/go-delve/delve/cmd/dlv`](https://pkg.go.dev/github.com/go-delve/delve/cmd/dlv) |
-| LSP | Rust | `rust-analyzer` | Cargo | [`ra_ap_rust-analyzer`](https://crates.io/crates/ra_ap_rust-analyzer) |
+| LSP | Rust | `rust-analyzer` | Official release | [rust-analyzer](https://github.com/rust-lang/rust-analyzer/releases) |
 | LSP | C#/.NET | `csharp-ls` | .NET tool / NuGet | [`csharp-ls`](https://www.nuget.org/packages/csharp-ls) |
 | LSP | TypeScript/JavaScript | `typescript-language-server` | npm | [`typescript-language-server`](https://www.npmjs.com/package/typescript-language-server), [`typescript`](https://www.npmjs.com/package/typescript) |
 | DAP | TypeScript/JavaScript, React/Vite | `js-debug-adapter` | GitHub release | [`vscode-js-debug`](https://github.com/microsoft/vscode-js-debug/releases) |
-| Browser runtime | React/Vite debugging | `chrome-for-testing` | Official stable archive | [Chrome for Testing](https://googlechromelabs.github.io/chrome-for-testing/) |
+| Browser runtime | React/Vite debugging | `chrome-for-testing` | Official release archive | [Chrome for Testing](https://googlechromelabs.github.io/chrome-for-testing/) |
 | LSP | Python | `basedpyright-langserver` | pip / PyPI | [`basedpyright`](https://pypi.org/project/basedpyright/) |
 | DAP | Python | `debugpy-adapter` | pip / PyPI | [`debugpy`](https://pypi.org/project/debugpy/) |
 | LSP | Java | `jdtls` | Eclipse archive | [Eclipse JDT LS milestones](https://download.eclipse.org/jdtls/milestones/) |
@@ -347,12 +343,14 @@ external; current JDT LS releases require JDK 21 or newer.
 | LSP | Bash | `bash-language-server` | npm | [`bash-language-server`](https://www.npmjs.com/package/bash-language-server) |
 | LSP | YAML | `yaml-language-server` | npm | [`yaml-language-server`](https://www.npmjs.com/package/yaml-language-server) |
 | LSP | Dockerfile | `docker-langserver` | npm | [`dockerfile-language-server-nodejs`](https://www.npmjs.com/package/dockerfile-language-server-nodejs) |
-| LSP | Prisma | `prisma` | npm | [`prisma`](https://www.npmjs.com/package/prisma) |
 
-Wingman resolves both LSP and DAP tools in this order: managed install,
-project-local install, `PATH`, then common user tool directories. Java's debug
-plug-in is loaded from Wingman's managed JDT LS install; set
-`WINGMAN_JAVA_DEBUG_BUNDLE` only to override it explicitly.
+Resolution order is project-local, `PATH` and standard user tool directories,
+then Wingman's managed fallback. Existing external tools are not modified.
+Package-manager installs honor their normal proxy, registry, and project
+configuration. If automatic downloads are blocked, install the executable
+through your organization's normal software distribution and retry; Wingman
+will find it without a restart. Java's debug plug-in is loaded from the managed
+JDT LS install; `WINGMAN_JAVA_DEBUG_BUNDLE` provides an explicit alternative.
 
 ### Additional LSP support
 
@@ -388,7 +386,6 @@ plug-in is loaded from Wingman's managed JDT LS install; set
 | Terraform | `terraform-ls` | `main.tf`, `.terraform` |
 | YAML | `yaml-language-server` | `.yamllint`, `docker-compose.yml` |
 | Docker | `docker-langserver` | `Dockerfile` |
-| Prisma | `prisma language-server` | `schema.prisma` |
 | Typst | `tinymist` | `typst.toml` |
 | LaTeX | `texlab` | `.latexmkrc` |
 

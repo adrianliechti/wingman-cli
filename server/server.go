@@ -188,15 +188,25 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 	})
 	if !opts.disableManagedTools {
 		s.setManagedToolsStatus(managedToolsStatus{State: "installing"})
-		s.background.Go(func() {
-			changed, updateErr := ws.UpdateManagedTools(serverCtx, func(progress devtools.Progress) {
-				s.setManagedToolsStatus(managedToolsStatus{
-					State: "installing", Tool: progress.Tool, Current: progress.Current, Total: progress.Total,
-				})
+		update := ws.StartManagedToolsUpdate(serverCtx, code.ManagedEditorTools, func(progress devtools.Progress) {
+			s.setManagedToolsStatus(managedToolsStatus{
+				State: "installing", Tool: progress.Tool, Label: progress.Label, Current: progress.Current, Total: progress.Total,
 			})
-			if updateErr != nil && serverCtx.Err() == nil {
+		})
+		s.background.Go(func() {
+			changed, updateErr := update.WaitContext(serverCtx)
+			if serverCtx.Err() != nil {
+				return
+			}
+			if updateErr != nil {
 				fmt.Fprintf(os.Stderr, "managed tools warning: %v\n", updateErr)
-				s.setManagedToolsStatus(managedToolsStatus{State: "error", Error: updateErr.Error()})
+				if devtools.IsUnavailable(updateErr) {
+					s.setManagedToolsStatus(managedToolsStatus{
+						State: "error", Error: updateErr.Error(), Unavailable: devtools.ToolLabels(devtools.UnavailableTools(updateErr)),
+					})
+				} else {
+					s.setManagedToolsStatus(managedToolsStatus{State: "ready"})
+				}
 			} else {
 				s.setManagedToolsStatus(managedToolsStatus{State: "ready"})
 			}
@@ -866,16 +876,17 @@ type capabilitiesResponse struct {
 	EditorTab     bool                `json:"editor.tab.completion"`
 	Platform      string              `json:"platform"`
 	WorkspaceName string              `json:"workspace_name"`
-	Notice        string              `json:"notice,omitempty"`
 	ManagedTools  *managedToolsStatus `json:"managed_tools,omitempty"`
 }
 
 type managedToolsStatus struct {
-	State   string `json:"state"`
-	Tool    string `json:"tool,omitempty"`
-	Current int    `json:"current,omitempty"`
-	Total   int    `json:"total,omitempty"`
-	Error   string `json:"error,omitempty"`
+	State       string   `json:"state"`
+	Tool        string   `json:"tool,omitempty"`
+	Label       string   `json:"label,omitempty"`
+	Current     int      `json:"current,omitempty"`
+	Total       int      `json:"total,omitempty"`
+	Error       string   `json:"error,omitempty"`
+	Unavailable []string `json:"unavailable,omitempty"`
 }
 
 func (s *Server) setManagedToolsStatus(status managedToolsStatus) {
@@ -910,9 +921,6 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	}
 	if status := s.managedToolsStatus(); status.State != "" {
 		caps.ManagedTools = &status
-		if status.State == "error" {
-			caps.Notice = "Some language or debugger tools could not be installed: " + status.Error
-		}
 	}
 	writeJSON(w, caps)
 }

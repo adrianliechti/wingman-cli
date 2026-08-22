@@ -14,7 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/adrianliechti/wingman-agent/pkg/commandpath"
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 )
 
 const detectionCacheTTL = 30 * time.Second
@@ -38,6 +38,7 @@ type Manager struct {
 
 	detectMu   sync.Mutex
 	detected   []detectedAdapter
+	missing    []detectedAdapter
 	detectedAt time.Time
 
 	mu          sync.Mutex
@@ -69,8 +70,8 @@ func (m *Manager) SetAdapterConnector(connector AdapterConnector) {
 	m.mu.Unlock()
 }
 
-// SetCommandResolver checks an application-managed tool location before the
-// host PATH and workspace-local adapter locations.
+// SetCommandResolver adds an application-managed fallback after project and
+// standard system command discovery.
 func (m *Manager) SetCommandResolver(resolve func(string) string) {
 	m.detectMu.Lock()
 	m.managed = resolve
@@ -84,6 +85,7 @@ func (m *Manager) SetAdapters(adapters ...AdapterDescriptor) {
 	m.detectMu.Lock()
 	m.adapters = cloneAdapters(adapters)
 	m.detected = nil
+	m.missing = nil
 	m.detectedAt = time.Time{}
 	m.detectMu.Unlock()
 }
@@ -115,25 +117,64 @@ func (m *Manager) detect(ctx context.Context) ([]detectedAdapter, error) {
 		return cloneDetected(m.detected), nil
 	}
 
-	var detected []detectedAdapter
-	for _, candidate := range m.adapters {
-		projects, err := detectProjects(ctx, m.root, candidate.Markers, candidate.SourceExtensions)
-		if err != nil {
-			return nil, fmt.Errorf("detect %s projects: %w", candidate.Language, err)
-		}
+	specs := make([]tooling.ProjectSpec, len(m.adapters))
+	for index, candidate := range m.adapters {
+		specs[index] = tooling.ProjectSpec{Markers: candidate.Markers, Extensions: candidate.SourceExtensions}
+	}
+	projectsByAdapter, err := tooling.DetectProjects(ctx, m.root, specs)
+	if err != nil {
+		return nil, fmt.Errorf("detect debugger projects: %w", err)
+	}
+	var detected, missing []detectedAdapter
+	for index, candidate := range m.adapters {
+		projects := projectsByAdapter[index]
 		if len(projects) == 0 {
 			continue
 		}
-		command := m.resolveDetectedCommand(candidate.Command, projects)
-		if command == "" {
+		var availableProjects, missingProjects []string
+		command := ""
+		for _, project := range projects {
+			resolved := m.resolveProjectCommand(candidate.Command, project)
+			if resolved == "" {
+				missingProjects = append(missingProjects, project)
+				continue
+			}
+			availableProjects = append(availableProjects, project)
+			if command == "" {
+				command = resolved
+			}
+		}
+		if len(missingProjects) > 0 {
+			missing = append(missing, detectedAdapter{adapter: candidate, projects: missingProjects})
+		}
+		if len(availableProjects) == 0 {
 			continue
 		}
 		candidate.Command = command
-		detected = append(detected, detectedAdapter{adapter: candidate, projects: projects})
+		detected = append(detected, detectedAdapter{adapter: candidate, projects: availableProjects})
 	}
 	m.detected = detected
+	m.missing = missing
 	m.detectedAt = time.Now()
 	return cloneDetected(detected), nil
+}
+
+// MissingRequirements reports debugger projects whose adapter command could
+// not be resolved. It shares the normal discovery cache and workspace scan.
+func (m *Manager) MissingRequirements(ctx context.Context) ([]AdapterRequirement, error) {
+	if _, err := m.detect(ctx); err != nil {
+		return nil, err
+	}
+	m.detectMu.Lock()
+	defer m.detectMu.Unlock()
+	result := make([]AdapterRequirement, 0, len(m.missing))
+	for _, value := range m.missing {
+		result = append(result, AdapterRequirement{
+			Name: value.adapter.Name, Language: value.adapter.Language,
+			Commands: []string{value.adapter.Command}, Projects: slices.Clone(value.projects),
+		})
+	}
+	return result, nil
 }
 
 func cloneAdapters(values []AdapterDescriptor) []AdapterDescriptor {
@@ -148,26 +189,6 @@ func cloneAdapters(values []AdapterDescriptor) []AdapterDescriptor {
 		cloned[i].IOValues = maps.Clone(value.IOValues)
 	}
 	return cloned
-}
-
-func (m *Manager) resolveDetectedCommand(command string, projects []string) string {
-	if command == "" {
-		return ""
-	}
-	for _, project := range projects {
-		if resolved := resolveProjectAdapterCommand(project, m.root, command); resolved != "" {
-			return resolved
-		}
-	}
-	if m.managed != nil {
-		if resolved := m.managed(command); resolved != "" {
-			return resolved
-		}
-	}
-	if m.lookup != nil {
-		return m.lookup(command)
-	}
-	return ""
 }
 
 func cloneDetected(values []detectedAdapter) []detectedAdapter {
@@ -231,7 +252,11 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 		return nil, err
 	}
 	if len(values) == 0 {
-		return nil, errors.New("no debug adapter detected in this workspace")
+		missing, missingErr := m.MissingRequirements(ctx)
+		if missingErr != nil {
+			return nil, missingErr
+		}
+		return nil, MissingAdapterError(missing)
 	}
 	selected, err := selectAdapter(values, options.Adapter)
 	if err != nil {
@@ -295,18 +320,15 @@ func (m *Manager) registeredAdapter(name string) *AdapterDescriptor {
 }
 
 func (m *Manager) resolveProjectCommand(command, project string) string {
-	if resolved := resolveProjectAdapterCommand(project, m.root, command); resolved != "" {
-		return resolved
+	if command == "" {
+		return ""
 	}
-	if m.managed != nil {
-		if resolved := m.managed(command); resolved != "" {
-			return resolved
-		}
-	}
-	if m.lookup != nil {
-		return m.lookup(command)
-	}
-	return ""
+	resolution := tooling.Resolver{
+		Workspace: m.root,
+		Lookup:    m.lookup,
+		Managed:   m.managed,
+	}.Resolve([]string{project}, command, nil)
+	return resolution.Path
 }
 
 // mergeSourceBreakpoints keeps a plan's initial stops and folds in the
@@ -695,9 +717,5 @@ func (m *Manager) Close() {
 }
 
 func resolveAdapterCommand(command string) string {
-	return commandpath.Resolve(command)
-}
-
-func resolveProjectAdapterCommand(project, workspace, command string) string {
-	return commandpath.ResolveProject(project, workspace, command)
+	return tooling.Resolve(command)
 }

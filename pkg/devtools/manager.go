@@ -18,23 +18,26 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/adrianliechti/wingman-agent/pkg/commandpath"
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 	"github.com/adrianliechti/wingman-agent/pkg/layout"
 )
 
 const (
-	statusName     = ".wingman"
-	updateLockName = ".update-lock"
-	updateInterval = 24 * time.Hour
-	staleLockAge   = 30 * time.Minute
-	lockHeartbeat  = time.Minute
+	statusName          = ".wingman"
+	updateLockName      = ".update-lock"
+	updateInterval      = 24 * time.Hour
+	retryInterval       = time.Hour
+	installTimeout      = 10 * time.Minute
+	versionProbeTimeout = 5 * time.Second
+	staleLockAge        = 30 * time.Minute
+	lockHeartbeat       = time.Minute
 )
 
 type installerKind string
 
 const (
 	installerGo         installerKind = "go"
-	installerCargo      installerKind = "cargo"
+	installerRust       installerKind = "rust"
 	installerNPM        installerKind = "npm"
 	installerPython     installerKind = "python"
 	installerDotnet     installerKind = "dotnet"
@@ -45,29 +48,104 @@ const (
 	installerJava       installerKind = "java"
 )
 
-// Requirement lists equivalent commands in preference order. The first
-// command Wingman knows how to manage selects the installation recipe.
+// Requirement lists equivalent commands in preference order. Project and
+// standard system commands satisfy the requirement before a managed recipe is
+// selected. ManagedOnly is reserved for capabilities that need bundled files
+// in addition to an executable, such as Java debugging.
 type Requirement struct {
-	Alternatives []string
+	Alternatives         []string
+	Workspace            string
+	Projects             []string
+	MinimumMajorVersions map[string]int
+	ManagedOnly          bool
 }
 
 // Progress identifies the managed tool currently being checked or installed.
 type Progress struct {
 	Tool    string
+	Label   string
 	Current int
 	Total   int
 }
 
 type recipe struct {
-	ID       string
-	Kind     installerKind
-	Packages []string
-	Commands []string
+	ID         string
+	Label      string
+	Kind       installerKind
+	Packages   []string
+	Commands   []string
+	WorkingDir string
+}
+
+// UnavailableError means no usable copy of a required tool remains after an
+// automatic installation failure. Refresh failures for an existing copy do
+// not use this type.
+type UnavailableError struct {
+	Tool string
+	Err  error
+}
+
+func (e *UnavailableError) Error() string { return fmt.Sprintf("%s is unavailable: %v", e.Tool, e.Err) }
+func (e *UnavailableError) Unwrap() error { return e.Err }
+
+func IsUnavailable(err error) bool {
+	var unavailable *UnavailableError
+	return errors.As(err, &unavailable)
+}
+
+// UnavailableTools returns the stable tool IDs from a possibly joined update
+// error. Callers can present a concise notice without exposing installer logs.
+func UnavailableTools(err error) []string {
+	seen := make(map[string]bool)
+	var visit func(error)
+	visit = func(err error) {
+		if err == nil {
+			return
+		}
+		if unavailable, ok := err.(*UnavailableError); ok && unavailable.Tool != "" {
+			seen[unavailable.Tool] = true
+		}
+		switch wrapped := err.(type) {
+		case interface{ Unwrap() []error }:
+			for _, child := range wrapped.Unwrap() {
+				visit(child)
+			}
+		case interface{ Unwrap() error }:
+			visit(wrapped.Unwrap())
+		}
+	}
+	visit(err)
+	tools := make([]string, 0, len(seen))
+	for tool := range seen {
+		tools = append(tools, tool)
+	}
+	slices.Sort(tools)
+	return tools
 }
 
 // The catalog is deliberately small and deterministic. Ecosystem-specific
 // recipes live beside their installers; SDKs and compilers remain external.
 var catalog = allRecipes()
+
+// ToolLabel returns the user-facing name stored with a managed tool's recipe.
+// Unknown IDs are returned unchanged so callers always have useful text.
+func ToolLabel(id string) string {
+	for _, item := range catalog {
+		if item.ID == id {
+			return item.Label
+		}
+	}
+	return id
+}
+
+// ToolLabels maps stable catalog IDs to their user-facing names.
+func ToolLabels(ids []string) []string {
+	labels := make([]string, len(ids))
+	for index, id := range ids {
+		labels[index] = ToolLabel(id)
+	}
+	return labels
+}
 
 func allRecipes() []recipe {
 	groups := [][]recipe{goRecipes, rustRecipes, dotnetRecipes, nodeRecipes, pythonRecipes, javascriptRecipes, javaRecipes}
@@ -92,7 +170,7 @@ type Manager struct {
 	install recipeInstaller
 
 	byCommand map[string]recipe
-	mu        sync.Mutex
+	updates   chan struct{}
 }
 
 // New creates a manager rooted at WINGMAN_HOME/tools.
@@ -111,10 +189,11 @@ func newManager(root string) *Manager {
 	manager := &Manager{
 		root:      filepath.Clean(root),
 		now:       time.Now,
-		look:      commandpath.LookPath,
+		look:      tooling.LookPath,
 		run:       runCommand,
 		fetch:     fetchURL,
 		byCommand: make(map[string]recipe),
+		updates:   make(chan struct{}, 1),
 	}
 	for _, item := range catalog {
 		for _, command := range item.Commands {
@@ -143,17 +222,28 @@ func (m *Manager) Resolve(command string) string {
 }
 
 // Update installs the latest release for every selected requirement. A fresh
-// installation is checked at most once per day; failed checks remain eligible
-// for the next run. Successful updates replace the prior directory and remove
-// it rather than accumulating versions.
+// installation is checked at most once per day; failed checks are retried
+// after a short backoff. Successful updates replace the prior directory and
+// remove it rather than accumulating versions.
 func (m *Manager) Update(ctx context.Context, requirements []Requirement, progress ...func(Progress)) (bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	select {
+	case m.updates <- struct{}{}:
+		defer func() { <-m.updates }()
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
 
 	selected := make(map[string]recipe)
 	for _, requirement := range requirements {
+		if !requirement.ManagedOnly && m.externalAvailable(ctx, requirement) {
+			continue
+		}
 		for _, command := range requirement.Alternatives {
 			if item, ok := m.byCommand[command]; ok {
+				item.WorkingDir = requirementWorkingDir(requirement)
+				if current, exists := selected[item.ID]; exists && current.WorkingDir != "" {
+					item.WorkingDir = current.WorkingDir
+				}
 				selected[item.ID] = item
 				break
 			}
@@ -187,7 +277,7 @@ func (m *Manager) Update(ctx context.Context, requirements []Requirement, progre
 		item := selected[id]
 		for _, report := range progress {
 			if report != nil {
-				report(Progress{Tool: item.ID, Current: index + 1, Total: len(ids)})
+				report(Progress{Tool: item.ID, Label: item.Label, Current: index + 1, Total: len(ids)})
 			}
 		}
 		if err := recoverInterruptedUpdate(m.root, item.ID); err != nil {
@@ -197,14 +287,99 @@ func (m *Manager) Update(ctx context.Context, requirements []Requirement, progre
 		if m.fresh(item) {
 			continue
 		}
+		ready := installationReady(item, filepath.Join(m.root, item.ID))
+		if m.retryDeferred(item) {
+			if !ready {
+				updateErrors = append(updateErrors, &UnavailableError{
+					Tool: item.ID,
+					Err:  fmt.Errorf("automatic installation was attempted recently; Wingman will retry after %s", retryInterval),
+				})
+			}
+			continue
+		}
 		updated, err := m.updateOne(ctx, item)
 		changed = changed || updated
 		if err != nil {
-			updateErrors = append(updateErrors, fmt.Errorf("update %s: %w", item.ID, err))
+			if contextErr := ctx.Err(); contextErr != nil {
+				updateErrors = append(updateErrors, contextErr)
+				break
+			}
+			retryErr := m.deferRetry(item)
+			if !ready {
+				err = &UnavailableError{Tool: item.ID, Err: err}
+			}
+			updateErrors = append(updateErrors, fmt.Errorf("update %s: %w", item.ID, errors.Join(err, retryErr)))
 			continue
 		}
+		_ = os.Remove(m.retryPath(item))
 	}
 	return changed, errors.Join(updateErrors...)
+}
+
+func (m *Manager) externalAvailable(ctx context.Context, requirement Requirement) bool {
+	if strings.TrimSpace(requirement.Workspace) == "" {
+		return false
+	}
+	resolver := tooling.Resolver{
+		Workspace: requirement.Workspace,
+		Lookup: func(command string) string {
+			path, err := m.look(command)
+			if err != nil {
+				return ""
+			}
+			return path
+		},
+	}
+	projects := requirement.Projects
+	if len(projects) == 0 {
+		projects = []string{""}
+	}
+	for _, project := range projects {
+		available := false
+		projectCandidates := []string(nil)
+		if project != "" {
+			projectCandidates = []string{project}
+		}
+		for _, command := range requirement.Alternatives {
+			minimum := requirement.MinimumMajorVersions[command]
+			for _, candidate := range resolver.Candidates(projectCandidates, command) {
+				probeCtx, cancel := context.WithTimeout(ctx, versionProbeTimeout)
+				supported := tooling.MajorVersionAtLeast(probeCtx, candidate.Path, minimum)
+				cancel()
+				if supported {
+					available = true
+					break
+				}
+			}
+			if available {
+				break
+			}
+		}
+		if !available {
+			return false
+		}
+	}
+	return true
+}
+
+func requirementWorkingDir(requirement Requirement) string {
+	workspace := filepath.Clean(requirement.Workspace)
+	for _, directory := range append(slices.Clone(requirement.Projects), requirement.Workspace) {
+		if directory == "" {
+			continue
+		}
+		directory = filepath.Clean(directory)
+		if requirement.Workspace != "" {
+			relative, err := filepath.Rel(workspace, directory)
+			if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				continue
+			}
+		}
+		if info, err := os.Stat(directory); err == nil && info.IsDir() {
+			return directory
+		}
+	}
+	return ""
 }
 
 func (m *Manager) fresh(item recipe) bool {
@@ -237,7 +412,9 @@ func (m *Manager) updateOne(ctx context.Context, item recipe) (bool, error) {
 	if m.install == nil {
 		return false, errors.New("no installer configured")
 	}
-	if err := m.install(ctx, item, stage); err != nil {
+	installCtx, cancel := context.WithTimeout(ctx, installTimeout)
+	defer cancel()
+	if err := m.install(installCtx, item, stage); err != nil {
 		return false, err
 	}
 	if !installationReady(item, stage) {
@@ -248,6 +425,42 @@ func (m *Manager) updateOne(ctx context.Context, item recipe) (bool, error) {
 		return false, err
 	}
 	return replaceDirectory(stage, filepath.Join(m.root, item.ID))
+}
+
+func (m *Manager) retryPath(item recipe) string {
+	return filepath.Join(m.root, "."+item.ID+"-retry")
+}
+
+func (m *Manager) retryDeferred(item recipe) bool {
+	info, err := os.Stat(m.retryPath(item))
+	if err != nil {
+		return false
+	}
+	age := m.now().Sub(info.ModTime())
+	if age >= 0 && age < retryInterval {
+		return true
+	}
+	_ = os.Remove(m.retryPath(item))
+	return false
+}
+
+func (m *Manager) deferRetry(item recipe) error {
+	path := m.retryPath(item)
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		return fmt.Errorf("record update retry: %w", err)
+	}
+	stamp := m.now()
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		return fmt.Errorf("record update retry time: %w", err)
+	}
+	return nil
+}
+
+func installWorkingDir(item recipe, fallback string) string {
+	if info, err := os.Stat(item.WorkingDir); err == nil && info.IsDir() {
+		return item.WorkingDir
+	}
+	return fallback
 }
 
 func installationReady(item recipe, root string) bool {
@@ -291,8 +504,8 @@ func (m *Manager) installRecipe(ctx context.Context, item recipe, stage string) 
 	case installerGo:
 		return m.installGo(ctx, item, stage)
 
-	case installerCargo:
-		return m.installCargo(ctx, item, stage)
+	case installerRust:
+		return m.installRustAnalyzer(ctx, item, stage)
 
 	case installerNPM:
 		return m.installNPM(ctx, item, stage)
@@ -341,43 +554,15 @@ func resolveInstalledCommand(root, command string) string {
 }
 
 func commandNames(command string) []string {
-	return commandpath.Candidates(runtime.GOOS, command)
+	return tooling.Candidates(runtime.GOOS, command)
 }
 
 func executableFile(path string) bool {
-	return commandpath.Executable(path)
+	return tooling.Executable(path)
 }
 
 func runnableFile(path string) bool {
-	if !executableFile(path) {
-		return false
-	}
-	if runtime.GOOS == "windows" {
-		return true
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer file.Close()
-	buffer := make([]byte, 512)
-	count, _ := file.Read(buffer)
-	line := string(buffer[:count])
-	if !strings.HasPrefix(line, "#!") {
-		return true
-	}
-	if index := strings.IndexByte(line, '\n'); index >= 0 {
-		line = line[:index]
-	}
-	fields := strings.Fields(strings.TrimPrefix(line, "#!"))
-	if len(fields) == 0 || !filepath.IsAbs(fields[0]) || !executableFile(fields[0]) {
-		return false
-	}
-	if filepath.Base(fields[0]) == "env" && len(fields) > 1 {
-		_, err := commandpath.LookPath(fields[len(fields)-1])
-		return err == nil
-	}
-	return true
+	return tooling.Runnable(path)
 }
 
 // replaceDirectory reports whether stage became the active installation. An
@@ -588,7 +773,7 @@ func ownsUpdateLock(path, token string) bool {
 func runCommand(ctx context.Context, name string, args []string, dir string, env []string) ([]byte, error) {
 	command := exec.CommandContext(ctx, name, args...)
 	command.Dir = dir
-	command.Env = env
+	command.Env = tooling.Environment(name, env)
 	command.WaitDelay = 3 * time.Second
 	return command.CombinedOutput()
 }

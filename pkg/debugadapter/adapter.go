@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 )
 
@@ -248,15 +249,7 @@ func sortTargets(values []Target) {
 }
 
 func skipDir(name string) bool {
-	if strings.HasPrefix(name, ".") {
-		return true
-	}
-	switch name {
-	case "node_modules", "vendor", "testdata", "target", "build", "dist", "__pycache__", "venv", "env":
-		return true
-	default:
-		return false
-	}
+	return tooling.SkipDirectory(name)
 }
 
 func projectPath(projectDir, targetPath string) (string, error) {

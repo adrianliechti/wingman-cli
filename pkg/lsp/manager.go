@@ -48,8 +48,8 @@ func WithServerInitializationOptions(name string, value any) ManagerOption {
 	}
 }
 
-// WithCommandResolver checks an application-managed tool location before
-// project-local and PATH-based command discovery.
+// WithCommandResolver adds an application-managed fallback after project and
+// standard system command discovery.
 func WithCommandResolver(resolve func(string) string) ManagerOption {
 	return func(manager *Manager) {
 		manager.commandResolver = resolve

@@ -293,20 +293,6 @@ func TestCheckedInDebuggerSamplesExposeRunnableTargets(t *testing.T) {
 	}
 }
 
-func TestRequiresChromiumFindsVitePackageScript(t *testing.T) {
-	root := t.TempDir()
-	writeDiscoveryTestFile(t, filepath.Join(root, "package.json"), `{"scripts":{"build":"vite build","server":"node src/server.js"}}`)
-	required, err := RequiresChromium(context.Background(), root)
-	if err != nil || required {
-		t.Fatalf("Node-only package RequiresChromium = %v, %v", required, err)
-	}
-	writeDiscoveryTestFile(t, filepath.Join(root, "apps", "web", "package.json"), `{"scripts":{"dev":"vite"}}`)
-	required, err = RequiresChromium(context.Background(), root)
-	if err != nil || !required {
-		t.Fatalf("Vite package RequiresChromium = %v, %v", required, err)
-	}
-}
-
 func writeDiscoveryTestFile(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 )
 
@@ -192,26 +193,11 @@ func loadCargoMetadata(projectDir string) (cargoMetadata, error) {
 
 func resolveCargoExecutable() string {
 	if configured := strings.TrimSpace(os.Getenv("CARGO")); configured != "" {
-		if path, err := exec.LookPath(configured); err == nil {
+		if path, err := tooling.LookPath(configured); err == nil {
 			return path
 		}
 	}
-	if path, err := exec.LookPath("cargo"); err == nil {
-		return path
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
-	}
-	name := "cargo"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	path := filepath.Join(home, ".cargo", "bin", name)
-	if info, err := os.Stat(path); err == nil && !info.IsDir() && (runtime.GOOS == "windows" || info.Mode()&0o111 != 0) {
-		return path
-	}
-	return ""
+	return tooling.Resolve("cargo")
 }
 
 func rustCargoTarget(request Request, metadata cargoMetadata) (cargoMetadataTarget, string, error) {

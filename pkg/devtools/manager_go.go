@@ -8,8 +8,8 @@ import (
 )
 
 var goRecipes = []recipe{
-	{ID: "gopls", Kind: installerGo, Packages: []string{"golang.org/x/tools/gopls@latest"}, Commands: []string{"gopls"}},
-	{ID: "delve", Kind: installerGo, Packages: []string{"github.com/go-delve/delve/cmd/dlv@latest"}, Commands: []string{"dlv"}},
+	{ID: "gopls", Label: "Go language tools", Kind: installerGo, Packages: []string{"golang.org/x/tools/gopls@latest"}, Commands: []string{"gopls"}},
+	{ID: "delve", Label: "Go debugger", Kind: installerGo, Packages: []string{"github.com/go-delve/delve/cmd/dlv@latest"}, Commands: []string{"dlv"}},
 }
 
 func (m *Manager) installGo(ctx context.Context, item recipe, stage string) error {
@@ -22,7 +22,7 @@ func (m *Manager) installGo(ctx context.Context, item recipe, stage string) erro
 		return err
 	}
 	for _, pkg := range item.Packages {
-		if output, err := m.run(ctx, goCommand, []string{"install", pkg}, stage, append(os.Environ(), "GOBIN="+bin)); err != nil {
+		if output, err := m.run(ctx, goCommand, []string{"install", pkg}, installWorkingDir(item, stage), append(os.Environ(), "GOBIN="+bin)); err != nil {
 			return commandError(output, err)
 		}
 	}

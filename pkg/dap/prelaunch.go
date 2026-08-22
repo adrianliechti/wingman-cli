@@ -13,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 )
 
 const preLaunchReadyTimeout = 60 * time.Second
@@ -36,7 +38,7 @@ func startDebugProcess(plan Plan, output func(string, string)) (*debugProcess, e
 	}
 	cmd := exec.Command(launch.Command, launch.Args...)
 	cmd.Dir = plan.ProjectDir
-	cmd.Env = os.Environ()
+	cmd.Env = tooling.Environment(launch.Command, os.Environ())
 	configureAdapterProcess(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

@@ -2,13 +2,10 @@ package debugadapter
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -16,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 )
 
@@ -310,10 +308,10 @@ func browserScriptPlan(request Request) (Plan, error) {
 	}
 	browser := strings.TrimSpace(request.BrowserExecutable)
 	if browser == "" {
-		browser = findChromiumBrowser()
+		browser = FindChromiumBrowser()
 	}
 	if browser == "" {
-		return Plan{}, errors.New("no supported Chromium browser is available; Wingman installs Chrome for Testing automatically, so wait for the tools update to finish and try again")
+		return Plan{}, errors.New("no supported Chromium browser is available; install Chrome, Chromium, Edge, or Brave, or set CHROME_PATH")
 	}
 	port := vitePort(projectDir, command)
 	url := "http://localhost:" + strconv.Itoa(port)
@@ -392,7 +390,7 @@ func resolvePackageScript(request Request) (command, projectDir, packageManager,
 	}
 	projectDir = absoluteProjectDir(request)
 	packageManager = nodePackageManager(projectDir, manifest.PackageManager)
-	packageManagerPath, err = exec.LookPath(packageManager)
+	packageManagerPath, err = tooling.LookPath(packageManager)
 	if err != nil {
 		return "", "", "", "", fmt.Errorf("package.json script %q requires %s, but it is not available", request.Target.Name, packageManager)
 	}
@@ -449,7 +447,9 @@ func nodePackageManager(projectDir, declared string) string {
 	return "npm"
 }
 
-func findChromiumBrowser() string {
+// FindChromiumBrowser returns an explicitly configured or standard system
+// Chromium installation. Managed Chrome for Testing is resolved separately.
+func FindChromiumBrowser() string {
 	if explicit := strings.TrimSpace(os.Getenv("CHROME_PATH")); executableFilePath(explicit) {
 		return explicit
 	}
@@ -481,7 +481,7 @@ func findChromiumBrowser() string {
 		}
 	}
 	for _, command := range []string{"google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge", "brave-browser"} {
-		if path, err := exec.LookPath(command); err == nil {
+		if path, err := tooling.LookPath(command); err == nil {
 			return path
 		}
 	}
@@ -496,65 +496,16 @@ func executableFilePath(path string) bool {
 	return err == nil && !info.IsDir() && (runtime.GOOS == "windows" || info.Mode()&0o111 != 0)
 }
 
-// RequiresChromium reports whether the workspace contains a package script
-// that launches a browser development server.
-func RequiresChromium(ctx context.Context, root string) (bool, error) {
-	found := false
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if path != root && skipDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.EqualFold(entry.Name(), "package.json") {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil || info.Size() > maxSourceBytes {
-			return nil
-		}
-		contents, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		targets, err := packageScriptTargets(filepath.ToSlash(path), filepath.ToSlash(filepath.Dir(path)), contents)
-		if err != nil {
-			return nil
-		}
-		for _, target := range targets {
-			if target.Kind == "browser-script" {
-				found = true
-				return fs.SkipAll
-			}
-		}
-		return nil
-	})
-	return found, err
-}
-
 func localTypeScriptRuntime(request Request) string {
 	projectDir := request.ProjectDir
 	if !filepath.IsAbs(projectDir) && request.WorkspaceDir != "" {
 		projectDir = filepath.Join(request.WorkspaceDir, filepath.FromSlash(projectDir))
 	}
-	names := []string{"tsx"}
-	if runtime.GOOS == "windows" {
-		names = []string{"tsx.cmd", "tsx.exe", "tsx"}
+	workspaceDir := request.WorkspaceDir
+	if workspaceDir == "" {
+		workspaceDir = projectDir
 	}
-	for _, name := range names {
-		path := filepath.Join(projectDir, "node_modules", ".bin", name)
-		if info, err := os.Stat(path); err == nil && !info.IsDir() {
-			return path
-		}
-	}
-	return ""
+	return tooling.ResolveProject(projectDir, workspaceDir, "tsx")
 }
 
 func explicitJavaScriptDebugServer() string {

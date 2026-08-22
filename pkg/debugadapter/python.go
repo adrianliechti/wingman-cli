@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/adrianliechti/wingman-agent/pkg/commandpath"
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 )
 
@@ -93,11 +93,11 @@ func (pythonAdapter) Plan(request Request) (Plan, error) {
 }
 
 func resolvePythonInterpreter(projectDir, workspaceDir string) string {
-	if interpreter := commandpath.ResolveProject(projectDir, workspaceDir, "python"); interpreter != "" {
+	if interpreter := tooling.ResolveProject(projectDir, workspaceDir, "python"); interpreter != "" {
 		return interpreter
 	}
 	for _, command := range []string{"python3", "python"} {
-		if path := commandpath.Resolve(command); path != "" {
+		if path := tooling.Resolve(command); path != "" {
 			return path
 		}
 	}

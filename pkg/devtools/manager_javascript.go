@@ -16,20 +16,24 @@ const javascriptReleaseURL = "https://api.github.com/repos/microsoft/vscode-js-d
 const chromeForTestingReleaseURL = "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json"
 
 var javascriptRecipes = []recipe{
-	{ID: "vscode-js-debug", Kind: installerJavaScript, Commands: []string{"js-debug-adapter"}},
-	{ID: "chrome-for-testing", Kind: installerBrowser, Commands: []string{"chrome-for-testing"}},
+	{ID: "vscode-js-debug", Label: "JavaScript debugger", Kind: installerJavaScript, Commands: []string{"js-debug-adapter"}},
+	{ID: "chrome-for-testing", Label: "Chrome browser", Kind: installerBrowser, Commands: []string{"chrome-for-testing"}},
 }
 
 type chromeForTestingRelease struct {
-	Channels map[string]struct {
-		Version   string `json:"version"`
-		Downloads struct {
-			Chrome []struct {
-				Platform string `json:"platform"`
-				URL      string `json:"url"`
-			} `json:"chrome"`
-		} `json:"downloads"`
-	} `json:"channels"`
+	Channels map[string]chromeForTestingChannel `json:"channels"`
+}
+
+type chromeForTestingChannel struct {
+	Version   string `json:"version"`
+	Downloads struct {
+		Chrome []chromeForTestingArchive `json:"chrome"`
+	} `json:"downloads"`
+}
+
+type chromeForTestingArchive struct {
+	Platform string `json:"platform"`
+	URL      string `json:"url"`
 }
 
 func (m *Manager) installJavaScript(ctx context.Context, item recipe, stage string) error {
@@ -105,26 +109,16 @@ func (m *Manager) installChromeForTesting(ctx context.Context, item recipe, stag
 	if err := json.Unmarshal(metadata, &release); err != nil {
 		return fmt.Errorf("decode Chrome for Testing release: %w", err)
 	}
-	stable, ok := release.Channels["Stable"]
-	if !ok || stable.Version == "" {
-		return errors.New("Chrome for Testing metadata has no Stable release")
-	}
-	downloadURL := ""
-	for _, download := range stable.Downloads.Chrome {
-		if download.Platform == platform {
-			downloadURL = download.URL
-			break
-		}
-	}
+	version, downloadURL := chromeForTestingDownload(release, platform)
 	if downloadURL == "" {
-		return fmt.Errorf("Chrome for Testing %s has no %s archive", stable.Version, platform)
+		return fmt.Errorf("Chrome for Testing has no %s archive", platform)
 	}
 	archive, err := m.fetch(ctx, downloadURL)
 	if err != nil {
-		return fmt.Errorf("download Chrome for Testing %s: %w", stable.Version, err)
+		return fmt.Errorf("download Chrome for Testing %s: %w", version, err)
 	}
 	if err := extractZip(archive, stage); err != nil {
-		return fmt.Errorf("extract Chrome for Testing %s: %w", stable.Version, err)
+		return fmt.Errorf("extract Chrome for Testing %s: %w", version, err)
 	}
 	executable, err := chromeForTestingExecutable(stage, runtime.GOOS, runtime.GOARCH)
 	if err != nil {
@@ -134,6 +128,21 @@ func (m *Manager) installChromeForTesting(ctx context.Context, item recipe, stag
 		return fmt.Errorf("make Chrome for Testing executable: %w", err)
 	}
 	return writeChromeForTestingLauncher(stage, executable)
+}
+
+func chromeForTestingDownload(release chromeForTestingRelease, platform string) (string, string) {
+	for _, name := range []string{"Stable", "Beta", "Dev", "Canary"} {
+		channel := release.Channels[name]
+		if channel.Version == "" {
+			continue
+		}
+		for _, download := range channel.Downloads.Chrome {
+			if download.Platform == platform && download.URL != "" {
+				return channel.Version, download.URL
+			}
+		}
+	}
+	return "", ""
 }
 
 func chromeForTestingPlatform(goos, goarch string) (string, error) {

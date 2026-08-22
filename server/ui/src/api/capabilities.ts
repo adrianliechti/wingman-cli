@@ -14,14 +14,17 @@ export interface Capabilities {
 	"editor.tab.completion": boolean;
 	platform: string;
 	workspace_name: string;
-	notice?: string;
-	managed_tools?: {
-		state: "installing" | "ready" | "error";
-		tool?: string;
-		current?: number;
-		total?: number;
-		error?: string;
-	};
+	managed_tools?: ManagedToolsStatus;
+}
+
+export interface ManagedToolsStatus {
+	state: "installing" | "ready" | "error";
+	tool?: string;
+	label?: string;
+	current?: number;
+	total?: number;
+	error?: string;
+	unavailable?: string[];
 }
 
 export const capabilitiesQuery = queryOptions({

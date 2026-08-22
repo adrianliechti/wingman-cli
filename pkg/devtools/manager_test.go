@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -54,10 +55,11 @@ func TestUpdateSelectsPreferredManagedAlternativeAndRemovesOld(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	var progress []Progress
 	changed, err := manager.Update(context.Background(), []Requirement{
 		{Alternatives: []string{"unknown", "tsc", "typescript-language-server"}},
 		{Alternatives: []string{"typescript-language-server"}},
-	})
+	}, func(update Progress) { progress = append(progress, update) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,6 +68,9 @@ func TestUpdateSelectsPreferredManagedAlternativeAndRemovesOld(t *testing.T) {
 	}
 	if len(installed) != 1 || installed[0] != "typescript-language-server" {
 		t.Fatalf("installed = %v", installed)
+	}
+	if len(progress) != 1 || progress[0].Tool != "typescript-language-server" || progress[0].Label != "TypeScript language tools" {
+		t.Fatalf("progress = %#v", progress)
 	}
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
 		t.Fatalf("old installation remains: %v", err)
@@ -145,9 +150,220 @@ func TestUpdateKeepsCurrentInstallationWhenInstallerFails(t *testing.T) {
 	if err == nil || changed {
 		t.Fatalf("Update = %v, %v", changed, err)
 	}
+	if IsUnavailable(err) {
+		t.Fatalf("refresh failure marked the existing tool unavailable: %v", err)
+	}
 	data, readErr := os.ReadFile(current)
 	if readErr != nil || string(data) != "current" {
 		t.Fatalf("current installation changed: %q, %v", data, readErr)
+	}
+}
+
+func TestUpdateSkipsManagedInstallWhenEveryProjectHasAnExternalTool(t *testing.T) {
+	root := t.TempDir()
+	workspace := t.TempDir()
+	projects := []string{filepath.Join(workspace, "one"), filepath.Join(workspace, "two")}
+	for _, project := range projects {
+		command := filepath.Join(project, "node_modules", ".bin", commandNames("typescript-language-server")[0])
+		if err := os.MkdirAll(filepath.Dir(command), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(command, []byte("server"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manager := newManager(root)
+	manager.look = func(string) (string, error) { return "", exec.ErrNotFound }
+	installCount := 0
+	manager.install = func(context.Context, recipe, string) error {
+		installCount++
+		return nil
+	}
+	changed, err := manager.Update(context.Background(), []Requirement{{
+		Alternatives: []string{"typescript-language-server"}, Workspace: workspace, Projects: projects,
+	}})
+	if err != nil || changed || installCount != 0 {
+		t.Fatalf("Update = %v, %v; installs = %d", changed, err, installCount)
+	}
+}
+
+func TestUpdateInstallsFallbackWhenOneProjectLacksExternalTool(t *testing.T) {
+	root := t.TempDir()
+	workspace := t.TempDir()
+	projects := []string{filepath.Join(workspace, "one"), filepath.Join(workspace, "two")}
+	for _, project := range projects {
+		if err := os.MkdirAll(project, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	local := filepath.Join(projects[0], "node_modules", ".bin", commandNames("typescript-language-server")[0])
+	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(local, []byte("server"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager := newManager(root)
+	manager.look = func(string) (string, error) { return "", exec.ErrNotFound }
+	manager.install = func(_ context.Context, item recipe, stage string) error {
+		for _, command := range item.Commands {
+			if err := writeTestCommand(stage, command); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	changed, err := manager.Update(context.Background(), []Requirement{{
+		Alternatives: []string{"typescript-language-server"}, Workspace: workspace, Projects: projects,
+	}})
+	if err != nil || !changed {
+		t.Fatalf("Update = %v, %v", changed, err)
+	}
+}
+
+func TestUpdateRejectsExternalCommandBelowMinimumVersion(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper uses a POSIX script")
+	}
+	root := t.TempDir()
+	workspace := t.TempDir()
+	local := filepath.Join(workspace, "node_modules", ".bin", "tsc")
+	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(local, []byte("#!/bin/sh\nprintf 'Version 6.0.0\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager := newManager(root)
+	manager.look = func(string) (string, error) { return "", exec.ErrNotFound }
+	manager.install = func(_ context.Context, item recipe, stage string) error {
+		for _, command := range item.Commands {
+			if err := writeTestCommand(stage, command); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	changed, err := manager.Update(context.Background(), []Requirement{{
+		Alternatives: []string{"tsc", "typescript-language-server"}, Workspace: workspace, Projects: []string{workspace},
+		MinimumMajorVersions: map[string]int{"tsc": 7},
+	}})
+	if err != nil || !changed {
+		t.Fatalf("Update = %v, %v", changed, err)
+	}
+}
+
+func TestUpdateBacksOffFailedMissingInstall(t *testing.T) {
+	root := t.TempDir()
+	manager := newManager(root)
+	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	manager.now = func() time.Time { return now }
+	attempts := 0
+	manager.install = func(context.Context, recipe, string) error {
+		attempts++
+		return errors.New("registry blocked")
+	}
+	requirements := []Requirement{{Alternatives: []string{"gopls"}}}
+	if _, err := manager.Update(context.Background(), requirements); !IsUnavailable(err) {
+		t.Fatalf("first error = %v, want unavailable", err)
+	}
+	if _, err := manager.Update(context.Background(), requirements); !IsUnavailable(err) {
+		t.Fatalf("backoff error = %v, want unavailable", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts during backoff = %d, want 1", attempts)
+	}
+	now = now.Add(retryInterval)
+	if _, err := manager.Update(context.Background(), requirements); !IsUnavailable(err) {
+		t.Fatalf("retry error = %v, want unavailable", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts after backoff = %d, want 2", attempts)
+	}
+}
+
+func TestUpdateDoesNotBackOffCancellation(t *testing.T) {
+	root := t.TempDir()
+	manager := newManager(root)
+	attempts := 0
+	ctx, cancel := context.WithCancel(context.Background())
+	manager.install = func(_ context.Context, item recipe, stage string) error {
+		attempts++
+		if attempts == 1 {
+			cancel()
+			return context.Canceled
+		}
+		for _, command := range item.Commands {
+			if err := writeTestCommand(stage, command); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	requirements := []Requirement{{Alternatives: []string{"gopls"}}}
+	if _, err := manager.Update(ctx, requirements); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled update error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".gopls-retry")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cancellation created retry backoff: %v", err)
+	}
+	if changed, err := manager.Update(context.Background(), requirements); err != nil || !changed {
+		t.Fatalf("immediate retry = %v, %v", changed, err)
+	}
+	if attempts != 2 {
+		t.Fatalf("install attempts = %d, want 2", attempts)
+	}
+}
+
+func TestUpdateWaitingForAnotherUpdateHonorsContext(t *testing.T) {
+	manager := newManager(t.TempDir())
+	manager.updates <- struct{}{}
+	defer func() { <-manager.updates }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := manager.Update(ctx, []Requirement{{Alternatives: []string{"gopls"}}}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("blocked update error = %v, want context cancellation", err)
+	}
+}
+
+func TestUnavailableToolsCollectsJoinedErrors(t *testing.T) {
+	err := errors.Join(
+		fmt.Errorf("first: %w", &UnavailableError{Tool: "gopls", Err: errors.New("blocked")}),
+		fmt.Errorf("second: %w", &UnavailableError{Tool: "debugpy", Err: errors.New("blocked")}),
+		&UnavailableError{Tool: "gopls", Err: errors.New("duplicate")},
+	)
+	want := []string{"debugpy", "gopls"}
+	if got := UnavailableTools(err); !reflect.DeepEqual(got, want) {
+		t.Fatalf("UnavailableTools = %v, want %v", got, want)
+	}
+}
+
+func TestNPMInstallUsesDetectedProjectForRegistryConfiguration(t *testing.T) {
+	manager := newManager(t.TempDir())
+	project := t.TempDir()
+	item := manager.byCommand["typescript-language-server"]
+	item.WorkingDir = project
+	manager.look = func(command string) (string, error) {
+		if command != "npm" {
+			t.Fatalf("look command = %q", command)
+		}
+		return "/toolchain/npm", nil
+	}
+	stage := t.TempDir()
+	manager.run = func(_ context.Context, _ string, _ []string, dir string, _ []string) ([]byte, error) {
+		if dir != project {
+			t.Fatalf("npm working directory = %q, want %q", dir, project)
+		}
+		for _, command := range item.Commands {
+			if err := writeTestCommand(stage, command); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	}
+	if err := manager.installRecipe(context.Background(), item, stage); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -366,6 +582,29 @@ func TestCleanMachineCatalogIncludesRustDotnetAndJava(t *testing.T) {
 	}
 }
 
+func TestCatalogHasUserFacingLabelsAndUniqueCommands(t *testing.T) {
+	ids := make(map[string]bool)
+	commands := make(map[string]string)
+	for _, item := range catalog {
+		if strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Label) == "" {
+			t.Errorf("incomplete catalog recipe: %#v", item)
+		}
+		if ids[item.ID] {
+			t.Errorf("duplicate tool ID %q", item.ID)
+		}
+		ids[item.ID] = true
+		for _, command := range item.Commands {
+			if owner := commands[command]; owner != "" {
+				t.Errorf("command %q belongs to both %q and %q", command, owner, item.ID)
+			}
+			commands[command] = item.ID
+		}
+	}
+	if got := ToolLabel("not-managed"); got != "not-managed" {
+		t.Fatalf("unknown tool label = %q", got)
+	}
+}
+
 func TestJavaScriptAdapterUsesVerifiedStandaloneRelease(t *testing.T) {
 	archive := testTarGzip(t, map[string]string{
 		"js-debug/src/dapDebugServer.js": "console.log('adapter')\n",
@@ -400,7 +639,7 @@ func TestJavaScriptAdapterRejectsArchiveTraversal(t *testing.T) {
 	}
 }
 
-func TestChromeForTestingUsesLatestStablePlatformArchive(t *testing.T) {
+func TestChromeForTestingUsesPreferredPlatformArchive(t *testing.T) {
 	platform, err := chromeForTestingPlatform(runtime.GOOS, runtime.GOARCH)
 	if err != nil {
 		t.Skip(err)
@@ -436,6 +675,21 @@ func TestChromeForTestingUsesLatestStablePlatformArchive(t *testing.T) {
 	}
 	if executable, err := chromeForTestingExecutable(stage, runtime.GOOS, runtime.GOARCH); err != nil || !executableFile(executable) {
 		t.Fatalf("Chrome executable = %q, %v", executable, err)
+	}
+}
+
+func TestChromeForTestingFallsBackWhenStableLacksPlatform(t *testing.T) {
+	metadata := `{"channels":{
+		"Stable":{"version":"152","downloads":{"chrome":[{"platform":"linux64","url":"https://example.test/stable"}]}},
+		"Beta":{"version":"153","downloads":{"chrome":[{"platform":"linux-arm64","url":"https://example.test/beta"}]}}
+	}}`
+	var release chromeForTestingRelease
+	if err := json.Unmarshal([]byte(metadata), &release); err != nil {
+		t.Fatal(err)
+	}
+	version, address := chromeForTestingDownload(release, "linux-arm64")
+	if version != "153" || address != "https://example.test/beta" {
+		t.Fatalf("download = %q, %q", version, address)
 	}
 }
 
@@ -584,32 +838,41 @@ func TestZipExtractorRejectsArchiveTraversal(t *testing.T) {
 	}
 }
 
-func TestRustAnalyzerPrefersCargoPackage(t *testing.T) {
+func TestRustAnalyzerUsesVerifiedOfficialRelease(t *testing.T) {
 	manager := newManager(t.TempDir())
 	item := manager.byCommand["rust-analyzer"]
-	manager.look = func(command string) (string, error) {
-		if command != "cargo" {
-			t.Fatalf("look command = %q", command)
-		}
-		return "/toolchain/cargo", nil
+	assetName, err := rustAnalyzerAssetName(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		t.Skip(err)
 	}
-	var gotName string
-	var gotArgs []string
-	manager.run = func(_ context.Context, name string, args []string, dir string, _ []string) ([]byte, error) {
-		gotName = name
-		gotArgs = append([]string(nil), args...)
-		return nil, writeTestCommand(dir, "rust-analyzer")
+	var archive bytes.Buffer
+	if runtime.GOOS == "windows" {
+		archive.Write(testZip(t, map[string]testZipEntry{
+			"rust-analyzer.exe": {contents: "server", mode: 0o755},
+		}))
+	} else {
+		writer := gzip.NewWriter(&archive)
+		if _, err := writer.Write([]byte("server")); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(archive.Bytes()))
+	metadata := fmt.Sprintf(`{"assets":[{"name":%q,"browser_download_url":"https://example.test/rust-analyzer","digest":%q}]}`, assetName, digest)
+	manager.fetch = func(_ context.Context, address string) ([]byte, error) {
+		if address == rustAnalyzerReleaseURL {
+			return []byte(metadata), nil
+		}
+		return archive.Bytes(), nil
 	}
 	stage := t.TempDir()
 	if err := manager.installRecipe(context.Background(), item, stage); err != nil {
 		t.Fatal(err)
 	}
-	if gotName != "/toolchain/cargo" {
-		t.Fatalf("runner = %q", gotName)
-	}
-	wantArgs := []string{"install", "--root", stage, "--locked", "ra_ap_rust-analyzer"}
-	if !reflect.DeepEqual(gotArgs, wantArgs) {
-		t.Fatalf("args = %v, want %v", gotArgs, wantArgs)
+	if got := resolveInstalledCommand(stage, "rust-analyzer"); got == "" {
+		t.Fatal("rust-analyzer was not installed")
 	}
 }
 

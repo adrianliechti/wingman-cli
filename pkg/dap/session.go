@@ -178,7 +178,7 @@ func friendlyStartError(plan Plan, err error, output string) error {
 	switch {
 	case strings.Contains(detail, "unable to find an installation of the browser"),
 		strings.Contains(detail, "browser executable") && strings.Contains(detail, "not found"):
-		return errors.New("No supported Chromium browser was found. Wingman installs Chrome for Testing automatically; wait for the tools update to finish and try again.")
+		return errors.New("No supported Chromium browser was found. Install Chrome, Chromium, Edge, or Brave, or set CHROME_PATH and try again.")
 	case strings.Contains(detail, "eaddrinuse"), strings.Contains(detail, "address already in use"):
 		return errors.New("The development server could not start because its port is already in use. Stop the other process or choose another port and try again.")
 	case strings.Contains(detail, "econnrefused"), strings.Contains(detail, "failed to connect to target"):

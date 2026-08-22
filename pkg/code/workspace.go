@@ -144,7 +144,10 @@ func NewWorkspace(workDir string) (*Workspace, error) {
 	reportShadowedPluginSkills(mergedSkills)
 
 	mcpManager := loadMCP(workDir, plugins)
-	managedTools, _ := devtools.New()
+	managedTools, toolsErr := devtools.New()
+	if toolsErr != nil {
+		fmt.Fprintf(os.Stderr, "managed tools: %v\n", toolsErr)
+	}
 
 	return &Workspace{
 		Root:        root,
@@ -311,11 +314,21 @@ func (w *Workspace) WarmUp() {
 	})
 }
 
-// UpdateManagedTools installs the latest project-relevant language servers and
-// debug adapters. Successful updates invalidate discovery caches immediately;
-// JDT LS restarts when its debug plug-in changes, while other active protocol
-// sessions continue until their normal restart boundary.
-func (w *Workspace) UpdateManagedTools(ctx context.Context, progress ...func(devtools.Progress)) (bool, error) {
+// ManagedToolSet selects the editor capabilities a frontend uses. Browser
+// runtimes are intentionally installed on demand when browser debugging is
+// requested, rather than as part of workspace startup.
+type ManagedToolSet uint8
+
+const (
+	ManagedLSPTools ManagedToolSet = 1 << iota
+	ManagedDAPTools
+	ManagedEditorTools = ManagedLSPTools | ManagedDAPTools
+)
+
+// UpdateManagedTools installs missing project-relevant tools. Successful
+// updates invalidate discovery caches immediately; JDT LS restarts when its
+// debug plug-in changes, while other active sessions keep running.
+func (w *Workspace) UpdateManagedTools(ctx context.Context, tools ManagedToolSet, progress ...func(devtools.Progress)) (bool, error) {
 	w.mu.RLock()
 	manager := w.DevTools
 	root := w.RootPath
@@ -326,22 +339,31 @@ func (w *Workspace) UpdateManagedTools(ctx context.Context, progress ...func(dev
 	}
 
 	var requirements []devtools.Requirement
-	for _, requirement := range lsp.DetectRequirements(root) {
-		requirements = append(requirements, devtools.Requirement{Alternatives: requirement.Commands})
+	if tools&ManagedLSPTools != 0 {
+		explicitJavaDebug := len(debugadapter.DiscoverJavaDebugBundles()) > 0
+		for _, requirement := range lsp.DetectRequirements(root) {
+			requirements = append(requirements, devtools.Requirement{
+				Alternatives: requirement.Commands, Workspace: root, Projects: requirement.Directories,
+				MinimumMajorVersions: requirement.MinimumMajorVersions,
+				ManagedOnly:          requirement.Project == "java" && !explicitJavaDebug,
+			})
+		}
 	}
 
-	registry := debugadapter.NewRegistry(workspaceJavaDebugBundles(manager)...)
-	adapterRequirements, detectErr := dap.DetectRequirements(ctx, root, registry.Descriptors())
-	for _, requirement := range adapterRequirements {
-		requirements = append(requirements, devtools.Requirement{Alternatives: requirement.Commands})
-	}
-	requiresBrowser, browserDetectErr := debugadapter.RequiresChromium(ctx, root)
-	if requiresBrowser {
-		requirements = append(requirements, devtools.Requirement{Alternatives: []string{"chrome-for-testing"}})
+	var detectErr error
+	if tools&ManagedDAPTools != 0 {
+		registry := debugadapter.NewRegistry(workspaceJavaDebugBundles(manager)...)
+		var adapterRequirements []dap.AdapterRequirement
+		adapterRequirements, detectErr = dap.DetectRequirements(ctx, root, registry.Descriptors())
+		for _, requirement := range adapterRequirements {
+			requirements = append(requirements, devtools.Requirement{
+				Alternatives: requirement.Commands, Workspace: root, Projects: requirement.Projects,
+			})
+		}
 	}
 	changed, updateErr := manager.Update(ctx, requirements, progress...)
 	if !changed {
-		return false, errors.Join(detectErr, browserDetectErr, updateErr)
+		return false, errors.Join(detectErr, updateErr)
 	}
 
 	w.lspLifeMu.RLock()
@@ -367,7 +389,64 @@ func (w *Workspace) UpdateManagedTools(ctx context.Context, progress ...func(dev
 	}
 	w.dapLifeMu.RUnlock()
 	w.lspLifeMu.RUnlock()
-	return true, errors.Join(detectErr, browserDetectErr, updateErr)
+	return true, errors.Join(detectErr, updateErr)
+}
+
+type managedToolsResult struct {
+	changed bool
+	err     error
+}
+
+// ManagedToolsUpdate owns one background update lifecycle. All frontends use
+// it so cancellation and shutdown have identical behavior.
+type ManagedToolsUpdate struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+	result managedToolsResult
+}
+
+func (w *Workspace) StartManagedToolsUpdate(ctx context.Context, tools ManagedToolSet, progress ...func(devtools.Progress)) *ManagedToolsUpdate {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	updateCtx, cancel := context.WithCancel(ctx)
+	update := &ManagedToolsUpdate{cancel: cancel, done: make(chan struct{})}
+	go func() {
+		defer close(update.done)
+		update.result.changed, update.result.err = w.UpdateManagedTools(updateCtx, tools, progress...)
+		if updateCtx.Err() != nil {
+			update.result.err = nil
+		}
+	}()
+	return update
+}
+
+func (u *ManagedToolsUpdate) Cancel() {
+	if u != nil && u.cancel != nil {
+		u.cancel()
+	}
+}
+
+func (u *ManagedToolsUpdate) Wait() (bool, error) {
+	return u.WaitContext(context.Background())
+}
+
+// WaitContext observes completion without making shutdown depend on an
+// installer that has not returned yet. Cancel remains separate so callers can
+// stop the update before choosing how long they are willing to wait.
+func (u *ManagedToolsUpdate) WaitContext(ctx context.Context) (bool, error) {
+	if u == nil {
+		return false, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-u.done:
+		return u.result.changed, u.result.err
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
 }
 
 func workspaceJavaDebugBundles(manager *devtools.Manager) []string {

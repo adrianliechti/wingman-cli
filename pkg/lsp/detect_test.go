@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"go.lsp.dev/protocol"
+
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 )
 
 func TestManagerInitializationOptionsAreStableSessionIdentity(t *testing.T) {
@@ -45,105 +47,6 @@ func TestManagerInitializationOptionsAreStableSessionIdentity(t *testing.T) {
 	}
 	if got := payload.Options["bundles"]; len(got) != 1 || got[0] != "java-debug.jar" {
 		t.Fatalf("wire initialization options = %s", wire)
-	}
-}
-
-func TestFindCommandIn(t *testing.T) {
-	dir := t.TempDir()
-	name := "gopls"
-	if runtime.GOOS == "windows" {
-		name = "gopls.exe"
-	}
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	if got := findCommandIn([]string{t.TempDir(), dir}, "gopls"); got != path {
-		t.Fatalf("findCommandIn = %q, want %q", got, path)
-	}
-
-	if got := findCommandIn([]string{dir}, "rust-analyzer"); got != "" {
-		t.Fatalf("findCommandIn for missing command = %q, want empty", got)
-	}
-}
-
-func TestResolveCommandFindsVenvServers(t *testing.T) {
-	binSub := filepath.Join(".venv", "bin")
-	fileName := "pylsp"
-	if runtime.GOOS == "windows" {
-		binSub = filepath.Join(".venv", "Scripts")
-		fileName = "pylsp.exe"
-	}
-
-	root := t.TempDir()
-	proj := filepath.Join(root, "services", "api")
-	binDir := filepath.Join(proj, binSub)
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(binDir, fileName)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	if got := resolveCommand(proj, root, "pylsp"); got != path {
-		t.Fatalf("resolveCommand = %q, want %q", got, path)
-	}
-
-	// A venv at the workspace root serves nested project dirs via walk-up.
-	rootBin := filepath.Join(root, binSub)
-	if err := os.MkdirAll(rootBin, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	rootServer := filepath.Join(rootBin, "basedpyright-langserver")
-	if runtime.GOOS == "windows" {
-		rootServer += ".cmd"
-	}
-	if err := os.WriteFile(rootServer, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	if got := resolveCommand(proj, root, "basedpyright-langserver"); got != rootServer {
-		t.Fatalf("walk-up resolveCommand = %q, want %q", got, rootServer)
-	}
-}
-
-func TestCommandCandidates(t *testing.T) {
-	got := commandCandidates("windows", "gopls")
-	want := []string{"gopls.exe", "gopls.cmd", "gopls.bat", "gopls"}
-	if len(got) != len(want) {
-		t.Fatalf("windows candidates = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("windows candidates = %v, want %v", got, want)
-		}
-	}
-
-	if got := commandCandidates("darwin", "gopls"); len(got) != 1 || got[0] != "gopls" {
-		t.Fatalf("darwin candidates = %v, want [gopls]", got)
-	}
-}
-
-func TestFindCommandInIgnoresNonExecutable(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("executable bits are not checked on windows")
-	}
-
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "gopls"), []byte("data"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(filepath.Join(dir, "rust-analyzer"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	if got := findCommandIn([]string{dir}, "gopls"); got != "" {
-		t.Fatalf("non-executable file resolved: %q", got)
-	}
-	if got := findCommandIn([]string{dir}, "rust-analyzer"); got != "" {
-		t.Fatalf("directory resolved: %q", got)
 	}
 }
 
@@ -249,8 +152,10 @@ func TestDetectRequirementsRecognizesSourceAndGradleMarkers(t *testing.T) {
 	}
 }
 
-func TestDetectAllPrefersManagedServer(t *testing.T) {
+func TestDetectAllUsesManagedServerAsFallback(t *testing.T) {
 	root := t.TempDir()
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	t.Setenv("PATH", "")
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/test\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -263,6 +168,33 @@ func TestDetectAllPrefersManagedServer(t *testing.T) {
 	})
 	if len(roots) != 1 || roots[0].Server.Command != managed {
 		t.Fatalf("roots = %+v, want managed command %q", roots, managed)
+	}
+}
+
+func TestDetectAllPrefersSystemServerOverManagedFallback(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	bin := filepath.Join(root, "system-bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	system := filepath.Join(bin, tooling.Candidates(runtime.GOOS, "gopls")[0])
+	if err := os.WriteFile(system, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	managed := filepath.Join(root, "managed", "gopls")
+	roots := detectAll(root, func(command string) string {
+		if command == "gopls" {
+			return managed
+		}
+		return ""
+	})
+	if len(roots) != 1 || roots[0].Server.Command != system {
+		t.Fatalf("roots = %+v, want system command %q", roots, system)
 	}
 }
 

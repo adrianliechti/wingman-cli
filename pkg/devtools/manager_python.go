@@ -13,8 +13,8 @@ import (
 )
 
 var pythonRecipes = []recipe{
-	{ID: "basedpyright", Kind: installerPython, Packages: []string{"basedpyright"}, Commands: []string{"basedpyright", "basedpyright-langserver"}},
-	{ID: "debugpy", Kind: installerPython, Packages: []string{"debugpy"}, Commands: []string{"debugpy-adapter"}},
+	{ID: "basedpyright", Label: "Python language tools", Kind: installerPython, Packages: []string{"basedpyright"}, Commands: []string{"basedpyright", "basedpyright-langserver"}},
+	{ID: "debugpy", Label: "Python debugger", Kind: installerPython, Packages: []string{"debugpy"}, Commands: []string{"debugpy-adapter"}},
 }
 
 func (m *Manager) installPython(ctx context.Context, item recipe, stage string) error {
@@ -26,7 +26,8 @@ func (m *Manager) installPython(ctx context.Context, item recipe, stage string) 
 	if err != nil {
 		return errors.New("python is not installed")
 	}
-	if output, err := m.run(ctx, python, []string{"-m", "venv", stage}, m.root, os.Environ()); err != nil {
+	workingDir := installWorkingDir(item, m.root)
+	if output, err := m.run(ctx, python, []string{"-m", "venv", stage}, workingDir, os.Environ()); err != nil {
 		return commandError(output, err)
 	}
 	venvPython := filepath.Join(stage, "bin", "python")
@@ -35,7 +36,7 @@ func (m *Manager) installPython(ctx context.Context, item recipe, stage string) 
 	}
 	args := []string{"-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade"}
 	args = append(args, item.Packages...)
-	if output, err := m.run(ctx, venvPython, args, stage, os.Environ()); err != nil {
+	if output, err := m.run(ctx, venvPython, args, workingDir, os.Environ()); err != nil {
 		return commandError(output, err)
 	}
 	return m.writePythonLaunchers(ctx, item, stage, venvPython)

@@ -507,19 +507,6 @@ var knownProjects = []projectType{
 		},
 	},
 	{
-		Name:    "prisma",
-		Markers: []string{"schema.prisma"},
-		Servers: []Server{
-			{
-				Name:       "prisma",
-				Command:    "prisma",
-				Args:       []string{"language-server"},
-				Languages:  []string{"prisma"},
-				LanguageID: "prisma",
-			},
-		},
-	},
-	{
 		Name:    "typst",
 		Markers: []string{"typst.toml"},
 		Servers: []Server{

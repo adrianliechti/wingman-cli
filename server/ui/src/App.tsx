@@ -43,7 +43,10 @@ import {
 	usePanelRef,
 } from "react-resizable-panels";
 import { agentQueries, setCurrentAgent } from "./api/agents";
-import { getInspectAvailability } from "./api/capabilities";
+import {
+	getInspectAvailability,
+	type ManagedToolsStatus,
+} from "./api/capabilities";
 import { controlDebug, getDebugSession, type DebugSession } from "./api/debug";
 import { createWorkspaceFile } from "./api/files";
 import { queryKeys } from "./api/query";
@@ -1673,8 +1676,6 @@ export default function App() {
 		[selectModeForSession, sessionId],
 	);
 
-	const [noticeDismissed, setNoticeDismissed] = useState(false);
-	const showNotice = !!capabilities?.notice && !noticeDismissed;
 	const handleLeftPanelResize = useCallback(({ inPixels }: PanelSize) => {
 		setLeftPanelCollapsed(inPixels === 0);
 		if (inPixels <= 0) return;
@@ -2473,6 +2474,7 @@ export default function App() {
 					/>
 				)}
 			</div>
+			<ManagedToolsFooter status={capabilities?.managed_tools} />
 		</aside>
 	);
 
@@ -2488,22 +2490,6 @@ export default function App() {
 				} as CSSProperties
 			}
 		>
-			{capabilities?.managed_tools?.state === "installing" && (
-				<div className="absolute inset-0 z-[100] flex items-center justify-center bg-bg/85 backdrop-blur-sm">
-					<div className="flex max-w-sm flex-col items-center gap-3 rounded-xl border border-border-subtle bg-bg-surface px-8 py-7 text-center shadow-2xl">
-						<Loader2 size={22} className="animate-spin text-accent" />
-						<div className="text-[13px] font-medium text-fg">
-							{managedToolMessage(capabilities.managed_tools.tool)}
-						</div>
-						<div className="text-[11px] leading-relaxed text-fg-muted">
-							Downloading the latest tools for this project. Installed versions are reused and updated automatically.
-							{capabilities.managed_tools.total && capabilities.managed_tools.current
-								? ` (${capabilities.managed_tools.current}/${capabilities.managed_tools.total})`
-								: ""}
-						</div>
-					</div>
-				</div>
-			)}
 			<div
 				data-panel-frame="sessions"
 				aria-hidden="true"
@@ -2673,19 +2659,6 @@ export default function App() {
 					)}
 				</div>
 			</header>
-			{showNotice && (
-				<div className="flex shrink-0 items-center gap-3 border-b border-warning/30 bg-warning/10 px-4 py-2 text-[12px] text-warning">
-					<span className="flex-1">{capabilities?.notice}</span>
-					<button
-						type="button"
-						onClick={() => setNoticeDismissed(true)}
-						className="opacity-70 hover:opacity-100 px-1"
-						aria-label="Dismiss"
-					>
-						×
-					</button>
-				</div>
-			)}
 			<Group
 				id="wingman-layout"
 				orientation="horizontal"
@@ -3073,21 +3046,27 @@ export default function App() {
 	);
 }
 
-function managedToolMessage(tool?: string) {
-	switch (tool) {
-		case "chrome-for-testing":
-			return "Installing Chrome for Testing…";
-		case "vscode-js-debug":
-			return "Installing the JavaScript debugger…";
-		case "codelldb":
-			return "Installing the Rust debugger…";
-		case "netcoredbg":
-			return "Installing the .NET debugger…";
-		case "java":
-			return "Installing Java language and debugger tools…";
-		default:
-			return tool ? `Installing ${tool}…` : "Preparing development tools…";
-	}
+function ManagedToolsFooter({ status }: { status?: ManagedToolsStatus }) {
+	if (status?.state !== "installing") return null;
+
+	const message = status.label ? `Setting up ${status.label}…` : "Checking tools…";
+	const progress =
+		status.current && status.total ? `${status.current}/${status.total}` : "";
+	return (
+		<div
+			data-managed-tools-status
+			role="status"
+			aria-live="polite"
+			aria-atomic="true"
+			className="flex h-8 shrink-0 items-center gap-2 border-t border-border-subtle bg-bg-surface/20 px-3 text-[10.5px] text-fg-dim"
+		>
+			<Loader2 size={11} className="shrink-0 animate-spin text-accent" />
+			<span className="min-w-0 flex-1 truncate" title={message}>
+				{message}
+			</span>
+			{progress && <span className="shrink-0 tabular-nums">{progress}</span>}
+		</div>
+	);
 }
 
 function formatTokens(n: number): string {

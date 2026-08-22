@@ -2,6 +2,7 @@ package code
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,6 +19,15 @@ import (
 	wingmcp "github.com/adrianliechti/wingman-agent/pkg/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/skill"
 )
+
+func TestManagedToolsUpdateWaitContextStopsWaiting(t *testing.T) {
+	update := &ManagedToolsUpdate{done: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := update.WaitContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitContext error = %v, want context cancellation", err)
+	}
+}
 
 func TestWarmUpCreatesLSPManagerOutsideGitRepository(t *testing.T) {
 	testenv.UserHome(t)

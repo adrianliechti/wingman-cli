@@ -1,8 +1,10 @@
-// Package commandpath resolves executable tools from project and user install
-// locations shared by language servers, debug adapters, and managed tools.
-package commandpath
+// Package tooling contains repository-private command discovery and project
+// traversal policy shared by language servers, debug adapters, and managed
+// developer tools.
+package tooling
 
 import (
+	"bufio"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,8 +18,6 @@ var projectDirectories = []string{
 	filepath.Join(".venv", "Scripts"), filepath.Join("venv", "Scripts"), filepath.Join("env", "Scripts"),
 	filepath.Join("vendor", "bin"),
 }
-
-func ProjectDirectories() []string { return append([]string(nil), projectDirectories...) }
 
 func Candidates(goos, command string) []string {
 	if goos == "windows" {
@@ -35,6 +35,57 @@ func Executable(path string) bool {
 }
 
 func Find(directories []string, command string) string {
+	for _, directory := range directories {
+		for _, name := range Candidates(runtime.GOOS, command) {
+			candidate := filepath.Join(directory, name)
+			if Runnable(candidate) {
+				return candidate
+			}
+		}
+	}
+	return ""
+}
+
+// Runnable also validates the interpreter of a script launcher. This prevents
+// a stale project or system shim from hiding a working managed fallback.
+func Runnable(path string) bool {
+	if !Executable(path) || runtime.GOOS == "windows" {
+		return Executable(path)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	line, _ := bufio.NewReader(file).ReadString('\n')
+	if !strings.HasPrefix(line, "#!") {
+		return true
+	}
+	fields := strings.Fields(strings.TrimPrefix(strings.TrimSpace(line), "#!"))
+	if len(fields) == 0 || !filepath.IsAbs(fields[0]) || !Executable(fields[0]) {
+		return false
+	}
+	if filepath.Base(fields[0]) != "env" || len(fields) == 1 {
+		return true
+	}
+	interpreter := ""
+	for _, field := range fields[1:] {
+		if strings.HasPrefix(field, "-") || strings.Contains(field, "=") {
+			continue
+		}
+		interpreter = field
+		break
+	}
+	if interpreter == "" {
+		return false
+	}
+	if path, err := exec.LookPath(interpreter); err == nil && Executable(path) {
+		return true
+	}
+	return findExecutable(userDirectories(), interpreter) != ""
+}
+
+func findExecutable(directories []string, command string) string {
 	for _, directory := range directories {
 		for _, name := range Candidates(runtime.GOOS, command) {
 			candidate := filepath.Join(directory, name)
@@ -74,12 +125,12 @@ func ResolveProject(project, workspace, command string) string {
 
 func LookPath(command string) (string, error) {
 	if filepath.IsAbs(command) {
-		if Executable(command) {
+		if Runnable(command) {
 			return command, nil
 		}
 		return "", exec.ErrNotFound
 	}
-	if path, err := exec.LookPath(command); err == nil {
+	if path, err := exec.LookPath(command); err == nil && Runnable(path) {
 		return path, nil
 	}
 	if path := Find(userDirectories(), command); path != "" {

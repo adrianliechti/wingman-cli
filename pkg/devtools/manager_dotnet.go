@@ -11,8 +11,8 @@ import (
 )
 
 var dotnetRecipes = []recipe{
-	{ID: "csharp-ls", Kind: installerDotnet, Packages: []string{"csharp-ls"}, Commands: []string{"csharp-ls"}},
-	{ID: "netcoredbg", Kind: installerNetCoreDbg, Commands: []string{"netcoredbg"}},
+	{ID: "csharp-ls", Label: "C# language tools", Kind: installerDotnet, Packages: []string{"csharp-ls"}, Commands: []string{"csharp-ls"}},
+	{ID: "netcoredbg", Label: ".NET debugger", Kind: installerNetCoreDbg, Commands: []string{"netcoredbg"}},
 }
 
 const netCoreDbgReleaseURL = "https://api.github.com/repos/Samsung/netcoredbg/releases/latest"
@@ -35,7 +35,7 @@ func (m *Manager) installDotnet(ctx context.Context, item recipe, stage string) 
 	)
 	for _, pkg := range item.Packages {
 		args := []string{"tool", "install", "--tool-path", bin, pkg}
-		if output, err := m.run(ctx, dotnet, args, stage, env); err != nil {
+		if output, err := m.run(ctx, dotnet, args, installWorkingDir(item, stage), env); err != nil {
 			return commandError(output, err)
 		}
 	}

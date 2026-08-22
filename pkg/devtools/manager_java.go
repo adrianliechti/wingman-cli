@@ -20,7 +20,7 @@ const (
 
 var (
 	javaRecipes = []recipe{
-		{ID: "jdtls", Kind: installerJava, Commands: []string{"jdtls"}},
+		{ID: "jdtls", Label: "Java tools", Kind: installerJava, Commands: []string{"jdtls"}},
 	}
 	jdtlsVersionPattern = regexp.MustCompile(`/jdtls/milestones/([0-9]+\.[0-9]+\.[0-9]+)`)
 )
