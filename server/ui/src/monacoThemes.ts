@@ -1,26 +1,46 @@
 import type { Monaco } from "@monaco-editor/react";
+import {
+	javascriptDefaults,
+	typescriptDefaults,
+	type ModeConfiguration,
+} from "monaco-editor/languages/features/typescript/register.js";
 import type { ColorScheme } from "./hooks/useColorScheme";
 
 let registered = false;
+
+const projectLanguageFeatures: ModeConfiguration = {
+	completionItems: false,
+	hovers: false,
+	documentSymbols: false,
+	definitions: false,
+	references: false,
+	documentHighlights: false,
+	rename: false,
+	diagnostics: true,
+	documentRangeFormattingEdits: false,
+	signatureHelp: false,
+	onTypeFormattingEdits: false,
+	codeActions: false,
+	inlayHints: false,
+};
 
 export function defineWingmanThemes(monaco: Monaco) {
 	if (registered) return;
 	registered = true;
 
 	// The standalone TypeScript worker has no workspace tsconfig.json or
-	// package graph. Keep syntax validation as a fallback, but leave semantic
-	// and suggestion diagnostics to the project-aware language server.
-	void import("monaco-editor/languages/features/typescript/register.js").then(
-		({ javascriptDefaults, typescriptDefaults }) => {
-			const diagnostics = {
-				noSemanticValidation: true,
-				noSuggestionDiagnostics: true,
-				noSyntaxValidation: false,
-			};
-			typescriptDefaults.setDiagnosticsOptions(diagnostics);
-			javascriptDefaults.setDiagnosticsOptions(diagnostics);
-		},
-	);
+	// package graph. Wingman's project-aware service owns semantic features;
+	// retaining Monaco's providers would duplicate hovers, completions, and
+	// navigation results. Keep only syntax validation as a startup fallback.
+	const diagnostics = {
+		noSemanticValidation: true,
+		noSuggestionDiagnostics: true,
+		noSyntaxValidation: false,
+	};
+	for (const defaults of [typescriptDefaults, javascriptDefaults]) {
+		defaults.setModeConfiguration(projectLanguageFeatures);
+		defaults.setDiagnosticsOptions(diagnostics);
+	}
 
 	monaco.editor.defineTheme("wingman", {
 		base: "vs-dark",

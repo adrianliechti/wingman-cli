@@ -215,6 +215,7 @@ func (s *Session) openedDocuments() []openDocument {
 
 func (s *Session) Close() {
 	s.closeOnce.Do(func() {
+		s.alive.Store(false)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -231,6 +232,9 @@ func retryRPC[T any](ctx context.Context, call func() (T, error)) (T, error) {
 	for attempt := range maxRetries {
 		result, err = call()
 		if err == nil || !isTransientError(err) {
+			return result, err
+		}
+		if attempt == maxRetries-1 {
 			return result, err
 		}
 		delay := retryBaseDelay << attempt

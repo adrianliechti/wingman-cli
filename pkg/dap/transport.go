@@ -250,16 +250,24 @@ func normalizeAdapterAddress(value string) (string, error) {
 	if err != nil || port < 1 || port > 65535 {
 		return "", fmt.Errorf("adapter reported invalid listen address %q", value)
 	}
-	if host != "" && !strings.EqualFold(host, "localhost") {
-		ip := net.ParseIP(host)
-		if ip != nil && !ip.IsUnspecified() && !ip.IsLoopback() {
-			return "", fmt.Errorf("adapter reported non-loopback listen address %q", value)
-		}
-		if ip == nil {
-			return "", fmt.Errorf("adapter reported non-loopback listen address %q", value)
+	if host == "" || strings.EqualFold(host, "localhost") {
+		return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || (!ip.IsUnspecified() && !ip.IsLoopback()) {
+		return "", fmt.Errorf("adapter reported non-loopback listen address %q", value)
+	}
+	if ip.IsUnspecified() {
+		if ip.To4() != nil {
+			ip = net.IPv4(127, 0, 0, 1)
+		} else {
+			ip = net.IPv6loopback
 		}
 	}
-	return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), nil
+	// Preserve the reported address family. Redirecting an IPv6-only adapter
+	// listening on ::1 or :: to 127.0.0.1 makes an otherwise healthy launch
+	// fail on hosts whose listener is not dual-stack.
+	return net.JoinHostPort(ip.String(), strconv.Itoa(port)), nil
 }
 
 func pipeTerminalOutput(writer *io.PipeWriter, snapshot []byte, chunks <-chan []byte, cancel func()) {

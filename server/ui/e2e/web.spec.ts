@@ -1277,7 +1277,7 @@ test("creates, saves, refreshes, and protects files changed on disk", async ({
 	const editor = page.locator(".monaco-editor");
 	await expect(editor).toBeVisible();
 	await editor.click();
-	await page.keyboard.type("package main\n\nfunc initialVersion() {}\n");
+	await page.keyboard.insertText("package main\n\nfunc initialVersion() {}\n");
 	const createdTab = page.getByRole("tab", { name: /web-created\.go/ });
 	await expect(createdTab).toHaveAttribute("aria-label", /unsaved changes/);
 	await page.keyboard.press("ControlOrMeta+S");
@@ -1294,7 +1294,8 @@ test("creates, saves, refreshes, and protects files changed on disk", async ({
 
 	await editor.click();
 	await page.keyboard.press("Control+End");
-	await page.keyboard.type("\nfunc localVersion() {}\n");
+	await page.keyboard.insertText("\nfunc localVersion() {}\n");
+	await expect(page.locator(".view-lines")).toContainText("localVersion");
 	await writeFile(
 		workspacePath("web-created.go"),
 		"package main\n\nfunc newerDiskVersion() {}\n",
@@ -1516,6 +1517,138 @@ test("leaves TypeScript project diagnostics to the active language server", asyn
 	await expect(
 		editor.locator(".squiggly-error, .squiggly-warning"),
 	).toHaveCount(0);
+});
+
+test("shows one project-aware TypeScript hover", async ({ page }) => {
+	let hoverRequests = 0;
+	await page.route(/\/api\/lsp\/capabilities\?/, async (route) => {
+		await route.fulfill({
+			json: {
+				workspace_uri: "file:///workspace",
+				language_server: true,
+				hover: true,
+			},
+		});
+	});
+	await page.route(/\/api\/lsp\/diagnostics$/, async (route) => {
+		await route.fulfill({ json: [] });
+	});
+	await page.route(/\/api\/lsp\/hover$/, async (route) => {
+		hoverRequests++;
+		await route.fulfill({
+			json: {
+				contents: '```typescript\nconst view: "Hello"\n```',
+			},
+		});
+	});
+
+	await composer(page);
+	await page
+		.getByRole("treeitem", { name: /standalone-diagnostics\.tsx/ })
+		.click();
+	const line = page.locator(".view-line", { hasText: "const view" });
+	await expect(line).toBeVisible();
+	await line.hover({ position: { x: 48, y: 8 } });
+	const hover = page.locator(".monaco-hover:visible");
+	await expect(hover).toContainText('const view: "Hello"');
+	await expect.poll(() => hoverRequests).toBe(1);
+	await expect(hover.locator(".hover-row")).toHaveCount(1);
+});
+
+test("does not flash standalone diagnostics while the project LSP starts", async ({
+	page,
+}) => {
+	let capabilitiesRequested = false;
+	let releaseCapabilities = () => {};
+	const capabilitiesReady = new Promise<void>((resolve) => {
+		releaseCapabilities = resolve;
+	});
+	await page.route(/\/api\/lsp\/capabilities\?/, async (route) => {
+		capabilitiesRequested = true;
+		await capabilitiesReady;
+		await route.fulfill({
+			json: {
+				workspace_uri: "file:///workspace",
+				language_server: true,
+			},
+		});
+	});
+	await page.route(/\/api\/lsp\/diagnostics$/, async (route) => {
+		await route.fulfill({ json: [] });
+	});
+
+	await composer(page);
+	await page
+		.getByRole("treeitem", { name: /standalone-diagnostics\.tsx/ })
+		.click();
+	const diagnostics = page
+		.locator(".monaco-editor")
+		.locator(".squiggly-error, .squiggly-warning");
+	try {
+		await expect.poll(() => capabilitiesRequested).toBe(true);
+		await page.waitForTimeout(1000);
+		expect(await diagnostics.count()).toBe(0);
+	} finally {
+		releaseCapabilities();
+	}
+	await expect(diagnostics).toHaveCount(0);
+});
+
+test("upgrades an open editor when its language server becomes available", async ({
+	page,
+}) => {
+	let languageServer = false;
+	let toolsState: "installing" | "ready" = "installing";
+	let editorCapabilityRequests = 0;
+	await page.route(/\/api\/capabilities$/, async (route) => {
+		await route.fulfill({
+			json: {
+				git: false,
+				git_init: false,
+				lsp: languageServer,
+				debug: false,
+				diffs: false,
+				tasks: false,
+				terminal: false,
+				tab: false,
+				"editor.tab.completion": false,
+				platform: "linux",
+				workspace_name: "workspace",
+				managed_tools: { state: toolsState },
+			},
+		});
+	});
+	await page.route(/\/api\/lsp\/capabilities\?/, async (route) => {
+		editorCapabilityRequests++;
+		await route.fulfill({
+			json: {
+				workspace_uri: "file:///workspace",
+				language_server: languageServer,
+				definition: languageServer,
+			},
+		});
+	});
+	await page.route(/\/api\/lsp\/diagnostics$/, async (route) => {
+		await route.fulfill({ json: [] });
+	});
+
+	await composer(page);
+	await page
+		.getByRole("treeitem", { name: /standalone-diagnostics\.tsx/ })
+		.click();
+	await expect.poll(() => editorCapabilityRequests).toBe(1);
+
+	languageServer = true;
+	toolsState = "ready";
+	await expect
+		.poll(() => editorCapabilityRequests, { timeout: 10_000 })
+		.toBeGreaterThan(1);
+	await page.locator(".monaco-editor").click({ button: "right" });
+	await expect(
+		page
+			.getByRole("menu", { name: "Editor actions" })
+			.getByRole("menuitem", { name: "Go to Definition" }),
+	).toBeEnabled();
 });
 
 test("save awaits LSP actions that add and remove Go imports", async ({
@@ -3187,6 +3320,7 @@ test("follows debugger stops into the source editor", async ({ page }) => {
 		stop: undefined as { reason: string; thread_id: number } | undefined,
 		started_at: "2026-08-22T10:00:00Z",
 	};
+	const evaluations: Array<Record<string, unknown>> = [];
 
 	await page.route(/\/api\/capabilities$/, async (route) => {
 		await route.fulfill({
@@ -3222,6 +3356,12 @@ test("follows debugger stops into the source editor", async ({ page }) => {
 			},
 		});
 	});
+	await page.route(/\/api\/debug\/evaluate$/, async (route) => {
+		evaluations.push(route.request().postDataJSON());
+		await route.fulfill({
+			json: { result: "70", type: "int", variables_reference: 0 },
+		});
+	});
 
 	await composer(page);
 	await expect(page.locator('[data-center-tab="debug"]')).toBeVisible();
@@ -3234,7 +3374,18 @@ test("follows debugger stops into the source editor", async ({ page }) => {
 
 	const sourceTab = page.locator('[data-center-tab="file:debug-follow.go"]');
 	await expect(sourceTab).toHaveAttribute("aria-selected", "true");
-	await expect(
-		page.locator(".view-line:visible", { hasText: "breakpointTarget = 70" }),
-	).toBeVisible();
+	const stoppedLine = page.locator(".view-line:visible", {
+		hasText: "breakpointTarget = 70",
+	});
+	await expect(stoppedLine).toBeVisible();
+	await stoppedLine.hover({ position: { x: 72, y: 8 } });
+	await expect.poll(() => evaluations.length).toBe(1);
+	expect(evaluations[0]).toMatchObject({
+		expression: "breakpointTarget",
+		session_id: "debug-follow-session",
+		frame_id: 21,
+		state_version: 2,
+		context: "hover",
+	});
+	await expect(page.locator(".monaco-hover:visible")).toContainText("70");
 });

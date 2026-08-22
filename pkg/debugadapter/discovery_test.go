@@ -259,6 +259,25 @@ func TestRegistryDetectWorkspaceSkipsGeneratedTrees(t *testing.T) {
 	}
 }
 
+func TestRegistryDetectWorkspaceDoesNotFollowSourceSymlinks(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.go")
+	if err := os.WriteFile(outside, []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "linked.go")); err != nil {
+		t.Skipf("source symlinks are unavailable: %v", err)
+	}
+
+	targets, err := NewRegistry(nil).DetectWorkspace(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 0 {
+		t.Fatalf("workspace discovery followed a source symlink: %#v", targets)
+	}
+}
+
 func TestCheckedInDebuggerSamplesExposeRunnableTargets(t *testing.T) {
 	tests := []struct {
 		path     string

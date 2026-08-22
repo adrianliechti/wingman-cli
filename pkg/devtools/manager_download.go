@@ -96,15 +96,19 @@ func fetchURL(ctx context.Context, address string) ([]byte, error) {
 // publish no checksum, such as GitHub assets uploaded before digests existed,
 // pass unverified rather than making the tool uninstallable.
 func verifySHA256(data []byte, published string) error {
-	want := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(published)), "sha256:")
+	published = strings.TrimSpace(published)
+	if published == "" {
+		return nil
+	}
+	want := strings.TrimPrefix(strings.ToLower(published), "sha256:")
 	if fields := strings.Fields(want); len(fields) > 0 {
 		want = fields[0]
 	}
-	if want == "" {
-		return nil
-	}
 	got := fmt.Sprintf("%x", sha256.Sum256(data))
-	if len(want) != len(got) || !strings.EqualFold(got, want) {
+	if len(want) != len(got) {
+		return fmt.Errorf("invalid published SHA-256 checksum %q", published)
+	}
+	if !strings.EqualFold(got, want) {
 		return fmt.Errorf("SHA-256 mismatch: got %s, want %s", got, published)
 	}
 	return nil

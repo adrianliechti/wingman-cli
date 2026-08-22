@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"slices"
 	"testing"
+	"time"
 
 	"go.lsp.dev/protocol"
 
@@ -297,4 +298,37 @@ func TestProjectDirsAppliesExcludes(t *testing.T) {
 		return
 	}
 	t.Fatal("typescript project type not found")
+}
+
+func TestIsSubPathHandlesRelativeRoots(t *testing.T) {
+	if !isSubPath(".", filepath.Join("nested", "source.go")) {
+		t.Fatal("relative workspace root did not contain a nested file")
+	}
+	if !isSubPath("workspace", filepath.Join("workspace", "nested", "source.go")) {
+		t.Fatal("relative project root did not contain a nested file")
+	}
+	if isSubPath("workspace", "workspace-other") {
+		t.Fatal("path with a shared textual prefix was treated as a child")
+	}
+}
+
+func TestDetectedProjectsDoNotExposeCachedServerSlices(t *testing.T) {
+	manager := &Manager{roots: []projectRoot{{
+		Dir: "project",
+		Server: Server{
+			Args:                  []string{"--stdio"},
+			Languages:             []string{"go"},
+			InitializationOptions: []byte(`{"setting":true}`),
+		},
+	}}, detectedAt: time.Now()}
+
+	first := manager.detect()
+	first[0].Server.Args[0] = "changed"
+	first[0].Server.Languages[0] = "changed"
+	first[0].Server.InitializationOptions[0] = 'x'
+
+	second := manager.detect()
+	if second[0].Server.Args[0] != "--stdio" || second[0].Server.Languages[0] != "go" || string(second[0].Server.InitializationOptions) != `{"setting":true}` {
+		t.Fatalf("cached descriptor was mutated through a detection result: %+v", second[0].Server)
+	}
 }

@@ -16,6 +16,9 @@ const maxRestarts = 3
 
 type Manager struct {
 	workingDir string
+	lifecycle  context.Context
+	cancel     context.CancelFunc
+	connect    sessionConnector
 	sessions   map[string]*Session
 	starting   map[string]*sessionStart
 	restarts   map[string]int
@@ -62,11 +65,17 @@ type sessionStart struct {
 	err     error
 }
 
+type sessionConnector func(context.Context, string, Server) (*Session, error)
+
 const detectionCacheTTL = 30 * time.Second
 
 func NewManager(workingDir string, options ...ManagerOption) *Manager {
+	lifecycle, cancel := context.WithCancel(context.Background())
 	manager := &Manager{
 		workingDir: workingDir,
+		lifecycle:  lifecycle,
+		cancel:     cancel,
+		connect:    connect,
 		sessions:   make(map[string]*Session),
 		starting:   make(map[string]*sessionStart),
 		restarts:   make(map[string]int),
@@ -96,7 +105,22 @@ func (m *Manager) detect() []projectRoot {
 		}
 		m.detectedAt = time.Now()
 	}
-	return slices.Clone(m.roots)
+	return cloneProjectRoots(m.roots)
+}
+
+// Detection results are cached, but every public lookup returns an isolated
+// descriptor. Server contains slices, so a shallow copy would let a caller
+// mutate the cache (and, for catalog-backed fields, the global catalog) by
+// changing Args, Languages, or InitializationOptions in a returned value.
+func cloneProjectRoots(values []projectRoot) []projectRoot {
+	cloned := make([]projectRoot, len(values))
+	for index, value := range values {
+		cloned[index] = value
+		cloned[index].Server.Args = slices.Clone(value.Server.Args)
+		cloned[index].Server.Languages = slices.Clone(value.Server.Languages)
+		cloned[index].Server.InitializationOptions = slices.Clone(value.Server.InitializationOptions)
+	}
+	return cloned
 }
 
 // InvalidateDetection makes newly installed or updated servers visible on the
@@ -141,9 +165,7 @@ func (m *Manager) SetServerInitializationOptions(name string, value any) error {
 		}
 	}
 	m.mu.Unlock()
-	for _, session := range stale {
-		session.Close()
-	}
+	closeSessions(stale)
 	return nil
 }
 
@@ -284,21 +306,43 @@ func (m *Manager) getSession(ctx context.Context, project projectRoot) (*Session
 	m.starting[key] = start
 	m.mu.Unlock()
 
-	session, err := connect(ctx, project.Dir, server)
-	if err != nil && restarting {
-		err = fmt.Errorf("restart %s: %w", server.Name, err)
+	connectCtx, cancelConnect := context.WithCancel(ctx)
+	stopCloseCancellation := func() bool { return false }
+	if m.lifecycle != nil {
+		stopCloseCancellation = context.AfterFunc(m.lifecycle, cancelConnect)
+	}
+	connector := m.connect
+	if connector == nil {
+		connector = connect
+	}
+	session, err := connector(connectCtx, project.Dir, server)
+	if err == nil && session == nil {
+		err = fmt.Errorf("start %s: connector returned no session", server.Name)
+	}
+	if err == nil {
+		err = connectCtx.Err()
 	}
 	if err == nil {
 		for _, document := range openedDocuments {
 			if document.Path == "" {
 				continue
 			}
+			var syncErr error
 			if document.Saved {
-				_, _ = session.SaveDocument(ctx, document.Path, document.Content)
+				_, syncErr = session.SaveDocument(connectCtx, document.Path, document.Content)
 			} else {
-				_, _ = session.SyncDocument(ctx, document.Path, document.Content)
+				_, syncErr = session.SyncDocument(connectCtx, document.Path, document.Content)
+			}
+			if syncErr != nil {
+				err = fmt.Errorf("restore open document %s: %w", document.Path, syncErr)
+				break
 			}
 		}
+	}
+	_ = stopCloseCancellation()
+	cancelConnect()
+	if err != nil && restarting {
+		err = fmt.Errorf("restart %s: %w", server.Name, err)
 	}
 
 	m.detectMu.Lock()
@@ -347,7 +391,21 @@ func (m *Manager) ActiveSession(filePath string) (*Session, bool) {
 
 func (m *Manager) WarmUpServers() {
 	go func() {
+		if m.lifecycle != nil {
+			select {
+			case <-m.lifecycle.Done():
+				return
+			default:
+			}
+		}
 		for _, project := range m.detect() {
+			if m.lifecycle != nil {
+				select {
+				case <-m.lifecycle.Done():
+					return
+				default:
+				}
+			}
 			m.warmUp(project)
 		}
 	}()
@@ -370,7 +428,11 @@ func (m *Manager) warmUp(project projectRoot) {
 			m.mu.Unlock()
 		}()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 2*startupTimeout)
+		parent := m.lifecycle
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(parent, 2*startupTimeout)
 		defer cancel()
 		m.getSession(ctx, project)
 	}()
@@ -378,6 +440,10 @@ func (m *Manager) warmUp(project projectRoot) {
 
 func (m *Manager) Close() {
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
 	m.closed = true
 	sessions := make([]*Session, 0, len(m.sessions))
 	for _, session := range m.sessions {
@@ -385,8 +451,20 @@ func (m *Manager) Close() {
 	}
 	clear(m.sessions)
 	m.mu.Unlock()
-
-	for _, session := range sessions {
-		session.Close()
+	if m.cancel != nil {
+		m.cancel()
 	}
+
+	closeSessions(sessions)
+}
+
+func closeSessions(sessions []*Session) {
+	var wait sync.WaitGroup
+	for _, session := range sessions {
+		if session == nil {
+			continue
+		}
+		wait.Go(session.Close)
+	}
+	wait.Wait()
 }

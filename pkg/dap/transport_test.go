@@ -64,9 +64,12 @@ func TestTCPAdapterOutputStreamsPromptWithoutNewline(t *testing.T) {
 
 func TestNormalizeAdapterAddressUsesLoopback(t *testing.T) {
 	values := map[string]string{
-		"4711":         "127.0.0.1:4711",
-		"0.0.0.0:4711": "127.0.0.1:4711",
-		"[::]:4711":    "127.0.0.1:4711",
+		"4711":           "127.0.0.1:4711",
+		"0.0.0.0:4711":   "127.0.0.1:4711",
+		"127.0.0.1:4711": "127.0.0.1:4711",
+		"localhost:4711": "127.0.0.1:4711",
+		"[::]:4711":      "[::1]:4711",
+		"[::1]:4711":     "[::1]:4711",
 	}
 	for input, want := range values {
 		got, err := normalizeAdapterAddress(input)

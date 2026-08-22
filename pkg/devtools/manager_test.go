@@ -1065,12 +1065,12 @@ func TestUpdateDisabledByEnvironment(t *testing.T) {
 	}
 }
 
-func TestVerifySHA256AllowsMissingPublishedChecksum(t *testing.T) {
+func TestVerifySHA256AllowsOnlyAbsentPublishedChecksum(t *testing.T) {
 	if err := verifySHA256([]byte("data"), ""); err != nil {
 		t.Fatalf("missing checksum was rejected: %v", err)
 	}
-	if err := verifySHA256([]byte("data"), "sha256:"); err != nil {
-		t.Fatalf("empty checksum was rejected: %v", err)
+	if err := verifySHA256([]byte("data"), "sha256:"); err == nil {
+		t.Fatal("malformed empty checksum was accepted")
 	}
 	if err := verifySHA256([]byte("data"), "sha256:0000000000000000000000000000000000000000000000000000000000000000"); err == nil {
 		t.Fatal("wrong checksum was accepted")

@@ -429,7 +429,7 @@ func TestPackageScriptPlansNodeServerWithoutBrowser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Configuration["type"] != "pwa-node" || plan.Configuration["runtimeExecutable"] != npm || !reflect.DeepEqual(plan.Configuration["runtimeArgs"], []string{"run-script", "server"}) || plan.Configuration["autoAttachChildProcesses"] != true || plan.PreLaunch != nil || !plan.SupportsTerminal {
+	if plan.Configuration["type"] != "pwa-node" || plan.Configuration["runtimeExecutable"] != npm || !reflect.DeepEqual(plan.Configuration["runtimeArgs"], []string{"run", "server"}) || plan.Configuration["autoAttachChildProcesses"] != true || plan.PreLaunch != nil || !plan.SupportsTerminal {
 		t.Fatalf("plan = %#v", plan)
 	}
 	environment, ok := plan.Configuration["env"].(map[string]string)

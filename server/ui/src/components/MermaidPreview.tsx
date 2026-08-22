@@ -14,15 +14,9 @@ function prepareSVG(svg: string) {
 	// is correctly rejected as malformed XML, leaving an otherwise empty canvas.
 	let normalized =
 		svg.includes("xlink:href") && !svg.includes("xmlns:xlink")
-			? svg.replace(
-					/<svg\b/,
-					'<svg xmlns:xlink="http://www.w3.org/1999/xlink"',
-				)
+			? svg.replace(/<svg\b/, '<svg xmlns:xlink="http://www.w3.org/1999/xlink"')
 			: svg;
-	const document = new DOMParser().parseFromString(
-		normalized,
-		"image/svg+xml",
-	);
+	const document = new DOMParser().parseFromString(normalized, "image/svg+xml");
 	const root = document.documentElement;
 	if (root.getAttribute("aria-roledescription") === "c4") {
 		const groups = Array.from(root.children).filter(

@@ -214,14 +214,6 @@ func matchesName(pattern, name string) bool {
 func isSubPath(parent, child string) bool {
 	parent = filepath.Clean(parent)
 	child = filepath.Clean(child)
-
-	if parent == child {
-		return true
-	}
-
-	if !strings.HasSuffix(parent, string(filepath.Separator)) {
-		parent += string(filepath.Separator)
-	}
-
-	return strings.HasPrefix(child, parent)
+	relative, err := filepath.Rel(parent, child)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }

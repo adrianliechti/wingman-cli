@@ -234,6 +234,16 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 		m.mu.Unlock()
 		return nil, ErrActiveSession
 	}
+	for path, breakpoints := range options.Breakpoints {
+		if err := validateSourceBreakpoints(breakpoints); err != nil {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("breakpoints for %s: %w", path, err)
+		}
+	}
+	if err := validateFunctionBreakpoints(options.FunctionBreakpoints); err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
 	combinedBreakpoints := make(map[string][]SourceBreakpoint, len(options.Breakpoints)+len(m.breakpoints))
 	for path, breakpoints := range options.Breakpoints {
 		combinedBreakpoints[filepath.Clean(path)] = slices.Clone(breakpoints)
@@ -364,9 +374,21 @@ func selectAdapter(values []detectedAdapter, requested string) (detectedAdapter,
 	requested = strings.TrimSpace(requested)
 	if requested != "" && requested != "auto" {
 		for _, value := range values {
-			if strings.EqualFold(value.adapter.Name, requested) || strings.EqualFold(value.adapter.Language, requested) {
+			if strings.EqualFold(value.adapter.Name, requested) {
 				return value, nil
 			}
+		}
+		var matching []detectedAdapter
+		for _, value := range values {
+			if strings.EqualFold(value.adapter.Language, requested) {
+				matching = append(matching, value)
+			}
+		}
+		if len(matching) == 1 {
+			return matching[0], nil
+		}
+		if len(matching) > 1 {
+			return detectedAdapter{}, fmt.Errorf("multiple %s debug adapters are available; choose one by name", requested)
 		}
 		return detectedAdapter{}, fmt.Errorf("debug adapter %q is not available", requested)
 	}
@@ -675,6 +697,9 @@ func (m *Manager) Breakpoints(path string) []SourceBreakpoint {
 }
 
 func (m *Manager) SetBreakpoints(ctx context.Context, path string, values []SourceBreakpoint) ([]Breakpoint, error) {
+	if err := validateSourceBreakpoints(values); err != nil {
+		return nil, err
+	}
 	path = filepath.Clean(path)
 	m.mu.Lock()
 	m.breakpoints[path] = slices.Clone(values)

@@ -86,6 +86,7 @@ type Workspace struct {
 
 	mcpCatalogMu     sync.Mutex
 	mcpRefreshCancel context.CancelFunc
+	managedUpdates   map[*ManagedToolsUpdate]struct{}
 
 	// LSP calls may include server startup and network round-trips. Keep their
 	// lifetime lock separate from workspace state so close does not block
@@ -331,40 +332,13 @@ const (
 func (w *Workspace) UpdateManagedTools(ctx context.Context, tools ManagedToolSet, progress ...func(devtools.Progress)) (bool, error) {
 	w.mu.RLock()
 	manager := w.DevTools
-	root := w.RootPath
 	closed := w.closed
 	w.mu.RUnlock()
 	if closed || manager == nil {
 		return false, nil
 	}
 
-	var requirements []devtools.Requirement
-	if tools&ManagedLSPTools != 0 {
-		managedOnly := make(map[string]bool)
-		for _, command := range w.DebugRegistry().ManagedOnlyCommands() {
-			managedOnly[command] = true
-		}
-		for _, requirement := range lsp.DetectRequirements(root) {
-			requirements = append(requirements, devtools.Requirement{
-				Alternatives: requirement.Commands, Workspace: root, Projects: requirement.Directories,
-				MinimumMajorVersions: requirement.MinimumMajorVersions,
-				ManagedOnly: slices.ContainsFunc(requirement.Commands, func(command string) bool {
-					return managedOnly[command]
-				}),
-			})
-		}
-	}
-
-	var detectErr error
-	if tools&ManagedDAPTools != 0 {
-		var adapterRequirements []dap.AdapterRequirement
-		adapterRequirements, detectErr = dap.DetectRequirements(ctx, root, w.DebugRegistry().Descriptors())
-		for _, requirement := range adapterRequirements {
-			requirements = append(requirements, devtools.Requirement{
-				Alternatives: requirement.Commands, Workspace: root, Projects: requirement.Projects,
-			})
-		}
-	}
+	requirements, detectErr := w.managedToolRequirements(ctx, tools)
 	changed, updateErr := manager.Update(ctx, requirements, progress...)
 	if !changed {
 		return false, errors.Join(detectErr, updateErr)
@@ -399,6 +373,55 @@ func (w *Workspace) UpdateManagedTools(ctx context.Context, tools ManagedToolSet
 	return true, errors.Join(detectErr, updateErr)
 }
 
+// managedToolRequirements keeps frontend scope explicit. A hosted debugger
+// such as java-debug may require a complete managed JDT LS bundle, but that
+// must not force TUI/ACP clients asking only for LSP support to replace a
+// usable system JDT LS. Conversely, a DAP-only caller still needs the hosted
+// adapter dependency even before its descriptor can become available.
+func (w *Workspace) managedToolRequirements(ctx context.Context, tools ManagedToolSet) ([]devtools.Requirement, error) {
+	root := w.RootPath
+	registry := w.DebugRegistry()
+	managedOnly := make(map[string]bool)
+	if tools&ManagedDAPTools != 0 {
+		for _, command := range registry.ManagedOnlyCommands() {
+			managedOnly[command] = true
+		}
+	}
+
+	var requirements []devtools.Requirement
+	if tools&ManagedLSPTools != 0 || len(managedOnly) > 0 {
+		for _, requirement := range lsp.DetectRequirements(root) {
+			alternatives := slices.Clone(requirement.Commands)
+			if tools&ManagedLSPTools == 0 {
+				alternatives = slices.DeleteFunc(alternatives, func(command string) bool {
+					return !managedOnly[command]
+				})
+				if len(alternatives) == 0 {
+					continue
+				}
+			}
+			requirements = append(requirements, devtools.Requirement{
+				Alternatives: alternatives, Workspace: root, Projects: requirement.Directories,
+				MinimumMajorVersions: requirement.MinimumMajorVersions,
+				ManagedOnly: slices.ContainsFunc(alternatives, func(command string) bool {
+					return managedOnly[command]
+				}),
+			})
+		}
+	}
+
+	if tools&ManagedDAPTools == 0 {
+		return requirements, nil
+	}
+	adapterRequirements, detectErr := dap.DetectRequirements(ctx, root, registry.Descriptors())
+	for _, requirement := range adapterRequirements {
+		requirements = append(requirements, devtools.Requirement{
+			Alternatives: requirement.Commands, Workspace: root, Projects: requirement.Projects,
+		})
+	}
+	return requirements, detectErr
+}
+
 type managedToolsResult struct {
 	changed bool
 	err     error
@@ -418,8 +441,25 @@ func (w *Workspace) StartManagedToolsUpdate(ctx context.Context, tools ManagedTo
 	}
 	updateCtx, cancel := context.WithCancel(ctx)
 	update := &ManagedToolsUpdate{cancel: cancel, done: make(chan struct{})}
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		cancel()
+		close(update.done)
+		return update
+	}
+	if w.managedUpdates == nil {
+		w.managedUpdates = make(map[*ManagedToolsUpdate]struct{})
+	}
+	w.managedUpdates[update] = struct{}{}
+	w.mu.Unlock()
 	go func() {
-		defer close(update.done)
+		defer func() {
+			w.mu.Lock()
+			delete(w.managedUpdates, update)
+			w.mu.Unlock()
+			close(update.done)
+		}()
 		update.result.changed, update.result.err = w.UpdateManagedTools(updateCtx, tools, progress...)
 		if updateCtx.Err() != nil {
 			update.result.err = nil
@@ -590,6 +630,11 @@ func (w *Workspace) Close() {
 	root := w.Root
 	scratchPath := w.ScratchPath
 	mcpRefreshCancel := w.mcpRefreshCancel
+	managedUpdates := make([]*ManagedToolsUpdate, 0, len(w.managedUpdates))
+	for update := range w.managedUpdates {
+		managedUpdates = append(managedUpdates, update)
+	}
+	clear(w.managedUpdates)
 	w.MCP = nil
 	w.Language = nil
 	w.DAP = nil
@@ -599,6 +644,9 @@ func (w *Workspace) Close() {
 	w.lspTools = nil
 	w.graphTools = nil
 	w.mu.Unlock()
+	for _, update := range managedUpdates {
+		update.Cancel()
+	}
 	if mcpManager != nil {
 		mcpManager.SetToolListChangedHandler(nil)
 	}

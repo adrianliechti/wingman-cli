@@ -351,10 +351,12 @@ func nodeScriptPlan(request Request) (Plan, error) {
 		return Plan{}, fmt.Errorf("package.json script %q is no longer a Node.js script", request.Target.Name)
 	}
 	configuration := map[string]any{
-		"type":                     "pwa-node",
-		"cwd":                      ".",
-		"runtimeExecutable":        packageManagerPath,
-		"runtimeArgs":              []string{"run-script", request.Target.Name},
+		"type":              "pwa-node",
+		"cwd":               ".",
+		"runtimeExecutable": packageManagerPath,
+		// npm, pnpm, Yarn, and Bun all share the run spelling; their
+		// run-script aliases are not portable across package managers.
+		"runtimeArgs":              []string{"run", request.Target.Name},
 		"sourceMaps":               true,
 		"autoAttachChildProcesses": true,
 		"skipFiles":                []string{"<node_internals>/**"},

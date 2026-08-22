@@ -246,7 +246,7 @@ func (registry *Registry) DetectWorkspace(ctx context.Context, root string) ([]T
 		}
 		visited++
 		info, err := entry.Info()
-		if err != nil || info.Size() > maxSourceBytes {
+		if err != nil || !info.Mode().IsRegular() || info.Size() > maxSourceBytes {
 			return nil
 		}
 		source, err := os.ReadFile(filePath)

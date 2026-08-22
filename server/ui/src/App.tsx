@@ -293,6 +293,7 @@ export default function App() {
 	const tabAvailable = capabilities?.tab ?? false;
 	const tabEnabled =
 		tabAvailable && (capabilities?.["editor.tab.completion"] ?? false);
+	const languageServicesKey = `${capabilities?.lsp ?? false}:${capabilities?.managed_tools?.state ?? ""}`;
 	const toggleEditorTabCompletion = useCallback(async () => {
 		try {
 			await setEditorTabCompletion(!tabEnabled);
@@ -834,6 +835,16 @@ export default function App() {
 	const openDebugLauncher = useCallback((seed: DebugLauncherSeed) => {
 		setDebugLauncher({ ...seed });
 	}, []);
+	const invalidateDebugDetails = useCallback(() => {
+		void queryClient.invalidateQueries({
+			queryKey: queryKeys.debug.inspection,
+			exact: true,
+		});
+		void queryClient.invalidateQueries({
+			queryKey: queryKeys.debug.output,
+			exact: true,
+		});
+	}, [queryClient]);
 	const applyDebugSession = useCallback(
 		(session?: DebugSession) => {
 			const current = debugSessionRef.current;
@@ -922,6 +933,7 @@ export default function App() {
 						queryKey: queryKeys.debug.state,
 						exact: true,
 					});
+					invalidateDebugDetails();
 				}
 			} catch (error) {
 				toast({
@@ -933,7 +945,14 @@ export default function App() {
 				setDebugControlBusy(false);
 			}
 		},
-		[applyDebugSession, debugControlBusy, debugSession, queryClient, toast],
+		[
+			applyDebugSession,
+			debugControlBusy,
+			debugSession,
+			invalidateDebugDetails,
+			queryClient,
+			toast,
+		],
 	);
 
 	const closeTabNow = useCallback(
@@ -1797,15 +1816,17 @@ export default function App() {
 				queryKey: queryKeys.debug.state,
 				exact: true,
 			});
+			invalidateDebugDetails();
 			setDebugContentView(session.terminal_id ? "terminal" : "output");
 			showDebugDetails();
 			setActiveTabId("debug");
 		},
-		[applyDebugSession, queryClient, showDebugDetails],
+		[applyDebugSession, invalidateDebugDetails, queryClient, showDebugDetails],
 	);
 	const showDebugFailure = useCallback(
 		(session: DebugSession) => {
 			applyDebugSession(session);
+			invalidateDebugDetails();
 			setTabs((current) =>
 				syncDebugTab(current, undefined, true, activePaneRef.current),
 			);
@@ -1813,7 +1834,7 @@ export default function App() {
 			showDebugDetails();
 			setActiveTabId("debug");
 		},
-		[applyDebugSession, showDebugDetails],
+		[applyDebugSession, invalidateDebugDetails, showDebugDetails],
 	);
 	const handleDebugTerminalExit = useCallback((id: string) => {
 		exitedDebugTerminalIDsRef.current.add(id);
@@ -2196,6 +2217,7 @@ export default function App() {
 						});
 					}}
 					view={fileViews[tab.id] ?? defaultFileView(tab.path)}
+					languageServicesKey={languageServicesKey}
 				/>
 			);
 		}
@@ -2806,7 +2828,11 @@ export default function App() {
 						.then(({ session }) => {
 							// Only a session created by this launch attempt carries its
 							// failure output; a leftover session would hide the error.
-							if (session && session.session_id !== previousID) {
+							if (
+								session?.state === "terminated" &&
+								session.error &&
+								session.session_id !== previousID
+							) {
 								showDebugFailure(session);
 								return;
 							}

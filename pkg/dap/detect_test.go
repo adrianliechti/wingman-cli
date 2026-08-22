@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -443,6 +444,23 @@ func TestDetectRequirementsDoesNotRequireInstalledAdapter(t *testing.T) {
 	}}
 	if !reflect.DeepEqual(requirements, want) {
 		t.Fatalf("requirements = %#v, want %#v", requirements, want)
+	}
+}
+
+func TestSelectAdapterRejectsAmbiguousLanguage(t *testing.T) {
+	values := []detectedAdapter{
+		{adapter: AdapterDescriptor{Name: "first", Language: "Test"}},
+		{adapter: AdapterDescriptor{Name: "second", Language: "Test"}},
+	}
+	if _, err := selectAdapter(values, "Test"); err == nil || !strings.Contains(err.Error(), "multiple") {
+		t.Fatalf("language selection error = %v, want ambiguity", err)
+	}
+	selected, err := selectAdapter(values, "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.adapter.Name != "second" {
+		t.Fatalf("selected adapter = %q", selected.adapter.Name)
 	}
 }
 

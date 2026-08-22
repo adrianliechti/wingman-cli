@@ -98,7 +98,14 @@ func (process *debugProcess) waitReady(ctx context.Context, address string) erro
 	}
 	readyCtx, cancel := context.WithTimeout(ctx, preLaunchReadyTimeout)
 	defer cancel()
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+		// ReadyURL is constrained to loopback by the API. Do not let a local
+		// development server redirect this health probe to an arbitrary host.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	ticker := time.NewTicker(150 * time.Millisecond)
 	defer ticker.Stop()
 	for {

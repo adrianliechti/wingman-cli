@@ -212,10 +212,16 @@ function MarkdownCodeBlock({ children, ...props }: CodePreProps) {
 						<button
 							type="button"
 							onClick={copyCode}
-							aria-label={copied ? "Diagram source copied" : "Copy diagram source"}
+							aria-label={
+								copied ? "Diagram source copied" : "Copy diagram source"
+							}
 							title={copied ? "Copied" : "Copy source"}
 						>
-							{copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+							{copied ? (
+								<Check aria-hidden="true" />
+							) : (
+								<Copy aria-hidden="true" />
+							)}
 						</button>
 					</span>
 				</div>

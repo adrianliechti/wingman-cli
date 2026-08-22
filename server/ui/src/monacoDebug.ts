@@ -263,6 +263,7 @@ export function createMonacoDebugBridge({
 								expression.text,
 								state.session.session_id,
 								state.frame.id,
+								state.session.state_version,
 								controller.signal,
 							),
 						);
