@@ -27,6 +27,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/changes"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 	"github.com/adrianliechti/wingman-agent/pkg/debugadapter"
+	"github.com/adrianliechti/wingman-agent/pkg/devtools"
 	"github.com/adrianliechti/wingman-agent/pkg/graph"
 	"github.com/adrianliechti/wingman-agent/pkg/language"
 	"github.com/adrianliechti/wingman-agent/pkg/layout"
@@ -66,7 +67,8 @@ type Workspace struct {
 
 	Plugins []plugin.Plugin
 
-	MCP *mcp.Manager
+	MCP      *mcp.Manager
+	DevTools *devtools.Manager
 
 	Language *language.Service
 	DAP      *dap.Manager
@@ -77,12 +79,14 @@ type Workspace struct {
 	mu               sync.RWMutex
 	closed           bool
 	warmed           bool
+	debugRegistry    *debugadapter.Registry
 	mcpToolsByServer map[string][]tool.Tool
 	lspTools         []tool.Tool
 	graphTools       []tool.Tool
 
 	mcpCatalogMu     sync.Mutex
 	mcpRefreshCancel context.CancelFunc
+	managedUpdates   map[*ManagedToolsUpdate]struct{}
 
 	// LSP calls may include server startup and network round-trips. Keep their
 	// lifetime lock separate from workspace state so close does not block
@@ -142,6 +146,10 @@ func NewWorkspace(workDir string) (*Workspace, error) {
 	reportShadowedPluginSkills(mergedSkills)
 
 	mcpManager := loadMCP(workDir, plugins)
+	managedTools, toolsErr := devtools.New()
+	if toolsErr != nil {
+		fmt.Fprintf(os.Stderr, "managed tools: %v\n", toolsErr)
+	}
 
 	return &Workspace{
 		Root:        root,
@@ -150,6 +158,7 @@ func NewWorkspace(workDir string) (*Workspace, error) {
 		ScratchPath: scratchDir,
 		Plugins:     plugins,
 		MCP:         mcpManager,
+		DevTools:    managedTools,
 		baseSkills:  baseSkills,
 		skills:      mergedSkills,
 	}, nil
@@ -257,15 +266,19 @@ func (w *Workspace) WarmUp() {
 			changesManager = changes.New(w.RootPath)
 		}
 
-		debugRegistry := debugadapter.NewRegistry()
+		debugRegistry := debugadapter.NewRegistry(w.DevTools)
 		var languageOptions []lsp.ManagerOption
-		if bundles := debugRegistry.JDTLSBundles(); len(bundles) > 0 {
-			languageOptions = append(languageOptions, lsp.WithServerInitializationOptions("jdtls", map[string]any{
-				"bundles": bundles,
-			}))
+		if w.DevTools != nil {
+			languageOptions = append(languageOptions, lsp.WithCommandResolver(w.DevTools.Resolve))
+		}
+		for server, options := range debugRegistry.ServerInitializations() {
+			languageOptions = append(languageOptions, lsp.WithServerInitializationOptions(server, options))
 		}
 		languageService := language.New(w.RootPath, filepath.Join(projectGraphDir(w.RootPath), "graph.json"), languageOptions...)
 		dapManager := dap.NewManager(w.RootPath, debugRegistry.Descriptors()...)
+		if w.DevTools != nil {
+			dapManager.SetCommandResolver(w.DevTools.Resolve)
+		}
 		dapManager.SetAdapterConnector(debugadapter.NewConnector(languageService))
 		graphEngine := languageService.Graph()
 		lspTools := lsptool.NewTools(languageService)
@@ -290,6 +303,7 @@ func (w *Workspace) WarmUp() {
 		w.Changes = changesManager
 		w.Language = languageService
 		w.DAP = dapManager
+		w.debugRegistry = debugRegistry
 		w.lspTools = lspTools
 		w.graphTools = graphTools
 		w.warmed = true
@@ -299,6 +313,201 @@ func (w *Workspace) WarmUp() {
 
 		languageService.WarmUp()
 	})
+}
+
+// ManagedToolSet selects the editor capabilities a frontend uses. Browser
+// runtimes are intentionally installed on demand when browser debugging is
+// requested, rather than as part of workspace startup.
+type ManagedToolSet uint8
+
+const (
+	ManagedLSPTools ManagedToolSet = 1 << iota
+	ManagedDAPTools
+	ManagedEditorTools = ManagedLSPTools | ManagedDAPTools
+)
+
+// UpdateManagedTools installs missing project-relevant tools. Successful
+// updates invalidate discovery caches immediately; JDT LS restarts when its
+// debug plug-in changes, while other active sessions keep running.
+func (w *Workspace) UpdateManagedTools(ctx context.Context, tools ManagedToolSet, progress ...func(devtools.Progress)) (bool, error) {
+	w.mu.RLock()
+	manager := w.DevTools
+	closed := w.closed
+	w.mu.RUnlock()
+	if closed || manager == nil {
+		return false, nil
+	}
+
+	requirements, detectErr := w.managedToolRequirements(ctx, tools)
+	changed, updateErr := manager.Update(ctx, requirements, progress...)
+	if !changed {
+		return false, errors.Join(detectErr, updateErr)
+	}
+
+	w.lspLifeMu.RLock()
+	w.dapLifeMu.RLock()
+	w.mu.RLock()
+	languageService := w.Language
+	dapManager := w.DAP
+	closed = w.closed
+	w.mu.RUnlock()
+	if !closed {
+		updatedRegistry := debugadapter.NewRegistry(manager)
+		w.mu.Lock()
+		if !w.closed {
+			w.debugRegistry = updatedRegistry
+		}
+		w.mu.Unlock()
+		if languageService != nil {
+			for server, options := range updatedRegistry.ServerInitializations() {
+				updateErr = errors.Join(updateErr, languageService.SetServerInitializationOptions(server, options))
+			}
+			languageService.InvalidateLSPDetection()
+		}
+		if dapManager != nil {
+			dapManager.SetAdapters(updatedRegistry.Descriptors()...)
+		}
+	}
+	w.dapLifeMu.RUnlock()
+	w.lspLifeMu.RUnlock()
+	return true, errors.Join(detectErr, updateErr)
+}
+
+// managedToolRequirements keeps frontend scope explicit. A hosted debugger
+// such as java-debug may require a complete managed JDT LS bundle, but that
+// must not force TUI/ACP clients asking only for LSP support to replace a
+// usable system JDT LS. Conversely, a DAP-only caller still needs the hosted
+// adapter dependency even before its descriptor can become available.
+func (w *Workspace) managedToolRequirements(ctx context.Context, tools ManagedToolSet) ([]devtools.Requirement, error) {
+	root := w.RootPath
+	registry := w.DebugRegistry()
+	managedOnly := make(map[string]bool)
+	if tools&ManagedDAPTools != 0 {
+		for _, command := range registry.ManagedOnlyCommands() {
+			managedOnly[command] = true
+		}
+	}
+
+	var requirements []devtools.Requirement
+	if tools&ManagedLSPTools != 0 || len(managedOnly) > 0 {
+		for _, requirement := range lsp.DetectRequirements(root) {
+			alternatives := slices.Clone(requirement.Commands)
+			if tools&ManagedLSPTools == 0 {
+				alternatives = slices.DeleteFunc(alternatives, func(command string) bool {
+					return !managedOnly[command]
+				})
+				if len(alternatives) == 0 {
+					continue
+				}
+			}
+			requirements = append(requirements, devtools.Requirement{
+				Alternatives: alternatives, Workspace: root, Projects: requirement.Directories,
+				MinimumMajorVersions: requirement.MinimumMajorVersions,
+				ManagedOnly: slices.ContainsFunc(alternatives, func(command string) bool {
+					return managedOnly[command]
+				}),
+			})
+		}
+	}
+
+	if tools&ManagedDAPTools == 0 {
+		return requirements, nil
+	}
+	adapterRequirements, detectErr := dap.DetectRequirements(ctx, root, registry.Descriptors())
+	for _, requirement := range adapterRequirements {
+		requirements = append(requirements, devtools.Requirement{
+			Alternatives: requirement.Commands, Workspace: root, Projects: requirement.Projects,
+		})
+	}
+	return requirements, detectErr
+}
+
+type managedToolsResult struct {
+	changed bool
+	err     error
+}
+
+// ManagedToolsUpdate owns one background update lifecycle. All frontends use
+// it so cancellation and shutdown have identical behavior.
+type ManagedToolsUpdate struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+	result managedToolsResult
+}
+
+func (w *Workspace) StartManagedToolsUpdate(ctx context.Context, tools ManagedToolSet, progress ...func(devtools.Progress)) *ManagedToolsUpdate {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	updateCtx, cancel := context.WithCancel(ctx)
+	update := &ManagedToolsUpdate{cancel: cancel, done: make(chan struct{})}
+	w.mu.Lock()
+	if w.closed {
+		w.mu.Unlock()
+		cancel()
+		close(update.done)
+		return update
+	}
+	if w.managedUpdates == nil {
+		w.managedUpdates = make(map[*ManagedToolsUpdate]struct{})
+	}
+	w.managedUpdates[update] = struct{}{}
+	w.mu.Unlock()
+	go func() {
+		defer func() {
+			w.mu.Lock()
+			delete(w.managedUpdates, update)
+			w.mu.Unlock()
+			close(update.done)
+		}()
+		update.result.changed, update.result.err = w.UpdateManagedTools(updateCtx, tools, progress...)
+		if updateCtx.Err() != nil {
+			update.result.err = nil
+		}
+	}()
+	return update
+}
+
+func (u *ManagedToolsUpdate) Cancel() {
+	if u != nil && u.cancel != nil {
+		u.cancel()
+	}
+}
+
+func (u *ManagedToolsUpdate) Wait() (bool, error) {
+	return u.WaitContext(context.Background())
+}
+
+// WaitContext observes completion without making shutdown depend on an
+// installer that has not returned yet. Cancel remains separate so callers can
+// stop the update before choosing how long they are willing to wait.
+func (u *ManagedToolsUpdate) WaitContext(ctx context.Context) (bool, error) {
+	if u == nil {
+		return false, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-u.done:
+		return u.result.changed, u.result.err
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+}
+
+// DebugRegistry returns the language debug adapters configured against the
+// workspace's managed tools. All frontends must plan and detect against this
+// registry so it matches the adapters the DAP manager runs.
+func (w *Workspace) DebugRegistry() *debugadapter.Registry {
+	w.mu.RLock()
+	registry := w.debugRegistry
+	manager := w.DevTools
+	w.mu.RUnlock()
+	if registry != nil {
+		return registry
+	}
+	return debugadapter.NewRegistry(manager)
 }
 
 func (w *Workspace) InitMCP(ctx context.Context) error {
@@ -421,6 +630,11 @@ func (w *Workspace) Close() {
 	root := w.Root
 	scratchPath := w.ScratchPath
 	mcpRefreshCancel := w.mcpRefreshCancel
+	managedUpdates := make([]*ManagedToolsUpdate, 0, len(w.managedUpdates))
+	for update := range w.managedUpdates {
+		managedUpdates = append(managedUpdates, update)
+	}
+	clear(w.managedUpdates)
 	w.MCP = nil
 	w.Language = nil
 	w.DAP = nil
@@ -430,14 +644,17 @@ func (w *Workspace) Close() {
 	w.lspTools = nil
 	w.graphTools = nil
 	w.mu.Unlock()
+	for _, update := range managedUpdates {
+		update.Cancel()
+	}
 	if mcpManager != nil {
 		mcpManager.SetToolListChangedHandler(nil)
 	}
 	if mcpRefreshCancel != nil {
 		mcpRefreshCancel()
 	}
-	// Java's debug adapter is hosted by JDT LS, so DAP must disconnect while
-	// the language service is still available.
+	// Some debug adapters are hosted by a language server, so DAP must
+	// disconnect while the language service is still available.
 	if dapManager != nil {
 		dapManager.Close()
 	}

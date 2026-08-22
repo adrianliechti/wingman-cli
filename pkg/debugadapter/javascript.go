@@ -2,6 +2,8 @@ package debugadapter
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,20 +13,27 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 )
 
 const javascriptLanguage = "JavaScript/TypeScript"
 
 var (
-	viteConfigPattern = regexp.MustCompile(`(?i)^vite\.config\.(?:[cm]?[jt]s)$`)
-	vitePortPattern   = regexp.MustCompile(`\bport\s*:\s*([0-9]{2,5})\b`)
-	jsGuardPatterns   = []*regexp.Regexp{
+	viteConfigPattern  = regexp.MustCompile(`(?i)^vite\.config\.(?:[cm]?[jt]s)$`)
+	vitePortPattern    = regexp.MustCompile(`\bport\s*:\s*([0-9]{2,5})\b`)
+	viteCLIPortPattern = regexp.MustCompile(`(?:^|\s)--port(?:=|\s+)([0-9]{2,5})(?:\s|$)`)
+	jsGuardPatterns    = []*regexp.Regexp{
 		regexp.MustCompile(`\brequire\s*\.\s*main\s*={2,3}\s*module\b`),
 		regexp.MustCompile(`\bimport\s*\.\s*meta\s*\.\s*main\b`),
 		regexp.MustCompile(`\bimport\s*\.\s*meta\s*\.\s*url\b[\s\S]{0,240}\bprocess\s*\.\s*argv\s*\[\s*1\s*]`),
 	}
 )
+
+type nodePackage struct {
+	PackageManager string            `json:"packageManager"`
+	Scripts        map[string]string `json:"scripts"`
+}
 
 type javaScriptAdapter struct {
 	command string
@@ -35,7 +44,7 @@ func newJavaScriptAdapter() javaScriptAdapter {
 	if command := strings.TrimSpace(os.Getenv("WINGMAN_JS_DEBUG_ADAPTER")); command != "" {
 		return javaScriptAdapter{command: command, args: []string{"0", "127.0.0.1"}}
 	}
-	if server := discoverJavaScriptDebugServer(); server != "" {
+	if server := explicitJavaScriptDebugServer(); server != "" {
 		return javaScriptAdapter{command: "node", args: []string{server, "0", "127.0.0.1"}}
 	}
 	return javaScriptAdapter{command: "js-debug-adapter", args: []string{"0", "127.0.0.1"}}
@@ -70,6 +79,9 @@ func (adapter javaScriptAdapter) Descriptor() dap.AdapterDescriptor {
 }
 
 func (javaScriptAdapter) Matches(path string) bool {
+	if strings.EqualFold(filepath.Base(filepath.FromSlash(path)), "package.json") {
+		return true
+	}
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".js", ".cjs", ".mjs", ".jsx", ".ts", ".cts", ".mts", ".tsx":
 		return true
@@ -84,23 +96,8 @@ func (javaScriptAdapter) Detect(path string, source []byte) ([]Target, error) {
 	if directory == "" {
 		directory = "."
 	}
-	if viteConfigPattern.MatchString(base) {
-		offset := bytes.Index(source, []byte("defineConfig"))
-		if offset < 0 {
-			offset = firstSourceOffset(source)
-		}
-		line, column := sourceLineColumn(source, offset)
-		return []Target{{
-			ID:        fmt.Sprintf("javascript:%s:vite", filepath.ToSlash(path)),
-			Name:      "Vite browser",
-			Detail:    "React/Vite browser app",
-			Kind:      "vite",
-			Language:  javascriptLanguage,
-			Path:      filepath.ToSlash(path),
-			Directory: directory,
-			Line:      line,
-			Column:    column,
-		}}, nil
+	if strings.EqualFold(base, "package.json") {
+		return packageScriptTargets(path, directory, source)
 	}
 
 	masked := maskCStyleSource(source, true, true)
@@ -125,6 +122,88 @@ func (javaScriptAdapter) Detect(path string, source []byte) ([]Target, error) {
 		Line:      line,
 		Column:    column,
 	}}, nil
+}
+
+func packageScriptTargets(path, directory string, source []byte) ([]Target, error) {
+	var manifest nodePackage
+	if err := json.Unmarshal(source, &manifest); err != nil {
+		// package.json is commonly incomplete while it is being edited. Target
+		// discovery should recover on the next change instead of failing the
+		// entire workspace scan.
+		return nil, nil
+	}
+	scriptsOffset := bytes.Index(source, []byte(`"scripts"`))
+	if scriptsOffset < 0 {
+		return nil, nil
+	}
+	targets := make(map[string]struct{ kind, detail string }, len(manifest.Scripts))
+	for name, command := range manifest.Scripts {
+		switch {
+		case isViteDevelopmentScript(command):
+			targets[name] = struct{ kind, detail string }{"browser-script", "Vite development script"}
+		case isNodePackageScript(command):
+			targets[name] = struct{ kind, detail string }{"node-script", "Node.js package script"}
+		}
+	}
+	names := make([]string, 0, len(targets))
+	for name := range targets {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	result := make([]Target, 0, len(names))
+	for _, name := range names {
+		offset := bytes.Index(source[scriptsOffset:], []byte(strconv.Quote(name)))
+		if offset < 0 {
+			offset = scriptsOffset
+		} else {
+			offset += scriptsOffset
+		}
+		line, column := sourceLineColumn(source, offset)
+		target := targets[name]
+		result = append(result, Target{
+			ID:        fmt.Sprintf("javascript:%s:package:%s", filepath.ToSlash(path), name),
+			Name:      name,
+			Detail:    target.detail,
+			Kind:      target.kind,
+			Language:  javascriptLanguage,
+			Path:      filepath.ToSlash(path),
+			Directory: directory,
+			Line:      line,
+			Column:    column,
+		})
+	}
+	return result, nil
+}
+
+func isNodePackageScript(command string) bool {
+	for _, field := range strings.Fields(command) {
+		field = strings.Trim(field, `"';&|()`)
+		field = strings.ToLower(filepath.Base(filepath.FromSlash(field)))
+		switch field {
+		case "node", "node.exe", "tsx", "tsx.cmd", "ts-node", "ts-node.cmd", "ts-node-dev", "ts-node-dev.cmd", "nodemon", "nodemon.cmd":
+			return true
+		}
+	}
+	return false
+}
+
+func isViteDevelopmentScript(command string) bool {
+	fields := strings.Fields(command)
+	for index, field := range fields {
+		field = strings.Trim(field, `"';&|()`)
+		field = filepath.Base(filepath.FromSlash(field))
+		if field != "vite" && field != "vite.cmd" {
+			continue
+		}
+		if index+1 < len(fields) {
+			next := strings.Trim(fields[index+1], `"';&|()`)
+			if next == "build" || next == "preview" {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func nodeEntrypointOffset(path string, source, masked []byte) int {
@@ -174,8 +253,10 @@ func isTypeScriptPath(path string) bool {
 
 func (javaScriptAdapter) Plan(request Request) (Plan, error) {
 	switch request.Target.Kind {
-	case "vite":
-		return vitePlan(request)
+	case "browser-script":
+		return browserScriptPlan(request)
+	case "node-script":
+		return nodeScriptPlan(request)
 	case "node":
 		return nodePlan(request)
 	default:
@@ -195,11 +276,14 @@ func nodePlan(request Request) (Plan, error) {
 		"sourceMaps": true,
 		"skipFiles":  []string{"<node_internals>/**"},
 	}
+	runtimeExecutable := ""
 	if isTypeScriptPath(request.Target.Path) {
-		if runtimeExecutable := localTypeScriptRuntime(request); runtimeExecutable != "" {
-			configuration["runtimeExecutable"] = runtimeExecutable
-		}
+		runtimeExecutable = localTypeScriptRuntime(request)
 	}
+	if runtimeExecutable == "" {
+		runtimeExecutable = tooling.Resolve("node")
+	}
+	setJavaScriptRuntime(configuration, runtimeExecutable)
 	plan := Plan{
 		Title:            actionLabel(request.Action) + " " + request.Target.Name,
 		Summary:          fmt.Sprintf("%s %s.", actionLabel(request.Action), request.Target.Detail),
@@ -217,43 +301,223 @@ func nodePlan(request Request) (Plan, error) {
 	return plan, nil
 }
 
-func vitePlan(request Request) (Plan, error) {
-	port := vitePort(request)
+func browserScriptPlan(request Request) (Plan, error) {
+	command, projectDir, packageManager, packageManagerPath, err := resolvePackageScript(request)
+	if err != nil {
+		return Plan{}, err
+	}
+	if !isViteDevelopmentScript(command) {
+		return Plan{}, fmt.Errorf("package.json script %q is no longer a Vite development script", request.Target.Name)
+	}
+	browser := strings.TrimSpace(request.BrowserExecutable)
+	if browser == "" {
+		browser = FindChromiumBrowser()
+	}
+	if browser == "" {
+		return Plan{}, errors.New("no supported Chromium browser is available; install Chrome, Chromium, Edge, or Brave, or set CHROME_PATH")
+	}
+	port := vitePort(projectDir, command)
 	url := "http://localhost:" + strconv.Itoa(port)
 	configuration := map[string]any{
-		"type":       "pwa-chrome",
-		"url":        url,
-		"webRoot":    ".",
-		"sourceMaps": true,
+		"type":              "pwa-chrome",
+		"url":               url,
+		"webRoot":           ".",
+		"sourceMaps":        true,
+		"runtimeExecutable": browser,
 	}
 	if request.Action == "run" {
 		configuration["noDebug"] = true
 	}
 	return Plan{
-		Title:         actionLabel(request.Action) + " Vite browser",
-		Summary:       fmt.Sprintf("%s the React/Vite browser app at %s; start the Vite dev server first.", actionLabel(request.Action), url),
+		Title:         fmt.Sprintf("%s %s run %s", actionLabel(request.Action), packageManager, request.Target.Name),
+		Summary:       fmt.Sprintf("Run the package.json %q script and %s its browser app at %s.", request.Target.Name, strings.ToLower(actionLabel(request.Action)), url),
 		ProjectDir:    request.ProjectDir,
 		Request:       "launch",
 		IO:            dap.IOOutput,
 		Configuration: configuration,
+		PreLaunch: &dap.ProcessLaunch{
+			Title: "Development server", Command: packageManagerPath,
+			Args: []string{"run", request.Target.Name}, ReadyURL: url,
+		},
 	}, nil
 }
 
-func vitePort(request Request) int {
-	path := request.Target.Path
-	if !filepath.IsAbs(path) && request.WorkspaceDir != "" {
-		path = filepath.Join(request.WorkspaceDir, filepath.FromSlash(path))
+func nodeScriptPlan(request Request) (Plan, error) {
+	command, _, packageManager, packageManagerPath, err := resolvePackageScript(request)
+	if err != nil {
+		return Plan{}, err
 	}
-	contents, err := os.ReadFile(path)
-	if err == nil {
-		masked := maskCStyleSource(contents, true, true)
-		if match := vitePortPattern.FindSubmatch(masked); len(match) == 2 {
-			if value, err := strconv.Atoi(string(match[1])); err == nil && value >= 1 && value <= 65535 {
-				return value
+	if !isNodePackageScript(command) {
+		return Plan{}, fmt.Errorf("package.json script %q is no longer a Node.js script", request.Target.Name)
+	}
+	configuration := map[string]any{
+		"type":              "pwa-node",
+		"cwd":               ".",
+		"runtimeExecutable": packageManagerPath,
+		// npm, pnpm, Yarn, and Bun all share the run spelling; their
+		// run-script aliases are not portable across package managers.
+		"runtimeArgs":              []string{"run", request.Target.Name},
+		"sourceMaps":               true,
+		"autoAttachChildProcesses": true,
+		"skipFiles":                []string{"<node_internals>/**"},
+	}
+	setJavaScriptRuntime(configuration, packageManagerPath)
+	plan := Plan{
+		Title:            fmt.Sprintf("%s %s run %s", actionLabel(request.Action), packageManager, request.Target.Name),
+		Summary:          fmt.Sprintf("%s the package.json %q Node.js script.", actionLabel(request.Action), request.Target.Name),
+		ProjectDir:       request.ProjectDir,
+		Request:          "launch",
+		IO:               dap.IOOutput,
+		SupportsTerminal: true,
+		Configuration:    configuration,
+	}
+	if request.Action == "run" {
+		configuration["noDebug"] = true
+	}
+	return plan, nil
+}
+
+// setJavaScriptRuntime keeps an absolute npm/node/tsx launcher paired with the
+// PATH that makes its sibling or env-style interpreter executable. GUI apps
+// commonly discover these tools outside their inherited PATH.
+func setJavaScriptRuntime(configuration map[string]any, executable string) {
+	if executable == "" {
+		return
+	}
+	configuration["runtimeExecutable"] = executable
+	for _, item := range tooling.Environment(executable, os.Environ()) {
+		key, value, ok := strings.Cut(item, "=")
+		if !ok || (key != "PATH" && (runtime.GOOS != "windows" || !strings.EqualFold(key, "PATH"))) {
+			continue
+		}
+		configuration["env"] = map[string]string{"PATH": value}
+		return
+	}
+}
+
+func resolvePackageScript(request Request) (command, projectDir, packageManager, packageManagerPath string, err error) {
+	manifestPath := request.Target.Path
+	if !filepath.IsAbs(manifestPath) && request.WorkspaceDir != "" {
+		manifestPath = filepath.Join(request.WorkspaceDir, filepath.FromSlash(manifestPath))
+	}
+	contents, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return "", "", "", "", fmt.Errorf("read package.json: %w", err)
+	}
+	var manifest nodePackage
+	if err := json.Unmarshal(contents, &manifest); err != nil {
+		return "", "", "", "", fmt.Errorf("parse package.json: %w", err)
+	}
+	command, ok := manifest.Scripts[request.Target.Name]
+	if !ok {
+		return "", "", "", "", fmt.Errorf("package.json script %q no longer exists", request.Target.Name)
+	}
+	projectDir = absoluteProjectDir(request)
+	packageManager = nodePackageManager(projectDir, manifest.PackageManager)
+	packageManagerPath, err = tooling.LookPath(packageManager)
+	if err != nil {
+		return "", "", "", "", fmt.Errorf("package.json script %q requires %s, but it is not available", request.Target.Name, packageManager)
+	}
+	packageManagerPath, err = filepath.Abs(packageManagerPath)
+	if err != nil {
+		return "", "", "", "", fmt.Errorf("resolve %s: %w", packageManager, err)
+	}
+	return command, projectDir, packageManager, packageManagerPath, nil
+}
+
+func vitePort(projectDir, command string) int {
+	if match := viteCLIPortPattern.FindStringSubmatch(command); len(match) == 2 {
+		if value, err := strconv.Atoi(match[1]); err == nil && value >= 1 && value <= 65535 {
+			return value
+		}
+	}
+	entries, _ := os.ReadDir(projectDir)
+	for _, entry := range entries {
+		if entry.IsDir() || !viteConfigPattern.MatchString(entry.Name()) {
+			continue
+		}
+		contents, err := os.ReadFile(filepath.Join(projectDir, entry.Name()))
+		if err == nil {
+			masked := maskCStyleSource(contents, true, true)
+			if match := vitePortPattern.FindSubmatch(masked); len(match) == 2 {
+				if value, err := strconv.Atoi(string(match[1])); err == nil && value >= 1 && value <= 65535 {
+					return value
+				}
 			}
 		}
 	}
 	return 5173
+}
+
+func absoluteProjectDir(request Request) string {
+	projectDir := filepath.FromSlash(request.ProjectDir)
+	if !filepath.IsAbs(projectDir) && request.WorkspaceDir != "" {
+		projectDir = filepath.Join(request.WorkspaceDir, projectDir)
+	}
+	return filepath.Clean(projectDir)
+}
+
+func nodePackageManager(projectDir, declared string) string {
+	if name := strings.SplitN(strings.TrimSpace(declared), "@", 2)[0]; name == "npm" || name == "pnpm" || name == "yarn" || name == "bun" {
+		return name
+	}
+	for _, candidate := range []struct{ file, command string }{
+		{"pnpm-lock.yaml", "pnpm"}, {"yarn.lock", "yarn"}, {"bun.lock", "bun"}, {"bun.lockb", "bun"},
+	} {
+		if info, err := os.Stat(filepath.Join(projectDir, candidate.file)); err == nil && !info.IsDir() {
+			return candidate.command
+		}
+	}
+	return "npm"
+}
+
+// FindChromiumBrowser returns an explicitly configured or standard system
+// Chromium installation. Managed Chrome for Testing is resolved separately.
+func FindChromiumBrowser() string {
+	if explicit := strings.TrimSpace(os.Getenv("CHROME_PATH")); executableFilePath(explicit) {
+		return explicit
+	}
+	var candidates []string
+	switch runtime.GOOS {
+	case "darwin":
+		candidates = []string{
+			"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+			"/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+			"/Applications/Chromium.app/Contents/MacOS/Chromium",
+			"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+			"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+		}
+	case "windows":
+		for _, root := range []string{os.Getenv("PROGRAMFILES"), os.Getenv("PROGRAMFILES(X86)"), os.Getenv("LOCALAPPDATA")} {
+			if root == "" {
+				continue
+			}
+			candidates = append(candidates,
+				filepath.Join(root, "Google", "Chrome", "Application", "chrome.exe"),
+				filepath.Join(root, "Microsoft", "Edge", "Application", "msedge.exe"),
+				filepath.Join(root, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+			)
+		}
+	}
+	for _, candidate := range candidates {
+		if executableFilePath(candidate) {
+			return candidate
+		}
+	}
+	for _, command := range []string{"google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge", "brave-browser"} {
+		if path, err := tooling.LookPath(command); err == nil {
+			return path
+		}
+	}
+	return ""
+}
+
+func executableFilePath(path string) bool {
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir() && (runtime.GOOS == "windows" || info.Mode()&0o111 != 0)
 }
 
 func localTypeScriptRuntime(request Request) string {
@@ -261,57 +525,18 @@ func localTypeScriptRuntime(request Request) string {
 	if !filepath.IsAbs(projectDir) && request.WorkspaceDir != "" {
 		projectDir = filepath.Join(request.WorkspaceDir, filepath.FromSlash(projectDir))
 	}
-	names := []string{"tsx"}
-	if runtime.GOOS == "windows" {
-		names = []string{"tsx.cmd", "tsx.exe", "tsx"}
+	workspaceDir := request.WorkspaceDir
+	if workspaceDir == "" {
+		workspaceDir = projectDir
 	}
-	for _, name := range names {
-		path := filepath.Join(projectDir, "node_modules", ".bin", name)
-		if info, err := os.Stat(path); err == nil && !info.IsDir() {
-			return path
-		}
-	}
-	return ""
+	return tooling.ResolveProject(projectDir, workspaceDir, "tsx")
 }
 
-func discoverJavaScriptDebugServer() string {
+func explicitJavaScriptDebugServer() string {
 	if explicit := strings.TrimSpace(os.Getenv("WINGMAN_JS_DEBUG_SERVER")); explicit != "" {
 		if info, err := os.Stat(explicit); err == nil && !info.IsDir() {
 			return filepath.Clean(explicit)
 		}
 	}
-	home, _ := os.UserHomeDir()
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if dataHome == "" && home != "" {
-		dataHome = filepath.Join(home, ".local", "share")
-	}
-	patterns := []string{
-		filepath.Join(home, ".vscode", "extensions", "ms-vscode.js-debug-*", "src", "dapDebugServer.js"),
-		filepath.Join(home, ".vscode", "extensions", "ms-vscode.js-debug-nightly-*", "src", "dapDebugServer.js"),
-		filepath.Join(home, ".cursor", "extensions", "ms-vscode.js-debug-*", "src", "dapDebugServer.js"),
-		filepath.Join(dataHome, "nvim", "mason", "packages", "js-debug-adapter", "js-debug", "src", "dapDebugServer.js"),
-		filepath.Join(dataHome, "nvim", "mason", "packages", "js-debug-adapter", "extension", "src", "dapDebugServer.js"),
-		filepath.Join("/Applications", "Visual Studio Code.app", "Contents", "Resources", "app", "extensions", "ms-vscode.js-debug", "src", "dapDebugServer.js"),
-		filepath.Join("/Applications", "Cursor.app", "Contents", "Resources", "app", "extensions", "ms-vscode.js-debug", "src", "dapDebugServer.js"),
-		filepath.Join("/usr", "share", "code", "resources", "app", "extensions", "ms-vscode.js-debug", "src", "dapDebugServer.js"),
-	}
-	if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
-		patterns = append(patterns,
-			filepath.Join(localAppData, "Programs", "Microsoft VS Code", "resources", "app", "extensions", "ms-vscode.js-debug", "src", "dapDebugServer.js"),
-			filepath.Join(localAppData, "Programs", "cursor", "resources", "app", "extensions", "ms-vscode.js-debug", "src", "dapDebugServer.js"),
-		)
-	}
-	var matches []string
-	for _, pattern := range patterns {
-		if strings.TrimSpace(pattern) == "" {
-			continue
-		}
-		values, _ := filepath.Glob(pattern)
-		matches = append(matches, values...)
-	}
-	slices.Sort(matches)
-	if len(matches) == 0 {
-		return ""
-	}
-	return matches[len(matches)-1]
+	return ""
 }

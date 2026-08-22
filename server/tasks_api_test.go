@@ -16,7 +16,7 @@ func TestTasksAPI(t *testing.T) {
 	t.Setenv("WINGMAN_URL", "http://localhost:1")
 
 	ctx := t.Context()
-	app, err := New(ctx, t.TempDir(), &ServerOptions{NoBrowser: true})
+	app, err := New(ctx, t.TempDir(), &ServerOptions{NoBrowser: true, disableManagedTools: true})
 	if err != nil {
 		t.Fatal(err)
 	}

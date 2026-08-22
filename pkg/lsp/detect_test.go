@@ -4,10 +4,15 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"slices"
 	"testing"
+	"time"
 
 	"go.lsp.dev/protocol"
+
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 )
 
 func TestManagerInitializationOptionsAreStableSessionIdentity(t *testing.T) {
@@ -43,105 +48,6 @@ func TestManagerInitializationOptionsAreStableSessionIdentity(t *testing.T) {
 	}
 	if got := payload.Options["bundles"]; len(got) != 1 || got[0] != "java-debug.jar" {
 		t.Fatalf("wire initialization options = %s", wire)
-	}
-}
-
-func TestFindCommandIn(t *testing.T) {
-	dir := t.TempDir()
-	name := "gopls"
-	if runtime.GOOS == "windows" {
-		name = "gopls.exe"
-	}
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	if got := findCommandIn([]string{t.TempDir(), dir}, "gopls"); got != path {
-		t.Fatalf("findCommandIn = %q, want %q", got, path)
-	}
-
-	if got := findCommandIn([]string{dir}, "rust-analyzer"); got != "" {
-		t.Fatalf("findCommandIn for missing command = %q, want empty", got)
-	}
-}
-
-func TestResolveCommandFindsVenvServers(t *testing.T) {
-	binSub := filepath.Join(".venv", "bin")
-	fileName := "pylsp"
-	if runtime.GOOS == "windows" {
-		binSub = filepath.Join(".venv", "Scripts")
-		fileName = "pylsp.exe"
-	}
-
-	root := t.TempDir()
-	proj := filepath.Join(root, "services", "api")
-	binDir := filepath.Join(proj, binSub)
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(binDir, fileName)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	if got := resolveCommand(proj, root, "pylsp"); got != path {
-		t.Fatalf("resolveCommand = %q, want %q", got, path)
-	}
-
-	// A venv at the workspace root serves nested project dirs via walk-up.
-	rootBin := filepath.Join(root, binSub)
-	if err := os.MkdirAll(rootBin, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	rootServer := filepath.Join(rootBin, "basedpyright-langserver")
-	if runtime.GOOS == "windows" {
-		rootServer += ".cmd"
-	}
-	if err := os.WriteFile(rootServer, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	if got := resolveCommand(proj, root, "basedpyright-langserver"); got != rootServer {
-		t.Fatalf("walk-up resolveCommand = %q, want %q", got, rootServer)
-	}
-}
-
-func TestCommandCandidates(t *testing.T) {
-	got := commandCandidates("windows", "gopls")
-	want := []string{"gopls.exe", "gopls.cmd", "gopls.bat", "gopls"}
-	if len(got) != len(want) {
-		t.Fatalf("windows candidates = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("windows candidates = %v, want %v", got, want)
-		}
-	}
-
-	if got := commandCandidates("darwin", "gopls"); len(got) != 1 || got[0] != "gopls" {
-		t.Fatalf("darwin candidates = %v, want [gopls]", got)
-	}
-}
-
-func TestFindCommandInIgnoresNonExecutable(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("executable bits are not checked on windows")
-	}
-
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "gopls"), []byte("data"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(filepath.Join(dir, "rust-analyzer"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	if got := findCommandIn([]string{dir}, "gopls"); got != "" {
-		t.Fatalf("non-executable file resolved: %q", got)
-	}
-	if got := findCommandIn([]string{dir}, "rust-analyzer"); got != "" {
-		t.Fatalf("directory resolved: %q", got)
 	}
 }
 
@@ -187,12 +93,109 @@ func TestDetectAllPrefersNativeTypeScriptSevenLSP(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	roots := detectAll(root)
+	managed := filepath.Join(t.TempDir(), "tsc")
+	if err := os.WriteFile(managed, []byte("#!/bin/sh\nprintf 'Version 6.0.0\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	roots := detectAll(root, func(command string) string {
+		if command == "tsc" {
+			return managed
+		}
+		return ""
+	})
 	if len(roots) != 1 {
 		t.Fatalf("detected roots = %+v, want one TypeScript root", roots)
 	}
 	if roots[0].Server.Name != "typescript-go" || roots[0].Server.Command != tsc {
 		t.Fatalf("detected server = %+v, want native TypeScript server %q", roots[0].Server, tsc)
+	}
+}
+
+func TestDetectRequirementsDoesNotRequireInstalledServer(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	requirements := DetectRequirements(root)
+	if len(requirements) != 1 || requirements[0].Project != "go" || !reflect.DeepEqual(requirements[0].Commands, []string{"gopls"}) {
+		t.Fatalf("requirements = %+v", requirements)
+	}
+}
+
+func TestDetectRequirementsRecognizesSourceAndGradleMarkers(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		marker  string
+		project string
+		command string
+	}{
+		{name: "shell script", marker: "scripts/build.sh", project: "bash", command: "bash-language-server"},
+		{name: "Java Gradle settings", marker: "settings.gradle", project: "java", command: "jdtls"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, filepath.FromSlash(test.marker))
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			for _, requirement := range DetectRequirements(root) {
+				if requirement.Project == test.project && slices.Contains(requirement.Commands, test.command) {
+					return
+				}
+			}
+			t.Fatalf("%s requirement not detected: %+v", test.project, DetectRequirements(root))
+		})
+	}
+}
+
+func TestDetectAllUsesManagedServerAsFallback(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	t.Setenv("PATH", "")
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	managed := filepath.Join(root, "managed", "gopls")
+	roots := detectAll(root, func(command string) string {
+		if command == "gopls" {
+			return managed
+		}
+		return ""
+	})
+	if len(roots) != 1 || roots[0].Server.Command != managed {
+		t.Fatalf("roots = %+v, want managed command %q", roots, managed)
+	}
+}
+
+func TestDetectAllPrefersSystemServerOverManagedFallback(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	bin := filepath.Join(root, "system-bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	system := filepath.Join(bin, tooling.Candidates(runtime.GOOS, "gopls")[0])
+	if err := os.WriteFile(system, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	managed := filepath.Join(root, "managed", "gopls")
+	roots := detectAll(root, func(command string) string {
+		if command == "gopls" {
+			return managed
+		}
+		return ""
+	})
+	if len(roots) != 1 || roots[0].Server.Command != system {
+		t.Fatalf("roots = %+v, want system command %q", roots, system)
 	}
 }
 
@@ -295,4 +298,37 @@ func TestProjectDirsAppliesExcludes(t *testing.T) {
 		return
 	}
 	t.Fatal("typescript project type not found")
+}
+
+func TestIsSubPathHandlesRelativeRoots(t *testing.T) {
+	if !isSubPath(".", filepath.Join("nested", "source.go")) {
+		t.Fatal("relative workspace root did not contain a nested file")
+	}
+	if !isSubPath("workspace", filepath.Join("workspace", "nested", "source.go")) {
+		t.Fatal("relative project root did not contain a nested file")
+	}
+	if isSubPath("workspace", "workspace-other") {
+		t.Fatal("path with a shared textual prefix was treated as a child")
+	}
+}
+
+func TestDetectedProjectsDoNotExposeCachedServerSlices(t *testing.T) {
+	manager := &Manager{roots: []projectRoot{{
+		Dir: "project",
+		Server: Server{
+			Args:                  []string{"--stdio"},
+			Languages:             []string{"go"},
+			InitializationOptions: []byte(`{"setting":true}`),
+		},
+	}}, detectedAt: time.Now()}
+
+	first := manager.detect()
+	first[0].Server.Args[0] = "changed"
+	first[0].Server.Languages[0] = "changed"
+	first[0].Server.InitializationOptions[0] = 'x'
+
+	second := manager.detect()
+	if second[0].Server.Args[0] != "--stdio" || second[0].Server.Languages[0] != "go" || string(second[0].Server.InitializationOptions) != `{"setting":true}` {
+		t.Fatalf("cached descriptor was mutated through a detection result: %+v", second[0].Server)
+	}
 }

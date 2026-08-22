@@ -2,97 +2,61 @@ package dap
 
 import (
 	"context"
-	"io/fs"
-	"path/filepath"
-	"slices"
+	"fmt"
 	"strings"
+
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 )
 
-func detectProjects(ctx context.Context, workspace string, markers, sourceExtensions []string) ([]string, error) {
-	markerSet := make(map[string]bool, len(markers))
-	for _, marker := range markers {
-		markerSet[strings.ToLower(marker)] = true
+// AdapterRequirement describes the commands capable of serving one detected
+// debugger integration, in preference order.
+type AdapterRequirement struct {
+	Name     string
+	Language string
+	Commands []string
+	Projects []string
+}
+
+// DetectRequirements reports adapter needs independently of whether the
+// adapter executable is installed.
+func DetectRequirements(ctx context.Context, workspace string, adapters []AdapterDescriptor) ([]AdapterRequirement, error) {
+	specs := make([]tooling.ProjectSpec, len(adapters))
+	for index, adapter := range adapters {
+		specs[index] = tooling.ProjectSpec{Markers: adapter.Markers, Extensions: adapter.SourceExtensions}
 	}
-	extensionSet := make(map[string]bool, len(sourceExtensions))
-	for _, extension := range sourceExtensions {
-		extensionSet[strings.ToLower(extension)] = true
-	}
-	seen := make(map[string]bool)
-	sourceDirs := make(map[string]bool)
-	var projects []string
-	err := filepath.WalkDir(workspace, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		if entry.IsDir() {
-			if path != workspace && skipProjectDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if extensionSet[strings.ToLower(filepath.Ext(entry.Name()))] {
-			sourceDirs[filepath.Dir(path)] = true
-		}
-		if !matchesProjectMarker(entry.Name(), markerSet) {
-			return nil
-		}
-		dir := filepath.Dir(path)
-		if !seen[dir] {
-			seen[dir] = true
-			projects = append(projects, dir)
-		}
-		return nil
-	})
+	projectsByAdapter, err := tooling.DetectProjects(ctx, workspace, specs)
 	if err != nil {
 		return nil, err
 	}
-	for sourceDir := range sourceDirs {
-		covered := false
-		for _, project := range projects {
-			rel, err := filepath.Rel(project, sourceDir)
-			if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-				covered = true
-				break
-			}
-		}
-		if !covered && !seen[workspace] {
-			projects = append(projects, workspace)
-			break
-		}
-	}
-	slices.Sort(projects)
-	return projects, nil
-}
-
-func matchesProjectMarker(name string, markers map[string]bool) bool {
-	name = strings.ToLower(name)
-	if markers[name] {
-		return true
-	}
-	for marker := range markers {
-		if !strings.ContainsAny(marker, "*?[") {
+	var requirements []AdapterRequirement
+	for index, adapter := range adapters {
+		projects := projectsByAdapter[index]
+		if len(projects) == 0 || adapter.Command == "" {
 			continue
 		}
-		if matched, err := filepath.Match(marker, name); err == nil && matched {
-			return true
-		}
+		requirements = append(requirements, AdapterRequirement{
+			Name: adapter.Name, Language: adapter.Language,
+			Commands: []string{adapter.Command}, Projects: projects,
+		})
 	}
-	return false
+	return requirements, nil
 }
 
-func skipProjectDir(name string) bool {
-	if strings.HasPrefix(name, ".") {
-		return true
+func MissingAdapterError(requirements []AdapterRequirement) error {
+	if len(requirements) == 0 {
+		return fmt.Errorf("no debug adapter project was detected in this workspace")
 	}
-	switch name {
-	case "node_modules", "vendor", "testdata", "target", "build", "dist", "__pycache__", "venv", "env":
-		return true
-	default:
-		return false
+	details := make([]string, 0, len(requirements))
+	for _, requirement := range requirements {
+		command := strings.Join(requirement.Commands, " or ")
+		if requirement.Language != "" {
+			command += " (" + requirement.Language + ")"
+		}
+		details = append(details, command)
 	}
+	return fmt.Errorf("debugging needs %s, but it was not found in the project, standard user tool locations, PATH, or Wingman's managed tools; if automatic installation is blocked, install it through your normal software distribution and retry", strings.Join(details, ", "))
+}
+
+func detectProjects(ctx context.Context, workspace string, markers, sourceExtensions []string) ([]string, error) {
+	return tooling.DetectProject(ctx, workspace, tooling.ProjectSpec{Markers: markers, Extensions: sourceExtensions})
 }

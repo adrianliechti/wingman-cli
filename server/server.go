@@ -31,6 +31,7 @@ import (
 	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/code/agents"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
+	"github.com/adrianliechti/wingman-agent/pkg/devtools"
 	"github.com/adrianliechti/wingman-agent/pkg/settings"
 	"github.com/adrianliechti/wingman-agent/pkg/system"
 	"github.com/adrianliechti/wingman-agent/pkg/terminal"
@@ -48,7 +49,8 @@ var StaticFS, _ = fs.Sub(staticFiles, "static")
 const DefaultPort = 9000
 
 type ServerOptions struct {
-	NoBrowser bool
+	NoBrowser           bool
+	disableManagedTools bool
 }
 
 type Server struct {
@@ -109,6 +111,9 @@ type Server struct {
 	prevLSP         bool
 	prevDebug       bool
 	prevFingerprint uint64
+
+	managedToolsMu sync.RWMutex
+	managedTools   managedToolsStatus
 }
 
 func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, error) {
@@ -181,6 +186,35 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 	s.background.Go(func() {
 		s.files.Run(serverCtx)
 	})
+	if !opts.disableManagedTools {
+		s.setManagedToolsStatus(managedToolsStatus{State: "installing"})
+		update := ws.StartManagedToolsUpdate(serverCtx, code.ManagedEditorTools, func(progress devtools.Progress) {
+			s.setManagedToolsStatus(managedToolsStatus{
+				State: "installing", Tool: progress.Tool, Label: progress.Label, Current: progress.Current, Total: progress.Total,
+			})
+		})
+		s.background.Go(func() {
+			changed, updateErr := update.WaitContext(serverCtx)
+			if serverCtx.Err() != nil {
+				return
+			}
+			if updateErr != nil {
+				fmt.Fprintf(os.Stderr, "managed tools warning: %v\n", updateErr)
+				if devtools.IsUnavailable(updateErr) {
+					s.setManagedToolsStatus(managedToolsStatus{
+						State: "error", Error: updateErr.Error(), Unavailable: devtools.ToolLabels(devtools.UnavailableTools(updateErr)),
+					})
+				} else {
+					s.setManagedToolsStatus(managedToolsStatus{State: "ready"})
+				}
+			} else {
+				s.setManagedToolsStatus(managedToolsStatus{State: "ready"})
+			}
+			if changed && serverCtx.Err() == nil {
+				s.files.Flush()
+			}
+		})
+	}
 	s.skillFiles = watch.New(watch.Options{
 		Fallback: 2 * time.Second,
 		Active:   s.hasClients,
@@ -831,18 +865,41 @@ func (s *Server) handleSetEffort(w http.ResponseWriter, r *http.Request) {
 }
 
 type capabilitiesResponse struct {
-	Git           bool   `json:"git"`
-	GitInit       bool   `json:"git_init"`
-	LSP           bool   `json:"lsp"`
-	Debug         bool   `json:"debug"`
-	Diffs         bool   `json:"diffs"`
-	Tasks         bool   `json:"tasks"`
-	Terminal      bool   `json:"terminal"`
-	Tab           bool   `json:"tab"`
-	EditorTab     bool   `json:"editor.tab.completion"`
-	Platform      string `json:"platform"`
-	WorkspaceName string `json:"workspace_name"`
-	Notice        string `json:"notice,omitempty"`
+	Git           bool                `json:"git"`
+	GitInit       bool                `json:"git_init"`
+	LSP           bool                `json:"lsp"`
+	Debug         bool                `json:"debug"`
+	Diffs         bool                `json:"diffs"`
+	Tasks         bool                `json:"tasks"`
+	Terminal      bool                `json:"terminal"`
+	Tab           bool                `json:"tab"`
+	EditorTab     bool                `json:"editor.tab.completion"`
+	Platform      string              `json:"platform"`
+	WorkspaceName string              `json:"workspace_name"`
+	ManagedTools  *managedToolsStatus `json:"managed_tools,omitempty"`
+}
+
+type managedToolsStatus struct {
+	State       string   `json:"state"`
+	Tool        string   `json:"tool,omitempty"`
+	Label       string   `json:"label,omitempty"`
+	Current     int      `json:"current,omitempty"`
+	Total       int      `json:"total,omitempty"`
+	Error       string   `json:"error,omitempty"`
+	Unavailable []string `json:"unavailable,omitempty"`
+}
+
+func (s *Server) setManagedToolsStatus(status managedToolsStatus) {
+	s.managedToolsMu.Lock()
+	s.managedTools = status
+	s.managedToolsMu.Unlock()
+	s.broadcast(Frame{Type: EvtCapabilitiesChanged})
+}
+
+func (s *Server) managedToolsStatus() managedToolsStatus {
+	s.managedToolsMu.RLock()
+	defer s.managedToolsMu.RUnlock()
+	return s.managedTools
 }
 
 func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
@@ -861,6 +918,9 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		EditorTab:     s.tab != nil && s.tabEnabled.Load(),
 		Platform:      runtime.GOOS,
 		WorkspaceName: filepath.Base(ws.RootPath),
+	}
+	if status := s.managedToolsStatus(); status.State != "" {
+		caps.ManagedTools = &status
 	}
 	writeJSON(w, caps)
 }

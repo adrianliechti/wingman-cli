@@ -115,6 +115,8 @@ func TestLiveDelveWorkspacePackage(t *testing.T) {
 	defer manager.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
+	mainFile := filepath.Join(root, "cmd", "wingman", "main.go")
+	breakLine := sourceLineContaining(t, mainFile, "if len(args) == 0 {")
 	session, err := manager.Start(ctx, StartOptions{
 		ProjectDir: root,
 		Configuration: map[string]any{
@@ -124,7 +126,7 @@ func TestLiveDelveWorkspacePackage(t *testing.T) {
 			"args":    []string{"--help"},
 		},
 		Breakpoints: map[string][]SourceBreakpoint{
-			filepath.Join(root, "cmd", "wingman", "main.go"): {{Line: 23}},
+			mainFile: {{Line: breakLine}},
 		},
 	})
 	if err != nil {
@@ -363,4 +365,19 @@ func requireNoDebugArtifacts(t *testing.T, root string) {
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+}
+
+func sourceLineContaining(t *testing.T, path, needle string) int {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, line := range strings.Split(string(contents), "\n") {
+		if strings.Contains(line, needle) {
+			return index + 1
+		}
+	}
+	t.Fatalf("%s does not contain %q", path, needle)
+	return 0
 }

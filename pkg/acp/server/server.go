@@ -78,12 +78,13 @@ type sessionEntry struct {
 }
 
 type workspaceEntry struct {
-	ws    *code.Workspace
-	agent *codeagent.Agent
-	key   string
-	refs  int
-	ready chan struct{}
-	err   error
+	ws         *code.Workspace
+	agent      *codeagent.Agent
+	key        string
+	refs       int
+	ready      chan struct{}
+	err        error
+	toolUpdate *code.ManagedToolsUpdate
 }
 
 func (s *Server) Initialize(_ context.Context, params acpsdk.InitializeRequest) (acpsdk.InitializeResponse, error) {
@@ -386,6 +387,12 @@ func (s *Server) acquireWorkspace(ctx context.Context, cwd string, requestedServ
 	s.mu.Unlock()
 
 	ws.WarmUp()
+	w.toolUpdate = ws.StartManagedToolsUpdate(context.Background(), code.ManagedLSPTools)
+	go func() {
+		if _, err := w.toolUpdate.Wait(); err != nil {
+			slog.Warn("managed tools update failed", "cwd", cwd, "err", err)
+		}
+	}()
 	mcpCtx, cancelMCP := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	if err := ws.InitMCP(mcpCtx); err != nil {
 		missing := missingRequestedMCPServers(requested, ws.MCP.Sessions())
@@ -467,6 +474,9 @@ func (s *Server) releaseWorkspace(w *workspaceEntry) {
 	}
 	delete(s.workspaces, w.key)
 	s.mu.Unlock()
+	if w.toolUpdate != nil {
+		w.toolUpdate.Cancel()
+	}
 	_ = w.agent.Close()
 	w.ws.Close()
 }

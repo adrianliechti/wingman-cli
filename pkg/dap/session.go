@@ -89,6 +89,11 @@ type Session struct {
 	capabilities Capabilities
 	terminalID   string
 	terminals    []terminalBinding
+	parent       *Session
+	child        *Session
+	breakpoints  map[string][]SourceBreakpoint
+	functions    []FunctionBreakpoint
+	preLaunch    *debugProcess
 	stateVersion uint64
 	stateChanged chan struct{}
 	initialized  chan struct{}
@@ -98,6 +103,7 @@ type Session struct {
 	resourceDone chan struct{}
 
 	alive         atomic.Bool
+	disconnecting atomic.Bool
 	finishOnce    sync.Once
 	closeOnce     sync.Once
 	terminateOnce sync.Once
@@ -118,26 +124,95 @@ func startSession(ctx context.Context, id string, plan Plan, options StartOption
 		launchDone:       make(chan struct{}),
 		resourceDone:     make(chan struct{}),
 		terminalLauncher: options.terminalLauncher,
+		breakpoints:      cloneSourceBreakpointSets(options.Breakpoints),
+		functions:        slices.Clone(options.FunctionBreakpoints),
+	}
+	if plan.PreLaunch != nil {
+		session.output.append("console", fmt.Sprintf("Starting %s: %s %s\n", plan.PreLaunch.Title, plan.PreLaunch.Command, strings.Join(plan.PreLaunch.Args, " ")))
+		process, err := startDebugProcess(plan, session.output.append)
+		session.preLaunch = process
+		if err == nil {
+			if plan.PreLaunch.WaitForExit {
+				err = process.waitExit(ctx, plan.PreLaunch.Title)
+			} else {
+				err = process.waitReady(ctx, plan.PreLaunch.ReadyURL)
+			}
+		}
+		if err != nil {
+			failure := friendlyStartError(plan, err, session.Output())
+			session.recordLaunchFailure(failure)
+			return session, failure
+		}
+		switch {
+		case plan.PreLaunch.WaitForExit:
+			session.output.append("console", fmt.Sprintf("%s finished\n", plan.PreLaunch.Title))
+		case plan.PreLaunch.ReadyURL != "":
+			session.output.append("console", fmt.Sprintf("%s is ready at %s\n", plan.PreLaunch.Title, plan.PreLaunch.ReadyURL))
+		}
 	}
 	connection, err := startAdapter(ctx, plan, session.output.append, options.terminalLauncher, options.adapterConnector)
 	if err != nil {
-		return nil, err
+		failure := friendlyStartError(plan, err, session.Output())
+		session.recordLaunchFailure(failure)
+		return session, failure
 	}
 	session.connection = connection
 	session.terminalID = connection.terminalID
 	session.alive.Store(true)
 	go session.readLoop()
 	go session.watchProcess()
+	go session.watchPreLaunch()
 
-	if err := session.initializeAndLaunch(ctx, options); err != nil {
-		adapterOutput := strings.TrimSpace(session.Output())
-		session.closeResources()
-		if adapterOutput != "" {
-			return nil, fmt.Errorf("start %s debug session: %w\n\nDebugger output:\n%s", plan.Adapter.Language, err, adapterOutput)
-		}
-		return nil, fmt.Errorf("start %s debug session: %w", plan.Adapter.Language, err)
+	launchCtx, cancelLaunch := context.WithTimeout(ctx, adapterStartupTimeout)
+	err = session.initializeAndLaunch(launchCtx, options)
+	cancelLaunch()
+	if err != nil {
+		failure := friendlyStartError(plan, err, session.Output())
+		session.recordLaunchFailure(failure)
+		return session, failure
 	}
 	return session, nil
+}
+
+func (session *Session) watchPreLaunch() {
+	process := session.preLaunch
+	if process == nil || (session.plan.PreLaunch != nil && session.plan.PreLaunch.WaitForExit) {
+		return
+	}
+	<-process.done
+	if process.stopping.Load() || session.Status().State == StateTerminated {
+		return
+	}
+	session.closeResourcesWithError(fmt.Errorf("Development server exited unexpectedly: %w", process.waitError()))
+}
+
+func friendlyStartError(plan Plan, err error, output string) error {
+	detail := strings.ToLower(err.Error() + "\n" + output)
+	switch {
+	case strings.Contains(detail, "unable to find an installation of the browser"),
+		strings.Contains(detail, "browser executable") && strings.Contains(detail, "not found"):
+		return errors.New("No supported Chromium browser was found. Install Chrome, Chromium, Edge, or Brave, or set CHROME_PATH and try again.")
+	case strings.Contains(detail, "eaddrinuse"), strings.Contains(detail, "address already in use"):
+		return errors.New("The development server could not start because its port is already in use. Stop the other process or choose another port and try again.")
+	case strings.Contains(detail, "econnrefused"), strings.Contains(detail, "failed to connect to target"):
+		return errors.New("The debugger could not reach the development server. Check that the package script starts successfully and that its port matches the debug URL.")
+	case strings.Contains(detail, "missing script"), strings.Contains(detail, "command not found"), strings.Contains(detail, "is not recognized as an internal or external command"):
+		return errors.New("The package script could not start. Check the script name, install the project dependencies, and try again.")
+	case strings.Contains(detail, "build failed:"):
+		return errors.New("The project build failed. Fix the build errors shown in the debug output and try again.")
+	default:
+		return fmt.Errorf("Could not start the %s debugger: %w", plan.Adapter.Language, err)
+	}
+}
+
+func (session *Session) recordLaunchFailure(err error) {
+	session.mu.Lock()
+	session.state = StateTerminated
+	session.stop = nil
+	session.terminalErr = err
+	session.notifyStateLocked()
+	session.mu.Unlock()
+	session.closeResourcesWithError(err)
 }
 
 // newConnectedSession is used by protocol tests and by future adapter hosts
@@ -154,6 +229,7 @@ func newConnectedSession(id string, plan Plan, connection io.ReadWriteCloser) *S
 		initialized:  make(chan struct{}),
 		launchDone:   make(chan struct{}),
 		resourceDone: make(chan struct{}),
+		breakpoints:  make(map[string][]SourceBreakpoint),
 	}
 	session.alive.Store(true)
 	go session.readLoop()
@@ -163,6 +239,19 @@ func newConnectedSession(id string, plan Plan, connection io.ReadWriteCloser) *S
 func (session *Session) ID() string { return session.id }
 
 func (session *Session) Status() Status {
+	if child := session.childSession(); child != nil {
+		status := child.Status()
+		session.mu.Lock()
+		status.SessionID = session.id
+		status.StateVersion = session.stateVersion
+		status.StartedAt = session.startedAt
+		session.mu.Unlock()
+		return status
+	}
+	return session.ownStatus()
+}
+
+func (session *Session) ownStatus() Status {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	status := Status{
@@ -201,23 +290,30 @@ func cloneInt(value *int) *int {
 	return &copy
 }
 
-func (session *Session) Output() string { return session.output.String() }
+func (session *Session) Output() string {
+	output := session.output.String()
+	if child := session.childSession(); child != nil {
+		output += child.Output()
+	}
+	return output
+}
 
 func (session *Session) initializeAndLaunch(ctx context.Context, options StartOptions) error {
 	defer session.launchOnce.Do(func() { close(session.launchDone) })
 	response, err := session.request(ctx, &godap.InitializeRequest{
 		Request: request("initialize"),
 		Arguments: godap.InitializeRequestArguments{
-			ClientID:                     "wingman",
-			ClientName:                   "Wingman",
-			AdapterID:                    session.plan.Adapter.AdapterID,
-			Locale:                       "en-US",
-			LinesStartAt1:                true,
-			ColumnsStartAt1:              true,
-			PathFormat:                   "path",
-			SupportsVariableType:         true,
-			SupportsVariablePaging:       true,
-			SupportsRunInTerminalRequest: session.plan.IO == IOTerminal && session.terminalLauncher != nil,
+			ClientID:                      "wingman",
+			ClientName:                    "Wingman",
+			AdapterID:                     session.plan.Adapter.AdapterID,
+			Locale:                        "en-US",
+			LinesStartAt1:                 true,
+			ColumnsStartAt1:               true,
+			PathFormat:                    "path",
+			SupportsVariableType:          true,
+			SupportsVariablePaging:        true,
+			SupportsRunInTerminalRequest:  session.plan.IO == IOTerminal && session.terminalLauncher != nil,
+			SupportsStartDebuggingRequest: session.connection.childConnector() != nil,
 		},
 	})
 	if err != nil {
@@ -273,6 +369,12 @@ func (session *Session) initializeAndLaunch(ctx context.Context, options StartOp
 			// initialized event. Keep waiting for the configuration barrier.
 			startResponseReceived = true
 			startResponse = nil
+		case <-session.resourceDone:
+			status := session.Status()
+			if status.Error != "" {
+				return errors.New(status.Error)
+			}
+			return errSessionClosed
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -320,11 +422,21 @@ configure:
 		}
 	}
 
-	status := session.Status()
-	if status.State == StateConfiguring {
-		session.setState(StateRunning, nil)
-	}
+	session.finishConfiguration()
 	return nil
+}
+
+// finishConfiguration must not overwrite a stopped or terminated event that
+// arrives immediately after the final launch/configuration response.
+func (session *Session) finishConfiguration() {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.state != StateConfiguring {
+		return
+	}
+	session.state = StateRunning
+	session.stop = nil
+	session.notifyStateLocked()
 }
 
 func request(command string) godap.Request {
@@ -514,11 +626,127 @@ func (session *Session) closeAfterTermination() {
 }
 
 func (session *Session) handleAdapterRequest(message godap.RequestMessage) {
+	if request, ok := message.(*godap.StartDebuggingRequest); ok {
+		session.respondStartDebugging(request)
+		return
+	}
 	if request, ok := message.(*godap.RunInTerminalRequest); ok {
 		session.respondRunInTerminal(request)
 		return
 	}
 	session.respondError(message.GetRequest(), "notSupported", "Wingman does not support adapter-initiated request {command}")
+}
+
+func (session *Session) respondStartDebugging(request *godap.StartDebuggingRequest) {
+	connector := session.connection.childConnector()
+	if connector == nil {
+		session.respondError(&request.Request, "notSupported", "The debug adapter does not accept child sessions")
+		return
+	}
+	requestName := strings.ToLower(strings.TrimSpace(request.Arguments.Request))
+	if requestName != "launch" && requestName != "attach" {
+		session.respondError(&request.Request, "invalidArgs", "startDebugging requires a launch or attach request")
+		return
+	}
+	arguments := make(map[string]any, len(request.Arguments.Configuration)+1)
+	for key, value := range request.Arguments.Configuration {
+		arguments[key] = value
+	}
+	arguments["request"] = requestName
+	childPlan := session.plan
+	childPlan.Adapter.Transport = TransportConnect
+	childPlan.Adapter.Command = ""
+	childPlan.Adapter.Args = nil
+	childPlan.Request = requestName
+	childPlan.Arguments = arguments
+	childPlan.PreLaunch = nil
+
+	ctx, cancel := context.WithTimeout(context.Background(), adapterStartupTimeout)
+	defer cancel()
+	child, err := startSession(ctx, session.id+"-child", childPlan, StartOptions{
+		Breakpoints:         session.breakpointSnapshot(),
+		FunctionBreakpoints: session.functionBreakpointSnapshot(),
+		terminalLauncher:    session.terminalLauncher,
+		adapterConnector:    connector,
+	})
+	if err != nil {
+		session.respondError(&request.Request, "startDebugging", err.Error())
+		return
+	}
+	previous, attached := session.attachChild(child)
+	if !attached {
+		child.Close()
+		session.respondError(&request.Request, "startDebugging", "The parent debug session ended while its child session was starting")
+		return
+	}
+	if previous != nil {
+		previous.Close()
+	}
+	session.respond(&godap.StartDebuggingResponse{Response: godap.Response{
+		ProtocolMessage: godap.ProtocolMessage{Type: "response"},
+		RequestSeq:      request.Seq,
+		Success:         true,
+		Command:         request.Command,
+	}})
+}
+
+// attachChild transfers ownership only while the parent is still active. A
+// child can take long enough to start that the parent is closed concurrently;
+// installing it afterward would leak the child adapter and debuggee.
+func (session *Session) attachChild(child *Session) (*Session, bool) {
+	child.mu.Lock()
+	child.parent = session
+	child.mu.Unlock()
+
+	session.mu.Lock()
+	if !session.alive.Load() || session.state == StateTerminated {
+		session.mu.Unlock()
+		child.mu.Lock()
+		if child.parent == session {
+			child.parent = nil
+		}
+		child.mu.Unlock()
+		return nil, false
+	}
+	previous := session.child
+	session.child = child
+	session.notifyStateLocked()
+	session.mu.Unlock()
+
+	if previous != nil {
+		previous.mu.Lock()
+		if previous.parent == session {
+			previous.parent = nil
+		}
+		previous.mu.Unlock()
+	}
+	return previous, true
+}
+
+func (session *Session) childSession() *Session {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return session.child
+}
+
+func cloneSourceBreakpointSets(values map[string][]SourceBreakpoint) map[string][]SourceBreakpoint {
+	result := make(map[string][]SourceBreakpoint, len(values))
+	for path, breakpoints := range values {
+		result[filepath.Clean(path)] = slices.Clone(breakpoints)
+	}
+	return result
+}
+
+func (session *Session) breakpointSnapshot() map[string][]SourceBreakpoint {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return cloneSourceBreakpointSets(session.breakpoints)
+}
+
+func (session *Session) functionBreakpointSnapshot() []FunctionBreakpoint {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return slices.Clone(session.functions)
 }
 
 func (session *Session) respondRunInTerminal(request *godap.RunInTerminalRequest) {
@@ -670,11 +898,12 @@ func (session *Session) finish(err error) {
 	session.finishOnce.Do(func() {
 		session.alive.Store(false)
 		session.mu.Lock()
+		wasTerminated := session.state == StateTerminated
 		if session.state != StateTerminated {
 			session.state = StateTerminated
 		}
 		session.stop = nil
-		if err != nil {
+		if err != nil && !wasTerminated && !session.disconnecting.Load() {
 			session.terminalErr = err
 		}
 		session.notifyStateLocked()
@@ -709,6 +938,21 @@ func (session *Session) notifyStateLocked() {
 	session.stateVersion++
 	close(session.stateChanged)
 	session.stateChanged = make(chan struct{})
+	if session.parent != nil {
+		session.parent.notifyChildStateChanged()
+	}
+}
+
+func (session *Session) notifyChildStateChanged() {
+	session.mu.Lock()
+	session.stateVersion++
+	close(session.stateChanged)
+	session.stateChanged = make(chan struct{})
+	parent := session.parent
+	session.mu.Unlock()
+	if parent != nil {
+		parent.notifyChildStateChanged()
+	}
 }
 
 func (session *Session) waitForStop(ctx context.Context, after uint64) (Status, bool) {
@@ -716,8 +960,12 @@ func (session *Session) waitForStop(ctx context.Context, after uint64) (Status, 
 		session.mu.Lock()
 		version := session.stateVersion
 		state := session.state
+		child := session.child
 		changed := session.stateChanged
 		session.mu.Unlock()
+		if child != nil {
+			state = child.Status().State
+		}
 		if version > after && (state == StateStopped || state == StateTerminated) {
 			return session.Status(), true
 		}
@@ -736,15 +984,27 @@ func (session *Session) stateEpoch() uint64 {
 }
 
 func (session *Session) SetBreakpoints(ctx context.Context, path string, values []SourceBreakpoint) ([]Breakpoint, error) {
+	if err := validateSourceBreakpoints(values); err != nil {
+		return nil, err
+	}
+	path = filepath.Clean(path)
+	session.mu.Lock()
+	if len(values) == 0 {
+		delete(session.breakpoints, path)
+	} else {
+		session.breakpoints[path] = slices.Clone(values)
+	}
+	child := session.child
+	session.mu.Unlock()
+	if child != nil {
+		return child.SetBreakpoints(ctx, path, values)
+	}
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(session.plan.ProjectDir, path)
 	}
 	path = filepath.Clean(path)
 	wire := make([]godap.SourceBreakpoint, 0, len(values))
 	for _, value := range values {
-		if value.Line <= 0 {
-			return nil, errors.New("breakpoint line must be a positive 1-based integer")
-		}
 		wire = append(wire, godap.SourceBreakpoint{
 			Line:         value.Line,
 			Column:       value.Column,
@@ -770,12 +1030,31 @@ func (session *Session) SetBreakpoints(ctx context.Context, path string, values 
 	return breakpointsFromWire(result.Body.Breakpoints), nil
 }
 
+func validateSourceBreakpoints(values []SourceBreakpoint) error {
+	for index, value := range values {
+		if value.Line <= 0 {
+			return fmt.Errorf("breakpoint %d line must be a positive 1-based integer", index+1)
+		}
+		if value.Column < 0 {
+			return fmt.Errorf("breakpoint %d column cannot be negative", index+1)
+		}
+	}
+	return nil
+}
+
 func (session *Session) SetFunctionBreakpoints(ctx context.Context, values []FunctionBreakpoint) ([]Breakpoint, error) {
+	if err := validateFunctionBreakpoints(values); err != nil {
+		return nil, err
+	}
+	session.mu.Lock()
+	session.functions = slices.Clone(values)
+	child := session.child
+	session.mu.Unlock()
+	if child != nil {
+		return child.SetFunctionBreakpoints(ctx, values)
+	}
 	wire := make([]godap.FunctionBreakpoint, 0, len(values))
 	for _, value := range values {
-		if strings.TrimSpace(value.Name) == "" {
-			return nil, errors.New("function breakpoint name is required")
-		}
 		wire = append(wire, godap.FunctionBreakpoint{Name: value.Name, Condition: value.Condition, HitCondition: value.HitCondition})
 	}
 	response, err := session.request(ctx, &godap.SetFunctionBreakpointsRequest{
@@ -792,6 +1071,15 @@ func (session *Session) SetFunctionBreakpoints(ctx context.Context, values []Fun
 	return breakpointsFromWire(result.Body.Breakpoints), nil
 }
 
+func validateFunctionBreakpoints(values []FunctionBreakpoint) error {
+	for index, value := range values {
+		if strings.TrimSpace(value.Name) == "" {
+			return fmt.Errorf("function breakpoint %d name is required", index+1)
+		}
+	}
+	return nil
+}
+
 func breakpointsFromWire(values []godap.Breakpoint) []Breakpoint {
 	result := make([]Breakpoint, 0, len(values))
 	for _, value := range values {
@@ -801,6 +1089,9 @@ func breakpointsFromWire(values []godap.Breakpoint) []Breakpoint {
 }
 
 func (session *Session) Continue(ctx context.Context, threadID int) error {
+	if child := session.childSession(); child != nil {
+		return child.Continue(ctx, threadID)
+	}
 	threadID, err := session.resolveThreadID(ctx, threadID)
 	if err != nil {
 		return err
@@ -809,6 +1100,9 @@ func (session *Session) Continue(ctx context.Context, threadID int) error {
 }
 
 func (session *Session) Next(ctx context.Context, threadID int) error {
+	if child := session.childSession(); child != nil {
+		return child.Next(ctx, threadID)
+	}
 	threadID, err := session.resolveThreadID(ctx, threadID)
 	if err != nil {
 		return err
@@ -817,6 +1111,9 @@ func (session *Session) Next(ctx context.Context, threadID int) error {
 }
 
 func (session *Session) StepIn(ctx context.Context, threadID int) error {
+	if child := session.childSession(); child != nil {
+		return child.StepIn(ctx, threadID)
+	}
 	threadID, err := session.resolveThreadID(ctx, threadID)
 	if err != nil {
 		return err
@@ -825,6 +1122,9 @@ func (session *Session) StepIn(ctx context.Context, threadID int) error {
 }
 
 func (session *Session) StepOut(ctx context.Context, threadID int) error {
+	if child := session.childSession(); child != nil {
+		return child.StepOut(ctx, threadID)
+	}
 	threadID, err := session.resolveThreadID(ctx, threadID)
 	if err != nil {
 		return err
@@ -833,6 +1133,9 @@ func (session *Session) StepOut(ctx context.Context, threadID int) error {
 }
 
 func (session *Session) StepBack(ctx context.Context, threadID int) error {
+	if child := session.childSession(); child != nil {
+		return child.StepBack(ctx, threadID)
+	}
 	if !session.Status().Capabilities.SupportsStepBack {
 		return fmt.Errorf("debug adapter %s does not support stepping backward", session.plan.Adapter.Name)
 	}
@@ -847,25 +1150,58 @@ func (session *Session) StepBack(ctx context.Context, threadID int) error {
 }
 
 func (session *Session) resumeRequest(ctx context.Context, message godap.RequestMessage) error {
-	previous := session.Status()
-	if previous.State != StateStopped {
-		return fmt.Errorf("debug session must be stopped before %s", message.GetRequest().Command)
-	}
 	// Mark the session running before sending. A fast adapter can emit the next
 	// stopped event immediately after its response; updating state afterwards
-	// would race with and overwrite that newer event.
-	session.setState(StateRunning, nil)
-	_, err := session.request(ctx, message)
+	// would race with and overwrite that newer event. The stopped check and
+	// transition are one critical section for the same reason.
+	previousStop, runningEpoch, err := session.beginResume(message.GetRequest().Command)
 	if err != nil {
-		if session.Status().State == StateRunning {
-			session.setState(StateStopped, previous.Stop)
-		}
+		return err
+	}
+	_, err = session.request(ctx, message)
+	if err != nil {
+		session.restoreFailedResume(runningEpoch, previousStop)
 		return err
 	}
 	return nil
 }
 
+func (session *Session) beginResume(command string) (*Stop, uint64, error) {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.state != StateStopped {
+		return nil, 0, fmt.Errorf("debug session must be stopped before %s", command)
+	}
+	previousStop := session.stop
+	if previousStop != nil {
+		clone := *previousStop
+		clone.HitBreakpointIDs = slices.Clone(previousStop.HitBreakpointIDs)
+		previousStop = &clone
+	}
+	session.state = StateRunning
+	session.stop = nil
+	session.notifyStateLocked()
+	return previousStop, session.stateVersion, nil
+}
+
+// restoreFailedResume rolls back the optimistic running state only when no
+// newer adapter event has arrived. Checking and restoring under one lock keeps
+// a stopped or continued event from being overwritten between those steps.
+func (session *Session) restoreFailedResume(runningEpoch uint64, stop *Stop) {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.state != StateRunning || session.stateVersion != runningEpoch {
+		return
+	}
+	session.state = StateStopped
+	session.stop = stop
+	session.notifyStateLocked()
+}
+
 func (session *Session) Pause(ctx context.Context, threadID int) error {
+	if child := session.childSession(); child != nil {
+		return child.Pause(ctx, threadID)
+	}
 	threadID, err := session.resolveThreadID(ctx, threadID)
 	if err != nil {
 		return err
@@ -881,6 +1217,9 @@ func (session *Session) WaitForStop(ctx context.Context, after uint64) (Status, 
 func (session *Session) StateEpoch() uint64 { return session.stateEpoch() }
 
 func (session *Session) Threads(ctx context.Context) ([]Thread, error) {
+	if child := session.childSession(); child != nil {
+		return child.Threads(ctx)
+	}
 	response, err := session.request(ctx, &godap.ThreadsRequest{Request: request("threads")})
 	if err != nil {
 		return nil, err
@@ -915,6 +1254,9 @@ func (session *Session) resolveThreadID(ctx context.Context, threadID int) (int,
 }
 
 func (session *Session) StackTrace(ctx context.Context, threadID, start, levels int) ([]StackFrame, int, error) {
+	if child := session.childSession(); child != nil {
+		return child.StackTrace(ctx, threadID, start, levels)
+	}
 	threadID, err := session.resolveThreadID(ctx, threadID)
 	if err != nil {
 		return nil, 0, err
@@ -942,6 +1284,9 @@ func (session *Session) StackTrace(ctx context.Context, threadID, start, levels 
 }
 
 func (session *Session) Scopes(ctx context.Context, frameID int) ([]Scope, error) {
+	if child := session.childSession(); child != nil {
+		return child.Scopes(ctx, frameID)
+	}
 	if frameID <= 0 {
 		frames, _, err := session.StackTrace(ctx, 0, 0, 1)
 		if err != nil {
@@ -971,6 +1316,9 @@ func (session *Session) Scopes(ctx context.Context, frameID int) ([]Scope, error
 }
 
 func (session *Session) Variables(ctx context.Context, reference, start, count int) ([]Variable, error) {
+	if child := session.childSession(); child != nil {
+		return child.Variables(ctx, reference, start, count)
+	}
 	if reference <= 0 {
 		return nil, errors.New("variables_reference must be a positive integer returned by scopes, variables, or evaluate")
 	}
@@ -1003,6 +1351,9 @@ func (session *Session) Evaluate(ctx context.Context, expression string, frameID
 // as "repl", "hover", or "watch". Adapters may format or restrict results
 // differently for each context.
 func (session *Session) EvaluateContext(ctx context.Context, expression string, frameID int, evaluationContext string) (Evaluation, error) {
+	if child := session.childSession(); child != nil {
+		return child.EvaluateContext(ctx, expression, frameID, evaluationContext)
+	}
 	if strings.TrimSpace(expression) == "" {
 		return Evaluation{}, errors.New("expression is required")
 	}
@@ -1037,8 +1388,15 @@ func (session *Session) EvaluateContext(ctx context.Context, expression string, 
 }
 
 func (session *Session) Disconnect(ctx context.Context, terminate bool) error {
+	// Process and connection watchers can finish concurrently with a user stop.
+	// Publish ownership intent before either side observes process exit so a
+	// forced close is not surfaced as an unexpected adapter crash.
+	session.disconnecting.Store(true)
 	session.disconnectMu.Lock()
 	defer session.disconnectMu.Unlock()
+	if child := session.childSession(); child != nil {
+		_ = child.Disconnect(ctx, terminate)
+	}
 
 	if !session.alive.Load() {
 		session.closeResources()
@@ -1101,10 +1459,23 @@ func (session *Session) closeResourcesWithError(closeErr error) {
 		if session.connection != nil {
 			_ = session.connection.Close()
 		}
+		if session.preLaunch != nil {
+			session.preLaunch.Close()
+		}
 		session.mu.Lock()
+		child := session.child
+		session.child = nil
 		terminals := slices.Clone(session.terminals)
 		session.terminals = nil
 		session.mu.Unlock()
+		if child != nil {
+			child.mu.Lock()
+			if child.parent == session {
+				child.parent = nil
+			}
+			child.mu.Unlock()
+			child.Close()
+		}
 		for _, terminal := range terminals {
 			terminal.cancel()
 			_ = terminal.process.Close()

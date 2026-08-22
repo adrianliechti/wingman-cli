@@ -50,6 +50,7 @@ interface Props {
 	onLaunchDebug?: (target: DebugTarget, action: DebugAction) => void;
 	view?: "code" | "preview";
 	tabEnabled?: boolean;
+	languageServicesKey?: string;
 }
 
 export function FileTab({
@@ -66,6 +67,7 @@ export function FileTab({
 	onLaunchDebug,
 	view = "code",
 	tabEnabled = false,
+	languageServicesKey = "",
 }: Props) {
 	const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
 	const monacoRef = useRef<Monaco | null>(null);
@@ -79,34 +81,42 @@ export function FileTab({
 	const onApplyWorkspaceEditRef = useRef(onApplyWorkspaceEdit);
 	const onLaunchDebugRef = useRef(onLaunchDebug);
 	const onSaveRef = useRef(onSave);
+	const languageServicesKeyRef = useRef(languageServicesKey);
 	const scheme = useColorScheme();
 	const [contextMenu, setContextMenu] = useState<{
 		x: number;
 		y: number;
 		altKey: boolean;
+		editor: Parameters<OnMount>[0];
 	} | null>(null);
 	const [, setLanguageFeaturesRevision] = useState(0);
-	onOpenFileRef.current = onOpenFile;
-	onApplyWorkspaceEditRef.current = onApplyWorkspaceEdit;
-	onLaunchDebugRef.current = onLaunchDebug;
-	onSaveRef.current = onSave;
+
+	useEffect(() => {
+		onOpenFileRef.current = onOpenFile;
+		onApplyWorkspaceEditRef.current = onApplyWorkspaceEdit;
+		onLaunchDebugRef.current = onLaunchDebug;
+		onSaveRef.current = onSave;
+	}, [onApplyWorkspaceEdit, onLaunchDebug, onOpenFile, onSave]);
 
 	const dirty = document.draft !== document.savedContent;
 	const file = document.file;
-	const disposeEditorIntegration = useCallback(() => {
-		contextMenuListenerRef.current?.dispose();
-		contextMenuListenerRef.current = null;
+	const disposeLSPIntegration = useCallback(() => {
 		saveParticipantDisposeRef.current?.();
 		saveParticipantDisposeRef.current = null;
 		lspBridgeRef.current?.dispose();
 		lspBridgeRef.current = null;
+	}, []);
+	const disposeEditorIntegration = useCallback(() => {
+		contextMenuListenerRef.current?.dispose();
+		contextMenuListenerRef.current = null;
+		disposeLSPIntegration();
 		debugBridgeRef.current?.dispose();
 		debugBridgeRef.current = null;
 		tabBridgeRef.current?.dispose();
 		tabBridgeRef.current = null;
 		editorRef.current = null;
 		monacoRef.current = null;
-	}, []);
+	}, [disposeLSPIntegration]);
 	const refreshTabIntegration = useCallback(() => {
 		tabBridgeRef.current?.dispose();
 		tabBridgeRef.current = null;
@@ -151,7 +161,6 @@ export function FileTab({
 
 	useEffect(() => {
 		if (view !== "code") {
-			setContextMenu(null);
 			disposeEditorIntegration();
 		}
 	}, [disposeEditorIntegration, view]);
@@ -159,6 +168,37 @@ export function FileTab({
 	const loadDiagnostics = useCallback(async () => {
 		await lspBridgeRef.current?.refreshDiagnostics();
 	}, []);
+	const refreshLSPIntegration = useCallback(() => {
+		disposeLSPIntegration();
+		const editor = editorRef.current;
+		const monaco = monacoRef.current;
+		if (document.external || !file || !editor || !monaco) return;
+
+		const bridge = createMonacoLSPBridge({
+			monaco,
+			editor,
+			file,
+			onCapabilitiesChanged: () =>
+				setLanguageFeaturesRevision((revision) => revision + 1),
+			onOpenFile: (path, row, col, external) =>
+				onOpenFileRef.current?.(path, row, col, external),
+			onApplyWorkspaceEdit: (envelope, label) =>
+				onApplyWorkspaceEditRef.current?.(envelope, label) ??
+				Promise.resolve(false),
+		});
+		lspBridgeRef.current = bridge;
+		saveParticipantDisposeRef.current = registerEditorSaveParticipant(
+			file.path,
+			() => bridge.organizeImports(),
+		);
+		void bridge.refreshDiagnostics();
+	}, [disposeLSPIntegration, document.external, file]);
+
+	useEffect(() => {
+		if (languageServicesKeyRef.current === languageServicesKey) return;
+		languageServicesKeyRef.current = languageServicesKey;
+		refreshLSPIntegration();
+	}, [languageServicesKey, refreshLSPIntegration]);
 
 	useEffect(() => {
 		if (!file || file.binary || !editorRef.current) return;
@@ -284,6 +324,7 @@ export function FileTab({
 						beforeMount={defineWingmanThemes}
 						onMount={(editor, monaco) => {
 							disposeEditorIntegration();
+							setContextMenu(null);
 							editorRef.current = editor;
 							monacoRef.current = monaco;
 							refreshTabIntegration();
@@ -310,6 +351,7 @@ export function FileTab({
 									x: event.event.posx,
 									y: event.event.posy,
 									altKey: event.event.altKey,
+									editor,
 								});
 							});
 							editor.addCommand(
@@ -328,6 +370,7 @@ export function FileTab({
 											(visible?.top ?? 8) +
 											(visible?.height ?? 16),
 										altKey: false,
+										editor,
 									});
 								},
 							);
@@ -345,26 +388,7 @@ export function FileTab({
 										})();
 									},
 								});
-								lspBridgeRef.current = createMonacoLSPBridge({
-									monaco,
-									editor,
-									file,
-									onCapabilitiesChanged: () =>
-										setLanguageFeaturesRevision((revision) => revision + 1),
-									onOpenFile: (path, row, col, external) =>
-										onOpenFileRef.current?.(path, row, col, external),
-									onApplyWorkspaceEdit: (envelope, label) =>
-										onApplyWorkspaceEditRef.current?.(envelope, label) ??
-										Promise.resolve(false),
-								});
-								saveParticipantDisposeRef.current =
-									registerEditorSaveParticipant(
-										file.path,
-										() =>
-											lspBridgeRef.current?.organizeImports() ??
-											Promise.resolve(false),
-									);
-								void loadDiagnostics();
+								refreshLSPIntegration();
 							}
 							revealEditorPosition(editor, line, column);
 						}}
@@ -388,9 +412,9 @@ export function FileTab({
 					/>
 				)}
 			</div>
-			{contextMenu && editorRef.current && (
+			{view === "code" && contextMenu && (
 				<EditorContextMenu
-					editor={editorRef.current}
+					editor={contextMenu.editor}
 					openAt={contextMenu}
 					readOnly={document.external}
 					initialAltKey={contextMenu.altKey}

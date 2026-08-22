@@ -18,6 +18,8 @@ import (
 	"go.lsp.dev/jsonrpc2"
 	"go.lsp.dev/protocol"
 	lspuri "go.lsp.dev/uri"
+
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 )
 
 type Session struct {
@@ -67,7 +69,7 @@ const startupTimeout = 30 * time.Second
 func connect(ctx context.Context, workingDir string, server Server) (*Session, error) {
 	cmd := exec.Command(server.Command, server.Args...)
 	cmd.Dir = workingDir
-	cmd.Env = os.Environ()
+	cmd.Env = tooling.Environment(server.Command, os.Environ())
 	cmd.Stderr = io.Discard
 
 	setSysProcAttr(cmd)
@@ -213,6 +215,7 @@ func (s *Session) openedDocuments() []openDocument {
 
 func (s *Session) Close() {
 	s.closeOnce.Do(func() {
+		s.alive.Store(false)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -229,6 +232,9 @@ func retryRPC[T any](ctx context.Context, call func() (T, error)) (T, error) {
 	for attempt := range maxRetries {
 		result, err = call()
 		if err == nil || !isTransientError(err) {
+			return result, err
+		}
+		if attempt == maxRetries-1 {
 			return result, err
 		}
 		delay := retryBaseDelay << attempt

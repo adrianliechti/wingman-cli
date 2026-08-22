@@ -143,6 +143,41 @@ export function createMonacoLSPBridge({
 	});
 	const lspCommandID = `wingman.lsp.command.${++bridgeSequence}`;
 
+	// Monaco's built-in workers publish diagnostics under the model language
+	// ID. When this file has a real language server, keep diagnostics
+	// project-aware by retaining only Wingman's LSP marker owner. This is done
+	// per model so files without an active LSP keep Monaco's fallback checks.
+	function suppressStandaloneDiagnostics() {
+		if (
+			!activeCapabilities?.language_server ||
+			!sourceModel ||
+			sourceModel.isDisposed()
+		)
+			return;
+		const owner = sourceModel.getLanguageId();
+		const hasStandaloneMarkers = monaco.editor
+			.getModelMarkers({ resource: sourceModel.uri })
+			.some((marker: MonacoTypes.editor.IMarker) => marker.owner === owner);
+		if (hasStandaloneMarkers) {
+			monaco.editor.setModelMarkers(sourceModel, owner, []);
+		}
+	}
+
+	disposables.push(
+		monaco.editor.onDidChangeMarkers(
+			(resources: readonly MonacoTypes.Uri[]) => {
+				if (
+					sourceModel &&
+					resources.some(
+						(resource) => resource.toString() === sourceModel.uri.toString(),
+					)
+				) {
+					suppressStandaloneDiagnostics();
+				}
+			},
+		),
+	);
+
 	type CodeActionPayload = {
 		action: LSPCodeAction | LSPCommand;
 		documents: Record<string, WorkspaceDocumentSnapshot>;
@@ -962,6 +997,7 @@ export function createMonacoLSPBridge({
 		}
 
 		activeCapabilities = capabilities;
+		suppressStandaloneDiagnostics();
 		onCapabilitiesChanged?.();
 	}
 

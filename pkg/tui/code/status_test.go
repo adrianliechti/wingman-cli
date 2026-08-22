@@ -41,6 +41,34 @@ func TestFooterUsageStaysCompact(t *testing.T) {
 	}
 }
 
+func TestBackgroundStatusUsesIdleFooter(t *testing.T) {
+	a := &App{
+		agent: newUITestAgent(nil), sessionID: "session",
+		backgroundStatus: "Installing gopls (1/2)",
+	}
+	footer := ansi.Strip(a.footerLine(80))
+	if !strings.Contains(footer, "Installing gopls (1/2)") {
+		t.Fatalf("footer missing background status: %q", footer)
+	}
+
+	a.setPhase(PhaseThinking)
+	footer = ansi.Strip(a.footerLine(80))
+	if !strings.Contains(footer, "Thinking") || strings.Contains(footer, "Installing gopls") {
+		t.Fatalf("turn activity did not take priority: %q", footer)
+	}
+}
+
+func TestBackgroundWarningExpires(t *testing.T) {
+	a := &App{
+		backgroundStatus: "Could not install gopls", backgroundWarning: true,
+		backgroundExpiry: time.Now().Add(time.Second),
+	}
+	a.expireBackgroundStatus(time.Now().Add(2 * time.Second))
+	if a.backgroundStatus != "" || a.backgroundWarning || !a.backgroundExpiry.IsZero() {
+		t.Fatalf("expired warning = (%q, %t, %v)", a.backgroundStatus, a.backgroundWarning, a.backgroundExpiry)
+	}
+}
+
 func TestFooterUsageAppearsOnlyWhenFreshOrLow(t *testing.T) {
 	a := &App{
 		agent: newUITestAgent(nil), sessionID: "session",

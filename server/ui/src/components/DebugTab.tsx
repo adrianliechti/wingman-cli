@@ -11,26 +11,25 @@ import {
 	type DebugVariable,
 } from "../api/debug";
 import { queryKeys } from "../api/query";
+import {
+	debugInspectionPollInterval,
+	preserveDebugInspection,
+} from "../debugInspection";
 
 interface Props {
 	onOpenFile: (path: string, line: number, column: number) => void;
 	onStopped?: () => void;
-	autoOpenSource?: boolean;
 }
 
-export function DebugTab({
-	onOpenFile,
-	onStopped,
-	autoOpenSource = true,
-}: Props) {
+export function DebugTab({ onOpenFile, onStopped }: Props) {
 	const inspectionQuery = useQuery<DebugInspection>({
 		queryKey: queryKeys.debug.inspection,
 		staleTime: 0,
 		queryFn: ({ signal }) => getDebugInspection(signal),
 		refetchInterval: (current) =>
-			current.state.data?.session?.state === "running" ? 600 : 1_500,
+			debugInspectionPollInterval(current.state.data, 600, 1_500),
 		structuralSharing: (previous, next) =>
-			preserveInspection(previous, next as DebugInspection),
+			preserveDebugInspection(previous, next as DebugInspection),
 	});
 	const inspection = inspectionQuery.data ?? null;
 	const session = inspection?.session;
@@ -45,9 +44,6 @@ export function DebugTab({
 		stopVersion: string;
 		frameID?: number;
 	}>({ stopVersion: "" });
-	if (frameSelection.stopVersion !== stopVersion) {
-		setFrameSelection({ stopVersion, frameID: initialFrameID });
-	}
 	const selectedFrameID =
 		frameSelection.stopVersion === stopVersion
 			? frameSelection.frameID
@@ -60,12 +56,8 @@ export function DebugTab({
 		}
 		if (notifiedStopRef.current === stopVersion) return;
 		notifiedStopRef.current = stopVersion;
-		const frame = inspection?.frames[0];
-		if (autoOpenSource && frame?.source?.path) {
-			onOpenFile(frame.source.path, frame.line, frame.column);
-		}
 		onStopped?.();
-	}, [autoOpenSource, inspection, onOpenFile, onStopped, stopVersion]);
+	}, [onStopped, stopVersion]);
 
 	const scopeSessionID = inspection?.session?.session_id;
 	const scopeSessionState = inspection?.session?.state;
@@ -83,7 +75,12 @@ export function DebugTab({
 		),
 		enabled: canLoadScopes,
 		queryFn: ({ signal }) =>
-			getDebugScopes(selectedFrameID ?? 0, scopeSessionID, signal),
+			getDebugScopes(
+				selectedFrameID ?? 0,
+				scopeSessionID,
+				scopeStateVersion,
+				signal,
+			),
 	});
 	const scopes = scopesQuery.data?.scopes ?? [];
 	const scopeLoading = canLoadScopes && scopesQuery.isFetching;
@@ -250,8 +247,10 @@ function VariableRow({
 			stateVersion ?? 0,
 			reference,
 		),
-		enabled: expanded && reference > 0,
-		queryFn: ({ signal }) => getDebugVariables(reference, sessionID, signal),
+		enabled:
+			expanded && reference > 0 && !!sessionID && stateVersion !== undefined,
+		queryFn: ({ signal }) =>
+			getDebugVariables(reference, sessionID, stateVersion, signal),
 	});
 	const children = childrenQuery.data?.variables ?? null;
 	const loading = childrenQuery.isFetching;
@@ -332,32 +331,4 @@ function EmptyDetail({ children }: { children: ReactNode }) {
 
 function errorMessage(value: unknown) {
 	return value instanceof Error ? value.message : String(value);
-}
-
-function preserveInspection(
-	previous: unknown,
-	next: DebugInspection,
-): DebugInspection {
-	const old = previous as DebugInspection | undefined;
-	if (!old) return next;
-	if (!next.session && old.session?.state === "terminated") return old;
-	if (
-		!next.session ||
-		!old.session ||
-		old.session.session_id !== next.session.session_id ||
-		next.session.state_version > old.session.state_version
-	) {
-		return next;
-	}
-
-	// Keep the inspector tree stable within one debugger state so expanded
-	// variables are not remounted by output-only polling updates.
-	if (old.error === next.error && old.session.error === next.session.error) {
-		return old;
-	}
-	return {
-		...old,
-		error: next.error,
-		session: { ...old.session, error: next.session.error },
-	};
 }

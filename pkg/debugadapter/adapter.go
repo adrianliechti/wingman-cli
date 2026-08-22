@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 )
 
@@ -36,10 +37,11 @@ type Target struct {
 }
 
 type Request struct {
-	Action       string
-	WorkspaceDir string
-	ProjectDir   string
-	Target       Target
+	Action            string
+	WorkspaceDir      string
+	ProjectDir        string
+	BrowserExecutable string
+	Target            Target
 }
 
 type Breakpoint struct {
@@ -58,6 +60,7 @@ type Plan struct {
 	Configuration       map[string]any
 	Breakpoints         []Breakpoint
 	FunctionBreakpoints []string
+	PreLaunch           *dap.ProcessLaunch
 }
 
 // LanguageAdapter owns all stable language-specific behavior. Implementations
@@ -82,11 +85,17 @@ func vscodeIOValues() map[dap.IOMode]string {
 	}
 }
 
-func NewRegistry() *Registry {
+// ToolDirectory locates managed tool installations for adapters that load
+// bundled files in addition to executables.
+type ToolDirectory interface {
+	ToolDir(id string) string
+}
+
+func NewRegistry(tools ToolDirectory) *Registry {
 	return NewRegistryWith(
 		goAdapter{},
-		newPythonAdapter(),
-		newJavaAdapter(),
+		pythonAdapter{},
+		newJavaAdapter(tools),
 		rustAdapter{},
 		dotnetAdapter{},
 		newJavaScriptAdapter(),
@@ -124,17 +133,45 @@ func (registry *Registry) Descriptors() []dap.AdapterDescriptor {
 	return result
 }
 
-// JDTLSBundles returns Java debug plug-ins that must be loaded when JDT LS is
-// initialized. The Java DAP server is supplied by this bundle, not by a
-// standalone executable.
-func (registry *Registry) JDTLSBundles() []string {
+// serverInitializer marks adapters whose DAP endpoint is hosted inside a
+// language server that needs additional initialization options.
+type serverInitializer interface {
+	ServerInitialization() (server string, options any)
+}
+
+// managedOnlyProvider marks adapters whose command must come from the managed
+// installer even when a system copy exists.
+type managedOnlyProvider interface {
+	ManagedOnlyCommands() []string
+}
+
+// ServerInitializations returns the language-server initialization options
+// required by hosted adapters, keyed by server name.
+func (registry *Registry) ServerInitializations() map[string]any {
+	result := make(map[string]any)
 	for _, adapter := range registry.adapters {
-		java, ok := adapter.(javaAdapter)
-		if ok {
-			return slices.Clone(java.bundles)
+		initializer, ok := adapter.(serverInitializer)
+		if !ok {
+			continue
+		}
+		if server, options := initializer.ServerInitialization(); server != "" && options != nil {
+			result[server] = options
 		}
 	}
-	return nil
+	return result
+}
+
+// ManagedOnlyCommands returns commands that only the managed installer can
+// provide completely.
+func (registry *Registry) ManagedOnlyCommands() []string {
+	var result []string
+	for _, adapter := range registry.adapters {
+		if provider, ok := adapter.(managedOnlyProvider); ok {
+			result = append(result, provider.ManagedOnlyCommands()...)
+		}
+	}
+	slices.Sort(result)
+	return slices.Compact(result)
 }
 
 func (registry *Registry) Plan(language string, request Request) (Plan, error) {
@@ -209,7 +246,7 @@ func (registry *Registry) DetectWorkspace(ctx context.Context, root string) ([]T
 		}
 		visited++
 		info, err := entry.Info()
-		if err != nil || info.Size() > maxSourceBytes {
+		if err != nil || !info.Mode().IsRegular() || info.Size() > maxSourceBytes {
 			return nil
 		}
 		source, err := os.ReadFile(filePath)
@@ -246,15 +283,7 @@ func sortTargets(values []Target) {
 }
 
 func skipDir(name string) bool {
-	if strings.HasPrefix(name, ".") {
-		return true
-	}
-	switch name {
-	case "node_modules", "vendor", "testdata", "target", "build", "dist", "__pycache__", "venv", "env":
-		return true
-	default:
-		return false
-	}
+	return tooling.SkipDirectory(name)
 }
 
 func projectPath(projectDir, targetPath string) (string, error) {
@@ -282,4 +311,15 @@ func actionLabel(action string) string {
 
 func targetBreakpoint(target Target) []Breakpoint {
 	return []Breakpoint{{FilePath: target.Path, Line: target.Line, Column: target.Column}}
+}
+
+func absoluteCommandPath(command string) string {
+	path, err := tooling.LookPath(command)
+	if err != nil {
+		return ""
+	}
+	if absolute, err := filepath.Abs(path); err == nil {
+		return absolute
+	}
+	return path
 }

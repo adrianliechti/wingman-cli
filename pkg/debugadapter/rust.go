@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 )
 
@@ -134,8 +135,18 @@ func (adapter rustAdapter) Plan(request Request) (Plan, error) {
 		buildTarget = "--example " + target.Name
 	}
 	summary := fmt.Sprintf("%s Rust %s %s.", actionLabel(request.Action), targetLabel, target.Name)
+	var preLaunch *dap.ProcessLaunch
 	if !exists {
-		summary += fmt.Sprintf(" Build it with cargo build %s first; the expected executable is %s.", buildTarget, filepath.ToSlash(program))
+		if cargo := resolveCargoExecutable(); cargo != "" {
+			buildArgs := []string{"build", "--bin", target.Name}
+			if kind == "example" {
+				buildArgs = []string{"build", "--example", target.Name}
+			}
+			preLaunch = &dap.ProcessLaunch{Title: "cargo build", Command: cargo, Args: buildArgs, WaitForExit: true}
+			summary += fmt.Sprintf(" The %s is built with cargo build %s first.", targetLabel, buildTarget)
+		} else {
+			summary += fmt.Sprintf(" Build it with cargo build %s first; the expected executable is %s.", buildTarget, filepath.ToSlash(program))
+		}
 	}
 	plan := Plan{
 		Title:            actionLabel(request.Action) + " " + target.Name,
@@ -145,6 +156,7 @@ func (adapter rustAdapter) Plan(request Request) (Plan, error) {
 		IO:               dap.IOOutput,
 		SupportsTerminal: true,
 		Configuration:    configuration,
+		PreLaunch:        preLaunch,
 	}
 	if request.Action == "run" {
 		configuration["noDebug"] = true
@@ -166,6 +178,8 @@ func loadCargoMetadata(projectDir string) (cargoMetadata, error) {
 		"metadata", "--no-deps", "--format-version=1", "--manifest-path", manifest,
 	)
 	command.Dir = projectDir
+	command.Env = tooling.Environment(cargo, os.Environ())
+	command.WaitDelay = 3 * time.Second
 	output, err := command.Output()
 	if err != nil {
 		if ctx.Err() != nil {
@@ -192,26 +206,11 @@ func loadCargoMetadata(projectDir string) (cargoMetadata, error) {
 
 func resolveCargoExecutable() string {
 	if configured := strings.TrimSpace(os.Getenv("CARGO")); configured != "" {
-		if path, err := exec.LookPath(configured); err == nil {
+		if path, err := tooling.LookPath(configured); err == nil {
 			return path
 		}
 	}
-	if path, err := exec.LookPath("cargo"); err == nil {
-		return path
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
-	}
-	name := "cargo"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	path := filepath.Join(home, ".cargo", "bin", name)
-	if info, err := os.Stat(path); err == nil && !info.IsDir() && (runtime.GOOS == "windows" || info.Mode()&0o111 != 0) {
-		return path
-	}
-	return ""
+	return tooling.Resolve("cargo")
 }
 
 func rustCargoTarget(request Request, metadata cargoMetadata) (cargoMetadataTarget, string, error) {

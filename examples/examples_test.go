@@ -23,7 +23,7 @@ func TestDebuggerSamplesExposeEverySupportedLanguage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	targets, err := debugadapter.NewRegistry().DetectWorkspace(t.Context(), root)
+	targets, err := debugadapter.NewRegistry(nil).DetectWorkspace(t.Context(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestDebuggerSamplesExposeEverySupportedLanguage(t *testing.T) {
 		"Java":                  1,
 		"Rust":                  1,
 		"C#/.NET":               1,
-		"JavaScript/TypeScript": 2,
+		"JavaScript/TypeScript": 3,
 	}
 	if !reflect.DeepEqual(counts, want) {
 		t.Fatalf("debug sample targets = %#v, want %#v; all targets = %#v", counts, want, targets)

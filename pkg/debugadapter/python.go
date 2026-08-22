@@ -4,45 +4,23 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	"os"
 	"path/filepath"
-	"runtime"
-	"slices"
 	"strings"
 
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 )
 
-type pythonAdapter struct {
-	fallbackCommand string
-	fallbackArgs    []string
-}
-
-func newPythonAdapter() pythonAdapter {
-	adapterPath := discoverBundledDebugpyAdapter()
-	if adapterPath == "" {
-		return pythonAdapter{}
-	}
-	command := "python3"
-	if runtime.GOOS == "windows" {
-		command = "python"
-	}
-	return pythonAdapter{
-		fallbackCommand: command,
-		fallbackArgs:    []string{adapterPath},
-	}
-}
+type pythonAdapter struct{}
 
 func (pythonAdapter) Language() string { return "Python" }
 
-func (adapter pythonAdapter) Descriptor() dap.AdapterDescriptor {
+func (pythonAdapter) Descriptor() dap.AdapterDescriptor {
 	return dap.AdapterDescriptor{
 		Name:             "debugpy",
 		Language:         "Python",
 		AdapterID:        "python",
 		Command:          "debugpy-adapter",
-		FallbackCommand:  adapter.fallbackCommand,
-		FallbackArgs:     slices.Clone(adapter.fallbackArgs),
 		Transport:        dap.TransportStdio,
 		TerminalStrategy: dap.TerminalRunInTerminal,
 		Markers:          []string{"pyproject.toml", "setup.py", "requirements.txt", "Pipfile"},
@@ -55,39 +33,6 @@ func (adapter pythonAdapter) Descriptor() dap.AdapterDescriptor {
 		IOConfigKey: "console",
 		IOValues:    vscodeIOValues(),
 	}
-}
-
-func discoverBundledDebugpyAdapter() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
-	}
-	patterns := []string{
-		filepath.Join(home, ".vscode", "extensions", "ms-python.debugpy-*", "bundled", "libs", "debugpy", "adapter"),
-		filepath.Join(home, ".vscode-insiders", "extensions", "ms-python.debugpy-*", "bundled", "libs", "debugpy", "adapter"),
-		filepath.Join(home, ".cursor", "extensions", "ms-python.debugpy-*", "bundled", "libs", "debugpy", "adapter"),
-		filepath.Join(home, ".windsurf", "extensions", "ms-python.debugpy-*", "bundled", "libs", "debugpy", "adapter"),
-	}
-	if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
-		patterns = append(patterns,
-			filepath.Join(localAppData, "Programs", "Microsoft VS Code", "resources", "app", "extensions", "ms-python.debugpy-*", "bundled", "libs", "debugpy", "adapter"),
-			filepath.Join(localAppData, "Programs", "cursor", "resources", "app", "extensions", "ms-python.debugpy-*", "bundled", "libs", "debugpy", "adapter"),
-		)
-	}
-	var matches []string
-	for _, pattern := range patterns {
-		values, _ := filepath.Glob(pattern)
-		for _, value := range values {
-			if info, err := os.Stat(filepath.Join(value, "__main__.py")); err == nil && !info.IsDir() {
-				matches = append(matches, filepath.Clean(value))
-			}
-		}
-	}
-	slices.Sort(matches)
-	if len(matches) == 0 {
-		return ""
-	}
-	return matches[len(matches)-1]
 }
 
 func (pythonAdapter) Matches(path string) bool {
@@ -119,6 +64,17 @@ func (pythonAdapter) Plan(request Request) (Plan, error) {
 	configuration := map[string]any{
 		"program": program, "cwd": ".", "justMyCode": true,
 	}
+	interpreterDir := request.ProjectDir
+	if request.WorkspaceDir != "" && !filepath.IsAbs(interpreterDir) {
+		interpreterDir = filepath.Join(request.WorkspaceDir, interpreterDir)
+	}
+	workspaceDir := request.WorkspaceDir
+	if workspaceDir == "" {
+		workspaceDir = interpreterDir
+	}
+	if interpreter := resolvePythonInterpreter(interpreterDir, workspaceDir); interpreter != "" {
+		configuration["python"] = []string{interpreter}
+	}
 	plan := Plan{
 		Title:            actionLabel(request.Action) + " " + request.Target.Name,
 		Summary:          fmt.Sprintf("%s Python script %s.", actionLabel(request.Action), request.Target.Path),
@@ -134,6 +90,18 @@ func (pythonAdapter) Plan(request Request) (Plan, error) {
 		plan.Breakpoints = targetBreakpoint(request.Target)
 	}
 	return plan, nil
+}
+
+func resolvePythonInterpreter(projectDir, workspaceDir string) string {
+	if interpreter := tooling.ResolveProject(projectDir, workspaceDir, "python"); interpreter != "" {
+		return interpreter
+	}
+	for _, command := range []string{"python3", "python"} {
+		if path := tooling.Resolve(command); path != "" {
+			return path
+		}
+	}
+	return ""
 }
 
 func pythonEntrypointLine(path string, source []byte) int {

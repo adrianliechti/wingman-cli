@@ -10,7 +10,7 @@ tasks:
     cmds:
       - curl -fsSL https://raw.githubusercontent.com/openai/codex/main/codex-rs/models-manager/models.json -o pkg/external/codex/models.json
 
-  ui:
+  build:ui:
     desc: Build the web UI assets
     dir: server/ui
     cmds:
@@ -24,7 +24,7 @@ tasks:
 
   test:web:
     desc: Build and run browser end-to-end tests
-    deps: [ui]
+    deps: [build:ui]
     dir: server/ui
     cmds:
       - npm run test:web
@@ -42,13 +42,13 @@ tasks:
 
   run:web:
     desc: Run the web server
-    deps: [ui]
+    deps: [build:ui]
     cmds:
       - go run ./cmd/wingman server
 
   build:app:
     desc: Build the desktop app for this platform; all resources are generated from app/appicon.png
-    deps: [ui]
+    deps: [build:ui]
     dir: app
     cmds:
       - go tool appbundle -name "Wingman Agent" -id com.adrianliechti.wingman-agent -description "Wingman Agent" -company "Adrian Liechti" -copyright "© Adrian Liechti" -package .
@@ -76,7 +76,7 @@ tasks:
 
   install:cli:
     desc: Build and install the CLI to GOPATH/bin or GOBIN
-    deps: [ui]
+    deps: [build:ui]
     cmds:
       - dest="$(go env GOBIN)" && [ -z "$dest" ] && dest="$(go env GOPATH)/bin" && go build -o "$dest/wingman" ./cmd/wingman
 

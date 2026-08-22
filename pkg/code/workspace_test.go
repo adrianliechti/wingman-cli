@@ -2,6 +2,7 @@ package code
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,9 +16,75 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/internal/testenv"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/devtools"
 	wingmcp "github.com/adrianliechti/wingman-agent/pkg/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/skill"
 )
+
+func TestManagedToolsUpdateWaitContextStopsWaiting(t *testing.T) {
+	update := &ManagedToolsUpdate{done: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := update.WaitContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitContext error = %v, want context cancellation", err)
+	}
+}
+
+func TestWorkspaceCloseCancelsManagedToolUpdates(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	update := &ManagedToolsUpdate{cancel: cancel, done: make(chan struct{})}
+	workspace := &Workspace{
+		managedUpdates: map[*ManagedToolsUpdate]struct{}{update: {}},
+	}
+
+	workspace.Close()
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("workspace close did not cancel its managed tool update")
+	}
+}
+
+func TestManagedToolRequirementsScopeHostedDebuggerDependencies(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "pom.xml"), []byte("<project/>\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace := &Workspace{RootPath: root}
+
+	findJDTLS := func(requirements []devtools.Requirement) (devtools.Requirement, bool) {
+		for _, requirement := range requirements {
+			if slices.Contains(requirement.Alternatives, "jdtls") {
+				return requirement, true
+			}
+		}
+		return devtools.Requirement{}, false
+	}
+
+	lspOnly, err := workspace.managedToolRequirements(context.Background(), ManagedLSPTools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requirement, ok := findJDTLS(lspOnly); !ok || requirement.ManagedOnly {
+		t.Fatalf("LSP-only JDT LS requirement = %+v, found %t; a system server should remain usable", requirement, ok)
+	}
+
+	dapOnly, err := workspace.managedToolRequirements(context.Background(), ManagedDAPTools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requirement, ok := findJDTLS(dapOnly); !ok || !requirement.ManagedOnly {
+		t.Fatalf("DAP-only JDT LS requirement = %+v, found %t; java-debug needs the managed bundle", requirement, ok)
+	}
+
+	editor, err := workspace.managedToolRequirements(context.Background(), ManagedEditorTools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requirement, ok := findJDTLS(editor); !ok || !requirement.ManagedOnly {
+		t.Fatalf("editor JDT LS requirement = %+v, found %t; java-debug needs the managed bundle", requirement, ok)
+	}
+}
 
 func TestWarmUpCreatesLSPManagerOutsideGitRepository(t *testing.T) {
 	testenv.UserHome(t)

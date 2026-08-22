@@ -63,6 +63,13 @@ export interface DebugLaunchPlan {
 	configuration: Record<string, unknown>;
 	breakpoints: DebugPlanBreakpoint[];
 	function_breakpoints: string[];
+	prelaunch?: {
+		title: string;
+		command: string;
+		args?: string[];
+		ready_url?: string;
+		wait_for_exit?: boolean;
+	};
 }
 
 export interface DebugSourceBreakpoint {
@@ -250,6 +257,7 @@ export async function evaluateDebug(
 	expression: string,
 	sessionId?: string,
 	frameId?: number,
+	stateVersion?: number,
 	signal?: AbortSignal,
 ) {
 	return fetchJSON<DebugEvaluation>("/api/debug/evaluate", {
@@ -259,6 +267,7 @@ export async function evaluateDebug(
 			expression,
 			session_id: sessionId,
 			frame_id: frameId,
+			state_version: stateVersion,
 			context: "hover",
 		}),
 		signal,
@@ -268,12 +277,17 @@ export async function evaluateDebug(
 export async function getDebugScopes(
 	frameId: number,
 	sessionId?: string,
+	stateVersion?: number,
 	signal?: AbortSignal,
 ) {
 	return fetchJSON<{ scopes: DebugScopeInspection[] }>("/api/debug/scopes", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ frame_id: frameId, session_id: sessionId }),
+		body: JSON.stringify({
+			frame_id: frameId,
+			session_id: sessionId,
+			state_version: stateVersion,
+		}),
 		signal,
 	});
 }
@@ -281,6 +295,7 @@ export async function getDebugScopes(
 export async function getDebugVariables(
 	variablesReference: number,
 	sessionId?: string,
+	stateVersion?: number,
 	signal?: AbortSignal,
 ) {
 	return fetchJSON<{ variables: DebugVariable[] }>("/api/debug/variables", {
@@ -289,6 +304,7 @@ export async function getDebugVariables(
 		body: JSON.stringify({
 			variables_reference: variablesReference,
 			session_id: sessionId,
+			state_version: stateVersion,
 			count: 200,
 		}),
 		signal,

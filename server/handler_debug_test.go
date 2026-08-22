@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -155,6 +156,92 @@ func TestDebugSessionWithoutActiveSession(t *testing.T) {
 	}
 }
 
+func TestDebugFrameInspectionRequiresStateVersion(t *testing.T) {
+	root := t.TempDir()
+	app := newDebugTestServer(t, root)
+	tests := []struct {
+		path string
+		body string
+	}{
+		{path: "/api/debug/evaluate", body: `{"expression":"value","frame_id":1}`},
+		{path: "/api/debug/scopes", body: `{"frame_id":1}`},
+		{path: "/api/debug/variables", body: `{"variables_reference":1}`},
+	}
+	for _, test := range tests {
+		request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		app.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "state_version") {
+			t.Fatalf("%s: status = %d, body = %q", test.path, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestDebugStatusChangedUsesSessionEpoch(t *testing.T) {
+	base := dap.Status{SessionID: "session", StateVersion: 7, State: dap.StateStopped}
+	if debugStatusChanged(base, base) {
+		t.Fatal("identical debugger status was reported as changed")
+	}
+	newer := base
+	newer.StateVersion++
+	newer.State = dap.StateRunning
+	if !debugStatusChanged(base, newer) {
+		t.Fatal("new debugger state epoch was not detected")
+	}
+	replacement := base
+	replacement.SessionID = "replacement"
+	if !debugStatusChanged(base, replacement) {
+		t.Fatal("replacement debugger session was not detected")
+	}
+}
+
+func TestDebugInspectionErrorUsesConflictAndTimeoutStatuses(t *testing.T) {
+	tests := []struct {
+		err  error
+		want int
+	}{
+		{err: errDebugStateChanged, want: http.StatusConflict},
+		{err: context.DeadlineExceeded, want: http.StatusGatewayTimeout},
+		{err: errors.New("invalid request"), want: http.StatusBadRequest},
+	}
+	for _, test := range tests {
+		response := httptest.NewRecorder()
+		writeDebugInspectionError(response, test.err)
+		if response.Code != test.want {
+			t.Fatalf("error %v: status = %d, want %d", test.err, response.Code, test.want)
+		}
+	}
+}
+
+func TestNormalizeDebugFrameResolvesWorkspaceSymlinks(t *testing.T) {
+	realRoot := t.TempDir()
+	writeDebugTestFile(t, realRoot, "main.go", "package main\n")
+	linkRoot := filepath.Join(t.TempDir(), "workspace")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("workspace symlinks are unavailable: %v", err)
+	}
+
+	frame := dap.StackFrame{Source: &dap.Source{Path: filepath.Join(realRoot, "main.go")}}
+	normalizeDebugFrame(linkRoot, &frame)
+	if frame.Source.Path != "main.go" {
+		t.Fatalf("normalized path = %q, want main.go", frame.Source.Path)
+	}
+
+	outside := filepath.Join(t.TempDir(), "outside.go")
+	if err := os.WriteFile(outside, []byte("package outside\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(realRoot, "linked.go")); err != nil {
+		t.Skipf("source symlinks are unavailable: %v", err)
+	}
+	frame.Source.Path = filepath.Join(linkRoot, "linked.go")
+	normalizeDebugFrame(linkRoot, &frame)
+	if frame.Source.Path != "" {
+		t.Fatalf("outside symlink normalized to %q", frame.Source.Path)
+	}
+}
+
 func TestLiveDebugInspectionReturnsGoVariables(t *testing.T) {
 	if os.Getenv("WINGMAN_LIVE_DAP") == "" {
 		t.Skip("set WINGMAN_LIVE_DAP=1 to run a real Delve session")
@@ -221,8 +308,9 @@ func main() {
 		t.Fatalf("inspection did not return stack frames: %#v", inspection)
 	}
 	scopesBody, err := json.Marshal(map[string]any{
-		"session_id": inspection.Session.SessionID,
-		"frame_id":   inspection.Frames[0].ID,
+		"session_id":    inspection.Session.SessionID,
+		"state_version": inspection.Session.StateVersion,
+		"frame_id":      inspection.Frames[0].ID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -271,6 +359,26 @@ func TestValidateDebugPlanConstrainsWorkspacePaths(t *testing.T) {
 	plan.Configuration["program"] = "../outside"
 	if err := app.validateDebugPlan(&plan, adapters); err == nil {
 		t.Fatal("outside program path was accepted")
+	}
+}
+
+func TestValidateDebugPlanRejectsAmbiguousLanguage(t *testing.T) {
+	root := t.TempDir()
+	app := newDebugTestServer(t, root)
+	plan := debugLaunchPlan{
+		Action: "debug", Adapter: "Test", ProjectDir: ".", Request: "launch",
+	}
+	adapters := []dap.AdapterInfo{
+		{Name: "first", Language: "Test", Projects: []string{root}},
+		{Name: "second", Language: "Test", Projects: []string{root}},
+	}
+	if err := app.validateDebugPlan(&plan, adapters); err == nil || !strings.Contains(err.Error(), "multiple") {
+		t.Fatalf("validation error = %v, want ambiguity", err)
+	}
+
+	plan.Adapter = "second"
+	if err := app.validateDebugPlan(&plan, adapters); err != nil {
+		t.Fatalf("named adapter: %v", err)
 	}
 }
 

@@ -2,6 +2,10 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { getDebugOutput, type DebugInspection } from "../api/debug";
 import { queryKeys } from "../api/query";
+import {
+	debugInspectionPollInterval,
+	preserveDebugOutput,
+} from "../debugInspection";
 
 export function DebugOutputTab() {
 	const outputRef = useRef<HTMLPreElement | null>(null);
@@ -11,9 +15,9 @@ export function DebugOutputTab() {
 		staleTime: 0,
 		queryFn: ({ signal }) => getDebugOutput(signal),
 		refetchInterval: (current) =>
-			current.state.data?.session?.state === "running" ? 500 : 1_500,
+			debugInspectionPollInterval(current.state.data, 500, 1_500),
 		structuralSharing: (previous, next) =>
-			preserveFinalOutput(previous, next as DebugInspection),
+			preserveDebugOutput(previous, next as DebugInspection),
 	});
 	const output = query.data?.output ?? "";
 	const error =
@@ -53,16 +57,4 @@ export function DebugOutputTab() {
 
 function errorMessage(value: unknown) {
 	return value instanceof Error ? value.message : String(value);
-}
-
-function preserveFinalOutput(
-	previous: unknown,
-	next: DebugInspection,
-): DebugInspection {
-	const old = previous as DebugInspection | undefined;
-	if (!old?.output || next.output) return next;
-	const oldSession = old.session?.session_id;
-	const nextSession = next.session?.session_id;
-	if (nextSession && nextSession !== oldSession) return next;
-	return { ...next, output: old.output };
 }

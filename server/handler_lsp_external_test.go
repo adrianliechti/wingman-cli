@@ -33,7 +33,7 @@ func TestExternalGoIntelliSense(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app, err := New(context.Background(), workDir, &ServerOptions{NoBrowser: true})
+	app, err := New(context.Background(), workDir, &ServerOptions{NoBrowser: true, disableManagedTools: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestExternalDefinitionNavigation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app, err := New(context.Background(), workDir, &ServerOptions{NoBrowser: true})
+	app, err := New(context.Background(), workDir, &ServerOptions{NoBrowser: true, disableManagedTools: true})
 	if err != nil {
 		t.Fatal(err)
 	}

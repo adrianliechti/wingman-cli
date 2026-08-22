@@ -145,6 +145,14 @@ func (a *App) footerLine(width int) string {
 		return withRight(activity)
 	}
 
+	if a.backgroundStatus != "" {
+		color := t.BrBlack
+		if a.backgroundWarning {
+			color = t.Yellow
+		}
+		return withRight(colored(color, a.backgroundStatus))
+	}
+
 	var left []string
 
 	hint := func(key, label string) string {

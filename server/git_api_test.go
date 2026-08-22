@@ -36,7 +36,7 @@ func TestGitAPIStageCommitPushAndPull(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app, err := New(context.Background(), repoDir, &ServerOptions{NoBrowser: true})
+	app, err := New(context.Background(), repoDir, &ServerOptions{NoBrowser: true, disableManagedTools: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestGitAPIInitCreatesRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app, err := New(context.Background(), workDir, &ServerOptions{NoBrowser: true})
+	app, err := New(context.Background(), workDir, &ServerOptions{NoBrowser: true, disableManagedTools: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestGitAPIInitRemovesDanglingShadowPointer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app, err := New(context.Background(), workDir, &ServerOptions{NoBrowser: true})
+	app, err := New(context.Background(), workDir, &ServerOptions{NoBrowser: true, disableManagedTools: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestGitAPIRejectsInvalidPath(t *testing.T) {
 	if _, err := git.PlainInit(repoDir, false); err != nil {
 		t.Fatal(err)
 	}
-	app, err := New(context.Background(), repoDir, &ServerOptions{NoBrowser: true})
+	app, err := New(context.Background(), repoDir, &ServerOptions{NoBrowser: true, disableManagedTools: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +238,7 @@ func TestGitAPIHistoryAndCompare(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app, err := New(context.Background(), repoDir, &ServerOptions{NoBrowser: true})
+	app, err := New(context.Background(), repoDir, &ServerOptions{NoBrowser: true, disableManagedTools: true})
 	if err != nil {
 		t.Fatal(err)
 	}

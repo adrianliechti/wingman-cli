@@ -13,12 +13,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 )
 
 const adapterStartupTimeout = 30 * time.Second
 
 type adapterConnection struct {
 	io.ReadWriteCloser
+	children       AdapterConnector
 	cmd            *exec.Cmd
 	processDone    <-chan error
 	terminal       TerminalProcess
@@ -73,20 +76,17 @@ func startAdapter(ctx context.Context, plan Plan, output func(string, string), l
 		if connection == nil {
 			return nil, fmt.Errorf("connect to debug adapter %s: connector returned no stream", plan.Adapter.Name)
 		}
-		return &adapterConnection{ReadWriteCloser: connection}, nil
+		return &adapterConnection{ReadWriteCloser: connection, children: connector}, nil
 	}
 	if plan.IO == IOTerminal && plan.Adapter.TerminalStrategy == TerminalAdapterProcess {
 		return startAdapterInTerminal(ctx, plan, output, launcher)
 	}
 	cmd := exec.Command(plan.Adapter.Command, plan.Adapter.Args...)
 	cmd.Dir = plan.ProjectDir
-	cmd.Env = os.Environ()
+	cmd.Env = tooling.Environment(plan.Adapter.Command, os.Environ())
+	cmd.Stderr = &outputWriter{category: "adapter stderr", output: output}
+	cmd.WaitDelay = 3 * time.Second
 	configureAdapterProcess(cmd)
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("debug adapter stderr: %w", err)
-	}
 
 	switch plan.Adapter.Transport {
 	case TransportStdio:
@@ -104,7 +104,6 @@ func startAdapter(ctx context.Context, plan Plan, output func(string, string), l
 			_ = stdout.Close()
 			return nil, fmt.Errorf("start debug adapter %s: %w", plan.Adapter.Name, err)
 		}
-		go copyAdapterOutput(stderr, "adapter stderr", output)
 		return runningConnection(cmd, &splitConnection{reader: stdout, writer: stdin}), nil
 
 	case TransportTCP:
@@ -116,7 +115,6 @@ func startAdapter(ctx context.Context, plan Plan, output func(string, string), l
 			_ = stdout.Close()
 			return nil, fmt.Errorf("start debug adapter %s: %w", plan.Adapter.Name, err)
 		}
-		go copyAdapterOutput(stderr, "adapter stderr", output)
 
 		ready := make(chan readyResult, 1)
 		go readTCPAdapterOutput(stdout, plan.Adapter.ReadyPrefix, output, ready)
@@ -139,7 +137,9 @@ func startAdapter(ctx context.Context, plan Plan, output func(string, string), l
 				stopStartedAdapter(cmd)
 				return nil, fmt.Errorf("connect to debug adapter %s at %s: %w", plan.Adapter.Name, address, err)
 			}
-			return runningConnection(cmd, conn), nil
+			connection := runningConnection(cmd, conn)
+			connection.children = childAdapterConnector(address)
+			return connection, nil
 		case <-startupCtx.Done():
 			stopStartedAdapter(cmd)
 			return nil, fmt.Errorf("start debug adapter %s: %w", plan.Adapter.Name, startupCtx.Err())
@@ -204,6 +204,7 @@ func startAdapterInTerminal(ctx context.Context, plan Plan, output func(string, 
 		}()
 		return &adapterConnection{
 			ReadWriteCloser: connection,
+			children:        childAdapterConnector(address),
 			processDone:     done,
 			terminal:        process,
 			terminalCancel:  cancelOutput,
@@ -215,6 +216,19 @@ func startAdapterInTerminal(ctx context.Context, plan Plan, output func(string, 
 		_ = process.Close()
 		return nil, fmt.Errorf("start debug adapter %s: %w", plan.Adapter.Name, startupCtx.Err())
 	}
+}
+
+type childAdapterConnector string
+
+func (address childAdapterConnector) ConnectAdapter(ctx context.Context, _ Plan) (io.ReadWriteCloser, error) {
+	return (&net.Dialer{}).DialContext(ctx, "tcp", string(address))
+}
+
+func (connection *adapterConnection) childConnector() AdapterConnector {
+	if connection == nil {
+		return nil
+	}
+	return connection.children
 }
 
 func normalizeAdapterAddress(value string) (string, error) {
@@ -236,16 +250,24 @@ func normalizeAdapterAddress(value string) (string, error) {
 	if err != nil || port < 1 || port > 65535 {
 		return "", fmt.Errorf("adapter reported invalid listen address %q", value)
 	}
-	if host != "" && !strings.EqualFold(host, "localhost") {
-		ip := net.ParseIP(host)
-		if ip != nil && !ip.IsUnspecified() && !ip.IsLoopback() {
-			return "", fmt.Errorf("adapter reported non-loopback listen address %q", value)
-		}
-		if ip == nil {
-			return "", fmt.Errorf("adapter reported non-loopback listen address %q", value)
+	if host == "" || strings.EqualFold(host, "localhost") {
+		return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || (!ip.IsUnspecified() && !ip.IsLoopback()) {
+		return "", fmt.Errorf("adapter reported non-loopback listen address %q", value)
+	}
+	if ip.IsUnspecified() {
+		if ip.To4() != nil {
+			ip = net.IPv4(127, 0, 0, 1)
+		} else {
+			ip = net.IPv6loopback
 		}
 	}
-	return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), nil
+	// Preserve the reported address family. Redirecting an IPv6-only adapter
+	// listening on ::1 or :: to 127.0.0.1 makes an otherwise healthy launch
+	// fail on hosts whose listener is not dual-stack.
+	return net.JoinHostPort(ip.String(), strconv.Itoa(port)), nil
 }
 
 func pipeTerminalOutput(writer *io.PipeWriter, snapshot []byte, chunks <-chan []byte, cancel func()) {

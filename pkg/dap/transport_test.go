@@ -1,10 +1,36 @@
 package dap
 
 import (
+	"context"
 	"io"
+	"net"
 	"testing"
 	"time"
 )
+
+type testAdapterConnector struct {
+	connection io.ReadWriteCloser
+}
+
+func (connector *testAdapterConnector) ConnectAdapter(context.Context, Plan) (io.ReadWriteCloser, error) {
+	return connector.connection, nil
+}
+
+func TestConnectedAdapterRetainsConnectorForNestedSessions(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+	connector := &testAdapterConnector{connection: client}
+	connection, err := startAdapter(context.Background(), Plan{
+		Adapter: AdapterDescriptor{Name: "test", Transport: TransportConnect},
+	}, func(string, string) {}, nil, connector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if connection.childConnector() != connector {
+		t.Fatal("connected child session lost its reusable adapter connector")
+	}
+}
 
 func TestTCPAdapterOutputStreamsPromptWithoutNewline(t *testing.T) {
 	reader, writer := io.Pipe()
@@ -38,9 +64,12 @@ func TestTCPAdapterOutputStreamsPromptWithoutNewline(t *testing.T) {
 
 func TestNormalizeAdapterAddressUsesLoopback(t *testing.T) {
 	values := map[string]string{
-		"4711":         "127.0.0.1:4711",
-		"0.0.0.0:4711": "127.0.0.1:4711",
-		"[::]:4711":    "127.0.0.1:4711",
+		"4711":           "127.0.0.1:4711",
+		"0.0.0.0:4711":   "127.0.0.1:4711",
+		"127.0.0.1:4711": "127.0.0.1:4711",
+		"localhost:4711": "127.0.0.1:4711",
+		"[::]:4711":      "[::1]:4711",
+		"[::1]:4711":     "[::1]:4711",
 	}
 	for input, want := range values {
 		got, err := normalizeAdapterAddress(input)

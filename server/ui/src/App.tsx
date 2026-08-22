@@ -43,8 +43,16 @@ import {
 	usePanelRef,
 } from "react-resizable-panels";
 import { agentQueries, setCurrentAgent } from "./api/agents";
-import { getInspectAvailability } from "./api/capabilities";
-import { controlDebug, getDebugSession, type DebugSession } from "./api/debug";
+import {
+	getInspectAvailability,
+	type ManagedToolsStatus,
+} from "./api/capabilities";
+import {
+	controlDebug,
+	getDebugSession,
+	getDebugState,
+	type DebugSession,
+} from "./api/debug";
 import { createWorkspaceFile } from "./api/files";
 import { queryKeys } from "./api/query";
 import {
@@ -285,6 +293,7 @@ export default function App() {
 	const tabAvailable = capabilities?.tab ?? false;
 	const tabEnabled =
 		tabAvailable && (capabilities?.["editor.tab.completion"] ?? false);
+	const languageServicesKey = `${capabilities?.lsp ?? false}:${capabilities?.managed_tools?.state ?? ""}`;
 	const toggleEditorTabCompletion = useCallback(async () => {
 		try {
 			await setEditorTabCompletion(!tabEnabled);
@@ -364,6 +373,7 @@ export default function App() {
 	const [debugDetailsVisible, setDebugDetailsVisible] = useState(true);
 	const [debugSession, setDebugSession] = useState<DebugSession>();
 	const debugSessionRef = useRef<DebugSession | undefined>(undefined);
+	const followedDebugStopRef = useRef("");
 	const [debugControlBusy, setDebugControlBusy] = useState(false);
 
 	const runWorkspaceEdit = useCallback(
@@ -825,6 +835,16 @@ export default function App() {
 	const openDebugLauncher = useCallback((seed: DebugLauncherSeed) => {
 		setDebugLauncher({ ...seed });
 	}, []);
+	const invalidateDebugDetails = useCallback(() => {
+		void queryClient.invalidateQueries({
+			queryKey: queryKeys.debug.inspection,
+			exact: true,
+		});
+		void queryClient.invalidateQueries({
+			queryKey: queryKeys.debug.output,
+			exact: true,
+		});
+	}, [queryClient]);
 	const applyDebugSession = useCallback(
 		(session?: DebugSession) => {
 			const current = debugSessionRef.current;
@@ -854,11 +874,11 @@ export default function App() {
 		},
 		[queryClient],
 	);
-	const debugSessionQuery = useQuery({
-		queryKey: queryKeys.debug.session,
+	const debugStateQuery = useQuery({
+		queryKey: queryKeys.debug.state,
 		enabled: showDebug,
 		staleTime: 0,
-		queryFn: ({ signal }) => getDebugSession(signal),
+		queryFn: ({ signal }) => getDebugState(undefined, signal),
 		refetchInterval: (current) => {
 			const session = current.state.data?.session;
 			if (!session || session.state === "terminated") return false;
@@ -871,10 +891,29 @@ export default function App() {
 			applyDebugSession(undefined);
 			return;
 		}
-		if (debugSessionQuery.data) {
-			applyDebugSession(debugSessionQuery.data.session);
+		if (debugStateQuery.data) {
+			applyDebugSession(debugStateQuery.data.session);
 		}
-	}, [applyDebugSession, debugSessionQuery.data, showDebug]);
+	}, [applyDebugSession, debugStateQuery.data, showDebug]);
+
+	useEffect(() => {
+		const state = debugStateQuery.data;
+		const session = state?.session;
+		const frame = state?.frame;
+		if (
+			session?.state !== "stopped" ||
+			debugSession?.session_id !== session.session_id ||
+			debugSession.state_version !== session.state_version ||
+			!frame?.source?.path ||
+			frame.line < 1
+		) {
+			return;
+		}
+		const stopKey = `${session.session_id}:${session.state_version}`;
+		if (followedDebugStopRef.current === stopKey) return;
+		followedDebugStopRef.current = stopKey;
+		openFile(frame.source.path, frame.line, Math.max(1, frame.column));
+	}, [debugSession, debugStateQuery.data, openFile]);
 
 	const handleDebugControl = useCallback(
 		async (operation: DebugOperation) => {
@@ -888,7 +927,14 @@ export default function App() {
 					session.session_id,
 					session.stop?.thread_id,
 				);
-				if (result.session) applyDebugSession(result.session);
+				if (result.session) {
+					applyDebugSession(result.session);
+					void queryClient.invalidateQueries({
+						queryKey: queryKeys.debug.state,
+						exact: true,
+					});
+					invalidateDebugDetails();
+				}
 			} catch (error) {
 				toast({
 					title: `Could not ${debugOperationLabel(operation)}`,
@@ -899,7 +945,14 @@ export default function App() {
 				setDebugControlBusy(false);
 			}
 		},
-		[applyDebugSession, debugControlBusy, debugSession, toast],
+		[
+			applyDebugSession,
+			debugControlBusy,
+			debugSession,
+			invalidateDebugDetails,
+			queryClient,
+			toast,
+		],
 	);
 
 	const closeTabNow = useCallback(
@@ -1673,8 +1726,6 @@ export default function App() {
 		[selectModeForSession, sessionId],
 	);
 
-	const [noticeDismissed, setNoticeDismissed] = useState(false);
-	const showNotice = !!capabilities?.notice && !noticeDismissed;
 	const handleLeftPanelResize = useCallback(({ inPixels }: PanelSize) => {
 		setLeftPanelCollapsed(inPixels === 0);
 		if (inPixels <= 0) return;
@@ -1761,11 +1812,29 @@ export default function App() {
 			if (session.terminal_id)
 				exitedDebugTerminalIDsRef.current.delete(session.terminal_id);
 			applyDebugSession(session);
+			void queryClient.invalidateQueries({
+				queryKey: queryKeys.debug.state,
+				exact: true,
+			});
+			invalidateDebugDetails();
 			setDebugContentView(session.terminal_id ? "terminal" : "output");
 			showDebugDetails();
 			setActiveTabId("debug");
 		},
-		[applyDebugSession, showDebugDetails],
+		[applyDebugSession, invalidateDebugDetails, queryClient, showDebugDetails],
+	);
+	const showDebugFailure = useCallback(
+		(session: DebugSession) => {
+			applyDebugSession(session);
+			invalidateDebugDetails();
+			setTabs((current) =>
+				syncDebugTab(current, undefined, true, activePaneRef.current),
+			);
+			setDebugContentView("output");
+			showDebugDetails();
+			setActiveTabId("debug");
+		},
+		[applyDebugSession, invalidateDebugDetails, showDebugDetails],
 	);
 	const handleDebugTerminalExit = useCallback((id: string) => {
 		exitedDebugTerminalIDsRef.current.add(id);
@@ -2050,7 +2119,6 @@ export default function App() {
 									openFile(path, line, column)
 								}
 								onStopped={showDebugDetails}
-								autoOpenSource={false}
 							/>
 						</div>
 					</Panel>
@@ -2149,6 +2217,7 @@ export default function App() {
 						});
 					}}
 					view={fileViews[tab.id] ?? defaultFileView(tab.path)}
+					languageServicesKey={languageServicesKey}
 				/>
 			);
 		}
@@ -2461,6 +2530,10 @@ export default function App() {
 					/>
 				)}
 			</div>
+			<ManagedToolsFooter
+				key={capabilities?.managed_tools?.state ?? "none"}
+				status={capabilities?.managed_tools}
+			/>
 		</aside>
 	);
 
@@ -2645,19 +2718,6 @@ export default function App() {
 					)}
 				</div>
 			</header>
-			{showNotice && (
-				<div className="flex shrink-0 items-center gap-3 border-b border-warning/30 bg-warning/10 px-4 py-2 text-[12px] text-warning">
-					<span className="flex-1">{capabilities?.notice}</span>
-					<button
-						type="button"
-						onClick={() => setNoticeDismissed(true)}
-						className="opacity-70 hover:opacity-100 px-1"
-						aria-label="Dismiss"
-					>
-						×
-					</button>
-				</div>
-			)}
 			<Group
 				id="wingman-layout"
 				orientation="horizontal"
@@ -2761,6 +2821,34 @@ export default function App() {
 								: "Debug session started",
 						tone: "success",
 					});
+				}}
+				onFailed={(message) => {
+					const previousID = debugSessionRef.current?.session_id;
+					void getDebugSession()
+						.then(({ session }) => {
+							// Only a session created by this launch attempt carries its
+							// failure output; a leftover session would hide the error.
+							if (
+								session?.state === "terminated" &&
+								session.error &&
+								session.session_id !== previousID
+							) {
+								showDebugFailure(session);
+								return;
+							}
+							toast({
+								title: "Debugger could not start",
+								description: message,
+								tone: "error",
+							});
+						})
+						.catch(() => {
+							toast({
+								title: "Debugger could not start",
+								description: message,
+								tone: "error",
+							});
+						});
 				}}
 			/>
 
@@ -3028,6 +3116,64 @@ export default function App() {
 					</div>
 				</div>
 			)}
+		</div>
+	);
+}
+
+function ManagedToolsFooter({ status }: { status?: ManagedToolsStatus }) {
+	const [dismissed, setDismissed] = useState("");
+	if (status?.state === "error") {
+		const tools = (status.unavailable ?? []).join(", ");
+		const key = tools || status.error || "error";
+		if (dismissed === key) return null;
+		const message = tools
+			? `Couldn't install ${tools}. Project and system tools still work.`
+			: "Automatic tool setup could not finish. Project and system tools still work.";
+		return (
+			<div
+				data-managed-tools-status
+				role="status"
+				aria-live="polite"
+				aria-atomic="true"
+				className="flex h-8 shrink-0 items-center gap-2 border-t border-warning/30 bg-warning/10 px-3 text-[10.5px] text-warning"
+			>
+				<span
+					className="min-w-0 flex-1 truncate"
+					title={status.error || message}
+				>
+					{message}
+				</span>
+				<button
+					type="button"
+					onClick={() => setDismissed(key)}
+					className="shrink-0 px-1 opacity-70 hover:opacity-100"
+					aria-label="Dismiss"
+				>
+					×
+				</button>
+			</div>
+		);
+	}
+	if (status?.state !== "installing") return null;
+
+	const message = status.label
+		? `Setting up ${status.label}…`
+		: "Checking tools…";
+	const progress =
+		status.current && status.total ? `${status.current}/${status.total}` : "";
+	return (
+		<div
+			data-managed-tools-status
+			role="status"
+			aria-live="polite"
+			aria-atomic="true"
+			className="flex h-8 shrink-0 items-center gap-2 border-t border-border-subtle bg-bg-surface/20 px-3 text-[10.5px] text-fg-dim"
+		>
+			<Loader2 size={11} className="shrink-0 animate-spin text-accent" />
+			<span className="min-w-0 flex-1 truncate" title={message}>
+				{message}
+			</span>
+			{progress && <span className="shrink-0 tabular-nums">{progress}</span>}
 		</div>
 	);
 }

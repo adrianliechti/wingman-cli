@@ -10,7 +10,7 @@ import (
 )
 
 func TestGoAdapterPlansSingleTestDeterministically(t *testing.T) {
-	plan, err := NewRegistry().Plan("Go", Request{
+	plan, err := NewRegistry(nil).Plan("Go", Request{
 		Action:     "debug",
 		ProjectDir: "services/api",
 		Target: Target{
@@ -41,7 +41,7 @@ func TestGoAdapterMapsOutputAndTerminalModesToDelve(t *testing.T) {
 }
 
 func TestPythonAdapterPlansWorkspaceRelativeScript(t *testing.T) {
-	plan, err := NewRegistry().Plan("Python", Request{
+	plan, err := NewRegistry(nil).Plan("Python", Request{
 		Action:     "run",
 		ProjectDir: "services/api",
 		Target: Target{
@@ -57,6 +57,66 @@ func TestPythonAdapterPlansWorkspaceRelativeScript(t *testing.T) {
 	}
 	if _, forced := plan.Configuration["redirectOutput"]; forced {
 		t.Fatalf("Python plan overrides debugpy's console-specific output policy: %#v", plan.Configuration)
+	}
+}
+
+func TestPythonAdapterUsesProjectVirtualEnvironment(t *testing.T) {
+	project := t.TempDir()
+	bin := "bin"
+	name := "python"
+	if runtime.GOOS == "windows" {
+		bin = "Scripts"
+		name = "python.exe"
+	}
+	interpreter := filepath.Join(project, ".venv", bin, name)
+	if err := os.MkdirAll(filepath.Dir(interpreter), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(interpreter, []byte("python"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := NewRegistry(nil).Plan("Python", Request{
+		Action: "debug", WorkspaceDir: project, ProjectDir: ".",
+		Target: Target{Name: "main.py", Kind: "script", Language: "Python", Path: "main.py", Directory: ".", Line: 1, Column: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{interpreter}
+	if got := plan.Configuration["python"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("python = %#v, want %#v", got, want)
+	}
+}
+
+func TestPythonAdapterWalksUpToWorkspaceVirtualEnvironment(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "services", "api")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := "bin"
+	name := "python"
+	if runtime.GOOS == "windows" {
+		bin = "Scripts"
+		name = "python.exe"
+	}
+	interpreter := filepath.Join(root, ".venv", bin, name)
+	if err := os.MkdirAll(filepath.Dir(interpreter), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(interpreter, []byte("python"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := NewRegistry(nil).Plan("Python", Request{
+		Action: "debug", WorkspaceDir: root, ProjectDir: filepath.Join("services", "api"),
+		Target: Target{Name: "main.py", Kind: "script", Language: "Python", Path: filepath.Join("services", "api", "main.py"), Directory: filepath.Join("services", "api"), Line: 1, Column: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.Configuration["python"]; !reflect.DeepEqual(got, []string{interpreter}) {
+		t.Fatalf("python = %#v, want workspace virtual environment", got)
 	}
 }
 
@@ -209,6 +269,40 @@ func TestRustAdapterUsesCargoMetadataTargetDirectory(t *testing.T) {
 	}
 }
 
+func TestCargoMetadataAddsCargoDirectoryToPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper uses POSIX scripts")
+	}
+	bin := t.TempDir()
+	cargo := filepath.Join(bin, "cargo")
+	helper := filepath.Join(bin, "wingman-cargo-metadata-helper")
+	if err := os.WriteFile(cargo, []byte("#!/bin/sh\nexec wingman-cargo-metadata-helper\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	helperContents := "#!/bin/sh\nprintf '{\"packages\":[],\"target_directory\":\"%s/target\"}\\n' \"$PWD\"\n"
+	if err := os.WriteFile(helper, []byte(helperContents), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "Cargo.toml"), []byte("[package]\nname = \"sample\"\nversion = \"0.0.0\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CARGO", cargo)
+	t.Setenv("PATH", "/usr/bin:/bin")
+	metadata, err := loadCargoMetadata(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalProject, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(canonicalProject, "target")
+	if metadata.TargetDirectory != want {
+		t.Fatalf("target directory = %q, want %q", metadata.TargetDirectory, want)
+	}
+}
+
 func TestDotnetAdapterPlansExistingOrExpectedAssembly(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "dotnet-app")
@@ -223,7 +317,7 @@ func TestDotnetAdapterPlansExistingOrExpectedAssembly(t *testing.T) {
 		Action: "debug", WorkspaceDir: root, ProjectDir: "dotnet-app",
 		Target: Target{Name: "Program", Kind: "main", Language: dotnetLanguage, Path: "dotnet-app/Program.cs", Line: 1, Column: 1},
 	}
-	plan, err := NewRegistry().Plan(dotnetLanguage, request)
+	plan, err := NewRegistry(nil).Plan(dotnetLanguage, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +339,7 @@ func TestDotnetAdapterPlansExistingOrExpectedAssembly(t *testing.T) {
 	if err := os.WriteFile(stale, []byte("stale assembly"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	plan, err = NewRegistry().Plan(dotnetLanguage, request)
+	plan, err = NewRegistry(nil).Plan(dotnetLanguage, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +354,7 @@ func TestDotnetAdapterPlansExistingOrExpectedAssembly(t *testing.T) {
 	if err := os.WriteFile(built, []byte("assembly"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	plan, err = NewRegistry().Plan(dotnetLanguage, request)
+	plan, err = NewRegistry(nil).Plan(dotnetLanguage, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +366,7 @@ func TestDotnetAdapterPlansExistingOrExpectedAssembly(t *testing.T) {
 	}
 }
 
-func TestViteAdapterPlansConfiguredPort(t *testing.T) {
+func TestPackageScriptPlansViteServerAndManagedBrowser(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "web")
 	if err := os.MkdirAll(project, 0o755); err != nil {
@@ -281,29 +375,66 @@ func TestViteAdapterPlansConfiguredPort(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(project, "vite.config.ts"), []byte("export default { server: { port: 4173 } }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := NewRegistry().Plan(javascriptLanguage, Request{
-		Action: "debug", WorkspaceDir: root, ProjectDir: "web",
-		Target: Target{Name: "Vite browser", Kind: "vite", Language: javascriptLanguage, Path: "web/vite.config.ts", Line: 1, Column: 1},
+	if err := os.WriteFile(filepath.Join(project, "package.json"), []byte(`{"scripts":{"dev":"vite"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	npm := filepath.Join(bin, "npm")
+	if runtime.GOOS == "windows" {
+		npm += ".cmd"
+	}
+	if err := os.WriteFile(npm, []byte("exit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	browser := filepath.Join(root, "chrome-for-testing")
+	if err := os.WriteFile(browser, []byte("browser"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := NewRegistry(nil).Plan(javascriptLanguage, Request{
+		Action: "debug", WorkspaceDir: root, ProjectDir: "web", BrowserExecutable: browser,
+		Target: Target{Name: "dev", Kind: "browser-script", Language: javascriptLanguage, Path: "web/package.json", Line: 1, Column: 1},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Configuration["type"] != "pwa-chrome" || plan.Configuration["url"] != "http://localhost:4173" || len(plan.Breakpoints) != 0 || plan.SupportsTerminal {
+	if plan.Configuration["type"] != "pwa-chrome" || plan.Configuration["url"] != "http://localhost:4173" || plan.Configuration["runtimeExecutable"] != browser || plan.Configuration["server"] != nil || plan.PreLaunch == nil || plan.PreLaunch.Command != npm || !reflect.DeepEqual(plan.PreLaunch.Args, []string{"run", "dev"}) || plan.PreLaunch.ReadyURL != "http://localhost:4173" || len(plan.Breakpoints) != 0 || plan.SupportsTerminal {
 		t.Fatalf("plan = %#v", plan)
 	}
 }
 
-func TestJavaDebugPortValidation(t *testing.T) {
-	for _, value := range []any{4711, float64(4711), "4711", map[string]any{"port": float64(4711)}} {
-		port, err := javaDebugPort(value)
-		if err != nil || port != 4711 {
-			t.Fatalf("javaDebugPort(%#v) = %d, %v", value, port, err)
-		}
+func TestPackageScriptPlansNodeServerWithoutBrowser(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "api")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	for _, value := range []any{nil, 0, 65536, 12.5, "remote.example:4711"} {
-		if _, err := javaDebugPort(value); err == nil {
-			t.Fatalf("javaDebugPort(%#v) succeeded", value)
-		}
+	if err := os.WriteFile(filepath.Join(project, "package.json"), []byte(`{"scripts":{"server":"tsx src/server.ts"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	npm := filepath.Join(bin, "npm")
+	if runtime.GOOS == "windows" {
+		npm += ".cmd"
+	}
+	if err := os.WriteFile(npm, []byte("exit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+
+	plan, err := NewRegistry(nil).Plan(javascriptLanguage, Request{
+		Action: "debug", WorkspaceDir: root, ProjectDir: "api",
+		Target: Target{Name: "server", Kind: "node-script", Language: javascriptLanguage, Path: "api/package.json", Line: 1, Column: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Configuration["type"] != "pwa-node" || plan.Configuration["runtimeExecutable"] != npm || !reflect.DeepEqual(plan.Configuration["runtimeArgs"], []string{"run", "server"}) || plan.Configuration["autoAttachChildProcesses"] != true || plan.PreLaunch != nil || !plan.SupportsTerminal {
+		t.Fatalf("plan = %#v", plan)
+	}
+	environment, ok := plan.Configuration["env"].(map[string]string)
+	if !ok || environment["PATH"] != bin {
+		t.Fatalf("runtime environment = %#v, want PATH %q", plan.Configuration["env"], bin)
 	}
 }
 
@@ -317,7 +448,7 @@ func TestJavaAdapterPlansMavenProjectName(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(project, "pom.xml"), []byte(pom), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := NewRegistry().Plan("Java", Request{
+	plan, err := NewRegistry(nil).Plan("Java", Request{
 		Action: "debug", WorkspaceDir: root, ProjectDir: "java-app",
 		Target: Target{Name: "demo.App", Kind: "main", Language: "Java", Path: "java-app/src/main/java/demo/App.java", Line: 3, Column: 24},
 	})
@@ -336,9 +467,13 @@ func TestRegistryWiresInstalledJavaDebugBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("WINGMAN_JAVA_DEBUG_BUNDLE", bundle)
-	registry := NewRegistry()
-	if got := registry.JDTLSBundles(); !reflect.DeepEqual(got, []string{bundle}) {
-		t.Fatalf("JDT LS bundles = %#v", got)
+	registry := NewRegistry(nil)
+	want := map[string]any{"bundles": []string{bundle}}
+	if got := registry.ServerInitializations()["jdtls"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("jdtls initialization = %#v", got)
+	}
+	if got := registry.ManagedOnlyCommands(); len(got) != 0 {
+		t.Fatalf("explicit bundle still requires managed jdtls: %v", got)
 	}
 	found := false
 	for _, descriptor := range registry.Descriptors() {
@@ -357,7 +492,7 @@ func TestRegistryUsesExplicitJavaScriptDebugServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("WINGMAN_JS_DEBUG_SERVER", server)
-	registry := NewRegistry()
+	registry := NewRegistry(nil)
 	found := false
 	for _, descriptor := range registry.Descriptors() {
 		if descriptor.Name == "vscode-js-debug" {
@@ -369,5 +504,59 @@ func TestRegistryUsesExplicitJavaScriptDebugServer(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("explicit JavaScript debug server was not configured")
+	}
+}
+
+func TestRegistryUsesManagedJavaScriptAdapterByDefault(t *testing.T) {
+	t.Setenv("WINGMAN_JS_DEBUG_ADAPTER", "")
+	t.Setenv("WINGMAN_JS_DEBUG_SERVER", "")
+	for _, descriptor := range NewRegistry(nil).Descriptors() {
+		if descriptor.Name != "vscode-js-debug" {
+			continue
+		}
+		if descriptor.Command != "js-debug-adapter" || !reflect.DeepEqual(descriptor.Args, []string{"0", "127.0.0.1"}) {
+			t.Fatalf("JavaScript adapter = %#v", descriptor)
+		}
+		return
+	}
+	t.Fatal("JavaScript adapter was not registered")
+}
+
+func TestJavaDebugPortValidation(t *testing.T) {
+	for _, value := range []any{4711, float64(4711), "4711", map[string]any{"port": float64(4711)}} {
+		port, err := javaDebugPort(value)
+		if err != nil || port != 4711 {
+			t.Fatalf("javaDebugPort(%#v) = %d, %v", value, port, err)
+		}
+	}
+	for _, value := range []any{nil, 0, 65536, 12.5, "remote.example:4711"} {
+		if _, err := javaDebugPort(value); err == nil {
+			t.Fatalf("javaDebugPort(%#v) succeeded", value)
+		}
+	}
+}
+
+type toolDirStub map[string]string
+
+func (stub toolDirStub) ToolDir(id string) string { return stub[id] }
+
+func TestRegistryLoadsManagedJavaDebugBundle(t *testing.T) {
+	t.Setenv("WINGMAN_JAVA_DEBUG_BUNDLE", "")
+	root := t.TempDir()
+	server := filepath.Join(root, "java-debug", "extension", "server")
+	if err := os.MkdirAll(server, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	jar := filepath.Join(server, "com.microsoft.java.debug.plugin-0.53.0.jar")
+	if err := os.WriteFile(jar, []byte("jar"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	registry := NewRegistry(toolDirStub{"jdtls": root})
+	want := map[string]any{"bundles": []string{jar}}
+	if got := registry.ServerInitializations()["jdtls"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("jdtls initialization = %#v", got)
+	}
+	if got := registry.ManagedOnlyCommands(); !reflect.DeepEqual(got, []string{"jdtls"}) {
+		t.Fatalf("managed-only commands = %v", got)
 	}
 }

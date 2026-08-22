@@ -3,15 +3,14 @@ package lsp
 import (
 	"context"
 	"io/fs"
-	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 )
 
 type Project struct {
@@ -21,153 +20,7 @@ type Project struct {
 
 type projectRoot = Project
 
-// skippedDirs are never descended into. Dot-prefixed directories are skipped
-// separately, so only their non-hidden counterparts are listed here.
-var skippedDirs = map[string]bool{
-	"node_modules": true,
-	"vendor":       true,
-	"__pycache__":  true,
-	"venv":         true,
-	"target":       true,
-	"build":        true,
-	"dist":         true,
-}
-
-var projectBinDirs = []string{
-	filepath.Join("node_modules", ".bin"),
-	filepath.Join(".venv", "bin"),
-	filepath.Join("venv", "bin"),
-	filepath.Join(".venv", "Scripts"),
-	filepath.Join("venv", "Scripts"),
-	filepath.Join("vendor", "bin"),
-}
-
 const serverVersionProbeTimeout = 5 * time.Second
-
-func resolveCommand(dir, workingDir, command string) string {
-	cur := filepath.Clean(dir)
-	root := filepath.Clean(workingDir)
-	for {
-		for _, sub := range projectBinDirs {
-			if found := findCommandIn([]string{filepath.Join(cur, sub)}, command); found != "" {
-				return found
-			}
-		}
-		if cur == root || !isSubPath(root, cur) {
-			return ""
-		}
-		parent := filepath.Dir(cur)
-		if parent == cur {
-			return ""
-		}
-		cur = parent
-	}
-}
-
-// userBinDirs lists fixed, user-owned tool-install directories searched when a
-// server is not on PATH — the common case when wingman is launched from an IDE
-// or app bundle with a minimal environment. Only these trusted locations are
-// probed, never repo-controlled paths, and only for exact known server names.
-var userBinDirs = sync.OnceValue(func() []string {
-	var dirs []string
-
-	add := func(path string) {
-		if path == "" {
-			return
-		}
-		if info, err := os.Stat(path); err == nil && info.IsDir() {
-			dirs = append(dirs, path)
-		}
-	}
-
-	if gobin := os.Getenv("GOBIN"); gobin != "" {
-		add(gobin)
-	}
-	if gopath := os.Getenv("GOPATH"); gopath != "" {
-		add(filepath.Join(gopath, "bin"))
-	}
-	if pnpmHome := os.Getenv("PNPM_HOME"); pnpmHome != "" {
-		add(pnpmHome)
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return dirs
-	}
-
-	add(filepath.Join(home, "go", "bin"))
-	add(filepath.Join(home, ".cargo", "bin"))
-	add(filepath.Join(home, ".local", "bin"))
-	add(filepath.Join(home, ".dotnet", "tools"))
-	add(filepath.Join(home, ".bun", "bin"))
-	add(filepath.Join(home, ".deno", "bin"))
-	add(filepath.Join(home, ".volta", "bin"))
-	add(filepath.Join(home, ".asdf", "shims"))
-	add(filepath.Join(home, ".local", "share", "mise", "shims"))
-	add(filepath.Join(home, ".npm-global", "bin"))
-
-	if runtime.GOOS == "windows" {
-		add(filepath.Join(home, "scoop", "shims"))
-		if appData := os.Getenv("APPDATA"); appData != "" {
-			add(filepath.Join(appData, "npm"))
-		}
-		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
-			add(filepath.Join(localAppData, "nvim-data", "mason", "bin"))
-			add(filepath.Join(localAppData, "pnpm"))
-			add(filepath.Join(localAppData, "Volta", "bin"))
-			add(filepath.Join(localAppData, "Microsoft", "WinGet", "Links"))
-		}
-		if programData := os.Getenv("PROGRAMDATA"); programData != "" {
-			add(filepath.Join(programData, "chocolatey", "bin"))
-		}
-		return dirs
-	}
-
-	add(filepath.Join(home, ".local", "share", "nvim", "mason", "bin"))
-	add(filepath.Join(home, "Library", "pnpm"))
-	add(filepath.Join(home, ".local", "share", "pnpm"))
-	add("/opt/homebrew/bin")
-	add("/usr/local/bin")
-	add("/home/linuxbrew/.linuxbrew/bin")
-
-	return dirs
-})
-
-func resolveUserCommand(command string) string {
-	return findCommandIn(userBinDirs(), command)
-}
-
-func findCommandIn(dirs []string, command string) string {
-	names := commandCandidates(runtime.GOOS, command)
-
-	for _, dir := range dirs {
-		for _, name := range names {
-			candidate := filepath.Join(dir, name)
-			if isExecutableFile(candidate) {
-				return candidate
-			}
-		}
-	}
-	return ""
-}
-
-func commandCandidates(goos, command string) []string {
-	if goos == "windows" {
-		return []string{command + ".exe", command + ".cmd", command + ".bat", command}
-	}
-	return []string{command}
-}
-
-func isExecutableFile(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		return false
-	}
-	if runtime.GOOS == "windows" {
-		return true
-	}
-	return info.Mode()&0o111 != 0
-}
 
 func serverVersionSupported(server Server, command string) bool {
 	if server.MinimumMajorVersion == 0 {
@@ -176,25 +29,25 @@ func serverVersionSupported(server Server, command string) bool {
 
 	ctx, cancel := context.WithTimeout(context.Background(), serverVersionProbeTimeout)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, command, "--version").CombinedOutput()
-	if err != nil {
-		return false
-	}
-
-	for _, field := range strings.Fields(string(output)) {
-		majorText := strings.SplitN(strings.TrimPrefix(field, "v"), ".", 2)[0]
-		major, err := strconv.Atoi(majorText)
-		if err == nil {
-			return major >= server.MinimumMajorVersion
-		}
-	}
-	return false
+	return tooling.MajorVersionAtLeast(ctx, command, server.MinimumMajorVersion)
 }
 
-func detectAll(workingDir string) []projectRoot {
+func detectAll(workingDir string, managedResolver func(string) string) []projectRoot {
 	index := indexWorkspace(workingDir)
 	commands := make(map[string]string)
 	versions := make(map[string]bool)
+	resolver := tooling.Resolver{
+		Workspace: workingDir,
+		Managed:   managedResolver,
+		Lookup: func(command string) string {
+			if cached, ok := commands[command]; ok {
+				return cached
+			}
+			resolved := tooling.Resolve(command)
+			commands[command] = resolved
+			return resolved
+		},
+	}
 
 	var roots []projectRoot
 	seen := make(map[string]bool)
@@ -202,7 +55,7 @@ func detectAll(workingDir string) []projectRoot {
 	for _, project := range knownProjects {
 		for _, dir := range projectDirs(index, project) {
 			for _, candidate := range project.Servers {
-				server, ok := resolveServer(workingDir, dir, candidate, commands, versions)
+				server, ok := resolveServer(dir, candidate, resolver, versions)
 				if !ok {
 					continue
 				}
@@ -247,36 +100,20 @@ func projectDirs(index *workspaceIndex, project projectType) []string {
 	})
 }
 
-func resolveServer(workingDir, dir string, candidate Server, commands map[string]string, versions map[string]bool) (Server, bool) {
-	path := resolveCommand(dir, workingDir, candidate.Command)
-	if path == "" {
-		global, cached := commands[candidate.Command]
-		if !cached {
-			if _, err := exec.LookPath(candidate.Command); err == nil {
-				global = candidate.Command
-			} else {
-				global = resolveUserCommand(candidate.Command)
-			}
-			commands[candidate.Command] = global
+func resolveServer(dir string, candidate Server, resolver tooling.Resolver, versions map[string]bool) (Server, bool) {
+	for _, resolution := range resolver.Candidates([]string{dir}, candidate.Command) {
+		versionKey := resolution.Path + "\x00" + strconv.Itoa(candidate.MinimumMajorVersion)
+		supported, checked := versions[versionKey]
+		if !checked {
+			supported = serverVersionSupported(candidate, resolution.Path)
+			versions[versionKey] = supported
 		}
-		path = global
+		if supported {
+			candidate.Command = resolution.Path
+			return candidate, true
+		}
 	}
-	if path == "" {
-		return Server{}, false
-	}
-
-	versionKey := path + "\x00" + strconv.Itoa(candidate.MinimumMajorVersion)
-	supported, checked := versions[versionKey]
-	if !checked {
-		supported = serverVersionSupported(candidate, path)
-		versions[versionKey] = supported
-	}
-	if !supported {
-		return Server{}, false
-	}
-
-	candidate.Command = path
-	return candidate, true
+	return Server{}, false
 }
 
 type workspaceEntry struct {
@@ -342,7 +179,7 @@ func indexWorkspace(workingDir string) *workspaceIndex {
 			}
 		}
 
-		if entry.IsDir() && (skippedDirs[name] || strings.HasPrefix(name, ".")) {
+		if entry.IsDir() && tooling.SkipDirectory(name) {
 			return filepath.SkipDir
 		}
 		return nil
@@ -377,14 +214,6 @@ func matchesName(pattern, name string) bool {
 func isSubPath(parent, child string) bool {
 	parent = filepath.Clean(parent)
 	child = filepath.Clean(child)
-
-	if parent == child {
-		return true
-	}
-
-	if !strings.HasSuffix(parent, string(filepath.Separator)) {
-		parent += string(filepath.Separator)
-	}
-
-	return strings.HasPrefix(child, parent)
+	relative, err := filepath.Rel(parent, child)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }

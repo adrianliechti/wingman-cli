@@ -30,6 +30,8 @@ type App struct {
 	launcher http.Handler
 }
 
+const shutdownTimeout = time.Second
+
 func main() {
 	// Repair PATH before anything detects agents via exec.LookPath: GUI
 	// launches (Finder/Dock) inherit a minimal PATH that hides Homebrew /
@@ -209,9 +211,8 @@ func (a *App) handleSelectFolder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"path": path})
 }
 
-// shutdown bounds the teardown so a slow component (LSP shutdown
-// handshakes, MCP subprocesses) can't hang app quit. Kill signals are
-// issued before the waits we abandon.
+// shutdown gives normal cleanup a brief opportunity to finish without making
+// native app termination depend on a slow protocol handshake or installer.
 func (a *App) shutdown() {
 	a.mu.Lock()
 	srv := a.server
@@ -229,7 +230,7 @@ func (a *App) shutdown() {
 
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(shutdownTimeout):
 		log.Println("shutdown timed out, exiting anyway")
 	}
 }

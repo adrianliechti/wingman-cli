@@ -6,15 +6,15 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 )
 
 const detectionCacheTTL = 30 * time.Second
@@ -30,6 +30,7 @@ type Manager struct {
 	root      string
 	adapters  []AdapterDescriptor
 	lookup    func(string) string
+	managed   func(string) string
 	start     sessionStarter
 	terminal  TerminalLauncher
 	connector AdapterConnector
@@ -37,6 +38,7 @@ type Manager struct {
 
 	detectMu   sync.Mutex
 	detected   []detectedAdapter
+	missing    []detectedAdapter
 	detectedAt time.Time
 
 	mu          sync.Mutex
@@ -68,6 +70,34 @@ func (m *Manager) SetAdapterConnector(connector AdapterConnector) {
 	m.mu.Unlock()
 }
 
+// SetCommandResolver adds an application-managed fallback after project and
+// standard system command discovery.
+func (m *Manager) SetCommandResolver(resolve func(string) string) {
+	m.detectMu.Lock()
+	m.managed = resolve
+	m.detectedAt = time.Time{}
+	m.detectMu.Unlock()
+}
+
+// SetAdapters replaces descriptors used by future discovery and sessions.
+// An already-running session is unaffected.
+func (m *Manager) SetAdapters(adapters ...AdapterDescriptor) {
+	m.detectMu.Lock()
+	m.adapters = cloneAdapters(adapters)
+	m.detected = nil
+	m.missing = nil
+	m.detectedAt = time.Time{}
+	m.detectMu.Unlock()
+}
+
+// InvalidateDetection makes newly installed or updated adapters visible on
+// the next lookup without waiting for the detection cache TTL.
+func (m *Manager) InvalidateDetection() {
+	m.detectMu.Lock()
+	m.detectedAt = time.Time{}
+	m.detectMu.Unlock()
+}
+
 func newManager(root string, adapters []AdapterDescriptor, lookup func(string) string, starter sessionStarter) *Manager {
 	return &Manager{
 		root:        filepath.Clean(root),
@@ -87,31 +117,64 @@ func (m *Manager) detect(ctx context.Context) ([]detectedAdapter, error) {
 		return cloneDetected(m.detected), nil
 	}
 
-	var detected []detectedAdapter
-	for _, candidate := range m.adapters {
-		projects, err := detectProjects(ctx, m.root, candidate.Markers, candidate.SourceExtensions)
-		if err != nil {
-			return nil, fmt.Errorf("detect %s projects: %w", candidate.Language, err)
-		}
+	specs := make([]tooling.ProjectSpec, len(m.adapters))
+	for index, candidate := range m.adapters {
+		specs[index] = tooling.ProjectSpec{Markers: candidate.Markers, Extensions: candidate.SourceExtensions}
+	}
+	projectsByAdapter, err := tooling.DetectProjects(ctx, m.root, specs)
+	if err != nil {
+		return nil, fmt.Errorf("detect debugger projects: %w", err)
+	}
+	var detected, missing []detectedAdapter
+	for index, candidate := range m.adapters {
+		projects := projectsByAdapter[index]
 		if len(projects) == 0 {
 			continue
 		}
-		command := m.resolveDetectedCommand(candidate.Command, projects)
-		if command == "" && candidate.FallbackCommand != "" {
-			command = m.resolveDetectedCommand(candidate.FallbackCommand, projects)
-			if command != "" {
-				candidate.Args = slices.Clone(candidate.FallbackArgs)
+		var availableProjects, missingProjects []string
+		command := ""
+		for _, project := range projects {
+			resolved := resolveProjectCommand(m.root, m.lookup, m.managed, candidate.Command, project)
+			if resolved == "" {
+				missingProjects = append(missingProjects, project)
+				continue
+			}
+			availableProjects = append(availableProjects, project)
+			if command == "" {
+				command = resolved
 			}
 		}
-		if command == "" {
+		if len(missingProjects) > 0 {
+			missing = append(missing, detectedAdapter{adapter: candidate, projects: missingProjects})
+		}
+		if len(availableProjects) == 0 {
 			continue
 		}
 		candidate.Command = command
-		detected = append(detected, detectedAdapter{adapter: candidate, projects: projects})
+		detected = append(detected, detectedAdapter{adapter: candidate, projects: availableProjects})
 	}
 	m.detected = detected
+	m.missing = missing
 	m.detectedAt = time.Now()
 	return cloneDetected(detected), nil
+}
+
+// MissingRequirements reports debugger projects whose adapter command could
+// not be resolved. It shares the normal discovery cache and workspace scan.
+func (m *Manager) MissingRequirements(ctx context.Context) ([]AdapterRequirement, error) {
+	if _, err := m.detect(ctx); err != nil {
+		return nil, err
+	}
+	m.detectMu.Lock()
+	defer m.detectMu.Unlock()
+	result := make([]AdapterRequirement, 0, len(m.missing))
+	for _, value := range m.missing {
+		result = append(result, AdapterRequirement{
+			Name: value.adapter.Name, Language: value.adapter.Language,
+			Commands: []string{value.adapter.Command}, Projects: slices.Clone(value.projects),
+		})
+	}
+	return result, nil
 }
 
 func cloneAdapters(values []AdapterDescriptor) []AdapterDescriptor {
@@ -119,7 +182,6 @@ func cloneAdapters(values []AdapterDescriptor) []AdapterDescriptor {
 	for i, value := range values {
 		cloned[i] = value
 		cloned[i].Args = slices.Clone(value.Args)
-		cloned[i].FallbackArgs = slices.Clone(value.FallbackArgs)
 		cloned[i].Markers = slices.Clone(value.Markers)
 		cloned[i].SourceExtensions = slices.Clone(value.SourceExtensions)
 		cloned[i].Defaults = maps.Clone(value.Defaults)
@@ -127,24 +189,6 @@ func cloneAdapters(values []AdapterDescriptor) []AdapterDescriptor {
 		cloned[i].IOValues = maps.Clone(value.IOValues)
 	}
 	return cloned
-}
-
-func (m *Manager) resolveDetectedCommand(command string, projects []string) string {
-	if command == "" {
-		return ""
-	}
-	if resolved := m.lookup(command); resolved != "" {
-		return resolved
-	}
-	if resolved := resolveWorkspaceAdapterCommand(m.root, command); resolved != "" {
-		return resolved
-	}
-	for _, project := range projects {
-		if resolved := resolveWorkspaceAdapterCommand(project, command); resolved != "" {
-			return resolved
-		}
-	}
-	return ""
 }
 
 func cloneDetected(values []detectedAdapter) []detectedAdapter {
@@ -190,6 +234,16 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 		m.mu.Unlock()
 		return nil, ErrActiveSession
 	}
+	for path, breakpoints := range options.Breakpoints {
+		if err := validateSourceBreakpoints(breakpoints); err != nil {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("breakpoints for %s: %w", path, err)
+		}
+	}
+	if err := validateFunctionBreakpoints(options.FunctionBreakpoints); err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
 	combinedBreakpoints := make(map[string][]SourceBreakpoint, len(options.Breakpoints)+len(m.breakpoints))
 	for path, breakpoints := range options.Breakpoints {
 		combinedBreakpoints[filepath.Clean(path)] = slices.Clone(breakpoints)
@@ -208,7 +262,11 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 		return nil, err
 	}
 	if len(values) == 0 {
-		return nil, errors.New("no debug adapter detected in this workspace")
+		missing, missingErr := m.MissingRequirements(ctx)
+		if missingErr != nil {
+			return nil, missingErr
+		}
+		return nil, MissingAdapterError(missing)
 	}
 	selected, err := selectAdapter(values, options.Adapter)
 	if err != nil {
@@ -218,19 +276,32 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 	if err != nil {
 		return nil, err
 	}
-	// Prefer the selected project's virtual environment or node_modules binary
-	// over a workspace-wide fallback found during discovery. This matters in
-	// monorepos where projects intentionally pin different adapter versions.
-	if registered := m.registeredAdapter(selected.adapter.Name); registered != nil {
-		if command := resolveWorkspaceAdapterCommand(plan.ProjectDir, registered.Command); command != "" {
-			plan.Adapter.Command = command
-			plan.Adapter.Args = slices.Clone(registered.Args)
+	if registered, managed := m.registeredAdapter(selected.adapter.Name); registered != nil {
+		command := resolveProjectCommand(m.root, m.lookup, managed, registered.Command, plan.ProjectDir)
+		if command == "" {
+			return nil, fmt.Errorf("debug adapter %s is not available for project %s", registered.Name, plan.ProjectDir)
 		}
+		plan.Adapter.Command = command
+		plan.Adapter.Args = slices.Clone(registered.Args)
 	}
 
 	id := uuid.NewString()[:8]
 	session, err := m.start(ctx, id, plan, options)
 	if err != nil {
+		if session != nil {
+			m.mu.Lock()
+			if m.closed {
+				m.mu.Unlock()
+				session.Close()
+				return nil, errors.New("DAP manager is closed")
+			}
+			previous := m.session
+			m.session = session
+			m.mu.Unlock()
+			if previous != nil {
+				previous.Close()
+			}
+		}
 		return nil, err
 	}
 	m.mu.Lock()
@@ -248,14 +319,28 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 	return session, nil
 }
 
-func (m *Manager) registeredAdapter(name string) *AdapterDescriptor {
+func (m *Manager) registeredAdapter(name string) (*AdapterDescriptor, func(string) string) {
+	m.detectMu.Lock()
+	defer m.detectMu.Unlock()
 	for _, adapter := range m.adapters {
 		if strings.EqualFold(adapter.Name, name) {
 			value := cloneAdapters([]AdapterDescriptor{adapter})[0]
-			return &value
+			return &value, m.managed
 		}
 	}
-	return nil
+	return nil, m.managed
+}
+
+func resolveProjectCommand(workspace string, lookup, managed func(string) string, command, project string) string {
+	if command == "" {
+		return ""
+	}
+	resolution := tooling.Resolver{
+		Workspace: workspace,
+		Lookup:    lookup,
+		Managed:   managed,
+	}.Resolve([]string{project}, command, nil)
+	return resolution.Path
 }
 
 // mergeSourceBreakpoints keeps a plan's initial stops and folds in the
@@ -289,9 +374,21 @@ func selectAdapter(values []detectedAdapter, requested string) (detectedAdapter,
 	requested = strings.TrimSpace(requested)
 	if requested != "" && requested != "auto" {
 		for _, value := range values {
-			if strings.EqualFold(value.adapter.Name, requested) || strings.EqualFold(value.adapter.Language, requested) {
+			if strings.EqualFold(value.adapter.Name, requested) {
 				return value, nil
 			}
+		}
+		var matching []detectedAdapter
+		for _, value := range values {
+			if strings.EqualFold(value.adapter.Language, requested) {
+				matching = append(matching, value)
+			}
+		}
+		if len(matching) == 1 {
+			return matching[0], nil
+		}
+		if len(matching) > 1 {
+			return detectedAdapter{}, fmt.Errorf("multiple %s debug adapters are available; choose one by name", requested)
 		}
 		return detectedAdapter{}, fmt.Errorf("debug adapter %q is not available", requested)
 	}
@@ -366,7 +463,17 @@ func resolvePlan(workspace string, selected detectedAdapter, options StartOption
 		Request:    requestName,
 		IO:         ioMode,
 		Arguments:  arguments,
+		PreLaunch:  cloneProcessLaunch(options.PreLaunch),
 	}, nil
+}
+
+func cloneProcessLaunch(value *ProcessLaunch) *ProcessLaunch {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	clone.Args = slices.Clone(value.Args)
+	return &clone
 }
 
 // ResolveConfigurationPaths validates and resolves the path fields declared by
@@ -495,6 +602,10 @@ func selectProjectDir(workspace string, projects []string, requested string, con
 }
 
 func ResolveWorkspaceDirectory(workspace, value string) (string, error) {
+	workspace, err := filepath.Abs(workspace)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace: %w", err)
+	}
 	path := value
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(workspace, path)
@@ -586,6 +697,9 @@ func (m *Manager) Breakpoints(path string) []SourceBreakpoint {
 }
 
 func (m *Manager) SetBreakpoints(ctx context.Context, path string, values []SourceBreakpoint) ([]Breakpoint, error) {
+	if err := validateSourceBreakpoints(values); err != nil {
+		return nil, err
+	}
 	path = filepath.Clean(path)
 	m.mu.Lock()
 	m.breakpoints[path] = slices.Clone(values)
@@ -634,120 +748,5 @@ func (m *Manager) Close() {
 }
 
 func resolveAdapterCommand(command string) string {
-	if filepath.IsAbs(command) {
-		if executableFile(command) {
-			return command
-		}
-		return ""
-	}
-	if path, err := exec.LookPath(command); err == nil {
-		return path
-	}
-	var dirs []string
-	if value := os.Getenv("GOBIN"); value != "" {
-		dirs = append(dirs, value)
-	}
-	if value := os.Getenv("GOPATH"); value != "" {
-		dirs = append(dirs, filepath.Join(value, "bin"))
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		dirs = append(dirs,
-			filepath.Join(home, "go", "bin"),
-			filepath.Join(home, ".cargo", "bin"),
-			filepath.Join(home, ".dotnet", "tools"),
-			filepath.Join(home, ".bun", "bin"),
-			filepath.Join(home, ".local", "bin"),
-			filepath.Join(home, ".local", "share", "nvim", "mason", "bin"),
-			filepath.Join(home, ".npm-global", "bin"),
-			filepath.Join(home, ".local", "share", "mise", "shims"),
-			filepath.Join(home, ".asdf", "shims"),
-		)
-		if runtime.GOOS == "windows" {
-			if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
-				dirs = append(dirs, filepath.Join(localAppData, "nvim-data", "mason", "bin"))
-			}
-		}
-		if command == "codelldb" {
-			if path := resolveCodeLLDB(home); path != "" {
-				return path
-			}
-		}
-	}
-	if runtime.GOOS != "windows" {
-		dirs = append(dirs, "/opt/homebrew/bin", "/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin")
-	}
-	for _, dir := range dirs {
-		for _, name := range commandNames(command) {
-			path := filepath.Join(dir, name)
-			if executableFile(path) {
-				return path
-			}
-		}
-	}
-	return ""
-}
-
-func resolveCodeLLDB(home string) string {
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if dataHome == "" {
-		dataHome = filepath.Join(home, ".local", "share")
-	}
-	patterns := []string{
-		filepath.Join(home, ".vscode", "extensions", "vadimcn.vscode-lldb-*", "adapter"),
-		filepath.Join(home, ".vscode-insiders", "extensions", "vadimcn.vscode-lldb-*", "adapter"),
-		filepath.Join(home, ".cursor", "extensions", "vadimcn.vscode-lldb-*", "adapter"),
-		filepath.Join(home, ".windsurf", "extensions", "vadimcn.vscode-lldb-*", "adapter"),
-		filepath.Join(dataHome, "nvim", "mason", "packages", "codelldb", "extension", "adapter"),
-	}
-	var directories []string
-	for _, pattern := range patterns {
-		matches, _ := filepath.Glob(pattern)
-		directories = append(directories, matches...)
-	}
-	slices.Sort(directories)
-	for index := len(directories) - 1; index >= 0; index-- {
-		for _, name := range commandNames("codelldb") {
-			path := filepath.Join(directories[index], name)
-			if executableFile(path) {
-				return path
-			}
-		}
-	}
-	return ""
-}
-
-func resolveWorkspaceAdapterCommand(workspace, command string) string {
-	for _, directory := range []string{".venv", "venv", "env", filepath.Join("node_modules", ".bin")} {
-		bin := "bin"
-		if directory == filepath.Join("node_modules", ".bin") {
-			bin = ""
-		}
-		if runtime.GOOS == "windows" {
-			if bin != "" {
-				bin = "Scripts"
-			}
-		}
-		for _, name := range commandNames(command) {
-			path := filepath.Join(workspace, directory, bin, name)
-			if executableFile(path) {
-				return path
-			}
-		}
-	}
-	return ""
-}
-
-func commandNames(command string) []string {
-	if runtime.GOOS == "windows" {
-		return []string{command + ".exe", command + ".cmd", command + ".bat", command}
-	}
-	return []string{command}
-}
-
-func executableFile(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		return false
-	}
-	return runtime.GOOS == "windows" || info.Mode()&0o111 != 0
+	return tooling.Resolve(command)
 }
