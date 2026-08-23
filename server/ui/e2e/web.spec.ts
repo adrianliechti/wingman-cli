@@ -677,6 +677,117 @@ test("uses each Git status slot for its stage action", async ({ page }) => {
 	).toBeVisible();
 });
 
+test("generates staged commit messages without overwriting concurrent edits", async ({
+	page,
+}) => {
+	await page.route(/\/api\/capabilities$/, async (route) => {
+		await route.fulfill({
+			json: {
+				git: true,
+				lsp: false,
+				diffs: true,
+				tasks: false,
+				terminal: true,
+			},
+		});
+	});
+	await page.route(/\/api\/git\/status$/, async (route) => {
+		await route.fulfill({
+			json: {
+				branch: "main",
+				ahead: 0,
+				behind: 0,
+				has_remote: false,
+				files: [
+					{
+						path: "src/staged.ts",
+						index_status: "M",
+						worktree_status: "",
+						staged: true,
+						changed: false,
+					},
+				],
+			},
+		});
+	});
+	let generated = 0;
+	let releaseSecond!: () => void;
+	let secondStarted!: () => void;
+	const waitForSecond = new Promise<void>((resolve) => {
+		secondStarted = resolve;
+	});
+	const secondRelease = new Promise<void>((resolve) => {
+		releaseSecond = resolve;
+	});
+	const firstMessage =
+		"Generated staged message 1\n\nExplain the staged behavior with enough detail to wrap in the narrow commit footer.";
+	await page.route(/\/api\/git\/commit-message$/, async (route) => {
+		generated++;
+		if (generated === 2) {
+			secondStarted();
+			await secondRelease;
+		}
+		await route.fulfill({
+			json: {
+				message:
+					generated === 1
+						? firstMessage
+						: `Generated staged message ${generated}`,
+			},
+		});
+	});
+	let commits = 0;
+	await page.route(/\/api\/git\/commit$/, async (route) => {
+		commits++;
+		await route.fulfill({ json: { output: "Committed" } });
+	});
+
+	await composer(page);
+	await page
+		.getByRole("tablist", { name: "Workspace panels" })
+		.getByRole("tab", { name: "Changes", exact: true })
+		.click();
+	const message = page.getByRole("textbox", { name: "Commit message" });
+	const generate = page.getByRole("button", {
+		name: "Generate commit message",
+	});
+	await generate.click();
+	await expect(message).toHaveValue(firstMessage);
+	expect(
+		await message.evaluate((element) => ({
+			tag: element.tagName,
+			height: element.getBoundingClientRect().height,
+		})),
+	).toEqual({ tag: "TEXTAREA", height: expect.any(Number) });
+	expect((await message.boundingBox())!.height).toBeGreaterThan(28);
+	await expect(generate).toBeHidden();
+	const commit = page.getByRole("button", { name: "Commit", exact: true });
+	await expect(commit).toBeVisible();
+	const messageBox = await message.boundingBox();
+	const commitBox = await commit.boundingBox();
+	expect(messageBox).not.toBeNull();
+	expect(commitBox).not.toBeNull();
+	expect(commitBox!.y).toBeGreaterThanOrEqual(
+		messageBox!.y + messageBox!.height - 1,
+	);
+	expect(commits).toBe(0);
+
+	await message.fill("");
+	await expect(generate).toBeVisible();
+	await generate.click();
+	await waitForSecond;
+	await message.fill("Keep my hand-written message");
+	releaseSecond();
+	await expect(message).toHaveValue("Keep my hand-written message");
+	await expect(
+		page.getByText(
+			"Generated message was not inserted because the commit box changed.",
+			{ exact: true },
+		),
+	).toBeVisible();
+	expect(commits).toBe(0);
+});
+
 test("compares branches and commits in a main content tab", async ({
 	page,
 }) => {
@@ -2951,6 +3062,139 @@ test("uses Wingman's dynamic editor context menu", async ({ page }) => {
 		.click();
 	await expect(viewLines).not.toContainText(/\/\*|\*\//);
 	await expect(viewLines).toContainText("package main");
+});
+
+test("previews selection transformations and can hand the selection to chat", async ({
+	page,
+	request,
+}) => {
+	const requests: Array<{
+		path: string;
+		content: string;
+		instruction: string;
+		version: number;
+		range: {
+			start_line: number;
+			start_column: number;
+			end_line: number;
+			end_column: number;
+		};
+	}> = [];
+	await page.route(/\/api\/editor\/transform$/, async (route) => {
+		const body = route.request().postDataJSON() as (typeof requests)[number];
+		requests.push(body);
+		await route.fulfill({
+			json: {
+				version: body.version,
+				edit: {
+					range: body.range,
+					expected_text: "original",
+					replacement: "transformed",
+				},
+			},
+		});
+	});
+
+	await composer(page);
+	await page.getByRole("treeitem", { name: /editable\.txt/ }).click();
+	const editor = page.locator(".monaco-editor").first();
+	const original = editor
+		.locator(".view-line", { hasText: "original" })
+		.first();
+	await expect(original).toBeVisible();
+	const selectOriginal = async () => {
+		await original.click();
+		await page.keyboard.press("Home");
+		await page.keyboard.press("Shift+End");
+	};
+
+	await selectOriginal();
+	await page.keyboard.press("ControlOrMeta+K");
+	let palette = page.getByRole("dialog", { name: "Command palette" });
+	await expect(palette).toBeVisible();
+	let paletteActions = await palette.getByRole("option").allTextContents();
+	expect(paletteActions.indexOf("Chat about this…Selected text")).toBeLessThan(
+		paletteActions.indexOf("Transform selection…Selected text"),
+	);
+	await palette
+		.getByRole("option", { name: "Transform selection… Selected text" })
+		.click();
+	const prompt = page.getByRole("dialog", { name: "Transform selection" });
+	await expect(prompt).toBeVisible();
+	await prompt.getByRole("button", { name: "Refactor", exact: true }).click();
+	await expect(
+		page
+			.locator(".monaco-editor:visible")
+			.filter({ hasText: "transformed" })
+			.first(),
+	).toBeVisible();
+	expect(requests).toHaveLength(1);
+	expect(requests[0].path).toBe("editable.txt");
+	expect(requests[0].content).toBe("original\n");
+	expect(requests[0].instruction).toContain("Refactor this selection");
+	await page.keyboard.press("Escape");
+	await expect(original).toBeVisible();
+
+	await selectOriginal();
+	await page.keyboard.press("ControlOrMeta+K");
+	palette = page.getByRole("dialog", { name: "Command palette" });
+	await palette
+		.getByRole("option", { name: "Transform selection… Selected text" })
+		.click();
+	await prompt
+		.getByRole("textbox", { name: "Transformation instruction" })
+		.fill("Make it clearer");
+	await prompt.getByRole("button", { name: "Generate", exact: true }).click();
+	await expect(
+		page
+			.locator(".monaco-editor:visible")
+			.filter({ hasText: "transformed" })
+			.first(),
+	).toBeVisible();
+	await page.keyboard.press("Tab");
+	const transformed = page
+		.locator(".view-line:visible", { hasText: "transformed" })
+		.first();
+	// Monaco may use the first Tab to focus its range-edit preview and the
+	// second to accept, depending on available editor space.
+	if (!(await transformed.isVisible())) await page.keyboard.press("Tab");
+	await expect(transformed).toBeVisible();
+	await expect
+		.poll(() => page.locator(".monaco-editor:visible").count())
+		.toBe(1);
+	const disk = await request.get("/api/files/read?path=editable.txt");
+	expect(((await disk.json()) as { content: string }).content).toBe(
+		"original\n",
+	);
+	await page.keyboard.press("ControlOrMeta+Z");
+	await expect(original).toBeVisible();
+
+	await selectOriginal();
+	await page.keyboard.press("Shift+F10");
+	const menu = page.getByRole("menu", { name: "Editor actions" });
+	const menuLabels = await menu.getByRole("menuitem").allTextContents();
+	expect(menuLabels.indexOf("Chat about this…")).toBeLessThan(
+		menuLabels.findIndex((label) => label.startsWith("Transform Selection…")),
+	);
+	await page.keyboard.press("Escape");
+	await page.keyboard.press("ControlOrMeta+K");
+	palette = page.getByRole("dialog", { name: "Command palette" });
+	paletteActions = await palette.getByRole("option").allTextContents();
+	expect(paletteActions).toContain("Chat about this…Selected text");
+	await palette
+		.getByRole("option", { name: "Chat about this… Selected text" })
+		.click();
+	const chatInput = page.getByPlaceholder("Message Wingman…");
+	await expect(chatInput).toBeVisible();
+	await expect(chatInput).toHaveValue(
+		/Help me with this selection from editable\.txt:1/,
+	);
+	await expect(chatInput).toHaveValue(/original/);
+	await expect(
+		page.locator("[data-chat-composer]").getByText("editable.txt", {
+			exact: true,
+		}),
+	).toBeVisible();
 });
 
 test("routes native File menu commands through shared file handling", async ({

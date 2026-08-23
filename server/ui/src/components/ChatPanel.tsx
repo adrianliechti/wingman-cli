@@ -69,7 +69,13 @@ interface Props {
 	prompt?: PendingPrompt | null;
 	onPromptReply?: (reply: PromptReply) => void;
 	onOpenFile?: (path: string, line?: number) => void;
-	seed?: { text: string; nonce: number } | null;
+	seed?: {
+		text: string;
+		files?: string[];
+		append?: boolean;
+		nonce: number;
+	} | null;
+	onSeedConsumed?: (nonce: number) => void;
 	toolProgress?: Record<string, string>;
 }
 
@@ -99,7 +105,11 @@ function slashTokenAt(
 
 function wordEndAt(text: string, caret: number): number {
 	let end = Math.min(caret, text.length);
-	while (end < text.length && !" \t\n".includes(text[end])) end++;
+	while (end < text.length) {
+		const code = text.charCodeAt(end);
+		if (code === 9 || code === 10 || code === 32) break;
+		end++;
+	}
 	return end;
 }
 
@@ -127,6 +137,7 @@ export function ChatPanel({
 	onPromptReply,
 	onOpenFile,
 	seed,
+	onSeedConsumed,
 	toolProgress,
 }: Props) {
 	const scheme = useColorScheme();
@@ -244,17 +255,26 @@ export function ChatPanel({
 		setCaret(text.length);
 	}, []);
 
-	const [prevSeed, setPrevSeed] = useState(seed);
+	// Start empty so a seed delivered while switching from an editor is applied
+	// by the newly mounted chat panel, not mistaken for one it already consumed.
+	const [prevSeed, setPrevSeed] = useState<Props["seed"]>(null);
 	if (seed && seed !== prevSeed) {
 		setPrevSeed(seed);
-		setDraft(seed.text);
+		setDraft(
+			seed.append && input.trim() ? `${input}\n\n${seed.text}` : seed.text,
+		);
+		const seedFiles = seed.files;
+		if (seedFiles?.length) {
+			setFiles((current) => [...new Set([...current, ...seedFiles])]);
+		}
 	}
 
 	useEffect(() => {
 		if (!seed) return;
 		historyIdxRef.current = null;
 		textareaRef.current?.focus();
-	}, [seed]);
+		onSeedConsumed?.(seed.nonce);
+	}, [onSeedConsumed, seed]);
 
 	const prevPhaseRef = useRef(phase);
 	/* This is intentionally a pre-commit DOM snapshot for the phase-driven

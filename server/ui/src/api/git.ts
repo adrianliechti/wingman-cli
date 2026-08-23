@@ -56,6 +56,22 @@ export async function initializeGitRepository(): Promise<void> {
 	await fetchOK("/api/git/init", { method: "POST" });
 }
 
+export async function generateGitCommitMessage(): Promise<string> {
+	const result = await fetchJSON<unknown>("/api/git/commit-message", {
+		method: "POST",
+	});
+	if (
+		!result ||
+		typeof result !== "object" ||
+		!("message" in result) ||
+		typeof result.message !== "string" ||
+		!result.message.trim()
+	) {
+		throw new Error("The server returned an invalid commit message.");
+	}
+	return result.message;
+}
+
 export async function fetchGitComparison(
 	base: string,
 	head: string,

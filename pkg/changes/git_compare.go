@@ -323,6 +323,15 @@ func (m *Manager) worktreeCandidates(ctx context.Context, baseTree, headTree *ob
 // History returns commits reachable from all local and remote refs. Ref labels
 // are attached to their tip commits so the UI can render a compact history tree.
 func (m *Manager) History(ctx context.Context) ([]GitCommit, error) {
+	return m.HistoryLimit(ctx, 0)
+}
+
+// HistoryLimit returns at most limit commits, or the complete history when
+// limit is zero. Commits are ordered by committer time, newest first.
+func (m *Manager) HistoryLimit(ctx context.Context, limit int) ([]GitCommit, error) {
+	if limit < 0 {
+		return nil, errors.New("history limit cannot be negative")
+	}
 	if err := m.lock(ctx); err != nil {
 		return nil, err
 	}
@@ -392,6 +401,9 @@ func (m *Manager) History(ctx context.Context) ([]GitCommit, error) {
 			AuthoredAt: commit.Author.When,
 			Refs:       append([]string{}, refsByHash[commit.Hash]...),
 		})
+		if limit > 0 && len(commits) == limit {
+			break
+		}
 	}
 	return commits, nil
 }

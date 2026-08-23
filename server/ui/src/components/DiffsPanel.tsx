@@ -16,8 +16,16 @@ import {
 	RefreshCw,
 	RotateCcw,
 	Search,
+	Sparkles,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	useCallback,
+	useEffect,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import {
 	Group,
 	Panel,
@@ -29,6 +37,7 @@ import { listDiffs, revertDiff } from "../api/diffs";
 import {
 	getGitBranches,
 	getGitStatus,
+	generateGitCommitMessage,
 	initializeGitRepository,
 	runGitAction,
 	type GitAction,
@@ -112,6 +121,7 @@ export function DiffsPanel({
 	const [menu, setMenu] = useState<MenuState | null>(null);
 	const [busy, setBusy] = useState("");
 	const [message, setMessage] = useState("");
+	const messageRef = useRef("");
 	const [operationError, setError] = useState("");
 	const error =
 		operationError ||
@@ -160,6 +170,32 @@ export function DiffsPanel({
 		setRevertTarget(diff);
 	};
 
+	const updateMessage = (value: string) => {
+		messageRef.current = value;
+		setMessage(value);
+	};
+
+	const generateCommitMessage = async () => {
+		const initial = messageRef.current;
+		setBusy("commit-message");
+		setError("");
+		setNotice("");
+		try {
+			const generated = await generateGitCommitMessage();
+			if (messageRef.current === initial) {
+				updateMessage(generated);
+			} else {
+				setNotice(
+					"Generated message was not inserted because the commit box changed.",
+				);
+			}
+		} catch (error) {
+			setError(error instanceof Error ? error.message : String(error));
+		} finally {
+			setBusy("");
+		}
+	};
+
 	const confirmRevert = async () => {
 		const diff = revertTarget;
 		if (!diff) return;
@@ -189,14 +225,15 @@ export function DiffsPanel({
 					message={message}
 					error={error}
 					notice={notice}
-					onMessage={setMessage}
+					onMessage={updateMessage}
 					onRequest={request}
 					onOpenDiff={onOpenDiff}
 					onOpenCompare={onOpenCompare}
 					onOpenFile={onOpenFile}
 					onCommit={async () => {
-						if (await request("commit", { message })) setMessage("");
+						if (await request("commit", { message })) updateMessage("");
 					}}
+					onGenerateMessage={generateCommitMessage}
 					onRevert={(file) => requestRevert(gitFileAsDiff(file))}
 				/>
 				<RevertDialog
@@ -376,6 +413,7 @@ function GitChanges({
 	onOpenCompare,
 	onOpenFile,
 	onCommit,
+	onGenerateMessage,
 	onRevert,
 }: {
 	status: GitStatus;
@@ -399,11 +437,16 @@ function GitChanges({
 	) => void;
 	onOpenFile?: (path: string, disposition?: TabDisposition) => void;
 	onCommit: () => Promise<void>;
+	onGenerateMessage: () => Promise<void>;
 	onRevert: (file: GitFileStatus) => void;
 }) {
 	const [menu, setMenu] = useState<GitMenuState | null>(null);
 	const [historyOpen, setHistoryOpen] = useState(false);
+	const [stackCommitAction, setStackCommitAction] = useState(false);
 	const historyPanelRef = usePanelRef();
+	const commitBoxRef = useRef<HTMLDivElement>(null);
+	const commitMeasureRef = useRef<HTMLTextAreaElement>(null);
+	const commitButtonRef = useRef<HTMLButtonElement>(null);
 	const staged = useMemo(
 		() => status.files.filter((file) => file.staged),
 		[status.files],
@@ -445,6 +488,34 @@ function GitChanges({
 	const handleHistoryResize = useCallback(({ inPixels }: PanelSize) => {
 		setHistoryOpen(inPixels > 33);
 	}, []);
+	const measureCommitLayout = useCallback(() => {
+		const box = commitBoxRef.current;
+		const measure = commitMeasureRef.current;
+		const button = commitButtonRef.current;
+		if (!message.trim() || !box || !measure || !button) {
+			setStackCommitAction(false);
+			return;
+		}
+		// Measure at the width the field would have beside the button. Keeping
+		// that width stable avoids the layout flipping when the button moves.
+		measure.style.width = `${Math.max(1, box.clientWidth - button.offsetWidth - 2)}px`;
+		const style = window.getComputedStyle(measure);
+		const singleLineHeight =
+			Number.parseFloat(style.lineHeight) +
+			Number.parseFloat(style.paddingTop) +
+			Number.parseFloat(style.paddingBottom);
+		setStackCommitAction(
+			/[\r\n]/.test(message) || measure.scrollHeight > singleLineHeight + 1,
+		);
+	}, [message]);
+	useLayoutEffect(() => {
+		measureCommitLayout();
+		const box = commitBoxRef.current;
+		if (!box || typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(measureCommitLayout);
+		observer.observe(box);
+		return () => observer.disconnect();
+	}, [measureCommitLayout]);
 
 	return (
 		<Group
@@ -563,27 +634,66 @@ function GitChanges({
 									{staged.length === 1 ? "file" : "files"}
 								</span>
 							</div>
-							<div className="h-8 flex items-center rounded-md border border-border-subtle bg-bg focus-within:border-border transition-colors">
-								<input
+							<div
+								ref={commitBoxRef}
+								className={`relative min-h-8 rounded-md border border-border-subtle bg-bg transition-colors focus-within:border-border ${
+									stackCommitAction
+										? "flex flex-col items-stretch"
+										: "flex items-end"
+								}`}
+							>
+								<textarea
+									ref={commitMeasureRef}
+									value={message}
+									readOnly
+									aria-hidden="true"
+									tabIndex={-1}
+									rows={1}
+									className="pointer-events-none fixed left-0 top-0 -z-10 h-0 resize-none overflow-hidden px-2 py-1.5 text-[11.5px] leading-4 opacity-0"
+								/>
+								<textarea
 									value={message}
 									onChange={(e) => onMessage(e.target.value)}
 									placeholder="Commit message…"
 									aria-label="Commit message"
-									className="h-full min-w-0 flex-1 bg-transparent px-2 text-[11.5px] text-fg placeholder:text-fg-dim outline-none"
+									rows={1}
+									className={`field-sizing-content min-h-7 max-h-24 min-w-0 resize-none overflow-y-auto bg-transparent px-2 py-1.5 text-[11.5px] leading-4 text-fg placeholder:text-fg-dim outline-none ${
+										stackCommitAction ? "w-full flex-none" : "flex-1"
+									}`}
 								/>
-								<button
-									type="submit"
-									disabled={disabled || !message.trim()}
-									title="Commit staged changes"
-									className="h-7 mr-0.5 px-2 rounded flex items-center gap-1 text-[10.5px] text-fg-muted hover:text-fg hover:bg-bg-hover disabled:opacity-25 disabled:cursor-not-allowed transition-colors"
-								>
-									{busy === "commit" ? (
-										<Loader2 size={11} className="animate-spin" />
-									) : (
-										<GitCommitHorizontal size={11} />
-									)}
-									Commit
-								</button>
+								{message.trim() ? (
+									<button
+										ref={commitButtonRef}
+										type="submit"
+										disabled={disabled}
+										title="Commit staged changes"
+										className={`mb-0.5 mr-0.5 flex h-7 shrink-0 items-center gap-1 rounded px-2 text-[10.5px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-25 ${
+											stackCommitAction ? "self-end" : ""
+										}`}
+									>
+										{busy === "commit" ? (
+											<Loader2 size={11} className="animate-spin" />
+										) : (
+											<GitCommitHorizontal size={11} />
+										)}
+										Commit
+									</button>
+								) : (
+									<button
+										type="button"
+										disabled={disabled}
+										onClick={() => void onGenerateMessage()}
+										title="Generate commit message from staged changes"
+										aria-label="Generate commit message"
+										className="mb-0.5 mr-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-bg-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-30"
+									>
+										{busy === "commit-message" ? (
+											<Loader2 size={11} className="animate-spin" />
+										) : (
+											<Sparkles size={11} />
+										)}
+									</button>
+								)}
 							</div>
 						</form>
 					)}

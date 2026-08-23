@@ -96,6 +96,8 @@ type Server struct {
 	terminals        *terminal.Manager
 	preview          *filePreviewServer
 	tab              *editorTabService
+	transforms       *editorTransformService
+	commitMessages   *gitCommitMessageService
 	tabSettingsMu    sync.Mutex
 	tabEnabled       atomic.Bool
 	tabRequestMu     sync.Mutex
@@ -164,6 +166,8 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 		return option.ID
 	}
 	s.tab = newEditorTabService(cfg)
+	s.transforms = newEditorTransformService(cfg)
+	s.commitMessages = newGitCommitMessageService(cfg)
 	s.tabEnabled.Store(true)
 	if userSettings, loadErr := settings.Load(); loadErr == nil {
 		s.tabEnabled.Store(userSettings.EditorTabCompletion)
@@ -399,6 +403,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Post("/stage", s.handleGitStage)
 			r.Post("/unstage", s.handleGitUnstage)
 			r.Post("/commit", s.handleGitCommit)
+			r.Post("/commit-message", s.handleGitCommitMessage)
 			r.Post("/pull", s.handleGitPull)
 			r.Post("/push", s.handleGitPush)
 		})
@@ -498,6 +503,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Post("/variables", s.handleDebugVariables)
 		})
 		r.Post("/editor/tab", s.handleEditorTab)
+		r.Post("/editor/transform", s.handleEditorTransform)
 		r.Post("/settings/editor.tab.completion", s.handleEditorTabSettings)
 		r.Get("/skills", s.handleSkills)
 		r.Get("/capabilities", s.handleCapabilities)

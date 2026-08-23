@@ -1044,6 +1044,15 @@ func (w *Workspace) Diffs(ctx context.Context) ([]changes.FileDiff, error) {
 	return w.Changes.Diffs(ctx)
 }
 
+func (w *Workspace) DiffsLayer(ctx context.Context, layer changes.DiffLayer) ([]changes.FileDiff, error) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.Changes == nil {
+		return nil, changes.ErrNotGitRepository
+	}
+	return w.Changes.DiffsLayer(ctx, layer)
+}
+
 func (w *Workspace) Diff(ctx context.Context, path string, layer changes.DiffLayer) (changes.FileDiff, error) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
@@ -1136,6 +1145,15 @@ func (w *Workspace) GitHistory(ctx context.Context) ([]changes.GitCommit, error)
 		return nil, changes.ErrNotGitRepository
 	}
 	return w.Changes.History(ctx)
+}
+
+func (w *Workspace) GitHistoryLimit(ctx context.Context, limit int) ([]changes.GitCommit, error) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.Changes == nil {
+		return nil, changes.ErrNotGitRepository
+	}
+	return w.Changes.HistoryLimit(ctx, limit)
 }
 
 func (w *Workspace) GitCompare(ctx context.Context, base, head string, mergeBase bool) (changes.CompareResult, error) {
