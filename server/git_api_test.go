@@ -218,6 +218,32 @@ func TestGitAPIRejectsInvalidPath(t *testing.T) {
 	}
 }
 
+func TestGitAPIStageAll(t *testing.T) {
+	t.Setenv("WINGMAN_URL", "http://localhost:1")
+	repoDir := t.TempDir()
+	if _, err := git.PlainInit(repoDir, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"one.txt", "two.txt"} {
+		if err := os.WriteFile(filepath.Join(repoDir, path), []byte(path+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	app, err := New(context.Background(), repoDir, &ServerOptions{NoBrowser: true, disableManagedTools: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	web := httptest.NewServer(app)
+	defer web.Close()
+
+	postGit(t, web.URL, "stage", `{"paths":[]}`)
+	status := getGitStatus(t, web.URL)
+	if len(status.Files) != 2 || !status.Files[0].Staged || !status.Files[1].Staged {
+		t.Fatalf("stage-all status = %+v", status)
+	}
+}
+
 func TestGitAPIHistoryAndCompare(t *testing.T) {
 	t.Setenv("WINGMAN_URL", "http://localhost:1")
 	repoDir := t.TempDir()

@@ -91,6 +91,7 @@ export const queryKeys = {
 			["server", "git", "branches", refresh] as const,
 		compare: (base: string, head: string, mode: string) =>
 			["server", "git", "compare", base, head, mode] as const,
+		comparisons: ["server", "git", "compare"] as const,
 	},
 	files: {
 		all: ["server", "files"] as const,
@@ -125,6 +126,28 @@ export const serverQueryClient = new QueryClient({
 
 export function invalidateAllServerQueries(client: QueryClient): void {
 	void client.invalidateQueries({ queryKey: queryKeys.all });
+}
+
+export async function invalidateGitIndexQueries(
+	client: QueryClient,
+): Promise<void> {
+	// Status drives the Changes panel. Refresh it first, and reuse an in-flight
+	// request when both the mutation and its WebSocket event reach this client.
+	await client.invalidateQueries(
+		{ queryKey: queryKeys.git.status },
+		{ cancelRefetch: false },
+	);
+	void client.invalidateQueries(
+		{ queryKey: queryKeys.diffs.all },
+		{ cancelRefetch: false },
+	);
+	void client.invalidateQueries(
+		{
+			queryKey: queryKeys.git.comparisons,
+			predicate: ({ queryKey }) => queryKey.includes(":worktree"),
+		},
+		{ cancelRefetch: false },
+	);
 }
 
 const TASK_TOOLS = new Set([
@@ -172,6 +195,9 @@ export function invalidateForServerMessage(
 		case "diffs_changed":
 			invalidate(queryKeys.diffs.all);
 			invalidate(queryKeys.git.all);
+			break;
+		case "git_index_changed":
+			void invalidateGitIndexQueries(client);
 			break;
 		case "files_changed":
 			invalidate(queryKeys.files.all);

@@ -51,6 +51,7 @@ const (
 	EvtPromptCancel        = "prompt_cancel"
 	EvtFilesChanged        = "files_changed"
 	EvtDiffsChanged        = "diffs_changed"
+	EvtGitIndexChanged     = "git_index_changed"
 	EvtSessionsChanged     = "sessions_changed"
 	EvtDiagnosticsChanged  = "diagnostics_changed"
 	EvtCapabilitiesChanged = "capabilities_changed"

@@ -186,6 +186,10 @@ interface DiffsChangedMessage {
 	type: "diffs_changed";
 }
 
+interface GitIndexChangedMessage {
+	type: "git_index_changed";
+}
+
 interface FilesChangedMessage {
 	type: "files_changed";
 }
@@ -275,6 +279,7 @@ export type ServerMessage =
 	| PromptCancelMessage
 	| SessionsChangedMessage
 	| DiffsChangedMessage
+	| GitIndexChangedMessage
 	| FilesChangedMessage
 	| DiagnosticsChangedMessage
 	| CapabilitiesChangedMessage

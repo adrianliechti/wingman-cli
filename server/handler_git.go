@@ -209,15 +209,23 @@ func (s *Server) handleGitCheckoutBranch(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleGitStage(w http.ResponseWriter, r *http.Request) {
-	paths, ok := s.decodeGitPaths(w, r)
-	if !ok {
+	var body gitPathsRequest
+	if err := decodeLimitedJSON(w, r, &body); err != nil {
 		return
+	}
+	paths := body.Paths
+	if len(paths) != 0 {
+		var ok bool
+		paths, ok = s.normalizeGitPaths(w, body.Paths)
+		if !ok {
+			return
+		}
 	}
 	if err := s.workspace.GitStage(r.Context(), paths); err != nil {
 		writeGitError(w, err)
 		return
 	}
-	s.gitMutationComplete(w, "")
+	s.gitIndexMutationComplete(w)
 }
 
 func (s *Server) handleGitUnstage(w http.ResponseWriter, r *http.Request) {
@@ -229,7 +237,7 @@ func (s *Server) handleGitUnstage(w http.ResponseWriter, r *http.Request) {
 		writeGitError(w, err)
 		return
 	}
-	s.gitMutationComplete(w, "")
+	s.gitIndexMutationComplete(w)
 }
 
 func (s *Server) handleGitCommit(w http.ResponseWriter, r *http.Request) {
@@ -278,12 +286,16 @@ func (s *Server) decodeGitPaths(w http.ResponseWriter, r *http.Request) ([]strin
 	if err := decodeLimitedJSON(w, r, &body); err != nil {
 		return nil, false
 	}
-	if len(body.Paths) == 0 {
+	return s.normalizeGitPaths(w, body.Paths)
+}
+
+func (s *Server) normalizeGitPaths(w http.ResponseWriter, requested []string) ([]string, bool) {
+	if len(requested) == 0 {
 		http.Error(w, "at least one path is required", http.StatusBadRequest)
 		return nil, false
 	}
-	paths := make([]string, 0, len(body.Paths))
-	for _, path := range body.Paths {
+	paths := make([]string, 0, len(requested))
+	for _, path := range requested {
 		rel, ok := s.workspaceRel(path)
 		if !ok {
 			http.Error(w, "invalid path", http.StatusBadRequest)
@@ -297,6 +309,13 @@ func (s *Server) decodeGitPaths(w http.ResponseWriter, r *http.Request) ([]strin
 func (s *Server) gitMutationComplete(w http.ResponseWriter, output string) {
 	s.broadcast(Frame{Type: EvtDiffsChanged})
 	writeJSON(w, map[string]string{"output": output})
+}
+
+func (s *Server) gitIndexMutationComplete(w http.ResponseWriter) {
+	// Staging only changes the index. Give clients a narrow event so an open
+	// history or branch comparison does not contend with the status refresh.
+	s.broadcast(Frame{Type: EvtGitIndexChanged})
+	writeJSON(w, map[string]string{"output": ""})
 }
 
 func (s *Server) gitCheckoutComplete(w http.ResponseWriter, output string) {

@@ -58,6 +58,19 @@ type statusEntry struct {
 	conflict     bool
 }
 
+type aheadBehindCache struct {
+	local    plumbing.Hash
+	upstream plumbing.Hash
+	ahead    int
+	behind   int
+	valid    bool
+}
+
+type fingerprintIndexEntry struct {
+	hash plumbing.Hash
+	mode filemode.FileMode
+}
+
 type Manager struct {
 	workingDir string
 	prefix     string
@@ -70,6 +83,8 @@ type Manager struct {
 
 	mu     sync.Mutex
 	closed bool
+
+	divergenceCache aheadBehindCache
 }
 
 func New(workingDir string) *Manager {
@@ -251,13 +266,30 @@ func (m *Manager) Fingerprint(ctx context.Context) uint64 {
 	if head, err := m.repo.Head(); err == nil {
 		_, _ = fmt.Fprintf(h, "head\x00%s\x00%s\n", head.Name(), head.Hash())
 	}
-	index, _ := m.repo.Storer.Index()
+	indexedFiles := make(map[string]fingerprintIndexEntry, len(entries))
+	if len(entries) > 0 {
+		idx, err := m.repo.Storer.Index()
+		if err == nil {
+			changedPaths := make(map[string]bool, len(entries))
+			for _, entry := range entries {
+				changedPaths[m.objectPath(entry.path)] = true
+			}
+			for _, entry := range idx.Entries {
+				if !changedPaths[entry.Name] {
+					continue
+				}
+				// Preserve Index.Entry's first-match behavior for conflicted paths,
+				// which can have more than one staged entry.
+				if _, exists := indexedFiles[entry.Name]; !exists {
+					indexedFiles[entry.Name] = fingerprintIndexEntry{hash: entry.Hash, mode: entry.Mode}
+				}
+			}
+		}
+	}
 	for _, entry := range entries {
 		_, _ = fmt.Fprintf(h, "%s\x00%s\x00%c%c\x00%t\n", entry.path, entry.originalPath, entry.index, entry.worktree, entry.conflict)
-		if index != nil {
-			if indexed, err := index.Entry(m.objectPath(entry.path)); err == nil {
-				_, _ = fmt.Fprintf(h, "index\x00%s\x00%o\n", indexed.Hash, indexed.Mode)
-			}
+		if indexed, exists := indexedFiles[m.objectPath(entry.path)]; exists {
+			_, _ = fmt.Fprintf(h, "index\x00%s\x00%o\n", indexed.hash, indexed.mode)
 		}
 		if info, err := os.Lstat(filepath.Join(m.workingDir, filepath.FromSlash(entry.path))); err == nil {
 			_, _ = fmt.Fprintf(h, "worktree\x00%d\x00%d\x00%o\n", info.Size(), info.ModTime().UnixNano(), info.Mode())

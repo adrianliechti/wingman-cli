@@ -33,7 +33,7 @@ import {
 	runGitAction,
 	type GitAction,
 } from "../api/git";
-import { queryKeys } from "../api/query";
+import { invalidateGitIndexQueries, queryKeys } from "../api/query";
 import type {
 	DiffEntry,
 	DiffLayer,
@@ -123,10 +123,17 @@ export function DiffsPanel({
 	const [notice, setNotice] = useState("");
 	const [revertTarget, setRevertTarget] = useState<DiffEntry | null>(null);
 	const load = useCallback(
-		() =>
-			queryClient.invalidateQueries({
-				queryKey: git ? queryKeys.git.all : queryKeys.diffs.all,
-			}),
+		(action?: GitAction) => {
+			if (git && (action === "stage" || action === "unstage")) {
+				return invalidateGitIndexQueries(queryClient);
+			}
+			return queryClient.invalidateQueries(
+				{
+					queryKey: git ? queryKeys.git.all : queryKeys.diffs.all,
+				},
+				{ cancelRefetch: false },
+			);
+		},
 		[git, queryClient],
 	);
 	useEffect(() => {
@@ -143,7 +150,7 @@ export function DiffsPanel({
 			try {
 				const output = await runGitAction(action, body);
 				if (output) setNotice(output);
-				await load();
+				await load(action);
 				return true;
 			} catch (e) {
 				setError(e instanceof Error ? e.message : String(e));
@@ -517,9 +524,7 @@ function GitChanges({
 									disabled={disabled}
 									action={<Plus size={11} />}
 									actionLabel="Stage"
-									onAll={() =>
-										void onRequest("stage", { paths: paths(changed) })
-									}
+									onAll={() => void onRequest("stage", { paths: [] })}
 									onFile={(file) =>
 										void onRequest("stage", { paths: gitFilePaths(file) })
 									}
@@ -534,7 +539,7 @@ function GitChanges({
 								disabled={disabled}
 								action={<Plus size={11} />}
 								actionLabel="Stage"
-								onAll={() => void onRequest("stage", { paths: paths(changed) })}
+								onAll={() => void onRequest("stage", { paths: [] })}
 								onFile={(file) =>
 									void onRequest("stage", { paths: gitFilePaths(file) })
 								}

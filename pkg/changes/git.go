@@ -196,17 +196,38 @@ func (m *Manager) CheckoutBranch(ctx context.Context, name, remote string) error
 	return nil
 }
 
+// Stage stages explicit workspace paths. An empty path list stages the entire
+// workspace in one operation.
 func (m *Manager) Stage(ctx context.Context, paths []string) error {
 	if err := m.lock(ctx); err != nil {
 		return err
 	}
 	defer m.mu.Unlock()
+	if len(paths) == 0 {
+		// Add the workspace directory once so go-git reads status and writes the
+		// index once. Calling Add for every changed path makes Stage All roughly
+		// quadratic in the number of files and index entries.
+		path := strings.TrimSuffix(m.prefix, "/")
+		if path == "" {
+			path = "."
+		}
+		if err := m.worktree.AddWithOptions(&git.AddOptions{Path: path}); err != nil {
+			return fmt.Errorf("stage workspace: %w", err)
+		}
+		return nil
+	}
 	for _, path := range paths {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		path, err := m.gitPath(path)
 		if err != nil {
 			return err
 		}
-		if err := m.worktree.AddWithOptions(&git.AddOptions{Path: path}); err != nil {
+		// The path is explicit, so avoid making go-git scan the entire worktree
+		// again before adding it. The mutation's status refresh provides the next
+		// repository snapshot.
+		if err := m.worktree.AddWithOptions(&git.AddOptions{Path: path, SkipStatus: true}); err != nil {
 			return fmt.Errorf("stage %s: %w", path, err)
 		}
 	}
@@ -466,6 +487,12 @@ func (m *Manager) lock(ctx context.Context) error {
 		return err
 	}
 	m.mu.Lock()
+	// A request can be cancelled while it waits behind another Git operation.
+	// Do not start an obsolete status walk once the lock finally becomes free.
+	if err := ctx.Err(); err != nil {
+		m.mu.Unlock()
+		return err
+	}
 	if m.closed {
 		m.mu.Unlock()
 		return ErrClosed
@@ -588,7 +615,11 @@ func (m *Manager) gitPath(path string) (string, error) {
 }
 
 func (m *Manager) aheadBehind(localHash, upstreamHash plumbing.Hash) (int, int, error) {
+	if cached := m.divergenceCache; cached.valid && cached.local == localHash && cached.upstream == upstreamHash {
+		return cached.ahead, cached.behind, nil
+	}
 	if localHash == upstreamHash {
+		m.divergenceCache = aheadBehindCache{local: localHash, upstream: upstreamHash, valid: true}
 		return 0, 0, nil
 	}
 	local, err := m.repo.CommitObject(localHash)
@@ -612,7 +643,14 @@ func (m *Manager) aheadBehind(localHash, upstreamHash plumbing.Hash) (int, int, 
 		return 0, 0, err
 	}
 	behind, err := m.countCommitsUntil(upstreamHash, stops)
-	return ahead, behind, err
+	if err != nil {
+		return 0, 0, err
+	}
+	m.divergenceCache = aheadBehindCache{
+		local: localHash, upstream: upstreamHash,
+		ahead: ahead, behind: behind, valid: true,
+	}
+	return ahead, behind, nil
 }
 
 func (m *Manager) countCommitsUntil(start plumbing.Hash, stops map[plumbing.Hash]bool) (int, error) {
