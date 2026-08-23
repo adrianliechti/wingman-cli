@@ -2057,6 +2057,7 @@ export default function App() {
 						const pending = sess?.prompt;
 						if (key && pending) respondPrompt(key, pending.id, reply);
 					}}
+					onOpenFile={openFile}
 					seed={tab.id === activeTabId ? composerSeed : null}
 					toolProgress={toolProgress}
 				/>

@@ -180,12 +180,14 @@ func (s *Server) handleTurnEvent(ev code.TurnEvent) {
 			switch {
 			case c.ToolCall != nil:
 				s.sendSession(ev.SessionID, Frame{
-					Type:    EvtToolCall,
-					ID:      c.ToolCall.ID,
-					Name:    c.ToolCall.Name,
-					Args:    c.ToolCall.Args,
-					Hint:    tool.ExtractHint(c.ToolCall.Args, c.ToolCall.Name),
-					Partial: c.ToolCall.Partial,
+					Type:      EvtToolCall,
+					ID:        c.ToolCall.ID,
+					Name:      c.ToolCall.Name,
+					Kind:      c.ToolCall.Kind,
+					Args:      c.ToolCall.Args,
+					Locations: c.ToolCall.Locations,
+					Hint:      tool.ExtractHint(c.ToolCall.Args, c.ToolCall.Name),
+					Partial:   c.ToolCall.Partial,
 				})
 				if c.ToolCall.Partial {
 					s.setSessionPhase(ev.SessionID, "thinking")
@@ -195,10 +197,12 @@ func (s *Server) handleTurnEvent(ev code.TurnEvent) {
 
 			case c.ToolResult != nil:
 				s.sendSession(ev.SessionID, Frame{
-					Type:    EvtToolResult,
-					ID:      c.ToolResult.ID,
-					Name:    c.ToolResult.Name,
-					Content: c.ToolResult.Content,
+					Type:      EvtToolResult,
+					ID:        c.ToolResult.ID,
+					Name:      c.ToolResult.Name,
+					Kind:      c.ToolResult.Kind,
+					Locations: c.ToolResult.Locations,
+					Content:   c.ToolResult.Content,
 				})
 
 				s.files.Notify()

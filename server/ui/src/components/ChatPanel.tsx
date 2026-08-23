@@ -68,6 +68,7 @@ interface Props {
 	onDismissError?: () => void;
 	prompt?: PendingPrompt | null;
 	onPromptReply?: (reply: PromptReply) => void;
+	onOpenFile?: (path: string, line?: number) => void;
 	seed?: { text: string; nonce: number } | null;
 	toolProgress?: Record<string, string>;
 }
@@ -124,6 +125,7 @@ export function ChatPanel({
 	onDismissError,
 	prompt,
 	onPromptReply,
+	onOpenFile,
 	seed,
 	toolProgress,
 }: Props) {
@@ -752,6 +754,7 @@ export function ChatPanel({
 										isActive={isActive}
 										phase={phase}
 										applyPendingAnchor={applyPendingAnchor}
+										onOpenFile={onOpenFile}
 									/>
 								);
 							})}

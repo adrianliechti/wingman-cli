@@ -61,8 +61,10 @@ type Usage struct {
 type ToolCall struct {
 	ID string `json:"id"`
 
-	Name string `json:"name"`
-	Args string `json:"args,omitempty"`
+	Name      string         `json:"name"`
+	Kind      string         `json:"kind,omitempty"`
+	Args      string         `json:"args,omitempty"`
+	Locations []ToolLocation `json:"locations,omitempty"`
 
 	Partial bool `json:"partial,omitempty"`
 }
@@ -70,12 +72,19 @@ type ToolCall struct {
 type ToolResult struct {
 	ID string `json:"id,omitempty"`
 
-	Name string `json:"name"`
-	Args string `json:"args,omitempty"`
+	Name      string         `json:"name"`
+	Kind      string         `json:"kind,omitempty"`
+	Args      string         `json:"args,omitempty"`
+	Locations []ToolLocation `json:"locations,omitempty"`
 
 	Content  string         `json:"content,omitempty"`
 	IsError  bool           `json:"is_error,omitempty"`
 	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+type ToolLocation struct {
+	Path string `json:"path"`
+	Line int    `json:"line,omitempty"`
 }
 
 type Reasoning struct {

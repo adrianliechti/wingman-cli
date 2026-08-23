@@ -1,6 +1,9 @@
 package server
 
-import "github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+import (
+	"github.com/adrianliechti/wingman-agent/pkg/agent"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+)
 
 const (
 	MsgSend           = "send"
@@ -69,22 +72,24 @@ type Frame struct {
 	Type    string `json:"type"`
 	Session string `json:"session,omitempty"`
 
-	Text     string           `json:"text,omitempty"`
-	ID       string           `json:"id,omitempty"`
-	Name     string           `json:"name,omitempty"`
-	Args     string           `json:"args,omitempty"`
-	Hint     string           `json:"hint,omitempty"`
-	Content  string           `json:"content,omitempty"`
-	Phase    string           `json:"phase,omitempty"`
-	Message  string           `json:"message,omitempty"`
-	State    string           `json:"state,omitempty"`
-	Intent   string           `json:"intent,omitempty"`
-	Part     int              `json:"part,omitempty"`
-	Position int              `json:"position,omitempty"`
-	Paused   bool             `json:"paused,omitempty"`
-	CanSteer bool             `json:"can_steer,omitempty"`
-	Partial  bool             `json:"partial,omitempty"`
-	Queue    []TurnQueueEntry `json:"queue,omitempty"`
+	Text      string               `json:"text,omitempty"`
+	ID        string               `json:"id,omitempty"`
+	Name      string               `json:"name,omitempty"`
+	Kind      string               `json:"kind,omitempty"`
+	Args      string               `json:"args,omitempty"`
+	Locations []agent.ToolLocation `json:"locations,omitempty"`
+	Hint      string               `json:"hint,omitempty"`
+	Content   string               `json:"content,omitempty"`
+	Phase     string               `json:"phase,omitempty"`
+	Message   string               `json:"message,omitempty"`
+	State     string               `json:"state,omitempty"`
+	Intent    string               `json:"intent,omitempty"`
+	Part      int                  `json:"part,omitempty"`
+	Position  int                  `json:"position,omitempty"`
+	Paused    bool                 `json:"paused,omitempty"`
+	CanSteer  bool                 `json:"can_steer,omitempty"`
+	Partial   bool                 `json:"partial,omitempty"`
+	Queue     []TurnQueueEntry     `json:"queue,omitempty"`
 
 	PromptID     string             `json:"prompt_id,omitempty"`
 	PromptKind   string             `json:"prompt_kind,omitempty"`
@@ -136,17 +141,21 @@ type ConversationReasoning struct {
 }
 
 type ConversationTool struct {
-	ID   string `json:"id,omitempty"`
-	Name string `json:"name"`
-	Args string `json:"args,omitempty"`
-	Hint string `json:"hint,omitempty"`
+	ID        string               `json:"id,omitempty"`
+	Name      string               `json:"name"`
+	Kind      string               `json:"kind,omitempty"`
+	Args      string               `json:"args,omitempty"`
+	Locations []agent.ToolLocation `json:"locations,omitempty"`
+	Hint      string               `json:"hint,omitempty"`
 }
 
 type ConversationResult struct {
-	ID      string `json:"id,omitempty"`
-	Name    string `json:"name"`
-	Args    string `json:"args,omitempty"`
-	Content string `json:"content"`
+	ID        string               `json:"id,omitempty"`
+	Name      string               `json:"name"`
+	Kind      string               `json:"kind,omitempty"`
+	Args      string               `json:"args,omitempty"`
+	Locations []agent.ToolLocation `json:"locations,omitempty"`
+	Content   string               `json:"content"`
 }
 
 type FileEntry struct {

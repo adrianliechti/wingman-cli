@@ -94,8 +94,10 @@ type sessionState struct {
 }
 
 type toolCall struct {
-	name string
-	args string
+	name      string
+	kind      string
+	args      string
+	locations []agent.ToolLocation
 }
 
 type turn struct {
@@ -1113,6 +1115,8 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 	case u.ToolCall != nil:
 		tc := u.ToolCall
 		args := rawValueToString(tc.RawInput)
+		kind := semanticToolKind(tc.Kind, tc.Content)
+		locations := agentToolLocations(a.workspaceRoot(), tc.Locations)
 
 		name := tc.Title
 		// ACP titles are display strings, not stable tool identifiers. Preserve
@@ -1129,12 +1133,16 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 			name = string(tc.Kind)
 		}
 		sess.toolCallsMu.Lock()
-		sess.toolCalls[string(tc.ToolCallId)] = toolCall{name: name, args: args}
+		sess.toolCalls[string(tc.ToolCallId)] = toolCall{
+			name: name, kind: kind, args: args, locations: locations,
+		}
 		sess.toolCallsMu.Unlock()
 		return emit(agent.RoleAssistant, agent.Content{ToolCall: &agent.ToolCall{
-			ID:   string(tc.ToolCallId),
-			Name: name,
-			Args: args,
+			ID:        string(tc.ToolCallId),
+			Name:      name,
+			Kind:      kind,
+			Args:      args,
+			Locations: locations,
 		}}, ""), true
 
 	case u.ToolCallUpdate != nil:
@@ -1146,6 +1154,14 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 		}
 		if tu.RawInput != nil {
 			prior.args = rawValueToString(tu.RawInput)
+		}
+		if tu.Kind != nil {
+			prior.kind = semanticToolKind(*tu.Kind, tu.Content)
+		} else if prior.kind == "" {
+			prior.kind = semanticToolKind("", tu.Content)
+		}
+		if tu.Locations != nil {
+			prior.locations = agentToolLocations(a.workspaceRoot(), tu.Locations)
 		}
 		sess.toolCalls[string(tu.ToolCallId)] = prior
 		sess.toolCallsMu.Unlock()
@@ -1170,11 +1186,13 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 			body = "tool call failed"
 		}
 		return emit(agent.RoleAssistant, agent.Content{ToolResult: &agent.ToolResult{
-			ID:      string(tu.ToolCallId),
-			Name:    prior.name,
-			Args:    prior.args,
-			Content: body,
-			IsError: status == acpsdk.ToolCallStatusFailed,
+			ID:        string(tu.ToolCallId),
+			Name:      prior.name,
+			Kind:      prior.kind,
+			Args:      prior.args,
+			Locations: prior.locations,
+			Content:   body,
+			IsError:   status == acpsdk.ToolCallStatusFailed,
 		}}, ""), true
 
 	}
@@ -1721,6 +1739,50 @@ func toolCallContentText(items []acpsdk.ToolCallContent) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func semanticToolKind(kind acpsdk.ToolKind, items []acpsdk.ToolCallContent) string {
+	if kind != "" {
+		return string(kind)
+	}
+	for _, item := range items {
+		if item.Diff != nil {
+			return string(acpsdk.ToolKindEdit)
+		}
+	}
+	return ""
+}
+
+func (a *Agent) workspaceRoot() string {
+	if a.workspace == nil {
+		return ""
+	}
+	return a.workspace.RootPath
+}
+
+func agentToolLocations(workspaceRoot string, locations []acpsdk.ToolCallLocation) []agent.ToolLocation {
+	if len(locations) == 0 {
+		return nil
+	}
+	result := make([]agent.ToolLocation, 0, len(locations))
+	for _, location := range locations {
+		if location.Path == "" {
+			continue
+		}
+		locationPath := location.Path
+		if workspaceRoot != "" && filepath.IsAbs(locationPath) {
+			if relative, err := filepath.Rel(workspaceRoot, locationPath); err == nil &&
+				relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				locationPath = relative
+			}
+		}
+		mapped := agent.ToolLocation{Path: filepath.ToSlash(locationPath)}
+		if location.Line != nil {
+			mapped.Line = *location.Line
+		}
+		result = append(result, mapped)
+	}
+	return result
 }
 
 func diffBlockText(d *acpsdk.ToolCallContentDiff) string {

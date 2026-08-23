@@ -99,7 +99,9 @@ interface ToolCallMessage extends SessionMessage {
 	type: "tool_call";
 	id: string;
 	name: string;
+	kind?: string;
 	args: string;
+	locations?: ToolLocation[];
 	hint: string;
 	partial?: boolean;
 }
@@ -108,6 +110,8 @@ interface ToolResultMessage extends SessionMessage {
 	type: "tool_result";
 	id: string;
 	name: string;
+	kind?: string;
+	locations?: ToolLocation[];
 	content: string;
 }
 
@@ -284,6 +288,11 @@ export type ServerMessage =
 
 export type Phase = "idle" | "thinking" | "streaming" | "tool_running";
 
+export interface ToolLocation {
+	path: string;
+	line?: number;
+}
+
 export interface ConversationMessage {
 	role: string;
 	content: ConversationContent[];
@@ -303,13 +312,17 @@ interface ConversationContent {
 	tool_call?: {
 		id: string;
 		name: string;
+		kind?: string;
 		args: string;
+		locations?: ToolLocation[];
 		hint?: string;
 	};
 	tool_result?: {
 		id?: string;
 		name: string;
+		kind?: string;
 		args: string;
+		locations?: ToolLocation[];
 		content: string;
 	};
 }

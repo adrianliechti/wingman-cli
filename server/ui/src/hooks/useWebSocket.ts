@@ -8,6 +8,7 @@ import type {
 	PromptField,
 	PromptKind,
 	ServerMessage,
+	ToolLocation,
 	TurnInputIntent,
 	TurnInputState,
 	TurnQueueEntry,
@@ -39,7 +40,9 @@ export interface ChatEntry {
 	files?: string[];
 	inputId?: string;
 	toolName?: string;
+	toolKind?: string;
 	toolArgs?: string;
+	toolLocations?: ToolLocation[];
 	toolHint?: string;
 	toolResult?: string;
 	toolId?: string;
@@ -101,7 +104,9 @@ export function messagesToEntries(
 					content: "",
 					toolId: c.tool_call.id,
 					toolName: c.tool_call.name,
+					toolKind: c.tool_call.kind,
 					toolArgs: c.tool_call.args,
+					toolLocations: c.tool_call.locations,
 					toolHint: c.tool_call.hint,
 				});
 			}
@@ -117,6 +122,8 @@ export function messagesToEntries(
 						);
 				if (existing) {
 					existing.toolResult = r.content;
+					existing.toolKind = r.kind ?? existing.toolKind;
+					existing.toolLocations = r.locations ?? existing.toolLocations;
 				} else {
 					entries.push({
 						id: `tr-${mi}-${ci}`,
@@ -124,7 +131,9 @@ export function messagesToEntries(
 						content: "",
 						toolId: r.id,
 						toolName: r.name,
+						toolKind: r.kind,
 						toolArgs: r.args,
+						toolLocations: r.locations,
 						toolResult: r.content,
 					});
 				}
@@ -295,12 +304,12 @@ function reconcileSnapshotEntries(
 			);
 			if (tailIdx >= 0) {
 				const idx = Math.max(tailStart, 0) + tailIdx;
-				if (
-					entry.toolResult !== undefined &&
-					entries[idx].toolResult === undefined
-				) {
-					entries[idx] = { ...entries[idx], toolResult: entry.toolResult };
-				}
+				entries[idx] = {
+					...entries[idx],
+					toolKind: entries[idx].toolKind ?? entry.toolKind,
+					toolLocations: entries[idx].toolLocations ?? entry.toolLocations,
+					toolResult: entries[idx].toolResult ?? entry.toolResult,
+				};
 				represented = true;
 			}
 		} else if (entry.type === "reasoning") {
@@ -650,7 +659,9 @@ export function useWebSocket() {
 						entries[idx] = {
 							...entries[idx],
 							toolName: msg.name,
+							toolKind: msg.kind ?? entries[idx].toolKind,
 							toolArgs: msg.args,
+							toolLocations: msg.locations ?? entries[idx].toolLocations,
 							toolHint: msg.hint,
 							toolPartial: msg.partial,
 						};
@@ -669,7 +680,9 @@ export function useWebSocket() {
 								content: "",
 								toolId: msg.id,
 								toolName: msg.name,
+								toolKind: msg.kind,
 								toolArgs: msg.args,
+								toolLocations: msg.locations,
 								toolHint: msg.hint,
 								toolPartial: msg.partial,
 							},
@@ -711,6 +724,8 @@ export function useWebSocket() {
 									content: "",
 									toolId: msg.id,
 									toolName: msg.name,
+									toolKind: msg.kind,
+									toolLocations: msg.locations,
 									toolResult: msg.content,
 								},
 							],
@@ -719,6 +734,8 @@ export function useWebSocket() {
 					const updated = [...sess.entries];
 					updated[idx] = {
 						...updated[idx],
+						toolKind: msg.kind ?? updated[idx].toolKind,
+						toolLocations: msg.locations ?? updated[idx].toolLocations,
 						toolResult: msg.content,
 						toolPartial: false,
 					};

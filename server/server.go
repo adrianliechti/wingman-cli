@@ -1026,18 +1026,22 @@ func convertMessages(messages []agent.Message) []ConversationMessage {
 			}
 			if c.ToolCall != nil {
 				cc.ToolCall = &ConversationTool{
-					ID:   c.ToolCall.ID,
-					Name: c.ToolCall.Name,
-					Args: c.ToolCall.Args,
-					Hint: tool.ExtractHint(c.ToolCall.Args, c.ToolCall.Name),
+					ID:        c.ToolCall.ID,
+					Name:      c.ToolCall.Name,
+					Kind:      c.ToolCall.Kind,
+					Args:      c.ToolCall.Args,
+					Locations: c.ToolCall.Locations,
+					Hint:      tool.ExtractHint(c.ToolCall.Args, c.ToolCall.Name),
 				}
 			}
 			if c.ToolResult != nil {
 				cc.ToolResult = &ConversationResult{
-					ID:      c.ToolResult.ID,
-					Name:    c.ToolResult.Name,
-					Args:    c.ToolResult.Args,
-					Content: c.ToolResult.Content,
+					ID:        c.ToolResult.ID,
+					Name:      c.ToolResult.Name,
+					Kind:      c.ToolResult.Kind,
+					Args:      c.ToolResult.Args,
+					Locations: c.ToolResult.Locations,
+					Content:   c.ToolResult.Content,
 				}
 			}
 			cm.Content = append(cm.Content, cc)

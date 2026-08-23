@@ -73,17 +73,22 @@ func TestTurnQueueFrameJSONCarriesCapabilitiesAndOrdering(t *testing.T) {
 }
 
 func TestToolCallFrameCarriesPartialState(t *testing.T) {
-	b, err := json.Marshal(Frame{Type: EvtToolCall, ID: "call-1", Partial: true})
+	b, err := json.Marshal(Frame{
+		Type: EvtToolCall, ID: "call-1", Kind: "edit", Partial: true,
+		Locations: []agent.ToolLocation{{Path: "/workspace/main.go", Line: 8}},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var decoded struct {
-		Partial bool `json:"partial"`
+		Kind      string               `json:"kind"`
+		Partial   bool                 `json:"partial"`
+		Locations []agent.ToolLocation `json:"locations"`
 	}
 	if err := json.Unmarshal(b, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if !decoded.Partial {
+	if decoded.Kind != "edit" || !decoded.Partial || len(decoded.Locations) != 1 || decoded.Locations[0].Line != 8 {
 		t.Fatalf("frame = %s", b)
 	}
 }
@@ -111,5 +116,25 @@ func TestConvertMessagesPreservesAssistantTextIdentity(t *testing.T) {
 	}
 	if got := messages[0].Content[0]; got.Text != "answer" || got.TextID != "message-1" {
 		t.Fatalf("content = %+v", got)
+	}
+}
+
+func TestConvertMessagesPreservesToolKind(t *testing.T) {
+	messages := convertMessages([]agent.Message{{
+		Role: agent.RoleAssistant,
+		Content: []agent.Content{
+			{ToolCall: &agent.ToolCall{ID: "edit-1", Name: "Editing files", Kind: "edit", Locations: []agent.ToolLocation{{Path: "/workspace/main.go"}}}},
+			{ToolResult: &agent.ToolResult{ID: "edit-1", Name: "Editing files", Kind: "edit", Locations: []agent.ToolLocation{{Path: "/workspace/main.go"}}, Content: "+new"}},
+		},
+	}})
+
+	if len(messages) != 1 || len(messages[0].Content) != 2 {
+		t.Fatalf("messages = %+v", messages)
+	}
+	if got := messages[0].Content[0].ToolCall; got == nil || got.Kind != "edit" || len(got.Locations) != 1 {
+		t.Fatalf("tool call = %+v", got)
+	}
+	if got := messages[0].Content[1].ToolResult; got == nil || got.Kind != "edit" || len(got.Locations) != 1 {
+		t.Fatalf("tool result = %+v", got)
 	}
 }
