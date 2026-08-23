@@ -752,6 +752,16 @@ func (w *Workspace) EditorLSPDocumentContent(filePath string) (string, bool) {
 	return service.DocumentContent(filePath)
 }
 
+func (w *Workspace) LSPActivities() []lsp.ServerActivity {
+	w.mu.RLock()
+	service := w.Language
+	w.mu.RUnlock()
+	if service == nil {
+		return nil
+	}
+	return service.Activities()
+}
+
 func (w *Workspace) Diagnostics(ctx context.Context) language.WorkspaceReport {
 	w.mu.RLock()
 	service := w.Language
@@ -911,6 +921,14 @@ func (w *Workspace) ExecuteLSPCommand(ctx context.Context, filePath string, cont
 		return nil, err
 	}
 	return service.ExecuteCommand(ctx, filePath, content, command)
+}
+
+func (w *Workspace) ExecuteLSPCommandWithEdits(ctx context.Context, filePath string, content *string, command lsp.Command) (any, []lsp.CommandWorkspaceEdit, error) {
+	service, err := w.languageService()
+	if err != nil {
+		return nil, nil, err
+	}
+	return service.ExecuteCommandWithEdits(ctx, filePath, content, command)
 }
 
 func (w *Workspace) Formatting(ctx context.Context, filePath string, content *string, options lsp.FormattingOptions) ([]lsp.TextEdit, error) {
@@ -1366,6 +1384,13 @@ func (w *Workspace) HasLSP() bool {
 	service := w.Language
 	w.mu.RUnlock()
 	return service != nil && service.HasLSP()
+}
+
+func (w *Workspace) HasLSPFor(filePath string) bool {
+	w.mu.RLock()
+	service := w.Language
+	w.mu.RUnlock()
+	return service != nil && service.HasLSPFor(filePath)
 }
 
 func (w *Workspace) HasChanges() bool {

@@ -396,6 +396,15 @@ func TestSelectTargetDebugProjectPrefersNearestProject(t *testing.T) {
 	}
 }
 
+func TestDebugControlWaitForUsesServerPolicy(t *testing.T) {
+	if got := debugControlWaitFor("pause"); got != 750*time.Millisecond {
+		t.Fatalf("pause wait = %v", got)
+	}
+	if got := debugControlWaitFor("next"); got != 150*time.Millisecond {
+		t.Fatalf("step wait = %v", got)
+	}
+}
+
 func writeDebugTestFile(t *testing.T, root, path, content string) {
 	t.Helper()
 	full := filepath.Join(root, filepath.FromSlash(path))

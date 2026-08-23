@@ -194,7 +194,8 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 		s.setManagedToolsStatus(managedToolsStatus{State: "installing"})
 		update := ws.StartManagedToolsUpdate(serverCtx, code.ManagedEditorTools, func(progress devtools.Progress) {
 			s.setManagedToolsStatus(managedToolsStatus{
-				State: "installing", Tool: progress.Tool, Label: progress.Label, Current: progress.Current, Total: progress.Total,
+				State: "installing", Tool: progress.Tool, Label: progress.Label, Phase: progress.Phase,
+				Current: progress.Current, Total: progress.Total,
 			})
 		})
 		s.background.Go(func() {
@@ -324,14 +325,6 @@ func (s *Server) activeRuntime() (code.Agent, *code.TurnManager) {
 	return s.agent, s.turns
 }
 
-func (s *Server) handleWebSocketURL(w http.ResponseWriter, r *http.Request) {
-	proto := "ws"
-	if r.TLS != nil {
-		proto = "wss"
-	}
-	writeJSON(w, map[string]string{"url": fmt.Sprintf("%s://%s/ws", proto, r.Host)})
-}
-
 func (s *Server) Run(ctx context.Context, port int) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -396,6 +389,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 			r.Post("/init", s.handleGitInit)
 			r.Get("/status", s.handleGitStatus)
 			r.Get("/branches", s.handleGitBranches)
+			r.Post("/fetch", s.handleGitFetch)
 			r.Get("/history", s.handleGitHistory)
 			r.Get("/compare", s.handleGitCompare)
 			r.Post("/branches", s.handleGitCreateBranch)
@@ -462,6 +456,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 		})
 
 		r.Route("/lsp", func(r chi.Router) {
+			r.Get("/status", s.handleLSPStatus)
 			r.Get("/capabilities", s.handleLSPEditorCapabilities)
 			r.Post("/document", s.handleLSPDocumentLifecycle)
 			r.Get("/diagnostics", s.handleDiagnostics)
@@ -507,7 +502,6 @@ func (s *Server) registerRoutes(r chi.Router) {
 		r.Post("/settings/editor.tab.completion", s.handleEditorTabSettings)
 		r.Get("/skills", s.handleSkills)
 		r.Get("/capabilities", s.handleCapabilities)
-		r.Get("/ws", s.handleWebSocketURL)
 	})
 
 	r.HandleFunc("/ws", s.handleWebSocket)
@@ -684,7 +678,6 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		ent := SessionEntry{ID: si.ID, Title: si.Title}
 		if !si.UpdatedAt.IsZero() {
 			ent.UpdatedAt = si.UpdatedAt.Format(time.RFC3339)
-			ent.CreatedAt = ent.UpdatedAt
 		}
 		out = append(out, ent)
 	}
@@ -875,7 +868,6 @@ type capabilitiesResponse struct {
 	GitInit       bool                `json:"git_init"`
 	LSP           bool                `json:"lsp"`
 	Debug         bool                `json:"debug"`
-	Diffs         bool                `json:"diffs"`
 	Tasks         bool                `json:"tasks"`
 	Terminal      bool                `json:"terminal"`
 	Tab           bool                `json:"tab"`
@@ -886,13 +878,14 @@ type capabilitiesResponse struct {
 }
 
 type managedToolsStatus struct {
-	State       string   `json:"state"`
-	Tool        string   `json:"tool,omitempty"`
-	Label       string   `json:"label,omitempty"`
-	Current     int      `json:"current,omitempty"`
-	Total       int      `json:"total,omitempty"`
-	Error       string   `json:"error,omitempty"`
-	Unavailable []string `json:"unavailable,omitempty"`
+	State       string                 `json:"state"`
+	Tool        string                 `json:"tool,omitempty"`
+	Label       string                 `json:"label,omitempty"`
+	Phase       devtools.ProgressPhase `json:"phase,omitempty"`
+	Current     int                    `json:"current,omitempty"`
+	Total       int                    `json:"total,omitempty"`
+	Error       string                 `json:"error,omitempty"`
+	Unavailable []string               `json:"unavailable,omitempty"`
 }
 
 func (s *Server) setManagedToolsStatus(status managedToolsStatus) {
@@ -917,7 +910,6 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		GitInit:       isCoder && !hasChanges,
 		LSP:           ws.HasLSP(),
 		Debug:         s.debugAvailable(r.Context()),
-		Diffs:         hasChanges,
 		Tasks:         isCoder,
 		Terminal:      terminal.Supported(),
 		Tab:           s.tab != nil,

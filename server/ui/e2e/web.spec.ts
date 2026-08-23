@@ -145,6 +145,88 @@ test("focuses the composer surface without outlining its textarea", async ({
 	});
 });
 
+test("keeps mixed background activity compact in the titlebar", async ({
+	page,
+}) => {
+	await page.route(/\/api\/capabilities$/, async (route) => {
+		await route.fulfill({
+			json: {
+				git: false,
+				git_init: false,
+				lsp: true,
+				debug: false,
+				tasks: false,
+				terminal: false,
+				tab: false,
+				"editor.tab.completion": false,
+				platform: "linux",
+				workspace_name: "workspace",
+				managed_tools: {
+					state: "installing",
+					phase: "updating",
+					tool: "debugpy",
+					label: "Python debugger",
+					current: 2,
+					total: 4,
+				},
+			},
+		});
+	});
+	await page.route(/\/api\/lsp\/status$/, async (route) => {
+		await route.fulfill({
+			json: {
+				analyzing: true,
+				services: [
+					{
+						server: "custom-lsp",
+						label: "A bespoke language",
+						project: "packages/a-very-long-project-name",
+						analyzing: true,
+						operations: [
+							{
+								title: "Reading project symbols",
+								message:
+									"Resolving a dependency with a deliberately long display name",
+								percentage: 42,
+							},
+						],
+					},
+				],
+			},
+		});
+	});
+
+	await composer(page);
+	const beacon = page.locator("[data-activity-center] button");
+	await expect(beacon).toHaveText("");
+	await expect(beacon).toHaveAttribute("data-activity-summary", "running");
+	await expect(beacon.locator("svg.animate-spin")).toHaveCount(1);
+	const beaconStyle = await beacon.evaluate((element) => {
+		const style = getComputedStyle(element);
+		return {
+			background: style.backgroundColor,
+			border: style.borderTopWidth,
+			width: element.getBoundingClientRect().width,
+		};
+	});
+	expect(beaconStyle).toEqual({
+		background: "rgba(0, 0, 0, 0)",
+		border: "0px",
+		width: 24,
+	});
+	await beacon.click();
+	const popup = page.getByRole("dialog", { name: "Workspace activity" });
+	await expect(popup).toBeVisible();
+	await expectFloatingInViewport(page, popup);
+	await expect(popup.locator("[data-activity-state=running]")).toHaveCount(2);
+	await expect(popup.locator("[data-activity-hint]")).toHaveCSS(
+		"-webkit-line-clamp",
+		"2",
+	);
+	const box = await popup.boundingBox();
+	expect(box?.height ?? 999).toBeLessThan(240);
+});
+
 test("keeps the active tab visible as the tab strip fills", async ({
 	page,
 }) => {
@@ -296,19 +378,16 @@ test("reuses and promotes preview tabs while browsing sessions", async ({
 		{
 			id: "preview-session-one",
 			title: "Preview session one",
-			created_at: "2026-08-14T10:00:00Z",
 			updated_at: "2026-08-14T10:00:00Z",
 		},
 		{
 			id: "preview-session-two",
 			title: "Preview session two",
-			created_at: "2026-08-14T09:00:00Z",
 			updated_at: "2026-08-14T09:00:00Z",
 		},
 		{
 			id: "preview-session-three",
 			title: "Preview session three",
-			created_at: "2026-08-14T08:00:00Z",
 			updated_at: "2026-08-14T08:00:00Z",
 		},
 	];
@@ -390,7 +469,6 @@ test("restores Agent when the last session preview is replaced", async ({
 					{
 						id: "sole-session-preview",
 						title: "Sole session preview",
-						created_at: "2026-08-14T10:00:00Z",
 						updated_at: "2026-08-14T10:00:00Z",
 					},
 				],
@@ -450,7 +528,7 @@ test("uses canonical product names for agents", async ({ page }) => {
 		});
 	});
 	await page.route(/\/api\/agent$/, async (route) => {
-		await route.fulfill({ json: { agent: "opencode" } });
+		await route.fulfill({ json: { agent: "opencode", can_delete: false } });
 	});
 
 	await composer(page);
@@ -477,7 +555,6 @@ test("groups diagnostics by file and opens individual problems", async ({
 				git_init: false,
 				lsp: true,
 				debug: false,
-				diffs: false,
 				tasks: false,
 				terminal: true,
 				platform: "linux",
@@ -560,7 +637,6 @@ test("uses each Git status slot for its stage action", async ({ page }) => {
 			json: {
 				git: true,
 				lsp: false,
-				diffs: true,
 				tasks: false,
 				terminal: true,
 			},
@@ -592,7 +668,7 @@ test("uses each Git status slot for its stage action", async ({ page }) => {
 			},
 		});
 	});
-	await page.route(/\/api\/git\/branches/, async (route) => {
+	await page.route(/\/api\/git\/(?:branches|fetch)$/, async (route) => {
 		await route.fulfill({
 			json: {
 				branches: [{ name: "main", current: true, remote: "" }],
@@ -685,7 +761,6 @@ test("generates staged commit messages without overwriting concurrent edits", as
 			json: {
 				git: true,
 				lsp: false,
-				diffs: true,
 				tasks: false,
 				terminal: true,
 			},
@@ -819,7 +894,6 @@ test("compares branches and commits in a main content tab", async ({
 			json: {
 				git: true,
 				lsp: false,
-				diffs: true,
 				tasks: false,
 				terminal: true,
 			},
@@ -836,7 +910,7 @@ test("compares branches and commits in a main content tab", async ({
 			},
 		});
 	});
-	await page.route(/\/api\/git\/branches/, async (route) => {
+	await page.route(/\/api\/git\/(?:branches|fetch)$/, async (route) => {
 		await route.fulfill({
 			json: {
 				branches: [{ name: "feature", current: true }, { name: "main" }],
@@ -1215,7 +1289,6 @@ test("shows and copies diagnostics for comparison failures", async ({
 			json: {
 				git: true,
 				lsp: false,
-				diffs: true,
 				tasks: false,
 				terminal: true,
 			},
@@ -1232,7 +1305,7 @@ test("shows and copies diagnostics for comparison failures", async ({
 			},
 		});
 	});
-	await page.route(/\/api\/git\/branches/, async (route) => {
+	await page.route(/\/api\/git\/(?:branches|fetch)$/, async (route) => {
 		await route.fulfill({
 			json: {
 				branches: [{ name: "feature/router", current: true }, { name: "main" }],
@@ -1282,14 +1355,13 @@ test("keeps the session context menu above panel clipping", async ({
 				{
 					id: "menu-clipping-check",
 					title: "Menu clipping check",
-					created_at: "2026-08-11T00:00:00Z",
 					updated_at: "2026-08-11T00:00:00Z",
 				},
 			],
 		});
 	});
 	await page.route(/\/api\/agent$/, async (route) => {
-		await route.fulfill({ json: { agent: "wingman", canDelete: true } });
+		await route.fulfill({ json: { agent: "wingman", can_delete: true } });
 	});
 	await composer(page);
 	await page.getByLabel("Show Agent Sessions").click();
@@ -1604,6 +1676,28 @@ test("uses Monaco's live buffer for automatic completion and parameter hints", a
 	);
 });
 
+test("syntax-highlights shell scripts without a language server", async ({
+	page,
+}) => {
+	await composer(page);
+	await page.getByRole("treeitem", { name: /syntax-highlight\.sh/ }).click();
+	const editor = page.locator(".monaco-editor");
+	await expect(editor).toBeVisible();
+	await expect
+		.poll(async () =>
+			editor.locator(".view-lines").evaluate((lines) => {
+				const tokenClasses = new Set<string>();
+				for (const element of lines.querySelectorAll<HTMLElement>("span")) {
+					for (const name of element.classList) {
+						if (/^mtk\d+$/.test(name)) tokenClasses.add(name);
+					}
+				}
+				return tokenClasses.size;
+			}),
+		)
+		.toBeGreaterThan(1);
+});
+
 test("leaves TypeScript project diagnostics to the active language server", async ({
 	page,
 }) => {
@@ -1718,7 +1812,6 @@ test("upgrades an open editor when its language server becomes available", async
 				git_init: false,
 				lsp: languageServer,
 				debug: false,
-				diffs: false,
 				tasks: false,
 				terminal: false,
 				tab: false,
@@ -1838,7 +1931,9 @@ test("save awaits LSP actions that add and remove Go imports", async ({
 	});
 
 	await composer(page);
+	const capabilitiesResponse = page.waitForResponse(/\/api\/lsp\/capabilities/);
 	await page.getByRole("treeitem", { name: /completion\.go/ }).click();
+	await capabilitiesResponse;
 	const editor = page.locator(".monaco-editor").first();
 	await expect(editor).toBeVisible();
 	await editor.click();
@@ -1854,6 +1949,149 @@ test("save awaits LSP actions that add and remove Go imports", async ({
 	const saved = (await read.json()) as { content: string };
 	expect(saved.content).toContain('import "fmt"');
 	expect(saved.content).not.toContain('import "os"');
+});
+
+test("applies one command-driven quick action without moving the cursor", async ({
+	page,
+	request,
+}) => {
+	let workspaceURI = "";
+	let invokedRequests = 0;
+	let commandExecutions = 0;
+	await page.route(/\/api\/lsp\/capabilities\?/, async (route) => {
+		const response = await route.fetch();
+		const capabilities = (await response.json()) as Record<string, unknown>;
+		workspaceURI = String(capabilities.workspace_uri ?? "");
+		await route.fulfill({
+			response,
+			json: {
+				...capabilities,
+				language_server: true,
+				code_actions: true,
+			},
+		});
+	});
+	await page.route(/\/api\/lsp\/diagnostics$/, async (route) => {
+		await route.fulfill({
+			json: [
+				{
+					path: "completion.go",
+					line: 1,
+					column: 1,
+					end_line: 1,
+					end_column: 8,
+					severity: "warning",
+					message: "Generated marker is missing",
+					source: "test",
+				},
+			],
+		});
+	});
+	await page.route(/\/api\/lsp\/code-actions$/, async (route) => {
+		const body = route.request().postDataJSON() as {
+			content: string;
+			trigger_kind?: number;
+			only?: string[];
+		};
+		if (body.only?.length) {
+			await route.fulfill({ json: { actions: [], documents: {} } });
+			return;
+		}
+		if (body.trigger_kind === 1) invokedRequests++;
+		await route.fulfill({
+			json: {
+				actions: [
+					{
+						title: "Add generated marker",
+						kind: "quickfix",
+						command: {
+							title: "Add generated marker",
+							command: "applyModCommand",
+							arguments: [],
+						},
+					},
+				],
+				documents: {},
+			},
+		});
+	});
+	await page.route(/\/api\/lsp\/execute-command$/, async (route) => {
+		commandExecutions++;
+		const body = route.request().postDataJSON() as { content: string };
+		const documentURI = `${workspaceURI.replace(/\/$/, "")}/completion.go`;
+		await route.fulfill({
+			json: {
+				edits: [
+					{
+						label: "Add generated marker",
+						edit: {
+							changes: {
+								[documentURI]: [
+									{
+										range: {
+											start: { line: 0, character: 0 },
+											end: { line: 0, character: 0 },
+										},
+										newText: "// generated\n",
+									},
+								],
+							},
+						},
+						documents: {
+							[documentURI]: {
+								path: "completion.go",
+								revision: createHash("sha256")
+									.update(body.content)
+									.digest("hex"),
+								exists: true,
+							},
+						},
+					},
+				],
+			},
+		});
+	});
+
+	await composer(page);
+	const capabilitiesResponse = page.waitForResponse(/\/api\/lsp\/capabilities/);
+	await page.getByRole("treeitem", { name: /completion\.go/ }).click();
+	await capabilitiesResponse;
+	const editor = page.locator(".monaco-editor").first();
+	const packageLine = editor.locator(".view-line", { hasText: "package main" });
+	await expect(packageLine).toBeVisible();
+	await expect(editor.locator(".squiggly-warning")).toBeVisible();
+	await packageLine.click();
+	await page.keyboard.press("End");
+	await page.keyboard.press("ControlOrMeta+.");
+	await expect.poll(() => invokedRequests).toBe(1);
+	const actionRows = page
+		.locator(".action-widget:visible .monaco-list-row.action")
+		.filter({ hasText: "Add generated marker" });
+	await expect(actionRows).toHaveCount(1);
+	await page.keyboard.press("Enter");
+	await expect(editor.locator(".view-lines")).toContainText("// generated");
+	expect(commandExecutions).toBe(1);
+	await page.keyboard.insertText("X");
+	await expect(editor.locator(".view-lines")).toContainText("package mainX");
+	await expect(page.getByRole("tab", { name: /completion\.go/ })).toHaveCount(
+		1,
+	);
+	await expect(
+		page.getByRole("tab", { name: /completion\.go/ }),
+	).toHaveAttribute("aria-label", /unsaved changes/);
+
+	const beforeSave = await request.get("/api/files/read?path=completion.go");
+	expect(((await beforeSave.json()) as { content: string }).content).toBe(
+		"package main\n",
+	);
+	await page.keyboard.press("ControlOrMeta+S");
+	await expect(
+		page.getByRole("tab", { name: /completion\.go/ }),
+	).not.toHaveAttribute("aria-label", /unsaved changes/);
+	const afterSave = await request.get("/api/files/read?path=completion.go");
+	expect(((await afterSave.json()) as { content: string }).content).toBe(
+		"// generated\npackage mainX\n",
+	);
 });
 
 test("save applies real gopls organize-imports edits", async ({
@@ -2221,7 +2459,6 @@ test("keeps scheduled-agent actions above inspector clipping", async ({
 				{
 					id: "agent-menu-check",
 					title: "Agent menu check",
-					created_at: "2026-08-11T00:00:00Z",
 					updated_at: "2026-08-11T00:00:00Z",
 				},
 			],
@@ -2238,7 +2475,6 @@ test("keeps scheduled-agent actions above inspector clipping", async ({
 			json: {
 				git: false,
 				lsp: false,
-				diffs: false,
 				tasks: true,
 				terminal: true,
 			},
@@ -3459,7 +3695,6 @@ test("stops the active debugger when the Debug tab closes", async ({
 				git_init: false,
 				lsp: false,
 				debug: true,
-				diffs: false,
 				tasks: false,
 				terminal: true,
 				platform: "linux",
@@ -3573,7 +3808,6 @@ test("follows debugger stops into the source editor", async ({ page }) => {
 				git_init: false,
 				lsp: false,
 				debug: true,
-				diffs: false,
 				tasks: false,
 				terminal: false,
 				platform: "linux",
@@ -3629,7 +3863,7 @@ test("follows debugger stops into the source editor", async ({ page }) => {
 		session_id: "debug-follow-session",
 		frame_id: 21,
 		state_version: 2,
-		context: "hover",
 	});
+	expect(evaluations[0]).not.toHaveProperty("context");
 	await expect(page.locator(".monaco-hover:visible")).toContainText("70");
 });

@@ -5,6 +5,7 @@ import {
 	useCallback,
 	useEffect,
 	useImperativeHandle,
+	useLayoutEffect,
 	useRef,
 	useState,
 } from "react";
@@ -44,6 +45,7 @@ import { EditorContextMenu } from "./EditorContextMenu";
 import { InlineTransformPrompt } from "./InlineTransformPrompt";
 import { MarkdownContent } from "./MarkdownContent";
 import { MermaidPreview } from "./MermaidPreview";
+import { useToast } from "./ui/Feedback";
 
 interface Props {
 	document: OpenDocument;
@@ -92,6 +94,86 @@ interface TransformTarget {
 	label: string;
 }
 
+type CodeEditor = Parameters<OnMount>[0];
+
+function synchronizeEditorDraft(editor: CodeEditor, next: string) {
+	const model = editor.getModel();
+	if (!model) return;
+	const current = model.getValue();
+	if (current === next) return;
+
+	let prefix = 0;
+	while (
+		prefix < current.length &&
+		prefix < next.length &&
+		current.charCodeAt(prefix) === next.charCodeAt(prefix)
+	) {
+		prefix++;
+	}
+	let suffix = 0;
+	while (
+		suffix < current.length - prefix &&
+		suffix < next.length - prefix &&
+		current.charCodeAt(current.length - suffix - 1) ===
+			next.charCodeAt(next.length - suffix - 1)
+	) {
+		suffix++;
+	}
+
+	const oldEnd = current.length - suffix;
+	const replacement = next.slice(prefix, next.length - suffix);
+	const newEnd = prefix + replacement.length;
+	const startPosition = model.getPositionAt(prefix);
+	const endPosition = model.getPositionAt(oldEnd);
+	const selections = editor.getSelections()?.map((selection) => ({
+		anchor: model.getOffsetAt({
+			lineNumber: selection.selectionStartLineNumber,
+			column: selection.selectionStartColumn,
+		}),
+		position: model.getOffsetAt({
+			lineNumber: selection.positionLineNumber,
+			column: selection.positionColumn,
+		}),
+	}));
+	const scrollTop = editor.getScrollTop();
+	const scrollLeft = editor.getScrollLeft();
+	const mapOffset = (offset: number) => {
+		if (offset <= prefix) return offset;
+		if (offset >= oldEnd) return newEnd + offset - oldEnd;
+		return prefix + Math.min(offset - prefix, replacement.length);
+	};
+
+	editor.pushUndoStop();
+	editor.executeEdits("wingman.workspaceEdit", [
+		{
+			range: {
+				startLineNumber: startPosition.lineNumber,
+				startColumn: startPosition.column,
+				endLineNumber: endPosition.lineNumber,
+				endColumn: endPosition.column,
+			},
+			text: replacement,
+			forceMoveMarkers: true,
+		},
+	]);
+	editor.pushUndoStop();
+	if (selections) {
+		editor.setSelections(
+			selections.map((selection) => {
+				const anchor = model.getPositionAt(mapOffset(selection.anchor));
+				const position = model.getPositionAt(mapOffset(selection.position));
+				return {
+					selectionStartLineNumber: anchor.lineNumber,
+					selectionStartColumn: anchor.column,
+					positionLineNumber: position.lineNumber,
+					positionColumn: position.column,
+				};
+			}),
+		);
+	}
+	editor.setScrollPosition({ scrollTop, scrollLeft });
+}
+
 export const FileTab = forwardRef<FileTabHandle, Props>(function FileTab(
 	{
 		document,
@@ -127,7 +209,9 @@ export const FileTab = forwardRef<FileTabHandle, Props>(function FileTab(
 	const onAskSelectionRef = useRef(onAskSelection);
 	const onSaveRef = useRef(onSave);
 	const languageServicesKeyRef = useRef(languageServicesKey);
+	const syncingEditorRef = useRef(false);
 	const scheme = useColorScheme();
+	const toast = useToast();
 	const [contextMenu, setContextMenu] = useState<{
 		x: number;
 		y: number;
@@ -312,6 +396,12 @@ export const FileTab = forwardRef<FileTabHandle, Props>(function FileTab(
 			onApplyWorkspaceEdit: (envelope, label) =>
 				onApplyWorkspaceEditRef.current?.(envelope, label) ??
 				Promise.resolve(false),
+			onCommandError: (label, error) =>
+				toast({
+					title: `${label} failed`,
+					description: error instanceof Error ? error.message : String(error),
+					tone: "error",
+				}),
 		});
 		lspBridgeRef.current = bridge;
 		saveParticipantDisposeRef.current = registerEditorSaveParticipant(
@@ -319,7 +409,7 @@ export const FileTab = forwardRef<FileTabHandle, Props>(function FileTab(
 			() => bridge.organizeImports(),
 		);
 		void bridge.refreshDiagnostics();
-	}, [disposeLSPIntegration, document.external, file]);
+	}, [disposeLSPIntegration, document.external, file, toast]);
 
 	useEffect(() => {
 		if (languageServicesKeyRef.current === languageServicesKey) return;
@@ -349,6 +439,17 @@ export const FileTab = forwardRef<FileTabHandle, Props>(function FileTab(
 			}, 200);
 		});
 	}, [loadDiagnostics, subscribe]);
+
+	useLayoutEffect(() => {
+		const editor = editorRef.current;
+		if (!editor || view !== "code") return;
+		syncingEditorRef.current = true;
+		try {
+			synchronizeEditorDraft(editor, document.draft);
+		} finally {
+			syncingEditorRef.current = false;
+		}
+	}, [document.draft, view]);
 
 	if (document.loading && !file) {
 		return (
@@ -446,7 +547,7 @@ export const FileTab = forwardRef<FileTabHandle, Props>(function FileTab(
 						height="100%"
 						path={`/${file.path}`}
 						language={file.language || undefined}
-						value={document.draft}
+						defaultValue={document.draft}
 						theme={wingmanThemeName(scheme)}
 						beforeMount={defineWingmanThemes}
 						onMount={(editor, monaco) => {
@@ -454,6 +555,12 @@ export const FileTab = forwardRef<FileTabHandle, Props>(function FileTab(
 							setContextMenu(null);
 							editorRef.current = editor;
 							monacoRef.current = monaco;
+							syncingEditorRef.current = true;
+							try {
+								synchronizeEditorDraft(editor, document.draft);
+							} finally {
+								syncingEditorRef.current = false;
+							}
 							transformBridgeRef.current = createMonacoTransformBridge(
 								monaco,
 								editor,
@@ -523,7 +630,9 @@ export const FileTab = forwardRef<FileTabHandle, Props>(function FileTab(
 							}
 							revealEditorPosition(editor, line, column);
 						}}
-						onChange={(value) => onChange(value ?? "")}
+						onChange={(value) => {
+							if (!syncingEditorRef.current) onChange(value ?? "");
+						}}
 						options={{
 							contextmenu: false,
 							codeLens: true,

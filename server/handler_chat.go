@@ -333,9 +333,7 @@ func turnInputFrame(inputID string, meta ClientMessage, state code.TurnInputStat
 	meta.ID = inputID
 	entry := turnQueueEntry(meta, state, position)
 	return Frame{
-		Type: EvtTurnInput, ID: entry.ID, State: entry.State,
-		Intent: entry.Intent, Position: entry.Position, Text: entry.Text,
-		Message: errorText(err), Queue: []TurnQueueEntry{entry},
+		Type: EvtTurnInput, Input: &entry, Message: errorText(err),
 	}
 }
 
@@ -360,7 +358,7 @@ func turnQueueEntry(meta ClientMessage, state code.TurnInputState, position int)
 	return TurnQueueEntry{
 		ID: meta.ID, State: string(state), Intent: meta.Intent, Position: position,
 		Text: meta.Text, Files: append([]string(nil), meta.Files...),
-		Images: append([]string(nil), meta.Images...), ImageCount: len(meta.Images),
+		Images: append([]string(nil), meta.Images...),
 	}
 }
 

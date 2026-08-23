@@ -22,7 +22,7 @@ export function AgentSessions({
 	switchingAgent,
 }: Props) {
 	const sessions = useQuery(sessionQueries.list()).data ?? [];
-	const canDelete = useQuery(agentQueries.current()).data?.canDelete ?? false;
+	const canDelete = useQuery(agentQueries.current()).data?.can_delete ?? false;
 
 	const [menu, setMenu] = useState<{
 		id: string;

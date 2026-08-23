@@ -9,6 +9,7 @@ import (
 
 type Server struct {
 	Name                  string
+	Label                 string
 	Command               string
 	Args                  []string
 	Languages             []string
@@ -34,11 +35,13 @@ func (s Server) LanguageIDForPath(path string) string {
 }
 
 type projectType struct {
-	Name     string
-	Markers  []string
-	Servers  []Server
-	Excludes []string
-	Requires []string
+	Name          string
+	Label         string
+	WorkspaceRoot bool
+	Markers       []string
+	Servers       []Server
+	Excludes      []string
+	Requires      []string
 }
 
 var knownProjects = []projectType{
@@ -58,6 +61,7 @@ var knownProjects = []projectType{
 	},
 	{
 		Name:     "typescript",
+		Label:    "TypeScript",
 		Markers:  []string{"tsconfig.json", "jsconfig.json", "package.json", "package-lock.json", "bun.lock", "bun.lockb", "yarn.lock", "pnpm-lock.yaml"},
 		Excludes: []string{"deno.json", "deno.jsonc"},
 		Servers: []Server{
@@ -150,6 +154,7 @@ var knownProjects = []projectType{
 	},
 	{
 		Name:    "cpp",
+		Label:   "C/C++",
 		Markers: []string{"compile_commands.json", "CMakeLists.txt", ".clangd"},
 		Servers: []Server{
 			{
@@ -183,6 +188,7 @@ var knownProjects = []projectType{
 	},
 	{
 		Name:    "csharp",
+		Label:   "C#",
 		Markers: []string{"*.csproj", "*.sln", "*.slnx", "global.json"},
 		Servers: []Server{
 			{
@@ -203,6 +209,7 @@ var knownProjects = []projectType{
 	},
 	{
 		Name:    "fsharp",
+		Label:   "F#",
 		Markers: []string{"*.fsproj", "*.sln", "*.slnx", "global.json"},
 		Servers: []Server{
 			{
@@ -236,6 +243,7 @@ var knownProjects = []projectType{
 	},
 	{
 		Name:    "php",
+		Label:   "PHP",
 		Markers: []string{"composer.json", "artisan"},
 		Servers: []Server{
 			{
@@ -281,9 +289,18 @@ var knownProjects = []projectType{
 		},
 	},
 	{
-		Name:    "kotlin",
-		Markers: []string{"settings.gradle.kts", "build.gradle.kts"},
+		Name:     "kotlin",
+		Label:    "Kotlin",
+		Markers:  []string{"settings.gradle", "settings.gradle.kts", "build.gradle", "build.gradle.kts", "pom.xml"},
+		Requires: []string{"*.kt", "*.main.kts"},
 		Servers: []Server{
+			{
+				Name:       "kotlin-lsp",
+				Command:    "kotlin-lsp",
+				Args:       []string{"--stdio"},
+				Languages:  []string{"kt", "kts"},
+				LanguageID: "kotlin",
+			},
 			{
 				Name:       "kotlin-language-server",
 				Command:    "kotlin-language-server",
@@ -408,8 +425,9 @@ var knownProjects = []projectType{
 		},
 	},
 	{
-		Name:    "bash",
-		Markers: []string{".bashrc", ".bash_profile", ".zshrc", "*.sh", "*.bash", "*.zsh", "*.ksh"},
+		Name:          "bash",
+		WorkspaceRoot: true,
+		Markers:       []string{".bashrc", ".bash_profile", ".zshrc", "*.sh", "*.bash", "*.zsh", "*.ksh"},
 		Servers: []Server{
 			{
 				Name:       "bash-language-server",
@@ -434,8 +452,10 @@ var knownProjects = []projectType{
 		},
 	},
 	{
-		Name:    "yaml",
-		Markers: []string{".yamllint", "mkdocs.yml", "docker-compose.yml"},
+		Name:          "yaml",
+		Label:         "YAML",
+		WorkspaceRoot: true,
+		Markers:       []string{"*.yaml", "*.yml"},
 		Servers: []Server{
 			{
 				Name:       "yaml-language-server",
@@ -461,6 +481,7 @@ var knownProjects = []projectType{
 	},
 	{
 		Name:    "ocaml",
+		Label:   "OCaml",
 		Markers: []string{"dune-project", "dune-workspace", ".merlin", "*.opam"},
 		Servers: []Server{
 			{
@@ -526,6 +547,7 @@ var knownProjects = []projectType{
 	},
 	{
 		Name:    "latex",
+		Label:   "LaTeX",
 		Markers: []string{".latexmkrc", "latexmkrc", ".texlabroot"},
 		Servers: []Server{
 			{

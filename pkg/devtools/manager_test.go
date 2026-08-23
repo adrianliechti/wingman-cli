@@ -71,8 +71,11 @@ func TestUpdateSelectsPreferredManagedAlternativeAndRemovesOld(t *testing.T) {
 	if len(installed) != 1 || installed[0] != "typescript-language-server" {
 		t.Fatalf("installed = %v", installed)
 	}
-	if len(progress) != 1 || progress[0].Tool != "typescript-language-server" || progress[0].Label != "TypeScript language tools" {
+	if len(progress) != 2 || progress[0].Tool != "typescript-language-server" || progress[0].Label != "TypeScript language tools" {
 		t.Fatalf("progress = %#v", progress)
+	}
+	if progress[0].Phase != ProgressChecking || progress[1].Phase != ProgressInstalling {
+		t.Fatalf("progress phases = %#v", progress)
 	}
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
 		t.Fatalf("old installation remains: %v", err)
@@ -114,20 +117,33 @@ func TestUpdateSkipsFreshInstallation(t *testing.T) {
 		return "", nil
 	}
 	requirements := []Requirement{{Alternatives: []string{"gopls"}}}
+	var phases []ProgressPhase
+	report := func(progress Progress) { phases = append(phases, progress.Phase) }
 
-	if changed, err := manager.Update(context.Background(), requirements); err != nil || !changed {
+	if changed, err := manager.Update(context.Background(), requirements, report); err != nil || !changed {
 		t.Fatalf("first Update = %v, %v", changed, err)
 	}
-	if changed, err := manager.Update(context.Background(), requirements); err != nil || changed {
+	if want := []ProgressPhase{ProgressChecking, ProgressInstalling}; !reflect.DeepEqual(phases, want) {
+		t.Fatalf("install phases = %v, want %v", phases, want)
+	}
+	phases = nil
+	if changed, err := manager.Update(context.Background(), requirements, report); err != nil || changed {
 		t.Fatalf("fresh Update = %v, %v", changed, err)
+	}
+	if want := []ProgressPhase{ProgressChecking}; !reflect.DeepEqual(phases, want) {
+		t.Fatalf("fresh phases = %v, want %v", phases, want)
 	}
 	if installCount != 1 {
 		t.Fatalf("install count = %d", installCount)
 	}
 
 	now = now.Add(updateInterval)
-	if changed, err := manager.Update(context.Background(), requirements); err != nil || !changed {
+	phases = nil
+	if changed, err := manager.Update(context.Background(), requirements, report); err != nil || !changed {
 		t.Fatalf("stale Update = %v, %v", changed, err)
+	}
+	if want := []ProgressPhase{ProgressChecking, ProgressUpdating}; !reflect.DeepEqual(phases, want) {
+		t.Fatalf("update phases = %v, want %v", phases, want)
 	}
 	if installCount != 2 {
 		t.Fatalf("install count after refresh = %d", installCount)
@@ -575,9 +591,9 @@ func TestUpdateLockRecoversLegacyStaleDirectory(t *testing.T) {
 	}
 }
 
-func TestCleanMachineCatalogIncludesRustDotnetAndJava(t *testing.T) {
+func TestCleanMachineCatalogIncludesRustDotnetJavaAndKotlin(t *testing.T) {
 	manager := newManager(t.TempDir())
-	for _, command := range []string{"rust-analyzer", "codelldb", "csharp-ls", "netcoredbg", "jdtls", "js-debug-adapter", "chrome-for-testing"} {
+	for _, command := range []string{"rust-analyzer", "codelldb", "csharp-ls", "netcoredbg", "jdtls", "kotlin-lsp", "js-debug-adapter", "chrome-for-testing"} {
 		if !manager.CanManage(command) {
 			t.Errorf("CanManage(%q) = false", command)
 		}
@@ -830,6 +846,141 @@ func TestJavaInstallsLatestVerifiedJDTLSAndDebugBundle(t *testing.T) {
 	}
 	if bundles := javaDebugBundlesAt(stage); len(bundles) != 1 {
 		t.Fatalf("java-debug bundles = %#v", bundles)
+	}
+}
+
+func TestKotlinLSPInstallsOfficialPlatformPackage(t *testing.T) {
+	serverName := "intellij-server"
+	if runtime.GOOS == "windows" {
+		serverName += ".exe"
+	}
+	root := "kotlin-server-1/"
+	files := map[string]string{
+		root + "bin/" + serverName: "server",
+		root + "lib/runtime.jar":   "runtime",
+	}
+	suffixes := map[string]string{
+		"darwin/amd64": ".sit", "darwin/arm64": "-aarch64.sit",
+		"linux/amd64": ".tar.gz", "linux/arm64": "-aarch64.tar.gz",
+		"windows/amd64": ".win.zip", "windows/arm64": "-aarch64.win.zip",
+	}
+	suffix := suffixes[runtime.GOOS+"/"+runtime.GOARCH]
+	if suffix == "" {
+		t.Skip("Kotlin LSP has no package for this test platform")
+	}
+	var archive []byte
+	if runtime.GOOS == "linux" {
+		archive = testTarGzip(t, files)
+	} else {
+		entries := make(map[string]testZipEntry, len(files))
+		for name, contents := range files {
+			entries[name] = testZipEntry{contents: contents, mode: 0o644}
+		}
+		archive = testZip(t, entries)
+	}
+	downloadURL := "https://download-cdn.jetbrains.com/language-server/kotlin-server/1/kotlin-server-1" + suffix
+	metadata := fmt.Sprintf(`{"tag_name":"kotlin-lsp/v1","body":"[Download](%s)"}`, downloadURL)
+
+	manager := newManager(t.TempDir())
+	manager.fetch = func(_ context.Context, address string) ([]byte, error) {
+		switch address {
+		case kotlinLSPReleaseURL:
+			return []byte(metadata), nil
+		case downloadURL:
+			return archive, nil
+		case downloadURL + ".sha256":
+			return []byte(fmt.Sprintf("%x", sha256.Sum256(archive))), nil
+		default:
+			return nil, fmt.Errorf("unexpected URL %s", address)
+		}
+	}
+	stage := t.TempDir()
+	version, err := manager.installRecipe(context.Background(), manager.byCommand["kotlin-lsp"], stage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != downloadURL || resolveInstalledCommand(stage, "kotlin-lsp") == "" || !tooling.Executable(kotlinLSPServerPath(stage)) || !kotlinLSPLauncherReady(stage) {
+		t.Fatalf("Kotlin LSP installation is incomplete: version=%q launcher=%q server=%q", version, resolveInstalledCommand(stage, "kotlin-lsp"), kotlinLSPServerPath(stage))
+	}
+	launcher, err := os.ReadFile(resolveInstalledCommand(stage, "kotlin-lsp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(launcher, []byte("JAVA_HOME")) || !bytes.Contains(launcher, []byte("jbr")) {
+		t.Fatalf("Kotlin LSP launcher does not expose the bundled JBR to the Gradle importer:\n%s", launcher)
+	}
+}
+
+func TestKotlinLSPRejectsLegacyLauncherForManagedMigration(t *testing.T) {
+	manager := newManager(t.TempDir())
+	root := filepath.Join(manager.root, "kotlin-lsp")
+	server := kotlinLSPServerPath(root)
+	if err := os.MkdirAll(filepath.Dir(server), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(server, []byte("server"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	launcherName := "kotlin-lsp"
+	if runtime.GOOS == "windows" {
+		launcherName += ".cmd"
+	}
+	launcher := filepath.Join(bin, launcherName)
+	if err := os.WriteFile(launcher, []byte("legacy launcher"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	item := recipe{ID: "kotlin-lsp", Kind: installerKotlinLSP, Commands: []string{"kotlin-lsp"}}
+	if installationReady(item, root) {
+		t.Fatal("legacy Kotlin launcher must be reinstalled")
+	}
+	if resolved := manager.Resolve("kotlin-lsp"); resolved != "" {
+		t.Fatalf("legacy Kotlin launcher resolved as %q before migration", resolved)
+	}
+	if err := writeKotlinLSPLauncher(root); err != nil {
+		t.Fatal(err)
+	}
+	if !installationReady(item, root) {
+		t.Fatal("current Kotlin launcher should be ready")
+	}
+	if resolved := manager.Resolve("kotlin-lsp"); resolved == "" {
+		t.Fatal("current Kotlin launcher was not resolved")
+	}
+}
+
+func TestKotlinLSPSelectsStandaloneArchiveForPlatform(t *testing.T) {
+	base := "https://download-cdn.jetbrains.com/language-server/kotlin-server/262.9593.0/kotlin-server-262.9593.0"
+	release := kotlinLSPRelease{
+		TagName: "kotlin-lsp/v262.9593.0",
+		Body: strings.Join([]string{
+			base + ".sit", base + "-aarch64.sit",
+			base + ".tar.gz", base + "-aarch64.tar.gz",
+			base + ".win.zip", base + "-aarch64.win.zip",
+		}, "\n"),
+	}
+	tests := []struct {
+		goos, goarch, suffix string
+	}{
+		{"darwin", "amd64", ".sit"},
+		{"darwin", "arm64", "-aarch64.sit"},
+		{"linux", "amd64", ".tar.gz"},
+		{"linux", "arm64", "-aarch64.tar.gz"},
+		{"windows", "amd64", ".win.zip"},
+		{"windows", "arm64", "-aarch64.win.zip"},
+	}
+	for _, test := range tests {
+		t.Run(test.goos+"-"+test.goarch, func(t *testing.T) {
+			got, err := kotlinLSPDownload(release, test.goos, test.goarch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != base+test.suffix {
+				t.Fatalf("download = %q, want %q", got, base+test.suffix)
+			}
+		})
 	}
 }
 

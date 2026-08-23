@@ -40,6 +40,10 @@ export const queryKeys = {
 		all: ["server", "diagnostics"] as const,
 		workspace: ["server", "diagnostics", "workspace"] as const,
 	},
+	lsp: {
+		all: ["server", "lsp"] as const,
+		activity: ["server", "lsp", "activity"] as const,
+	},
 	debug: {
 		all: ["server", "debug"] as const,
 		session: ["server", "debug", "session"] as const,
@@ -73,24 +77,17 @@ export const queryKeys = {
 	},
 	diffs: {
 		all: ["server", "diffs"] as const,
-		list: (sessionId?: string, layer?: string, path?: string) =>
-			[
-				"server",
-				"diffs",
-				"list",
-				sessionId ?? "",
-				layer ?? "",
-				path ?? "",
-			] as const,
+		list: (layer?: string, path?: string) =>
+			["server", "diffs", "list", layer ?? "", path ?? ""] as const,
 	},
 	git: {
 		all: ["server", "git"] as const,
 		status: ["server", "git", "status"] as const,
 		history: ["server", "git", "history"] as const,
-		branches: (refresh: boolean) =>
-			["server", "git", "branches", refresh] as const,
+		branches: ["server", "git", "branches"] as const,
 		compare: (base: string, head: string, mode: string) =>
 			["server", "git", "compare", base, head, mode] as const,
+		comparisons: ["server", "git", "compare"] as const,
 	},
 	files: {
 		all: ["server", "files"] as const,
@@ -125,6 +122,28 @@ export const serverQueryClient = new QueryClient({
 
 export function invalidateAllServerQueries(client: QueryClient): void {
 	void client.invalidateQueries({ queryKey: queryKeys.all });
+}
+
+export async function invalidateGitIndexQueries(
+	client: QueryClient,
+): Promise<void> {
+	// Status drives the Changes panel. Refresh it first, and reuse an in-flight
+	// request when both the mutation and its WebSocket event reach this client.
+	await client.invalidateQueries(
+		{ queryKey: queryKeys.git.status },
+		{ cancelRefetch: false },
+	);
+	void client.invalidateQueries(
+		{ queryKey: queryKeys.diffs.all },
+		{ cancelRefetch: false },
+	);
+	void client.invalidateQueries(
+		{
+			queryKey: queryKeys.git.comparisons,
+			predicate: ({ queryKey }) => queryKey.includes(":worktree"),
+		},
+		{ cancelRefetch: false },
+	);
 }
 
 const TASK_TOOLS = new Set([
@@ -172,6 +191,9 @@ export function invalidateForServerMessage(
 		case "diffs_changed":
 			invalidate(queryKeys.diffs.all);
 			invalidate(queryKeys.git.all);
+			break;
+		case "git_index_changed":
+			void invalidateGitIndexQueries(client);
 			break;
 		case "files_changed":
 			invalidate(queryKeys.files.all);

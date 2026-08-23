@@ -63,6 +63,49 @@ func TestNativeBranchesCreateCheckoutAndProtectChanges(t *testing.T) {
 	}
 }
 
+func TestAheadBehindCachesTheCurrentReferencePair(t *testing.T) {
+	dir := t.TempDir()
+	repo := initRepository(t, dir)
+	writeFile(t, dir, "file.txt", "one\n")
+	stage(t, repo, "file.txt")
+	commit(t, repo, "initial")
+	base, err := repo.Head()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dir, "file.txt", "two\n")
+	stage(t, repo, "file.txt")
+	commit(t, repo, "second")
+	local, err := repo.Head()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := New(dir)
+	defer m.Close()
+	if err := m.lock(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer m.mu.Unlock()
+
+	ahead, behind, err := m.aheadBehind(local.Hash(), base.Hash())
+	if err != nil || ahead != 1 || behind != 0 {
+		t.Fatalf("ahead/behind = %d/%d, err = %v", ahead, behind, err)
+	}
+	cached := m.divergenceCache
+	if !cached.valid || cached.local != local.Hash() || cached.upstream != base.Hash() {
+		t.Fatalf("cache = %+v", cached)
+	}
+	ahead, behind, err = m.aheadBehind(local.Hash(), base.Hash())
+	if err != nil || ahead != 1 || behind != 0 || m.divergenceCache != cached {
+		t.Fatalf("cached ahead/behind = %d/%d, cache = %+v, err = %v", ahead, behind, m.divergenceCache, err)
+	}
+	ahead, behind, err = m.aheadBehind(base.Hash(), local.Hash())
+	if err != nil || ahead != 0 || behind != 1 {
+		t.Fatalf("reversed ahead/behind = %d/%d, err = %v", ahead, behind, err)
+	}
+}
+
 func TestNativeBranchesFetchAndTrackRemoteBranch(t *testing.T) {
 	dir := t.TempDir()
 	repo := initRepository(t, dir)

@@ -21,27 +21,41 @@ func TestTurnQueueEntryPreservesEditableInput(t *testing.T) {
 	if entry.ID != "input-1" || entry.State != "queued" || entry.Position != 2 || entry.Text != "fix it" {
 		t.Fatalf("entry = %#v", entry)
 	}
-	if entry.Files[0] != "main.go" || entry.Images[0] != "data:image/png;base64,abc" || entry.ImageCount != 1 {
+	if entry.Files[0] != "main.go" || entry.Images[0] != "data:image/png;base64,abc" {
 		t.Fatalf("attachments = %#v", entry)
 	}
 }
 
-func TestTurnInputFrameKeepsTopLevelAndEntryInSync(t *testing.T) {
+func TestTurnInputFrameCarriesSingleInputPayload(t *testing.T) {
 	frame := turnInputFrame("input-1", ClientMessage{
 		Intent: string(code.TurnInputSteer), Text: "guide",
 		Files: []string{"main.go"}, Images: []string{"image"},
 	}, code.TurnInputQueued, 2, errors.New("waiting"))
 
-	if len(frame.Queue) != 1 {
-		t.Fatalf("queue = %+v", frame.Queue)
+	if frame.Input == nil {
+		t.Fatal("input payload is missing")
 	}
-	entry := frame.Queue[0]
-	if frame.ID != entry.ID || frame.State != entry.State || frame.Intent != entry.Intent ||
-		frame.Position != entry.Position || frame.Text != entry.Text {
-		t.Fatalf("top-level frame and entry diverged: frame=%+v entry=%+v", frame, entry)
+	entry := frame.Input
+	if entry.ID != "input-1" || entry.State != "queued" || entry.Intent != "steer" ||
+		entry.Position != 2 || entry.Text != "guide" {
+		t.Fatalf("input = %+v", entry)
 	}
 	if frame.Message != "waiting" || len(entry.Files) != 1 || len(entry.Images) != 1 {
 		t.Fatalf("frame metadata = %+v", frame)
+	}
+
+	b, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(b, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for _, legacy := range []string{"id", "state", "intent", "position", "text", "queue"} {
+		if _, ok := fields[legacy]; ok {
+			t.Errorf("legacy duplicate field %q is still present: %s", legacy, b)
+		}
 	}
 }
 

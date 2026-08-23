@@ -27,6 +27,72 @@ export interface WorkspaceEditSummary {
 	requiresConfirmation: boolean;
 }
 
+// A command may compute a later workspace/applyEdit request against the
+// result of an earlier one. Preserve that order and apply the sequence as one
+// editor transaction.
+export function combineWorkspaceEditEnvelopes(
+	envelopes: readonly WorkspaceEditEnvelope[],
+): WorkspaceEditEnvelope {
+	const documentChanges: NonNullable<WorkspaceEdit["documentChanges"]> = [];
+	const changeAnnotations: NonNullable<WorkspaceEdit["changeAnnotations"]> = {};
+	const documents: Record<string, WorkspaceDocumentSnapshot> = {};
+	let annotated = false;
+
+	for (const envelope of envelopes) {
+		for (const [uri, snapshot] of Object.entries(envelope.documents)) {
+			const existing = documents[uri];
+			if (
+				existing &&
+				(existing.path !== snapshot.path ||
+					existing.revision !== snapshot.revision ||
+					existing.exists !== snapshot.exists)
+			) {
+				throw new Error(
+					"The language server returned incompatible document snapshots.",
+				);
+			}
+			documents[uri] = snapshot;
+		}
+
+		const edit = envelope.edit;
+		if (!edit) continue;
+		if (edit.documentChanges) {
+			documentChanges.push(...edit.documentChanges);
+		} else {
+			for (const [uri, edits] of Object.entries(edit.changes ?? {})) {
+				documentChanges.push({
+					textDocument: { uri, version: null },
+					edits,
+				});
+			}
+		}
+		for (const [id, annotation] of Object.entries(
+			edit.changeAnnotations ?? {},
+		)) {
+			const existing = changeAnnotations[id];
+			changeAnnotations[id] = existing
+				? {
+						...existing,
+						needsConfirmation:
+							existing.needsConfirmation || annotation.needsConfirmation,
+					}
+				: annotation;
+			annotated = true;
+		}
+	}
+
+	return {
+		edit:
+			documentChanges.length > 0
+				? {
+						documentChanges,
+						...(annotated ? { changeAnnotations } : {}),
+					}
+				: null,
+		documents,
+	};
+}
+
 export function summarizeWorkspaceEdit(
 	envelope: WorkspaceEditEnvelope,
 ): WorkspaceEditSummary {

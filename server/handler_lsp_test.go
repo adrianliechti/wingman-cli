@@ -297,6 +297,29 @@ func TestWorkspaceDiagnosticsResponseIncludesCoverage(t *testing.T) {
 	}
 }
 
+func TestLSPStatusReturnsAnEmptyActivityList(t *testing.T) {
+	t.Setenv("WINGMAN_URL", "http://localhost:1")
+	app, err := New(context.Background(), t.TempDir(), &ServerOptions{NoBrowser: true, disableManagedTools: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+
+	request := httptest.NewRequest(http.MethodGet, "/api/lsp/status", nil)
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	var body lspActivityResponse
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Analyzing || body.Services == nil || len(body.Services) != 0 {
+		t.Fatalf("activity = %+v", body)
+	}
+}
+
 func TestLSPFileDiagnosticsRequestValidation(t *testing.T) {
 	t.Setenv("WINGMAN_URL", "http://localhost:1")
 	workDir := t.TempDir()

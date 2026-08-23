@@ -308,10 +308,19 @@ Otherwise it installs the latest supported adapter under
 `$WINGMAN_HOME/tools/<tool>` (normally `~/.wingman/tools/<tool>`), checks it
 daily, and replaces the old version after an update.
 
-Unbuilt .NET and Rust targets are built with `dotnet build` or `cargo build`
-before the debugger launches. Click the editor gutter to add breakpoints.
+Unbuilt .NET and Rust targets are built with `dotnet build` or `cargo build`.
+Click the editor gutter to add breakpoints.
 Closing the Debug tab stops the session. Runnable samples live in
 [`examples/debug`](examples/debug).
+
+Kotlin is currently LSP-only. JetBrains' full Run/Debug support remains an
+[open feature request](https://github.com/Kotlin/kotlin-lsp/issues/46), and the
+experimental attach adapter currently accepts breakpoints without reliably
+[stopping the JVM](https://github.com/Kotlin/kotlin-lsp/issues/198), so Wingman
+does not register it as a working debugger.
+The managed standalone server includes its own JBR, which Wingman also uses for
+Gradle project import; a separate Kotlin CLI or editor extension is not needed,
+though project builds still need their usual compatible JDK.
 
 ## 🛠️ Built-in Tools
 
@@ -349,6 +358,7 @@ external; current JDT LS releases require JDK 21 or newer.
 | DAP | Python | `debugpy-adapter` | pip / PyPI | [`debugpy`](https://pypi.org/project/debugpy/) |
 | LSP | Java | `jdtls` | Eclipse archive | [Eclipse JDT LS milestones](https://download.eclipse.org/jdtls/milestones/) |
 | DAP | Java | java-debug plug-in | Verified Open VSX package | [Microsoft Java Debugger](https://open-vsx.org/extension/vscjava/vscode-java-debug) |
+| LSP | Kotlin/JVM | `kotlin-lsp` | Verified standalone release archive | [JetBrains Kotlin LSP](https://github.com/Kotlin/kotlin-lsp/releases) |
 | DAP | Rust | `codelldb` | GitHub release | [CodeLLDB](https://github.com/vadimcn/codelldb/releases) |
 | DAP | C#/.NET | `netcoredbg` | GitHub release | [NetCoreDbg](https://github.com/Samsung/netcoredbg/releases) |
 | LSP | PHP | `intelephense` | npm | [`intelephense`](https://www.npmjs.com/package/intelephense) |
@@ -387,7 +397,7 @@ provides an explicit alternative.
 | Ruby | `ruby-lsp`, `solargraph` | `Gemfile` |
 | PHP | `intelephense`, `phpactor` | `composer.json` |
 | Swift | `sourcekit-lsp` | `Package.swift` |
-| Kotlin | `kotlin-language-server` | `build.gradle.kts` |
+| Kotlin | `kotlin-lsp`, `kotlin-language-server` | Kotlin sources in Gradle or Maven projects |
 | Scala | `metals` | `build.sbt` |
 | Dart | `dart language-server` | `pubspec.yaml` |
 | Zig | `zls` | `build.zig` |

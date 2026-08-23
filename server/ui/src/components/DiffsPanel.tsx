@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 	ArrowDownToLine,
 	ArrowUpFromLine,
@@ -35,14 +35,16 @@ import {
 } from "react-resizable-panels";
 import { listDiffs, revertDiff } from "../api/diffs";
 import {
+	fetchGitBranches,
 	getGitBranches,
 	getGitStatus,
 	generateGitCommitMessage,
 	initializeGitRepository,
-	runGitAction,
-	type GitAction,
+	runGitCommand,
+	type GitCommand,
+	type GitCommandType,
 } from "../api/git";
-import { queryKeys } from "../api/query";
+import { invalidateGitIndexQueries, queryKeys } from "../api/query";
 import type {
 	DiffEntry,
 	DiffLayer,
@@ -57,7 +59,6 @@ import { FloatingMenu, FloatingSurface } from "./ui/Floating";
 import { GitHistoryPanel } from "./GitCompareControls";
 
 interface Props {
-	sessionId: string;
 	git?: boolean;
 	canInit?: boolean;
 	onOpenDiff?: (
@@ -97,7 +98,6 @@ const EMPTY_GIT_STATUS: GitStatus = {
 const EMPTY_BRANCHES: GitBranchInfo[] = [];
 
 export function DiffsPanel({
-	sessionId,
 	git = false,
 	canInit = false,
 	onOpenDiff,
@@ -106,10 +106,10 @@ export function DiffsPanel({
 }: Props) {
 	const queryClient = useQueryClient();
 	const changesQuery = useQuery<GitStatus | DiffEntry[]>({
-		queryKey: git ? queryKeys.git.status : queryKeys.diffs.list(sessionId),
+		queryKey: git ? queryKeys.git.status : queryKeys.diffs.list(),
 		enabled: git || !canInit,
 		queryFn: ({ signal }) =>
-			git ? getGitStatus(signal) : listDiffs({ sessionId, signal }),
+			git ? getGitStatus(signal) : listDiffs({ signal }),
 	});
 	const diffs = git
 		? []
@@ -133,10 +133,20 @@ export function DiffsPanel({
 	const [notice, setNotice] = useState("");
 	const [revertTarget, setRevertTarget] = useState<DiffEntry | null>(null);
 	const load = useCallback(
-		() =>
-			queryClient.invalidateQueries({
-				queryKey: git ? queryKeys.git.all : queryKeys.diffs.all,
-			}),
+		(action?: GitCommandType) => {
+			if (
+				git &&
+				(action === "stage" || action === "stage_all" || action === "unstage")
+			) {
+				return invalidateGitIndexQueries(queryClient);
+			}
+			return queryClient.invalidateQueries(
+				{
+					queryKey: git ? queryKeys.git.all : queryKeys.diffs.all,
+				},
+				{ cancelRefetch: false },
+			);
+		},
 		[git, queryClient],
 	);
 	useEffect(() => {
@@ -146,14 +156,14 @@ export function DiffsPanel({
 	}, [notice]);
 
 	const request = useCallback(
-		async (action: GitAction, body?: unknown) => {
-			setBusy(action);
+		async (command: GitCommand) => {
+			setBusy(command.type);
 			setError("");
 			setNotice("");
 			try {
-				const output = await runGitAction(action, body);
+				const output = await runGitCommand(command);
 				if (output) setNotice(output);
-				await load();
+				await load(command.type);
 				return true;
 			} catch (e) {
 				setError(e instanceof Error ? e.message : String(e));
@@ -201,7 +211,7 @@ export function DiffsPanel({
 		if (!diff) return;
 		setBusy("revert");
 		try {
-			await revertDiff(diff.path, sessionId);
+			await revertDiff(diff.path);
 			await load();
 			setRevertTarget(null);
 		} catch (e) {
@@ -231,7 +241,7 @@ export function DiffsPanel({
 					onOpenCompare={onOpenCompare}
 					onOpenFile={onOpenFile}
 					onCommit={async () => {
-						if (await request("commit", { message })) updateMessage("");
+						if (await request({ type: "commit", message })) updateMessage("");
 					}}
 					onGenerateMessage={generateCommitMessage}
 					onRevert={(file) => requestRevert(gitFileAsDiff(file))}
@@ -423,7 +433,7 @@ function GitChanges({
 	error: string;
 	notice: string;
 	onMessage: (value: string) => void;
-	onRequest: (action: GitAction, body?: unknown) => Promise<boolean>;
+	onRequest: (command: GitCommand) => Promise<boolean>;
 	onOpenDiff?: (
 		path: string,
 		layer?: DiffLayer,
@@ -547,7 +557,7 @@ function GitChanges({
 							icon={<ArrowDownToLine size={12} />}
 							disabled={disabled || !status.upstream}
 							loading={busy === "pull"}
-							onClick={() => void onRequest("pull")}
+							onClick={() => void onRequest({ type: "pull" })}
 						/>
 						<SyncButton
 							label={status.ahead ? `Push ${status.ahead}` : "Push"}
@@ -559,7 +569,7 @@ function GitChanges({
 							icon={<ArrowUpFromLine size={12} />}
 							disabled={disabled || !status.has_remote}
 							loading={busy === "push"}
-							onClick={() => void onRequest("push")}
+							onClick={() => void onRequest({ type: "push" })}
 						/>
 					</div>
 
@@ -573,10 +583,16 @@ function GitChanges({
 									action={<Minus size={11} />}
 									actionLabel="Unstage"
 									onAll={() =>
-										void onRequest("unstage", { paths: paths(staged) })
+										void onRequest({
+											type: "unstage",
+											paths: paths(staged),
+										})
 									}
 									onFile={(file) =>
-										void onRequest("unstage", { paths: gitFilePaths(file) })
+										void onRequest({
+											type: "unstage",
+											paths: gitFilePaths(file),
+										})
 									}
 									onOpenDiff={onOpenDiff}
 									onContextMenu={openMenu}
@@ -588,11 +604,12 @@ function GitChanges({
 									disabled={disabled}
 									action={<Plus size={11} />}
 									actionLabel="Stage"
-									onAll={() =>
-										void onRequest("stage", { paths: paths(changed) })
-									}
+									onAll={() => void onRequest({ type: "stage_all" })}
 									onFile={(file) =>
-										void onRequest("stage", { paths: gitFilePaths(file) })
+										void onRequest({
+											type: "stage",
+											paths: gitFilePaths(file),
+										})
 									}
 									onOpenDiff={onOpenDiff}
 									onContextMenu={openMenu}
@@ -605,9 +622,12 @@ function GitChanges({
 								disabled={disabled}
 								action={<Plus size={11} />}
 								actionLabel="Stage"
-								onAll={() => void onRequest("stage", { paths: paths(changed) })}
+								onAll={() => void onRequest({ type: "stage_all" })}
 								onFile={(file) =>
-									void onRequest("stage", { paths: gitFilePaths(file) })
+									void onRequest({
+										type: "stage",
+										paths: gitFilePaths(file),
+									})
 								}
 								onOpenDiff={onOpenDiff}
 								onContextMenu={openMenu}
@@ -735,10 +755,13 @@ function GitChanges({
 								icon={menu.staged ? <Minus size={11} /> : <Plus size={11} />}
 								label={menu.staged ? "Unstage Changes" : "Stage Changes"}
 								onClick={() => {
-									const action = menu.staged ? "unstage" : "stage";
 									const paths = gitFilePaths(menu.file);
 									setMenu(null);
-									void onRequest(action, { paths });
+									void onRequest(
+										menu.staged
+											? { type: "unstage", paths }
+											: { type: "stage", paths },
+									);
 								}}
 							/>
 							{!menu.staged && (
@@ -802,7 +825,7 @@ function BranchPicker({
 }: {
 	status: GitStatus;
 	disabled: boolean;
-	onRequest: (action: GitAction, body?: unknown) => Promise<boolean>;
+	onRequest: (command: GitCommand) => Promise<boolean>;
 	onCompare?: (base: string, head: string, mode: CompareMode) => void;
 }) {
 	const buttonRef = useRef<HTMLButtonElement>(null);
@@ -811,37 +834,35 @@ function BranchPicker({
 	const [query, setQuery] = useState("");
 	const [creating, setCreating] = useState(false);
 	const [newBranch, setNewBranch] = useState("");
+	const queryClient = useQueryClient();
 	const branchesQuery = useQuery({
-		queryKey: queryKeys.git.branches(false),
+		queryKey: queryKeys.git.branches,
 		enabled: false,
-		queryFn: ({ signal }) => getGitBranches(false, signal),
+		queryFn: ({ signal }) => getGitBranches(signal),
 	});
-	const refreshedBranchesQuery = useQuery({
-		queryKey: queryKeys.git.branches(true),
-		enabled: false,
-		queryFn: ({ signal }) => getGitBranches(true, signal),
+	const refreshBranches = useMutation({
+		mutationFn: fetchGitBranches,
+		onSuccess: (branches) => {
+			queryClient.setQueryData(queryKeys.git.branches, branches);
+		},
 	});
 	const refetchBranches = branchesQuery.refetch;
-	const refetchRemoteBranches = refreshedBranchesQuery.refetch;
-	const branchData =
-		refreshedBranchesQuery.dataUpdatedAt >= branchesQuery.dataUpdatedAt
-			? refreshedBranchesQuery.data
-			: branchesQuery.data;
-	const branches = branchData?.branches ?? EMPTY_BRANCHES;
-	const warning = branchData?.warning ?? "";
-	const branchError = refreshedBranchesQuery.error ?? branchesQuery.error;
+	const refetchRemoteBranches = refreshBranches.mutate;
+	const branches = branchesQuery.data?.branches ?? EMPTY_BRANCHES;
+	const warning = branchesQuery.data?.warning ?? "";
+	const branchError = refreshBranches.error ?? branchesQuery.error;
 	const loadError = branchError
 		? branchError instanceof Error
 			? branchError.message
 			: String(branchError)
 		: "";
-	const loading = branchesQuery.isFetching || refreshedBranchesQuery.isFetching;
+	const loading = branchesQuery.isFetching || refreshBranches.isPending;
 
 	useEffect(() => {
 		if (!open) return;
 		void (async () => {
 			await refetchBranches();
-			await refetchRemoteBranches();
+			refetchRemoteBranches();
 		})();
 		requestAnimationFrame(() => searchRef.current?.focus());
 	}, [open, refetchBranches, refetchRemoteBranches]);
@@ -870,7 +891,8 @@ function BranchPicker({
 			return;
 		}
 		if (
-			await onRequest("checkout", {
+			await onRequest({
+				type: "checkout_branch",
 				name: branch.name,
 				...(branch.remote ? { remote: branch.remote } : {}),
 			})
@@ -886,7 +908,7 @@ function BranchPicker({
 	const create = async () => {
 		const name = newBranch.trim();
 		if (!name) return;
-		if (await onRequest("branches", { name })) close();
+		if (await onRequest({ type: "create_branch", name })) close();
 	};
 
 	return (

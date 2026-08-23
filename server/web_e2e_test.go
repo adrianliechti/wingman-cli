@@ -336,6 +336,13 @@ func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(
+		filepath.Join(workDir, "syntax-highlight.sh"),
+		[]byte("#!/usr/bin/env bash\nif [ -n \"$HOME\" ]; then\n  echo \"ready\"\nfi\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
 	tabFiles := map[string]string{
 		"tab-effectiveness.go": "package main\n\nfunc display() {\n    userName := \"Ada\"\n    prepare()\n    validate()\n    println(userName)\n}\n",
 		"tab-ghost.go":         "package main\n\nfunc main() {\n\ttotal := price *\n\t_ = total\n}\n",

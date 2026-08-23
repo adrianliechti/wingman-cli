@@ -54,7 +54,7 @@ test("agent events invalidate dependent server catalogs", () => {
 
 test("diff events invalidate diff and Git query families", () => {
 	const client = new QueryClient();
-	const diff = queryKeys.diffs.list("session");
+	const diff = queryKeys.diffs.list();
 	const history = queryKeys.git.history;
 	client.setQueryData(diff, []);
 	client.setQueryData(history, []);
@@ -63,6 +63,33 @@ test("diff events invalidate diff and Git query families", () => {
 
 	assert.equal(client.getQueryState(diff)?.isInvalidated, true);
 	assert.equal(client.getQueryState(history)?.isInvalidated, true);
+});
+
+test("Git index events refresh status before dependent diff views", async () => {
+	const client = new QueryClient();
+	const status = queryKeys.git.status;
+	const diff = queryKeys.diffs.list("staged", "file.txt");
+	const comparison = queryKeys.git.compare("main", ":worktree", "merge-base");
+	const committedComparison = queryKeys.git.compare(
+		"main",
+		"feature",
+		"direct",
+	);
+	const history = queryKeys.git.history;
+	client.setQueryData(status, {});
+	client.setQueryData(diff, []);
+	client.setQueryData(comparison, {});
+	client.setQueryData(committedComparison, {});
+	client.setQueryData(history, []);
+
+	invalidateForServerMessage(client, { type: "git_index_changed" });
+	await new Promise((resolve) => setImmediate(resolve));
+
+	assert.equal(client.getQueryState(status)?.isInvalidated, true);
+	assert.equal(client.getQueryState(diff)?.isInvalidated, true);
+	assert.equal(client.getQueryState(comparison)?.isInvalidated, true);
+	assert.equal(client.getQueryState(committedComparison)?.isInvalidated, false);
+	assert.equal(client.getQueryState(history)?.isInvalidated, false);
 });
 
 test("task events only invalidate the affected session when identified", () => {

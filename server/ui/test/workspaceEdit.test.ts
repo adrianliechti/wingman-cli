@@ -3,10 +3,58 @@ import test from "node:test";
 import type { WorkspaceEdit } from "vscode-languageserver-types";
 import {
 	applyTextEdits,
+	combineWorkspaceEditEnvelopes,
 	summarizeWorkspaceEdit,
 	textEditOperations,
 	type WorkspaceEditEnvelope,
 } from "../src/workspaceEdit.ts";
+
+test("combines command edits in their server-declared order", () => {
+	const uri = "file:///workspace/a.kt";
+	const documents = {
+		[uri]: { path: "a.kt", revision: "revision", exists: true },
+	};
+	const combined = combineWorkspaceEditEnvelopes([
+		{
+			edit: {
+				changes: {
+					[uri]: [
+						{
+							range: {
+								start: { line: 0, character: 0 },
+								end: { line: 0, character: 1 },
+							},
+							newText: "ab",
+						},
+					],
+				},
+			},
+			documents,
+		},
+		{
+			edit: {
+				changes: {
+					[uri]: [
+						{
+							range: {
+								start: { line: 0, character: 2 },
+								end: { line: 0, character: 2 },
+							},
+							newText: "!",
+						},
+					],
+				},
+			},
+			documents,
+		},
+	]);
+
+	let content = "a";
+	for (const group of textEditOperations(combined).get(uri) ?? []) {
+		content = applyTextEdits(content, group.edits);
+	}
+	assert.equal(content, "ab!");
+});
 
 test("applies LSP UTF-16 positions without splitting astral characters", () => {
 	assert.equal(

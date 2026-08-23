@@ -1,9 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-	readWorkspaceFile,
-	writeWorkspaceFile,
-	writeWorkspaceFiles,
-} from "../api/files";
+import { readWorkspaceFile, writeWorkspaceFile } from "../api/files";
 import { runEditorSaveParticipants } from "../editorSaveParticipants";
 import { syncLSPDocument, type LSPDocumentEvent } from "../api/lsp";
 import type { FileContent, ServerMessage } from "../types/protocol";
@@ -346,18 +342,30 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 			try {
 				const operations = textEditOperations(envelope);
 				if (operations.size === 0) return { ok: true, paths: [] };
-				const writes: Array<{
+				const prepared: Array<{
 					path: string;
 					content: string;
-					revision: string;
+					original: string;
+					file: FileContent;
+					base?: OpenDocument;
 				}> = [];
+				const paths = new Set<string>();
 
 				for (const [documentUri, groups] of operations) {
 					const expected = envelope.documents[documentUri];
 					if (!expected?.revision) throw new Error("Missing file revision.");
+					if (paths.has(expected.path)) {
+						throw new Error(
+							`The language server addressed “${expected.path}” more than once.`,
+						);
+					}
+					paths.add(expected.path);
 					const open = documentsRef.current[expected.path];
 					if (open?.external || open?.file?.binary) {
 						throw new Error(`Cannot edit read-only file “${expected.path}”.`);
+					}
+					if (open && (!open.file || open.loading)) {
+						throw new Error(`“${expected.path}” is still loading.`);
 					}
 					if (
 						open &&
@@ -367,14 +375,14 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 							`“${expected.path}” changed after the language server prepared this edit. Try again.`,
 						);
 					}
+					let file: FileContent;
 					let content: string;
-					let diskRevision: string;
-					if (open?.file?.revision) {
+					if (open?.file) {
 						if (open.conflict) {
 							throw new Error(`“${expected.path}” changed on disk.`);
 						}
+						file = open.file;
 						content = open.draft;
-						diskRevision = open.file.revision;
 					} else {
 						const current = await readWorkspaceFile(expected.path);
 						if (current.binary || current.revision !== expected.revision) {
@@ -382,69 +390,69 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 								`“${expected.path}” changed before the edit was applied.`,
 							);
 						}
+						file = current;
 						content = current.content ?? "";
-						diskRevision = current.revision;
 					}
 
+					const original = content;
 					for (const group of groups)
 						content = applyTextEdits(content, group.edits);
-					writes.push({
+					prepared.push({
 						path: expected.path,
 						content,
-						revision: diskRevision,
+						original,
+						file,
+						base: open,
 					});
 				}
 
-				const result = await writeWorkspaceFiles(writes);
-				if (!result.ok) {
-					updateDocuments((current) => {
-						let changed = false;
-						const next = { ...current };
-						for (const file of writes) {
-							if (!next[file.path] || next[file.path].conflict) continue;
-							next[file.path] = { ...next[file.path], conflict: true };
-							changed = true;
-						}
-						return changed ? next : current;
-					});
-					return { ok: false, conflict: true, error: result.error };
+				// Do not partially apply a multi-file edit if any target changed while
+				// unopened files were being read.
+				for (const target of prepared) {
+					if (documentsRef.current[target.path] !== target.base) {
+						throw new Error(
+							`“${target.path}” changed while the language server edit was prepared. Try again.`,
+						);
+					}
 				}
 
-				const contents = new Map(
-					writes.map((file) => [file.path, file.content]),
+				const changed = prepared.filter(
+					(target) => target.content !== target.original,
 				);
+				if (changed.length === 0) return { ok: true, paths: [] };
 				updateDocuments((current) => {
-					let changed = false;
 					const next = { ...current };
-					for (const [path, content] of contents) {
-						const document = next[path];
-						if (!document?.file) continue;
-						next[path] = {
-							...document,
-							file: {
-								...document.file,
-								content,
-								revision: result.revisions[path],
-								size: new Blob([content]).size,
-							},
-							draft: content,
-							savedContent: content,
+					for (const target of changed) {
+						const base = target.base;
+						next[target.path] = {
+							...(base ?? {
+								path: target.path,
+								external: false,
+								file: target.file,
+								draft: target.original,
+								savedContent: target.original,
+								loading: false,
+								saving: false,
+								error: null,
+								saveError: null,
+								conflict: false,
+								revision: 0,
+							}),
+							draft: target.content,
 							conflict: false,
 							saveError: null,
-							revision: document.revision + 1,
+							revision: (base?.revision ?? 0) + 1,
 						};
-						changed = true;
 					}
-					return changed ? next : current;
+					return next;
 				});
-				for (const [path, content] of contents) {
-					const document = documentsRef.current[path];
-					if (document && !document.external && !document.file?.binary) {
-						cancelPendingLSPChange(path);
-						queueLSPEvent("save", path, content);
-					}
+				for (const target of changed) {
+					cancelPendingLSPChange(target.path);
+					// "change" also opens a document that was not editor-owned yet,
+					// while correctly preserving its unsaved state in the LSP session.
+					queueLSPEvent("change", target.path, target.content);
 				}
-				return { ok: true, paths: writes.map((file) => file.path) };
+				return { ok: true, paths: changed.map((target) => target.path) };
 			} catch (error) {
 				return {
 					ok: false,

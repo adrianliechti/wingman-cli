@@ -54,7 +54,6 @@ export interface DebugPlanBreakpoint {
 export interface DebugLaunchPlan {
 	action: DebugAction;
 	title: string;
-	summary: string;
 	adapter: string;
 	terminal_available: boolean;
 	project_dir: string;
@@ -247,7 +246,6 @@ export async function controlDebug(
 			operation,
 			session_id: sessionId,
 			thread_id: threadId,
-			wait_timeout_ms: operation === "pause" ? 750 : 150,
 		}),
 		signal,
 	});
@@ -268,7 +266,6 @@ export async function evaluateDebug(
 			session_id: sessionId,
 			frame_id: frameId,
 			state_version: stateVersion,
-			context: "hover",
 		}),
 		signal,
 	});
@@ -305,7 +302,6 @@ export async function getDebugVariables(
 			variables_reference: variablesReference,
 			session_id: sessionId,
 			state_version: stateVersion,
-			count: 200,
 		}),
 		signal,
 	});

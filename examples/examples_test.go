@@ -44,6 +44,27 @@ func TestDebuggerSamplesExposeEverySupportedLanguage(t *testing.T) {
 	}
 }
 
+func TestKotlinLSPExampleIsMinimal(t *testing.T) {
+	for _, path := range []string{
+		"kotlin/build.gradle.kts",
+		"kotlin/src/main/kotlin/example/Main.kt",
+	} {
+		if info, err := os.Stat(path); err != nil || info.IsDir() {
+			t.Errorf("Kotlin example file %s: %v", path, err)
+		}
+	}
+	build, err := os.ReadFile("kotlin/build.gradle.kts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(build, []byte("jvmToolchain(")) {
+		t.Fatal("Kotlin example must not require a locally installed fixed-version JDK toolchain")
+	}
+	if bytes.Contains(build, []byte("JvmTarget")) || bytes.Contains(build, []byte("sourceCompatibility")) {
+		t.Fatal("Kotlin example contains unnecessary JVM compatibility configuration")
+	}
+}
+
 func TestMCPExampleMatchesConfigSchema(t *testing.T) {
 	data, err := os.ReadFile("mcp.json")
 	if err != nil {

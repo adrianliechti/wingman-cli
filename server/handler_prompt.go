@@ -32,14 +32,6 @@ func (s *Server) Elicit(ctx context.Context, req tool.ElicitRequest) (tool.Elici
 		return tool.ElicitResult{Action: tool.ElicitCancel}, nil
 	}
 
-	// Plain-text reply (no structured action): map onto a single-field request.
-	if reply.Text != "" && len(req.Fields) == 1 {
-		return tool.ElicitResult{
-			Action:  tool.ElicitAccept,
-			Content: map[string]any{req.Fields[0].Name: reply.Text},
-		}, nil
-	}
-
 	return tool.ElicitResult{Action: tool.ElicitCancel}, nil
 }
 
@@ -58,13 +50,14 @@ func (s *Server) Confirm(ctx context.Context, message string) (bool, error) {
 		return false, err
 	}
 
-	if reply.Approved && reply.Always {
+	approved := tool.ElicitAction(reply.Action) == tool.ElicitAccept
+	if approved && reply.Scope == PromptScopeSession {
 		s.promptsMu.Lock()
 		s.confirmAll[sid] = true
 		s.promptsMu.Unlock()
 	}
 
-	return reply.Approved, nil
+	return approved, nil
 }
 
 func (s *Server) prompt(ctx context.Context, kind, message string, fields []tool.ElicitField) (ClientMessage, error) {
@@ -106,6 +99,11 @@ func (s *Server) prompt(ctx context.Context, kind, message string, fields []tool
 }
 
 func (s *Server) resolvePrompt(msg ClientMessage) {
+	switch tool.ElicitAction(msg.Action) {
+	case tool.ElicitAccept, tool.ElicitDecline, tool.ElicitCancel:
+	default:
+		return
+	}
 	s.promptsMu.Lock()
 	p, ok := s.pendingPrompts[msg.PromptID]
 	s.promptsMu.Unlock()

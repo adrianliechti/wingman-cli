@@ -54,9 +54,10 @@ var extToLanguage = map[string]string{
 	".hpp":        "cpp",
 	".cs":         "csharp",
 	".swift":      "swift",
-	".sh":         "bash",
-	".bash":       "bash",
-	".zsh":        "bash",
+	".sh":         "shell",
+	".bash":       "shell",
+	".zsh":        "shell",
+	".ksh":        "shell",
 	".yaml":       "yaml",
 	".yml":        "yaml",
 	".json":       "json",
@@ -254,6 +255,8 @@ func languageForPath(filePath string) string {
 		return lang
 	}
 	switch strings.ToLower(filepath.Base(filePath)) {
+	case ".bashrc", ".bash_profile", ".zshrc":
+		return "shell"
 	case "dockerfile":
 		return "dockerfile"
 	case "makefile":
@@ -559,11 +562,9 @@ func (s *Server) handleFilePath(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, struct {
-		Path     string `json:"path"`
-		Relative string `json:"relative"`
+		Path string `json:"path"`
 	}{
-		Path:     absolute,
-		Relative: filepath.ToSlash(rel),
+		Path: absolute,
 	})
 }
 

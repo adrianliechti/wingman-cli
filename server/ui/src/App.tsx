@@ -44,10 +44,7 @@ import {
 	usePanelRef,
 } from "react-resizable-panels";
 import { agentQueries, setCurrentAgent } from "./api/agents";
-import {
-	getInspectAvailability,
-	type ManagedToolsStatus,
-} from "./api/capabilities";
+import { getInspectAvailability } from "./api/capabilities";
 import {
 	controlDebug,
 	getDebugSession,
@@ -120,6 +117,7 @@ import { TasksPanel } from "./components/TasksPanel";
 import { TaskTab } from "./components/TaskTab";
 import { TerminalView } from "./components/TerminalView";
 import { WorkspaceFilesPanel } from "./components/WorkspaceFilesPanel";
+import { WorkspaceActivity } from "./components/WorkspaceActivity";
 import {
 	Dialog,
 	dialogButtonClass,
@@ -309,7 +307,7 @@ export default function App() {
 		applyWorkspaceEdit,
 	} = useOpenDocuments(subscribe);
 	const capabilities = useCapabilities();
-	const showChanges = !!(capabilities?.diffs || capabilities?.git_init);
+	const showChanges = !!(capabilities?.git || capabilities?.git_init);
 	const { inspect: showInspect, debug: showDebug } =
 		getInspectAvailability(capabilities);
 	const showAgents = capabilities?.tasks ?? false;
@@ -405,6 +403,46 @@ export default function App() {
 	const followedDebugStopRef = useRef("");
 	const [debugControlBusy, setDebugControlBusy] = useState(false);
 
+	const openWorkspaceEditFiles = useCallback(
+		(paths: readonly string[]) => {
+			if (paths.length === 0) return;
+			const pane = activePaneRef.current;
+			const activeFile = tabs.find(
+				(tab) => tab.id === activeTabId && tab.type === "file",
+			);
+			const keepActive = !!activeFile?.path && paths.includes(activeFile.path);
+			const firstExisting = tabs.find(
+				(tab) => tab.type === "file" && tab.path === paths[0],
+			);
+			setTabs((current) => {
+				const next = [...current];
+				for (const path of paths) {
+					const index = next.findIndex(
+						(tab) => tab.type === "file" && tab.path === path,
+					);
+					if (index >= 0) {
+						if (next[index].preview) {
+							next[index] = { ...next[index], preview: undefined };
+						}
+						continue;
+					}
+					next.push({
+						id: `file:${path}`,
+						type: "file",
+						label: path.split("/").pop() || path,
+						path,
+						pane,
+					});
+				}
+				return withSessionFallback(next);
+			});
+			// Keep the initiating editor focused. In particular, promoting a preview
+			// tab must not create and activate a second editor for the same file.
+			if (!keepActive) setActiveTabId(firstExisting?.id ?? `file:${paths[0]}`);
+		},
+		[activeTabId, tabs],
+	);
+
 	const runWorkspaceEdit = useCallback(
 		async (envelope: WorkspaceEditEnvelope, label: string) => {
 			const result = await applyWorkspaceEdit(envelope);
@@ -414,10 +452,12 @@ export default function App() {
 					description: result.error,
 					tone: "error",
 				});
+			} else {
+				openWorkspaceEditFiles(result.paths ?? []);
 			}
 			return result.ok;
 		},
-		[applyWorkspaceEdit, toast],
+		[applyWorkspaceEdit, openWorkspaceEditFiles, toast],
 	);
 
 	const requestWorkspaceEdit = useCallback(
@@ -2261,7 +2301,6 @@ export default function App() {
 				<DiffTab
 					path={tab.path}
 					layer={tab.diffLayer}
-					sessionId={sessionId}
 					onDeleted={() => closeTabNow(tab.id)}
 				/>
 			);
@@ -2583,7 +2622,6 @@ export default function App() {
 					<TasksPanel sessionId={sessionId} onOpenTask={openTask} />
 				) : workspaceTab === "changes" && showChanges ? (
 					<DiffsPanel
-						sessionId={sessionId}
 						git={capabilities?.git ?? false}
 						canInit={capabilities?.git_init ?? false}
 						onOpenDiff={openDiff}
@@ -2622,10 +2660,6 @@ export default function App() {
 					/>
 				)}
 			</div>
-			<ManagedToolsFooter
-				key={capabilities?.managed_tools?.state ?? "none"}
-				status={capabilities?.managed_tools}
-			/>
 		</aside>
 	);
 
@@ -2770,6 +2804,10 @@ export default function App() {
 						{activeTab.pane === "right" && titlebarActions}
 					</div>
 				)}
+				<WorkspaceActivity
+					hasLSP={capabilities?.lsp ?? false}
+					tools={capabilities?.managed_tools}
+				/>
 				<div
 					data-window-interactive
 					data-titlebar-right-panel
@@ -3211,64 +3249,6 @@ export default function App() {
 					</div>
 				</div>
 			)}
-		</div>
-	);
-}
-
-function ManagedToolsFooter({ status }: { status?: ManagedToolsStatus }) {
-	const [dismissed, setDismissed] = useState("");
-	if (status?.state === "error") {
-		const tools = (status.unavailable ?? []).join(", ");
-		const key = tools || status.error || "error";
-		if (dismissed === key) return null;
-		const message = tools
-			? `Couldn't install ${tools}. Project and system tools still work.`
-			: "Automatic tool setup could not finish. Project and system tools still work.";
-		return (
-			<div
-				data-managed-tools-status
-				role="status"
-				aria-live="polite"
-				aria-atomic="true"
-				className="flex h-8 shrink-0 items-center gap-2 border-t border-warning/30 bg-warning/10 px-3 text-[10.5px] text-warning"
-			>
-				<span
-					className="min-w-0 flex-1 truncate"
-					title={status.error || message}
-				>
-					{message}
-				</span>
-				<button
-					type="button"
-					onClick={() => setDismissed(key)}
-					className="shrink-0 px-1 opacity-70 hover:opacity-100"
-					aria-label="Dismiss"
-				>
-					×
-				</button>
-			</div>
-		);
-	}
-	if (status?.state !== "installing") return null;
-
-	const message = status.label
-		? `Setting up ${status.label}…`
-		: "Checking tools…";
-	const progress =
-		status.current && status.total ? `${status.current}/${status.total}` : "";
-	return (
-		<div
-			data-managed-tools-status
-			role="status"
-			aria-live="polite"
-			aria-atomic="true"
-			className="flex h-8 shrink-0 items-center gap-2 border-t border-border-subtle bg-bg-surface/20 px-3 text-[10.5px] text-fg-dim"
-		>
-			<Loader2 size={11} className="shrink-0 animate-spin text-accent" />
-			<span className="min-w-0 flex-1 truncate" title={message}>
-				{message}
-			</span>
-			{progress && <span className="shrink-0 tabular-nums">{progress}</span>}
 		</div>
 	);
 }

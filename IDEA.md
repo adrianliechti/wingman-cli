@@ -84,6 +84,8 @@ persistent debugger inspection, and terminal execution are implemented.
 Remaining work:
 
 - Watch expressions and an interactive evaluate/debug console.
+- Kotlin/JVM Run/Debug support once JetBrains' attach adapter reliably stops at
+  accepted breakpoints.
 - Additional adapter descriptors and language target detectors beyond the
   currently supported profiles.
 - Test discovery and a Test Explorer.

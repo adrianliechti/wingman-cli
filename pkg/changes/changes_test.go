@@ -180,6 +180,50 @@ func TestNativeSubdirectoryCommitRejectsStagedChangesOutsideScope(t *testing.T) 
 	}
 }
 
+func TestNativeStageAllIsScopedToWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	repo := initRepository(t, dir)
+	writeFile(t, dir, "sub/modified.txt", "one\n")
+	writeFile(t, dir, "sub/deleted.txt", "one\n")
+	writeFile(t, dir, "outside.txt", "one\n")
+	stage(t, repo, "sub/modified.txt")
+	stage(t, repo, "sub/deleted.txt")
+	stage(t, repo, "outside.txt")
+	commit(t, repo, "initial")
+
+	writeFile(t, dir, "sub/modified.txt", "two\n")
+	if err := os.Remove(filepath.Join(dir, "sub/deleted.txt")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dir, "sub/added.txt", "two\n")
+	writeFile(t, dir, "outside.txt", "two\n")
+
+	m := New(filepath.Join(dir, "sub"))
+	defer m.Close()
+	if err := m.Stage(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	worktree, err := repo.Worktree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := worktree.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"sub/modified.txt", "sub/deleted.txt", "sub/added.txt"} {
+		file := files.File(path)
+		if file.Staging == git.Unmodified || file.Worktree != git.Unmodified {
+			t.Fatalf("stage-all status for %s = %c%c", path, file.Staging, file.Worktree)
+		}
+	}
+	outside := files.File("outside.txt")
+	if outside.Staging != git.Unmodified || outside.Worktree != git.Modified {
+		t.Fatalf("outside status = %c%c", outside.Staging, outside.Worktree)
+	}
+}
+
 func TestNativeRepositoryFromSubdirectory(t *testing.T) {
 	dir := t.TempDir()
 	repo := initRepository(t, dir)
