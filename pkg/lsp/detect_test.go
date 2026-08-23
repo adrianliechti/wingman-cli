@@ -127,11 +127,15 @@ func TestDetectRequirementsRecognizesSourceAndGradleMarkers(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		marker  string
+		source  string
 		project string
 		command string
 	}{
 		{name: "shell script", marker: "scripts/build.sh", project: "bash", command: "bash-language-server"},
+		{name: "YAML document", marker: "config/release.yml", project: "yaml", command: "yaml-language-server"},
 		{name: "Java Gradle settings", marker: "settings.gradle", project: "java", command: "jdtls"},
+		{name: "Kotlin Gradle project", marker: "build.gradle.kts", source: "src/main/kotlin/example/App.kt", project: "kotlin", command: "kotlin-lsp"},
+		{name: "Kotlin Maven project", marker: "pom.xml", source: "src/main/kotlin/example/App.kt", project: "kotlin", command: "kotlin-lsp"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -142,6 +146,15 @@ func TestDetectRequirementsRecognizesSourceAndGradleMarkers(t *testing.T) {
 			if err := os.WriteFile(path, nil, 0o600); err != nil {
 				t.Fatal(err)
 			}
+			if test.source != "" {
+				source := filepath.Join(root, filepath.FromSlash(test.source))
+				if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(source, []byte("fun main() {}\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
 
 			for _, requirement := range DetectRequirements(root) {
 				if requirement.Project == test.project && slices.Contains(requirement.Commands, test.command) {
@@ -150,6 +163,45 @@ func TestDetectRequirementsRecognizesSourceAndGradleMarkers(t *testing.T) {
 			}
 			t.Fatalf("%s requirement not detected: %+v", test.project, DetectRequirements(root))
 		})
+	}
+}
+
+func TestWorkspaceScopedLanguagesUseOneRoot(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"scripts/build.sh", "examples/run.sh", "config/app.yml", "deploy/app.yaml"} {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	requirements := DetectRequirements(root)
+	for _, project := range []string{"bash", "yaml"} {
+		var matches []string
+		for _, requirement := range requirements {
+			if requirement.Project == project {
+				matches = requirement.Directories
+				break
+			}
+		}
+		if !reflect.DeepEqual(matches, []string{root}) {
+			t.Errorf("%s directories = %v, want one workspace root %q", project, matches, root)
+		}
+	}
+}
+
+func TestKotlinRequirementNeedsKotlinSource(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "build.gradle.kts"), []byte("plugins { java }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, requirement := range DetectRequirements(root) {
+		if requirement.Project == "kotlin" {
+			t.Fatalf("Java-only Gradle project detected as Kotlin: %+v", DetectRequirements(root))
+		}
 	}
 }
 

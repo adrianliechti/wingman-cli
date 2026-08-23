@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/adrianliechti/wingman-agent/pkg/fileuri"
 )
 
 const maxRestarts = 3
@@ -31,6 +33,16 @@ type Manager struct {
 	detectedAt            time.Time
 	initializationOptions map[string][]byte
 	commandResolver       func(string) string
+}
+
+// ServerActivity describes one live language-server session without starting
+// a new one. It is intended for lightweight workspace status surfaces.
+type ServerActivity struct {
+	Server     string         `json:"server"`
+	Label      string         `json:"label"`
+	ProjectDir string         `json:"project_dir"`
+	Analyzing  bool           `json:"analyzing"`
+	Operations []WorkProgress `json:"operations"`
 }
 
 type ManagerOption func(*Manager)
@@ -282,12 +294,7 @@ func (m *Manager) getSession(ctx context.Context, project projectRoot) (*Session
 	}
 	if start := m.starting[key]; start != nil {
 		m.mu.Unlock()
-		select {
-		case <-start.done:
-			return start.session, start.err
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+		return waitForSessionStart(ctx, start)
 	}
 
 	var openedDocuments []openDocument
@@ -306,11 +313,31 @@ func (m *Manager) getSession(ctx context.Context, project projectRoot) (*Session
 	m.starting[key] = start
 	m.mu.Unlock()
 
-	connectCtx, cancelConnect := context.WithCancel(ctx)
-	stopCloseCancellation := func() bool { return false }
-	if m.lifecycle != nil {
-		stopCloseCancellation = context.AfterFunc(m.lifecycle, cancelConnect)
+	// Session startup is shared workspace state. Keep it alive when the request
+	// that discovered the server is cancelled (for example, when a hover moves)
+	// and let each caller stop waiting independently.
+	go m.startSession(project, key, start, openedDocuments, restarting)
+	return waitForSessionStart(ctx, start)
+}
+
+func waitForSessionStart(ctx context.Context, start *sessionStart) (*Session, error) {
+	select {
+	case <-start.done:
+		return start.session, start.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
+}
+
+func (m *Manager) startSession(project projectRoot, key string, start *sessionStart, openedDocuments []openDocument, restarting bool) {
+	server := project.Server
+	parent := m.lifecycle
+	if parent == nil {
+		parent = context.Background()
+	}
+	connectCtx, cancelConnect := context.WithCancel(parent)
+	defer cancelConnect()
+
 	connector := m.connect
 	if connector == nil {
 		connector = connect
@@ -339,8 +366,6 @@ func (m *Manager) getSession(ctx context.Context, project projectRoot) (*Session
 			}
 		}
 	}
-	_ = stopCloseCancellation()
-	cancelConnect()
 	if err != nil && restarting {
 		err = fmt.Errorf("restart %s: %w", server.Name, err)
 	}
@@ -369,9 +394,7 @@ func (m *Manager) getSession(ctx context.Context, project projectRoot) (*Session
 		if session != nil {
 			session.Close()
 		}
-		return nil, err
 	}
-	return session, nil
 }
 
 func (m *Manager) ActiveSession(filePath string) (*Session, bool) {
@@ -387,6 +410,41 @@ func (m *Manager) ActiveSession(filePath string) (*Session, bool) {
 		return session, true
 	}
 	return nil, false
+}
+
+func (m *Manager) Activities() []ServerActivity {
+	m.mu.Lock()
+	sessions := make([]*Session, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		if session != nil && session.IsAlive() {
+			sessions = append(sessions, session)
+		}
+	}
+	m.mu.Unlock()
+
+	result := make([]ServerActivity, 0, len(sessions))
+	for _, session := range sessions {
+		projectDir, _ := fileuri.Path(session.rootURI)
+		operations := session.Progress()
+		label := session.server.Label
+		if label == "" {
+			label = session.server.Name
+		}
+		result = append(result, ServerActivity{
+			Server:     session.server.Name,
+			Label:      label,
+			ProjectDir: projectDir,
+			Analyzing:  len(operations) > 0,
+			Operations: operations,
+		})
+	}
+	slices.SortFunc(result, func(a, b ServerActivity) int {
+		if order := strings.Compare(a.ProjectDir, b.ProjectDir); order != 0 {
+			return order
+		}
+		return strings.Compare(a.Server, b.Server)
+	})
+	return result
 }
 
 func (m *Manager) WarmUpServers() {

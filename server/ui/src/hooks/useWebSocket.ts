@@ -4,15 +4,16 @@ import type {
 	ClientMessage,
 	ConversationMessage,
 	Phase,
-	PromptAction,
 	PromptField,
 	PromptKind,
+	PromptReply,
 	ServerMessage,
 	ToolLocation,
 	TurnInputIntent,
 	TurnInputState,
 	TurnQueueEntry,
 } from "../types/protocol";
+export type { PromptReply } from "../types/protocol";
 import { discardUncommittedStreamEntries } from "../streamEntries";
 
 export interface PendingPrompt {
@@ -20,14 +21,6 @@ export interface PendingPrompt {
 	kind: PromptKind;
 	message: string;
 	fields?: PromptField[];
-}
-
-export interface PromptReply {
-	text?: string;
-	approved?: boolean;
-	always?: boolean;
-	action?: PromptAction;
-	content?: Record<string, unknown>;
 }
 
 export interface ChatEntry {
@@ -837,31 +830,28 @@ export function useWebSocket() {
 				break;
 
 			case "turn_input": {
-				const raw: TurnQueueEntry = msg.queue?.[0] ?? {
-					id: msg.id,
-					state: msg.state,
-					intent: msg.intent,
-					position: msg.position,
-					text: msg.text,
-				};
-				const input = pendingInputFromEntry(raw, msg.message);
+				const input = pendingInputFromEntry(msg.input, msg.message);
 				updateSession(sid, (sess) => {
 					let entries = sess.entries;
 					let pendingInputs = sess.pendingInputs;
-					if (msg.state === "active" || msg.state === "steered") {
+					if (input.state === "active" || input.state === "steered") {
 						entries = ensureUserEntry(entries, input);
-						pendingInputs = pendingInputs.filter((item) => item.id !== msg.id);
-					} else if (msg.state === "queued" || msg.state === "sending") {
+						pendingInputs = pendingInputs.filter(
+							(item) => item.id !== input.id,
+						);
+					} else if (input.state === "queued" || input.state === "sending") {
 						pendingInputs = upsertPending(pendingInputs, input);
-					} else if (msg.state === "cancelled" || msg.state === "failed") {
+					} else if (input.state === "cancelled" || input.state === "failed") {
 						const wasVisible = entries.some(
-							(entry) => entry.inputId === msg.id,
+							(entry) => entry.inputId === input.id,
 						);
 						pendingInputs = wasVisible
-							? pendingInputs.filter((item) => item.id !== msg.id)
+							? pendingInputs.filter((item) => item.id !== input.id)
 							: upsertPending(pendingInputs, input);
 					} else {
-						pendingInputs = pendingInputs.filter((item) => item.id !== msg.id);
+						pendingInputs = pendingInputs.filter(
+							(item) => item.id !== input.id,
+						);
 					}
 					return { ...sess, entries, pendingInputs };
 				});
@@ -972,7 +962,6 @@ export function useWebSocket() {
 			text: string,
 			files?: string[],
 			images?: string[],
-			intent: TurnInputIntent = "follow_up",
 		) =>
 			send({
 				type: "queue_update",
@@ -981,7 +970,6 @@ export function useWebSocket() {
 				text,
 				files,
 				images,
-				intent,
 			}),
 		[send],
 	);
@@ -1025,13 +1013,8 @@ export function useWebSocket() {
 		(sessionId: string, promptId: string, reply: PromptReply) => {
 			const sent = send({
 				type: "prompt_response",
-				session: sessionId,
 				prompt_id: promptId,
-				text: reply.text,
-				approved: reply.approved,
-				always: reply.always,
-				action: reply.action,
-				content: reply.content,
+				...reply,
 			});
 			if (!sent) return;
 			updateSession(sessionId, (sess) =>
@@ -1072,21 +1055,11 @@ export function useWebSocket() {
 	useEffect(() => {
 		let reconnectTimer: ReturnType<typeof setTimeout>;
 		let alive = true;
-		let cachedURL: string | null = null;
 
-		async function resolveURL(): Promise<string> {
-			if (cachedURL) return cachedURL;
-			cachedURL = await getChatWebSocketURL();
-			return cachedURL;
-		}
-
-		async function connect() {
+		function connect() {
 			if (!alive) return;
 
-			const url = await resolveURL();
-			if (!alive) return;
-
-			const ws = new WebSocket(url);
+			const ws = new WebSocket(getChatWebSocketURL());
 
 			ws.onopen = () => {
 				setConnected(true);

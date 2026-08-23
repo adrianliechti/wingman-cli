@@ -138,11 +138,21 @@ func (m *Manager) ready() error {
 }
 
 func (m *Manager) Diffs(ctx context.Context) ([]FileDiff, error) {
+	return m.DiffsLayer(ctx, DiffCombined)
+}
+
+// DiffsLayer returns a consistent snapshot of every change in one Git layer.
+// The manager lock stays held while the status, HEAD tree, and file contents
+// are read so callers such as commit-message generation never mix snapshots.
+func (m *Manager) DiffsLayer(ctx context.Context, layer DiffLayer) ([]FileDiff, error) {
 	if err := m.ready(); err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if layer != DiffCombined && layer != DiffStaged && layer != DiffUnstaged {
+		return nil, errors.New("invalid diff layer")
 	}
 
 	m.mu.Lock()
@@ -164,7 +174,13 @@ func (m *Manager) Diffs(ctx context.Context) ([]FileDiff, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		diff, err := m.fileDiff(ctx, head, entry, DiffCombined)
+		if layer == DiffStaged && (entry.index == git.Unmodified || entry.index == git.Untracked) {
+			continue
+		}
+		if layer == DiffUnstaged && entry.worktree == git.Unmodified {
+			continue
+		}
+		diff, err := m.fileDiff(ctx, head, entry, layer)
 		if err != nil {
 			return nil, err
 		}

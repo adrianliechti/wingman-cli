@@ -8,14 +8,16 @@ import type {
 import { fetchJSON, fetchOK } from "./http.ts";
 
 export type GitRequestError = Error & { diagnosticContext: string };
-export type GitAction =
-	| "branches"
-	| "checkout"
-	| "commit"
-	| "pull"
-	| "push"
-	| "stage"
-	| "unstage";
+export type GitCommand =
+	| { type: "create_branch"; name: string }
+	| { type: "checkout_branch"; name: string; remote?: string }
+	| { type: "commit"; message: string }
+	| { type: "pull" }
+	| { type: "push" }
+	| { type: "stage"; paths: string[] }
+	| { type: "stage_all" }
+	| { type: "unstage"; paths: string[] };
+export type GitCommandType = GitCommand["type"];
 
 export function getGitStatus(signal?: AbortSignal): Promise<GitStatus> {
 	return fetchJSON<GitStatus>("/api/git/status", { signal });
@@ -25,35 +27,79 @@ export function getGitHistory(signal?: AbortSignal): Promise<GitCommit[]> {
 	return fetchJSON<GitCommit[]>("/api/git/history", { signal });
 }
 
-export function getGitBranches(
-	refresh: boolean,
-	signal?: AbortSignal,
-): Promise<GitBranches> {
-	return fetchJSON<GitBranches>(
-		`/api/git/branches?refresh=${refresh ? 1 : 0}`,
-		{
-			signal,
-		},
-	);
+export function getGitBranches(signal?: AbortSignal): Promise<GitBranches> {
+	return fetchJSON<GitBranches>("/api/git/branches", { signal });
 }
 
-export async function runGitAction(
-	action: GitAction,
-	body?: unknown,
+export function fetchGitBranches(): Promise<GitBranches> {
+	return fetchJSON<GitBranches>("/api/git/fetch", { method: "POST" });
+}
+
+export async function runGitCommand(
+	command: GitCommand,
 ): Promise<string | undefined> {
-	const response = await fetchOK(`/api/git/${action}`, {
+	let endpoint: string;
+	let body: object | undefined;
+	switch (command.type) {
+		case "create_branch":
+			endpoint = "branches";
+			body = { name: command.name };
+			break;
+		case "checkout_branch":
+			endpoint = "checkout";
+			body = {
+				name: command.name,
+				...(command.remote ? { remote: command.remote } : {}),
+			};
+			break;
+		case "commit":
+			endpoint = "commit";
+			body = { message: command.message };
+			break;
+		case "pull":
+		case "push":
+			endpoint = command.type;
+			break;
+		case "stage":
+		case "unstage":
+			endpoint = command.type;
+			body = { paths: command.paths };
+			break;
+		case "stage_all":
+			endpoint = "stage";
+			break;
+	}
+	const response = await fetchOK(`/api/git/${endpoint}`, {
 		method: "POST",
 		headers: body ? { "Content-Type": "application/json" } : undefined,
 		body: body ? JSON.stringify(body) : undefined,
 	});
-	if (!response.headers.get("content-type")?.includes("application/json")) {
-		return undefined;
+	if (response.status === 204) return undefined;
+	const result = (await response.json()) as { output?: unknown };
+	if (typeof result.output !== "string") {
+		throw new Error("The server returned an invalid Git mutation response.");
 	}
-	return ((await response.json()) as { output?: string }).output;
+	return result.output;
 }
 
 export async function initializeGitRepository(): Promise<void> {
 	await fetchOK("/api/git/init", { method: "POST" });
+}
+
+export async function generateGitCommitMessage(): Promise<string> {
+	const result = await fetchJSON<unknown>("/api/git/commit-message", {
+		method: "POST",
+	});
+	if (
+		!result ||
+		typeof result !== "object" ||
+		!("message" in result) ||
+		typeof result.message !== "string" ||
+		!result.message.trim()
+	) {
+		throw new Error("The server returned an invalid commit message.");
+	}
+	return result.message;
 }
 
 export async function fetchGitComparison(

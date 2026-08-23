@@ -31,6 +31,16 @@ type lspCodeActionsResponse struct {
 	Documents map[string]lspWorkspaceDocument `json:"documents"`
 }
 
+type lspCommandEditResponse struct {
+	Label     string                          `json:"label,omitempty"`
+	Edit      *lsp.WorkspaceEdit              `json:"edit"`
+	Documents map[string]lspWorkspaceDocument `json:"documents"`
+}
+
+type lspCommandResponse struct {
+	Edits []lspCommandEditResponse `json:"edits"`
+}
+
 func (s *Server) handleLSPPrepareRename(w http.ResponseWriter, r *http.Request) {
 	body, filePath, ok := s.decodeLSPPositionRequest(w, r, true)
 	if !ok {
@@ -165,12 +175,24 @@ func (s *Server) handleLSPExecuteCommand(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "invalid command", http.StatusBadRequest)
 		return
 	}
-	result, err := s.workspace.ExecuteLSPCommand(r.Context(), filePath, body.Content, command)
+	_, edits, err := s.workspace.ExecuteLSPCommandWithEdits(r.Context(), filePath, body.Content, command)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	writeLSPJSON(w, result)
+	response := lspCommandResponse{Edits: make([]lspCommandEditResponse, 0, len(edits))}
+	for _, requested := range edits {
+		edit := requested.Edit
+		documents, err := s.workspaceEditDocuments(&edit)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		response.Edits = append(response.Edits, lspCommandEditResponse{
+			Label: requested.Label, Edit: &edit, Documents: documents,
+		})
+	}
+	writeLSPJSON(w, response)
 }
 
 type lspFormattingRequest struct {
@@ -311,20 +333,23 @@ func workspaceEditURIs(edit *lsp.WorkspaceEdit) []string {
 		return nil
 	}
 	result := make([]string, 0, len(edit.Changes)+len(edit.DocumentChanges))
+	if edit.DocumentChanges != nil {
+		for _, change := range edit.DocumentChanges {
+			switch change := change.(type) {
+			case *lsp.TextDocumentEdit:
+				result = append(result, change.TextDocument.URI.String())
+			case *lsp.CreateFile:
+				result = append(result, change.URI.String())
+			case *lsp.RenameFile:
+				result = append(result, change.OldURI.String(), change.NewURI.String())
+			case *lsp.DeleteFile:
+				result = append(result, change.URI.String())
+			}
+		}
+		return result
+	}
 	for documentURI := range edit.Changes {
 		result = append(result, documentURI.String())
-	}
-	for _, change := range edit.DocumentChanges {
-		switch change := change.(type) {
-		case *lsp.TextDocumentEdit:
-			result = append(result, change.TextDocument.URI.String())
-		case *lsp.CreateFile:
-			result = append(result, change.URI.String())
-		case *lsp.RenameFile:
-			result = append(result, change.OldURI.String(), change.NewURI.String())
-		case *lsp.DeleteFile:
-			result = append(result, change.URI.String())
-		}
 	}
 	return result
 }

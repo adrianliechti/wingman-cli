@@ -14,6 +14,7 @@ import {
 	ScanText,
 	Scissors,
 	Search,
+	Sparkles,
 	Undo2,
 } from "lucide-react";
 import type * as MonacoTypes from "monaco-editor";
@@ -32,6 +33,8 @@ interface Props {
 	readOnly: boolean;
 	initialAltKey?: boolean;
 	supportsLanguageFeature: (feature: MonacoLanguageFeature) => boolean;
+	onTransformSelection?: () => void;
+	onAskSelection?: () => void;
 	onClose: () => void;
 }
 
@@ -126,6 +129,8 @@ export function EditorContextMenu({
 	readOnly,
 	initialAltKey = false,
 	supportsLanguageFeature,
+	onTransformSelection,
+	onAskSelection,
 	onClose,
 }: Props) {
 	const [altKey, setAltKey] = useState(initialAltKey);
@@ -218,6 +223,25 @@ export function EditorContextMenu({
 			]);
 	const selection = editor.getSelection();
 	const hasSelection = !!selection && !selection.isEmpty();
+	const aiItems: MenuItem[] =
+		!readOnly && hasSelection
+			? [
+					{
+						key: "wingman.askSelection",
+						label: "Chat about this…",
+						icon: <MessageSquareCode size={13} />,
+						enabled: !!onAskSelection,
+						run: () => onAskSelection?.(),
+					},
+					{
+						key: "wingman.transformSelection",
+						label: "Transform Selection…",
+						icon: <Sparkles size={13} />,
+						enabled: !!onTransformSelection,
+						run: () => onTransformSelection?.(),
+					},
+				]
+			: [];
 	const formatItems = readOnly
 		? []
 		: supportedActions(editor, [
@@ -232,6 +256,7 @@ export function EditorContextMenu({
 			]);
 	const groups = [
 		editItems,
+		aiItems,
 		commentItems,
 		navigationItems,
 		supportedCodeActions,

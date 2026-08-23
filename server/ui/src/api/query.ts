@@ -40,6 +40,10 @@ export const queryKeys = {
 		all: ["server", "diagnostics"] as const,
 		workspace: ["server", "diagnostics", "workspace"] as const,
 	},
+	lsp: {
+		all: ["server", "lsp"] as const,
+		activity: ["server", "lsp", "activity"] as const,
+	},
 	debug: {
 		all: ["server", "debug"] as const,
 		session: ["server", "debug", "session"] as const,
@@ -73,22 +77,14 @@ export const queryKeys = {
 	},
 	diffs: {
 		all: ["server", "diffs"] as const,
-		list: (sessionId?: string, layer?: string, path?: string) =>
-			[
-				"server",
-				"diffs",
-				"list",
-				sessionId ?? "",
-				layer ?? "",
-				path ?? "",
-			] as const,
+		list: (layer?: string, path?: string) =>
+			["server", "diffs", "list", layer ?? "", path ?? ""] as const,
 	},
 	git: {
 		all: ["server", "git"] as const,
 		status: ["server", "git", "status"] as const,
 		history: ["server", "git", "history"] as const,
-		branches: (refresh: boolean) =>
-			["server", "git", "branches", refresh] as const,
+		branches: ["server", "git", "branches"] as const,
 		compare: (base: string, head: string, mode: string) =>
 			["server", "git", "compare", base, head, mode] as const,
 		comparisons: ["server", "git", "compare"] as const,

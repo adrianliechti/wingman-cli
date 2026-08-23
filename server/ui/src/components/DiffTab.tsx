@@ -10,15 +10,14 @@ import type { DiffLayer } from "../types/protocol";
 interface Props {
 	path: string;
 	layer?: DiffLayer;
-	sessionId: string;
 	onDeleted?: () => void;
 }
 
-export function DiffTab({ path, layer, sessionId, onDeleted }: Props) {
+export function DiffTab({ path, layer, onDeleted }: Props) {
 	const scheme = useColorScheme();
 	const query = useQuery({
-		queryKey: queryKeys.diffs.list(sessionId, layer, path),
-		queryFn: ({ signal }) => listDiffs({ sessionId, layer, path, signal }),
+		queryKey: queryKeys.diffs.list(layer, path),
+		queryFn: ({ signal }) => listDiffs({ layer, path, signal }),
 	});
 	const diff = query.data?.find((entry) => entry.path === path) ?? null;
 	const loading = query.isPending;
@@ -32,7 +31,7 @@ export function DiffTab({ path, layer, sessionId, onDeleted }: Props) {
 
 	useEffect(() => {
 		hadDiffRef.current = false;
-	}, [layer, path, sessionId]);
+	}, [layer, path]);
 
 	useEffect(() => {
 		if (diff) {

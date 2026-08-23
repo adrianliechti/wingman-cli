@@ -59,6 +59,9 @@ func detectAll(workingDir string, managedResolver func(string) string) []project
 				if !ok {
 					continue
 				}
+				if server.Label == "" {
+					server.Label = projectLabel(project)
+				}
 
 				root := projectRoot{Dir: dir, Server: server}
 				if key := projectKey(root); !seen[key] {
@@ -71,6 +74,16 @@ func detectAll(workingDir string, managedResolver func(string) string) []project
 	}
 
 	return roots
+}
+
+func projectLabel(project projectType) string {
+	if project.Label != "" {
+		return project.Label
+	}
+	if project.Name == "" {
+		return ""
+	}
+	return strings.ToUpper(project.Name[:1]) + project.Name[1:]
 }
 
 func projectDirs(index *workspaceIndex, project projectType) []string {
@@ -89,8 +102,7 @@ func projectDirs(index *workspaceIndex, project projectType) []string {
 	}
 
 	slices.Sort(dirs)
-
-	return slices.DeleteFunc(dirs, func(dir string) bool {
+	dirs = slices.DeleteFunc(dirs, func(dir string) bool {
 		for _, exclude := range project.Excludes {
 			if index.hasChild(dir, exclude) {
 				return true
@@ -98,6 +110,10 @@ func projectDirs(index *workspaceIndex, project projectType) []string {
 		}
 		return len(project.Requires) > 0 && !index.hasNestedFile(dir, project.Requires)
 	})
+	if project.WorkspaceRoot && len(dirs) > 0 {
+		return []string{index.root}
+	}
+	return dirs
 }
 
 func resolveServer(dir string, candidate Server, resolver tooling.Resolver, versions map[string]bool) (Server, bool) {
@@ -125,6 +141,7 @@ type workspaceEntry struct {
 // workspaceIndex holds one scan of the workspace, indexed so that marker
 // lookups cost a map hit instead of a pass over every entry.
 type workspaceIndex struct {
+	root   string
 	byName map[string][]workspaceEntry
 	byGlob map[string][]workspaceEntry
 }
@@ -160,6 +177,7 @@ func indexWorkspace(workingDir string) *workspaceIndex {
 	globs := markerGlobs()
 
 	index := &workspaceIndex{
+		root:   workingDir,
 		byName: make(map[string][]workspaceEntry),
 		byGlob: make(map[string][]workspaceEntry),
 	}

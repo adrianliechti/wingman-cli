@@ -24,7 +24,6 @@ interface QueueUpdateMessage {
 	type: "queue_update";
 	session: string;
 	id: string;
-	intent?: TurnInputIntent;
 	text: string;
 	files?: string[];
 	images?: string[];
@@ -41,17 +40,20 @@ interface SyncMessage {
 }
 
 export type PromptAction = "accept" | "decline" | "cancel";
+export type PromptScope = "once" | "session";
 
-interface PromptResponseMessage {
+export type PromptReply =
+	| {
+			action: "accept";
+			content?: Record<string, unknown>;
+			scope?: PromptScope;
+	  }
+	| { action: Exclude<PromptAction, "accept"> };
+
+type PromptResponseMessage = {
 	type: "prompt_response";
-	session: string;
 	prompt_id: string;
-	text?: string;
-	approved?: boolean;
-	always?: boolean;
-	action?: PromptAction;
-	content?: Record<string, unknown>;
-}
+} & PromptReply;
 
 interface FocusMessage {
 	type: "focus";
@@ -237,19 +239,12 @@ export interface TurnQueueEntry {
 	text?: string;
 	files?: string[];
 	images?: string[];
-	image_count?: number;
-	error?: string;
 }
 
 interface TurnInputMessage extends SessionMessage {
 	type: "turn_input";
-	id: string;
-	state: TurnInputState;
-	intent?: TurnInputIntent;
-	position?: number;
-	text?: string;
+	input: TurnQueueEntry;
 	message?: string;
-	queue?: TurnQueueEntry[];
 }
 
 interface TurnQueueMessage extends SessionMessage {
@@ -470,4 +465,23 @@ export interface WorkspaceDiagnostics {
 	unknown_files: number;
 	unavailable_servers: string[];
 	analyzing: boolean;
+}
+
+export interface LSPWorkProgress {
+	title?: string;
+	message?: string;
+	percentage?: number;
+}
+
+export interface LSPServiceActivity {
+	server: string;
+	label: string;
+	project: string;
+	analyzing: boolean;
+	operations: LSPWorkProgress[];
+}
+
+export interface LSPActivityStatus {
+	analyzing: boolean;
+	services: LSPServiceActivity[];
 }

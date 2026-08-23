@@ -2,10 +2,8 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -23,7 +21,8 @@ import (
 
 const (
 	debugRequestLimit       = 2 << 20
-	debugControlMaxWait     = 30 * time.Second
+	debugControlWait        = 150 * time.Millisecond
+	debugPauseWait          = 750 * time.Millisecond
 	debugStateRequestBudget = 2 * time.Second
 	debugInspectionBudget   = 5 * time.Second
 )
@@ -42,7 +41,6 @@ type debugPlanBreakpoint struct {
 type debugLaunchPlan struct {
 	Action              string                `json:"action"`
 	Title               string                `json:"title"`
-	Summary             string                `json:"summary"`
 	Adapter             string                `json:"adapter"`
 	TerminalAvailable   bool                  `json:"terminal_available"`
 	ProjectDir          string                `json:"project_dir"`
@@ -207,7 +205,7 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	plan := debugLaunchPlan{
-		Action: request.Action, Title: profile.Title, Summary: profile.Summary,
+		Action: request.Action, Title: profile.Title,
 		Adapter: adapterInfo[0].Name, ProjectDir: profile.ProjectDir, Request: profile.Request,
 		TerminalAvailable: profile.SupportsTerminal && adapterInfo[0].TerminalStrategy != dap.TerminalUnsupported && terminal.Supported(),
 		IO:                string(profile.IO), Configuration: profile.Configuration,
@@ -235,13 +233,15 @@ func (s *Server) ensureManagedBrowser(ctx context.Context) (string, error) {
 		return executable, nil
 	}
 	s.setManagedToolsStatus(managedToolsStatus{
-		State: "installing", Tool: "chrome-for-testing", Label: devtools.ToolLabel("chrome-for-testing"), Current: 1, Total: 1,
+		State: "installing", Tool: "chrome-for-testing", Label: devtools.ToolLabel("chrome-for-testing"),
+		Phase: devtools.ProgressChecking, Current: 1, Total: 1,
 	})
 	_, err := manager.Update(ctx, []devtools.Requirement{{
 		Alternatives: []string{"chrome-for-testing"}, Workspace: s.workspace.RootPath, ManagedOnly: true,
 	}}, func(progress devtools.Progress) {
 		s.setManagedToolsStatus(managedToolsStatus{
-			State: "installing", Tool: progress.Tool, Label: progress.Label, Current: progress.Current, Total: progress.Total,
+			State: "installing", Tool: progress.Tool, Label: progress.Label, Phase: progress.Phase,
+			Current: progress.Current, Total: progress.Total,
 		})
 	})
 	if err != nil {
@@ -475,19 +475,15 @@ func (s *Server) handleDebugBreakpoints(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleDebugControl(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Operation     string `json:"operation"`
-		SessionID     string `json:"session_id,omitempty"`
-		ThreadID      int    `json:"thread_id,omitempty"`
-		WaitTimeoutMS int    `json:"wait_timeout_ms,omitempty"`
+		Operation string `json:"operation"`
+		SessionID string `json:"session_id,omitempty"`
+		ThreadID  int    `json:"thread_id,omitempty"`
 	}
 	if err := decodeDebugJSON(w, r, &body); err != nil {
 		return
 	}
 	body.Operation = strings.TrimSpace(body.Operation)
-	if body.WaitTimeoutMS < 0 || body.WaitTimeoutMS > int(debugControlMaxWait/time.Millisecond) {
-		http.Error(w, "wait_timeout_ms is out of range", http.StatusBadRequest)
-		return
-	}
+	waitTimeout := debugControlWaitFor(body.Operation)
 	var status *dap.Status
 	err := s.workspace.WithDAPManager(func(manager *dap.Manager) error {
 		session, err := manager.Session(strings.TrimSpace(body.SessionID))
@@ -518,8 +514,8 @@ func (s *Server) handleDebugControl(w http.ResponseWriter, r *http.Request) {
 		if err != nil || body.Operation == "stop" {
 			return err
 		}
-		if body.WaitTimeoutMS > 0 {
-			waitCtx, cancel := context.WithTimeout(r.Context(), time.Duration(body.WaitTimeoutMS)*time.Millisecond)
+		if waitTimeout > 0 {
+			waitCtx, cancel := context.WithTimeout(r.Context(), waitTimeout)
 			_, _ = session.WaitForStop(waitCtx, before)
 			cancel()
 		}
@@ -532,6 +528,13 @@ func (s *Server) handleDebugControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"session": status})
+}
+
+func debugControlWaitFor(operation string) time.Duration {
+	if operation == "pause" {
+		return debugPauseWait
+	}
+	return debugControlWait
 }
 
 func (s *Server) handleDebugEvaluate(w http.ResponseWriter, r *http.Request) {
@@ -729,17 +732,7 @@ func writeDebugInspectionError(w http.ResponseWriter, err error) {
 }
 
 func decodeDebugJSON(w http.ResponseWriter, r *http.Request, target any) error {
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, debugRequestLimit))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		http.Error(w, "invalid body: "+err.Error(), http.StatusBadRequest)
-		return err
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		http.Error(w, "invalid body: expected a single JSON value", http.StatusBadRequest)
-		return errors.New("request body contains more than one JSON value")
-	}
-	return nil
+	return decodeJSONRequest(w, r, target, debugRequestLimit)
 }
 
 func (s *Server) detectDebugTargets(currentFile string) ([]debugadapter.Target, error) {
@@ -985,7 +978,6 @@ func (s *Server) validateDebugPlan(plan *debugLaunchPlan, adapters []dap.Adapter
 		return err
 	}
 	plan.Title = strings.TrimSpace(plan.Title)
-	plan.Summary = strings.TrimSpace(plan.Summary)
 	if plan.Title == "" {
 		plan.Title = "Debug session"
 	}

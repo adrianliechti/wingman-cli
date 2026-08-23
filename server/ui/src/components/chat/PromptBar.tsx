@@ -250,14 +250,14 @@ export function PromptBar({
 					<button
 						type="button"
 						className="px-3 h-7 flex items-center justify-center rounded text-[11px] text-fg-muted hover:text-fg hover:bg-bg-hover cursor-pointer transition-colors"
-						onClick={() => onReply({ approved: false })}
+						onClick={() => onReply({ action: "decline" })}
 					>
 						Deny
 					</button>
 					<button
 						type="button"
 						className="px-3 h-7 flex items-center justify-center rounded text-[11px] text-fg-muted hover:text-fg hover:bg-bg-hover cursor-pointer transition-colors"
-						onClick={() => onReply({ approved: true, always: true })}
+						onClick={() => onReply({ action: "accept", scope: "session" })}
 						title="Approve and don't ask again in this session"
 					>
 						Always allow
@@ -265,7 +265,7 @@ export function PromptBar({
 					<button
 						type="button"
 						className="px-3 h-7 flex items-center justify-center rounded text-[11px] text-bg bg-success hover:opacity-90 cursor-pointer transition-opacity"
-						onClick={() => onReply({ approved: true })}
+						onClick={() => onReply({ action: "accept" })}
 					>
 						Approve
 					</button>

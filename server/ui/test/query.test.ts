@@ -54,7 +54,7 @@ test("agent events invalidate dependent server catalogs", () => {
 
 test("diff events invalidate diff and Git query families", () => {
 	const client = new QueryClient();
-	const diff = queryKeys.diffs.list("session");
+	const diff = queryKeys.diffs.list();
 	const history = queryKeys.git.history;
 	client.setQueryData(diff, []);
 	client.setQueryData(history, []);
@@ -68,7 +68,7 @@ test("diff events invalidate diff and Git query families", () => {
 test("Git index events refresh status before dependent diff views", async () => {
 	const client = new QueryClient();
 	const status = queryKeys.git.status;
-	const diff = queryKeys.diffs.list("session", "staged", "file.txt");
+	const diff = queryKeys.diffs.list("staged", "file.txt");
 	const comparison = queryKeys.git.compare("main", ":worktree", "merge-base");
 	const committedComparison = queryKeys.git.compare(
 		"main",

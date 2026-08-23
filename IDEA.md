@@ -1,6 +1,6 @@
 # Smart Editor Feature Gaps
 
-Comparison captured on 2026-08-15 against VS Code, Cursor, AWS Kiro, and Google Antigravity. Implementation status was re-audited on 2026-08-21 against `main` and the active feature branches.
+Comparison captured on 2026-08-15 against VS Code, Cursor, AWS Kiro, and Google Antigravity. Implementation status was re-audited on 2026-08-23 against `main` and the active feature branches.
 
 Kiro is an AWS product. Google Antigravity 2.0 is positioned more as a standalone agent command center than as a conventional editor.
 
@@ -12,10 +12,11 @@ Wingman already provides:
 - Two-pane editor groups with scrollable tab strips, preview and pinned tabs, drag reordering, cross-pane moves, contextual close controls, and unsaved-change protection.
 - Zero-config detection of ~50 language servers with LSP completion, navigation, references, rename, code actions, semantic tokens, formatting, diagnostics, and inlay hints, plus a tree-sitter fallback for navigation, hover, and completion when no server covers a file.
 - Predictive Tab editing with edit-gated ghost text, nearby multiline next edits, stale-result cancellation, and awaited LSP import cleanup on save or acceptance.
+- Selection transformations with free-form and preset instructions, previewed as rejectable Monaco inline edits against the live unsaved buffer, plus a **Chat about this…** handoff with the selected text and source file attached.
 - Revision-checked file writes with atomic multi-file batches and post-edit diagnostics fed back to the agent.
 - Streaming workspace search with regex, case, whole-word, and file filters, plus previewed revision-checked replacement at match, file, and workspace scope.
 - File editing, terminals, permission gates, multiple models, persistent agent sessions, and queued or steerable turns.
-- Git status, branches, comparisons, staging, commits, pull, and push.
+- Git status, branches, comparisons, staging, commits, pull, and push, plus staged-diff commit-message generation that matches recent repository style without committing automatically.
 - An experimental DAP debugger foundation: deterministic Go, Python, Java, Rust, .NET/C#, TypeScript, and React/Vite launch profiles; `Run | Debug` CodeLens; gutter breakpoints; capability-aware stepping; automatic stop navigation; hover evaluation; one Debug tab with output and terminal views; variables and call-stack inspection; and PTY-backed interactive sessions.
 - Tasks and schedules, runtime-refreshable Agent Skills (including `.agents/skills`
   compatibility), plugins, MCP, lifecycle hooks, structural code intelligence,
@@ -25,13 +26,11 @@ Wingman already provides:
 
 ### P1: AI editing beyond Tab
 
-Predictive completion and nearby multiline next-edit suggestions are implemented. Remaining extensions are:
+Predictive completion, nearby multiline next-edit suggestions, selection-based transformations and chat handoff, and staged-diff commit-message generation are implemented. Remaining extensions are:
 
 - Coordinated multi-file suggestions and cross-file transitions.
-- Selection-based inline chat and transformations.
 - Optional diagnostic and surrounding-file context, gated by quality evaluations.
 - Terminal command generation and terminal-output-to-chat context.
-- AI-generated commit messages in the commit box.
 
 Benchmarks: [Cursor Tab](https://cursor.com/help/ai-features/tab) and [VS Code AI-powered suggestions](https://code.visualstudio.com/docs/editing/ai-powered-suggestions).
 
@@ -85,6 +84,8 @@ persistent debugger inspection, and terminal execution are implemented.
 Remaining work:
 
 - Watch expressions and an interactive evaluate/debug console.
+- Kotlin/JVM Run/Debug support once JetBrains' attach adapter reliably stops at
+  accepted breakpoints.
 - Additional adapter descriptors and language target detectors beyond the
   currently supported profiles.
 - Test discovery and a Test Explorer.
@@ -216,7 +217,7 @@ one vendor's workflow.
 2. Worktree-isolated agent sessions with merge-back.
 3. Browser control and screenshot-based UI verification.
 4. Git-native per-hunk review and provenance.
-5. AI editing beyond the completed Tab foundation.
+5. Cross-file AI editing, evaluated context expansion, and terminal integration.
 6. Test Explorer, coverage, watch expressions, and a debug console.
 
 Items 1–3 close the most visible remaining gaps with Cursor and VS Code without requiring Wingman to reproduce the entire VS Code extension ecosystem. Predictive Tab editing already uses the configured utility role through the existing Responses endpoint and does not require a dedicated FIM model.

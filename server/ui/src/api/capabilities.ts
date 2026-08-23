@@ -7,7 +7,6 @@ export interface Capabilities {
 	git_init: boolean;
 	lsp: boolean;
 	debug: boolean;
-	diffs: boolean;
 	tasks: boolean;
 	terminal: boolean;
 	tab: boolean;
@@ -21,6 +20,7 @@ export interface ManagedToolsStatus {
 	state: "installing" | "ready" | "error";
 	tool?: string;
 	label?: string;
+	phase?: "checking" | "installing" | "updating";
 	current?: number;
 	total?: number;
 	error?: string;

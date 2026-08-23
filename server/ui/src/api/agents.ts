@@ -8,8 +8,8 @@ export interface AgentInfo {
 }
 
 export interface AgentState {
-	agent?: string;
-	canDelete?: boolean;
+	agent: string;
+	can_delete: boolean;
 }
 
 export async function setCurrentAgent(agent: string): Promise<void> {

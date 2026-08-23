@@ -5,7 +5,6 @@ import { queryKeys } from "./query.ts";
 export interface SessionInfo {
 	id: string;
 	title?: string;
-	created_at?: string;
 	updated_at: string;
 }
 

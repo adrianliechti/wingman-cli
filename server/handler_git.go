@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -72,6 +71,8 @@ type gitBranchRequest struct {
 	Remote string `json:"remote,omitempty"`
 }
 
+const gitRequestLimit = 1 << 20
+
 func (s *Server) handleGitInit(w http.ResponseWriter, r *http.Request) {
 	if err := s.workspace.GitInit(); err != nil {
 		writeGitError(w, err)
@@ -79,7 +80,7 @@ func (s *Server) handleGitInit(w http.ResponseWriter, r *http.Request) {
 	}
 	s.broadcast(Frame{Type: EvtCapabilitiesChanged})
 	s.flushFiles()
-	s.gitMutationComplete(w, "Initialized Git repository")
+	s.gitMutationNoContent(w)
 }
 
 func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
@@ -104,17 +105,30 @@ func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGitBranches(w http.ResponseWriter, r *http.Request) {
-	refresh := r.URL.Query().Get("refresh") != "0"
-	ctx := r.Context()
-	if refresh {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, 15*time.Second)
-		defer cancel()
-	}
-	branches, warning, err := s.workspace.GitBranches(ctx, refresh)
+	result, err := s.gitBranches(r.Context(), false)
 	if err != nil {
 		writeGitError(w, err)
 		return
+	}
+	writeJSON(w, result)
+}
+
+func (s *Server) handleGitFetch(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	result, err := s.gitBranches(ctx, true)
+	if err != nil {
+		writeGitError(w, err)
+		return
+	}
+	s.broadcast(Frame{Type: EvtDiffsChanged})
+	writeJSON(w, result)
+}
+
+func (s *Server) gitBranches(ctx context.Context, refresh bool) (GitBranches, error) {
+	branches, warning, err := s.workspace.GitBranches(ctx, refresh)
+	if err != nil {
+		return GitBranches{}, err
 	}
 	result := GitBranches{Branches: make([]GitBranch, 0, len(branches)), Warning: warning}
 	for _, branch := range branches {
@@ -122,10 +136,7 @@ func (s *Server) handleGitBranches(w http.ResponseWriter, r *http.Request) {
 			Name: branch.Name, Remote: branch.Remote, Current: branch.Current,
 		})
 	}
-	if refresh {
-		s.broadcast(Frame{Type: EvtDiffsChanged})
-	}
-	writeJSON(w, result)
+	return result, nil
 }
 
 func (s *Server) handleGitHistory(w http.ResponseWriter, r *http.Request) {
@@ -179,7 +190,7 @@ func (s *Server) handleGitCompare(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGitCreateBranch(w http.ResponseWriter, r *http.Request) {
 	var body gitBranchRequest
-	if err := decodeLimitedJSON(w, r, &body); err != nil {
+	if err := decodeGitJSON(w, r, &body); err != nil {
 		return
 	}
 	body.Name = strings.TrimSpace(body.Name)
@@ -192,7 +203,7 @@ func (s *Server) handleGitCreateBranch(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGitCheckoutBranch(w http.ResponseWriter, r *http.Request) {
 	var body gitBranchRequest
-	if err := decodeLimitedJSON(w, r, &body); err != nil {
+	if err := decodeGitJSON(w, r, &body); err != nil {
 		return
 	}
 	body.Name = strings.TrimSpace(body.Name)
@@ -209,12 +220,12 @@ func (s *Server) handleGitCheckoutBranch(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleGitStage(w http.ResponseWriter, r *http.Request) {
-	var body gitPathsRequest
-	if err := decodeLimitedJSON(w, r, &body); err != nil {
-		return
-	}
-	paths := body.Paths
-	if len(paths) != 0 {
+	var paths []string
+	if r.ContentLength != 0 {
+		var body gitPathsRequest
+		if err := decodeGitJSON(w, r, &body); err != nil {
+			return
+		}
 		var ok bool
 		paths, ok = s.normalizeGitPaths(w, body.Paths)
 		if !ok {
@@ -242,7 +253,7 @@ func (s *Server) handleGitUnstage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGitCommit(w http.ResponseWriter, r *http.Request) {
 	var body gitCommitRequest
-	if err := decodeLimitedJSON(w, r, &body); err != nil {
+	if err := decodeGitJSON(w, r, &body); err != nil {
 		return
 	}
 	body.Message = strings.TrimSpace(body.Message)
@@ -283,7 +294,7 @@ func (s *Server) handleGitPush(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) decodeGitPaths(w http.ResponseWriter, r *http.Request) ([]string, bool) {
 	var body gitPathsRequest
-	if err := decodeLimitedJSON(w, r, &body); err != nil {
+	if err := decodeGitJSON(w, r, &body); err != nil {
 		return nil, false
 	}
 	return s.normalizeGitPaths(w, body.Paths)
@@ -315,7 +326,12 @@ func (s *Server) gitIndexMutationComplete(w http.ResponseWriter) {
 	// Staging only changes the index. Give clients a narrow event so an open
 	// history or branch comparison does not contend with the status refresh.
 	s.broadcast(Frame{Type: EvtGitIndexChanged})
-	writeJSON(w, map[string]string{"output": ""})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) gitMutationNoContent(w http.ResponseWriter) {
+	s.broadcast(Frame{Type: EvtDiffsChanged})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) gitCheckoutComplete(w http.ResponseWriter, output string) {
@@ -323,13 +339,8 @@ func (s *Server) gitCheckoutComplete(w http.ResponseWriter, output string) {
 	s.gitMutationComplete(w, output)
 }
 
-func decodeLimitedJSON(w http.ResponseWriter, r *http.Request, dst any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
-		return err
-	}
-	return nil
+func decodeGitJSON(w http.ResponseWriter, r *http.Request, target any) error {
+	return decodeJSONRequest(w, r, target, gitRequestLimit)
 }
 
 func writeGitError(w http.ResponseWriter, err error) {

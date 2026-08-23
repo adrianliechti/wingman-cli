@@ -46,6 +46,7 @@ const (
 	installerCodeLLDB   installerKind = "codelldb"
 	installerNetCoreDbg installerKind = "netcoredbg"
 	installerJava       installerKind = "java"
+	installerKotlinLSP  installerKind = "kotlin-lsp"
 )
 
 // Requirement lists equivalent commands in preference order. Project and
@@ -60,10 +61,23 @@ type Requirement struct {
 	ManagedOnly          bool
 }
 
-// Progress identifies the managed tool currently being checked or installed.
+// ProgressPhase describes what the managed-tool updater is doing. Checking is
+// intentionally distinct from a download so status surfaces do not imply that
+// a fresh installation is being replaced on every startup.
+type ProgressPhase string
+
+const (
+	ProgressChecking   ProgressPhase = "checking"
+	ProgressInstalling ProgressPhase = "installing"
+	ProgressUpdating   ProgressPhase = "updating"
+)
+
+// Progress identifies the managed tool currently being checked, installed, or
+// updated.
 type Progress struct {
 	Tool    string
 	Label   string
+	Phase   ProgressPhase
 	Current int
 	Total   int
 }
@@ -148,7 +162,7 @@ func ToolLabels(ids []string) []string {
 }
 
 func allRecipes() []recipe {
-	groups := [][]recipe{goRecipes, rustRecipes, dotnetRecipes, nodeRecipes, pythonRecipes, javascriptRecipes, javaRecipes}
+	groups := [][]recipe{goRecipes, rustRecipes, dotnetRecipes, nodeRecipes, pythonRecipes, javascriptRecipes, javaRecipes, kotlinRecipes}
 	var result []recipe
 	for _, group := range groups {
 		result = append(result, group...)
@@ -234,7 +248,11 @@ func (m *Manager) Resolve(command string) string {
 	if !ok {
 		return ""
 	}
-	return resolveInstalledCommand(filepath.Join(m.root, item.ID), command)
+	root := filepath.Join(m.root, item.ID)
+	if item.Kind == installerKotlinLSP && !kotlinLSPLauncherReady(root) {
+		return ""
+	}
+	return resolveInstalledCommand(root, command)
 }
 
 // Update installs the latest release for every selected requirement. A fresh
@@ -294,11 +312,7 @@ func (m *Manager) Update(ctx context.Context, requirements []Requirement, progre
 			break
 		}
 		item := selected[id]
-		for _, report := range progress {
-			if report != nil {
-				report(Progress{Tool: item.ID, Label: item.Label, Current: index + 1, Total: len(ids)})
-			}
-		}
+		reportProgress(progress, item, ProgressChecking, index+1, len(ids))
 		if err := recoverInterruptedUpdate(m.root, item.ID); err != nil {
 			updateErrors = append(updateErrors, fmt.Errorf("recover %s: %w", item.ID, err))
 			continue
@@ -316,6 +330,11 @@ func (m *Manager) Update(ctx context.Context, requirements []Requirement, progre
 			}
 			continue
 		}
+		phase := ProgressInstalling
+		if ready {
+			phase = ProgressUpdating
+		}
+		reportProgress(progress, item, phase, index+1, len(ids))
 		updated, err := m.updateOne(ctx, item)
 		changed = changed || updated
 		if err != nil {
@@ -337,6 +356,15 @@ func (m *Manager) Update(ctx context.Context, requirements []Requirement, progre
 		_ = os.Remove(m.retryPath(item))
 	}
 	return changed, errors.Join(updateErrors...)
+}
+
+func reportProgress(reports []func(Progress), item recipe, phase ProgressPhase, current, total int) {
+	update := Progress{Tool: item.ID, Label: item.Label, Phase: phase, Current: current, Total: total}
+	for _, report := range reports {
+		if report != nil {
+			report(update)
+		}
+	}
 }
 
 func (m *Manager) externalAvailable(ctx context.Context, requirement Requirement) bool {
@@ -586,6 +614,8 @@ func installationReady(item recipe, root string) bool {
 		return tooling.Executable(filepath.Join(root, "netcoredbg", name))
 	case installerJava:
 		return len(javaDebugBundlesAt(root)) > 0
+	case installerKotlinLSP:
+		return tooling.Executable(kotlinLSPServerPath(root)) && kotlinLSPLauncherReady(root)
 	default:
 		return true
 	}
@@ -627,6 +657,9 @@ func (m *Manager) installRecipe(ctx context.Context, item recipe, stage string) 
 
 	case installerJava:
 		return m.installJava(ctx, item, stage)
+
+	case installerKotlinLSP:
+		return m.installKotlinLSP(ctx, item, stage)
 
 	default:
 		return "", fmt.Errorf("unsupported installer %q", item.Kind)

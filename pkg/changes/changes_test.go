@@ -99,6 +99,46 @@ func TestNativeRepositoryDiffLayersAndRevertPreservesIndex(t *testing.T) {
 	}
 }
 
+func TestNativeRepositoryDiffsLayerReturnsConsistentIndexAndWorktreeSnapshots(t *testing.T) {
+	dir := t.TempDir()
+	repo := initRepository(t, dir)
+	writeFile(t, dir, "both.txt", "base\n")
+	writeFile(t, dir, "worktree.txt", "base\n")
+	stage(t, repo, "both.txt")
+	stage(t, repo, "worktree.txt")
+	commit(t, repo, "initial")
+
+	writeFile(t, dir, "both.txt", "staged\n")
+	stage(t, repo, "both.txt")
+	writeFile(t, dir, "both.txt", "worktree\n")
+	writeFile(t, dir, "worktree.txt", "worktree\n")
+
+	m := New(dir)
+	defer m.Close()
+	staged, err := m.DiffsLayer(context.Background(), DiffStaged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(staged) != 1 || staged[0].Path != "both.txt" || staged[0].Original != "base\n" || staged[0].Modified != "staged\n" {
+		t.Fatalf("staged diffs = %+v", staged)
+	}
+
+	unstaged, err := m.DiffsLayer(context.Background(), DiffUnstaged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := make(map[string]FileDiff, len(unstaged))
+	for _, diff := range unstaged {
+		byPath[diff.Path] = diff
+	}
+	if len(byPath) != 2 || byPath["both.txt"].Original != "staged\n" || byPath["both.txt"].Modified != "worktree\n" || byPath["worktree.txt"].Original != "base\n" || byPath["worktree.txt"].Modified != "worktree\n" {
+		t.Fatalf("unstaged diffs = %+v", unstaged)
+	}
+	if _, err := m.DiffsLayer(context.Background(), DiffLayer("unknown")); err == nil {
+		t.Fatal("invalid aggregate diff layer was accepted")
+	}
+}
+
 func TestNativeRepositoryRevertRejectsStagedOnlyChange(t *testing.T) {
 	dir := t.TempDir()
 	repo := initRepository(t, dir)
@@ -301,6 +341,13 @@ func TestNativeRepositoryCompareAndHistory(t *testing.T) {
 	}
 	if !refs[featureBranch.Short()] {
 		t.Fatalf("feature ref missing from history: %+v", history)
+	}
+	recent, err := m.HistoryLimit(context.Background(), 2)
+	if err != nil || len(recent) != 2 {
+		t.Fatalf("limited history = %+v, %v", recent, err)
+	}
+	if _, err := m.HistoryLimit(context.Background(), -1); err == nil {
+		t.Fatal("negative history limit was accepted")
 	}
 	if _, err := m.Compare(context.Background(), "missing", featureBranch.Short(), false); err == nil {
 		t.Fatal("comparison with a missing ref succeeded")

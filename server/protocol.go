@@ -29,9 +29,8 @@ type ClientMessage struct {
 	Sessions   []string `json:"sessions,omitempty"`
 
 	PromptID string         `json:"prompt_id,omitempty"`
-	Approved bool           `json:"approved,omitempty"`
-	Always   bool           `json:"always,omitempty"`
 	Action   string         `json:"action,omitempty"`
+	Scope    string         `json:"scope,omitempty"`
 	Content  map[string]any `json:"content,omitempty"`
 }
 
@@ -65,8 +64,9 @@ const (
 )
 
 const (
-	PromptKindAsk     = "ask"
-	PromptKindConfirm = "confirm"
+	PromptKindAsk      = "ask"
+	PromptKindConfirm  = "confirm"
+	PromptScopeSession = "session"
 )
 
 type Frame struct {
@@ -90,6 +90,7 @@ type Frame struct {
 	Paused    bool                 `json:"paused,omitempty"`
 	CanSteer  bool                 `json:"can_steer,omitempty"`
 	Partial   bool                 `json:"partial,omitempty"`
+	Input     *TurnQueueEntry      `json:"input,omitempty"`
 	Queue     []TurnQueueEntry     `json:"queue,omitempty"`
 
 	PromptID     string             `json:"prompt_id,omitempty"`
@@ -107,14 +108,13 @@ type Frame struct {
 }
 
 type TurnQueueEntry struct {
-	ID         string   `json:"id"`
-	State      string   `json:"state"`
-	Intent     string   `json:"intent"`
-	Position   int      `json:"position,omitempty"`
-	Text       string   `json:"text,omitempty"`
-	Files      []string `json:"files,omitempty"`
-	Images     []string `json:"images,omitempty"`
-	ImageCount int      `json:"image_count,omitempty"`
+	ID       string   `json:"id"`
+	State    string   `json:"state"`
+	Intent   string   `json:"intent"`
+	Position int      `json:"position,omitempty"`
+	Text     string   `json:"text,omitempty"`
+	Files    []string `json:"files,omitempty"`
+	Images   []string `json:"images,omitempty"`
 }
 
 type ConversationMessage struct {
@@ -190,6 +190,5 @@ type DiffEntry struct {
 type SessionEntry struct {
 	ID        string `json:"id"`
 	Title     string `json:"title,omitempty"`
-	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 }

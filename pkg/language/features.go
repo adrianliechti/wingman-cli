@@ -9,12 +9,14 @@ import (
 )
 
 func (s *Service) DefinitionLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.Location, error) {
-	if s.hasLSPServerFor(filePath) {
-		return s.locationRequest(ctx, filePath, content, func(session *lsp.Session, uri string) ([]lsp.Location, error) {
+	return s.structuralLocations(
+		ctx, filePath, content, line, column,
+		func(capabilities lsp.ServerCapabilities) any { return capabilities.DefinitionProvider },
+		func(session *lsp.Session, uri string) ([]lsp.Location, error) {
 			return session.DefinitionLocations(ctx, uri, line, column)
-		})
-	}
-	return s.graphLocations(ctx, filePath, content, line, column, (*graph.Engine).Definitions)
+		},
+		(*graph.Engine).Definitions,
+	)
 }
 
 func (s *Service) TypeDefinitionLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.Location, error) {
@@ -24,21 +26,64 @@ func (s *Service) TypeDefinitionLocations(ctx context.Context, filePath string, 
 }
 
 func (s *Service) ImplementationLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.Location, error) {
-	if s.hasLSPServerFor(filePath) {
-		return s.locationRequest(ctx, filePath, content, func(session *lsp.Session, uri string) ([]lsp.Location, error) {
+	return s.structuralLocations(
+		ctx, filePath, content, line, column,
+		func(capabilities lsp.ServerCapabilities) any { return capabilities.ImplementationProvider },
+		func(session *lsp.Session, uri string) ([]lsp.Location, error) {
 			return session.ImplementationLocations(ctx, uri, line, column)
-		})
-	}
-	return s.graphLocations(ctx, filePath, content, line, column, (*graph.Engine).Implementations)
+		},
+		(*graph.Engine).Implementations,
+	)
 }
 
 func (s *Service) ReferenceLocations(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.Location, error) {
-	if s.hasLSPServerFor(filePath) {
-		return s.locationRequest(ctx, filePath, content, func(session *lsp.Session, uri string) ([]lsp.Location, error) {
+	return s.structuralLocations(
+		ctx, filePath, content, line, column,
+		func(capabilities lsp.ServerCapabilities) any { return capabilities.ReferencesProvider },
+		func(session *lsp.Session, uri string) ([]lsp.Location, error) {
 			return session.ReferenceLocations(ctx, uri, line, column)
-		})
+		},
+		(*graph.Engine).References,
+	)
+}
+
+func (s *Service) structuralLocations(
+	ctx context.Context,
+	filePath string,
+	content *string,
+	line, column int,
+	capability func(lsp.ServerCapabilities) any,
+	request func(*lsp.Session, string) ([]lsp.Location, error),
+	fallback func(*graph.Engine, context.Context, string, []byte, int, int) ([]graph.Location, error),
+) ([]lsp.Location, error) {
+	if s.hasLSPServerFor(filePath) {
+		locations, supported, err := s.capabilityLocationRequest(ctx, filePath, content, capability, request)
+		if supported && err == nil {
+			return locations, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 	}
-	return s.graphLocations(ctx, filePath, content, line, column, (*graph.Engine).References)
+	return s.graphLocations(ctx, filePath, content, line, column, fallback)
+}
+
+func (s *Service) capabilityLocationRequest(
+	ctx context.Context,
+	filePath string,
+	content *string,
+	capability func(lsp.ServerCapabilities) any,
+	request func(*lsp.Session, string) ([]lsp.Location, error),
+) (locations []lsp.Location, supported bool, err error) {
+	err = s.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
+		supported = lsp.CapabilityEnabled(capability(session.Capabilities()))
+		if !supported {
+			return nil
+		}
+		locations, err = request(session, uri)
+		return err
+	})
+	return
 }
 
 func (s *Service) locationRequest(ctx context.Context, filePath string, content *string, request func(*lsp.Session, string) ([]lsp.Location, error)) ([]lsp.Location, error) {
@@ -55,27 +100,42 @@ func (s *Service) locationRequest(ctx context.Context, filePath string, content 
 }
 
 func (s *Service) Hover(ctx context.Context, filePath string, content *string, line, column int) (string, error) {
-	if !s.hasLSPServerFor(filePath) {
-		return s.graphHover(ctx, filePath, content, line, column)
+	if s.hasLSPServerFor(filePath) {
+		var hover *lsp.Hover
+		supported := false
+		err := s.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
+			supported = lsp.CapabilityEnabled(session.Capabilities().HoverProvider)
+			if !supported {
+				return nil
+			}
+			var err error
+			hover, err = session.Hover(ctx, uri, line, column)
+			return err
+		})
+		if supported && err == nil {
+			return HoverText(hover), nil
+		}
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 	}
-	var hover *lsp.Hover
-	err := s.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
-		var err error
-		hover, err = session.Hover(ctx, uri, line, column)
-		return err
-	})
-	return HoverText(hover), err
+	return s.graphHover(ctx, filePath, content, line, column)
 }
 
 func (s *Service) CompletionItems(ctx context.Context, filePath string, content *string, line, column int, completionContext *lsp.CompletionContext) (lsp.CompletionList, error) {
 	if s.hasLSPServerFor(filePath) {
 		var list lsp.CompletionList
+		supported := false
 		err := s.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
+			supported = session.Capabilities().CompletionProvider != nil
+			if !supported {
+				return nil
+			}
 			var err error
 			list, err = session.CompletionItems(ctx, uri, line, column, completionContext)
 			return err
 		})
-		if err == nil {
+		if supported && err == nil {
 			return list, nil
 		}
 		if ctx.Err() != nil {
@@ -162,6 +222,17 @@ func (s *Service) ExecuteCommand(ctx context.Context, filePath string, content *
 	return result, err
 }
 
+func (s *Service) ExecuteCommandWithEdits(ctx context.Context, filePath string, content *string, command lsp.Command) (any, []lsp.CommandWorkspaceEdit, error) {
+	var result any
+	var edits []lsp.CommandWorkspaceEdit
+	err := s.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, _ string) error {
+		var err error
+		result, edits, err = session.ExecuteCommandWithEdits(ctx, command)
+		return err
+	})
+	return result, edits, err
+}
+
 func (s *Service) Formatting(ctx context.Context, filePath string, content *string, options lsp.FormattingOptions) ([]lsp.TextEdit, error) {
 	var result []lsp.TextEdit
 	err := s.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
@@ -203,28 +274,43 @@ func (s *Service) InlayHints(ctx context.Context, filePath string, content *stri
 }
 
 func (s *Service) DocumentSymbols(ctx context.Context, filePath string, content *string) ([]lsp.DocumentSymbol, []lsp.SymbolInformation, error) {
-	if !s.hasLSPServerFor(filePath) {
-		return s.graphDocumentSymbols(filePath, content)
+	if s.hasLSPServerFor(filePath) {
+		var documents []lsp.DocumentSymbol
+		var flat []lsp.SymbolInformation
+		supported := false
+		err := s.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
+			supported = lsp.CapabilityEnabled(session.Capabilities().DocumentSymbolProvider)
+			if !supported {
+				return nil
+			}
+			result, err := session.DocumentSymbols(ctx, uri)
+			documents, flat = DocumentSymbolsFromProtocol(result)
+			return err
+		})
+		if supported && err == nil {
+			return documents, flat, nil
+		}
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
 	}
-	var documents []lsp.DocumentSymbol
-	var flat []lsp.SymbolInformation
-	err := s.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
-		result, err := session.DocumentSymbols(ctx, uri)
-		documents, flat = DocumentSymbolsFromProtocol(result)
-		return err
-	})
-	return documents, flat, err
+	return s.graphDocumentSymbols(filePath, content)
 }
 
 func (s *Service) DocumentHighlights(ctx context.Context, filePath string, content *string, line, column int) ([]lsp.DocumentHighlight, error) {
 	if s.hasLSPServerFor(filePath) {
 		var result []lsp.DocumentHighlight
+		supported := false
 		err := s.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
+			supported = lsp.CapabilityEnabled(session.Capabilities().DocumentHighlightProvider)
+			if !supported {
+				return nil
+			}
 			var err error
 			result, err = session.DocumentHighlights(ctx, uri, line, column)
 			return err
 		})
-		if err == nil {
+		if supported && err == nil {
 			return result, nil
 		}
 		if ctx.Err() != nil {
@@ -237,12 +323,17 @@ func (s *Service) DocumentHighlights(ctx context.Context, filePath string, conte
 func (s *Service) FoldingRanges(ctx context.Context, filePath string, content *string) ([]lsp.FoldingRange, error) {
 	if s.hasLSPServerFor(filePath) {
 		var result []lsp.FoldingRange
+		supported := false
 		err := s.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
+			supported = lsp.CapabilityEnabled(session.Capabilities().FoldingRangeProvider)
+			if !supported {
+				return nil
+			}
 			var err error
 			result, err = session.FoldingRanges(ctx, uri)
 			return err
 		})
-		if err == nil {
+		if supported && err == nil {
 			return result, nil
 		}
 		if ctx.Err() != nil {
@@ -256,13 +347,18 @@ func (s *Service) SemanticTokens(ctx context.Context, filePath string, content *
 	if s.hasLSPServerFor(filePath) {
 		var tokens *lsp.SemanticTokens
 		var legend lsp.SemanticTokensLegend
+		supported := false
 		err := s.withLSPDocument(ctx, filePath, content, func(session *lsp.Session, uri string) error {
+			supported = lsp.CapabilityEnabled(session.Capabilities().SemanticTokensProvider)
+			if !supported {
+				return nil
+			}
 			var err error
 			legend = semanticTokenLegend(session.Capabilities())
 			tokens, err = session.SemanticTokens(ctx, uri)
 			return err
 		})
-		if err == nil && tokens != nil {
+		if supported && err == nil && tokens != nil {
 			return decodeSemanticTokens(tokens.Data, legend)
 		}
 		if ctx.Err() != nil {

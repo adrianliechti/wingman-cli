@@ -14,6 +14,7 @@ import {
 	Globe2,
 	Lightbulb,
 	Loader2,
+	MessageSquare,
 	Monitor,
 	MonitorPlay,
 	PanelLeftOpen,
@@ -43,10 +44,7 @@ import {
 	usePanelRef,
 } from "react-resizable-panels";
 import { agentQueries, setCurrentAgent } from "./api/agents";
-import {
-	getInspectAvailability,
-	type ManagedToolsStatus,
-} from "./api/capabilities";
+import { getInspectAvailability } from "./api/capabilities";
 import {
 	controlDebug,
 	getDebugSession,
@@ -108,13 +106,18 @@ import { DiffTab } from "./components/DiffTab";
 import { CompareTab } from "./components/CompareTab";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ErrorPanel } from "./components/ErrorScreen";
-import { FileTab } from "./components/FileTab";
+import {
+	FileTab,
+	type EditorSelectionContext,
+	type FileTabHandle,
+} from "./components/FileTab";
 import { InsightsTab } from "./components/insights/InsightsTab";
 import { ProblemsPanel } from "./components/ProblemsPanel";
 import { TasksPanel } from "./components/TasksPanel";
 import { TaskTab } from "./components/TaskTab";
 import { TerminalView } from "./components/TerminalView";
 import { WorkspaceFilesPanel } from "./components/WorkspaceFilesPanel";
+import { WorkspaceActivity } from "./components/WorkspaceActivity";
 import {
 	Dialog,
 	dialogButtonClass,
@@ -198,6 +201,25 @@ const TERMINAL_SHORTCUT = /Mac|iPhone|iPad/.test(navigator.platform)
 const TERMINAL_SHELL_MENU_HINT = /Mac|iPhone|iPad/.test(navigator.platform)
 	? "Option-click"
 	: "Alt-click";
+
+function markdownFenceFor(text: string): string {
+	const fenceFor = (marker: "`" | "~") => {
+		let longest = 0;
+		let current = 0;
+		for (const character of text) {
+			if (character === marker) {
+				current++;
+				longest = Math.max(longest, current);
+			} else {
+				current = 0;
+			}
+		}
+		return marker.repeat(Math.max(3, longest + 1));
+	};
+	const backticks = fenceFor("`");
+	const tildes = fenceFor("~");
+	return backticks.length <= tildes.length ? backticks : tildes;
+}
 
 function terminalShellName(name: string): string {
 	const knownNames: Record<string, string> = {
@@ -285,7 +307,7 @@ export default function App() {
 		applyWorkspaceEdit,
 	} = useOpenDocuments(subscribe);
 	const capabilities = useCapabilities();
-	const showChanges = !!(capabilities?.diffs || capabilities?.git_init);
+	const showChanges = !!(capabilities?.git || capabilities?.git_init);
 	const { inspect: showInspect, debug: showDebug } =
 		getInspectAvailability(capabilities);
 	const showAgents = capabilities?.tasks ?? false;
@@ -343,6 +365,7 @@ export default function App() {
 	const exitedDebugTerminalIDsRef = useRef(new Set<string>());
 
 	const [tabs, setTabs] = useState<CenterTab[]>([draftChatTab()]);
+	const fileTabHandlesRef = useRef(new Map<string, FileTabHandle>());
 	const [activeTabId, setActiveTabId] = useState(chatTabId(""));
 	const [dragTabId, setDragTabId] = useState<string | null>(null);
 	const [leftActiveId, setLeftActiveId] = useState(chatTabId(""));
@@ -351,8 +374,12 @@ export default function App() {
 	const [fileViews, setFileViews] = useState<Record<string, FileView>>({});
 	const [currentSessionId, setCurrentSessionId] = useState("");
 	const [paletteOpen, setPaletteOpen] = useState(false);
+	const [paletteEditorActions, setPaletteEditorActions] =
+		useState<FileTabHandle | null>(null);
 	const [composerSeed, setComposerSeed] = useState<{
 		text: string;
+		files?: string[];
+		append?: boolean;
 		nonce: number;
 	} | null>(null);
 	const [closeRequest, setCloseRequest] = useState<CloseRequest>(null);
@@ -376,6 +403,46 @@ export default function App() {
 	const followedDebugStopRef = useRef("");
 	const [debugControlBusy, setDebugControlBusy] = useState(false);
 
+	const openWorkspaceEditFiles = useCallback(
+		(paths: readonly string[]) => {
+			if (paths.length === 0) return;
+			const pane = activePaneRef.current;
+			const activeFile = tabs.find(
+				(tab) => tab.id === activeTabId && tab.type === "file",
+			);
+			const keepActive = !!activeFile?.path && paths.includes(activeFile.path);
+			const firstExisting = tabs.find(
+				(tab) => tab.type === "file" && tab.path === paths[0],
+			);
+			setTabs((current) => {
+				const next = [...current];
+				for (const path of paths) {
+					const index = next.findIndex(
+						(tab) => tab.type === "file" && tab.path === path,
+					);
+					if (index >= 0) {
+						if (next[index].preview) {
+							next[index] = { ...next[index], preview: undefined };
+						}
+						continue;
+					}
+					next.push({
+						id: `file:${path}`,
+						type: "file",
+						label: path.split("/").pop() || path,
+						path,
+						pane,
+					});
+				}
+				return withSessionFallback(next);
+			});
+			// Keep the initiating editor focused. In particular, promoting a preview
+			// tab must not create and activate a second editor for the same file.
+			if (!keepActive) setActiveTabId(firstExisting?.id ?? `file:${paths[0]}`);
+		},
+		[activeTabId, tabs],
+	);
+
 	const runWorkspaceEdit = useCallback(
 		async (envelope: WorkspaceEditEnvelope, label: string) => {
 			const result = await applyWorkspaceEdit(envelope);
@@ -385,10 +452,12 @@ export default function App() {
 					description: result.error,
 					tone: "error",
 				});
+			} else {
+				openWorkspaceEditFiles(result.paths ?? []);
 			}
 			return result.ok;
 		},
-		[applyWorkspaceEdit, toast],
+		[applyWorkspaceEdit, openWorkspaceEditFiles, toast],
 	);
 
 	const requestWorkspaceEdit = useCallback(
@@ -507,7 +576,17 @@ export default function App() {
 				["k", "p"].includes(e.key.toLowerCase())
 			) {
 				e.preventDefault();
-				setPaletteOpen((o) => !o);
+				e.stopPropagation();
+				if (paletteOpen) {
+					setPaletteOpen(false);
+					setPaletteEditorActions(null);
+				} else {
+					const editorActions = fileTabHandlesRef.current.get(activeTabId);
+					setPaletteEditorActions(
+						editorActions?.hasSelection() ? editorActions : null,
+					);
+					setPaletteOpen(true);
+				}
 				return;
 			}
 			// Match on e.code: with Alt held macOS reports the composed character
@@ -522,9 +601,11 @@ export default function App() {
 				void createTerminal();
 			}
 		};
-		window.addEventListener("keydown", onKey);
-		return () => window.removeEventListener("keydown", onKey);
-	}, [createTerminal]);
+		// Capture the palette shortcut before embedded editors can consume it as
+		// the start of one of their own key chords.
+		window.addEventListener("keydown", onKey, true);
+		return () => window.removeEventListener("keydown", onKey, true);
+	}, [activeTabId, createTerminal, paletteOpen]);
 
 	const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
 	const leftTabs = tabs.filter((tab) => paneOf(tab) === "left");
@@ -1652,6 +1733,30 @@ export default function App() {
 		if (tab) activateTab(tab);
 	}, [tabs, currentSessionId, activateTab]);
 
+	const askAboutEditorSelection = useCallback(
+		(selection: EditorSelectionContext) => {
+			focusChat();
+			const fence = markdownFenceFor(selection.text);
+			const language = /^[a-z0-9_+.-]+$/i.test(selection.language)
+				? selection.language
+				: "";
+			const lines =
+				selection.range.start_line === selection.range.end_line
+					? `${selection.range.start_line}`
+					: `${selection.range.start_line}-${selection.range.end_line}`;
+			setComposerSeed({
+				text: `Help me with this selection from ${selection.path}:${lines}.\n\n${fence}${language}\n${selection.text}\n${fence}`,
+				files: [selection.path],
+				append: true,
+				nonce: Date.now(),
+			});
+		},
+		[focusChat],
+	);
+	const consumeComposerSeed = useCallback((nonce: number) => {
+		setComposerSeed((current) => (current?.nonce === nonce ? null : current));
+	}, []);
+
 	const runSkill = useCallback(
 		(skill: PaletteSkill) => {
 			focusChat();
@@ -1862,7 +1967,26 @@ export default function App() {
 	}, [showWorkspaceSearch]);
 
 	const paletteActions = useMemo<PaletteAction[]>(() => {
-		const actions: PaletteAction[] = [
+		const actions: PaletteAction[] = [];
+		if (paletteEditorActions) {
+			actions.push(
+				{
+					id: "editor.chat-about-selection",
+					label: "Chat about this…",
+					hint: "Selected text",
+					icon: <MessageSquare size={12} className="text-fg-dim shrink-0" />,
+					run: () => void paletteEditorActions.chatAboutSelection(),
+				},
+				{
+					id: "editor.transform-selection",
+					label: "Transform selection…",
+					hint: "Selected text",
+					icon: <Sparkles size={12} className="text-fg-dim shrink-0" />,
+					run: () => void paletteEditorActions.transformSelection(),
+				},
+			);
+		}
+		actions.push(
 			{
 				id: "new-session",
 				label: "New session",
@@ -1885,7 +2009,7 @@ export default function App() {
 				icon: <PanelRightOpen size={12} className="text-fg-dim shrink-0" />,
 				run: toggleRightPanel,
 			},
-		];
+		);
 		if (showChanges) {
 			actions.push({
 				id: "show-changes",
@@ -1956,6 +2080,7 @@ export default function App() {
 		}
 		return actions;
 	}, [
+		paletteEditorActions,
 		handleNewSession,
 		showChanges,
 		showTerminal,
@@ -2059,6 +2184,7 @@ export default function App() {
 					}}
 					onOpenFile={openFile}
 					seed={tab.id === activeTabId ? composerSeed : null}
+					onSeedConsumed={consumeComposerSeed}
 					toolProgress={toolProgress}
 				/>
 			);
@@ -2175,7 +2301,6 @@ export default function App() {
 				<DiffTab
 					path={tab.path}
 					layer={tab.diffLayer}
-					sessionId={sessionId}
 					onDeleted={() => closeTabNow(tab.id)}
 				/>
 			);
@@ -2184,6 +2309,10 @@ export default function App() {
 			return (
 				<FileTab
 					key={`${tab.id}:${tab.path}`}
+					ref={(handle) => {
+						if (handle) fileTabHandlesRef.current.set(tab.id, handle);
+						else fileTabHandlesRef.current.delete(tab.id);
+					}}
 					document={documents[tab.path]}
 					tabEnabled={tabEnabled}
 					line={tab.line}
@@ -2200,6 +2329,7 @@ export default function App() {
 					onReload={() => void reloadDocument(tab.path!, tab.external ?? false)}
 					onOpenFile={openFile}
 					onApplyWorkspaceEdit={requestWorkspaceEdit}
+					onAskSelection={askAboutEditorSelection}
 					onLaunchDebug={(target, action) => {
 						const currentPath = tab.path;
 						if (!currentPath) return;
@@ -2492,7 +2622,6 @@ export default function App() {
 					<TasksPanel sessionId={sessionId} onOpenTask={openTask} />
 				) : workspaceTab === "changes" && showChanges ? (
 					<DiffsPanel
-						sessionId={sessionId}
 						git={capabilities?.git ?? false}
 						canInit={capabilities?.git_init ?? false}
 						onOpenDiff={openDiff}
@@ -2531,10 +2660,6 @@ export default function App() {
 					/>
 				)}
 			</div>
-			<ManagedToolsFooter
-				key={capabilities?.managed_tools?.state ?? "none"}
-				status={capabilities?.managed_tools}
-			/>
 		</aside>
 	);
 
@@ -2679,6 +2804,10 @@ export default function App() {
 						{activeTab.pane === "right" && titlebarActions}
 					</div>
 				)}
+				<WorkspaceActivity
+					hasLSP={capabilities?.lsp ?? false}
+					tools={capabilities?.managed_tools}
+				/>
 				<div
 					data-window-interactive
 					data-titlebar-right-panel
@@ -2801,7 +2930,10 @@ export default function App() {
 			{paletteOpen && (
 				<CommandPalette
 					sessionId={sessionId}
-					onClose={() => setPaletteOpen(false)}
+					onClose={() => {
+						setPaletteOpen(false);
+						setPaletteEditorActions(null);
+					}}
 					actions={paletteActions}
 					onRunSkill={runSkill}
 					onSelectSession={(id) => void handleSessionSelect(id, "keep")}
@@ -3117,64 +3249,6 @@ export default function App() {
 					</div>
 				</div>
 			)}
-		</div>
-	);
-}
-
-function ManagedToolsFooter({ status }: { status?: ManagedToolsStatus }) {
-	const [dismissed, setDismissed] = useState("");
-	if (status?.state === "error") {
-		const tools = (status.unavailable ?? []).join(", ");
-		const key = tools || status.error || "error";
-		if (dismissed === key) return null;
-		const message = tools
-			? `Couldn't install ${tools}. Project and system tools still work.`
-			: "Automatic tool setup could not finish. Project and system tools still work.";
-		return (
-			<div
-				data-managed-tools-status
-				role="status"
-				aria-live="polite"
-				aria-atomic="true"
-				className="flex h-8 shrink-0 items-center gap-2 border-t border-warning/30 bg-warning/10 px-3 text-[10.5px] text-warning"
-			>
-				<span
-					className="min-w-0 flex-1 truncate"
-					title={status.error || message}
-				>
-					{message}
-				</span>
-				<button
-					type="button"
-					onClick={() => setDismissed(key)}
-					className="shrink-0 px-1 opacity-70 hover:opacity-100"
-					aria-label="Dismiss"
-				>
-					×
-				</button>
-			</div>
-		);
-	}
-	if (status?.state !== "installing") return null;
-
-	const message = status.label
-		? `Setting up ${status.label}…`
-		: "Checking tools…";
-	const progress =
-		status.current && status.total ? `${status.current}/${status.total}` : "";
-	return (
-		<div
-			data-managed-tools-status
-			role="status"
-			aria-live="polite"
-			aria-atomic="true"
-			className="flex h-8 shrink-0 items-center gap-2 border-t border-border-subtle bg-bg-surface/20 px-3 text-[10.5px] text-fg-dim"
-		>
-			<Loader2 size={11} className="shrink-0 animate-spin text-accent" />
-			<span className="min-w-0 flex-1 truncate" title={message}>
-				{message}
-			</span>
-			{progress && <span className="shrink-0 tabular-nums">{progress}</span>}
 		</div>
 	);
 }

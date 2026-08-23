@@ -57,7 +57,41 @@ type editorCapabilitiesResponse struct {
 	OnTypeFormattingTriggerCharacters []string `json:"on_type_formatting_trigger_characters"`
 	SemanticTokens                    bool     `json:"semantic_tokens"`
 	InlayHints                        bool     `json:"inlay_hints"`
-	WorkspaceSymbols                  bool     `json:"workspace_symbols"`
+}
+
+type lspActivityResponse struct {
+	Analyzing bool                 `json:"analyzing"`
+	Services  []lspServiceActivity `json:"services"`
+}
+
+type lspServiceActivity struct {
+	Server     string             `json:"server"`
+	Label      string             `json:"label"`
+	Project    string             `json:"project"`
+	Analyzing  bool               `json:"analyzing"`
+	Operations []lsp.WorkProgress `json:"operations"`
+}
+
+func (s *Server) handleLSPStatus(w http.ResponseWriter, _ *http.Request) {
+	activities := s.workspace.LSPActivities()
+	services := make([]lspServiceActivity, 0, len(activities))
+	analyzing := false
+	for _, activity := range activities {
+		project, err := filepath.Rel(s.workspace.RootPath, activity.ProjectDir)
+		if err != nil || project == ".." || filepath.IsAbs(project) || strings.HasPrefix(project, ".."+string(filepath.Separator)) {
+			project = filepath.Base(activity.ProjectDir)
+		}
+		project = filepath.ToSlash(project)
+		services = append(services, lspServiceActivity{
+			Server:     activity.Server,
+			Label:      activity.Label,
+			Project:    project,
+			Analyzing:  activity.Analyzing,
+			Operations: activity.Operations,
+		})
+		analyzing = analyzing || activity.Analyzing
+	}
+	writeJSON(w, lspActivityResponse{Analyzing: analyzing, Services: services})
 }
 
 func (s *Server) handleLSPEditorCapabilities(w http.ResponseWriter, r *http.Request) {
@@ -83,7 +117,6 @@ func (s *Server) handleLSPEditorCapabilities(w http.ResponseWriter, r *http.Requ
 		DocumentHighlights: true,
 		FoldingRanges:      true,
 		SemanticTokens:     true,
-		WorkspaceSymbols:   true,
 	}
 	if hasServer {
 		if provider := capabilities.CompletionProvider; provider != nil {
@@ -97,11 +130,11 @@ func (s *Server) handleLSPEditorCapabilities(w http.ResponseWriter, r *http.Requ
 		}
 		// Structural features remain available when the server omits them or
 		// fails later; only type-aware features are strictly capability-gated.
-		response.TypeDefinition = lspCapabilityEnabled(capabilities.TypeDefinitionProvider)
+		response.TypeDefinition = lsp.CapabilityEnabled(capabilities.TypeDefinitionProvider)
 		response.Rename, response.RenamePrepare = renameCapabilities(capabilities.RenameProvider)
 		response.CodeActions, response.CodeActionResolve = codeActionCapabilities(capabilities.CodeActionProvider)
-		response.DocumentFormatting = lspCapabilityEnabled(capabilities.DocumentFormattingProvider)
-		response.RangeFormatting = lspCapabilityEnabled(capabilities.DocumentRangeFormattingProvider)
+		response.DocumentFormatting = lsp.CapabilityEnabled(capabilities.DocumentFormattingProvider)
+		response.RangeFormatting = lsp.CapabilityEnabled(capabilities.DocumentRangeFormattingProvider)
 		if provider := capabilities.DocumentOnTypeFormattingProvider; provider.FirstTriggerCharacter != "" {
 			response.OnTypeFormattingTriggerCharacters = append(
 				[]string{provider.FirstTriggerCharacter},
@@ -109,19 +142,9 @@ func (s *Server) handleLSPEditorCapabilities(w http.ResponseWriter, r *http.Requ
 			)
 		}
 		response.SemanticTokens = true
-		response.InlayHints = lspCapabilityEnabled(capabilities.InlayHintProvider)
+		response.InlayHints = lsp.CapabilityEnabled(capabilities.InlayHintProvider)
 	}
 	writeJSON(w, response)
-}
-
-func lspCapabilityEnabled(value any) bool {
-	if value == nil {
-		return false
-	}
-	if enabled, ok := value.(lsp.Boolean); ok {
-		return bool(enabled)
-	}
-	return true
 }
 
 func renameCapabilities(value any) (enabled, prepare bool) {
@@ -247,11 +270,12 @@ func (s *Server) resolveLSPFile(w http.ResponseWriter, p string, requireLSP bool
 	if !ok {
 		return "", false
 	}
-	if requireLSP && !s.workspace.HasLSP() {
+	filePath := filepath.Join(s.workspace.RootPath, rel)
+	if requireLSP && !s.workspace.HasLSPFor(filePath) {
 		http.Error(w, "language server unavailable", http.StatusNotFound)
 		return "", false
 	}
-	return filepath.Join(s.workspace.RootPath, rel), true
+	return filePath, true
 }
 
 func (s *Server) decodeLSPDocumentRequest(w http.ResponseWriter, r *http.Request, requireLSP bool) (lspDocumentRequest, string, bool) {

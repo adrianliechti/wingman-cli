@@ -94,7 +94,7 @@ func TestGitAPIStageCommitPushAndPull(t *testing.T) {
 
 func getGitBranches(t *testing.T, baseURL string) GitBranches {
 	t.Helper()
-	res, err := http.Get(baseURL + "/api/git/branches?refresh=0")
+	res, err := http.Get(baseURL + "/api/git/branches")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,6 +107,61 @@ func getGitBranches(t *testing.T, baseURL string) GitBranches {
 		t.Fatal(err)
 	}
 	return branches
+}
+
+func TestGitAPIBranchFetchIsExplicit(t *testing.T) {
+	t.Setenv("WINGMAN_URL", "http://localhost:1")
+	repoDir := t.TempDir()
+	repo, err := git.PlainInit(repoDir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := repo.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.User.Name = "Wingman Test"
+	cfg.User.Email = "wingman@test.local"
+	if err := repo.SetConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	missingRemote := filepath.Join(t.TempDir(), "missing.git")
+	if _, err := repo.CreateRemote(&config.RemoteConfig{Name: "origin", URLs: []string{missingRemote}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "hello.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app, err := New(context.Background(), repoDir, &ServerOptions{NoBrowser: true, disableManagedTools: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	web := httptest.NewServer(app)
+	defer web.Close()
+
+	postGit(t, web.URL, "stage", "")
+	postGit(t, web.URL, "commit", `{"message":"initial commit"}`)
+	if branches := getGitBranches(t, web.URL); branches.Warning != "" {
+		t.Fatalf("read-only branch listing attempted a fetch: %q", branches.Warning)
+	}
+
+	res, err := http.Post(web.URL+"/api/git/fetch", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("fetch endpoint = %d", res.StatusCode)
+	}
+	var refreshed GitBranches
+	if err := json.NewDecoder(res.Body).Decode(&refreshed); err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.Warning == "" {
+		t.Fatal("fetch against a missing remote returned no warning")
+	}
 }
 
 func TestGitAPIInitCreatesRepository(t *testing.T) {
@@ -134,13 +189,13 @@ func TestGitAPIInitCreatesRepository(t *testing.T) {
 	}
 	caps := getCapabilities(t, web.URL)
 	assertRequiredCapabilityTypes(t, caps)
-	if caps["git"] != false || caps["diffs"] != false || caps["git_init"] != true {
+	if caps["git"] != false || caps["git_init"] != true {
 		t.Fatalf("capabilities before init = %v", caps)
 	}
 
 	postGit(t, web.URL, "init", "")
 	caps = getCapabilities(t, web.URL)
-	if caps["git"] != true || caps["diffs"] != true || caps["git_init"] != false {
+	if caps["git"] != true || caps["git_init"] != false {
 		t.Fatalf("capabilities after init = %v", caps)
 	}
 	if _, err := os.Stat(filepath.Join(workDir, ".git")); err != nil {
@@ -237,10 +292,42 @@ func TestGitAPIStageAll(t *testing.T) {
 	web := httptest.NewServer(app)
 	defer web.Close()
 
-	postGit(t, web.URL, "stage", `{"paths":[]}`)
+	postGit(t, web.URL, "stage", "")
 	status := getGitStatus(t, web.URL)
 	if len(status.Files) != 2 || !status.Files[0].Staged || !status.Files[1].Staged {
 		t.Fatalf("stage-all status = %+v", status)
+	}
+}
+
+func TestGitAPIRejectsLooseJSON(t *testing.T) {
+	t.Setenv("WINGMAN_URL", "http://localhost:1")
+	repoDir := t.TempDir()
+	if _, err := git.PlainInit(repoDir, false); err != nil {
+		t.Fatal(err)
+	}
+	app, err := New(context.Background(), repoDir, &ServerOptions{NoBrowser: true, disableManagedTools: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	web := httptest.NewServer(app)
+	defer web.Close()
+
+	for name, body := range map[string]string{
+		"unknown field":   `{"paths":["hello.txt"],"recursive":true}`,
+		"trailing value":  `{"paths":["hello.txt"]} {}`,
+		"empty path list": `{"paths":[]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			res, err := http.Post(web.URL+"/api/git/stage", "application/json", strings.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer res.Body.Close()
+			if res.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", res.StatusCode, http.StatusBadRequest)
+			}
+		})
 	}
 }
 
@@ -403,10 +490,13 @@ func getCapabilities(t *testing.T, baseURL string) map[string]any {
 
 func assertRequiredCapabilityTypes(t *testing.T, caps map[string]any) {
 	t.Helper()
-	for _, name := range []string{"git", "git_init", "lsp", "debug", "diffs", "tasks", "terminal"} {
+	for _, name := range []string{"git", "git_init", "lsp", "debug", "tasks", "terminal"} {
 		if _, ok := caps[name].(bool); !ok {
 			t.Errorf("capability %q = %#v, want non-null boolean", name, caps[name])
 		}
+	}
+	if _, ok := caps["diffs"]; ok {
+		t.Error("legacy duplicate capability \"diffs\" is still present")
 	}
 	for _, name := range []string{"platform", "workspace_name"} {
 		if _, ok := caps[name].(string); !ok {

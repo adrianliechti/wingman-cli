@@ -1,4 +1,7 @@
-import type { WorkspaceDiagnostics } from "../types/protocol";
+import type {
+	LSPActivityStatus,
+	WorkspaceDiagnostics,
+} from "../types/protocol";
 import { fetchJSON, fetchOK } from "./http.ts";
 
 export type LSPDocumentEvent = "open" | "change" | "save" | "close";
@@ -7,6 +10,12 @@ export function getWorkspaceDiagnostics(
 	signal?: AbortSignal,
 ): Promise<WorkspaceDiagnostics> {
 	return fetchJSON<WorkspaceDiagnostics>("/api/lsp/diagnostics", { signal });
+}
+
+export function getLSPActivity(
+	signal?: AbortSignal,
+): Promise<LSPActivityStatus> {
+	return fetchJSON<LSPActivityStatus>("/api/lsp/status", { signal });
 }
 
 export async function syncLSPDocument(

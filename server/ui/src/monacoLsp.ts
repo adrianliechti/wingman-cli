@@ -16,9 +16,10 @@ import type {
 	TextEdit as LSPTextEdit,
 } from "vscode-languageserver-types";
 import type { DiagnosticEntry, FileContent } from "./types/protocol";
-import type {
-	WorkspaceDocumentSnapshot,
-	WorkspaceEditEnvelope,
+import {
+	combineWorkspaceEditEnvelopes,
+	type WorkspaceDocumentSnapshot,
+	type WorkspaceEditEnvelope,
 } from "./workspaceEdit";
 
 const markerOwner = "wingman-lsp";
@@ -60,6 +61,10 @@ const semanticTokenModifiers = [
 	"defaultLibrary",
 ];
 let bridgeSequence = 0;
+const modelProviderOwners = new WeakMap<
+	MonacoTypes.editor.ITextModel,
+	{ bridge: number; dispose: () => void }
+>();
 
 interface BridgeOptions {
 	monaco: Monaco;
@@ -76,6 +81,7 @@ interface BridgeOptions {
 		envelope: WorkspaceEditEnvelope,
 		label: string,
 	) => Promise<boolean>;
+	onCommandError?: (label: string, error: unknown) => void;
 }
 
 export interface MonacoLSPBridge {
@@ -114,9 +120,11 @@ export function createMonacoLSPBridge({
 	onCapabilitiesChanged,
 	onOpenFile,
 	onApplyWorkspaceEdit,
+	onCommandError,
 }: BridgeOptions): MonacoLSPBridge {
 	const sourceModel = editor.getModel();
 	const disposables: MonacoTypes.IDisposable[] = [];
+	const providerDisposables: MonacoTypes.IDisposable[] = [];
 	const ownedModels = new Map<string, MonacoTypes.editor.ITextModel>();
 	const definitionTargets = new Map<
 		string,
@@ -141,7 +149,20 @@ export function createMonacoLSPBridge({
 	const capabilitiesReady = new Promise<void>((resolve) => {
 		resolveCapabilitiesReady = resolve;
 	});
-	const lspCommandID = `wingman.lsp.command.${++bridgeSequence}`;
+	const bridgeID = ++bridgeSequence;
+	const lspCommandID = `wingman.lsp.command.${bridgeID}`;
+
+	function clearLanguageProviders() {
+		for (const disposable of providerDisposables.splice(0)) {
+			disposable.dispose();
+		}
+		if (
+			sourceModel &&
+			modelProviderOwners.get(sourceModel)?.bridge === bridgeID
+		) {
+			modelProviderOwners.delete(sourceModel);
+		}
+	}
 
 	// Monaco's built-in workers publish diagnostics under the model language
 	// ID. When this file has a real language server, keep diagnostics
@@ -184,11 +205,14 @@ export function createMonacoLSPBridge({
 		resolve: boolean;
 	};
 
-	async function executeLSPCommand(command: LSPCommand) {
+	async function executeLSPCommand(
+		command: LSPCommand,
+		fallbackLabel = command.title,
+	): Promise<boolean> {
 		const controller = new AbortController();
 		requests.add(controller);
 		try {
-			await postJSON(
+			const response = await postJSONRequired<LSPCommandResponse>(
 				"/api/lsp/execute-command",
 				{
 					...documentRequest(file.path, sourceModel!),
@@ -196,6 +220,20 @@ export function createMonacoLSPBridge({
 				},
 				controller.signal,
 			);
+			const requested = response.edits ?? [];
+			if (requested.length === 0) return true;
+			const applied = await onApplyWorkspaceEdit?.(
+				combineWorkspaceEditEnvelopes(requested),
+				requested.find((item) => item.label)?.label || fallbackLabel,
+			);
+			if (!applied) return false;
+			appliedCodeActions++;
+			return true;
+		} catch (error) {
+			if (!(error instanceof DOMException && error.name === "AbortError")) {
+				onCommandError?.(fallbackLabel, error);
+			}
+			return false;
 		} finally {
 			requests.delete(controller);
 		}
@@ -229,17 +267,22 @@ export function createMonacoLSPBridge({
 				requests.delete(controller);
 			}
 		}
-		if (!isLSPCommand(action) && action.edit) {
-			const applied = await onApplyWorkspaceEdit?.(
+		let applied = false;
+		if (!isLSPCommand(action) && action.edit != null) {
+			const version = sourceModel.getVersionId();
+			const accepted = await onApplyWorkspaceEdit?.(
 				{ edit: action.edit, documents },
 				action.title,
 			);
-			if (!applied) return false;
+			if (!accepted) return false;
 			appliedCodeActions++;
+			applied = true;
+			await waitForModelChange(version);
+			if (disposed) return false;
 		}
 		const command = isLSPCommand(action) ? action : action.command;
-		if (command) await executeLSPCommand(command);
-		return (!isLSPCommand(action) && action.edit !== undefined) || !!command;
+		if (!command) return applied;
+		return (await executeLSPCommand(command, action.title)) || applied;
 	}
 
 	async function waitForModelChange(version: number) {
@@ -432,6 +475,15 @@ export function createMonacoLSPBridge({
 
 	function registerLanguageProviders(capabilities: LSPEditorCapabilities) {
 		if (!sourceModel || !file.language || disposed) return;
+		clearLanguageProviders();
+		const currentOwner = modelProviderOwners.get(sourceModel);
+		if (currentOwner && currentOwner.bridge > bridgeID) {
+			activeCapabilities = capabilities;
+			onCapabilitiesChanged?.();
+			return;
+		}
+		currentOwner?.dispose();
+		const disposables = providerDisposables;
 		workspaceURI = capabilities.workspace_uri;
 
 		if (capabilities.completion) {
@@ -831,8 +883,8 @@ export function createMonacoLSPBridge({
 											action.data !== undefined;
 										const executable =
 											isLSPCommand(action) ||
-											action.edit !== undefined ||
-											action.command !== undefined ||
+											action.edit != null ||
+											action.command != null ||
 											resolvable;
 										return {
 											title: action.title,
@@ -997,11 +1049,18 @@ export function createMonacoLSPBridge({
 		}
 
 		activeCapabilities = capabilities;
+		modelProviderOwners.set(sourceModel, {
+			bridge: bridgeID,
+			dispose: clearLanguageProviders,
+		});
 		suppressStandaloneDiagnostics();
 		onCapabilitiesChanged?.();
 	}
 
 	if (sourceModel && file.language) {
+		// Structural providers are useful immediately and keep an editor opened
+		// during language-server startup from requiring a close/reopen cycle.
+		registerLanguageProviders(structuralCapabilities);
 		const controller = new AbortController();
 		requests.add(controller);
 		void getEditorCapabilities(file.path, controller.signal)
@@ -1106,6 +1165,7 @@ export function createMonacoLSPBridge({
 			if (sourceModel && !sourceModel.isDisposed()) {
 				monaco.editor.setModelMarkers(sourceModel, markerOwner, []);
 			}
+			clearLanguageProviders();
 			for (const disposable of disposables) disposable.dispose();
 			for (const model of ownedModels.values()) model.dispose();
 			ownedModels.clear();
@@ -1189,6 +1249,14 @@ interface LSPResolvedCodeActionResponse {
 	documents: Record<string, WorkspaceDocumentSnapshot>;
 }
 
+interface LSPCommandEditResponse extends WorkspaceEditEnvelope {
+	label?: string;
+}
+
+interface LSPCommandResponse {
+	edits: LSPCommandEditResponse[];
+}
+
 interface LSPEditorCapabilities {
 	workspace_uri: string;
 	language_server: boolean;
@@ -1215,7 +1283,6 @@ interface LSPEditorCapabilities {
 	on_type_formatting_trigger_characters: string[];
 	semantic_tokens: boolean;
 	inlay_hints: boolean;
-	workspace_symbols: boolean;
 }
 
 const structuralCapabilities: LSPEditorCapabilities = {
@@ -1244,7 +1311,6 @@ const structuralCapabilities: LSPEditorCapabilities = {
 	on_type_formatting_trigger_characters: [],
 	semantic_tokens: true,
 	inlay_hints: false,
-	workspace_symbols: true,
 };
 
 async function postJSON<T>(
@@ -1259,6 +1325,24 @@ async function postJSON<T>(
 		signal,
 	});
 	if (!response.ok) return undefined;
+	return (await response.json()) as T;
+}
+
+async function postJSONRequired<T>(
+	endpoint: string,
+	body: unknown,
+	signal: AbortSignal,
+): Promise<T> {
+	const response = await fetch(endpoint, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body),
+		signal,
+	});
+	if (!response.ok) {
+		const detail = (await response.text()).trim();
+		throw new Error(detail || `Request failed (${response.status})`);
+	}
 	return (await response.json()) as T;
 }
 

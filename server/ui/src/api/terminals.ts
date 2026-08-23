@@ -22,7 +22,7 @@ export function startTerminal(shell?: string): Promise<TerminalEntry> {
 	return fetchJSON<TerminalEntry>("/api/terminals", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ shell, cols: 80, rows: 24 }),
+		body: JSON.stringify({ shell }),
 	});
 }
 

@@ -16,6 +16,22 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 )
 
+func TestLanguageForShellPathsUsesMonacoShellID(t *testing.T) {
+	for _, path := range []string{
+		"scripts/publish-cask.sh",
+		"script.bash",
+		"script.zsh",
+		"script.ksh",
+		".bashrc",
+		".bash_profile",
+		".zshrc",
+	} {
+		if got := languageForPath(path); got != "shell" {
+			t.Errorf("languageForPath(%q) = %q, want shell", path, got)
+		}
+	}
+}
+
 func TestFileListingExcludesMetadataAndIncludesHiddenEntries(t *testing.T) {
 	t.Setenv("WINGMAN_URL", "http://localhost:1")
 	workDir := t.TempDir()
@@ -180,15 +196,14 @@ func TestFileCreateAndConflictAwareWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	var paths struct {
-		Path     string `json:"path"`
-		Relative string `json:"relative"`
+		Path string `json:"path"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&paths); err != nil {
 		res.Body.Close()
 		t.Fatal(err)
 	}
 	res.Body.Close()
-	if paths.Path != filepath.Join(workDir, "created-folder", "nested.txt") || paths.Relative != "created-folder/nested.txt" {
+	if paths.Path != filepath.Join(workDir, "created-folder", "nested.txt") {
 		t.Fatalf("file paths = %#v", paths)
 	}
 

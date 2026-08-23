@@ -1,7 +1,19 @@
 import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
 import { AlertTriangle, FileDigit, Loader2 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+	forwardRef,
+	useCallback,
+	useEffect,
+	useImperativeHandle,
+	useLayoutEffect,
+	useRef,
+	useState,
+} from "react";
 import type { DebugAction, DebugTarget } from "../api/debug";
+import {
+	transformEditorSelection,
+	type EditorTransformRange,
+} from "../api/editor";
 import {
 	workspaceFileDownloadURL,
 	workspaceFilePreviewURL,
@@ -19,14 +31,21 @@ import {
 	type MonacoDebugBridge,
 } from "../monacoDebug";
 import { createMonacoTabBridge, type MonacoTabBridge } from "../monacoTab";
+import {
+	createMonacoTransformBridge,
+	isEditorTransformResponse,
+	type MonacoTransformBridge,
+} from "../monacoTransform";
 import { defineWingmanThemes, wingmanThemeName } from "../monacoThemes";
 import type { ServerMessage } from "../types/protocol";
 import type { WorkspaceEditEnvelope } from "../workspaceEdit";
 import { textPreviewKind } from "../utils/filePreview";
 import { DataPreview } from "./DataPreview";
 import { EditorContextMenu } from "./EditorContextMenu";
+import { InlineTransformPrompt } from "./InlineTransformPrompt";
 import { MarkdownContent } from "./MarkdownContent";
 import { MermaidPreview } from "./MermaidPreview";
+import { useToast } from "./ui/Feedback";
 
 interface Props {
 	document: OpenDocument;
@@ -48,27 +67,133 @@ interface Props {
 		label: string,
 	) => Promise<boolean>;
 	onLaunchDebug?: (target: DebugTarget, action: DebugAction) => void;
+	onAskSelection?: (selection: EditorSelectionContext) => void;
 	view?: "code" | "preview";
 	tabEnabled?: boolean;
 	languageServicesKey?: string;
 }
 
-export function FileTab({
-	document,
-	line,
-	column,
-	navigationKey,
-	subscribe,
-	onChange,
-	onSave,
-	onReload,
-	onOpenFile,
-	onApplyWorkspaceEdit,
-	onLaunchDebug,
-	view = "code",
-	tabEnabled = false,
-	languageServicesKey = "",
-}: Props) {
+export interface EditorSelectionContext {
+	path: string;
+	language: string;
+	range: EditorTransformRange;
+	text: string;
+}
+
+export interface FileTabHandle {
+	hasSelection: () => boolean;
+	chatAboutSelection: () => boolean;
+	transformSelection: () => boolean;
+}
+
+interface TransformTarget {
+	reference: { x: number; y: number };
+	range: EditorTransformRange;
+	expectedText: string;
+	version: number;
+	label: string;
+}
+
+type CodeEditor = Parameters<OnMount>[0];
+
+function synchronizeEditorDraft(editor: CodeEditor, next: string) {
+	const model = editor.getModel();
+	if (!model) return;
+	const current = model.getValue();
+	if (current === next) return;
+
+	let prefix = 0;
+	while (
+		prefix < current.length &&
+		prefix < next.length &&
+		current.charCodeAt(prefix) === next.charCodeAt(prefix)
+	) {
+		prefix++;
+	}
+	let suffix = 0;
+	while (
+		suffix < current.length - prefix &&
+		suffix < next.length - prefix &&
+		current.charCodeAt(current.length - suffix - 1) ===
+			next.charCodeAt(next.length - suffix - 1)
+	) {
+		suffix++;
+	}
+
+	const oldEnd = current.length - suffix;
+	const replacement = next.slice(prefix, next.length - suffix);
+	const newEnd = prefix + replacement.length;
+	const startPosition = model.getPositionAt(prefix);
+	const endPosition = model.getPositionAt(oldEnd);
+	const selections = editor.getSelections()?.map((selection) => ({
+		anchor: model.getOffsetAt({
+			lineNumber: selection.selectionStartLineNumber,
+			column: selection.selectionStartColumn,
+		}),
+		position: model.getOffsetAt({
+			lineNumber: selection.positionLineNumber,
+			column: selection.positionColumn,
+		}),
+	}));
+	const scrollTop = editor.getScrollTop();
+	const scrollLeft = editor.getScrollLeft();
+	const mapOffset = (offset: number) => {
+		if (offset <= prefix) return offset;
+		if (offset >= oldEnd) return newEnd + offset - oldEnd;
+		return prefix + Math.min(offset - prefix, replacement.length);
+	};
+
+	editor.pushUndoStop();
+	editor.executeEdits("wingman.workspaceEdit", [
+		{
+			range: {
+				startLineNumber: startPosition.lineNumber,
+				startColumn: startPosition.column,
+				endLineNumber: endPosition.lineNumber,
+				endColumn: endPosition.column,
+			},
+			text: replacement,
+			forceMoveMarkers: true,
+		},
+	]);
+	editor.pushUndoStop();
+	if (selections) {
+		editor.setSelections(
+			selections.map((selection) => {
+				const anchor = model.getPositionAt(mapOffset(selection.anchor));
+				const position = model.getPositionAt(mapOffset(selection.position));
+				return {
+					selectionStartLineNumber: anchor.lineNumber,
+					selectionStartColumn: anchor.column,
+					positionLineNumber: position.lineNumber,
+					positionColumn: position.column,
+				};
+			}),
+		);
+	}
+	editor.setScrollPosition({ scrollTop, scrollLeft });
+}
+
+export const FileTab = forwardRef<FileTabHandle, Props>(function FileTab(
+	{
+		document,
+		line,
+		column,
+		navigationKey,
+		subscribe,
+		onChange,
+		onSave,
+		onReload,
+		onOpenFile,
+		onApplyWorkspaceEdit,
+		onLaunchDebug,
+		onAskSelection,
+		view = "code",
+		tabEnabled = false,
+		languageServicesKey = "",
+	},
+	ref,
+) {
 	const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
 	const monacoRef = useRef<Monaco | null>(null);
 	const contextMenuListenerRef = useRef<{ dispose(): void } | null>(null);
@@ -76,27 +201,34 @@ export function FileTab({
 	const lspBridgeRef = useRef<MonacoLSPBridge | null>(null);
 	const debugBridgeRef = useRef<MonacoDebugBridge | null>(null);
 	const tabBridgeRef = useRef<MonacoTabBridge | null>(null);
+	const transformBridgeRef = useRef<MonacoTransformBridge | null>(null);
 	const diagnosticsTimerRef = useRef<number | null>(null);
 	const onOpenFileRef = useRef(onOpenFile);
 	const onApplyWorkspaceEditRef = useRef(onApplyWorkspaceEdit);
 	const onLaunchDebugRef = useRef(onLaunchDebug);
+	const onAskSelectionRef = useRef(onAskSelection);
 	const onSaveRef = useRef(onSave);
 	const languageServicesKeyRef = useRef(languageServicesKey);
+	const syncingEditorRef = useRef(false);
 	const scheme = useColorScheme();
+	const toast = useToast();
 	const [contextMenu, setContextMenu] = useState<{
 		x: number;
 		y: number;
 		altKey: boolean;
 		editor: Parameters<OnMount>[0];
 	} | null>(null);
+	const [transformTarget, setTransformTarget] =
+		useState<TransformTarget | null>(null);
 	const [, setLanguageFeaturesRevision] = useState(0);
 
 	useEffect(() => {
 		onOpenFileRef.current = onOpenFile;
 		onApplyWorkspaceEditRef.current = onApplyWorkspaceEdit;
 		onLaunchDebugRef.current = onLaunchDebug;
+		onAskSelectionRef.current = onAskSelection;
 		onSaveRef.current = onSave;
-	}, [onApplyWorkspaceEdit, onLaunchDebug, onOpenFile, onSave]);
+	}, [onApplyWorkspaceEdit, onAskSelection, onLaunchDebug, onOpenFile, onSave]);
 
 	const dirty = document.draft !== document.savedContent;
 	const file = document.file;
@@ -112,6 +244,8 @@ export function FileTab({
 		disposeLSPIntegration();
 		debugBridgeRef.current?.dispose();
 		debugBridgeRef.current = null;
+		transformBridgeRef.current?.dispose();
+		transformBridgeRef.current = null;
 		tabBridgeRef.current?.dispose();
 		tabBridgeRef.current = null;
 		editorRef.current = null;
@@ -135,6 +269,83 @@ export function FileTab({
 			path: file.path,
 		});
 	}, [document.external, file, tabEnabled]);
+
+	const selectionTarget = (
+		editor: Parameters<OnMount>[0],
+	): TransformTarget | null => {
+		if (document.external || !file) return null;
+		const model = editor.getModel();
+		const selection = editor.getSelection();
+		if (!model || !selection || selection.isEmpty()) return null;
+		const start = selection.getStartPosition();
+		const end = selection.getEndPosition();
+		const visible = editor.getScrolledVisiblePosition(end);
+		const bounds = editor.getDomNode()?.getBoundingClientRect();
+		if (!bounds) return null;
+		return {
+			reference: {
+				x: bounds.left + (visible?.left ?? 8),
+				y: bounds.top + (visible?.top ?? 8) + (visible?.height ?? 16),
+			},
+			range: {
+				start_line: start.lineNumber,
+				start_column: start.column,
+				end_line: end.lineNumber,
+				end_column: end.column,
+			},
+			expectedText: model.getValueInRange(selection),
+			version: model.getVersionId(),
+			label:
+				start.lineNumber === end.lineNumber
+					? `${file.path}:${start.lineNumber}`
+					: `${file.path}:${start.lineNumber}-${end.lineNumber}`,
+		};
+	};
+
+	const openTransformPrompt = (editor: Parameters<OnMount>[0]) => {
+		const target = selectionTarget(editor);
+		if (!target) return;
+		setContextMenu(null);
+		setTransformTarget(target);
+	};
+
+	const askWithSelectionTarget = (target: TransformTarget) => {
+		if (!file) return;
+		onAskSelectionRef.current?.({
+			path: file.path,
+			language: file.language ?? "",
+			range: target.range,
+			text: target.expectedText,
+		});
+		setContextMenu(null);
+		setTransformTarget(null);
+	};
+
+	const askAboutSelection = (editor: Parameters<OnMount>[0] | null) => {
+		if (!editor) return;
+		const target = selectionTarget(editor);
+		if (target) askWithSelectionTarget(target);
+	};
+
+	useImperativeHandle(ref, () => ({
+		hasSelection: () => {
+			if (document.external || !file || view !== "code") return false;
+			const selection = editorRef.current?.getSelection();
+			return !!selection && !selection.isEmpty();
+		},
+		chatAboutSelection: () => {
+			const editor = editorRef.current;
+			if (!editor || !selectionTarget(editor)) return false;
+			askAboutSelection(editor);
+			return true;
+		},
+		transformSelection: () => {
+			const editor = editorRef.current;
+			if (!editor || !selectionTarget(editor)) return false;
+			openTransformPrompt(editor);
+			return true;
+		},
+	}));
 
 	useEffect(() => {
 		const editor = editorRef.current;
@@ -185,6 +396,12 @@ export function FileTab({
 			onApplyWorkspaceEdit: (envelope, label) =>
 				onApplyWorkspaceEditRef.current?.(envelope, label) ??
 				Promise.resolve(false),
+			onCommandError: (label, error) =>
+				toast({
+					title: `${label} failed`,
+					description: error instanceof Error ? error.message : String(error),
+					tone: "error",
+				}),
 		});
 		lspBridgeRef.current = bridge;
 		saveParticipantDisposeRef.current = registerEditorSaveParticipant(
@@ -192,7 +409,7 @@ export function FileTab({
 			() => bridge.organizeImports(),
 		);
 		void bridge.refreshDiagnostics();
-	}, [disposeLSPIntegration, document.external, file]);
+	}, [disposeLSPIntegration, document.external, file, toast]);
 
 	useEffect(() => {
 		if (languageServicesKeyRef.current === languageServicesKey) return;
@@ -222,6 +439,17 @@ export function FileTab({
 			}, 200);
 		});
 	}, [loadDiagnostics, subscribe]);
+
+	useLayoutEffect(() => {
+		const editor = editorRef.current;
+		if (!editor || view !== "code") return;
+		syncingEditorRef.current = true;
+		try {
+			synchronizeEditorDraft(editor, document.draft);
+		} finally {
+			syncingEditorRef.current = false;
+		}
+	}, [document.draft, view]);
 
 	if (document.loading && !file) {
 		return (
@@ -319,7 +547,7 @@ export function FileTab({
 						height="100%"
 						path={`/${file.path}`}
 						language={file.language || undefined}
-						value={document.draft}
+						defaultValue={document.draft}
 						theme={wingmanThemeName(scheme)}
 						beforeMount={defineWingmanThemes}
 						onMount={(editor, monaco) => {
@@ -327,6 +555,16 @@ export function FileTab({
 							setContextMenu(null);
 							editorRef.current = editor;
 							monacoRef.current = monaco;
+							syncingEditorRef.current = true;
+							try {
+								synchronizeEditorDraft(editor, document.draft);
+							} finally {
+								syncingEditorRef.current = false;
+							}
+							transformBridgeRef.current = createMonacoTransformBridge(
+								monaco,
+								editor,
+							);
 							refreshTabIntegration();
 							// Wingman owns the command surface; keep Monaco's standalone
 							// palette shortcuts from opening a second command UI.
@@ -392,7 +630,9 @@ export function FileTab({
 							}
 							revealEditorPosition(editor, line, column);
 						}}
-						onChange={(value) => onChange(value ?? "")}
+						onChange={(value) => {
+							if (!syncingEditorRef.current) onChange(value ?? "");
+						}}
 						options={{
 							contextmenu: false,
 							codeLens: true,
@@ -421,12 +661,60 @@ export function FileTab({
 					supportsLanguageFeature={(feature) =>
 						lspBridgeRef.current?.supports(feature) ?? false
 					}
+					onTransformSelection={() => openTransformPrompt(contextMenu.editor)}
+					onAskSelection={() => askAboutSelection(contextMenu.editor)}
 					onClose={() => setContextMenu(null)}
+				/>
+			)}
+			{view === "code" && transformTarget && (
+				<InlineTransformPrompt
+					reference={transformTarget.reference}
+					selectionLabel={transformTarget.label}
+					onTransform={async (instruction, signal) => {
+						const editor = editorRef.current;
+						const model = editor?.getModel();
+						if (!editor || !model || !file) {
+							throw new Error("The editor is no longer available.");
+						}
+						if (model.getVersionId() !== transformTarget.version) {
+							throw new Error(
+								"The selection changed. Select it again and retry.",
+							);
+						}
+						const result = await transformEditorSelection(
+							{
+								path: file.path,
+								content: model.getValue(),
+								range: transformTarget.range,
+								instruction,
+								version: transformTarget.version,
+							},
+							signal,
+						);
+						if (!isEditorTransformResponse(result)) {
+							throw new Error("Wingman returned an invalid transformation.");
+						}
+						if (result.version !== transformTarget.version) {
+							throw new Error("The transformation response is stale.");
+						}
+						if (!result.edit) {
+							throw new Error("Wingman did not find a useful change.");
+						}
+						if (
+							!transformBridgeRef.current?.preview(result.edit, result.version)
+						) {
+							throw new Error(
+								"The selection changed before the preview opened.",
+							);
+						}
+					}}
+					onAskWingman={() => askWithSelectionTarget(transformTarget)}
+					onClose={() => setTransformTarget(null)}
 				/>
 			)}
 		</div>
 	);
-}
+});
 
 function BinaryPreview({
 	file,

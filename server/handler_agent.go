@@ -1,8 +1,8 @@
 package server
 
 import (
-	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/code/agents"
@@ -11,6 +11,11 @@ import (
 type AgentEntry struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+}
+
+type agentState struct {
+	Agent     string `json:"agent"`
+	CanDelete bool   `json:"can_delete"`
 }
 
 func (s *Server) handleAgents(w http.ResponseWriter, _ *http.Request) {
@@ -36,7 +41,7 @@ func (s *Server) handleAgent(w http.ResponseWriter, _ *http.Request) {
 		name = a.Name()
 		canDelete = supportsDelete(a)
 	}
-	writeJSON(w, map[string]any{"agent": name, "canDelete": canDelete})
+	writeJSON(w, agentState{Agent: name, CanDelete: canDelete})
 }
 
 func supportsDelete(a code.Agent) bool {
@@ -50,12 +55,11 @@ func (s *Server) handleSetAgent(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Agent string `json:"agent"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
+	if err := decodeJSONRequest(w, r, &body, 1<<10); err != nil {
 		return
 	}
 
-	name := body.Agent
+	name := strings.TrimSpace(body.Agent)
 	if name == "" {
 		name = code.BuiltinAgentName
 	}
@@ -65,7 +69,7 @@ func (s *Server) handleSetAgent(w http.ResponseWriter, r *http.Request) {
 		current = a.Name()
 	}
 	if current == name {
-		writeJSON(w, map[string]string{"agent": name})
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
@@ -77,5 +81,5 @@ func (s *Server) handleSetAgent(w http.ResponseWriter, r *http.Request) {
 	s.swapAgent(next)
 
 	s.broadcast(Frame{Type: EvtAgentChanged})
-	writeJSON(w, map[string]string{"agent": name})
+	w.WriteHeader(http.StatusNoContent)
 }
