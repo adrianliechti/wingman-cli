@@ -641,10 +641,17 @@ func TestMemoryContent_CacheInvalidatesOnFileChange(t *testing.T) {
 }
 
 func TestLoadBundledSkillsIncludesCoreWorkflows(t *testing.T) {
-	scratch := t.TempDir()
-	skills, err := loadBundledSkills(scratch)
+	testenv.UserHome(t)
+	home := testenv.WingmanHome(t)
+	skills, systemRoot, err := loadBundledSkills()
 	if err != nil {
 		t.Fatalf("loadBundledSkills: %v", err)
+	}
+	if want := filepath.Join(home, "skills", ".system"); systemRoot != want {
+		t.Fatalf("system skills root = %q, want %q", systemRoot, want)
+	}
+	if marker, err := os.ReadFile(filepath.Join(systemRoot, bundledSkillsMarkerFile)); err != nil || strings.TrimSpace(string(marker)) == "" {
+		t.Fatalf("system skills marker = %q, %v", marker, err)
 	}
 
 	names := make(map[string]bool, len(skills))
@@ -668,8 +675,8 @@ func TestLoadBundledSkillsIncludesCoreWorkflows(t *testing.T) {
 					t.Errorf("skill-creator resource %q was not copied: %v", resource, err)
 				}
 			}
-			if !strings.HasPrefix(sk.Location, filepath.Join(scratch, "skills")+string(filepath.Separator)) {
-				t.Errorf("skill-creator location %q is outside managed scratch skills", sk.Location)
+			if !strings.HasPrefix(sk.Location, systemRoot+string(filepath.Separator)) {
+				t.Errorf("skill-creator location %q is outside managed system skills", sk.Location)
 			}
 		}
 	}
@@ -699,6 +706,89 @@ func TestLoadBundledSkillsIncludesCoreWorkflows(t *testing.T) {
 	}
 }
 
+func TestLoadBundledSkillsRefreshesMismatchedSystemSnapshot(t *testing.T) {
+	testenv.UserHome(t)
+	home := testenv.WingmanHome(t)
+	systemRoot := filepath.Join(home, "skills", ".system")
+	staleSkill := filepath.Join(systemRoot, "removed-skill", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(staleSkill), 0755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, staleSkill, "stale")
+	if err := os.MkdirAll(filepath.Join(systemRoot, "feature-dev"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(systemRoot, "feature-dev", "SKILL.md"), "tampered")
+	mustWrite(t, filepath.Join(systemRoot, bundledSkillsMarkerFile), "old-fingerprint")
+
+	_, gotRoot, err := loadBundledSkills()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotRoot != systemRoot {
+		t.Fatalf("system skills root = %q, want %q", gotRoot, systemRoot)
+	}
+	if _, err := os.Stat(staleSkill); !os.IsNotExist(err) {
+		t.Fatalf("stale system skill survived refresh: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(systemRoot, "feature-dev", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) == "tampered" || !strings.Contains(string(data), "name: feature-dev") {
+		t.Fatalf("embedded system skill was not restored: %q", data)
+	}
+	marker, err := os.ReadFile(filepath.Join(systemRoot, bundledSkillsMarkerFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(marker)) == "old-fingerprint" {
+		t.Fatal("system skills marker was not refreshed")
+	}
+}
+
+func TestLoadBundledSkillsReusesMatchingSystemSnapshot(t *testing.T) {
+	testenv.UserHome(t)
+	testenv.WingmanHome(t)
+	_, systemRoot, err := loadBundledSkills()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(systemRoot, "sentinel")
+	mustWrite(t, sentinel, "keep")
+
+	if _, _, err := loadBundledSkills(); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(sentinel); err != nil || string(data) != "keep" {
+		t.Fatalf("matching system snapshot was unnecessarily replaced: %q, %v", data, err)
+	}
+}
+
+func TestSystemSkillsSurviveWorkspaceScratchCleanup(t *testing.T) {
+	testenv.UserHome(t)
+	testenv.WingmanHome(t)
+	ws, err := NewWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	feature := skill.FindSkill("feature-dev", ws.Skills())
+	if feature == nil {
+		ws.Close()
+		t.Fatal("feature-dev system skill was not loaded")
+	}
+	skillFile := filepath.Join(feature.Location, "SKILL.md")
+	scratch := ws.ScratchPath
+	ws.Close()
+
+	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
+		t.Fatalf("scratch directory survived workspace close: %v", err)
+	}
+	if _, err := os.Stat(skillFile); err != nil {
+		t.Fatalf("system skill was removed with scratch: %v", err)
+	}
+}
+
 func TestPersonalSkillOverridesManagedBundledSnapshot(t *testing.T) {
 	testenv.UserHome(t)
 	home := testenv.WingmanHome(t)
@@ -712,7 +802,7 @@ description: Personal override
 ---
 Use the personal workflow.`)
 
-	bundled, err := loadBundledSkills(t.TempDir())
+	bundled, systemRoot, err := loadBundledSkills()
 	if err != nil {
 		t.Fatalf("loadBundledSkills: %v", err)
 	}
@@ -725,8 +815,10 @@ Use the personal workflow.`)
 	if override == nil || override.Bundled || override.Description != "Personal override" {
 		t.Fatalf("personal override was not selected: %#v", override)
 	}
-	if _, err := os.Stat(filepath.Join(home, "skills", ".system")); !os.IsNotExist(err) {
-		t.Fatalf("bundled snapshot leaked into personal discovery root: %v", err)
+	for _, sk := range personal {
+		if strings.HasPrefix(sk.Location, systemRoot+string(filepath.Separator)) {
+			t.Fatalf("system skill was rediscovered as personal: %#v", sk)
+		}
 	}
 }
 

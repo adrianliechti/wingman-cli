@@ -2,7 +2,9 @@ package code
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -60,10 +62,11 @@ func SessionIDFromContext(ctx context.Context) string {
 }
 
 type Workspace struct {
-	Root        *os.Root
-	RootPath    string
-	MemoryPath  string
-	ScratchPath string
+	Root             *os.Root
+	RootPath         string
+	MemoryPath       string
+	ScratchPath      string
+	SystemSkillsPath string
 
 	Plugins []plugin.Plugin
 
@@ -120,7 +123,7 @@ func NewWorkspace(workDir string) (*Workspace, error) {
 		root.Close()
 		return nil, fmt.Errorf("create scratch directory: %w", err)
 	}
-	bundled, err := loadBundledSkills(scratchDir)
+	bundled, systemSkillsPath, err := loadBundledSkills()
 	if err != nil {
 		os.RemoveAll(scratchDir)
 		root.Close()
@@ -152,15 +155,16 @@ func NewWorkspace(workDir string) (*Workspace, error) {
 	}
 
 	return &Workspace{
-		Root:        root,
-		RootPath:    workDir,
-		MemoryPath:  memoryDir,
-		ScratchPath: scratchDir,
-		Plugins:     plugins,
-		MCP:         mcpManager,
-		DevTools:    managedTools,
-		baseSkills:  baseSkills,
-		skills:      mergedSkills,
+		Root:             root,
+		RootPath:         workDir,
+		MemoryPath:       memoryDir,
+		ScratchPath:      scratchDir,
+		SystemSkillsPath: systemSkillsPath,
+		Plugins:          plugins,
+		MCP:              mcpManager,
+		DevTools:         managedTools,
+		baseSkills:       baseSkills,
+		skills:           mergedSkills,
 	}, nil
 }
 
@@ -1531,16 +1535,79 @@ func resolveWorktreeRoot(worktreeDir, gitFile string) string {
 	return ""
 }
 
-func loadBundledSkills(scratchDir string) ([]skill.Skill, error) {
+var bundledSkillsInstallMu sync.Mutex
+
+const bundledSkillsMarkerFile = ".wingman"
+
+func loadBundledSkills() ([]skill.Skill, string, error) {
 	source, err := fs.Sub(bundledFS, "skills")
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	destination := filepath.Join(scratchDir, "skills")
-	if err := os.CopyFS(destination, source); err != nil {
-		return nil, err
+	destination, err := skill.SystemSkillsRoot()
+	if err != nil {
+		return nil, "", err
+	}
+	fingerprint, err := bundledSkillsFingerprint(source)
+	if err != nil {
+		return nil, "", fmt.Errorf("fingerprint system skills: %w", err)
 	}
 
-	return skill.LoadBundledAt(source, ".", destination)
+	// .system is a reserved Wingman-owned snapshot. Refresh it wholesale so
+	// changed files are replaced and skills removed from the embedded bundle do
+	// not survive as stale personal-looking entries. Serialize workspace starts
+	// within this process so two projects cannot interleave the refresh.
+	bundledSkillsInstallMu.Lock()
+	defer bundledSkillsInstallMu.Unlock()
+	markerPath := filepath.Join(destination, bundledSkillsMarkerFile)
+	marker, markerErr := os.ReadFile(markerPath)
+	if markerErr != nil || strings.TrimSpace(string(marker)) != fingerprint {
+		if err := os.RemoveAll(destination); err != nil {
+			return nil, "", fmt.Errorf("remove system skills: %w", err)
+		}
+		if err := os.CopyFS(destination, source); err != nil {
+			return nil, "", fmt.Errorf("copy system skills: %w", err)
+		}
+		if err := os.WriteFile(markerPath, []byte(fingerprint+"\n"), 0644); err != nil {
+			return nil, "", fmt.Errorf("mark system skills: %w", err)
+		}
+	}
+
+	skills, err := skill.LoadBundledAt(source, ".", destination)
+	return skills, destination, err
+}
+
+func bundledSkillsFingerprint(source fs.FS) (string, error) {
+	digest := sha256.New()
+	writeField := func(value []byte) {
+		var size [8]byte
+		binary.BigEndian.PutUint64(size[:], uint64(len(value)))
+		_, _ = digest.Write(size[:])
+		_, _ = digest.Write(value)
+	}
+
+	err := fs.WalkDir(source, ".", func(name string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			writeField([]byte("directory"))
+			writeField([]byte(name))
+			return nil
+		}
+
+		data, err := fs.ReadFile(source, name)
+		if err != nil {
+			return err
+		}
+		writeField([]byte("file"))
+		writeField([]byte(name))
+		writeField(data)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", digest.Sum(nil)), nil
 }

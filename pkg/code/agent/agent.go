@@ -800,36 +800,7 @@ func (a *Agent) buildSession() *sessionState {
 		truncation.New(ws.ScratchPath),
 	)
 
-	allowedReadRoots := skill.DiscoveryRoots(ws.RootPath)
-	for _, sk := range ws.Skills() {
-		if path := sk.AbsoluteDir(ws.RootPath); path != "" {
-			allowedReadRoots = append(allowedReadRoots, path)
-		}
-	}
-	allowedReadRoots = append(allowedReadRoots, ws.ScratchPath)
-
-	var allowedWriteRoots []string
-	if ws.MemoryPath != "" {
-		allowedReadRoots = append(allowedReadRoots, ws.MemoryPath)
-		allowedWriteRoots = append(allowedWriteRoots, ws.MemoryPath)
-	}
-
-	// Agents stage scratch files (downscaled images, montages, compile helpers,
-	// intermediate outputs) under the OS temp dir. Allow the file tools to both
-	// read and write it — the shell tool can already write there, so restricting
-	// only the dedicated tools just pushes work onto shell.
-	allowedReadRoots = append(allowedReadRoots, os.TempDir())
-	allowedWriteRoots = append(allowedWriteRoots, os.TempDir())
-
-	// WINGMAN_SANDBOX=off lifts the workspace path restriction entirely so the
-	// file tools reach the whole filesystem like the shell tool already does —
-	// e.g. reading and editing /etc configs on system-administration tasks. "*"
-	// is the wildcard root the fs matcher treats as "any absolute path": a
-	// platform-agnostic marker, avoiding a fragile per-OS filesystem-root path.
-	if harness.SandboxDisabled() {
-		allowedReadRoots = append(allowedReadRoots, "*")
-		allowedWriteRoots = append(allowedWriteRoots, "*")
-	}
+	allowedReadRoots, allowedWriteRoots := sessionFileRoots(ws)
 
 	s.tasks = task.NewRegistry()
 	s.execManager = shell.NewExecManager(func(e shell.ExecExit) {
@@ -883,6 +854,47 @@ func (a *Agent) buildSession() *sessionState {
 		return nil
 	})
 	return s
+}
+
+func sessionFileRoots(ws *code.Workspace) (readRoots, writeRoots []string) {
+	readRoots = skill.DiscoveryRoots(ws.RootPath)
+	for _, sk := range ws.Skills() {
+		if sk.Bundled {
+			continue
+		}
+		if path := sk.AbsoluteDir(ws.RootPath); path != "" {
+			readRoots = append(readRoots, path)
+		}
+	}
+	// System skills live outside the workspace, but their references and scripts
+	// must remain readable. Deliberately do not add this root to write roots.
+	if ws.SystemSkillsPath != "" {
+		readRoots = append(readRoots, ws.SystemSkillsPath)
+	}
+	readRoots = append(readRoots, ws.ScratchPath)
+
+	if ws.MemoryPath != "" {
+		readRoots = append(readRoots, ws.MemoryPath)
+		writeRoots = append(writeRoots, ws.MemoryPath)
+	}
+
+	// Agents stage scratch files (downscaled images, montages, compile helpers,
+	// intermediate outputs) under the OS temp dir. Allow the file tools to both
+	// read and write it — the shell tool can already write there, so restricting
+	// only the dedicated tools just pushes work onto shell.
+	readRoots = append(readRoots, os.TempDir())
+	writeRoots = append(writeRoots, os.TempDir())
+
+	// WINGMAN_SANDBOX=off lifts the workspace path restriction entirely so the
+	// file tools reach the whole filesystem like the shell tool already does —
+	// e.g. reading and editing /etc configs on system-administration tasks. "*"
+	// is the wildcard root the fs matcher treats as "any absolute path": a
+	// platform-agnostic marker, avoiding a fragile per-OS filesystem-root path.
+	if harness.SandboxDisabled() {
+		readRoots = append(readRoots, "*")
+		writeRoots = append(writeRoots, "*")
+	}
+	return readRoots, writeRoots
 }
 
 // execExitNotifyLimit caps how much trailing output of a backgrounded command

@@ -488,7 +488,7 @@ Skill frontmatter follows the [Agent Skills specification](https://agentskills.i
 
 ### Bundled Skills
 
-Wingman ships with built-in skills that are available immediately via slash commands. Their complete directories are copied to a managed temporary workspace snapshot, while a personal or project skill with the same name cleanly overrides the built-in:
+Wingman ships with built-in skills that are available immediately via slash commands. Their complete directories are synchronized to `$WINGMAN_HOME/skills/.system` (normally `~/.wingman/skills/.system`), while a personal or project skill with the same name cleanly overrides the built-in. The `.system` subtree and its short `.wingman` fingerprint marker are managed by Wingman and should not be edited directly.
 
 Existing `~/.wingman/skills/<name>` customizations from older Wingman versions remain personal overrides. Rename or remove one only when you want the current bundled skill to take precedence.
 

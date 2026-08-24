@@ -8,6 +8,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/adrianliechti/wingman-agent/internal/testenv"
 	. "github.com/adrianliechti/wingman-agent/pkg/skill"
 )
 
@@ -391,6 +392,37 @@ func TestDiscoverIgnoresOpencode(t *testing.T) {
 	}
 	if len(skills) != 0 {
 		t.Fatalf("skills = %#v, want none", skills)
+	}
+}
+
+func TestDiscoverPersonalIgnoresReservedSystemSkills(t *testing.T) {
+	home := testenv.UserHome(t)
+	wingmanHome := testenv.WingmanHome(t)
+
+	writeSkill(t, filepath.Join(wingmanHome, "skills", ".system", "bundled"), "bundled", "system")
+	writeSkill(t, filepath.Join(wingmanHome, "skills", "personal"), "personal", "user")
+
+	skills, err := DiscoverPersonal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skills) != 1 || skills[0].Name != "personal" {
+		t.Fatalf("personal skills = %#v, want only personal", skills)
+	}
+
+	agentsDir := filepath.Join(home, ".agents")
+	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(wingmanHome, "skills"), filepath.Join(agentsDir, "skills")); err != nil {
+		t.Skipf("skill-root symlink is unavailable: %v", err)
+	}
+	skills, err = DiscoverPersonal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skills) != 1 || skills[0].Name != "personal" {
+		t.Fatalf("personal skills through alias = %#v, want only personal", skills)
 	}
 }
 

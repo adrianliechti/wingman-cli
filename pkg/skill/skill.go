@@ -280,17 +280,25 @@ func splitArguments(value string) []string {
 }
 
 func Discover(root string) ([]Skill, error) {
-	return discover(projectDiscoveryRoots(root), root, true), nil
+	return discover(projectDiscoveryRoots(root), root, true, ""), nil
 }
 
 func DiscoverPersonal() ([]Skill, error) {
+	return discoverPersonal(true)
+}
+
+func discoverPersonal(report bool) ([]Skill, error) {
 	sources := layout.PersonalRoots("skills")
 	if len(sources) == 0 {
 		_, err := os.UserHomeDir()
 		return nil, err
 	}
 
-	return discover(sources, "", true), nil
+	systemRoot, err := SystemSkillsRoot()
+	if err != nil {
+		return nil, err
+	}
+	return discover(sources, "", report, systemRoot), nil
 }
 
 func MustDiscoverPersonal() []Skill {
@@ -301,18 +309,18 @@ func MustDiscoverPersonal() []Skill {
 // Rediscover repeats project discovery without reprinting diagnostics already
 // reported at startup. It is intended for runtime catalog reconciliation.
 func Rediscover(root string) ([]Skill, error) {
-	return discover(projectDiscoveryRoots(root), root, false), nil
+	return discover(projectDiscoveryRoots(root), root, false, ""), nil
 }
 
 // RediscoverPersonal repeats personal discovery without reprinting diagnostics
 // already reported at startup.
 func RediscoverPersonal() ([]Skill, error) {
-	sources := layout.PersonalRoots("skills")
-	if len(sources) == 0 {
-		_, err := os.UserHomeDir()
-		return nil, err
-	}
-	return discover(sources, "", false), nil
+	return discoverPersonal(false)
+}
+
+// SystemSkillsRoot returns Wingman's reserved bundled-skill directory.
+func SystemSkillsRoot() (string, error) {
+	return layout.WingmanPath("skills", ".system")
 }
 
 // DiscoveryRoots returns every directory that can contribute skills to a
@@ -340,15 +348,23 @@ func projectDiscoveryRoots(root string) []string {
 // Symlinked directories are followed once, with their resolved paths used to
 // prevent cycles.
 func LoadDir(dir string) []Skill {
-	return loadDir(dir, true)
+	return loadDir(dir, true, "")
 }
 
-func loadDir(dir string, report bool) []Skill {
+func loadDir(dir string, report bool, excludedRoot string) []Skill {
 	var skills []Skill
 	visited := make(map[string]bool)
+	var excludedInfo fs.FileInfo
+	if excludedRoot != "" {
+		excludedRoot = filepath.Clean(excludedRoot)
+		excludedInfo, _ = os.Stat(excludedRoot)
+	}
 
 	var walk func(string)
 	walk = func(current string) {
+		if excludedRoot != "" && filepath.Clean(current) == excludedRoot {
+			return
+		}
 		resolved, err := filepath.EvalSymlinks(current)
 		if err != nil {
 			return
@@ -359,6 +375,9 @@ func loadDir(dir string, report bool) []Skill {
 		}
 		info, err := os.Stat(resolved)
 		if err != nil || !info.IsDir() {
+			return
+		}
+		if excludedInfo != nil && os.SameFile(info, excludedInfo) {
 			return
 		}
 		visited[resolved] = true
@@ -425,12 +444,12 @@ func skillDirsThroughRepo(root, configDir string) []string {
 	return dirs
 }
 
-func discover(sources []string, relativeTo string, report bool) []Skill {
+func discover(sources []string, relativeTo string, report bool, excludedRoot string) []Skill {
 	var skills []Skill
 	seen := make(map[string]string)
 
 	for _, source := range sources {
-		for _, sk := range loadDir(source, report) {
+		for _, sk := range loadDir(source, report, excludedRoot) {
 			key := strings.ToLower(sk.Name)
 
 			if winner, ok := seen[key]; ok {
