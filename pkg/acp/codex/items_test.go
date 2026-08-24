@@ -9,12 +9,12 @@ import (
 
 func TestWebSearchTitle(t *testing.T) {
 	cases := map[string]string{
-		`{"query":"go generics"}`: "Web search: go generics",
+		`{"query":"go generics"}`: "Web search",
 		`{"query":""}`:            "Web search",
-		`{"query":"x","action":{"type":"search","query":"narrowed"}}`:    "Web search: narrowed",
-		`{"query":"","action":{"type":"search","queries":["a","","b"]}}`: "Web search: a, b",
-		`{"action":{"type":"openPage","url":"https://x.dev"}}`:           "Open page: https://x.dev",
-		`{"action":{"type":"findInPage","url":"u","pattern":"p"}}`:       "Find in page for 'p' in u",
+		`{"query":"x","action":{"type":"search","query":"narrowed"}}`:    "Web search",
+		`{"query":"","action":{"type":"search","queries":["a","","b"]}}`: "Web search",
+		`{"action":{"type":"openPage","url":"https://x.dev"}}`:           "Open page",
+		`{"action":{"type":"findInPage","url":"u","pattern":"p"}}`:       "Find in page",
 		`{"action":{"type":"other"}}`:                                    "Web search",
 	}
 	for in, want := range cases {
@@ -24,6 +24,29 @@ func TestWebSearchTitle(t *testing.T) {
 		}
 		if got := webSearchTitle(it); got != want {
 			t.Errorf("webSearchTitle(%s) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestWebSearchInputContainsOnlyVisibleArguments(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want map[string]any
+	}{
+		{`{"id":"1","query":"go generics"}`, map[string]any{"query": "go generics"}},
+		{`{"id":"1","action":{"type":"search","query":"narrowed"}}`, map[string]any{"query": "narrowed"}},
+		{`{"id":"1","action":{"type":"openPage","url":"https://x.dev"}}`, map[string]any{"url": "https://x.dev"}},
+		{`{"id":"1","action":{"type":"findInPage","url":"u","pattern":"p"}}`, map[string]any{"pattern": "p", "url": "u"}},
+	}
+	for _, tc := range cases {
+		var it webSearchItem
+		if err := json.Unmarshal([]byte(tc.raw), &it); err != nil {
+			t.Fatalf("unmarshal %s: %v", tc.raw, err)
+		}
+		got, _ := json.Marshal(webSearchInput(it))
+		want, _ := json.Marshal(tc.want)
+		if string(got) != string(want) {
+			t.Errorf("webSearchInput(%s) = %s, want %s", tc.raw, got, want)
 		}
 	}
 }
@@ -82,6 +105,31 @@ func TestImageGenStatus(t *testing.T) {
 		if got := imageGenStatus(in); got != want {
 			t.Errorf("imageGenStatus(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestImageGenerationUsesSavedPathAsLocation(t *testing.T) {
+	start := imageGenStartToolCall("gen-1")
+	if start.ToolCall == nil || start.ToolCall.RawInput != nil {
+		t.Fatalf("start = %#v", start)
+	}
+
+	raw := json.RawMessage(`{"id":"gen-1","status":"completed","revisedPrompt":"a fox","result":"opaque-image-data","savedPath":"/project/fox.png"}`)
+	completed, ok := imageGenToolCall(raw)
+	if !ok || completed.ToolCall == nil {
+		t.Fatalf("completed = %#v, ok=%v", completed, ok)
+	}
+	if completed.ToolCall.RawOutput != nil {
+		t.Fatalf("saved path duplicated as raw output: %#v", completed.ToolCall.RawOutput)
+	}
+	if len(completed.ToolCall.Locations) != 1 || completed.ToolCall.Locations[0].Path != "/project/fox.png" {
+		t.Fatalf("locations = %#v", completed.ToolCall.Locations)
+	}
+	if completed.ToolCall.RawInput != nil {
+		t.Fatalf("location was mirrored into raw input: %#v", completed.ToolCall.RawInput)
+	}
+	if len(completed.ToolCall.Content) != 2 {
+		t.Fatalf("content = %#v", completed.ToolCall.Content)
 	}
 }
 
@@ -144,8 +192,8 @@ func TestSubAgentToolCalls(t *testing.T) {
 	if start.ToolCall.Title != "Start subagent worker" || start.ToolCall.Status != acp.ToolCallStatusInProgress {
 		t.Errorf("start tool call = %#v", start.ToolCall)
 	}
-	if in, _ := start.ToolCall.RawInput.(map[string]any); in["agentThreadId"] != "t-2" || in["activityKind"] != "started" {
-		t.Errorf("rawInput = %#v", start.ToolCall.RawInput)
+	if start.ToolCall.RawInput != nil {
+		t.Errorf("subagent metadata should not be rendered as arguments: %#v", start.ToolCall.RawInput)
 	}
 
 	complete, ok := subAgentCompleteToolCall(raw)
@@ -158,6 +206,51 @@ func TestSubAgentToolCalls(t *testing.T) {
 
 	if _, ok := subAgentStartToolCall(json.RawMessage(`{"kind":"started"}`), acp.ToolCallStatusInProgress); ok {
 		t.Error("missing id should not produce a tool call")
+	}
+}
+
+func TestCollabToolCallShowsPromptWithoutInternalState(t *testing.T) {
+	raw := json.RawMessage(`{"id":"c-1","tool":"spawn_agent","status":"completed","prompt":"Review tools","senderThreadId":"root","receiverThreadIds":["worker"],"agentsStates":{"worker":"done"}}`)
+	update, ok := collabStartToolCall(raw)
+	if !ok || update.ToolCall == nil {
+		t.Fatalf("update = %#v, ok=%v", update, ok)
+	}
+	input, _ := update.ToolCall.RawInput.(map[string]any)
+	if len(input) != 1 || input["prompt"] != "Review tools" {
+		t.Fatalf("raw input = %#v", update.ToolCall.RawInput)
+	}
+
+	withoutPrompt, ok := collabStartToolCall(json.RawMessage(`{"id":"c-2","tool":"wait","status":"completed","agentsStates":{"worker":"done"}}`))
+	if !ok || withoutPrompt.ToolCall == nil || withoutPrompt.ToolCall.RawInput != nil {
+		t.Fatalf("metadata-only input should be omitted: %#v", withoutPrompt)
+	}
+}
+
+func TestImageViewUsesOneLocationRepresentation(t *testing.T) {
+	update, ok := imageViewToolCall(json.RawMessage(`{"id":"img-1","path":"/project/image.png"}`))
+	if !ok || update.ToolCall == nil {
+		t.Fatalf("update = %#v, ok=%v", update, ok)
+	}
+	call := update.ToolCall
+	if call.Title != "View image" || len(call.Locations) != 1 || call.Locations[0].Path != "/project/image.png" {
+		t.Fatalf("tool call = %#v", call)
+	}
+	if call.RawInput != nil || len(call.Content) != 0 {
+		t.Fatalf("path was represented outside the location chip: raw=%#v content=%#v", call.RawInput, call.Content)
+	}
+}
+
+func TestGuardianUsesFormattedContentOnly(t *testing.T) {
+	g := guardianNotif{ReviewID: "review-1"}
+	g.Review.Status = "approved"
+	g.Action = json.RawMessage(`{"type":"command","command":"go test ./..."}`)
+	start := guardianStartToolCall(g)
+	if start.ToolCall == nil || start.ToolCall.RawInput != nil || len(start.ToolCall.Content) != 1 {
+		t.Fatalf("start = %#v", start)
+	}
+	update := guardianUpdateToolCall(g)
+	if update.ToolCallUpdate == nil || update.ToolCallUpdate.RawOutput != nil || len(update.ToolCallUpdate.Content) != 1 {
+		t.Fatalf("update = %#v", update)
 	}
 }
 

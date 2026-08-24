@@ -123,8 +123,8 @@ func TestToolInfoEditProducesDiff(t *testing.T) {
 	if info.kind != acp.ToolKindEdit {
 		t.Errorf("kind = %q, want edit", info.kind)
 	}
-	if info.title != "Edit main.go" {
-		t.Errorf("title = %q, want %q", info.title, "Edit main.go")
+	if info.title != "Edit file" {
+		t.Errorf("title = %q, want %q", info.title, "Edit file")
 	}
 	if len(info.content) != 1 || info.content[0].Diff == nil {
 		t.Fatalf("expected one diff content block, got %+v", info.content)
@@ -136,12 +136,26 @@ func TestToolInfoEditProducesDiff(t *testing.T) {
 	if len(info.locations) != 1 || info.locations[0].Path != "/proj/main.go" {
 		t.Errorf("locations = %+v", info.locations)
 	}
+	if info.rawInput != nil {
+		t.Errorf("edit input duplicates its chip/diff: %#v", info.rawInput)
+	}
+}
+
+func TestToolInfoMultiEditProducesDiffsWithoutRawEdits(t *testing.T) {
+	input := json.RawMessage(`{"file_path":"/proj/main.go","edits":[{"old_string":"a","new_string":"b"},{"old_string":"c","new_string":"d"}]}`)
+	info := toolInfoFromToolUse("MultiEdit", input, "/proj")
+	if info.title != "Edit file" || len(info.content) != 2 || info.rawInput != nil {
+		t.Fatalf("info = %#v", info)
+	}
+	if info.content[0].Diff == nil || info.content[1].Diff == nil {
+		t.Fatalf("diffs = %#v", info.content)
+	}
 }
 
 func TestToolInfoSkillIncludesName(t *testing.T) {
 	info := toolInfoFromToolUse("Skill", json.RawMessage(`{"skill":"commits","args":"--all"}`), "/proj")
-	if info.title != "Load skill: commits" {
-		t.Errorf("title = %q, want %q", info.title, "Load skill: commits")
+	if info.title != "Load skill" {
+		t.Errorf("title = %q, want %q", info.title, "Load skill")
 	}
 	if info.kind != acp.ToolKindOther {
 		t.Errorf("kind = %q, want other", info.kind)
@@ -149,27 +163,68 @@ func TestToolInfoSkillIncludesName(t *testing.T) {
 	if len(info.content) != 0 {
 		t.Errorf("content = %#v, want none", info.content)
 	}
+	input, ok := info.rawInput.(map[string]any)
+	if !ok || input["skill"] != "commits" || input["args"] != "--all" {
+		t.Errorf("display input = %#v", info.rawInput)
+	}
 }
 
 func TestToolInfoReadTitleAndLocation(t *testing.T) {
 	input := json.RawMessage(`{"file_path":"/proj/pkg/x.go","offset":10,"limit":5}`)
 	info := toolInfoFromToolUse("Read", input, "/proj")
-	if want := "Read pkg/x.go (10 - 14)"; info.title != want {
+	if want := "Read file"; info.title != want {
 		t.Errorf("title = %q, want %q", info.title, want)
 	}
 	if len(info.locations) != 1 || info.locations[0].Line == nil || *info.locations[0].Line != 10 {
 		t.Errorf("locations = %+v", info.locations)
 	}
+	args, ok := info.rawInput.(map[string]any)
+	if !ok || args["limit"] != float64(5) || args["offset"] != nil || args["file_path"] != nil {
+		t.Errorf("display input = %#v", info.rawInput)
+	}
 }
 
 func TestToolInfoGrepLabel(t *testing.T) {
-	input := json.RawMessage(`{"pattern":"todo","-i":true,"output_mode":"files_with_matches","glob":"*.go"}`)
-	info := toolInfoFromToolUse("Grep", input, "")
-	if want := `grep -i -l --include="*.go" "todo"`; info.title != want {
+	input := json.RawMessage(`{"pattern":"todo","path":"pkg","-i":true,"output_mode":"files_with_matches","glob":"*.go"}`)
+	info := toolInfoFromToolUse("Grep", input, "/proj")
+	if want := "Search files"; info.title != want {
 		t.Errorf("title = %q, want %q", info.title, want)
 	}
 	if info.kind != acp.ToolKindSearch {
 		t.Errorf("kind = %q, want search", info.kind)
+	}
+	if len(info.locations) != 1 || info.locations[0].Path != "/proj/pkg" {
+		t.Errorf("locations = %#v", info.locations)
+	}
+	args, ok := info.rawInput.(map[string]any)
+	if !ok || args["pattern"] != "todo" || args["path"] != nil {
+		t.Errorf("display input = %#v", info.rawInput)
+	}
+}
+
+func TestToolCallStartUsesLocationWithoutSyntheticPathInput(t *testing.T) {
+	update := toolCallStartUpdate(
+		"read-1", "Read", json.RawMessage(`{"file_path":"/proj/main.go"}`), "/proj",
+		acp.ToolCallStatusInProgress,
+	)
+	if update.ToolCall == nil {
+		t.Fatal("missing tool call")
+	}
+	if update.ToolCall.Title != "Read file" || len(update.ToolCall.Locations) != 1 {
+		t.Fatalf("tool call = %#v", update.ToolCall)
+	}
+	if update.ToolCall.RawInput != nil {
+		t.Fatalf("location was mirrored into input: %#v", update.ToolCall.RawInput)
+	}
+}
+
+func TestUnknownToolUsesRawInputOnlyOnce(t *testing.T) {
+	info := toolInfoFromToolUse("mcp__example", json.RawMessage(`{"query":"value"}`), "/proj")
+	if info.rawInput == nil {
+		t.Fatal("missing raw input")
+	}
+	if len(info.content) != 0 {
+		t.Fatalf("raw input was duplicated as content: %#v", info.content)
 	}
 }
 

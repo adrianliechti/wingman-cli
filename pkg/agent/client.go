@@ -32,9 +32,13 @@ type pendingToolCall struct {
 }
 
 func (p *pendingToolCall) message() Message {
+	presentation := NewToolPresentation(p.name, "", string(p.args), nil)
 	return Message{
-		Role:    RoleAssistant,
-		Content: []Content{{ToolCall: &ToolCall{ID: p.id, Name: p.name, Args: string(p.args), Partial: true}}},
+		Role: RoleAssistant,
+		Content: []Content{{ToolCall: &ToolCall{
+			ID: p.id, Name: p.name, Args: string(p.args), Partial: true,
+			Presentation: presentation,
+		}}},
 	}
 }
 

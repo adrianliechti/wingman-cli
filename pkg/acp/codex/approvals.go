@@ -83,11 +83,16 @@ func (a *approver) askWithOptions(tc acp.ToolCallUpdate, options []acp.Permissio
 
 func (a *approver) handleExec(p execApprovalParams) execApprovalResponse {
 	tc := pendingToolCall(p.ItemID, acp.ToolKindExecute)
+	tc.Title = new("Run command")
 	if p.Reason != "" {
 		tc.Content = []acp.ToolCallContent{acp.ToolContent(acp.TextBlock(p.Reason))}
 	}
 	if p.Command != "" {
-		tc.RawInput = map[string]any{"command": stripShellPrefix(p.Command), "cwd": p.Cwd}
+		command := stripShellPrefix(p.Command)
+		if command == "" {
+			command = p.Command
+		}
+		tc.RawInput = commandRawInput(command, p.Cwd)
 	}
 
 	choices := commandApprovalChoices(p)
@@ -105,6 +110,7 @@ func (a *approver) handleExec(p execApprovalParams) execApprovalResponse {
 
 func (a *approver) handleFile(p fileApprovalParams) fileApprovalResponse {
 	tc := pendingToolCall(p.ItemID, acp.ToolKindEdit)
+	tc.Title = new("Edit files")
 	if p.Reason != "" {
 		tc.Content = []acp.ToolCallContent{acp.ToolContent(acp.TextBlock(p.Reason))}
 	}
@@ -123,19 +129,7 @@ func (a *approver) handleFile(p fileApprovalParams) fileApprovalResponse {
 }
 
 func (a *approver) handlePermissions(p permissionsApprovalParams) permissionsApprovalResponse {
-	title := p.Reason
-	if title == "" {
-		title = "Permissions Request"
-	}
-	tc := pendingToolCall(p.ItemID, acp.ToolKindOther)
-	tc.Title = &title
-	tc.RawInput = p
-	if content := formatRequestedPermissions(p.Permissions); content != "" {
-		if p.Reason != "" {
-			content = p.Reason + "\n\n" + content
-		}
-		tc.Content = []acp.ToolCallContent{acp.ToolContent(acp.TextBlock(content))}
-	}
+	tc := permissionsToolCall(p)
 
 	options := []acp.PermissionOption{
 		permissionOption(optionAllowPermissionsSession, "Allow for Session", acp.PermissionOptionKindAllowAlways, permissionGrantChanges(p.Permissions, "session")...),
@@ -154,6 +148,20 @@ func (a *approver) handlePermissions(p permissionsApprovalParams) permissionsApp
 	default:
 		return rejectPermissionsResponse()
 	}
+}
+
+func permissionsToolCall(p permissionsApprovalParams) acp.ToolCallUpdate {
+	tc := pendingToolCall(p.ItemID, acp.ToolKindOther)
+	tc.Title = new("Permissions request")
+	if content := formatRequestedPermissions(p.Permissions); content != "" {
+		if p.Reason != "" {
+			content = p.Reason + "\n\n" + content
+		}
+		tc.Content = []acp.ToolCallContent{acp.ToolContent(acp.TextBlock(content))}
+	} else if p.Reason != "" {
+		tc.Content = []acp.ToolCallContent{acp.ToolContent(acp.TextBlock(p.Reason))}
+	}
+	return tc
 }
 
 func approvalOptions(choices []approvalChoice) []acp.PermissionOption {

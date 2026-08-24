@@ -122,6 +122,10 @@ type TodoItem struct {
 func ParseTodoItems(argsJSON string) []TodoItem {
 	var args struct {
 		Items []TodoItem `json:"items"`
+		Plan  []struct {
+			Step   string `json:"step"`
+			Status string `json:"status"`
+		} `json:"plan"`
 	}
 	if json.Unmarshal([]byte(argsJSON), &args) != nil {
 		if json.Unmarshal([]byte(closeJSONPrefix(argsJSON)), &args) != nil {
@@ -129,13 +133,20 @@ func ParseTodoItems(argsJSON string) []TodoItem {
 		}
 	}
 
-	items := args.Items[:0]
-	for _, item := range args.Items {
-		if strings.TrimSpace(item.Content) != "" {
-			items = append(items, item)
+	items := args.Items
+	if len(items) == 0 {
+		items = make([]TodoItem, 0, len(args.Plan))
+		for _, item := range args.Plan {
+			items = append(items, TodoItem{Content: item.Step, Status: item.Status})
 		}
 	}
-	return items
+	filtered := items[:0]
+	for _, item := range items {
+		if strings.TrimSpace(item.Content) != "" {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
 }
 
 // TodoHint summarizes a todo call as progress plus the active step.

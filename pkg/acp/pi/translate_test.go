@@ -153,7 +153,7 @@ func TestReplayMessagesPreservesRichConversation(t *testing.T) {
 		{"role":"toolResult","toolCallId":"call-1","toolName":"read","content":[{"type":"text","text":"contents"}],"isError":false}
 	]}`)
 	var updates []acp.SessionUpdate
-	replayMessages(func(update acp.SessionUpdate) { updates = append(updates, update) }, data)
+	replayMessages(func(update acp.SessionUpdate) { updates = append(updates, update) }, data, "/workspace")
 
 	var userText, userImage, agentThought, agentText, toolStart, toolEnd bool
 	for _, update := range updates {
@@ -169,6 +169,9 @@ func TestReplayMessagesPreservesRichConversation(t *testing.T) {
 		}
 		if update.ToolCall != nil {
 			toolStart = true
+			if update.ToolCall.Title != "Read file" || len(update.ToolCall.Locations) != 1 || update.ToolCall.RawInput != nil {
+				t.Fatalf("replayed tool presentation = %#v", update.ToolCall)
+			}
 		}
 		if update.ToolCallUpdate != nil {
 			toolEnd = true

@@ -113,7 +113,9 @@ interface ToolResultMessage extends SessionMessage {
 	id: string;
 	name: string;
 	kind?: string;
+	args?: string;
 	locations?: ToolLocation[];
+	hint?: string;
 	content: string;
 }
 

@@ -2,7 +2,6 @@ package claude
 
 import (
 	"encoding/json"
-	"fmt"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -16,6 +15,7 @@ type toolUseCache map[string]string
 type toolInfo struct {
 	title     string
 	kind      acp.ToolKind
+	rawInput  any
 	locations []acp.ToolCallLocation
 	content   []acp.ToolCallContent
 }
@@ -30,14 +30,17 @@ func toolCallStartUpdate(id, name string, rawInput json.RawMessage, cwd string, 
 		acp.WithStartKind(info.kind),
 		acp.WithStartStatus(status),
 	}
-	if input, ok := unmarshalAny(rawInput); ok {
-		opts = append(opts, acp.WithStartRawInput(input))
-	}
 	if len(info.content) > 0 {
 		opts = append(opts, acp.WithStartContent(info.content))
 	}
 	if len(info.locations) > 0 {
 		opts = append(opts, acp.WithStartLocations(info.locations))
+	}
+	// WithStartLocations mirrors a lone location into rawInput.path. Apply the
+	// display input afterwards so a file chip never becomes a duplicate hint or
+	// expanded path argument.
+	if info.rawInput != nil || len(info.locations) > 0 {
+		opts = append(opts, acp.WithStartRawInput(info.rawInput))
 	}
 	return acp.StartToolCall(acp.ToolCallId(id), info.title, opts...)
 }
@@ -52,8 +55,8 @@ func toolCallRefineUpdate(id, name string, rawInput json.RawMessage, cwd string,
 		acp.WithUpdateKind(info.kind),
 		acp.WithUpdateStatus(status),
 	}
-	if input, ok := unmarshalAny(rawInput); ok {
-		opts = append(opts, acp.WithUpdateRawInput(input))
+	if info.rawInput != nil {
+		opts = append(opts, acp.WithUpdateRawInput(info.rawInput))
 	}
 	if len(info.content) > 0 {
 		opts = append(opts, acp.WithUpdateContent(info.content))
@@ -75,21 +78,36 @@ func unmarshalAny(raw json.RawMessage) (any, bool) {
 	return v, true
 }
 
-func toDisplayPath(filePath, cwd string) string {
-	if cwd == "" || filePath == "" {
-		return filePath
+func displayInput(raw json.RawMessage, omit ...string) any {
+	input, ok := unmarshalAny(raw)
+	if !ok {
+		return nil
 	}
-	rc, err1 := filepath.Abs(cwd)
-	rf, err2 := filepath.Abs(filePath)
-	if err1 != nil || err2 != nil {
-		return filePath
+	args, ok := input.(map[string]any)
+	if !ok {
+		return input
 	}
-	if rf == rc || strings.HasPrefix(rf, rc+string(filepath.Separator)) {
-		if rel, err := filepath.Rel(rc, rf); err == nil {
-			return rel
-		}
+	for _, key := range omit {
+		delete(args, key)
 	}
-	return filePath
+	if len(args) == 0 {
+		return nil
+	}
+	return args
+}
+
+func displayLocation(path, cwd string, line int) []acp.ToolCallLocation {
+	if path == "" {
+		return nil
+	}
+	if !filepath.IsAbs(path) && cwd != "" {
+		path = filepath.Join(cwd, path)
+	}
+	location := acp.ToolCallLocation{Path: path}
+	if line > 0 {
+		location.Line = new(line)
+	}
+	return []acp.ToolCallLocation{location}
 }
 
 func toolInfoFromToolUse(name string, rawInput json.RawMessage, cwd string) toolInfo {
@@ -116,15 +134,14 @@ func toolInfoFromToolUse(name string, rawInput json.RawMessage, cwd string) tool
 			Description string `json:"description"`
 		}
 		_ = json.Unmarshal(rawInput, &in)
-		title := "Terminal"
-		if in.Command != "" {
-			title = in.Command
-		}
 		var content []acp.ToolCallContent
 		if in.Description != "" {
 			content = []acp.ToolCallContent{acp.ToolContent(acp.TextBlock(in.Description))}
 		}
-		return toolInfo{title: title, kind: acp.ToolKindExecute, content: content}
+		return toolInfo{
+			title: "Run command", kind: acp.ToolKindExecute,
+			rawInput: displayInput(rawInput, "description"), content: content,
+		}
 
 	case "Read":
 		var in struct {
@@ -133,28 +150,11 @@ func toolInfoFromToolUse(name string, rawInput json.RawMessage, cwd string) tool
 			Limit    int    `json:"limit"`
 		}
 		_ = json.Unmarshal(rawInput, &in)
-		span := ""
-		switch {
-		case in.Limit > 0:
-			start := in.Offset
-			if start == 0 {
-				start = 1
-			}
-			span = fmt.Sprintf(" (%d - %d)", start, start+in.Limit-1)
-		case in.Offset != 0:
-			span = fmt.Sprintf(" (from line %d)", in.Offset)
+		return toolInfo{
+			title: "Read file", kind: acp.ToolKindRead,
+			rawInput:  displayInput(rawInput, "file_path", "offset"),
+			locations: displayLocation(in.FilePath, cwd, in.Offset),
 		}
-		display := "File"
-		var locations []acp.ToolCallLocation
-		if in.FilePath != "" {
-			display = toDisplayPath(in.FilePath, cwd)
-			line := in.Offset
-			if line == 0 {
-				line = 1
-			}
-			locations = []acp.ToolCallLocation{{Path: in.FilePath, Line: new(line)}}
-		}
-		return toolInfo{title: "Read " + display + span, kind: acp.ToolKindRead, locations: locations}
 
 	case "Write":
 		var in struct {
@@ -164,36 +164,58 @@ func toolInfoFromToolUse(name string, rawInput json.RawMessage, cwd string) tool
 		_ = json.Unmarshal(rawInput, &in)
 		var content []acp.ToolCallContent
 		var locations []acp.ToolCallLocation
-		title := "Write"
 		if in.FilePath != "" {
 			content = []acp.ToolCallContent{acp.ToolDiffContent(in.FilePath, in.Content)}
-			locations = []acp.ToolCallLocation{{Path: in.FilePath}}
-			title = "Write " + toDisplayPath(in.FilePath, cwd)
+			locations = displayLocation(in.FilePath, cwd, 0)
 		} else if in.Content != "" {
 			content = []acp.ToolCallContent{acp.ToolContent(acp.TextBlock(in.Content))}
 		}
-		return toolInfo{title: title, kind: acp.ToolKindEdit, content: content, locations: locations}
+		return toolInfo{title: "Write file", kind: acp.ToolKindEdit, content: content, locations: locations}
 
 	case "Edit", "MultiEdit":
 		var in struct {
 			FilePath  string `json:"file_path"`
 			OldString string `json:"old_string"`
 			NewString string `json:"new_string"`
+			Edits     []struct {
+				OldString string `json:"old_string"`
+				NewString string `json:"new_string"`
+			} `json:"edits"`
 		}
 		_ = json.Unmarshal(rawInput, &in)
 		var content []acp.ToolCallContent
 		var locations []acp.ToolCallLocation
-		title := "Edit"
+		var display any
 		if in.FilePath != "" {
 			if in.OldString != "" {
 				content = []acp.ToolCallContent{acp.ToolDiffContent(in.FilePath, in.NewString, in.OldString)}
 			} else if in.NewString != "" {
 				content = []acp.ToolCallContent{acp.ToolDiffContent(in.FilePath, in.NewString)}
 			}
-			locations = []acp.ToolCallLocation{{Path: in.FilePath}}
-			title = "Edit " + toDisplayPath(in.FilePath, cwd)
+			for _, edit := range in.Edits {
+				content = append(content, acp.ToolDiffContent(in.FilePath, edit.NewString, edit.OldString))
+			}
+			locations = displayLocation(in.FilePath, cwd, 0)
 		}
-		return toolInfo{title: title, kind: acp.ToolKindEdit, content: content, locations: locations}
+		if len(content) > 0 {
+			display = displayInput(rawInput, "file_path", "old_string", "new_string", "edits")
+		} else {
+			// MultiEdit carries an edits array which is not representable as one
+			// ACP diff, so retain it while still removing the duplicate path.
+			display = displayInput(rawInput, "file_path")
+		}
+		return toolInfo{title: "Edit file", kind: acp.ToolKindEdit, rawInput: display, content: content, locations: locations}
+
+	case "NotebookEdit":
+		var in struct {
+			NotebookPath string `json:"notebook_path"`
+		}
+		_ = json.Unmarshal(rawInput, &in)
+		return toolInfo{
+			title: "Edit notebook", kind: acp.ToolKindEdit,
+			rawInput:  displayInput(rawInput, "notebook_path"),
+			locations: displayLocation(in.NotebookPath, cwd, 0),
+		}
 
 	case "Glob":
 		var in struct {
@@ -201,21 +223,22 @@ func toolInfoFromToolUse(name string, rawInput json.RawMessage, cwd string) tool
 			Pattern string `json:"pattern"`
 		}
 		_ = json.Unmarshal(rawInput, &in)
-		label := "Find"
-		if in.Path != "" {
-			label += " `" + in.Path + "`"
+		return toolInfo{
+			title: "Find files", kind: acp.ToolKindSearch,
+			rawInput:  displayInput(rawInput, "path"),
+			locations: displayLocation(in.Path, cwd, 0),
 		}
-		if in.Pattern != "" {
-			label += " `" + in.Pattern + "`"
-		}
-		var locations []acp.ToolCallLocation
-		if in.Path != "" {
-			locations = []acp.ToolCallLocation{{Path: in.Path}}
-		}
-		return toolInfo{title: label, kind: acp.ToolKindSearch, locations: locations}
 
 	case "Grep":
-		return toolInfo{title: grepLabel(rawInput), kind: acp.ToolKindSearch}
+		var in struct {
+			Path string `json:"path"`
+		}
+		_ = json.Unmarshal(rawInput, &in)
+		return toolInfo{
+			title: "Search files", kind: acp.ToolKindSearch,
+			rawInput:  displayInput(rawInput, "path"),
+			locations: displayLocation(in.Path, cwd, 0),
+		}
 
 	case "WebFetch":
 		var in struct {
@@ -223,15 +246,14 @@ func toolInfoFromToolUse(name string, rawInput json.RawMessage, cwd string) tool
 			Prompt string `json:"prompt"`
 		}
 		_ = json.Unmarshal(rawInput, &in)
-		title := "Fetch"
-		if in.URL != "" {
-			title = "Fetch " + in.URL
-		}
 		var content []acp.ToolCallContent
 		if in.Prompt != "" {
 			content = []acp.ToolCallContent{acp.ToolContent(acp.TextBlock(in.Prompt))}
 		}
-		return toolInfo{title: title, kind: acp.ToolKindFetch, content: content}
+		return toolInfo{
+			title: "Open page", kind: acp.ToolKindFetch,
+			rawInput: displayInput(rawInput, "prompt"), content: content,
+		}
 
 	case "WebSearch":
 		var in struct {
@@ -240,17 +262,13 @@ func toolInfoFromToolUse(name string, rawInput json.RawMessage, cwd string) tool
 			BlockedDomains []string `json:"blocked_domains"`
 		}
 		_ = json.Unmarshal(rawInput, &in)
-		label := "Web search"
-		if in.Query != "" {
-			label = `"` + in.Query + `"`
-		}
-		if len(in.AllowedDomains) > 0 {
-			label += " (allowed: " + strings.Join(in.AllowedDomains, ", ") + ")"
-		}
-		if len(in.BlockedDomains) > 0 {
-			label += " (blocked: " + strings.Join(in.BlockedDomains, ", ") + ")"
-		}
-		return toolInfo{title: label, kind: acp.ToolKindFetch}
+		return toolInfo{title: "Web search", kind: acp.ToolKindFetch, rawInput: displayInput(rawInput)}
+
+	case "BashOutput":
+		return toolInfo{title: "Read command output", kind: acp.ToolKindExecute, rawInput: displayInput(rawInput)}
+
+	case "KillShell":
+		return toolInfo{title: "Stop command", kind: acp.ToolKindExecute, rawInput: displayInput(rawInput)}
 
 	case "ExitPlanMode":
 		var in struct {
@@ -264,96 +282,18 @@ func toolInfoFromToolUse(name string, rawInput json.RawMessage, cwd string) tool
 		return toolInfo{title: "Ready to code?", kind: acp.ToolKindSwitchMode, content: content}
 
 	case "Skill":
-		var in struct {
-			Skill string `json:"skill"`
-		}
-		_ = json.Unmarshal(rawInput, &in)
-		title := "Load skill"
-		if in.Skill != "" {
-			title += ": " + in.Skill
-		}
-		return toolInfo{title: title, kind: acp.ToolKindOther}
+		return toolInfo{title: "Load skill", kind: acp.ToolKindOther, rawInput: displayInput(rawInput)}
 
 	case "AskUserQuestion":
-		title := "Asking for your input"
-		if qs := parseAskQuestions(rawInput); len(qs) > 0 {
-			title = qs[0].Question
-		}
-		return toolInfo{title: title, kind: acp.ToolKindOther}
+		return toolInfo{title: "Request input", kind: acp.ToolKindOther}
 
 	default:
 		title := name
 		if title == "" {
 			title = "Tool call"
 		}
-		var content []acp.ToolCallContent
-		if len(rawInput) > 0 {
-			if pretty, err := json.MarshalIndent(json.RawMessage(rawInput), "", "  "); err == nil {
-				content = []acp.ToolCallContent{acp.ToolContent(acp.TextBlock("```json\n" + string(pretty) + "\n```"))}
-			}
-		}
-		return toolInfo{title: title, kind: toolKindFor(name), content: content}
+		return toolInfo{title: title, kind: toolKindFor(name), rawInput: displayInput(rawInput)}
 	}
-}
-
-func grepLabel(rawInput json.RawMessage) string {
-	var in struct {
-		Pattern    string `json:"pattern"`
-		Path       string `json:"path"`
-		Glob       string `json:"glob"`
-		Type       string `json:"type"`
-		OutputMode string `json:"output_mode"`
-		I          bool   `json:"-i"`
-		N          bool   `json:"-n"`
-		A          *int   `json:"-A"`
-		B          *int   `json:"-B"`
-		C          *int   `json:"-C"`
-		HeadLimit  *int   `json:"head_limit"`
-		Multiline  bool   `json:"multiline"`
-	}
-	_ = json.Unmarshal(rawInput, &in)
-
-	label := "grep"
-	if in.I {
-		label += " -i"
-	}
-	if in.N {
-		label += " -n"
-	}
-	if in.A != nil {
-		label += fmt.Sprintf(" -A %d", *in.A)
-	}
-	if in.B != nil {
-		label += fmt.Sprintf(" -B %d", *in.B)
-	}
-	if in.C != nil {
-		label += fmt.Sprintf(" -C %d", *in.C)
-	}
-	switch in.OutputMode {
-	case "files_with_matches":
-		label += " -l"
-	case "count":
-		label += " -c"
-	}
-	if in.HeadLimit != nil {
-		label += fmt.Sprintf(" | head -%d", *in.HeadLimit)
-	}
-	if in.Glob != "" {
-		label += fmt.Sprintf(` --include="%s"`, in.Glob)
-	}
-	if in.Type != "" {
-		label += " --type=" + in.Type
-	}
-	if in.Multiline {
-		label += " -P"
-	}
-	if in.Pattern != "" {
-		label += fmt.Sprintf(` "%s"`, in.Pattern)
-	}
-	if in.Path != "" {
-		label += " " + in.Path
-	}
-	return label
 }
 
 // taskPlan mirrors the CLI's TaskCreate/TaskUpdate task list as ACP plan

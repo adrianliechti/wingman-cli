@@ -110,44 +110,63 @@ func TestFileChangeContentUpdate(t *testing.T) {
 	}
 }
 
+func TestFileChangeLocationsAreDistinct(t *testing.T) {
+	raw := json.RawMessage(`{"changes":[{"path":"/p/a.go"},{"path":"/p/a.go"},{"path":"/p/b.go"},{"path":""}]}`)
+	locations := fileChangeLocations(raw)
+	if len(locations) != 2 || locations[0].Path != "/p/a.go" || locations[1].Path != "/p/b.go" {
+		t.Fatalf("locations = %#v", locations)
+	}
+}
+
 func TestCommandActionToolCall(t *testing.T) {
-	title, kind, locs, ok := commandActionToolCall([]commandAction{{Type: "read", Path: "/x"}})
-	if !ok || title != "Read file '/x'" || kind != acp.ToolKindRead || len(locs) != 1 || locs[0].Path != "/x" {
+	title, kind, input, locs, ok := commandActionToolCall([]commandAction{{Type: "read", Path: "/x"}})
+	if !ok || title != "Read file" || kind != acp.ToolKindRead || input != nil || len(locs) != 1 || locs[0].Path != "/x" {
 		t.Errorf("read: got %q %v %v %v", title, kind, locs, ok)
 	}
 
-	title, kind, _, ok = commandActionToolCall([]commandAction{{Type: "search", Query: "foo", Path: "/p"}})
-	if !ok || title != "Search for 'foo' in /p" || kind != acp.ToolKindSearch {
-		t.Errorf("search: got %q %v %v", title, kind, ok)
+	title, kind, input, locs, ok = commandActionToolCall([]commandAction{{Type: "search", Query: "foo", Path: "/p"}})
+	query, _ := input.(map[string]any)["query"].(string)
+	if !ok || title != "Search files" || kind != acp.ToolKindSearch || query != "foo" || len(locs) != 1 || locs[0].Path != "/p" {
+		t.Errorf("search: got %q %v %v %v", title, kind, locs, ok)
 	}
 
-	title, kind, _, ok = commandActionToolCall([]commandAction{{Type: "listFiles", Path: "/p"}})
-	if !ok || title != "List files in '/p'" || kind != acp.ToolKindRead {
-		t.Errorf("listFiles: got %q %v %v", title, kind, ok)
+	title, kind, input, locs, ok = commandActionToolCall([]commandAction{{Type: "listFiles", Path: "/p"}})
+	if !ok || title != "List files" || kind != acp.ToolKindRead || len(locs) != 1 || locs[0].Path != "/p" {
+		t.Errorf("listFiles: got %q %v %v %v", title, kind, locs, ok)
 	}
-	if title, _, _, _ := commandActionToolCall([]commandAction{{Type: "listFiles"}}); title != "List files" {
+	if title, _, _, _, _ := commandActionToolCall([]commandAction{{Type: "listFiles"}}); title != "List files" {
 		t.Errorf("listFiles no path: got %q", title)
 	}
 
-	if _, _, _, ok := commandActionToolCall([]commandAction{{Type: "read", Path: "/x"}, {Type: "read", Path: "/y"}}); ok {
+	if _, _, _, _, ok := commandActionToolCall([]commandAction{{Type: "read", Path: "/x"}, {Type: "read", Path: "/y"}}); ok {
 		t.Errorf("multiple actions should not resolve to a single mapping")
 	}
-	if _, _, _, ok := commandActionToolCall([]commandAction{{Type: "unknown"}}); ok {
+	if _, _, _, _, ok := commandActionToolCall([]commandAction{{Type: "unknown"}}); ok {
 		t.Errorf("unknown action should not resolve")
 	}
 }
 
-func TestSearchTitle(t *testing.T) {
-	cases := map[string][2]string{
-		"Search for 'q' in /p": {"q", "/p"},
-		"Search for 'q'":       {"q", ""},
-		"Search in '/p'":       {"", "/p"},
-		"Search":               {"", ""},
+func TestDisplayLocationsDoNotBecomeRawInput(t *testing.T) {
+	opts := appendDisplayLocations(nil, []acp.ToolCallLocation{{Path: "/project/main.go"}})
+	update := acp.StartToolCall("read-1", "Read file", opts...)
+	if update.ToolCall == nil {
+		t.Fatal("missing tool call")
 	}
-	for want, in := range cases {
-		if got := searchTitle(in[0], in[1]); got != want {
-			t.Errorf("searchTitle(%q,%q) = %q, want %q", in[0], in[1], got, want)
-		}
+	if len(update.ToolCall.Locations) != 1 || update.ToolCall.Locations[0].Path != "/project/main.go" {
+		t.Fatalf("locations = %#v", update.ToolCall.Locations)
+	}
+	if update.ToolCall.RawInput != nil {
+		t.Fatalf("raw input duplicated the location: %#v", update.ToolCall.RawInput)
+	}
+}
+
+func TestCommandRawInputOmitsEmptyWorkingDirectory(t *testing.T) {
+	input := commandRawInput("go test ./...", "")
+	if input["command"] != "go test ./..." {
+		t.Fatalf("command = %#v", input["command"])
+	}
+	if _, ok := input["cwd"]; ok {
+		t.Fatalf("empty cwd should be omitted: %#v", input)
 	}
 }
 

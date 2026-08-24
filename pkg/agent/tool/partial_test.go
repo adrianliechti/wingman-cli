@@ -68,3 +68,10 @@ func TestExtractHintPartialArgs(t *testing.T) {
 		t.Fatalf("hint = %q", hint)
 	}
 }
+
+func TestTodoHintAcceptsCodexPlanShape(t *testing.T) {
+	args := `{"plan":[{"step":"Inspect","status":"completed"},{"step":"Simplify","status":"in_progress"}]}`
+	if hint := TodoHint(args); hint != "1/2 · Simplify" {
+		t.Fatalf("TodoHint() = %q", hint)
+	}
+}

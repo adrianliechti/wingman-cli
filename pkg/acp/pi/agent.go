@@ -384,7 +384,7 @@ func (a *Agent) LoadSession(ctx context.Context, params acp.LoadSessionRequest) 
 		_ = a.conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: s.id, Update: u})
 	}
 	if data, err := proc.getMessages(ctx); err == nil {
-		replayMessages(send, data)
+		replayMessages(send, data, cwd)
 	}
 
 	return acp.LoadSessionResponse{ConfigOptions: s.configOptions()}, nil

@@ -130,23 +130,16 @@ func (a *approver) handle(req controlRequest) {
 		return
 	}
 
-	tc := pendingToolCall(id, toolKindFor(name))
+	info := toolInfoFromToolUse(name, req.Request.Input, a.cwd)
+	tc := pendingToolCall(id, info.kind)
 	claudeMeta := map[string]any{"toolName": name}
 	if parentToolUseID != "" {
 		claudeMeta["parentToolUseId"] = parentToolUseID
 	}
 	tc.Meta = map[string]any{"claudeCode": claudeMeta}
-	title := name
-	if title == "" {
-		title = "Tool call"
-	}
-	tc.Title = &title
-	if len(req.Request.Input) > 0 {
-		var input map[string]any
-		if json.Unmarshal(req.Request.Input, &input) == nil {
-			tc.RawInput = input
-		}
-	}
+	tc.Title = &info.title
+	tc.RawInput = info.rawInput
+	tc.Locations = info.locations
 	if req.Request.Description != "" {
 		tc.Content = []acp.ToolCallContent{acp.ToolContent(acp.TextBlock(req.Request.Description))}
 	}

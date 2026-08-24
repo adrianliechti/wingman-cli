@@ -718,7 +718,9 @@ export function useWebSocket() {
 									toolId: msg.id,
 									toolName: msg.name,
 									toolKind: msg.kind,
+									toolArgs: msg.args,
 									toolLocations: msg.locations,
+									toolHint: msg.hint,
 									toolResult: msg.content,
 								},
 							],
@@ -727,8 +729,11 @@ export function useWebSocket() {
 					const updated = [...sess.entries];
 					updated[idx] = {
 						...updated[idx],
+						toolName: msg.name || updated[idx].toolName,
 						toolKind: msg.kind ?? updated[idx].toolKind,
+						toolArgs: msg.args ?? "",
 						toolLocations: msg.locations ?? updated[idx].toolLocations,
+						toolHint: msg.hint ?? "",
 						toolResult: msg.content,
 						toolPartial: false,
 					};

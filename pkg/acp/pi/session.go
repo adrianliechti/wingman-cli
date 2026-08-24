@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/coder/acp-go-sdk"
+
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
 type session struct {
@@ -279,17 +281,11 @@ func (t *turn) handleMessageUpdate(raw json.RawMessage) {
 			return
 		}
 		args := toolArgs(tc)
-		opts := []acp.ToolCallStartOpt{
-			acp.WithStartKind(toolKind(tc.Name)),
-			acp.WithStartStatus(acp.ToolCallStatusPending),
-		}
-		if args != nil {
-			opts = append(opts, acp.WithStartRawInput(args))
-		}
-		if locs := toolLocations(args, t.sess.cwd); len(locs) > 0 {
-			opts = append(opts, acp.WithStartLocations(locs))
-		}
-		t.emit(acp.StartToolCall(acp.ToolCallId(tc.ID), toolTitle(tc.Name, args), opts...))
+		presentation := presentTool(tc.Name, args, t.sess.cwd)
+		t.emit(acp.StartToolCall(
+			acp.ToolCallId(tc.ID), presentation.title,
+			startToolOptions(presentation, acp.ToolCallStatusPending)...,
+		))
 	}
 }
 
@@ -305,36 +301,34 @@ func (t *turn) handleToolStart(raw json.RawMessage) {
 
 	var args map[string]any
 	_ = json.Unmarshal(p.Args, &args)
-	locs := toolLocations(args, t.sess.cwd)
-	t.snapshotFileMutation(p.ToolName, p.ToolCallID, args, locs)
+	presentation := presentTool(p.ToolName, args, t.sess.cwd)
+	t.snapshotFileMutation(p.ToolName, p.ToolCallID, args, presentation.locations)
 
 	seen := t.tools[p.ToolCallID]
 	t.tools[p.ToolCallID] = true
 
 	if !seen {
-		opts := []acp.ToolCallStartOpt{
-			acp.WithStartKind(toolKind(p.ToolName)),
-			acp.WithStartStatus(acp.ToolCallStatusInProgress),
-		}
-		if args != nil {
-			opts = append(opts, acp.WithStartRawInput(args))
-		}
-		if len(locs) > 0 {
-			opts = append(opts, acp.WithStartLocations(locs))
-		}
-		t.emit(acp.StartToolCall(acp.ToolCallId(p.ToolCallID), toolTitle(p.ToolName, args), opts...))
+		t.emit(acp.StartToolCall(
+			acp.ToolCallId(p.ToolCallID), presentation.title,
+			startToolOptions(presentation, acp.ToolCallStatusInProgress)...,
+		))
 		return
 	}
 
 	opts := []acp.ToolCallUpdateOpt{
 		acp.WithUpdateStatus(acp.ToolCallStatusInProgress),
-		acp.WithUpdateTitle(toolTitle(p.ToolName, args)),
+		acp.WithUpdateTitle(presentation.title),
+		acp.WithUpdateKind(presentation.kind),
 	}
-	if args != nil {
-		opts = append(opts, acp.WithUpdateRawInput(args))
+	if presentation.rawInput != nil {
+		opts = append(opts, acp.WithUpdateRawInput(presentation.rawInput))
+	} else if args != nil || len(presentation.locations) > 0 {
+		// A streamed partial call may have exposed partialArgs. Replace it with
+		// an empty object once the complete call is represented solely by a chip.
+		opts = append(opts, acp.WithUpdateRawInput(map[string]any{}))
 	}
-	if len(locs) > 0 {
-		opts = append(opts, acp.WithUpdateLocations(locs))
+	if len(presentation.locations) > 0 {
+		opts = append(opts, acp.WithUpdateLocations(presentation.locations))
 	}
 	t.emit(acp.UpdateToolCall(acp.ToolCallId(p.ToolCallID), opts...))
 }
@@ -436,7 +430,7 @@ func (t *turn) ensureToolStarted(id string) {
 		t.tools[id] = true
 	}
 	if !seen {
-		t.emit(acp.StartToolCall(acp.ToolCallId(id), "tool",
+		t.emit(acp.StartToolCall(acp.ToolCallId(id), "Tool call",
 			acp.WithStartKind(acp.ToolKindOther),
 			acp.WithStartStatus(acp.ToolCallStatusInProgress),
 		))
@@ -605,21 +599,94 @@ func toolLocations(args map[string]any, cwd string) []acp.ToolCallLocation {
 	if !filepath.IsAbs(path) && cwd != "" {
 		path = filepath.Join(cwd, path)
 	}
-	return []acp.ToolCallLocation{{Path: path}}
+	location := acp.ToolCallLocation{Path: path}
+	if offset, ok := tool.IntArg(args, "offset"); ok && offset > 0 {
+		location.Line = new(offset)
+	}
+	return []acp.ToolCallLocation{location}
 }
 
-func toolTitle(name string, args map[string]any) string {
-	if name == "bash" {
-		for _, key := range []string{"command", "cmd"} {
-			if cmd, ok := args[key].(string); ok && strings.TrimSpace(cmd) != "" {
-				return cmd
-			}
-		}
+type toolPresentation struct {
+	title     string
+	kind      acp.ToolKind
+	rawInput  any
+	locations []acp.ToolCallLocation
+}
+
+func presentTool(name string, args map[string]any, cwd string) toolPresentation {
+	kind := toolKind(name)
+	locations := toolLocations(args, cwd)
+	title := name
+	omit := []string{}
+
+	switch strings.ToLower(name) {
+	case "read":
+		title = "Read file"
+		omit = append(omit, "path", "file_path", "offset")
+	case "write":
+		title = "Write file"
+		omit = append(omit, "path", "file_path", "content")
+	case "edit":
+		title = "Edit file"
+		omit = append(omit,
+			"path", "file_path", "oldText", "newText", "old_string", "new_string",
+			"replaceAll", "replace_all", "edits",
+		)
+	case "bash", "shell", "exec_command":
+		title = "Run command"
+	case "grep":
+		title = "Search files"
+		omit = append(omit, "path", "file_path")
+	case "glob":
+		title = "Find files"
+		omit = append(omit, "path", "file_path")
+	case "view_image":
+		title = "View image"
+		omit = append(omit, "path", "file_path")
 	}
-	if name == "" {
-		return "tool"
+
+	if title == "" {
+		title = "Tool call"
 	}
-	return name
+	if len(locations) > 0 && len(omit) == 0 {
+		omit = append(omit, "path", "file_path")
+	}
+	return toolPresentation{
+		title: title, kind: kind,
+		rawInput: compactToolArgs(args, omit...), locations: locations,
+	}
+}
+
+func compactToolArgs(args map[string]any, omit ...string) any {
+	if len(args) == 0 {
+		return nil
+	}
+	display := make(map[string]any, len(args))
+	for key, value := range args {
+		display[key] = value
+	}
+	for _, key := range omit {
+		delete(display, key)
+	}
+	if len(display) == 0 {
+		return nil
+	}
+	return display
+}
+
+func startToolOptions(p toolPresentation, status acp.ToolCallStatus) []acp.ToolCallStartOpt {
+	opts := []acp.ToolCallStartOpt{
+		acp.WithStartKind(p.kind),
+		acp.WithStartStatus(status),
+	}
+	if len(p.locations) > 0 {
+		opts = append(opts, acp.WithStartLocations(p.locations))
+	}
+	// Apply rawInput after locations to undo the SDK's synthetic path mirror.
+	if p.rawInput != nil || len(p.locations) > 0 {
+		opts = append(opts, acp.WithStartRawInput(p.rawInput))
+	}
+	return opts
 }
 
 func absPath(path, cwd string) string {
@@ -666,13 +733,17 @@ func findUniqueLine(text, needle string) *int {
 }
 
 func toolKind(name string) acp.ToolKind {
-	switch name {
+	switch strings.ToLower(name) {
 	case "read":
 		return acp.ToolKindRead
 	case "write", "edit":
 		return acp.ToolKindEdit
-	case "bash":
+	case "bash", "shell", "exec_command":
 		return acp.ToolKindExecute
+	case "grep", "glob":
+		return acp.ToolKindSearch
+	case "view_image":
+		return acp.ToolKindRead
 	default:
 		return acp.ToolKindOther
 	}

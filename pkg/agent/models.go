@@ -61,10 +61,11 @@ type Usage struct {
 type ToolCall struct {
 	ID string `json:"id"`
 
-	Name      string         `json:"name"`
-	Kind      string         `json:"kind,omitempty"`
-	Args      string         `json:"args,omitempty"`
-	Locations []ToolLocation `json:"locations,omitempty"`
+	Name         string            `json:"name"`
+	Kind         string            `json:"kind,omitempty"`
+	Args         string            `json:"args,omitempty"`
+	Locations    []ToolLocation    `json:"locations,omitempty"`
+	Presentation *ToolPresentation `json:"presentation,omitempty"`
 
 	Partial bool `json:"partial,omitempty"`
 }
@@ -72,14 +73,23 @@ type ToolCall struct {
 type ToolResult struct {
 	ID string `json:"id,omitempty"`
 
-	Name      string         `json:"name"`
-	Kind      string         `json:"kind,omitempty"`
-	Args      string         `json:"args,omitempty"`
-	Locations []ToolLocation `json:"locations,omitempty"`
+	Name         string            `json:"name"`
+	Kind         string            `json:"kind,omitempty"`
+	Args         string            `json:"args,omitempty"`
+	Locations    []ToolLocation    `json:"locations,omitempty"`
+	Presentation *ToolPresentation `json:"presentation,omitempty"`
 
 	Content  string         `json:"content,omitempty"`
 	IsError  bool           `json:"is_error,omitempty"`
 	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+type ToolPresentation struct {
+	Title     string         `json:"title"`
+	Kind      string         `json:"kind,omitempty"`
+	Args      string         `json:"args,omitempty"`
+	Hint      string         `json:"hint,omitempty"`
+	Locations []ToolLocation `json:"locations,omitempty"`
 }
 
 type ToolLocation struct {

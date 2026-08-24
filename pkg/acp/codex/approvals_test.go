@@ -97,6 +97,29 @@ func TestPermissionsGrantMetadata(t *testing.T) {
 	}
 }
 
+func TestPermissionsToolCallUsesOneReadableRepresentation(t *testing.T) {
+	tc := permissionsToolCall(permissionsApprovalParams{
+		ItemID: "permission-1",
+		Reason: "The command needs network access.",
+		Permissions: map[string]any{
+			"network": map[string]any{"enabled": true},
+		},
+	})
+	if tc.Title == nil || *tc.Title != "Permissions request" {
+		t.Fatalf("title = %#v", tc.Title)
+	}
+	if tc.RawInput != nil {
+		t.Fatalf("internal request duplicated as raw input: %#v", tc.RawInput)
+	}
+	if len(tc.Content) != 1 || tc.Content[0].Content == nil {
+		t.Fatalf("content = %#v", tc.Content)
+	}
+	text := tc.Content[0].Content.Content.Text
+	if text == nil || text.Text != "The command needs network access.\n\nNetwork Access: true" {
+		t.Fatalf("content text = %#v", text)
+	}
+}
+
 func choiceByID(t *testing.T, choices []approvalChoice, id acp.PermissionOptionId) approvalChoice {
 	t.Helper()
 	for _, choice := range choices {

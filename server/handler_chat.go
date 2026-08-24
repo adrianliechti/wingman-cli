@@ -11,7 +11,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
-	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 )
@@ -179,14 +178,18 @@ func (s *Server) handleTurnEvent(ev code.TurnEvent) {
 		for _, c := range ev.Message.Content {
 			switch {
 			case c.ToolCall != nil:
+				display := displayTool(
+					c.ToolCall.Name, c.ToolCall.Kind, c.ToolCall.Args, c.ToolCall.Locations,
+					c.ToolCall.Presentation,
+				)
 				s.sendSession(ev.SessionID, Frame{
 					Type:      EvtToolCall,
 					ID:        c.ToolCall.ID,
-					Name:      c.ToolCall.Name,
-					Kind:      c.ToolCall.Kind,
-					Args:      c.ToolCall.Args,
-					Locations: c.ToolCall.Locations,
-					Hint:      tool.ExtractHint(c.ToolCall.Args, c.ToolCall.Name),
+					Name:      display.name,
+					Kind:      display.kind,
+					Args:      display.args,
+					Locations: display.locations,
+					Hint:      display.hint,
 					Partial:   c.ToolCall.Partial,
 				})
 				if c.ToolCall.Partial {
@@ -196,12 +199,18 @@ func (s *Server) handleTurnEvent(ev code.TurnEvent) {
 				}
 
 			case c.ToolResult != nil:
+				display := displayTool(
+					c.ToolResult.Name, c.ToolResult.Kind, c.ToolResult.Args, c.ToolResult.Locations,
+					c.ToolResult.Presentation,
+				)
 				s.sendSession(ev.SessionID, Frame{
 					Type:      EvtToolResult,
 					ID:        c.ToolResult.ID,
-					Name:      c.ToolResult.Name,
-					Kind:      c.ToolResult.Kind,
-					Locations: c.ToolResult.Locations,
+					Name:      display.name,
+					Kind:      display.kind,
+					Args:      display.args,
+					Locations: display.locations,
+					Hint:      display.hint,
 					Content:   c.ToolResult.Content,
 				})
 

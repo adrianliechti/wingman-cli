@@ -21,22 +21,14 @@ func imageViewToolCall(raw json.RawMessage) (acp.SessionUpdate, bool) {
 	if json.Unmarshal(raw, &it) != nil || it.ID == "" {
 		return acp.SessionUpdate{}, false
 	}
-	title := "View image"
-	if it.Path != "" {
-		title = "View Image " + it.Path
-	}
 	opts := []acp.ToolCallStartOpt{
 		acp.WithStartKind(acp.ToolKindRead),
 		acp.WithStartStatus(acp.ToolCallStatusCompleted),
-		acp.WithStartRawInput(map[string]any{"path": it.Path}),
 	}
 	if it.Path != "" {
-		opts = append(opts,
-			acp.WithStartContent([]acp.ToolCallContent{acp.ToolContent(acp.ResourceLinkBlock(it.Path, it.Path))}),
-			acp.WithStartLocations([]acp.ToolCallLocation{{Path: it.Path}}),
-		)
+		opts = appendDisplayLocations(opts, []acp.ToolCallLocation{{Path: it.Path}})
 	}
-	return acp.StartToolCall(acp.ToolCallId(it.ID), title, opts...), true
+	return acp.StartToolCall(acp.ToolCallId(it.ID), "View image", opts...), true
 }
 
 // imageGeneration -------------------------------------------------------------
@@ -64,7 +56,6 @@ func imageGenStartToolCall(id string) acp.SessionUpdate {
 	return acp.StartToolCall(acp.ToolCallId(id), "Image generation",
 		acp.WithStartKind(acp.ToolKindOther),
 		acp.WithStartStatus(acp.ToolCallStatusInProgress),
-		acp.WithStartRawInput(map[string]any{"id": id}),
 	)
 }
 
@@ -83,15 +74,6 @@ func imageGenContent(it imageGenItem) []acp.ToolCallContent {
 	return content
 }
 
-func imageGenRawOutput(it imageGenItem) map[string]any {
-	return map[string]any{
-		"status":        it.Status,
-		"revisedPrompt": it.RevisedPrompt,
-		"result":        it.Result,
-		"savedPath":     it.SavedPath,
-	}
-}
-
 func imageGenCompleteToolCall(raw json.RawMessage) (acp.SessionUpdate, bool) {
 	var it imageGenItem
 	if json.Unmarshal(raw, &it) != nil || it.ID == "" {
@@ -101,7 +83,9 @@ func imageGenCompleteToolCall(raw json.RawMessage) (acp.SessionUpdate, bool) {
 	if content := imageGenContent(it); len(content) > 0 {
 		opts = append(opts, acp.WithUpdateContent(content))
 	}
-	opts = append(opts, acp.WithUpdateRawOutput(imageGenRawOutput(it)))
+	if it.SavedPath != "" {
+		opts = append(opts, acp.WithUpdateLocations([]acp.ToolCallLocation{{Path: it.SavedPath}}))
+	}
 	return acp.UpdateToolCall(acp.ToolCallId(it.ID), opts...), true
 }
 
@@ -115,10 +99,12 @@ func imageGenToolCall(raw json.RawMessage) (acp.SessionUpdate, bool) {
 	opts := []acp.ToolCallStartOpt{
 		acp.WithStartKind(acp.ToolKindOther),
 		acp.WithStartStatus(imageGenStatus(it.Status)),
-		acp.WithStartRawOutput(imageGenRawOutput(it)),
 	}
 	if content := imageGenContent(it); len(content) > 0 {
 		opts = append(opts, acp.WithStartContent(content))
+	}
+	if it.SavedPath != "" {
+		opts = appendDisplayLocations(opts, []acp.ToolCallLocation{{Path: it.SavedPath}})
 	}
 	return acp.StartToolCall(acp.ToolCallId(it.ID), "Image generation", opts...), true
 }
@@ -136,15 +122,11 @@ type collabItem struct {
 }
 
 func collabRawInput(it collabItem) map[string]any {
-	var states any
-	_ = json.Unmarshal(it.AgentsStates, &states)
-	return map[string]any{
-		"prompt":            it.Prompt,
-		"senderThreadId":    it.SenderThreadID,
-		"receiverThreadIds": it.ReceiverThreadIDs,
-		"agentsStates":      states,
-		"status":            it.Status,
+	input := make(map[string]any)
+	if it.Prompt != "" {
+		input["prompt"] = it.Prompt
 	}
+	return input
 }
 
 func collabStartToolCall(raw json.RawMessage) (acp.SessionUpdate, bool) {
@@ -156,11 +138,14 @@ func collabStartToolCall(raw json.RawMessage) (acp.SessionUpdate, bool) {
 	if title == "" {
 		title = "Collab agent"
 	}
-	return acp.StartToolCall(acp.ToolCallId(it.ID), title,
+	opts := []acp.ToolCallStartOpt{
 		acp.WithStartKind(acp.ToolKindOther),
 		acp.WithStartStatus(toolStatusFor(it.Status)),
-		acp.WithStartRawInput(collabRawInput(it)),
-	), true
+	}
+	if input := collabRawInput(it); len(input) > 0 {
+		opts = append(opts, acp.WithStartRawInput(input))
+	}
+	return acp.StartToolCall(acp.ToolCallId(it.ID), title, opts...), true
 }
 
 func collabCompleteToolCall(raw json.RawMessage) (acp.SessionUpdate, bool) {
@@ -170,7 +155,9 @@ func collabCompleteToolCall(raw json.RawMessage) (acp.SessionUpdate, bool) {
 	}
 	opts := []acp.ToolCallUpdateOpt{
 		acp.WithUpdateStatus(toolStatusFor(it.Status)),
-		acp.WithUpdateRawInput(collabRawInput(it)),
+	}
+	if input := collabRawInput(it); len(input) > 0 {
+		opts = append(opts, acp.WithUpdateRawInput(input))
 	}
 	if it.Tool != "" {
 		opts = append(opts, acp.WithUpdateTitle(it.Tool))
@@ -210,14 +197,6 @@ func subAgentTitle(it subAgentItem) string {
 	return "Subagent " + name
 }
 
-func subAgentRawInput(it subAgentItem) map[string]any {
-	return map[string]any{
-		"agentThreadId": it.AgentThreadID,
-		"agentPath":     it.AgentPath,
-		"activityKind":  it.Kind,
-	}
-}
-
 func subAgentStartToolCall(raw json.RawMessage, status acp.ToolCallStatus) (acp.SessionUpdate, bool) {
 	var it subAgentItem
 	if json.Unmarshal(raw, &it) != nil || it.ID == "" {
@@ -226,7 +205,6 @@ func subAgentStartToolCall(raw json.RawMessage, status acp.ToolCallStatus) (acp.
 	return acp.StartToolCall(acp.ToolCallId(it.ID), subAgentTitle(it),
 		acp.WithStartKind(acp.ToolKindOther),
 		acp.WithStartStatus(status),
-		acp.WithStartRawInput(subAgentRawInput(it)),
 	), true
 }
 
@@ -237,7 +215,6 @@ func subAgentCompleteToolCall(raw json.RawMessage) (acp.SessionUpdate, bool) {
 	}
 	return acp.UpdateToolCall(acp.ToolCallId(it.ID),
 		acp.WithUpdateStatus(acp.ToolCallStatusCompleted),
-		acp.WithUpdateRawInput(subAgentRawInput(it)),
 	), true
 }
 
@@ -293,72 +270,87 @@ type webSearchItem struct {
 func webSearchStartToolCall(raw json.RawMessage, status acp.ToolCallStatus) acp.SessionUpdate {
 	var it webSearchItem
 	_ = json.Unmarshal(raw, &it)
-	var rawInput map[string]any
-	_ = json.Unmarshal(raw, &rawInput)
-	return acp.StartToolCall(acp.ToolCallId(it.ID), webSearchTitle(it),
+	opts := []acp.ToolCallStartOpt{
 		acp.WithStartKind(acp.ToolKindSearch),
 		acp.WithStartStatus(status),
-		acp.WithStartRawInput(rawInput),
-	)
+	}
+	if input := webSearchInput(it); len(input) > 0 {
+		opts = append(opts, acp.WithStartRawInput(input))
+	}
+	return acp.StartToolCall(acp.ToolCallId(it.ID), webSearchTitle(it), opts...)
 }
 
 func webSearchCompleteToolCall(raw json.RawMessage) acp.SessionUpdate {
 	var it webSearchItem
 	_ = json.Unmarshal(raw, &it)
-	var rawInput map[string]any
-	_ = json.Unmarshal(raw, &rawInput)
-	return acp.UpdateToolCall(acp.ToolCallId(it.ID),
+	opts := []acp.ToolCallUpdateOpt{
 		acp.WithUpdateStatus(acp.ToolCallStatusCompleted),
 		acp.WithUpdateTitle(webSearchTitle(it)),
-		acp.WithUpdateRawInput(rawInput),
-	)
+	}
+	if input := webSearchInput(it); len(input) > 0 {
+		opts = append(opts, acp.WithUpdateRawInput(input))
+	}
+	return acp.UpdateToolCall(acp.ToolCallId(it.ID), opts...)
 }
 
 func webSearchTitle(it webSearchItem) string {
 	a := it.Action
+	if a == nil || a.Type == "search" {
+		return "Web search"
+	}
+	switch a.Type {
+	case "openPage":
+		return "Open page"
+	case "findInPage":
+		return "Find in page"
+	default:
+		return "Web search"
+	}
+}
+
+func webSearchInput(it webSearchItem) map[string]any {
+	input := make(map[string]any)
+	a := it.Action
 	if a == nil {
 		if it.Query != "" {
-			return "Web search: " + it.Query
+			input["query"] = it.Query
 		}
-		return "Web search"
+		return input
 	}
 	switch a.Type {
 	case "search":
 		query := it.Query
 		if a.Query != nil && *a.Query != "" {
 			query = *a.Query
-		} else if len(a.Queries) > 0 {
-			var qs []string
-			for _, q := range a.Queries {
-				if q != "" {
-					qs = append(qs, q)
-				}
-			}
-			if len(qs) > 0 {
-				query = strings.Join(qs, ", ")
-			}
 		}
 		if query != "" {
-			return "Web search: " + query
+			input["query"] = query
 		}
-		return "Web search"
+		if len(a.Queries) > 0 {
+			queries := make([]string, 0, len(a.Queries))
+			for _, query := range a.Queries {
+				if query != "" {
+					queries = append(queries, query)
+				}
+			}
+			if len(queries) > 0 {
+				input["queries"] = queries
+				delete(input, "query")
+			}
+		}
 	case "openPage":
 		if a.URL != nil && *a.URL != "" {
-			return "Open page: " + *a.URL
+			input["url"] = *a.URL
 		}
-		return "Open page"
 	case "findInPage":
-		title := "Find in page"
 		if a.Pattern != nil && *a.Pattern != "" {
-			title += " for '" + *a.Pattern + "'"
+			input["pattern"] = *a.Pattern
 		}
 		if a.URL != nil && *a.URL != "" {
-			title += " in " + *a.URL
+			input["url"] = *a.URL
 		}
-		return title
-	default:
-		return "Web search"
 	}
+	return input
 }
 
 // guardian (item/autoApprovalReview/*) ----------------------------------------
@@ -474,24 +466,18 @@ func guardianContent(g guardianNotif) []acp.ToolCallContent {
 	return []acp.ToolCallContent{acp.ToolContent(acp.TextBlock(strings.Join(lines, "\n")))}
 }
 
-func guardianStartToolCall(g guardianNotif, raw json.RawMessage) acp.SessionUpdate {
-	var rawInput map[string]any
-	_ = json.Unmarshal(raw, &rawInput)
+func guardianStartToolCall(g guardianNotif) acp.SessionUpdate {
 	return acp.StartToolCall(acp.ToolCallId(guardianToolCallID(g.ReviewID)), "Guardian Review",
 		acp.WithStartKind(acp.ToolKindThink),
 		acp.WithStartStatus(guardianStatus(g.Review.Status)),
 		acp.WithStartContent(guardianContent(g)),
-		acp.WithStartRawInput(rawInput),
 	)
 }
 
-func guardianUpdateToolCall(g guardianNotif, raw json.RawMessage) acp.SessionUpdate {
-	var rawOutput map[string]any
-	_ = json.Unmarshal(raw, &rawOutput)
+func guardianUpdateToolCall(g guardianNotif) acp.SessionUpdate {
 	return acp.UpdateToolCall(acp.ToolCallId(guardianToolCallID(g.ReviewID)),
 		acp.WithUpdateStatus(guardianStatus(g.Review.Status)),
 		acp.WithUpdateContent(guardianContent(g)),
-		acp.WithUpdateRawOutput(rawOutput),
 	)
 }
 

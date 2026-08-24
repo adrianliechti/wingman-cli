@@ -88,10 +88,20 @@ func CloneContent(in []Content) []Content {
 		}
 		if content.ToolCall != nil {
 			call := *content.ToolCall
+			if call.Presentation != nil {
+				presentation := *call.Presentation
+				presentation.Locations = append([]ToolLocation(nil), presentation.Locations...)
+				call.Presentation = &presentation
+			}
 			out[i].ToolCall = &call
 		}
 		if content.ToolResult != nil {
 			result := *content.ToolResult
+			if result.Presentation != nil {
+				presentation := *result.Presentation
+				presentation.Locations = append([]ToolLocation(nil), presentation.Locations...)
+				result.Presentation = &presentation
+			}
 			result.Metadata = maps.Clone(result.Metadata)
 			out[i].ToolResult = &result
 		}

@@ -817,18 +817,40 @@ func notifyContent(notify func(acpsdk.SessionUpdate), role agent.MessageRole, c 
 		if c.ToolCall.Partial {
 			return
 		}
-		raw := parseRawInput(c.ToolCall.Args)
-		opts := []acpsdk.ToolCallStartOpt{
-			acpsdk.WithStartKind(mapKind(c.ToolCall.Name)),
-			acpsdk.WithStartStatus(acpsdk.ToolCallStatusInProgress),
-			acpsdk.WithStartRawInput(raw),
+		presentation := c.ToolCall.Presentation
+		if presentation == nil {
+			presentation = agent.NewToolPresentation(
+				c.ToolCall.Name, c.ToolCall.Kind, c.ToolCall.Args, c.ToolCall.Locations,
+			)
 		}
-		if locs := toolLocations(c.ToolCall.Name, raw); len(locs) > 0 {
-			opts = append(opts, acpsdk.WithStartLocations(locs))
+		title := presentation.Title
+		if title == "" {
+			title = c.ToolCall.Name
+		}
+		if title == "" {
+			title = "Tool call"
+		}
+		kind := acpsdk.ToolKind(presentation.Kind)
+		if kind == "" {
+			kind = acpsdk.ToolKindOther
+		}
+		rawInput := parseRawInput(presentation.Args)
+		locations := sdkToolLocations(presentation.Locations)
+		opts := []acpsdk.ToolCallStartOpt{
+			acpsdk.WithStartKind(kind),
+			acpsdk.WithStartStatus(acpsdk.ToolCallStatusInProgress),
+		}
+		if len(locations) > 0 {
+			opts = append(opts, acpsdk.WithStartLocations(locations))
+		}
+		// Locations are rendered as file chips. Apply the compact display input
+		// afterwards so the SDK cannot mirror a lone location back into args.
+		if rawInput != nil || len(locations) > 0 {
+			opts = append(opts, acpsdk.WithStartRawInput(rawInput))
 		}
 		notify(acpsdk.StartToolCall(
 			acpsdk.ToolCallId(c.ToolCall.ID),
-			toolTitle(c.ToolCall.Name, raw),
+			title,
 			opts...,
 		))
 	case c.ToolResult != nil:
@@ -985,129 +1007,17 @@ func titleCase(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-func toolTitle(name string, raw any) string {
-	args, _ := raw.(map[string]any)
-	str := func(key string) string {
-		if args == nil {
-			return ""
+func sdkToolLocations(locations []agent.ToolLocation) []acpsdk.ToolCallLocation {
+	result := make([]acpsdk.ToolCallLocation, 0, len(locations))
+	for _, location := range locations {
+		if location.Path == "" {
+			continue
 		}
-		v, _ := args[key].(string)
-		return v
+		mapped := acpsdk.ToolCallLocation{Path: location.Path}
+		if location.Line > 0 {
+			mapped.Line = new(location.Line)
+		}
+		result = append(result, mapped)
 	}
-	intArg := func(key string) int {
-		if args == nil {
-			return 0
-		}
-		switch v := args[key].(type) {
-		case float64:
-			return int(v)
-		case int:
-			return v
-		}
-		return 0
-	}
-	truncate := func(s string, max int) string {
-		if len(s) <= max {
-			return s
-		}
-		return s[:max-3] + "..."
-	}
-
-	var detail string
-	switch name {
-	case "read", "write", "edit":
-
-		detail = str("file_path")
-		if detail == "" {
-			detail = str("path")
-		}
-	case "grep":
-		if p := str("pattern"); p != "" {
-			detail = p
-			if path := str("path"); path != "" {
-				detail = p + " in " + path
-			}
-		}
-	case "glob":
-		if p := str("pattern"); p != "" {
-			detail = p
-			if path := str("path"); path != "" {
-				detail = p + " in " + path
-			}
-		}
-	case "lsp":
-		if op := str("operation"); op != "" {
-			detail = op
-			if fp := str("file_path"); fp != "" {
-				if line := intArg("line"); line > 0 {
-					detail = fmt.Sprintf("%s %s:%d", op, fp, line)
-				} else {
-					detail = op + " " + fp
-				}
-			} else if q := str("query"); q != "" {
-				detail = op + " " + q
-			}
-		}
-	case "shell":
-		if cmd := str("command"); cmd != "" {
-			if desc := str("description"); desc != "" {
-				detail = desc
-			} else {
-				detail = truncate(cmd, 60)
-			}
-		}
-	case "elicit":
-		detail = truncate(tool.ElicitHint(args), 80)
-	case "agent":
-
-		prompt := str("prompt")
-		if agentType := str("agent_type"); agentType != "" && prompt != "" {
-			detail = truncate(agentType+": "+prompt, 80)
-		} else if prompt != "" {
-			detail = truncate(prompt, 60)
-		}
-	}
-	if detail == "" {
-		return name
-	}
-	return name + ": " + strings.TrimSpace(detail)
-}
-
-func toolLocations(name string, raw any) []acpsdk.ToolCallLocation {
-	args, _ := raw.(map[string]any)
-	if args == nil {
-		return nil
-	}
-	var path string
-	switch name {
-	case "read", "write", "edit":
-		path, _ = args["file_path"].(string)
-		if path == "" {
-
-			path, _ = args["path"].(string)
-		}
-	case "lsp":
-		path, _ = args["file_path"].(string)
-	case "grep", "glob":
-		path, _ = args["path"].(string)
-	}
-	if path == "" {
-		return nil
-	}
-	return []acpsdk.ToolCallLocation{{Path: path}}
-}
-
-func mapKind(name string) acpsdk.ToolKind {
-	switch name {
-	case "read", "lsp":
-		return acpsdk.ToolKindRead
-	case "grep", "glob":
-		return acpsdk.ToolKindSearch
-	case "write", "edit":
-		return acpsdk.ToolKindEdit
-	case "shell":
-		return acpsdk.ToolKindExecute
-	default:
-		return acpsdk.ToolKindOther
-	}
+	return result
 }

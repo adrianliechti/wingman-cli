@@ -58,6 +58,47 @@ func TestNotifyContentIgnoresPartialToolCall(t *testing.T) {
 	}
 }
 
+func TestNotifyContentUsesCompactFilePresentation(t *testing.T) {
+	var update acpsdk.SessionUpdate
+	notifyContent(func(got acpsdk.SessionUpdate) { update = got }, agent.RoleAssistant, agent.Content{
+		ToolCall: &agent.ToolCall{
+			ID: "read-1", Name: "read",
+			Args: `{"file_path":"/workspace/main.go","offset":12,"limit":4}`,
+		},
+	})
+
+	call := update.ToolCall
+	if call == nil || call.Title != "Read file" || call.Kind != acpsdk.ToolKindRead {
+		t.Fatalf("tool call = %#v", call)
+	}
+	if len(call.Locations) != 1 || call.Locations[0].Path != "/workspace/main.go" ||
+		call.Locations[0].Line == nil || *call.Locations[0].Line != 12 {
+		t.Fatalf("locations = %#v", call.Locations)
+	}
+	args, ok := call.RawInput.(map[string]any)
+	if !ok || args["limit"] != float64(4) || args["offset"] != nil || args["file_path"] != nil || args["path"] != nil {
+		t.Fatalf("display input = %#v", call.RawInput)
+	}
+}
+
+func TestNotifyContentDoesNotRepeatEditPayload(t *testing.T) {
+	var update acpsdk.SessionUpdate
+	notifyContent(func(got acpsdk.SessionUpdate) { update = got }, agent.RoleAssistant, agent.Content{
+		ToolCall: &agent.ToolCall{
+			ID: "edit-1", Name: "edit",
+			Args: `{"file_path":"/workspace/main.go","old_string":"before","new_string":"after"}`,
+		},
+	})
+
+	call := update.ToolCall
+	if call == nil || call.Title != "Edit file" || len(call.Locations) != 1 {
+		t.Fatalf("tool call = %#v", call)
+	}
+	if call.RawInput != nil {
+		t.Fatalf("edit payload duplicated its diff/result: %#v", call.RawInput)
+	}
+}
+
 func TestClassifyPromptStreamError(t *testing.T) {
 	reason, err := classifyPromptStreamError(context.Canceled)
 	if err != nil || reason != acpsdk.StopReasonCancelled {

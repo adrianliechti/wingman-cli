@@ -270,12 +270,6 @@ func emitToolResults(ctx context.Context, conn *acp.AgentSideConnection, sid acp
 		if content := toolResultContent(name, b); len(content) > 0 {
 			opts = append(opts, acp.WithUpdateContent(content))
 		}
-		if len(b.Content) > 0 {
-			var rawOutput any
-			if json.Unmarshal(b.Content, &rawOutput) == nil {
-				opts = append(opts, acp.WithUpdateRawOutput(rawOutput))
-			}
-		}
 		u := acp.UpdateToolCall(acp.ToolCallId(b.ToolUseID), opts...)
 		withClaudeToolMeta(&u, name, parentToolUseID)
 		if err := conn.SessionUpdate(ctx, acp.SessionNotification{

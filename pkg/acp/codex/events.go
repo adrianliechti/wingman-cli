@@ -203,10 +203,10 @@ func (d *eventDispatcher) handle(method string, params json.RawMessage) {
 		var g guardianNotif
 		if json.Unmarshal(params, &g) == nil && g.ReviewID != "" {
 			if d.guardianStarted[g.ReviewID] {
-				d.update(guardianUpdateToolCall(g, params))
+				d.update(guardianUpdateToolCall(g))
 			} else {
 				d.guardianStarted[g.ReviewID] = true
-				d.update(guardianStartToolCall(g, params))
+				d.update(guardianStartToolCall(g))
 			}
 		}
 
@@ -215,9 +215,9 @@ func (d *eventDispatcher) handle(method string, params json.RawMessage) {
 		if json.Unmarshal(params, &g) == nil && g.ReviewID != "" {
 			if d.guardianStarted[g.ReviewID] {
 				delete(d.guardianStarted, g.ReviewID)
-				d.update(guardianUpdateToolCall(g, params))
+				d.update(guardianUpdateToolCall(g))
 			} else {
-				d.update(guardianStartToolCall(g, params))
+				d.update(guardianStartToolCall(g))
 			}
 		}
 
@@ -411,25 +411,26 @@ func (d *eventDispatcher) handleItemStarted(params json.RawMessage) {
 			CommandActions []commandAction `json:"commandActions"`
 		}
 		_ = json.Unmarshal(env.Item, &it)
-		if title, kind, locs, ok := commandActionToolCall(it.CommandActions); ok {
+		if title, kind, input, locs, ok := commandActionToolCall(it.CommandActions); ok {
 			opts := []acp.ToolCallStartOpt{
 				acp.WithStartKind(kind),
 				acp.WithStartStatus(acp.ToolCallStatusInProgress),
 			}
-			if len(locs) > 0 {
-				opts = append(opts, acp.WithStartLocations(locs))
+			opts = appendDisplayLocations(opts, locs)
+			if input != nil {
+				opts = append(opts, acp.WithStartRawInput(input))
 			}
 			d.update(acp.StartToolCall(acp.ToolCallId(id), title, opts...))
 			break
 		}
-		title := stripShellPrefix(it.Command)
-		if title == "" {
-			title = "Run command"
+		command := stripShellPrefix(it.Command)
+		if command == "" {
+			command = it.Command
 		}
-		d.update(acp.StartToolCall(acp.ToolCallId(id), title,
+		d.update(acp.StartToolCall(acp.ToolCallId(id), "Run command",
 			acp.WithStartKind(acp.ToolKindExecute),
 			acp.WithStartStatus(acp.ToolCallStatusInProgress),
-			acp.WithStartRawInput(map[string]any{"command": title, "cwd": it.Cwd}),
+			acp.WithStartRawInput(commandRawInput(command, it.Cwd)),
 		))
 
 	case "fileChange":
@@ -440,7 +441,8 @@ func (d *eventDispatcher) handleItemStarted(params json.RawMessage) {
 		if content := fileChangeContent(env.Item); len(content) > 0 {
 			opts = append(opts, acp.WithStartContent(content))
 		}
-		d.update(acp.StartToolCall(acp.ToolCallId(id), "Editing files", opts...))
+		opts = appendDisplayLocations(opts, fileChangeLocations(env.Item))
+		d.update(acp.StartToolCall(acp.ToolCallId(id), "Edit files", opts...))
 
 	case "mcpToolCall":
 		var it struct {
@@ -454,7 +456,7 @@ func (d *eventDispatcher) handleItemStarted(params json.RawMessage) {
 		d.update(acp.StartToolCall(acp.ToolCallId(id), fmt.Sprintf("mcp.%s.%s", it.Server, it.Tool),
 			acp.WithStartKind(acp.ToolKindExecute),
 			acp.WithStartStatus(acp.ToolCallStatusInProgress),
-			acp.WithStartRawInput(map[string]any{"server": it.Server, "tool": it.Tool, "arguments": args}),
+			acp.WithStartRawInput(args),
 		))
 
 	case "dynamicToolCall":
@@ -468,7 +470,7 @@ func (d *eventDispatcher) handleItemStarted(params json.RawMessage) {
 		d.update(acp.StartToolCall(acp.ToolCallId(id), it.Tool,
 			acp.WithStartKind(acp.ToolKindExecute),
 			acp.WithStartStatus(acp.ToolCallStatusInProgress),
-			acp.WithStartRawInput(map[string]any{"arguments": args}),
+			acp.WithStartRawInput(args),
 		))
 
 	case "webSearch":
@@ -573,7 +575,7 @@ func (d *eventDispatcher) handleItemCompleted(params json.RawMessage) {
 		_ = json.Unmarshal(it.Args, &args)
 		opts := []acp.ToolCallUpdateOpt{
 			acp.WithUpdateStatus(toolStatusFor(it.Status)),
-			acp.WithUpdateRawInput(map[string]any{"server": it.Server, "tool": it.Tool, "arguments": args}),
+			acp.WithUpdateRawInput(args),
 		}
 		if out := mcpRawOutput(it.Result, it.Error); out != nil {
 			opts = append(opts, acp.WithUpdateRawOutput(out))
@@ -813,39 +815,53 @@ type commandAction struct {
 	Query string `json:"query"`
 }
 
-func commandActionToolCall(actions []commandAction) (title string, kind acp.ToolKind, locations []acp.ToolCallLocation, ok bool) {
+// The ACP SDK mirrors a lone location into rawInput.path. Codex already
+// supplies the location as a file chip, so clear that synthetic input to keep
+// clients from rendering the same path again as a hint and expanded argument.
+func appendDisplayLocations(opts []acp.ToolCallStartOpt, locations []acp.ToolCallLocation) []acp.ToolCallStartOpt {
+	if len(locations) == 0 {
+		return opts
+	}
+	return append(opts, acp.WithStartLocations(locations), acp.WithStartRawInput(nil))
+}
+
+func commandRawInput(command, cwd string) map[string]any {
+	input := map[string]any{"command": command}
+	if cwd != "" {
+		input["cwd"] = cwd
+	}
+	return input
+}
+
+func commandActionToolCall(actions []commandAction) (title string, kind acp.ToolKind, rawInput any, locations []acp.ToolCallLocation, ok bool) {
 	if len(actions) != 1 {
-		return "", "", nil, false
+		return "", "", nil, nil, false
 	}
 	a := actions[0]
 	switch a.Type {
 	case "read":
 		if a.Path == "" {
-			return "", "", nil, false
+			return "", "", nil, nil, false
 		}
-		return fmt.Sprintf("Read file '%s'", a.Path), acp.ToolKindRead, []acp.ToolCallLocation{{Path: a.Path}}, true
+		return "Read file", acp.ToolKindRead, nil, []acp.ToolCallLocation{{Path: a.Path}}, true
 	case "search":
-		return searchTitle(a.Query, a.Path), acp.ToolKindSearch, nil, true
-	case "listFiles":
+		var locations []acp.ToolCallLocation
 		if a.Path != "" {
-			return fmt.Sprintf("List files in '%s'", a.Path), acp.ToolKindRead, nil, true
+			locations = []acp.ToolCallLocation{{Path: a.Path}}
 		}
-		return "List files", acp.ToolKindRead, nil, true
+		var input any
+		if a.Query != "" {
+			input = map[string]any{"query": a.Query}
+		}
+		return "Search files", acp.ToolKindSearch, input, locations, true
+	case "listFiles":
+		var locations []acp.ToolCallLocation
+		if a.Path != "" {
+			locations = []acp.ToolCallLocation{{Path: a.Path}}
+		}
+		return "List files", acp.ToolKindRead, nil, locations, true
 	}
-	return "", "", nil, false
-}
-
-func searchTitle(query, path string) string {
-	switch {
-	case query != "" && path != "":
-		return fmt.Sprintf("Search for '%s' in %s", query, path)
-	case query != "":
-		return fmt.Sprintf("Search for '%s'", query)
-	case path != "":
-		return fmt.Sprintf("Search in '%s'", path)
-	default:
-		return "Search"
-	}
+	return "", "", nil, nil, false
 }
 
 type fileChange struct {
@@ -892,6 +908,25 @@ func fileChangeContent(raw json.RawMessage) []acp.ToolCallContent {
 		})
 	}
 	return content
+}
+
+func fileChangeLocations(raw json.RawMessage) []acp.ToolCallLocation {
+	var it struct {
+		Changes []fileChange `json:"changes"`
+	}
+	if json.Unmarshal(raw, &it) != nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	locations := make([]acp.ToolCallLocation, 0, len(it.Changes))
+	for _, change := range it.Changes {
+		if change.Path == "" || seen[change.Path] {
+			continue
+		}
+		seen[change.Path] = true
+		locations = append(locations, acp.ToolCallLocation{Path: change.Path})
+	}
+	return locations
 }
 
 func isUnifiedDiff(s string) bool {

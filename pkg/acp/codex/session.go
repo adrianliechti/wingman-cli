@@ -352,8 +352,16 @@ func replayToolResult(send func(acp.SessionUpdate), id, status string, content [
 	send(acp.UpdateToolCall(acp.ToolCallId(id), opts...))
 }
 
-func replayToolText(send func(acp.SessionUpdate), id, status string, outputs map[string]string) {
+func replayToolText(send func(acp.SessionUpdate), id, status string, outputs map[string]string, fallbacks ...string) {
 	out := outputs[id]
+	if out == "" {
+		for _, fallback := range fallbacks {
+			if strings.TrimSpace(fallback) != "" {
+				out = fallback
+				break
+			}
+		}
+	}
 	if out == "" {
 		return
 	}
@@ -418,43 +426,48 @@ func replayItem(send func(acp.SessionUpdate), raw json.RawMessage, toolOutputs m
 
 	case "commandExecution":
 		var it struct {
-			Command        string          `json:"command"`
-			Cwd            string          `json:"cwd"`
-			Status         string          `json:"status"`
-			CommandActions []commandAction `json:"commandActions"`
+			Command          string          `json:"command"`
+			Cwd              string          `json:"cwd"`
+			Status           string          `json:"status"`
+			AggregatedOutput string          `json:"aggregatedOutput"`
+			CommandActions   []commandAction `json:"commandActions"`
 		}
 		_ = json.Unmarshal(raw, &it)
-		if title, kind, locs, ok := commandActionToolCall(it.CommandActions); ok {
+		if title, kind, input, locs, ok := commandActionToolCall(it.CommandActions); ok {
 			opts := []acp.ToolCallStartOpt{
 				acp.WithStartKind(kind),
 				acp.WithStartStatus(toolStatusFor(it.Status)),
 			}
-			if len(locs) > 0 {
-				opts = append(opts, acp.WithStartLocations(locs))
+			opts = appendDisplayLocations(opts, locs)
+			if input != nil {
+				opts = append(opts, acp.WithStartRawInput(input))
 			}
 			send(acp.StartToolCall(acp.ToolCallId(probe.ID), title, opts...))
+			replayToolText(send, probe.ID, it.Status, toolOutputs, it.AggregatedOutput)
 			break
 		}
-		title := stripShellPrefix(it.Command)
-		if title == "" {
-			title = "Run command"
+		command := stripShellPrefix(it.Command)
+		if command == "" {
+			command = it.Command
 		}
-		send(acp.StartToolCall(acp.ToolCallId(probe.ID), title,
+		send(acp.StartToolCall(acp.ToolCallId(probe.ID), "Run command",
 			acp.WithStartKind(acp.ToolKindExecute),
 			acp.WithStartStatus(toolStatusFor(it.Status)),
-			acp.WithStartRawInput(map[string]any{"command": title, "cwd": it.Cwd}),
+			acp.WithStartRawInput(commandRawInput(command, it.Cwd)),
 		))
-		replayToolText(send, probe.ID, it.Status, toolOutputs)
+		replayToolText(send, probe.ID, it.Status, toolOutputs, it.AggregatedOutput)
 
 	case "fileChange":
 		var it struct {
 			Status string `json:"status"`
 		}
 		_ = json.Unmarshal(raw, &it)
-		send(acp.StartToolCall(acp.ToolCallId(probe.ID), "Editing files",
+		opts := []acp.ToolCallStartOpt{
 			acp.WithStartKind(acp.ToolKindEdit),
 			acp.WithStartStatus(toolStatusFor(it.Status)),
-		))
+		}
+		opts = appendDisplayLocations(opts, fileChangeLocations(raw))
+		send(acp.StartToolCall(acp.ToolCallId(probe.ID), "Edit files", opts...))
 		if content := fileChangeContent(raw); len(content) > 0 {
 			replayToolResult(send, probe.ID, it.Status, content)
 		}
@@ -472,7 +485,7 @@ func replayItem(send func(acp.SessionUpdate), raw json.RawMessage, toolOutputs m
 		send(acp.StartToolCall(acp.ToolCallId(probe.ID), fmt.Sprintf("mcp.%s.%s", it.Server, it.Tool),
 			acp.WithStartKind(acp.ToolKindExecute),
 			acp.WithStartStatus(toolStatusFor(it.Status)),
-			acp.WithStartRawInput(map[string]any{"server": it.Server, "tool": it.Tool, "arguments": args}),
+			acp.WithStartRawInput(args),
 		))
 		replayToolText(send, probe.ID, it.Status, toolOutputs)
 
@@ -488,7 +501,7 @@ func replayItem(send func(acp.SessionUpdate), raw json.RawMessage, toolOutputs m
 		send(acp.StartToolCall(acp.ToolCallId(probe.ID), it.Tool,
 			acp.WithStartKind(acp.ToolKindExecute),
 			acp.WithStartStatus(toolStatusFor(it.Status)),
-			acp.WithStartRawInput(map[string]any{"arguments": args}),
+			acp.WithStartRawInput(args),
 		))
 		replayToolText(send, probe.ID, it.Status, toolOutputs)
 

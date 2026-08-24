@@ -1023,22 +1023,30 @@ func convertMessages(messages []agent.Message) []ConversationMessage {
 				cc.Reasoning = &ConversationReasoning{ID: c.Reasoning.ID, Summary: c.Reasoning.Summary}
 			}
 			if c.ToolCall != nil {
+				display := displayTool(
+					c.ToolCall.Name, c.ToolCall.Kind, c.ToolCall.Args, c.ToolCall.Locations,
+					c.ToolCall.Presentation,
+				)
 				cc.ToolCall = &ConversationTool{
 					ID:        c.ToolCall.ID,
-					Name:      c.ToolCall.Name,
-					Kind:      c.ToolCall.Kind,
-					Args:      c.ToolCall.Args,
-					Locations: c.ToolCall.Locations,
-					Hint:      tool.ExtractHint(c.ToolCall.Args, c.ToolCall.Name),
+					Name:      display.name,
+					Kind:      display.kind,
+					Args:      display.args,
+					Locations: display.locations,
+					Hint:      display.hint,
 				}
 			}
 			if c.ToolResult != nil {
+				display := displayTool(
+					c.ToolResult.Name, c.ToolResult.Kind, c.ToolResult.Args, c.ToolResult.Locations,
+					c.ToolResult.Presentation,
+				)
 				cc.ToolResult = &ConversationResult{
 					ID:        c.ToolResult.ID,
-					Name:      c.ToolResult.Name,
-					Kind:      c.ToolResult.Kind,
-					Args:      c.ToolResult.Args,
-					Locations: c.ToolResult.Locations,
+					Name:      display.name,
+					Kind:      display.kind,
+					Args:      display.args,
+					Locations: display.locations,
 					Content:   c.ToolResult.Content,
 				}
 			}

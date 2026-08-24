@@ -631,9 +631,13 @@ func (a *Agent) processToolCallsParallel(ctx context.Context, calls []ToolCall, 
 }
 
 func toolCallMessage(tc ToolCall) Message {
+	presentation := NewToolPresentation(tc.Name, tc.Kind, tc.Args, tc.Locations)
 	return Message{
-		Role:    RoleAssistant,
-		Content: []Content{{ToolCall: &ToolCall{ID: tc.ID, Name: tc.Name, Args: tc.Args}}},
+		Role: RoleAssistant,
+		Content: []Content{{ToolCall: &ToolCall{
+			ID: tc.ID, Name: tc.Name, Kind: tc.Kind, Args: tc.Args,
+			Locations: tc.Locations, Presentation: presentation,
+		}}},
 	}
 }
 
@@ -645,17 +649,15 @@ const (
 )
 
 func toolResultMessage(tc ToolCall, result tool.Result) Message {
+	presentation := NewToolPresentation(tc.Name, tc.Kind, tc.Args, tc.Locations)
 	if tool.IsImageResult(result.Content) {
 		return Message{
 			Role: RoleAssistant,
 			Content: []Content{
 				{ToolResult: &ToolResult{
-					ID:       tc.ID,
-					Name:     tc.Name,
-					Args:     tc.Args,
-					Content:  imageResultPlaceholder,
-					IsError:  result.IsError,
-					Metadata: result.Metadata,
+					ID: tc.ID, Name: tc.Name, Kind: tc.Kind, Args: tc.Args,
+					Locations: tc.Locations, Presentation: presentation,
+					Content: imageResultPlaceholder, IsError: result.IsError, Metadata: result.Metadata,
 				}},
 				{File: &File{Data: result.Content}},
 			},
@@ -665,12 +667,9 @@ func toolResultMessage(tc ToolCall, result tool.Result) Message {
 	return Message{
 		Role: RoleAssistant,
 		Content: []Content{{ToolResult: &ToolResult{
-			ID:       tc.ID,
-			Name:     tc.Name,
-			Args:     tc.Args,
-			Content:  result.Content,
-			IsError:  result.IsError,
-			Metadata: result.Metadata,
+			ID: tc.ID, Name: tc.Name, Kind: tc.Kind, Args: tc.Args,
+			Locations: tc.Locations, Presentation: presentation,
+			Content: result.Content, IsError: result.IsError, Metadata: result.Metadata,
 		}}},
 	}
 }

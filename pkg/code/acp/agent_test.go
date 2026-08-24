@@ -275,14 +275,14 @@ func TestTranslateUpdateReleasesCompletedToolCall(t *testing.T) {
 	}
 }
 
-func TestTranslateUpdateNormalizesCommandToolForTerminalRenderer(t *testing.T) {
+func TestTranslateUpdatePreservesCommandActionTitle(t *testing.T) {
 	a := &Agent{}
 	sess := &sessionState{toolCalls: map[string]toolCall{}}
 	turn := &turn{}
 	id := acp.ToolCallId("command-1")
 	update := acp.StartToolCall(
 		id,
-		"sed -n '1,20p' README.md",
+		"Run command",
 		acp.WithStartKind(acp.ToolKindExecute),
 		acp.WithStartRawInput(map[string]any{"command": "sed -n '1,20p' README.md", "cwd": "/workspace"}),
 	)
@@ -291,8 +291,8 @@ func TestTranslateUpdateNormalizesCommandToolForTerminalRenderer(t *testing.T) {
 		t.Fatalf("translated command = %+v, ok=%v", msg, ok)
 	}
 	call := msg.Content[0].ToolCall
-	if call.Name != "shell" || !strings.Contains(call.Args, `"command":"sed -n '1,20p' README.md"`) {
-		t.Fatalf("normalized command = %+v", call)
+	if call.Name != "Run command" || call.Kind != "execute" || !strings.Contains(call.Args, `"command":"sed -n '1,20p' README.md"`) {
+		t.Fatalf("command = %+v", call)
 	}
 }
 
@@ -381,6 +381,36 @@ func TestTranslateUpdateInfersEditKindFromStructuredDiff(t *testing.T) {
 	))
 	if !ok || result.Content[0].ToolResult == nil || result.Content[0].ToolResult.Kind != "edit" {
 		t.Fatalf("translated result = %+v, ok=%v", result, ok)
+	}
+}
+
+func TestTranslateUpdateRetainsStartDiffForStatusOnlyCompletion(t *testing.T) {
+	a := &Agent{}
+	sess := &sessionState{toolCalls: map[string]toolCall{}}
+	turn := &turn{}
+	id := acp.ToolCallId("edit-1")
+	old := "before\n"
+
+	if _, ok := a.translateUpdate(sess, turn, acp.StartToolCall(
+		id,
+		"Edit file",
+		acp.WithStartKind(acp.ToolKindEdit),
+		acp.WithStartContent([]acp.ToolCallContent{{Diff: &acp.ToolCallContentDiff{
+			Type: "diff", Path: "main.go", OldText: &old, NewText: "after\n",
+		}}}),
+	)); !ok {
+		t.Fatal("tool call start was not translated")
+	}
+
+	result, ok := a.translateUpdate(sess, turn, acp.UpdateToolCall(
+		id,
+		acp.WithUpdateStatus(acp.ToolCallStatusCompleted),
+	))
+	if !ok || len(result.Content) != 1 || result.Content[0].ToolResult == nil {
+		t.Fatalf("translated result = %+v, ok=%v", result, ok)
+	}
+	if body := result.Content[0].ToolResult.Content; !strings.Contains(body, "-before") || !strings.Contains(body, "+after") {
+		t.Fatalf("retained diff = %q", body)
 	}
 }
 

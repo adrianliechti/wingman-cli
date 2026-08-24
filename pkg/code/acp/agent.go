@@ -98,6 +98,7 @@ type toolCall struct {
 	kind      string
 	args      string
 	locations []agent.ToolLocation
+	diff      string
 }
 
 type turn struct {
@@ -1119,30 +1120,23 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 		locations := agentToolLocations(a.workspaceRoot(), tc.Locations)
 
 		name := tc.Title
-		// ACP titles are display strings, not stable tool identifiers. Preserve
-		// specialized tools such as MCP calls, but normalize command-bearing
-		// execute calls so Wingman's terminal renderer can show `$ <command>`.
-		if tc.Kind == acpsdk.ToolKindExecute {
-			if input, ok := tc.RawInput.(map[string]any); ok {
-				if command, _ := input["command"].(string); command != "" {
-					name = "shell"
-				}
-			}
-		}
 		if name == "" {
 			name = string(tc.Kind)
 		}
+		presentation := agent.NewToolPresentation(name, kind, args, locations)
 		sess.toolCallsMu.Lock()
 		sess.toolCalls[string(tc.ToolCallId)] = toolCall{
 			name: name, kind: kind, args: args, locations: locations,
+			diff: toolCallDiffText(tc.Content),
 		}
 		sess.toolCallsMu.Unlock()
 		return emit(agent.RoleAssistant, agent.Content{ToolCall: &agent.ToolCall{
-			ID:        string(tc.ToolCallId),
-			Name:      name,
-			Kind:      kind,
-			Args:      args,
-			Locations: locations,
+			ID:           string(tc.ToolCallId),
+			Name:         name,
+			Kind:         kind,
+			Args:         args,
+			Locations:    locations,
+			Presentation: presentation,
 		}}, ""), true
 
 	case u.ToolCallUpdate != nil:
@@ -1163,6 +1157,9 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 		if tu.Locations != nil {
 			prior.locations = agentToolLocations(a.workspaceRoot(), tu.Locations)
 		}
+		if diff := toolCallDiffText(tu.Content); diff != "" {
+			prior.diff = diff
+		}
 		sess.toolCalls[string(tu.ToolCallId)] = prior
 		sess.toolCallsMu.Unlock()
 		if tu.Status == nil {
@@ -1179,6 +1176,9 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 		delete(sess.toolCalls, string(tu.ToolCallId))
 		sess.toolCallsMu.Unlock()
 		body := toolCallContentText(tu.Content)
+		if body == "" {
+			body = prior.diff
+		}
 		if body == "" && tu.RawOutput != nil {
 			body = rawValueToString(tu.RawOutput)
 		}
@@ -1191,8 +1191,11 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 			Kind:      prior.kind,
 			Args:      prior.args,
 			Locations: prior.locations,
-			Content:   body,
-			IsError:   status == acpsdk.ToolCallStatusFailed,
+			Presentation: agent.NewToolPresentation(
+				prior.name, prior.kind, prior.args, prior.locations,
+			),
+			Content: body,
+			IsError: status == acpsdk.ToolCallStatusFailed,
 		}}, ""), true
 
 	}
@@ -1736,6 +1739,19 @@ func toolCallContentText(items []acpsdk.ToolCallContent) string {
 			if t := diffBlockText(item.Diff); t != "" {
 				parts = append(parts, t)
 			}
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func toolCallDiffText(items []acpsdk.ToolCallContent) string {
+	var parts []string
+	for _, item := range items {
+		if item.Diff == nil {
+			continue
+		}
+		if text := diffBlockText(item.Diff); text != "" {
+			parts = append(parts, text)
 		}
 	}
 	return strings.Join(parts, "\n")
