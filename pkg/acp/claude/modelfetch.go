@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/coder/acp-go-sdk"
+
+	"github.com/adrianliechti/wingman-agent/internal/process"
 )
 
 func (a *Agent) fetchModels(ctx context.Context) ([]ModelEntry, []acp.AvailableCommand, error) {
@@ -20,6 +22,7 @@ func (a *Agent) fetchModels(ctx context.Context) ([]ModelEntry, []acp.AvailableC
 		"--input-format", "stream-json",
 		"--verbose",
 	)
+	process.Hide(cmd)
 	cmd.Dir = a.defaultCwd
 	if a.env != nil {
 		cmd.Env = a.env

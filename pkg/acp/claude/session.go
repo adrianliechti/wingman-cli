@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/coder/acp-go-sdk"
+
+	"github.com/adrianliechti/wingman-agent/internal/process"
 )
 
 type session struct {
@@ -190,6 +192,7 @@ func (s *session) ensureProc() (*claudeProc, error) {
 	args := s.cliArgsLocked()
 	procCtx, kill := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(procCtx, a.path, args...)
+	process.Hide(cmd)
 	cmd.Dir = s.cwd
 	if a.env != nil {
 		cmd.Env = a.env

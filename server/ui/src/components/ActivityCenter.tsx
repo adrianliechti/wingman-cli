@@ -124,7 +124,7 @@ export function ActivityCenter({
 				data-activity-summary={
 					errors.length > 0 ? "error" : busy ? "running" : "ready"
 				}
-				className={`flex h-7 w-6 items-center justify-center transition-colors ${tone}`}
+				className={`flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-bg-hover ${tone}`}
 				title={`${label} · Show ${title.toLowerCase()}`}
 				aria-label={`${label}. Show ${title.toLowerCase()}`}
 				aria-haspopup="dialog"
@@ -132,11 +132,11 @@ export function ActivityCenter({
 				onClick={() => setOpen((value) => !value)}
 			>
 				{errors.length > 0 ? (
-					<AlertTriangle size={12} className="shrink-0" />
+					<AlertTriangle size={13} className="shrink-0" />
 				) : busy ? (
-					<Loader2 size={12} className="shrink-0 animate-spin" />
+					<Loader2 size={13} className="shrink-0 animate-spin" />
 				) : (
-					<Check size={12} className="shrink-0" />
+					<Check size={13} className="shrink-0" />
 				)}
 			</button>
 			<FloatingSurface

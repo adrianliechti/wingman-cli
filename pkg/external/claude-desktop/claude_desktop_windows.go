@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/adrianliechti/wingman-agent/internal/process"
 )
 
 func supported() error {
@@ -24,7 +26,7 @@ func profileRoots() (string, string, error) {
 }
 
 func isRunning() bool {
-	out, err := exec.Command("powershell.exe", "-NoProfile", "-Command", `(Get-Process claude -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1).Id`).Output()
+	out, err := powerShell(`(Get-Process claude -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1).Id`).Output()
 	return err == nil && strings.TrimSpace(string(out)) != ""
 }
 
@@ -34,12 +36,12 @@ func openApp() error {
 		return err
 	}
 
-	return exec.Command("powershell.exe", "-NoProfile", "-Command", "Start-Process -FilePath "+quotePowerShellString(path)).Run()
+	return powerShell("Start-Process -FilePath " + quotePowerShellString(path)).Run()
 }
 
 func quitApp() error {
 	script := `Get-Process claude -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object { [void]$_.CloseMainWindow() }`
-	return exec.Command("powershell.exe", "-NoProfile", "-Command", script).Run()
+	return powerShell(script).Run()
 }
 
 func windowsAppPath() (string, error) {
@@ -62,7 +64,7 @@ func windowsAppPath() (string, error) {
 
 func runningAppPath() string {
 	script := `(Get-Process claude -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.Path } | Select-Object -First 1 -ExpandProperty Path)`
-	out, err := exec.Command("powershell.exe", "-NoProfile", "-Command", script).Output()
+	out, err := powerShell(script).Output()
 	if err != nil {
 		return ""
 	}
@@ -89,4 +91,10 @@ func localAppData() (string, error) {
 
 func quotePowerShellString(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+func powerShell(script string) *exec.Cmd {
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-Command", script)
+	process.Hide(cmd)
+	return cmd
 }

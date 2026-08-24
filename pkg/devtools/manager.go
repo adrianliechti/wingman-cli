@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/adrianliechti/wingman-agent/internal/process"
 	"github.com/adrianliechti/wingman-agent/internal/tooling"
 	"github.com/adrianliechti/wingman-agent/pkg/layout"
 )
@@ -890,6 +891,7 @@ func ownsUpdateLock(path, token string) bool {
 
 func runCommand(ctx context.Context, name string, args []string, dir string, env []string) ([]byte, error) {
 	command := exec.CommandContext(ctx, name, args...)
+	process.Hide(command)
 	command.Dir = dir
 	command.Env = tooling.Environment(name, env)
 	command.WaitDelay = 3 * time.Second

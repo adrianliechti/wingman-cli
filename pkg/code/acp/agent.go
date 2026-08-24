@@ -19,6 +19,7 @@ import (
 	acpsdk "github.com/coder/acp-go-sdk"
 	"github.com/sergi/go-diff/diffmatchpatch"
 
+	"github.com/adrianliechti/wingman-agent/internal/process"
 	"github.com/adrianliechti/wingman-agent/pkg/acp"
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
@@ -150,6 +151,7 @@ func New(ctx context.Context, ws *code.Workspace, def code.AgentDef) (*Agent, er
 
 	cwd := ws.RootPath
 	cmd := exec.Command(def.Command, def.Args...)
+	process.Hide(cmd)
 	cmd.Dir = cwd
 	cmd.Env = os.Environ()
 	for k, v := range def.Env {

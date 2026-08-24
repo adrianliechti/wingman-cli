@@ -64,11 +64,11 @@
       .shell-menu {
         position: fixed;
         top: 0;
-        left: 0;
+        left: var(--shell-titlebar-inset-left, 0px);
         z-index: 20;
         display: none;
         width: 32px;
-        height: 40px;
+        height: var(--shell-titlebar-height, 40px);
         align-items: center;
         justify-content: center;
       }
@@ -103,7 +103,7 @@
 
       .shell-menu-popup {
         position: absolute;
-        top: 36px;
+        top: calc(var(--shell-titlebar-height, 40px) - 4px);
         left: 6px;
         min-width: 190px;
         padding: 4px 0;
@@ -537,13 +537,6 @@
     </div>
 
     <script type="module">
-      const shellChrome =
-        new URLSearchParams(window.location.search).get("shell_chrome") ||
-        window.sessionStorage.getItem("shell-window-chrome");
-      if (shellChrome === "windows-overlay") {
-        window.sessionStorage.setItem("shell-window-chrome", shellChrome);
-        document.documentElement.dataset.windowChrome = shellChrome;
-      }
       async function api(path, body) {
         const response = await fetch(
           path,
@@ -677,6 +670,7 @@
 
       function setOpenDisabled(disabled) {
         for (const b of openButtons) b.disabled = disabled;
+        shellMenuOpen.disabled = disabled;
         window.dispatchEvent(
           new CustomEvent("shell:command-state", {
             detail: { command: "open-folder", enabled: !disabled },
@@ -742,6 +736,30 @@
       window.addEventListener("shell:command", (event) => {
         if (event.detail === "open-folder") void pickAndOpen();
       });
+      window.addEventListener(
+        "keydown",
+        (event) => {
+          if (window.shell?.platform === "macos") return;
+          const isMac =
+            window.shell?.platform === "macos" ||
+            (!window.shell && /Mac|iPhone|iPad/.test(navigator.platform));
+          const primary = isMac
+            ? event.metaKey && !event.ctrlKey
+            : event.ctrlKey && !event.metaKey;
+          if (
+            !primary ||
+            event.altKey ||
+            event.shiftKey ||
+            event.key.toLowerCase() !== "o"
+          ) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          if (!isOpening) void pickAndOpen();
+        },
+        true,
+      );
 
       loadWorkspaces();
     </script>

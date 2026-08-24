@@ -15,6 +15,8 @@ import (
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+
+	"github.com/adrianliechti/wingman-agent/internal/process"
 )
 
 // authForRemote bridges go-git with the credential helpers already configured
@@ -245,6 +247,7 @@ func runCredentialHelper(ctx context.Context, helper, input string) ([]byte, err
 		command = "git credential-" + helper
 	}
 	cmd := exec.CommandContext(ctx, shell, "-c", command+` "$@"`, "git-credential-helper", "get")
+	process.Hide(cmd)
 	cmd.Stdin = strings.NewReader(input)
 	return credentialHelperOutput(cmd)
 }

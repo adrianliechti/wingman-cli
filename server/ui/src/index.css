@@ -216,14 +216,16 @@ select,
    WebView2 builds understand app-region directly; AppKit uses the equivalent
    native full-size-content window configured by go-shell.
 
-   go-shell publishes the space its native window controls occupy as
-   --shell-titlebar-inset-left / -right, so the toolbar reserves whichever side
-   the platform puts them on: the macOS traffic lights on the left, the Windows
-   caption buttons (and the menu button) on both. */
+	 go-shell publishes the space its native window controls occupy as
+	 --shell-titlebar-inset-left / -right, so the toolbar reserves whichever side
+	 the platform puts them on: the macOS traffic lights on the left, the Windows
+	 caption buttons on the right. Wingman owns the Windows app menu. */
 .window-titlebar {
 	--window-controls-inset: var(--shell-titlebar-inset-left, 0px);
 	--window-controls-inset-end: var(--shell-titlebar-inset-right, 0px);
 	--window-menu-inset: 0px;
+	height: var(--shell-titlebar-height, 40px);
+	min-height: var(--shell-titlebar-height, 40px);
 	--shell-window-drag: drag;
 	app-region: drag;
 	-webkit-app-region: drag;
@@ -264,12 +266,6 @@ html[data-window-chrome="windows-overlay"] .window-app-menu {
    feedback; a 32px rounded fill looks oversized inside the slim chrome. */
 .window-titlebar button:not([role="tab"]):hover {
 	background-color: transparent;
-}
-
-/* The macOS traffic lights are positioned by AppKit rather than reported through
-   the shell insets, so their reservation stays a constant here. */
-html[data-window-chrome="macos-overlay"] .window-titlebar {
-	--window-controls-inset: 76px;
 }
 
 ::selection {

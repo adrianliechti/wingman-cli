@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"os/exec"
 	"strings"
+
+	"github.com/adrianliechti/wingman-agent/internal/process"
 )
 
 const powerShellEncodingPrefix = "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
@@ -23,11 +25,14 @@ func buildPowerShellArgs(script string, sta bool) []string {
 }
 
 func runPowerShell(script string, sta bool) ([]byte, error) {
-	return exec.Command("powershell.exe", buildPowerShellArgs(script, sta)...).Output()
+	cmd := exec.Command("powershell.exe", buildPowerShellArgs(script, sta)...)
+	process.Hide(cmd)
+	return cmd.Output()
 }
 
 func buildWriteTextCommand(text string) *exec.Cmd {
 	cmd := exec.Command("powershell.exe", buildPowerShellArgs(`$ErrorActionPreference = 'Stop'; Set-Clipboard -Value ([Console]::In.ReadToEnd())`, false)...)
+	process.Hide(cmd)
 	cmd.Stdin = strings.NewReader(text)
 
 	return cmd

@@ -22,6 +22,15 @@ import { ToastProvider } from "./components/ui/Feedback.tsx";
 declare global {
 	interface Window {
 		MonacoEnvironment?: monaco.Environment;
+		shell?: Readonly<{
+			platform: "macos" | "windows";
+			titleBar: Readonly<{
+				overlay: boolean;
+				height: number;
+				insets: Readonly<{ left: number; right: number }>;
+				maximized: boolean;
+			}>;
+		}>;
 	}
 }
 
@@ -91,24 +100,6 @@ StandaloneServices.initialize({
 		focus: () => {},
 	},
 });
-
-// The packaged macOS app runs in WKWebView. Its AppKit window extends the web
-// content underneath the native traffic lights, so reserve their hit area.
-// Chromium-based browsers and WebView2 keep their normal content bounds.
-const userAgent = navigator.userAgent;
-const shellChrome =
-	new URLSearchParams(window.location.search).get("shell_chrome") ??
-	window.sessionStorage.getItem("shell-window-chrome");
-if (shellChrome === "windows-overlay") {
-	window.sessionStorage.setItem("shell-window-chrome", shellChrome);
-	document.documentElement.dataset.windowChrome = shellChrome;
-} else if (
-	/Mac/.test(navigator.platform) &&
-	/AppleWebKit/.test(userAgent) &&
-	!/(Chrome|Chromium|CriOS|Edg|Electron|Safari)/.test(userAgent)
-) {
-	document.documentElement.dataset.windowChrome = "macos-overlay";
-}
 
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>

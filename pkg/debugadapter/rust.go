@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/adrianliechti/wingman-agent/internal/process"
 	"github.com/adrianliechti/wingman-agent/internal/tooling"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 )
@@ -177,6 +178,7 @@ func loadCargoMetadata(projectDir string) (cargoMetadata, error) {
 	command := exec.CommandContext(ctx, cargo,
 		"metadata", "--no-deps", "--format-version=1", "--manifest-path", manifest,
 	)
+	process.Hide(command)
 	command.Dir = projectDir
 	command.Env = tooling.Environment(cargo, os.Environ())
 	command.WaitDelay = 3 * time.Second

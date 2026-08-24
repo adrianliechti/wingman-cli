@@ -15,6 +15,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/adrianliechti/wingman-agent/internal/process"
 	"github.com/adrianliechti/wingman-agent/pkg/httpclient"
 )
 
@@ -178,6 +179,7 @@ func createTransport(server ServerConfig, dir string) (mcp.Transport, error) {
 
 	if server.Command != "" {
 		cmd := exec.Command(server.Command, server.Args...)
+		process.Hide(cmd)
 		cmd.Dir = dir
 		if len(server.Env) > 0 {
 			cmd.Env = os.Environ()

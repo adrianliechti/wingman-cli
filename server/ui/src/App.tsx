@@ -200,12 +200,11 @@ const EMPTY_USAGE = {
 	contextWindow: 0,
 };
 
-const TERMINAL_SHORTCUT = /Mac|iPhone|iPad/.test(navigator.platform)
-	? "⌃⌥T"
-	: "Ctrl+Alt+T";
-const TERMINAL_SHELL_MENU_HINT = /Mac|iPhone|iPad/.test(navigator.platform)
-	? "Option-click"
-	: "Alt-click";
+const IS_MAC =
+	window.shell?.platform === "macos" ||
+	(!window.shell && /Mac|iPhone|iPad/.test(navigator.platform));
+const TERMINAL_SHORTCUT = IS_MAC ? "⌃⌥T" : "Ctrl+Alt+T";
+const TERMINAL_SHELL_MENU_HINT = IS_MAC ? "Option-click" : "Alt-click";
 
 function markdownFenceFor(text: string): string {
 	const fenceFor = (marker: "`" | "~") => {
@@ -1448,24 +1447,45 @@ export default function App() {
 		return () => window.removeEventListener("keydown", onKey);
 	}, [requestCloseTab, activeTabId]);
 
-	// Monaco leaves Ctrl/Cmd+S unbound, so saves from any focus location land
-	// here; preventDefault also suppresses the browser's save dialog.
+	// Windows owns its app menu in the web title bar, so implement the same
+	// primary-modifier commands that the native macOS File menu dispatches. Use
+	// capture so Monaco and browser defaults cannot consume them first.
 	useEffect(() => {
 		const onKey = (event: KeyboardEvent) => {
-			if (
-				!(event.metaKey || event.ctrlKey) ||
-				event.shiftKey ||
-				event.altKey ||
-				event.key.toLowerCase() !== "s"
-			) {
-				return;
+			if (window.shell?.platform === "macos") return;
+			const primary = IS_MAC
+				? event.metaKey && !event.ctrlKey
+				: event.ctrlKey && !event.metaKey;
+			if (!primary || event.altKey) return;
+
+			const key = event.key.toLowerCase();
+			let command: "new-file" | "open-folder" | "save" | "save-as" | null =
+				null;
+			let enabled = true;
+
+			if (key === "n" && !event.shiftKey) {
+				command = "new-file";
+				enabled = !workspaceSwitching;
+			} else if (key === "o" && !event.shiftKey) {
+				command = "open-folder";
+				enabled = !workspaceSwitching;
+			} else if (key === "s") {
+				command = event.shiftKey ? "save-as" : "save";
+				enabled = canSaveFile;
 			}
+
+			if (!command) return;
 			event.preventDefault();
-			if (canSaveFile && activeTab.path) void saveFile(activeTab.path);
+			event.stopPropagation();
+			if (enabled) {
+				window.dispatchEvent(
+					new CustomEvent("shell:command", { detail: command }),
+				);
+			}
 		};
-		window.addEventListener("keydown", onKey);
-		return () => window.removeEventListener("keydown", onKey);
-	}, [canSaveFile, activeTab.path, saveFile]);
+		window.addEventListener("keydown", onKey, true);
+		return () => window.removeEventListener("keydown", onKey, true);
+	}, [canSaveFile, workspaceSwitching]);
 
 	const terminateTerminal = useCallback(async () => {
 		const request = closeRequest;
@@ -2075,7 +2095,7 @@ export default function App() {
 		actions.push({
 			id: "find-in-files",
 			label: "Find in files",
-			hint: /Mac|iPhone|iPad/.test(navigator.platform) ? "⇧⌘F" : "Ctrl+Shift+F",
+			hint: IS_MAC ? "⇧⌘F" : "Ctrl+Shift+F",
 			icon: <Search size={12} className="text-fg-dim shrink-0" />,
 			run: showWorkspaceSearch,
 		});
@@ -2449,6 +2469,7 @@ export default function App() {
 	);
 	const leftPanelDocked = !leftPanelCollapsed;
 	const rightPanelDocked = !rightPanelCollapsed;
+	const collapsedRightTitlebarWidth = showTerminal ? 76 : 40;
 	const agentSessionsContent = (
 		<AgentSessions
 			currentSessionId={sessionId}
@@ -2720,7 +2741,7 @@ export default function App() {
 			/>
 			<header
 				data-window-titlebar
-				className="window-titlebar relative z-10 flex h-10 shrink-0 items-stretch overflow-hidden bg-transparent"
+				className="window-titlebar relative z-10 flex shrink-0 items-stretch overflow-hidden bg-transparent"
 				aria-label="Window toolbar"
 			>
 				<div
@@ -2812,7 +2833,7 @@ export default function App() {
 						className="flex shrink-0 items-stretch overflow-hidden"
 						style={{
 							width: `max(0px, calc(var(--right-pane-width) - ${
-								rightPanelDocked ? 0 : showTerminal ? 80 : 40
+								rightPanelDocked ? 0 : collapsedRightTitlebarWidth
 							}px))`,
 						}}
 					>
@@ -2839,25 +2860,29 @@ export default function App() {
 				<div
 					data-window-interactive
 					data-titlebar-right-panel
-					className={`relative z-20 flex shrink-0 items-center overflow-hidden pl-0 ${rightPanelDocked ? "pr-2" : "pr-0"}`}
+					className={`relative z-20 flex shrink-0 items-center overflow-hidden ${rightPanelDocked ? "pr-2" : "gap-1 px-1"}`}
 					style={{
 						width: rightPanelDocked
 							? "max(0px, calc(var(--right-panel-width) - var(--window-controls-inset-end)))"
-							: showTerminal
-								? "80px"
-								: "40px",
+							: `${collapsedRightTitlebarWidth}px`,
 					}}
 				>
+					{rightPanelCollapsed && showTerminal && (
+						<TerminalLauncher
+							shells={terminalShells}
+							onCreate={(shell) => void createTerminal(shell)}
+						/>
+					)}
 					{rightPanelCollapsed && (
 						<button
 							type="button"
 							data-window-panel-toggle="right"
-							className="flex h-10 w-10 shrink-0 items-center justify-center text-fg-muted transition-colors hover:!bg-bg-hover hover:text-fg"
+							className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:!bg-bg-hover hover:text-fg"
 							onClick={toggleRightPanel}
 							title="Show Workspace Panel"
 							aria-label="Show Workspace Panel"
 						>
-							<PanelRightOpen size={15} />
+							<PanelRightOpen size={13} />
 						</button>
 					)}
 					{rightPanelDocked && (
@@ -2868,8 +2893,7 @@ export default function App() {
 							{workspaceTabs}
 						</div>
 					)}
-					{!rightPanelDocked && <div className="min-w-0 flex-1" />}
-					{showTerminal && (
+					{rightPanelDocked && showTerminal && (
 						<TerminalLauncher
 							shells={terminalShells}
 							onCreate={(shell) => void createTerminal(shell)}

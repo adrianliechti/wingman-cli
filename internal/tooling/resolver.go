@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/adrianliechti/wingman-agent/internal/process"
 )
 
 // Source identifies where a command was found. Project and system tools are
@@ -89,10 +91,11 @@ func MajorVersionAtLeast(ctx context.Context, command string, minimum int) bool 
 	if minimum == 0 {
 		return true
 	}
-	process := exec.CommandContext(ctx, command, "--version")
-	process.Env = Environment(command, os.Environ())
-	process.WaitDelay = 100 * time.Millisecond
-	output, err := process.CombinedOutput()
+	cmd := exec.CommandContext(ctx, command, "--version")
+	process.Hide(cmd)
+	cmd.Env = Environment(command, os.Environ())
+	cmd.WaitDelay = 100 * time.Millisecond
+	output, err := cmd.CombinedOutput()
 	result := false
 	if err == nil && minimum < 0 {
 		result = true

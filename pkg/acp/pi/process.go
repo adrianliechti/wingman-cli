@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	processutil "github.com/adrianliechti/wingman-agent/internal/process"
 )
 
 var errProcessClosed = errors.New("pi process closed")
@@ -55,6 +57,7 @@ func spawn(opts spawnOptions) (*process, error) {
 	args := append([]string{"--mode", "rpc", "--no-themes"}, opts.Args...)
 
 	cmd := exec.Command(path, args...)
+	processutil.Hide(cmd)
 	cmd.Dir = opts.Dir
 	cmd.Stderr = opts.Stderr
 	if cmd.Stderr == nil {

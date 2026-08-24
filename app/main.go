@@ -60,6 +60,8 @@ func main() {
 
 			Height: 40,
 		},
+		// go-shell installs this menu natively on macOS. The Windows title bar
+		// renders the same commands in the web UI and owns their Ctrl shortcuts.
 		FileMenu: []shell.MenuItem{
 			{Title: "New File...", Command: "new-file", Key: "n", Disabled: true},
 			{Title: "Open Folder...", Command: "open-folder", Key: "o"},

@@ -2,9 +2,6 @@
 
 package lsp
 
-import (
-	"os/exec"
-)
+import "os/exec"
 
-func setSysProcAttr(cmd *exec.Cmd) {
-}
+func setSysProcAttr(_ *exec.Cmd) {}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/coder/acp-go-sdk"
 
+	"github.com/adrianliechti/wingman-agent/internal/process"
 	codexcli "github.com/adrianliechti/wingman-agent/pkg/external/codex"
 )
 
@@ -36,6 +37,7 @@ func Spawn(ctx context.Context, opts Options) (*Agent, error) {
 
 	args := append(append([]string{}, opts.ExtraArgs...), "app-server")
 	cmd := exec.CommandContext(ctx, codexPath, args...)
+	process.Hide(cmd)
 	cmd.Dir = opts.Dir
 	cmd.Stderr = opts.Stderr
 	if cmd.Stderr == nil {

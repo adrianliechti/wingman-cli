@@ -2,9 +2,15 @@
 
 package dap
 
-import "os/exec"
+import (
+	"os/exec"
 
-func configureAdapterProcess(_ *exec.Cmd) {}
+	"github.com/adrianliechti/wingman-agent/internal/process"
+)
+
+func configureAdapterProcess(cmd *exec.Cmd) {
+	process.Hide(cmd)
+}
 
 func killAdapterProcess(cmd *exec.Cmd) {
 	if cmd != nil && cmd.Process != nil {

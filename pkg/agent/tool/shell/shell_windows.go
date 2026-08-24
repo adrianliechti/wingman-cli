@@ -6,19 +6,22 @@ import (
 	"fmt"
 	"os/exec"
 	"syscall"
+
+	"github.com/adrianliechti/wingman-agent/internal/process"
 )
 
 func setupProcessGroup(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
-	}
+	process.Hide(cmd)
+	cmd.SysProcAttr.CreationFlags |= syscall.CREATE_NEW_PROCESS_GROUP
 }
 
 func killProcessGroup(cmd *exec.Cmd) error {
 	if cmd.Process == nil {
 		return nil
 	}
-	return exec.Command("taskkill", "/T", "/F", "/PID", fmt.Sprintf("%d", cmd.Process.Pid)).Run()
+	taskkill := exec.Command("taskkill", "/T", "/F", "/PID", fmt.Sprintf("%d", cmd.Process.Pid))
+	process.Hide(taskkill)
+	return taskkill.Run()
 }
 
 func interruptProcessGroup(cmd *exec.Cmd) error {

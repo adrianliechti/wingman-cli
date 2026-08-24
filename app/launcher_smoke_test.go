@@ -37,7 +37,13 @@ func TestLauncherSmoke(t *testing.T) {
 	if rec := get("/"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Wingman Agent") {
 		t.Fatalf("start page: %d", rec.Code)
 	} else if !strings.Contains(rec.Body.String(), "--shell-window-drag: drag") {
-		t.Fatal("start page has no macOS window drag region")
+		t.Fatal("start page has no window drag region")
+	} else if !strings.Contains(rec.Body.String(), `data-window-chrome="windows-overlay"`) {
+		t.Fatal("start page has no app-owned Windows menu")
+	} else if !strings.Contains(rec.Body.String(), "window.shell?.platform") {
+		t.Fatal("start page does not consume the injected shell environment")
+	} else if strings.Contains(rec.Body.String(), "shell_chrome") {
+		t.Fatal("start page still depends on URL-based shell detection")
 	}
 
 	if rec := get("/app/workspaces"); rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "null" {
