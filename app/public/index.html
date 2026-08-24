@@ -61,6 +61,96 @@
         -moz-osx-font-smoothing: grayscale;
       }
 
+      .shell-menu {
+        position: fixed;
+        top: 0;
+        left: 0;
+        z-index: 20;
+        display: none;
+        width: 32px;
+        height: 40px;
+        align-items: center;
+        justify-content: center;
+      }
+
+      html[data-window-chrome="windows-overlay"] .shell-menu {
+        display: flex;
+      }
+
+      .shell-menu-trigger {
+        display: flex;
+        width: 28px;
+        height: 28px;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border: 0;
+        border-radius: 4px;
+        background: transparent;
+        color: var(--fg-muted);
+      }
+
+      .shell-menu-trigger:hover:not(:disabled) {
+        border-color: transparent;
+        background: var(--bg-hover);
+        color: var(--fg);
+      }
+
+      .shell-menu-trigger svg {
+        width: 14px;
+        height: 14px;
+      }
+
+      .shell-menu-popup {
+        position: absolute;
+        top: 36px;
+        left: 6px;
+        min-width: 190px;
+        padding: 4px 0;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg-elevated);
+        box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+      }
+
+      .shell-menu-popup[hidden] {
+        display: none;
+      }
+
+      .shell-menu-item {
+        display: flex;
+        width: 100%;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 12px;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        color: var(--fg-muted);
+        text-align: left;
+      }
+
+      .shell-menu-item:hover:not(:disabled) {
+        border-color: transparent;
+        background: var(--bg-hover);
+        color: var(--fg);
+      }
+
+      .shell-menu-item svg {
+        width: 13px;
+        height: 13px;
+      }
+
+      .shell-menu-item span:first-of-type {
+        flex: 1;
+      }
+
+      .shell-menu-shortcut {
+        margin-left: 16px;
+        color: var(--fg-muted);
+        font-size: 10px;
+      }
+
       :where(button, a, input, select, textarea, dialog) {
         --shell-window-drag: no-drag;
         app-region: no-drag;
@@ -396,6 +486,24 @@
     </style>
   </head>
   <body>
+    <div class="shell-menu">
+      <button id="shell-menu-trigger" class="shell-menu-trigger" type="button" title="File menu" aria-label="File menu" aria-haspopup="menu" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+          <line x1="4" y1="7" x2="20" y2="7"></line>
+          <line x1="4" y1="12" x2="20" y2="12"></line>
+          <line x1="4" y1="17" x2="20" y2="17"></line>
+        </svg>
+      </button>
+      <div id="shell-menu-popup" class="shell-menu-popup" role="menu" aria-label="File" hidden>
+        <button id="shell-menu-open" class="shell-menu-item" type="button" role="menuitem">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 7a2 2 0 0 1 2-2h3.6a2 2 0 0 1 1.4.6l1 1a2 2 0 0 0 1.4.6H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+          </svg>
+          <span>Open Folder…</span>
+          <span class="shell-menu-shortcut">Ctrl+O</span>
+        </button>
+      </div>
+    </div>
     <div class="page">
       <div id="layout" class="layout empty">
         <aside class="brand-panel">
@@ -429,6 +537,13 @@
     </div>
 
     <script type="module">
+      const shellChrome =
+        new URLSearchParams(window.location.search).get("shell_chrome") ||
+        window.sessionStorage.getItem("shell-window-chrome");
+      if (shellChrome === "windows-overlay") {
+        window.sessionStorage.setItem("shell-window-chrome", shellChrome);
+        document.documentElement.dataset.windowChrome = shellChrome;
+      }
       async function api(path, body) {
         const response = await fetch(
           path,
@@ -457,6 +572,9 @@
 
       const dropzoneBtn = document.getElementById("open-dropzone");
       const addBtn = document.getElementById("open-add");
+      const shellMenuBtn = document.getElementById("shell-menu-trigger");
+      const shellMenuPopup = document.getElementById("shell-menu-popup");
+      const shellMenuOpen = document.getElementById("shell-menu-open");
       const openButtons = [dropzoneBtn, addBtn];
 
       const workspacesListEl = document.getElementById("workspaces-list");
@@ -606,6 +724,21 @@
 
       dropzoneBtn.addEventListener("click", pickAndOpen);
       addBtn.addEventListener("click", pickAndOpen);
+      shellMenuBtn.addEventListener("click", () => {
+        const open = shellMenuPopup.hidden;
+        shellMenuPopup.hidden = !open;
+        shellMenuBtn.setAttribute("aria-expanded", String(open));
+      });
+      shellMenuOpen.addEventListener("click", () => {
+        shellMenuPopup.hidden = true;
+        shellMenuBtn.setAttribute("aria-expanded", "false");
+        void pickAndOpen();
+      });
+      document.addEventListener("pointerdown", (event) => {
+        if (shellMenuPopup.hidden || event.target.closest(".shell-menu")) return;
+        shellMenuPopup.hidden = true;
+        shellMenuBtn.setAttribute("aria-expanded", "false");
+      });
       window.addEventListener("shell:command", (event) => {
         if (event.detail === "open-folder") void pickAndOpen();
       });

@@ -24,6 +24,33 @@ const (
 
 var ErrUnsupported = errors.New("terminal sessions are not supported on this platform")
 
+// Terminal is a running command attached to a pseudo-terminal. Each platform
+// builds one its own way — Unix over creack/pty and an exec.Cmd, Windows over
+// ConPTY — but Session only needs this platform-neutral surface.
+type Terminal interface {
+	// Read and Write move terminal I/O. Read returns io.EOF (or another error)
+	// once the process exits and the master side drains.
+	Read(p []byte) (int, error)
+	Write(p []byte) (int, error)
+
+	// Resize changes the pseudo-terminal window size.
+	Resize(cols, rows int) error
+
+	// ProcessID is the child process id, or 0 before it starts.
+	ProcessID() int
+
+	// HasForegroundProcess reports whether a command other than the interactive
+	// shell currently owns the terminal foreground. Platforms without the notion
+	// return false.
+	HasForegroundProcess() bool
+
+	// Wait blocks until the process exits.
+	Wait() error
+
+	// Close terminates the process and releases the pseudo-terminal.
+	Close() error
+}
+
 // CommandSpec describes a trusted, direct process launch inside a PTY. It is
 // intentionally separate from the public shell endpoint: editor services such
 // as DAP use it after the user has reviewed the operation, while browser input
@@ -41,8 +68,7 @@ type Session struct {
 	title string
 	shell string
 
-	cmd *exec.Cmd
-	pty *os.File
+	pty Terminal
 
 	done   chan struct{}
 	onExit func(*Session)
@@ -86,11 +112,15 @@ func newCommandSession(id string, spec CommandSpec, cols, rows int, onExit func(
 		return nil, fmt.Errorf("terminal command %q was not found", spec.Path)
 	}
 
-	cmd := exec.Command(path, spec.Args...)
-	cmd.Dir = dir
-	cmd.Env = commandEnv(spec.Env)
+	launch := CommandSpec{
+		Path:  path,
+		Args:  spec.Args,
+		Dir:   dir,
+		Env:   spec.Env,
+		Title: spec.Title,
+	}
 
-	f, err := startPTY(cmd, cols, rows)
+	p, err := startPTY(launch, cols, rows)
 	if err != nil {
 		return nil, err
 	}
@@ -100,8 +130,7 @@ func newCommandSession(id string, spec CommandSpec, cols, rows int, onExit func(
 		title: strings.TrimSpace(spec.Title),
 		shell: path,
 
-		cmd: cmd,
-		pty: f,
+		pty: p,
 
 		done:   make(chan struct{}),
 		onExit: onExit,
@@ -132,10 +161,10 @@ func (s *Session) Shell() string {
 }
 
 func (s *Session) ProcessID() int {
-	if s.cmd == nil || s.cmd.Process == nil {
+	if s.pty == nil {
 		return 0
 	}
-	return s.cmd.Process.Pid
+	return s.pty.ProcessID()
 }
 
 func (s *Session) Size() (cols, rows int) {
@@ -163,7 +192,7 @@ func (s *Session) HasForegroundProcess() bool {
 	if s.Exited() {
 		return false
 	}
-	return hasForegroundProcess(s.pty, s.cmd)
+	return s.pty.HasForegroundProcess()
 }
 
 func (s *Session) Write(p []byte) error {
@@ -185,7 +214,7 @@ func (s *Session) Resize(cols, rows int) error {
 	s.cols, s.rows = cols, rows
 	s.mu.Unlock()
 
-	return setPTYSize(s.pty, cols, rows)
+	return s.pty.Resize(cols, rows)
 }
 
 // Subscribe returns the scrollback captured so far plus a channel of
@@ -226,7 +255,6 @@ func (s *Session) Close() error {
 	}
 	s.mu.Unlock()
 
-	killProcess(s.cmd)
 	err := s.pty.Close()
 	<-s.done
 	return err
@@ -283,7 +311,7 @@ func (s *Session) finish() {
 	}
 
 	_ = s.pty.Close()
-	_ = s.cmd.Wait()
+	_ = s.pty.Wait()
 
 	close(s.done)
 

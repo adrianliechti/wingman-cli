@@ -10,11 +10,14 @@ import {
 	Code2,
 	Eye,
 	FileText,
+	FilePlus,
+	FolderOpen,
 	GitCompare,
 	Globe2,
 	Lightbulb,
 	Loader2,
 	MessageSquare,
+	Menu as MenuIcon,
 	Monitor,
 	MonitorPlay,
 	PanelLeftOpen,
@@ -22,6 +25,8 @@ import {
 	Plus,
 	RefreshCw,
 	Search,
+	Save,
+	SaveAll,
 	Sparkles,
 	SquareTerminal,
 	Wrench,
@@ -1832,15 +1837,17 @@ export default function App() {
 	);
 
 	const handleLeftPanelResize = useCallback(({ inPixels }: PanelSize) => {
-		setLeftPanelCollapsed(inPixels === 0);
-		if (inPixels <= 0) return;
+		const collapsed = inPixels < 1;
+		setLeftPanelCollapsed(collapsed);
+		if (collapsed) return;
 		const width = Math.round(inPixels);
 		leftPanelWidthRef.current = width;
 		appRef.current?.style.setProperty("--left-panel-width", `${width}px`);
 	}, []);
 	const handleRightPanelResize = useCallback(({ inPixels }: PanelSize) => {
-		setRightPanelCollapsed(inPixels === 0);
-		if (inPixels <= 0) return;
+		const collapsed = inPixels < 1;
+		setRightPanelCollapsed(collapsed);
+		if (collapsed) return;
 		const width = Math.round(inPixels);
 		rightPanelWidthRef.current = width;
 		appRef.current?.style.setProperty("--right-panel-width", `${width}px`);
@@ -1861,19 +1868,28 @@ export default function App() {
 		const panel = leftPanelRef.current;
 		if (panel?.isCollapsed()) {
 			panel.resize(`${leftPanelWidthRef.current}px`);
-		} else panel?.collapse();
+			setLeftPanelCollapsed(false);
+		} else {
+			panel?.collapse();
+			setLeftPanelCollapsed(true);
+		}
 	}, [leftPanelRef]);
 	const toggleRightPanel = useCallback(() => {
 		const panel = rightPanelRef.current;
 		if (panel?.isCollapsed()) {
 			panel.resize(`${rightPanelWidthRef.current}px`);
-		} else panel?.collapse();
+			setRightPanelCollapsed(false);
+		} else {
+			panel?.collapse();
+			setRightPanelCollapsed(true);
+		}
 	}, [rightPanelRef]);
 	const showRightPanel = useCallback(
 		(tab: WorkspaceTab) => {
 			setRequestedWorkspaceTab(tab);
 			if (rightPanelRef.current?.isCollapsed()) {
 				rightPanelRef.current.resize(`${rightPanelWidthRef.current}px`);
+				setRightPanelCollapsed(false);
 			}
 		},
 		[rightPanelRef],
@@ -1951,6 +1967,14 @@ export default function App() {
 		setWorkspaceSearching(true);
 		setSearchFocusKey((value) => value + 1);
 	}, [showRightPanel]);
+	// react-resizable-panels only reports collapse through onResize, which does
+	// not fire for the initial layout. Sync both panels from their real state
+	// once mounted so titlebar controls (like the reopen button) render before
+	// the first manual resize.
+	useEffect(() => {
+		setLeftPanelCollapsed(leftPanelRef.current?.isCollapsed() ?? true);
+		setRightPanelCollapsed(rightPanelRef.current?.isCollapsed() ?? false);
+	}, [leftPanelRef, rightPanelRef]);
 	useEffect(() => {
 		const onKey = (event: KeyboardEvent) => {
 			if (
@@ -2578,7 +2602,6 @@ export default function App() {
 					Agents
 				</WorkspaceTabButton>
 			)}
-			<div className="flex-1" />
 		</div>
 	);
 	const inspectorContent = (
@@ -2713,14 +2736,19 @@ export default function App() {
 					className="window-titlebar-controls-spacer shrink-0"
 					aria-hidden="true"
 				/>
+				<AppMenu
+					canCreateFile={!workspaceSwitching}
+					canOpenFolder={!workspaceSwitching}
+					canSave={canSaveFile}
+				/>
 				<div
 					data-window-interactive
 					data-titlebar-left-panel
-					className="flex shrink-0 items-center gap-0.5 overflow-hidden pr-0 pl-2"
+					className={`flex shrink-0 items-center gap-0.5 overflow-hidden pr-0 ${leftPanelDocked ? "pl-2" : "pl-0"}`}
 					style={{
 						width: leftPanelDocked
-							? "calc(var(--left-panel-width) - var(--window-controls-inset))"
-							: "40px",
+							? "calc(var(--left-panel-width) - var(--window-controls-inset) - var(--window-menu-inset))"
+							: "32px",
 					}}
 				>
 					{leftPanelDocked && (
@@ -2811,10 +2839,10 @@ export default function App() {
 				<div
 					data-window-interactive
 					data-titlebar-right-panel
-					className="flex shrink-0 items-center overflow-hidden pr-2 pl-0"
+					className={`relative z-20 flex shrink-0 items-center overflow-hidden pl-0 ${rightPanelDocked ? "pr-2" : "pr-0"}`}
 					style={{
 						width: rightPanelDocked
-							? "var(--right-panel-width)"
+							? "max(0px, calc(var(--right-panel-width) - var(--window-controls-inset-end)))"
 							: showTerminal
 								? "80px"
 								: "40px",
@@ -2823,12 +2851,13 @@ export default function App() {
 					{rightPanelCollapsed && (
 						<button
 							type="button"
-							className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
+							data-window-panel-toggle="right"
+							className="flex h-10 w-10 shrink-0 items-center justify-center text-fg-muted transition-colors hover:!bg-bg-hover hover:text-fg"
 							onClick={toggleRightPanel}
 							title="Show Workspace Panel"
 							aria-label="Show Workspace Panel"
 						>
-							<PanelRightOpen size={13} />
+							<PanelRightOpen size={15} />
 						</button>
 					)}
 					{rightPanelDocked && (
@@ -2847,6 +2876,10 @@ export default function App() {
 						/>
 					)}
 				</div>
+				<div
+					className="window-titlebar-controls-spacer-end shrink-0"
+					aria-hidden="true"
+				/>
 			</header>
 			<Group
 				id="wingman-layout"
@@ -3395,6 +3428,110 @@ function TabContextMenu({
 	);
 }
 
+function AppMenu({
+	canCreateFile,
+	canOpenFolder,
+	canSave,
+}: {
+	canCreateFile: boolean;
+	canOpenFolder: boolean;
+	canSave: boolean;
+}) {
+	const [open, setOpen] = useState(false);
+	const [button, setButton] = useState<HTMLButtonElement | null>(null);
+
+	const run = (command: string) => {
+		setOpen(false);
+		window.dispatchEvent(new CustomEvent("shell:command", { detail: command }));
+	};
+
+	return (
+		<div className="window-app-menu relative shrink-0 items-center justify-center">
+			<button
+				ref={setButton}
+				type="button"
+				className="flex h-7 w-7 items-center justify-center text-fg-dim transition-colors hover:text-fg"
+				title="File menu"
+				aria-label="File menu"
+				aria-haspopup="menu"
+				aria-expanded={open}
+				onClick={() => setOpen((value) => !value)}
+			>
+				<MenuIcon size={14} />
+			</button>
+			<FloatingMenu
+				open={open}
+				onOpenChange={setOpen}
+				reference={button}
+				placement="bottom-start"
+				gap={4}
+				label="File"
+				className="z-[140] min-w-[190px] rounded-md border border-border-subtle bg-bg-elevated py-1 text-[12px] shadow-2xl"
+			>
+				<AppMenuItem
+					icon={<FilePlus size={12} />}
+					label="New File…"
+					shortcut="Ctrl+N"
+					disabled={!canCreateFile}
+					onClick={() => run("new-file")}
+				/>
+				<AppMenuItem
+					icon={<FolderOpen size={12} />}
+					label="Open Folder…"
+					shortcut="Ctrl+O"
+					disabled={!canOpenFolder}
+					onClick={() => run("open-folder")}
+				/>
+				<div role="separator" className="my-1 border-t border-border-subtle" />
+				<AppMenuItem
+					icon={<Save size={12} />}
+					label="Save"
+					shortcut="Ctrl+S"
+					disabled={!canSave}
+					onClick={() => run("save")}
+				/>
+				<AppMenuItem
+					icon={<SaveAll size={12} />}
+					label="Save As…"
+					shortcut="Ctrl+Shift+S"
+					disabled={!canSave}
+					onClick={() => run("save-as")}
+				/>
+			</FloatingMenu>
+		</div>
+	);
+}
+
+function AppMenuItem({
+	icon,
+	label,
+	shortcut,
+	disabled,
+	onClick,
+}: {
+	icon: ReactNode;
+	label: string;
+	shortcut: string;
+	disabled?: boolean;
+	onClick: () => void;
+}) {
+	return (
+		<button
+			type="button"
+			role="menuitem"
+			disabled={disabled}
+			className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted transition-colors enabled:hover:bg-bg-hover enabled:hover:text-fg disabled:cursor-default disabled:opacity-40"
+			onClick={onClick}
+		>
+			<span className="flex w-3.5 shrink-0 items-center justify-center text-fg-dim">
+				{icon}
+			</span>
+			<span className="min-w-0 flex-1">{label}</span>
+			<span className="ml-4 text-[10px] text-fg-dim">{shortcut}</span>
+		</button>
+	);
+}
+
 function WorkspaceTabButton({
 	active,
 	onClick,
@@ -3410,7 +3547,7 @@ function WorkspaceTabButton({
 			role="tab"
 			aria-selected={active}
 			tabIndex={active ? 0 : -1}
-			className={`relative flex cursor-pointer items-center px-2.5 text-[12px] font-medium transition-colors ${
+			className={`relative flex min-w-0 flex-1 cursor-pointer items-center justify-center px-1.5 text-[11px] font-medium transition-colors ${
 				active ? "text-fg" : "text-fg-dim hover:text-fg-muted"
 			}`}
 			onClick={onClick}
@@ -3431,7 +3568,7 @@ function WorkspaceTabButton({
 		>
 			{children}
 			{active && (
-				<span className="absolute right-2.5 bottom-0 left-2.5 h-[2px] rounded-full bg-accent" />
+				<span className="absolute right-2 bottom-0 left-2 h-[2px] rounded-full bg-accent" />
 			)}
 		</button>
 	);

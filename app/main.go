@@ -57,6 +57,8 @@ func main() {
 			Overlay:         true,
 			ControlsOffsetX: 4,
 			ControlsOffsetY: 4,
+
+			Height: 40,
 		},
 		FileMenu: []shell.MenuItem{
 			{Title: "New File...", Command: "new-file", Key: "n", Disabled: true},

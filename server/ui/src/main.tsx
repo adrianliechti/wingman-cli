@@ -96,7 +96,13 @@ StandaloneServices.initialize({
 // content underneath the native traffic lights, so reserve their hit area.
 // Chromium-based browsers and WebView2 keep their normal content bounds.
 const userAgent = navigator.userAgent;
-if (
+const shellChrome =
+	new URLSearchParams(window.location.search).get("shell_chrome") ??
+	window.sessionStorage.getItem("shell-window-chrome");
+if (shellChrome === "windows-overlay") {
+	window.sessionStorage.setItem("shell-window-chrome", shellChrome);
+	document.documentElement.dataset.windowChrome = shellChrome;
+} else if (
 	/Mac/.test(navigator.platform) &&
 	/AppleWebKit/.test(userAgent) &&
 	!/(Chrome|Chromium|CriOS|Edg|Electron|Safari)/.test(userAgent)

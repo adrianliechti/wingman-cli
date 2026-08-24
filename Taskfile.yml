@@ -57,8 +57,15 @@ tasks:
     desc: Build and launch the desktop app with web inspection enabled
     deps: [build:app]
     dir: app
+    env:
+      WINGMAN_DEBUG: "1"
     cmds:
-      - open -n --env WINGMAN_DEBUG=1 "build/bin/Wingman Agent.app"
+      - cmd: open -n --env WINGMAN_DEBUG=1 "build/bin/Wingman Agent.app"
+        platforms: [darwin]
+      - cmd: '"build/bin/Wingman Agent.exe"'
+        platforms: [windows]
+      - cmd: '"build/bin/Wingman Agent"'
+        platforms: [linux]
 
   run:app:ollama:
     desc: Build and launch the desktop app against local Ollama

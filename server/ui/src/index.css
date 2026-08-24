@@ -214,9 +214,16 @@ select,
 
 /* The primary toolbar doubles as desktop window chrome. Electron and recent
    WebView2 builds understand app-region directly; AppKit uses the equivalent
-   native full-size-content window configured by app/titlebar_darwin.go. */
+   native full-size-content window configured by go-shell.
+
+   go-shell publishes the space its native window controls occupy as
+   --shell-titlebar-inset-left / -right, so the toolbar reserves whichever side
+   the platform puts them on: the macOS traffic lights on the left, the Windows
+   caption buttons (and the menu button) on both. */
 .window-titlebar {
-	--window-controls-inset: 0px;
+	--window-controls-inset: var(--shell-titlebar-inset-left, 0px);
+	--window-controls-inset-end: var(--shell-titlebar-inset-right, 0px);
+	--window-menu-inset: 0px;
 	--shell-window-drag: drag;
 	app-region: drag;
 	-webkit-app-region: drag;
@@ -226,6 +233,25 @@ select,
 
 .window-titlebar-controls-spacer {
 	width: var(--window-controls-inset);
+}
+
+.window-titlebar-controls-spacer-end {
+	width: var(--window-controls-inset-end);
+	min-width: var(--window-controls-inset-end);
+}
+
+.window-app-menu {
+	display: none;
+}
+
+html[data-window-chrome="windows-overlay"] .window-titlebar {
+	--window-menu-inset: 32px;
+}
+
+html[data-window-chrome="windows-overlay"] .window-app-menu {
+	display: flex;
+	min-width: var(--window-menu-inset);
+	width: var(--window-menu-inset);
 }
 
 .window-titlebar :where(button, a, input, select, textarea, [role="tab"]) {
@@ -240,6 +266,8 @@ select,
 	background-color: transparent;
 }
 
+/* The macOS traffic lights are positioned by AppKit rather than reported through
+   the shell insets, so their reservation stays a constant here. */
 html[data-window-chrome="macos-overlay"] .window-titlebar {
 	--window-controls-inset: 76px;
 }
