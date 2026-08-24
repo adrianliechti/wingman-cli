@@ -1,16 +1,22 @@
 package debugadapter
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/adrianliechti/wingman-agent/pkg/dap"
+	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 )
 
 func TestGoAdapterPlansSingleTestDeterministically(t *testing.T) {
-	plan, err := NewRegistry(nil).Plan("Go", Request{
+	plan, err := NewRegistry().Plan("Go", Request{
 		Action:     "debug",
 		ProjectDir: "services/api",
 		Target: Target{
@@ -41,7 +47,7 @@ func TestGoAdapterMapsOutputAndTerminalModesToDelve(t *testing.T) {
 }
 
 func TestPythonAdapterPlansWorkspaceRelativeScript(t *testing.T) {
-	plan, err := NewRegistry(nil).Plan("Python", Request{
+	plan, err := NewRegistry().Plan("Python", Request{
 		Action:     "run",
 		ProjectDir: "services/api",
 		Target: Target{
@@ -76,7 +82,7 @@ func TestPythonAdapterUsesProjectVirtualEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plan, err := NewRegistry(nil).Plan("Python", Request{
+	plan, err := NewRegistry().Plan("Python", Request{
 		Action: "debug", WorkspaceDir: project, ProjectDir: ".",
 		Target: Target{Name: "main.py", Kind: "script", Language: "Python", Path: "main.py", Directory: ".", Line: 1, Column: 1},
 	})
@@ -108,7 +114,7 @@ func TestPythonAdapterWalksUpToWorkspaceVirtualEnvironment(t *testing.T) {
 	if err := os.WriteFile(interpreter, []byte("python"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := NewRegistry(nil).Plan("Python", Request{
+	plan, err := NewRegistry().Plan("Python", Request{
 		Action: "debug", WorkspaceDir: root, ProjectDir: filepath.Join("services", "api"),
 		Target: Target{Name: "main.py", Kind: "script", Language: "Python", Path: filepath.Join("services", "api", "main.py"), Directory: filepath.Join("services", "api"), Line: 1, Column: 1},
 	})
@@ -317,7 +323,7 @@ func TestDotnetAdapterPlansExistingOrExpectedAssembly(t *testing.T) {
 		Action: "debug", WorkspaceDir: root, ProjectDir: "dotnet-app",
 		Target: Target{Name: "Program", Kind: "main", Language: dotnetLanguage, Path: "dotnet-app/Program.cs", Line: 1, Column: 1},
 	}
-	plan, err := NewRegistry(nil).Plan(dotnetLanguage, request)
+	plan, err := NewRegistry().Plan(dotnetLanguage, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +345,7 @@ func TestDotnetAdapterPlansExistingOrExpectedAssembly(t *testing.T) {
 	if err := os.WriteFile(stale, []byte("stale assembly"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	plan, err = NewRegistry(nil).Plan(dotnetLanguage, request)
+	plan, err = NewRegistry().Plan(dotnetLanguage, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +360,7 @@ func TestDotnetAdapterPlansExistingOrExpectedAssembly(t *testing.T) {
 	if err := os.WriteFile(built, []byte("assembly"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	plan, err = NewRegistry(nil).Plan(dotnetLanguage, request)
+	plan, err = NewRegistry().Plan(dotnetLanguage, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +397,7 @@ func TestPackageScriptPlansViteServerAndManagedBrowser(t *testing.T) {
 	if err := os.WriteFile(browser, []byte("browser"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := NewRegistry(nil).Plan(javascriptLanguage, Request{
+	plan, err := NewRegistry().Plan(javascriptLanguage, Request{
 		Action: "debug", WorkspaceDir: root, ProjectDir: "web", BrowserExecutable: browser,
 		Target: Target{Name: "dev", Kind: "browser-script", Language: javascriptLanguage, Path: "web/package.json", Line: 1, Column: 1},
 	})
@@ -422,7 +428,7 @@ func TestPackageScriptPlansNodeServerWithoutBrowser(t *testing.T) {
 	}
 	t.Setenv("PATH", bin)
 
-	plan, err := NewRegistry(nil).Plan(javascriptLanguage, Request{
+	plan, err := NewRegistry().Plan(javascriptLanguage, Request{
 		Action: "debug", WorkspaceDir: root, ProjectDir: "api",
 		Target: Target{Name: "server", Kind: "node-script", Language: javascriptLanguage, Path: "api/package.json", Line: 1, Column: 1},
 	})
@@ -448,7 +454,7 @@ func TestJavaAdapterPlansMavenProjectName(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(project, "pom.xml"), []byte(pom), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := NewRegistry(nil).Plan("Java", Request{
+	plan, err := NewRegistry().Plan("Java", Request{
 		Action: "debug", WorkspaceDir: root, ProjectDir: "java-app",
 		Target: Target{Name: "demo.App", Kind: "main", Language: "Java", Path: "java-app/src/main/java/demo/App.java", Line: 3, Column: 24},
 	})
@@ -467,13 +473,17 @@ func TestRegistryWiresInstalledJavaDebugBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("WINGMAN_JAVA_DEBUG_BUNDLE", bundle)
-	registry := NewRegistry(nil)
+	managed := filepath.Join(root, "managed", "java-debug")
+	if err := os.MkdirAll(managed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(managed, "com.microsoft.java.debug.plugin-managed.jar"), []byte("jar"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	registry := NewRegistry(toolDirectoryStub{"java-debug": filepath.Dir(managed)})
 	want := map[string]any{"bundles": []string{bundle}}
 	if got := registry.ServerInitializations()["jdtls"]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("jdtls initialization = %#v", got)
-	}
-	if got := registry.ManagedOnlyCommands(); len(got) != 0 {
-		t.Fatalf("explicit bundle still requires managed jdtls: %v", got)
 	}
 	found := false
 	for _, descriptor := range registry.Descriptors() {
@@ -486,13 +496,53 @@ func TestRegistryWiresInstalledJavaDebugBundle(t *testing.T) {
 	}
 }
 
+type toolDirectoryStub map[string]string
+
+func (stub toolDirectoryStub) ToolDir(id string) string { return stub[id] }
+
+func TestRegistryRequestsAndLoadsManagedJavaDebugger(t *testing.T) {
+	t.Setenv("WINGMAN_JAVA_DEBUG_BUNDLE", "")
+	root := t.TempDir()
+
+	missing := NewRegistry(toolDirectoryStub{})
+	foundRequirement := false
+	for _, descriptor := range missing.Descriptors() {
+		if descriptor.Name == "java-debug" {
+			foundRequirement = descriptor.Command == "java-debug-adapter" && descriptor.Transport == "connect"
+		}
+	}
+	if !foundRequirement {
+		t.Fatal("missing managed Java debugger was not advertised for installation")
+	}
+	if options := missing.ServerInitializations()["jdtls"]; options != nil {
+		t.Fatalf("missing Java debug bundle initialized JDT LS: %#v", options)
+	}
+
+	directory := filepath.Join(root, "java-debug")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldBundle := filepath.Join(directory, "com.microsoft.java.debug.plugin-0.52.0.jar")
+	bundle := filepath.Join(directory, "com.microsoft.java.debug.plugin-0.53.1.jar")
+	for _, path := range []string{oldBundle, bundle} {
+		if err := os.WriteFile(path, []byte("jar"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	installed := NewRegistry(toolDirectoryStub{"java-debug": root})
+	want := map[string]any{"bundles": []string{bundle}}
+	if got := installed.ServerInitializations()["jdtls"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("managed JDT LS initialization = %#v, want %#v", got, want)
+	}
+}
+
 func TestRegistryUsesExplicitJavaScriptDebugServer(t *testing.T) {
 	server := filepath.Join(t.TempDir(), "dapDebugServer.js")
 	if err := os.WriteFile(server, []byte("// server"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("WINGMAN_JS_DEBUG_SERVER", server)
-	registry := NewRegistry(nil)
+	registry := NewRegistry()
 	found := false
 	for _, descriptor := range registry.Descriptors() {
 		if descriptor.Name == "vscode-js-debug" {
@@ -507,10 +557,10 @@ func TestRegistryUsesExplicitJavaScriptDebugServer(t *testing.T) {
 	}
 }
 
-func TestRegistryUsesManagedJavaScriptAdapterByDefault(t *testing.T) {
+func TestRegistryUsesJavaScriptAdapterCommandByDefault(t *testing.T) {
 	t.Setenv("WINGMAN_JS_DEBUG_ADAPTER", "")
 	t.Setenv("WINGMAN_JS_DEBUG_SERVER", "")
-	for _, descriptor := range NewRegistry(nil).Descriptors() {
+	for _, descriptor := range NewRegistry().Descriptors() {
 		if descriptor.Name != "vscode-js-debug" {
 			continue
 		}
@@ -522,8 +572,12 @@ func TestRegistryUsesManagedJavaScriptAdapterByDefault(t *testing.T) {
 	t.Fatal("JavaScript adapter was not registered")
 }
 
+type stringPort string
+
+func (value stringPort) String() string { return string(value) }
+
 func TestJavaDebugPortValidation(t *testing.T) {
-	for _, value := range []any{4711, float64(4711), "4711", map[string]any{"port": float64(4711)}} {
+	for _, value := range []any{4711, int16(4711), uint16(4711), uint64(4711), float64(4711), "4711", stringPort("4711"), map[string]any{"port": float64(4711)}} {
 		port, err := javaDebugPort(value)
 		if err != nil || port != 4711 {
 			t.Fatalf("javaDebugPort(%#v) = %d, %v", value, port, err)
@@ -536,27 +590,100 @@ func TestJavaDebugPortValidation(t *testing.T) {
 	}
 }
 
-type toolDirStub map[string]string
+type javaCommandExecutor struct {
+	results  map[string]any
+	commands []lsp.Command
+}
 
-func (stub toolDirStub) ToolDir(id string) string { return stub[id] }
+func (executor *javaCommandExecutor) ExecuteCommand(_ context.Context, _ string, _ *string, command lsp.Command) (any, error) {
+	executor.commands = append(executor.commands, command)
+	return executor.results[command.Command], nil
+}
 
-func TestRegistryLoadsManagedJavaDebugBundle(t *testing.T) {
-	t.Setenv("WINGMAN_JAVA_DEBUG_BUNDLE", "")
+func TestJavaConnectorPreparesLaunchWithJDTLS(t *testing.T) {
 	root := t.TempDir()
-	server := filepath.Join(root, "java-debug", "extension", "server")
-	if err := os.MkdirAll(server, 0o755); err != nil {
+	source := filepath.Join(root, "src", "main", "java", "example", "App.java")
+	if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	jar := filepath.Join(server, "com.microsoft.java.debug.plugin-0.53.0.jar")
-	if err := os.WriteFile(jar, []byte("jar"), 0o644); err != nil {
+	if err := os.WriteFile(source, []byte("package example; public class App { public static void main(String[] args) {} }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	registry := NewRegistry(toolDirStub{"jdtls": root})
-	want := map[string]any{"bundles": []string{jar}}
-	if got := registry.ServerInitializations()["jdtls"]; !reflect.DeepEqual(got, want) {
-		t.Fatalf("jdtls initialization = %#v", got)
+	classes := filepath.Join(root, "target", "classes")
+	executor := &javaCommandExecutor{results: map[string]any{
+		"vscode.java.resolveClasspath":      json.RawMessage(fmt.Sprintf(`[%s,%s]`, `[]`, mustJSON(t, []string{classes}))),
+		"vscode.java.resolveJavaExecutable": json.RawMessage(mustJSON(t, "/jdk/bin/java")),
+	}}
+	original := map[string]any{"projectName": "example-project"}
+	prepared, err := NewConnector(executor).PrepareAdapter(context.Background(), dap.Plan{
+		Adapter: dap.AdapterDescriptor{Name: "java-debug"}, ProjectDir: root,
+		Target: "example.App", Request: "launch", Arguments: original,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := registry.ManagedOnlyCommands(); !reflect.DeepEqual(got, []string{"jdtls"}) {
-		t.Fatalf("managed-only commands = %v", got)
+	if _, mutated := original["classPaths"]; mutated {
+		t.Fatalf("PrepareAdapter mutated the caller's arguments: %#v", original)
 	}
+	if got := prepared.Arguments["modulePaths"]; !reflect.DeepEqual(got, []string{}) {
+		t.Fatalf("modulePaths = %#v", got)
+	}
+	if got := prepared.Arguments["classPaths"]; !reflect.DeepEqual(got, []string{classes}) {
+		t.Fatalf("classPaths = %#v", got)
+	}
+	if got := prepared.Arguments["javaExec"]; got != "/jdk/bin/java" {
+		t.Fatalf("javaExec = %#v", got)
+	}
+	wantCommands := []string{"vscode.java.resolveClasspath", "vscode.java.resolveJavaExecutable"}
+	if len(executor.commands) != len(wantCommands) {
+		t.Fatalf("commands = %#v", executor.commands)
+	}
+	for index, want := range wantCommands {
+		if executor.commands[index].Command != want {
+			t.Fatalf("command %d = %q, want %q", index, executor.commands[index].Command, want)
+		}
+		var mainClass, projectName string
+		if err := json.Unmarshal(executor.commands[index].Arguments[0], &mainClass); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(executor.commands[index].Arguments[1], &projectName); err != nil {
+			t.Fatal(err)
+		}
+		if mainClass != "example.App" || projectName != "example-project" {
+			t.Fatalf("command arguments = %q, %q", mainClass, projectName)
+		}
+	}
+}
+
+func TestJavaConnectorPreservesExplicitLaunchPaths(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "App.java")
+	if err := os.WriteFile(source, []byte("class App {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	executor := &javaCommandExecutor{results: map[string]any{
+		"vscode.java.resolveJavaExecutable": json.RawMessage(`"/jdk/bin/java"`),
+	}}
+	prepared, err := NewConnector(executor).PrepareAdapter(context.Background(), dap.Plan{
+		Adapter: dap.AdapterDescriptor{Name: "java-debug"}, ProjectDir: root,
+		Target: "App", Request: "launch", Arguments: map[string]any{"classPaths": []string{"classes"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := prepared.Arguments["classPaths"]; !reflect.DeepEqual(got, []string{"classes"}) {
+		t.Fatalf("classPaths = %#v", got)
+	}
+	if len(executor.commands) != 1 || executor.commands[0].Command != "vscode.java.resolveJavaExecutable" {
+		t.Fatalf("commands = %#v", executor.commands)
+	}
+}
+
+func mustJSON(t *testing.T, value any) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
 }

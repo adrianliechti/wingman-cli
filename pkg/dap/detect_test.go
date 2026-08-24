@@ -3,6 +3,7 @@ package dap
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +11,20 @@ import (
 	"strings"
 	"testing"
 )
+
+type preparingConnector struct {
+	called bool
+}
+
+func (*preparingConnector) ConnectAdapter(context.Context, Plan) (io.ReadWriteCloser, error) {
+	return nil, errors.New("not used by this test")
+}
+
+func (connector *preparingConnector) PrepareAdapter(_ context.Context, plan Plan) (Plan, error) {
+	connector.called = true
+	plan.Arguments["prepared"] = true
+	return plan, nil
+}
 
 func TestDetectProjectsUsesDescriptorMarkersAndSkipsGeneratedTrees(t *testing.T) {
 	root := t.TempDir()
@@ -346,7 +361,7 @@ func TestManagerPrefersProjectAdapterOverPath(t *testing.T) {
 	}
 }
 
-func TestManagerPrefersSystemAdapterOverManagedFallback(t *testing.T) {
+func TestManagerPrefersManagedAdapterOverSystemFallback(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/test\n")
 	managed := filepath.Join(root, "managed", "dlv")
@@ -364,9 +379,9 @@ func TestManagerPrefersSystemAdapterOverManagedFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(root, "path", "dlv")
+	want := managed
 	if len(values) != 1 || values[0].adapter.Command != want {
-		t.Fatalf("detected adapters = %#v, want system command %q", values, want)
+		t.Fatalf("detected adapters = %#v, want managed command %q", values, want)
 	}
 }
 
@@ -509,6 +524,32 @@ func TestManagerRetainsFailedSessionForDebuggerOutput(t *testing.T) {
 	session := manager.ActiveSession()
 	if session == nil || session.Status().Error != failure.Error() {
 		t.Fatalf("failed session = %#v", session)
+	}
+}
+
+func TestManagerPreparesConnectedAdapterPlanBeforeStarting(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "pom.xml"), "<project/>\n")
+	adapterPath := filepath.Join(root, "java-debug-adapter")
+	writeTestFile(t, adapterPath, "adapter\n")
+	if err := os.Chmod(adapterPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var started Plan
+	manager := newManager(root, []AdapterDescriptor{{
+		Name: "java-debug", Language: "Java", Command: "java-debug-adapter",
+		Transport: TransportConnect, Markers: []string{"pom.xml"}, SourceExtensions: []string{".java"},
+	}}, func(string) string { return adapterPath }, func(_ context.Context, id string, plan Plan, _ StartOptions) (*Session, error) {
+		started = plan
+		return &Session{id: id, plan: plan, state: StateStarting}, nil
+	})
+	connector := &preparingConnector{}
+	manager.SetAdapterConnector(connector)
+	if _, err := manager.Start(context.Background(), StartOptions{Adapter: "java-debug"}); err != nil {
+		t.Fatal(err)
+	}
+	if !connector.called || started.Arguments["prepared"] != true {
+		t.Fatalf("prepared = %v, started plan = %#v", connector.called, started)
 	}
 }
 

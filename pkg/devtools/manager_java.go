@@ -2,175 +2,248 @@ package devtools
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
+	"runtime"
 	"slices"
-	"strconv"
 	"strings"
 )
 
 const (
-	jdtlsMilestonesURL = "https://download.eclipse.org/jdtls/milestones/"
-	javaDebugLatestURL = "https://open-vsx.org/api/vscjava/vscode-java-debug/latest"
+	mavenLatestVersion           = "LATEST"
+	mavenDependencyPluginVersion = "3.11.0"
+	jdtlsMavenRepository         = "https://repo.eclipse.org/repository/ls-maven2-releases/"
+	jdtlsCoreBundlePrefix        = "org.eclipse.jdt.ls.core_"
+	javaDebugBundlePrefix        = "com.microsoft.java.debug.plugin-"
 )
 
-var (
-	javaRecipes = []recipe{
-		{ID: "jdtls", Label: "Java tools", Kind: installerJava, Commands: []string{"jdtls"}},
-	}
-	jdtlsVersionPattern = regexp.MustCompile(`/jdtls/milestones/([0-9]+\.[0-9]+\.[0-9]+)`)
-)
-
-type openVSXExtension struct {
-	Verified bool `json:"verified"`
-	Files    struct {
-		Download string `json:"download"`
-		SHA256   string `json:"sha256"`
-	} `json:"files"`
+var javaRecipes = []recipe{
+	{ID: "jdtls", Label: "Java language tools", Kind: installerMaven, Commands: []string{"jdtls"}},
+	{ID: "java-debug", Label: "Java debugger", Kind: installerMaven, Commands: []string{"java-debug-adapter"}},
 }
 
-func (m *Manager) installJava(ctx context.Context, item recipe, stage string) (string, error) {
-	if item.ID != "jdtls" {
-		return "", fmt.Errorf("unknown Java tool %q", item.ID)
+// installMaven installs Java tooling through the project wrapper or Maven.
+// Repository selection remains subject to settings.xml mirrors, credentials,
+// and proxy policy.
+func (m *Manager) installMaven(ctx context.Context, item recipe, stage string) (string, error) {
+	switch item.ID {
+	case "jdtls":
+		return m.installJDTLSMaven(ctx, item, stage)
+	case "java-debug":
+		return m.installJavaDebugMaven(ctx, item, stage)
+	default:
+		return "", fmt.Errorf("unknown Maven tool %q", item.ID)
 	}
-	baseURL, filename, err := m.latestJDTLSArchive(ctx)
+}
+
+func (m *Manager) installJDTLSMaven(ctx context.Context, item recipe, stage string) (string, error) {
+	maven, workingDir, err := m.mavenCommand(item, stage)
 	if err != nil {
 		return "", err
 	}
-	extension, err := m.latestJavaDebug(ctx)
+	pom, err := writeJDTLSPOM(stage)
 	if err != nil {
 		return "", err
 	}
-	version := filename + "|" + extension.Files.Download
+	markers := filepath.Join(stage, ".maven-markers")
+	args := []string{
+		"--file", pom,
+		"--batch-mode",
+		"--no-transfer-progress",
+		"--update-snapshots",
+		"org.apache.maven.plugins:maven-dependency-plugin:" + mavenDependencyPluginVersion + ":unpack-dependencies",
+		"-DincludeGroupIds=org.eclipse.jdt.ls",
+		"-DincludeArtifactIds=org.eclipse.jdt.ls.product",
+		"-DoutputDirectory=" + stage,
+		"-DmarkersDirectory=" + markers,
+		"-DexcludeTransitive=true",
+	}
+	if output, err := m.run(ctx, maven, args, workingDir, os.Environ()); err != nil {
+		return "", commandError(output, err)
+	}
+	if err := errors.Join(os.RemoveAll(markers), os.Remove(pom)); err != nil {
+		return "", fmt.Errorf("remove temporary Maven files: %w", err)
+	}
+
+	launcher := resolveInstalledCommand(stage, "jdtls")
+	if launcher == "" && runtime.GOOS != "windows" {
+		candidate := filepath.Join(stage, "bin", "jdtls")
+		if info, statErr := os.Stat(candidate); statErr == nil && info.Mode().IsRegular() {
+			if chmodErr := os.Chmod(candidate, 0o755); chmodErr != nil {
+				return "", fmt.Errorf("make JDT LS launcher executable: %w", chmodErr)
+			}
+			launcher = resolveInstalledCommand(stage, "jdtls")
+		}
+	}
+	if launcher == "" {
+		return "", errors.New("Maven artifact did not contain the JDT LS launcher")
+	}
+	version, err := jdtlsProductVersion(stage)
+	if err != nil {
+		return "", err
+	}
 	if version == m.installedVersion(item) {
 		return "", errUpToDate
-	}
-	if err := m.installJDTLS(ctx, stage, baseURL, filename); err != nil {
-		return "", err
-	}
-	if err := m.installJavaDebug(ctx, stage, extension); err != nil {
-		return "", err
 	}
 	return version, nil
 }
 
-func (m *Manager) latestJDTLSArchive(ctx context.Context) (string, string, error) {
-	index, err := m.fetch(ctx, jdtlsMilestonesURL)
-	if err != nil {
-		return "", "", fmt.Errorf("query JDT LS milestones: %w", err)
+// A declared repository is required for Maven to resolve dynamic version
+// metadata. Keeping it in a minimal POM also ensures settings.xml mirror rules
+// apply to the Eclipse repository exactly as they do for normal projects.
+func writeJDTLSPOM(root string) (string, error) {
+	path := filepath.Join(root, ".wingman-jdtls-pom.xml")
+	contents := `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>dev.wingman</groupId>
+  <artifactId>managed-jdtls</artifactId>
+  <version>1</version>
+  <repositories>
+    <repository>
+      <id>eclipse-jdtls</id>
+      <url>` + jdtlsMavenRepository + `</url>
+      <releases><enabled>true</enabled></releases>
+      <snapshots><enabled>false</enabled></snapshots>
+    </repository>
+  </repositories>
+  <dependencies>
+    <dependency>
+      <groupId>org.eclipse.jdt.ls</groupId>
+      <artifactId>org.eclipse.jdt.ls.product</artifactId>
+      <version>` + mavenLatestVersion + `</version>
+      <type>tar.gz</type>
+    </dependency>
+  </dependencies>
+</project>
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		return "", fmt.Errorf("write JDT LS Maven project: %w", err)
 	}
-	version := latestJDTLSVersion(index)
-	if version == "" {
-		return "", "", errors.New("JDT LS milestone index contains no release")
-	}
-	baseURL := jdtlsMilestonesURL + version + "/"
-	latest, err := m.fetch(ctx, baseURL+"latest.txt")
-	if err != nil {
-		return "", "", fmt.Errorf("query JDT LS %s archive: %w", version, err)
-	}
-	filename := strings.TrimSpace(string(latest))
-	if filename != filepath.Base(filename) || !strings.HasPrefix(filename, "jdt-language-server-") || !strings.HasSuffix(filename, ".tar.gz") {
-		return "", "", fmt.Errorf("invalid JDT LS archive name %q", filename)
-	}
-	return baseURL, filename, nil
+	return path, nil
 }
 
-func (m *Manager) latestJavaDebug(ctx context.Context) (openVSXExtension, error) {
-	metadata, err := m.fetch(ctx, javaDebugLatestURL)
+// installJavaDebugMaven copies Microsoft's OSGi plug-in from Maven Central.
+// Maven's dynamic version asks the configured repository or mirror for its
+// newest available release, matching the latest-only policy used for JDT LS.
+func (m *Manager) installJavaDebugMaven(ctx context.Context, item recipe, stage string) (string, error) {
+	maven, workingDir, err := m.mavenCommand(item, stage)
 	if err != nil {
-		return openVSXExtension{}, fmt.Errorf("query latest java-debug package: %w", err)
-	}
-	var extension openVSXExtension
-	if err := json.Unmarshal(metadata, &extension); err != nil {
-		return openVSXExtension{}, fmt.Errorf("decode latest java-debug package: %w", err)
-	}
-	if !extension.Verified || extension.Files.Download == "" || extension.Files.SHA256 == "" {
-		return openVSXExtension{}, errors.New("latest java-debug package is not verified or has no checksum")
-	}
-	return extension, nil
-}
-
-func (m *Manager) installJDTLS(ctx context.Context, stage, baseURL, filename string) error {
-	archive, err := m.fetch(ctx, baseURL+filename)
-	if err != nil {
-		return fmt.Errorf("download %s: %w", filename, err)
-	}
-	checksum, err := m.fetch(ctx, baseURL+filename+".sha256")
-	if err != nil {
-		return fmt.Errorf("download %s checksum: %w", filename, err)
-	}
-	if err := verifySHA256(archive, string(checksum)); err != nil {
-		return fmt.Errorf("verify %s: %w", filename, err)
-	}
-	if err := extractTarGzip(archive, stage); err != nil {
-		return fmt.Errorf("extract %s: %w", filename, err)
-	}
-	return nil
-}
-
-func (m *Manager) installJavaDebug(ctx context.Context, stage string, extension openVSXExtension) error {
-	archive, err := m.fetch(ctx, extension.Files.Download)
-	if err != nil {
-		return fmt.Errorf("download java-debug package: %w", err)
-	}
-	checksum, err := m.fetch(ctx, extension.Files.SHA256)
-	if err != nil {
-		return fmt.Errorf("download java-debug checksum: %w", err)
-	}
-	if err := verifySHA256(archive, string(checksum)); err != nil {
-		return fmt.Errorf("verify java-debug package: %w", err)
+		return "", err
 	}
 	destination := filepath.Join(stage, "java-debug")
-	if err := extractZip(archive, destination); err != nil {
-		return fmt.Errorf("extract java-debug package: %w", err)
+	artifact := "com.microsoft.java:com.microsoft.java.debug.plugin:" + mavenLatestVersion
+	args := []string{
+		"--batch-mode",
+		"--no-transfer-progress",
+		"--update-snapshots",
+		"org.apache.maven.plugins:maven-dependency-plugin:" + mavenDependencyPluginVersion + ":copy",
+		"-Dartifact=" + artifact,
+		"-DoutputDirectory=" + destination,
+		"-Dtransitive=false",
 	}
-	if len(javaDebugBundlesAt(stage)) == 0 {
-		return errors.New("java-debug package contains no JDT LS plug-in")
+	if output, err := m.run(ctx, maven, args, workingDir, os.Environ()); err != nil {
+		return "", commandError(output, err)
 	}
-	return nil
+	version, err := javaDebugBundleVersion(stage)
+	if err != nil {
+		return "", err
+	}
+	if version == m.installedVersion(item) {
+		return "", errUpToDate
+	}
+	if err := writeJavaDebugMarker(stage); err != nil {
+		return "", fmt.Errorf("write Java debug adapter marker: %w", err)
+	}
+	return version, nil
 }
 
-func latestJDTLSVersion(index []byte) string {
-	var best [3]int
-	found := false
-	for _, match := range jdtlsVersionPattern.FindAllSubmatch(index, -1) {
-		parts := strings.Split(string(match[1]), ".")
-		version := [3]int{}
-		for i := range version {
-			version[i], _ = strconv.Atoi(parts[i])
+// jdtlsProductVersion identifies the resolved release from its core OSGi
+// bundle. Unlike the open Maven version range, this is a stable value that can
+// be compared on the next refresh.
+func jdtlsProductVersion(root string) (string, error) {
+	entries, err := os.ReadDir(filepath.Join(root, "plugins"))
+	if err != nil {
+		return "", fmt.Errorf("read JDT LS plugins: %w", err)
+	}
+	version := ""
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, jdtlsCoreBundlePrefix) || !strings.HasSuffix(name, ".jar") {
+			continue
 		}
-		if !found || version[0] > best[0] ||
-			version[0] == best[0] && version[1] > best[1] ||
-			version[0] == best[0] && version[1] == best[1] && version[2] > best[2] {
-			best = version
-			found = true
+		candidate := strings.TrimSuffix(strings.TrimPrefix(name, jdtlsCoreBundlePrefix), ".jar")
+		if candidate > version {
+			version = candidate
 		}
 	}
-	if !found {
-		return ""
+	if version == "" {
+		return "", errors.New("Maven artifact did not contain the JDT LS core bundle")
 	}
-	return fmt.Sprintf("%d.%d.%d", best[0], best[1], best[2])
+	return version, nil
+}
+
+// Java debug runs inside JDT LS. The marker is intentionally only an
+// availability token for DAP discovery; the Java connector never executes it.
+func writeJavaDebugMarker(root string) error {
+	directory := filepath.Join(root, "bin")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return err
+	}
+	if runtime.GOOS == "windows" {
+		return os.WriteFile(filepath.Join(directory, "java-debug-adapter.cmd"), []byte("@echo off\r\necho java-debug is hosted by JDT LS 1^>^&2\r\nexit /b 1\r\n"), 0o755)
+	}
+	return os.WriteFile(filepath.Join(directory, "java-debug-adapter"), []byte("#!/bin/sh\necho 'java-debug is hosted by JDT LS' >&2\nexit 1\n"), 0o755)
 }
 
 func javaDebugBundlesAt(root string) []string {
-	directory := filepath.Join(root, "java-debug", "extension", "server")
-	entries, err := os.ReadDir(directory)
+	entries, err := os.ReadDir(filepath.Join(root, "java-debug"))
 	if err != nil {
 		return nil
 	}
-	var matches []string
+	var bundles []string
 	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "com.microsoft.java.debug.plugin-") && strings.HasSuffix(entry.Name(), ".jar") {
-			matches = append(matches, filepath.Join(directory, entry.Name()))
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, javaDebugBundlePrefix) || !strings.HasSuffix(name, ".jar") {
+			continue
+		}
+		bundles = append(bundles, filepath.Join(root, "java-debug", name))
+	}
+	slices.Sort(bundles)
+	return bundles
+}
+
+func javaDebugBundleVersion(root string) (string, error) {
+	bundles := javaDebugBundlesAt(root)
+	if len(bundles) == 0 {
+		return "", errors.New("Maven artifact did not contain the Java debug plug-in")
+	}
+	name := filepath.Base(bundles[len(bundles)-1])
+	return strings.TrimSuffix(strings.TrimPrefix(name, javaDebugBundlePrefix), ".jar"), nil
+}
+
+func (m *Manager) mavenCommand(item recipe, fallback string) (command, workingDir string, err error) {
+	name := "mvnw"
+	if runtime.GOOS == "windows" {
+		name = "mvnw.cmd"
+	}
+	for _, directory := range item.WorkingDirs {
+		wrapper := filepath.Join(directory, name)
+		if runtime.GOOS == "windows" {
+			if info, err := os.Stat(wrapper); err == nil && info.Mode().IsRegular() {
+				return wrapper, directory, nil
+			}
+		} else if info, err := os.Stat(wrapper); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+			return wrapper, directory, nil
 		}
 	}
-	slices.Sort(matches)
-	if len(matches) == 0 {
-		return nil
+	maven, err := m.look("mvn")
+	if err != nil {
+		return "", "", errors.New("Maven is not installed and this project has no Maven wrapper")
 	}
-	return []string{matches[len(matches)-1]}
+	return maven, installWorkingDir(item, fallback), nil
 }

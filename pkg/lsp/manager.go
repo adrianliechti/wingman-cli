@@ -63,8 +63,8 @@ func WithServerInitializationOptions(name string, value any) ManagerOption {
 	}
 }
 
-// WithCommandResolver adds an application-managed fallback after project and
-// standard system command discovery.
+// WithCommandResolver adds an application-managed candidate after project
+// discovery and before the standard system fallback.
 func WithCommandResolver(resolve func(string) string) ManagerOption {
 	return func(manager *Manager) {
 		manager.commandResolver = resolve

@@ -37,34 +37,29 @@ const (
 type installerKind string
 
 const (
-	installerGo         installerKind = "go"
-	installerRust       installerKind = "rust"
-	installerNPM        installerKind = "npm"
-	installerPython     installerKind = "python"
-	installerDotnet     installerKind = "dotnet"
-	installerJavaScript installerKind = "javascript"
-	installerBrowser    installerKind = "browser"
-	installerCodeLLDB   installerKind = "codelldb"
-	installerNetCoreDbg installerKind = "netcoredbg"
-	installerJava       installerKind = "java"
-	installerKotlinLSP  installerKind = "kotlin-lsp"
+	installerGo     installerKind = "go"
+	installerRustup installerKind = "rustup"
+	installerNPM    installerKind = "npm"
+	installerPython installerKind = "python"
+	installerDotnet installerKind = "dotnet"
+	installerMaven  installerKind = "maven"
+	installerGitHub installerKind = "github"
 )
 
 // Requirement lists equivalent commands in preference order. Project and
-// standard system commands satisfy the requirement before a managed recipe is
-// selected. ManagedOnly is reserved for capabilities that need bundled files
-// in addition to an executable, such as Java debugging.
+// virtual-environment commands satisfy the requirement before a managed
+// package is selected. System commands remain runtime fallbacks, but do not
+// suppress installation of Wingman's package-managed copy.
 type Requirement struct {
 	Alternatives         []string
 	Workspace            string
 	Projects             []string
 	MinimumMajorVersions map[string]int
-	ManagedOnly          bool
 }
 
 // ProgressPhase describes what the managed-tool updater is doing. Checking is
-// intentionally distinct from a download so status surfaces do not imply that
-// a fresh installation is being replaced on every startup.
+// intentionally distinct from installation so status surfaces do not imply
+// that a fresh installation is being replaced on every startup.
 type ProgressPhase string
 
 const (
@@ -84,12 +79,13 @@ type Progress struct {
 }
 
 type recipe struct {
-	ID         string
-	Label      string
-	Kind       installerKind
-	Packages   []string
-	Commands   []string
-	WorkingDir string
+	ID          string
+	Label       string
+	Kind        installerKind
+	Packages    []string
+	Commands    []string
+	WorkingDirs []string
+	BestEffort  bool
 }
 
 // UnavailableError means no usable copy of a required tool remains after an
@@ -140,6 +136,7 @@ func UnavailableTools(err error) []string {
 
 // The catalog is deliberately small and deterministic. Ecosystem-specific
 // recipes live beside their installers; SDKs and compilers remain external.
+// Direct downloads are limited to recipes explicitly marked best-effort.
 var catalog = allRecipes()
 
 // ToolLabel returns the user-facing name stored with a managed tool's recipe.
@@ -163,12 +160,7 @@ func ToolLabels(ids []string) []string {
 }
 
 func allRecipes() []recipe {
-	groups := [][]recipe{goRecipes, rustRecipes, dotnetRecipes, nodeRecipes, pythonRecipes, javascriptRecipes, javaRecipes, kotlinRecipes}
-	var result []recipe
-	for _, group := range groups {
-		result = append(result, group...)
-	}
-	return result
+	return slices.Concat(goRecipes, rustRecipes, dotnetRecipes, nodeRecipes, pythonRecipes, javaRecipes, githubRecipes)
 }
 
 type commandRunner func(context.Context, string, []string, string, []string) ([]byte, error)
@@ -230,17 +222,19 @@ func (m *Manager) CanManage(command string) bool {
 	return ok
 }
 
-// ToolDir returns the installation directory of a managed tool, if present.
-// Adapters use it to locate bundled files that accompany an executable.
+// ToolDir returns a complete managed installation for adapters that need
+// bundled files in addition to an executable availability token.
 func (m *Manager) ToolDir(id string) string {
 	if m == nil {
 		return ""
 	}
 	root := filepath.Join(m.root, filepath.Base(id))
-	if info, err := os.Stat(root); err != nil || !info.IsDir() {
-		return ""
+	for _, item := range catalog {
+		if item.ID == id && installationReady(item, root) {
+			return root
+		}
 	}
-	return root
+	return ""
 }
 
 // Resolve returns the absolute path of a managed command, if installed.
@@ -250,9 +244,6 @@ func (m *Manager) Resolve(command string) string {
 		return ""
 	}
 	root := filepath.Join(m.root, item.ID)
-	if item.Kind == installerKotlinLSP && !kotlinLSPLauncherReady(root) {
-		return ""
-	}
 	return resolveInstalledCommand(root, command)
 }
 
@@ -271,21 +262,23 @@ func (m *Manager) Update(ctx context.Context, requirements []Requirement, progre
 		return false, ctx.Err()
 	}
 
-	selected := make(map[string]recipe)
+	type selection struct {
+		item           recipe
+		systemFallback bool
+	}
+	selected := make(map[string]selection)
 	for _, requirement := range requirements {
-		if !requirement.ManagedOnly && m.externalAvailable(ctx, requirement) {
+		item, managed := m.managedRecipe(requirement)
+		if !managed || m.requirementAvailable(ctx, requirement, tooling.SourceProject) {
 			continue
 		}
-		for _, command := range requirement.Alternatives {
-			if item, ok := m.byCommand[command]; ok {
-				item.WorkingDir = requirementWorkingDir(requirement)
-				if current, exists := selected[item.ID]; exists && current.WorkingDir != "" {
-					item.WorkingDir = current.WorkingDir
-				}
-				selected[item.ID] = item
-				break
-			}
+		item.WorkingDirs = requirementWorkingDirs(requirement)
+		systemFallback := m.requirementAvailable(ctx, requirement, tooling.SourceSystem)
+		if current, exists := selected[item.ID]; exists {
+			item.WorkingDirs = appendUniquePaths(current.item.WorkingDirs, item.WorkingDirs...)
+			systemFallback = current.systemFallback && systemFallback
 		}
+		selected[item.ID] = selection{item: item, systemFallback: systemFallback}
 	}
 
 	ids := make([]string, 0, len(selected))
@@ -312,7 +305,8 @@ func (m *Manager) Update(ctx context.Context, requirements []Requirement, progre
 			updateErrors = append(updateErrors, err)
 			break
 		}
-		item := selected[id]
+		selectedTool := selected[id]
+		item := selectedTool.item
 		reportProgress(progress, item, ProgressChecking, index+1, len(ids))
 		if err := recoverInterruptedUpdate(m.root, item.ID); err != nil {
 			updateErrors = append(updateErrors, fmt.Errorf("recover %s: %w", item.ID, err))
@@ -323,7 +317,7 @@ func (m *Manager) Update(ctx context.Context, requirements []Requirement, progre
 		}
 		ready := installationReady(item, filepath.Join(m.root, item.ID))
 		if m.retryDeferred(item) {
-			if !ready {
+			if !ready && !selectedTool.systemFallback && !item.BestEffort {
 				updateErrors = append(updateErrors, &UnavailableError{
 					Tool: item.ID,
 					Err:  errors.New("automatic installation was attempted recently; Wingman will retry in about an hour"),
@@ -347,8 +341,8 @@ func (m *Manager) Update(ctx context.Context, requirements []Requirement, progre
 			if !updated {
 				retryErr = m.deferRetry(item)
 			}
-			available := ready || installationReady(item, filepath.Join(m.root, item.ID))
-			if !available {
+			available := selectedTool.systemFallback || ready || installationReady(item, filepath.Join(m.root, item.ID))
+			if !available && !item.BestEffort {
 				err = &UnavailableError{Tool: item.ID, Err: err}
 			}
 			updateErrors = append(updateErrors, fmt.Errorf("update %s: %w", item.ID, errors.Join(err, retryErr)))
@@ -368,41 +362,41 @@ func reportProgress(reports []func(Progress), item recipe, phase ProgressPhase, 
 	}
 }
 
-func (m *Manager) externalAvailable(ctx context.Context, requirement Requirement) bool {
-	if strings.TrimSpace(requirement.Workspace) == "" {
-		return false
+func (m *Manager) managedRecipe(requirement Requirement) (recipe, bool) {
+	for _, command := range requirement.Alternatives {
+		if item, ok := m.byCommand[command]; ok {
+			return item, true
+		}
 	}
-	resolver := tooling.Resolver{
-		Workspace: requirement.Workspace,
-		Lookup: func(command string) string {
-			path, err := m.look(command)
-			if err != nil {
-				return ""
-			}
-			return path
-		},
+	return recipe{}, false
+}
+
+func (m *Manager) requirementAvailable(ctx context.Context, requirement Requirement, source tooling.Source) bool {
+	if source == tooling.SourceProject && strings.TrimSpace(requirement.Workspace) == "" {
+		return false
 	}
 	projects := requirement.Projects
 	if len(projects) == 0 {
-		projects = []string{""}
+		projects = []string{requirement.Workspace}
 	}
 	for _, project := range projects {
 		available := false
-		projectCandidates := []string(nil)
-		if project != "" {
-			projectCandidates = []string{project}
-		}
 		for _, command := range requirement.Alternatives {
-			minimum := requirement.MinimumMajorVersions[command]
-			for _, candidate := range resolver.Candidates(projectCandidates, command) {
-				probeCtx, cancel := context.WithTimeout(ctx, versionProbeTimeout)
-				supported := tooling.MajorVersionAtLeast(probeCtx, candidate.Path, minimum)
-				cancel()
-				if supported {
-					available = true
-					break
-				}
+			path := ""
+			switch source {
+			case tooling.SourceProject:
+				path = tooling.ResolveProject(project, requirement.Workspace, command)
+			case tooling.SourceSystem:
+				path, _ = m.look(command)
+			default:
+				return false
 			}
+			if path == "" {
+				continue
+			}
+			probeCtx, cancel := context.WithTimeout(ctx, versionProbeTimeout)
+			available = tooling.MajorVersionAtLeast(probeCtx, path, requirement.MinimumMajorVersions[command], project)
+			cancel()
 			if available {
 				break
 			}
@@ -414,9 +408,14 @@ func (m *Manager) externalAvailable(ctx context.Context, requirement Requirement
 	return true
 }
 
-func requirementWorkingDir(requirement Requirement) string {
+func requirementWorkingDirs(requirement Requirement) []string {
 	workspace := filepath.Clean(requirement.Workspace)
-	for _, directory := range append(slices.Clone(requirement.Projects), requirement.Workspace) {
+	directories := requirement.Projects
+	if len(directories) == 0 {
+		directories = []string{requirement.Workspace}
+	}
+	var result []string
+	for _, directory := range directories {
 		if directory == "" {
 			continue
 		}
@@ -428,10 +427,23 @@ func requirementWorkingDir(requirement Requirement) string {
 			}
 		}
 		if info, err := os.Stat(directory); err == nil && info.IsDir() {
-			return directory
+			result = appendUniquePaths(result, directory)
 		}
 	}
-	return ""
+	return result
+}
+
+func appendUniquePaths(paths []string, additions ...string) []string {
+	for _, addition := range additions {
+		if addition == "" {
+			continue
+		}
+		addition = filepath.Clean(addition)
+		if !slices.Contains(paths, addition) {
+			paths = append(paths, addition)
+		}
+	}
+	return paths
 }
 
 // The status file holds the refresh timestamp on its first line and an
@@ -501,8 +513,7 @@ func (m *Manager) updateOne(ctx context.Context, item recipe) (bool, error) {
 	return replaceDirectory(stage, filepath.Join(m.root, item.ID))
 }
 
-// errUpToDate is returned by download-based installers when the release
-// metadata still matches the installed copy, so the archive is not fetched.
+// errUpToDate lets an installer refresh its status without replacing files.
 var errUpToDate = errors.New("managed tool is up to date")
 
 func (m *Manager) refreshStatus(item recipe) error {
@@ -530,7 +541,7 @@ func (m *Manager) installedVersion(item recipe) string {
 }
 
 // Disabled reports whether automatic installation is turned off. Existing
-// managed tools continue to resolve; only downloads and updates stop.
+// managed tools continue to resolve; only installations and updates stop.
 func Disabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("WINGMAN_MANAGED_TOOLS"))) {
 	case "0", "false", "off", "disable", "disabled":
@@ -570,8 +581,10 @@ func (m *Manager) deferRetry(item recipe) error {
 }
 
 func installWorkingDir(item recipe, fallback string) string {
-	if info, err := os.Stat(item.WorkingDir); err == nil && info.IsDir() {
-		return item.WorkingDir
+	for _, directory := range item.WorkingDirs {
+		if info, err := os.Stat(directory); err == nil && info.IsDir() {
+			return directory
+		}
 	}
 	return fallback
 }
@@ -596,35 +609,14 @@ func installationReady(item recipe, root string) bool {
 			}
 		}
 		return true
-	case installerJavaScript:
-		return regularFile(filepath.Join(root, "js-debug", "src", "dapDebugServer.js"))
-	case installerBrowser:
-		path, err := chromeForTestingExecutable(root, runtime.GOOS, runtime.GOARCH)
-		return err == nil && tooling.Executable(path)
-	case installerCodeLLDB:
-		name := "codelldb"
-		if runtime.GOOS == "windows" {
-			name += ".exe"
+	case installerMaven:
+		if item.ID == "java-debug" {
+			return len(javaDebugBundlesAt(root)) > 0
 		}
-		return tooling.Executable(filepath.Join(root, "extension", "adapter", name))
-	case installerNetCoreDbg:
-		name := "netcoredbg"
-		if runtime.GOOS == "windows" {
-			name += ".exe"
-		}
-		return tooling.Executable(filepath.Join(root, "netcoredbg", name))
-	case installerJava:
-		return len(javaDebugBundlesAt(root)) > 0
-	case installerKotlinLSP:
-		return tooling.Executable(kotlinLSPServerPath(root)) && kotlinLSPLauncherReady(root)
+		return true
 	default:
 		return true
 	}
-}
-
-func regularFile(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.Mode().IsRegular()
 }
 
 func (m *Manager) installRecipe(ctx context.Context, item recipe, stage string) (string, error) {
@@ -632,8 +624,8 @@ func (m *Manager) installRecipe(ctx context.Context, item recipe, stage string) 
 	case installerGo:
 		return m.installGo(ctx, item, stage)
 
-	case installerRust:
-		return m.installRustAnalyzer(ctx, item, stage)
+	case installerRustup:
+		return m.installRustup(ctx, item, stage)
 
 	case installerNPM:
 		return m.installNPM(ctx, item, stage)
@@ -644,23 +636,11 @@ func (m *Manager) installRecipe(ctx context.Context, item recipe, stage string) 
 	case installerDotnet:
 		return m.installDotnet(ctx, item, stage)
 
-	case installerJavaScript:
-		return m.installJavaScript(ctx, item, stage)
+	case installerMaven:
+		return m.installMaven(ctx, item, stage)
 
-	case installerBrowser:
-		return m.installChromeForTesting(ctx, item, stage)
-
-	case installerCodeLLDB:
-		return m.installCodeLLDB(ctx, item, stage)
-
-	case installerNetCoreDbg:
-		return m.installNetCoreDbg(ctx, item, stage)
-
-	case installerJava:
-		return m.installJava(ctx, item, stage)
-
-	case installerKotlinLSP:
-		return m.installKotlinLSP(ctx, item, stage)
+	case installerGitHub:
+		return m.installGitHub(ctx, item, stage)
 
 	default:
 		return "", fmt.Errorf("unsupported installer %q", item.Kind)

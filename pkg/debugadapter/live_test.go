@@ -26,7 +26,7 @@ print(work(41))
 		t.Fatal(err)
 	}
 
-	registry := NewRegistry(nil)
+	registry := NewRegistry()
 	manager := dap.NewManager(root, registry.Descriptors()...)
 	defer manager.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
@@ -89,17 +89,14 @@ func TestLiveViteLaunchStartsPackageScript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tools, err := devtools.New()
-	if err != nil {
-		t.Fatal(err)
+	browser := FindChromiumBrowser()
+	if !liveJavaScriptAdapterAvailable() || browser == "" {
+		t.Skip("js-debug-adapter and a Chromium-family browser are required")
 	}
-	if tools.Resolve("js-debug-adapter") == "" || tools.Resolve("chrome-for-testing") == "" {
-		t.Skip("managed JavaScript debugger and Chrome for Testing are required")
-	}
-	registry := NewRegistry(nil)
+	registry := NewRegistry()
 	profile, err := registry.Plan(javascriptLanguage, Request{
 		Action: "debug", WorkspaceDir: root, ProjectDir: root,
-		BrowserExecutable: tools.Resolve("chrome-for-testing"),
+		BrowserExecutable: browser,
 		Target:            Target{Name: "dev", Kind: "browser-script", Language: javascriptLanguage, Path: filepath.Join(root, "package.json")},
 	})
 	if err != nil {
@@ -107,7 +104,6 @@ func TestLiveViteLaunchStartsPackageScript(t *testing.T) {
 	}
 	profile.Configuration["runtimeArgs"] = []string{"--headless=new"}
 	manager := dap.NewManager(root, registry.Descriptors()...)
-	manager.SetCommandResolver(tools.Resolve)
 	defer manager.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -159,14 +155,10 @@ setInterval(() => {}, 1000)
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	tools, err := devtools.New()
-	if err != nil {
-		t.Fatal(err)
+	if !liveJavaScriptAdapterAvailable() {
+		t.Skip("js-debug-adapter is required")
 	}
-	if tools.Resolve("js-debug-adapter") == "" {
-		t.Skip("managed JavaScript debugger is required")
-	}
-	registry := NewRegistry(nil)
+	registry := NewRegistry()
 	profile, err := registry.Plan(javascriptLanguage, Request{
 		Action: "debug", WorkspaceDir: root, ProjectDir: root,
 		Target: Target{Name: "server", Kind: "node-script", Language: javascriptLanguage, Path: filepath.Join(root, "package.json")},
@@ -175,7 +167,6 @@ setInterval(() => {}, 1000)
 		t.Fatal(err)
 	}
 	manager := dap.NewManager(root, registry.Descriptors()...)
-	manager.SetCommandResolver(tools.Resolve)
 	defer manager.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -206,6 +197,10 @@ setInterval(() => {}, 1000)
 	}
 }
 
+func liveJavaScriptAdapterAvailable() bool {
+	return absoluteCommandPath(newJavaScriptAdapter().command) != ""
+}
+
 func sameFile(first, second string) bool {
 	firstInfo, firstErr := os.Stat(first)
 	secondInfo, secondErr := os.Stat(second)
@@ -219,6 +214,115 @@ func failedSessionOutput(manager *dap.Manager) string {
 	return ""
 }
 
+func liveAdapterResolver(t *testing.T, ctx context.Context, root, command string) func(string) string {
+	t.Helper()
+	if os.Getenv("WINGMAN_LIVE_DEVTOOLS") == "" {
+		if absoluteCommandPath(command) == "" {
+			t.Skipf("%s is not installed; also set WINGMAN_LIVE_DEVTOOLS=1 to provision it", command)
+		}
+		return nil
+	}
+	t.Setenv("WINGMAN_HOME", filepath.Join(t.TempDir(), "wingman"))
+	tools, err := devtools.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tools.Update(ctx, []devtools.Requirement{{
+		Alternatives: []string{command}, Workspace: root, Projects: []string{root},
+	}}); err != nil {
+		t.Fatalf("install managed %s: %v", command, err)
+	}
+	if tools.Resolve(command) == "" {
+		t.Fatalf("managed %s was not installed", command)
+	}
+	return tools.Resolve
+}
+
+func TestLiveCodeLLDBAutoBuildLaunch(t *testing.T) {
+	if os.Getenv("WINGMAN_LIVE_DAP") == "" {
+		t.Skip("set WINGMAN_LIVE_DAP=1 to run a real CodeLLDB session")
+	}
+	if absoluteCommandPath("cargo") == "" {
+		t.Skip("cargo is not installed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+	defer cancel()
+
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `[package]
+name = "wingman-live-debug"
+version = "0.0.0"
+edition = "2024"
+`
+	source := `fn work(input: i32) -> i32 {
+    input + 1
+}
+
+fn main() {
+    let value = work(41);
+    println!("{value}");
+}
+`
+	program := filepath.Join(root, "src", "main.rs")
+	if err := os.WriteFile(filepath.Join(root, "Cargo.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(program, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := liveAdapterResolver(t, ctx, root, "codelldb")
+	registry := NewRegistry()
+	profile, err := registry.Plan("Rust", Request{
+		Action: "debug", WorkspaceDir: root, ProjectDir: ".",
+		Target: Target{Name: "wingman-live-debug", Kind: "main", Language: "Rust", Path: "src/main.rs", Directory: "src", Line: 5, Column: 4},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.PreLaunch == nil || !profile.PreLaunch.WaitForExit {
+		t.Fatalf("unbuilt project did not plan an automatic build: %+v", profile.PreLaunch)
+	}
+
+	manager := dap.NewManager(root, registry.Descriptors()...)
+	defer manager.Close()
+	if resolver != nil {
+		manager.SetCommandResolver(resolver)
+	}
+	session, err := manager.Start(ctx, dap.StartOptions{
+		Adapter:       "codelldb",
+		ProjectDir:    ".",
+		Configuration: profile.Configuration,
+		PreLaunch:     profile.PreLaunch,
+		Breakpoints: map[string][]dap.SourceBreakpoint{
+			program: {{Line: 2}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("start CodeLLDB: %v\noutput:\n%s", err, failedSessionOutput(manager))
+	}
+	status := session.Status()
+	if status.State != dap.StateStopped {
+		status, _ = session.WaitForStop(ctx, 0)
+	}
+	if status.State != dap.StateStopped {
+		t.Fatalf("status = %+v\noutput:\n%s", status, session.Output())
+	}
+	frames, _, err := session.StackTrace(ctx, status.Stop.ThreadID, 0, 5)
+	if err != nil || len(frames) == 0 || frames[0].Source == nil || !sameFile(frames[0].Source.Path, program) || frames[0].Line != 2 {
+		t.Fatalf("frames = %+v, %v\noutput:\n%s", frames, err, session.Output())
+	}
+	if err := manager.Stop(ctx, session.ID()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLiveNetCoreDbgAutoBuildLaunch(t *testing.T) {
 	if os.Getenv("WINGMAN_LIVE_DAP") == "" {
 		t.Skip("set WINGMAN_LIVE_DAP=1 to run a real NetCoreDbg session")
@@ -226,19 +330,8 @@ func TestLiveNetCoreDbgAutoBuildLaunch(t *testing.T) {
 	if absoluteCommandPath("dotnet") == "" {
 		t.Skip("dotnet is not installed")
 	}
-	t.Setenv("WINGMAN_HOME", t.TempDir())
-	tools, err := devtools.New()
-	if err != nil {
-		t.Fatal(err)
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
-	if _, err := tools.Update(ctx, []devtools.Requirement{{Alternatives: []string{"netcoredbg"}}}); err != nil {
-		t.Fatal(err)
-	}
-	if tools.Resolve("netcoredbg") == "" {
-		t.Fatal("managed netcoredbg was not installed")
-	}
 
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -268,7 +361,8 @@ static int Work(int input)
 		t.Fatal(err)
 	}
 
-	registry := NewRegistry(nil)
+	resolver := liveAdapterResolver(t, ctx, root, "netcoredbg")
+	registry := NewRegistry()
 	profile, err := registry.Plan(dotnetLanguage, Request{
 		Action: "debug", WorkspaceDir: root, ProjectDir: ".",
 		Target: Target{Name: "Program", Kind: "main", Language: dotnetLanguage, Path: "Program.cs", Directory: ".", Line: 1, Column: 1},
@@ -281,8 +375,10 @@ static int Work(int input)
 	}
 
 	manager := dap.NewManager(root, registry.Descriptors()...)
-	manager.SetCommandResolver(tools.Resolve)
 	defer manager.Close()
+	if resolver != nil {
+		manager.SetCommandResolver(resolver)
+	}
 	session, err := manager.Start(ctx, dap.StartOptions{
 		Adapter:       "netcoredbg",
 		ProjectDir:    ".",

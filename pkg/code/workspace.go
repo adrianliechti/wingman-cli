@@ -319,9 +319,8 @@ func (w *Workspace) WarmUp() {
 	})
 }
 
-// ManagedToolSet selects the editor capabilities a frontend uses. Browser
-// runtimes are intentionally installed on demand when browser debugging is
-// requested, rather than as part of workspace startup.
+// ManagedToolSet selects the curated editor capabilities a frontend uses.
+// Browser runtimes and adapters without a managed recipe remain external.
 type ManagedToolSet uint8
 
 const (
@@ -331,8 +330,8 @@ const (
 )
 
 // UpdateManagedTools installs missing project-relevant tools. Successful
-// updates invalidate discovery caches immediately; JDT LS restarts when its
-// debug plug-in changes, while other active sessions keep running.
+// updates invalidate discovery caches immediately; active sessions keep
+// running and use the new command on their next start.
 func (w *Workspace) UpdateManagedTools(ctx context.Context, tools ManagedToolSet, progress ...func(devtools.Progress)) (bool, error) {
 	w.mu.RLock()
 	manager := w.DevTools
@@ -377,28 +376,30 @@ func (w *Workspace) UpdateManagedTools(ctx context.Context, tools ManagedToolSet
 	return true, errors.Join(detectErr, updateErr)
 }
 
-// managedToolRequirements keeps frontend scope explicit. A hosted debugger
-// such as java-debug may require a complete managed JDT LS bundle, but that
-// must not force TUI/ACP clients asking only for LSP support to replace a
-// usable system JDT LS. Conversely, a DAP-only caller still needs the hosted
-// adapter dependency even before its descriptor can become available.
+// managedToolRequirements keeps frontend scope explicit. Only tools with a
+// curated managed recipe are returned; other adapters remain discoverable but
+// are not provisioned here.
 func (w *Workspace) managedToolRequirements(ctx context.Context, tools ManagedToolSet) ([]devtools.Requirement, error) {
 	root := w.RootPath
 	registry := w.DebugRegistry()
-	managedOnly := make(map[string]bool)
+
+	var adapterRequirements []dap.AdapterRequirement
+	var detectErr error
+	needsJavaHost := false
 	if tools&ManagedDAPTools != 0 {
-		for _, command := range registry.ManagedOnlyCommands() {
-			managedOnly[command] = true
-		}
+		adapterRequirements, detectErr = dap.DetectRequirements(ctx, root, registry.Descriptors())
+		needsJavaHost = slices.ContainsFunc(adapterRequirements, func(requirement dap.AdapterRequirement) bool {
+			return strings.EqualFold(requirement.Language, "Java")
+		})
 	}
 
 	var requirements []devtools.Requirement
-	if tools&ManagedLSPTools != 0 || len(managedOnly) > 0 {
+	if tools&ManagedLSPTools != 0 || needsJavaHost {
 		for _, requirement := range lsp.DetectRequirements(root) {
-			alternatives := slices.Clone(requirement.Commands)
+			alternatives := requirement.Commands
 			if tools&ManagedLSPTools == 0 {
-				alternatives = slices.DeleteFunc(alternatives, func(command string) bool {
-					return !managedOnly[command]
+				alternatives = slices.DeleteFunc(slices.Clone(alternatives), func(command string) bool {
+					return command != "jdtls"
 				})
 				if len(alternatives) == 0 {
 					continue
@@ -407,17 +408,13 @@ func (w *Workspace) managedToolRequirements(ctx context.Context, tools ManagedTo
 			requirements = append(requirements, devtools.Requirement{
 				Alternatives: alternatives, Workspace: root, Projects: requirement.Directories,
 				MinimumMajorVersions: requirement.MinimumMajorVersions,
-				ManagedOnly: slices.ContainsFunc(alternatives, func(command string) bool {
-					return managedOnly[command]
-				}),
 			})
 		}
 	}
 
 	if tools&ManagedDAPTools == 0 {
-		return requirements, nil
+		return requirements, detectErr
 	}
-	adapterRequirements, detectErr := dap.DetectRequirements(ctx, root, registry.Descriptors())
 	for _, requirement := range adapterRequirements {
 		requirements = append(requirements, devtools.Requirement{
 			Alternatives: requirement.Commands, Workspace: root, Projects: requirement.Projects,
@@ -500,9 +497,8 @@ func (u *ManagedToolsUpdate) WaitContext(ctx context.Context) (bool, error) {
 	}
 }
 
-// DebugRegistry returns the language debug adapters configured against the
-// workspace's managed tools. All frontends must plan and detect against this
-// registry so it matches the adapters the DAP manager runs.
+// DebugRegistry returns the language debug adapters configured for the
+// workspace. All frontends plan and detect against the same registry.
 func (w *Workspace) DebugRegistry() *debugadapter.Registry {
 	w.mu.RLock()
 	registry := w.debugRegistry

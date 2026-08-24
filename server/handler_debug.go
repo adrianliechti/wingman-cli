@@ -15,7 +15,6 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 	"github.com/adrianliechti/wingman-agent/pkg/debugadapter"
-	"github.com/adrianliechti/wingman-agent/pkg/devtools"
 	"github.com/adrianliechti/wingman-agent/pkg/terminal"
 )
 
@@ -185,20 +184,9 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	browserExecutable := debugadapter.FindChromiumBrowser()
-	if browserExecutable == "" && s.workspace.DevTools != nil {
-		browserExecutable = s.workspace.DevTools.Resolve("chrome-for-testing")
-	}
-	if selected.Kind == "browser-script" && browserExecutable == "" {
-		browserExecutable, err = s.ensureManagedBrowser(r.Context())
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
-			return
-		}
-	}
 	profile, err := s.workspace.DebugRegistry().Plan(adapterInfo[0].Language, debugadapter.Request{
 		Action: request.Action, WorkspaceDir: s.workspace.RootPath, ProjectDir: projectDir,
-		BrowserExecutable: browserExecutable, Target: *selected,
+		Target: *selected,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
@@ -222,48 +210,6 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, plan)
-}
-
-func (s *Server) ensureManagedBrowser(ctx context.Context) (string, error) {
-	manager := s.workspace.DevTools
-	if manager == nil {
-		return "", errors.New("Chrome for Testing cannot be installed because managed tools are unavailable")
-	}
-	if executable := manager.Resolve("chrome-for-testing"); executable != "" {
-		return executable, nil
-	}
-	s.setManagedToolsStatus(managedToolsStatus{
-		State: "installing", Tool: "chrome-for-testing", Label: devtools.ToolLabel("chrome-for-testing"),
-		Phase: devtools.ProgressChecking, Current: 1, Total: 1,
-	})
-	_, err := manager.Update(ctx, []devtools.Requirement{{
-		Alternatives: []string{"chrome-for-testing"}, Workspace: s.workspace.RootPath, ManagedOnly: true,
-	}}, func(progress devtools.Progress) {
-		s.setManagedToolsStatus(managedToolsStatus{
-			State: "installing", Tool: progress.Tool, Label: progress.Label, Phase: progress.Phase,
-			Current: progress.Current, Total: progress.Total,
-		})
-	})
-	if err != nil {
-		if ctx.Err() != nil {
-			s.setManagedToolsStatus(managedToolsStatus{State: "ready"})
-			return "", ctx.Err()
-		}
-		s.setManagedToolsStatus(managedToolsStatus{
-			State: "error", Error: err.Error(), Unavailable: devtools.ToolLabels(devtools.UnavailableTools(err)),
-		})
-		return "", fmt.Errorf("no Chromium browser is available and Chrome for Testing could not be installed: %w. Install Chrome, Chromium, Edge, or Brave with your normal software distribution, or set CHROME_PATH", err)
-	}
-	executable := manager.Resolve("chrome-for-testing")
-	if executable == "" {
-		err := errors.New("the installation completed without a browser executable")
-		s.setManagedToolsStatus(managedToolsStatus{
-			State: "error", Error: err.Error(), Unavailable: []string{devtools.ToolLabel("chrome-for-testing")},
-		})
-		return "", fmt.Errorf("Chrome for Testing could not be installed: %w", err)
-	}
-	s.setManagedToolsStatus(managedToolsStatus{State: "ready"})
-	return executable, nil
 }
 
 func (s *Server) handleDebugStart(w http.ResponseWriter, r *http.Request) {

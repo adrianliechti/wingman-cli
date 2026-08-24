@@ -472,7 +472,7 @@ func nodePackageManager(projectDir, declared string) string {
 }
 
 // FindChromiumBrowser returns an explicitly configured or standard system
-// Chromium installation. Managed Chrome for Testing is resolved separately.
+// Chromium-family installation.
 func FindChromiumBrowser() string {
 	if explicit := strings.TrimSpace(os.Getenv("CHROME_PATH")); executableFilePath(explicit) {
 		return explicit

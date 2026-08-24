@@ -1,13 +1,8 @@
 package devtools
 
 import (
-	"archive/tar"
-	"archive/zip"
 	"bytes"
-	"compress/gzip"
 	"context"
-	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -177,7 +172,7 @@ func TestUpdateKeepsCurrentInstallationWhenInstallerFails(t *testing.T) {
 	}
 }
 
-func TestUpdateSkipsManagedInstallWhenEveryProjectHasAnExternalTool(t *testing.T) {
+func TestUpdateSkipsManagedInstallWhenEveryProjectHasAProjectTool(t *testing.T) {
 	root := t.TempDir()
 	workspace := t.TempDir()
 	projects := []string{filepath.Join(workspace, "one"), filepath.Join(workspace, "two")}
@@ -205,7 +200,7 @@ func TestUpdateSkipsManagedInstallWhenEveryProjectHasAnExternalTool(t *testing.T
 	}
 }
 
-func TestUpdateInstallsFallbackWhenOneProjectLacksExternalTool(t *testing.T) {
+func TestUpdateInstallsFallbackWhenOneProjectLacksProjectTool(t *testing.T) {
 	root := t.TempDir()
 	workspace := t.TempDir()
 	projects := []string{filepath.Join(workspace, "one"), filepath.Join(workspace, "two")}
@@ -239,7 +234,32 @@ func TestUpdateInstallsFallbackWhenOneProjectLacksExternalTool(t *testing.T) {
 	}
 }
 
-func TestUpdateRejectsExternalCommandBelowMinimumVersion(t *testing.T) {
+func TestUpdateCarriesAllProjectDirectoriesIntoSharedRecipe(t *testing.T) {
+	root := t.TempDir()
+	workspace := t.TempDir()
+	projects := []string{filepath.Join(workspace, "one"), filepath.Join(workspace, "two")}
+	for _, project := range projects {
+		if err := os.MkdirAll(project, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manager := newManager(root)
+	manager.look = func(string) (string, error) { return "", exec.ErrNotFound }
+	manager.install = func(_ context.Context, item recipe, stage string) (string, error) {
+		if !reflect.DeepEqual(item.WorkingDirs, projects) {
+			t.Fatalf("working directories = %v, want %v", item.WorkingDirs, projects)
+		}
+		return "", writeTestCommand(stage, "rust-analyzer")
+	}
+	changed, err := manager.Update(context.Background(), []Requirement{{
+		Alternatives: []string{"rust-analyzer"}, Workspace: workspace, Projects: projects,
+	}})
+	if err != nil || !changed {
+		t.Fatalf("Update = %v, %v", changed, err)
+	}
+}
+
+func TestUpdateRejectsProjectCommandBelowMinimumVersion(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test helper uses a POSIX script")
 	}
@@ -271,9 +291,45 @@ func TestUpdateRejectsExternalCommandBelowMinimumVersion(t *testing.T) {
 	}
 }
 
+func TestSystemFallbackMustRunForEveryProject(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper uses a POSIX script")
+	}
+	workspace := t.TempDir()
+	projects := []string{filepath.Join(workspace, "one"), filepath.Join(workspace, "two")}
+	for _, project := range projects {
+		if err := os.MkdirAll(project, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(projects[0], ".available"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	command := filepath.Join(t.TempDir(), "rust-analyzer")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\n[ -f .available ] || exit 1\nprintf 'rust-analyzer 1.0.0\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager := newManager(t.TempDir())
+	manager.look = func(string) (string, error) { return command, nil }
+	requirement := Requirement{
+		Alternatives: []string{"rust-analyzer"}, Workspace: workspace, Projects: projects,
+		MinimumMajorVersions: map[string]int{"rust-analyzer": tooling.ProbeExecutes},
+	}
+	if manager.requirementAvailable(context.Background(), requirement, tooling.SourceSystem) {
+		t.Fatal("system fallback was accepted despite failing in one project")
+	}
+	if err := os.WriteFile(filepath.Join(projects[1], ".available"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !manager.requirementAvailable(context.Background(), requirement, tooling.SourceSystem) {
+		t.Fatal("system fallback was rejected after succeeding in every project")
+	}
+}
+
 func TestUpdateBacksOffFailedMissingInstall(t *testing.T) {
 	root := t.TempDir()
 	manager := newManager(root)
+	manager.look = func(string) (string, error) { return "", exec.ErrNotFound }
 	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
 	manager.now = func() time.Time { return now }
 	attempts := 0
@@ -361,7 +417,7 @@ func TestNPMInstallUsesDetectedProjectForRegistryConfiguration(t *testing.T) {
 	manager := newManager(t.TempDir())
 	project := t.TempDir()
 	item := manager.byCommand["typescript-language-server"]
-	item.WorkingDir = project
+	item.WorkingDirs = []string{project}
 	manager.look = func(command string) (string, error) {
 		if command != "npm" {
 			t.Fatalf("look command = %q", command)
@@ -591,11 +647,16 @@ func TestUpdateLockRecoversLegacyStaleDirectory(t *testing.T) {
 	}
 }
 
-func TestCleanMachineCatalogIncludesRustDotnetJavaAndKotlin(t *testing.T) {
+func TestCatalogContainsCuratedManagedTools(t *testing.T) {
 	manager := newManager(t.TempDir())
-	for _, command := range []string{"rust-analyzer", "codelldb", "csharp-ls", "netcoredbg", "jdtls", "kotlin-lsp", "js-debug-adapter", "chrome-for-testing"} {
+	for _, command := range []string{"gopls", "dlv", "rust-analyzer", "csharp-ls", "jdtls", "java-debug-adapter", "typescript-language-server", "basedpyright", "debugpy-adapter", "js-debug-adapter", "codelldb", "netcoredbg"} {
 		if !manager.CanManage(command) {
 			t.Errorf("CanManage(%q) = false", command)
+		}
+	}
+	for _, command := range []string{"kotlin-lsp", "intelephense", "phpactor", "chrome-for-testing"} {
+		if manager.CanManage(command) {
+			t.Errorf("CanManage(%q) = true for externally supplied tool", command)
 		}
 	}
 }
@@ -623,414 +684,286 @@ func TestCatalogHasUserFacingLabelsAndUniqueCommands(t *testing.T) {
 	}
 }
 
-func TestJavaScriptAdapterUsesVerifiedStandaloneRelease(t *testing.T) {
-	archive := testTarGzip(t, map[string]string{
-		"js-debug/src/dapDebugServer.js": "console.log('adapter')\n",
-		"js-debug/LICENSE":               "MIT\n",
-	})
-	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(archive))
-	metadata := fmt.Sprintf(`{"assets":[{"name":"js-debug-dap-v1.2.3.tar.gz","browser_download_url":"https://github.com/microsoft/vscode-js-debug/releases/download/v1.2.3/js-debug-dap-v1.2.3.tar.gz","digest":%q}]}`, digest)
-
-	manager := newManager(t.TempDir())
-	manager.fetch = func(_ context.Context, address string) ([]byte, error) {
-		if address == javascriptReleaseURL {
-			return []byte(metadata), nil
-		}
-		return archive, nil
-	}
-	stage := t.TempDir()
-	if _, err := manager.installRecipe(context.Background(), manager.byCommand["js-debug-adapter"], stage); err != nil {
-		t.Fatal(err)
-	}
-	if got := resolveInstalledCommand(stage, "js-debug-adapter"); got == "" {
-		t.Fatal("standalone JavaScript adapter launcher was not installed")
-	}
-	if _, err := os.Stat(filepath.Join(stage, "js-debug", "src", "dapDebugServer.js")); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestJavaScriptAdapterRejectsArchiveTraversal(t *testing.T) {
-	archive := testTarGzip(t, map[string]string{"../escape": "bad"})
-	if err := extractTarGzip(archive, t.TempDir()); err == nil {
-		t.Fatal("archive traversal was accepted")
-	}
-}
-
-func TestChromeForTestingUsesPreferredPlatformArchive(t *testing.T) {
-	platform, err := chromeForTestingPlatform(runtime.GOOS, runtime.GOARCH)
-	if err != nil {
-		t.Skip(err)
-	}
-	relativeExecutable, err := chromeForTestingExecutable("", runtime.GOOS, runtime.GOARCH)
-	if err != nil {
-		t.Fatal(err)
-	}
-	relativeExecutable = strings.TrimPrefix(filepath.Clean(relativeExecutable), string(filepath.Separator))
-	archive := testZip(t, map[string]testZipEntry{
-		filepath.ToSlash(relativeExecutable): {contents: "browser", mode: 0o755},
-	})
-	downloadURL := "https://storage.example.test/chrome.zip"
-	metadata := fmt.Sprintf(`{"channels":{"Stable":{"version":"123.0.0.1","downloads":{"chrome":[{"platform":%q,"url":%q}]}}}}`, platform, downloadURL)
-
-	manager := newManager(t.TempDir())
-	manager.fetch = func(_ context.Context, address string) ([]byte, error) {
-		switch address {
-		case chromeForTestingReleaseURL:
-			return []byte(metadata), nil
-		case downloadURL:
-			return archive, nil
-		default:
-			return nil, fmt.Errorf("unexpected URL %s", address)
-		}
-	}
-	stage := t.TempDir()
-	if _, err := manager.installRecipe(context.Background(), manager.byCommand["chrome-for-testing"], stage); err != nil {
-		t.Fatal(err)
-	}
-	if got := resolveInstalledCommand(stage, "chrome-for-testing"); got == "" {
-		t.Fatal("Chrome for Testing launcher was not installed")
-	}
-	if executable, err := chromeForTestingExecutable(stage, runtime.GOOS, runtime.GOARCH); err != nil || !tooling.Executable(executable) {
-		t.Fatalf("Chrome executable = %q, %v", executable, err)
-	}
-}
-
-func TestChromeForTestingFallsBackWhenStableLacksPlatform(t *testing.T) {
-	metadata := `{"channels":{
-		"Stable":{"version":"152","downloads":{"chrome":[{"platform":"linux64","url":"https://example.test/stable"}]}},
-		"Beta":{"version":"153","downloads":{"chrome":[{"platform":"linux-arm64","url":"https://example.test/beta"}]}}
-	}}`
-	var release chromeForTestingRelease
-	if err := json.Unmarshal([]byte(metadata), &release); err != nil {
-		t.Fatal(err)
-	}
-	version, address := chromeForTestingDownload(release, "linux-arm64")
-	if version != "153" || address != "https://example.test/beta" {
-		t.Fatalf("download = %q, %q", version, address)
-	}
-}
-
-func TestZipExtractorAllowsSafeRelativeSymlink(t *testing.T) {
+func TestProjectVirtualEnvironmentSuppressesManagedPythonInstall(t *testing.T) {
+	workspace := t.TempDir()
+	command := filepath.Join(workspace, ".venv", "bin", "debugpy-adapter")
 	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation may require Windows developer mode")
+		command = filepath.Join(workspace, ".venv", "Scripts", "debugpy-adapter.exe")
 	}
-	archive := testZip(t, map[string]testZipEntry{
-		"app/Versions/1/app":   {contents: "browser", mode: 0o755},
-		"app/Versions/Current": {contents: "1", mode: os.ModeSymlink | 0o777},
-	})
-	root := t.TempDir()
-	if err := extractZip(archive, root); err != nil {
+	if err := os.MkdirAll(filepath.Dir(command), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	target, err := os.Readlink(filepath.Join(root, "app", "Versions", "Current"))
-	if err != nil || target != "1" {
-		t.Fatalf("symlink = %q, %v", target, err)
+	if err := os.WriteFile(command, []byte("project adapter"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestCodeLLDBUsesVerifiedPlatformRelease(t *testing.T) {
-	adapterName := "codelldb"
-	if runtime.GOOS == "windows" {
-		adapterName += ".exe"
-	}
-	archive := testZip(t, map[string]testZipEntry{
-		"extension/adapter/" + adapterName: {contents: "adapter", mode: 0o755},
-		"extension/lldb/runtime":           {contents: "lldb", mode: 0o644},
-	})
-	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(archive))
-	assetName, err := codeLLDBAssetName(runtime.GOOS, runtime.GOARCH)
-	if err != nil {
-		t.Skip(err)
-	}
-	metadata := fmt.Sprintf(`{"assets":[{"name":%q,"browser_download_url":"https://example.test/codelldb.vsix","digest":%q}]}`, assetName, digest)
 
 	manager := newManager(t.TempDir())
-	manager.fetch = func(_ context.Context, address string) ([]byte, error) {
-		if address == codeLLDBReleaseURL {
-			return []byte(metadata), nil
-		}
-		return archive, nil
-	}
-	stage := t.TempDir()
-	if _, err := manager.installRecipe(context.Background(), manager.byCommand["codelldb"], stage); err != nil {
-		t.Fatal(err)
-	}
-	if got := resolveInstalledCommand(stage, "codelldb"); got == "" {
-		t.Fatal("CodeLLDB launcher was not installed")
-	}
-	if _, err := os.Stat(filepath.Join(stage, "extension", "lldb", "runtime")); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestNetCoreDbgUsesVerifiedPlatformRelease(t *testing.T) {
-	adapterName := "netcoredbg"
-	if runtime.GOOS == "windows" {
-		adapterName += ".exe"
-	}
-	archive := testZip(t, map[string]testZipEntry{
-		"netcoredbg/" + adapterName: {contents: "adapter", mode: 0o755},
-		"netcoredbg/runtime.dll":    {contents: "runtime", mode: 0o644},
-	})
-	assetName, err := netCoreDbgAssetName(runtime.GOOS, runtime.GOARCH)
-	if err != nil {
-		t.Skip(err)
-	}
-	if strings.HasSuffix(assetName, ".tar.gz") {
-		archive = testTarGzip(t, map[string]string{
-			"netcoredbg/" + adapterName: "adapter",
-			"netcoredbg/runtime.dll":    "runtime",
-		})
-	}
-	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(archive))
-	metadata := fmt.Sprintf(`{"assets":[{"name":%q,"browser_download_url":"https://example.test/netcoredbg","digest":%q}]}`, assetName, digest)
-
-	manager := newManager(t.TempDir())
-	manager.fetch = func(_ context.Context, address string) ([]byte, error) {
-		if address == netCoreDbgReleaseURL {
-			return []byte(metadata), nil
-		}
-		return archive, nil
-	}
-	stage := t.TempDir()
-	if _, err := manager.installRecipe(context.Background(), manager.byCommand["netcoredbg"], stage); err != nil {
-		t.Fatal(err)
-	}
-	if got := resolveInstalledCommand(stage, "netcoredbg"); got == "" {
-		t.Fatal("NetCoreDbg launcher was not installed")
-	}
-}
-
-func TestJavaInstallsLatestVerifiedJDTLSAndDebugBundle(t *testing.T) {
-	jdtlsArchive := testTarGzip(t, map[string]string{
-		"bin/jdtls":                "#!/bin/sh\n",
-		"plugins/jdtls-plugin.jar": "jdtls",
-	})
-	javaDebugArchive := testZip(t, map[string]testZipEntry{
-		"extension/server/com.microsoft.java.debug.plugin-0.53.2.jar": {contents: "java-debug", mode: 0o644},
-	})
-	jdtlsFilename := "jdt-language-server-1.60.0-build.tar.gz"
-	jdtlsBase := jdtlsMilestonesURL + "1.60.0/"
-	javaDebugURL := "https://example.test/java-debug.vsix"
-	javaDebugSHAURL := "https://example.test/java-debug.sha256"
-	javaMetadata := fmt.Sprintf(`{"verified":true,"files":{"download":%q,"sha256":%q}}`, javaDebugURL, javaDebugSHAURL)
-
-	manager := newManager(t.TempDir())
-	manager.fetch = func(_ context.Context, address string) ([]byte, error) {
-		switch address {
-		case jdtlsMilestonesURL:
-			return []byte(`<a href='/jdtls/milestones/1.9.0'>old</a><a href='/jdtls/milestones/1.60.0'>latest</a>`), nil
-		case jdtlsBase + "latest.txt":
-			return []byte(jdtlsFilename), nil
-		case jdtlsBase + jdtlsFilename:
-			return jdtlsArchive, nil
-		case jdtlsBase + jdtlsFilename + ".sha256":
-			return []byte(fmt.Sprintf("%x", sha256.Sum256(jdtlsArchive))), nil
-		case javaDebugLatestURL:
-			return []byte(javaMetadata), nil
-		case javaDebugURL:
-			return javaDebugArchive, nil
-		case javaDebugSHAURL:
-			return []byte(fmt.Sprintf("%x", sha256.Sum256(javaDebugArchive))), nil
-		default:
-			return nil, fmt.Errorf("unexpected URL %s", address)
-		}
-	}
-	stage := t.TempDir()
-	if _, err := manager.installRecipe(context.Background(), manager.byCommand["jdtls"], stage); err != nil {
-		t.Fatal(err)
-	}
-	if got := resolveInstalledCommand(stage, "jdtls"); got == "" {
-		t.Fatal("JDT LS launcher was not installed")
-	}
-	if bundles := javaDebugBundlesAt(stage); len(bundles) != 1 {
-		t.Fatalf("java-debug bundles = %#v", bundles)
-	}
-}
-
-func TestKotlinLSPInstallsOfficialPlatformPackage(t *testing.T) {
-	serverName := "intellij-server"
-	if runtime.GOOS == "windows" {
-		serverName += ".exe"
-	}
-	root := "kotlin-server-1/"
-	files := map[string]string{
-		root + "bin/" + serverName: "server",
-		root + "lib/runtime.jar":   "runtime",
-	}
-	suffixes := map[string]string{
-		"darwin/amd64": ".sit", "darwin/arm64": "-aarch64.sit",
-		"linux/amd64": ".tar.gz", "linux/arm64": "-aarch64.tar.gz",
-		"windows/amd64": ".win.zip", "windows/arm64": "-aarch64.win.zip",
-	}
-	suffix := suffixes[runtime.GOOS+"/"+runtime.GOARCH]
-	if suffix == "" {
-		t.Skip("Kotlin LSP has no package for this test platform")
-	}
-	var archive []byte
-	if runtime.GOOS == "linux" {
-		archive = testTarGzip(t, files)
-	} else {
-		entries := make(map[string]testZipEntry, len(files))
-		for name, contents := range files {
-			entries[name] = testZipEntry{contents: contents, mode: 0o644}
-		}
-		archive = testZip(t, entries)
-	}
-	downloadURL := "https://download-cdn.jetbrains.com/language-server/kotlin-server/1/kotlin-server-1" + suffix
-	metadata := fmt.Sprintf(`{"tag_name":"kotlin-lsp/v1","body":"[Download](%s)"}`, downloadURL)
-
-	manager := newManager(t.TempDir())
-	manager.fetch = func(_ context.Context, address string) ([]byte, error) {
-		switch address {
-		case kotlinLSPReleaseURL:
-			return []byte(metadata), nil
-		case downloadURL:
-			return archive, nil
-		case downloadURL + ".sha256":
-			return []byte(fmt.Sprintf("%x", sha256.Sum256(archive))), nil
-		default:
-			return nil, fmt.Errorf("unexpected URL %s", address)
-		}
-	}
-	stage := t.TempDir()
-	version, err := manager.installRecipe(context.Background(), manager.byCommand["kotlin-lsp"], stage)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if version != downloadURL || resolveInstalledCommand(stage, "kotlin-lsp") == "" || !tooling.Executable(kotlinLSPServerPath(stage)) || !kotlinLSPLauncherReady(stage) {
-		t.Fatalf("Kotlin LSP installation is incomplete: version=%q launcher=%q server=%q", version, resolveInstalledCommand(stage, "kotlin-lsp"), kotlinLSPServerPath(stage))
-	}
-	launcher, err := os.ReadFile(resolveInstalledCommand(stage, "kotlin-lsp"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(launcher, []byte("JAVA_HOME")) || !bytes.Contains(launcher, []byte("jbr")) {
-		t.Fatalf("Kotlin LSP launcher does not expose the bundled JBR to the Gradle importer:\n%s", launcher)
-	}
-}
-
-func TestKotlinLSPRejectsLegacyLauncherForManagedMigration(t *testing.T) {
-	manager := newManager(t.TempDir())
-	root := filepath.Join(manager.root, "kotlin-lsp")
-	server := kotlinLSPServerPath(root)
-	if err := os.MkdirAll(filepath.Dir(server), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(server, []byte("server"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	bin := filepath.Join(root, "bin")
-	if err := os.MkdirAll(bin, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	launcherName := "kotlin-lsp"
-	if runtime.GOOS == "windows" {
-		launcherName += ".cmd"
-	}
-	launcher := filepath.Join(bin, launcherName)
-	if err := os.WriteFile(launcher, []byte("legacy launcher"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	item := recipe{ID: "kotlin-lsp", Kind: installerKotlinLSP, Commands: []string{"kotlin-lsp"}}
-	if installationReady(item, root) {
-		t.Fatal("legacy Kotlin launcher must be reinstalled")
-	}
-	if resolved := manager.Resolve("kotlin-lsp"); resolved != "" {
-		t.Fatalf("legacy Kotlin launcher resolved as %q before migration", resolved)
-	}
-	if err := writeKotlinLSPLauncher(root); err != nil {
-		t.Fatal(err)
-	}
-	if !installationReady(item, root) {
-		t.Fatal("current Kotlin launcher should be ready")
-	}
-	if resolved := manager.Resolve("kotlin-lsp"); resolved == "" {
-		t.Fatal("current Kotlin launcher was not resolved")
-	}
-}
-
-func TestKotlinLSPSelectsStandaloneArchiveForPlatform(t *testing.T) {
-	base := "https://download-cdn.jetbrains.com/language-server/kotlin-server/262.9593.0/kotlin-server-262.9593.0"
-	release := kotlinLSPRelease{
-		TagName: "kotlin-lsp/v262.9593.0",
-		Body: strings.Join([]string{
-			base + ".sit", base + "-aarch64.sit",
-			base + ".tar.gz", base + "-aarch64.tar.gz",
-			base + ".win.zip", base + "-aarch64.win.zip",
-		}, "\n"),
-	}
-	tests := []struct {
-		goos, goarch, suffix string
-	}{
-		{"darwin", "amd64", ".sit"},
-		{"darwin", "arm64", "-aarch64.sit"},
-		{"linux", "amd64", ".tar.gz"},
-		{"linux", "arm64", "-aarch64.tar.gz"},
-		{"windows", "amd64", ".win.zip"},
-		{"windows", "arm64", "-aarch64.win.zip"},
-	}
-	for _, test := range tests {
-		t.Run(test.goos+"-"+test.goarch, func(t *testing.T) {
-			got, err := kotlinLSPDownload(release, test.goos, test.goarch)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got != base+test.suffix {
-				t.Fatalf("download = %q, want %q", got, base+test.suffix)
-			}
-		})
-	}
-}
-
-func TestZipExtractorRejectsArchiveTraversal(t *testing.T) {
-	archive := testZip(t, map[string]testZipEntry{"../escape": {contents: "bad", mode: 0o644}})
-	if err := extractZip(archive, t.TempDir()); err == nil {
-		t.Fatal("archive traversal was accepted")
-	}
-}
-
-func TestRustAnalyzerUsesVerifiedOfficialRelease(t *testing.T) {
-	manager := newManager(t.TempDir())
-	item := manager.byCommand["rust-analyzer"]
 	manager.look = func(string) (string, error) { return "", exec.ErrNotFound }
-	assetName, err := rustAnalyzerAssetName(runtime.GOOS, runtime.GOARCH)
-	if err != nil {
-		t.Skip(err)
+	manager.install = func(context.Context, recipe, string) (string, error) {
+		t.Fatal("managed installer ran despite project .venv adapter")
+		return "", nil
 	}
-	var archive bytes.Buffer
-	if runtime.GOOS == "windows" {
-		archive.Write(testZip(t, map[string]testZipEntry{
-			"rust-analyzer.exe": {contents: "server", mode: 0o755},
-		}))
-	} else {
-		writer := gzip.NewWriter(&archive)
-		if _, err := writer.Write([]byte("server")); err != nil {
-			t.Fatal(err)
-		}
-		if err := writer.Close(); err != nil {
-			t.Fatal(err)
-		}
+	changed, err := manager.Update(context.Background(), []Requirement{{
+		Alternatives: []string{"debugpy-adapter"}, Workspace: workspace, Projects: []string{workspace},
+	}})
+	if err != nil || changed {
+		t.Fatalf("Update = %v, %v", changed, err)
 	}
-	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(archive.Bytes()))
-	metadata := fmt.Sprintf(`{"assets":[{"name":%q,"browser_download_url":"https://example.test/rust-analyzer","digest":%q}]}`, assetName, digest)
-	manager.fetch = func(_ context.Context, address string) ([]byte, error) {
-		if address == rustAnalyzerReleaseURL {
-			return []byte(metadata), nil
-		}
-		return archive.Bytes(), nil
+	if contents, err := os.ReadFile(command); err != nil || string(contents) != "project adapter" {
+		t.Fatalf("project .venv command changed: %q, %v", contents, err)
 	}
+}
+
+func TestSystemToolDoesNotSuppressManagedPackage(t *testing.T) {
+	workspace := t.TempDir()
+	manager := newManager(t.TempDir())
+	manager.look = func(command string) (string, error) {
+		return filepath.Join(string(filepath.Separator), "system", command), nil
+	}
+	manager.install = func(_ context.Context, item recipe, stage string) (string, error) {
+		for _, command := range item.Commands {
+			if err := writeTestCommand(stage, command); err != nil {
+				return "", err
+			}
+		}
+		return "", nil
+	}
+	changed, err := manager.Update(context.Background(), []Requirement{{
+		Alternatives: []string{"gopls"}, Workspace: workspace, Projects: []string{workspace},
+	}})
+	if err != nil || !changed {
+		t.Fatalf("Update = %v, %v", changed, err)
+	}
+}
+
+func TestSystemFallbackPreventsUnavailableInstallError(t *testing.T) {
+	workspace := t.TempDir()
+	manager := newManager(t.TempDir())
+	manager.look = func(command string) (string, error) {
+		return filepath.Join(string(filepath.Separator), "system", command), nil
+	}
+	manager.install = func(context.Context, recipe, string) (string, error) {
+		return "", errors.New("package registry is blocked")
+	}
+	changed, err := manager.Update(context.Background(), []Requirement{{
+		Alternatives: []string{"gopls"}, Workspace: workspace, Projects: []string{workspace},
+	}})
+	if changed || err == nil {
+		t.Fatalf("Update = %v, %v", changed, err)
+	}
+	if IsUnavailable(err) {
+		t.Fatalf("usable system fallback was marked unavailable: %v", err)
+	}
+}
+
+func TestRustAnalyzerUsesEveryProjectToolchain(t *testing.T) {
+	firstProject := t.TempDir()
+	secondProject := t.TempDir()
+	manager := newManager(t.TempDir())
+	manager.look = func(command string) (string, error) {
+		if command != "rustup" {
+			t.Fatalf("look command = %q", command)
+		}
+		return "/toolchain/rustup", nil
+	}
+	var calls []string
+	manager.run = func(_ context.Context, command string, args []string, dir string, _ []string) ([]byte, error) {
+		calls = append(calls, dir+" "+command+" "+strings.Join(args, " "))
+		if reflect.DeepEqual(args, []string{"show", "active-toolchain"}) {
+			if dir == firstProject {
+				return []byte("nightly-aarch64-apple-darwin (overridden by rust-toolchain.toml)\n"), nil
+			}
+			if dir == secondProject {
+				return []byte("stable-aarch64-apple-darwin (overridden by rust-toolchain.toml)\n"), nil
+			}
+		}
+		if reflect.DeepEqual(args, []string{"run", "nightly-aarch64-apple-darwin", "rust-analyzer", "--version"}) {
+			return []byte("rust-analyzer 1.2.3\n"), nil
+		}
+		if reflect.DeepEqual(args, []string{"run", "stable-aarch64-apple-darwin", "rust-analyzer", "--version"}) {
+			return []byte("rust-analyzer 1.2.4\n"), nil
+		}
+		return nil, nil
+	}
+	item := manager.byCommand["rust-analyzer"]
+	item.WorkingDirs = []string{firstProject, secondProject}
 	stage := t.TempDir()
 	version, err := manager.installRecipe(context.Background(), item, stage)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != "https://example.test/rust-analyzer" {
-		t.Fatalf("version marker = %q", version)
+	wantVersion := "/toolchain/rustup|nightly-aarch64-apple-darwin=rust-analyzer 1.2.3|stable-aarch64-apple-darwin=rust-analyzer 1.2.4"
+	if version != wantVersion {
+		t.Fatalf("version = %q", version)
 	}
-	if got := resolveInstalledCommand(stage, "rust-analyzer"); got == "" {
-		t.Fatal("rust-analyzer was not installed")
+	want := []string{
+		firstProject + " /toolchain/rustup show active-toolchain",
+		secondProject + " /toolchain/rustup show active-toolchain",
+		firstProject + " /toolchain/rustup component add --toolchain nightly-aarch64-apple-darwin rust-analyzer",
+		firstProject + " /toolchain/rustup run nightly-aarch64-apple-darwin rust-analyzer --version",
+		secondProject + " /toolchain/rustup component add --toolchain stable-aarch64-apple-darwin rust-analyzer",
+		secondProject + " /toolchain/rustup run stable-aarch64-apple-darwin rust-analyzer --version",
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls = %v, want %v", calls, want)
+	}
+	if resolveInstalledCommand(stage, "rust-analyzer") == "" {
+		t.Fatal("rustup proxy launcher was not installed")
+	}
+}
+
+func TestActiveRustToolchainIgnoresRustupSetupNoise(t *testing.T) {
+	output := []byte("info: syncing channel updates for 'stable-aarch64-apple-darwin'\n" +
+		"info: default toolchain set to 'stable-aarch64-apple-darwin'\n" +
+		"stable-aarch64-apple-darwin (default)\n")
+	if got := activeRustToolchain(output); got != "stable-aarch64-apple-darwin" {
+		t.Fatalf("active toolchain = %q", got)
+	}
+	if got := activeRustToolchain([]byte("info: no active toolchain\n")); got != "" {
+		t.Fatalf("informational output produced toolchain %q", got)
+	}
+}
+
+func TestJDTLSUsesMavenProductArtifactAndProjectWrapper(t *testing.T) {
+	const resolvedVersion = "1.61.0.202608210947"
+	firstProject := t.TempDir()
+	wrapperProject := t.TempDir()
+	wrapperName := "mvnw"
+	if runtime.GOOS == "windows" {
+		wrapperName = "mvnw.cmd"
+	}
+	wrapper := filepath.Join(wrapperProject, wrapperName)
+	if err := os.WriteFile(wrapper, []byte("wrapper"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := newManager(t.TempDir())
+	manager.look = func(command string) (string, error) {
+		t.Fatalf("looked for %q despite project Maven wrapper", command)
+		return "", exec.ErrNotFound
+	}
+	item := manager.byCommand["jdtls"]
+	item.WorkingDirs = []string{firstProject, wrapperProject}
+	stage := t.TempDir()
+	var gotCommand, gotDir string
+	var gotArgs []string
+	var gotPOM []byte
+	manager.run = func(_ context.Context, command string, args []string, dir string, _ []string) ([]byte, error) {
+		gotCommand, gotDir = command, dir
+		gotArgs = append([]string(nil), args...)
+		if len(args) >= 2 && args[0] == "--file" {
+			gotPOM, _ = os.ReadFile(args[1])
+		}
+		return nil, writeTestJDTLS(stage, resolvedVersion)
+	}
+	version, err := manager.installRecipe(context.Background(), item, stage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != resolvedVersion || gotCommand != wrapper || gotDir != wrapperProject {
+		t.Fatalf("install = version %q, command %q, dir %q", version, gotCommand, gotDir)
+	}
+	joined := strings.Join(gotArgs, "\n")
+	for _, value := range []string{
+		"--update-snapshots",
+		"maven-dependency-plugin:" + mavenDependencyPluginVersion + ":unpack-dependencies",
+		"-DincludeGroupIds=org.eclipse.jdt.ls",
+		"-DincludeArtifactIds=org.eclipse.jdt.ls.product",
+		"-DoutputDirectory=" + stage,
+		"-DmarkersDirectory=" + filepath.Join(stage, ".maven-markers"),
+	} {
+		if !strings.Contains(joined, value) {
+			t.Errorf("Maven arguments do not contain %q: %v", value, gotArgs)
+		}
+	}
+	pomPath := filepath.Join(stage, ".wingman-jdtls-pom.xml")
+	if len(gotArgs) < 2 || gotArgs[0] != "--file" || gotArgs[1] != pomPath {
+		t.Fatalf("Maven project arguments = %v", gotArgs[:min(2, len(gotArgs))])
+	}
+	for _, value := range []string{jdtlsMavenRepository, "<version>" + mavenLatestVersion + "</version>", "<type>tar.gz</type>"} {
+		if !bytes.Contains(gotPOM, []byte(value)) {
+			t.Errorf("generated Maven project does not contain %q:\n%s", value, gotPOM)
+		}
+	}
+}
+
+func TestJDTLSKeepsInstallationWhenLatestReleaseIsUnchanged(t *testing.T) {
+	const resolvedVersion = "1.61.0.202608210947"
+	root := t.TempDir()
+	manager := newManager(root)
+	item := manager.byCommand["jdtls"]
+	installed := filepath.Join(root, item.ID)
+	if err := writeTestJDTLS(installed, resolvedVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.writeStatus(installed, resolvedVersion); err != nil {
+		t.Fatal(err)
+	}
+	manager.look = func(command string) (string, error) {
+		if command != "mvn" {
+			t.Fatalf("look command = %q", command)
+		}
+		return "/toolchain/mvn", nil
+	}
+	stage := t.TempDir()
+	manager.run = func(_ context.Context, _ string, _ []string, _ string, _ []string) ([]byte, error) {
+		return nil, writeTestJDTLS(stage, resolvedVersion)
+	}
+	if _, err := manager.installRecipe(context.Background(), item, stage); !errors.Is(err, errUpToDate) {
+		t.Fatalf("install error = %v, want errUpToDate", err)
+	}
+}
+
+func TestJavaDebuggerUsesLatestMavenPluginAndProjectWrapper(t *testing.T) {
+	const resolvedVersion = "0.53.1"
+	project := t.TempDir()
+	wrapperName := "mvnw"
+	if runtime.GOOS == "windows" {
+		wrapperName = "mvnw.cmd"
+	}
+	wrapper := filepath.Join(project, wrapperName)
+	if err := os.WriteFile(wrapper, []byte("wrapper"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := newManager(t.TempDir())
+	manager.look = func(command string) (string, error) {
+		t.Fatalf("looked for %q despite project Maven wrapper", command)
+		return "", exec.ErrNotFound
+	}
+	item := manager.byCommand["java-debug-adapter"]
+	item.WorkingDirs = []string{project}
+	stage := t.TempDir()
+	var gotCommand, gotDir string
+	var gotArgs []string
+	manager.run = func(_ context.Context, command string, args []string, dir string, _ []string) ([]byte, error) {
+		gotCommand, gotDir = command, dir
+		gotArgs = append([]string(nil), args...)
+		return nil, writeTestJavaDebugBundle(stage, resolvedVersion)
+	}
+	version, err := manager.installRecipe(context.Background(), item, stage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != resolvedVersion || gotCommand != wrapper || gotDir != project {
+		t.Fatalf("install = version %q, command %q, dir %q", version, gotCommand, gotDir)
+	}
+	joined := strings.Join(gotArgs, "\n")
+	for _, value := range []string{
+		"--update-snapshots",
+		"maven-dependency-plugin:" + mavenDependencyPluginVersion + ":copy",
+		"-Dartifact=com.microsoft.java:com.microsoft.java.debug.plugin:" + mavenLatestVersion,
+		"-DoutputDirectory=" + filepath.Join(stage, "java-debug"),
+	} {
+		if !strings.Contains(joined, value) {
+			t.Errorf("Maven arguments do not contain %q: %v", value, gotArgs)
+		}
+	}
+	if resolveInstalledCommand(stage, "java-debug-adapter") == "" {
+		t.Fatal("Java debug availability marker was not installed")
+	}
+	if bundles := javaDebugBundlesAt(stage); len(bundles) != 1 {
+		t.Fatalf("Java debug bundles = %v", bundles)
 	}
 }
 
@@ -1084,119 +1017,23 @@ func writeTestCommand(root, command string) error {
 	return os.WriteFile(filepath.Join(directory, name), []byte("test"), 0o755)
 }
 
-func testTarGzip(t *testing.T, files map[string]string) []byte {
-	t.Helper()
-	var data bytes.Buffer
-	gzipWriter := gzip.NewWriter(&data)
-	tarWriter := tar.NewWriter(gzipWriter)
-	for name, contents := range files {
-		mode := int64(0o644)
-		if strings.HasPrefix(name, "bin/") || strings.HasSuffix(name, "/netcoredbg") || strings.HasSuffix(name, "/netcoredbg.exe") {
-			mode = 0o755
-		}
-		if err := tarWriter.WriteHeader(&tar.Header{Name: name, Mode: mode, Size: int64(len(contents))}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tarWriter.Write([]byte(contents)); err != nil {
-			t.Fatal(err)
-		}
+func writeTestJDTLS(root, version string) error {
+	if err := writeTestCommand(root, "jdtls"); err != nil {
+		return err
 	}
-	if err := tarWriter.Close(); err != nil {
-		t.Fatal(err)
+	plugins := filepath.Join(root, "plugins")
+	if err := os.MkdirAll(plugins, 0o755); err != nil {
+		return err
 	}
-	if err := gzipWriter.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return data.Bytes()
+	return os.WriteFile(filepath.Join(plugins, jdtlsCoreBundlePrefix+version+".jar"), []byte("test"), 0o644)
 }
 
-type testZipEntry struct {
-	contents string
-	mode     os.FileMode
-}
-
-func testZip(t *testing.T, files map[string]testZipEntry) []byte {
-	t.Helper()
-	var data bytes.Buffer
-	writer := zip.NewWriter(&data)
-	for name, entry := range files {
-		header := &zip.FileHeader{Name: name, Method: zip.Deflate}
-		header.SetMode(entry.mode)
-		file, err := writer.CreateHeader(header)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := file.Write([]byte(entry.contents)); err != nil {
-			t.Fatal(err)
-		}
+func writeTestJavaDebugBundle(root, version string) error {
+	directory := filepath.Join(root, "java-debug")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return err
 	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return data.Bytes()
-}
-
-func TestUpdateSkipsUnchangedGitHubRelease(t *testing.T) {
-	archive := testTarGzip(t, map[string]string{
-		"js-debug/src/dapDebugServer.js": "console.log('adapter')\n",
-	})
-	assetURL := "https://github.example.test/js-debug-dap-v1.2.3.tar.gz"
-	metadata := fmt.Sprintf(`{"assets":[{"name":"js-debug-dap-v1.2.3.tar.gz","browser_download_url":%q}]}`, assetURL)
-
-	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	downloads := 0
-	manager := newManager(t.TempDir())
-	manager.install = manager.installRecipe
-	manager.now = func() time.Time { return now }
-	manager.look = func(string) (string, error) { return filepath.Join(t.TempDir(), "node"), nil }
-	manager.fetch = func(_ context.Context, address string) ([]byte, error) {
-		switch address {
-		case javascriptReleaseURL:
-			return []byte(metadata), nil
-		case assetURL:
-			downloads++
-			return archive, nil
-		default:
-			return nil, fmt.Errorf("unexpected URL %s", address)
-		}
-	}
-
-	requirements := []Requirement{{Alternatives: []string{"js-debug-adapter"}}}
-	if changed, err := manager.Update(context.Background(), requirements); err != nil || !changed {
-		t.Fatalf("first update = %v, %v", changed, err)
-	}
-	if downloads != 1 {
-		t.Fatalf("downloads after install = %d", downloads)
-	}
-
-	now = now.Add(25 * time.Hour)
-	if changed, err := manager.Update(context.Background(), requirements); err != nil || changed {
-		t.Fatalf("stale update = %v, %v", changed, err)
-	}
-	if downloads != 1 {
-		t.Fatalf("unchanged release was re-downloaded (%d downloads)", downloads)
-	}
-	if !manager.fresh(manager.byCommand["js-debug-adapter"]) {
-		t.Fatal("skipped update did not refresh the status stamp")
-	}
-
-	assetURL2 := "https://github.example.test/js-debug-dap-v1.2.4.tar.gz"
-	metadata = fmt.Sprintf(`{"assets":[{"name":"js-debug-dap-v1.2.4.tar.gz","browser_download_url":%q}]}`, assetURL2)
-	previous := manager.fetch
-	manager.fetch = func(ctx context.Context, address string) ([]byte, error) {
-		if address == assetURL2 {
-			downloads++
-			return archive, nil
-		}
-		return previous(ctx, address)
-	}
-	now = now.Add(25 * time.Hour)
-	if changed, err := manager.Update(context.Background(), requirements); err != nil || !changed {
-		t.Fatalf("new release update = %v, %v", changed, err)
-	}
-	if downloads != 2 {
-		t.Fatalf("new release was not downloaded (%d downloads)", downloads)
-	}
+	return os.WriteFile(filepath.Join(directory, javaDebugBundlePrefix+version+".jar"), []byte("test"), 0o644)
 }
 
 func TestUpdateDisabledByEnvironment(t *testing.T) {
@@ -1213,79 +1050,5 @@ func TestUpdateDisabledByEnvironment(t *testing.T) {
 	}
 	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("disabled update created the tools directory")
-	}
-}
-
-func TestVerifySHA256AllowsOnlyAbsentPublishedChecksum(t *testing.T) {
-	if err := verifySHA256([]byte("data"), ""); err != nil {
-		t.Fatalf("missing checksum was rejected: %v", err)
-	}
-	if err := verifySHA256([]byte("data"), "sha256:"); err == nil {
-		t.Fatal("malformed empty checksum was accepted")
-	}
-	if err := verifySHA256([]byte("data"), "sha256:0000000000000000000000000000000000000000000000000000000000000000"); err == nil {
-		t.Fatal("wrong checksum was accepted")
-	}
-}
-
-func TestTarGzipExtractorHandlesPaxHeaderAndSymlink(t *testing.T) {
-	var data bytes.Buffer
-	compressor := gzip.NewWriter(&data)
-	writer := tar.NewWriter(compressor)
-	if err := writer.WriteHeader(&tar.Header{
-		Name: "pax_global_header", Typeflag: tar.TypeXGlobalHeader,
-		PAXRecords: map[string]string{"comment": "git archive"}, Format: tar.FormatPAX,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	contents := []byte("data")
-	if err := writer.WriteHeader(&tar.Header{Name: "dir/file.txt", Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(contents))}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := writer.Write(contents); err != nil {
-		t.Fatal(err)
-	}
-	withSymlink := runtime.GOOS != "windows"
-	if withSymlink {
-		if err := writer.WriteHeader(&tar.Header{Name: "dir/link", Typeflag: tar.TypeSymlink, Linkname: "file.txt"}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := compressor.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	destination := t.TempDir()
-	if err := extractTarGzip(data.Bytes(), destination); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(destination, "dir", "file.txt")); err != nil {
-		t.Fatal(err)
-	}
-	if withSymlink {
-		if resolved, err := os.ReadFile(filepath.Join(destination, "dir", "link")); err != nil || string(resolved) != "data" {
-			t.Fatalf("symlink contents = %q, %v", resolved, err)
-		}
-	}
-}
-
-func TestTarGzipExtractorRejectsEscapingSymlink(t *testing.T) {
-	var data bytes.Buffer
-	compressor := gzip.NewWriter(&data)
-	writer := tar.NewWriter(compressor)
-	if err := writer.WriteHeader(&tar.Header{Name: "dir/link", Typeflag: tar.TypeSymlink, Linkname: "../../escape"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := compressor.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := extractTarGzip(data.Bytes(), t.TempDir()); err == nil {
-		t.Fatal("escaping tar symlink was accepted")
 	}
 }

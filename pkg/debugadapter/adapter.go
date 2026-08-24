@@ -85,13 +85,19 @@ func vscodeIOValues() map[dap.IOMode]string {
 	}
 }
 
-// ToolDirectory locates managed tool installations for adapters that load
-// bundled files in addition to executables.
+// ToolDirectory locates managed installations for adapters that load bundled
+// files in addition to resolving an executable availability token.
 type ToolDirectory interface {
 	ToolDir(id string) string
 }
 
-func NewRegistry(tools ToolDirectory) *Registry {
+// NewRegistry accepts an optional managed-tool directory while keeping the
+// no-argument form useful for source discovery and standalone callers.
+func NewRegistry(toolDirectories ...ToolDirectory) *Registry {
+	var tools ToolDirectory
+	if len(toolDirectories) > 0 {
+		tools = toolDirectories[0]
+	}
 	return NewRegistryWith(
 		goAdapter{},
 		pythonAdapter{},
@@ -139,12 +145,6 @@ type serverInitializer interface {
 	ServerInitialization() (server string, options any)
 }
 
-// managedOnlyProvider marks adapters whose command must come from the managed
-// installer even when a system copy exists.
-type managedOnlyProvider interface {
-	ManagedOnlyCommands() []string
-}
-
 // ServerInitializations returns the language-server initialization options
 // required by hosted adapters, keyed by server name.
 func (registry *Registry) ServerInitializations() map[string]any {
@@ -159,19 +159,6 @@ func (registry *Registry) ServerInitializations() map[string]any {
 		}
 	}
 	return result
-}
-
-// ManagedOnlyCommands returns commands that only the managed installer can
-// provide completely.
-func (registry *Registry) ManagedOnlyCommands() []string {
-	var result []string
-	for _, adapter := range registry.adapters {
-		if provider, ok := adapter.(managedOnlyProvider); ok {
-			result = append(result, provider.ManagedOnlyCommands()...)
-		}
-	}
-	slices.Sort(result)
-	return slices.Compact(result)
 }
 
 func (registry *Registry) Plan(language string, request Request) (Plan, error) {

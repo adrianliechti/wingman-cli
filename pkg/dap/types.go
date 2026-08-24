@@ -64,6 +64,13 @@ type AdapterConnector interface {
 	ConnectAdapter(context.Context, Plan) (io.ReadWriteCloser, error)
 }
 
+// AdapterPlanPreparer optionally enriches a resolved plan before the adapter
+// transport starts. It lets a host-created adapter obtain launch details from
+// its owning service without putting language-specific behavior in Manager.
+type AdapterPlanPreparer interface {
+	PrepareAdapter(context.Context, Plan) (Plan, error)
+}
+
 // AdapterDescriptor describes how to start one debug adapter process. Command
 // is resolved to an executable before a Plan reaches the session layer.
 type AdapterDescriptor struct {

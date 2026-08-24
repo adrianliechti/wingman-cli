@@ -16,6 +16,7 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/internal/testenv"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/debugadapter"
 	"github.com/adrianliechti/wingman-agent/pkg/devtools"
 	wingmcp "github.com/adrianliechti/wingman-agent/pkg/mcp"
 	"github.com/adrianliechti/wingman-agent/pkg/skill"
@@ -45,12 +46,19 @@ func TestWorkspaceCloseCancelsManagedToolUpdates(t *testing.T) {
 	}
 }
 
-func TestManagedToolRequirementsScopeHostedDebuggerDependencies(t *testing.T) {
+type managedToolDirectoryStub struct{}
+
+func (managedToolDirectoryStub) ToolDir(string) string { return "" }
+
+func TestManagedToolRequirementsIncludeJavaDebuggerAndHost(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "pom.xml"), []byte("<project/>\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	workspace := &Workspace{RootPath: root}
+	workspace := &Workspace{
+		RootPath:      root,
+		debugRegistry: debugadapter.NewRegistry(managedToolDirectoryStub{}),
+	}
 
 	findJDTLS := func(requirements []devtools.Requirement) (devtools.Requirement, bool) {
 		for _, requirement := range requirements {
@@ -65,25 +73,50 @@ func TestManagedToolRequirementsScopeHostedDebuggerDependencies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if requirement, ok := findJDTLS(lspOnly); !ok || requirement.ManagedOnly {
-		t.Fatalf("LSP-only JDT LS requirement = %+v, found %t; a system server should remain usable", requirement, ok)
+	if requirement, ok := findJDTLS(lspOnly); !ok {
+		t.Fatalf("LSP-only JDT LS requirement = %+v, found %t", requirement, ok)
 	}
 
 	dapOnly, err := workspace.managedToolRequirements(context.Background(), ManagedDAPTools)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if requirement, ok := findJDTLS(dapOnly); !ok || !requirement.ManagedOnly {
-		t.Fatalf("DAP-only JDT LS requirement = %+v, found %t; java-debug needs the managed bundle", requirement, ok)
+	if requirement, ok := findJDTLS(dapOnly); !ok {
+		t.Fatalf("DAP-only JDT LS host requirement = %+v, found %t", requirement, ok)
+	}
+	foundDebugger := false
+	for _, requirement := range dapOnly {
+		foundDebugger = foundDebugger || slices.Contains(requirement.Alternatives, "java-debug-adapter")
+	}
+	if !foundDebugger {
+		t.Fatalf("DAP-only Java debugger requirement was not detected: %+v", dapOnly)
 	}
 
 	editor, err := workspace.managedToolRequirements(context.Background(), ManagedEditorTools)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if requirement, ok := findJDTLS(editor); !ok || !requirement.ManagedOnly {
-		t.Fatalf("editor JDT LS requirement = %+v, found %t; java-debug needs the managed bundle", requirement, ok)
+	if requirement, ok := findJDTLS(editor); !ok {
+		t.Fatalf("editor JDT LS requirement = %+v, found %t", requirement, ok)
 	}
+}
+
+func TestManagedDAPRequirementsIncludeJavaScriptDebugger(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"scripts":{"start":"node server.js"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace := &Workspace{RootPath: root}
+	requirements, err := workspace.managedToolRequirements(context.Background(), ManagedDAPTools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, requirement := range requirements {
+		if slices.Contains(requirement.Alternatives, "js-debug-adapter") && slices.Contains(requirement.Projects, root) {
+			return
+		}
+	}
+	t.Fatalf("JavaScript debugger requirement not detected: %+v", requirements)
 }
 
 func TestWarmUpCreatesLSPManagerOutsideGitRepository(t *testing.T) {

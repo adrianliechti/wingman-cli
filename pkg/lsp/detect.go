@@ -22,14 +22,14 @@ type projectRoot = Project
 
 const serverVersionProbeTimeout = 5 * time.Second
 
-func serverVersionSupported(server Server, command string) bool {
+func serverVersionSupported(server Server, command, workingDir string) bool {
 	if server.MinimumMajorVersion == 0 {
 		return true
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), serverVersionProbeTimeout)
 	defer cancel()
-	return tooling.MajorVersionAtLeast(ctx, command, server.MinimumMajorVersion)
+	return tooling.MajorVersionAtLeast(ctx, command, server.MinimumMajorVersion, workingDir)
 }
 
 func detectAll(workingDir string, managedResolver func(string) string) []projectRoot {
@@ -118,10 +118,10 @@ func projectDirs(index *workspaceIndex, project projectType) []string {
 
 func resolveServer(dir string, candidate Server, resolver tooling.Resolver, versions map[string]bool) (Server, bool) {
 	for _, resolution := range resolver.Candidates([]string{dir}, candidate.Command) {
-		versionKey := resolution.Path + "\x00" + strconv.Itoa(candidate.MinimumMajorVersion)
+		versionKey := resolution.Path + "\x00" + strconv.Itoa(candidate.MinimumMajorVersion) + "\x00" + dir
 		supported, checked := versions[versionKey]
 		if !checked {
-			supported = serverVersionSupported(candidate, resolution.Path)
+			supported = serverVersionSupported(candidate, resolution.Path, dir)
 			versions[versionKey] = supported
 		}
 		if supported {

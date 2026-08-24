@@ -3,82 +3,47 @@ package devtools
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 )
 
-func TestLiveManagedArchiveDownloads(t *testing.T) {
+func TestLiveRustAnalyzerInstall(t *testing.T) {
 	if os.Getenv("WINGMAN_LIVE_DEVTOOLS") == "" {
-		t.Skip("set WINGMAN_LIVE_DEVTOOLS=1 to download managed release archives")
+		t.Skip("set WINGMAN_LIVE_DEVTOOLS=1 to install managed rustup tools")
 	}
-	if _, err := codeLLDBAssetName(runtime.GOOS, runtime.GOARCH); err != nil {
-		t.Skip(err)
-	}
-	if _, err := netCoreDbgAssetName(runtime.GOOS, runtime.GOARCH); err != nil {
-		t.Skip(err)
-	}
-
 	manager := newManager(t.TempDir())
 	manager.install = manager.installRecipe
+	if _, err := manager.look("rustup"); err != nil {
+		t.Skip("rustup is not installed")
+	}
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "Cargo.toml"), []byte("[package]\nname = \"wingman-live-rust\"\nversion = \"0.0.0\"\nedition = \"2024\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	changed, err := manager.Update(ctx, []Requirement{
-		{Alternatives: []string{"codelldb"}},
-		{Alternatives: []string{"netcoredbg"}},
-		{Alternatives: []string{"jdtls"}},
-		{Alternatives: []string{"rust-analyzer"}},
-	})
-	if err != nil {
+	if _, err := manager.Update(ctx, []Requirement{{
+		Alternatives: []string{"rust-analyzer"}, Workspace: project, Projects: []string{project},
+		MinimumMajorVersions: map[string]int{"rust-analyzer": tooling.ProbeExecutes},
+	}}); err != nil {
 		t.Fatal(err)
 	}
-	if !changed {
-		t.Fatal("clean managed root was not updated")
+	launcher := manager.Resolve("rust-analyzer")
+	if launcher == "" {
+		t.Fatal("rust-analyzer launcher was not installed")
 	}
-	for _, command := range []string{"codelldb", "netcoredbg", "jdtls", "rust-analyzer"} {
-		if manager.Resolve(command) == "" {
-			t.Errorf("%s was not installed", command)
-		}
-	}
-	if len(javaDebugBundlesAt(manager.ToolDir("jdtls"))) != 1 {
-		t.Errorf("managed java-debug bundle was not installed")
-	}
-
-	// A stale installation of an unchanged upstream release refreshes its
-	// status stamp from metadata alone instead of re-downloading the archive.
-	manager.now = func() time.Time { return time.Now().Add(25 * time.Hour) }
-	changed, err = manager.Update(ctx, []Requirement{
-		{Alternatives: []string{"codelldb"}},
-		{Alternatives: []string{"netcoredbg"}},
-		{Alternatives: []string{"jdtls"}},
-		{Alternatives: []string{"rust-analyzer"}},
-	})
+	output, err := runCommand(ctx, launcher, []string{"--version"}, project, os.Environ())
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("rust-analyzer --version: %v\n%s", err, output)
 	}
-	if changed {
-		t.Fatal("unchanged releases were reinstalled")
+	if !strings.Contains(string(output), "rust-analyzer") {
+		t.Fatalf("unexpected version output: %s", output)
 	}
-	for _, item := range []recipe{byID(t, "codelldb"), byID(t, "netcoredbg"), byID(t, "jdtls"), byID(t, "rust-analyzer")} {
-		if !manager.fresh(item) {
-			t.Errorf("%s status stamp was not refreshed", item.ID)
-		}
-		if manager.installedVersion(item) == "" {
-			t.Errorf("%s has no recorded upstream version", item.ID)
-		}
-	}
-}
-
-func byID(t *testing.T, id string) recipe {
-	t.Helper()
-	for _, item := range catalog {
-		if item.ID == id {
-			return item
-		}
-	}
-	t.Fatalf("unknown recipe %q", id)
-	return recipe{}
 }
 
 func TestLiveDotnetToolInstall(t *testing.T) {
@@ -107,5 +72,138 @@ func TestLiveDotnetToolInstall(t *testing.T) {
 	}
 	if !strings.Contains(string(output), "csharp-ls") {
 		t.Fatalf("unexpected version output: %s", output)
+	}
+}
+
+func TestLiveJavaScriptDebuggerInstall(t *testing.T) {
+	if os.Getenv("WINGMAN_LIVE_DEVTOOLS") == "" {
+		t.Skip("set WINGMAN_LIVE_DEVTOOLS=1 to install managed GitHub tools")
+	}
+	manager := newManager(t.TempDir())
+	manager.install = manager.installRecipe
+	if _, err := manager.look("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if _, err := manager.Update(ctx, []Requirement{{Alternatives: []string{"js-debug-adapter"}}}); err != nil {
+		t.Fatal(err)
+	}
+	launcher := manager.Resolve("js-debug-adapter")
+	if launcher == "" {
+		t.Fatal("js-debug-adapter launcher was not installed")
+	}
+	if _, err := os.Stat(filepath.Join(manager.Root(), "vscode-js-debug", "js-debug", "src", "dapDebugServer.js")); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runCommand(ctx, launcher, []string{"--help"}, manager.root, os.Environ())
+	if err != nil {
+		t.Fatalf("js-debug-adapter --help: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "Usage:") {
+		t.Fatalf("unexpected adapter help: %s", output)
+	}
+}
+
+func TestLiveCodeLLDBInstall(t *testing.T) {
+	if os.Getenv("WINGMAN_LIVE_DEVTOOLS") == "" {
+		t.Skip("set WINGMAN_LIVE_DEVTOOLS=1 to install managed GitHub tools")
+	}
+	if _, err := githubSpec("codelldb", runtime.GOOS, runtime.GOARCH); err != nil {
+		t.Skip(err)
+	}
+	manager := newManager(t.TempDir())
+	manager.install = manager.installRecipe
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	if _, err := manager.Update(ctx, []Requirement{{Alternatives: []string{"codelldb"}}}); err != nil {
+		t.Fatal(err)
+	}
+	launcher := manager.Resolve("codelldb")
+	if launcher == "" || manager.ToolDir("codelldb") == "" {
+		t.Fatal("CodeLLDB distribution was not installed")
+	}
+	output, err := runCommand(ctx, launcher, []string{"--help"}, manager.root, os.Environ())
+	if err != nil {
+		t.Fatalf("codelldb --help: %v\n%s", err, output)
+	}
+	if !strings.Contains(strings.ToLower(string(output)), "codelldb") {
+		t.Fatalf("unexpected adapter help: %s", output)
+	}
+}
+
+func TestLiveNetCoreDbgInstall(t *testing.T) {
+	if os.Getenv("WINGMAN_LIVE_DEVTOOLS") == "" {
+		t.Skip("set WINGMAN_LIVE_DEVTOOLS=1 to install managed GitHub tools")
+	}
+	if _, err := githubSpec("netcoredbg", runtime.GOOS, runtime.GOARCH); err != nil {
+		t.Skip(err)
+	}
+	manager := newManager(t.TempDir())
+	manager.install = manager.installRecipe
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	if _, err := manager.Update(ctx, []Requirement{{Alternatives: []string{"netcoredbg"}}}); err != nil {
+		t.Fatal(err)
+	}
+	launcher := manager.Resolve("netcoredbg")
+	if launcher == "" || manager.ToolDir("netcoredbg") == "" {
+		t.Fatal("NetCoreDbg distribution was not installed")
+	}
+	output, err := runCommand(ctx, launcher, []string{"--help"}, manager.root, os.Environ())
+	if err != nil {
+		t.Fatalf("netcoredbg --help: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "--interpreter=vscode") {
+		t.Fatalf("unexpected adapter help: %s", output)
+	}
+}
+
+func TestLiveJavaDebuggerInstall(t *testing.T) {
+	if os.Getenv("WINGMAN_LIVE_DEVTOOLS") == "" {
+		t.Skip("set WINGMAN_LIVE_DEVTOOLS=1 to install managed Maven tools")
+	}
+	manager := newManager(t.TempDir())
+	manager.install = manager.installRecipe
+	if _, err := manager.look("mvn"); err != nil {
+		t.Skip("Maven is not installed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	if _, err := manager.Update(ctx, []Requirement{{Alternatives: []string{"java-debug-adapter"}, Workspace: t.TempDir()}}); err != nil {
+		t.Fatal(err)
+	}
+	if manager.Resolve("java-debug-adapter") == "" {
+		t.Fatal("Java debug availability marker was not installed")
+	}
+	root := manager.ToolDir("java-debug")
+	if root == "" || len(javaDebugBundlesAt(root)) != 1 {
+		t.Fatalf("managed Java debug bundle was not installed under %q", root)
+	}
+}
+
+func TestLiveJDTLSInstall(t *testing.T) {
+	if os.Getenv("WINGMAN_LIVE_DEVTOOLS") == "" {
+		t.Skip("set WINGMAN_LIVE_DEVTOOLS=1 to install managed Maven tools")
+	}
+	manager := newManager(t.TempDir())
+	manager.install = manager.installRecipe
+	if _, err := manager.look("mvn"); err != nil {
+		t.Skip("Maven is not installed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	if _, err := manager.Update(ctx, []Requirement{{Alternatives: []string{"jdtls"}, Workspace: t.TempDir()}}); err != nil {
+		t.Fatal(err)
+	}
+	if manager.Resolve("jdtls") == "" {
+		t.Fatal("JDT LS launcher was not installed")
+	}
+	root := manager.ToolDir("jdtls")
+	if root == "" {
+		t.Fatal("managed JDT LS directory was not installed")
+	}
+	if _, err := jdtlsProductVersion(root); err != nil {
+		t.Fatal(err)
 	}
 }

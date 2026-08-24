@@ -63,14 +63,14 @@ func TestServerVersionSupported(t *testing.T) {
 	}
 
 	server := Server{MinimumMajorVersion: 7}
-	if !serverVersionSupported(server, command) {
+	if !serverVersionSupported(server, command, dir) {
 		t.Fatal("TypeScript 7 should satisfy a version 7 minimum")
 	}
 	server.MinimumMajorVersion = 8
-	if serverVersionSupported(server, command) {
+	if serverVersionSupported(server, command, dir) {
 		t.Fatal("TypeScript 7 should not satisfy a version 8 minimum")
 	}
-	if !serverVersionSupported(Server{}, filepath.Join(dir, "missing")) {
+	if !serverVersionSupported(Server{}, filepath.Join(dir, "missing"), dir) {
 		t.Fatal("servers without a version constraint should not be probed")
 	}
 }
@@ -133,6 +133,7 @@ func TestDetectRequirementsRecognizesSourceAndGradleMarkers(t *testing.T) {
 	}{
 		{name: "shell script", marker: "scripts/build.sh", project: "bash", command: "bash-language-server"},
 		{name: "YAML document", marker: "config/release.yml", project: "yaml", command: "yaml-language-server"},
+		{name: "PHP Composer project", marker: "composer.json", project: "php", command: "intelephense"},
 		{name: "Java Gradle settings", marker: "settings.gradle", project: "java", command: "jdtls"},
 		{name: "Kotlin Gradle project", marker: "build.gradle.kts", source: "src/main/kotlin/example/App.kt", project: "kotlin", command: "kotlin-lsp"},
 		{name: "Kotlin Maven project", marker: "pom.xml", source: "src/main/kotlin/example/App.kt", project: "kotlin", command: "kotlin-lsp"},
@@ -224,7 +225,7 @@ func TestDetectAllUsesManagedServerAsFallback(t *testing.T) {
 	}
 }
 
-func TestDetectAllPrefersSystemServerOverManagedFallback(t *testing.T) {
+func TestDetectAllPrefersManagedServerOverSystemFallback(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", filepath.Join(root, "home"))
 	bin := filepath.Join(root, "system-bin")
@@ -246,8 +247,8 @@ func TestDetectAllPrefersSystemServerOverManagedFallback(t *testing.T) {
 		}
 		return ""
 	})
-	if len(roots) != 1 || roots[0].Server.Command != system {
-		t.Fatalf("roots = %+v, want system command %q", roots, system)
+	if len(roots) != 1 || roots[0].Server.Command != managed {
+		t.Fatalf("roots = %+v, want managed command %q", roots, managed)
 	}
 }
 

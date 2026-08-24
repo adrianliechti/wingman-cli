@@ -30,7 +30,7 @@ func TestResolveProjectWalksToWorkspaceRoot(t *testing.T) {
 	}
 }
 
-func TestResolverUsesProjectSystemManagedPrecedence(t *testing.T) {
+func TestResolverUsesProjectManagedSystemPrecedence(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "app")
 	if err := os.MkdirAll(project, 0o755); err != nil {
@@ -50,7 +50,7 @@ func TestResolverUsesProjectSystemManagedPrecedence(t *testing.T) {
 		Managed:   func(string) string { return filepath.Join(root, "managed", name) },
 	}
 	got := resolver.Candidates([]string{project}, "example-tool")
-	wantSources := []Source{SourceProject, SourceSystem, SourceManaged}
+	wantSources := []Source{SourceProject, SourceManaged, SourceSystem}
 	if len(got) != len(wantSources) {
 		t.Fatalf("candidates = %#v", got)
 	}
@@ -103,8 +103,30 @@ func TestMajorVersionAtLeast(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if !MajorVersionAtLeast(ctx, command, 7) || MajorVersionAtLeast(ctx, command, 8) {
+	if !MajorVersionAtLeast(ctx, command, 7, "") || MajorVersionAtLeast(ctx, command, 8, "") {
 		t.Fatal("major version probe returned the wrong result")
+	}
+}
+
+func TestMajorVersionProbeUsesProjectDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper uses a POSIX script")
+	}
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, ".available"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	command := filepath.Join(t.TempDir(), "project-aware")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\n[ -f .available ] || exit 1\nprintf 'Version 1.0.0\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if !MajorVersionAtLeast(ctx, command, ProbeExecutes, project) {
+		t.Fatal("project-aware command was probed from the wrong directory")
+	}
+	if MajorVersionAtLeast(ctx, command, ProbeExecutes, t.TempDir()) {
+		t.Fatal("project-aware command ignored its working directory")
 	}
 }
 
@@ -124,19 +146,19 @@ func TestMajorVersionProbeReflectsRuntimeAvailability(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if !MajorVersionAtLeast(ctx, command, ProbeExecutes) {
+	if !MajorVersionAtLeast(ctx, command, ProbeExecutes, "") {
 		t.Fatal("available runtime was rejected")
 	}
 	if err := os.Remove(marker); err != nil {
 		t.Fatal(err)
 	}
-	if MajorVersionAtLeast(ctx, command, ProbeExecutes) {
+	if MajorVersionAtLeast(ctx, command, ProbeExecutes, "") {
 		t.Fatal("probe reused a stale successful result")
 	}
 	if err := os.WriteFile(marker, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if !MajorVersionAtLeast(ctx, command, ProbeExecutes) {
+	if !MajorVersionAtLeast(ctx, command, ProbeExecutes, "") {
 		t.Fatal("probe reused a stale failed result")
 	}
 }

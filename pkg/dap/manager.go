@@ -70,8 +70,8 @@ func (m *Manager) SetAdapterConnector(connector AdapterConnector) {
 	m.mu.Unlock()
 }
 
-// SetCommandResolver adds an application-managed fallback after project and
-// standard system command discovery.
+// SetCommandResolver adds an application-managed candidate after project
+// discovery and before the standard system fallback.
 func (m *Manager) SetCommandResolver(resolve func(string) string) {
 	m.detectMu.Lock()
 	m.managed = resolve
@@ -283,6 +283,14 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 		}
 		plan.Adapter.Command = command
 		plan.Adapter.Args = slices.Clone(registered.Args)
+	}
+	if plan.Adapter.Transport == TransportConnect {
+		if preparer, ok := options.adapterConnector.(AdapterPlanPreparer); ok {
+			plan, err = preparer.PrepareAdapter(ctx, plan)
+			if err != nil {
+				return nil, fmt.Errorf("prepare debug adapter %s: %w", plan.Adapter.Name, err)
+			}
+		}
 	}
 
 	id := uuid.NewString()[:8]

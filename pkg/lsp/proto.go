@@ -31,6 +31,7 @@ type CommandOrCodeAction = protocol.CommandOrCodeAction
 type CodeAction = protocol.CodeAction
 type CodeActionOptions = protocol.CodeActionOptions
 type Command = protocol.Command
+type LSPAny = protocol.LSPAny
 type FormattingOptions = protocol.FormattingOptions
 type TextEdit = protocol.TextEdit
 type InlayHint = protocol.InlayHint

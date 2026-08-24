@@ -12,8 +12,9 @@ import (
 	"github.com/adrianliechti/wingman-agent/internal/process"
 )
 
-// Source identifies where a command was found. Project and system tools are
-// intentionally preferred over Wingman's managed fallback.
+// Source identifies where a command was found. Project tools remain
+// authoritative, Wingman's package-managed tools provide the predictable
+// default, and system tools are the final fallback.
 type Source string
 
 const (
@@ -58,14 +59,14 @@ func (r Resolver) Candidates(projects []string, command string) []Resolution {
 		}
 	}
 
+	if r.Managed != nil {
+		add(r.Managed(command), SourceManaged, "")
+	}
 	lookup := r.Lookup
 	if lookup == nil {
 		lookup = Resolve
 	}
 	add(lookup(command), SourceSystem, "")
-	if r.Managed != nil {
-		add(r.Managed(command), SourceManaged, "")
-	}
 	return result
 }
 
@@ -87,12 +88,15 @@ const ProbeExecutes = -1
 // Callers cache the surrounding detection result when appropriate. The probe
 // itself deliberately stays live: shims and launchers can start or stop working
 // when their external runtime changes without the executable being modified.
-func MajorVersionAtLeast(ctx context.Context, command string, minimum int) bool {
+func MajorVersionAtLeast(ctx context.Context, command string, minimum int, workingDir string) bool {
 	if minimum == 0 {
 		return true
 	}
 	cmd := exec.CommandContext(ctx, command, "--version")
 	process.Hide(cmd)
+	if workingDir != "" {
+		cmd.Dir = workingDir
+	}
 	cmd.Env = Environment(command, os.Environ())
 	cmd.WaitDelay = 100 * time.Millisecond
 	output, err := cmd.CombinedOutput()

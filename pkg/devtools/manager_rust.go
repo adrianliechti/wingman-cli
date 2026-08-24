@@ -1,134 +1,107 @@
 package devtools
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
-
-	"github.com/adrianliechti/wingman-agent/internal/tooling"
+	"slices"
+	"strings"
 )
 
 var rustRecipes = []recipe{
-	{ID: "rust-analyzer", Label: "Rust language tools", Kind: installerRust, Commands: []string{"rust-analyzer"}},
-	{ID: "codelldb", Label: "Rust debugger", Kind: installerCodeLLDB, Commands: []string{"codelldb"}},
+	{ID: "rust-analyzer", Label: "Rust language tools", Kind: installerRustup, Commands: []string{"rust-analyzer"}},
 }
 
-const (
-	rustAnalyzerReleaseURL = "https://api.github.com/repos/rust-lang/rust-analyzer/releases/latest"
-	codeLLDBReleaseURL     = "https://api.github.com/repos/vadimcn/codelldb/releases/latest"
-)
-
-// installRustAnalyzer downloads the official release archive.
-func (m *Manager) installRustAnalyzer(ctx context.Context, item recipe, stage string) (string, error) {
+// installRustup adds rust-analyzer to the toolchain selected by the project's
+// rust-toolchain file or rustup override. The managed launcher asks rustup for
+// the active toolchain each time, keeping that per-project selection intact.
+func (m *Manager) installRustup(ctx context.Context, item recipe, stage string) (string, error) {
 	if item.ID != "rust-analyzer" {
-		return "", fmt.Errorf("unknown Rust tool %q", item.ID)
+		return "", errors.New("unsupported rustup tool")
 	}
-	assetName, err := rustAnalyzerAssetName(runtime.GOOS, runtime.GOARCH)
+	rustup, err := m.look("rustup")
 	if err != nil {
+		return "", errors.New("rustup is not installed")
+	}
+	directories := item.WorkingDirs
+	if len(directories) == 0 {
+		directories = []string{stage}
+	}
+	toolchainDirs := make(map[string]string)
+	for _, directory := range directories {
+		active, runErr := m.run(ctx, rustup, []string{"show", "active-toolchain"}, directory, os.Environ())
+		if runErr != nil {
+			return "", commandError(active, runErr)
+		}
+		toolchain := activeRustToolchain(active)
+		if toolchain == "" {
+			return "", fmt.Errorf("rustup did not report an active toolchain for %s", directory)
+		}
+		if _, exists := toolchainDirs[toolchain]; !exists {
+			toolchainDirs[toolchain] = directory
+		}
+	}
+	toolchains := slices.Sorted(maps.Keys(toolchainDirs))
+	versions := make([]string, 0, len(toolchains))
+	for _, toolchain := range toolchains {
+		directory := toolchainDirs[toolchain]
+		if output, runErr := m.run(ctx, rustup, []string{"component", "add", "--toolchain", toolchain, "rust-analyzer"}, directory, os.Environ()); runErr != nil {
+			return "", commandError(output, runErr)
+		}
+		output, runErr := m.run(ctx, rustup, []string{"run", toolchain, "rust-analyzer", "--version"}, directory, os.Environ())
+		if runErr != nil {
+			return "", commandError(output, runErr)
+		}
+		reportedVersion := strings.TrimSpace(string(output))
+		if reportedVersion == "" {
+			return "", fmt.Errorf("rust-analyzer did not report a version for toolchain %s", toolchain)
+		}
+		versions = append(versions, toolchain+"="+reportedVersion)
+	}
+	version := rustup + "|" + strings.Join(versions, "|")
+	if version == m.installedVersion(item) {
+		return "", errUpToDate
+	}
+	if err := writeRustupLauncher(stage, rustup); err != nil {
 		return "", err
-	}
-	archive, version, err := m.githubAsset(ctx, item, rustAnalyzerReleaseURL, assetName)
-	if err != nil {
-		return "", fmt.Errorf("download rust-analyzer: %w", err)
-	}
-	directory := filepath.Join(stage, "bin")
-	if err := os.MkdirAll(directory, 0o755); err != nil {
-		return "", err
-	}
-	name := "rust-analyzer"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-		if err := extractZip(archive, directory); err != nil {
-			return "", fmt.Errorf("extract %s: %w", assetName, err)
-		}
-	} else {
-		reader, err := gzip.NewReader(bytes.NewReader(archive))
-		if err != nil {
-			return "", fmt.Errorf("decompress %s: %w", assetName, err)
-		}
-		writeErr := writeArchiveFile(filepath.Join(directory, name), 0o755, reader)
-		closeErr := reader.Close()
-		if err := errors.Join(writeErr, closeErr); err != nil {
-			return "", fmt.Errorf("decompress %s: %w", assetName, err)
-		}
-	}
-	if !tooling.Executable(filepath.Join(directory, name)) {
-		return "", errors.New("rust-analyzer release does not contain its native server")
 	}
 	return version, nil
 }
 
-func rustAnalyzerAssetName(goos, goarch string) (string, error) {
-	assets := map[string]string{
-		"darwin/amd64":  "rust-analyzer-x86_64-apple-darwin.gz",
-		"darwin/arm64":  "rust-analyzer-aarch64-apple-darwin.gz",
-		"linux/amd64":   "rust-analyzer-x86_64-unknown-linux-gnu.gz",
-		"linux/arm64":   "rust-analyzer-aarch64-unknown-linux-gnu.gz",
-		"windows/amd64": "rust-analyzer-x86_64-pc-windows-msvc.zip",
-		"windows/arm64": "rust-analyzer-aarch64-pc-windows-msvc.zip",
+func activeRustToolchain(output []byte) string {
+	lines := strings.Split(string(output), "\n")
+	for index := len(lines) - 1; index >= 0; index-- {
+		fields := strings.Fields(lines[index])
+		if len(fields) == 0 || strings.HasSuffix(fields[0], ":") {
+			continue
+		}
+		return fields[0]
 	}
-	asset := assets[goos+"/"+goarch]
-	if asset == "" {
-		return "", fmt.Errorf("rust-analyzer does not publish a release for %s/%s", goos, goarch)
-	}
-	return asset, nil
+	return ""
 }
 
-func (m *Manager) installCodeLLDB(ctx context.Context, item recipe, stage string) (string, error) {
-	if item.ID != "codelldb" {
-		return "", fmt.Errorf("unknown CodeLLDB tool %q", item.ID)
-	}
-	assetName, err := codeLLDBAssetName(runtime.GOOS, runtime.GOARCH)
-	if err != nil {
-		return "", err
-	}
-	archive, version, err := m.githubAsset(ctx, item, codeLLDBReleaseURL, assetName)
-	if err != nil {
-		return "", fmt.Errorf("download CodeLLDB: %w", err)
-	}
-	if err := extractZip(archive, stage); err != nil {
-		return "", fmt.Errorf("extract %s: %w", assetName, err)
-	}
-	adapter := filepath.Join(stage, "extension", "adapter", "codelldb")
-	if runtime.GOOS == "windows" {
-		adapter += ".exe"
-	}
-	if !tooling.Executable(adapter) {
-		return "", errors.New("CodeLLDB archive does not contain its native adapter")
-	}
-	return version, writeCodeLLDBLauncher(stage)
-}
-
-func codeLLDBAssetName(goos, goarch string) (string, error) {
-	platforms := map[string]string{
-		"darwin/amd64":  "darwin-x64",
-		"darwin/arm64":  "darwin-arm64",
-		"linux/amd64":   "linux-x64",
-		"linux/arm64":   "linux-arm64",
-		"linux/arm":     "linux-armhf",
-		"windows/amd64": "win32-x64",
-	}
-	platform := platforms[goos+"/"+goarch]
-	if platform == "" {
-		return "", fmt.Errorf("CodeLLDB does not publish a release for %s/%s", goos, goarch)
-	}
-	return "codelldb-" + platform + ".vsix", nil
-}
-
-func writeCodeLLDBLauncher(stage string) error {
+func writeRustupLauncher(stage, rustup string) error {
 	directory := filepath.Join(stage, "bin")
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return err
 	}
 	if runtime.GOOS == "windows" {
-		contents := "@echo off\r\n\"%~dp0\\..\\extension\\adapter\\codelldb.exe\" %*\r\n"
-		return os.WriteFile(filepath.Join(directory, "codelldb.cmd"), []byte(contents), 0o755)
+		contents := "@echo off\r\n" +
+			"for /f \"tokens=1\" %%T in ('\"" + rustup + "\" show active-toolchain') do (\r\n" +
+			"  \"" + rustup + "\" run %%T rust-analyzer %*\r\n" +
+			"  exit /b %ERRORLEVEL%\r\n" +
+			")\r\nexit /b 1\r\n"
+		return os.WriteFile(filepath.Join(directory, "rust-analyzer.cmd"), []byte(contents), 0o755)
 	}
-	contents := "#!/bin/sh\nexec \"$(dirname \"$0\")/../extension/adapter/codelldb\" \"$@\"\n"
-	return os.WriteFile(filepath.Join(directory, "codelldb"), []byte(contents), 0o755)
+	quoted := quotePOSIXShell(rustup)
+	contents := "#!/bin/sh\n" +
+		"toolchain=$(" + quoted + " show active-toolchain)\n" +
+		"toolchain=${toolchain%% *}\n" +
+		"[ -n \"$toolchain\" ] || exit 1\n" +
+		"exec " + quoted + " run \"$toolchain\" rust-analyzer \"$@\"\n"
+	return os.WriteFile(filepath.Join(directory, "rust-analyzer"), []byte(contents), 0o755)
 }
