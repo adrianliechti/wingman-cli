@@ -26,17 +26,18 @@ func readTool(root *os.Root, tracker *contentTracker, freshness *Freshness, maxF
 
 		Description: strings.Join([]string{
 			fmt.Sprintf("Reads a file from the local filesystem. Results use cat -n format with 1-based line numbers. By default reads the first %d lines; output is capped at %dKB, with a trailing notice telling you which offset to continue from.", DefaultMaxLines, DefaultMaxBytes/1024),
+			"- PDF, RTF, supported Word, Excel, and PowerPoint documents (including macro-enabled files, templates, and slide shows), EML, and Outlook MSG files are converted to Markdown. `offset` and `limit` select lines from that Markdown just like any text file.",
 			"- Use `offset` and `limit` for long files or known ranges. `offset` is a 1-based start line, not a result skip count.",
 			"- Reads files only, not directories. Use `glob` to list files in a directory.",
-			"- Binary files (PDF, images, archives) are rejected. SVG files are treated as text. Use `view_image` to look at image files.",
+			"- Other binary files are rejected. Use `view_image` for image files. SVG and HTML files are treated as text.",
 		}, "\n"),
 
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"file_path": map[string]any{"type": "string", "description": "The absolute path to the file to read."},
-				"offset":    map[string]any{"type": "integer", "description": "1-based line number to start reading from. Only provide for large files or known ranges. Defaults to 1."},
-				"limit":     map[string]any{"type": "integer", "description": "Positive number of lines to read. Only provide for large files or known ranges."},
+				"offset":    map[string]any{"type": "integer", "description": "1-based line number to start reading from, including for converted documents. Only provide for large files or known ranges. Defaults to 1."},
+				"limit":     map[string]any{"type": "integer", "description": "Positive number of lines to read, including from converted documents. Only provide for large files or known ranges."},
 			},
 			"required":             []string{"file_path"},
 			"additionalProperties": false,
@@ -82,7 +83,11 @@ func readTool(root *os.Root, tracker *contentTracker, freshness *Freshness, maxF
 			if !info.Mode().IsRegular() {
 				return tool.Result{}, fmt.Errorf("cannot read file: path %q is not a regular file", pathArg)
 			}
-			if maxFileBytes > 0 && info.Size() > maxFileBytes {
+			documentHint := documentPath(pathArg)
+			if documentHint && info.Size() > MaxDocumentBytes {
+				return tool.Result{}, fmt.Errorf("cannot read document: %q is %.1fMB (max %dMB)", pathArg, float64(info.Size())/(1024*1024), MaxDocumentBytes/(1024*1024))
+			}
+			if !documentHint && maxFileBytes > 0 && info.Size() > maxFileBytes {
 				output, err := readFileWindow(root, target, pathArg, info.Size(), startLine, limit)
 				if err != nil {
 					return tool.Result{}, err
@@ -94,6 +99,14 @@ func readTool(root *os.Root, tracker *contentTracker, freshness *Freshness, maxF
 			content, err := readFileTarget(root, target)
 			if err != nil {
 				return tool.Result{}, fmt.Errorf("read file %q: %w", pathArg, err)
+			}
+
+			if len(content) > MaxDocumentBytes && (documentHint || documentData(content)) {
+				return tool.Result{}, fmt.Errorf("cannot read document: %q grew beyond the %dMB limit while being read", pathArg, MaxDocumentBytes/(1024*1024))
+			}
+
+			if result, handled, err := readDocument(ctx, target, pathArg, content, startLine, limit, freshness); handled {
+				return result, err
 			}
 
 			if isBinaryContent(content) {
