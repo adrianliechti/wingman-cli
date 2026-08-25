@@ -212,7 +212,7 @@ test("keeps mixed background activity compact in the titlebar", async ({
 	expect(beaconStyle).toEqual({
 		background: "rgba(0, 0, 0, 0)",
 		border: "0px",
-		width: 24,
+		width: 32,
 	});
 	await beacon.click();
 	const popup = page.getByRole("dialog", { name: "Workspace activity" });
@@ -2725,7 +2725,7 @@ test("places navigation, tabs, and contextual actions in one window toolbar", as
 	await expect(workspaceFrame).toHaveCSS("opacity", "0");
 	await expect(toolbar.locator("[data-titlebar-right-panel]")).toHaveCSS(
 		"width",
-		"80px",
+		"40px",
 	);
 	await expect(workspaceTabs).toHaveCount(0);
 	await toolbar.getByRole("button", { name: "Show Workspace Panel" }).click();

@@ -3,6 +3,7 @@ import {
 	ArrowDownToLine,
 	ArrowUpFromLine,
 	Check,
+	CheckCircle2,
 	ChevronDown,
 	ClipboardCopy,
 	Code2,
@@ -54,6 +55,7 @@ import type {
 	GitStatus,
 } from "../types/protocol";
 import type { TabDisposition } from "../types/tabs";
+import { PanelEmptyState } from "./ui/EmptyState";
 import { Dialog, dialogButtonClass } from "./ui/Feedback";
 import { FloatingMenu, FloatingSurface } from "./ui/Floating";
 import { GitHistoryPanel } from "./GitCompareControls";
@@ -258,7 +260,7 @@ export function DiffsPanel({
 
 	return (
 		<div className="relative flex h-full flex-col overflow-hidden bg-transparent">
-			<div className="overflow-y-auto flex-1 py-2">
+			<div className="flex flex-1 flex-col overflow-y-auto py-2">
 				{diffs.length === 0 && !error && <EmptyChanges loaded={loaded} />}
 				{diffs.map((diff) => (
 					<ChangeRow
@@ -573,7 +575,7 @@ function GitChanges({
 						/>
 					</div>
 
-					<div className="overflow-y-auto flex-1 py-1.5">
+					<div className="flex flex-1 flex-col overflow-y-auto py-1.5">
 						{hasStaged ? (
 							<>
 								<ChangeGroup
@@ -1350,11 +1352,22 @@ function SyncButton({
 }
 
 function EmptyChanges({ loaded }: { loaded: boolean }) {
+	if (!loaded) {
+		return (
+			<PanelEmptyState
+				icon={Loader2}
+				iconClassName="animate-spin text-fg-dim"
+				title="Loading…"
+			/>
+		);
+	}
 	return (
-		<div className="flex min-h-12 items-center justify-center gap-1.5 px-3 text-center text-[11px] text-fg-dim">
-			{!loaded && <Loader2 size={11} className="animate-spin" />}
-			<span>{loaded ? "Working tree clean" : "Loading…"}</span>
-		</div>
+		<PanelEmptyState
+			icon={CheckCircle2}
+			iconClassName="text-success/70"
+			title="Working tree clean"
+			hint="New, modified, and deleted files appear here."
+		/>
 	);
 }
 

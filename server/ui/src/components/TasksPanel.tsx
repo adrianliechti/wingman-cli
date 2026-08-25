@@ -24,6 +24,7 @@ import {
 } from "../api/tasks";
 import type { ScheduleEntry, TaskEntry } from "../types/protocol";
 import { formatElapsed } from "../utils/tasks";
+import { PanelEmptyState } from "./ui/EmptyState";
 import { Dialog, dialogButtonClass, useToast } from "./ui/Feedback";
 import { FloatingMenu } from "./ui/Floating";
 
@@ -128,16 +129,18 @@ export function TasksPanel({ sessionId, onOpenTask }: Props) {
 
 	return (
 		<div className="relative flex h-full flex-col overflow-hidden bg-transparent">
-			<div className="overflow-y-auto flex-1">
+			<div className="flex flex-1 flex-col overflow-y-auto">
 				{error && (
-					<div className="mx-2 mt-2 rounded bg-danger/5 px-2 py-1.5 text-[10px] text-danger/80">
+					<div className="mx-2 mt-2 shrink-0 rounded bg-danger/5 px-2 py-1.5 text-[10px] text-danger/80">
 						{error}
 					</div>
 				)}
 				{tasks.length === 0 && schedules.length === 0 && (
-					<div className="px-3 py-6 text-[11px] text-fg-dim text-center">
-						No background agents or scheduled tasks in this session
-					</div>
+					<PanelEmptyState
+						icon={Bot}
+						title="No agents running"
+						hint="Background agents and scheduled tasks for this session appear here."
+					/>
 				)}
 				{schedules.length > 0 && (
 					<div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wide text-fg-dim">

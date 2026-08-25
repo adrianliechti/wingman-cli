@@ -2496,7 +2496,7 @@ export default function App() {
 	);
 	const leftPanelDocked = !leftPanelCollapsed;
 	const rightPanelDocked = !rightPanelCollapsed;
-	const collapsedRightTitlebarWidth = showTerminal ? 76 : 40;
+	const collapsedRightTitlebarWidth = 40;
 	const agentSessionsContent = (
 		<AgentSessions
 			currentSessionId={sessionId}
@@ -2512,7 +2512,7 @@ export default function App() {
 		<div
 			data-window-interactive
 			data-titlebar-actions
-			className="flex shrink-0 items-center pr-2"
+			className="flex shrink-0 items-center"
 		>
 			{activeTab.type === "chat" &&
 				(usage.inputTokens > 0 || outputTokens > 0) && (
@@ -2610,6 +2610,12 @@ export default function App() {
 						</button>
 					)}
 				</>
+			)}
+			{showTerminal && (
+				<TerminalLauncher
+					shells={terminalShells}
+					onCreate={(shell) => void createTerminal(shell)}
+				/>
 			)}
 		</div>
 	);
@@ -2797,11 +2803,11 @@ export default function App() {
 				<div
 					data-window-interactive
 					data-titlebar-left-panel
-					className={`flex shrink-0 items-center gap-0.5 overflow-hidden pr-0 ${leftPanelDocked ? "pl-2" : "pl-0"}`}
+					className={`flex shrink-0 items-center gap-0.5 overflow-hidden ${leftPanelDocked ? "pl-2 pr-0" : "px-1"}`}
 					style={{
 						width: leftPanelDocked
 							? "calc(var(--left-panel-width) - var(--window-controls-inset) - var(--window-menu-inset))"
-							: "32px",
+							: "40px",
 					}}
 				>
 					{leftPanelDocked && (
@@ -2809,7 +2815,6 @@ export default function App() {
 							<AgentPicker onSwitchingChange={setSwitchingAgent} />
 						</div>
 					)}
-					{!leftPanelDocked && <div className="min-w-0 flex-1" />}
 					{leftPanelCollapsed && (
 						<button
 							type="button"
@@ -2885,26 +2890,16 @@ export default function App() {
 						{activeTab.pane === "right" && titlebarActions}
 					</div>
 				)}
-				<WorkspaceActivity
-					hasLSP={capabilities?.lsp ?? false}
-					tools={capabilities?.managed_tools}
-				/>
 				<div
 					data-window-interactive
 					data-titlebar-right-panel
-					className={`relative z-20 flex shrink-0 items-center overflow-hidden ${rightPanelDocked ? "" : "gap-1 px-1"}`}
+					className={`relative z-20 flex shrink-0 items-center overflow-hidden ${rightPanelDocked ? "pr-2" : "gap-1 px-1"}`}
 					style={{
 						width: rightPanelDocked
 							? "max(0px, calc(var(--right-panel-width) - var(--window-controls-reserve-end)))"
 							: `${collapsedRightTitlebarWidth}px`,
 					}}
 				>
-					{rightPanelCollapsed && showTerminal && (
-						<TerminalLauncher
-							shells={terminalShells}
-							onCreate={(shell) => void createTerminal(shell)}
-						/>
-					)}
 					{rightPanelCollapsed && (
 						<button
 							type="button"
@@ -2925,10 +2920,10 @@ export default function App() {
 							{workspaceTabs}
 						</div>
 					)}
-					{rightPanelDocked && showTerminal && (
-						<TerminalLauncher
-							shells={terminalShells}
-							onCreate={(shell) => void createTerminal(shell)}
+					{rightPanelDocked && (
+						<WorkspaceActivity
+							hasLSP={capabilities?.lsp ?? false}
+							tools={capabilities?.managed_tools}
 						/>
 					)}
 				</div>
