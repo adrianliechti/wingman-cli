@@ -1,7 +1,7 @@
-# Desktop app release — separate from the CLI (.goreleaser.yml) because the
-# macOS .app bundle must be built natively on macOS (cgo/Cocoa, no
-# cross-compile) and ships as a Homebrew cask (into /Applications), not a
-# formula.
+# Desktop app release — separate from the CLI (.goreleaser.yml). The macOS
+# .app bundle must be built natively on macOS (cgo/Cocoa, no cross-compile),
+# while the Windows executable is cross-compiled during the same release. The
+# two artifacts ship as a Homebrew cask and a Scoop app respectively.
 #
 #   goreleaser release --clean --skip=validate -f .goreleaser.app.yml             # release
 #   goreleaser release --snapshot --clean --skip=validate -f .goreleaser.app.yml  # dry run
@@ -14,14 +14,15 @@ before:
   hooks:
     - sh -c 'cd server/ui && npm ci && npm run build'             # UI -> server/static
     - sh -c 'cd app && go tool appbundle -name "Wingman Agent" -id com.adrianliechti.wingman-agent -description "Wingman Agent" -company "Adrian Liechti" -copyright "© Adrian Liechti" -package . -version {{ .Version }}'
+    - sh -c 'cd app && go tool appbundle -os windows -arch amd64 -name "Wingman Agent" -id com.adrianliechti.wingman-agent -description "Wingman Agent" -company "Adrian Liechti" -package . -version {{ .Version }}'
 
-# The hook above assembles the .app; GoReleaser builds no binaries.
+# The hooks above assemble both app artifacts; GoReleaser builds no binaries.
 builds:
   - id: app
     skip: true
 
-# Zip the prebuilt bundle. dst re-adds the "Contents" dir that GoReleaser strips
-# from the glob, yielding "Wingman Agent.app/Contents/...".
+# Zip the prebuilt artifacts. For macOS, dst re-adds the "Contents" dir that
+# GoReleaser strips from the glob, yielding "Wingman Agent.app/Contents/...".
 archives:
   - id: app
     meta: true
@@ -30,6 +31,13 @@ archives:
     files:
       - src: "app/build/bin/Wingman Agent.app/**/*"
         dst: "Wingman Agent.app/Contents"
+  - id: windows-app
+    meta: true
+    formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_Windows_x86_64"
+    files:
+      - src: "app/build/bin/Wingman Agent.exe"
+        dst: "Wingman Agent.exe"
 
 # Distinct name so it doesn't collide with the CLI's checksums.txt on a shared release.
 checksum:
@@ -44,6 +52,11 @@ publishers:
     env:
       - GITHUB_TOKEN={{ .Env.GITHUB_TOKEN }}
     cmd: ./scripts/publish-cask.sh {{ .Version }}
+  - name: scoop-app
+    ids: [windows-app]
+    env:
+      - GITHUB_TOKEN={{ .Env.GITHUB_TOKEN }}
+    cmd: ./scripts/publish-scoop-app.sh {{ .Version }}
 
 # append: land in an existing release for the tag (or create it), so the desktop
 # and CLI release flows don't clash.

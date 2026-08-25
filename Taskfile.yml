@@ -107,13 +107,13 @@ tasks:
       - goreleaser release --clean -f .goreleaser.yml
 
   release:app:
-    desc: Release the macOS desktop app + Homebrew cask (macOS only; needs GITHUB_TOKEN)
+    desc: Release the macOS and Windows desktop apps + Homebrew cask + Scoop (run on macOS; needs GITHUB_TOKEN)
     cmds:
       # --skip=validate: skip git-state checks so snapshot/dry runs work from a dirty tree.
       - goreleaser release --clean --skip=validate -f .goreleaser.app.yml
 
   release:
-    desc: Full release — CLI (all platforms) then the desktop app, on the current git tag
+    desc: Full release — CLI (all platforms) then desktop apps, on the current git tag
     cmds:
       - task: release:cli
       - task: release:app

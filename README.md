@@ -35,15 +35,22 @@ brew install adrianliechti/tap/wingman-cli
 
 > Linux: Homebrew no longer supports formula-style binary installs from taps, so use `go install` (below) or download a binary from the [releases](https://github.com/adrianliechti/wingman-agent/releases).
 
-### Desktop App (macOS, Apple Silicon)
+### Desktop App
 
-Install the Wingman Agent desktop app into `/Applications` via Homebrew Cask:
+macOS (Apple Silicon):
 
 ```bash
 brew install --cask adrianliechti/tap/wingman-app
 ```
 
-### Scoop (Windows)
+Windows (x64):
+
+```powershell
+scoop bucket add adrianliechti https://github.com/adrianliechti/scoop-bucket
+scoop install wingman-app
+```
+
+### CLI with Scoop (Windows)
 
 ```bash
 scoop bucket add adrianliechti https://github.com/adrianliechti/scoop-bucket
