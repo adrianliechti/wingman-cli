@@ -2,7 +2,7 @@ package server
 
 import (
 	"os/exec"
-	"path/filepath"
+	"path"
 	"runtime"
 )
 
@@ -32,8 +32,11 @@ func revealCommand(goos, target string, isDir bool) (string, []string) {
 	case "darwin":
 		return "open", []string{"-R", target}
 	default:
+		// The generic branch only ever runs on systems with slash-separated
+		// paths, so trim with path rather than filepath: the latter would follow
+		// the host's separator and mangle the target when goos is overridden.
 		if !isDir {
-			target = filepath.Dir(target)
+			target = path.Dir(target)
 		}
 		return "xdg-open", []string{target}
 	}

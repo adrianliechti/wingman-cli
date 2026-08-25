@@ -5,6 +5,7 @@ import {
 	useQueryClient,
 } from "@tanstack/react-query";
 import {
+	Bot,
 	Bug,
 	Compass,
 	Code2,
@@ -12,10 +13,13 @@ import {
 	FileText,
 	FilePlus,
 	FolderOpen,
+	FolderTree,
 	GitCompare,
+	GitCompareArrows,
 	Globe2,
 	Lightbulb,
 	Loader2,
+	type LucideIcon,
 	MessageSquare,
 	Menu as MenuIcon,
 	Monitor,
@@ -29,6 +33,7 @@ import {
 	SaveAll,
 	Sparkles,
 	SquareTerminal,
+	Stethoscope,
 	Wrench,
 } from "lucide-react";
 import {
@@ -188,6 +193,8 @@ const RIGHT_PANEL_MAX_SIZE = 480;
 const CENTER_PANEL_MIN_SIZE = 320;
 const DEBUG_DETAILS_MIN_SIZE = 240;
 const DEBUG_DETAILS_MAX_SIZE = 480;
+// Width per workspace tab below which the label is replaced by its icon.
+const WORKSPACE_TAB_LABEL_MIN_WIDTH = 58;
 
 const EMPTY_ENTRIES: never[] = [];
 const EMPTY_MODES: ModeOption[] = [];
@@ -347,6 +354,26 @@ export default function App() {
 	const [searchFocusKey, setSearchFocusKey] = useState(0);
 	const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(true);
 	const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
+	const workspaceTabsRef = useRef<HTMLDivElement>(null);
+	// The workspace tablist shares the title bar with the native window
+	// controls, so its width is whatever the panel leaves over. Once a tab is too
+	// narrow to spell its label out the text is swapped for the icon, which stays
+	// recognisable where a truncated word does not.
+	const [workspaceTabsCompact, setWorkspaceTabsCompact] = useState(false);
+	useEffect(() => {
+		const element = workspaceTabsRef.current;
+		if (!element) return;
+		const updateCompactMode = () => {
+			const tabs = element.childElementCount;
+			if (tabs === 0) return;
+			setWorkspaceTabsCompact(
+				element.clientWidth / tabs < WORKSPACE_TAB_LABEL_MIN_WIDTH,
+			);
+		};
+		const observer = new ResizeObserver(updateCompactMode);
+		observer.observe(element);
+		return () => observer.disconnect();
+	}, [rightPanelCollapsed, showAgents, showChanges, showInspect]);
 	const appRef = useRef<HTMLDivElement>(null);
 	const leftPanelWidthRef = useRef(LEFT_PANEL_DEFAULT_SIZE);
 	const rightPanelDefaultWidth = RIGHT_PANEL_DEFAULT_SIZE;
@@ -2589,39 +2616,44 @@ export default function App() {
 
 	const workspaceTabs = (
 		<div
+			ref={workspaceTabsRef}
 			className="flex h-10 w-full min-w-0 shrink-0 items-stretch overflow-hidden"
 			role="tablist"
 			aria-label="Workspace panels"
 		>
 			<WorkspaceTabButton
 				active={workspaceTab === "files"}
+				icon={FolderTree}
+				label="Files"
+				iconOnly={workspaceTabsCompact}
 				onClick={() => setRequestedWorkspaceTab("files")}
-			>
-				Files
-			</WorkspaceTabButton>
+			/>
 			{showChanges && (
 				<WorkspaceTabButton
 					active={workspaceTab === "changes"}
+					icon={GitCompareArrows}
+					label="Changes"
+					iconOnly={workspaceTabsCompact}
 					onClick={() => setRequestedWorkspaceTab("changes")}
-				>
-					Changes
-				</WorkspaceTabButton>
+				/>
 			)}
 			{showInspect && (
 				<WorkspaceTabButton
 					active={workspaceTab === "inspect"}
+					icon={Stethoscope}
+					label="Inspect"
+					iconOnly={workspaceTabsCompact}
 					onClick={() => setRequestedWorkspaceTab("inspect")}
-				>
-					Inspect
-				</WorkspaceTabButton>
+				/>
 			)}
 			{showAgents && (
 				<WorkspaceTabButton
 					active={workspaceTab === "agents"}
+					icon={Bot}
+					label="Agents"
+					iconOnly={workspaceTabsCompact}
 					onClick={() => setRequestedWorkspaceTab("agents")}
-				>
-					Agents
-				</WorkspaceTabButton>
+				/>
 			)}
 		</div>
 	);
@@ -2860,10 +2892,10 @@ export default function App() {
 				<div
 					data-window-interactive
 					data-titlebar-right-panel
-					className={`relative z-20 flex shrink-0 items-center overflow-hidden ${rightPanelDocked ? "pr-2" : "gap-1 px-1"}`}
+					className={`relative z-20 flex shrink-0 items-center overflow-hidden ${rightPanelDocked ? "" : "gap-1 px-1"}`}
 					style={{
 						width: rightPanelDocked
-							? "max(0px, calc(var(--right-panel-width) - var(--window-controls-inset-end)))"
+							? "max(0px, calc(var(--right-panel-width) - var(--window-controls-reserve-end)))"
 							: `${collapsedRightTitlebarWidth}px`,
 					}}
 				>
@@ -3558,20 +3590,26 @@ function AppMenuItem({
 
 function WorkspaceTabButton({
 	active,
+	icon: Icon,
+	label,
+	iconOnly,
 	onClick,
-	children,
 }: {
 	active: boolean;
+	icon: LucideIcon;
+	label: string;
+	iconOnly: boolean;
 	onClick: () => void;
-	children: React.ReactNode;
 }) {
 	return (
 		<button
 			type="button"
 			role="tab"
 			aria-selected={active}
+			aria-label={label}
 			tabIndex={active ? 0 : -1}
-			className={`relative flex min-w-0 flex-1 cursor-pointer items-center justify-center px-1.5 text-[11px] font-medium transition-colors ${
+			title={iconOnly ? label : undefined}
+			className={`relative flex min-w-0 flex-1 cursor-pointer items-center justify-center overflow-hidden px-1.5 text-[11px] font-medium transition-colors ${
 				active ? "text-fg" : "text-fg-dim hover:text-fg-muted"
 			}`}
 			onClick={onClick}
@@ -3590,7 +3628,11 @@ function WorkspaceTabButton({
 				next?.click();
 			}}
 		>
-			{children}
+			{iconOnly ? (
+				<Icon size={13} className="shrink-0" aria-hidden="true" />
+			) : (
+				<span className="truncate">{label}</span>
+			)}
 			{active && (
 				<span className="absolute right-2 bottom-0 left-2 h-[2px] rounded-full bg-accent" />
 			)}

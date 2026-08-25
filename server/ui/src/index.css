@@ -223,6 +223,14 @@ select,
 .window-titlebar {
 	--window-controls-inset: var(--shell-titlebar-inset-left, 0px);
 	--window-controls-inset-end: var(--shell-titlebar-inset-right, 0px);
+	/* go-shell already pads its reported inset past the caption glyphs, so the
+	   trailing edge of the toolbar can reach back into that cushion instead of
+	   stacking a second gap on top of it. */
+	--window-controls-cushion: 6px;
+	--window-controls-reserve-end: max(
+		0px,
+		calc(var(--window-controls-inset-end) - var(--window-controls-cushion))
+	);
 	--window-menu-inset: 0px;
 	height: var(--shell-titlebar-height, 40px);
 	min-height: var(--shell-titlebar-height, 40px);
@@ -238,8 +246,8 @@ select,
 }
 
 .window-titlebar-controls-spacer-end {
-	width: var(--window-controls-inset-end);
-	min-width: var(--window-controls-inset-end);
+	width: var(--window-controls-reserve-end);
+	min-width: var(--window-controls-reserve-end);
 }
 
 .window-app-menu {
