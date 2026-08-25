@@ -115,10 +115,12 @@ func modelIdentity(available []model.Model, current string) string {
 }
 
 // streamCells renders the in-flight turn tail shown below the committed chat.
-// Displaced snapshots keep earlier thoughts, messages, and tools visible while
-// ACP waits until turn completion to commit the complete transcript.
-// Spacing follows the same cellFlow rules as committed cells (on a copy of
-// the state), so nothing shifts when the turn finalizes.
+// Displaced snapshots keep earlier reasoning headings, messages, and tools
+// visible while ACP waits until turn completion to commit the complete
+// transcript. Reasoning bodies remain buffered for reconciliation and the
+// transcript overlay; the live chat shows only their stable structured heading.
+// Visible live cells follow the same cellFlow rules as committed cells (on a
+// copy of the state).
 func (a *App) streamCells(width int) []string {
 	snapshots := a.snapshotStreamState()
 
@@ -152,8 +154,8 @@ func (a *App) streamCells(width int) []string {
 			lines = append(lines, cellAssistant(snapshot.text, width, theme.Default.BrBlack)...)
 		}
 
-		if snapshot.reasoning != "" {
-			cell := cellReasoning(snapshot.reasoning, width, false)
+		if snapshot.reasoningHeadings != "" {
+			cell := cellReasoningHeadings(snapshot.reasoningHeadings, width)
 			if flow.beforeThought(len(cell) > 1) {
 				lines = append(lines, "")
 			}

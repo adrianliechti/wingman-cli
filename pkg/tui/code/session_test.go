@@ -23,20 +23,20 @@ func newStreamTestApp(messages []agent.Message) (*App, *uiTestAgent) {
 func TestSyncMessagesReconcilesNativeCommittedStream(t *testing.T) {
 	a, testAgent := newStreamTestApp(nil)
 	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
-		Reasoning: &agent.Reasoning{ID: "reason-1", Summary: "planning the edit"},
+		Reasoning: &agent.Reasoning{ID: "reason-1", Summary: "**Planning the edit**\nprivate details"},
 	}}})
 	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
 		Text: "Let me inspect the file.",
 	}}})
 
 	testAgent.messages = append(testAgent.messages, agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{
-		{Reasoning: &agent.Reasoning{ID: "reason-1", Summary: "planning the edit"}},
+		{Reasoning: &agent.Reasoning{ID: "reason-1", Summary: "**Planning the edit**\nprivate details"}},
 		{Text: "Let me inspect the file."},
 		{ToolCall: &agent.ToolCall{ID: "call-1", Name: "read", Args: `{"path":"main.go"}`}},
 	}})
 	a.syncMessages()
 
-	if tail := ansi.Strip(strings.Join(a.streamCells(100), "\n")); strings.Contains(tail, "planning the edit") || strings.Contains(tail, "Let me inspect the file.") {
+	if tail := ansi.Strip(strings.Join(a.streamCells(100), "\n")); strings.Contains(tail, "Planning the edit") || strings.Contains(tail, "Let me inspect the file.") {
 		t.Fatalf("committed response remained in live tail: %q", tail)
 	}
 
@@ -52,8 +52,11 @@ func TestSyncMessagesReconcilesNativeCommittedStream(t *testing.T) {
 	if count := strings.Count(out, "Let me inspect the file."); count != 1 {
 		t.Fatalf("assistant response rendered %d times: %q", count, out)
 	}
-	if count := strings.Count(out, "planning the edit"); count != 1 {
+	if count := strings.Count(out, "Planning the edit"); count != 1 {
 		t.Fatalf("reasoning rendered %d times: %q", count, out)
+	}
+	if strings.Contains(out, "private details") {
+		t.Fatalf("normal chat exposed full reasoning: %q", out)
 	}
 	if textAt, toolAt := strings.Index(out, "Let me inspect the file."), strings.Index(out, "main.go"); textAt < 0 || toolAt <= textAt {
 		t.Fatalf("tool result is not after its response: %q", out)

@@ -17,7 +17,7 @@ func TestVariantFor(t *testing.T) {
 	if v := VariantFor("some-unknown-model"); v != def {
 		t.Errorf("VariantFor(some-unknown-model) = distinct variant, want default")
 	}
-	for _, id := range []string{"grokish-4.6", "minimaximum-m3", "gptish-5.6"} {
+	for _, id := range []string{"grokish-4.6", "minimaximum-m3", "gptish-5.6", "qwenish-3.8"} {
 		if v := VariantFor(id); v != def {
 			t.Errorf("VariantFor(%s) matched a partial family name", id)
 		}
@@ -27,6 +27,7 @@ func TestVariantFor(t *testing.T) {
 		"gpt-5.6-sol", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.2", "gpt-5.1", "gpt-4o",
 		"claude-opus-5", "claude-opus-4-8", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-6", "claude-fable-5", "claude-mythos-5",
 		"gemini-3.7-flash", "gemini-3.6-flash", "glm-5.3", "glm-5.2", "kimi-k3", "minimax-m3", "grok-4.6",
+		"qwen3.8-max", "qwen3.8", "qwen3.7-plus", "qwen3.5-plus",
 	} {
 		v := VariantFor(id)
 
@@ -79,12 +80,21 @@ func TestVariantFor(t *testing.T) {
 	if VariantFor("grok-4.5").Agent != VariantFor("grok-4.6").Agent {
 		t.Error("Grok models should share the Grok family prompt")
 	}
+	if VariantFor("qwen3.8-max").Agent != VariantFor("qwen3.5-plus").Agent {
+		t.Error("Qwen models should share the Qwen family prompt")
+	}
+	if VariantFor("qwen/qwen3.8-27b").Agent != VariantFor("qwen3.8").Agent {
+		t.Error("provider-prefixed Qwen models should use the Qwen family prompt")
+	}
 
 	if upper := VariantFor("GPT-5.6-Sol"); upper != VariantFor("gpt-5.6-sol") {
 		t.Error("VariantFor is not case-insensitive")
 	}
 	if upper := VariantFor("MiniMax-M3"); upper != VariantFor("minimax-m3") {
 		t.Error("MiniMax M3 prompt matching is not case-insensitive")
+	}
+	if upper := VariantFor("QWEN3.8-MAX"); upper != VariantFor("qwen3.8-max") {
+		t.Error("Qwen prompt matching is not case-insensitive")
 	}
 }
 
@@ -106,6 +116,8 @@ func TestBuildInstructionsRendersModelTemplate(t *testing.T) {
 		"kimi-k3",
 		"minimax-m3",
 		"grok-4.6",
+		"qwen3.8",
+		"qwen3.8-max",
 	} {
 		t.Run(id, func(t *testing.T) {
 			selected, ok := model.Find(id)
@@ -242,6 +254,7 @@ func TestAgentPromptPolicy(t *testing.T) {
 		"kimi-k3",
 		"minimax-m3",
 		"grok-4.6",
+		"qwen3.8",
 	} {
 		t.Run(id, func(t *testing.T) {
 			agent := strings.ToLower(VariantFor(id).Agent)
@@ -339,8 +352,35 @@ func TestFallbackPlanContract(t *testing.T) {
 	}
 }
 
+func TestQwenAgentContract(t *testing.T) {
+	agent := strings.ToLower(VariantFor("qwen3.8").Agent)
+
+	for _, want := range []string{
+		"# core mandates",
+		"# software-engineering workflow",
+		"never assume a library or framework",
+		"start with a reasonable approach",
+		"do not retry blindly",
+		"before the first tool call",
+	} {
+		if !strings.Contains(agent, want) {
+			t.Errorf("Qwen agent prompt missing reference guidance %q", want)
+		}
+	}
+
+	if agent == strings.ToLower(VariantFor("gemini-3.6-flash").Agent) {
+		t.Error("Qwen should keep its model-specific prompt")
+	}
+
+	for _, unwanted := range []string{"qwen.md", "run_shell_command", "ask_user_question", "qwen:user-prompt-submit-context"} {
+		if strings.Contains(agent, unwanted) {
+			t.Errorf("Qwen agent prompt contains Qwen Code harness instruction %q", unwanted)
+		}
+	}
+}
+
 func TestNewModelPromptsExcludeVendorHarnessInstructions(t *testing.T) {
-	for _, id := range []string{"gemini-3.6-flash", "glm-5.3", "kimi-k3", "minimax-m3", "grok-4.6"} {
+	for _, id := range []string{"gemini-3.6-flash", "glm-5.3", "kimi-k3", "minimax-m3", "grok-4.6", "qwen3.8"} {
 		t.Run(id, func(t *testing.T) {
 			agent := strings.ToLower(VariantFor(id).Agent)
 			for _, unwanted := range []string{"github copilot", "microsoft content policies", "vs code editor", "/mnt/agents", "tool_search_tool"} {

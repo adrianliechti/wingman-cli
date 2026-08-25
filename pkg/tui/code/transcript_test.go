@@ -2,7 +2,6 @@ package code
 
 import (
 	"context"
-	"slices"
 	"strings"
 	"testing"
 
@@ -57,55 +56,26 @@ func TestTranscriptInspectorSearchAndExpansion(t *testing.T) {
 	}
 }
 
-func TestTranscriptUsesChatCellSpacing(t *testing.T) {
-	longThought := strings.Repeat("weighing the tradeoffs carefully ", 6)
+func TestTranscriptShowsFullReasoningWhileChatShowsHeadings(t *testing.T) {
 	messages := []agent.Message{
-		{Role: agent.RoleAssistant, Content: []agent.Content{{ToolResult: &agent.ToolResult{
-			ID: "tool-1", Name: "read", Content: "ok",
-		}}}},
 		{Role: agent.RoleAssistant, Content: []agent.Content{{Reasoning: &agent.Reasoning{
-			ID: "reason-1", Summary: "considering the options",
+			ID: "reason-1", Summary: "**Considering the options**\nweighing the tradeoffs carefully",
 		}}}},
-		{Role: agent.RoleAssistant, Content: []agent.Content{{Reasoning: &agent.Reasoning{
-			ID: "reason-2", Summary: longThought,
-		}}}},
-		{Role: agent.RoleAssistant, Content: []agent.Content{{Reasoning: &agent.Reasoning{
-			ID: "reason-3", Summary: "settling on a plan",
-		}}}},
-		{Role: agent.RoleAssistant, Content: []agent.Content{{ToolResult: &agent.ToolResult{
-			ID: "tool-2", Name: "shell", Content: "one\ntwo\nthree\nfour",
-		}}}},
-		{Role: agent.RoleAssistant, Content: []agent.Content{{Text: "done"}}},
 	}
 
-	const transcriptWidth = 80
 	a := &App{ctx: context.Background(), agent: newUITestAgent(messages), sessionID: "session"}
-	var chat []string
-	for _, message := range messages {
-		chat = append(chat, a.formatMessageCells(message, transcriptWidth-2)...)
+	chat := ansi.Strip(strings.Join(a.formatMessageCells(messages[0], 78), "\n"))
+	if !strings.Contains(chat, "Considering the options") || strings.Contains(chat, "weighing the tradeoffs") {
+		t.Fatalf("normal chat reasoning = %q", chat)
 	}
 
 	o := &transcriptOverlay{
 		app: a, selected: -1, expanded: map[string]bool{}, cache: map[string]transcriptCache{},
 	}
 	o.buildEntries()
-	for _, entry := range o.entries {
-		if entry.kind == transcriptReasoning {
-			o.expanded[entry.key] = true
-		}
-	}
-	// Remove selection styling so only the transcript's fixed two-column
-	// navigation gutter differs from the normal chat cells.
-	o.selected = -1
-	transcript, _, _ := o.bodyLines(transcriptWidth)
-	for i, line := range transcript {
-		if strings.HasPrefix(line, "  ") {
-			transcript[i] = line[2:]
-		}
-	}
-
-	if !slices.Equal(transcript, chat) {
-		t.Fatalf("transcript spacing drifted from chat\ntranscript: %q\nchat:       %q", transcript, chat)
+	transcript := ansi.Strip(strings.Join(o.entryLines(o.entries[0], 80, false), "\n"))
+	if !strings.Contains(transcript, "Considering the options") || !strings.Contains(transcript, "weighing the tradeoffs") {
+		t.Fatalf("transcript did not show full reasoning: %q", transcript)
 	}
 }
 
@@ -115,7 +85,7 @@ func TestTranscriptLiveTailOrderAndVanishedSelection(t *testing.T) {
 		{Role: agent.RoleAssistant, Content: []agent.Content{{Text: "answer one"}}},
 	}
 	a := &App{ctx: context.Background(), agent: newUITestAgent(messages), sessionID: "session"}
-	a.streamCurrent = streamSnapshot{text: "partial answer", reasoning: "weighing options"}
+	a.streamCurrent = streamSnapshot{text: "partial answer", reasoning: "**Weighing options**\nfull live details"}
 
 	o := &transcriptOverlay{app: a, selected: -1, follow: true, expanded: map[string]bool{}, cache: map[string]transcriptCache{}}
 	o.buildEntries()
@@ -123,6 +93,10 @@ func TestTranscriptLiveTailOrderAndVanishedSelection(t *testing.T) {
 	last := len(o.entries) - 1
 	if o.entries[last-1].key != "live:0:text" || o.entries[last].key != "live:0:reasoning" {
 		t.Fatalf("live tail = %q, %q; want text before reasoning", o.entries[last-1].key, o.entries[last].key)
+	}
+	liveReasoning := ansi.Strip(strings.Join(o.entryLines(o.entries[last], 80, false), "\n"))
+	if !strings.Contains(liveReasoning, "Weighing options") || !strings.Contains(liveReasoning, "full live details") {
+		t.Fatalf("transcript hid live reasoning body: %q", liveReasoning)
 	}
 
 	o.moveSelection(-1)
@@ -172,6 +146,18 @@ func TestTranscriptTallEntryLineScroll(t *testing.T) {
 		t.Fatalf("tall entry not anchored to its top: offset=%d start=%d", o.offset, starts[toolIndex])
 	}
 
+	pageRows := o.contentRows
+	o.HandleKey(inline.KeyEvent{Key: inline.KeyPgDn})
+	o.Render(80, height)
+	if o.selected != toolIndex || o.offset != starts[toolIndex]+pageRows {
+		t.Fatalf("page down did not move one viewport: selected=%d offset=%d, want %d", o.selected, o.offset, starts[toolIndex]+pageRows)
+	}
+	o.HandleKey(inline.KeyEvent{Key: inline.KeyPgUp})
+	o.Render(80, height)
+	if o.selected != toolIndex || o.offset != starts[toolIndex] {
+		t.Fatalf("page up did not return one viewport: selected=%d offset=%d, want %d", o.selected, o.offset, starts[toolIndex])
+	}
+
 	o.step(1)
 	o.Render(80, height)
 	if o.selected != toolIndex || o.offset != starts[toolIndex]+1 {
@@ -197,13 +183,19 @@ func TestTranscriptShortOverlayKeys(t *testing.T) {
 	}
 	a := &App{ctx: context.Background(), agent: newUITestAgent(messages), sessionID: "session"}
 	o := &transcriptOverlay{app: a, selected: -1, follow: true, expanded: map[string]bool{}, cache: map[string]transcriptCache{}}
-	o.Render(40, 5)
+	o.Render(40, 4)
 
 	o.selected = o.firstSelectable()
 	o.follow = false
+	o.Render(40, 4)
 	o.HandleKey(inline.KeyEvent{Key: inline.KeyPgDn})
-	if o.selected == o.firstSelectable() {
-		t.Fatal("pgdn on a short overlay did not move the selection")
+	if o.offset != 1 {
+		t.Fatalf("pgdn offset = %d, want one clamped page", o.offset)
+	}
+
+	hints := ansi.Strip(o.hintLine())
+	if !strings.Contains(hints, "pgup/dn page") || strings.Contains(hints, "ctrl+u") || strings.Contains(hints, "ctrl+d") {
+		t.Fatalf("transcript hints = %q", hints)
 	}
 
 	o.HandleKey(inline.KeyEvent{Key: inline.KeyRune, Rune: '/'})

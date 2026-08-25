@@ -41,14 +41,11 @@ func TestThoughtCellsGetSurroundingBlankLines(t *testing.T) {
 		}}
 	}
 
-	long := strings.Repeat("weighing the tradeoffs carefully ", 6)
-
 	var lines []string
 	for _, m := range []agent.Message{
 		toolMsg("call_1"),
-		thoughtMsg("rs_1", "considering the options"),
-		thoughtMsg("rs_2", long),
-		thoughtMsg("rs_3", "settling on a plan"),
+		thoughtMsg("rs_1", "**Considering the options**\nfull reasoning body"),
+		thoughtMsg("rs_2", "**Settling on a plan**\nmore reasoning body"),
 		toolMsg("call_2"),
 	} {
 		lines = append(lines, a.formatMessageCells(m, 80)...)
@@ -64,21 +61,20 @@ func TestThoughtCellsGetSurroundingBlankLines(t *testing.T) {
 		return -1
 	}
 
-	first := find("considering the options")
-	second := find("weighing the tradeoffs")
-	third := find("settling on a plan")
+	first := find("Considering the options")
+	second := find("Settling on a plan")
 
 	if first == 0 || lines[first-1] != "" {
 		t.Errorf("no blank line between tool and thought: %q", lines)
 	}
 	if second != first+1 {
-		t.Errorf("one-line thoughts not tight: %q", lines)
+		t.Errorf("one-line thought headings not tight: %q", lines)
 	}
-	if lines[third-1] != "" {
-		t.Errorf("no blank line after multi-line thought: %q", lines)
-	}
-	if third == len(lines)-1 || lines[third+1] != "" {
+	if second == len(lines)-1 || lines[second+1] != "" {
 		t.Errorf("no blank line between thought and tool: %q", lines)
+	}
+	if joined := strings.Join(lines, "\n"); strings.Contains(joined, "reasoning body") {
+		t.Errorf("normal chat exposed full reasoning: %q", lines)
 	}
 
 	for i := 1; i < len(lines); i++ {
@@ -88,7 +84,7 @@ func TestThoughtCellsGetSurroundingBlankLines(t *testing.T) {
 	}
 }
 
-func TestStreamTailFollowsWorkOrder(t *testing.T) {
+func TestStreamingReasoningUsesStableChatHeading(t *testing.T) {
 	ws := newTestWorkspace(t, t.TempDir())
 
 	a := &App{agent: codeagent.New(ws, &agent.Config{}, nil), queue: make(chan func(), 64), quit: make(chan struct{})}
@@ -97,29 +93,67 @@ func TestStreamTailFollowsWorkOrder(t *testing.T) {
 		{Text: "streamed answer"},
 	}})
 	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{
-		{Reasoning: &agent.Reasoning{ID: "rs_1", Summary: "planning the next step"}},
+		{Reasoning: &agent.Reasoning{ID: "rs_1", Summary: "**Planning the next step** more detail"}},
 	}})
+	a.setPhase(PhaseThinking)
 
-	tail := a.streamCells(80)
+	tail := ansi.Strip(strings.Join(a.streamCells(80), "\n"))
+	if !strings.Contains(tail, "streamed answer") {
+		t.Fatalf("tail lost streamed assistant text: %q", tail)
+	}
+	if !strings.Contains(tail, "Planning the next step") || strings.Contains(tail, "more detail") {
+		t.Fatalf("tail did not isolate the stable reasoning heading: %q", tail)
+	}
+	footer := ansi.Strip(a.footerLine(80))
+	if !strings.Contains(footer, "Thinking") || strings.Contains(footer, "Planning the next step") {
+		t.Fatalf("footer did not remain generic activity: %q", footer)
+	}
+}
 
-	textIdx, thoughtIdx := -1, -1
-	for i, l := range tail {
-		if strings.Contains(l, "streamed answer") {
-			textIdx = i
-		}
-		if strings.Contains(l, "planning the next step") {
-			thoughtIdx = i
-		}
+func TestReasoningHeadingWaitsForCompleteBoldText(t *testing.T) {
+	a := &App{queue: make(chan func(), 64), quit: make(chan struct{})}
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		Reasoning: &agent.Reasoning{ID: "reason-1", Summary: "**Checking"},
+	}}})
+	if tail := ansi.Strip(strings.Join(a.streamCells(80), "\n")); strings.Contains(tail, "Checking") {
+		t.Fatalf("partial reasoning heading became visible: %q", tail)
 	}
 
-	if textIdx < 0 || thoughtIdx < 0 {
-		t.Fatalf("tail missing cells: %q", tail)
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		Reasoning: &agent.Reasoning{ID: "reason-1", Summary: " files** and reading details"},
+	}}})
+	tail := ansi.Strip(strings.Join(a.streamCells(80), "\n"))
+	if !strings.Contains(tail, "Checking files") || strings.Contains(tail, "reading details") {
+		t.Fatalf("completed heading was not isolated from reasoning tokens: %q", tail)
 	}
-	if thoughtIdx < textIdx {
-		t.Errorf("thought rendered above older streamed text: %q", tail)
+}
+
+func TestReasoningHeadingsAccumulateAcrossPartBoundaries(t *testing.T) {
+	a := &App{queue: make(chan func(), 64), quit: make(chan struct{})}
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		Reasoning: &agent.Reasoning{ID: "reason-1", Part: 0, Summary: "**Inspecting files** body"},
+	}}})
+	a.handleStreamMessage(agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{
+		Reasoning: &agent.Reasoning{ID: "reason-1", Part: 1, Summary: "**Planning changes** body"},
+	}}})
+
+	tail := ansi.Strip(strings.Join(a.streamCells(80), "\n"))
+	if !strings.Contains(tail, "Inspecting files") || !strings.Contains(tail, "Planning changes") {
+		t.Fatalf("reasoning headings were not preserved across parts: %q", tail)
 	}
-	if thoughtIdx != textIdx+2 || tail[textIdx+1] != "" {
-		t.Errorf("no single blank line between text and thought: %q", tail)
+}
+
+func TestReasoningHeadingIsSafeSingleLineText(t *testing.T) {
+	got := extractReasoningHeader("**Checking\n\x1b[31mred\x1b[0m files** body")
+	if got != "Checking red files" {
+		t.Fatalf("unsafe reasoning heading = %q", got)
+	}
+}
+
+func TestCommittedReasoningExtractsOnlyLineHeadings(t *testing.T) {
+	summary := "**Inspecting files**\nbody with **important** detail\n\n**Planning changes**\nmore body"
+	if got := extractReasoningHeadings(summary); got != "Inspecting files\nPlanning changes" {
+		t.Fatalf("reasoning headings = %q", got)
 	}
 }
 
@@ -146,14 +180,17 @@ func TestStreamTailRetainsIntermediateACPCells(t *testing.T) {
 
 	tail := a.streamCells(100)
 	joined := strings.Join(tail, "\n")
-	for _, want := range []string{"checking the repository", "choosing the relevant file", "I found the relevant path.", "one.go", "two.go"} {
+	for _, want := range []string{"I found the relevant path.", "one.go", "two.go"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("live turn lost %q: %q", want, tail)
 		}
 	}
-	if strings.Index(joined, "checking the repository") > strings.Index(joined, "choosing the relevant file") ||
-		strings.Index(joined, "choosing the relevant file") > strings.Index(joined, "I found the relevant path.") ||
-		strings.Index(joined, "I found the relevant path.") > strings.Index(joined, "one.go") ||
+	for _, hidden := range []string{"checking the repository", "choosing the relevant file"} {
+		if strings.Contains(joined, hidden) {
+			t.Errorf("reasoning token tape retained %q: %q", hidden, tail)
+		}
+	}
+	if strings.Index(joined, "I found the relevant path.") > strings.Index(joined, "one.go") ||
 		strings.Index(joined, "one.go") > strings.Index(joined, "two.go") {
 		t.Errorf("live cells are out of event order: %q", tail)
 	}

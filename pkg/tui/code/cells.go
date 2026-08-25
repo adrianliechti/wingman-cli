@@ -152,6 +152,56 @@ func cellReasoning(summary string, width int, full bool) []string {
 	return lines
 }
 
+// cellReasoningHeadings renders the structured reasoning headings retained in
+// the normal chat. Complete reasoning bodies are reserved for the transcript.
+func cellReasoningHeadings(headings string, width int) []string {
+	var lines []string
+	for heading := range strings.SplitSeq(headings, "\n") {
+		if heading != "" {
+			lines = append(lines, cellReasoning(heading, width, false)...)
+		}
+	}
+	return lines
+}
+
+// extractReasoningHeader returns the first complete structured heading in a
+// reasoning part. Incomplete delimiters are left buffered until a later delta.
+func extractReasoningHeader(summary string) string {
+	header, _, _ := strings.Cut(extractReasoningHeadings(summary), "\n")
+	return header
+}
+
+// extractReasoningHeadings recovers every structured bold heading from a
+// committed summary whose original provider part boundaries are no longer
+// represented separately.
+func extractReasoningHeadings(summary string) string {
+	var headings []string
+	for offset := 0; offset < len(summary); {
+		relativeStart := strings.Index(summary[offset:], "**")
+		if relativeStart < 0 {
+			break
+		}
+		start := offset + relativeStart
+		rest := summary[start+2:]
+		end := strings.Index(rest, "**")
+		if end < 0 {
+			break
+		}
+		lineStart := strings.LastIndex(summary[:start], "\n") + 1
+		if strings.TrimSpace(summary[lineStart:start]) == "" {
+			if heading := normalizeReasoningHeading(rest[:end]); heading != "" {
+				headings = append(headings, heading)
+			}
+		}
+		offset = start + 2 + end + 2
+	}
+	return strings.Join(headings, "\n")
+}
+
+func normalizeReasoningHeading(heading string) string {
+	return strings.Join(strings.Fields(markdown.Sanitize(heading)), " ")
+}
+
 func lastNonEmptyLine(s string) string {
 	lines := strings.Split(s, "\n")
 	for _, line := range slices.Backward(lines) {

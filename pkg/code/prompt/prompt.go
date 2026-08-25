@@ -80,10 +80,13 @@ func loadVariants() map[string]Variant {
 
 func VariantFor(id string) Variant {
 	id = model.Normalize(id)
+	if _, suffix, ok := strings.Cut(id, "/"); ok {
+		id = suffix
+	}
 
 	match := ""
 	for prefix := range variants {
-		if (id == prefix || strings.HasPrefix(id, prefix+"-")) && len(prefix) > len(match) {
+		if hasVariantPrefix(id, prefix) && len(prefix) > len(match) {
 			match = prefix
 		}
 	}
@@ -93,6 +96,18 @@ func VariantFor(id string) Variant {
 	}
 
 	return Variant{Agent: modeAgent, Plan: modePlan, Unattended: modeUnattended}
+}
+
+func hasVariantPrefix(id, prefix string) bool {
+	if id == prefix {
+		return true
+	}
+	if !strings.HasPrefix(id, prefix) || len(id) == len(prefix) {
+		return false
+	}
+
+	next := id[len(prefix)]
+	return next == '-' || next >= '0' && next <= '9'
 }
 
 //go:embed section_environment.txt

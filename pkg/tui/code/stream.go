@@ -130,7 +130,11 @@ func (a *App) formatMessageCells(msg agent.Message, width int) []string {
 			continue
 
 		case c.Reasoning != nil && c.Reasoning.Summary != "":
-			cell := cellReasoning(c.Reasoning.Summary, width, true)
+			headings := extractReasoningHeadings(c.Reasoning.Summary)
+			if headings == "" {
+				continue
+			}
+			cell := cellReasoningHeadings(headings, width)
 			if a.flow.beforeThought(len(cell) > 1) {
 				lines = append(lines, "")
 			}
@@ -265,9 +269,7 @@ func (a *App) releaseReasoningLocked(reasoning *agent.Reasoning) {
 		return snapshot.reasoning == reasoning.Summary
 	}
 	a.releaseStreamFieldLocked(match, func(snapshot *streamSnapshot) {
-		snapshot.reasoning = ""
-		snapshot.reasoningID = ""
-		snapshot.reasoningPart = 0
+		snapshot.clearReasoning()
 		snapshot.retryAttempt = false
 	})
 }
@@ -368,9 +370,7 @@ func (a *App) commitStreamAttempt() {
 func (a *App) clearRetryableOutputLocked(snapshot *streamSnapshot) {
 	snapshot.text = ""
 	snapshot.textID = ""
-	snapshot.reasoning = ""
-	snapshot.reasoningID = ""
-	snapshot.reasoningPart = 0
+	snapshot.clearReasoning()
 	if snapshot.toolPartial {
 		snapshot.clearTool()
 	}
@@ -391,6 +391,15 @@ func (snapshot *streamSnapshot) clearTool() {
 	snapshot.toolPartial = false
 	snapshot.toolProgress = ""
 	snapshot.toolResult = nil
+}
+
+func (snapshot *streamSnapshot) clearReasoning() {
+	snapshot.reasoning = ""
+	snapshot.reasoningID = ""
+	snapshot.reasoningPart = 0
+	snapshot.reasoningPartStart = 0
+	snapshot.reasoningHeadings = ""
+	snapshot.reasoningHeadingSet = false
 }
 
 func (snapshot streamSnapshot) empty() bool {
@@ -610,13 +619,33 @@ func (a *App) handleStreamMessage(msg agent.Message) {
 			}
 			if a.streamCurrent.reasoning != "" && c.Reasoning.Part != a.streamCurrent.reasoningPart {
 				a.streamCurrent.reasoning += "\n\n"
+				a.streamCurrent.reasoningPartStart = len(a.streamCurrent.reasoning)
+				a.streamCurrent.reasoningHeadingSet = false
 			}
 			a.streamCurrent.reasoning += c.Reasoning.Summary
+			headerChanged := false
+			if !a.streamCurrent.reasoningHeadingSet {
+				currentPart := a.streamCurrent.reasoning[a.streamCurrent.reasoningPartStart:]
+				header := extractReasoningHeader(currentPart)
+				headerChanged = header != ""
+				if headerChanged {
+					a.streamCurrent.reasoningHeadingSet = true
+					if a.streamCurrent.reasoningHeadings != "" {
+						a.streamCurrent.reasoningHeadings += "\n"
+					}
+					a.streamCurrent.reasoningHeadings += header
+				}
+			}
 			a.streamCurrent.reasoningID = c.Reasoning.ID
 			a.streamCurrent.reasoningPart = c.Reasoning.Part
 			a.streamCurrent.retryAttempt = true
 			a.streamStateMu.Unlock()
-			a.requestRender()
+			// Ordinary reasoning tokens no longer change the visible chat tail.
+			// Repaint only when a complete structured heading becomes available;
+			// the spinner ticker handles the ongoing activity animation.
+			if headerChanged {
+				a.requestRender()
+			}
 
 		case c.Text != "":
 			if a.getPhase() != PhaseStreaming {

@@ -146,7 +146,12 @@ type streamSnapshot struct {
 	reasoning     string
 	reasoningID   string
 	reasoningPart int
-	retryAttempt  bool
+	// reasoningPartStart locates the current summary part within reasoning so
+	// a heading split across deltas can be extracted without a second buffer.
+	reasoningPartStart  int
+	reasoningHeadings   string
+	reasoningHeadingSet bool
+	retryAttempt        bool
 }
 
 type toast struct {
