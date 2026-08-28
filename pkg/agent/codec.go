@@ -108,7 +108,7 @@ func userToInput(m Message) []responses.ResponseInputItemUnionParam {
 		if c.ToolResult != nil && c.ToolResult.ID != "" {
 			items = append(items, responses.ResponseInputItemUnionParam{
 				OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
-					CallID: c.ToolResult.ID,
+					CallID: openai.String(c.ToolResult.ID),
 					Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
 						OfString: openai.String(c.ToolResult.Content),
 					},
@@ -169,7 +169,7 @@ func assistantToInput(m Message) ([]responses.ResponseInputItemUnionParam, []res
 		if c.ToolResult != nil && c.ToolResult.ID != "" {
 			items = append(items, responses.ResponseInputItemUnionParam{
 				OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
-					CallID: c.ToolResult.ID,
+					CallID: openai.String(c.ToolResult.ID),
 					Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
 						OfString: openai.String(c.ToolResult.Content),
 					},
@@ -259,9 +259,9 @@ func toMessages(items []responses.ResponseInputItemUnionParam) []Message {
 			})
 
 		case item.OfFunctionCallOutput != nil:
-			tc := toolCallsByID[item.OfFunctionCallOutput.CallID]
+			tc := toolCallsByID[item.OfFunctionCallOutput.CallID.Value]
 			tr := ToolResult{
-				ID:      item.OfFunctionCallOutput.CallID,
+				ID:      item.OfFunctionCallOutput.CallID.Value,
 				Name:    tc.Name,
 				Args:    tc.Args,
 				Content: item.OfFunctionCallOutput.Output.OfString.Value,

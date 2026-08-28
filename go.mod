@@ -1,6 +1,6 @@
 module github.com/adrianliechti/wingman-agent
 
-go 1.26.0
+go 1.26.3
 
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
@@ -18,7 +18,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/odvcencio/gotreesitter v0.51.0
-	github.com/openai/openai-go/v3 v3.52.0
+	github.com/openai/openai-go/v3 v3.54.0
 	github.com/rivo/uniseg v0.4.7
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/sahilm/fuzzy v0.1.3
