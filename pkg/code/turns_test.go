@@ -23,6 +23,7 @@ type turnManagerTestAgent struct {
 	steerErr   error
 	steerPanic bool
 	steer      bool
+	queues     map[string]TurnQueueState
 }
 
 type blockingSteerAgent struct {
@@ -66,6 +67,34 @@ func (a *turnManagerTestAgent) Messages(string) []agent.Message                 
 func (a *turnManagerTestAgent) Usage(string) agent.Usage                            { return agent.Usage{} }
 func (a *turnManagerTestAgent) Close() error                                        { return nil }
 
+func (a *turnManagerTestAgent) LoadTurnQueue(sessionID string) (TurnQueueState, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	state := a.queues[sessionID]
+	state.Inputs = cloneTurnInputs(state.Inputs)
+	return state, nil
+}
+
+func (a *turnManagerTestAgent) SaveTurnQueue(sessionID string, state TurnQueueState) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.queues == nil {
+		a.queues = map[string]TurnQueueState{}
+	}
+	state.Inputs = cloneTurnInputs(state.Inputs)
+	a.queues[sessionID] = state
+	return nil
+}
+
+func cloneTurnInputs(inputs []TurnInput) []TurnInput {
+	out := make([]TurnInput, len(inputs))
+	for i := range inputs {
+		out[i] = inputs[i]
+		out[i].Content = agent.CloneContent(inputs[i].Content)
+	}
+	return out
+}
+
 func (a *turnManagerTestAgent) Send(ctx context.Context, _ string, input []agent.Content) (iter.Seq2[agent.Message, error], error) {
 	text := input[0].Text
 	if text == "panic" {
@@ -100,6 +129,44 @@ func TestTurnManagerInstallsSessionIDOnRunContext(t *testing.T) {
 		t.Fatalf("session ID = %q, want session-1", got)
 	}
 	a.releases <- struct{}{}
+}
+
+func TestTurnManagerRestoresQueuedInputsPaused(t *testing.T) {
+	a := newTurnManagerTestAgent()
+	if err := a.SaveTurnQueue("s", TurnQueueState{Inputs: []TurnInput{
+		{ID: "one", Intent: TurnInputFollowUp, Content: []agent.Content{{Text: "first restored"}}},
+		{ID: "two", Intent: TurnInputFollowUp, Content: []agent.Content{{Text: "second restored"}}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewTurnManager(context.Background(), a, nil)
+	defer m.Close()
+	snapshot := m.Snapshot("s")
+	if !snapshot.Paused || len(snapshot.Inputs) != 2 {
+		t.Fatalf("restored snapshot = %#v", snapshot)
+	}
+	if snapshot.Inputs[0].State != TurnInputQueued || snapshot.Inputs[0].Position != 1 {
+		t.Fatalf("first restored input = %#v", snapshot.Inputs[0])
+	}
+	select {
+	case started := <-a.starts:
+		t.Fatalf("restored queue auto-replayed %q", started)
+	default:
+	}
+
+	if !m.Resume("s") {
+		t.Fatal("resume did not start restored queue")
+	}
+	if got := waitValue(t, a.starts); got != "first restored" {
+		t.Fatalf("started = %q", got)
+	}
+	a.mu.Lock()
+	persisted := a.queues["s"]
+	a.mu.Unlock()
+	if len(persisted.Inputs) != 1 || persisted.Inputs[0].ID != "two" {
+		t.Fatalf("persisted remainder = %#v", persisted)
+	}
 }
 
 func TestTurnManagerForwardsStreamLifecycleEvents(t *testing.T) {

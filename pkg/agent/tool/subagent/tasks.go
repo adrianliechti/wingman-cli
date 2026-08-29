@@ -28,7 +28,7 @@ func taskTools(tasks *task.Registry) []tool.Tool {
 				"additionalProperties": false,
 			},
 
-			Execute: func(_ context.Context, args map[string]any) (tool.Result, error) {
+			Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 				id, _ := args["id"].(string)
 				id = strings.TrimSpace(id)
 
@@ -68,7 +68,7 @@ func taskTools(tasks *task.Registry) []tool.Tool {
 				"additionalProperties": false,
 			},
 
-			Execute: func(_ context.Context, args map[string]any) (tool.Result, error) {
+			Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 				id, _ := args["id"].(string)
 				id = strings.TrimSpace(id)
 				if id == "" {
@@ -83,7 +83,7 @@ func taskTools(tasks *task.Registry) []tool.Tool {
 				if t == nil {
 					return tool.Result{}, fmt.Errorf("no background agent with id %s", id)
 				}
-				if err := t.Resume(message); err != nil {
+				if err := t.ResumeContext(ctx, message); err != nil {
 					return tool.Result{}, err
 				}
 				return tool.Text(fmt.Sprintf("Follow-up sent to background agent %s; it resumed with its prior context. The reply arrives as a task notification — never assume or invent it.", id)), nil

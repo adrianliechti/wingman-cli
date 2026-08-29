@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
@@ -90,21 +91,51 @@ func matchAllowedRoot(absPath string, allowedRoots []string) (rootClean, sub str
 }
 
 func matchAllowedRootLiteral(cleaned string, allowedRoots []string) (rootClean, sub string, ok bool) {
-	cmpPath := normalizePathForComparison(cleaned)
-	sep := string(filepath.Separator)
-
 	for _, allowed := range allowedRoots {
 		allowedClean := cleanPath(allowed)
-		cmpAllowed := normalizePathForComparison(allowedClean)
-		if cmpPath == cmpAllowed {
+		consumed, matched := pathPrefixLen(cleaned, allowedClean)
+		if !matched {
+			continue
+		}
+		if consumed == len(cleaned) {
 			return allowedClean, "", true
 		}
-		if strings.HasPrefix(cmpPath, cmpAllowed+sep) {
-
-			return allowedClean, cleaned[len(allowedClean)+1:], true
+		if cleaned[consumed] == filepath.Separator {
+			return allowedClean, cleaned[consumed+1:], true
 		}
 	}
 	return "", "", false
+}
+
+// pathPrefixLen reports how many bytes of path are consumed by prefix when
+// compared with the platform's path case sensitivity. Byte lengths cannot be
+// compared across normalized forms: lowercasing changes the encoded length of
+// some runes, so the offset must come from the string being sliced.
+func pathPrefixLen(path, prefix string) (int, bool) {
+	i, j := 0, 0
+	for j < len(prefix) {
+		if i >= len(path) {
+			return 0, false
+		}
+		pathRune, pathSize := utf8.DecodeRuneInString(path[i:])
+		prefixRune, prefixSize := utf8.DecodeRuneInString(prefix[j:])
+		if !equalPathRune(pathRune, prefixRune) {
+			return 0, false
+		}
+		i += pathSize
+		j += prefixSize
+	}
+	return i, true
+}
+
+func equalPathRune(a, b rune) bool {
+	if a == b {
+		return true
+	}
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		return unicode.ToLower(a) == unicode.ToLower(b)
+	}
+	return false
 }
 
 // resolveForCompare resolves symlinks (and Windows junctions) for containment
@@ -460,17 +491,13 @@ func relPathLiteral(absPath, workingDir string) (string, bool) {
 		return ".", true
 	}
 
-	prefix := compWorking
-	if !strings.HasSuffix(prefix, sep) {
-		prefix += sep
-	}
-
-	if strings.HasPrefix(compPath, prefix) {
+	if consumed, matched := pathPrefixLen(absPathClean, absWorkingDir); matched {
 		if strings.HasSuffix(absWorkingDir, sep) {
-			return absPathClean[len(absWorkingDir):], true
+			return absPathClean[consumed:], true
 		}
-
-		return absPathClean[len(absWorkingDir)+len(sep):], true
+		if consumed < len(absPathClean) && absPathClean[consumed] == filepath.Separator {
+			return absPathClean[consumed+1:], true
+		}
 	}
 
 	relComp, err := filepath.Rel(compWorking, compPath)

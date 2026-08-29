@@ -3,6 +3,7 @@ package subagent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -132,8 +133,219 @@ func mergeTypes(custom []Definition) (types map[string]subagentType, names []str
 	return types, names, blurbs
 }
 
+const durableSpecVersion = 1
+
+// durableSpec contains only stable, serializable construction inputs. Tool
+// implementations and hooks are rebound from the current session on restore.
+type durableSpec struct {
+	Version      int            `json:"version"`
+	AgentID      string         `json:"agent_id"`
+	AgentType    string         `json:"agent_type"`
+	Instructions string         `json:"instructions"`
+	Model        string         `json:"model,omitempty"`
+	Effort       string         `json:"effort,omitempty"`
+	Schema       map[string]any `json:"schema,omitempty"`
+}
+
+type subagentRunner struct {
+	parent    *agent.Config
+	typ       subagentType
+	spec      durableSpec
+	sub       *agent.Agent
+	collector *reportCollector
+}
+
+func newSubagentRunner(parent *agent.Config, typ subagentType, spec durableSpec, state agent.State) (*subagentRunner, error) {
+	if spec.Version != durableSpecVersion || spec.AgentID == "" || spec.AgentType == "" {
+		return nil, fmt.Errorf("invalid durable subagent specification")
+	}
+	var collector *reportCollector
+	var err error
+	if spec.Schema != nil {
+		collector, err = newReportCollector(spec.Schema)
+		if err != nil {
+			return nil, fmt.Errorf("restore subagent result schema: %w", err)
+		}
+	}
+
+	subcfg := parent.Derive()
+	subcfg.CacheKey = spec.AgentID
+	subcfg.Instructions = func() string { return spec.Instructions }
+	if spec.Model != "" {
+		subcfg.Model = func() string { return spec.Model }
+	}
+	if spec.Effort != "" {
+		subcfg.Effort = func() string { return spec.Effort }
+	}
+	subcfg.Tools = func() []tool.Tool {
+		var tools []tool.Tool
+		if parent.Tools != nil {
+			tools = toolsForType(parent.Tools(), typ)
+		}
+		if collector != nil {
+			tools = append(tools, collector.tool())
+		}
+		return tools
+	}
+	sub := &agent.Agent{Config: subcfg}
+	if err := sub.Restore(state); err != nil {
+		return nil, fmt.Errorf("restore child agent %s: %w", spec.AgentID, err)
+	}
+	return &subagentRunner{parent: parent, typ: typ, spec: spec, sub: sub, collector: collector}, nil
+}
+
+func (r *subagentRunner) runTurn(execCtx, reportCtx context.Context, tk *task.Task, input string) (out string, err error) {
+	if tk != nil {
+		r.sub.Recorder = agent.EventRecorderFunc(tk.AppendAgentEvents)
+		defer func() {
+			if persistErr := tk.SetAgentState(r.sub.StateSnapshot()); persistErr != nil {
+				err = errors.Join(err, fmt.Errorf("persist child agent state: %w", persistErr))
+			}
+		}()
+	}
+
+	runtime := hook.RuntimeFromContext(execCtx)
+	runtime.AgentID = r.spec.AgentID
+	runtime.AgentType = r.spec.AgentType
+	execCtx = hook.WithRuntime(execCtx, runtime)
+	execCtx = agent.WithStreamEventHandlers(execCtx, agent.StreamEventHandlers{
+		Reset: func() {
+			if tk != nil {
+				tk.SetActivity("")
+			}
+		},
+	})
+	started := time.Now()
+	before := r.sub.UsageSnapshot()
+	startIdx := len(r.sub.MessagesSnapshot())
+
+	runOnce := func(prompt string) error {
+		stream, err := r.sub.Send(execCtx, []agent.Content{{Text: prompt}})
+		if err != nil {
+			return err
+		}
+		for msg, err := range stream {
+			if err != nil {
+				return err
+			}
+			if tk != nil {
+				updateTaskActivity(tk, msg)
+			}
+		}
+		return nil
+	}
+
+	runErr := runOnce(input)
+	stopHookActive := false
+	for runErr == nil && len(r.parent.Hooks.SubagentStop) > 0 {
+		runMessages := r.sub.MessagesSnapshot()
+		if startIdx <= len(runMessages) {
+			runMessages = runMessages[startIdx:]
+		}
+		lastMessage := strings.TrimSpace(finalText(runMessages))
+		var stopOutcome hook.Outcome
+		for _, h := range r.parent.Hooks.SubagentStop {
+			candidate, hookErr := h(execCtx, r.spec.AgentID, r.spec.AgentType, lastMessage, stopHookActive)
+			if hookErr != nil {
+				continue
+			}
+			if candidate.Stop {
+				stopOutcome = candidate
+				break
+			}
+			if candidate.Block && !stopOutcome.Block {
+				stopOutcome = candidate
+			}
+		}
+		if stopOutcome.Stop || !stopOutcome.Block {
+			break
+		}
+		stopHookActive = true
+		reason := stopOutcome.Reason
+		if reason == "" {
+			reason = "A SubagentStop hook requested another pass."
+		}
+		runErr = runOnce(reason)
+	}
+
+	usage := r.sub.UsageSnapshot()
+	delta := tool.UsageDelta{
+		InputTokens:  usage.InputTokens - before.InputTokens,
+		CachedTokens: usage.CachedTokens - before.CachedTokens,
+		OutputTokens: usage.OutputTokens - before.OutputTokens,
+	}
+	tool.ReportUsage(reportCtx, delta)
+	runMessages := r.sub.MessagesSnapshot()
+	if startIdx <= len(runMessages) {
+		runMessages = runMessages[startIdx:]
+	}
+	trailer := runTrailer(runMessages, agent.Usage{
+		InputTokens: delta.InputTokens, CachedTokens: delta.CachedTokens, OutputTokens: delta.OutputTokens,
+	}, time.Since(started))
+	text := strings.TrimSpace(finalText(runMessages))
+
+	if runErr != nil {
+		if text == "" {
+			return "", fmt.Errorf("agent error: %w", runErr)
+		}
+		return fmt.Sprintf("Agent aborted before finishing (%v). Last output before the abort — treat as incomplete:\n\n%s%s", runErr, text, trailer), nil
+	}
+	if r.collector != nil {
+		if payload := r.collector.take(); payload != "" {
+			return payload + trailer, nil
+		}
+		if text == "" {
+			return "Sub-agent completed without calling report and produced no output." + trailer, nil
+		}
+		return "Sub-agent completed without calling report; unstructured output follows:\n\n" + text + trailer, nil
+	}
+	if text == "" {
+		return "Sub-agent completed but produced no output." + trailer, nil
+	}
+	return text + trailer, nil
+}
+
+func bindTaskRunner(tasks *task.Registry, tk *task.Task, runner *subagentRunner) {
+	tk.SetPeek(runner.sub.MessagesSnapshot)
+	tk.SetResumeContext(func(reportCtx context.Context, followUp string) error {
+		return tasks.Relaunch(tk, func(execCtx context.Context, current *task.Task) (string, error) {
+			return runner.runTurn(execCtx, reportCtx, current, followUp)
+		})
+	})
+}
+
+func bindRestoredTasks(parent *agent.Config, types map[string]subagentType, tasks *task.Registry) {
+	for _, tk := range tasks.List() {
+		agentID, state, raw := tk.DurableAgent()
+		if agentID == "" || len(raw) == 0 {
+			continue
+		}
+		var spec durableSpec
+		if err := json.Unmarshal(raw, &spec); err != nil {
+			continue
+		}
+		typ, ok := types[spec.AgentType]
+		if !ok {
+			continue
+		}
+		runner, err := newSubagentRunner(parent, typ, spec, state)
+		if err != nil {
+			continue
+		}
+		runner.sub.Recorder = agent.EventRecorderFunc(tk.AppendAgentEvents)
+		if err := runner.sub.ReconcileInterrupted("process restarted before the child operation settled"); err != nil {
+			continue
+		}
+		_ = tk.SetAgentState(runner.sub.StateSnapshot())
+		bindTaskRunner(tasks, tk, runner)
+	}
+}
+
 func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry, custom ...Definition) []tool.Tool {
 	types, names, blurbs := mergeTypes(custom)
+	if tasks != nil {
+		bindRestoredTasks(cfg, types, tasks)
+	}
 
 	lines := []string{
 		"Launch a subagent for a bounded task. It runs in a separate context with a filtered toolset and returns one final report; it does not see your conversation, and its intermediate output (file dumps, logs, test runs) never enters your context — only the report does. The report is delivered to you, not the user — relay what matters in your response.",
@@ -246,188 +458,75 @@ func Tools(cfg *agent.Config, sharedContext func() string, tasks *task.Registry,
 				}
 			}
 
-			var collector *reportCollector
+			var schemaMap map[string]any
 			if raw, present := args["schema"]; present {
-				schemaMap, ok := raw.(map[string]any)
+				schemaMap, ok = raw.(map[string]any)
 				if !ok {
 					return tool.Result{}, fmt.Errorf("schema must be a JSON Schema object")
 				}
-				var err error
-				if collector, err = newReportCollector(schemaMap); err != nil {
+				if _, err := newReportCollector(schemaMap); err != nil {
 					return tool.Result{}, fmt.Errorf("invalid schema: %w", err)
 				}
 				instructions.WriteString("\n\nDeliver your final result by calling the `report` tool exactly once; its `result` argument must match the provided JSON schema. Prose output outside `report` is not the deliverable.")
 			}
 
-			subcfg := cfg.Derive()
-			subcfg.Instructions = func() string { return instructions.String() }
-
-			if err := applyModelOverrides(subcfg, args, typ.Model); err != nil {
+			resolved := cfg.Derive()
+			if err := applyModelOverrides(resolved, args, typ.Model); err != nil {
 				return tool.Result{}, err
 			}
-
-			subcfg.Tools = func() []tool.Tool {
-				var tools []tool.Tool
-				if cfg.Tools != nil {
-					tools = toolsForType(cfg.Tools(), typ)
-				}
-				if collector != nil {
-					tools = append(tools, collector.tool())
-				}
-				return tools
+			modelID := ""
+			if resolved.Model != nil {
+				modelID = resolved.Model()
 			}
-
-			// reportCtx outlives a background run's execution context: its
-			// values (usage sink) stay readable after the launching tool call
-			// returns and its cancellation must not stop accounting.
-			reportCtx := ctx
-
-			sub := &agent.Agent{Config: subcfg}
-
-			// runTurn is one turn on the shared sub-agent: the initial task and
-			// each task_send follow-up. Usage is reported as this turn's delta —
-			// the cumulative snapshot would double-bill resumed agents.
-			runTurn := func(execCtx context.Context, tk *task.Task, input string) (string, error) {
-				runtime := hook.RuntimeFromContext(execCtx)
-				runtime.AgentID = agentID
-				runtime.AgentType = subagentName
-				execCtx = hook.WithRuntime(execCtx, runtime)
-				// Sub-agent deltas are buffered internally rather than rendered on
-				// the parent stream, so a failed attempt can always be discarded.
-				execCtx = agent.WithStreamEventHandlers(execCtx, agent.StreamEventHandlers{
-					Reset: func() {
-						if tk != nil {
-							tk.SetActivity("")
-						}
-					},
-				})
-				started := time.Now()
-				before := sub.UsageSnapshot()
-				startIdx := len(sub.MessagesSnapshot())
-
-				runOnce := func(prompt string) error {
-					stream, err := sub.Send(execCtx, []agent.Content{{Text: prompt}})
-					if err != nil {
-						return err
-					}
-					for msg, err := range stream {
-						if err != nil {
-							return err
-						}
-						if tk != nil {
-							updateTaskActivity(tk, msg)
-						}
-					}
-					return nil
-				}
-
-				runErr := runOnce(input)
-				stopHookActive := false
-				for runErr == nil && len(cfg.Hooks.SubagentStop) > 0 {
-					runMessages := sub.MessagesSnapshot()
-					if startIdx <= len(runMessages) {
-						runMessages = runMessages[startIdx:]
-					}
-					lastMessage := strings.TrimSpace(finalText(runMessages))
-					var stopOutcome hook.Outcome
-					for _, h := range cfg.Hooks.SubagentStop {
-						out, err := h(execCtx, agentID, subagentName, lastMessage, stopHookActive)
-						if err != nil {
-							continue
-						}
-						if out.Stop {
-							stopOutcome = out
-							break
-						}
-						if out.Block && !stopOutcome.Block {
-							stopOutcome = out
-						}
-					}
-					if stopOutcome.Stop || !stopOutcome.Block {
-						break
-					}
-					stopHookActive = true
-					reason := stopOutcome.Reason
-					if reason == "" {
-						reason = "A SubagentStop hook requested another pass."
-					}
-					runErr = runOnce(reason)
-				}
-
-				usage := sub.UsageSnapshot()
-				delta := tool.UsageDelta{
-					InputTokens:  usage.InputTokens - before.InputTokens,
-					CachedTokens: usage.CachedTokens - before.CachedTokens,
-					OutputTokens: usage.OutputTokens - before.OutputTokens,
-				}
-				tool.ReportUsage(reportCtx, delta)
-
-				// Only this run's messages: a resumed agent's history still holds
-				// every earlier run, and finalText over the full history would
-				// re-deliver the previous run's answer.
-				runMessages := sub.MessagesSnapshot()
-				if startIdx <= len(runMessages) {
-					runMessages = runMessages[startIdx:]
-				}
-
-				trailer := runTrailer(runMessages, agent.Usage{InputTokens: delta.InputTokens, CachedTokens: delta.CachedTokens, OutputTokens: delta.OutputTokens}, time.Since(started))
-
-				text := strings.TrimSpace(finalText(runMessages))
-
-				if runErr != nil {
-					if text == "" {
-						return "", fmt.Errorf("agent error: %w", runErr)
-					}
-					return fmt.Sprintf("Agent aborted before finishing (%v). Last output before the abort — treat as incomplete:\n\n%s%s", runErr, text, trailer), nil
-				}
-
-				if collector != nil {
-					if payload := collector.take(); payload != "" {
-						return payload + trailer, nil
-					}
-					if text == "" {
-						return "Sub-agent completed without calling report and produced no output." + trailer, nil
-					}
-					return "Sub-agent completed without calling report; unstructured output follows:\n\n" + text + trailer, nil
-				}
-
-				if text == "" {
-					return "Sub-agent completed but produced no output." + trailer, nil
-				}
-				return text + trailer, nil
+			effort := ""
+			if resolved.Effort != nil {
+				effort = resolved.Effort()
+			}
+			spec := durableSpec{
+				Version: durableSpecVersion, AgentID: agentID, AgentType: subagentName,
+				Instructions: instructions.String(), Model: modelID, Effort: effort, Schema: schemaMap,
+			}
+			rawSpec, err := json.Marshal(spec)
+			if err != nil {
+				return tool.Result{}, err
+			}
+			runner, err := newSubagentRunner(cfg, typ, spec, agent.State{})
+			if err != nil {
+				return tool.Result{}, err
 			}
 
 			if background, _ := args["background"].(bool); background {
 				if tasks == nil {
 					return tool.Result{}, fmt.Errorf("background agents are not available in this session; run the agent synchronously")
 				}
-				t, err := tasks.Launch(description, subagentName, func(execCtx context.Context, tk *task.Task) (string, error) {
-					return runTurn(execCtx, tk, prompt)
-				})
+				t, err := tasks.LaunchAgent(agentID, description, subagentName,
+					func(tk *task.Task) error {
+						return tk.SetDurableAgent(agentID, runner.sub.StateSnapshot(), rawSpec)
+					},
+					func(execCtx context.Context, tk *task.Task) (string, error) {
+						return runner.runTurn(execCtx, ctx, tk, prompt)
+					},
+				)
 				if err != nil {
 					return tool.Result{}, err
 				}
-				t.SetPeek(sub.MessagesSnapshot)
-				t.SetResume(func(followUp string) error {
-					return tasks.Relaunch(t, func(execCtx context.Context, tk *task.Task) (string, error) {
-						return runTurn(execCtx, tk, followUp)
-					})
-				})
+				bindTaskRunner(tasks, t, runner)
 				return tool.Text(fmt.Sprintf("Launched background agent %s (%s: %s). Continue with other work — the result arrives as a task notification when it finishes. Never assume or invent its result, and don't start work that overlaps its scope. Check on it with task_output, cancel it with task_stop, or ask it follow-ups later with task_send.", t.ID, subagentName, description)), nil
 			}
 
 			started := time.Now()
-			out, err := runTurn(ctx, nil, prompt)
+			out, err := runner.runTurn(ctx, ctx, nil, prompt)
 			if err != nil || tasks == nil {
 				return tool.Text(out), err
 			}
-			if t := tasks.Adopt(description, subagentName, out, time.Since(started)); t != nil {
-				t.SetPeek(sub.MessagesSnapshot)
-				t.SetResume(func(followUp string) error {
-					return tasks.Relaunch(t, func(execCtx context.Context, tk *task.Task) (string, error) {
-						return runTurn(execCtx, tk, followUp)
-					})
-				})
+			t, adoptErr := tasks.AdoptAgent(agentID, description, subagentName, out, time.Since(started), func(tk *task.Task) error {
+				return tk.SetDurableAgent(agentID, runner.sub.StateSnapshot(), rawSpec)
+			})
+			if adoptErr != nil {
+				return tool.Result{}, adoptErr
+			}
+			if t != nil {
+				bindTaskRunner(tasks, t, runner)
 				out += fmt.Sprintf("\n(id %s — task_send continues this agent with its context intact)", t.ID)
 			}
 			return tool.Text(out), nil

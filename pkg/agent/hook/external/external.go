@@ -21,12 +21,14 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/shell"
 	"github.com/adrianliechti/wingman-agent/pkg/httpclient"
+	"github.com/adrianliechti/wingman-agent/pkg/text"
 )
 
 const (
-	defaultTimeout    = 600
-	sessionEndTimeout = 1
-	maxHookOutput     = 16 * 1024
+	defaultTimeout                 = 600
+	sessionEndTimeout              = 1
+	maxHookOutput                  = 16 * 1024
+	defaultAdditionalContextTokens = 2_500
 )
 
 // Gate defers a workspace trust decision until the first matching hook fires.
@@ -304,12 +306,13 @@ type selectedHandler struct {
 }
 
 type runResult struct {
-	configuredOrder int
-	completionOrder int
-	exitCode        int
-	stdout          string
-	stderr          string
-	err             error
+	configuredOrder        int
+	completionOrder        int
+	exitCode               int
+	stdout                 string
+	stderr                 string
+	err                    error
+	additionalContextLimit *int
 }
 
 func runEvent(ctx context.Context, workDir string, options BuildOptions, event string, groups []MatcherGroup, matcherInputs []string, payload map[string]any) []runResult {
@@ -383,7 +386,9 @@ func (h Handler) run(ctx context.Context, workDir, event string, input []byte, e
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 	if h.Type == "http" {
-		return h.post(ctx, input)
+		result := h.post(ctx, input)
+		result.additionalContextLimit = h.AdditionalContextLimit
+		return result
 	}
 	command := h.Command
 	if runtime.GOOS == "windows" {
@@ -398,7 +403,8 @@ func (h Handler) run(ctx context.Context, workDir, event string, input []byte, e
 		cmd.Env = mergedEnvironment(os.Environ(), environment)
 	}
 	cmd.Stdin = bytes.NewReader(input)
-	var stdout, stderr bytes.Buffer
+	stdout := cappedBuffer{limit: maxHookOutput + 1}
+	stderr := cappedBuffer{limit: maxHookOutput + 1}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
@@ -406,7 +412,39 @@ func (h Handler) run(ctx context.Context, workDir, event string, input []byte, e
 	if cmd.ProcessState != nil {
 		exitCode = cmd.ProcessState.ExitCode()
 	}
-	return runResult{exitCode: exitCode, stdout: limit(stdout.String()), stderr: limit(stderr.String()), err: nonExitError(err)}
+	return runResult{
+		exitCode: exitCode, stdout: limit(stdout.String()), stderr: limit(stderr.String()),
+		err: nonExitError(err), additionalContextLimit: h.AdditionalContextLimit,
+	}
+}
+
+// cappedBuffer keeps draining a child process after the retained prefix is
+// full. Returning the original input length is required by io.Writer and keeps
+// a noisy hook from seeing a short-write error or blocking on a full pipe.
+type cappedBuffer struct {
+	buf   bytes.Buffer
+	limit int
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	written := len(p)
+	remaining := b.limit - b.buf.Len()
+	if remaining <= 0 {
+		return written, nil
+	}
+	if len(p) > remaining {
+		p = p[:remaining]
+	}
+	_, _ = b.buf.Write(p)
+	return written, nil
+}
+
+func (b *cappedBuffer) Len() int {
+	return b.buf.Len()
+}
+
+func (b *cappedBuffer) String() string {
+	return b.buf.String()
 }
 
 func mergedEnvironment(base []string, overrides map[string]string) []string {
@@ -487,7 +525,7 @@ func limit(value string) string {
 	if len(value) <= maxHookOutput {
 		return value
 	}
-	return value[:maxHookOutput] + "\n[hook output truncated]"
+	return text.HeadBytes(value, maxHookOutput) + "\n[hook output truncated]"
 }
 
 func validMatcher(matcher string) bool {
@@ -582,7 +620,9 @@ func parseResult(event string, result runResult) parsedResult {
 	if err := decoder.Decode(&output); err != nil {
 		if event == "SessionStart" || event == "SubagentStart" || event == "UserPromptSubmit" {
 			if !strings.HasPrefix(strings.TrimSpace(result.stdout), "{") && !strings.HasPrefix(strings.TrimSpace(result.stdout), "[") {
-				return parsedResult{Outcome: hook.Outcome{AdditionalContext: []string{result.stdout}}}
+				return parsedResult{Outcome: hook.Outcome{AdditionalContext: []string{
+					boundAdditionalContext(result.stdout, result.additionalContextLimit),
+				}}}
 			}
 		}
 		return parsedResult{}
@@ -607,7 +647,8 @@ func parseResult(event string, result runResult) parsedResult {
 	}
 	if specific != nil && specific.AdditionalContext != nil {
 		if context := strings.TrimSpace(*specific.AdditionalContext); context != "" {
-			parsed.AdditionalContext = append(parsed.AdditionalContext, context)
+			parsed.AdditionalContext = append(parsed.AdditionalContext,
+				boundAdditionalContext(context, result.additionalContextLimit))
 		}
 	}
 	switch event {
@@ -641,6 +682,26 @@ func parseResult(event string, result runResult) parsedResult {
 		}
 	}
 	return parsed
+}
+
+// boundAdditionalContext applies Codex's per-handler approximate-token
+// threshold. A zero value explicitly disables this limit; the process-level
+// maxHookOutput ceiling remains in force for safety.
+func boundAdditionalContext(value string, configured *int) string {
+	tokenLimit := defaultAdditionalContextTokens
+	if configured != nil {
+		tokenLimit = *configured
+	}
+	if tokenLimit == 0 || (len(value)+3)/4 <= tokenLimit {
+		return value
+	}
+
+	byteBudget := tokenLimit * 4
+	marker := fmt.Sprintf("\n… hook additionalContext truncated from approximately %d tokens …\n", (len(value)+3)/4)
+	previewBudget := max(byteBudget-len(marker), 0)
+	headBudget := previewBudget / 2
+	tailBudget := previewBudget - headBudget
+	return text.HeadBytes(value, headBudget) + marker + text.TailBytes(value, tailBudget)
 }
 
 // validWireOutput applies Codex's event-specific output schemas and semantic

@@ -20,7 +20,7 @@ type ScheduleEntry struct {
 	Failures int    `json:"failures,omitempty"`
 }
 
-func (s *Server) sessionSchedules(sessionID string) *schedule.MemoryStore {
+func (s *Server) sessionSchedules(sessionID string) schedule.Store {
 	ca, ok := s.activeAgent().(*codeagent.Agent)
 	if !ok {
 		return nil

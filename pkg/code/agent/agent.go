@@ -65,8 +65,9 @@ type Agent struct {
 var _ code.Agent = (*Agent)(nil)
 
 type sessionState struct {
-	parent *Agent
-	aa     *harness.Agent
+	parent  *Agent
+	aa      *harness.Agent
+	journal *session.Journal
 
 	modelByRole  map[modelRole]string
 	effortByRole map[modelRole]string
@@ -79,8 +80,7 @@ type sessionState struct {
 	execManager *shell.ExecManager
 	tasks       *task.Registry
 
-	schedules   *schedule.MemoryStore
-	scheduleSeq atomic.Uint64
+	schedules schedule.ObservableStore
 
 	freshness *fs.Freshness
 	watchStop chan struct{}
@@ -444,8 +444,10 @@ func (a *Agent) NewSession(_ context.Context) (string, error) {
 	a.mu.Unlock()
 
 	id := uuid.NewString()
-	s := a.buildSession()
-	s.aa.CacheKey = id
+	s, err := a.buildSession(id)
+	if err != nil {
+		return "", err
+	}
 	s.startSource = "startup"
 	a.mu.Lock()
 	if a.closed {
@@ -474,11 +476,19 @@ func (a *Agent) LoadSession(_ context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	s := a.buildSession()
-	s.aa.CacheKey = id
+	s, err := a.buildSession(id)
+	if err != nil {
+		return err
+	}
 	s.startSource = "resume"
-	s.aa.Messages = saved.State.Messages
-	s.aa.Usage = saved.State.Usage
+	if err := s.aa.Restore(saved.State); err != nil {
+		s.close()
+		return err
+	}
+	if err := s.aa.ReconcileInterrupted("process restarted before the operation settled"); err != nil {
+		s.close()
+		return err
+	}
 
 	a.mu.Lock()
 	if a.closed {
@@ -595,7 +605,7 @@ func (a *Agent) Tasks(id string) *task.Registry {
 
 // Schedules exposes the session's scheduled tasks so UI surfaces can list
 // them alongside its background agents.
-func (a *Agent) Schedules(id string) *schedule.MemoryStore {
+func (a *Agent) Schedules(id string) schedule.Store {
 	s := a.session(id)
 	if s == nil {
 		return nil
@@ -728,14 +738,20 @@ func (a *Agent) Tools(id string) []tool.Tool {
 	return s.tools()
 }
 
-func (a *Agent) buildSession() *sessionState {
+func (a *Agent) buildSession(id string) (*sessionState, error) {
+	journal, err := session.OpenJournal(a.sessionsDir, id)
+	if err != nil {
+		return nil, err
+	}
 	sessionCfg := a.cfg.Derive()
 	s := &sessionState{
 		parent:       a,
-		aa:           &harness.Agent{Config: sessionCfg},
+		aa:           &harness.Agent{Config: sessionCfg, Recorder: journal},
+		journal:      journal,
 		modelByRole:  map[modelRole]string{},
 		effortByRole: map[modelRole]string{modelRoleUtility: ""},
 	}
+	s.aa.CacheKey = id
 	s.setMode(modeAgent)
 	sessionCfg.Tools = s.tools
 	sessionCfg.Instructions = s.instructions
@@ -802,12 +818,19 @@ func (a *Agent) buildSession() *sessionState {
 
 	allowedReadRoots, allowedWriteRoots := sessionFileRoots(ws)
 
-	s.tasks = task.NewRegistry()
+	artifactDir, err := session.ArtifactDir(a.sessionsDir, id)
+	if err != nil {
+		return nil, err
+	}
+	s.tasks, err = task.NewFileRegistry(filepath.Join(artifactDir, "tasks.json"))
+	if err != nil {
+		return nil, fmt.Errorf("restore background tasks: %w", err)
+	}
 	s.execManager = shell.NewExecManager(func(e shell.ExecExit) {
 		s.tasks.Publish(execExitEvent(e))
 	})
 	s.freshness = fs.NewFreshness(ws.Root)
-	s.schedules = schedule.NewMemoryStore()
+	s.schedules = schedule.NewFileStore(filepath.Join(artifactDir, "schedules"))
 	s.watchStop = make(chan struct{})
 	approvals := shell.NewApprovals()
 
@@ -853,7 +876,7 @@ func (a *Agent) buildSession() *sessionState {
 		s.tasks.Close()
 		return nil
 	})
-	return s
+	return s, nil
 }
 
 func sessionFileRoots(ws *code.Workspace) (readRoots, writeRoots []string) {

@@ -180,7 +180,7 @@ func TestBuildInstructionsSharedSections(t *testing.T) {
 		WorkingDir:          "/repo",
 		Shell:               "zsh",
 		MemoryDir:           "/memory",
-		MemoryContent:       "- preferences.md — coding preferences",
+		MemoryContent:       "- [Preferences](preferences.md) — coding preferences",
 		Skills:              "<available_skills><skill><name>review</name><location>/skills/review/SKILL.md</location></skill></available_skills>",
 		ProjectInstructions: "From AGENTS.md:\n\nproject rule",
 	})
@@ -198,7 +198,8 @@ func TestBuildInstructionsSharedSections(t *testing.T) {
 		"deeper files override broader ones",
 		"request clearly matches its description",
 		"read the skill's `<location>` completely",
-		"This index is only a locator",
+		"Saved memory index, newest first — a locator only",
+		"Each memory is one file holding one fact",
 		"Time Zone: Europe/Berlin",
 		"Shell: zsh",
 	} {

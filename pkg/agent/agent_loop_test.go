@@ -446,7 +446,12 @@ func TestEndRunPreservesQueuedUserInput(t *testing.T) {
 		pendingInput: [][]Content{{{Text: "queued"}}},
 	}
 
-	a.endRun()
+	if err := a.recordEvents(RuntimeEvent{Type: EventTurnStarted, TurnID: "turn"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.finishTurn("turn", RuntimeInterrupted, context.Canceled, Usage{}); err != nil {
+		t.Fatal(err)
+	}
 
 	if a.running || len(a.pendingInput) != 0 {
 		t.Fatalf("run state was not cleared: running=%v pending=%d", a.running, len(a.pendingInput))
@@ -663,6 +668,26 @@ func TestCodexPostToolBlockReplacesOriginalResult(t *testing.T) {
 	}})
 	if got.Content != "review the generated files" {
 		t.Fatalf("tool result = %q", got.Content)
+	}
+}
+
+func TestToolResultHasHarnessLevelSizeLimit(t *testing.T) {
+	input := "HEAD" + strings.Repeat("☃", maxInlineToolResultBytes) + "TAIL"
+	a := &Agent{Config: &Config{}}
+	got := a.runSingleToolCall(context.Background(), ToolCall{Name: "unbounded"}, []tool.Tool{{
+		Name: "unbounded",
+		Execute: func(context.Context, map[string]any) (tool.Result, error) {
+			return tool.Text(input), nil
+		},
+	}})
+	if !strings.Contains(got.Content, "truncated by the agent harness") {
+		t.Fatalf("tool result did not report truncation")
+	}
+	if !strings.Contains(got.Content, "HEAD") || !strings.Contains(got.Content, "TAIL") {
+		t.Fatalf("tool result did not preserve head and tail")
+	}
+	if len(got.Content) >= len(input) {
+		t.Fatalf("bounded result length = %d, input length = %d", len(got.Content), len(input))
 	}
 }
 

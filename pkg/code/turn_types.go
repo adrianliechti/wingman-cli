@@ -58,9 +58,24 @@ var (
 )
 
 type TurnInput struct {
-	ID      string
-	Content []agent.Content
-	Intent  TurnInputIntent
+	ID      string          `json:"id"`
+	Content []agent.Content `json:"content"`
+	Intent  TurnInputIntent `json:"intent"`
+}
+
+// TurnQueueState contains only inputs that have not started. Active and
+// steered inputs are represented by the runtime ledger and are never replayed
+// automatically after a crash.
+type TurnQueueState struct {
+	Inputs []TurnInput `json:"inputs,omitempty"`
+	Paused bool        `json:"paused,omitempty"`
+}
+
+// TurnQueueStore is an optional Agent capability used by TurnManager. A
+// backend that does not implement it keeps the existing in-memory behavior.
+type TurnQueueStore interface {
+	LoadTurnQueue(sessionID string) (TurnQueueState, error)
+	SaveTurnQueue(sessionID string, state TurnQueueState) error
 }
 
 type TurnInputSnapshot struct {

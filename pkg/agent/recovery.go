@@ -92,18 +92,13 @@ func isContextOverflowError(err error) bool {
 	return false
 }
 
-func (a *Agent) removeOrphanedToolMessages() {
-	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
-	a.removeOrphanedToolMessagesLocked()
-}
-
-func (a *Agent) removeOrphanedToolMessagesLocked() {
+func (a *Agent) removeOrphanedToolMessages() error {
+	messages := a.contextSnapshot()
 
 	callIDs := make(map[string]bool)
 	outputIDs := make(map[string]bool)
 
-	for _, m := range a.Messages {
+	for _, m := range messages {
 		for _, c := range m.Content {
 			if c.ToolCall != nil && c.ToolCall.ID != "" {
 				callIDs[c.ToolCall.ID] = true
@@ -117,7 +112,7 @@ func (a *Agent) removeOrphanedToolMessagesLocked() {
 
 	dropped := make(map[int]bool)
 
-	for i, m := range a.Messages {
+	for i, m := range messages {
 		for _, c := range m.Content {
 			if c.ToolCall != nil && !outputIDs[c.ToolCall.ID] {
 				dropped[i] = true
@@ -131,12 +126,12 @@ func (a *Agent) removeOrphanedToolMessagesLocked() {
 		}
 	}
 
-	cleaned := a.Messages
+	cleaned := messages
 	changed := false
 
 	if len(dropped) > 0 {
 		cleaned = nil
-		for i, m := range a.Messages {
+		for i, m := range messages {
 			if !dropped[i] {
 				cleaned = append(cleaned, m)
 			}
@@ -150,25 +145,24 @@ func (a *Agent) removeOrphanedToolMessagesLocked() {
 	}
 
 	if !changed {
-		return
+		return nil
 	}
-
-	a.Messages = cleaned
-	a.Revision++
+	return a.replaceContext("remove orphaned tool or reasoning items", cleaned)
 }
 
 // dropForeignReasoning strips encrypted reasoning payloads that the current
 // model cannot decrypt (produced by a different model, e.g. after switching
 // from GPT to Claude mid-session or reloading a session under a new model).
 // Summaries stay for display; only the opaque payload and its tag are removed.
-func (a *Agent) dropForeignReasoning(model string) {
-	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
+func (a *Agent) dropForeignReasoning(model string) error {
+	messages := a.contextSnapshot()
 
 	changed := false
 
-	for _, m := range a.Messages {
-		for _, c := range m.Content {
+	for i := range messages {
+		m := &messages[i]
+		for j := range m.Content {
+			c := &m.Content[j]
 			r := c.Reasoning
 			if r == nil || r.Content == "" || r.Model == model {
 				continue
@@ -180,9 +174,10 @@ func (a *Agent) dropForeignReasoning(model string) {
 		}
 	}
 
-	if changed {
-		a.Revision++
+	if !changed {
+		return nil
 	}
+	return a.replaceContext("drop reasoning encrypted for another model", messages)
 }
 
 // dropDanglingReasoning removes reasoning-only messages that are not followed
@@ -257,14 +252,13 @@ const trimImageMarker = "[image result trimmed to reclaim context — rerun the 
 // and drops old image results, reclaiming context without an LLM summarization
 // pass and without disturbing the conversation spine. The newest messages stay
 // untouched so the working set survives. Returns the number of bytes freed.
-func (a *Agent) trimStaleToolResults() int {
-	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
+func (a *Agent) trimStaleToolResults() (int, error) {
+	messages := a.contextSnapshot()
 
 	cut := 0
 	total := 0
-	for i, v := range slices.Backward(a.Messages) {
-		if total > trimProtectBytes && len(a.Messages)-i > trimProtectMessages {
+	for i, v := range slices.Backward(messages) {
+		if total > trimProtectBytes && len(messages)-i > trimProtectMessages {
 			cut = i + 1
 			break
 		}
@@ -274,8 +268,8 @@ func (a *Agent) trimStaleToolResults() int {
 	freed := 0
 	rewritten := false
 
-	for i := range a.Messages[:cut] {
-		m := a.Messages[i]
+	for i := range messages[:cut] {
+		m := messages[i]
 		if m.Role != RoleAssistant {
 			continue
 		}
@@ -316,16 +310,18 @@ func (a *Agent) trimStaleToolResults() int {
 			}
 		}
 
-		a.Messages[i].Content = content
+		messages[i].Content = content
 	}
 
 	if rewritten {
-		a.Revision++
+		if err := a.replaceContext("trim stale tool results", messages); err != nil {
+			return 0, err
+		}
 	}
-	return freed
+	return freed, nil
 }
 
-func (a *Agent) compactMessages(ctx context.Context, truncateOnFailure bool) bool {
+func (a *Agent) compactMessages(ctx context.Context, truncateOnFailure bool) (bool, error) {
 	messages := a.requestMessages()
 	summaryMessages, recentMessages := splitMessagesForRecoverySummary(messages)
 
@@ -339,9 +335,11 @@ func (a *Agent) compactMessages(ctx context.Context, truncateOnFailure bool) boo
 	summary, err := a.summarizeMessages(ctx, summaryMessages)
 	if err != nil || summary == "" {
 		if truncateOnFailure {
-			a.truncateMessagesForRecovery()
+			if truncateErr := a.truncateMessagesForRecovery(); truncateErr != nil {
+				return false, truncateErr
+			}
 		}
-		return false
+		return false, nil
 	}
 
 	compacted := append([]Message{{
@@ -349,12 +347,13 @@ func (a *Agent) compactMessages(ctx context.Context, truncateOnFailure bool) boo
 		Hidden:  true,
 		Content: []Content{{Text: summary}},
 	}}, recentMessages...)
-	a.stateMu.Lock()
-	a.Messages = compacted
-	a.Revision++
-	a.stateMu.Unlock()
-	a.removeOrphanedToolMessages()
-	return true
+	if err := a.replaceContext("compact model context", compacted); err != nil {
+		return false, err
+	}
+	if err := a.removeOrphanedToolMessages(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 const maxSummarizeBytes = 100 * 1024
@@ -460,7 +459,7 @@ func (a *Agent) summarizeMessages(ctx context.Context, messages []Message) (stri
 // Recap produces a short user-facing briefing of the conversation so far,
 // for returning to a resumed session.
 func (a *Agent) Recap(ctx context.Context) (string, error) {
-	transcript := recoverySummaryTranscript(a.requestMessages())
+	transcript := recoverySummaryTranscript(a.MessagesSnapshot())
 	if transcript == "" {
 		return "", nil
 	}
@@ -550,17 +549,17 @@ func recoverySummaryTranscript(messages []Message) string {
 	return sb.String()
 }
 
-func (a *Agent) truncateMessagesForRecovery() {
-	a.stateMu.Lock()
-	if len(a.Messages) > minRecoveryMessagesToPreserve {
-		start := len(a.Messages) - minRecoveryMessagesToPreserve
-		trimmed := CloneMessages(a.Messages[start:])
-		if userIdx := lastVisibleUserIndex(a.Messages); userIdx >= 0 && userIdx < start {
-			trimmed = append(CloneMessages(a.Messages[userIdx:userIdx+1]), trimmed...)
+func (a *Agent) truncateMessagesForRecovery() error {
+	messages := a.contextSnapshot()
+	if len(messages) > minRecoveryMessagesToPreserve {
+		start := len(messages) - minRecoveryMessagesToPreserve
+		trimmed := CloneMessages(messages[start:])
+		if userIdx := lastVisibleUserIndex(messages); userIdx >= 0 && userIdx < start {
+			trimmed = append(CloneMessages(messages[userIdx:userIdx+1]), trimmed...)
 		}
-		a.Messages = trimmed
-		a.Revision++
+		if err := a.replaceContext("truncate context after failed compaction", trimmed); err != nil {
+			return err
+		}
 	}
-	a.stateMu.Unlock()
-	a.removeOrphanedToolMessages()
+	return a.removeOrphanedToolMessages()
 }

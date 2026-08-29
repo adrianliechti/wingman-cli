@@ -37,6 +37,30 @@ func TestFileStoreCreatesAgentDir(t *testing.T) {
 	}
 }
 
+func TestFileStoreSignalsChangesAndRestoresTasks(t *testing.T) {
+	dir := t.TempDir()
+	store := NewFileStore(dir)
+	if err := store.Mutate(func(tasks []Task) ([]Task, error) {
+		return append(tasks, Task{ID: "durable", Schedule: "every 1h", Status: StatusActive, FireSeq: 4}), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-store.Changed():
+	default:
+		t.Fatal("file mutation did not wake scheduler")
+	}
+
+	restored := NewFileStore(dir)
+	tasks, err := restored.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].ID != "durable" || tasks[0].FireSeq != 4 {
+		t.Fatalf("restored tasks = %#v", tasks)
+	}
+}
+
 func TestFileStoreReportsMalformedYAML(t *testing.T) {
 	store := NewFileStore(t.TempDir())
 

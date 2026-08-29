@@ -4,7 +4,7 @@ description: Save, revise, or remove durable facts in persistent per-project mem
 ---
 # Memory
 
-You have a persistent, file-based memory at the path shown in the Memory section of the system prompt (typically `~/.wingman/projects/{cwd}/memory/`). Memory survives across conversations: an index of every `*.md` file in that directory is auto-generated and injected into the system prompt of every future session, using each file's frontmatter `description` as the one-line hook. So anything you `write` there is automatically available next time.
+You have a persistent, file-based memory at the path shown in the Memory section of the system prompt (typically `~/.wingman/projects/{cwd}/memory/`). Memory survives across conversations: an index of every `*.md` file in that directory is auto-generated and injected into the system prompt of every future session, newest first, as `- [Title](file.md) — hook` with the title derived from the filename and the hook taken from the frontmatter `description`. So anything you `write` there is automatically available next time.
 
 You manage memory with the **normal file tools** — `write`, `edit`, `read`, `glob`. The memory directory is an allowed write root, so workspace-relative path rules don't apply: pass the absolute path inside the memory directory.
 
@@ -41,7 +41,6 @@ Each memory is one markdown file with a tiny YAML frontmatter and a body. The fr
 
 ```
 ---
-name: feedback_testing
 description: integration tests must hit a real database; no mocks
 type: feedback
 ---
@@ -52,15 +51,15 @@ Integration tests must hit a real database, not mocks.
 **How to apply:** any test under `internal/db/...` or that exercises a query path.
 ```
 
-Filename is `{name}.md` — lowercase letters, digits, underscore, hyphen. Group semantically: `user_role.md`, `feedback_testing.md`, `project_auth_migration.md`. Cap files at ~25 KB.
+The filename is the memory's identifier — lowercase letters, digits, underscore, hyphen, and no separate `name` field in the frontmatter. Group semantically: `user_role.md`, `feedback_testing.md`, `project_auth_migration.md`. Cap files at ~25 KB.
 
 ## Workflow recipes
 
 **Save a new memory.** Single call: `write` to `{memory_dir}/feedback_testing.md` with frontmatter + body. The framework picks up the new file on the next turn — no separate index to maintain.
 
-**Update an existing memory.** Use `edit` on `{memory_dir}/{name}.md` for surgical changes. If the rule has changed, update the `description` in the frontmatter too so the index reflects the new gist.
+**Update an existing memory.** Use `edit` on the file for surgical changes. If the rule has changed, update the `description` in the frontmatter too so the index reflects the new gist.
 
-**Forget a memory.** Use `shell` `rm {memory_dir}/{name}.md`. The index updates automatically on the next turn. If you only need to revise the fact, edit the file instead of deleting.
+**Forget a memory.** Use `shell` `rm` on the file. The index updates automatically on the next turn. If you only need to revise the fact, edit the file instead of deleting.
 
 **List what's remembered.** `glob` `*.md` inside the memory dir; or just consult the index already injected at the top of the system prompt.
 

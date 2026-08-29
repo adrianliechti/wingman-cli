@@ -26,16 +26,20 @@ func TestTrimStaleToolResults(t *testing.T) {
 	}
 
 	a := trimTestAgent(messages)
-	freed := a.trimStaleToolResults()
+	freed, err := a.trimStaleToolResults()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if freed == 0 {
 		t.Fatal("expected bytes freed")
 	}
-	if a.Revision == 0 {
-		t.Fatal("expected revision bump")
+	if a.ContextRevision == 0 {
+		t.Fatal("expected context revision bump")
 	}
 
+	context := a.requestMessages()
 	var trimmed, intact int
-	for _, m := range a.Messages {
+	for _, m := range context {
 		for _, c := range m.Content {
 			if c.ToolResult == nil {
 				continue
@@ -54,13 +58,16 @@ func TestTrimStaleToolResults(t *testing.T) {
 		t.Fatal("recent tool results must stay intact")
 	}
 
-	last := a.Messages[len(a.Messages)-1]
+	last := context[len(context)-1]
 	if got := last.Content[0].ToolResult.Content; len(got) != len(big) {
 		t.Fatalf("newest tool result was trimmed (len %d)", len(got))
 	}
 
-	if a.trimStaleToolResults() != 0 {
+	if freed, err := a.trimStaleToolResults(); err != nil || freed != 0 {
 		t.Fatal("second trim should be a no-op")
+	}
+	if strings.Contains(a.Messages[2].Content[0].ToolResult.Content, "trimmed to reclaim context") {
+		t.Fatal("trimming model context must not rewrite canonical history")
 	}
 }
 
@@ -77,11 +84,11 @@ func TestTrimStaleToolResultsDropsImages(t *testing.T) {
 	}
 
 	a := trimTestAgent(messages)
-	if a.trimStaleToolResults() == 0 {
+	if freed, err := a.trimStaleToolResults(); err != nil || freed == 0 {
 		t.Fatal("expected bytes freed")
 	}
 
-	first := a.Messages[0]
+	first := a.requestMessages()[0]
 	for _, c := range first.Content {
 		if c.File != nil {
 			t.Fatal("old image data must be dropped")
@@ -92,7 +99,7 @@ func TestTrimStaleToolResultsDropsImages(t *testing.T) {
 	}
 }
 
-func TestTrimStaleToolResultsBumpsRevisionForEmptyImage(t *testing.T) {
+func TestTrimStaleToolResultsCheckpointsEmptyImage(t *testing.T) {
 	var messages []Message
 	messages = append(messages, Message{Role: RoleAssistant, Content: []Content{
 		{ToolResult: &ToolResult{ID: "img", Name: "view_image", Content: "[image attached below]"}},
@@ -106,31 +113,31 @@ func TestTrimStaleToolResultsBumpsRevisionForEmptyImage(t *testing.T) {
 	}
 
 	a := trimTestAgent(messages)
-	if freed := a.trimStaleToolResults(); freed != 0 {
+	if freed, err := a.trimStaleToolResults(); err != nil || freed != 0 {
 		t.Fatalf("freed = %d, want 0 for an empty image", freed)
 	}
-	if a.Revision != 1 {
-		t.Fatalf("revision = %d, want 1 after retained history was rewritten", a.Revision)
+	if a.ContextRevision != 1 {
+		t.Fatalf("context revision = %d, want 1 after projection changed", a.ContextRevision)
 	}
 
-	first := a.Messages[0]
+	first := a.requestMessages()[0]
 	if len(first.Content) != 1 || first.Content[0].File != nil {
 		t.Fatalf("empty image was not dropped: %#v", first.Content)
 	}
 	if got := first.Content[0].ToolResult.Content; got != trimImageMarker {
 		t.Fatalf("tool result = %q, want %q", got, trimImageMarker)
 	}
-	if freed := a.trimStaleToolResults(); freed != 0 {
+	if freed, err := a.trimStaleToolResults(); err != nil || freed != 0 {
 		t.Fatalf("second trim freed %d bytes, want 0", freed)
 	}
-	if a.Revision != 1 {
-		t.Fatalf("revision = %d after no-op trim, want 1", a.Revision)
+	if a.ContextRevision != 1 {
+		t.Fatalf("context revision = %d after no-op trim, want 1", a.ContextRevision)
 	}
 }
 
 func TestTrimStaleToolResultsProtectsSmallSessions(t *testing.T) {
 	a := trimTestAgent(toolExchange("call", strings.Repeat("x", 8*1024)))
-	if freed := a.trimStaleToolResults(); freed != 0 {
+	if freed, err := a.trimStaleToolResults(); err != nil || freed != 0 {
 		t.Fatalf("freed %d bytes from a small session", freed)
 	}
 }
