@@ -149,6 +149,19 @@ type threadResumeResponse struct {
 	ReasoningEffort *string    `json:"reasoningEffort"`
 }
 
+type threadForkParams struct {
+	ThreadID      string         `json:"threadId"`
+	Cwd           string         `json:"cwd,omitempty"`
+	ModelProvider string         `json:"modelProvider,omitempty"`
+	Config        map[string]any `json:"config,omitempty"`
+}
+
+type threadForkResponse struct {
+	Thread          threadInfo `json:"thread"`
+	Model           string     `json:"model"`
+	ReasoningEffort *string    `json:"reasoningEffort"`
+}
+
 type threadReadParams struct {
 	ThreadID     string `json:"threadId"`
 	IncludeTurns bool   `json:"includeTurns,omitempty"`
@@ -375,6 +388,12 @@ func (c *codexClient) turnSteer(ctx context.Context, p turnSteerParams) error {
 func (c *codexClient) threadResume(ctx context.Context, p threadResumeParams) (threadResumeResponse, error) {
 	var out threadResumeResponse
 	err := c.rpc.call(ctx, "thread/resume", p, &out)
+	return out, err
+}
+
+func (c *codexClient) threadFork(ctx context.Context, p threadForkParams) (threadForkResponse, error) {
+	var out threadForkResponse
+	err := c.rpc.call(ctx, "thread/fork", p, &out)
 	return out, err
 }
 

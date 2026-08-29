@@ -201,10 +201,12 @@ func testSessionContract(t *testing.T, factory Factory) {
 
 	caps := init.AgentCapabilities.SessionCapabilities
 	if caps.Fork != nil {
+		forkUpdateStart := len(h.client.snapshot())
 		forked, err := h.conn.UnstableForkSession(ctx, acp.UnstableForkSessionRequest{
 			SessionId:             session.SessionId,
 			Cwd:                   newReq.Cwd,
 			AdditionalDirectories: newReq.AdditionalDirectories,
+			McpServers:            unstableMCPServers(newReq.McpServers),
 		})
 		if err != nil {
 			t.Fatalf("session/fork advertised but failed: %v", err)
@@ -212,6 +214,10 @@ func testSessionContract(t *testing.T, factory Factory) {
 		if forked.SessionId == "" || forked.SessionId == session.SessionId {
 			t.Fatalf("session/fork returned invalid sessionId %q", forked.SessionId)
 		}
+		validateModes(t, forked.Modes)
+		validateUnstableConfigOptions(t, forked.ConfigOptions)
+		forkUpdates := h.client.snapshot()[forkUpdateStart:]
+		validateUpdates(t, forked.SessionId, forkUpdates)
 		if caps.Close != nil {
 			if _, err := h.conn.CloseSession(ctx, acp.CloseSessionRequest{SessionId: forked.SessionId}); err != nil {
 				t.Fatalf("close forked session: %v", err)
@@ -264,7 +270,7 @@ func testSessionContract(t *testing.T, factory Factory) {
 		}
 		validateModes(t, loaded.Modes)
 		validateConfigOptions(t, loaded.ConfigOptions)
-		validateUpdates(t, session.SessionId, h.client.snapshot())
+		validateUpdates(t, session.SessionId, updatesForSession(h.client.snapshot(), session.SessionId))
 	}
 
 	if caps.Delete != nil {
@@ -276,6 +282,33 @@ func testSessionContract(t *testing.T, factory Factory) {
 			t.Fatalf("close loaded session: %v", err)
 		}
 	}
+}
+
+func unstableMCPServers(servers []acp.McpServer) []acp.UnstableMcpServer {
+	out := make([]acp.UnstableMcpServer, 0, len(servers))
+	for _, server := range servers {
+		converted := acp.UnstableMcpServer{Stdio: server.Stdio}
+		if server.Http != nil {
+			converted.Http = &acp.UnstableMcpServerHttp{
+				Meta: server.Http.Meta, Headers: server.Http.Headers,
+				Name: server.Http.Name, Type: server.Http.Type, Url: server.Http.Url,
+			}
+		}
+		if server.Sse != nil {
+			converted.Sse = &acp.UnstableMcpServerSse{
+				Meta: server.Sse.Meta, Headers: server.Sse.Headers,
+				Name: server.Sse.Name, Type: server.Sse.Type, Url: server.Sse.Url,
+			}
+		}
+		if server.Acp != nil {
+			converted.Acp = &acp.UnstableMcpServerAcpInline{
+				Meta: server.Acp.Meta, Id: acp.UnstableMcpServerAcpId(server.Acp.Id),
+				Name: server.Acp.Name, Type: server.Acp.Type,
+			}
+		}
+		out = append(out, converted)
+	}
+	return out
 }
 
 func testCancelContract(t *testing.T, factory Factory) {
@@ -365,6 +398,27 @@ func validateConfigOptions(t *testing.T, options []acp.SessionConfigOption) {
 	}
 }
 
+func validateUnstableConfigOptions(t *testing.T, options []acp.UnstableSessionConfigOption) {
+	t.Helper()
+	seen := map[acp.SessionConfigId]bool{}
+	for _, option := range options {
+		var id acp.SessionConfigId
+		name := ""
+		switch {
+		case option.Select != nil:
+			id, name = option.Select.Id, option.Select.Name
+		case option.Boolean != nil:
+			id, name = option.Boolean.Id, option.Boolean.Name
+		default:
+			t.Fatal("unstable config option has no variant")
+		}
+		if id == "" || name == "" || seen[id] {
+			t.Fatalf("invalid or duplicate unstable config option %q (%q)", id, name)
+		}
+		seen[id] = true
+	}
+}
+
 func validateSelectOptions(t *testing.T, current acp.SessionConfigValueId, options acp.SessionConfigSelectOptions) {
 	t.Helper()
 	var values []acp.SessionConfigSelectOption
@@ -445,6 +499,16 @@ func validateUpdates(t *testing.T, sessionID acp.SessionId, updates []acp.Sessio
 			t.Fatalf("tool_call_update %q arrived before tool_call", u.ToolCallUpdate.ToolCallId)
 		}
 	}
+}
+
+func updatesForSession(updates []acp.SessionNotification, sessionID acp.SessionId) []acp.SessionNotification {
+	filtered := make([]acp.SessionNotification, 0, len(updates))
+	for _, notification := range updates {
+		if notification.SessionId == sessionID {
+			filtered = append(filtered, notification)
+		}
+	}
+	return filtered
 }
 
 func validateMessageID(t *testing.T, id *string) {

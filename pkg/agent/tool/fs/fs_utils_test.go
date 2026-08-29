@@ -175,3 +175,33 @@ func TestEditReturnsLineDiff(t *testing.T) {
 		t.Fatalf("expected line-numbered diff, got: %q", result.Content)
 	}
 }
+
+func TestWriteTruncatesVeryLongSingleLineDiff(t *testing.T) {
+	root, tmpDir, cleanup := createTestRoot(t)
+	defer cleanup()
+
+	oldContent := strings.Repeat("a", 100_000)
+	newContent := strings.Repeat("b", 100_000)
+	path := filepath.Join(tmpDir, "minified.txt")
+	if err := os.WriteFile(path, []byte(oldContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := WriteTool(root).Execute(context.Background(), map[string]any{
+		"file_path": "minified.txt",
+		"content":   newContent,
+	})
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if !strings.Contains(result.Content, "diff line truncated") {
+		t.Fatalf("expected long-line truncation marker, got %d output bytes", len(result.Content))
+	}
+	if len(result.Content) > 12*1024 {
+		t.Fatalf("long-line diff output is still too large: %d bytes", len(result.Content))
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != newContent {
+		t.Fatalf("file was not written in full: %v, %d bytes", err, len(data))
+	}
+}

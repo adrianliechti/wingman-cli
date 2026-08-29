@@ -18,8 +18,10 @@ func TestNormalizeSessionRoots(t *testing.T) {
 		additional []string
 	}{
 		{cwd: "relative"},
+		{cwd: "/workspace/\x00bad"},
 		{cwd: "/workspace", additional: []string{"relative"}},
 		{cwd: "/workspace", additional: []string{""}},
+		{cwd: "/workspace", additional: []string{"/workspace/\x00bad"}},
 	} {
 		if _, _, err := NormalizeSessionRoots(tc.cwd, tc.additional); err == nil {
 			t.Fatalf("expected invalid roots to fail: %#v", tc)

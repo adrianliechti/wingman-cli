@@ -3,6 +3,7 @@ package acp
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 )
 
 // NormalizeSessionRoots validates ACP's absolute-path contract and returns a
@@ -10,6 +11,9 @@ import (
 func NormalizeSessionRoots(cwd string, additionalDirectories []string) (string, []string, error) {
 	if cwd == "" {
 		return "", nil, fmt.Errorf("cwd is required")
+	}
+	if strings.ContainsRune(cwd, '\x00') {
+		return "", nil, fmt.Errorf("cwd must not contain NUL bytes")
 	}
 	if !filepath.IsAbs(cwd) {
 		return "", nil, fmt.Errorf("cwd must be an absolute path (got %q)", cwd)
@@ -20,6 +24,9 @@ func NormalizeSessionRoots(cwd string, additionalDirectories []string) (string, 
 	for _, directory := range additionalDirectories {
 		if directory == "" {
 			return "", nil, fmt.Errorf("additionalDirectories entries must not be empty")
+		}
+		if strings.ContainsRune(directory, '\x00') {
+			return "", nil, fmt.Errorf("additionalDirectories entries must not contain NUL bytes")
 		}
 		if !filepath.IsAbs(directory) {
 			return "", nil, fmt.Errorf("additionalDirectories entries must be absolute (got %q)", directory)

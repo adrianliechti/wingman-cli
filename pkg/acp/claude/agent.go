@@ -381,14 +381,23 @@ func (a *Agent) LoadSession(ctx context.Context, params acp.LoadSessionRequest) 
 }
 
 func (a *Agent) UnstableForkSession(_ context.Context, params acp.UnstableForkSessionRequest) (acp.UnstableForkSessionResponse, error) {
+	servers, err := acpcommon.StableMCPServers(params.McpServers, acp.McpCapabilities{Http: true, Sse: true})
+	if err != nil {
+		return acp.UnstableForkSessionResponse{}, err
+	}
 	cwd, additional, err := acpcommon.NormalizeSessionRoots(params.Cwd, params.AdditionalDirectories)
 	if err != nil {
 		return acp.UnstableForkSessionResponse{}, err
 	}
 	newID := acp.SessionId(newUUID())
-	a.adoptSession(newID, cwd, additional, nil, string(params.SessionId), true)
+	s := a.adoptSession(newID, cwd, additional, servers, string(params.SessionId), true)
+	a.sendAvailableCommands(s)
 
-	return acp.UnstableForkSessionResponse{SessionId: newID}, nil
+	return acp.UnstableForkSessionResponse{
+		SessionId:     newID,
+		Modes:         buildSessionModeState(s.mode),
+		ConfigOptions: acpcommon.UnstableConfigOptions(buildConfigOptions(a.models, s.modelID, s.effort)),
+	}, nil
 }
 
 func (a *Agent) adoptSession(id acp.SessionId, cwd string, additionalDirs []string, mcpServers []acp.McpServer, resumeFrom string, fork bool) *session {

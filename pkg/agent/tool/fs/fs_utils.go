@@ -182,15 +182,37 @@ func fallbackRoot(workingDir, rel string) (*os.Root, string, bool) {
 
 type fileTarget struct {
 	InWorkspace bool
+	RootPath    string
 	RelPath     string
 	AbsPath     string
 }
 
-func statFileTarget(root *os.Root, target fileTarget) (os.FileInfo, error) {
+func fileTargetRoot(workspaceRoot *os.Root, target fileTarget) (*os.Root, string, func(), bool, error) {
 	if target.InWorkspace {
-		info, err := root.Stat(target.RelPath)
+		return workspaceRoot, target.RelPath, nil, true, nil
+	}
+	if target.RootPath == "" {
+		return nil, "", nil, false, nil
+	}
+	r, err := os.OpenRoot(target.RootPath)
+	if err != nil {
+		return nil, "", nil, false, err
+	}
+	return r, target.RelPath, func() { _ = r.Close() }, true, nil
+}
+
+func statFileTarget(root *os.Root, target fileTarget) (os.FileInfo, error) {
+	targetRoot, rel, closeRoot, rooted, err := fileTargetRoot(root, target)
+	if err != nil {
+		return nil, err
+	}
+	if closeRoot != nil {
+		defer closeRoot()
+	}
+	if rooted {
+		info, err := targetRoot.Stat(rel)
 		if err != nil {
-			if fr, sub, ok := fallbackRoot(root.Name(), target.RelPath); ok {
+			if fr, sub, ok := fallbackRoot(targetRoot.Name(), rel); ok {
 				defer fr.Close()
 				return fr.Stat(sub)
 			}
@@ -201,10 +223,17 @@ func statFileTarget(root *os.Root, target fileTarget) (os.FileInfo, error) {
 }
 
 func readFileTarget(root *os.Root, target fileTarget) ([]byte, error) {
-	if target.InWorkspace {
-		content, err := root.ReadFile(target.RelPath)
+	targetRoot, rel, closeRoot, rooted, err := fileTargetRoot(root, target)
+	if err != nil {
+		return nil, err
+	}
+	if closeRoot != nil {
+		defer closeRoot()
+	}
+	if rooted {
+		content, err := targetRoot.ReadFile(rel)
 		if err != nil {
-			if fr, sub, ok := fallbackRoot(root.Name(), target.RelPath); ok {
+			if fr, sub, ok := fallbackRoot(targetRoot.Name(), rel); ok {
 				defer fr.Close()
 				return fr.ReadFile(sub)
 			}
@@ -215,10 +244,17 @@ func readFileTarget(root *os.Root, target fileTarget) ([]byte, error) {
 }
 
 func openFileTarget(root *os.Root, target fileTarget) (*os.File, error) {
-	if target.InWorkspace {
-		f, err := root.Open(target.RelPath)
+	targetRoot, rel, closeRoot, rooted, err := fileTargetRoot(root, target)
+	if err != nil {
+		return nil, err
+	}
+	if closeRoot != nil {
+		defer closeRoot()
+	}
+	if rooted {
+		f, err := targetRoot.Open(rel)
 		if err != nil {
-			if fr, sub, ok := fallbackRoot(root.Name(), target.RelPath); ok {
+			if fr, sub, ok := fallbackRoot(targetRoot.Name(), rel); ok {
 				defer fr.Close()
 				return fr.Open(sub)
 			}
@@ -229,10 +265,17 @@ func openFileTarget(root *os.Root, target fileTarget) (*os.File, error) {
 }
 
 func writeFileTarget(root *os.Root, target fileTarget, content string) error {
-	if target.InWorkspace {
-		err := writeRootFile(root, target.RelPath, content)
+	targetRoot, rel, closeRoot, rooted, err := fileTargetRoot(root, target)
+	if err != nil {
+		return err
+	}
+	if closeRoot != nil {
+		defer closeRoot()
+	}
+	if rooted {
+		err := writeRootFile(targetRoot, rel, content)
 		if err != nil {
-			if fr, sub, ok := fallbackRoot(root.Name(), target.RelPath); ok {
+			if fr, sub, ok := fallbackRoot(targetRoot.Name(), rel); ok {
 				defer fr.Close()
 				return writeRootFile(fr, sub, content)
 			}
@@ -256,12 +299,19 @@ func resolveFileTarget(pathArg, workingDir string, allowedRoots []string, action
 		return fileTarget{}, fmt.Errorf("cannot %s: relative path %q is outside workspace", action, pathArg)
 	}
 
+	if slices.Contains(allowedRoots, "*") {
+		return fileTarget{AbsPath: cleanPath(pathArg)}, nil
+	}
+
 	if rootClean, sub, ok := matchAllowedRoot(pathArg, allowedRoots); ok {
+		rootClean = resolveForCompare(rootClean)
+		rel := "."
 		abs := rootClean
 		if sub != "" {
+			rel = sub
 			abs = filepath.Join(rootClean, sub)
 		}
-		return fileTarget{AbsPath: abs}, nil
+		return fileTarget{RootPath: rootClean, RelPath: rel, AbsPath: abs}, nil
 	}
 
 	return fileTarget{}, fmt.Errorf("cannot %s: path %q is outside workspace %q and not in any allowed root", action, pathArg, workingDir)
@@ -599,9 +649,13 @@ func fuzzyFindText(content, oldText string) fuzzyMatchResult {
 	}
 }
 
-// maxDiffLines caps the diff echoed back to the model after edit/write: the
-// model just produced the content, so a huge rewrite doesn't need repeating.
-const maxDiffLines = 200
+// The model just produced edited content, so echo only a bounded diff. Both
+// dimensions matter: a line cap alone still permits a minified or encoded line
+// to flood the context and UI.
+const (
+	maxDiffLines     = 200
+	maxDiffLineBytes = 4 * 1024
+)
 
 func generateDiffString(oldContent, newContent string) string {
 	dmp := diffmatchpatch.New()
@@ -628,18 +682,29 @@ func generateDiffString(oldContent, newContent string) string {
 			newLineNum += len(lines)
 		case diffmatchpatch.DiffDelete:
 			for _, line := range lines {
-				fmt.Fprintf(&output, "-%d %s\n", oldLineNum, line)
+				fmt.Fprintf(&output, "-%d %s\n", oldLineNum, truncateDiffLine(line))
 				oldLineNum++
 			}
 		case diffmatchpatch.DiffInsert:
 			for _, line := range lines {
-				fmt.Fprintf(&output, "+%d %s\n", newLineNum, line)
+				fmt.Fprintf(&output, "+%d %s\n", newLineNum, truncateDiffLine(line))
 				newLineNum++
 			}
 		}
 	}
 
 	return capDiffLines(output.String())
+}
+
+func truncateDiffLine(line string) string {
+	if len(line) <= maxDiffLineBytes {
+		return line
+	}
+	prefix := line[:maxDiffLineBytes]
+	for !utf8.ValidString(prefix) {
+		prefix = prefix[:len(prefix)-1]
+	}
+	return prefix + fmt.Sprintf("… [diff line truncated: %d bytes omitted]", len(line)-len(prefix))
 }
 
 func capDiffLines(diff string) string {

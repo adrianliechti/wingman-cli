@@ -66,3 +66,63 @@ func ValidateMCPServers(servers []acpsdk.McpServer, capabilities acpsdk.McpCapab
 	}
 	return nil
 }
+
+// StableMCPServers converts the unstable session/fork transport union to the
+// stable union used by new/resume and validates it against the agent's
+// advertised transport capabilities.
+func StableMCPServers(servers []acpsdk.UnstableMcpServer, capabilities acpsdk.McpCapabilities) ([]acpsdk.McpServer, error) {
+	out := make([]acpsdk.McpServer, 0, len(servers))
+	for _, server := range servers {
+		converted := acpsdk.McpServer{Stdio: server.Stdio}
+		if server.Http != nil {
+			converted.Http = &acpsdk.McpServerHttpInline{
+				Meta: server.Http.Meta, Headers: server.Http.Headers,
+				Name: server.Http.Name, Type: server.Http.Type, Url: server.Http.Url,
+			}
+		}
+		if server.Sse != nil {
+			converted.Sse = &acpsdk.McpServerSseInline{
+				Meta: server.Sse.Meta, Headers: server.Sse.Headers,
+				Name: server.Sse.Name, Type: server.Sse.Type, Url: server.Sse.Url,
+			}
+		}
+		if server.Acp != nil {
+			converted.Acp = &acpsdk.McpServerAcpInline{
+				Meta: server.Acp.Meta, Id: acpsdk.McpServerAcpId(server.Acp.Id),
+				Name: server.Acp.Name, Type: server.Acp.Type,
+			}
+		}
+		out = append(out, converted)
+	}
+	if err := ValidateMCPServers(out, capabilities); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// UnstableConfigOptions maps the stable config-option union to the duplicate
+// unstable union used by ACP's session/fork response.
+func UnstableConfigOptions(options []acpsdk.SessionConfigOption) []acpsdk.UnstableSessionConfigOption {
+	out := make([]acpsdk.UnstableSessionConfigOption, 0, len(options))
+	for _, option := range options {
+		converted := acpsdk.UnstableSessionConfigOption{}
+		if option.Select != nil {
+			selectOption := option.Select
+			converted.Select = &acpsdk.UnstableSessionConfigOptionSelect{
+				Meta: selectOption.Meta, Category: selectOption.Category,
+				CurrentValue: selectOption.CurrentValue, Description: selectOption.Description,
+				Id: selectOption.Id, Name: selectOption.Name, Options: selectOption.Options, Type: selectOption.Type,
+			}
+		}
+		if option.Boolean != nil {
+			booleanOption := option.Boolean
+			converted.Boolean = &acpsdk.UnstableSessionConfigOptionBoolean{
+				Meta: booleanOption.Meta, Category: booleanOption.Category,
+				CurrentValue: booleanOption.CurrentValue, Description: booleanOption.Description,
+				Id: booleanOption.Id, Name: booleanOption.Name, Type: booleanOption.Type,
+			}
+		}
+		out = append(out, converted)
+	}
+	return out
+}

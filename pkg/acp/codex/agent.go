@@ -112,6 +112,7 @@ func (a *Agent) Initialize(ctx context.Context, req acp.InitializeRequest) (acp.
 			SessionCapabilities: acp.SessionCapabilities{
 				AdditionalDirectories: &acp.SessionAdditionalDirectoriesCapabilities{},
 				Close:                 &acp.SessionCloseCapabilities{},
+				Fork:                  &acp.SessionForkCapabilities{},
 				List:                  &acp.SessionListCapabilities{},
 				Resume:                &acp.SessionResumeCapabilities{},
 				Delete:                &acp.SessionDeleteCapabilities{},
@@ -546,6 +547,45 @@ func (a *Agent) LoadSession(ctx context.Context, params acp.LoadSessionRequest) 
 	return acp.LoadSessionResponse{
 		Modes:         buildSessionModeState(s.mode),
 		ConfigOptions: buildConfigOptions(a.models, s.modelID, s.effort, s.collaborationMode),
+	}, nil
+}
+
+func (a *Agent) UnstableForkSession(ctx context.Context, params acp.UnstableForkSessionRequest) (acp.UnstableForkSessionResponse, error) {
+	servers, err := acpcommon.StableMCPServers(params.McpServers, acp.McpCapabilities{Http: true})
+	if err != nil {
+		return acp.UnstableForkSessionResponse{}, err
+	}
+	cwd, additional, err := acpcommon.NormalizeSessionRoots(params.Cwd, params.AdditionalDirectories)
+	if err != nil {
+		return acp.UnstableForkSessionResponse{}, err
+	}
+	resp, err := a.codex.threadFork(ctx, threadForkParams{
+		ThreadID:      string(params.SessionId),
+		Cwd:           cwd,
+		ModelProvider: a.resumeModelProvider(ctx),
+		Config:        sessionConfig(cwd, additional, servers),
+	})
+	if err != nil {
+		return acp.UnstableForkSessionResponse{}, fmt.Errorf("thread/fork: %w", err)
+	}
+	if resp.Thread.ID == "" {
+		return acp.UnstableForkSessionResponse{}, fmt.Errorf("codex returned empty forked thread id")
+	}
+
+	s := a.registerSession(acp.SessionId(resp.Thread.ID), resp.Model, derefEffort(resp.ReasoningEffort), additional)
+	if source := a.lookup(params.SessionId); source != nil {
+		source.mu.Lock()
+		mode, collaborationMode := source.mode, source.collaborationMode
+		source.mu.Unlock()
+		s.mu.Lock()
+		s.mode, s.collaborationMode = mode, collaborationMode
+		s.mu.Unlock()
+	}
+	a.sendAvailableCommands(ctx, s.id)
+	return acp.UnstableForkSessionResponse{
+		SessionId:     s.id,
+		Modes:         buildSessionModeState(s.mode),
+		ConfigOptions: acpcommon.UnstableConfigOptions(buildConfigOptions(a.models, s.modelID, s.effort, s.collaborationMode)),
 	}, nil
 }
 

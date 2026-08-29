@@ -69,6 +69,11 @@ func (s *contractAppServer) handle(msg rpcMessage) {
 			"thread": map[string]any{"id": uuid.NewString(), "cwd": "/contract"},
 			"model":  "contract-model", "reasoningEffort": "medium",
 		})
+	case "thread/fork":
+		s.respond(msg, map[string]any{
+			"thread": map[string]any{"id": uuid.NewString(), "cwd": "/contract"},
+			"model":  "contract-model", "reasoningEffort": "medium",
+		})
 	case "turn/start":
 		var p struct {
 			ThreadID string `json:"threadId"`
