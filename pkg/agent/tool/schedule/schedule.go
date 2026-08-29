@@ -34,6 +34,7 @@ type Task struct {
 
 	Failures    int        `yaml:"failures,omitempty"`
 	LastAttempt *time.Time `yaml:"last_attempt,omitempty"`
+	FireSeq     uint64     `yaml:"fire_seq,omitempty"`
 }
 
 func NewTask(prompt, sched string) (Task, error) {

@@ -146,9 +146,12 @@ func TestDropForeignReasoningPurgesOtherModels(t *testing.T) {
 		{Role: RoleAssistant, Content: []Content{{Text: "done"}}},
 	}
 
-	a.dropForeignReasoning("claude-sonnet-5")
+	if err := a.dropForeignReasoning("claude-sonnet-5"); err != nil {
+		t.Fatal(err)
+	}
 
-	foreign := a.Messages[0].Content[0].Reasoning
+	projected := a.requestMessages()
+	foreign := projected[0].Content[0].Reasoning
 	if foreign.Content != "" || foreign.Model != "" {
 		t.Fatalf("expected foreign payload purged, got content=%q model=%q", foreign.Content, foreign.Model)
 	}
@@ -156,18 +159,23 @@ func TestDropForeignReasoningPurgesOtherModels(t *testing.T) {
 		t.Fatal("expected summary preserved for display")
 	}
 
-	native := a.Messages[3].Content[0].Reasoning
+	native := projected[3].Content[0].Reasoning
 	if native.Content != "blob-b" || native.Model != "claude-sonnet-5" {
 		t.Fatalf("expected native payload kept, got content=%q model=%q", native.Content, native.Model)
 	}
 
-	if a.Revision != 1 {
-		t.Fatalf("expected revision bump, got %d", a.Revision)
+	if a.ContextRevision != 1 {
+		t.Fatalf("expected context revision bump, got %d", a.ContextRevision)
+	}
+	if a.Messages[0].Content[0].Reasoning.Content != "blob-a" {
+		t.Fatal("foreign reasoning was removed from canonical history")
 	}
 
-	a.dropForeignReasoning("claude-sonnet-5")
-	if a.Revision != 1 {
-		t.Fatal("expected no revision bump when nothing changes")
+	if err := a.dropForeignReasoning("claude-sonnet-5"); err != nil {
+		t.Fatal(err)
+	}
+	if a.ContextRevision != 1 {
+		t.Fatal("expected no context revision bump when nothing changes")
 	}
 }
 
@@ -235,7 +243,9 @@ func TestFallbackTruncationPreservesActiveUserRequest(t *testing.T) {
 		toolRoundMessages(20, 128)...,
 	)
 
-	a.truncateMessagesForRecovery()
+	if err := a.truncateMessagesForRecovery(); err != nil {
+		t.Fatal(err)
+	}
 
 	if len(a.Messages) == 0 || a.Messages[0].Role != RoleUser || a.Messages[0].Content[0].Text != "finish the active task" {
 		t.Fatalf("active user request was lost: %+v", a.Messages)

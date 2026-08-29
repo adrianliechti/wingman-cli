@@ -19,16 +19,22 @@ type Store interface {
 	Mutate(fn func([]Task) ([]Task, error)) error
 }
 
+type ObservableStore interface {
+	Store
+	Changed() <-chan struct{}
+}
+
 type taskFile struct {
 	Tasks []Task `yaml:"tasks"`
 }
 
 type FileStore struct {
-	dir string
+	dir     string
+	changed chan struct{}
 }
 
 func NewFileStore(dir string) *FileStore {
-	return &FileStore{dir: dir}
+	return &FileStore{dir: dir, changed: make(chan struct{}, 1)}
 }
 
 // dirLocks are keyed by path, not by store, so independent FileStore values
@@ -72,7 +78,11 @@ func (s *FileStore) Mutate(fn func([]Task) ([]Task, error)) error {
 		return err
 	}
 
-	return s.save(updated)
+	if err := s.save(updated); err != nil {
+		return err
+	}
+	s.signalChanged()
+	return nil
 }
 
 func (s *FileStore) load() ([]Task, error) {
@@ -148,16 +158,27 @@ func (s *MemoryStore) Mutate(fn func([]Task) ([]Task, error)) error {
 
 	s.tasks = updated
 
+	s.signalChanged()
+	return nil
+}
+
+func (s *FileStore) signalChanged()   { signalChanged(s.changed) }
+func (s *MemoryStore) signalChanged() { signalChanged(s.changed) }
+
+func signalChanged(ch chan struct{}) {
 	select {
-	case s.changed <- struct{}{}:
+	case ch <- struct{}{}:
 	default:
 	}
-	return nil
 }
 
 // Changed signals (coalesced, one buffered tick) after every successful
 // Mutate, so a scheduler sleeping until the next known due time can wake up
 // and re-plan when tasks are added or removed mid-sleep.
 func (s *MemoryStore) Changed() <-chan struct{} {
+	return s.changed
+}
+
+func (s *FileStore) Changed() <-chan struct{} {
 	return s.changed
 }

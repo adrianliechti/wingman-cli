@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -34,6 +35,7 @@ const (
 
 type Task struct {
 	ID          string
+	AgentID     string
 	Description string
 	AgentType   string
 	Started     time.Time
@@ -47,7 +49,11 @@ type Task struct {
 	activity string
 	seq      int
 	peek     func() []agent.Message
-	resume   func(prompt string) error
+	resume   func(ctx context.Context, prompt string) error
+	registry *Registry
+
+	agentState agent.State
+	resumeData json.RawMessage
 }
 
 // Seq counts the task's runs: 1 for the initial launch, +1 per resume. It
@@ -61,19 +67,106 @@ func (t *Task) Seq() int {
 // SetResume installs the follow-up hook used by task_send: it restarts the
 // finished agent with a new prompt and its full prior context.
 func (t *Task) SetResume(fn func(prompt string) error) {
+	if fn == nil {
+		t.SetResumeContext(nil)
+		return
+	}
+	t.SetResumeContext(func(_ context.Context, prompt string) error { return fn(prompt) })
+}
+
+func (t *Task) SetResumeContext(fn func(context.Context, string) error) {
 	t.mu.Lock()
 	t.resume = fn
 	t.mu.Unlock()
 }
 
+// SetDurableAgent binds the stable child identity, its current event ledger,
+// and opaque resume specification. The subagent package owns the spec format;
+// Registry only guarantees atomic persistence.
+func (t *Task) SetDurableAgent(agentID string, state agent.State, resumeData json.RawMessage) error {
+	t.mu.Lock()
+	t.AgentID = agentID
+	t.agentState = cloneAgentState(state)
+	t.resumeData = append(json.RawMessage(nil), resumeData...)
+	registry := t.registry
+	t.mu.Unlock()
+	if registry != nil {
+		if err := registry.saveAgentState(t.ID, state); err != nil {
+			return err
+		}
+		return registry.persist()
+	}
+	return nil
+}
+
+func (t *Task) DurableAgent() (string, agent.State, json.RawMessage) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.AgentID, cloneAgentState(t.agentState), append(json.RawMessage(nil), t.resumeData...)
+}
+
+// AppendAgentEvents implements the child's live durability boundary. Events
+// have already been assigned monotonically by that child Agent.
+func (t *Task) AppendAgentEvents(events []agent.RuntimeEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	t.mu.Lock()
+	last := uint64(0)
+	if existing := t.agentState.Events; len(existing) > 0 {
+		last = existing[len(existing)-1].Sequence
+	}
+	for _, event := range events {
+		if event.Sequence != last+1 {
+			t.mu.Unlock()
+			return fmt.Errorf("child event sequence %d is not the next sequence %d", event.Sequence, last+1)
+		}
+		last = event.Sequence
+	}
+	registry := t.registry
+	t.mu.Unlock()
+	if registry != nil {
+		if err := registry.appendAgentEvents(t.ID, events); err != nil {
+			return err
+		}
+	}
+	t.mu.Lock()
+	t.agentState.Events = append(t.agentState.Events, events...)
+	t.mu.Unlock()
+	return nil
+}
+
+func (t *Task) SetAgentState(state agent.State) error {
+	registry := t.registry
+	if registry != nil {
+		if err := registry.saveAgentState(t.ID, state); err != nil {
+			return err
+		}
+	}
+	t.mu.Lock()
+	t.agentState = cloneAgentState(state)
+	t.mu.Unlock()
+	return nil
+}
+
 func (t *Task) Resume(prompt string) error {
+	return t.ResumeContext(context.Background(), prompt)
+}
+
+func (t *Task) ResumeContext(ctx context.Context, prompt string) error {
 	t.mu.Lock()
 	fn := t.resume
 	t.mu.Unlock()
 	if fn == nil {
 		return fmt.Errorf("agent %s does not support follow-ups", t.ID)
 	}
-	return fn(prompt)
+	return fn(ctx, prompt)
+}
+
+func (t *Task) SupportsResume() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.resume != nil
 }
 
 // SetActivity records what the agent is currently doing (e.g. its running
@@ -81,7 +174,11 @@ func (t *Task) Resume(prompt string) error {
 func (t *Task) SetActivity(text string) {
 	t.mu.Lock()
 	t.activity = text
+	registry := t.registry
 	t.mu.Unlock()
+	if registry != nil {
+		_ = registry.persist()
+	}
 }
 
 func (t *Task) Activity() string {
@@ -103,7 +200,14 @@ func (t *Task) PeekMessages() []agent.Message {
 	fn := t.peek
 	t.mu.Unlock()
 	if fn == nil {
-		return nil
+		t.mu.Lock()
+		state := cloneAgentState(t.agentState)
+		t.mu.Unlock()
+		var restored agent.Agent
+		if err := restored.Restore(state); err != nil {
+			return nil
+		}
+		return restored.MessagesSnapshot()
 	}
 	return fn()
 }
@@ -225,9 +329,18 @@ type Registry struct {
 	running  int
 	launched int
 	closed   bool
+
+	path          string
+	persistMu     sync.Mutex
+	persistGate   sync.RWMutex
+	agentJournals sync.Map
 }
 
 func NewRegistry() *Registry {
+	return newRegistry("")
+}
+
+func newRegistry(path string) *Registry {
 	// Background tasks deliberately do not inherit the foreground turn's
 	// progress or stream lifecycle callbacks: their output is represented by
 	// Task activity/results, and sub-agent retries install their own local reset
@@ -237,6 +350,7 @@ func NewRegistry() *Registry {
 		ctx:    ctx,
 		cancel: cancel,
 		events: make(chan Event, MaxPerSession),
+		path:   path,
 	}
 }
 
@@ -279,6 +393,12 @@ func (r *Registry) Done() <-chan struct{} { return r.ctx.Done() }
 // shutdown rejections, never run failures — those surface via the task. run
 // receives the task so it can publish activity and a transcript peek.
 func (r *Registry) Launch(description, agentType string, run func(ctx context.Context, t *Task) (string, error)) (*Task, error) {
+	return r.LaunchAgent(uuid.NewString(), description, agentType, nil, run)
+}
+
+// LaunchAgent is Launch with a stable child identity and a preparation step
+// that is persisted before the goroutine can start.
+func (r *Registry) LaunchAgent(agentID, description, agentType string, prepare func(*Task) error, run func(ctx context.Context, t *Task) (string, error)) (*Task, error) {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
@@ -295,18 +415,59 @@ func (r *Registry) Launch(description, agentType string, run func(ctx context.Co
 
 	ctx, cancel := context.WithTimeout(r.ctx, MaxRunDuration)
 	ctx = tool.WithBackgroundOrigin(ctx)
+	if agentID == "" {
+		agentID = uuid.NewString()
+	}
+	if r.hasAgentIDLocked(agentID) {
+		r.mu.Unlock()
+		cancel()
+		return nil, fmt.Errorf("background agent identity %s already exists", agentID)
+	}
+	taskID := r.uniqueTaskIDLocked(agentID)
 	t := &Task{
-		ID:          uuid.NewString()[:8],
+		ID:          taskID,
+		AgentID:     agentID,
 		Description: description,
 		AgentType:   agentType,
 		Started:     time.Now(),
 		status:      StatusRunning,
 		cancel:      cancel,
 		seq:         1,
+		registry:    r,
 	}
 	r.tasks = append(r.tasks, t)
 	r.running++
 	r.launched++
+	r.mu.Unlock()
+	if prepare != nil {
+		if err := prepare(t); err != nil {
+			r.mu.Lock()
+			r.removeTaskLocked(t)
+			r.running--
+			r.launched--
+			r.mu.Unlock()
+			cancel()
+			return nil, err
+		}
+	}
+	if err := r.persist(); err != nil {
+		r.mu.Lock()
+		r.removeTaskLocked(t)
+		r.running--
+		r.launched--
+		r.mu.Unlock()
+		cancel()
+		return nil, err
+	}
+	r.mu.Lock()
+	if r.closed {
+		r.removeTaskLocked(t)
+		r.running--
+		r.launched--
+		r.mu.Unlock()
+		cancel()
+		return nil, fmt.Errorf("session is shutting down")
+	}
 	r.mu.Unlock()
 
 	go r.execute(ctx, cancel, t, run)
@@ -319,15 +480,31 @@ func (r *Registry) Launch(description, agentType string, run func(ctx context.Co
 // result was already delivered inline. Returns nil when the registry is closed
 // or at capacity; the caller then skips follow-up support.
 func (r *Registry) Adopt(description, agentType, result string, elapsed time.Duration) *Task {
+	t, _ := r.AdoptAgent(uuid.NewString(), description, agentType, result, elapsed, nil)
+	return t
+}
+
+// AdoptAgent is Adopt with durable child state installed before it becomes
+// visible to task_send or UI readers.
+func (r *Registry) AdoptAgent(agentID, description, agentType, result string, elapsed time.Duration, prepare func(*Task) error) (*Task, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.closed || r.launched >= MaxPerSession {
-		return nil
+		r.mu.Unlock()
+		return nil, nil
 	}
 
 	now := time.Now()
+	if agentID == "" {
+		agentID = uuid.NewString()
+	}
+	if r.hasAgentIDLocked(agentID) {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("background agent identity %s already exists", agentID)
+	}
+	taskID := r.uniqueTaskIDLocked(agentID)
 	t := &Task{
-		ID:          uuid.NewString()[:8],
+		ID:          taskID,
+		AgentID:     agentID,
 		Description: description,
 		AgentType:   agentType,
 		Started:     now.Add(-elapsed),
@@ -335,10 +512,75 @@ func (r *Registry) Adopt(description, agentType, result string, elapsed time.Dur
 		result:      result,
 		finished:    now,
 		seq:         1,
+		registry:    r,
 	}
 	r.tasks = append(r.tasks, t)
 	r.launched++
-	return t
+	r.mu.Unlock()
+	if prepare != nil {
+		if err := prepare(t); err != nil {
+			r.mu.Lock()
+			r.removeTaskLocked(t)
+			r.launched--
+			r.mu.Unlock()
+			return nil, err
+		}
+	}
+	if err := r.persist(); err != nil {
+		r.mu.Lock()
+		r.removeTaskLocked(t)
+		r.launched--
+		r.mu.Unlock()
+		return nil, err
+	}
+	r.mu.Lock()
+	if r.closed {
+		r.removeTaskLocked(t)
+		r.launched--
+		r.mu.Unlock()
+		return nil, fmt.Errorf("session is shutting down")
+	}
+	r.mu.Unlock()
+	return t, nil
+}
+
+func (r *Registry) removeTaskLocked(target *Task) {
+	for i, current := range r.tasks {
+		if current == target {
+			r.tasks = append(r.tasks[:i], r.tasks[i+1:]...)
+			return
+		}
+	}
+}
+
+func (r *Registry) hasAgentIDLocked(agentID string) bool {
+	for _, task := range r.tasks {
+		if task.AgentID == agentID {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Registry) uniqueTaskIDLocked(agentID string) string {
+	base := agentID
+	if len(base) > 8 {
+		base = base[:8]
+	}
+	candidate := base
+	for suffix := 2; ; suffix++ {
+		available := true
+		for _, task := range r.tasks {
+			if task.ID == candidate {
+				available = false
+				break
+			}
+		}
+		if available {
+			return candidate
+		}
+		candidate = fmt.Sprintf("%s-%d", base, suffix)
+	}
 }
 
 // Relaunch restarts a finished task with a new run — the task_send follow-up
@@ -378,6 +620,35 @@ func (r *Registry) Relaunch(t *Task, run func(ctx context.Context, t *Task) (str
 
 	r.running++
 	r.launched++
+	r.mu.Unlock()
+	if err := r.persist(); err != nil {
+		t.mu.Lock()
+		t.status = StatusFailed
+		t.result = fmt.Sprintf("error: could not persist relaunch: %v", err)
+		t.finished = time.Now()
+		t.cancel = nil
+		t.mu.Unlock()
+		r.mu.Lock()
+		r.running--
+		r.launched--
+		r.mu.Unlock()
+		cancel()
+		return err
+	}
+	r.mu.Lock()
+	if r.closed {
+		r.running--
+		r.launched--
+		r.mu.Unlock()
+		t.mu.Lock()
+		t.status = StatusStopped
+		t.result = "error: session shut down before the background agent restarted"
+		t.finished = time.Now()
+		t.cancel = nil
+		t.mu.Unlock()
+		cancel()
+		return fmt.Errorf("session is shutting down")
+	}
 	r.mu.Unlock()
 
 	go r.execute(ctx, cancel, t, run)
@@ -424,6 +695,7 @@ func (r *Registry) execute(ctx context.Context, cancel context.CancelFunc, t *Ta
 	r.running--
 	closed := r.closed
 	r.mu.Unlock()
+	_ = r.persist()
 
 	if !closed {
 		r.send(ev)
@@ -467,13 +739,26 @@ func (r *Registry) Stop(id string) error {
 	t.stopped = true
 	cancel := t.cancel
 	t.mu.Unlock()
+	_ = r.persist()
 	cancel()
 	return nil
 }
 
 // Close cancels all running tasks and stops event delivery.
 func (r *Registry) Close() {
+	if r == nil {
+		return
+	}
+	// Exclude new writes and wait for an append or atomic snapshot already in
+	// progress before returning. Canceled runs may unwind later, but they can no
+	// longer recreate durable state after their session directory is deleted.
+	r.persistGate.Lock()
+	defer r.persistGate.Unlock()
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
 	r.closed = true
 	r.mu.Unlock()
 	r.cancel()

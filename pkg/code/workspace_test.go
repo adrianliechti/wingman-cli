@@ -613,6 +613,8 @@ type: project
 # Migrate auth middleware
 `)
 
+	mustWrite(t, filepath.Join(dir, "über_setup.md"), "---\ndescription: unicode title stays intact\n---\n\nbody\n")
+
 	mustWrite(t, filepath.Join(dir, "notes.txt"), "ignore me\n")
 
 	if err := os.MkdirAll(filepath.Join(dir, "subdir"), 0755); err != nil {
@@ -624,10 +626,11 @@ type: project
 	content := w.MemoryContent()
 
 	wantLines := []string{
-		"- feedback_testing.md — no DB mocks; real DB only",
-		"- note.md — Just a one-liner about something.",
-		"- preferences.md — User Preferences",
-		"- typed_only.md — Migrate auth middleware",
+		"- [Feedback testing](feedback_testing.md) — no DB mocks; real DB only",
+		"- [Note](note.md) — Just a one-liner about something.",
+		"- [Preferences](preferences.md) — User Preferences",
+		"- [Typed only](typed_only.md) — Migrate auth middleware",
+		"- [Über setup](über_setup.md) — unicode title stays intact",
 	}
 	for _, want := range wantLines {
 		if !strings.Contains(content, want) {
@@ -643,6 +646,32 @@ type: project
 	}
 }
 
+func TestMemoryContent_NewestFirst(t *testing.T) {
+	dir := t.TempDir()
+
+	base := time.Now().Add(-time.Hour)
+	for i, name := range []string{"project_oldest.md", "feedback_middle.md", "user_newest.md"} {
+		path := filepath.Join(dir, name)
+		mustWrite(t, path, "---\ndescription: hook "+name+"\n---\n\nbody\n")
+		stamp := base.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(path, stamp, stamp); err != nil {
+			t.Fatalf("chtimes %s: %v", name, err)
+		}
+	}
+
+	w := &Workspace{MemoryPath: dir}
+	got := w.MemoryContent()
+
+	want := []string{
+		"- [User newest](user_newest.md) — hook user_newest.md",
+		"- [Feedback middle](feedback_middle.md) — hook feedback_middle.md",
+		"- [Project oldest](project_oldest.md) — hook project_oldest.md",
+	}
+	if got != strings.Join(want, "\n") {
+		t.Errorf("expected newest-first index:\n%s\ngot:\n%s", strings.Join(want, "\n"), got)
+	}
+}
+
 func TestMemoryContent_CacheInvalidatesOnFileChange(t *testing.T) {
 	dir := t.TempDir()
 	w := &Workspace{MemoryPath: dir}
@@ -652,7 +681,7 @@ func TestMemoryContent_CacheInvalidatesOnFileChange(t *testing.T) {
 	}
 
 	mustWrite(t, filepath.Join(dir, "a.md"), "---\ndescription: first\n---\n\nbody\n")
-	if got := w.MemoryContent(); !strings.Contains(got, "a.md — first") {
+	if got := w.MemoryContent(); !strings.Contains(got, "[A](a.md) — first") {
 		t.Errorf("expected new file picked up, got %q", got)
 	}
 
@@ -661,7 +690,7 @@ func TestMemoryContent_CacheInvalidatesOnFileChange(t *testing.T) {
 	if err := os.Chtimes(filepath.Join(dir, "a.md"), future, future); err != nil {
 		t.Fatalf("chtimes: %v", err)
 	}
-	if got := w.MemoryContent(); !strings.Contains(got, "a.md — second") {
+	if got := w.MemoryContent(); !strings.Contains(got, "[A](a.md) — second") {
 		t.Errorf("expected updated description, got %q", got)
 	}
 

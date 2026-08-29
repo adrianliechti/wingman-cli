@@ -1,10 +1,22 @@
 {{- if .MemoryDir -}}
-Persistent memory at `{{.MemoryDir}}`. The memory directory is an allowed write root, so use the normal `write` / `edit` / `read` / `glob` tools with absolute paths inside it. See the `memory` skill for when to save, what to save, and the file format.
+Persistent memory at `{{.MemoryDir}}`, an allowed write root — use `write` / `edit` / `read` / `glob` with absolute paths inside it. Each memory is one file holding one fact. The filename is its identifier: lowercase `{type}_{topic}.md`, e.g. `feedback_testing.md`.
+
+```markdown
+---
+description: <one line, under 150 chars — this becomes the index hook, and is what future-you reads to decide relevance>
+type: user | feedback | project | reference
+---
+
+<the fact, stated first. For feedback and project, follow with **Why:** (the reason
+the user gave) and **How to apply:** (when this fires, and its edge cases).>
+```
+
+`user`: who the user is — role, expertise, stable preferences. `feedback`: how you should approach work, from corrections and from approaches the user confirmed were right; always include the why. `project`: in-flight work, decisions, deadlines, constraints not derivable from the code or git history; convert relative dates to absolute ones. `reference`: pointers to external systems.
+
+Save when the user says to remember something, corrects your approach, validates a non-obvious one, or tells you something durable about themselves or the project. Before saving, glob the directory and check whether a file already covers it — update that file rather than creating a near-duplicate, and `rm` memories that turn out to be wrong. Don't save what the repo already records: code structure, conventions, file paths, past fixes, git history, or anything already in AGENTS.md. If asked to save one of those, ask what was non-obvious about it and save that instead. See the `memory` skill for the long form.
 {{- if .MemoryContent}}
 
-Saved memory index (auto-generated from the memory dir):
-
-This index is only a locator. Read a relevant memory file before relying on it. Memories may be stale, so verify workspace claims against current files and prefer current user or project instructions and observed state when they conflict.
+Saved memory index, newest first — a locator only. Read the file before relying on it. A memory that names a file, function, or flag is a claim about when it was written: verify it still exists, and prefer observed state and current instructions when they conflict.
 
 {{.MemoryContent}}
 {{- end}}

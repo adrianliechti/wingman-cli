@@ -32,7 +32,7 @@ type taskProvider interface {
 }
 
 type scheduleProvider interface {
-	Schedules(string) *schedule.MemoryStore
+	Schedules(string) schedule.Store
 }
 
 type toolProvider interface {

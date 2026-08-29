@@ -15,7 +15,9 @@ type managedTurnInput struct {
 }
 
 type managedTurnSession struct {
-	mu sync.Mutex
+	mu       sync.Mutex
+	loadOnce sync.Once
+	loadErr  error
 
 	active  *managedTurnInput
 	queued  []*managedTurnInput
@@ -75,7 +77,56 @@ func (m *TurnManager) session(id string) *managedTurnSession {
 		s = &managedTurnSession{}
 		m.sessions[id] = s
 	}
+	s.loadOnce.Do(func() {
+		store, ok := m.agent.(TurnQueueStore)
+		if !ok {
+			return
+		}
+		state, err := store.LoadTurnQueue(id)
+		if err != nil {
+			s.loadErr = err
+			return
+		}
+		if len(state.Inputs) == 0 {
+			return
+		}
+		s.ids = make(map[string]struct{}, len(state.Inputs))
+		for _, input := range state.Inputs {
+			input.Content = agent.CloneContent(input.Content)
+			if input.Intent == "" {
+				input.Intent = TurnInputFollowUp
+			}
+			if input.ID == "" {
+				continue
+			}
+			if _, duplicate := s.ids[input.ID]; duplicate {
+				continue
+			}
+			s.ids[input.ID] = struct{}{}
+			s.queued = append(s.queued, &managedTurnInput{input: input})
+		}
+		// Never auto-replay work merely because the process restarted. Resume is
+		// an explicit user/client decision after inspecting the interrupted turn.
+		s.paused = len(s.queued) > 0
+	})
 	return s
+}
+
+func (m *TurnManager) persistLocked(sessionID string, s *managedTurnSession) error {
+	store, ok := m.agent.(TurnQueueStore)
+	if !ok {
+		return nil
+	}
+	state := TurnQueueState{Paused: s.paused, Inputs: make([]TurnInput, 0, len(s.queued))}
+	for _, item := range s.queued {
+		input := item.input
+		input.Content = agent.CloneContent(input.Content)
+		state.Inputs = append(state.Inputs, input)
+	}
+	if err := store.SaveTurnQueue(sessionID, state); err != nil {
+		return fmt.Errorf("persist turn queue: %w", err)
+	}
+	return nil
 }
 
 func (m *TurnManager) Features(sessionID string) TurnFeatures {
@@ -113,6 +164,11 @@ func (m *TurnManager) Submit(ctx context.Context, sessionID string, input TurnIn
 
 	s := m.session(sessionID)
 	s.mu.Lock()
+	if s.loadErr != nil {
+		err := s.loadErr
+		s.mu.Unlock()
+		return TurnInputSnapshot{}, fmt.Errorf("restore turn queue: %w", err)
+	}
 	if s.ids == nil {
 		s.ids = make(map[string]struct{})
 	}
@@ -179,6 +235,12 @@ func (m *TurnManager) Submit(ctx context.Context, sessionID string, input TurnIn
 	}
 	s.queued = append(s.queued, item)
 	position := len(s.queued)
+	if err := m.persistLocked(sessionID, s); err != nil {
+		s.queued = s.queued[:len(s.queued)-1]
+		delete(s.ids, input.ID)
+		s.mu.Unlock()
+		return TurnInputSnapshot{}, err
+	}
 	s.mu.Unlock()
 	m.emit(TurnEvent{SessionID: sessionID, InputID: input.ID, State: TurnInputQueued, Intent: input.Intent, Position: position})
 	return TurnInputSnapshot{ID: input.ID, State: TurnInputQueued, Intent: input.Intent, Position: position}, nil
@@ -244,6 +306,16 @@ func (m *TurnManager) runSession(sessionID string, s *managedTurnSession) {
 		} else {
 			s.running = false
 		}
+		if err := m.persistLocked(sessionID, s); err != nil {
+			if next != nil {
+				s.active = nil
+				s.queued = append([]*managedTurnInput{next}, s.queued...)
+				next = nil
+			}
+			s.paused = len(s.queued) > 0
+			s.running = false
+			s.loadErr = err
+		}
 		s.mu.Unlock()
 
 		m.emit(TurnEvent{SessionID: sessionID, InputID: item.input.ID, State: state, Intent: item.input.Intent, Err: runErr, Executed: true})
@@ -306,6 +378,14 @@ func (m *TurnManager) RemoveQueued(sessionID, inputID string) error {
 	}
 	s.queued = append(s.queued[:idx], s.queued[idx+1:]...)
 	delete(s.ids, inputID)
+	if err := m.persistLocked(sessionID, s); err != nil {
+		s.queued = append(s.queued, nil)
+		copy(s.queued[idx+1:], s.queued[idx:])
+		s.queued[idx] = removed
+		s.ids[inputID] = struct{}{}
+		s.mu.Unlock()
+		return err
+	}
 	s.mu.Unlock()
 	m.emit(TurnEvent{SessionID: sessionID, InputID: inputID, State: TurnInputCancelled, Intent: removed.input.Intent})
 	m.emitQueuePositions(sessionID, s)
@@ -319,6 +399,7 @@ func (m *TurnManager) ReplaceQueued(sessionID, inputID string, replacement TurnI
 	s := m.session(sessionID)
 	s.mu.Lock()
 	position := 0
+	var previous TurnInput
 	for i, item := range s.queued {
 		if item.input.ID != inputID {
 			continue
@@ -328,14 +409,21 @@ func (m *TurnManager) ReplaceQueued(sessionID, inputID string, replacement TurnI
 			replacement.Intent = item.input.Intent
 		}
 		replacement.Content = agent.CloneContent(replacement.Content)
+		previous = item.input
 		item.input = replacement
 		position = i + 1
 		break
 	}
-	s.mu.Unlock()
 	if position == 0 {
+		s.mu.Unlock()
 		return ErrInputNotQueued
 	}
+	if err := m.persistLocked(sessionID, s); err != nil {
+		s.queued[position-1].input = previous
+		s.mu.Unlock()
+		return err
+	}
+	s.mu.Unlock()
 	m.emit(TurnEvent{SessionID: sessionID, InputID: inputID, State: TurnInputQueued, Intent: replacement.Intent, Position: position})
 	return nil
 }
@@ -366,6 +454,7 @@ func (m *TurnManager) cancelSession(sessionID string, clearQueue bool) {
 		s.queued = nil
 		s.paused = false
 	}
+	_ = m.persistLocked(sessionID, s)
 	cancel := s.cancel
 	s.mu.Unlock()
 
@@ -387,6 +476,7 @@ func (m *TurnManager) ClearQueue(sessionID string) {
 	}
 	s.queued = nil
 	s.paused = false
+	_ = m.persistLocked(sessionID, s)
 	s.mu.Unlock()
 	for _, item := range queued {
 		m.emit(TurnEvent{SessionID: sessionID, InputID: item.input.ID, State: TurnInputCancelled, Intent: item.input.Intent})
@@ -406,6 +496,15 @@ func (m *TurnManager) Resume(sessionID string) bool {
 	s.active = next
 	s.running = true
 	s.cancelRequested = false
+	if err := m.persistLocked(sessionID, s); err != nil {
+		s.active = nil
+		s.queued = append([]*managedTurnInput{next}, s.queued...)
+		s.running = false
+		s.paused = true
+		s.loadErr = err
+		s.mu.Unlock()
+		return false
+	}
 	s.mu.Unlock()
 	m.emit(TurnEvent{SessionID: sessionID, InputID: next.input.ID, State: TurnInputActive, Intent: next.input.Intent})
 	go m.runSession(sessionID, s)

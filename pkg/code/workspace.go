@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -1262,7 +1263,7 @@ func (w *Workspace) MemoryContent() string {
 
 	var lines []string
 	for _, f := range files {
-		line := "- " + f.name
+		line := fmt.Sprintf("- [%s](%s)", memoryTitle(f.name), f.name)
 		if hook := extractMemoryHook(filepath.Join(w.MemoryPath, f.name)); hook != "" {
 			line += " — " + hook
 		}
@@ -1306,8 +1307,25 @@ func listMemoryFiles(dir string) []memoryFile {
 		files = append(files, memoryFile{name: e.Name(), mtime: info.ModTime()})
 	}
 
-	slices.SortFunc(files, func(a, b memoryFile) int { return strings.Compare(a.name, b.name) })
+	slices.SortFunc(files, func(a, b memoryFile) int {
+		if c := b.mtime.Compare(a.mtime); c != 0 {
+			return c
+		}
+		return strings.Compare(a.name, b.name)
+	})
 	return files
+}
+
+func memoryTitle(name string) string {
+	title := strings.TrimSuffix(name, filepath.Ext(name))
+	title = strings.NewReplacer("_", " ", "-", " ").Replace(title)
+	title = strings.Join(strings.Fields(title), " ")
+	if title == "" {
+		return name
+	}
+	runes := []rune(title)
+	runes[0] = unicode.ToUpper(runes[0])
+	return string(runes)
 }
 
 func extractMemoryHook(path string) string {
