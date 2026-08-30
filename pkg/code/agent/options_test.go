@@ -4,10 +4,15 @@ import (
 	"context"
 	"slices"
 	"testing"
+	"time"
+
+	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/adrianliechti/wingman-agent/internal/testenv"
 	harness "github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
+	wingmanmcp "github.com/adrianliechti/wingman-agent/pkg/mcp"
+	"github.com/adrianliechti/wingman-agent/pkg/telemetry"
 )
 
 func TestResolveOptionsFromEnvironment(t *testing.T) {
@@ -112,6 +117,63 @@ func TestEnvironmentOptionsAreResolvedAtAgentStartup(t *testing.T) {
 		[]string{"shell", "exec_command", "exec_session", "web_search", "fetch"},
 		[]string{"read", "edit", "write"},
 	)
+}
+
+func TestTelemetryOptionOverridesHarnessConfig(t *testing.T) {
+	workspace := newOptionsTestWorkspace(t)
+	inherited := &telemetry.Telemetry{}
+	override := &telemetry.Telemetry{}
+	a := New(workspace, &harness.Config{Telemetry: inherited}, nil, Options{Telemetry: override})
+	defer a.Close()
+
+	sessionID, err := a.NewSession(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := a.session(sessionID)
+	if state == nil {
+		t.Fatal("session state was not created")
+	}
+	if state.aa.Telemetry != override {
+		t.Fatalf("session telemetry = %p, want explicit override %p", state.aa.Telemetry, override)
+	}
+}
+
+func TestCloseWithOwnedTelemetryClosesWorkspaceMCPSessions(t *testing.T) {
+	workspace := newOptionsTestWorkspace(t)
+	manager := wingmanmcp.NewManager(&wingmanmcp.Config{Servers: map[string]wingmanmcp.ServerConfig{}})
+	workspace.MCP = manager
+
+	clientTransport, serverTransport := sdkmcp.NewInMemoryTransports()
+	server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "test", Version: "1.0.0"}, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = serverSession.Close() })
+	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "test-client", Version: "1.0.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.AddSession("test", clientSession)
+
+	a := New(workspace, &harness.Config{Telemetry: &telemetry.Telemetry{}}, nil, Options{
+		ShutdownTelemetryOnClose: true,
+	})
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	waited := make(chan error, 1)
+	go func() { waited <- clientSession.Wait() }()
+	select {
+	case <-waited:
+	case <-ctx.Done():
+		t.Fatal("owned telemetry shutdown left the MCP session open")
+	}
 }
 
 func newOptionsTestWorkspace(t *testing.T) *code.Workspace {

@@ -298,6 +298,26 @@ func TestSessionUpdatesPreserveCommandsMetadataUsageAndProgress(t *testing.T) {
 	}
 }
 
+func TestUsageFromACPNormalizesSeparateTokenTypes(t *testing.T) {
+	cacheRead, cacheWrite, reasoning := 6, 3, 4
+	usage := usageFromACP(&acpsdk.Usage{
+		InputTokens:       15,
+		OutputTokens:      4,
+		CachedReadTokens:  &cacheRead,
+		CachedWriteTokens: &cacheWrite,
+		ThoughtTokens:     &reasoning,
+		TotalTokens:       32,
+	})
+	if usage.InputTokens != 24 ||
+		usage.OutputTokens != 8 ||
+		usage.ReasoningTokens != 4 ||
+		usage.CacheReadInputTokens != 6 ||
+		usage.CacheCreationInputTokens != 3 ||
+		usage.TotalTokens() != 32 {
+		t.Fatalf("usage = %#v", usage)
+	}
+}
+
 func cloneOptionsWithCurrent(options []acpsdk.SessionConfigOption, id acpsdk.SessionConfigId, value acpsdk.SessionConfigValueId) []acpsdk.SessionConfigOption {
 	result := append([]acpsdk.SessionConfigOption(nil), options...)
 	for i, option := range result {

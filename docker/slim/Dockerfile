@@ -2,7 +2,7 @@
 
 # Build on the native builder architecture and cross-compile the static binary
 # so buildx can publish amd64 and arm64 from either kind of host.
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS build
+FROM --platform=$BUILDPLATFORM golang:1-bookworm AS build
 
 ARG TARGETOS
 ARG TARGETARCH

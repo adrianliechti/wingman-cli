@@ -192,14 +192,18 @@ func Names() ([]string, error) {
 func New(ctx context.Context, ws *code.Workspace, name string, builtinConfig *agent.Config) (code.Agent, error) {
 	name = ID(name)
 	if name == "" || name == code.BuiltinAgentName {
+		ownsTelemetry := false
 		if builtinConfig == nil {
 			var err error
 			builtinConfig, err = agent.DefaultConfig()
 			if err != nil {
 				return nil, err
 			}
+			ownsTelemetry = true
 		}
-		return codeagent.New(ws, builtinConfig, nil), nil
+		return codeagent.New(ws, builtinConfig, nil, codeagent.Options{
+			ShutdownTelemetryOnClose: ownsTelemetry,
+		}), nil
 	}
 
 	available, err := Available()

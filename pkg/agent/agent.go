@@ -15,6 +15,7 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/hook"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/telemetry"
 	"github.com/adrianliechti/wingman-agent/pkg/text"
 )
 
@@ -113,16 +114,21 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 		runtime.Model = a.Model()
 	}
 	ctx = hook.WithRuntime(ctx, runtime)
+	ctx, telemetryInvocation := a.Telemetry.StartAgent(ctx, telemetry.AgentRequest{
+		ConversationID: conversationID(ctx, a.CacheKey),
+	})
 	turnUsageBefore := a.UsageSnapshot()
 	if err := a.recordEvents(RuntimeEvent{
 		Type: EventTurnStarted, TurnID: runtime.TurnID, Model: runtime.Model,
 	}); err != nil {
 		a.setRunning(false)
+		telemetryInvocation.End(telemetry.Outcome{Err: err})
 		return nil, err
 	}
 
 	failSetup := func(err error) (iter.Seq2[Message, error], error) {
 		terminalErr := a.finishTurn(runtime.TurnID, RuntimeFailed, err, turnUsageBefore)
+		telemetryInvocation.End(telemetry.Outcome{Err: errors.Join(err, terminalErr)})
 		return nil, errors.Join(err, terminalErr)
 	}
 
@@ -182,11 +188,14 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 			if r := recover(); r != nil {
 				status = RuntimeFailed
 				outcomeErr = fmt.Errorf("agent turn panicked: %v", r)
-				_ = a.finishTurn(runtime.TurnID, status, outcomeErr, turnUsageBefore)
+				finishErr := a.finishTurn(runtime.TurnID, status, outcomeErr, turnUsageBefore)
+				telemetryInvocation.End(telemetry.Outcome{Err: errors.Join(outcomeErr, finishErr)})
 				panic(r)
 			}
-			if err := a.finishTurn(runtime.TurnID, status, outcomeErr, turnUsageBefore); err != nil && consumerOpen {
-				yield(Message{}, err)
+			finishErr := a.finishTurn(runtime.TurnID, status, outcomeErr, turnUsageBefore)
+			telemetryInvocation.End(telemetry.Outcome{Err: errors.Join(outcomeErr, finishErr)})
+			if finishErr != nil && consumerOpen {
+				yield(Message{}, finishErr)
 			}
 		}()
 
@@ -270,7 +279,18 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 				outputSchema: outputSchema,
 			}
 
-			resp, err := a.completeRun(ctx, runtime.TurnID, req, yield)
+			captureContent := a.Telemetry.CapturesMessageContent()
+			inferenceRequest := telemetry.InferenceRequest{
+				Model:          req.model,
+				ConversationID: conversationID(ctx, a.CacheKey),
+				Streaming:      true,
+				ReasoningLevel: req.effort,
+			}
+			if captureContent {
+				inferenceRequest.Content = telemetryInferenceContent(req.messages, req.instructions, req.tools)
+			}
+			inferenceCtx, inference := a.Telemetry.StartInference(ctx, inferenceRequest)
+			resp, err := a.completeRun(inferenceCtx, runtime.TurnID, req, yield)
 
 			for attempt := 1; err != nil && attempt <= maxStreamRetries; attempt++ {
 				if errors.Is(err, errYieldStopped) || ctx.Err() != nil || !isRecoverableError(err) {
@@ -284,7 +304,9 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 
 				if isContextOverflowError(err) {
 					if outcome := a.runPreCompact(ctx, "auto"); outcome.Stop {
-						interrupt("compaction stopped by hook")
+						interruptErr := errors.New("compaction stopped by hook")
+						inference.End(streamingInferenceResult(resp, interruptErr, captureContent))
+						interrupt(interruptErr.Error())
 						return
 					}
 					compacted, compactErr := a.compactMessages(ctx, true)
@@ -294,7 +316,9 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 					}
 					if compacted {
 						if outcome := a.runPostCompact(ctx, "auto"); outcome.Stop {
-							interrupt("post-compaction hook stopped the turn")
+							interruptErr := errors.New("post-compaction hook stopped the turn")
+							inference.End(streamingInferenceResult(resp, interruptErr, captureContent))
+							interrupt(interruptErr.Error())
 							return
 						}
 						outcome, hookErr := a.runSessionStartHooks(ctx, "compact")
@@ -303,11 +327,16 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 							break
 						}
 						if outcome.Stop {
-							interrupt("session-start hook stopped the compacted turn")
+							interruptErr := errors.New("session-start hook stopped the compacted turn")
+							inference.End(streamingInferenceResult(resp, interruptErr, captureContent))
+							interrupt(interruptErr.Error())
 							return
 						}
 					}
 					req.messages = a.requestMessages()
+					if captureContent {
+						inference.SetContent(telemetryInferenceContent(req.messages, req.instructions, req.tools))
+					}
 				} else {
 					// The SDK already retried transport errors with backoff; this
 					// covers failures before streamed output begins, so back off
@@ -323,8 +352,9 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 					break
 				}
 
-				resp, err = a.completeRun(ctx, runtime.TurnID, req, yield)
+				resp, err = a.completeRun(inferenceCtx, runtime.TurnID, req, yield)
 			}
+			inference.End(streamingInferenceResult(resp, err, captureContent))
 
 			if err != nil {
 				stop(err)
@@ -618,9 +648,11 @@ func (a *Agent) finishTurn(turnID string, status RuntimeStatus, outcomeErr error
 	}
 	after := a.UsageSnapshot()
 	delta := Usage{
-		InputTokens:  after.InputTokens - before.InputTokens,
-		CachedTokens: after.CachedTokens - before.CachedTokens,
-		OutputTokens: after.OutputTokens - before.OutputTokens,
+		InputTokens:              after.InputTokens - before.InputTokens,
+		OutputTokens:             after.OutputTokens - before.OutputTokens,
+		ReasoningTokens:          after.ReasoningTokens - before.ReasoningTokens,
+		CacheReadInputTokens:     after.CacheReadInputTokens - before.CacheReadInputTokens,
+		CacheCreationInputTokens: after.CacheCreationInputTokens - before.CacheCreationInputTokens,
 	}
 	terminal := &RuntimeTerminal{Status: status}
 	if outcomeErr != nil {
@@ -904,6 +936,34 @@ func (a *Agent) toolCallOutcome(ctx context.Context, tc ToolCall, tools []tool.T
 func (a *Agent) executeToolOperation(ctx context.Context, tc ToolCall, tools []tool.Tool) toolCallOutcome {
 	operationID := uuid.NewString()
 	effect := a.toolEffect(tc, tools)
+	t := findTool(tc.Name, tools)
+	description := ""
+	toolType := "function"
+	mcpMethod := ""
+	mcpProtocolVersion := ""
+	if t != nil {
+		description = t.Description
+		if t.Telemetry.ToolType != "" {
+			toolType = t.Telemetry.ToolType
+		}
+		mcpMethod = t.Telemetry.MCPMethod
+		mcpProtocolVersion = t.Telemetry.MCPProtocolVersion
+	}
+	ctx, telemetryExecution := a.Telemetry.StartTool(ctx, telemetry.ToolRequest{
+		Name:               tc.Name,
+		Description:        description,
+		CallID:             tc.ID,
+		Type:               toolType,
+		MCPMethod:          mcpMethod,
+		MCPProtocolVersion: mcpProtocolVersion,
+		Arguments:          genericToolTelemetryValue(mcpMethod, tc.Args),
+	})
+	telemetryEnded := false
+	defer func() {
+		if !telemetryEnded {
+			telemetryExecution.End(telemetry.Outcome{ErrorType: "_OTHER"})
+		}
+	}()
 	started := RuntimeEvent{
 		Type:        EventToolStarted,
 		TurnID:      hook.RuntimeFromContext(ctx).TurnID,
@@ -911,6 +971,8 @@ func (a *Agent) executeToolOperation(ctx context.Context, tc ToolCall, tools []t
 		Tool:        &RuntimeTool{CallID: tc.ID, Name: tc.Name, Args: tc.Args, Effect: string(effect)},
 	}
 	if err := a.recordEvents(started); err != nil {
+		telemetryExecution.End(telemetry.Outcome{Err: err})
+		telemetryEnded = true
 		return toolCallOutcome{result: tool.Error(fmt.Sprintf("error: could not durably start tool call: %v", err))}
 	}
 
@@ -934,9 +996,53 @@ func (a *Agent) executeToolOperation(ctx context.Context, tc ToolCall, tools []t
 		Tool:        &RuntimeTool{CallID: tc.ID, Name: tc.Name, Args: tc.Args, Effect: string(effect), IsError: result.IsError},
 		Terminal:    terminal,
 	})...); err != nil {
+		telemetryExecution.End(telemetry.Outcome{Err: err})
+		telemetryEnded = true
 		return toolCallOutcome{result: tool.Error(fmt.Sprintf("error: tool finished but its result and terminal fact could not be persisted: %v", err))}
 	}
+	toolOutcome := telemetry.Outcome{}
+	if result.IsError {
+		toolOutcome.ErrorType = "_OTHER"
+		if result.Content == interruptedToolResult || result.Content == interruptedWaitResult {
+			toolOutcome.ErrorType = "canceled"
+		} else if strings.Contains(result.Content, "time limit") || strings.Contains(result.Content, "deadline") {
+			toolOutcome.ErrorType = "timeout"
+		}
+	}
+	if mcpMethod == "" {
+		telemetryExecution.SetResult(genericToolResultTelemetryValue(result.Content))
+	}
+	telemetryExecution.End(toolOutcome)
+	telemetryEnded = true
 	return toolCallOutcome{result: result, recorded: true}
+}
+
+func genericToolTelemetryValue(mcpMethod, arguments string) any {
+	if mcpMethod != "" || !json.Valid([]byte(arguments)) {
+		return nil
+	}
+	decoder := json.NewDecoder(strings.NewReader(arguments))
+	decoder.UseNumber()
+	var object map[string]any
+	if err := decoder.Decode(&object); err != nil {
+		return nil
+	}
+	return object
+}
+
+func genericToolResultTelemetryValue(content string) map[string]any {
+	if json.Valid([]byte(content)) {
+		decoder := json.NewDecoder(strings.NewReader(content))
+		decoder.UseNumber()
+		var decoded any
+		if err := decoder.Decode(&decoded); err == nil {
+			if object, ok := decoded.(map[string]any); ok {
+				return object
+			}
+			return map[string]any{"content": decoded}
+		}
+	}
+	return map[string]any{"content": content}
 }
 
 func (a *Agent) beginToolRound() {
@@ -998,7 +1104,13 @@ func (a *Agent) executeSingleToolCall(ctx context.Context, tc ToolCall, tools []
 	var usageMu sync.Mutex
 	var usageErr error
 	ctx = tool.WithUsageSink(ctx, func(d tool.UsageDelta) {
-		usage := Usage{InputTokens: d.InputTokens, CachedTokens: d.CachedTokens, OutputTokens: d.OutputTokens}
+		usage := Usage{
+			InputTokens:              d.InputTokens,
+			OutputTokens:             d.OutputTokens,
+			ReasoningTokens:          d.ReasoningTokens,
+			CacheReadInputTokens:     d.CacheReadInputTokens,
+			CacheCreationInputTokens: d.CacheCreationInputTokens,
+		}
 		if err := a.recordEvents(RuntimeEvent{Type: EventUsage, TurnID: hook.RuntimeFromContext(ctx).TurnID, Usage: &usage}); err != nil {
 			usageMu.Lock()
 			usageErr = errors.Join(usageErr, err)

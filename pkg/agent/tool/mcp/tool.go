@@ -74,12 +74,21 @@ func convertTool(serverName string, session *sdkmcp.ClientSession, mcpTool sdkmc
 	if mcpTool.Annotations != nil && mcpTool.Annotations.ReadOnlyHint {
 		effect = tool.EffectReadOnly
 	}
+	protocolVersion := ""
+	if initialized := session.InitializeResult(); initialized != nil {
+		protocolVersion = initialized.ProtocolVersion
+	}
 
 	return tool.Tool{
 		Name:        fmt.Sprintf("%s_%s", serverName, mcpTool.Name),
 		Description: text.TruncateHead(mcpTool.Description, maxDescriptionBytes),
 		Effect:      tool.StaticEffect(effect),
 		Parameters:  schemaToParams(serverName, mcpTool),
+		Telemetry: tool.TelemetryMetadata{
+			ToolType:           "extension",
+			MCPMethod:          "tools/call",
+			MCPProtocolVersion: protocolVersion,
+		},
 		Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			return callTool(ctx, session, mcpTool.Name, args)
 		},

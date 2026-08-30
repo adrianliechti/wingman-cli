@@ -10,6 +10,7 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
 
+	"github.com/adrianliechti/wingman-agent/pkg/telemetry"
 	"github.com/adrianliechti/wingman-agent/pkg/text"
 )
 
@@ -421,24 +422,36 @@ func (a *Agent) summarizeMessages(ctx context.Context, messages []Message) (stri
 		return "", nil
 	}
 
+	modelID := a.utilityModelName()
+	instructions := "An LLM context limit was reached during an active working session between a user and you (the assistant). " +
+		"Produce a continuation briefing for yourself so the session can resume seamlessly. " +
+		"Frame and tone for an agent reader (you), not a human — completeness matters more than brevity. " +
+		"Do not answer the user's latest request; only summarize the prior context. " +
+		"Do not introduce new ideas unless the user already confirmed them.\n\n" +
+		"Include these sections:\n" +
+		"1. User Intent — all goals and requests\n" +
+		"2. Technical Concepts — tools, methods, libraries discussed\n" +
+		"3. Files + Code — viewed/edited files with key code and why changes were made\n" +
+		"4. Errors + Fixes — bugs encountered, resolutions, user corrections\n" +
+		"5. Problem Solving — issues solved or still in progress\n" +
+		"6. Pending Tasks — unresolved user requests\n" +
+		"7. Current Work — what was active when the limit hit: file names, code, alignment to the latest instruction\n" +
+		"8. Next Step — only if it directly continues an explicit user instruction"
+	captureContent := a.Telemetry.CapturesMessageContent()
+	inferenceRequest := telemetry.InferenceRequest{
+		Model:          modelID,
+		ConversationID: conversationID(ctx, a.CacheKey),
+	}
+	if captureContent {
+		inferenceRequest.Content = telemetry.InferenceContent{
+			InputMessages:      telemetryStringInput(transcript),
+			SystemInstructions: telemetrySystemInstructions(instructions),
+		}
+	}
+	ctx, operation := a.Telemetry.StartInference(ctx, inferenceRequest)
 	resp, err := a.client.Responses.New(ctx, responses.ResponseNewParams{
-		Model: a.utilityModelName(),
-		Instructions: openai.String(
-			"An LLM context limit was reached during an active working session between a user and you (the assistant). " +
-				"Produce a continuation briefing for yourself so the session can resume seamlessly. " +
-				"Frame and tone for an agent reader (you), not a human — completeness matters more than brevity. " +
-				"Do not answer the user's latest request; only summarize the prior context. " +
-				"Do not introduce new ideas unless the user already confirmed them.\n\n" +
-				"Include these sections:\n" +
-				"1. User Intent — all goals and requests\n" +
-				"2. Technical Concepts — tools, methods, libraries discussed\n" +
-				"3. Files + Code — viewed/edited files with key code and why changes were made\n" +
-				"4. Errors + Fixes — bugs encountered, resolutions, user corrections\n" +
-				"5. Problem Solving — issues solved or still in progress\n" +
-				"6. Pending Tasks — unresolved user requests\n" +
-				"7. Current Work — what was active when the limit hit: file names, code, alignment to the latest instruction\n" +
-				"8. Next Step — only if it directly continues an explicit user instruction",
-		),
+		Model:        modelID,
+		Instructions: openai.String(instructions),
 		Input: responses.ResponseNewParamsInputUnion{
 			OfString: openai.String(transcript),
 		},
@@ -446,8 +459,10 @@ func (a *Agent) summarizeMessages(ctx context.Context, messages []Message) (stri
 	})
 
 	if err != nil {
+		operation.End(telemetry.InferenceResult{Outcome: telemetryOutcome(err)})
 		return "", err
 	}
+	operation.End(inferenceResult(resp, responseToUsage(*resp), nil, captureContent))
 
 	summary := recoverySummaryOutput(resp)
 	if summary == "" {
@@ -464,14 +479,26 @@ func (a *Agent) Recap(ctx context.Context) (string, error) {
 		return "", nil
 	}
 
+	modelID := a.utilityModelName()
+	instructions := "The user is returning to a coding session after time away. " +
+		"From the transcript, write a brief recap in Markdown: 2-5 bullets covering what was being worked on, " +
+		"what was accomplished or changed, and any open items or agreed next step. " +
+		"Address the user directly. No preamble, no heading, no questions."
+	captureContent := a.Telemetry.CapturesMessageContent()
+	inferenceRequest := telemetry.InferenceRequest{
+		Model:          modelID,
+		ConversationID: conversationID(ctx, a.CacheKey),
+	}
+	if captureContent {
+		inferenceRequest.Content = telemetry.InferenceContent{
+			InputMessages:      telemetryStringInput(transcript),
+			SystemInstructions: telemetrySystemInstructions(instructions),
+		}
+	}
+	ctx, operation := a.Telemetry.StartInference(ctx, inferenceRequest)
 	resp, err := a.client.Responses.New(ctx, responses.ResponseNewParams{
-		Model: a.utilityModelName(),
-		Instructions: openai.String(
-			"The user is returning to a coding session after time away. " +
-				"From the transcript, write a brief recap in Markdown: 2-5 bullets covering what was being worked on, " +
-				"what was accomplished or changed, and any open items or agreed next step. " +
-				"Address the user directly. No preamble, no heading, no questions.",
-		),
+		Model:        modelID,
+		Instructions: openai.String(instructions),
 		Input: responses.ResponseNewParamsInputUnion{
 			OfString: openai.String(transcript),
 		},
@@ -479,8 +506,10 @@ func (a *Agent) Recap(ctx context.Context) (string, error) {
 	})
 
 	if err != nil {
+		operation.End(telemetry.InferenceResult{Outcome: telemetryOutcome(err)})
 		return "", err
 	}
+	operation.End(inferenceResult(resp, responseToUsage(*resp), nil, captureContent))
 
 	return strings.TrimSpace(recoverySummaryOutput(resp)), nil
 }

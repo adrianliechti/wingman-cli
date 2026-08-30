@@ -34,6 +34,11 @@ func Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = cfg.Telemetry.Shutdown(shutdownCtx)
+		cancel()
+	}()
 	s := &Server{
 		config:      cfg,
 		sessions:    map[acpsdk.SessionId]*sessionEntry{},
@@ -673,15 +678,23 @@ func classifyPromptStreamError(err error) (acpsdk.StopReason, error) {
 func promptResponse(sess *sessionEntry, reason acpsdk.StopReason, messageID *string) acpsdk.PromptResponse {
 	u := sess.agent.Usage(string(sess.id))
 	input := tokenCount(u.InputTokens)
-	cached := min(tokenCount(u.CachedTokens), input)
+	cacheRead := min(tokenCount(u.CacheReadInputTokens), input)
+	cacheWrite := min(tokenCount(u.CacheCreationInputTokens), input-cacheRead)
 	output := tokenCount(u.OutputTokens)
+	reasoning := min(tokenCount(u.ReasoningTokens), output)
 	usage := &acpsdk.Usage{
-		InputTokens:  input - cached,
-		OutputTokens: output,
+		InputTokens:  input - cacheRead - cacheWrite,
+		OutputTokens: output - reasoning,
 		TotalTokens:  addTokenCounts(input, output),
 	}
-	if cached > 0 {
-		usage.CachedReadTokens = &cached
+	if cacheRead > 0 {
+		usage.CachedReadTokens = &cacheRead
+	}
+	if cacheWrite > 0 {
+		usage.CachedWriteTokens = &cacheWrite
+	}
+	if reasoning > 0 {
+		usage.ThoughtTokens = &reasoning
 	}
 	return acpsdk.PromptResponse{StopReason: reason, Usage: usage, UserMessageId: messageID}
 }

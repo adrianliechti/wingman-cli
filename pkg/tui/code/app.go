@@ -673,8 +673,8 @@ func (a *App) shutdown() {
 
 	if len(messages) > 0 {
 		fmt.Fprintf(os.Stderr, "\n")
-		if usage.CachedTokens > 0 {
-			fmt.Fprintf(os.Stderr, "  Tokens: ↑%s (%s cached) ↓%s\n", tui.FormatTokens(usage.InputTokens), tui.FormatTokens(usage.CachedTokens), tui.FormatTokens(usage.OutputTokens))
+		if usage.CacheReadInputTokens > 0 {
+			fmt.Fprintf(os.Stderr, "  Tokens: ↑%s (%s cached) ↓%s\n", tui.FormatTokens(usage.InputTokens), tui.FormatTokens(usage.CacheReadInputTokens), tui.FormatTokens(usage.OutputTokens))
 		} else {
 			fmt.Fprintf(os.Stderr, "  Tokens: ↑%s ↓%s\n", tui.FormatTokens(usage.InputTokens), tui.FormatTokens(usage.OutputTokens))
 		}

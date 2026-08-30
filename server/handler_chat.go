@@ -438,10 +438,12 @@ func (s *Server) sendUsageIfChanged(sessionID string) {
 
 func (s *Server) usageFrame(a code.Agent, sid string, u agent.Usage) Frame {
 	f := Frame{
-		Type:         EvtUsage,
-		InputTokens:  u.InputTokens,
-		CachedTokens: u.CachedTokens,
-		OutputTokens: u.OutputTokens,
+		Type:                     EvtUsage,
+		InputTokens:              u.InputTokens,
+		OutputTokens:             u.OutputTokens,
+		ReasoningTokens:          u.ReasoningTokens,
+		CacheReadInputTokens:     u.CacheReadInputTokens,
+		CacheCreationInputTokens: u.CacheCreationInputTokens,
 
 		LastInputTokens: u.LastInputTokens,
 		ContextWindow:   u.ContextWindow,
