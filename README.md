@@ -230,6 +230,9 @@ backend at `http://localhost:4242/v1`.
 | Variable | Description |
 |----------|-------------|
 | `WINGMAN_SANDBOX` | `off` lifts the workspace path restriction from the file tools |
+| `WINGMAN_DISABLE_SHELL` | `1`, `true`, `yes`, or `on` disables `shell`, `exec_command`, and `exec_session` for the built-in agent |
+| `WINGMAN_DISABLE_WEBSEARCH` | `1`, `true`, `yes`, or `on` disables `web_search` for the built-in agent |
+| `WINGMAN_DISABLE_WEBFETCH` | `1`, `true`, `yes`, or `on` disables `fetch` for the built-in agent |
 | `WINGMAN_ELICITATION` | Headless (ACP) sessions: `accept` or `cancel` answers elicitation prompts automatically |
 | `WINGMAN_HOME` | Overrides the `~/.wingman` directory for all Wingman-owned user data |
 | `WINGMAN_<AGENT>_PATH` | Path override for an external agent binary (e.g. `WINGMAN_CODEX_PATH`) |

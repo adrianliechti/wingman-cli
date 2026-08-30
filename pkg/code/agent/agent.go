@@ -43,6 +43,7 @@ import (
 type Agent struct {
 	workspace *code.Workspace
 	cfg       *harness.Config
+	options   Options
 
 	uiMu    sync.RWMutex
 	ui      code.UI
@@ -130,10 +131,13 @@ func (s *sessionState) setMode(mode sessionMode) {
 	s.mode.Store(mode)
 }
 
-func New(ws *code.Workspace, cfg *harness.Config, ui code.UI) *Agent {
+// New constructs a built-in code agent. Options are optional so existing
+// callers keep the default tool set; multiple values are combined.
+func New(ws *code.Workspace, cfg *harness.Config, ui code.UI, options ...Options) *Agent {
 	a := &Agent{
 		workspace: ws,
 		cfg:       cfg,
+		options:   resolveOptions(options),
 		ui:        ui,
 		modelByRole: map[modelRole]string{
 			modelRoleMain:    harness.DefaultModel(),
@@ -850,19 +854,34 @@ func (a *Agent) buildSession(id string) (*sessionState, error) {
 
 	shellOpts := &shell.Options{ScratchDir: ws.ScratchPath}
 
+	var shellTools []tool.Tool
+	if !a.options.DisableShell {
+		shellTools = slices.Concat(
+			shell.Tools(ws.RootPath, elicit, approvals, shellOpts),
+			shell.ExecTools(s.execManager, ws.RootPath, elicit, approvals, shellOpts),
+		)
+	}
+	var webFetchTools []tool.Tool
+	if !a.options.DisableWebFetch {
+		webFetchTools = fetch.Tools(elicit, sessionCfg.Utility)
+	}
+	var webSearchTools []tool.Tool
+	if !a.options.DisableWebSearch {
+		webSearchTools = websearch.Tools(elicit)
+	}
+
 	baseTools := slices.Concat(
 		ws.WithEditDiagnostics(fs.Tools(ws.Root, &fs.Options{
 			AllowedReadRoots:  allowedReadRoots,
 			AllowedWriteRoots: allowedWriteRoots,
 			Freshness:         s.freshness,
 		})),
-		shell.Tools(ws.RootPath, elicit, approvals, shellOpts),
-		shell.ExecTools(s.execManager, ws.RootPath, elicit, approvals, shellOpts),
+		shellTools,
 		todo.Tools(),
 		schedule.Tools(s.schedules),
 		elicittool.Tools(elicit),
-		fetch.Tools(elicit, sessionCfg.Utility),
-		websearch.Tools(elicit),
+		webFetchTools,
+		webSearchTools,
 		subagent.Tools(sessionCfg, s.subagentContext, s.tasks, subagent.Discover(ws.RootPath)...),
 	)
 	s.toolSet = tool.NewSet(baseTools...)

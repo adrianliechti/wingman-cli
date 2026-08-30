@@ -4,7 +4,50 @@ version: "3"
 
 dotenv: [".env"]
 
+vars:
+  IMAGE_REPOSITORY: ghcr.io/adrianliechti/wingman-agent
+  IMAGE_STACKS:
+    sh: find docker -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort
+
 tasks:
+  image:build:
+    desc: Build every worker stack for the local Docker Engine
+    cmds:
+      - for:
+          var: IMAGE_STACKS
+        task: image:build:stack
+        vars:
+          STACK: "{{.ITEM}}"
+
+  image:publish:
+    desc: Publish every worker stack to GHCR
+    cmds:
+      - for:
+          var: IMAGE_STACKS
+        task: image:publish:stack
+        vars:
+          STACK: "{{.ITEM}}"
+
+  image:build:stack:
+    internal: true
+    requires:
+      vars: [STACK]
+    vars:
+      PLATFORMS:
+        sh: tr -d '[:space:]' < docker/{{.STACK}}/platforms
+    cmds:
+      - docker buildx build . --file docker/{{.STACK}}/Dockerfile --load {{if not (contains "," .PLATFORMS)}}--platform {{.PLATFORMS}}{{end}} --tag {{.IMAGE_REPOSITORY}}:{{.STACK}}
+
+  image:publish:stack:
+    internal: true
+    requires:
+      vars: [STACK]
+    vars:
+      PLATFORMS:
+        sh: tr -d '[:space:]' < docker/{{.STACK}}/platforms
+    cmds:
+      - docker buildx build . --file docker/{{.STACK}}/Dockerfile --platform {{.PLATFORMS}} --tag {{.IMAGE_REPOSITORY}}:{{.STACK}} --push
+
   generate:codex-models:
     desc: Refresh the embedded Codex model catalog from upstream
     cmds:

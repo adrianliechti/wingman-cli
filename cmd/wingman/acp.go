@@ -36,7 +36,7 @@ func parseACPBackend(value string) (acpBackend, error) {
 
 func printACPHelp() {
 	fmt.Fprint(os.Stdout, `Usage:
-  wingman acp [wingman]
+  wingman acp [wingman] [--listen ADDRESS]
   wingman acp claude [--backend native|wingman] [--model ID] [--effort LEVEL]
   wingman acp codex  [--backend native|wingman] [--model ID] [--effort LEVEL]
   wingman acp pi     [--backend native|wingman]
@@ -61,11 +61,20 @@ func runACP(ctx context.Context, args []string) {
 
 	switch target {
 	case "wingman":
+		listen := ""
 		fs := newFlags("wingman acp wingman")
+		fs.String(&listen, "--listen ADDRESS", "serve ACP over TCP instead of stdin/stdout")
 		if err := fs.Parse(args); err != nil {
 			fatal(err)
 		}
-		if err := server.Run(ctx, os.Stdin, os.Stdout); err != nil {
+
+		var err error
+		if listen == "" {
+			err = server.Run(ctx, os.Stdin, os.Stdout)
+		} else {
+			err = server.ListenAndServe(ctx, listen)
+		}
+		if err != nil {
 			fatal(err)
 		}
 	case "claude":
