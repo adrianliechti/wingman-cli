@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os/exec"
@@ -37,21 +38,66 @@ type Agent struct {
 var _ acp.Agent = (*Agent)(nil)
 
 func newAgent(codex *codexClient, model, effort string) *Agent {
-	return &Agent{
+	a := &Agent{
 		codex:         codex,
 		sessions:      make(map[acp.SessionId]*session),
 		closed:        make(chan struct{}),
 		defaultModel:  model,
 		defaultEffort: effort,
 	}
+	codex.setGlobalNotificationHandler(a.handleGlobalNotification)
+	return a
 }
 
-func (a *Agent) SetAgentConnection(conn *acp.AgentSideConnection) { a.conn = conn }
+func (a *Agent) SetAgentConnection(conn *acp.AgentSideConnection) {
+	a.mu.Lock()
+	a.conn = conn
+	a.mu.Unlock()
+}
+
+func (a *Agent) connection() *acp.AgentSideConnection {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.conn
+}
+
+func (a *Agent) sessionConnection(id acp.SessionId) *acp.AgentSideConnection {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.sessions[id] == nil {
+		return nil
+	}
+	return a.conn
+}
 
 func (a *Agent) lookup(id acp.SessionId) *session {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.sessions[id]
+}
+
+func (a *Agent) handleGlobalNotification(threadID, method string, params json.RawMessage) {
+	if method != "thread/name/updated" {
+		return
+	}
+	conn := a.sessionConnection(acp.SessionId(threadID))
+	if conn == nil {
+		return
+	}
+	var p struct {
+		ThreadName string `json:"threadName"`
+	}
+	if json.Unmarshal(params, &p) != nil || p.ThreadName == "" {
+		return
+	}
+	go func(id acp.SessionId, title string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = conn.SessionUpdate(ctx, acp.SessionNotification{
+			SessionId: id,
+			Update:    sessionTitleUpdate(title),
+		})
+	}(acp.SessionId(threadID), p.ThreadName)
 }
 
 func (a *Agent) loadModels(ctx context.Context) {
@@ -175,18 +221,30 @@ func (a *Agent) registerSession(id acp.SessionId, model, effort string, addition
 }
 
 func (a *Agent) sendAvailableCommands(ctx context.Context, id acp.SessionId) {
-	if a.conn == nil {
+	conn := a.connection()
+	if conn == nil {
 		return
 	}
-	_ = a.conn.SessionUpdate(ctx, acp.SessionNotification{
+	_ = conn.SessionUpdate(ctx, acp.SessionNotification{
 		SessionId: id,
 		Update: acp.SessionUpdate{AvailableCommandsUpdate: &acp.SessionAvailableCommandsUpdate{
-			SessionUpdate: "available_commands_update",
-			AvailableCommands: []acp.AvailableCommand{
-				{Name: "plan", Description: "Toggle plan mode"},
-			},
+			SessionUpdate:     "available_commands_update",
+			AvailableCommands: availableCommands(),
 		}},
 	})
+}
+
+func availableCommands() []acp.AvailableCommand {
+	return []acp.AvailableCommand{
+		{Name: "plan", Description: "Toggle plan mode"},
+		{
+			Name:        "rename",
+			Description: "Rename the current session.",
+			Input: &acp.AvailableCommandInput{Unstructured: &acp.UnstructuredCommandInput{
+				Hint: "new name",
+			}},
+		},
+	}
 }
 
 func derefEffort(p *string) string {
@@ -245,8 +303,8 @@ func (a *Agent) Prompt(ctx context.Context, params acp.PromptRequest) (acp.Promp
 	if s == nil {
 		return acp.PromptResponse{}, fmt.Errorf("session %s not found", params.SessionId)
 	}
-	if isPlanCommand(params.Prompt) {
-		if err := a.togglePlanMode(ctx, s); err != nil {
+	if handled, err := a.handleCommand(ctx, s, params.Prompt); handled {
+		if err != nil {
 			return acp.PromptResponse{}, err
 		}
 		return acp.PromptResponse{
@@ -254,15 +312,63 @@ func (a *Agent) Prompt(ctx context.Context, params acp.PromptRequest) (acp.Promp
 			UserMessageId: params.MessageId,
 		}, nil
 	}
-	stop, usage, err := s.runTurn(ctx, a.conn, a.codex, a.clientCapabilities, a.models, params.Prompt)
+	stop, usage, err := s.runTurn(ctx, a.connection(), a.codex, a.clientCapabilities, a.models, params.Prompt)
 	if err != nil {
 		return acp.PromptResponse{}, err
 	}
 	return acp.PromptResponse{StopReason: stop, Usage: usage, UserMessageId: params.MessageId}, nil
 }
 
-func isPlanCommand(prompt []acp.ContentBlock) bool {
-	return len(prompt) == 1 && prompt[0].Text != nil && strings.TrimSpace(prompt[0].Text.Text) == "/plan"
+type builtinCommand struct {
+	name string
+	args string
+}
+
+func parseBuiltinCommand(prompt []acp.ContentBlock) (builtinCommand, bool) {
+	if len(prompt) != 1 || prompt[0].Text == nil {
+		return builtinCommand{}, false
+	}
+	text := strings.TrimSpace(prompt[0].Text.Text)
+	if !strings.HasPrefix(text, "/") {
+		return builtinCommand{}, false
+	}
+	command := strings.TrimSpace(strings.TrimPrefix(text, "/"))
+	if command == "" {
+		return builtinCommand{}, false
+	}
+	fields := strings.Fields(command)
+	name := fields[0]
+	return builtinCommand{name: strings.ToLower(name), args: strings.TrimSpace(command[len(name):])}, true
+}
+
+func (a *Agent) handleCommand(ctx context.Context, s *session, prompt []acp.ContentBlock) (bool, error) {
+	command, ok := parseBuiltinCommand(prompt)
+	if !ok {
+		return false, nil
+	}
+	switch command.name {
+	case "plan":
+		if command.args != "" {
+			return false, nil
+		}
+		return true, a.togglePlanMode(ctx, s)
+	case "rename":
+		if command.args == "" {
+			if conn := a.connection(); conn != nil {
+				_ = conn.SessionUpdate(ctx, acp.SessionNotification{
+					SessionId: s.id,
+					Update:    acp.UpdateAgentMessageText("Usage: /rename <new name>"),
+				})
+			}
+			return true, nil
+		}
+		if err := a.codex.threadSetName(ctx, threadSetNameParams{ThreadID: string(s.id), Name: command.args}); err != nil {
+			return true, fmt.Errorf("thread/name/set: %w", err)
+		}
+		return true, nil
+	default:
+		return false, nil
+	}
 }
 
 func (a *Agent) togglePlanMode(ctx context.Context, s *session) error {
@@ -281,8 +387,8 @@ func (a *Agent) togglePlanMode(ctx context.Context, s *session) error {
 	s.mu.Lock()
 	s.collaborationMode = next
 	s.mu.Unlock()
-	if a.conn != nil {
-		_ = a.conn.SessionUpdate(ctx, acp.SessionNotification{
+	if conn := a.connection(); conn != nil {
+		_ = conn.SessionUpdate(ctx, acp.SessionNotification{
 			SessionId: s.id,
 			Update: acp.SessionUpdate{ConfigOptionUpdate: &acp.SessionConfigOptionUpdate{
 				SessionUpdate: "config_option_update",
@@ -293,7 +399,7 @@ func (a *Agent) togglePlanMode(ctx context.Context, s *session) error {
 		if next == defaultCollaborationMode {
 			label = "Plan mode disabled."
 		}
-		_ = a.conn.SessionUpdate(ctx, acp.SessionNotification{
+		_ = conn.SessionUpdate(ctx, acp.SessionNotification{
 			SessionId: s.id,
 			Update:    acp.UpdateAgentMessageText(label),
 		})
@@ -543,7 +649,7 @@ func (a *Agent) LoadSession(ctx context.Context, params acp.LoadSessionRequest) 
 	}
 
 	outputs := rolloutCommandOutputs(string(params.SessionId), threadPath(thread))
-	streamThreadHistory(ctx, a.conn, s.id, thread.Turns, outputs, a.clientCapabilities.PlanCapabilities != nil)
+	streamThreadHistory(ctx, a.connection(), s.id, thread.Turns, outputs, a.clientCapabilities.PlanCapabilities != nil)
 	return acp.LoadSessionResponse{
 		Modes:         buildSessionModeState(s.mode),
 		ConfigOptions: buildConfigOptions(a.models, s.modelID, s.effort, s.collaborationMode),

@@ -3,7 +3,10 @@ package claude
 import (
 	"context"
 	"encoding/json"
+	"net"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/coder/acp-go-sdk"
 )
@@ -329,27 +332,31 @@ func TestToolCallTrackerEmitsStartOnceThenRefines(t *testing.T) {
 	}
 }
 
-func TestShouldEmitToolCall(t *testing.T) {
-	cases := map[string]bool{
-		"Bash":      true,
-		"Write":     true,
-		"TodoWrite": false,
-		"Task":      false,
-		"Agent":     false,
+func TestToolCallTrackingPolicy(t *testing.T) {
+	tests := []struct {
+		name       string
+		eager      bool
+		trackAfter bool
+	}{
+		{name: "Bash", eager: true, trackAfter: true},
+		{name: "Write", eager: true, trackAfter: true},
+		{name: "TodoWrite", eager: false, trackAfter: false},
+		{name: "Task", eager: false, trackAfter: true},
+		{name: "Agent", eager: false, trackAfter: true},
 	}
-	for name, want := range cases {
-		if got := shouldEmitToolCall(name); got != want {
-			t.Errorf("shouldEmitToolCall(%q) = %v, want %v", name, got, want)
+	for _, tt := range tests {
+		if got := shouldEagerlyEmitToolCall(tt.name); got != tt.eager {
+			t.Errorf("shouldEagerlyEmitToolCall(%q) = %v, want %v", tt.name, got, tt.eager)
+		}
+		if got := shouldTrackToolCall(tt.name); got != tt.trackAfter {
+			t.Errorf("shouldTrackToolCall(%q) = %v, want %v", tt.name, got, tt.trackAfter)
 		}
 	}
 }
 
-func TestBashImageResultBlocksSurfacesImage(t *testing.T) {
-	raw := []byte(`[{"type":"text","text":"saved"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]`)
-	blocks, ok := bashImageResultBlocks(raw)
-	if !ok {
-		t.Fatal("expected mixed content to be detected")
-	}
+func TestBashImageResultSurfacesImage(t *testing.T) {
+	raw := json.RawMessage(`[{"type":"text","text":"saved"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]`)
+	blocks := toolResultContent("Bash", cliMsgBlock{Content: raw})
 	if len(blocks) != 2 {
 		t.Fatalf("expected 2 blocks, got %d: %+v", len(blocks), blocks)
 	}
@@ -360,12 +367,136 @@ func TestBashImageResultBlocksSurfacesImage(t *testing.T) {
 		t.Errorf("image block = %+v", blocks[1])
 	}
 
-	if _, ok := bashImageResultBlocks([]byte(`[{"type":"text","text":"plain output"}]`)); ok {
-		t.Error("text-only array should fall back to normal extraction (ok=false)")
+	blocks = toolResultContent("Bash", cliMsgBlock{Content: json.RawMessage(`[{"type":"text","text":"plain output"}]`)})
+	if len(blocks) != 1 || blocks[0].Content == nil || blocks[0].Content.Content.Text == nil || blocks[0].Content.Content.Text.Text != "```console\nplain output\n```" {
+		t.Errorf("text-only output = %+v", blocks)
+	}
+	blocks = toolResultContent("Bash", cliMsgBlock{Content: json.RawMessage(`[{"type":"image","source":{"type":"base64","media_type":"image/png","data":""}}]`)})
+	if len(blocks) != 0 {
+		t.Errorf("empty image output = %+v", blocks)
+	}
+}
+
+type toolUpdateClient struct {
+	stubClient
+	updates chan acp.SessionUpdate
+}
+
+func (c *toolUpdateClient) SessionUpdate(_ context.Context, notification acp.SessionNotification) error {
+	c.updates <- notification.Update
+	return nil
+}
+
+func (c *toolUpdateClient) RequestPermission(context.Context, acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
+	return acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{
+		Cancelled: &acp.RequestPermissionOutcomeCancelled{},
+	}}, nil
+}
+
+func TestLiveSubagentResultCompletesTrackedToolCall(t *testing.T) {
+	agentSide, clientSide := net.Pipe()
+	t.Cleanup(func() {
+		_ = agentSide.Close()
+		_ = clientSide.Close()
+	})
+	conn := acp.NewAgentSideConnection(New(Options{}), agentSide, agentSide)
+	client := &toolUpdateClient{updates: make(chan acp.SessionUpdate, 2)}
+	_ = acp.NewClientSideConnection(client, clientSide, clientSide)
+	tracker := newToolCallTracker()
+
+	assistant := json.RawMessage(`{"content":[{"type":"tool_use","id":"task-1","name":"Task","input":{"description":"research"}}]}`)
+	if err := emitAssistant(context.Background(), conn, "session", assistant, "/workspace", nil, tracker, nil, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	result := json.RawMessage(`{"content":[{"type":"tool_result","tool_use_id":"task-1","content":"done"}]}`)
+	if err := emitToolResults(context.Background(), conn, "session", result, toolUseCache{"task-1": "Task"}, tracker, nil, ""); err != nil {
+		t.Fatal(err)
 	}
 
-	if blocks, ok := bashImageResultBlocks([]byte(`[{"type":"image","source":{"type":"base64","media_type":"image/png","data":""}}]`)); ok {
-		t.Errorf("non-text content with no extractable data should fall back (ok=false), got blocks=%+v", blocks)
+	var updates []acp.SessionUpdate
+	for len(updates) < 2 {
+		select {
+		case update := <-client.updates:
+			updates = append(updates, update)
+		case <-time.After(time.Second):
+			t.Fatalf("received %d updates, want start and completion", len(updates))
+		}
+	}
+	if updates[0].ToolCall == nil || updates[0].ToolCall.ToolCallId != "task-1" {
+		t.Fatalf("start update = %#v", updates[0])
+	}
+	if updates[1].ToolCallUpdate == nil || updates[1].ToolCallUpdate.Status == nil || *updates[1].ToolCallUpdate.Status != acp.ToolCallStatusCompleted {
+		t.Fatalf("completion update = %#v", updates[1])
+	}
+	if tracker.has("task-1") {
+		t.Fatal("completed subagent remained tracked")
+	}
+}
+
+func TestDocumentToolResultUsesCompactPlaceholder(t *testing.T) {
+	payload := "QUJDRA=="
+	raw := json.RawMessage(`[{"type":"document","title":"API spec","source":{"type":"base64","media_type":"application/pdf","data":"` + payload + `"}}]`)
+	content := toolResultContent("Read", cliMsgBlock{Content: raw})
+	if len(content) != 1 || content[0].Content == nil || content[0].Content.Content.Text == nil {
+		t.Fatalf("content = %#v", content)
+	}
+	text := content[0].Content.Content.Text.Text
+	if text != `[document "API spec": application/pdf, 4 B]` {
+		t.Fatalf("placeholder = %q", text)
+	}
+	if strings.Contains(text, payload) {
+		t.Fatal("document payload leaked into ACP content")
+	}
+}
+
+func TestDocumentToolResultPreservesMixedOrderAndSuppressesDataURL(t *testing.T) {
+	raw := json.RawMessage(`[
+		{"type":"text","text":"before"},
+		{"type":"document","title":"Remote","source":{"type":"url","url":"https://example.com/spec.pdf"}},
+		{"type":"text","text":"after"},
+		{"type":"document","title":"Inline","source":{"type":"url","url":"data:application/pdf;base64,SECRET"}}
+	]`)
+	content := toolResultContent("Read", cliMsgBlock{Content: raw})
+	if len(content) != 4 {
+		t.Fatalf("content = %#v", content)
+	}
+	want := []string{
+		markdownEscape("before"),
+		`[document "Remote": https://example.com/spec.pdf]`,
+		markdownEscape("after"),
+		`[document "Inline"]`,
+	}
+	for i, expected := range want {
+		if content[i].Content == nil || content[i].Content.Content.Text == nil || content[i].Content.Content.Text.Text != expected {
+			t.Errorf("content[%d] = %#v, want %q", i, content[i], expected)
+		}
+	}
+}
+
+func TestSubagentPartialOutputNoteIsClientFacing(t *testing.T) {
+	note := "NOTE: this agent stopped at its 12-turn limit before finishing. Send the agent a message.\n\nPartial report"
+	for _, raw := range []json.RawMessage{
+		json.RawMessage(`"` + strings.ReplaceAll(note, "\n", `\n`) + `"`),
+		json.RawMessage(`[{"type":"text","text":"NOTE: this agent stopped at its 12-turn limit before finishing. Continue it."},{"type":"text","text":"Partial report"}]`),
+		json.RawMessage(`[{"type":"text","text":""},{"type":"text","text":"NOTE: this agent stopped at its 12-turn limit before finishing.\n\nPartial report"}]`),
+	} {
+		content := toolResultContent("Task", cliMsgBlock{Content: raw})
+		if len(content) == 0 || content[0].Content == nil || content[0].Content.Content.Text == nil {
+			t.Fatalf("content = %#v", content)
+		}
+		if got := content[0].Content.Content.Text.Text; got != partialOutputLabel && got != partialOutputLabel+"\n\nPartial report" {
+			t.Errorf("partial label = %q", got)
+		}
+	}
+
+	unchanged := "Report before NOTE: this agent stopped at its 12-turn limit before finishing."
+	content := toolResultContent("Task", cliMsgBlock{Content: json.RawMessage(`"` + unchanged + `"`)})
+	if got := content[0].Content.Content.Text.Text; got != unchanged {
+		t.Fatalf("mid-string note changed to %q", got)
+	}
+	content = toolResultContent("Bash", cliMsgBlock{Content: json.RawMessage(`"` + strings.ReplaceAll(note, "\n", `\n`) + `"`)})
+	if got := content[0].Content.Content.Text.Text; strings.Contains(got, partialOutputLabel) {
+		t.Fatalf("non-subagent note was rewritten: %q", got)
 	}
 }
 

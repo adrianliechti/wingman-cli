@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/coder/acp-go-sdk"
@@ -208,7 +209,7 @@ func emitToolUseCall(ctx context.Context, conn *acp.AgentSideConnection, sid acp
 		return send(u)
 	}
 
-	if b.ID == "" || tracker == nil || !shouldEmitToolCall(b.Name) {
+	if b.ID == "" || tracker == nil || !shouldTrackToolCall(b.Name) {
 		return start()
 	}
 
@@ -314,13 +315,23 @@ func withClaudeToolMeta(update *acp.SessionUpdate, toolName, parentToolUseID str
 }
 
 func toolResultContent(name string, b cliMsgBlock) []acp.ToolCallContent {
-	if name == "Bash" && !b.IsError {
-		if blocks, ok := bashImageResultBlocks(b.Content); ok {
-			return blocks
+	text, parts, isArray := decodeToolResult(b.Content)
+	subagent := (name == "Agent" || name == "Task") && !b.IsError
+	if isArray {
+		hasDocument := hasResultBlockType(parts, "document")
+		richBash := name == "Bash" && !b.IsError && hasNonTextResultBlock(parts)
+		if subagent || hasDocument || richBash {
+			return resultBlocks(parts, name, b.IsError, subagent, hasDocument)
 		}
+		text = resultText(parts)
+	} else if subagent {
+		text = replacePartialOutputNote(text)
 	}
-	text := extractToolResultText(b.Content)
-	if b.IsError {
+	return textToolResultContent(name, text, b.IsError)
+}
+
+func textToolResultContent(name, text string, isError bool) []acp.ToolCallContent {
+	if isError {
 		if text == "" {
 			return nil
 		}
@@ -347,50 +358,190 @@ func toolResultContent(name string, b cliMsgBlock) []acp.ToolCallContent {
 	}
 }
 
-// bashImageResultBlocks handles a Bash tool_result whose content array
-// contains a non-text block (e.g. an image from a command piping a base64
-// data URI). extractToolResultText only collects "text" blocks, so without
-// this, image output is silently dropped. ok is false for text-only or
-// non-array content, telling the caller to fall back to the normal
-// text-extraction path (which keeps the existing console code-fence
-// formatting for plain Bash output).
-func bashImageResultBlocks(raw json.RawMessage) ([]acp.ToolCallContent, bool) {
-	if len(raw) == 0 {
-		return nil, false
+func resultBlocks(parts []cliMsgBlock, name string, isError, subagent, includeDocuments bool) []acp.ToolCallContent {
+	blocks := make([]acp.ToolCallContent, 0, len(parts))
+	firstText := true
+	for _, part := range parts {
+		switch part.Type {
+		case "text":
+			if part.Text == "" {
+				continue
+			}
+			text := part.Text
+			if subagent && firstText {
+				text = replacePartialOutputNote(text)
+			}
+			firstText = false
+			blocks = append(blocks, acp.ToolContent(acp.TextBlock(formatResultText(name, text, isError))))
+		case "image":
+			if part.Source != nil && part.Source.Data != "" && (name == "Bash" || part.Source.Type == "base64") {
+				blocks = append(blocks, acp.ToolContent(acp.ImageBlock(part.Source.Data, part.Source.MediaType)))
+			}
+		case "document":
+			if includeDocuments {
+				blocks = append(blocks, acp.ToolContent(acp.TextBlock(documentPlaceholder(part))))
+			}
+		}
 	}
-	var parts []cliMsgBlock
-	if err := json.Unmarshal(raw, &parts); err != nil || len(parts) == 0 {
-		return nil, false
+	return blocks
+}
+
+func formatResultText(name, text string, isError bool) string {
+	if isError {
+		return codeFence(text)
+	}
+	if name == "Read" {
+		return markdownEscape(text)
+	}
+	return text
+}
+
+var partialOutputNotePattern = regexp.MustCompile(`^NOTE: this agent stopped at its [0-9]+-turn limit before finishing\.`)
+
+const partialOutputLabel = "[Agent stopped at its turn limit — the output below is partial]"
+
+func replacePartialOutputNote(text string) string {
+	if !partialOutputNotePattern.MatchString(text) {
+		return text
+	}
+	_, report, found := strings.Cut(text, "\n\n")
+	if !found {
+		return partialOutputLabel
+	}
+	report = strings.TrimLeft(report, " \t\r\n")
+	if report == "" {
+		return partialOutputLabel
+	}
+	return partialOutputLabel + "\n\n" + report
+}
+
+func documentPlaceholder(block cliMsgBlock) string {
+	title := sanitizeDocumentLabel(block.Title, 120)
+	if title != "" {
+		title = ` "` + strings.ReplaceAll(title, `"`, `'`) + `"`
+	}
+	if block.Source == nil {
+		return "[document" + title + "]"
 	}
 
-	textOnly := true
-	for _, p := range parts {
-		if p.Type != "text" {
-			textOnly = false
+	source := block.Source
+	switch source.Type {
+	case "url":
+		url := sanitizeDocumentLabel(source.URL, 300)
+		if url == "" || strings.HasPrefix(strings.ToLower(strings.TrimSpace(url)), "data:") {
+			return "[document" + title + "]"
+		}
+		return "[document" + title + ": " + url + "]"
+	case "base64", "text":
+		mediaType := sanitizeDocumentLabel(source.MediaType, 80)
+		if mediaType == "" {
+			mediaType = "document"
+		}
+		size := len(source.Data)
+		if source.Type == "base64" {
+			size = decodedBase64Size(source.Data)
+		}
+		return fmt.Sprintf("[document%s: %s, %s]", title, mediaType, formatByteSize(size))
+	default:
+		return "[document" + title + "]"
+	}
+}
+
+func sanitizeDocumentLabel(value string, maxRunes int) string {
+	value = strings.TrimSpace(strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, value))
+	if len(value) <= maxRunes {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) > maxRunes {
+		return string(runes[:maxRunes-1]) + "…"
+	}
+	return value
+}
+
+func decodedBase64Size(data string) int {
+	trimmed := strings.TrimSpace(data)
+	if trimmed == "" {
+		return 0
+	}
+	size := len(trimmed) * 3 / 4
+	if strings.HasSuffix(trimmed, "==") {
+		size -= 2
+	} else if strings.HasSuffix(trimmed, "=") {
+		size--
+	}
+	if size < 0 {
+		return 0
+	}
+	return size
+}
+
+func formatByteSize(size int) string {
+	if size < 1024 {
+		return fmt.Sprintf("%d B", size)
+	}
+	units := []string{"KB", "MB", "GB", "TB"}
+	value := float64(size) / 1024
+	unit := units[0]
+	for _, next := range units[1:] {
+		if value < 1024 {
 			break
 		}
+		value /= 1024
+		unit = next
 	}
-	if textOnly {
-		return nil, false
+	if value >= 10 {
+		return fmt.Sprintf("%.0f %s", value, unit)
 	}
+	return fmt.Sprintf("%.1f %s", value, unit)
+}
 
-	var blocks []acp.ToolCallContent
-	for _, p := range parts {
-		switch p.Type {
-		case "text":
-			if p.Text != "" {
-				blocks = append(blocks, acp.ToolContent(acp.TextBlock(p.Text)))
-			}
-		case "image":
-			if p.Source != nil && p.Source.Data != "" {
-				blocks = append(blocks, acp.ToolContent(acp.ImageBlock(p.Source.Data, p.Source.MediaType)))
-			}
+func decodeToolResult(raw json.RawMessage) (string, []cliMsgBlock, bool) {
+	if len(raw) == 0 {
+		return "", nil, false
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text, nil, false
+	}
+	var parts []cliMsgBlock
+	if json.Unmarshal(raw, &parts) == nil {
+		return "", parts, true
+	}
+	return string(raw), nil, false
+}
+
+func hasResultBlockType(parts []cliMsgBlock, blockType string) bool {
+	for _, part := range parts {
+		if part.Type == blockType {
+			return true
 		}
 	}
-	if len(blocks) == 0 {
-		return nil, false
+	return false
+}
+
+func hasNonTextResultBlock(parts []cliMsgBlock) bool {
+	for _, part := range parts {
+		if part.Type != "text" {
+			return true
+		}
 	}
-	return blocks, true
+	return false
+}
+
+func resultText(parts []cliMsgBlock) string {
+	var out strings.Builder
+	for _, part := range parts {
+		if part.Type == "text" {
+			out.WriteString(part.Text)
+		}
+	}
+	return out.String()
 }
 
 func codeFence(text string) string {
@@ -398,24 +549,11 @@ func codeFence(text string) string {
 }
 
 func extractToolResultText(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
+	text, parts, isArray := decodeToolResult(raw)
+	if isArray {
+		return resultText(parts)
 	}
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		return s
-	}
-	var blocks []cliMsgBlock
-	if err := json.Unmarshal(raw, &blocks); err == nil {
-		var out strings.Builder
-		for _, blk := range blocks {
-			if blk.Type == "text" {
-				out.WriteString(blk.Text)
-			}
-		}
-		return out.String()
-	}
-	return string(raw)
+	return text
 }
 
 func toolKindFor(name string) acp.ToolKind {

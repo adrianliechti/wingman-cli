@@ -214,6 +214,7 @@ func TestIsFatalTurnError(t *testing.T) {
 	}{
 		{"unauthorized string", `"unauthorized"`, true},
 		{"usage limit string", `"usageLimitExceeded"`, true},
+		{"rate limit string", `"rateLimitExceeded"`, true},
 		{"other string", `"somethingElse"`, false},
 		{"http 401 object", `{"httpConnectionFailed":{"httpStatusCode":401}}`, true},
 		{"stream disconnected 401", `{"responseStreamDisconnected":{"httpStatusCode":401}}`, true},
@@ -227,6 +228,32 @@ func TestIsFatalTurnError(t *testing.T) {
 				t.Errorf("isFatalTurnError(%s) = %v, want %v", c.info, got, c.want)
 			}
 		})
+	}
+
+	d := newEventDispatcher(context.Background(), nil, "session")
+	d.handle("error", json.RawMessage(`{"error":{"codexErrorInfo":"rateLimitExceeded"}}`))
+	if d.getFailure() == nil {
+		t.Fatal("rate-limit notification did not record a turn failure")
+	}
+	select {
+	case <-d.done:
+	default:
+		t.Fatal("rate-limit notification did not unblock the turn")
+	}
+}
+
+func TestToolStatusFor(t *testing.T) {
+	cases := map[string]acp.ToolCallStatus{
+		"inProgress":  acp.ToolCallStatusInProgress,
+		"completed":   acp.ToolCallStatusCompleted,
+		"failed":      acp.ToolCallStatusFailed,
+		"declined":    acp.ToolCallStatusFailed,
+		"interrupted": acp.ToolCallStatusFailed,
+	}
+	for status, want := range cases {
+		if got := toolStatusFor(status); got != want {
+			t.Errorf("toolStatusFor(%q) = %q, want %q", status, got, want)
+		}
 	}
 }
 

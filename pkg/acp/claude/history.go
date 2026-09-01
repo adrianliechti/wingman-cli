@@ -1,7 +1,6 @@
 package claude
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -83,8 +82,7 @@ func scanSessionModel(path string) string {
 	defer f.Close()
 
 	var model string
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	scanner := newCLIScanner(f)
 	for scanner.Scan() {
 		var h historyHeader
 		if json.Unmarshal(scanner.Bytes(), &h) == nil && h.Type == "assistant" && h.Message.Model != "" {
@@ -204,8 +202,7 @@ func scanSessionMetadata(path string) (title, cwd string) {
 		return "", ""
 	}
 	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	scanner := newCLIScanner(f)
 
 	var firstUserText, latestAITitle string
 	for scanner.Scan() {
@@ -293,8 +290,7 @@ func replayHistory(ctx context.Context, conn *acp.AgentSideConnection, sid acp.S
 
 func streamHistory(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, cwd string, r io.Reader, plan *taskPlan) error {
 	cache := toolUseCache{}
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	scanner := newCLIScanner(r)
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
 			return err

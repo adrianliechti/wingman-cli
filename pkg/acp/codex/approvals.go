@@ -347,7 +347,7 @@ func (a *approver) handleElicitation(p elicitationParams) elicitationResponse {
 			return a.handleURLElicitation(p)
 		}
 	}
-	if p.Mode != "form" && p.Mode != "openai/form" {
+	if !isMessageOnlyElicitation(p) {
 		return elicitationResponse{Action: "decline", Content: nil, Meta: nil}
 	}
 	title := p.Message
@@ -373,6 +373,30 @@ func (a *approver) handleElicitation(p elicitationParams) elicitationResponse {
 	default:
 		return elicitationResponse{Action: "decline"}
 	}
+}
+
+func isMessageOnlyElicitation(p elicitationParams) bool {
+	if p.Mode != "form" && p.Mode != "openai/form" && p.Mode != "openaiForm" {
+		return false
+	}
+	schema := strings.TrimSpace(string(p.RequestedSchema))
+	if schema == "" || schema == "null" {
+		return true
+	}
+	var requested map[string]json.RawMessage
+	if json.Unmarshal(p.RequestedSchema, &requested) != nil {
+		return false
+	}
+	var schemaType string
+	if json.Unmarshal(requested["type"], &schemaType) != nil || schemaType != "object" {
+		return false
+	}
+	propertiesRaw, ok := requested["properties"]
+	if !ok || strings.TrimSpace(string(propertiesRaw)) == "null" {
+		return false
+	}
+	var properties map[string]json.RawMessage
+	return json.Unmarshal(propertiesRaw, &properties) == nil && len(properties) == 0
 }
 
 func (a *approver) elicitationMeta(meta map[string]any) map[string]any {

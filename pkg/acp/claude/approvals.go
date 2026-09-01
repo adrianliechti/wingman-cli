@@ -117,7 +117,7 @@ func (a *approver) handle(req controlRequest) {
 	// block streams to us, so a permission request can reference a tool_call
 	// the client has never seen. Emit it now if no one has yet, so the client
 	// can always associate the prompt below with a known tool call.
-	if id != "" && shouldEmitToolCall(name) && a.emitted != nil {
+	if id != "" && shouldEagerlyEmitToolCall(name) && a.emitted != nil {
 		_ = a.emitted.emit(id, func() error {
 			return a.emitToolCallStart(id, name, req.Request.Input, parentToolUseID)
 		}, func() error {

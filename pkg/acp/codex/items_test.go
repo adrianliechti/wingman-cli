@@ -150,6 +150,7 @@ func TestGuardianStatus(t *testing.T) {
 func TestGuardianActionSummary(t *testing.T) {
 	cases := map[string]string{
 		`{"type":"command","command":"rm -rf /"}`:                  "shell rm -rf /",
+		`{"type":"writeStdin","processId":"proc-1"}`:               "write stdin to process proc-1",
 		`{"type":"applyPatch","files":["a.go"]}`:                   "apply_patch touching a.go",
 		`{"type":"applyPatch","files":["a.go","b.go"]}`:            "apply_patch touching 2 files",
 		`{"type":"networkAccess","host":"example.com"}`:            "network access to example.com",
@@ -168,6 +169,7 @@ func TestSubAgentTitle(t *testing.T) {
 		`{"kind":"started","agentPath":"agents/researcher"}`:    "Start subagent researcher",
 		`{"kind":"interacted","agentPath":"agents/researcher"}`: "Interact with subagent researcher",
 		`{"kind":"interrupted","agentPath":"researcher/"}`:      "Interrupt subagent researcher",
+		`{"kind":"completed","agentPath":"agents/researcher"}`:  "Complete subagent researcher",
 		`{"kind":"started","agentPath":""}`:                     "Start subagent subagent",
 		`{"kind":"other","agentPath":"a/b/c"}`:                  "Subagent c",
 	}

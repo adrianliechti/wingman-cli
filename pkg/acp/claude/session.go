@@ -1,7 +1,6 @@
 package claude
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -331,8 +330,7 @@ func (p *claudeProc) read(ctx context.Context, conn *acp.AgentSideConnection, si
 		askForm:   p.session.agent.supportsFormElicitation(),
 		applyMode: func(modeID string) { p.applyMode(ctx, conn, sid, modeID) }}
 
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	scanner := newCLIScanner(r)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -710,7 +708,7 @@ func promptMessage(blocks []acp.ContentBlock) cliInput {
 		case b.Text != nil:
 			add(cliInputContent{Type: "text", Text: b.Text.Text})
 		case b.Image != nil && b.Image.Data != "":
-			add(cliInputContent{Type: "image", Source: &cliImageSource{
+			add(cliInputContent{Type: "image", Source: &cliInputImageSource{
 				Type:      "base64",
 				MediaType: b.Image.MimeType,
 				Data:      b.Image.Data,
