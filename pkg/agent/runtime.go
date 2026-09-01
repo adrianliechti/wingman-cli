@@ -357,11 +357,34 @@ func (a *Agent) addUsageLocked(delta Usage) {
 }
 
 func (a *Agent) replaceContext(reason string, messages []Message) error {
+	// A context checkpoint means some part of the provider-visible history was
+	// rewritten. Opaque reasoning is bound to the exact model and prefix that
+	// produced it, so replaying any retained payload after a rewrite is unsafe:
+	// providers may reject it, and removing one foreign block also invalidates
+	// later same-model blocks whose prefix included it. Keep summaries in the
+	// recovery projection for continuity, but leave the canonical event history
+	// untouched for display and audit.
+	messages = withoutReplayableReasoning(messages)
 	return a.recordEvents(RuntimeEvent{
 		Type:          EventContextCheckpoint,
 		Context:       CloneMessages(messages),
 		ContextReason: reason,
 	})
+}
+
+func withoutReplayableReasoning(messages []Message) []Message {
+	cleaned := CloneMessages(messages)
+	for i := range cleaned {
+		for j := range cleaned[i].Content {
+			reasoning := cleaned[i].Content[j].Reasoning
+			if reasoning == nil {
+				continue
+			}
+			reasoning.Content = ""
+			reasoning.Model = ""
+		}
+	}
+	return cleaned
 }
 
 // ReconcileInterrupted closes lifecycle entities that were open when the

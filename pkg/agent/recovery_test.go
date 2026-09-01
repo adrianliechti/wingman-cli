@@ -136,7 +136,7 @@ func reasoningMessage(id, model, content string) Message {
 	return Message{Role: RoleAssistant, Content: []Content{{Reasoning: &Reasoning{ID: id, Summary: "s", Content: content, Model: model}}}}
 }
 
-func TestDropForeignReasoningPurgesOtherModels(t *testing.T) {
+func TestDropForeignReasoningPurgesAllPayloadsAfterCrossProviderRewrite(t *testing.T) {
 	a := &Agent{Config: &Config{}}
 	a.Messages = []Message{
 		reasoningMessage("r1", "gpt-5.5", "blob-a"),
@@ -160,8 +160,11 @@ func TestDropForeignReasoningPurgesOtherModels(t *testing.T) {
 	}
 
 	native := projected[3].Content[0].Reasoning
-	if native.Content != "blob-b" || native.Model != "claude-sonnet-5" {
-		t.Fatalf("expected native payload kept, got content=%q model=%q", native.Content, native.Model)
+	if native.Content != "" || native.Model != "" {
+		t.Fatalf("expected later native payload purged after prefix rewrite, got content=%q model=%q", native.Content, native.Model)
+	}
+	if native.Summary != "s" {
+		t.Fatal("expected native summary preserved for display")
 	}
 
 	if a.ContextRevision != 1 {
@@ -170,12 +173,40 @@ func TestDropForeignReasoningPurgesOtherModels(t *testing.T) {
 	if a.Messages[0].Content[0].Reasoning.Content != "blob-a" {
 		t.Fatal("foreign reasoning was removed from canonical history")
 	}
+	if a.Messages[3].Content[0].Reasoning.Content != "blob-b" {
+		t.Fatal("native reasoning was removed from canonical history")
+	}
 
 	if err := a.dropForeignReasoning("claude-sonnet-5"); err != nil {
 		t.Fatal(err)
 	}
 	if a.ContextRevision != 1 {
 		t.Fatal("expected no context revision bump when nothing changes")
+	}
+}
+
+func TestReplaceContextDropsReplayableReasoningAfterSameModelRewrite(t *testing.T) {
+	a := &Agent{Config: &Config{}}
+	messages := []Message{
+		{Role: RoleUser, Content: []Content{{Text: "rewritten summary"}}},
+		reasoningMessage("r1", "claude-fable-5-1", "bound-thinking"),
+		{Role: RoleAssistant, Content: []Content{{Text: "answer"}}},
+	}
+
+	if err := a.replaceContext("compact model context", messages); err != nil {
+		t.Fatal(err)
+	}
+
+	projected := a.requestMessages()
+	reasoning := projected[1].Content[0].Reasoning
+	if reasoning.Content != "" || reasoning.Model != "" {
+		t.Fatalf("recovery checkpoint retained replayable reasoning: %+v", reasoning)
+	}
+	if reasoning.Summary != "s" {
+		t.Fatal("recovery checkpoint dropped the reasoning summary")
+	}
+	if messages[1].Content[0].Reasoning.Content != "bound-thinking" {
+		t.Fatal("replaceContext mutated its caller's messages")
 	}
 }
 

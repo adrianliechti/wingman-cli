@@ -82,6 +82,7 @@ func (m Model) ids() []string {
 
 var gptEfforts = []string{"none", "low", "medium", "high", "xhigh"}
 var gpt56Efforts = []string{"none", "low", "medium", "high", "xhigh", "max"}
+var claudeAlwaysThinkingEfforts = []string{"low", "medium", "high", "xhigh", "max"}
 
 // Models lists every known model in preference order: the first entry of a
 // family, filter or class is the one picked automatically.
@@ -224,6 +225,21 @@ var Models = []Model{
 	},
 
 	{
+		ID: "claude-fable-5-1",
+
+		Namespace: "anthropic",
+
+		Name: "Claude Fable 5.1",
+
+		Class: ClassLarge,
+
+		Output: 128000,
+
+		Context: 1000000,
+
+		Efforts: claudeAlwaysThinkingEfforts,
+	},
+	{
 		ID: "claude-fable-5",
 
 		Namespace: "anthropic",
@@ -235,6 +251,23 @@ var Models = []Model{
 		Output: 128000,
 
 		Context: 1000000,
+
+		Efforts: claudeAlwaysThinkingEfforts,
+	},
+	{
+		ID: "claude-mythos-5-1",
+
+		Namespace: "anthropic",
+
+		Name: "Claude Mythos 5.1",
+
+		Class: ClassLarge,
+
+		Output: 128000,
+
+		Context: 1000000,
+
+		Efforts: claudeAlwaysThinkingEfforts,
 	},
 	{
 		ID: "claude-mythos-5",
@@ -248,6 +281,8 @@ var Models = []Model{
 		Output: 128000,
 
 		Context: 1000000,
+
+		Efforts: claudeAlwaysThinkingEfforts,
 	},
 
 	// OpenAI

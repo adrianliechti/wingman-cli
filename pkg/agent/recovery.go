@@ -150,10 +150,11 @@ func (a *Agent) removeOrphanedToolMessages() error {
 	return a.replaceContext("remove orphaned tool or reasoning items", cleaned)
 }
 
-// dropForeignReasoning strips encrypted reasoning payloads that the current
-// model cannot decrypt (produced by a different model, e.g. after switching
-// from GPT to Claude mid-session or reloading a session under a new model).
-// Summaries stay for display; only the opaque payload and its tag are removed.
+// dropForeignReasoning detects encrypted reasoning that the current model
+// cannot decrypt (for example after switching from GPT to Claude). Creating
+// the checkpoint removes every opaque reasoning payload: deleting the foreign
+// block changes the prefix that later same-model blocks were bound to as well.
+// Summaries stay available in the recovery context and canonical history.
 func (a *Agent) dropForeignReasoning(model string) error {
 	messages := a.contextSnapshot()
 

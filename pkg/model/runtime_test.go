@@ -14,6 +14,10 @@ func TestModelRuntimeFields(t *testing.T) {
 		efforts []string
 	}{
 		{"claude-sonnet-5", 1_000_000, nil},
+		{"claude-fable-5", 1_000_000, claudeAlwaysThinkingEfforts},
+		{"claude-fable-5-1", 1_000_000, claudeAlwaysThinkingEfforts},
+		{"claude-mythos-5", 1_000_000, claudeAlwaysThinkingEfforts},
+		{"claude-mythos-5-1", 1_000_000, claudeAlwaysThinkingEfforts},
 		{"claude-haiku-4-5", 200_000, nil},
 		{"gpt-5.6-sol", 272_000, gpt56Efforts},
 		{"gpt-5-6-preview", 0, nil},

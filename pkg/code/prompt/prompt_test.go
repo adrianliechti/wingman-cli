@@ -25,7 +25,7 @@ func TestVariantFor(t *testing.T) {
 
 	for _, id := range []string{
 		"gpt-5.6-sol", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.2", "gpt-5.1", "gpt-4o",
-		"claude-opus-5", "claude-opus-4-8", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-6", "claude-fable-5", "claude-mythos-5",
+		"claude-opus-5", "claude-opus-4-8", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-6", "claude-fable-5-1", "claude-fable-5", "claude-mythos-5-1", "claude-mythos-5",
 		"gemini-3.7-flash", "gemini-3.6-flash", "glm-5.3", "glm-5.2", "kimi-k3", "minimax-m3", "grok-4.6",
 		"qwen3.8-max", "qwen3.8", "qwen3.7-plus", "qwen3.5-plus",
 	} {
@@ -103,7 +103,9 @@ func TestBuildInstructionsRendersModelTemplate(t *testing.T) {
 		"claude-sonnet-5",
 		"claude-opus-5",
 		"claude-opus-4-8",
+		"claude-fable-5-1",
 		"claude-fable-5",
+		"claude-mythos-5-1",
 		"claude-mythos-5",
 		"gpt-5.6-sol",
 		"gpt-5.5",
@@ -242,7 +244,9 @@ func TestAgentPromptPolicy(t *testing.T) {
 		"claude-sonnet-5",
 		"claude-opus-5",
 		"claude-opus-4-8",
+		"claude-fable-5-1",
 		"claude-fable-5",
+		"claude-mythos-5-1",
 		"claude-mythos-5",
 		"gpt-5.6-sol",
 		"gpt-5.5",

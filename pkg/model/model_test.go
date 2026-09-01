@@ -21,6 +21,8 @@ func TestCurrentProviderModels(t *testing.T) {
 		{"minimax-m3", "MiniMax M3", ClassLarge, 1_000_000, 128_000},
 		{"MiniMax-M3", "MiniMax M3", ClassLarge, 1_000_000, 128_000},
 		{"grok-4.6", "Grok 4.6", ClassLarge, 500_000, 500_000},
+		{"claude-fable-5-1", "Claude Fable 5.1", ClassLarge, 1_000_000, 128_000},
+		{"claude-mythos-5-1", "Claude Mythos 5.1", ClassLarge, 1_000_000, 128_000},
 	}
 
 	for _, tc := range cases {
@@ -52,6 +54,37 @@ func TestCurrentProviderModelAvailability(t *testing.T) {
 
 	if want := []string{"glm-5.3", "kimi-k3", "MiniMax-M3", "grok-4.6"}; !slices.Equal(ids, want) {
 		t.Fatalf("Available() ids = %v, want %v", ids, want)
+	}
+}
+
+func TestClaude51ModelAvailability(t *testing.T) {
+	available := Available(map[string]bool{
+		"claude-fable-5-1":  true,
+		"claude-mythos-5-1": true,
+	})
+
+	ids := make([]string, 0, len(available))
+	for _, m := range available {
+		ids = append(ids, m.ID)
+	}
+
+	if want := []string{"claude-fable-5-1", "claude-mythos-5-1"}; !slices.Equal(ids, want) {
+		t.Fatalf("Available() ids = %v, want %v", ids, want)
+	}
+}
+
+func TestAlwaysThinkingClaudeEfforts(t *testing.T) {
+	want := []string{"low", "medium", "high", "xhigh", "max"}
+	for _, id := range []string{"claude-fable-5", "claude-fable-5-1", "claude-mythos-5", "claude-mythos-5-1"} {
+		t.Run(id, func(t *testing.T) {
+			got, ok := Find(id)
+			if !ok {
+				t.Fatalf("Find(%q) failed", id)
+			}
+			if !slices.Equal(got.Efforts, want) {
+				t.Fatalf("Find(%q).Efforts = %v, want %v", id, got.Efforts, want)
+			}
+		})
 	}
 }
 
@@ -117,16 +150,18 @@ func TestProviderPrefixedModelMapping(t *testing.T) {
 	}
 
 	cases := map[string]string{
-		"anthropic/claude-sonnet-5": "Claude Sonnet 5",
-		"openai/gpt-5.6-sol":        "GPT 5.6 Sol",
-		"google/gemini-3.1-pro":     "Gemini 3.1 Pro",
-		"z-ai/glm-5.3":              "GLM 5.3",
-		"deepseek/deepseek-v4-pro":  "DeepSeek V4 Pro",
-		"mistralai/mistral-medium":  "Mistral Medium 3.5",
-		"moonshotai/kimi-k3":        "Kimi K3",
-		"minimax/minimax-m3":        "MiniMax M3",
-		"x-ai/grok-4.6":             "Grok 4.6",
-		"qwen/qwen3.8-27b":          "Qwen 3.8",
+		"anthropic/claude-sonnet-5":   "Claude Sonnet 5",
+		"anthropic/claude-fable-5-1":  "Claude Fable 5.1",
+		"anthropic/claude-mythos-5-1": "Claude Mythos 5.1",
+		"openai/gpt-5.6-sol":          "GPT 5.6 Sol",
+		"google/gemini-3.1-pro":       "Gemini 3.1 Pro",
+		"z-ai/glm-5.3":                "GLM 5.3",
+		"deepseek/deepseek-v4-pro":    "DeepSeek V4 Pro",
+		"mistralai/mistral-medium":    "Mistral Medium 3.5",
+		"moonshotai/kimi-k3":          "Kimi K3",
+		"minimax/minimax-m3":          "MiniMax M3",
+		"x-ai/grok-4.6":               "Grok 4.6",
+		"qwen/qwen3.8-27b":            "Qwen 3.8",
 	}
 
 	for id, name := range cases {

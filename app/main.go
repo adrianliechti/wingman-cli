@@ -48,7 +48,7 @@ func main() {
 		OnShutdown: app.shutdown,
 
 		Width:  1280,
-		Height: 768,
+		Height: 800,
 
 		MinWidth:  640,
 		MinHeight: 400,
