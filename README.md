@@ -230,7 +230,7 @@ backend at `http://localhost:4242/v1`.
 | Variable | Description |
 |----------|-------------|
 | `WINGMAN_SANDBOX` | `off` lifts the workspace path restriction from the file tools |
-| `WINGMAN_DISABLE_SHELL` | `1`, `true`, `yes`, or `on` disables `shell`, `exec_command`, and `exec_session` for the built-in agent |
+| `WINGMAN_DISABLE_SHELL` | `1`, `true`, `yes`, or `on` disables `exec_command` and `exec_session` for the built-in agent (the variable name is retained for compatibility) |
 | `WINGMAN_DISABLE_WEBSEARCH` | `1`, `true`, `yes`, or `on` disables `web_search` for the built-in agent |
 | `WINGMAN_DISABLE_WEBFETCH` | `1`, `true`, `yes`, or `on` disables `fetch` for the built-in agent |
 | `WINGMAN_ELICITATION` | Headless (ACP) sessions: `accept` or `cancel` answers elicitation prompts automatically |
@@ -424,9 +424,11 @@ Wingman comes with powerful built-in tools:
 | `read` | Read file contents with optional line range |
 | `write` | Create or overwrite files |
 | `edit` | Make surgical edits to existing files |
+| `apply_patch` | Apply a free-form multi-file patch atomically (GPT-5.6 family) |
 | `glob` | Find files using glob patterns |
 | `grep` | Search file contents using regex patterns |
-| `shell` | Execute shell commands |
+| `exec_command` | Run a command, returning a session id when it remains active |
+| `exec_session` | Poll, interact with, or stop a running command session |
 | `agent` | Launch a sub-agent to handle independent tasks in a separate context |
 | `schedule_task` | Schedule recurring or one-time work (interval, cron, or timestamp) that wakes the agent when due |
 | `lsp` | Code intelligence (definitions, references, diagnostics, symbols, call hierarchy) |

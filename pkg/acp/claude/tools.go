@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 
 	"github.com/coder/acp-go-sdk"
 )
@@ -172,15 +171,11 @@ func toolInfoFromToolUse(name string, rawInput json.RawMessage, cwd string) tool
 		}
 		return toolInfo{title: "Write file", kind: acp.ToolKindEdit, content: content, locations: locations}
 
-	case "Edit", "MultiEdit":
+	case "Edit":
 		var in struct {
 			FilePath  string `json:"file_path"`
 			OldString string `json:"old_string"`
 			NewString string `json:"new_string"`
-			Edits     []struct {
-				OldString string `json:"old_string"`
-				NewString string `json:"new_string"`
-			} `json:"edits"`
 		}
 		_ = json.Unmarshal(rawInput, &in)
 		var content []acp.ToolCallContent
@@ -192,16 +187,11 @@ func toolInfoFromToolUse(name string, rawInput json.RawMessage, cwd string) tool
 			} else if in.NewString != "" {
 				content = []acp.ToolCallContent{acp.ToolDiffContent(in.FilePath, in.NewString)}
 			}
-			for _, edit := range in.Edits {
-				content = append(content, acp.ToolDiffContent(in.FilePath, edit.NewString, edit.OldString))
-			}
 			locations = displayLocation(in.FilePath, cwd, 0)
 		}
 		if len(content) > 0 {
-			display = displayInput(rawInput, "file_path", "old_string", "new_string", "edits")
+			display = displayInput(rawInput, "file_path", "old_string", "new_string")
 		} else {
-			// MultiEdit carries an edits array which is not representable as one
-			// ACP diff, so retain it while still removing the duplicate path.
 			display = displayInput(rawInput, "file_path")
 		}
 		return toolInfo{title: "Edit file", kind: acp.ToolKindEdit, rawInput: display, content: content, locations: locations}
@@ -264,11 +254,14 @@ func toolInfoFromToolUse(name string, rawInput json.RawMessage, cwd string) tool
 		_ = json.Unmarshal(rawInput, &in)
 		return toolInfo{title: "Web search", kind: acp.ToolKindFetch, rawInput: displayInput(rawInput)}
 
-	case "BashOutput":
+	case "TaskOutput":
 		return toolInfo{title: "Read command output", kind: acp.ToolKindExecute, rawInput: displayInput(rawInput)}
 
-	case "KillShell":
+	case "TaskStop":
 		return toolInfo{title: "Stop command", kind: acp.ToolKindExecute, rawInput: displayInput(rawInput)}
+
+	case "EnterPlanMode":
+		return toolInfo{title: "Planning", kind: acp.ToolKindSwitchMode, rawInput: displayInput(rawInput)}
 
 	case "ExitPlanMode":
 		var in struct {
@@ -296,294 +289,12 @@ func toolInfoFromToolUse(name string, rawInput json.RawMessage, cwd string) tool
 	}
 }
 
-// taskPlan mirrors the CLI's TaskCreate/TaskUpdate task list as ACP plan
-// entries. The task id is only revealed in TaskCreate's result text
-// ("Task #1 created successfully: …"), so creates resolve in two steps.
-type taskPlan struct {
-	mu             sync.Mutex
-	pendingCreates map[string]string
-	pendingUpdates map[string]taskPlanUpdate
-	order          []string
-	tasks          map[string]*acp.PlanEntry
-}
-
-func newTaskPlan() *taskPlan {
-	return &taskPlan{
-		pendingCreates: map[string]string{},
-		pendingUpdates: map[string]taskPlanUpdate{},
-		tasks:          map[string]*acp.PlanEntry{},
-	}
-}
-
-type taskPlanUpdate struct {
-	taskID  string
-	status  string
-	subject string
-}
-
-var taskIDPattern = regexp.MustCompile(`Task #([\w-]+)`)
-var taskListPattern = regexp.MustCompile(`^#(\S+) \[(pending|in_progress|completed)\] (.+?)(?: \([^()]*\))?(?: \[blocked by .+\])?$`)
-
-func (p *taskPlan) noteCreate(toolUseID string, input json.RawMessage) {
-	var in struct {
-		Subject string `json:"subject"`
-	}
-	_ = json.Unmarshal(input, &in)
-	if toolUseID != "" && in.Subject != "" {
-		p.mu.Lock()
-		p.pendingCreates[toolUseID] = in.Subject
-		p.mu.Unlock()
-	}
-}
-
-func (p *taskPlan) completeCreate(toolUseID, resultText string, isError bool) bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	subject, ok := p.pendingCreates[toolUseID]
-	if !ok {
-		return false
-	}
-	delete(p.pendingCreates, toolUseID)
-	if isError {
-		return false
-	}
-	m := taskIDPattern.FindStringSubmatch(resultText)
-	if m == nil {
-		return false
-	}
-	id := m[1]
-	if _, exists := p.tasks[id]; !exists {
-		p.order = append(p.order, id)
-	}
-	p.tasks[id] = &acp.PlanEntry{Content: subject, Priority: acp.PlanEntryPriorityMedium, Status: acp.PlanEntryStatusPending}
-	return true
-}
-
-func (p *taskPlan) noteUpdate(toolUseID string, input json.RawMessage) {
-	var in struct {
-		TaskID  string `json:"taskId"`
-		Status  string `json:"status"`
-		Subject string `json:"subject"`
-	}
-	_ = json.Unmarshal(input, &in)
-	if toolUseID == "" || in.TaskID == "" {
-		return
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if _, ok := p.tasks[in.TaskID]; !ok {
-		return
-	}
-	p.pendingUpdates[toolUseID] = taskPlanUpdate{taskID: in.TaskID, status: in.Status, subject: in.Subject}
-}
-
-func (p *taskPlan) completeUpdate(toolUseID, resultText string, isError bool) bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	update, ok := p.pendingUpdates[toolUseID]
-	if !ok {
-		return false
-	}
-	delete(p.pendingUpdates, toolUseID)
-	if isError || taskUpdateFailed(resultText, update.taskID) {
-		return false
-	}
-	entry, ok := p.tasks[update.taskID]
-	if !ok {
-		return false
-	}
-	if update.status == "deleted" {
-		delete(p.tasks, update.taskID)
-		for i, id := range p.order {
-			if id == update.taskID {
-				p.order = append(p.order[:i], p.order[i+1:]...)
-				break
-			}
-		}
-		return true
-	}
-	changed := false
-	if update.subject != "" && update.subject != entry.Content {
-		entry.Content = update.subject
-		changed = true
-	}
-	var status acp.PlanEntryStatus
-	switch update.status {
-	case "pending":
-		status = acp.PlanEntryStatusPending
-	case "in_progress":
-		status = acp.PlanEntryStatusInProgress
-	case "completed":
-		status = acp.PlanEntryStatusCompleted
-	}
-	if status != "" && status != entry.Status {
-		entry.Status = status
-		changed = true
-	}
-	return changed
-}
-
-func taskUpdateFailed(resultText, taskID string) bool {
-	text := strings.TrimSpace(resultText)
-	if strings.EqualFold(text, "Failed to delete task") || strings.Contains(strings.ToLower(text), "task #"+strings.ToLower(taskID)+" not found") {
-		return true
-	}
-	var result struct {
-		Success *bool  `json:"success"`
-		TaskID  string `json:"taskId"`
-	}
-	if json.Unmarshal([]byte(text), &result) == nil && result.Success != nil {
-		return !*result.Success || (result.TaskID != "" && result.TaskID != taskID)
-	}
-	return false
-}
-
-func (p *taskPlan) applyTaskList(resultText string, isError bool) bool {
-	if isError {
-		return false
-	}
-	tasks, ok := parseTaskList(resultText)
-	if !ok {
-		return false
-	}
-	p.mu.Lock()
-	p.order = p.order[:0]
-	clear(p.tasks)
-	for _, task := range tasks {
-		p.order = append(p.order, task.id)
-		p.tasks[task.id] = &acp.PlanEntry{
-			Content:  task.subject,
-			Status:   planStatus(task.status),
-			Priority: acp.PlanEntryPriorityMedium,
-		}
-	}
-	p.mu.Unlock()
-	return true
-}
-
-type taskListEntry struct {
-	id      string
-	subject string
-	status  string
-}
-
-func parseTaskList(resultText string) ([]taskListEntry, bool) {
-	text := strings.TrimSpace(resultText)
-	var structured struct {
-		Tasks []struct {
-			ID      string `json:"id"`
-			Subject string `json:"subject"`
-			Status  string `json:"status"`
-		} `json:"tasks"`
-	}
-	if json.Unmarshal([]byte(text), &structured) == nil && structured.Tasks != nil {
-		out := make([]taskListEntry, 0, len(structured.Tasks))
-		for _, task := range structured.Tasks {
-			if task.ID == "" || task.Subject == "" || !validTaskStatus(task.Status) {
-				return nil, false
-			}
-			out = append(out, taskListEntry{id: task.ID, subject: task.Subject, status: task.Status})
-		}
-		return out, true
-	}
-	if text == "No tasks found" {
-		return []taskListEntry{}, true
-	}
-	var out []taskListEntry
-	for line := range strings.SplitSeq(text, "\n") {
-		match := taskListPattern.FindStringSubmatch(line)
-		if match == nil {
-			return nil, false
-		}
-		out = append(out, taskListEntry{id: match[1], status: match[2], subject: match[3]})
-	}
-	return out, len(out) > 0
-}
-
-func validTaskStatus(status string) bool {
-	return status == "pending" || status == "in_progress" || status == "completed"
-}
-
-func (p *taskPlan) entries() []acp.PlanEntry {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.entriesLocked()
-}
-
-func (p *taskPlan) unfinishedEntries() ([]acp.PlanEntry, bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	unfinished := false
-	for _, entry := range p.tasks {
-		if entry.Status != acp.PlanEntryStatusCompleted {
-			unfinished = true
-			break
-		}
-	}
-	return p.entriesLocked(), unfinished
-}
-
-func (p *taskPlan) clear() {
-	p.mu.Lock()
-	clear(p.pendingCreates)
-	clear(p.pendingUpdates)
-	p.order = nil
-	clear(p.tasks)
-	p.mu.Unlock()
-}
-
-func (p *taskPlan) entriesLocked() []acp.PlanEntry {
-	out := make([]acp.PlanEntry, 0, len(p.order))
-	for _, id := range p.order {
-		out = append(out, *p.tasks[id])
-	}
-	return out
-}
-
-func isPlanTool(name string) bool { return name == "TodoWrite" }
-
 // shouldEagerlyEmitToolCall reports whether a permission request may publish
-// the tool before its assistant tool_use arrives. TodoWrite renders as a plan
-// update, while Task/Agent wait for the assistant event so subagent calls never
-// appear merely because a permission prompt raced ahead of the model output.
+// the tool before its assistant tool_use arrives. Task/Agent wait for the
+// assistant event so subagent calls never appear merely because a permission
+// prompt raced ahead of the model output.
 func shouldEagerlyEmitToolCall(name string) bool {
-	return !isPlanTool(name) && name != "Agent" && name != "Task"
-}
-
-func shouldTrackToolCall(name string) bool {
-	return !isPlanTool(name)
-}
-
-func planEntriesFromTodoWrite(rawInput json.RawMessage) (entries []acp.PlanEntry, ok bool) {
-	var in struct {
-		Todos []struct {
-			Content string `json:"content"`
-			Status  string `json:"status"`
-		} `json:"todos"`
-	}
-	if err := json.Unmarshal(rawInput, &in); err != nil || in.Todos == nil {
-		return nil, false
-	}
-	entries = make([]acp.PlanEntry, 0, len(in.Todos))
-	for _, t := range in.Todos {
-		entries = append(entries, acp.PlanEntry{
-			Content:  t.Content,
-			Status:   planStatus(t.Status),
-			Priority: acp.PlanEntryPriorityMedium,
-		})
-	}
-	return entries, true
-}
-
-func planStatus(s string) acp.PlanEntryStatus {
-	switch s {
-	case "in_progress":
-		return acp.PlanEntryStatusInProgress
-	case "completed":
-		return acp.PlanEntryStatusCompleted
-	default:
-		return acp.PlanEntryStatusPending
-	}
+	return name != "Agent" && name != "Task"
 }
 
 var fencePattern = regexp.MustCompile("(?m)^`{3,}")

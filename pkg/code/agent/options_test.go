@@ -39,7 +39,7 @@ func TestResolveOptionsFromEnvironment(t *testing.T) {
 	t.Setenv("WINGMAN_DISABLE_WEBFETCH", "on")
 	resolved := resolveOptions(nil)
 	if !resolved.DisableWebSearch || !resolved.DisableWebFetch {
-		t.Fatalf("web options = %+v, want both disabled", resolved)
+		t.Fatalf("resolved options = %+v, want web disabled", resolved)
 	}
 }
 
@@ -74,13 +74,13 @@ func TestExplicitOptionsDisableOnlySelectedToolFamilies(t *testing.T) {
 			name:    "web search",
 			options: Options{DisableWebSearch: true},
 			absent:  []string{"web_search"},
-			present: []string{"shell", "exec_command", "exec_session", "fetch"},
+			present: []string{"exec_command", "exec_session", "fetch"},
 		},
 		{
 			name:    "web fetch",
 			options: Options{DisableWebFetch: true},
 			absent:  []string{"fetch"},
-			present: []string{"shell", "exec_command", "exec_session", "web_search"},
+			present: []string{"exec_command", "exec_session", "web_search"},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -114,7 +114,7 @@ func TestEnvironmentOptionsAreResolvedAtAgentStartup(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertTools(t, a, sessionID,
-		[]string{"shell", "exec_command", "exec_session", "web_search", "fetch"},
+		[]string{"shell", "exec_command", "exec_session", "web_search", "fetch", "todo"},
 		[]string{"read", "edit", "write"},
 	)
 }
@@ -125,7 +125,6 @@ func TestTelemetryOptionOverridesHarnessConfig(t *testing.T) {
 	override := &telemetry.Telemetry{}
 	a := New(workspace, &harness.Config{Telemetry: inherited}, nil, Options{Telemetry: override})
 	defer a.Close()
-
 	sessionID, err := a.NewSession(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -174,6 +173,18 @@ func TestCloseWithOwnedTelemetryClosesWorkspaceMCPSessions(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("owned telemetry shutdown left the MCP session open")
 	}
+}
+
+func TestLegacyToolsAreNotExposed(t *testing.T) {
+	workspace := newOptionsTestWorkspace(t)
+
+	a := New(workspace, &harness.Config{}, nil)
+	defer a.Close()
+	sessionID, err := a.NewSession(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertTools(t, a, sessionID, []string{"shell", "todo"}, []string{"exec_command", "exec_session"})
 }
 
 func newOptionsTestWorkspace(t *testing.T) *code.Workspace {

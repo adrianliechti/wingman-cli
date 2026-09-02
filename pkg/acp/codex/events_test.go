@@ -47,24 +47,6 @@ func TestMessageUpdatesCarryIDsAndPhase(t *testing.T) {
 	}
 }
 
-func TestTurnCompletedFlushesThrottledPlanTail(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	d := newEventDispatcher(ctx, nil, "session-1")
-	d.planUpdates = true
-
-	d.handle("item/plan/delta", json.RawMessage(`{"itemId":"plan-1","delta":"first"}`))
-	d.handle("item/plan/delta", json.RawMessage(`{"itemId":"plan-1","delta":" second"}`))
-	if got := d.planEmitted["plan-1"]; got != "first" {
-		t.Fatalf("plan before completion = %q, want first throttled snapshot", got)
-	}
-
-	d.handle("turn/completed", json.RawMessage(`{"threadId":"session-1","turn":{"id":"turn-1","status":"completed"}}`))
-	if got := d.planEmitted["plan-1"]; got != "first second" {
-		t.Fatalf("plan after completion = %q, want flushed snapshot", got)
-	}
-}
-
 func TestElicitationParamsPreserveSchemaAndURLFields(t *testing.T) {
 	var p elicitationParams
 	err := json.Unmarshal([]byte(`{"threadId":"t","serverName":"mcp","mode":"form","message":"Choose","requestedSchema":{"type":"object","properties":{"answer":{"type":"string"}}},"url":"https://example.com","elicitationId":"e-1","_meta":{"persist":"session"}}`), &p)

@@ -30,7 +30,6 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/schedule"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/shell"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/subagent"
-	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/todo"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/websearch"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/code/prompt"
@@ -880,10 +879,7 @@ func (a *Agent) buildSession(id string) (*sessionState, error) {
 
 	var shellTools []tool.Tool
 	if !a.options.DisableShell {
-		shellTools = slices.Concat(
-			shell.Tools(ws.RootPath, elicit, approvals, shellOpts),
-			shell.ExecTools(s.execManager, ws.RootPath, elicit, approvals, shellOpts),
-		)
+		shellTools = shell.ExecTools(s.execManager, ws.RootPath, elicit, approvals, shellOpts)
 	}
 	var webFetchTools []tool.Tool
 	if !a.options.DisableWebFetch {
@@ -901,7 +897,6 @@ func (a *Agent) buildSession(id string) (*sessionState, error) {
 			Freshness:         s.freshness,
 		})),
 		shellTools,
-		todo.Tools(),
 		schedule.Tools(s.schedules),
 		elicittool.Tools(elicit),
 		webFetchTools,
@@ -1237,6 +1232,15 @@ func formatFileChangeNotice(paths []string) string {
 func (s *sessionState) tools() []tool.Tool {
 	tools := s.toolSet.Slice()
 	tools = append(tools, s.managedTools()...)
+	option, _ := s.parent.roleModel(s, "")
+	if strings.HasPrefix(option.ID, "gpt-5.6-") || option.ID == "gpt-5.6" {
+		// apply_patch covers both creation and updates in one compact call.
+		tools = slices.DeleteFunc(tools, func(t tool.Tool) bool {
+			return t.Name == "edit" || t.Name == "write"
+		})
+	} else {
+		tools = slices.DeleteFunc(tools, func(t tool.Tool) bool { return t.Freeform != nil })
+	}
 	switch s.currentMode() {
 	case modePlan:
 		tools = planModeTools(tools)

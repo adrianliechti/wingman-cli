@@ -299,10 +299,6 @@ func headPreview(lines []string, n int) []string {
 func cellTool(result *agent.ToolResult, width int, full bool) []string {
 	name := result.Name
 
-	if name == "todo" {
-		return cellTodo(result.Args, width)
-	}
-
 	hint := tool.ExtractHint(result.Args, result.Name)
 	output := strings.TrimRight(result.Content, "\n")
 	errored := result.IsError || strings.HasPrefix(output, "error:")
@@ -363,51 +359,6 @@ func cellToolProgress(name, hint, progress string, width int) []string {
 		inner := max(width-len(cellIndent)-2, 10)
 		text := markdown.Sanitize(strings.ReplaceAll(progress, "\n", " "))
 		lines = append(lines, cellIndent+"  "+dim(ansi.Truncate(text, inner, "…")))
-	}
-
-	return lines
-}
-
-func cellTodo(argsJSON string, width int) []string {
-	items := tool.ParseTodoItems(argsJSON)
-	if len(items) == 0 {
-		return []string{toolTitleLine("todo", "", "", width, false, false)}
-	}
-	return cellTodoItems(items, width)
-}
-
-func cellTodoItems(items []tool.TodoItem, width int) []string {
-	t := theme.Default
-
-	completed := 0
-	for _, item := range items {
-		if item.Status == "completed" {
-			completed++
-		}
-	}
-
-	lines := []string{cellIndent + dim("• ") + bold("plan") + " " + dim(fmt.Sprintf("%d/%d", completed, len(items)))}
-
-	inner := max(width-len(cellIndent)-4, 10)
-
-	for _, item := range items {
-		var line string
-		content := markdown.Sanitize(item.Content)
-		switch item.Status {
-		case "completed":
-			line = fg(t.Green) + "✔ " + ansi.Reset + fg(t.BrBlack) + ansi.Strike + content
-		case "in_progress":
-			line = fg(t.Cyan) + ansi.Bold + "□ " + content
-		default:
-			line = fg(t.BrBlack) + "□ " + content
-		}
-		for i, wl := range ansi.Wrap(line, inner) {
-			prefix := cellIndent + "  "
-			if i > 0 {
-				prefix += "  "
-			}
-			lines = append(lines, prefix+wl+ansi.Reset)
-		}
 	}
 
 	return lines

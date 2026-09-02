@@ -28,5 +28,6 @@ func Tools(root *os.Root, opts *Options) []tool.Tool {
 		GrepTool(root, opts.AllowedReadRoots...),
 		GlobTool(root, opts.AllowedReadRoots...),
 		ImageTool(root, opts.AllowedReadRoots...),
+		ApplyPatchTool(root, opts.Freshness),
 	}
 }

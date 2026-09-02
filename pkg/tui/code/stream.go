@@ -410,11 +410,6 @@ func (snapshot streamSnapshot) toolLines(width int, expanded bool) []string {
 	if snapshot.toolResult != nil {
 		return cellTool(snapshot.toolResult, width, expanded)
 	}
-	if snapshot.toolName == "todo" {
-		if items := tool.ParseTodoItems(snapshot.toolArgs); len(items) > 0 {
-			return cellTodoItems(items, width)
-		}
-	}
 	return cellToolProgress(snapshot.toolName, snapshot.toolHint, snapshot.toolProgress, width)
 }
 

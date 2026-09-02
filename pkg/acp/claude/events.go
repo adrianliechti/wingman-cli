@@ -124,7 +124,7 @@ func emitStreamEvent(ctx context.Context, conn *acp.AgentSideConnection, sid acp
 // emitAssistant renders a consolidated assistant message. Blocks already sent
 // as live deltas are removed by content, while unstreamed blocks and partial
 // tails are still emitted. streamed is nil on history replay.
-func emitAssistant(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, raw json.RawMessage, cwd string, cache toolUseCache, tracker *toolCallTracker, streamed *streamedBlockTracker, plan *taskPlan, parentToolUseID string) error {
+func emitAssistant(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, raw json.RawMessage, cwd string, cache toolUseCache, tracker *toolCallTracker, streamed *streamedBlockTracker, parentToolUseID string) error {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -161,22 +161,6 @@ func emitAssistant(ctx context.Context, conn *acp.AgentSideConnection, sid acp.S
 			if cache != nil && b.ID != "" {
 				cache[b.ID] = b.Name
 			}
-			if plan != nil {
-				switch b.Name {
-				case "TaskCreate":
-					plan.noteCreate(b.ID, b.Input)
-				case "TaskUpdate":
-					plan.noteUpdate(b.ID, b.Input)
-				}
-			}
-			if plan != nil && isPlanTool(b.Name) {
-				entries, ok := planEntriesFromTodoWrite(b.Input)
-				if !ok {
-					continue
-				}
-				update = acp.UpdatePlan(entries...)
-				break
-			}
 			if err := emitToolUseCall(ctx, conn, sid, b, cwd, tracker, parentToolUseID); err != nil {
 				return err
 			}
@@ -209,7 +193,7 @@ func emitToolUseCall(ctx context.Context, conn *acp.AgentSideConnection, sid acp
 		return send(u)
 	}
 
-	if b.ID == "" || tracker == nil || !shouldTrackToolCall(b.Name) {
+	if b.ID == "" || tracker == nil {
 		return start()
 	}
 
@@ -221,7 +205,7 @@ func emitToolUseCall(ctx context.Context, conn *acp.AgentSideConnection, sid acp
 	return tracker.emit(b.ID, start, refine)
 }
 
-func emitToolResults(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, raw json.RawMessage, cache toolUseCache, tracker *toolCallTracker, plan *taskPlan, parentToolUseID string) error {
+func emitToolResults(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, raw json.RawMessage, cache toolUseCache, tracker *toolCallTracker, parentToolUseID string) error {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -245,17 +229,6 @@ func emitToolResults(ctx context.Context, conn *acp.AgentSideConnection, sid acp
 			continue
 		}
 		name := cache[b.ToolUseID]
-		if applyTaskPlanResult(plan, name, b) {
-			if err := conn.SessionUpdate(ctx, acp.SessionNotification{
-				SessionId: sid,
-				Update:    acp.UpdatePlan(plan.entries()...),
-			}); err != nil {
-				return err
-			}
-		}
-		if plan != nil && isPlanTool(name) {
-			continue
-		}
 		// A cancelled turn can drop the assistant message that announced this
 		// tool call while a late result still arrives. Never reference an id the
 		// ACP client has not seen, and remove completed ids so late progress
@@ -281,23 +254,6 @@ func emitToolResults(ctx context.Context, conn *acp.AgentSideConnection, sid acp
 		}
 	}
 	return nil
-}
-
-func applyTaskPlanResult(plan *taskPlan, name string, result cliMsgBlock) bool {
-	if plan == nil {
-		return false
-	}
-	text := extractToolResultText(result.Content)
-	switch name {
-	case "TaskCreate":
-		return plan.completeCreate(result.ToolUseID, text, result.IsError)
-	case "TaskUpdate":
-		return plan.completeUpdate(result.ToolUseID, text, result.IsError)
-	case "TaskList":
-		return plan.applyTaskList(text, result.IsError)
-	default:
-		return false
-	}
 }
 
 func withClaudeToolMeta(update *acp.SessionUpdate, toolName, parentToolUseID string) {
@@ -553,14 +509,6 @@ func codeFence(text string) string {
 	return "```\n" + text + "\n```"
 }
 
-func extractToolResultText(raw json.RawMessage) string {
-	text, parts, isArray := decodeToolResult(raw)
-	if isArray {
-		return resultText(parts)
-	}
-	return text
-}
-
 func toolKindFor(name string) acp.ToolKind {
 	switch name {
 	case "Read":
@@ -569,13 +517,13 @@ func toolKindFor(name string) acp.ToolKind {
 		return acp.ToolKindSearch
 	case "WebFetch", "WebSearch":
 		return acp.ToolKindFetch
-	case "Edit", "Write", "MultiEdit", "NotebookEdit":
+	case "Edit", "Write", "NotebookEdit":
 		return acp.ToolKindEdit
-	case "Bash", "BashOutput", "KillShell":
+	case "Bash", "TaskOutput", "TaskStop":
 		return acp.ToolKindExecute
 	case "Agent", "Task":
 		return acp.ToolKindThink
-	case "ExitPlanMode":
+	case "EnterPlanMode", "ExitPlanMode":
 		return acp.ToolKindSwitchMode
 	}
 	return acp.ToolKindOther

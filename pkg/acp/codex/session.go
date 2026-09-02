@@ -145,8 +145,6 @@ func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, cc
 	}()
 
 	disp := newEventDispatcher(turnCtx, conn, s.id)
-	disp.planUpdates = clientCapabilities.PlanCapabilities != nil
-	defer flushPendingPlans(ctx, disp)
 	app := newApprover(turnCtx, conn, s.id, clientCapabilities)
 	cc.setThreadHandlers(threadID, &threadHandlers{
 		onNotification: func(method string, params json.RawMessage) {
@@ -280,12 +278,6 @@ func interruptTurnSoon(cc *codexClient, threadID, turnID string) {
 	_ = cc.turnInterrupt(ctx, turnInterruptParams{ThreadID: threadID, TurnID: turnID})
 }
 
-func flushPendingPlans(ctx context.Context, disp *eventDispatcher) {
-	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-	defer cancel()
-	disp.flushPendingPlanUpdates(cleanup)
-}
-
 func requestPlanImplementation(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, plan *completedPlan) bool {
 	const (
 		implement = acp.PermissionOptionId("implement_plan")
@@ -348,7 +340,7 @@ func sandboxPolicyWithRoots(policy any, roots []string) any {
 	return copy
 }
 
-func streamThreadHistory(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, turns []rawTurn, toolOutputs map[string]string, planUpdates bool) {
+func streamThreadHistory(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, turns []rawTurn, toolOutputs map[string]string) {
 	send := func(u acp.SessionUpdate) {
 		if ctx.Err() != nil {
 			return
@@ -357,7 +349,7 @@ func streamThreadHistory(ctx context.Context, conn *acp.AgentSideConnection, sid
 	}
 	for _, turn := range turns {
 		for _, raw := range turn.Items {
-			replayItem(send, raw, toolOutputs, planUpdates)
+			replayItem(send, raw, toolOutputs)
 		}
 	}
 }
@@ -390,7 +382,7 @@ func replayToolText(send func(acp.SessionUpdate), id, status string, outputs map
 	replayToolResult(send, id, status, []acp.ToolCallContent{acp.ToolContent(acp.TextBlock(out))})
 }
 
-func replayItem(send func(acp.SessionUpdate), raw json.RawMessage, toolOutputs map[string]string, planUpdates bool) {
+func replayItem(send func(acp.SessionUpdate), raw json.RawMessage, toolOutputs map[string]string) {
 	var probe struct {
 		Type string `json:"type"`
 		ID   string `json:"id"`
@@ -436,14 +428,7 @@ func replayItem(send func(acp.SessionUpdate), raw json.RawMessage, toolOutputs m
 		}
 		_ = json.Unmarshal(raw, &it)
 		if it.Text != "" {
-			if planUpdates {
-				send(acp.SessionUpdate{PlanUpdate: &acp.SessionPlanUpdate{
-					SessionUpdate: "plan_update",
-					Plan:          acp.NewPlanUpdateContentMarkdown(acp.PlanId(probe.ID), it.Text),
-				}})
-			} else {
-				send(acp.UpdateAgentMessageText("Plan:\n" + it.Text))
-			}
+			send(acp.UpdateAgentMessageText("Plan:\n" + it.Text))
 		}
 
 	case "commandExecution":

@@ -31,8 +31,7 @@ Be precise and direct. Use explicit structure for complex work, but do not over-
 
 - Use `glob` to locate files, `grep` for exact text or symbols, and `read` once you know the useful path or range.
 - Use `edit` for changes to existing files and `write` only for genuinely new files. Read existing files before editing them.
-- Use `shell` for builds, tests, package managers, version control, and commands that genuinely require execution. Do not use shell redirection, heredocs, `sed`, or similar commands to edit files.
-- Use `todo` for work with three or more distinct implementation steps. Keep one item in progress and update it as work completes; skip it for simple tasks.
+- Use `exec_command` for builds, tests, package managers, version control, and commands that genuinely require execution. Do not use shell redirection, heredocs, `sed`, or similar commands to edit files.
 - Delegate only bounded, independent work to `agent`; keep final synthesis and decisions in the main session.
 - Batch independent reads and searches in parallel. Keep calls sequential when one depends on another's result or when commands mutate shared state.
 - If tool output contains omitted ranges, placeholders, or summaries, read the real content needed for an edit. Never copy omission markers into a file.

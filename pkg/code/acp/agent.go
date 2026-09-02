@@ -268,8 +268,11 @@ func (a *Agent) initialize(ctx context.Context) (acpsdk.InitializeResponse, erro
 	if err != nil {
 		return acpsdk.InitializeResponse{}, err
 	}
-	if resp.ProtocolVersion != acpsdk.ProtocolVersionNumber {
-		return acpsdk.InitializeResponse{}, fmt.Errorf("unsupported ACP protocol version %d (want %d)", resp.ProtocolVersion, acpsdk.ProtocolVersionNumber)
+	// ACP negotiates down: the agent may answer with any version at or below
+	// the one we offered, and both sides then speak that. Only a version above
+	// ours is unusable.
+	if resp.ProtocolVersion > acpsdk.ProtocolVersionNumber {
+		return acpsdk.InitializeResponse{}, fmt.Errorf("unsupported ACP protocol version %d (want %d or lower)", resp.ProtocolVersion, acpsdk.ProtocolVersionNumber)
 	}
 	return resp, nil
 }

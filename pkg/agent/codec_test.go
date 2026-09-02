@@ -1,11 +1,82 @@
 package agent
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
+
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
+
+func TestToToolsEncodesFreeformGrammar(t *testing.T) {
+	encoded, err := json.Marshal(toTools([]tool.Tool{{
+		Name:        "apply_patch",
+		Description: "apply a patch",
+		Freeform: &tool.FreeformFormat{
+			Syntax:     "lark",
+			Definition: `start: "ok"`,
+		},
+	}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire []struct {
+		Type        string `json:"type"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Format      struct {
+			Type       string `json:"type"`
+			Syntax     string `json:"syntax"`
+			Definition string `json:"definition"`
+		} `json:"format"`
+	}
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if len(wire) != 1 || wire[0].Type != "custom" || wire[0].Name != "apply_patch" ||
+		wire[0].Description != "apply a patch" || wire[0].Format.Type != "grammar" ||
+		wire[0].Format.Syntax != "lark" || wire[0].Format.Definition != `start: "ok"` {
+		t.Fatalf("custom tool wire payload = %s", encoded)
+	}
+}
+
+func TestCustomToolCallRoundTrip(t *testing.T) {
+	const patch = "*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch\n"
+	messages := []Message{
+		{Role: RoleAssistant, Content: []Content{{ToolCall: &ToolCall{
+			ID: "call_patch", Name: "apply_patch", Args: patch, Custom: true,
+		}}}},
+		{Role: RoleAssistant, Content: []Content{{ToolResult: &ToolResult{
+			ID: "call_patch", Name: "apply_patch", Args: patch, Content: "Done!", Custom: true,
+		}}}},
+	}
+
+	items := toInput(messages)
+	if len(items) != 2 || items[0].OfCustomToolCall == nil || items[1].OfCustomToolCallOutput == nil {
+		t.Fatalf("custom wire items = %#v", items)
+	}
+	if got := items[0].OfCustomToolCall.Input; got != patch {
+		t.Fatalf("custom input = %q, want raw patch", got)
+	}
+	if got := items[1].OfCustomToolCallOutput.Output.OfString.Value; got != "Done!" {
+		t.Fatalf("custom output = %q", got)
+	}
+
+	roundTrip := toMessages(items)
+	if len(roundTrip) != 2 {
+		t.Fatalf("round-trip messages = %#v", roundTrip)
+	}
+	call := roundTrip[0].Content[0].ToolCall
+	result := roundTrip[1].Content[0].ToolResult
+	if call == nil || !call.Custom || call.Name != "apply_patch" || call.Args != patch {
+		t.Fatalf("round-trip call = %#v", call)
+	}
+	if result == nil || !result.Custom || result.Name != "apply_patch" || result.Args != patch || result.Content != "Done!" {
+		t.Fatalf("round-trip result = %#v", result)
+	}
+}
 
 func TestReasoningToInputReplaysEncryptedContent(t *testing.T) {
 	p := reasoningToInput(&Reasoning{ID: "rs_1", Summary: "sum", Content: "blob", Model: "gpt-5.5"})

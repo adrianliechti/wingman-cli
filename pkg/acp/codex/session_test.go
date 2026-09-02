@@ -188,7 +188,7 @@ func TestReplayToolRepresentationsAreCompact(t *testing.T) {
 			var updates []acp.SessionUpdate
 			replayItem(func(update acp.SessionUpdate) {
 				updates = append(updates, update)
-			}, json.RawMessage(tc.raw), nil, false)
+			}, json.RawMessage(tc.raw), nil)
 			if len(updates) == 0 || updates[0].ToolCall == nil {
 				t.Fatalf("updates = %#v", updates)
 			}
@@ -238,7 +238,7 @@ func TestReplayCommandOutputFallsBackToHistoryItem(t *testing.T) {
 			var updates []acp.SessionUpdate
 			replayItem(func(update acp.SessionUpdate) {
 				updates = append(updates, update)
-			}, json.RawMessage(tc.raw), nil, false)
+			}, json.RawMessage(tc.raw), nil)
 			if len(updates) != 2 || updates[1].ToolCallUpdate == nil {
 				t.Fatalf("updates = %#v", updates)
 			}

@@ -232,6 +232,13 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 				stop(err)
 				return
 			}
+			// Keep the active working set intact while compacting superseded large
+			// tool results before every provider request. This usually avoids an
+			// expensive LLM compaction pass later in long coding sessions.
+			if _, err := a.trimStaleToolResults(); err != nil {
+				stop(err)
+				return
+			}
 
 			modelID := ""
 			if a.Config.Model != nil {
@@ -790,7 +797,7 @@ func (a *Agent) processToolCallsParallel(ctx context.Context, calls []ToolCall, 
 	for range parallelism {
 		go func() {
 			for i := range jobs {
-				ch <- completion{i, a.runSingleToolCallOutcome(ctx, calls[i], tools)}
+				ch <- completion{i, a.runSingleToolCallOutcomeDeferred(ctx, calls[i], tools)}
 			}
 		}()
 	}
@@ -808,6 +815,7 @@ func (a *Agent) processToolCallsParallel(ctx context.Context, calls []ToolCall, 
 	resultMessages := make([]Message, len(calls))
 	var unrecorded []Message
 	for i, tc := range calls {
+		outcomes[i] = a.commitDeferredToolOutcome(tc, outcomes[i])
 		resultMessages[i] = toolResultMessage(tc, outcomes[i].result)
 		if !outcomes[i].recorded {
 			unrecorded = append(unrecorded, resultMessages[i])
@@ -826,8 +834,15 @@ func (a *Agent) processToolCallsParallel(ctx context.Context, calls []ToolCall, 
 }
 
 type toolCallOutcome struct {
-	result   tool.Result
-	recorded bool
+	result         tool.Result
+	recorded       bool
+	deferredCommit *toolCommit
+}
+
+type toolCommit struct {
+	operationID string
+	turnID      string
+	effect      tool.Effect
 }
 
 func toolCallMessage(tc ToolCall) Message {
@@ -836,7 +851,7 @@ func toolCallMessage(tc ToolCall) Message {
 		Role: RoleAssistant,
 		Content: []Content{{ToolCall: &ToolCall{
 			ID: tc.ID, Name: tc.Name, Kind: tc.Kind, Args: tc.Args,
-			Locations: tc.Locations, Presentation: presentation,
+			Locations: tc.Locations, Presentation: presentation, Custom: tc.Custom,
 		}}},
 	}
 }
@@ -850,7 +865,7 @@ const (
 	// The code harness installs a more specific PostToolUse hook that persists
 	// oversized output before replacing it with a preview. This is the final
 	// safety net for every other Agent embedding and for context added by hooks.
-	maxInlineToolResultBytes = 100 * 1024
+	maxInlineToolResultBytes = 48 * 1024
 	toolResultHeadBytes      = 4 * 1024
 	toolResultTailBytes      = 8 * 1024
 )
@@ -864,6 +879,7 @@ func toolResultMessage(tc ToolCall, result tool.Result) Message {
 				{ToolResult: &ToolResult{
 					ID: tc.ID, Name: tc.Name, Kind: tc.Kind, Args: tc.Args,
 					Locations: tc.Locations, Presentation: presentation,
+					Custom:  tc.Custom,
 					Content: imageResultPlaceholder, IsError: result.IsError, Metadata: result.Metadata,
 				}},
 				{File: &File{Data: result.Content}},
@@ -876,6 +892,7 @@ func toolResultMessage(tc ToolCall, result tool.Result) Message {
 		Content: []Content{{ToolResult: &ToolResult{
 			ID: tc.ID, Name: tc.Name, Kind: tc.Kind, Args: tc.Args,
 			Locations: tc.Locations, Presentation: presentation,
+			Custom:  tc.Custom,
 			Content: result.Content, IsError: result.IsError, Metadata: result.Metadata,
 		}}},
 	}
@@ -886,17 +903,25 @@ func (a *Agent) runSingleToolCall(ctx context.Context, tc ToolCall, tools []tool
 }
 
 func (a *Agent) runSingleToolCallOutcome(ctx context.Context, tc ToolCall, tools []tool.Tool) (outcome toolCallOutcome) {
+	return a.runSingleToolCallOutcomeMode(ctx, tc, tools, false)
+}
+
+func (a *Agent) runSingleToolCallOutcomeDeferred(ctx context.Context, tc ToolCall, tools []tool.Tool) (outcome toolCallOutcome) {
+	return a.runSingleToolCallOutcomeMode(ctx, tc, tools, true)
+}
+
+func (a *Agent) runSingleToolCallOutcomeMode(ctx context.Context, tc ToolCall, tools []tool.Tool, deferCommit bool) (outcome toolCallOutcome) {
 	defer func() {
 		if r := recover(); r != nil {
 			outcome = toolCallOutcome{result: tool.Error(fmt.Sprintf("error: tool %s panicked: %v", tc.Name, r))}
 		}
 	}()
-	return a.toolCallOutcome(ctx, tc, tools)
+	return a.toolCallOutcome(ctx, tc, tools, deferCommit)
 }
 
-func (a *Agent) toolCallOutcome(ctx context.Context, tc ToolCall, tools []tool.Tool) toolCallOutcome {
+func (a *Agent) toolCallOutcome(ctx context.Context, tc ToolCall, tools []tool.Tool, deferCommit bool) toolCallOutcome {
 	if tc.ID == "" {
-		return a.executeToolOperation(ctx, tc, tools)
+		return a.executeToolOperation(ctx, tc, tools, deferCommit)
 	}
 	if result, ok := a.retainedToolResult(tc); ok {
 		return toolCallOutcome{result: result}
@@ -925,7 +950,7 @@ func (a *Agent) toolCallOutcome(ctx context.Context, tc ToolCall, tools []tool.T
 	a.toolRuns[tc.ID] = run
 	a.toolRunsMu.Unlock()
 
-	outcome := a.executeToolOperation(ctx, tc, tools)
+	outcome := a.executeToolOperation(ctx, tc, tools, deferCommit)
 	a.toolRunsMu.Lock()
 	run.result = cloneToolResult(outcome.result)
 	close(run.done)
@@ -933,7 +958,7 @@ func (a *Agent) toolCallOutcome(ctx context.Context, tc ToolCall, tools []tool.T
 	return outcome
 }
 
-func (a *Agent) executeToolOperation(ctx context.Context, tc ToolCall, tools []tool.Tool) toolCallOutcome {
+func (a *Agent) executeToolOperation(ctx context.Context, tc ToolCall, tools []tool.Tool, deferCommit bool) toolCallOutcome {
 	operationID := uuid.NewString()
 	effect := a.toolEffect(tc, tools)
 	t := findTool(tc.Name, tools)
@@ -977,29 +1002,6 @@ func (a *Agent) executeToolOperation(ctx context.Context, tc ToolCall, tools []t
 	}
 
 	result := a.executeSingleToolCall(ctx, tc, tools)
-	status := RuntimeCompleted
-	if result.IsError {
-		status = RuntimeFailed
-	}
-	if result.Content == interruptedToolResult || result.Content == interruptedWaitResult {
-		status = RuntimeInterrupted
-	}
-	terminal := &RuntimeTerminal{Status: status}
-	if result.IsError {
-		terminal.Error = result.Content
-	}
-	resultMessage := toolResultMessage(tc, result)
-	if err := a.recordEvents(append(messageEvents(resultMessage), RuntimeEvent{
-		Type:        EventToolTerminal,
-		TurnID:      started.TurnID,
-		OperationID: operationID,
-		Tool:        &RuntimeTool{CallID: tc.ID, Name: tc.Name, Args: tc.Args, Effect: string(effect), IsError: result.IsError},
-		Terminal:    terminal,
-	})...); err != nil {
-		telemetryExecution.End(telemetry.Outcome{Err: err})
-		telemetryEnded = true
-		return toolCallOutcome{result: tool.Error(fmt.Sprintf("error: tool finished but its result and terminal fact could not be persisted: %v", err))}
-	}
 	toolOutcome := telemetry.Outcome{}
 	if result.IsError {
 		toolOutcome.ErrorType = "_OTHER"
@@ -1014,6 +1016,49 @@ func (a *Agent) executeToolOperation(ctx context.Context, tc ToolCall, tools []t
 	}
 	telemetryExecution.End(toolOutcome)
 	telemetryEnded = true
+	if deferCommit {
+		return toolCallOutcome{
+			result: result,
+			deferredCommit: &toolCommit{
+				operationID: operationID,
+				turnID:      started.TurnID,
+				effect:      effect,
+			},
+		}
+	}
+	return a.commitToolOutcome(tc, result, operationID, started.TurnID, effect)
+}
+
+func (a *Agent) commitDeferredToolOutcome(tc ToolCall, outcome toolCallOutcome) toolCallOutcome {
+	if outcome.deferredCommit == nil {
+		return outcome
+	}
+	commit := outcome.deferredCommit
+	return a.commitToolOutcome(tc, outcome.result, commit.operationID, commit.turnID, commit.effect)
+}
+
+func (a *Agent) commitToolOutcome(tc ToolCall, result tool.Result, operationID, turnID string, effect tool.Effect) toolCallOutcome {
+	status := RuntimeCompleted
+	if result.IsError {
+		status = RuntimeFailed
+	}
+	if result.Content == interruptedToolResult || result.Content == interruptedWaitResult {
+		status = RuntimeInterrupted
+	}
+	terminal := &RuntimeTerminal{Status: status}
+	if result.IsError {
+		terminal.Error = result.Content
+	}
+	resultMessage := toolResultMessage(tc, result)
+	if err := a.recordEvents(append(messageEvents(resultMessage), RuntimeEvent{
+		Type:        EventToolTerminal,
+		TurnID:      turnID,
+		OperationID: operationID,
+		Tool:        &RuntimeTool{CallID: tc.ID, Name: tc.Name, Args: tc.Args, Effect: string(effect), IsError: result.IsError},
+		Terminal:    terminal,
+	})...); err != nil {
+		return toolCallOutcome{result: tool.Error(fmt.Sprintf("error: tool finished but its result and terminal fact could not be persisted: %v", err))}
+	}
 	return toolCallOutcome{result: result, recorded: true}
 }
 
@@ -1133,7 +1178,7 @@ func (a *Agent) executeSingleToolCall(ctx context.Context, tc ToolCall, tools []
 			break
 		}
 		hookContext = append(hookContext, outcome.AdditionalContext...)
-		if len(outcome.UpdatedInput) > 0 && json.Valid(outcome.UpdatedInput) {
+		if len(outcome.UpdatedInput) > 0 && ((t != nil && t.Freeform != nil) || json.Valid(outcome.UpdatedInput)) {
 			hc.Args = string(outcome.UpdatedInput)
 			tc.Args = hc.Args
 		}
@@ -1208,7 +1253,14 @@ func (a *Agent) executeTool(ctx context.Context, tc ToolCall, t *tool.Tool, time
 		return tool.Error(fmt.Sprintf("error: unknown tool %s", tc.Name))
 	}
 	if t.Execute == nil {
-		return tool.Error(fmt.Sprintf("error: tool %s has no executor", tc.Name))
+		if t.ExecuteText == nil {
+			return tool.Error(fmt.Sprintf("error: tool %s has no executor", tc.Name))
+		}
+		result, err := t.ExecuteText(ctx, tc.Args)
+		if err != nil {
+			return tool.Error(fmt.Sprintf("error: %v", err))
+		}
+		return result
 	}
 
 	args := make(map[string]any)
@@ -1247,6 +1299,10 @@ func (a *Agent) toolEffect(tc ToolCall, tools []tool.Tool) tool.Effect {
 	t := findTool(tc.Name, tools)
 	if t == nil || t.Effect == nil {
 		return tool.EffectDynamic
+	}
+
+	if t.Freeform != nil {
+		return t.Effect(nil)
 	}
 
 	var args map[string]any

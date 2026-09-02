@@ -40,7 +40,6 @@ type Agent struct {
 	mu              sync.Mutex
 	sessions        map[acp.SessionId]*session
 	formElicitation bool
-	planUpdates     bool
 
 	defaultModel  string
 	defaultEffort string
@@ -103,12 +102,6 @@ func (a *Agent) supportsFormElicitation() bool {
 	return a.formElicitation
 }
 
-func (a *Agent) supportsPlanUpdates() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.planUpdates
-}
-
 func (a *Agent) lookup(id acp.SessionId) *session {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -160,7 +153,6 @@ func (a *Agent) sendAvailableCommands(s *session) {
 func (a *Agent) Initialize(_ context.Context, params acp.InitializeRequest) (acp.InitializeResponse, error) {
 	a.mu.Lock()
 	a.formElicitation = params.ClientCapabilities.Elicitation != nil && params.ClientCapabilities.Elicitation.Form != nil
-	a.planUpdates = params.ClientCapabilities.PlanCapabilities != nil
 	a.mu.Unlock()
 
 	title := "Claude (ACP)"
@@ -376,7 +368,7 @@ func (a *Agent) LoadSession(ctx context.Context, params acp.LoadSessionRequest) 
 	}
 	a.ensureModels(ctx)
 	s := a.adoptSession(params.SessionId, cwd, additional, params.McpServers, string(params.SessionId), false)
-	if err := replayHistory(ctx, a.conn, params.SessionId, cwd, s.plan); err != nil {
+	if err := replayHistory(ctx, a.conn, params.SessionId, cwd); err != nil {
 		return acp.LoadSessionResponse{}, fmt.Errorf("replay history: %w", err)
 	}
 	a.sendAvailableCommands(s)

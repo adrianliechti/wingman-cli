@@ -75,7 +75,7 @@ func (a *approver) askWithOptions(tc acp.ToolCallUpdate, options []acp.Permissio
 		ToolCall:  tc,
 		Options:   options,
 	})
-	if err != nil || resp.Outcome.Cancelled != nil {
+	if err != nil || resp.Outcome.Cancelled != nil || resp.Outcome.Selected == nil {
 		return "", false
 	}
 	return resp.Outcome.Selected.OptionId, true
@@ -376,7 +376,7 @@ func (a *approver) handleElicitation(p elicitationParams) elicitationResponse {
 }
 
 func isMessageOnlyElicitation(p elicitationParams) bool {
-	if p.Mode != "form" && p.Mode != "openai/form" && p.Mode != "openaiForm" {
+	if p.Mode != "form" {
 		return false
 	}
 	schema := strings.TrimSpace(string(p.RequestedSchema))

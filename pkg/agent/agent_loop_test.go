@@ -271,12 +271,12 @@ func TestSendAllowsFinalResponseAtMaxTurns(t *testing.T) {
 }
 
 func TestCompleteStreamsPartialToolCalls(t *testing.T) {
-	const args = "{\\\"items\\\":[{\\\"content\\\":\\\"Fix\\\",\\\"status\\\":\\\"pending\\\"}]}"
+	const args = "{\\\"path\\\":\\\"main.go\\\",\\\"line_end\\\":20}"
 
 	client := streamingTestClient(func(*http.Request) string {
-		return "data: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"todo\",\"arguments\":\"{\\\"items\\\":[\",\"status\":\"in_progress\"}}\n\n" +
-			"data: {\"type\":\"response.function_call_arguments.done\",\"sequence_number\":3,\"output_index\":0,\"item_id\":\"fc_1\",\"name\":\"todo\",\"arguments\":\"" + args + "\"}\n\n" +
-			"data: {\"type\":\"response.output_item.done\",\"sequence_number\":4,\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"todo\",\"arguments\":\"" + args + "\",\"status\":\"completed\"}}\n\n" +
+		return "data: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\",\"status\":\"in_progress\"}}\n\n" +
+			"data: {\"type\":\"response.function_call_arguments.done\",\"sequence_number\":3,\"output_index\":0,\"item_id\":\"fc_1\",\"name\":\"read\",\"arguments\":\"" + args + "\"}\n\n" +
+			"data: {\"type\":\"response.output_item.done\",\"sequence_number\":4,\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"read\",\"arguments\":\"" + args + "\",\"status\":\"completed\"}}\n\n" +
 			"data: {\"type\":\"response.completed\",\"sequence_number\":5,\"response\":{\"usage\":{\"input_tokens\":1,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1}}}\n\n"
 	})
 
@@ -297,10 +297,10 @@ func TestCompleteStreamsPartialToolCalls(t *testing.T) {
 		t.Fatalf("partial tool calls = %v, want announcement and completion", partials)
 	}
 	first, last := partials[0], partials[len(partials)-1]
-	if !first.Partial || first.ID != "call_1" || first.Name != "todo" || first.Args != `{"items":[` {
+	if !first.Partial || first.ID != "call_1" || first.Name != "read" || first.Args != `{"path":` {
 		t.Fatalf("announcement = %+v", first)
 	}
-	wantArgs := `{"items":[{"content":"Fix","status":"pending"}]}`
+	wantArgs := `{"path":"main.go","line_end":20}`
 	if !last.Partial || last.ID != "call_1" || last.Args != wantArgs {
 		t.Fatalf("completion snapshot = %+v", last)
 	}
@@ -308,6 +308,46 @@ func TestCompleteStreamsPartialToolCalls(t *testing.T) {
 	calls := extractToolCalls(resp.messages)
 	if len(calls) != 1 || calls[0].Partial || calls[0].ID != "call_1" || calls[0].Args != wantArgs {
 		t.Fatalf("committed calls = %+v", calls)
+	}
+}
+
+func TestCompleteStreamsFreeformToolCalls(t *testing.T) {
+	const patch = "*** Begin Patch\n*** Add File: main.go\n+package main\n*** End Patch\n"
+	quotedPatch, err := json.Marshal(patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client := streamingTestClient(func(*http.Request) string {
+		return "data: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":0,\"item\":{\"type\":\"custom_tool_call\",\"id\":\"ctc_1\",\"call_id\":\"call_patch\",\"name\":\"apply_patch\",\"input\":\"\"}}\n\n" +
+			"data: {\"type\":\"response.custom_tool_call_input.delta\",\"sequence_number\":2,\"output_index\":0,\"item_id\":\"ctc_1\",\"delta\":" + string(quotedPatch) + "}\n\n" +
+			"data: {\"type\":\"response.custom_tool_call_input.done\",\"sequence_number\":3,\"output_index\":0,\"item_id\":\"ctc_1\",\"input\":" + string(quotedPatch) + "}\n\n" +
+			"data: {\"type\":\"response.output_item.done\",\"sequence_number\":4,\"output_index\":0,\"item\":{\"type\":\"custom_tool_call\",\"id\":\"ctc_1\",\"call_id\":\"call_patch\",\"name\":\"apply_patch\",\"input\":" + string(quotedPatch) + "}}\n\n" +
+			"data: {\"type\":\"response.completed\",\"sequence_number\":5,\"response\":{\"usage\":{\"input_tokens\":1,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":1}}}\n\n"
+	})
+
+	var partials []ToolCall
+	resp, err := complete(context.Background(), &client, &request{}, func(m Message, err error) bool {
+		for _, c := range m.Content {
+			if c.ToolCall != nil {
+				partials = append(partials, *c.ToolCall)
+			}
+		}
+		return true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(partials) < 2 {
+		t.Fatalf("partial custom tool calls = %#v", partials)
+	}
+	last := partials[len(partials)-1]
+	if !last.Partial || !last.Custom || last.ID != "call_patch" || last.Name != "apply_patch" || last.Args != patch {
+		t.Fatalf("custom completion snapshot = %#v", last)
+	}
+	calls := extractToolCalls(resp.messages)
+	if len(calls) != 1 || calls[0].Partial || !calls[0].Custom || calls[0].Args != patch {
+		t.Fatalf("committed custom calls = %#v", calls)
 	}
 }
 
@@ -747,6 +787,24 @@ func TestToolWithoutExecutorReturnsError(t *testing.T) {
 	got := a.runSingleToolCall(context.Background(), ToolCall{Name: "broken"}, []tool.Tool{{Name: "broken"}})
 	if !strings.Contains(got.Content, "no executor") {
 		t.Fatalf("result = %q", got.Content)
+	}
+}
+
+func TestFreeformToolReceivesRawInput(t *testing.T) {
+	const input = "*** Begin Patch\n*** Add File: main.go\n+package main\n*** End Patch\n"
+	var got string
+	a := &Agent{Config: &Config{ToolTimeout: -1}}
+	result := a.runSingleToolCall(context.Background(), ToolCall{
+		ID: "patch", Name: "apply_patch", Args: input, Custom: true,
+	}, []tool.Tool{{
+		Name: "apply_patch", Freeform: &tool.FreeformFormat{Syntax: "lark", Definition: "start: /.+/"},
+		ExecuteText: func(_ context.Context, raw string) (tool.Result, error) {
+			got = raw
+			return tool.Text("Done!"), nil
+		},
+	}})
+	if result.IsError || result.Content != "Done!" || got != input {
+		t.Fatalf("result=%#v raw input=%q", result, got)
 	}
 }
 

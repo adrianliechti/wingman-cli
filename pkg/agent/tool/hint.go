@@ -16,8 +16,15 @@ var workingDirTools = map[string]bool{
 }
 
 func ExtractHint(argsJSON, toolName string) string {
-	if toolName == "todo" {
-		return TodoHint(argsJSON)
+	if toolName == "apply_patch" {
+		for _, line := range strings.Split(argsJSON, "\n") {
+			for _, marker := range []string{"*** Update File: ", "*** Add File: ", "*** Delete File: "} {
+				if path, ok := strings.CutPrefix(strings.TrimSpace(line), marker); ok {
+					return strings.TrimSpace(path)
+				}
+			}
+		}
+		return ""
 	}
 
 	args, ok := parseArgs(argsJSON)
@@ -111,67 +118,6 @@ func parseArgs(argsJSON string) (map[string]any, bool) {
 		return nil, false
 	}
 	return args, true
-}
-
-type TodoItem struct {
-	Content string `json:"content"`
-	Status  string `json:"status"`
-}
-
-// ParseTodoItems extracts a todo checklist from complete or streaming arguments.
-func ParseTodoItems(argsJSON string) []TodoItem {
-	var args struct {
-		Items []TodoItem `json:"items"`
-		Plan  []struct {
-			Step   string `json:"step"`
-			Status string `json:"status"`
-		} `json:"plan"`
-	}
-	if json.Unmarshal([]byte(argsJSON), &args) != nil {
-		if json.Unmarshal([]byte(closeJSONPrefix(argsJSON)), &args) != nil {
-			return nil
-		}
-	}
-
-	items := args.Items
-	if len(items) == 0 {
-		items = make([]TodoItem, 0, len(args.Plan))
-		for _, item := range args.Plan {
-			items = append(items, TodoItem{Content: item.Step, Status: item.Status})
-		}
-	}
-	filtered := items[:0]
-	for _, item := range items {
-		if strings.TrimSpace(item.Content) != "" {
-			filtered = append(filtered, item)
-		}
-	}
-	return filtered
-}
-
-// TodoHint summarizes a todo call as progress plus the active step.
-func TodoHint(argsJSON string) string {
-	items := ParseTodoItems(argsJSON)
-	if len(items) == 0 {
-		return ""
-	}
-
-	completed := 0
-	current := ""
-	for _, item := range items {
-		if item.Status == "completed" {
-			completed++
-		}
-		if item.Status == "in_progress" && current == "" {
-			current = strings.Join(strings.Fields(item.Content), " ")
-		}
-	}
-
-	hint := fmt.Sprintf("%d/%d", completed, len(items))
-	if current != "" {
-		hint += " · " + current
-	}
-	return hint
 }
 
 // ElicitHint summarizes an elicit tool call as its first question plus a

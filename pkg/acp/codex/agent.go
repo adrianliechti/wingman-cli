@@ -133,7 +133,8 @@ func (a *Agent) resumeModelProvider(ctx context.Context) string {
 func (a *Agent) Initialize(ctx context.Context, req acp.InitializeRequest) (acp.InitializeResponse, error) {
 	a.clientCapabilities = req.ClientCapabilities
 	if err := a.codex.initialize(ctx, initializeParams{
-		ClientInfo: clientInfo{Name: "codex-acp", Title: "Codex (ACP)", Version: "0.1.0"},
+		ClientInfo:   clientInfo{Name: "codex-acp", Title: "Codex (ACP)", Version: "0.1.0"},
+		Capabilities: clientCapabilities{ExperimentalAPI: true},
 	}); err != nil {
 		return acp.InitializeResponse{}, fmt.Errorf("codex initialize: %w", err)
 	}
@@ -663,7 +664,7 @@ func (a *Agent) LoadSession(ctx context.Context, params acp.LoadSessionRequest) 
 	}
 
 	outputs := rolloutCommandOutputs(string(params.SessionId), threadPath(thread))
-	streamThreadHistory(ctx, a.connection(), s.id, thread.Turns, outputs, a.clientCapabilities.PlanCapabilities != nil)
+	streamThreadHistory(ctx, a.connection(), s.id, thread.Turns, outputs)
 	return acp.LoadSessionResponse{
 		Modes:         buildSessionModeState(s.mode),
 		ConfigOptions: buildConfigOptions(a.models, s.modelID, s.effort, s.collaborationMode),

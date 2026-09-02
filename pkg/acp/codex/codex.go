@@ -129,6 +129,15 @@ type initializeParams struct {
 	Capabilities any        `json:"capabilities"`
 }
 
+// clientCapabilities opts into the app-server's experimental surface. Without
+// experimentalApi the server rejects `thread/settings/update` and
+// `collaborationMode/list` outright and silently drops experimental
+// notifications, which breaks `/plan` and the collaboration-mode selector.
+type clientCapabilities struct {
+	ExperimentalAPI    bool `json:"experimentalApi"`
+	RequestAttestation bool `json:"requestAttestation"`
+}
+
 type threadStartParams struct {
 	Cwd            string         `json:"cwd,omitempty"`
 	Model          string         `json:"model,omitempty"`

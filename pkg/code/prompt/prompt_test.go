@@ -279,6 +279,38 @@ func TestAgentPromptPolicy(t *testing.T) {
 	}
 }
 
+func TestAgentPromptsExcludeRemovedTools(t *testing.T) {
+	for _, id := range []string{
+		"some-unknown-model",
+		"claude-sonnet-5",
+		"claude-opus-5",
+		"claude-opus-4-8",
+		"claude-fable-5-1",
+		"claude-mythos-5-1",
+		"gpt-5.6-sol",
+		"gpt-5.5",
+		"gpt-5.4",
+		"gpt-5.4-mini",
+		"gpt-5.2",
+		"gpt-5.1-codex",
+		"gemini-3.6-flash",
+		"glm-5.3",
+		"kimi-k3",
+		"minimax-m3",
+		"grok-4.6",
+		"qwen3.8",
+	} {
+		t.Run(id, func(t *testing.T) {
+			agent := strings.ToLower(VariantFor(id).Agent)
+			for _, removed := range []string{"`todo`", "`shell`", "todo tool", "visible todo"} {
+				if strings.Contains(agent, removed) {
+					t.Errorf("agent prompt references removed tool %q", removed)
+				}
+			}
+		})
+	}
+}
+
 func TestReferenceSpecificCopyrightHeaderGuidance(t *testing.T) {
 	const guidance = "never add copyright or license headers unless specifically requested"
 

@@ -53,6 +53,10 @@ var presentationSpecs = indexPresentationSpecs([]presentationSpec{
 		path: []string{"file_path", "path"},
 	},
 	{
+		names: []string{"apply_patch"},
+		title: "Apply patch", kind: "edit",
+	},
+	{
 		names: []string{"grep", "Search files"},
 		title: "Search files", kind: "search", omit: []string{"path"},
 		primary: []string{"query", "pattern"}, path: []string{"path"},
@@ -129,10 +133,6 @@ var presentationSpecs = indexPresentationSpecs([]presentationSpec{
 	{
 		names: []string{"interrupt_agent", "Interrupt agent"},
 		title: "Interrupt agent", primary: []string{"target"},
-	},
-	{
-		names: []string{"todo", "update_plan", "Update plan"},
-		title: "Update plan", derivedHint: "todo",
 	},
 	{
 		names: []string{"elicit", "request_user_input", "Request input"},
@@ -245,9 +245,6 @@ func Present(name, kind, argsJSON string, hasLocation bool) Presentation {
 	}
 	if p.Hint == "" {
 		switch spec.derivedHint {
-		case "todo":
-			raw, _ := json.Marshal(args)
-			p.Hint = TodoHint(string(raw))
 		case "elicit":
 			p.Hint = ElicitHint(args)
 		case "extract":

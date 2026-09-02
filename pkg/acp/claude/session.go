@@ -34,7 +34,6 @@ type session struct {
 	forkOnResume   bool
 	started        bool
 	lastTitle      string
-	plan           *taskPlan
 	cancel         context.CancelFunc
 	proc           *claudeProc
 }
@@ -49,9 +48,6 @@ func (a *Agent) newSession(id acp.SessionId, cwd, model, effort string, addition
 		effort:         effort,
 		mode:           defaultModeID,
 		additionalDirs: append([]string(nil), additionalDirs...),
-	}
-	if a.supportsPlanUpdates() {
-		s.plan = newTaskPlan()
 	}
 	return s
 }
@@ -108,17 +104,6 @@ func (s *session) runTurn(ctx context.Context, prompt []acp.ContentBlock) (acp.S
 	}()
 
 	p.beginTurn()
-	if p.plan != nil {
-		if entries, ok := p.plan.unfinishedEntries(); ok {
-			if err := s.agent.conn.SessionUpdate(turnCtx, acp.SessionNotification{
-				SessionId: s.id,
-				Update:    acp.UpdatePlan(entries...),
-			}); err != nil {
-				p.finishTurn()
-				return "", nil, fmt.Errorf("republish task plan: %w", err)
-			}
-		}
-	}
 	if err := p.out.writeJSON(promptMessage(prompt)); err != nil {
 		p.finishTurn()
 		s.dropProc(p)
@@ -240,7 +225,6 @@ func (s *session) ensureProc() (*claudeProc, error) {
 		tools:           toolUseCache{},
 		emitted:         newToolCallTracker(),
 		streamedContent: &streamedBlockTracker{},
-		plan:            s.plan,
 		subagentParents: make(map[string]string),
 		results:         make(chan turnResult, 1),
 		dead:            make(chan struct{}),
@@ -279,7 +263,6 @@ type claudeProc struct {
 	tools           toolUseCache
 	emitted         *toolCallTracker
 	streamedContent *streamedBlockTracker
-	plan            *taskPlan
 
 	turnMu          sync.Mutex
 	turnActive      bool
@@ -368,11 +351,11 @@ func (p *claudeProc) read(ctx context.Context, conn *acp.AgentSideConnection, si
 				fmt.Fprintf(stderr, "claude-acp: emit stream event: %v\n", err)
 			}
 		case "assistant":
-			if err := emitAssistant(ctx, conn, sid, env.Message, p.cwd, p.tools, p.emitted, p.streamedContent, p.plan, env.ParentToolUseID); err != nil {
+			if err := emitAssistant(ctx, conn, sid, env.Message, p.cwd, p.tools, p.emitted, p.streamedContent, env.ParentToolUseID); err != nil {
 				fmt.Fprintf(stderr, "claude-acp: emit assistant: %v\n", err)
 			}
 		case "user":
-			if err := emitToolResults(ctx, conn, sid, env.Message, p.tools, p.emitted, p.plan, env.ParentToolUseID); err != nil {
+			if err := emitToolResults(ctx, conn, sid, env.Message, p.tools, p.emitted, env.ParentToolUseID); err != nil {
 				fmt.Fprintf(stderr, "claude-acp: emit tool result: %v\n", err)
 			}
 		case "tool_progress":
@@ -403,12 +386,6 @@ func (p *claudeProc) read(ctx context.Context, conn *acp.AgentSideConnection, si
 
 func (p *claudeProc) handleSystem(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, env cliEnvelope) {
 	switch env.Subtype {
-	case "conversation_reset":
-		if p.plan != nil {
-			p.plan.clear()
-			_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: acp.UpdatePlan()})
-		}
-
 	case "session_state_changed":
 		if env.State == "idle" && p.finishTurn() {
 			select {

@@ -30,9 +30,6 @@ type LiveConfig struct {
 	// subagent capability, so each bridge supplies its own spawn prompt
 	// and expectations; a zero value skips the scenario.
 	Subagents LiveSubagents
-	// PlanPrompt opts the bridge into the plan scenario: it must make the
-	// agent use its todo/plan tool so an ACP plan update is emitted.
-	PlanPrompt string
 	// MCPHelperTest names a test in the bridge package whose body is
 	// acptest.MCPServerHelper; the mcp_tool scenario re-executes it as a
 	// stdio MCP server handed to the agent via session/new.
@@ -80,7 +77,6 @@ func RunLive(t *testing.T, cfg LiveConfig) {
 	t.Run("session_lifecycle", func(t *testing.T) { liveSessionLifecycle(t, factory, cfg.Timeout) })
 	t.Run("session_tree", func(t *testing.T) { liveSessionTree(t, factory, cfg.Timeout) })
 	t.Run("additional_directories", func(t *testing.T) { liveAdditionalDirectories(t, factory, cfg.Timeout) })
-	t.Run("plan", func(t *testing.T) { livePlan(t, factory, cfg.Timeout, cfg.PlanPrompt) })
 	t.Run("mcp_tool", func(t *testing.T) { liveMCPTool(t, factory, cfg.Timeout, cfg.MCPHelperTest) })
 	t.Run("subagents", func(t *testing.T) { liveSubagents(t, factory, cfg.Timeout, cfg.Subagents) })
 }
@@ -198,39 +194,6 @@ func liveAdditionalDirectories(t *testing.T, factory Factory, timeout time.Durat
 	}
 	if _, err := os.Stat(filepath.Join(extra, "extra.txt")); err != nil {
 		t.Errorf("file in additional directory not created: %v", err)
-	}
-}
-
-func livePlan(t *testing.T, factory Factory, timeout time.Duration, prompt string) {
-	if prompt == "" {
-		t.Skip("bridge has no plan scenario configured")
-	}
-	h := newHarness(t, factory)
-	_ = initialize(t, h)
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	session, err := h.conn.NewSession(ctx, acp.NewSessionRequest{Cwd: t.TempDir(), McpServers: []acp.McpServer{}})
-	if err != nil {
-		t.Fatalf("session/new: %v", err)
-	}
-	livePrompt(t, h, ctx, session.SessionId, prompt)
-
-	entries, planSeen := 0, false
-	var titles []string
-	for _, n := range h.client.snapshot() {
-		if n.Update.Plan != nil {
-			planSeen = true
-			if len(n.Update.Plan.Entries) > entries {
-				entries = len(n.Update.Plan.Entries)
-			}
-		}
-		if n.Update.ToolCall != nil {
-			titles = append(titles, n.Update.ToolCall.Title)
-		}
-	}
-	if entries == 0 {
-		t.Errorf("no plan update with entries arrived (plan update seen: %v; tool titles: %q)", planSeen, titles)
 	}
 }
 

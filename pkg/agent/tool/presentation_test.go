@@ -47,11 +47,6 @@ func TestPresentCompactsBuiltInTools(t *testing.T) {
 }
 
 func TestPresentDerivesHintsForHumanizedNames(t *testing.T) {
-	plan := Present("Update plan", "", `{"plan":[{"step":"Review tools","status":"in_progress"}]}`, false)
-	if plan.Hint == "" || plan.Args == "" {
-		t.Fatalf("plan presentation = %#v", plan)
-	}
-
 	input := Present("Request input", "", `{"questions":[{"question":"Which layout?"}]}`, false)
 	if input.Hint != "Which layout?" || input.Args == "" {
 		t.Fatalf("input presentation = %#v", input)
