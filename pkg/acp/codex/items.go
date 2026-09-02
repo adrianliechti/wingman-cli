@@ -498,3 +498,67 @@ func goalStatusLabel(s string) string {
 		return s
 	}
 }
+
+// itemToolCallStart builds the tool_call for the item kinds whose live and
+// replay paths differ only in the status they report.
+func itemToolCallStart(raw json.RawMessage, id string, kind string, status acp.ToolCallStatus) (acp.SessionUpdate, bool) {
+	switch kind {
+	case "commandExecution":
+		var it struct {
+			Command        string          `json:"command"`
+			Cwd            string          `json:"cwd"`
+			CommandActions []commandAction `json:"commandActions"`
+		}
+		_ = json.Unmarshal(raw, &it)
+		if title, toolKind, input, locs, ok := commandActionToolCall(it.CommandActions); ok {
+			opts := []acp.ToolCallStartOpt{
+				acp.WithStartKind(toolKind),
+				acp.WithStartStatus(status),
+			}
+			opts = appendDisplayLocations(opts, locs)
+			if input != nil {
+				opts = append(opts, acp.WithStartRawInput(input))
+			}
+			return acp.StartToolCall(acp.ToolCallId(id), title, opts...), true
+		}
+		command := stripShellPrefix(it.Command)
+		if command == "" {
+			command = it.Command
+		}
+		return acp.StartToolCall(acp.ToolCallId(id), "Run command",
+			acp.WithStartKind(acp.ToolKindExecute),
+			acp.WithStartStatus(status),
+			acp.WithStartRawInput(commandRawInput(command, it.Cwd)),
+		), true
+
+	case "mcpToolCall":
+		var it struct {
+			Server string          `json:"server"`
+			Tool   string          `json:"tool"`
+			Args   json.RawMessage `json:"arguments"`
+		}
+		_ = json.Unmarshal(raw, &it)
+		var args map[string]any
+		_ = json.Unmarshal(it.Args, &args)
+		return acp.StartToolCall(acp.ToolCallId(id), fmt.Sprintf("mcp.%s.%s", it.Server, it.Tool),
+			acp.WithStartKind(acp.ToolKindExecute),
+			acp.WithStartStatus(status),
+			acp.WithStartRawInput(args),
+		), true
+
+	case "dynamicToolCall":
+		var it struct {
+			Tool string          `json:"tool"`
+			Args json.RawMessage `json:"arguments"`
+		}
+		_ = json.Unmarshal(raw, &it)
+		var args map[string]any
+		_ = json.Unmarshal(it.Args, &args)
+		return acp.StartToolCall(acp.ToolCallId(id), it.Tool,
+			acp.WithStartKind(acp.ToolKindExecute),
+			acp.WithStartStatus(status),
+			acp.WithStartRawInput(args),
+		), true
+	}
+	return acp.SessionUpdate{}, false
+}

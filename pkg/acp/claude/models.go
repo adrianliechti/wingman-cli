@@ -1,10 +1,11 @@
 package claude
 
 import (
-	"slices"
 	"strings"
 
 	"github.com/coder/acp-go-sdk"
+
+	acpcommon "github.com/adrianliechti/wingman-agent/pkg/acp"
 )
 
 type ModelEntry struct {
@@ -143,63 +144,20 @@ func modelConfigOption(models []ModelEntry, currentID string) acp.SessionConfigO
 
 func effortConfigOption(models []ModelEntry, currentModelID, currentEffort string) *acp.SessionConfigOption {
 	m := findModel(models, currentModelID)
-	if m == nil || len(m.EffortLevels) == 0 {
+	if m == nil {
 		return nil
 	}
-
-	ungrouped := acp.SessionConfigSelectOptionsUngrouped{
-		{Value: "default", Name: "Default"},
-	}
-	for _, lvl := range m.EffortLevels {
-		ungrouped = append(ungrouped, acp.SessionConfigSelectOption{
-			Value: acp.SessionConfigValueId(lvl),
-			Name:  titleCase(lvl),
-		})
-	}
-
-	current := currentEffort
-	if current == "" || !isValidEffort(m, current) {
-		current = "default"
-	}
-	opt := acp.NewSessionConfigOptionSelect(
-		acp.SessionConfigValueId(current),
-		acp.SessionConfigSelectOptions{Ungrouped: &ungrouped},
-	)
-	desc := "Reasoning effort for the selected model"
-	cat := acp.SessionConfigOptionCategoryThoughtLevel
-	opt.Select.Id = effortConfigID
-	opt.Select.Name = "Effort"
-	opt.Select.Description = &desc
-	opt.Select.Category = &cat
-	return &opt
-}
-
-func isValidEffort(m *ModelEntry, level string) bool {
-	if level == "" || level == "default" {
-		return true
-	}
-	return slices.Contains(m.EffortLevels, level)
+	return acpcommon.EffortConfigOption(m.EffortLevels, currentEffort)
 }
 
 func normalizeSessionConfig(models []ModelEntry, modelID, effort string) (string, string) {
 	if m := resolveModel(models, modelID); m != nil {
 		modelID = m.ID
-		if !isValidEffort(m, effort) {
+		if !acpcommon.IsValidEffort(m.EffortLevels, effort) {
 			effort = "default"
 		}
 	}
 	return modelID, effort
-}
-
-func titleCase(s string) string {
-	if s == "" {
-		return s
-	}
-	out := []byte(s)
-	if out[0] >= 'a' && out[0] <= 'z' {
-		out[0] -= 0x20
-	}
-	return string(out)
 }
 
 const defaultModeID = "agent"
@@ -229,20 +187,9 @@ func findMode(id string) *sessionMode {
 }
 
 func buildSessionModeState(currentID string) *acp.SessionModeState {
-	if currentID == "" {
-		currentID = defaultModeID
-	}
-	available := make([]acp.SessionMode, 0, len(sessionModes))
+	infos := make([]acpcommon.ModeInfo, 0, len(sessionModes))
 	for _, m := range sessionModes {
-		desc := m.description
-		available = append(available, acp.SessionMode{
-			Id:          acp.SessionModeId(m.id),
-			Name:        m.name,
-			Description: &desc,
-		})
+		infos = append(infos, acpcommon.ModeInfo{ID: m.id, Name: m.name, Description: m.description})
 	}
-	return &acp.SessionModeState{
-		AvailableModes: available,
-		CurrentModeId:  acp.SessionModeId(currentID),
-	}
+	return acpcommon.SessionModeState(infos, currentID, defaultModeID)
 }

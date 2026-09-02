@@ -20,7 +20,7 @@ import (
 	acpsdk "github.com/coder/acp-go-sdk"
 	"github.com/google/uuid"
 
-	"github.com/adrianliechti/wingman-agent/pkg/acp"
+	acpcommon "github.com/adrianliechti/wingman-agent/pkg/acp"
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
@@ -434,7 +434,7 @@ func (s *Server) acquireWorkspace(ctx context.Context, cwd string, requestedServ
 }
 
 func requestedMCPConfig(servers []acpsdk.McpServer) (map[string]mcp.ServerConfig, error) {
-	if err := acp.ValidateMCPServers(servers, serverMCPCapabilities); err != nil {
+	if err := acpcommon.ValidateMCPServers(servers, serverMCPCapabilities); err != nil {
 		return nil, err
 	}
 	result := make(map[string]mcp.ServerConfig, len(servers))
@@ -563,7 +563,7 @@ func (s *Server) replaceLoadedSession(id acpsdk.SessionId, w *workspaceEntry) er
 }
 
 func normalizeCwd(cwd string) (string, error) {
-	cwd, _, err := acp.NormalizeSessionRoots(cwd, nil)
+	cwd, _, err := acpcommon.NormalizeSessionRoots(cwd, nil)
 	return cwd, err
 }
 
@@ -765,7 +765,7 @@ func (s *Server) Prompt(ctx context.Context, params acpsdk.PromptRequest) (acpsd
 	// ACP agent_message_chunk updates cannot be retracted. Deliberately leave
 	// Reset unsupported so a recoverable error after visible output terminates
 	// the attempt instead of duplicating it with an invisible retry.
-	stream, err := sess.agent.Send(ctx, string(sess.id), acp.ContentFromBlocks(params.Prompt))
+	stream, err := sess.agent.Send(ctx, string(sess.id), acpcommon.ContentFromBlocks(params.Prompt))
 	if err != nil {
 		return acpsdk.PromptResponse{}, err
 	}
@@ -1002,7 +1002,7 @@ func notifyContent(notify func(acpsdk.SessionUpdate), role agent.MessageRole, c 
 	if c.Reasoning != nil && c.Reasoning.Summary != "" {
 		notify(acpsdk.UpdateAgentThoughtText(c.Reasoning.Summary))
 	}
-	for _, block := range acp.ContentToBlocks([]agent.Content{c}) {
+	for _, block := range acpcommon.ContentToBlocks([]agent.Content{c}) {
 		if role == agent.RoleUser {
 			notify(acpsdk.UpdateUserMessage(block))
 		} else {
@@ -1122,7 +1122,7 @@ func effortConfigOption(a *codeagent.Agent, sid string) acpsdk.SessionConfigOpti
 	for _, v := range values {
 		opts = append(opts, acpsdk.SessionConfigSelectOption{
 			Value: acpsdk.SessionConfigValueId(v),
-			Name:  titleCase(v),
+			Name:  acpcommon.TitleCase(v),
 		})
 	}
 	return acpsdk.SessionConfigOption{
@@ -1133,13 +1133,6 @@ func effortConfigOption(a *codeagent.Agent, sid string) acpsdk.SessionConfigOpti
 			Options:      acpsdk.SessionConfigSelectOptions{Ungrouped: &opts},
 		},
 	}
-}
-
-func titleCase(s string) string {
-	if s == "" {
-		return s
-	}
-	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 func sdkToolLocations(locations []agent.ToolLocation) []acpsdk.ToolCallLocation {

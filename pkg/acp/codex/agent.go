@@ -496,12 +496,12 @@ func (a *Agent) SetSessionConfigOption(ctx context.Context, params acp.SetSessio
 			return acp.SetSessionConfigOptionResponse{}, fmt.Errorf("unknown model %q", value)
 		}
 		modelID = value
-		if !isValidEffort(m, effort) {
+		if !acpcommon.IsValidEffort(m.EffortLevels, effort) {
 			effort = "default"
 		}
 	case effortConfigID:
 		m := findModel(a.models, modelID)
-		if m == nil || !isValidEffort(m, value) {
+		if m == nil || !acpcommon.IsValidEffort(m.EffortLevels, value) {
 			return acp.SetSessionConfigOptionResponse{}, fmt.Errorf("effort %q invalid for model %s", value, modelID)
 		}
 		effort = value

@@ -603,7 +603,7 @@ func (p *claudeProc) applyFallbackModel(ctx context.Context, conn *acp.AgentSide
 	p.session.mu.Lock()
 	p.session.modelID = modelID
 	p.session.modelOverride = false
-	if m := findModel(p.models, modelID); m != nil && !isValidEffort(m, p.session.effort) {
+	if m := findModel(p.models, modelID); m != nil && !acpcommon.IsValidEffort(m.EffortLevels, p.session.effort) {
 		p.session.effort = "default"
 	}
 	p.sig = p.session.spawnSigLocked()

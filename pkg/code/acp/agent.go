@@ -726,53 +726,44 @@ func (a *Agent) DeleteSession(ctx context.Context, id string) error {
 }
 
 func (a *Agent) Messages(id string) []agent.Message {
-	sess := a.session(id)
-	if sess == nil {
-		return nil
-	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	return agent.CloneMessages(sess.messages)
+	return readSession(a, id, func(s *sessionState) []agent.Message {
+		return agent.CloneMessages(s.messages)
+	})
 }
 
 func (a *Agent) HistorySnapshot(id string) code.HistorySnapshot {
-	sess := a.session(id)
-	if sess == nil {
-		return code.HistorySnapshot{}
-	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	return code.HistorySnapshot{Messages: agent.CloneMessages(sess.messages)}
+	return readSession(a, id, func(s *sessionState) code.HistorySnapshot {
+		return code.HistorySnapshot{Messages: agent.CloneMessages(s.messages)}
+	})
 }
 
 func (a *Agent) HistoryVersion(id string) code.HistoryVersion {
-	sess := a.session(id)
-	if sess == nil {
-		return code.HistoryVersion{}
-	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	return code.HistoryVersion{MessageCount: len(sess.messages)}
+	return readSession(a, id, func(s *sessionState) code.HistoryVersion {
+		return code.HistoryVersion{MessageCount: len(s.messages)}
+	})
 }
 
 func (a *Agent) Commands(id string) []code.Command {
-	sess := a.session(id)
-	if sess == nil {
-		return nil
-	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	return append([]code.Command(nil), sess.commands...)
+	return readSession(a, id, func(s *sessionState) []code.Command {
+		return append([]code.Command(nil), s.commands...)
+	})
 }
 
 func (a *Agent) Usage(id string) agent.Usage {
+	return readSession(a, id, func(s *sessionState) agent.Usage { return s.usage })
+}
+
+// readSession runs fn under the session lock, or returns the zero value when
+// the session is unknown.
+func readSession[T any](a *Agent, id string, fn func(*sessionState) T) T {
 	sess := a.session(id)
 	if sess == nil {
-		return agent.Usage{}
+		var zero T
+		return zero
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	return sess.usage
+	return fn(sess)
 }
 
 func (a *Agent) session(id string) *sessionState {
@@ -927,10 +918,7 @@ func optionalACPTokenCount(value *int) int64 {
 }
 
 func tokenCount64(value int) int64 {
-	if value <= 0 {
-		return 0
-	}
-	return int64(value)
+	return int64(max(value, 0))
 }
 
 func (a *Agent) cancelPrompt(id acpsdk.SessionId) {

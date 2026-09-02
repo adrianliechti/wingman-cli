@@ -349,35 +349,6 @@ func (d *eventDispatcher) handleItemStarted(params json.RawMessage) {
 		_ = json.Unmarshal(env.Item, &it)
 		d.agentPhases[id] = it.Phase
 
-	case "commandExecution":
-		var it struct {
-			Command        string          `json:"command"`
-			Cwd            string          `json:"cwd"`
-			CommandActions []commandAction `json:"commandActions"`
-		}
-		_ = json.Unmarshal(env.Item, &it)
-		if title, kind, input, locs, ok := commandActionToolCall(it.CommandActions); ok {
-			opts := []acp.ToolCallStartOpt{
-				acp.WithStartKind(kind),
-				acp.WithStartStatus(acp.ToolCallStatusInProgress),
-			}
-			opts = appendDisplayLocations(opts, locs)
-			if input != nil {
-				opts = append(opts, acp.WithStartRawInput(input))
-			}
-			d.update(acp.StartToolCall(acp.ToolCallId(id), title, opts...))
-			break
-		}
-		command := stripShellPrefix(it.Command)
-		if command == "" {
-			command = it.Command
-		}
-		d.update(acp.StartToolCall(acp.ToolCallId(id), "Run command",
-			acp.WithStartKind(acp.ToolKindExecute),
-			acp.WithStartStatus(acp.ToolCallStatusInProgress),
-			acp.WithStartRawInput(commandRawInput(command, it.Cwd)),
-		))
-
 	case "fileChange":
 		opts := []acp.ToolCallStartOpt{
 			acp.WithStartKind(acp.ToolKindEdit),
@@ -389,34 +360,10 @@ func (d *eventDispatcher) handleItemStarted(params json.RawMessage) {
 		opts = appendDisplayLocations(opts, fileChangeLocations(env.Item))
 		d.update(acp.StartToolCall(acp.ToolCallId(id), "Edit files", opts...))
 
-	case "mcpToolCall":
-		var it struct {
-			Server string          `json:"server"`
-			Tool   string          `json:"tool"`
-			Args   json.RawMessage `json:"arguments"`
+	case "commandExecution", "mcpToolCall", "dynamicToolCall":
+		if u, ok := itemToolCallStart(env.Item, id, kind, acp.ToolCallStatusInProgress); ok {
+			d.update(u)
 		}
-		_ = json.Unmarshal(env.Item, &it)
-		var args map[string]any
-		_ = json.Unmarshal(it.Args, &args)
-		d.update(acp.StartToolCall(acp.ToolCallId(id), fmt.Sprintf("mcp.%s.%s", it.Server, it.Tool),
-			acp.WithStartKind(acp.ToolKindExecute),
-			acp.WithStartStatus(acp.ToolCallStatusInProgress),
-			acp.WithStartRawInput(args),
-		))
-
-	case "dynamicToolCall":
-		var it struct {
-			Tool string          `json:"tool"`
-			Args json.RawMessage `json:"arguments"`
-		}
-		_ = json.Unmarshal(env.Item, &it)
-		var args map[string]any
-		_ = json.Unmarshal(it.Args, &args)
-		d.update(acp.StartToolCall(acp.ToolCallId(id), it.Tool,
-			acp.WithStartKind(acp.ToolKindExecute),
-			acp.WithStartStatus(acp.ToolCallStatusInProgress),
-			acp.WithStartRawInput(args),
-		))
 
 	case "webSearch":
 		d.update(webSearchStartToolCall(env.Item, acp.ToolCallStatusInProgress))

@@ -432,36 +432,14 @@ func replayItem(send func(acp.SessionUpdate), raw json.RawMessage, toolOutputs m
 
 	case "commandExecution":
 		var it struct {
-			Command          string          `json:"command"`
-			Cwd              string          `json:"cwd"`
-			Status           string          `json:"status"`
-			AggregatedOutput string          `json:"aggregatedOutput"`
-			CommandActions   []commandAction `json:"commandActions"`
+			Status           string `json:"status"`
+			AggregatedOutput string `json:"aggregatedOutput"`
 		}
 		_ = json.Unmarshal(raw, &it)
-		if title, kind, input, locs, ok := commandActionToolCall(it.CommandActions); ok {
-			opts := []acp.ToolCallStartOpt{
-				acp.WithStartKind(kind),
-				acp.WithStartStatus(toolStatusFor(it.Status)),
-			}
-			opts = appendDisplayLocations(opts, locs)
-			if input != nil {
-				opts = append(opts, acp.WithStartRawInput(input))
-			}
-			send(acp.StartToolCall(acp.ToolCallId(probe.ID), title, opts...))
+		if u, ok := itemToolCallStart(raw, probe.ID, probe.Type, toolStatusFor(it.Status)); ok {
+			send(u)
 			replayToolText(send, probe.ID, it.Status, toolOutputs, it.AggregatedOutput)
-			break
 		}
-		command := stripShellPrefix(it.Command)
-		if command == "" {
-			command = it.Command
-		}
-		send(acp.StartToolCall(acp.ToolCallId(probe.ID), "Run command",
-			acp.WithStartKind(acp.ToolKindExecute),
-			acp.WithStartStatus(toolStatusFor(it.Status)),
-			acp.WithStartRawInput(commandRawInput(command, it.Cwd)),
-		))
-		replayToolText(send, probe.ID, it.Status, toolOutputs, it.AggregatedOutput)
 
 	case "fileChange":
 		var it struct {
@@ -478,38 +456,15 @@ func replayItem(send func(acp.SessionUpdate), raw json.RawMessage, toolOutputs m
 			replayToolResult(send, probe.ID, it.Status, content)
 		}
 
-	case "mcpToolCall":
+	case "mcpToolCall", "dynamicToolCall":
 		var it struct {
-			Server string          `json:"server"`
-			Tool   string          `json:"tool"`
-			Args   json.RawMessage `json:"arguments"`
-			Status string          `json:"status"`
+			Status string `json:"status"`
 		}
 		_ = json.Unmarshal(raw, &it)
-		var args map[string]any
-		_ = json.Unmarshal(it.Args, &args)
-		send(acp.StartToolCall(acp.ToolCallId(probe.ID), fmt.Sprintf("mcp.%s.%s", it.Server, it.Tool),
-			acp.WithStartKind(acp.ToolKindExecute),
-			acp.WithStartStatus(toolStatusFor(it.Status)),
-			acp.WithStartRawInput(args),
-		))
-		replayToolText(send, probe.ID, it.Status, toolOutputs)
-
-	case "dynamicToolCall":
-		var it struct {
-			Tool   string          `json:"tool"`
-			Args   json.RawMessage `json:"arguments"`
-			Status string          `json:"status"`
+		if u, ok := itemToolCallStart(raw, probe.ID, probe.Type, toolStatusFor(it.Status)); ok {
+			send(u)
+			replayToolText(send, probe.ID, it.Status, toolOutputs)
 		}
-		_ = json.Unmarshal(raw, &it)
-		var args map[string]any
-		_ = json.Unmarshal(it.Args, &args)
-		send(acp.StartToolCall(acp.ToolCallId(probe.ID), it.Tool,
-			acp.WithStartKind(acp.ToolKindExecute),
-			acp.WithStartStatus(toolStatusFor(it.Status)),
-			acp.WithStartRawInput(args),
-		))
-		replayToolText(send, probe.ID, it.Status, toolOutputs)
 
 	case "webSearch":
 		send(webSearchStartToolCall(raw, acp.ToolCallStatusCompleted))

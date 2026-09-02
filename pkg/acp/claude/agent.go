@@ -280,12 +280,12 @@ func (a *Agent) SetSessionConfigOption(_ context.Context, params acp.SetSessionC
 			s.modelID = m.ID
 		}
 		s.modelOverride = true
-		if m != nil && !isValidEffort(m, s.effort) {
+		if m != nil && !acpcommon.IsValidEffort(m.EffortLevels, s.effort) {
 			s.effort = "default"
 		}
 	case effortConfigID:
 		m := findModel(a.models, s.modelID)
-		if m == nil || !isValidEffort(m, value) {
+		if m == nil || !acpcommon.IsValidEffort(m.EffortLevels, value) {
 			return acp.SetSessionConfigOptionResponse{}, fmt.Errorf("effort %q invalid for model %s", value, s.modelID)
 		}
 		s.effort = value
