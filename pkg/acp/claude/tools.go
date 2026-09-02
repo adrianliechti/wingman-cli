@@ -285,7 +285,7 @@ func toolInfoFromToolUse(name string, rawInput json.RawMessage, cwd string) tool
 		if title == "" {
 			title = "Tool call"
 		}
-		return toolInfo{title: title, kind: toolKindFor(name), rawInput: displayInput(rawInput)}
+		return toolInfo{title: title, kind: acp.ToolKindOther, rawInput: displayInput(rawInput)}
 	}
 }
 

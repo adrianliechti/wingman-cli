@@ -43,10 +43,9 @@ func nativeCodexOptions(root string, env []string) codex.Options {
 	return codex.Options{Dir: root, Env: env, Stderr: io.Discard}
 }
 
-func nativePiOptions(root string, env []string) pi.Options {
+func nativePiOptions(env []string) pi.Options {
 	return pi.Options{
 		Path:        picli.BinPath(),
-		Dir:         root,
 		Env:         env,
 		Stderr:      io.Discard,
 		SessionsDir: picli.NativeSessionsDir(),
@@ -116,7 +115,7 @@ func detected() []Registration {
 		out = append(out, Registration{
 			ID: "pi", Name: "Pi",
 			Constructor: func(ctx context.Context, ws *code.Workspace) (code.Agent, error) {
-				srv := pi.New(nativePiOptions(ws.RootPath, os.Environ()))
+				srv := pi.New(nativePiOptions(os.Environ()))
 				return wrapInProcess(ctx, ws, "pi", srv)
 			},
 		})

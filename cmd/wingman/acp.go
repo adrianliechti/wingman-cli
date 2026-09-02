@@ -212,14 +212,8 @@ func runACPPi(ctx context.Context, args []string) {
 		fatal(err)
 	}
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		fatal(err)
-	}
-
 	opts := pi.Options{
 		Path:        picli.BinPath(),
-		Dir:         cwd,
 		Env:         os.Environ(),
 		SessionsDir: picli.NativeSessionsDir(),
 	}

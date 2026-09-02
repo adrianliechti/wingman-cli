@@ -75,3 +75,37 @@ func TestPromptMessagePreservesBlobResources(t *testing.T) {
 		t.Fatalf("binary resource = %#v", content)
 	}
 }
+
+func TestRateLimitNoteOnlySpeaksWhenConstrained(t *testing.T) {
+	tests := []struct {
+		name string
+		env  cliEnvelope
+		want string
+	}{
+		{name: "no status", env: cliEnvelope{}},
+		{name: "allowed is the routine heartbeat", env: cliEnvelope{Status: "allowed"}},
+		{
+			name: "rejected reports type and reset",
+			env:  cliEnvelope{Status: "rejected", RateLimitType: "five_hour", ResetsAt: "2026-09-03T10:00:00Z"},
+			want: "*Rate limit rejected (five hour), resets 2026-09-03T10:00:00Z.*\n\n",
+		},
+		{name: "status alone is enough", env: cliEnvelope{Status: "warning"}, want: "*Rate limit warning.*\n\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := rateLimitNote(tt.env); got != tt.want {
+				t.Errorf("rateLimitNote() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTaskProgressNoteCombinesAvailableFields(t *testing.T) {
+	got := taskProgressNote(cliEnvelope{Description: "Searching", SubagentType: "explore", LastToolName: "Grep"})
+	if got != "Searching (explore) — Grep" {
+		t.Fatalf("note = %q", got)
+	}
+	if taskProgressNote(cliEnvelope{}) != "" {
+		t.Fatal("empty envelope should produce no note")
+	}
+}

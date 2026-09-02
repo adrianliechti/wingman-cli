@@ -520,18 +520,6 @@ func TestResolveModelAlias(t *testing.T) {
 	}
 }
 
-func TestToolKindForMatchesToolInfo(t *testing.T) {
-	for _, name := range []string{
-		"Read", "Glob", "Grep", "WebFetch", "WebSearch",
-		"Edit", "Write", "MultiEdit", "Bash", "Agent", "Task", "ExitPlanMode",
-	} {
-		info := toolInfoFromToolUse(name, json.RawMessage(`{}`), "/tmp")
-		if got := toolKindFor(name); got != info.kind {
-			t.Errorf("toolKindFor(%q) = %q, toolInfoFromToolUse kind = %q", name, got, info.kind)
-		}
-	}
-}
-
 func TestAlwaysAllowPermissions(t *testing.T) {
 	suggested := controlRequestBody{
 		ToolName:              "Bash",

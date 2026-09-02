@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/coder/acp-go-sdk"
+
+	acpcommon "github.com/adrianliechti/wingman-agent/pkg/acp"
 )
 
 const maxProjectKeyLen = 200
@@ -353,10 +355,7 @@ func replayUserMessage(ctx context.Context, conn *acp.AgentSideConnection, sid a
 		if !ok {
 			return nil
 		}
-		return conn.SessionUpdate(ctx, acp.SessionNotification{
-			SessionId: sid,
-			Update:    acp.UpdateUserMessageText(text),
-		})
+		return acpcommon.Notify(ctx, conn, sid, acp.UpdateUserMessageText(text))
 	}
 
 	var blocks []cliMsgBlock
@@ -373,10 +372,7 @@ func replayUserMessage(ctx context.Context, conn *acp.AgentSideConnection, sid a
 			if !ok {
 				continue
 			}
-			if err := conn.SessionUpdate(ctx, acp.SessionNotification{
-				SessionId: sid,
-				Update:    acp.UpdateUserMessageText(text),
-			}); err != nil {
+			if err := acpcommon.Notify(ctx, conn, sid, acp.UpdateUserMessageText(text)); err != nil {
 				return err
 			}
 		case "tool_result":
@@ -394,10 +390,7 @@ func replayUserMessage(ctx context.Context, conn *acp.AgentSideConnection, sid a
 			}
 			u := acp.UpdateToolCall(acp.ToolCallId(b.ToolUseID), opts...)
 			withClaudeToolMeta(&u, name, parentToolUseID)
-			if err := conn.SessionUpdate(ctx, acp.SessionNotification{
-				SessionId: sid,
-				Update:    u,
-			}); err != nil {
+			if err := acpcommon.Notify(ctx, conn, sid, u); err != nil {
 				return err
 			}
 		}

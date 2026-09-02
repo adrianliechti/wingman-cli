@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/coder/acp-go-sdk"
 )
@@ -594,6 +595,43 @@ func (d *eventDispatcher) handleItemCompleted(params json.RawMessage) {
 			d.update(acp.UpdateAgentThoughtText(text))
 		}
 	}
+}
+
+// rateLimitNote speaks only when constrained; the notification is a per-turn heartbeat.
+func rateLimitNote(params json.RawMessage) string {
+	var p struct {
+		RateLimits struct {
+			LimitName            string  `json:"limitName"`
+			SpendControlReached  *bool   `json:"spendControlReached"`
+			RateLimitReachedType *string `json:"rateLimitReachedType"`
+			Primary              *struct {
+				UsedPercent int    `json:"usedPercent"`
+				ResetsAt    *int64 `json:"resetsAt"`
+			} `json:"primary"`
+		} `json:"rateLimits"`
+	}
+	if json.Unmarshal(params, &p) != nil {
+		return ""
+	}
+
+	limits := p.RateLimits
+	reached := limits.RateLimitReachedType != nil && *limits.RateLimitReachedType != ""
+	spend := limits.SpendControlReached != nil && *limits.SpendControlReached
+	if !reached && !spend {
+		return ""
+	}
+
+	note := "Rate limit reached"
+	if spend && !reached {
+		note = "Spend limit reached"
+	}
+	if limits.LimitName != "" {
+		note += " (" + limits.LimitName + ")"
+	}
+	if limits.Primary != nil && limits.Primary.ResetsAt != nil {
+		note += ", resets " + time.Unix(*limits.Primary.ResetsAt, 0).Format(time.RFC3339)
+	}
+	return "*" + note + ".*\n\n"
 }
 
 func mcpRawOutput(result, mcpErr json.RawMessage) map[string]any {

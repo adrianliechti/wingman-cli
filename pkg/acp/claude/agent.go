@@ -2,9 +2,8 @@ package claude
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
+	"github.com/google/uuid"
 	"io"
 	"os"
 	"path/filepath"
@@ -202,7 +201,7 @@ func (a *Agent) NewSession(ctx context.Context, params acp.NewSessionRequest) (a
 		return acp.NewSessionResponse{}, err
 	}
 	a.ensureModels(ctx)
-	id := acp.SessionId(newUUID())
+	id := acp.SessionId(uuid.NewString())
 	modelID, effort := normalizeSessionConfig(a.models, a.defaultModel, a.defaultEffort)
 	s := a.newSession(id, cwd, modelID, effort, additional)
 	s.mcpServers = params.McpServers
@@ -387,7 +386,7 @@ func (a *Agent) UnstableForkSession(_ context.Context, params acp.UnstableForkSe
 	if err != nil {
 		return acp.UnstableForkSessionResponse{}, err
 	}
-	newID := acp.SessionId(newUUID())
+	newID := acp.SessionId(uuid.NewString())
 	s := a.adoptSession(newID, cwd, additional, servers, string(params.SessionId), true)
 	a.sendAvailableCommands(s)
 
@@ -428,21 +427,4 @@ func (a *Agent) storeSession(s *session) {
 	if old != nil && old != s {
 		old.close()
 	}
-}
-
-func newUUID() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-
-		return "00000000-0000-4000-8000-000000000000"
-	}
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%s-%s-%s-%s-%s",
-		hex.EncodeToString(b[0:4]),
-		hex.EncodeToString(b[4:6]),
-		hex.EncodeToString(b[6:8]),
-		hex.EncodeToString(b[8:10]),
-		hex.EncodeToString(b[10:16]),
-	)
 }

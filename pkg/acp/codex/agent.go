@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -77,6 +79,26 @@ func (a *Agent) lookup(id acp.SessionId) *session {
 }
 
 func (a *Agent) handleGlobalNotification(threadID, method string, params json.RawMessage) {
+	// Account-scoped: no threadId, so warn on every live session.
+	if method == "account/rateLimits/updated" {
+		note := rateLimitNote(params)
+		a.mu.Lock()
+		ids := slices.Collect(maps.Keys(a.sessions))
+		conn := a.conn
+		a.mu.Unlock()
+		if note == "" || conn == nil || len(ids) == 0 {
+			return
+		}
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			for _, id := range ids {
+				_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: id,
+					Update: acp.UpdateAgentMessageText(note)})
+			}
+		}()
+		return
+	}
 	if method != "thread/name/updated" {
 		return
 	}
@@ -93,10 +115,7 @@ func (a *Agent) handleGlobalNotification(threadID, method string, params json.Ra
 	go func(id acp.SessionId, title string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = conn.SessionUpdate(ctx, acp.SessionNotification{
-			SessionId: id,
-			Update:    sessionTitleUpdate(title),
-		})
+		_ = acpcommon.Notify(ctx, conn, id, sessionTitleUpdate(title))
 	}(acp.SessionId(threadID), p.ThreadName)
 }
 
@@ -230,13 +249,10 @@ func (a *Agent) sendAvailableCommands(ctx context.Context, id acp.SessionId) {
 	if conn == nil {
 		return
 	}
-	_ = conn.SessionUpdate(ctx, acp.SessionNotification{
-		SessionId: id,
-		Update: acp.SessionUpdate{AvailableCommandsUpdate: &acp.SessionAvailableCommandsUpdate{
-			SessionUpdate:     "available_commands_update",
-			AvailableCommands: availableCommands(),
-		}},
-	})
+	_ = acpcommon.Notify(ctx, conn, id, acp.SessionUpdate{AvailableCommandsUpdate: &acp.SessionAvailableCommandsUpdate{
+		SessionUpdate:     "available_commands_update",
+		AvailableCommands: availableCommands(),
+	}})
 }
 
 func availableCommands() []acp.AvailableCommand {

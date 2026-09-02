@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/coder/acp-go-sdk"
+
+	acpcommon "github.com/adrianliechti/wingman-agent/pkg/acp"
 )
 
 type streamedBlock struct {
@@ -118,7 +120,7 @@ func emitStreamEvent(ctx context.Context, conn *acp.AgentSideConnection, sid acp
 	default:
 		return nil
 	}
-	return conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: update})
+	return acpcommon.Notify(ctx, conn, sid, update)
 }
 
 // emitAssistant renders a consolidated assistant message. Blocks already sent
@@ -168,10 +170,7 @@ func emitAssistant(ctx context.Context, conn *acp.AgentSideConnection, sid acp.S
 		default:
 			continue
 		}
-		if err := conn.SessionUpdate(ctx, acp.SessionNotification{
-			SessionId: sid,
-			Update:    update,
-		}); err != nil {
+		if err := acpcommon.Notify(ctx, conn, sid, update); err != nil {
 			return err
 		}
 	}
@@ -185,7 +184,7 @@ func emitAssistant(ctx context.Context, conn *acp.AgentSideConnection, sid acp.S
 // it.
 func emitToolUseCall(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, b cliMsgBlock, cwd string, tracker *toolCallTracker, parentToolUseID string) error {
 	send := func(u acp.SessionUpdate) error {
-		return conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: u})
+		return acpcommon.Notify(ctx, conn, sid, u)
 	}
 	start := func() error {
 		u := toolCallStartUpdate(b.ID, b.Name, b.Input, cwd, acp.ToolCallStatusInProgress)
@@ -216,10 +215,7 @@ func emitToolResults(ctx context.Context, conn *acp.AgentSideConnection, sid acp
 	for _, b := range m.Content {
 		if b.Type == "text" && parentToolUseID == "" && strings.Contains(b.Text, "<local-command-stdout>") {
 			if text, ok := stripMarkerTags(b.Text); ok {
-				if err := conn.SessionUpdate(ctx, acp.SessionNotification{
-					SessionId: sid,
-					Update:    acp.UpdateAgentMessageText(text),
-				}); err != nil {
+				if err := acpcommon.Notify(ctx, conn, sid, acp.UpdateAgentMessageText(text)); err != nil {
 					return err
 				}
 			}
@@ -246,10 +242,7 @@ func emitToolResults(ctx context.Context, conn *acp.AgentSideConnection, sid acp
 		}
 		u := acp.UpdateToolCall(acp.ToolCallId(b.ToolUseID), opts...)
 		withClaudeToolMeta(&u, name, parentToolUseID)
-		if err := conn.SessionUpdate(ctx, acp.SessionNotification{
-			SessionId: sid,
-			Update:    u,
-		}); err != nil {
+		if err := acpcommon.Notify(ctx, conn, sid, u); err != nil {
 			return err
 		}
 	}
@@ -507,24 +500,4 @@ func resultText(parts []cliMsgBlock) string {
 
 func codeFence(text string) string {
 	return "```\n" + text + "\n```"
-}
-
-func toolKindFor(name string) acp.ToolKind {
-	switch name {
-	case "Read":
-		return acp.ToolKindRead
-	case "Glob", "Grep":
-		return acp.ToolKindSearch
-	case "WebFetch", "WebSearch":
-		return acp.ToolKindFetch
-	case "Edit", "Write", "NotebookEdit":
-		return acp.ToolKindEdit
-	case "Bash", "TaskOutput", "TaskStop":
-		return acp.ToolKindExecute
-	case "Agent", "Task":
-		return acp.ToolKindThink
-	case "EnterPlanMode", "ExitPlanMode":
-		return acp.ToolKindSwitchMode
-	}
-	return acp.ToolKindOther
 }

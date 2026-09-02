@@ -62,6 +62,8 @@ func Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	return nil
 }
 
+var serverMCPCapabilities = acpsdk.McpCapabilities{Http: true, Sse: true}
+
 type Server struct {
 	conn   *acpsdk.AgentSideConnection
 	config *agent.Config
@@ -81,6 +83,7 @@ type sessionEntry struct {
 	cancel     context.CancelFunc
 	promptDone chan struct{}
 	closing    bool
+	lastTitle  string
 }
 
 type workspaceEntry struct {
@@ -104,8 +107,12 @@ func (s *Server) Initialize(_ context.Context, params acpsdk.InitializeRequest) 
 			Version: "0.1.0",
 		},
 		AgentCapabilities: acpsdk.AgentCapabilities{
-			LoadSession:        true,
-			PromptCapabilities: acpsdk.PromptCapabilities{Image: true},
+			LoadSession:     true,
+			McpCapabilities: serverMCPCapabilities,
+			PromptCapabilities: acpsdk.PromptCapabilities{
+				Image:           true,
+				EmbeddedContext: true,
+			},
 			SessionCapabilities: acpsdk.SessionCapabilities{
 				List:   &acpsdk.SessionListCapabilities{},
 				Resume: &acpsdk.SessionResumeCapabilities{},
@@ -401,7 +408,15 @@ func (s *Server) acquireWorkspace(ctx context.Context, cwd string, requestedServ
 	}()
 	mcpCtx, cancelMCP := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	if err := ws.InitMCP(mcpCtx); err != nil {
-		missing := missingRequestedMCPServers(requested, ws.MCP.Sessions())
+		// A local stdio server that won't start is a misconfiguration worth
+		// failing on; a remote one is usually transient and must not take the
+		// whole session down with it.
+		var missing []string
+		for _, name := range missingRequestedMCPServers(requested, ws.MCP.Sessions()) {
+			if requested[name].Transport == "" {
+				missing = append(missing, name)
+			}
+		}
 		if len(missing) > 0 {
 			w.err = fmt.Errorf("initialize requested MCP servers %s: %w", strings.Join(missing, ", "), err)
 		} else {
@@ -419,23 +434,46 @@ func (s *Server) acquireWorkspace(ctx context.Context, cwd string, requestedServ
 }
 
 func requestedMCPConfig(servers []acpsdk.McpServer) (map[string]mcp.ServerConfig, error) {
-	if err := acp.ValidateMCPServers(servers, acpsdk.McpCapabilities{}); err != nil {
+	if err := acp.ValidateMCPServers(servers, serverMCPCapabilities); err != nil {
 		return nil, err
 	}
 	result := make(map[string]mcp.ServerConfig, len(servers))
 	for _, server := range servers {
-		stdio := server.Stdio
-		env := make(map[string]string, len(stdio.Env))
-		for _, item := range stdio.Env {
-			env[item.Name] = item.Value
-		}
-		result[stdio.Name] = mcp.ServerConfig{
-			Command: stdio.Command,
-			Args:    append([]string(nil), stdio.Args...),
-			Env:     env,
+		switch {
+		case server.Stdio != nil:
+			stdio := server.Stdio
+			env := make(map[string]string, len(stdio.Env))
+			for _, item := range stdio.Env {
+				env[item.Name] = item.Value
+			}
+			result[stdio.Name] = mcp.ServerConfig{
+				Command: stdio.Command,
+				Args:    append([]string(nil), stdio.Args...),
+				Env:     env,
+			}
+		case server.Http != nil:
+			result[server.Http.Name] = mcp.ServerConfig{
+				Transport: "streamable-http",
+				URL:       server.Http.Url,
+				Headers:   headerMap(server.Http.Headers),
+			}
+		case server.Sse != nil:
+			result[server.Sse.Name] = mcp.ServerConfig{
+				Transport: "sse",
+				URL:       server.Sse.Url,
+				Headers:   headerMap(server.Sse.Headers),
+			}
 		}
 	}
 	return result, nil
+}
+
+func headerMap(headers []acpsdk.HttpHeader) map[string]string {
+	m := make(map[string]string, len(headers))
+	for _, h := range headers {
+		m[h.Name] = h.Value
+	}
+	return m
 }
 
 func workspaceKey(cwd string, requested map[string]mcp.ServerConfig) string {
@@ -662,6 +700,35 @@ func (s *Server) Cancel(_ context.Context, params acpsdk.CancelNotification) err
 	return nil
 }
 
+// pushSessionInfo reports the title the agent derived for this session, so the
+// client can replace its placeholder thread name.
+func (s *Server) pushSessionInfo(ctx context.Context, sess *sessionEntry) {
+	if s.conn == nil || sess.workspace == nil || sess.workspace.ws == nil {
+		return
+	}
+	info, err := session.Load(code.SessionsDir(sess.workspace.ws.RootPath), string(sess.id))
+	if err != nil || info.Title == "" {
+		return
+	}
+	if sess.lastTitle == info.Title {
+		return
+	}
+	sess.lastTitle = info.Title
+
+	title := info.Title
+	update := acpsdk.SessionSessionInfoUpdate{SessionUpdate: "session_info_update", Title: &title}
+	if !info.UpdatedAt.IsZero() {
+		u := info.UpdatedAt.UTC().Format(time.RFC3339)
+		update.UpdatedAt = &u
+	}
+	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	_ = s.conn.SessionUpdate(sendCtx, acpsdk.SessionNotification{
+		SessionId: sess.id,
+		Update:    acpsdk.SessionUpdate{SessionInfoUpdate: &update},
+	})
+}
+
 func (s *Server) Prompt(ctx context.Context, params acpsdk.PromptRequest) (acpsdk.PromptResponse, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -676,11 +743,20 @@ func (s *Server) Prompt(ctx context.Context, params acpsdk.PromptRequest) (acpsd
 	defer func() {
 		if err := sess.agent.Save(string(sess.id)); err != nil {
 			slog.Warn("save session failed", "session", sess.id, "err", err)
+			return
 		}
+		s.pushSessionInfo(ctx, sess)
 	}()
 
 	notify := func(u acpsdk.SessionUpdate) {
-		_ = s.conn.SessionUpdate(ctx, acpsdk.SessionNotification{
+		sendCtx := ctx
+		// Finish tool calls already announced in_progress; the SDK won't write on a cancelled ctx.
+		if ctx.Err() != nil {
+			detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+			defer cancel()
+			sendCtx = detached
+		}
+		_ = s.conn.SessionUpdate(sendCtx, acpsdk.SessionNotification{
 			SessionId: params.SessionId,
 			Update:    u,
 		})
@@ -803,9 +879,6 @@ func (s *Server) ResumeSession(ctx context.Context, params acpsdk.ResumeSessionR
 	if err != nil {
 		return acpsdk.ResumeSessionResponse{}, err
 	}
-	if w == nil {
-		return acpsdk.ResumeSessionResponse{}, nil
-	}
 	return acpsdk.ResumeSessionResponse{
 		Modes:         modeState(w.agent, string(params.SessionId)),
 		ConfigOptions: sessionConfigOptions(w.agent, string(params.SessionId)),
@@ -816,9 +889,6 @@ func (s *Server) LoadSession(ctx context.Context, params acpsdk.LoadSessionReque
 	w, messages, err := s.loadAndAttach(ctx, params.Cwd, params.SessionId, params.McpServers)
 	if err != nil {
 		return acpsdk.LoadSessionResponse{}, err
-	}
-	if w == nil {
-		return acpsdk.LoadSessionResponse{}, nil
 	}
 	s.replayMessages(ctx, params.SessionId, messages)
 	return acpsdk.LoadSessionResponse{
@@ -839,7 +909,11 @@ func (s *Server) loadAndAttach(ctx context.Context, cwdParam string, id acpsdk.S
 	if err := w.agent.LoadSession(ctx, string(id)); err != nil {
 		s.releaseWorkspace(w)
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil, nil
+			return nil, nil, &acpsdk.RequestError{
+				Code:    -32002,
+				Message: "Resource not found",
+				Data:    map[string]any{"sessionId": string(id)},
+			}
 		}
 		return nil, nil, fmt.Errorf("session %s not found: %w", id, err)
 	}

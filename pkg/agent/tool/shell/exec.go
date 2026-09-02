@@ -27,9 +27,7 @@ const (
 	maxUnreadBytes     = 1 << 20
 )
 
-// execIdleGrace backgrounds a command that produced output and then went quiet,
-// which is what a started server or watch task looks like. A command that has
-// printed nothing yet is still working, so it waits out the full wait instead.
+// execIdleGrace backgrounds a command that printed output then went quiet, as a started server does.
 var execIdleGrace = 15 * time.Second
 
 // ExecExit reports the exit of a backgrounded exec_command session that no
@@ -195,9 +193,7 @@ type execSession struct {
 	exitErr  error
 	exitedAt time.Time
 
-	// timeout is the kill deadline in seconds (0 when the command may run
-	// until it exits or the agent session closes); timedOut records that the
-	// deadline, rather than the command itself, ended the process.
+	// timeout is the kill deadline in seconds; 0 means none.
 	timeout  int
 	timedOut atomic.Bool
 
@@ -230,9 +226,7 @@ func (s *execSession) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// idleFor reports whether the command has produced output and then stayed
-// quiet for at least d. drain() does not reset the clock, so a session that a
-// poll already emptied still reads as idle.
+// idleFor reports output seen, then quiet for d. drain() does not reset the clock.
 func (s *execSession) idleFor(d time.Duration) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

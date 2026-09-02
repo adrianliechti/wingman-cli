@@ -71,18 +71,19 @@ func TestOTLPReceiverStoresJSONAndProtobufAsCanonicalJSON(t *testing.T) {
 }
 
 func TestCompactOTLPOmitsCodexStreamDeltas(t *testing.T) {
-	record := func(name string) *logsv1.LogRecord {
+	record := func(name, body string) *logsv1.LogRecord {
 		return &logsv1.LogRecord{Attributes: []*commonv1.KeyValue{{
 			Key: "event.name",
 			Value: &commonv1.AnyValue{Value: &commonv1.AnyValue_StringValue{
 				StringValue: name,
 			}},
-		}}}
+		}}, Body: &commonv1.AnyValue{Value: &commonv1.AnyValue_StringValue{StringValue: body}}}
 	}
 	request := &collectorlogsv1.ExportLogsServiceRequest{ResourceLogs: []*logsv1.ResourceLogs{{
 		ScopeLogs: []*logsv1.ScopeLogs{{LogRecords: []*logsv1.LogRecord{
-			record("codex.sse_event"),
-			record("codex.api_request"),
+			record("codex.sse_event", ""),
+			record("codex.api_request", ""),
+			record("", "flushing OTEL metrics"),
 		}}},
 	}}}
 
@@ -90,6 +91,61 @@ func TestCompactOTLPOmitsCodexStreamDeltas(t *testing.T) {
 	records := request.ResourceLogs[0].ScopeLogs[0].LogRecords
 	if len(records) != 1 || attributeValue(records[0].Attributes, "event.name") != "codex.api_request" {
 		t.Fatalf("compacted records = %#v", records)
+	}
+}
+
+func TestRedactOTLPRemovesIdentityAttributesAndArbitraryLogBodies(t *testing.T) {
+	stringValue := func(value string) *commonv1.AnyValue {
+		return &commonv1.AnyValue{Value: &commonv1.AnyValue_StringValue{StringValue: value}}
+	}
+	request := &collectorlogsv1.ExportLogsServiceRequest{ResourceLogs: []*logsv1.ResourceLogs{{
+		ScopeLogs: []*logsv1.ScopeLogs{{LogRecords: []*logsv1.LogRecord{
+			{
+				Body: stringValue("secret assistant response"),
+				Attributes: []*commonv1.KeyValue{
+					{Key: "user.account_uuid", Value: stringValue("private-user")},
+					{Key: "organization.id", Value: stringValue("private-org")},
+					{Key: "tool_result", Value: stringValue("private-result")},
+					{Key: "event.name", Value: stringValue("claude_code.assistant_response")},
+				},
+			},
+			{Body: stringValue("claude_code.tool_result")},
+		}}},
+	}}}
+
+	redactOTLP(request)
+	records := request.ResourceLogs[0].ScopeLogs[0].LogRecords
+	if records[0].Body != nil {
+		t.Fatalf("arbitrary log body was retained: %#v", records[0].Body)
+	}
+	if len(records[0].Attributes) != 1 || attributeValue(records[0].Attributes, "event.name") != "claude_code.assistant_response" {
+		t.Fatalf("redacted attributes = %#v", records[0].Attributes)
+	}
+	if records[1].Body.GetStringValue() != "claude_code.tool_result" {
+		t.Fatalf("stable event body was removed: %#v", records[1].Body)
+	}
+}
+
+func TestOTLPSummarySupportsSemanticAndFirstClassEventNames(t *testing.T) {
+	request := &collectorlogsv1.ExportLogsServiceRequest{ResourceLogs: []*logsv1.ResourceLogs{{
+		ScopeLogs: []*logsv1.ScopeLogs{{LogRecords: []*logsv1.LogRecord{
+			{
+				EventName: "event source.rs:42",
+				Attributes: []*commonv1.KeyValue{{
+					Key: "event.name",
+					Value: &commonv1.AnyValue{Value: &commonv1.AnyValue_StringValue{
+						StringValue: "codex.api_request",
+					}},
+				}},
+			},
+			{EventName: "gen_ai.client.inference.operation.details"},
+		}}},
+	}}}
+
+	var summary otlpSummary
+	summary.add("logs", request)
+	if summary.LogEvents["gen_ai.client.inference.operation.details"] != 1 || summary.LogEvents["codex.api_request"] != 1 {
+		t.Fatalf("log events = %#v", summary.LogEvents)
 	}
 }
 

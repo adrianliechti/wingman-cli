@@ -16,6 +16,7 @@ import (
 	collectormetricsv1 "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	collectortracev1 "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonv1 "go.opentelemetry.io/proto/otlp/common/v1"
+	logsv1 "go.opentelemetry.io/proto/otlp/logs/v1"
 	metricsv1 "go.opentelemetry.io/proto/otlp/metrics/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -136,8 +137,8 @@ func (r *otlpReceiver) serveHTTP(w http.ResponseWriter, request *http.Request) {
 		http.Error(w, "decode OTLP "+signal+": "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	redactOTLP(requestMessage)
 	compactOTLP(requestMessage)
+	redactOTLP(requestMessage)
 
 	canonical, err := (protojson.MarshalOptions{UseProtoNames: true}).Marshal(requestMessage)
 	if err != nil {
@@ -187,6 +188,11 @@ func compactOTLP(message proto.Message) {
 				if attributeValue(record.Attributes, "event.name") == "codex.sse_event" {
 					continue
 				}
+				// Codex emits an implementation-level message when its metrics provider
+				// flushes. It is exporter plumbing, not an agent-loop event.
+				if record.Body != nil && record.Body.GetStringValue() == "flushing OTEL metrics" {
+					continue
+				}
 				records = append(records, record)
 			}
 			scopeLogs.LogRecords = records
@@ -228,7 +234,13 @@ func (s *otlpSummary) add(signal string, message proto.Message) {
 			for _, scopeLogs := range resourceLogs.ScopeLogs {
 				for _, record := range scopeLogs.LogRecords {
 					s.LogRecords++
+					// Vendor emitters such as Codex use the first-class OTLP field for
+					// the source-level tracing event and event.name for the stable business
+					// event. Wingman uses the first-class field directly.
 					name := attributeValue(record.Attributes, "event.name")
+					if name == "" {
+						name = record.GetEventName()
+					}
 					if name == "" && record.Body != nil {
 						name = record.Body.GetStringValue()
 					}
@@ -326,10 +338,40 @@ func redactOTLP(message proto.Message) {
 				}
 				for _, record := range scopeLogs.LogRecords {
 					record.Attributes = redactAttributes(record.Attributes)
+					redactLogBody(record)
 				}
 			}
 		}
 	}
+}
+
+func redactLogBody(record *logsv1.LogRecord) {
+	if record.Body == nil {
+		return
+	}
+	value, ok := record.Body.Value.(*commonv1.AnyValue_StringValue)
+	if ok && structuralEventName(value.StringValue) {
+		return
+	}
+	// Event bodies are not needed for the benchmark comparison. Keep only stable
+	// vendor event names; prompt, response, tool, and arbitrary structured bodies
+	// are removed even when an emitter's content capture was enabled elsewhere.
+	record.Body = nil
+}
+
+func structuralEventName(value string) bool {
+	if len(value) == 0 || len(value) > 128 ||
+		(!strings.HasPrefix(value, "claude_code.") && !strings.HasPrefix(value, "codex.")) {
+		return false
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '.' || character == '_' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func redactMetric(metric *metricsv1.Metric) {
@@ -373,12 +415,21 @@ func redactNumberPoint(point *metricsv1.NumberDataPoint) {
 func redactAttributes(attributes []*commonv1.KeyValue) []*commonv1.KeyValue {
 	output := attributes[:0]
 	for _, candidate := range attributes {
-		switch candidate.Key {
-		case "arguments", "conversation.id", "cwd", "exception.message", "gen_ai.conversation.id",
+		key := strings.ToLower(candidate.Key)
+		if strings.HasPrefix(key, "enduser.") || strings.HasPrefix(key, "organization.") ||
+			strings.HasPrefix(key, "tenant.") || strings.HasPrefix(key, "user.account_") ||
+			key == "user.email" || key == "user.id" || key == "user.organization_id" {
+			continue
+		}
+		switch key {
+		case "arguments", "command", "conversation.id", "cwd", "error", "error.message", "exception.message",
+			"exception.stacktrace", "file.path", "file_path", "full_command", "gen_ai.conversation.id",
 			"gen_ai.input.messages", "gen_ai.output.messages", "gen_ai.system_instructions",
 			"gen_ai.tool.call.arguments", "gen_ai.tool.call.result", "gen_ai.tool.definitions",
-			"host.name", "message.content", "output", "prompt", "response", "session.id",
-			"tool_input", "tool_response", "user.account_id", "user.email", "user.id", "user_prompt":
+			"host.name", "message.content", "output", "prompt", "request.body", "response", "response.body",
+			"process.command_args", "process.command_line", "process.executable.path", "process.owner", "session.id",
+			"system_prompt", "tool.content", "tool_input", "tool_output", "tool_parameters", "tool_response",
+			"tool_result", "user_prompt":
 			continue
 		default:
 			output = append(output, candidate)

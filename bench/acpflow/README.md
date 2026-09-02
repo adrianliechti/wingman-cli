@@ -35,10 +35,31 @@ go run ./bench/acpflow \
 
 The command above also writes
 `/private/tmp/wingman-sol-dashboard.otel.json`. Use `-telemetry-output` to choose
-a different sidecar path. OTLP protobuf and JSON payloads are accepted and
-stored as compact canonical JSON. Content and identity attributes are removed;
-Codex's per-SSE-frame logs are omitted because its request, tool, timing, and
-token signals already cover the useful measurements.
+a different sidecar path. When `-output` is set, the benchmark also rebuilds
+`acpflow-<effort>-report.json` and a self-contained
+`acpflow-<effort>-report.html` presentation from every matching result/sidecar
+pair in that directory. Pass `-report none` to disable this, or `-report PATH`
+to choose another HTML path.
+
+The report can be regenerated from existing captures without making model
+requests:
+
+```bash
+go run ./bench/acpflow \
+  -report-only /private/tmp/acpflow-results \
+  -effort high \
+  -report /private/tmp/acpflow-results/comparison.html
+```
+
+The HTML embeds a content-free normalized copy of the comparison data, so it
+opens directly from disk and prints cleanly to PDF. The adjacent report JSON is
+useful for further analysis. Links in the final slide open the raw run and OTEL
+artifacts beside the report.
+
+OTLP protobuf and JSON payloads are accepted and stored as compact canonical
+JSON. Content and identity attributes are removed; Codex's per-SSE-frame logs
+are omitted because its request, tool, timing, and token signals already cover
+the useful measurements.
 
 The dashboard prompts keep the workload to direct repository implementation
 and one production build per turn: no optional skills, browser automation,

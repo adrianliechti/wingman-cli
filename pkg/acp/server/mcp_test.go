@@ -22,12 +22,22 @@ func TestRequestedMCPConfigConvertsStdio(t *testing.T) {
 	}
 }
 
-func TestRequestedMCPConfigRejectsUnadvertisedTransport(t *testing.T) {
-	_, err := requestedMCPConfig([]acpsdk.McpServer{{Http: &acpsdk.McpServerHttpInline{
-		Name: "remote", Url: "https://example.invalid/mcp",
-	}}})
-	if err == nil {
-		t.Fatal("HTTP MCP server was accepted without advertising HTTP capability")
+func TestRequestedMCPConfigConvertsRemoteTransports(t *testing.T) {
+	servers, err := requestedMCPConfig([]acpsdk.McpServer{
+		{Http: &acpsdk.McpServerHttpInline{
+			Name: "remote", Url: "https://example.invalid/mcp",
+			Headers: []acpsdk.HttpHeader{{Name: "Authorization", Value: "Bearer t"}},
+		}},
+		{Sse: &acpsdk.McpServerSseInline{Name: "events", Url: "https://example.invalid/sse"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := servers["remote"]; got.Transport != "streamable-http" || got.URL != "https://example.invalid/mcp" || got.Headers["Authorization"] != "Bearer t" {
+		t.Fatalf("http config = %#v", got)
+	}
+	if got := servers["events"]; got.Transport != "sse" || got.URL != "https://example.invalid/sse" {
+		t.Fatalf("sse config = %#v", got)
 	}
 }
 

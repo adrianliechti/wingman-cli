@@ -634,7 +634,31 @@ func main() {
 	timeout := flag.Duration("timeout", 12*time.Minute, "run timeout")
 	output := flag.String("output", "", "optional JSON output path")
 	telemetryOutput := flag.String("telemetry-output", "", "optional OTLP JSON sidecar path (defaults beside -output)")
+	reportOutput := flag.String("report", "auto", "comparison HTML path; auto writes beside -output, none disables")
+	reportOnly := flag.String("report-only", "", "generate comparison artifacts from an existing result directory without running an agent")
 	flag.Parse()
+	if *reportOnly != "" {
+		directory, err := filepath.Abs(*reportOnly)
+		if err != nil {
+			panic(err)
+		}
+		htmlPath := automaticReportPath(*reportOutput, directory, *effort)
+		if htmlPath == "" {
+			panic("-report=none cannot be used with -report-only")
+		}
+		if !filepath.IsAbs(htmlPath) {
+			htmlPath, err = filepath.Abs(htmlPath)
+			if err != nil {
+				panic(err)
+			}
+		}
+		dataPath, err := writeComparisonArtifacts(directory, *effort, htmlPath)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Fprintf(os.Stdout, "report: %s\ndata: %s\n", htmlPath, dataPath)
+		return
+	}
 
 	absoluteBinary, err := filepath.Abs(*binary)
 	if err != nil {
@@ -660,18 +684,42 @@ func main() {
 		panic(err)
 	}
 	writer := io.Writer(os.Stdout)
+	var outputFile *os.File
 	if *output != "" {
 		file, err := os.Create(*output)
 		if err != nil {
 			panic(err)
 		}
-		defer file.Close()
+		outputFile = file
 		writer = file
 	}
 	encoder := json.NewEncoder(writer)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(result); err != nil {
 		panic(err)
+	}
+	if outputFile != nil {
+		if err := outputFile.Close(); err != nil {
+			panic(err)
+		}
+	}
+	if *output != "" {
+		directory := filepath.Dir(*output)
+		htmlPath := automaticReportPath(*reportOutput, directory, *effort)
+		if htmlPath != "" {
+			if !filepath.IsAbs(htmlPath) {
+				var err error
+				htmlPath, err = filepath.Abs(htmlPath)
+				if err != nil {
+					panic(err)
+				}
+			}
+			dataPath, err := writeComparisonArtifacts(directory, *effort, htmlPath)
+			if err != nil {
+				panic(err)
+			}
+			fmt.Fprintf(os.Stderr, "ACP comparison report: %s (data: %s)\n", htmlPath, dataPath)
+		}
 	}
 	if result.Error != "" {
 		os.Exit(1)

@@ -181,10 +181,14 @@ type fileSnapshot struct {
 }
 
 func (t *turn) emit(u acp.SessionUpdate) {
-	if t.ctx.Err() != nil {
-		return
+	ctx := t.ctx
+	// Finish tool calls already announced in_progress; the SDK won't write on a cancelled ctx.
+	if ctx.Err() != nil {
+		detached, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		ctx = detached
 	}
-	_ = t.conn.SessionUpdate(t.ctx, acp.SessionNotification{SessionId: t.sess.id, Update: u})
+	_ = t.conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: t.sess.id, Update: u})
 }
 
 func (t *turn) resolve(stop acp.StopReason, err error) {

@@ -13,6 +13,8 @@ import (
 
 	"github.com/coder/acp-go-sdk"
 
+	acpcommon "github.com/adrianliechti/wingman-agent/pkg/acp"
+
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 )
 
@@ -291,7 +293,7 @@ func requestPlanImplementation(ctx context.Context, conn *acp.AgentSideConnectio
 		acp.WithStartStatus(acp.ToolCallStatusPending),
 		acp.WithStartRawInput(map[string]any{"plan": plan.text}),
 	)
-	if err := conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: start}); err != nil {
+	if err := acpcommon.Notify(ctx, conn, sid, start); err != nil {
 		return false
 	}
 	response, err := conn.RequestPermission(ctx, acp.RequestPermissionRequest{
@@ -315,14 +317,11 @@ func requestPlanImplementation(ctx context.Context, conn *acp.AgentSideConnectio
 	}
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
-	_ = conn.SessionUpdate(finishCtx, acp.SessionNotification{
-		SessionId: sid,
-		Update: acp.UpdateToolCall(
-			id,
-			acp.WithUpdateStatus(acp.ToolCallStatusCompleted),
-			acp.WithUpdateRawOutput(output),
-		),
-	})
+	_ = acpcommon.Notify(finishCtx, conn, sid, acp.UpdateToolCall(
+		id,
+		acp.WithUpdateStatus(acp.ToolCallStatusCompleted),
+		acp.WithUpdateRawOutput(output),
+	))
 	return approved
 }
 
@@ -345,7 +344,7 @@ func streamThreadHistory(ctx context.Context, conn *acp.AgentSideConnection, sid
 		if ctx.Err() != nil {
 			return
 		}
-		_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: u})
+		_ = acpcommon.Notify(ctx, conn, sid, u)
 	}
 	for _, turn := range turns {
 		for _, raw := range turn.Items {
