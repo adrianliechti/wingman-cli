@@ -37,6 +37,7 @@ type Agent struct {
 	closeOnce sync.Once
 
 	serverDone <-chan struct{}
+	serverW    io.Closer
 	cleanup    func() error
 	steer      func(context.Context, acpsdk.SessionId, []acpsdk.ContentBlock, string) error
 
@@ -48,10 +49,8 @@ type Agent struct {
 	configMu      sync.RWMutex
 	models        []model.Model
 	modelID       string
-	modelOptID    string
 	modelDefault  string
 	effortID      string
-	effortOptID   string
 	effortDefault string
 	effortOpts    []string
 
@@ -67,8 +66,7 @@ var (
 )
 
 type sessionState struct {
-	parent *Agent
-	id     acpsdk.SessionId
+	id acpsdk.SessionId
 
 	mu       sync.Mutex
 	messages []agent.Message
@@ -114,10 +112,55 @@ type turn struct {
 	ignoreUserUpdates bool
 }
 
+// send drops the message once the turn is finished.
+func (t *turn) send(msg agent.Message) {
+	select {
+	case t.events <- event{msg: msg}:
+	case <-t.done:
+	}
+}
+
 func (t *turn) messages() []agent.Message {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return agent.CloneMessages(t.emitted)
+}
+
+// cancelOutstandingToolCalls renders tool calls that never reached a terminal status.
+func (s *sessionState) cancelOutstandingToolCalls(t *turn) []agent.Message {
+	s.toolCallsMu.Lock()
+	pending := s.toolCalls
+	s.toolCalls = map[string]toolCall{}
+	s.toolCallsMu.Unlock()
+
+	ids := make([]string, 0, len(pending))
+	for id := range pending {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	messages := make([]agent.Message, 0, len(ids))
+	for _, id := range ids {
+		call := pending[id]
+		msg := agent.Message{Role: agent.RoleAssistant, Content: []agent.Content{{ToolResult: &agent.ToolResult{
+			ID:        id,
+			Name:      call.name,
+			Kind:      call.kind,
+			Args:      call.args,
+			Locations: call.locations,
+			Presentation: agent.NewToolPresentation(
+				call.name, call.kind, call.args, call.locations,
+			),
+			Content: "tool call cancelled",
+			IsError: true,
+		}}}}
+		t.mu.Lock()
+		t.emitted = append(t.emitted, msg)
+		t.lastContentKey = ""
+		t.mu.Unlock()
+		messages = append(messages, msg)
+	}
+	return messages
 }
 
 func (s *sessionState) finalizeTurn(t *turn) {
@@ -228,6 +271,7 @@ func NewInProcess(
 		setupServer(srvConn)
 	}
 	a.serverDone = srvConn.Done()
+	a.serverW = serverW
 
 	a.conn = acpsdk.NewClientSideConnection(a, clientW, clientR)
 	a.conn.SetLogger(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
@@ -268,8 +312,11 @@ func (a *Agent) initialize(ctx context.Context) (acpsdk.InitializeResponse, erro
 	if err != nil {
 		return acpsdk.InitializeResponse{}, err
 	}
-	if resp.ProtocolVersion != acpsdk.ProtocolVersionNumber {
-		return acpsdk.InitializeResponse{}, fmt.Errorf("unsupported ACP protocol version %d (want %d)", resp.ProtocolVersion, acpsdk.ProtocolVersionNumber)
+	// ACP negotiates down: the agent may answer with any version at or below
+	// the one we offered, and both sides then speak that. Only a version above
+	// ours is unusable.
+	if resp.ProtocolVersion > acpsdk.ProtocolVersionNumber {
+		return acpsdk.InitializeResponse{}, fmt.Errorf("unsupported ACP protocol version %d (want %d or lower)", resp.ProtocolVersion, acpsdk.ProtocolVersionNumber)
 	}
 	return resp, nil
 }
@@ -492,7 +539,6 @@ func (a *Agent) NewSession(ctx context.Context) (string, error) {
 
 	id := string(resp.SessionId)
 	sess := &sessionState{
-		parent:    a,
 		id:        resp.SessionId,
 		toolCalls: map[string]toolCall{},
 	}
@@ -542,7 +588,6 @@ func (a *Agent) LoadSessionStream(ctx context.Context, id string) iter.Seq2[[]ag
 	sess, exists := a.sessions[id]
 	if !exists {
 		sess = &sessionState{
-			parent:    a,
 			id:        acpsdk.SessionId(id),
 			toolCalls: map[string]toolCall{},
 		}
@@ -681,53 +726,44 @@ func (a *Agent) DeleteSession(ctx context.Context, id string) error {
 }
 
 func (a *Agent) Messages(id string) []agent.Message {
-	sess := a.session(id)
-	if sess == nil {
-		return nil
-	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	return agent.CloneMessages(sess.messages)
+	return readSession(a, id, func(s *sessionState) []agent.Message {
+		return agent.CloneMessages(s.messages)
+	})
 }
 
 func (a *Agent) HistorySnapshot(id string) code.HistorySnapshot {
-	sess := a.session(id)
-	if sess == nil {
-		return code.HistorySnapshot{}
-	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	return code.HistorySnapshot{Messages: agent.CloneMessages(sess.messages)}
+	return readSession(a, id, func(s *sessionState) code.HistorySnapshot {
+		return code.HistorySnapshot{Messages: agent.CloneMessages(s.messages)}
+	})
 }
 
 func (a *Agent) HistoryVersion(id string) code.HistoryVersion {
-	sess := a.session(id)
-	if sess == nil {
-		return code.HistoryVersion{}
-	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	return code.HistoryVersion{MessageCount: len(sess.messages)}
+	return readSession(a, id, func(s *sessionState) code.HistoryVersion {
+		return code.HistoryVersion{MessageCount: len(s.messages)}
+	})
 }
 
 func (a *Agent) Commands(id string) []code.Command {
-	sess := a.session(id)
-	if sess == nil {
-		return nil
-	}
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	return append([]code.Command(nil), sess.commands...)
+	return readSession(a, id, func(s *sessionState) []code.Command {
+		return append([]code.Command(nil), s.commands...)
+	})
 }
 
 func (a *Agent) Usage(id string) agent.Usage {
+	return readSession(a, id, func(s *sessionState) agent.Usage { return s.usage })
+}
+
+// readSession runs fn under the session lock, or returns the zero value when
+// the session is unknown.
+func readSession[T any](a *Agent, id string, fn func(*sessionState) T) T {
 	sess := a.session(id)
 	if sess == nil {
-		return agent.Usage{}
+		var zero T
+		return zero
 	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	return sess.usage
+	return fn(sess)
 }
 
 func (a *Agent) session(id string) *sessionState {
@@ -777,21 +813,20 @@ func (a *Agent) Send(ctx context.Context, id string, input []agent.Content) (ite
 		remoteCancelled := err == nil && resp.StopReason == acpsdk.StopReasonCancelled
 		if remoteCancelled {
 			err = context.Canceled
+		} else if err == nil {
+			if reason := stopReasonError(resp.StopReason); reason != nil {
+				err = reason
+			}
 		}
 
 		if resp.Usage != nil {
 			sess.mu.Lock()
 			lastInputTokens := sess.usage.LastInputTokens
 			contextWindow := sess.usage.ContextWindow
-			sess.usage = agent.Usage{
-				InputTokens:     int64(resp.Usage.InputTokens),
-				OutputTokens:    int64(resp.Usage.OutputTokens),
-				LastInputTokens: lastInputTokens,
-				ContextWindow:   contextWindow,
-			}
-			if resp.Usage.CachedReadTokens != nil {
-				sess.usage.CachedTokens = int64(*resp.Usage.CachedReadTokens)
-			}
+			usage := usageFromACP(resp.Usage)
+			usage.LastInputTokens = lastInputTokens
+			usage.ContextWindow = contextWindow
+			sess.usage = usage
 			sess.mu.Unlock()
 		}
 		select {
@@ -808,21 +843,30 @@ func (a *Agent) Send(ctx context.Context, id string, input []agent.Content) (ite
 			if !completed {
 				a.cancelPrompt(sess.id)
 			}
-			sess.toolCallsMu.Lock()
-			clear(sess.toolCalls)
-			sess.toolCallsMu.Unlock()
-
 			sess.finalizeTurn(t)
 		}()
+		flushCancelled := func() bool {
+			for _, msg := range sess.cancelOutstandingToolCalls(t) {
+				if !yield(msg, nil) {
+					return false
+				}
+			}
+			return true
+		}
 		for {
 			select {
 			case <-ctx.Done():
-				yield(agent.Message{}, ctx.Err())
+				if flushCancelled() {
+					yield(agent.Message{}, ctx.Err())
+				}
 				return
 			case ev := <-t.events:
 				if ev.done {
 					completed = ev.remoteCancelled || ev.err == nil ||
 						(!errors.Is(ev.err, context.Canceled) && !errors.Is(ev.err, context.DeadlineExceeded))
+					if !flushCancelled() {
+						return
+					}
 					if ev.err != nil {
 						yield(agent.Message{}, ev.err)
 					}
@@ -834,6 +878,47 @@ func (a *Agent) Send(ctx context.Context, id string, input []agent.Content) (ite
 			}
 		}
 	}, nil
+}
+
+// stopReasonError reports a turn cut short; end_turn and cancelled are the caller's.
+func stopReasonError(reason acpsdk.StopReason) error {
+	switch reason {
+	case acpsdk.StopReasonRefusal:
+		return errors.New("the agent refused to continue this turn")
+	case acpsdk.StopReasonMaxTokens:
+		return errors.New("the agent stopped: output token limit reached")
+	case acpsdk.StopReasonMaxTurnRequests:
+		return errors.New("the agent stopped: maximum requests per turn reached")
+	default:
+		return nil
+	}
+}
+
+func usageFromACP(usage *acpsdk.Usage) agent.Usage {
+	if usage == nil {
+		return agent.Usage{}
+	}
+	cacheRead := optionalACPTokenCount(usage.CachedReadTokens)
+	cacheCreation := optionalACPTokenCount(usage.CachedWriteTokens)
+	reasoning := optionalACPTokenCount(usage.ThoughtTokens)
+	return agent.Usage{
+		InputTokens:              tokenCount64(usage.InputTokens) + cacheRead + cacheCreation,
+		OutputTokens:             tokenCount64(usage.OutputTokens) + reasoning,
+		ReasoningTokens:          reasoning,
+		CacheReadInputTokens:     cacheRead,
+		CacheCreationInputTokens: cacheCreation,
+	}
+}
+
+func optionalACPTokenCount(value *int) int64 {
+	if value == nil {
+		return 0
+	}
+	return tokenCount64(*value)
+}
+
+func tokenCount64(value int) int64 {
+	return int64(max(value, 0))
 }
 
 func (a *Agent) cancelPrompt(id acpsdk.SessionId) {
@@ -928,6 +1013,9 @@ func (a *Agent) shutdown() {
 			case <-a.serverDone:
 			case <-time.After(2 * time.Second):
 			}
+		}
+		if a.serverW != nil {
+			_ = a.serverW.Close()
 		}
 		if a.cleanup != nil {
 			_ = a.cleanup()
@@ -1122,14 +1210,45 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 			diff: toolCallDiffText(tc.Content),
 		}
 		sess.toolCallsMu.Unlock()
-		return emit(agent.RoleAssistant, agent.Content{ToolCall: &agent.ToolCall{
+		callMsg := emit(agent.RoleAssistant, agent.Content{ToolCall: &agent.ToolCall{
 			ID:           string(tc.ToolCallId),
 			Name:         name,
 			Kind:         kind,
 			Args:         args,
 			Locations:    locations,
 			Presentation: presentation,
-		}}, ""), true
+		}}, "")
+
+		// A tool_call may arrive already terminal, with no tool_call_update to follow.
+		if tc.Status == acpsdk.ToolCallStatusCompleted || tc.Status == acpsdk.ToolCallStatusFailed {
+			sess.toolCallsMu.Lock()
+			delete(sess.toolCalls, string(tc.ToolCallId))
+			sess.toolCallsMu.Unlock()
+
+			body := toolCallContentText(tc.Content)
+			if body == "" {
+				body = toolCallDiffText(tc.Content)
+			}
+			if body == "" && tc.RawOutput != nil {
+				body = rawValueToString(tc.RawOutput)
+			}
+			failed := tc.Status == acpsdk.ToolCallStatusFailed
+			if body == "" && failed {
+				body = "tool call failed"
+			}
+			t.send(callMsg)
+			return emit(agent.RoleAssistant, agent.Content{ToolResult: &agent.ToolResult{
+				ID:           string(tc.ToolCallId),
+				Name:         name,
+				Kind:         kind,
+				Args:         args,
+				Locations:    locations,
+				Presentation: presentation,
+				Content:      body,
+				IsError:      failed,
+			}}, ""), true
+		}
+		return callMsg, true
 
 	case u.ToolCallUpdate != nil:
 		tu := u.ToolCallUpdate
@@ -1628,17 +1747,19 @@ func (a *Agent) resolvePath(p string) (string, error) {
 func (a *Agent) CreateTerminal(context.Context, acpsdk.CreateTerminalRequest) (acpsdk.CreateTerminalResponse, error) {
 	return acpsdk.CreateTerminalResponse{}, errors.New("terminal not supported")
 }
+
+// Terminal is not advertised; a zero-valued success would read as real data.
 func (a *Agent) KillTerminal(context.Context, acpsdk.KillTerminalRequest) (acpsdk.KillTerminalResponse, error) {
-	return acpsdk.KillTerminalResponse{}, nil
+	return acpsdk.KillTerminalResponse{}, acpsdk.NewMethodNotFound("terminal/kill")
 }
 func (a *Agent) ReleaseTerminal(context.Context, acpsdk.ReleaseTerminalRequest) (acpsdk.ReleaseTerminalResponse, error) {
-	return acpsdk.ReleaseTerminalResponse{}, nil
+	return acpsdk.ReleaseTerminalResponse{}, acpsdk.NewMethodNotFound("terminal/release")
 }
 func (a *Agent) TerminalOutput(context.Context, acpsdk.TerminalOutputRequest) (acpsdk.TerminalOutputResponse, error) {
-	return acpsdk.TerminalOutputResponse{Output: ""}, nil
+	return acpsdk.TerminalOutputResponse{}, acpsdk.NewMethodNotFound("terminal/output")
 }
 func (a *Agent) WaitForTerminalExit(context.Context, acpsdk.WaitForTerminalExitRequest) (acpsdk.WaitForTerminalExitResponse, error) {
-	return acpsdk.WaitForTerminalExitResponse{}, nil
+	return acpsdk.WaitForTerminalExitResponse{}, acpsdk.NewMethodNotFound("terminal/wait_for_exit")
 }
 
 func (a *Agent) refreshConfig(sess *sessionState, options []acpsdk.SessionConfigOption) {
@@ -1687,9 +1808,7 @@ func (a *Agent) refreshConfig(sess *sessionState, options []acpsdk.SessionConfig
 	a.configMu.Lock()
 	a.models = models
 	a.modelID = modelID
-	a.modelOptID = modelOptID
 	a.effortID = effortID
-	a.effortOptID = effortOptID
 	a.effortOpts = effortOpts
 	a.configMu.Unlock()
 

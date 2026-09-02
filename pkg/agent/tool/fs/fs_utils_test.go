@@ -155,7 +155,7 @@ func TestEditFuzzyMatchesCommonTypography(t *testing.T) {
 	}
 }
 
-func TestEditReturnsLineDiff(t *testing.T) {
+func TestEditReturnsConciseFileSummary(t *testing.T) {
 	root, tmpDir, cleanup := createTestRoot(t)
 	defer cleanup()
 
@@ -171,8 +171,8 @@ func TestEditReturnsLineDiff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("edit: %v", err)
 	}
-	if !strings.Contains(result.Content, "-2 old") || !strings.Contains(result.Content, "+2 new") {
-		t.Fatalf("expected line-numbered diff, got: %q", result.Content)
+	if result.Content != "Applied 1 edits across 1 files atomically.\nM diff.txt" {
+		t.Fatalf("unexpected edit summary: %q", result.Content)
 	}
 }
 

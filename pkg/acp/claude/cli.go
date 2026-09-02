@@ -75,9 +75,41 @@ type cliEnvelope struct {
 	ElapsedTimeSeconds float64         `json:"elapsed_time_seconds,omitempty"`
 	SubagentType       string          `json:"subagent_type,omitempty"`
 	SubagentRetry      map[string]any  `json:"subagent_retry,omitempty"`
-	Patch              struct {
+	Description        string          `json:"description,omitempty"`
+	LastToolName       string          `json:"last_tool_name,omitempty"`
+	Summary            string          `json:"summary,omitempty"`
+
+	// The only signal a misconfigured server or plugin produces; stderr stays empty when captured.
+	MCPServers      []cliNamedStatus `json:"mcp_servers,omitempty"`
+	MCPServerErrors []cliLoadError   `json:"mcp_server_errors,omitempty"`
+	PluginErrors    []cliLoadError   `json:"plugin_errors,omitempty"`
+
+	// rate_limit_event
+	ResetsAt      any    `json:"resetsAt,omitempty"`
+	RateLimitType string `json:"rateLimitType,omitempty"`
+	Patch         struct {
 		Status string `json:"status,omitempty"`
 	} `json:"patch"`
+}
+
+type cliNamedStatus struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+// cliLoadError covers mcp_server_errors (`name`) and plugin_errors (`plugin`).
+type cliLoadError struct {
+	Name    string `json:"name"`
+	Plugin  string `json:"plugin"`
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+func (e cliLoadError) label() string {
+	if e.Name != "" {
+		return e.Name
+	}
+	return e.Plugin
 }
 
 type streamEvent struct {

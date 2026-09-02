@@ -13,6 +13,9 @@ import (
 
 	"github.com/coder/acp-go-sdk"
 
+	acpcommon "github.com/adrianliechti/wingman-agent/pkg/acp"
+	"github.com/google/uuid"
+
 	"github.com/adrianliechti/wingman-agent/internal/process"
 )
 
@@ -34,7 +37,6 @@ type session struct {
 	forkOnResume   bool
 	started        bool
 	lastTitle      string
-	plan           *taskPlan
 	cancel         context.CancelFunc
 	proc           *claudeProc
 }
@@ -49,9 +51,6 @@ func (a *Agent) newSession(id acp.SessionId, cwd, model, effort string, addition
 		effort:         effort,
 		mode:           defaultModeID,
 		additionalDirs: append([]string(nil), additionalDirs...),
-	}
-	if a.supportsPlanUpdates() {
-		s.plan = newTaskPlan()
 	}
 	return s
 }
@@ -108,17 +107,6 @@ func (s *session) runTurn(ctx context.Context, prompt []acp.ContentBlock) (acp.S
 	}()
 
 	p.beginTurn()
-	if p.plan != nil {
-		if entries, ok := p.plan.unfinishedEntries(); ok {
-			if err := s.agent.conn.SessionUpdate(turnCtx, acp.SessionNotification{
-				SessionId: s.id,
-				Update:    acp.UpdatePlan(entries...),
-			}); err != nil {
-				p.finishTurn()
-				return "", nil, fmt.Errorf("republish task plan: %w", err)
-			}
-		}
-	}
 	if err := p.out.writeJSON(promptMessage(prompt)); err != nil {
 		p.finishTurn()
 		s.dropProc(p)
@@ -240,7 +228,6 @@ func (s *session) ensureProc() (*claudeProc, error) {
 		tools:           toolUseCache{},
 		emitted:         newToolCallTracker(),
 		streamedContent: &streamedBlockTracker{},
-		plan:            s.plan,
 		subagentParents: make(map[string]string),
 		results:         make(chan turnResult, 1),
 		dead:            make(chan struct{}),
@@ -279,7 +266,6 @@ type claudeProc struct {
 	tools           toolUseCache
 	emitted         *toolCallTracker
 	streamedContent *streamedBlockTracker
-	plan            *taskPlan
 
 	turnMu          sync.Mutex
 	turnActive      bool
@@ -368,11 +354,11 @@ func (p *claudeProc) read(ctx context.Context, conn *acp.AgentSideConnection, si
 				fmt.Fprintf(stderr, "claude-acp: emit stream event: %v\n", err)
 			}
 		case "assistant":
-			if err := emitAssistant(ctx, conn, sid, env.Message, p.cwd, p.tools, p.emitted, p.streamedContent, p.plan, env.ParentToolUseID); err != nil {
+			if err := emitAssistant(ctx, conn, sid, env.Message, p.cwd, p.tools, p.emitted, p.streamedContent, env.ParentToolUseID); err != nil {
 				fmt.Fprintf(stderr, "claude-acp: emit assistant: %v\n", err)
 			}
 		case "user":
-			if err := emitToolResults(ctx, conn, sid, env.Message, p.tools, p.emitted, p.plan, env.ParentToolUseID); err != nil {
+			if err := emitToolResults(ctx, conn, sid, env.Message, p.tools, p.emitted, env.ParentToolUseID); err != nil {
 				fmt.Fprintf(stderr, "claude-acp: emit tool result: %v\n", err)
 			}
 		case "tool_progress":
@@ -386,11 +372,15 @@ func (p *claudeProc) read(ctx context.Context, conn *acp.AgentSideConnection, si
 			tr, usageUpd := resultToTurn(line)
 			p.finishTurn()
 			if usageUpd != nil {
-				_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: *usageUpd})
+				_ = acpcommon.Notify(ctx, conn, sid, *usageUpd)
 			}
 			select {
 			case p.results <- tr:
 			default:
+			}
+		case "rate_limit_event":
+			if note := rateLimitNote(env); note != "" {
+				_ = acpcommon.Notify(ctx, conn, sid, acp.UpdateAgentMessageText(note))
 			}
 		case "system":
 			p.handleSystem(ctx, conn, sid, env)
@@ -401,14 +391,84 @@ func (p *claudeProc) read(ctx context.Context, conn *acp.AgentSideConnection, si
 	}
 }
 
+// rateLimitNote skips the routine "allowed" heartbeat.
+func rateLimitNote(env cliEnvelope) string {
+	status := strings.TrimSpace(env.Status)
+	if status == "" || status == "allowed" {
+		return ""
+	}
+	note := "Rate limit " + status
+	if env.RateLimitType != "" {
+		note += " (" + strings.ReplaceAll(env.RateLimitType, "_", " ") + ")"
+	}
+	if resets := formatResetsAt(env.ResetsAt); resets != "" {
+		note += ", resets " + resets
+	}
+	return "*" + note + ".*\n\n"
+}
+
+func formatResetsAt(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case float64:
+		return time.Unix(int64(t), 0).Format(time.RFC3339)
+	}
+	return ""
+}
+
+// subagentParent falls back to tool_use_id when the task was never registered.
+func (p *claudeProc) subagentParent(taskID, toolUseID string) string {
+	if taskID != "" {
+		p.subagentMu.Lock()
+		id := p.subagentParents[taskID]
+		p.subagentMu.Unlock()
+		if id != "" {
+			return id
+		}
+	}
+	return toolUseID
+}
+
+func taskProgressNote(env cliEnvelope) string {
+	parts := make([]string, 0, 3)
+	if d := strings.TrimSpace(env.Description); d != "" {
+		parts = append(parts, d)
+	}
+	if t := strings.TrimSpace(env.SubagentType); t != "" {
+		parts = append(parts, "("+t+")")
+	}
+	if tool := strings.TrimSpace(env.LastToolName); tool != "" {
+		parts = append(parts, "— "+tool)
+	}
+	return strings.Join(parts, " ")
+}
+
+// reportLoadErrors surfaces system/init's mcp_server_errors and plugin_errors.
+func reportLoadErrors(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, env cliEnvelope) {
+	var lines []string
+	for _, e := range env.MCPServerErrors {
+		lines = append(lines, fmt.Sprintf("- MCP server %q skipped (%s): %s", e.label(), e.Type, e.Message))
+	}
+	for _, e := range env.PluginErrors {
+		lines = append(lines, fmt.Sprintf("- Plugin %q failed to load (%s): %s", e.label(), e.Type, e.Message))
+	}
+	for _, s := range env.MCPServers {
+		if s.Status == "failed" {
+			lines = append(lines, fmt.Sprintf("- MCP server %q failed to connect", s.Name))
+		}
+	}
+	if len(lines) == 0 {
+		return
+	}
+	_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid,
+		Update: acp.UpdateAgentMessageText("Startup warnings:\n" + strings.Join(lines, "\n") + "\n\n")})
+}
+
 func (p *claudeProc) handleSystem(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, env cliEnvelope) {
 	switch env.Subtype {
-	case "conversation_reset":
-		if p.plan != nil {
-			p.plan.clear()
-			_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: acp.UpdatePlan()})
-		}
-
+	case "init":
+		reportLoadErrors(ctx, conn, sid, env)
 	case "session_state_changed":
 		if env.State == "idle" && p.finishTurn() {
 			select {
@@ -433,7 +493,7 @@ func (p *claudeProc) handleSystem(ctx context.Context, conn *acp.AgentSideConnec
 		if env.RefusalExplanation != "" {
 			message += "\n\n" + env.RefusalExplanation
 		}
-		_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: acp.UpdateAgentMessageText(message)})
+		_ = acpcommon.Notify(ctx, conn, sid, acp.UpdateAgentMessageText(message))
 		if env.Direction != "revert" {
 			p.applyFallbackModel(ctx, conn, sid, env.FallbackModel)
 		}
@@ -449,13 +509,13 @@ func (p *claudeProc) handleSystem(ctx context.Context, conn *acp.AgentSideConnec
 			text = "Compacting failed.\n\n"
 		}
 		if text != "" {
-			_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: acp.UpdateAgentMessageText(text)})
+			_ = acpcommon.Notify(ctx, conn, sid, acp.UpdateAgentMessageText(text))
 		}
 
 	case "local_command_output":
 		var out string
 		if json.Unmarshal(env.Content, &out) == nil && strings.TrimSpace(out) != "" {
-			_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: acp.UpdateAgentMessageText(out)})
+			_ = acpcommon.Notify(ctx, conn, sid, acp.UpdateAgentMessageText(out))
 		}
 
 	case "permission_denied":
@@ -481,7 +541,21 @@ func (p *claudeProc) handleSystem(ctx context.Context, conn *acp.AgentSideConnec
 			p.subagentParents[env.TaskID] = env.ToolUseID
 			p.subagentMu.Unlock()
 		}
+	case "task_progress":
+		if toolCallID := p.subagentParent(env.TaskID, env.ToolUseID); toolCallID != "" {
+			if note := taskProgressNote(env); note != "" {
+				_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: acp.UpdateToolCall(acp.ToolCallId(toolCallID),
+					acp.WithUpdateContent([]acp.ToolCallContent{acp.ToolContent(acp.TextBlock(note))}),
+				)})
+			}
+		}
+
 	case "task_notification":
+		if toolCallID := p.subagentParent(env.TaskID, env.ToolUseID); toolCallID != "" && strings.TrimSpace(env.Summary) != "" {
+			_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: acp.UpdateToolCall(acp.ToolCallId(toolCallID),
+				acp.WithUpdateContent([]acp.ToolCallContent{acp.ToolContent(acp.TextBlock(strings.TrimSpace(env.Summary)))}),
+			)})
+		}
 		p.subagentMu.Lock()
 		delete(p.subagentParents, env.TaskID)
 		p.subagentMu.Unlock()
@@ -517,7 +591,7 @@ func (p *claudeProc) handleToolProgress(ctx context.Context, conn *acp.AgentSide
 	if update.ToolCallUpdate != nil {
 		update.ToolCallUpdate.Meta = map[string]any{"claudeCode": claudeMeta}
 	}
-	_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: update})
+	_ = acpcommon.Notify(ctx, conn, sid, update)
 }
 
 func (p *claudeProc) applyFallbackModel(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, fallback string) {
@@ -529,20 +603,17 @@ func (p *claudeProc) applyFallbackModel(ctx context.Context, conn *acp.AgentSide
 	p.session.mu.Lock()
 	p.session.modelID = modelID
 	p.session.modelOverride = false
-	if m := findModel(p.models, modelID); m != nil && !isValidEffort(m, p.session.effort) {
+	if m := findModel(p.models, modelID); m != nil && !acpcommon.IsValidEffort(m.EffortLevels, p.session.effort) {
 		p.session.effort = "default"
 	}
 	p.sig = p.session.spawnSigLocked()
 	effort := p.session.effort
 	p.session.mu.Unlock()
 
-	_ = conn.SessionUpdate(ctx, acp.SessionNotification{
-		SessionId: sid,
-		Update: acp.SessionUpdate{ConfigOptionUpdate: &acp.SessionConfigOptionUpdate{
-			SessionUpdate: "config_option_update",
-			ConfigOptions: buildConfigOptions(p.models, modelID, effort),
-		}},
-	})
+	_ = acpcommon.Notify(ctx, conn, sid, acp.SessionUpdate{ConfigOptionUpdate: &acp.SessionConfigOptionUpdate{
+		SessionUpdate: "config_option_update",
+		ConfigOptions: buildConfigOptions(p.models, modelID, effort),
+	}})
 }
 
 func (p *claudeProc) applyMode(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, modeID string) {
@@ -557,13 +628,10 @@ func (p *claudeProc) applyMode(ctx context.Context, conn *acp.AgentSideConnectio
 	if !changed {
 		return
 	}
-	_ = conn.SessionUpdate(ctx, acp.SessionNotification{
-		SessionId: sid,
-		Update: acp.SessionUpdate{CurrentModeUpdate: &acp.SessionCurrentModeUpdate{
-			SessionUpdate: "current_mode_update",
-			CurrentModeId: acp.SessionModeId(modeID),
-		}},
-	})
+	_ = acpcommon.Notify(ctx, conn, sid, acp.SessionUpdate{CurrentModeUpdate: &acp.SessionCurrentModeUpdate{
+		SessionUpdate: "current_mode_update",
+		CurrentModeId: acp.SessionModeId(modeID),
+	}})
 }
 
 func resultToTurn(line []byte) (turnResult, *acp.SessionUpdate) {
@@ -652,7 +720,7 @@ func resultErrMessage(r cliResult) string {
 func interruptRequest() controlInterrupt {
 	return controlInterrupt{
 		Type:      "control_request",
-		RequestID: newUUID(),
+		RequestID: uuid.NewString(),
 		Request:   controlInterruptBody{Subtype: "interrupt"},
 	}
 }

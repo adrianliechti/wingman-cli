@@ -15,6 +15,7 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/hook"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/telemetry"
 	"github.com/adrianliechti/wingman-agent/pkg/text"
 )
 
@@ -113,16 +114,21 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 		runtime.Model = a.Model()
 	}
 	ctx = hook.WithRuntime(ctx, runtime)
+	ctx, telemetryInvocation := a.Telemetry.StartAgent(ctx, telemetry.AgentRequest{
+		ConversationID: conversationID(ctx, a.CacheKey),
+	})
 	turnUsageBefore := a.UsageSnapshot()
 	if err := a.recordEvents(RuntimeEvent{
 		Type: EventTurnStarted, TurnID: runtime.TurnID, Model: runtime.Model,
 	}); err != nil {
 		a.setRunning(false)
+		telemetryInvocation.End(telemetry.Outcome{Err: err})
 		return nil, err
 	}
 
 	failSetup := func(err error) (iter.Seq2[Message, error], error) {
 		terminalErr := a.finishTurn(runtime.TurnID, RuntimeFailed, err, turnUsageBefore)
+		telemetryInvocation.End(telemetry.Outcome{Err: errors.Join(err, terminalErr)})
 		return nil, errors.Join(err, terminalErr)
 	}
 
@@ -182,11 +188,14 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 			if r := recover(); r != nil {
 				status = RuntimeFailed
 				outcomeErr = fmt.Errorf("agent turn panicked: %v", r)
-				_ = a.finishTurn(runtime.TurnID, status, outcomeErr, turnUsageBefore)
+				finishErr := a.finishTurn(runtime.TurnID, status, outcomeErr, turnUsageBefore)
+				telemetryInvocation.End(telemetry.Outcome{Err: errors.Join(outcomeErr, finishErr)})
 				panic(r)
 			}
-			if err := a.finishTurn(runtime.TurnID, status, outcomeErr, turnUsageBefore); err != nil && consumerOpen {
-				yield(Message{}, err)
+			finishErr := a.finishTurn(runtime.TurnID, status, outcomeErr, turnUsageBefore)
+			telemetryInvocation.End(telemetry.Outcome{Err: errors.Join(outcomeErr, finishErr)})
+			if finishErr != nil && consumerOpen {
+				yield(Message{}, finishErr)
 			}
 		}()
 
@@ -220,6 +229,13 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 			}
 
 			if err := a.removeOrphanedToolMessages(); err != nil {
+				stop(err)
+				return
+			}
+			// Keep the active working set intact while compacting superseded large
+			// tool results before every provider request. This usually avoids an
+			// expensive LLM compaction pass later in long coding sessions.
+			if _, err := a.trimStaleToolResults(); err != nil {
 				stop(err)
 				return
 			}
@@ -270,7 +286,18 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 				outputSchema: outputSchema,
 			}
 
-			resp, err := a.completeRun(ctx, runtime.TurnID, req, yield)
+			captureContent := a.Telemetry.CapturesMessageContent()
+			inferenceRequest := telemetry.InferenceRequest{
+				Model:          req.model,
+				ConversationID: conversationID(ctx, a.CacheKey),
+				Streaming:      true,
+				ReasoningLevel: req.effort,
+			}
+			if captureContent {
+				inferenceRequest.Content = telemetryInferenceContent(req.messages, req.instructions, req.tools)
+			}
+			inferenceCtx, inference := a.Telemetry.StartInference(ctx, inferenceRequest)
+			resp, err := a.completeRun(inferenceCtx, runtime.TurnID, req, yield)
 
 			for attempt := 1; err != nil && attempt <= maxStreamRetries; attempt++ {
 				if errors.Is(err, errYieldStopped) || ctx.Err() != nil || !isRecoverableError(err) {
@@ -284,7 +311,9 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 
 				if isContextOverflowError(err) {
 					if outcome := a.runPreCompact(ctx, "auto"); outcome.Stop {
-						interrupt("compaction stopped by hook")
+						interruptErr := errors.New("compaction stopped by hook")
+						inference.End(streamingInferenceResult(resp, interruptErr, captureContent))
+						interrupt(interruptErr.Error())
 						return
 					}
 					compacted, compactErr := a.compactMessages(ctx, true)
@@ -294,7 +323,9 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 					}
 					if compacted {
 						if outcome := a.runPostCompact(ctx, "auto"); outcome.Stop {
-							interrupt("post-compaction hook stopped the turn")
+							interruptErr := errors.New("post-compaction hook stopped the turn")
+							inference.End(streamingInferenceResult(resp, interruptErr, captureContent))
+							interrupt(interruptErr.Error())
 							return
 						}
 						outcome, hookErr := a.runSessionStartHooks(ctx, "compact")
@@ -303,11 +334,16 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 							break
 						}
 						if outcome.Stop {
-							interrupt("session-start hook stopped the compacted turn")
+							interruptErr := errors.New("session-start hook stopped the compacted turn")
+							inference.End(streamingInferenceResult(resp, interruptErr, captureContent))
+							interrupt(interruptErr.Error())
 							return
 						}
 					}
 					req.messages = a.requestMessages()
+					if captureContent {
+						inference.SetContent(telemetryInferenceContent(req.messages, req.instructions, req.tools))
+					}
 				} else {
 					// The SDK already retried transport errors with backoff; this
 					// covers failures before streamed output begins, so back off
@@ -323,8 +359,9 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 					break
 				}
 
-				resp, err = a.completeRun(ctx, runtime.TurnID, req, yield)
+				resp, err = a.completeRun(inferenceCtx, runtime.TurnID, req, yield)
 			}
+			inference.End(streamingInferenceResult(resp, err, captureContent))
 
 			if err != nil {
 				stop(err)
@@ -618,9 +655,11 @@ func (a *Agent) finishTurn(turnID string, status RuntimeStatus, outcomeErr error
 	}
 	after := a.UsageSnapshot()
 	delta := Usage{
-		InputTokens:  after.InputTokens - before.InputTokens,
-		CachedTokens: after.CachedTokens - before.CachedTokens,
-		OutputTokens: after.OutputTokens - before.OutputTokens,
+		InputTokens:              after.InputTokens - before.InputTokens,
+		OutputTokens:             after.OutputTokens - before.OutputTokens,
+		ReasoningTokens:          after.ReasoningTokens - before.ReasoningTokens,
+		CacheReadInputTokens:     after.CacheReadInputTokens - before.CacheReadInputTokens,
+		CacheCreationInputTokens: after.CacheCreationInputTokens - before.CacheCreationInputTokens,
 	}
 	terminal := &RuntimeTerminal{Status: status}
 	if outcomeErr != nil {
@@ -758,7 +797,7 @@ func (a *Agent) processToolCallsParallel(ctx context.Context, calls []ToolCall, 
 	for range parallelism {
 		go func() {
 			for i := range jobs {
-				ch <- completion{i, a.runSingleToolCallOutcome(ctx, calls[i], tools)}
+				ch <- completion{i, a.runSingleToolCallOutcomeDeferred(ctx, calls[i], tools)}
 			}
 		}()
 	}
@@ -776,6 +815,7 @@ func (a *Agent) processToolCallsParallel(ctx context.Context, calls []ToolCall, 
 	resultMessages := make([]Message, len(calls))
 	var unrecorded []Message
 	for i, tc := range calls {
+		outcomes[i] = a.commitDeferredToolOutcome(tc, outcomes[i])
 		resultMessages[i] = toolResultMessage(tc, outcomes[i].result)
 		if !outcomes[i].recorded {
 			unrecorded = append(unrecorded, resultMessages[i])
@@ -794,8 +834,15 @@ func (a *Agent) processToolCallsParallel(ctx context.Context, calls []ToolCall, 
 }
 
 type toolCallOutcome struct {
-	result   tool.Result
-	recorded bool
+	result         tool.Result
+	recorded       bool
+	deferredCommit *toolCommit
+}
+
+type toolCommit struct {
+	operationID string
+	turnID      string
+	effect      tool.Effect
 }
 
 func toolCallMessage(tc ToolCall) Message {
@@ -818,7 +865,7 @@ const (
 	// The code harness installs a more specific PostToolUse hook that persists
 	// oversized output before replacing it with a preview. This is the final
 	// safety net for every other Agent embedding and for context added by hooks.
-	maxInlineToolResultBytes = 100 * 1024
+	maxInlineToolResultBytes = 48 * 1024
 	toolResultHeadBytes      = 4 * 1024
 	toolResultTailBytes      = 8 * 1024
 )
@@ -854,17 +901,25 @@ func (a *Agent) runSingleToolCall(ctx context.Context, tc ToolCall, tools []tool
 }
 
 func (a *Agent) runSingleToolCallOutcome(ctx context.Context, tc ToolCall, tools []tool.Tool) (outcome toolCallOutcome) {
+	return a.runSingleToolCallOutcomeMode(ctx, tc, tools, false)
+}
+
+func (a *Agent) runSingleToolCallOutcomeDeferred(ctx context.Context, tc ToolCall, tools []tool.Tool) (outcome toolCallOutcome) {
+	return a.runSingleToolCallOutcomeMode(ctx, tc, tools, true)
+}
+
+func (a *Agent) runSingleToolCallOutcomeMode(ctx context.Context, tc ToolCall, tools []tool.Tool, deferCommit bool) (outcome toolCallOutcome) {
 	defer func() {
 		if r := recover(); r != nil {
 			outcome = toolCallOutcome{result: tool.Error(fmt.Sprintf("error: tool %s panicked: %v", tc.Name, r))}
 		}
 	}()
-	return a.toolCallOutcome(ctx, tc, tools)
+	return a.toolCallOutcome(ctx, tc, tools, deferCommit)
 }
 
-func (a *Agent) toolCallOutcome(ctx context.Context, tc ToolCall, tools []tool.Tool) toolCallOutcome {
+func (a *Agent) toolCallOutcome(ctx context.Context, tc ToolCall, tools []tool.Tool, deferCommit bool) toolCallOutcome {
 	if tc.ID == "" {
-		return a.executeToolOperation(ctx, tc, tools)
+		return a.executeToolOperation(ctx, tc, tools, deferCommit)
 	}
 	if result, ok := a.retainedToolResult(tc); ok {
 		return toolCallOutcome{result: result}
@@ -893,7 +948,7 @@ func (a *Agent) toolCallOutcome(ctx context.Context, tc ToolCall, tools []tool.T
 	a.toolRuns[tc.ID] = run
 	a.toolRunsMu.Unlock()
 
-	outcome := a.executeToolOperation(ctx, tc, tools)
+	outcome := a.executeToolOperation(ctx, tc, tools, deferCommit)
 	a.toolRunsMu.Lock()
 	run.result = cloneToolResult(outcome.result)
 	close(run.done)
@@ -901,9 +956,37 @@ func (a *Agent) toolCallOutcome(ctx context.Context, tc ToolCall, tools []tool.T
 	return outcome
 }
 
-func (a *Agent) executeToolOperation(ctx context.Context, tc ToolCall, tools []tool.Tool) toolCallOutcome {
+func (a *Agent) executeToolOperation(ctx context.Context, tc ToolCall, tools []tool.Tool, deferCommit bool) toolCallOutcome {
 	operationID := uuid.NewString()
 	effect := a.toolEffect(tc, tools)
+	t := findTool(tc.Name, tools)
+	description := ""
+	toolType := "function"
+	mcpMethod := ""
+	mcpProtocolVersion := ""
+	if t != nil {
+		description = t.Description
+		if t.Telemetry.ToolType != "" {
+			toolType = t.Telemetry.ToolType
+		}
+		mcpMethod = t.Telemetry.MCPMethod
+		mcpProtocolVersion = t.Telemetry.MCPProtocolVersion
+	}
+	ctx, telemetryExecution := a.Telemetry.StartTool(ctx, telemetry.ToolRequest{
+		Name:               tc.Name,
+		Description:        description,
+		CallID:             tc.ID,
+		Type:               toolType,
+		MCPMethod:          mcpMethod,
+		MCPProtocolVersion: mcpProtocolVersion,
+		Arguments:          genericToolTelemetryValue(mcpMethod, tc.Args),
+	})
+	telemetryEnded := false
+	defer func() {
+		if !telemetryEnded {
+			telemetryExecution.End(telemetry.Outcome{ErrorType: "_OTHER"})
+		}
+	}()
 	started := RuntimeEvent{
 		Type:        EventToolStarted,
 		TurnID:      hook.RuntimeFromContext(ctx).TurnID,
@@ -911,10 +994,48 @@ func (a *Agent) executeToolOperation(ctx context.Context, tc ToolCall, tools []t
 		Tool:        &RuntimeTool{CallID: tc.ID, Name: tc.Name, Args: tc.Args, Effect: string(effect)},
 	}
 	if err := a.recordEvents(started); err != nil {
+		telemetryExecution.End(telemetry.Outcome{Err: err})
+		telemetryEnded = true
 		return toolCallOutcome{result: tool.Error(fmt.Sprintf("error: could not durably start tool call: %v", err))}
 	}
 
 	result := a.executeSingleToolCall(ctx, tc, tools)
+	toolOutcome := telemetry.Outcome{}
+	if result.IsError {
+		toolOutcome.ErrorType = "_OTHER"
+		if result.Content == interruptedToolResult || result.Content == interruptedWaitResult {
+			toolOutcome.ErrorType = "canceled"
+		} else if strings.Contains(result.Content, "time limit") || strings.Contains(result.Content, "deadline") {
+			toolOutcome.ErrorType = "timeout"
+		}
+	}
+	if mcpMethod == "" {
+		telemetryExecution.SetResult(genericToolResultTelemetryValue(result.Content))
+	}
+	telemetryExecution.End(toolOutcome)
+	telemetryEnded = true
+	if deferCommit {
+		return toolCallOutcome{
+			result: result,
+			deferredCommit: &toolCommit{
+				operationID: operationID,
+				turnID:      started.TurnID,
+				effect:      effect,
+			},
+		}
+	}
+	return a.commitToolOutcome(tc, result, operationID, started.TurnID, effect)
+}
+
+func (a *Agent) commitDeferredToolOutcome(tc ToolCall, outcome toolCallOutcome) toolCallOutcome {
+	if outcome.deferredCommit == nil {
+		return outcome
+	}
+	commit := outcome.deferredCommit
+	return a.commitToolOutcome(tc, outcome.result, commit.operationID, commit.turnID, commit.effect)
+}
+
+func (a *Agent) commitToolOutcome(tc ToolCall, result tool.Result, operationID, turnID string, effect tool.Effect) toolCallOutcome {
 	status := RuntimeCompleted
 	if result.IsError {
 		status = RuntimeFailed
@@ -929,7 +1050,7 @@ func (a *Agent) executeToolOperation(ctx context.Context, tc ToolCall, tools []t
 	resultMessage := toolResultMessage(tc, result)
 	if err := a.recordEvents(append(messageEvents(resultMessage), RuntimeEvent{
 		Type:        EventToolTerminal,
-		TurnID:      started.TurnID,
+		TurnID:      turnID,
 		OperationID: operationID,
 		Tool:        &RuntimeTool{CallID: tc.ID, Name: tc.Name, Args: tc.Args, Effect: string(effect), IsError: result.IsError},
 		Terminal:    terminal,
@@ -937,6 +1058,34 @@ func (a *Agent) executeToolOperation(ctx context.Context, tc ToolCall, tools []t
 		return toolCallOutcome{result: tool.Error(fmt.Sprintf("error: tool finished but its result and terminal fact could not be persisted: %v", err))}
 	}
 	return toolCallOutcome{result: result, recorded: true}
+}
+
+func genericToolTelemetryValue(mcpMethod, arguments string) any {
+	if mcpMethod != "" || !json.Valid([]byte(arguments)) {
+		return nil
+	}
+	decoder := json.NewDecoder(strings.NewReader(arguments))
+	decoder.UseNumber()
+	var object map[string]any
+	if err := decoder.Decode(&object); err != nil {
+		return nil
+	}
+	return object
+}
+
+func genericToolResultTelemetryValue(content string) map[string]any {
+	if json.Valid([]byte(content)) {
+		decoder := json.NewDecoder(strings.NewReader(content))
+		decoder.UseNumber()
+		var decoded any
+		if err := decoder.Decode(&decoded); err == nil {
+			if object, ok := decoded.(map[string]any); ok {
+				return object
+			}
+			return map[string]any{"content": decoded}
+		}
+	}
+	return map[string]any{"content": content}
 }
 
 func (a *Agent) beginToolRound() {
@@ -998,7 +1147,13 @@ func (a *Agent) executeSingleToolCall(ctx context.Context, tc ToolCall, tools []
 	var usageMu sync.Mutex
 	var usageErr error
 	ctx = tool.WithUsageSink(ctx, func(d tool.UsageDelta) {
-		usage := Usage{InputTokens: d.InputTokens, CachedTokens: d.CachedTokens, OutputTokens: d.OutputTokens}
+		usage := Usage{
+			InputTokens:              d.InputTokens,
+			OutputTokens:             d.OutputTokens,
+			ReasoningTokens:          d.ReasoningTokens,
+			CacheReadInputTokens:     d.CacheReadInputTokens,
+			CacheCreationInputTokens: d.CacheCreationInputTokens,
+		}
 		if err := a.recordEvents(RuntimeEvent{Type: EventUsage, TurnID: hook.RuntimeFromContext(ctx).TurnID, Usage: &usage}); err != nil {
 			usageMu.Lock()
 			usageErr = errors.Join(usageErr, err)

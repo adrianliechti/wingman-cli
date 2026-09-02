@@ -13,6 +13,8 @@ import (
 
 	"github.com/coder/acp-go-sdk"
 
+	acpcommon "github.com/adrianliechti/wingman-agent/pkg/acp"
+
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 )
 
@@ -145,8 +147,6 @@ func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, cc
 	}()
 
 	disp := newEventDispatcher(turnCtx, conn, s.id)
-	disp.planUpdates = clientCapabilities.PlanCapabilities != nil
-	defer flushPendingPlans(ctx, disp)
 	app := newApprover(turnCtx, conn, s.id, clientCapabilities)
 	cc.setThreadHandlers(threadID, &threadHandlers{
 		onNotification: func(method string, params json.RawMessage) {
@@ -280,12 +280,6 @@ func interruptTurnSoon(cc *codexClient, threadID, turnID string) {
 	_ = cc.turnInterrupt(ctx, turnInterruptParams{ThreadID: threadID, TurnID: turnID})
 }
 
-func flushPendingPlans(ctx context.Context, disp *eventDispatcher) {
-	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
-	defer cancel()
-	disp.flushPendingPlanUpdates(cleanup)
-}
-
 func requestPlanImplementation(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, plan *completedPlan) bool {
 	const (
 		implement = acp.PermissionOptionId("implement_plan")
@@ -299,7 +293,7 @@ func requestPlanImplementation(ctx context.Context, conn *acp.AgentSideConnectio
 		acp.WithStartStatus(acp.ToolCallStatusPending),
 		acp.WithStartRawInput(map[string]any{"plan": plan.text}),
 	)
-	if err := conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: start}); err != nil {
+	if err := acpcommon.Notify(ctx, conn, sid, start); err != nil {
 		return false
 	}
 	response, err := conn.RequestPermission(ctx, acp.RequestPermissionRequest{
@@ -323,14 +317,11 @@ func requestPlanImplementation(ctx context.Context, conn *acp.AgentSideConnectio
 	}
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
-	_ = conn.SessionUpdate(finishCtx, acp.SessionNotification{
-		SessionId: sid,
-		Update: acp.UpdateToolCall(
-			id,
-			acp.WithUpdateStatus(acp.ToolCallStatusCompleted),
-			acp.WithUpdateRawOutput(output),
-		),
-	})
+	_ = acpcommon.Notify(finishCtx, conn, sid, acp.UpdateToolCall(
+		id,
+		acp.WithUpdateStatus(acp.ToolCallStatusCompleted),
+		acp.WithUpdateRawOutput(output),
+	))
 	return approved
 }
 
@@ -348,16 +339,16 @@ func sandboxPolicyWithRoots(policy any, roots []string) any {
 	return copy
 }
 
-func streamThreadHistory(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, turns []rawTurn, toolOutputs map[string]string, planUpdates bool) {
+func streamThreadHistory(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, turns []rawTurn, toolOutputs map[string]string) {
 	send := func(u acp.SessionUpdate) {
 		if ctx.Err() != nil {
 			return
 		}
-		_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: sid, Update: u})
+		_ = acpcommon.Notify(ctx, conn, sid, u)
 	}
 	for _, turn := range turns {
 		for _, raw := range turn.Items {
-			replayItem(send, raw, toolOutputs, planUpdates)
+			replayItem(send, raw, toolOutputs)
 		}
 	}
 }
@@ -390,7 +381,7 @@ func replayToolText(send func(acp.SessionUpdate), id, status string, outputs map
 	replayToolResult(send, id, status, []acp.ToolCallContent{acp.ToolContent(acp.TextBlock(out))})
 }
 
-func replayItem(send func(acp.SessionUpdate), raw json.RawMessage, toolOutputs map[string]string, planUpdates bool) {
+func replayItem(send func(acp.SessionUpdate), raw json.RawMessage, toolOutputs map[string]string) {
 	var probe struct {
 		Type string `json:"type"`
 		ID   string `json:"id"`
@@ -436,48 +427,19 @@ func replayItem(send func(acp.SessionUpdate), raw json.RawMessage, toolOutputs m
 		}
 		_ = json.Unmarshal(raw, &it)
 		if it.Text != "" {
-			if planUpdates {
-				send(acp.SessionUpdate{PlanUpdate: &acp.SessionPlanUpdate{
-					SessionUpdate: "plan_update",
-					Plan:          acp.NewPlanUpdateContentMarkdown(acp.PlanId(probe.ID), it.Text),
-				}})
-			} else {
-				send(acp.UpdateAgentMessageText("Plan:\n" + it.Text))
-			}
+			send(acp.UpdateAgentMessageText("Plan:\n" + it.Text))
 		}
 
 	case "commandExecution":
 		var it struct {
-			Command          string          `json:"command"`
-			Cwd              string          `json:"cwd"`
-			Status           string          `json:"status"`
-			AggregatedOutput string          `json:"aggregatedOutput"`
-			CommandActions   []commandAction `json:"commandActions"`
+			Status           string `json:"status"`
+			AggregatedOutput string `json:"aggregatedOutput"`
 		}
 		_ = json.Unmarshal(raw, &it)
-		if title, kind, input, locs, ok := commandActionToolCall(it.CommandActions); ok {
-			opts := []acp.ToolCallStartOpt{
-				acp.WithStartKind(kind),
-				acp.WithStartStatus(toolStatusFor(it.Status)),
-			}
-			opts = appendDisplayLocations(opts, locs)
-			if input != nil {
-				opts = append(opts, acp.WithStartRawInput(input))
-			}
-			send(acp.StartToolCall(acp.ToolCallId(probe.ID), title, opts...))
+		if u, ok := itemToolCallStart(raw, probe.ID, probe.Type, toolStatusFor(it.Status)); ok {
+			send(u)
 			replayToolText(send, probe.ID, it.Status, toolOutputs, it.AggregatedOutput)
-			break
 		}
-		command := stripShellPrefix(it.Command)
-		if command == "" {
-			command = it.Command
-		}
-		send(acp.StartToolCall(acp.ToolCallId(probe.ID), "Run command",
-			acp.WithStartKind(acp.ToolKindExecute),
-			acp.WithStartStatus(toolStatusFor(it.Status)),
-			acp.WithStartRawInput(commandRawInput(command, it.Cwd)),
-		))
-		replayToolText(send, probe.ID, it.Status, toolOutputs, it.AggregatedOutput)
 
 	case "fileChange":
 		var it struct {
@@ -494,38 +456,15 @@ func replayItem(send func(acp.SessionUpdate), raw json.RawMessage, toolOutputs m
 			replayToolResult(send, probe.ID, it.Status, content)
 		}
 
-	case "mcpToolCall":
+	case "mcpToolCall", "dynamicToolCall":
 		var it struct {
-			Server string          `json:"server"`
-			Tool   string          `json:"tool"`
-			Args   json.RawMessage `json:"arguments"`
-			Status string          `json:"status"`
+			Status string `json:"status"`
 		}
 		_ = json.Unmarshal(raw, &it)
-		var args map[string]any
-		_ = json.Unmarshal(it.Args, &args)
-		send(acp.StartToolCall(acp.ToolCallId(probe.ID), fmt.Sprintf("mcp.%s.%s", it.Server, it.Tool),
-			acp.WithStartKind(acp.ToolKindExecute),
-			acp.WithStartStatus(toolStatusFor(it.Status)),
-			acp.WithStartRawInput(args),
-		))
-		replayToolText(send, probe.ID, it.Status, toolOutputs)
-
-	case "dynamicToolCall":
-		var it struct {
-			Tool   string          `json:"tool"`
-			Args   json.RawMessage `json:"arguments"`
-			Status string          `json:"status"`
+		if u, ok := itemToolCallStart(raw, probe.ID, probe.Type, toolStatusFor(it.Status)); ok {
+			send(u)
+			replayToolText(send, probe.ID, it.Status, toolOutputs)
 		}
-		_ = json.Unmarshal(raw, &it)
-		var args map[string]any
-		_ = json.Unmarshal(it.Args, &args)
-		send(acp.StartToolCall(acp.ToolCallId(probe.ID), it.Tool,
-			acp.WithStartKind(acp.ToolKindExecute),
-			acp.WithStartStatus(toolStatusFor(it.Status)),
-			acp.WithStartRawInput(args),
-		))
-		replayToolText(send, probe.ID, it.Status, toolOutputs)
 
 	case "webSearch":
 		send(webSearchStartToolCall(raw, acp.ToolCallStatusCompleted))

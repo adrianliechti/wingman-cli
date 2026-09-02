@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
@@ -19,12 +20,15 @@ import (
 )
 
 const (
-	defaultExecWait    = 10
+	defaultExecWait    = 120
 	defaultSessionWait = 5
 	maxExecWait        = 300
 	maxExecSessions    = 16
 	maxUnreadBytes     = 1 << 20
 )
+
+// execIdleGrace backgrounds a command that printed output then went quiet, as a started server does.
+var execIdleGrace = 15 * time.Second
 
 // ExecExit reports the exit of a backgrounded exec_command session that no
 // tool call was waiting on, so the host can deliver it as a notification
@@ -189,15 +193,20 @@ type execSession struct {
 	exitErr  error
 	exitedAt time.Time
 
+	// timeout is the kill deadline in seconds; 0 means none.
+	timeout  int
+	timedOut atomic.Bool
+
 	// backgrounded and waiters are lifecycle state guarded by the manager mutex:
 	// exit notifications fire only for backgrounded sessions no tool call is
 	// currently waiting on.
 	backgrounded bool
 	waiters      int
 
-	mu      sync.Mutex
-	unread  bytes.Buffer
-	dropped int
+	mu        sync.Mutex
+	unread    bytes.Buffer
+	dropped   int
+	lastWrite time.Time
 
 	inputMu        sync.Mutex
 	pendingInput   string
@@ -209,11 +218,19 @@ func (s *execSession) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.unread.Write(p)
+	s.lastWrite = time.Now()
 	if over := s.unread.Len() - maxUnreadBytes; over > 0 {
 		s.unread.Next(over)
 		s.dropped += over
 	}
 	return len(p), nil
+}
+
+// idleFor reports output seen, then quiet for d. drain() does not reset the clock.
+func (s *execSession) idleFor(d time.Duration) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.lastWrite.IsZero() && time.Since(s.lastWrite) >= d
 }
 
 func (s *execSession) drain() string {
@@ -269,6 +286,9 @@ func (s *execSession) exited() bool {
 }
 
 func (s *execSession) exitNotice() string {
+	if s.timedOut.Load() {
+		return fmt.Sprintf("Command killed after exceeding its %ds timeout", s.timeout)
+	}
 	if s.exitErr != nil {
 		if exitErr, ok := errors.AsType[*exec.ExitError](s.exitErr); ok {
 			if code := exitErr.ExitCode(); code >= 0 {
@@ -287,10 +307,13 @@ func ExecTools(manager *ExecManager, workDir string, elicit *tool.Elicitation, a
 	}
 
 	commandLines := []string{
-		fmt.Sprintf("Start a command for long-running or interactive work. Waits up to `wait` seconds (default %d) for it to finish; if still running, the command keeps running in the background and a session_id is returned.", defaultExecWait),
-		"- Use for dev servers, watch tasks, log tails, and interactive programs (REPLs, CLIs that prompt for input). Use `shell` for commands expected to finish promptly.",
+		fmt.Sprintf("Run a command in the host shell. Waits up to `wait` seconds (default %d) for it to finish; if still running, the command keeps running in the background and a session_id is returned.", defaultExecWait),
+		"- Use directly for both short commands and long-running or interactive work such as dev servers, watch tasks, log tails, REPLs, and prompting CLIs.",
+		fmt.Sprintf("- Builds and test suites finish inline within the default wait, so just call and read the result. A command that prints output and then stays quiet for %.0fs is treated as started and handed back as a session, so dev servers return promptly without waiting out the full `wait`.", execIdleGrace.Seconds()),
+		"- Set `timeout` for anything that could hang (network calls, flaky suites, unfamiliar binaries) — the process is killed at that deadline. Omit it for servers and watch tasks you intend to keep running.",
 		"- Set `tty` for programs that need a terminal (REPLs, prompts, programs that buffer output when piped). Unix only — ignored on Windows. Written input is echoed back in the output.",
-		"- Runs in the same host shell as `shell` and starts in the workspace directory (override with `workdir`). stdout and stderr are merged. Output between reads is buffered (oldest dropped past 1MB); poll with `exec_session` to collect it.",
+		"- Starts in the workspace directory (override with `workdir`). Shell state does not carry over between calls. stdout and stderr are merged. Output between reads is buffered (oldest dropped past 1MB); poll with `exec_session` to collect it.",
+		"- Not for file content work: use `read`/`edit`/`write`/`grep`/`glob` instead of cat, head, tail, sed, awk, echo-redirects, or find. A file inspected through the shell does not count as read, so `write` will still refuse to overwrite it.",
 		"- The process is NOT killed when the wait elapses. Kill sessions you no longer need via `exec_session`.",
 	}
 
@@ -327,6 +350,7 @@ func ExecTools(manager *ExecManager, workDir string, elicit *tool.Elicitation, a
 					"workdir":     map[string]any{"type": "string", "description": "Directory to run the command in (absolute, or relative to the workspace). Defaults to the workspace root."},
 					"tty":         map[string]any{"type": "boolean", "description": "Run in a pseudo-terminal (Unix only)."},
 					"wait":        map[string]any{"type": "integer", "description": fmt.Sprintf("Seconds to wait before backgrounding (default %d, max %d; 0 backgrounds immediately).", defaultExecWait, maxExecWait)},
+					"timeout":     map[string]any{"type": "integer", "description": "Seconds after which the command is killed. Omit to let it run until it exits or the agent session closes."},
 				},
 
 				"required":             []string{"command"},
@@ -382,6 +406,14 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, eli
 		wait = maxExecWait
 	}
 
+	timeout := 0
+	if value, present, err := tool.NonNegIntArg(args, "timeout"); present {
+		if err != nil {
+			return tool.Result{}, err
+		}
+		timeout = value
+	}
+
 	dir, err := resolveWorkdir(workDir, args)
 	if err != nil {
 		return tool.Result{}, err
@@ -410,6 +442,7 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, eli
 		description: strings.TrimSpace(description),
 		started:     time.Now(),
 		tty:         tty,
+		timeout:     timeout,
 		cancel:      cancel,
 		interrupt:   func() error { return interruptProcessGroup(cmd) },
 		done:        make(chan struct{}),
@@ -464,6 +497,19 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, eli
 		}()
 	}
 
+	if timeout > 0 {
+		go func() {
+			t := time.NewTimer(time.Duration(timeout) * time.Second)
+			defer t.Stop()
+			select {
+			case <-s.done:
+			case <-t.C:
+				s.timedOut.Store(true)
+				s.cancel()
+			}
+		}()
+	}
+
 	id, err := m.add(s)
 	if err != nil {
 		return tool.Result{}, err
@@ -472,17 +518,41 @@ func executeExecCommand(ctx context.Context, m *ExecManager, workDir string, eli
 	timer := time.NewTimer(time.Duration(wait) * time.Second)
 	defer timer.Stop()
 
-	select {
-	case <-s.done:
-		m.remove(id)
-		return completedSessionResult(s), nil
-	case <-timer.C:
-	case <-ctx.Done():
+	grace := execIdleGrace
+
+	var idleTick <-chan time.Time
+	if grace > 0 {
+		idle := time.NewTicker(min(time.Second, grace))
+		defer idle.Stop()
+		idleTick = idle.C
+	}
+
+	idled := false
+
+waiting:
+	for {
+		select {
+		case <-s.done:
+			m.remove(id)
+			return completedSessionResult(s), nil
+		case <-timer.C:
+			break waiting
+		case <-ctx.Done():
+			break waiting
+		case <-idleTick:
+			if s.idleFor(grace) {
+				idled = true
+				break waiting
+			}
+		}
 	}
 
 	m.markBackgrounded(s)
 
 	notice := fmt.Sprintf("Still running with session_id %d — use exec_session to poll output, send input, or kill it", id)
+	if idled {
+		notice = fmt.Sprintf("Started and idle (no new output for %s), running with session_id %d — use exec_session to poll output, send input, or kill it", grace, id)
+	}
 	return tool.Text(sessionResult(s.drain(), notice)), nil
 }
 

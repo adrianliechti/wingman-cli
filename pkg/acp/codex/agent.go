@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -77,6 +79,26 @@ func (a *Agent) lookup(id acp.SessionId) *session {
 }
 
 func (a *Agent) handleGlobalNotification(threadID, method string, params json.RawMessage) {
+	// Account-scoped: no threadId, so warn on every live session.
+	if method == "account/rateLimits/updated" {
+		note := rateLimitNote(params)
+		a.mu.Lock()
+		ids := slices.Collect(maps.Keys(a.sessions))
+		conn := a.conn
+		a.mu.Unlock()
+		if note == "" || conn == nil || len(ids) == 0 {
+			return
+		}
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			for _, id := range ids {
+				_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: id,
+					Update: acp.UpdateAgentMessageText(note)})
+			}
+		}()
+		return
+	}
 	if method != "thread/name/updated" {
 		return
 	}
@@ -93,10 +115,7 @@ func (a *Agent) handleGlobalNotification(threadID, method string, params json.Ra
 	go func(id acp.SessionId, title string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = conn.SessionUpdate(ctx, acp.SessionNotification{
-			SessionId: id,
-			Update:    sessionTitleUpdate(title),
-		})
+		_ = acpcommon.Notify(ctx, conn, id, sessionTitleUpdate(title))
 	}(acp.SessionId(threadID), p.ThreadName)
 }
 
@@ -133,7 +152,8 @@ func (a *Agent) resumeModelProvider(ctx context.Context) string {
 func (a *Agent) Initialize(ctx context.Context, req acp.InitializeRequest) (acp.InitializeResponse, error) {
 	a.clientCapabilities = req.ClientCapabilities
 	if err := a.codex.initialize(ctx, initializeParams{
-		ClientInfo: clientInfo{Name: "codex-acp", Title: "Codex (ACP)", Version: "0.1.0"},
+		ClientInfo:   clientInfo{Name: "codex-acp", Title: "Codex (ACP)", Version: "0.1.0"},
+		Capabilities: clientCapabilities{ExperimentalAPI: true},
 	}); err != nil {
 		return acp.InitializeResponse{}, fmt.Errorf("codex initialize: %w", err)
 	}
@@ -229,13 +249,10 @@ func (a *Agent) sendAvailableCommands(ctx context.Context, id acp.SessionId) {
 	if conn == nil {
 		return
 	}
-	_ = conn.SessionUpdate(ctx, acp.SessionNotification{
-		SessionId: id,
-		Update: acp.SessionUpdate{AvailableCommandsUpdate: &acp.SessionAvailableCommandsUpdate{
-			SessionUpdate:     "available_commands_update",
-			AvailableCommands: availableCommands(),
-		}},
-	})
+	_ = acpcommon.Notify(ctx, conn, id, acp.SessionUpdate{AvailableCommandsUpdate: &acp.SessionAvailableCommandsUpdate{
+		SessionUpdate:     "available_commands_update",
+		AvailableCommands: availableCommands(),
+	}})
 }
 
 func availableCommands() []acp.AvailableCommand {
@@ -479,12 +496,12 @@ func (a *Agent) SetSessionConfigOption(ctx context.Context, params acp.SetSessio
 			return acp.SetSessionConfigOptionResponse{}, fmt.Errorf("unknown model %q", value)
 		}
 		modelID = value
-		if !isValidEffort(m, effort) {
+		if !acpcommon.IsValidEffort(m.EffortLevels, effort) {
 			effort = "default"
 		}
 	case effortConfigID:
 		m := findModel(a.models, modelID)
-		if m == nil || !isValidEffort(m, value) {
+		if m == nil || !acpcommon.IsValidEffort(m.EffortLevels, value) {
 			return acp.SetSessionConfigOptionResponse{}, fmt.Errorf("effort %q invalid for model %s", value, modelID)
 		}
 		effort = value
@@ -663,7 +680,7 @@ func (a *Agent) LoadSession(ctx context.Context, params acp.LoadSessionRequest) 
 	}
 
 	outputs := rolloutCommandOutputs(string(params.SessionId), threadPath(thread))
-	streamThreadHistory(ctx, a.connection(), s.id, thread.Turns, outputs, a.clientCapabilities.PlanCapabilities != nil)
+	streamThreadHistory(ctx, a.connection(), s.id, thread.Turns, outputs)
 	return acp.LoadSessionResponse{
 		Modes:         buildSessionModeState(s.mode),
 		ConfigOptions: buildConfigOptions(a.models, s.modelID, s.effort, s.collaborationMode),

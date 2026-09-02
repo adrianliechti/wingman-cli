@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/coder/acp-go-sdk"
+
+	acpcommon "github.com/adrianliechti/wingman-agent/pkg/acp"
 )
 
 const (
@@ -155,7 +157,7 @@ func effortConfigOption(levels []string, thinking string) acp.SessionConfigOptio
 	for _, l := range levels {
 		ungrouped = append(ungrouped, acp.SessionConfigSelectOption{
 			Value: acp.SessionConfigValueId(l),
-			Name:  titleCase(l),
+			Name:  acpcommon.TitleCase(l),
 		})
 	}
 	opt := acp.NewSessionConfigOptionSelect(
@@ -169,15 +171,4 @@ func effortConfigOption(levels []string, thinking string) acp.SessionConfigOptio
 	opt.Select.Description = &desc
 	opt.Select.Category = &cat
 	return opt
-}
-
-func titleCase(s string) string {
-	if s == "" {
-		return s
-	}
-	b := []byte(s)
-	if b[0] >= 'a' && b[0] <= 'z' {
-		b[0] -= 0x20
-	}
-	return string(b)
 }

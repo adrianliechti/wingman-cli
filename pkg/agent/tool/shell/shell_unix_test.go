@@ -3,8 +3,6 @@
 package shell_test
 
 import (
-	"context"
-	"os"
 	"testing"
 
 	. "github.com/adrianliechti/wingman-agent/pkg/agent/tool/shell"
@@ -268,88 +266,5 @@ func TestIsReadOnlyCommand_WriteCapableAllowlistedTools(t *testing.T) {
 				t.Fatalf("IsReadOnlyCommand(%q) = false, want true", cmd)
 			}
 		})
-	}
-}
-
-func TestShellElicitationOnlyPromptsForDangerousCommands(t *testing.T) {
-	ctx := context.Background()
-	workDir := t.TempDir()
-	confirmCalls := 0
-
-	elicit := &tool.Elicitation{
-		Confirm: func(ctx context.Context, message string) (bool, error) {
-			confirmCalls++
-			return false, nil
-		},
-	}
-	shellTool := Tools(workDir, elicit, nil, nil)[0]
-
-	if _, err := shellTool.Execute(ctx, map[string]any{"command": "printf hi > out.txt"}); err != nil {
-		t.Fatalf("benign mutating command failed: %v", err)
-	}
-	if confirmCalls != 0 {
-		t.Fatalf("benign mutating command prompted %d times, want 0", confirmCalls)
-	}
-
-	if _, err := os.ReadFile(workDir + "/out.txt"); err != nil {
-		t.Fatalf("benign mutating command did not write expected file: %v", err)
-	}
-
-	_, err := shellTool.Execute(ctx, map[string]any{"command": "rm -rf out.txt"})
-	if err == nil || err.Error() != "command execution denied by user" {
-		t.Fatalf("dangerous command was not denied by elicitation: %v", err)
-	}
-	if confirmCalls != 1 {
-		t.Fatalf("dangerous command prompted %d times, want 1", confirmCalls)
-	}
-}
-
-func TestShellApprovalRememberedForSession(t *testing.T) {
-	ctx := context.Background()
-	workDir := t.TempDir()
-	confirmCalls := 0
-
-	elicit := &tool.Elicitation{
-		Confirm: func(ctx context.Context, message string) (bool, error) {
-			confirmCalls++
-			return true, nil
-		},
-	}
-	shellTool := Tools(workDir, elicit, nil, nil)[0]
-
-	for range 2 {
-		if _, err := shellTool.Execute(ctx, map[string]any{"command": "rm -rf missing-dir"}); err != nil {
-			t.Fatalf("approved dangerous command failed: %v", err)
-		}
-	}
-	if confirmCalls != 1 {
-		t.Fatalf("identical approved command prompted %d times, want 1", confirmCalls)
-	}
-
-	if _, err := shellTool.Execute(ctx, map[string]any{"command": "rm -rf other-dir"}); err != nil {
-		t.Fatalf("approved dangerous command failed: %v", err)
-	}
-	if confirmCalls != 2 {
-		t.Fatalf("different dangerous command prompted %d times total, want 2", confirmCalls)
-	}
-}
-
-func TestShellApprovalDistinguishesQuotedWhitespace(t *testing.T) {
-	ctx := context.Background()
-	confirmCalls := 0
-
-	elicit := &tool.Elicitation{
-		Confirm: func(ctx context.Context, message string) (bool, error) {
-			confirmCalls++
-			return true, nil
-		},
-	}
-	shellTool := Tools(t.TempDir(), elicit, nil, nil)[0]
-
-	shellTool.Execute(ctx, map[string]any{"command": `rm -rf "missing a  b"`})
-	shellTool.Execute(ctx, map[string]any{"command": `rm -rf "missing a b"`})
-
-	if confirmCalls != 2 {
-		t.Fatalf("whitespace-distinct commands prompted %d times, want 2", confirmCalls)
 	}
 }

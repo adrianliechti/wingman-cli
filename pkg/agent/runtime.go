@@ -346,8 +346,10 @@ func (a *Agent) applyEventLocked(event RuntimeEvent) {
 
 func (a *Agent) addUsageLocked(delta Usage) {
 	a.Usage.InputTokens += delta.InputTokens
-	a.Usage.CachedTokens += delta.CachedTokens
 	a.Usage.OutputTokens += delta.OutputTokens
+	a.Usage.ReasoningTokens += delta.ReasoningTokens
+	a.Usage.CacheReadInputTokens += delta.CacheReadInputTokens
+	a.Usage.CacheCreationInputTokens += delta.CacheCreationInputTokens
 	if delta.LastInputTokens > 0 {
 		a.Usage.LastInputTokens = delta.LastInputTokens
 	}

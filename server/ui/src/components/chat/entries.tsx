@@ -13,7 +13,6 @@ import {
 	useState,
 } from "react";
 import type { ChatEntry } from "../../hooks/useWebSocket";
-import { parseTodoItems } from "../../streamingJson";
 import type { Phase, ToolLocation } from "../../types/protocol";
 import { MarkdownContent } from "../MarkdownContent";
 import { looksLikeDiffPath, shouldRenderDiff } from "./diffOutput";
@@ -130,16 +129,6 @@ export const ToolGroupView = memo(function ToolGroupView({
 			{entries.map((entry) => {
 				const running =
 					isTrailing && phase !== "idle" && entry.toolResult === undefined;
-				if (entry.toolName === "todo") {
-					return (
-						<TodoRow
-							key={entry.id}
-							entry={entry}
-							running={running}
-							onOpenFile={onOpenFile}
-						/>
-					);
-				}
 				return (
 					<ToolRow
 						key={entry.id}
@@ -152,67 +141,6 @@ export const ToolGroupView = memo(function ToolGroupView({
 		</div>
 	);
 });
-
-function TodoRow({
-	entry,
-	running,
-	onOpenFile,
-}: {
-	entry: ChatEntry;
-	running: boolean;
-	onOpenFile?: (path: string, line?: number) => void;
-}) {
-	const items = parseTodoItems(entry.toolArgs);
-
-	if (!items.length) {
-		return <ToolRow entry={entry} running={running} onOpenFile={onOpenFile} />;
-	}
-
-	const completed = items.filter((it) => it.status === "completed").length;
-
-	return (
-		<div data-entry-id={entry.id} className="border-l-2 border-purple pl-3">
-			<div className="flex items-center gap-2 py-0.5 text-[12px]">
-				{running && (
-					<LoaderCircle
-						size={11}
-						className="animate-spin text-fg-dim"
-						aria-label={entry.toolPartial ? "Preparing plan" : "Updating plan"}
-					/>
-				)}
-				<span className="text-purple font-mono text-[11px]">plan</span>
-				<span className="text-fg-dim font-mono text-[11px]">
-					{completed}/{items.length}
-				</span>
-			</div>
-			<div className="flex flex-col">
-				{items.map((it, i) => (
-					<div
-						key={`${i}-${it.content}`}
-						className="flex items-start gap-1.5 text-[12px] font-mono leading-relaxed"
-					>
-						{it.status === "completed" ? (
-							<>
-								<span className="text-success">✔</span>
-								<span className="text-fg-dim line-through">{it.content}</span>
-							</>
-						) : it.status === "in_progress" ? (
-							<>
-								<span className="text-accent">□</span>
-								<span className="text-fg font-medium">{it.content}</span>
-							</>
-						) : (
-							<>
-								<span className="text-fg-dim">□</span>
-								<span className="text-fg-dim">{it.content}</span>
-							</>
-						)}
-					</div>
-				))}
-			</div>
-		</div>
-	);
-}
 
 function parseArgs(json?: string): Record<string, unknown> | null {
 	if (!json) return null;

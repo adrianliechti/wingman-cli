@@ -30,7 +30,6 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/schedule"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/shell"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/subagent"
-	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/todo"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/websearch"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/code/prompt"
@@ -134,10 +133,11 @@ func (s *sessionState) setMode(mode sessionMode) {
 // New constructs a built-in code agent. Options are optional so existing
 // callers keep the default tool set; multiple values are combined.
 func New(ws *code.Workspace, cfg *harness.Config, ui code.UI, options ...Options) *Agent {
+	resolvedOptions := resolveOptions(options)
 	a := &Agent{
 		workspace: ws,
 		cfg:       cfg,
-		options:   resolveOptions(options),
+		options:   resolvedOptions,
 		ui:        ui,
 		modelByRole: map[modelRole]string{
 			modelRoleMain:    harness.DefaultModel(),
@@ -160,6 +160,11 @@ func New(ws *code.Workspace, cfg *harness.Config, ui code.UI, options ...Options
 	// the first turn) for display.
 	if ws.MCP != nil {
 		ws.MCP.SetElicit(a.elicit)
+		tel := cfg.Telemetry
+		if resolvedOptions.Telemetry != nil {
+			tel = resolvedOptions.Telemetry
+		}
+		ws.MCP.SetTelemetry(tel)
 	}
 
 	return a
@@ -697,6 +702,21 @@ func (a *Agent) Close() error {
 	for _, s := range sessions {
 		s.close()
 	}
+	if a.options.ShutdownTelemetryOnClose {
+		// The MCP manager can retain session-duration observations until the
+		// workspace closes. End those sessions while the owned meter provider is
+		// still accepting records; Workspace.Close may safely close them again.
+		if a.workspace != nil && a.workspace.MCP != nil {
+			a.workspace.MCP.Close()
+		}
+		tel := a.options.Telemetry
+		if tel == nil {
+			tel = a.cfg.Telemetry
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return tel.Shutdown(shutdownCtx)
+	}
 	return nil
 }
 
@@ -748,6 +768,9 @@ func (a *Agent) buildSession(id string) (*sessionState, error) {
 		return nil, err
 	}
 	sessionCfg := a.cfg.Derive()
+	if a.options.Telemetry != nil {
+		sessionCfg.Telemetry = a.options.Telemetry
+	}
 	s := &sessionState{
 		parent:       a,
 		aa:           &harness.Agent{Config: sessionCfg, Recorder: journal},
@@ -856,10 +879,7 @@ func (a *Agent) buildSession(id string) (*sessionState, error) {
 
 	var shellTools []tool.Tool
 	if !a.options.DisableShell {
-		shellTools = slices.Concat(
-			shell.Tools(ws.RootPath, elicit, approvals, shellOpts),
-			shell.ExecTools(s.execManager, ws.RootPath, elicit, approvals, shellOpts),
-		)
+		shellTools = shell.ExecTools(s.execManager, ws.RootPath, elicit, approvals, shellOpts)
 	}
 	var webFetchTools []tool.Tool
 	if !a.options.DisableWebFetch {
@@ -877,7 +897,6 @@ func (a *Agent) buildSession(id string) (*sessionState, error) {
 			Freshness:         s.freshness,
 		})),
 		shellTools,
-		todo.Tools(),
 		schedule.Tools(s.schedules),
 		elicittool.Tools(elicit),
 		webFetchTools,

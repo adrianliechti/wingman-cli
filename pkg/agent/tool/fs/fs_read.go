@@ -12,10 +12,10 @@ import (
 )
 
 func ReadTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
-	return readTool(root, nil, nil, 0, allowedReadRoots...)
+	return readTool(root, nil, 0, allowedReadRoots...)
 }
 
-func readTool(root *os.Root, tracker *contentTracker, freshness *Freshness, maxFileBytes int64, allowedReadRoots ...string) tool.Tool {
+func readTool(root *os.Root, freshness *Freshness, maxFileBytes int64, allowedReadRoots ...string) tool.Tool {
 	if maxFileBytes == 0 {
 		maxFileBytes = MaxReadFileBytes
 	}
@@ -113,7 +113,6 @@ func readTool(root *os.Root, tracker *contentTracker, freshness *Freshness, maxF
 				return tool.Result{}, fmt.Errorf("cannot read %s: file appears to be binary. Use the shell tool with an appropriate viewer if you really need to inspect it", pathArg)
 			}
 
-			tracker.record(content)
 			freshness.record(ctx, target)
 
 			return tool.Text(formatRead(content, startLine, limit)), nil

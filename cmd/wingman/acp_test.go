@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"slices"
+	"strings"
+	"testing"
+)
 
 func TestParseACPBackend(t *testing.T) {
 	tests := []struct {
@@ -28,5 +32,32 @@ func TestParseACPBackend(t *testing.T) {
 func TestParseACPBackendRejectsUnknownValue(t *testing.T) {
 	if _, err := parseACPBackend("proxy"); err == nil {
 		t.Fatal("parseACPBackend(proxy) succeeded")
+	}
+}
+
+func TestCodexOTLPArgsEnableLogsAndMetrics(t *testing.T) {
+	args := codexOTLPArgs("http://127.0.0.1:4318")
+	var configs []string
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--config" {
+			configs = append(configs, args[i+1])
+		}
+	}
+	for _, want := range []string{
+		"analytics.enabled=true",
+		`otel.exporter={ otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "json" } }`,
+		`otel.metrics_exporter={ otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics", protocol = "json" } }`,
+	} {
+		if !slices.Contains(configs, want) {
+			t.Errorf("configs = %q, missing %q", configs, want)
+		}
+	}
+	for _, config := range configs {
+		if strings.HasPrefix(config, "otel.trace_exporter=") {
+			t.Errorf("unexpected noisy trace exporter override %q", config)
+		}
+		if strings.Contains(config, "update_plan") {
+			t.Errorf("unexpected opt-in planning tool override %q", config)
+		}
 	}
 }

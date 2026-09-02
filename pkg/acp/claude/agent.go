@@ -2,9 +2,8 @@ package claude
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
+	"github.com/google/uuid"
 	"io"
 	"os"
 	"path/filepath"
@@ -40,7 +39,6 @@ type Agent struct {
 	mu              sync.Mutex
 	sessions        map[acp.SessionId]*session
 	formElicitation bool
-	planUpdates     bool
 
 	defaultModel  string
 	defaultEffort string
@@ -103,12 +101,6 @@ func (a *Agent) supportsFormElicitation() bool {
 	return a.formElicitation
 }
 
-func (a *Agent) supportsPlanUpdates() bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.planUpdates
-}
-
 func (a *Agent) lookup(id acp.SessionId) *session {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -160,7 +152,6 @@ func (a *Agent) sendAvailableCommands(s *session) {
 func (a *Agent) Initialize(_ context.Context, params acp.InitializeRequest) (acp.InitializeResponse, error) {
 	a.mu.Lock()
 	a.formElicitation = params.ClientCapabilities.Elicitation != nil && params.ClientCapabilities.Elicitation.Form != nil
-	a.planUpdates = params.ClientCapabilities.PlanCapabilities != nil
 	a.mu.Unlock()
 
 	title := "Claude (ACP)"
@@ -210,7 +201,7 @@ func (a *Agent) NewSession(ctx context.Context, params acp.NewSessionRequest) (a
 		return acp.NewSessionResponse{}, err
 	}
 	a.ensureModels(ctx)
-	id := acp.SessionId(newUUID())
+	id := acp.SessionId(uuid.NewString())
 	modelID, effort := normalizeSessionConfig(a.models, a.defaultModel, a.defaultEffort)
 	s := a.newSession(id, cwd, modelID, effort, additional)
 	s.mcpServers = params.McpServers
@@ -289,12 +280,12 @@ func (a *Agent) SetSessionConfigOption(_ context.Context, params acp.SetSessionC
 			s.modelID = m.ID
 		}
 		s.modelOverride = true
-		if m != nil && !isValidEffort(m, s.effort) {
+		if m != nil && !acpcommon.IsValidEffort(m.EffortLevels, s.effort) {
 			s.effort = "default"
 		}
 	case effortConfigID:
 		m := findModel(a.models, s.modelID)
-		if m == nil || !isValidEffort(m, value) {
+		if m == nil || !acpcommon.IsValidEffort(m.EffortLevels, value) {
 			return acp.SetSessionConfigOptionResponse{}, fmt.Errorf("effort %q invalid for model %s", value, s.modelID)
 		}
 		s.effort = value
@@ -376,7 +367,7 @@ func (a *Agent) LoadSession(ctx context.Context, params acp.LoadSessionRequest) 
 	}
 	a.ensureModels(ctx)
 	s := a.adoptSession(params.SessionId, cwd, additional, params.McpServers, string(params.SessionId), false)
-	if err := replayHistory(ctx, a.conn, params.SessionId, cwd, s.plan); err != nil {
+	if err := replayHistory(ctx, a.conn, params.SessionId, cwd); err != nil {
 		return acp.LoadSessionResponse{}, fmt.Errorf("replay history: %w", err)
 	}
 	a.sendAvailableCommands(s)
@@ -395,7 +386,7 @@ func (a *Agent) UnstableForkSession(_ context.Context, params acp.UnstableForkSe
 	if err != nil {
 		return acp.UnstableForkSessionResponse{}, err
 	}
-	newID := acp.SessionId(newUUID())
+	newID := acp.SessionId(uuid.NewString())
 	s := a.adoptSession(newID, cwd, additional, servers, string(params.SessionId), true)
 	a.sendAvailableCommands(s)
 
@@ -436,21 +427,4 @@ func (a *Agent) storeSession(s *session) {
 	if old != nil && old != s {
 		old.close()
 	}
-}
-
-func newUUID() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-
-		return "00000000-0000-4000-8000-000000000000"
-	}
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%s-%s-%s-%s-%s",
-		hex.EncodeToString(b[0:4]),
-		hex.EncodeToString(b[4:6]),
-		hex.EncodeToString(b[6:8]),
-		hex.EncodeToString(b[8:10]),
-		hex.EncodeToString(b[10:16]),
-	)
 }

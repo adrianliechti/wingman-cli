@@ -19,7 +19,6 @@ func TestLiveSuite(t *testing.T) {
 			Marker: "FINISHED",
 			Leak:   "WATERMELON",
 		},
-		PlanPrompt:      "Use your task tracking tools to create two tasks named 'first' and 'second'. Mark both completed, then reply with exactly: DONE",
 		MCPHelperTest:   "TestMCPServerHelper",
 		WantUsageUpdate: true,
 		WantCommands:    true,

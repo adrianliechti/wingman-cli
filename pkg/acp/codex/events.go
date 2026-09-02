@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"regexp"
 	"strings"
 	"sync"
@@ -26,12 +25,7 @@ type eventDispatcher struct {
 	guardianStarted map[string]bool
 	startedTools    map[string]bool
 	agentPhases     map[string]string
-	planText        map[string]string
-	planEmitted     map[string]string
-	planEmittedAt   map[string]time.Time
 	lastGoal        string
-	planUpdates     bool
-	planMu          sync.Mutex
 
 	mu            sync.Mutex
 	failure       error
@@ -56,9 +50,6 @@ func newEventDispatcher(ctx context.Context, conn *acp.AgentSideConnection, sid 
 		guardianStarted: map[string]bool{},
 		startedTools:    map[string]bool{},
 		agentPhases:     map[string]string{},
-		planText:        map[string]string{},
-		planEmitted:     map[string]string{},
-		planEmittedAt:   map[string]time.Time{},
 	}
 }
 
@@ -230,11 +221,6 @@ func (d *eventDispatcher) handle(method string, params json.RawMessage) {
 			d.update(acp.UpdateAgentMessageText("\n\nGoal cleared.\n\n"))
 		}
 
-	case "turn/plan/updated":
-		if d.planUpdates {
-			d.handlePlanUpdated(params)
-		}
-
 	case "error":
 		var p struct {
 			Error struct {
@@ -279,36 +265,8 @@ func (d *eventDispatcher) handle(method string, params json.RawMessage) {
 			d.appendToolOut(p.ItemID, p.Delta)
 		}
 
-	case "item/mcpToolCall/progress":
-		var p struct {
-			ItemID  string `json:"itemId"`
-			Message string `json:"message"`
-		}
-		if json.Unmarshal(params, &p) == nil && p.ItemID != "" && strings.TrimSpace(p.Message) != "" {
-			d.appendToolOut(p.ItemID, strings.TrimSpace(p.Message)+"\n")
-		}
-
-	case "item/plan/delta":
-		var p struct {
-			ItemID string `json:"itemId"`
-			Delta  string `json:"delta"`
-		}
-		if json.Unmarshal(params, &p) == nil && p.ItemID != "" && p.Delta != "" {
-			d.planMu.Lock()
-			d.planText[p.ItemID] += p.Delta
-			text := d.planText[p.ItemID]
-			emit := d.planUpdates && (d.planEmitted[p.ItemID] == "" || time.Since(d.planEmittedAt[p.ItemID]) >= 100*time.Millisecond)
-			d.planMu.Unlock()
-			if emit {
-				d.emitMarkdownPlan(d.ctx, p.ItemID, text)
-			}
-		}
-
 	case "thread/tokenUsage/updated":
 		d.handleTokenUsage(params)
-
-	case "thread/compacted":
-		d.update(acp.UpdateAgentMessageText("*Context compacted to fit the model's context window.*\n\n"))
 
 	case "configWarning":
 		var p struct {
@@ -336,7 +294,6 @@ func (d *eventDispatcher) handle(method string, params json.RawMessage) {
 	case "turn/completed":
 		var tc turnCompleted
 		if json.Unmarshal(params, &tc) == nil {
-			d.flushPendingPlanUpdates(d.ctx)
 			select {
 			case d.done <- tc:
 			default:
@@ -392,35 +349,6 @@ func (d *eventDispatcher) handleItemStarted(params json.RawMessage) {
 		_ = json.Unmarshal(env.Item, &it)
 		d.agentPhases[id] = it.Phase
 
-	case "commandExecution":
-		var it struct {
-			Command        string          `json:"command"`
-			Cwd            string          `json:"cwd"`
-			CommandActions []commandAction `json:"commandActions"`
-		}
-		_ = json.Unmarshal(env.Item, &it)
-		if title, kind, input, locs, ok := commandActionToolCall(it.CommandActions); ok {
-			opts := []acp.ToolCallStartOpt{
-				acp.WithStartKind(kind),
-				acp.WithStartStatus(acp.ToolCallStatusInProgress),
-			}
-			opts = appendDisplayLocations(opts, locs)
-			if input != nil {
-				opts = append(opts, acp.WithStartRawInput(input))
-			}
-			d.update(acp.StartToolCall(acp.ToolCallId(id), title, opts...))
-			break
-		}
-		command := stripShellPrefix(it.Command)
-		if command == "" {
-			command = it.Command
-		}
-		d.update(acp.StartToolCall(acp.ToolCallId(id), "Run command",
-			acp.WithStartKind(acp.ToolKindExecute),
-			acp.WithStartStatus(acp.ToolCallStatusInProgress),
-			acp.WithStartRawInput(commandRawInput(command, it.Cwd)),
-		))
-
 	case "fileChange":
 		opts := []acp.ToolCallStartOpt{
 			acp.WithStartKind(acp.ToolKindEdit),
@@ -432,34 +360,10 @@ func (d *eventDispatcher) handleItemStarted(params json.RawMessage) {
 		opts = appendDisplayLocations(opts, fileChangeLocations(env.Item))
 		d.update(acp.StartToolCall(acp.ToolCallId(id), "Edit files", opts...))
 
-	case "mcpToolCall":
-		var it struct {
-			Server string          `json:"server"`
-			Tool   string          `json:"tool"`
-			Args   json.RawMessage `json:"arguments"`
+	case "commandExecution", "mcpToolCall", "dynamicToolCall":
+		if u, ok := itemToolCallStart(env.Item, id, kind, acp.ToolCallStatusInProgress); ok {
+			d.update(u)
 		}
-		_ = json.Unmarshal(env.Item, &it)
-		var args map[string]any
-		_ = json.Unmarshal(it.Args, &args)
-		d.update(acp.StartToolCall(acp.ToolCallId(id), fmt.Sprintf("mcp.%s.%s", it.Server, it.Tool),
-			acp.WithStartKind(acp.ToolKindExecute),
-			acp.WithStartStatus(acp.ToolCallStatusInProgress),
-			acp.WithStartRawInput(args),
-		))
-
-	case "dynamicToolCall":
-		var it struct {
-			Tool string          `json:"tool"`
-			Args json.RawMessage `json:"arguments"`
-		}
-		_ = json.Unmarshal(env.Item, &it)
-		var args map[string]any
-		_ = json.Unmarshal(it.Args, &args)
-		d.update(acp.StartToolCall(acp.ToolCallId(id), it.Tool,
-			acp.WithStartKind(acp.ToolKindExecute),
-			acp.WithStartStatus(acp.ToolCallStatusInProgress),
-			acp.WithStartRawInput(args),
-		))
 
 	case "webSearch":
 		d.update(webSearchStartToolCall(env.Item, acp.ToolCallStatusInProgress))
@@ -610,25 +514,10 @@ func (d *eventDispatcher) handleItemCompleted(params json.RawMessage) {
 			Text string `json:"text"`
 		}
 		_ = json.Unmarshal(env.Item, &it)
-		d.planMu.Lock()
-		text := it.Text
-		if text == "" {
-			text = d.planText[id]
+		if it.Text != "" {
+			d.update(acp.UpdateAgentMessageText("Plan:\n" + it.Text))
+			d.setCompletedPlan(id, it.Text)
 		}
-		delete(d.planText, id)
-		d.planMu.Unlock()
-		if text != "" {
-			if d.planUpdates {
-				d.emitMarkdownPlan(d.ctx, id, text)
-			} else {
-				d.update(acp.UpdateAgentMessageText("Plan:\n" + text))
-			}
-			d.setCompletedPlan(id, text)
-		}
-		d.planMu.Lock()
-		delete(d.planEmitted, id)
-		delete(d.planEmittedAt, id)
-		d.planMu.Unlock()
 
 	case "exitedReviewMode":
 		var it struct {
@@ -655,35 +544,41 @@ func (d *eventDispatcher) handleItemCompleted(params json.RawMessage) {
 	}
 }
 
-func (d *eventDispatcher) emitMarkdownPlan(ctx context.Context, itemID, text string) {
-	if text == "" {
-		return
+// rateLimitNote speaks only when constrained; the notification is a per-turn heartbeat.
+func rateLimitNote(params json.RawMessage) string {
+	var p struct {
+		RateLimits struct {
+			LimitName            string  `json:"limitName"`
+			SpendControlReached  *bool   `json:"spendControlReached"`
+			RateLimitReachedType *string `json:"rateLimitReachedType"`
+			Primary              *struct {
+				UsedPercent int    `json:"usedPercent"`
+				ResetsAt    *int64 `json:"resetsAt"`
+			} `json:"primary"`
+		} `json:"rateLimits"`
 	}
-	d.planMu.Lock()
-	if d.planEmitted[itemID] == text {
-		d.planMu.Unlock()
-		return
+	if json.Unmarshal(params, &p) != nil {
+		return ""
 	}
-	d.planEmitted[itemID] = text
-	d.planEmittedAt[itemID] = time.Now()
-	d.planMu.Unlock()
-	d.updateWithContext(ctx, acp.SessionUpdate{PlanUpdate: &acp.SessionPlanUpdate{
-		SessionUpdate: "plan_update",
-		Plan:          acp.NewPlanUpdateContentMarkdown(acp.PlanId(itemID), text),
-	}})
-}
 
-func (d *eventDispatcher) flushPendingPlanUpdates(ctx context.Context) {
-	if !d.planUpdates {
-		return
+	limits := p.RateLimits
+	reached := limits.RateLimitReachedType != nil && *limits.RateLimitReachedType != ""
+	spend := limits.SpendControlReached != nil && *limits.SpendControlReached
+	if !reached && !spend {
+		return ""
 	}
-	d.planMu.Lock()
-	pending := make(map[string]string, len(d.planText))
-	maps.Copy(pending, d.planText)
-	d.planMu.Unlock()
-	for itemID, text := range pending {
-		d.emitMarkdownPlan(ctx, itemID, text)
+
+	note := "Rate limit reached"
+	if spend && !reached {
+		note = "Spend limit reached"
 	}
+	if limits.LimitName != "" {
+		note += " (" + limits.LimitName + ")"
+	}
+	if limits.Primary != nil && limits.Primary.ResetsAt != nil {
+		note += ", resets " + time.Unix(*limits.Primary.ResetsAt, 0).Format(time.RFC3339)
+	}
+	return "*" + note + ".*\n\n"
 }
 
 func mcpRawOutput(result, mcpErr json.RawMessage) map[string]any {
@@ -745,34 +640,6 @@ func (d *eventDispatcher) handleTokenUsage(params json.RawMessage) {
 			Size:          size,
 		}})
 	}
-}
-
-func (d *eventDispatcher) handlePlanUpdated(params json.RawMessage) {
-	var p struct {
-		Plan []struct {
-			Step   string `json:"step"`
-			Status string `json:"status"`
-		} `json:"plan"`
-	}
-	if err := json.Unmarshal(params, &p); err != nil {
-		return
-	}
-	entries := make([]acp.PlanEntry, 0, len(p.Plan))
-	for _, e := range p.Plan {
-		status := acp.PlanEntryStatusPending
-		switch e.Status {
-		case "inProgress":
-			status = acp.PlanEntryStatusInProgress
-		case "completed":
-			status = acp.PlanEntryStatusCompleted
-		}
-		entries = append(entries, acp.PlanEntry{
-			Content:  e.Step,
-			Priority: acp.PlanEntryPriorityMedium,
-			Status:   status,
-		})
-	}
-	d.update(acp.UpdatePlan(entries...))
 }
 
 func peekItem(item json.RawMessage) (id, kind string, ok bool) {

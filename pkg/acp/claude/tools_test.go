@@ -144,17 +144,6 @@ func TestToolInfoEditProducesDiff(t *testing.T) {
 	}
 }
 
-func TestToolInfoMultiEditProducesDiffsWithoutRawEdits(t *testing.T) {
-	input := json.RawMessage(`{"file_path":"/proj/main.go","edits":[{"old_string":"a","new_string":"b"},{"old_string":"c","new_string":"d"}]}`)
-	info := toolInfoFromToolUse("MultiEdit", input, "/proj")
-	if info.title != "Edit file" || len(info.content) != 2 || info.rawInput != nil {
-		t.Fatalf("info = %#v", info)
-	}
-	if info.content[0].Diff == nil || info.content[1].Diff == nil {
-		t.Fatalf("diffs = %#v", info.content)
-	}
-}
-
 func TestToolInfoSkillIncludesName(t *testing.T) {
 	info := toolInfoFromToolUse("Skill", json.RawMessage(`{"skill":"commits","args":"--all"}`), "/proj")
 	if info.title != "Load skill" {
@@ -228,23 +217,6 @@ func TestUnknownToolUsesRawInputOnlyOnce(t *testing.T) {
 	}
 	if len(info.content) != 0 {
 		t.Fatalf("raw input was duplicated as content: %#v", info.content)
-	}
-}
-
-func TestPlanEntriesFromTodoWrite(t *testing.T) {
-	input := json.RawMessage(`{"todos":[{"content":"a","status":"completed"},{"content":"b","status":"in_progress"},{"content":"c","status":"pending"}]}`)
-	entries, ok := planEntriesFromTodoWrite(input)
-	if !ok || len(entries) != 3 {
-		t.Fatalf("entries=%+v ok=%v", entries, ok)
-	}
-	if entries[0].Status != acp.PlanEntryStatusCompleted ||
-		entries[1].Status != acp.PlanEntryStatusInProgress ||
-		entries[2].Status != acp.PlanEntryStatusPending {
-		t.Errorf("statuses = %+v", entries)
-	}
-
-	if _, ok := planEntriesFromTodoWrite(json.RawMessage(`{}`)); ok {
-		t.Errorf("expected ok=false for missing todos")
 	}
 }
 
@@ -334,22 +306,18 @@ func TestToolCallTrackerEmitsStartOnceThenRefines(t *testing.T) {
 
 func TestToolCallTrackingPolicy(t *testing.T) {
 	tests := []struct {
-		name       string
-		eager      bool
-		trackAfter bool
+		name  string
+		eager bool
 	}{
-		{name: "Bash", eager: true, trackAfter: true},
-		{name: "Write", eager: true, trackAfter: true},
-		{name: "TodoWrite", eager: false, trackAfter: false},
-		{name: "Task", eager: false, trackAfter: true},
-		{name: "Agent", eager: false, trackAfter: true},
+		{name: "Bash", eager: true},
+		{name: "Write", eager: true},
+		{name: "Edit", eager: true},
+		{name: "Task", eager: false},
+		{name: "Agent", eager: false},
 	}
 	for _, tt := range tests {
 		if got := shouldEagerlyEmitToolCall(tt.name); got != tt.eager {
 			t.Errorf("shouldEagerlyEmitToolCall(%q) = %v, want %v", tt.name, got, tt.eager)
-		}
-		if got := shouldTrackToolCall(tt.name); got != tt.trackAfter {
-			t.Errorf("shouldTrackToolCall(%q) = %v, want %v", tt.name, got, tt.trackAfter)
 		}
 	}
 }
@@ -441,11 +409,11 @@ func TestLiveSubagentResultCompletesTrackedToolCall(t *testing.T) {
 	tracker := newToolCallTracker()
 
 	assistant := json.RawMessage(`{"content":[{"type":"tool_use","id":"task-1","name":"Task","input":{"description":"research"}}]}`)
-	if err := emitAssistant(context.Background(), conn, "session", assistant, "/workspace", nil, tracker, nil, nil, ""); err != nil {
+	if err := emitAssistant(context.Background(), conn, "session", assistant, "/workspace", nil, tracker, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	result := json.RawMessage(`{"content":[{"type":"tool_result","tool_use_id":"task-1","content":"done"}]}`)
-	if err := emitToolResults(context.Background(), conn, "session", result, toolUseCache{"task-1": "Task"}, tracker, nil, ""); err != nil {
+	if err := emitToolResults(context.Background(), conn, "session", result, toolUseCache{"task-1": "Task"}, tracker, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -552,18 +520,6 @@ func TestResolveModelAlias(t *testing.T) {
 	}
 }
 
-func TestToolKindForMatchesToolInfo(t *testing.T) {
-	for _, name := range []string{
-		"Read", "Glob", "Grep", "WebFetch", "WebSearch",
-		"Edit", "Write", "MultiEdit", "Bash", "Agent", "Task", "ExitPlanMode",
-	} {
-		info := toolInfoFromToolUse(name, json.RawMessage(`{}`), "/tmp")
-		if got := toolKindFor(name); got != info.kind {
-			t.Errorf("toolKindFor(%q) = %q, toolInfoFromToolUse kind = %q", name, got, info.kind)
-		}
-	}
-}
-
 func TestAlwaysAllowPermissions(t *testing.T) {
 	suggested := controlRequestBody{
 		ToolName:              "Bash",
@@ -589,81 +545,6 @@ func TestAlwaysAllowPermissions(t *testing.T) {
 
 	if got := alwaysAllowPermissions(controlRequestBody{}); got != nil {
 		t.Errorf("no tool name should yield nil, got %#v", got)
-	}
-}
-
-func TestTaskPlan(t *testing.T) {
-	p := newTaskPlan()
-
-	p.noteCreate("tu1", json.RawMessage(`{"subject":"first","description":"d","activeForm":"Doing first"}`))
-	if p.completeCreate("tu1", "Task #1 created successfully: first", false) != true {
-		t.Fatal("create #1 should register")
-	}
-	p.noteCreate("tu2", json.RawMessage(`{"subject":"second"}`))
-	if !p.completeCreate("tu2", "Task #2 created successfully: second", false) {
-		t.Fatal("create #2 should register")
-	}
-
-	entries := p.entries()
-	if len(entries) != 2 || entries[0].Content != "first" || entries[0].Status != acp.PlanEntryStatusPending {
-		t.Fatalf("entries after create = %#v", entries)
-	}
-
-	p.noteUpdate("update-1", json.RawMessage(`{"taskId":"1","status":"completed"}`))
-	if !p.completeUpdate("update-1", `{"success":true,"taskId":"1"}`, false) {
-		t.Fatal("update #1 should change state")
-	}
-	p.noteUpdate("update-2", json.RawMessage(`{"taskId":"1","status":"completed"}`))
-	if p.completeUpdate("update-2", `{"success":true,"taskId":"1"}`, false) {
-		t.Fatal("repeat update should be a no-op")
-	}
-	p.noteUpdate("update-3", json.RawMessage(`{"taskId":"99","status":"completed"}`))
-	if p.completeUpdate("update-3", "ok", false) {
-		t.Fatal("unknown task id should be a no-op")
-	}
-	if entries := p.entries(); entries[0].Status != acp.PlanEntryStatusCompleted || entries[1].Status != acp.PlanEntryStatusPending {
-		t.Fatalf("entries after update = %#v", entries)
-	}
-
-	if p.completeCreate("tu-unknown", "Task #3 created successfully: x", false) {
-		t.Fatal("result without matching create should be a no-op")
-	}
-	p.noteCreate("tu3", json.RawMessage(`{"subject":"third"}`))
-	if p.completeCreate("tu3", "something went wrong", false) {
-		t.Fatal("unparseable result should not register")
-	}
-
-	p.noteUpdate("failed-update", json.RawMessage(`{"taskId":"2","status":"completed"}`))
-	if p.completeUpdate("failed-update", "Task #2 not found", false) {
-		t.Fatal("logically failed update should not change state")
-	}
-	if entries := p.entries(); entries[1].Status != acp.PlanEntryStatusPending {
-		t.Fatalf("failed update changed task state: %#v", entries)
-	}
-
-	if entries, ok := p.unfinishedEntries(); !ok || len(entries) != 2 {
-		t.Fatalf("unfinished entries = %#v, %v", entries, ok)
-	}
-
-	p.noteUpdate("delete-2", json.RawMessage(`{"taskId":"2","status":"deleted"}`))
-	if !p.completeUpdate("delete-2", `{"success":true,"taskId":"2"}`, false) {
-		t.Fatal("delete #2 should change state")
-	}
-	if entries := p.entries(); len(entries) != 1 || entries[0].Content != "first" {
-		t.Fatalf("entries after delete = %#v", entries)
-	}
-	p.clear()
-	if entries, ok := p.unfinishedEntries(); ok || len(entries) != 0 {
-		t.Fatalf("entries after clear = %#v, %v", entries, ok)
-	}
-	if !p.applyTaskList(`{"tasks":[{"id":"7","subject":"restored","status":"in_progress"}]}`, false) {
-		t.Fatal("structured task list should restore state")
-	}
-	if entries := p.entries(); len(entries) != 1 || entries[0].Content != "restored" || entries[0].Status != acp.PlanEntryStatusInProgress {
-		t.Fatalf("entries after task list = %#v", entries)
-	}
-	if !p.applyTaskList("No tasks found", false) || len(p.entries()) != 0 {
-		t.Fatalf("empty task list did not clear state: %#v", p.entries())
 	}
 }
 

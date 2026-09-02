@@ -171,12 +171,27 @@ func runACPCodex(ctx context.Context, args []string) {
 		}
 		opts.Env = codexcli.BuildEnv(os.Environ(), cfg)
 		opts.ExtraArgs = codexcli.BuildArgs(cfg)
+		endpoint := strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+		if endpoint = strings.TrimRight(endpoint, "/"); endpoint != "" {
+			opts.ExtraArgs = append(opts.ExtraArgs, codexOTLPArgs(endpoint)...)
+		}
 	}
 
 	err = codex.Run(ctx, opts, os.Stdin, os.Stdout, acpLogger(debug))
 	cleanup()
 	if err != nil {
 		fatal(err)
+	}
+}
+
+func codexOTLPArgs(endpoint string) []string {
+	exporter := func(path string) string {
+		return fmt.Sprintf(`{ otlp-http = { endpoint = %q, protocol = "json" } }`, endpoint+path)
+	}
+	return []string{
+		"--config", "analytics.enabled=true",
+		"--config", "otel.exporter=" + exporter("/v1/logs"),
+		"--config", "otel.metrics_exporter=" + exporter("/v1/metrics"),
 	}
 }
 
@@ -197,14 +212,8 @@ func runACPPi(ctx context.Context, args []string) {
 		fatal(err)
 	}
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		fatal(err)
-	}
-
 	opts := pi.Options{
 		Path:        picli.BinPath(),
-		Dir:         cwd,
 		Env:         os.Environ(),
 		SessionsDir: picli.NativeSessionsDir(),
 	}

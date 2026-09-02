@@ -36,6 +36,10 @@ func TestPresentCompactsBuiltInTools(t *testing.T) {
 			name: "task_send", args: `{"id":"agent-1","message":"Check aliases"}`,
 			want: Presentation{Title: "Follow up with agent", Hint: "agent-1: Check aliases"},
 		},
+		{
+			name: "edit", args: `{"edits":[{"file_path":"pkg/a.go","old_string":"a","new_string":"b"},{"file_path":"pkg/b.go","old_string":"c","new_string":"d"}]}`,
+			want: Presentation{Title: "Edit file", Kind: "edit", Path: "pkg/a.go", Hint: "2 edits · 2 files"},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -47,11 +51,6 @@ func TestPresentCompactsBuiltInTools(t *testing.T) {
 }
 
 func TestPresentDerivesHintsForHumanizedNames(t *testing.T) {
-	plan := Present("Update plan", "", `{"plan":[{"step":"Review tools","status":"in_progress"}]}`, false)
-	if plan.Hint == "" || plan.Args == "" {
-		t.Fatalf("plan presentation = %#v", plan)
-	}
-
 	input := Present("Request input", "", `{"questions":[{"question":"Which layout?"}]}`, false)
 	if input.Hint != "Which layout?" || input.Args == "" {
 		t.Fatalf("input presentation = %#v", input)

@@ -486,7 +486,27 @@ func TestSendPreservesMixedInputAndACPStreamState(t *testing.T) {
 		messages[1].Content[2].ToolCall == nil || messages[1].Content[3].ToolResult == nil {
 		t.Fatalf("assistant content = %#v", messages[1].Content)
 	}
-	if usage := a.Usage(sessionID); usage.InputTokens != 7 || usage.CachedTokens != 2 || usage.OutputTokens != 3 {
+	if usage := a.Usage(sessionID); usage.InputTokens != 9 || usage.CacheReadInputTokens != 2 || usage.OutputTokens != 3 {
+		t.Fatalf("usage = %#v", usage)
+	}
+}
+
+func TestUsageFromACPNormalizesSeparateTokenTypes(t *testing.T) {
+	cacheRead, cacheWrite, reasoning := 6, 3, 4
+	usage := usageFromACP(&acpsdk.Usage{
+		InputTokens:       15,
+		OutputTokens:      4,
+		CachedReadTokens:  &cacheRead,
+		CachedWriteTokens: &cacheWrite,
+		ThoughtTokens:     &reasoning,
+		TotalTokens:       32,
+	})
+	if usage.InputTokens != 24 ||
+		usage.OutputTokens != 8 ||
+		usage.ReasoningTokens != 4 ||
+		usage.CacheReadInputTokens != 6 ||
+		usage.CacheCreationInputTokens != 3 ||
+		usage.TotalTokens() != 32 {
 		t.Fatalf("usage = %#v", usage)
 	}
 }

@@ -125,8 +125,8 @@ func TestCodexApplyPatchMatcherAliases(t *testing.T) {
 		name string
 		want []string
 	}{
-		{"write", []string{"write", "Write", "apply_patch"}},
-		{"edit", []string{"edit", "Edit", "apply_patch"}},
+		{"write", []string{"write", "Write"}},
+		{"edit", []string{"edit", "Edit"}},
 	} {
 		name, _, aliases := toolWire(tool.ToolCall{Name: test.name})
 		if name != test.name {

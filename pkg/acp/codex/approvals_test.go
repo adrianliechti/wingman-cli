@@ -83,9 +83,10 @@ func TestMessageOnlyElicitations(t *testing.T) {
 		want   bool
 	}{
 		{name: "form without schema", params: elicitationParams{Mode: "form"}, want: true},
-		{name: "openai slash null schema", params: elicitationParams{Mode: "openai/form", RequestedSchema: json.RawMessage(`null`)}, want: true},
-		{name: "openai camel empty object", params: elicitationParams{Mode: "openaiForm", RequestedSchema: json.RawMessage(`{"type":"object","properties":{}}`)}, want: true},
-		{name: "structured field", params: elicitationParams{Mode: "openaiForm", RequestedSchema: json.RawMessage(`{"type":"object","properties":{"code":{"type":"string"}},"required":["code"]}`)}},
+		{name: "null schema", params: elicitationParams{Mode: "form", RequestedSchema: json.RawMessage(`null`)}, want: true},
+		{name: "empty object", params: elicitationParams{Mode: "form", RequestedSchema: json.RawMessage(`{"type":"object","properties":{}}`)}, want: true},
+		{name: "structured field", params: elicitationParams{Mode: "form", RequestedSchema: json.RawMessage(`{"type":"object","properties":{"code":{"type":"string"}},"required":["code"]}`)}},
+		{name: "openai form mode is no longer offered", params: elicitationParams{Mode: "openai/form"}},
 		{name: "missing properties", params: elicitationParams{Mode: "form", RequestedSchema: json.RawMessage(`{"type":"object"}`)}},
 		{name: "null properties", params: elicitationParams{Mode: "form", RequestedSchema: json.RawMessage(`{"type":"object","properties":null}`)}},
 		{name: "unknown mode", params: elicitationParams{Mode: "unknown"}},
@@ -98,7 +99,7 @@ func TestMessageOnlyElicitations(t *testing.T) {
 		})
 	}
 
-	structured := elicitationParams{Mode: "openaiForm", RequestedSchema: json.RawMessage(`{"type":"object","properties":{"code":{"type":"string"}}}`)}
+	structured := elicitationParams{Mode: "form", RequestedSchema: json.RawMessage(`{"type":"object","properties":{"code":{"type":"string"}}}`)}
 	if got := (&approver{}).handleElicitation(structured); got.Action != "decline" {
 		t.Fatalf("structured fallback action = %q, want decline", got.Action)
 	}

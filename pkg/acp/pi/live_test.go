@@ -101,7 +101,7 @@ func TestLivePiSession(t *testing.T) {
 	defer os.RemoveAll(cwd)
 
 	agentSide, clientSide := net.Pipe()
-	agent := New(Options{Path: path, Dir: cwd, Env: os.Environ()})
+	agent := New(Options{Path: path, Env: os.Environ()})
 	defer agent.Close()
 	conn := acp.NewAgentSideConnection(agent, agentSide, agentSide)
 	agent.SetAgentConnection(conn)

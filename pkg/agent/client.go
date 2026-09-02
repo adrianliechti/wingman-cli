@@ -12,6 +12,7 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/telemetry"
 )
 
 // streamIdleTimeout bounds the wait for the next stream event; reasoning
@@ -99,6 +100,10 @@ type request struct {
 type response struct {
 	messages []Message
 	usage    Usage
+	id       string
+	model    string
+
+	finishReasons []string
 
 	incomplete       bool
 	incompleteReason string
@@ -123,7 +128,6 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 		// "auto" would silently drop mid-conversation context server-side.
 		Truncation: responses.ResponseNewParamsTruncationDisabled,
 	}
-
 	if r.cacheKey != "" {
 		params.PromptCacheKey = openai.String(r.cacheKey)
 	}
@@ -172,11 +176,14 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 
 	incomplete := false
 	incompleteReason := ""
+	responseID := ""
+	responseModel := ""
 	outputStarted := false
 	terminalEvent := false
 
 	for stream.Next() {
 		idle.Reset(streamIdleTimeout)
+		telemetry.ObserveResponseChunk(ctx)
 		event := stream.Current()
 		// Error events are terminal metadata, not user-visible output. Preserve
 		// the replay-safety state from before the event so a transient failure
@@ -189,6 +196,7 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 
 		switch e := event.AsAny().(type) {
 		case responses.ResponseTextDeltaEvent:
+			telemetry.ObserveOutputChunk(ctx)
 			msg := Message{
 				Role:    RoleAssistant,
 				Content: []Content{{Text: e.Delta, TextID: e.ItemID}},
@@ -199,6 +207,7 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 			}
 
 		case responses.ResponseReasoningSummaryTextDeltaEvent:
+			telemetry.ObserveOutputChunk(ctx)
 			msg := Message{
 				Role:    RoleAssistant,
 				Content: []Content{{Reasoning: &Reasoning{ID: e.ItemID, Part: int(e.SummaryIndex), Summary: e.Delta}}},
@@ -209,7 +218,11 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 			}
 
 		case responses.ResponseOutputItemAddedEvent:
-			if item, ok := e.Item.AsAny().(responses.ResponseFunctionToolCall); ok && item.CallID != "" {
+			switch item := e.Item.AsAny().(type) {
+			case responses.ResponseFunctionToolCall:
+				if item.CallID == "" {
+					break
+				}
 				pending := &pendingToolCall{
 					id:            item.CallID,
 					name:          item.Name,
@@ -225,6 +238,7 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 			}
 
 		case responses.ResponseFunctionCallArgumentsDeltaEvent:
+			telemetry.ObserveOutputChunk(ctx)
 			if pending := pendingCalls[e.OutputIndex]; pending != nil {
 				pending.args = append(pending.args, e.Delta...)
 
@@ -282,10 +296,13 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 				outputItems = append(outputItems, responses.ResponseInputItemUnionParam{
 					OfFunctionCall: &p,
 				})
+
 			}
 
 		case responses.ResponseCompletedEvent:
 			usageDelta = responseToUsage(e.Response)
+			responseID = e.Response.ID
+			responseModel = e.Response.Model
 			terminalEvent = true
 			if items := outputItemsFromResponse(e.Response); len(items) >= len(outputItems) && len(items) > 0 {
 				outputItems = items
@@ -297,6 +314,8 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 			// output_item.done — so prefer it over the accumulated stream items,
 			// or the resume round would regenerate everything already streamed.
 			usageDelta = responseToUsage(e.Response)
+			responseID = e.Response.ID
+			responseModel = e.Response.Model
 			incomplete = true
 			incompleteReason = e.Response.IncompleteDetails.Reason
 			terminalEvent = true
@@ -349,9 +368,18 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 		}
 	}
 
+	status := "completed"
+	if incomplete {
+		status = "incomplete"
+	}
+	finishReasons := telemetryFinishReasons(status, incompleteReason, messages)
 	return &response{
 		messages: messages,
 		usage:    usageDelta,
+		id:       responseID,
+		model:    responseModel,
+
+		finishReasons: finishReasons,
 
 		incomplete:       incomplete,
 		incompleteReason: incompleteReason,
@@ -390,6 +418,7 @@ func outputItemsFromResponse(r responses.Response) []responses.ResponseInputItem
 			if err := json.Unmarshal([]byte(it.RawJSON()), &p); err == nil {
 				items = append(items, responses.ResponseInputItemUnionParam{OfFunctionCall: &p})
 			}
+
 		}
 	}
 

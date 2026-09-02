@@ -65,8 +65,8 @@ func TestNativeOptionsPreserveEnvironmentWithoutProviderOverrides(t *testing.T) 
 		t.Fatalf("nativeCodexOptions().Stderr = %T, want io.Discard", codex.Stderr)
 	}
 
-	pi := nativePiOptions("/workspace", env)
-	if pi.Dir != "/workspace" || !slices.Equal(pi.Env, env) || len(pi.Args) != 0 {
+	pi := nativePiOptions(env)
+	if !slices.Equal(pi.Env, env) || len(pi.Args) != 0 {
 		t.Fatalf("nativePiOptions() = %#v", pi)
 	}
 	if pi.Stderr != io.Discard {

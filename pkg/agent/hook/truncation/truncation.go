@@ -25,7 +25,7 @@ func budgetFor(name string) int {
 	switch name {
 	case "grep":
 		return grepMaxBytes
-	case "shell":
+	case "shell", "exec_command", "exec_session":
 		return shellMaxBytes
 	default:
 		return MaxBytes

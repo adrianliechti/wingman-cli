@@ -408,15 +408,15 @@ func TestACPTaskTurnWritesFileAndReportsUsage(t *testing.T) {
 						"type":      "function_call",
 						"id":        "fc_1",
 						"call_id":   "call_1",
-						"name":      "write",
-						"arguments": fmt.Sprintf(`{"file_path":%q,"content":"benchmark-ready\n"}`, filepath.Join(workdir, "solution.txt")),
+						"name":      "edit",
+						"arguments": fmt.Sprintf(`{"edits":[{"file_path":%q,"old_string":"","new_string":"benchmark-ready\n"}]}`, filepath.Join(workdir, "solution.txt")),
 						"status":    "completed",
 					},
 				})
-				writeSSE(t, w, completedEvent(2, 11, 2, 3, nil))
+				writeSSE(t, w, completedEvent(2, 11, 2, 1, 3, 1, nil))
 				return
 			}
-			writeSSE(t, w, completedEvent(1, 13, 4, 5, []map[string]any{{
+			writeSSE(t, w, completedEvent(1, 13, 4, 2, 5, 2, []map[string]any{{
 				"type":   "message",
 				"id":     "msg_1",
 				"role":   "assistant",
@@ -473,11 +473,17 @@ func TestACPTaskTurnWritesFileAndReportsUsage(t *testing.T) {
 	if response.Usage == nil {
 		t.Fatal("prompt response did not include usage")
 	}
-	if response.Usage.InputTokens != 18 || response.Usage.OutputTokens != 8 || response.Usage.TotalTokens != 32 {
-		t.Fatalf("usage = %+v, want input=18 cached=6 output=8 total=32", *response.Usage)
+	if response.Usage.InputTokens != 15 || response.Usage.OutputTokens != 5 || response.Usage.TotalTokens != 32 {
+		t.Fatalf("usage = %+v, want input=15 output=5 total=32", *response.Usage)
 	}
 	if response.Usage.CachedReadTokens == nil || *response.Usage.CachedReadTokens != 6 {
-		t.Fatalf("cached usage = %v, want 6", response.Usage.CachedReadTokens)
+		t.Fatalf("cache-read usage = %v, want 6", response.Usage.CachedReadTokens)
+	}
+	if response.Usage.CachedWriteTokens == nil || *response.Usage.CachedWriteTokens != 3 {
+		t.Fatalf("cache-write usage = %v, want 3", response.Usage.CachedWriteTokens)
+	}
+	if response.Usage.ThoughtTokens == nil || *response.Usage.ThoughtTokens != 3 {
+		t.Fatalf("reasoning usage = %v, want 3", response.Usage.ThoughtTokens)
 	}
 	content, err := os.ReadFile(filepath.Join(workdir, "solution.txt"))
 	if err != nil {
@@ -524,14 +530,19 @@ func writeSSE(t *testing.T, w http.ResponseWriter, event map[string]any) {
 	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 }
 
-func completedEvent(sequence, input, cached, output int, items []map[string]any) map[string]any {
+func completedEvent(sequence, input, cached, cacheWrite, output, reasoning int, items []map[string]any) map[string]any {
 	response := map[string]any{
 		"usage": map[string]any{
 			"input_tokens": input,
 			"input_tokens_details": map[string]any{
-				"cached_tokens": cached,
+				"cached_tokens":      cached,
+				"cache_write_tokens": cacheWrite,
 			},
 			"output_tokens": output,
+			"output_tokens_details": map[string]any{
+				"reasoning_tokens": reasoning,
+			},
+			"total_tokens": input + output,
 		},
 	}
 	if items != nil {

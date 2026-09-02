@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/coder/acp-go-sdk"
@@ -44,24 +45,6 @@ func TestMessageUpdatesCarryIDsAndPhase(t *testing.T) {
 	thought := agentThoughtUpdate("thinking", "thought-id")
 	if thought.AgentThoughtChunk == nil || thought.AgentThoughtChunk.MessageId == nil || *thought.AgentThoughtChunk.MessageId != "thought-id" {
 		t.Fatalf("thought update = %#v", thought)
-	}
-}
-
-func TestTurnCompletedFlushesThrottledPlanTail(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	d := newEventDispatcher(ctx, nil, "session-1")
-	d.planUpdates = true
-
-	d.handle("item/plan/delta", json.RawMessage(`{"itemId":"plan-1","delta":"first"}`))
-	d.handle("item/plan/delta", json.RawMessage(`{"itemId":"plan-1","delta":" second"}`))
-	if got := d.planEmitted["plan-1"]; got != "first" {
-		t.Fatalf("plan before completion = %q, want first throttled snapshot", got)
-	}
-
-	d.handle("turn/completed", json.RawMessage(`{"threadId":"session-1","turn":{"id":"turn-1","status":"completed"}}`))
-	if got := d.planEmitted["plan-1"]; got != "first second" {
-		t.Fatalf("plan after completion = %q, want flushed snapshot", got)
 	}
 }
 
@@ -266,5 +249,25 @@ func TestTokenUsageComponentsMatchTotal(t *testing.T) {
 	}
 	if got := u.InputTokens + *u.CachedReadTokens + u.OutputTokens + *u.ThoughtTokens; got != u.TotalTokens {
 		t.Fatalf("component sum = %d, total = %d", got, u.TotalTokens)
+	}
+}
+
+func TestCodexRateLimitNoteOnlySpeaksWhenReached(t *testing.T) {
+	// The rolling heartbeat fires several times per turn; an unconstrained
+	// snapshot must stay silent.
+	quiet := `{"rateLimits":{"limitName":"weekly","primary":{"usedPercent":12}}}`
+	if got := rateLimitNote(json.RawMessage(quiet)); got != "" {
+		t.Fatalf("unconstrained snapshot produced %q, want silence", got)
+	}
+
+	reached := `{"rateLimits":{"limitName":"weekly","rateLimitReachedType":"primary","primary":{"usedPercent":100,"resetsAt":1788000000}}}`
+	got := rateLimitNote(json.RawMessage(reached))
+	if !strings.Contains(got, "Rate limit reached") || !strings.Contains(got, "weekly") {
+		t.Fatalf("reached snapshot = %q", got)
+	}
+
+	spend := `{"rateLimits":{"spendControlReached":true}}`
+	if got := rateLimitNote(json.RawMessage(spend)); !strings.Contains(got, "Spend limit reached") {
+		t.Fatalf("spend snapshot = %q", got)
 	}
 }

@@ -48,8 +48,12 @@ func Progress(ctx context.Context) func(text string) {
 
 type UsageDelta struct {
 	InputTokens  int64
-	CachedTokens int64
 	OutputTokens int64
+
+	ReasoningTokens int64
+
+	CacheReadInputTokens     int64
+	CacheCreationInputTokens int64
 }
 
 // WithUsageSink installs a callback that credits model usage a tool incurred

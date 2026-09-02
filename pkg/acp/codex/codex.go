@@ -64,14 +64,13 @@ func (c *codexClient) dispatchNotification(method string, params json.RawMessage
 		ThreadID string `json:"threadId"`
 	}
 	_ = json.Unmarshal(params, &probe)
-	if probe.ThreadID == "" {
-		return
-	}
+
+	// Account- and process-scoped notifications carry no threadId; only per-thread handlers need one.
 	global, local := c.notificationHandlers(probe.ThreadID)
 	if global != nil {
 		global(probe.ThreadID, method, params)
 	}
-	if local != nil && local.onNotification != nil {
+	if probe.ThreadID != "" && local != nil && local.onNotification != nil {
 		local.onNotification(method, params)
 	}
 }
@@ -127,6 +126,12 @@ type clientInfo struct {
 type initializeParams struct {
 	ClientInfo   clientInfo `json:"clientInfo"`
 	Capabilities any        `json:"capabilities"`
+}
+
+// experimentalApi gates thread/settings/update, collaborationMode/list and experimental notifications.
+type clientCapabilities struct {
+	ExperimentalAPI    bool `json:"experimentalApi"`
+	RequestAttestation bool `json:"requestAttestation"`
 }
 
 type threadStartParams struct {

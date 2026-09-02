@@ -26,7 +26,6 @@ func TestLiveSuite(t *testing.T) {
 			Marker:        "DONE",
 			WantToolTitle: "subagent",
 		},
-		PlanPrompt:      "Use your plan tool to create a plan with exactly two steps: 'first' and 'second'. Mark both completed, then reply with exactly: DONE",
 		MCPHelperTest:   "TestMCPServerHelper",
 		WantUsageUpdate: true,
 	})

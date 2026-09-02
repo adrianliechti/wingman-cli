@@ -2,8 +2,11 @@ package agent
 
 import (
 	"context"
+	"fmt"
+	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +17,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/hook"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/model"
+	"github.com/adrianliechti/wingman-agent/pkg/telemetry"
 )
 
 const (
@@ -46,6 +50,11 @@ type ModelOption struct {
 
 type Config struct {
 	client *openai.Client
+
+	// Telemetry instruments agent, model, and tool operations. DefaultConfig
+	// initializes it when standard OTEL exporter variables are present. Library
+	// callers may inject a separately configured pipeline instead.
+	Telemetry *telemetry.Telemetry
 
 	Model        func() string
 	Effort       func() string
@@ -85,6 +94,7 @@ type Config struct {
 func (c *Config) Derive() *Config {
 	return &Config{
 		client:       c.client,
+		Telemetry:    c.Telemetry,
 		Model:        c.Model,
 		Effort:       c.Effort,
 		Tools:        c.Tools,
@@ -132,8 +142,21 @@ func (c *Config) utilityModelName() string {
 // main model) and credits its token usage to the session through the context's
 // usage sink. It backs internal helpers such as fetch page extraction.
 func (c *Config) Utility(ctx context.Context, instructions, input string) (string, error) {
+	modelID := c.utilityModelName()
+	captureContent := c.Telemetry.CapturesMessageContent()
+	inferenceRequest := telemetry.InferenceRequest{
+		Model:          modelID,
+		ConversationID: conversationID(ctx, c.CacheKey),
+	}
+	if captureContent {
+		inferenceRequest.Content = telemetry.InferenceContent{
+			InputMessages:      telemetryStringInput(input),
+			SystemInstructions: telemetrySystemInstructions(instructions),
+		}
+	}
+	ctx, operation := c.Telemetry.StartInference(ctx, inferenceRequest)
 	resp, err := c.client.Responses.New(ctx, responses.ResponseNewParams{
-		Model:        c.utilityModelName(),
+		Model:        modelID,
 		Instructions: openai.String(instructions),
 		Input: responses.ResponseNewParamsInputUnion{
 			OfString: openai.String(input),
@@ -142,14 +165,18 @@ func (c *Config) Utility(ctx context.Context, instructions, input string) (strin
 	})
 
 	if err != nil {
+		operation.End(telemetry.InferenceResult{Outcome: telemetryOutcome(err)})
 		return "", err
 	}
 
 	usage := responseToUsage(*resp)
+	operation.End(inferenceResult(resp, usage, nil, captureContent))
 	tool.ReportUsage(ctx, tool.UsageDelta{
-		InputTokens:  usage.InputTokens,
-		CachedTokens: usage.CachedTokens,
-		OutputTokens: usage.OutputTokens,
+		InputTokens:              usage.InputTokens,
+		OutputTokens:             usage.OutputTokens,
+		ReasoningTokens:          usage.ReasoningTokens,
+		CacheReadInputTokens:     usage.CacheReadInputTokens,
+		CacheCreationInputTokens: usage.CacheCreationInputTokens,
 	})
 
 	return strings.TrimSpace(recoverySummaryOutput(resp)), nil
@@ -172,14 +199,57 @@ func (c *Config) Models(ctx context.Context) ([]ModelInfo, error) {
 
 func DefaultConfig() (*Config, error) {
 	client := createClient()
+	tel, err := telemetry.NewFromEnvironment(context.Background(), defaultTelemetryOptions())
+	if err != nil {
+		return nil, fmt.Errorf("configure OpenTelemetry: %w", err)
+	}
 
-	cfg := &Config{client: &client}
+	cfg := &Config{client: &client, Telemetry: tel}
 
 	if model := DefaultModel(); model != "" {
 		cfg.Model = func() string { return model }
 	}
 
 	return cfg, nil
+}
+
+func defaultTelemetryOptions() telemetry.Options {
+	baseURL, _ := clientConfig()
+	provider := "wingman"
+	switch {
+	case envPresent("WINGMAN_URL"):
+		provider = "wingman"
+	case envPresent("OPENAI_API_KEY"):
+		provider = "openai"
+	case envPresent("OPENROUTER_API_KEY"):
+		provider = "openrouter"
+	case envPresent("OLLAMA_HOST") || envPresent("OLLAMA_API_KEY"):
+		provider = "ollama"
+	}
+
+	opts := telemetry.Options{
+		AgentName:    "wingman",
+		ProviderName: provider,
+	}
+	if parsed, err := url.Parse(baseURL); err == nil {
+		opts.ServerAddress = parsed.Hostname()
+		if port := parsed.Port(); port != "" {
+			opts.ServerPort, _ = strconv.Atoi(port)
+		} else {
+			switch strings.ToLower(parsed.Scheme) {
+			case "http":
+				opts.ServerPort = 80
+			case "https":
+				opts.ServerPort = 443
+			}
+		}
+	}
+	return opts
+}
+
+func envPresent(name string) bool {
+	_, ok := os.LookupEnv(name)
+	return ok
 }
 
 // DefaultModel returns the model requested via environment; WINGMAN_MODEL

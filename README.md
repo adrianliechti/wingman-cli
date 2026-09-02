@@ -9,7 +9,7 @@ A powerful AI-powered coding assistant that runs directly in your terminal. Wing
 ## ✨ Features
 
 - **Interactive TUI** — Rich terminal interface with markdown rendering and syntax highlighting
-- **File Operations** — Read, write, edit, and search files in your codebase
+- **File Operations** — Read, batch-edit, create, and search files in your codebase
 - **Shell Integration** — Execute shell commands with user approval
 - **LSP Integration** — Code intelligence via auto-detected language servers (definitions, references, diagnostics, call hierarchy, and more)
 - **Predictive Tab Edits** — Low-latency inline and multiline next-edit suggestions in the web editor, with import cleanup through the active language server
@@ -230,12 +230,94 @@ backend at `http://localhost:4242/v1`.
 | Variable | Description |
 |----------|-------------|
 | `WINGMAN_SANDBOX` | `off` lifts the workspace path restriction from the file tools |
-| `WINGMAN_DISABLE_SHELL` | `1`, `true`, `yes`, or `on` disables `shell`, `exec_command`, and `exec_session` for the built-in agent |
+| `WINGMAN_DISABLE_SHELL` | `1`, `true`, `yes`, or `on` disables `exec_command` and `exec_session` for the built-in agent (the variable name is retained for compatibility) |
 | `WINGMAN_DISABLE_WEBSEARCH` | `1`, `true`, `yes`, or `on` disables `web_search` for the built-in agent |
 | `WINGMAN_DISABLE_WEBFETCH` | `1`, `true`, `yes`, or `on` disables `fetch` for the built-in agent |
 | `WINGMAN_ELICITATION` | Headless (ACP) sessions: `accept` or `cancel` answers elicitation prompts automatically |
 | `WINGMAN_HOME` | Overrides the `~/.wingman` directory for all Wingman-owned user data |
 | `WINGMAN_<AGENT>_PATH` | Path override for an external agent binary (e.g. `WINGMAN_CODEX_PATH`) |
+
+### OpenTelemetry GenAI telemetry
+
+The built-in Wingman agent emits the current OpenTelemetry GenAI
+semantic-convention traces and metrics, plus optional standard inference-detail
+and exception log events. Telemetry is a no-op by default: no SDK pipeline or
+exporter is created until standard OTLP variables are present or a pipeline is
+explicitly supplied in code.
+
+```bash
+export OTEL_SERVICE_NAME=wingman-agent
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+```
+
+`OTEL_EXPORTER_OTLP_ENDPOINT` enables traces and metrics. Signal-specific
+endpoints such as `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and
+`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` enable only that signal. The standard
+headers, timeout, compression, TLS, and signal-specific OTLP HTTP variables are
+passed through to the official Go exporters. `OTEL_TRACES_EXPORTER` and
+`OTEL_METRICS_EXPORTER` may be `otlp` or `none`; `OTEL_SDK_DISABLED=true`
+disables every signal.
+
+GenAI log events are separately opt-in, so configuring a log exporter cannot
+silently begin recording them:
+
+```bash
+export OTEL_LOGS_EXPORTER=otlp
+export OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT=true
+```
+
+With a common `OTEL_EXPORTER_OTLP_ENDPOINT`, only the event switch is needed.
+`OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` and the other standard log-exporter
+variables are also supported. The emitted events are
+`gen_ai.client.inference.operation.details` and, for failed model operations,
+`gen_ai.client.operation.exception`; they are not a Wingman-specific audit-log
+schema.
+
+Message content is excluded by default. The cross-language GenAI utilities
+variables control the opt-in behavior:
+
+| Variable | Values and behavior |
+|----------|---------------------|
+| `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `NO_CONTENT` (default), `SPAN_ONLY`, `EVENT_ONLY`, or `SPAN_AND_EVENT` |
+| `OTEL_INSTRUMENTATION_GENAI_EMIT_EVENT` | `true` or `false`; when unset, defaults to true only for `EVENT_ONLY` and `SPAN_AND_EVENT` |
+
+Captured input/output messages, system instructions, tool calls/results, and
+tool definitions are emitted in the structured semantic-convention shape and
+may contain source code, credentials, or other sensitive data. The new
+instrumentation always uses the latest Development GenAI conventions and has no
+legacy pre-1.37 format, so `OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental`
+is not required and does not change its output.
+
+The built-in exporter is intentionally limited to OTLP over HTTP/protobuf.
+It does not include autoexport or console, Prometheus, or OTLP/gRPC exporter
+packages.
+The emitted signals include agent, model-inference, tool, and MCP spans plus the
+recommended duration, streaming, token-usage, and per-invocation call-count
+metrics. MCP client requests and peer-initiated operations are covered, along
+with client/server operation duration and client-session duration. W3C trace
+context and baggage are injected into and extracted from MCP `params._meta`.
+An MCP `tools/call` reuses its enclosing GenAI `execute_tool` span to avoid
+double instrumentation.
+
+Usage has one normalized meaning throughout the agent: `InputTokens` includes
+cache-read and cache-write tokens, while `OutputTokens` includes reasoning
+tokens. The cache and reasoning fields are detail subsets, so total usage is
+always `InputTokens + OutputTokens`; those detail fields are never added a
+second time. OpenAI Responses usage already has this inclusive shape. ACP's
+disjoint wire fields are folded into the inclusive totals on input and split
+back out on output.
+
+Library callers can explicitly enable telemetry with the `telemetry` package
+and assign it to `agent.Config.Telemetry` or `codeagent.Options.Telemetry`.
+`telemetry.Options.EmitEvents` and `CaptureMessageContent` provide the same
+event and capture controls in code; injected tracer, meter, and logger providers
+remain caller-owned. Pipelines created by `telemetry.New` should be shut down by
+their owner; a code agent can take ownership with `ShutdownTelemetryOnClose`.
+
+Telemetry covers the built-in Wingman agent when it is served over ACP. Native
+or third-party ACP agents such as Codex, Claude, Pi, Copilot, and OpenCode are
+not wrapped by this telemetry pipeline.
 
 ### User Data
 
@@ -340,11 +422,11 @@ Wingman comes with powerful built-in tools:
 | Tool | Description |
 |------|-------------|
 | `read` | Read file contents with optional line range |
-| `write` | Create or overwrite files |
-| `edit` | Make surgical edits to existing files |
+| `edit` | Create or edit several files atomically with structured exact-string replacements |
 | `glob` | Find files using glob patterns |
 | `grep` | Search file contents using regex patterns |
-| `shell` | Execute shell commands |
+| `exec_command` | Run a command, returning a session id when it remains active |
+| `exec_session` | Poll, interact with, or stop a running command session |
 | `agent` | Launch a sub-agent to handle independent tasks in a separate context |
 | `schedule_task` | Schedule recurring or one-time work (interval, cron, or timestamp) that wakes the agent when due |
 | `lsp` | Code intelligence (definitions, references, diagnostics, symbols, call hierarchy) |

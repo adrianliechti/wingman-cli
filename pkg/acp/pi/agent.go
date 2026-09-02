@@ -21,7 +21,6 @@ import (
 
 type Options struct {
 	Path string
-	Dir  string
 	Env  []string
 	Args []string
 

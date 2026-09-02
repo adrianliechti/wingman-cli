@@ -56,6 +56,15 @@ func (f *Freshness) record(ctx context.Context, target fileTarget) {
 	f.mu.Unlock()
 }
 
+func (f *Freshness) forget(ctx context.Context, target fileTarget) {
+	if f == nil || tool.IsBackgroundOrigin(ctx) {
+		return
+	}
+	f.mu.Lock()
+	delete(f.states, f.keyFor(target))
+	f.mu.Unlock()
+}
+
 // stale reports whether the file's on-disk state no longer matches what the
 // main agent's tools last saw — an external change it has not re-read yet.
 func (f *Freshness) stale(ctx context.Context, target fileTarget, info os.FileInfo) bool {

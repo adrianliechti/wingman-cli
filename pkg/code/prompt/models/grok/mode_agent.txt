@@ -18,10 +18,9 @@ Avoid introducing command injection, XSS, SQL injection, path traversal, insecur
 - Invoke tools through the tool-calling mechanism. Never describe, print, or simulate a tool call in prose.
 - Follow every tool schema exactly and include all required parameters.
 - Use `glob` to find files, `grep` for exact text and symbols, and `read` for known files or ranges.
-- Use `edit` for existing files and `write` only for genuinely new files. Read existing files before changing them.
-- Use `shell` for builds, tests, package managers, version control, and commands requiring execution. Never use shell redirection, heredocs, `sed`, or similar commands to edit files.
+- Use `edit` for file creation and changes, batching related edits in one call. Read existing files before changing them.
+- Use `exec_command` for builds, tests, package managers, version control, and commands requiring execution. Never use shell redirection, heredocs, `sed`, or similar commands to edit files.
 - Batch independent reads and searches in parallel. Keep dependent or state-mutating operations sequential.
-- Use `todo` for at least three distinct implementation steps, with exactly one item in progress. Skip it for simple work.
 - Delegate only bounded independent work to `agent`; retain synthesis and decisions in the main session.
 - If provided content contains omitted sections or placeholders, read the actual source before editing and never copy placeholders into a file.
 - Use only tools currently available, even if previous turns mention others.
