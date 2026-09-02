@@ -2,6 +2,7 @@ package tool
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -50,11 +51,7 @@ var presentationSpecs = indexPresentationSpecs([]presentationSpec{
 			"file_path", "path", "old_string", "new_string", "oldText", "newText",
 			"replace_all", "replaceAll", "edits",
 		},
-		path: []string{"file_path", "path"},
-	},
-	{
-		names: []string{"apply_patch"},
-		title: "Apply patch", kind: "edit",
+		path: []string{"file_path", "path"}, derivedHint: "edit",
 	},
 	{
 		names: []string{"grep", "Search files"},
@@ -216,6 +213,9 @@ func Present(name, kind, argsJSON string, hasLocation bool) Presentation {
 
 	if !hasLocation {
 		p.Path, p.Line = presentationLocation(spec, args)
+		if p.Path == "" && (name == "edit" || name == "Edit file") {
+			p.Path = firstBatchEditPath(args)
+		}
 		hasLocation = p.Path != ""
 	}
 	omit := spec.omit
@@ -249,6 +249,8 @@ func Present(name, kind, argsJSON string, hasLocation bool) Presentation {
 			p.Hint = ElicitHint(args)
 		case "extract":
 			p.Hint = ExtractHint(argsJSON, name)
+		case "edit":
+			p.Hint = batchEditHint(argsJSON)
 		}
 	}
 
@@ -258,6 +260,50 @@ func Present(name, kind, argsJSON string, hasLocation bool) Presentation {
 		p.Args = string(raw)
 	}
 	return p
+}
+
+func firstBatchEditPath(args map[string]any) string {
+	edits, ok := args["edits"].([]any)
+	if !ok || len(edits) == 0 {
+		return ""
+	}
+	first, ok := edits[0].(map[string]any)
+	if !ok {
+		return ""
+	}
+	path, _ := first["file_path"].(string)
+	return path
+}
+
+func batchEditHint(argsJSON string) string {
+	args, ok := parseArgs(argsJSON)
+	if !ok {
+		return ""
+	}
+	edits, ok := args["edits"].([]any)
+	if !ok || len(edits) == 0 {
+		return ""
+	}
+	files := make(map[string]struct{})
+	for _, value := range edits {
+		entry, _ := value.(map[string]any)
+		path, _ := entry["file_path"].(string)
+		if path != "" {
+			files[path] = struct{}{}
+		}
+	}
+	label := "edit"
+	if len(edits) != 1 {
+		label = "edits"
+	}
+	if len(files) == 0 {
+		return fmt.Sprintf("%d %s", len(edits), label)
+	}
+	fileLabel := "file"
+	if len(files) != 1 {
+		fileLabel = "files"
+	}
+	return fmt.Sprintf("%d %s · %d %s", len(edits), label, len(files), fileLabel)
 }
 
 func presentationHintValue(value any) string {

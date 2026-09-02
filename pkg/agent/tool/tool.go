@@ -27,11 +27,6 @@ type Tool struct {
 	Description string
 	Parameters  map[string]any
 	Execute     func(ctx context.Context, args map[string]any) (Result, error)
-	// Freeform switches the Responses API representation from a JSON function
-	// tool to a custom text tool. ExecuteText receives the model's input exactly
-	// as emitted, without JSON wrapping or unescaping.
-	Freeform    *FreeformFormat
-	ExecuteText func(ctx context.Context, input string) (Result, error)
 	Hidden      bool
 	Effect      func(args map[string]any) Effect
 	Telemetry   TelemetryMetadata
@@ -49,13 +44,6 @@ type TelemetryMetadata struct {
 	ToolType           string
 	MCPMethod          string
 	MCPProtocolVersion string
-}
-
-type FreeformFormat struct {
-	// Syntax is "lark" or "regex" when Definition constrains the input. Both
-	// fields empty means unconstrained text.
-	Syntax     string
-	Definition string
 }
 
 // Result separates tool-reported failure from executor/transport failure and

@@ -869,9 +869,9 @@ func toolWire(call tool.ToolCall) (string, map[string]any, []string) {
 	case "agent":
 		name = "Agent"
 	case "write":
-		aliases = append(aliases, "Write", "apply_patch")
+		aliases = append(aliases, "Write")
 	case "edit":
-		aliases = append(aliases, "Edit", "apply_patch")
+		aliases = append(aliases, "Edit")
 	}
 	aliases = append(aliases, name)
 	return name, input, aliases

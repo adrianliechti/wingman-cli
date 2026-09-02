@@ -30,7 +30,6 @@ type pendingToolCall struct {
 	args          []byte
 	lastYield     time.Time
 	lastYieldSize int
-	custom        bool
 }
 
 func (p *pendingToolCall) message() Message {
@@ -39,7 +38,7 @@ func (p *pendingToolCall) message() Message {
 		Role: RoleAssistant,
 		Content: []Content{{ToolCall: &ToolCall{
 			ID: p.id, Name: p.name, Args: string(p.args), Partial: true,
-			Presentation: presentation, Custom: p.custom,
+			Presentation: presentation,
 		}}},
 	}
 }
@@ -236,18 +235,6 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 				if !yield(pending.message(), nil) {
 					return nil, errYieldStopped
 				}
-			case responses.ResponseCustomToolCall:
-				if item.CallID == "" {
-					break
-				}
-				pending := &pendingToolCall{
-					id: item.CallID, name: item.Name, args: []byte(item.Input), custom: true,
-					lastYield: time.Now(), lastYieldSize: len(item.Input),
-				}
-				pendingCalls[e.OutputIndex] = pending
-				if !yield(pending.message(), nil) {
-					return nil, errYieldStopped
-				}
 			}
 
 		case responses.ResponseFunctionCallArgumentsDeltaEvent:
@@ -273,27 +260,6 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 					pending.name = e.Name
 				}
 
-				if !yield(pending.message(), nil) {
-					return nil, errYieldStopped
-				}
-			}
-
-		case responses.ResponseCustomToolCallInputDeltaEvent:
-			if pending := pendingCalls[e.OutputIndex]; pending != nil {
-				pending.args = append(pending.args, e.Delta...)
-				now := time.Now()
-				if pending.snapshotReady(now) {
-					pending.markSnapshot(now)
-					if !yield(pending.message(), nil) {
-						return nil, errYieldStopped
-					}
-				}
-			}
-
-		case responses.ResponseCustomToolCallInputDoneEvent:
-			if pending := pendingCalls[e.OutputIndex]; pending != nil {
-				delete(pendingCalls, e.OutputIndex)
-				pending.args = []byte(e.Input)
 				if !yield(pending.message(), nil) {
 					return nil, errYieldStopped
 				}
@@ -331,14 +297,6 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 					OfFunctionCall: &p,
 				})
 
-			case responses.ResponseCustomToolCall:
-				var p responses.ResponseCustomToolCallParam
-				if err := json.Unmarshal([]byte(item.RawJSON()), &p); err != nil {
-					return nil, fmt.Errorf("failed to parse custom tool call: %w", err)
-				}
-				outputItems = append(outputItems, responses.ResponseInputItemUnionParam{
-					OfCustomToolCall: &p,
-				})
 			}
 
 		case responses.ResponseCompletedEvent:
@@ -461,11 +419,6 @@ func outputItemsFromResponse(r responses.Response) []responses.ResponseInputItem
 				items = append(items, responses.ResponseInputItemUnionParam{OfFunctionCall: &p})
 			}
 
-		case responses.ResponseCustomToolCall:
-			var p responses.ResponseCustomToolCallParam
-			if err := json.Unmarshal([]byte(it.RawJSON()), &p); err == nil {
-				items = append(items, responses.ResponseInputItemUnionParam{OfCustomToolCall: &p})
-			}
 		}
 	}
 

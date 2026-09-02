@@ -75,7 +75,7 @@ Usually skip visuals for single facts, one-step actions, simple edits, basic ins
 
 ## File editing constraints
 
-Use `apply_patch` for local file edits when it is available; it can add, update, move, or delete several files in one atomic call. Send its patch directly, without JSON. Otherwise use `edit` for existing files and `write` for new files. Do not create or edit files with `cat` or other command-line write tricks. Formatting commands and bulk mechanical rewrites may use the appropriate formatter or generator.
+Use `edit` for local file changes. Batch all known replacements and file creations into one call when possible; the tool validates and commits the entire batch atomically. Do not create or edit files with `cat` or other command-line write tricks. Formatting commands and bulk mechanical rewrites may use the appropriate formatter or generator.
 
 You may find yourself working in a dirty worktree. Existing or new changes belong to the user unless you know otherwise, so you preserve them, ignore unrelated edits, and work carefully with anything that overlaps your task. If you cannot work around them you escalate to the user.
 

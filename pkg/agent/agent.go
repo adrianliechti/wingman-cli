@@ -851,7 +851,7 @@ func toolCallMessage(tc ToolCall) Message {
 		Role: RoleAssistant,
 		Content: []Content{{ToolCall: &ToolCall{
 			ID: tc.ID, Name: tc.Name, Kind: tc.Kind, Args: tc.Args,
-			Locations: tc.Locations, Presentation: presentation, Custom: tc.Custom,
+			Locations: tc.Locations, Presentation: presentation,
 		}}},
 	}
 }
@@ -879,7 +879,6 @@ func toolResultMessage(tc ToolCall, result tool.Result) Message {
 				{ToolResult: &ToolResult{
 					ID: tc.ID, Name: tc.Name, Kind: tc.Kind, Args: tc.Args,
 					Locations: tc.Locations, Presentation: presentation,
-					Custom:  tc.Custom,
 					Content: imageResultPlaceholder, IsError: result.IsError, Metadata: result.Metadata,
 				}},
 				{File: &File{Data: result.Content}},
@@ -892,7 +891,6 @@ func toolResultMessage(tc ToolCall, result tool.Result) Message {
 		Content: []Content{{ToolResult: &ToolResult{
 			ID: tc.ID, Name: tc.Name, Kind: tc.Kind, Args: tc.Args,
 			Locations: tc.Locations, Presentation: presentation,
-			Custom:  tc.Custom,
 			Content: result.Content, IsError: result.IsError, Metadata: result.Metadata,
 		}}},
 	}
@@ -1178,7 +1176,7 @@ func (a *Agent) executeSingleToolCall(ctx context.Context, tc ToolCall, tools []
 			break
 		}
 		hookContext = append(hookContext, outcome.AdditionalContext...)
-		if len(outcome.UpdatedInput) > 0 && ((t != nil && t.Freeform != nil) || json.Valid(outcome.UpdatedInput)) {
+		if len(outcome.UpdatedInput) > 0 && json.Valid(outcome.UpdatedInput) {
 			hc.Args = string(outcome.UpdatedInput)
 			tc.Args = hc.Args
 		}
@@ -1253,14 +1251,7 @@ func (a *Agent) executeTool(ctx context.Context, tc ToolCall, t *tool.Tool, time
 		return tool.Error(fmt.Sprintf("error: unknown tool %s", tc.Name))
 	}
 	if t.Execute == nil {
-		if t.ExecuteText == nil {
-			return tool.Error(fmt.Sprintf("error: tool %s has no executor", tc.Name))
-		}
-		result, err := t.ExecuteText(ctx, tc.Args)
-		if err != nil {
-			return tool.Error(fmt.Sprintf("error: %v", err))
-		}
-		return result
+		return tool.Error(fmt.Sprintf("error: tool %s has no executor", tc.Name))
 	}
 
 	args := make(map[string]any)
@@ -1299,10 +1290,6 @@ func (a *Agent) toolEffect(tc ToolCall, tools []tool.Tool) tool.Effect {
 	t := findTool(tc.Name, tools)
 	if t == nil || t.Effect == nil {
 		return tool.EffectDynamic
-	}
-
-	if t.Freeform != nil {
-		return t.Effect(nil)
 	}
 
 	var args map[string]any

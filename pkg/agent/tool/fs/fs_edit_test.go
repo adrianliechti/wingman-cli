@@ -38,7 +38,7 @@ func TestEditTool(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if !strings.Contains(result.Content, "Successfully") {
+		if !strings.Contains(result.Content, "Applied 1 edits across 1 files") {
 			t.Errorf("expected success message, got: %s", result.Content)
 		}
 
@@ -59,7 +59,7 @@ func TestEditTool(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !strings.Contains(result.Content, "Successfully") {
+		if !strings.Contains(result.Content, "Applied 1 edits across 1 files") {
 			t.Errorf("expected success message, got: %s", result.Content)
 		}
 

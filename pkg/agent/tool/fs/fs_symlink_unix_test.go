@@ -63,21 +63,21 @@ func TestWriteAndEditThroughAbsoluteInRootSymlink(t *testing.T) {
 	defer root.Close()
 
 	tools := Tools(root, nil)
-	var write, edit tool_
+	var edit tool_
 	for _, tl := range tools {
-		switch tl.Name {
-		case "write":
-			write = tl.Execute
-		case "edit":
+		if tl.Name == "edit" {
 			edit = tl.Execute
 		}
 	}
 
-	if _, err := write(context.Background(), map[string]any{
-		"file_path": "link/new.txt",
-		"content":   "alpha beta\n",
+	if _, err := edit(context.Background(), map[string]any{
+		"edits": []any{map[string]any{
+			"file_path":  "link/new.txt",
+			"old_string": "",
+			"new_string": "alpha beta\n",
+		}},
 	}); err != nil {
-		t.Fatalf("write through symlink failed: %v", err)
+		t.Fatalf("create through symlink failed: %v", err)
 	}
 
 	data, err := os.ReadFile(filepath.Join(real, "new.txt"))
@@ -86,9 +86,11 @@ func TestWriteAndEditThroughAbsoluteInRootSymlink(t *testing.T) {
 	}
 
 	if _, err := edit(context.Background(), map[string]any{
-		"file_path":  "link/new.txt",
-		"old_string": "beta",
-		"new_string": "gamma",
+		"edits": []any{map[string]any{
+			"file_path":  "link/new.txt",
+			"old_string": "beta",
+			"new_string": "gamma",
+		}},
 	}); err != nil {
 		t.Fatalf("edit through symlink failed: %v", err)
 	}

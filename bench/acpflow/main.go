@@ -557,11 +557,20 @@ func runOne(ctx context.Context, binary, agentName, model, effort, scenario, nod
 			runDashboardTurn(ctx, conn, client, session.SessionId, fixture, "create_dashboard", dashboardCreatePrompt),
 			runDashboardTurn(ctx, conn, client, session.SessionId, fixture, "add_range_selector", dashboardModifyPrompt),
 		)
+		result.TestsPassed = len(result.Turns) > 0
 		for _, turn := range result.Turns {
+			result.TotalMS += turn.TotalMS
+			if !turn.BuildPassed || !turn.RequirementsPassed {
+				result.TestsPassed = false
+			}
 			if turn.Error != "" {
+				result.TestsPassed = false
 				result.Error = turn.Name + ": " + turn.Error
 				break
 			}
+		}
+		if len(result.Turns) > 0 {
+			result.StopReason = result.Turns[len(result.Turns)-1].StopReason
 		}
 		if value := strings.TrimSpace(stderr.String()); value != "" {
 			result.AgentStderr = value

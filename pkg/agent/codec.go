@@ -5,7 +5,6 @@ import (
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
-	"github.com/openai/openai-go/v3/shared"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
@@ -15,20 +14,6 @@ func toTools(tools []tool.Tool) []responses.ToolUnionParam {
 
 	for _, t := range tools {
 		if t.Name == "" {
-			continue
-		}
-
-		if t.Freeform != nil {
-			custom := &responses.CustomToolParam{Name: t.Name}
-			if t.Description != "" {
-				custom.Description = openai.String(t.Description)
-			}
-			if t.Freeform.Definition == "" {
-				custom.Format.OfText = &shared.CustomToolInputFormatTextParam{}
-			} else {
-				custom.Format = shared.CustomToolInputFormatParamOfGrammar(t.Freeform.Definition, t.Freeform.Syntax)
-			}
-			result = append(result, responses.ToolUnionParam{OfCustom: custom})
 			continue
 		}
 
@@ -121,10 +106,6 @@ func userToInput(m Message) []responses.ResponseInputItemUnionParam {
 		}
 
 		if c.ToolResult != nil && c.ToolResult.ID != "" {
-			if c.ToolResult.Custom {
-				items = append(items, responses.ResponseInputItemParamOfCustomToolCallOutput(c.ToolResult.ID, c.ToolResult.Content))
-				continue
-			}
 			items = append(items, responses.ResponseInputItemUnionParam{
 				OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
 					CallID: openai.String(c.ToolResult.ID),
@@ -176,10 +157,6 @@ func assistantToInput(m Message) ([]responses.ResponseInputItemUnionParam, []res
 
 	for _, c := range m.Content {
 		if c.ToolCall != nil && c.ToolCall.ID != "" {
-			if c.ToolCall.Custom {
-				items = append(items, responses.ResponseInputItemParamOfCustomToolCall(c.ToolCall.ID, c.ToolCall.Args, c.ToolCall.Name))
-				continue
-			}
 			items = append(items, responses.ResponseInputItemUnionParam{
 				OfFunctionCall: &responses.ResponseFunctionToolCallParam{
 					CallID:    c.ToolCall.ID,
@@ -190,10 +167,6 @@ func assistantToInput(m Message) ([]responses.ResponseInputItemUnionParam, []res
 		}
 
 		if c.ToolResult != nil && c.ToolResult.ID != "" {
-			if c.ToolResult.Custom {
-				items = append(items, responses.ResponseInputItemParamOfCustomToolCallOutput(c.ToolResult.ID, c.ToolResult.Content))
-				continue
-			}
 			items = append(items, responses.ResponseInputItemUnionParam{
 				OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
 					CallID: openai.String(c.ToolResult.ID),
@@ -287,16 +260,6 @@ func toMessages(items []responses.ResponseInputItemUnionParam) []Message {
 				Content: []Content{{ToolCall: &tc}},
 			})
 
-		case item.OfCustomToolCall != nil:
-			tc := ToolCall{
-				ID: item.OfCustomToolCall.CallID, Name: item.OfCustomToolCall.Name,
-				Args: item.OfCustomToolCall.Input, Custom: true,
-			}
-			toolCallsByID[tc.ID] = tc
-			messages = append(messages, Message{
-				Role: RoleAssistant, Content: []Content{{ToolCall: &tc}},
-			})
-
 		case item.OfFunctionCallOutput != nil:
 			tc := toolCallsByID[item.OfFunctionCallOutput.CallID.Value]
 			tr := ToolResult{
@@ -308,17 +271,6 @@ func toMessages(items []responses.ResponseInputItemUnionParam) []Message {
 			messages = append(messages, Message{
 				Role:    RoleAssistant,
 				Content: []Content{{ToolResult: &tr}},
-			})
-
-		case item.OfCustomToolCallOutput != nil:
-			callID := item.OfCustomToolCallOutput.CallID
-			tc := toolCallsByID[callID]
-			tr := ToolResult{
-				ID: callID, Name: tc.Name, Args: tc.Args, Custom: true,
-				Content: item.OfCustomToolCallOutput.Output.OfString.Value,
-			}
-			messages = append(messages, Message{
-				Role: RoleAssistant, Content: []Content{{ToolResult: &tr}},
 			})
 
 		case item.OfReasoning != nil:

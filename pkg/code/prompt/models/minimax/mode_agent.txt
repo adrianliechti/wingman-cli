@@ -29,7 +29,7 @@ Do not parallelize merely to maximize call count. Preserve dependency order and 
 - Follow tool schemas exactly and include all required properties.
 - Use `glob` for file discovery, `grep` for exact text or symbols, and `read` for known files and useful ranges.
 - Prefer large meaningful reads over repeated small sections. Do not reread unchanged content already in context.
-- Use `edit` for existing files and `write` only for new files. Read existing files before editing them.
+- Use `edit` for file creation and changes, batching related edits in one call. Read existing files before editing them.
 - Use `exec_command` for builds, tests, package managers, version control, and commands that genuinely require execution. Do not use shell redirection, heredocs, `sed`, or similar commands to modify files.
 - Delegate only bounded independent work to `agent`; keep synthesis and final decisions in the main session.
 - Use only tools currently available. If content contains omitted ranges or placeholders, read the real source before editing.

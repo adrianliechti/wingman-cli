@@ -408,8 +408,8 @@ func TestACPTaskTurnWritesFileAndReportsUsage(t *testing.T) {
 						"type":      "function_call",
 						"id":        "fc_1",
 						"call_id":   "call_1",
-						"name":      "write",
-						"arguments": fmt.Sprintf(`{"file_path":%q,"content":"benchmark-ready\n"}`, filepath.Join(workdir, "solution.txt")),
+						"name":      "edit",
+						"arguments": fmt.Sprintf(`{"edits":[{"file_path":%q,"old_string":"","new_string":"benchmark-ready\n"}]}`, filepath.Join(workdir, "solution.txt")),
 						"status":    "completed",
 					},
 				})

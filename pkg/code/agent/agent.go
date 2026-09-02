@@ -1232,15 +1232,6 @@ func formatFileChangeNotice(paths []string) string {
 func (s *sessionState) tools() []tool.Tool {
 	tools := s.toolSet.Slice()
 	tools = append(tools, s.managedTools()...)
-	option, _ := s.parent.roleModel(s, "")
-	if strings.HasPrefix(option.ID, "gpt-5.6-") || option.ID == "gpt-5.6" {
-		// apply_patch covers both creation and updates in one compact call.
-		tools = slices.DeleteFunc(tools, func(t tool.Tool) bool {
-			return t.Name == "edit" || t.Name == "write"
-		})
-	} else {
-		tools = slices.DeleteFunc(tools, func(t tool.Tool) bool { return t.Freeform != nil })
-	}
 	switch s.currentMode() {
 	case modePlan:
 		tools = planModeTools(tools)

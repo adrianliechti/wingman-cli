@@ -80,7 +80,6 @@ type ToolCall struct {
 	Args         string            `json:"args,omitempty"`
 	Locations    []ToolLocation    `json:"locations,omitempty"`
 	Presentation *ToolPresentation `json:"presentation,omitempty"`
-	Custom       bool              `json:"custom,omitempty"`
 
 	Partial bool `json:"partial,omitempty"`
 }
@@ -93,7 +92,6 @@ type ToolResult struct {
 	Args         string            `json:"args,omitempty"`
 	Locations    []ToolLocation    `json:"locations,omitempty"`
 	Presentation *ToolPresentation `json:"presentation,omitempty"`
-	Custom       bool              `json:"custom,omitempty"`
 
 	Content  string         `json:"content,omitempty"`
 	IsError  bool           `json:"is_error,omitempty"`

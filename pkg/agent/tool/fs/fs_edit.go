@@ -1,7 +1,6 @@
 package fs
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,132 +11,7 @@ import (
 )
 
 func EditTool(root *os.Root, allowedWriteRoots ...string) tool.Tool {
-	return editTool(root, nil, nil, allowedWriteRoots...)
-}
-
-func editTool(root *os.Root, tracker *contentTracker, freshness *Freshness, allowedWriteRoots ...string) tool.Tool {
-	return tool.Tool{
-		Name:   "edit",
-		Effect: tool.StaticEffect(tool.EffectMutates),
-
-		Description: strings.Join([]string{
-			"Performs exact string replacements in files.",
-			"- You must `read` the file at least once in this conversation before editing it.",
-			"- Preserve indentation exactly as it appears after the `read` line-number prefix (`42\\t...`); never include the prefix itself.",
-			"- The edit FAILS if `old_string` is not unique in the file: add surrounding context (2-4 adjacent lines usually suffice) or set `replace_all` for intentional file-wide replacements like symbol renames.",
-			"- Prefer `write` for new files.",
-			"- For several changes to one file, pass `edits` (array of {old_string, new_string, replace_all}) in a single call. Edits apply in order — later ones see earlier results — and the call is atomic: if any edit fails, nothing is written.",
-			"- The returned diff is authoritative — do not re-read the file to verify an edit; a failed edit writes nothing.",
-		}, "\n"),
-
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"file_path":   map[string]any{"type": "string", "description": "The absolute path to the file to modify."},
-				"old_string":  map[string]any{"type": "string", "description": "The text to replace. Must be unique unless replace_all=true. Use an empty string only to create a new file or replace an empty file. Omit when using edits."},
-				"new_string":  map[string]any{"type": "string", "description": "The text to replace it with (must be different from old_string). Omit when using edits."},
-				"replace_all": map[string]any{"type": "boolean", "description": "Replace all occurrences of old_string (default false).", "default": false},
-				"edits": map[string]any{
-					"type":        "array",
-					"description": "Multiple replacements applied in order in a single atomic call. Use instead of old_string/new_string.",
-					"items": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"old_string":  map[string]any{"type": "string", "description": "The text to replace. Must be unique unless replace_all=true."},
-							"new_string":  map[string]any{"type": "string", "description": "The text to replace it with (must be different from old_string)."},
-							"replace_all": map[string]any{"type": "boolean", "description": "Replace all occurrences of old_string (default false).", "default": false},
-						},
-						"required":             []string{"old_string", "new_string"},
-						"additionalProperties": false,
-					},
-				},
-			},
-			"required":             []string{"file_path"},
-			"additionalProperties": false,
-		},
-
-		Execute: func(ctx context.Context, args map[string]any) (tool.Result, error) {
-			pathArg, ok := args["file_path"].(string)
-
-			if !ok || pathArg == "" {
-				return tool.Result{}, fmt.Errorf("file_path is required")
-			}
-
-			workingDir := root.Name()
-			target, err := resolveFileTarget(pathArg, workingDir, allowedWriteRoots, "edit file")
-			if err != nil {
-				return tool.Result{}, err
-			}
-
-			ops, err := parseEditOps(args)
-			if err != nil {
-				return tool.Result{}, err
-			}
-
-			info, err := statFileTarget(root, target)
-			exists := err == nil
-			switch {
-			case exists:
-				if info.IsDir() {
-					return tool.Result{}, fmt.Errorf("cannot edit file: path %q is a directory", pathArg)
-				}
-				if !info.Mode().IsRegular() {
-					return tool.Result{}, fmt.Errorf("cannot edit file: path %q is not a regular file", pathArg)
-				}
-			case !os.IsNotExist(err):
-				return tool.Result{}, fmt.Errorf("stat file %q: %w", pathArg, err)
-			case ops[0].oldText != "":
-				return tool.Result{}, fmt.Errorf("cannot edit %s: file does not exist", pathArg)
-			}
-
-			if exists && freshness.stale(ctx, target, info) {
-				return tool.Result{}, fmt.Errorf("cannot edit %s: the file changed on disk after you last read it (edited externally or by another agent) — `read` it again first and take the changes into account", pathArg)
-			}
-
-			var contentBytes []byte
-			if exists {
-				contentBytes, err = readFileTarget(root, target)
-				if err != nil {
-					return tool.Result{}, fmt.Errorf("read file %q: %w", pathArg, err)
-				}
-			}
-
-			if len(contentBytes) > MaxEditFileBytes {
-				return tool.Result{}, fmt.Errorf("file %s is %d bytes; edits are capped at %d bytes — use `write` for full rewrites or narrow the change", pathArg, len(contentBytes), MaxEditFileBytes)
-			}
-
-			bom, content := stripBom(string(contentBytes))
-			originalEnding := detectLineEnding(content)
-			normalizedContent := normalizeToLF(content)
-
-			newContent := normalizedContent
-			for i, op := range ops {
-				newContent, err = applyEditOp(newContent, op, pathArg)
-				if err != nil {
-					if len(ops) > 1 {
-						return tool.Result{}, fmt.Errorf("edits[%d]: %w (no edits were applied)", i, err)
-					}
-					return tool.Result{}, err
-				}
-			}
-
-			finalContent := bom + restoreLineEndings(newContent, originalEnding)
-
-			if err := writeFileTarget(root, target, finalContent); err != nil {
-				return tool.Result{}, fmt.Errorf("write file %q: %w", pathArg, err)
-			}
-
-			tracker.record([]byte(finalContent))
-			freshness.record(ctx, target)
-
-			diff := generateDiffString(normalizedContent, newContent)
-
-			if len(ops) > 1 {
-				return tool.Text(fmt.Sprintf("Successfully applied %d edits to %s.\n\n%s", len(ops), pathArg, diff)), nil
-			}
-			return tool.Text(fmt.Sprintf("Successfully replaced text in %s.\n\n%s", pathArg, diff)), nil
-		},
-	}
+	return batchEditTool(root, nil, allowedWriteRoots...)
 }
 
 type editOp struct {

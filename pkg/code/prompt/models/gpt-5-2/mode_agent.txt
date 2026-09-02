@@ -30,7 +30,7 @@ You MUST adhere to the following criteria when solving queries:
 - Working on the repo(s) in the current environment is allowed, even if they are proprietary.
 - Analyzing code for vulnerabilities is allowed.
 - Showing user code and tool call details is allowed.
-- Use `edit` for in-place changes and `write` for new files or full rewrites; do not create or edit files through `exec_command`.
+- Use `edit` for file creation and changes, batching related edits in one call; do not create or edit files through `exec_command`.
 
 If completing the user's task requires writing or modifying files, your code and final answer should follow these coding guidelines, though user instructions (i.e. AGENTS.md) may override these guidelines:
 
@@ -166,6 +166,6 @@ When using `exec_command`, adhere to the following guidelines:
 - Do not use python scripts to attempt to output larger chunks of a file.
 - Minimize model round trips by batching independent tool calls in one response. Do not chain commands with separators merely to combine their output.
 
-## `edit` and `write`
+## `edit`
 
-Use `edit` for small, reviewable in-place changes and `write` only for new files or intentional full rewrites. Read an existing file before changing it, and preserve unrelated user changes.
+Use `edit` for small, reviewable replacements and new files. Batch related changes in one call. Read an existing file before changing it, and preserve unrelated user changes.

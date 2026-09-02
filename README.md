@@ -9,7 +9,7 @@ A powerful AI-powered coding assistant that runs directly in your terminal. Wing
 ## ✨ Features
 
 - **Interactive TUI** — Rich terminal interface with markdown rendering and syntax highlighting
-- **File Operations** — Read, write, edit, and search files in your codebase
+- **File Operations** — Read, batch-edit, create, and search files in your codebase
 - **Shell Integration** — Execute shell commands with user approval
 - **LSP Integration** — Code intelligence via auto-detected language servers (definitions, references, diagnostics, call hierarchy, and more)
 - **Predictive Tab Edits** — Low-latency inline and multiline next-edit suggestions in the web editor, with import cleanup through the active language server
@@ -422,9 +422,7 @@ Wingman comes with powerful built-in tools:
 | Tool | Description |
 |------|-------------|
 | `read` | Read file contents with optional line range |
-| `write` | Create or overwrite files |
-| `edit` | Make surgical edits to existing files |
-| `apply_patch` | Apply a free-form multi-file patch atomically (GPT-5.6 family) |
+| `edit` | Create or edit several files atomically with structured exact-string replacements |
 | `glob` | Find files using glob patterns |
 | `grep` | Search file contents using regex patterns |
 | `exec_command` | Run a command, returning a session id when it remains active |

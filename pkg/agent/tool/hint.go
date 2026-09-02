@@ -16,20 +16,14 @@ var workingDirTools = map[string]bool{
 }
 
 func ExtractHint(argsJSON, toolName string) string {
-	if toolName == "apply_patch" {
-		for _, line := range strings.Split(argsJSON, "\n") {
-			for _, marker := range []string{"*** Update File: ", "*** Add File: ", "*** Delete File: "} {
-				if path, ok := strings.CutPrefix(strings.TrimSpace(line), marker); ok {
-					return strings.TrimSpace(path)
-				}
-			}
-		}
-		return ""
-	}
-
 	args, ok := parseArgs(argsJSON)
 	if !ok {
 		return wdFallback(toolName)
+	}
+	if toolName == "edit" || toolName == "Edit file" {
+		if path := firstBatchEditPath(args); path != "" {
+			return normalizeWorkspacePath(strings.Join(strings.Fields(path), " "))
+		}
 	}
 
 	if desc, ok := args["description"]; ok {

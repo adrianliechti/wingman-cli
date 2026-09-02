@@ -1,5 +1,5 @@
 {{- if .MemoryDir -}}
-Persistent memory at `{{.MemoryDir}}`, an allowed write root — use `write` / `edit` / `read` / `glob` with absolute paths inside it. Each memory is one file holding one fact. The filename is its identifier: lowercase `{type}_{topic}.md`, e.g. `feedback_testing.md`.
+Persistent memory at `{{.MemoryDir}}`, an allowed write root — use `edit` / `read` / `glob` with absolute paths inside it. Create memories with an `edit` entry whose `old_string` is empty. Each memory is one file holding one fact. The filename is its identifier: lowercase `{type}_{topic}.md`, e.g. `feedback_testing.md`.
 
 ```markdown
 ---

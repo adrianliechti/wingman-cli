@@ -115,7 +115,7 @@ func TestEnvironmentOptionsAreResolvedAtAgentStartup(t *testing.T) {
 	}
 	assertTools(t, a, sessionID,
 		[]string{"shell", "exec_command", "exec_session", "web_search", "fetch", "todo"},
-		[]string{"read", "edit", "write"},
+		[]string{"read", "edit"},
 	)
 }
 

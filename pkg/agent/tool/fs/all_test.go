@@ -12,7 +12,7 @@ func TestTools(t *testing.T) {
 
 	tools := Tools(root, nil)
 
-	expectedNames := []string{"read", "write", "edit", "grep", "glob", "view_image", "apply_patch"}
+	expectedNames := []string{"read", "edit", "grep", "glob", "view_image"}
 
 	if len(tools) != len(expectedNames) {
 		t.Errorf("expected %d tools, got %d", len(expectedNames), len(tools))
@@ -27,7 +27,7 @@ func TestTools(t *testing.T) {
 			t.Errorf("tool %s has empty description", tool.Name)
 		}
 
-		if tool.Execute == nil && tool.ExecuteText == nil {
+		if tool.Execute == nil {
 			t.Errorf("tool %s has no executor", tool.Name)
 		}
 	}
