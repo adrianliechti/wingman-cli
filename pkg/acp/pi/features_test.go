@@ -72,6 +72,31 @@ func TestIdleExtensionDialogIsCancelled(t *testing.T) {
 	}
 }
 
+func TestFailedLoadKeepsExistingLiveSession(t *testing.T) {
+	cwd := t.TempDir()
+	sessionsDir := t.TempDir()
+	const id = acp.SessionId("00000000-0000-4000-8000-000000000099")
+	history := []byte(`{"type":"session","id":"` + string(id) + `","cwd":"` + cwd + `"}` + "\n")
+	if err := os.WriteFile(filepath.Join(sessionsDir, "session.jsonl"), history, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	old := newSession(id, cwd, &process{})
+	a := New(Options{Path: filepath.Join(t.TempDir(), "missing-pi"), SessionsDir: sessionsDir})
+	a.storeSession(old)
+	t.Cleanup(func() { _ = a.Close() })
+
+	_, err := a.LoadSession(context.Background(), acp.LoadSessionRequest{
+		SessionId: id, Cwd: cwd, McpServers: []acp.McpServer{},
+	})
+	if err == nil {
+		t.Fatal("load with a missing Pi executable succeeded")
+	}
+	if got := a.lookup(id); got != old || old.isClosed() {
+		t.Fatalf("failed load replaced or closed the live session: got=%p old=%p", got, old)
+	}
+}
+
 func TestPresentToolTitles(t *testing.T) {
 	if got := presentTool("bash", map[string]any{"command": "echo hi"}, "").title; got != "Run command" {
 		t.Errorf("bash command title = %q", got)

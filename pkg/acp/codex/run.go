@@ -80,6 +80,16 @@ func (a *Agent) Done() <-chan struct{} {
 
 func (a *Agent) Close() error {
 	a.closeOnce.Do(func() {
+		a.mu.Lock()
+		sessions := make([]*session, 0, len(a.sessions))
+		for _, s := range a.sessions {
+			sessions = append(sessions, s)
+		}
+		a.sessions = make(map[acp.SessionId]*session)
+		a.mu.Unlock()
+		for _, s := range sessions {
+			s.markClosed()
+		}
 		if a.stdin != nil {
 			_ = a.stdin.Close()
 		}

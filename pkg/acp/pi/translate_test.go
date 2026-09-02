@@ -2,6 +2,7 @@ package pi
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/coder/acp-go-sdk"
@@ -101,6 +102,26 @@ func TestPromptToPi(t *testing.T) {
 	}
 	if images[0].Data != "BASE64DATA" || images[0].MimeType != "image/png" || images[0].Type != "image" {
 		t.Errorf("image = %+v", images[0])
+	}
+}
+
+func TestPromptToPiPreservesBlobResources(t *testing.T) {
+	imageMIME := "image/png"
+	binaryMIME := "application/pdf"
+	blocks := []acp.ContentBlock{
+		acp.ResourceBlock(acp.EmbeddedResourceResource{BlobResourceContents: &acp.BlobResourceContents{
+			Uri: "file:///work/image.png", MimeType: &imageMIME, Blob: "IMAGE",
+		}}),
+		acp.ResourceBlock(acp.EmbeddedResourceResource{BlobResourceContents: &acp.BlobResourceContents{
+			Uri: "file:///work/report.pdf", MimeType: &binaryMIME, Blob: "PDF",
+		}}),
+	}
+	message, images := promptToPi(blocks)
+	if len(images) != 1 || images[0].MimeType != imageMIME || images[0].Data != "IMAGE" {
+		t.Fatalf("images = %#v", images)
+	}
+	if !strings.Contains(message, "file:///work/report.pdf (application/pdf, base64)\nPDF") {
+		t.Fatalf("message = %q", message)
 	}
 }
 

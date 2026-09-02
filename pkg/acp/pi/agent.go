@@ -181,9 +181,7 @@ func (a *Agent) NewSession(ctx context.Context, params acp.NewSessionRequest) (a
 		return acp.NewSessionResponse{}, err
 	}
 
-	a.mu.Lock()
-	a.sessions[id] = s
-	a.mu.Unlock()
+	a.storeSession(s)
 
 	return acp.NewSessionResponse{
 		SessionId:     id,
@@ -195,6 +193,14 @@ func (a *Agent) Prompt(ctx context.Context, params acp.PromptRequest) (acp.Promp
 	s := a.lookup(params.SessionId)
 	if s == nil {
 		return acp.PromptResponse{}, fmt.Errorf("session %s not found", params.SessionId)
+	}
+	s.promptMu.Lock()
+	defer s.promptMu.Unlock()
+	if s.isClosed() {
+		return acp.PromptResponse{}, fmt.Errorf("session %s is closed", params.SessionId)
+	}
+	if ctx.Err() != nil {
+		return acp.PromptResponse{StopReason: acp.StopReasonCancelled, UserMessageId: params.MessageId}, nil
 	}
 	stop, err := s.runTurn(ctx, a.conn, params.Prompt)
 	if err != nil {
@@ -274,6 +280,16 @@ func (a *Agent) disposeSession(id acp.SessionId) {
 	}
 }
 
+func (a *Agent) storeSession(s *session) {
+	a.mu.Lock()
+	old := a.sessions[s.id]
+	a.sessions[s.id] = s
+	a.mu.Unlock()
+	if old != nil && old != s {
+		old.close()
+	}
+}
+
 const sessionPageSize = 50
 
 func (a *Agent) ListSessions(_ context.Context, params acp.ListSessionsRequest) (acp.ListSessionsResponse, error) {
@@ -348,8 +364,6 @@ func (a *Agent) LoadSession(ctx context.Context, params acp.LoadSessionRequest) 
 		return acp.LoadSessionResponse{}, err
 	}
 
-	a.disposeSession(params.SessionId)
-
 	proc, bridge, err := a.spawnSessionProcess(ctx, cwd, []string{"--session", file.Path}, params.McpServers)
 	if err != nil {
 		return acp.LoadSessionResponse{}, err
@@ -376,9 +390,7 @@ func (a *Agent) LoadSession(ctx context.Context, params acp.LoadSessionRequest) 
 		return acp.LoadSessionResponse{}, err
 	}
 
-	a.mu.Lock()
-	a.sessions[params.SessionId] = s
-	a.mu.Unlock()
+	a.storeSession(s)
 
 	send := func(u acp.SessionUpdate) {
 		_ = a.conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: s.id, Update: u})
@@ -484,31 +496,10 @@ func (a *Agent) UnstableForkSession(ctx context.Context, params acp.UnstableFork
 		return fail(err)
 	}
 
-	a.mu.Lock()
-	a.sessions[id] = s
-	a.mu.Unlock()
+	a.storeSession(s)
 	return acp.UnstableForkSessionResponse{SessionId: id}, nil
 }
 
 func stableMCPServers(servers []acp.UnstableMcpServer) ([]acp.McpServer, error) {
-	out := make([]acp.McpServer, 0, len(servers))
-	for i, server := range servers {
-		count := 0
-		for _, present := range []bool{server.Stdio != nil, server.Http != nil, server.Sse != nil, server.Acp != nil} {
-			if present {
-				count++
-			}
-		}
-		if count != 1 {
-			return nil, fmt.Errorf("MCP server %d must specify exactly one transport", i+1)
-		}
-		if server.Stdio == nil {
-			return nil, fmt.Errorf("MCP server %d: only stdio transport is supported", i+1)
-		}
-		out = append(out, acp.McpServer{Stdio: server.Stdio})
-	}
-	if err := acpcommon.ValidateMCPServers(out, acp.McpCapabilities{}); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return acpcommon.StableMCPServers(servers, acp.McpCapabilities{})
 }

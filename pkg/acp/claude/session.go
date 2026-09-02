@@ -21,7 +21,9 @@ type session struct {
 	cwd   string
 	agent *Agent
 
+	promptMu       sync.Mutex
 	mu             sync.Mutex
+	closed         bool
 	modelID        string
 	modelOverride  bool
 	effort         string
@@ -65,6 +67,7 @@ func (s *session) cancelTurn() {
 
 func (s *session) close() {
 	s.mu.Lock()
+	s.closed = true
 	cancel := s.cancel
 	proc := s.proc
 	s.proc = nil
@@ -77,6 +80,12 @@ func (s *session) close() {
 	}
 }
 
+func (s *session) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
 func (s *session) runTurn(ctx context.Context, prompt []acp.ContentBlock) (acp.StopReason, *acp.Usage, error) {
 	p, err := s.ensureProc()
 	if err != nil {
@@ -86,6 +95,10 @@ func (s *session) runTurn(ctx context.Context, prompt []acp.ContentBlock) (acp.S
 	turnCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return acp.StopReasonCancelled, nil, nil
+	}
 	s.cancel = cancel
 	s.mu.Unlock()
 	defer func() {
@@ -178,6 +191,9 @@ func (s *session) ensureProc() (*claudeProc, error) {
 	a := s.agent
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return nil, fmt.Errorf("session %s is closed", s.id)
+	}
 
 	sig := s.spawnSigLocked()
 	if s.proc != nil && s.proc.sig == sig && !s.proc.isDead() {
@@ -271,6 +287,7 @@ type claudeProc struct {
 	subagentParents map[string]string
 	results         chan turnResult
 	dead            chan struct{}
+	shutdownOnce    sync.Once
 }
 
 func (p *claudeProc) beginTurn() {
@@ -312,15 +329,16 @@ func (p *claudeProc) isDead() bool {
 }
 
 func (p *claudeProc) shutdown() {
-
-	_ = p.stdin.Close()
-	select {
-	case <-p.dead:
-	case <-time.After(5 * time.Second):
-		p.kill()
-		<-p.dead
-	}
-	_ = p.cmd.Wait()
+	p.shutdownOnce.Do(func() {
+		_ = p.stdin.Close()
+		select {
+		case <-p.dead:
+		case <-time.After(5 * time.Second):
+			p.kill()
+			<-p.dead
+		}
+		_ = p.cmd.Wait()
+	})
 }
 
 func (p *claudeProc) read(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, r io.Reader) {
@@ -703,22 +721,60 @@ func (s *session) cliArgsLocked() []string {
 func promptMessage(blocks []acp.ContentBlock) cliInput {
 	in := cliInput{Type: "user", Message: cliInputMessage{Role: "user"}}
 	add := func(c cliInputContent) { in.Message.Content = append(in.Message.Content, c) }
+	var contextBlocks []cliInputContent
 	for _, b := range blocks {
 		switch {
 		case b.Text != nil:
 			add(cliInputContent{Type: "text", Text: b.Text.Text})
-		case b.Image != nil && b.Image.Data != "":
-			add(cliInputContent{Type: "image", Source: &cliInputImageSource{
-				Type:      "base64",
-				MediaType: b.Image.MimeType,
-				Data:      b.Image.Data,
-			}})
+		case b.Image != nil:
+			switch {
+			case b.Image.Data != "":
+				add(cliInputContent{Type: "image", Source: &cliInputImageSource{
+					Type:      "base64",
+					MediaType: b.Image.MimeType,
+					Data:      b.Image.Data,
+				}})
+			case b.Image.Uri != nil && (strings.HasPrefix(*b.Image.Uri, "http://") || strings.HasPrefix(*b.Image.Uri, "https://")):
+				add(cliInputContent{Type: "image", Source: &cliInputImageSource{Type: "url", URL: *b.Image.Uri}})
+			}
 		case b.ResourceLink != nil:
-			add(cliInputContent{Type: "text", Text: fmt.Sprintf("[@%s](%s)", b.ResourceLink.Name, b.ResourceLink.Uri)})
-		case b.Resource != nil && b.Resource.Resource.TextResourceContents != nil:
-			r := b.Resource.Resource.TextResourceContents
-			add(cliInputContent{Type: "text", Text: fmt.Sprintf("\n<context ref=%q>\n%s\n</context>", r.Uri, r.Text)})
+			add(cliInputContent{Type: "text", Text: formatResourceLink(b.ResourceLink.Name, b.ResourceLink.Uri)})
+		case b.Resource != nil:
+			resource := b.Resource.Resource
+			switch {
+			case resource.TextResourceContents != nil:
+				r := resource.TextResourceContents
+				add(cliInputContent{Type: "text", Text: formatResourceLink("", r.Uri)})
+				contextBlocks = append(contextBlocks, cliInputContent{Type: "text", Text: fmt.Sprintf("\n<context ref=%q>\n%s\n</context>", r.Uri, r.Text)})
+			case resource.BlobResourceContents != nil:
+				r := resource.BlobResourceContents
+				mimeType := "application/octet-stream"
+				if r.MimeType != nil && *r.MimeType != "" {
+					mimeType = *r.MimeType
+				}
+				if strings.HasPrefix(strings.ToLower(mimeType), "image/") && r.Blob != "" {
+					add(cliInputContent{Type: "image", Source: &cliInputImageSource{
+						Type: "base64", MediaType: mimeType, Data: r.Blob,
+					}})
+					break
+				}
+				add(cliInputContent{Type: "text", Text: formatResourceLink("", r.Uri)})
+				contextBlocks = append(contextBlocks, cliInputContent{Type: "text", Text: fmt.Sprintf(
+					"\n<context ref=%q mimeType=%q encoding=%q>\n%s\n</context>", r.Uri, mimeType, "base64", r.Blob,
+				)})
+			}
 		}
 	}
+	in.Message.Content = append(in.Message.Content, contextBlocks...)
 	return in
+}
+
+func formatResourceLink(name, uri string) string {
+	if name != "" {
+		return fmt.Sprintf("[@%s](%s)", name, uri)
+	}
+	if path, ok := strings.CutPrefix(uri, "file://"); ok {
+		return fmt.Sprintf("[@%s](%s)", filepath.Base(path), uri)
+	}
+	return uri
 }

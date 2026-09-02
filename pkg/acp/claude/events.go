@@ -318,10 +318,8 @@ func toolResultContent(name string, b cliMsgBlock) []acp.ToolCallContent {
 	text, parts, isArray := decodeToolResult(b.Content)
 	subagent := (name == "Agent" || name == "Task") && !b.IsError
 	if isArray {
-		hasDocument := hasResultBlockType(parts, "document")
-		richBash := name == "Bash" && !b.IsError && hasNonTextResultBlock(parts)
-		if subagent || hasDocument || richBash {
-			return resultBlocks(parts, name, b.IsError, subagent, hasDocument)
+		if subagent || hasNonTextResultBlock(parts) {
+			return resultBlocks(parts, name, b.IsError, subagent)
 		}
 		text = resultText(parts)
 	} else if subagent {
@@ -358,7 +356,7 @@ func textToolResultContent(name, text string, isError bool) []acp.ToolCallConten
 	}
 }
 
-func resultBlocks(parts []cliMsgBlock, name string, isError, subagent, includeDocuments bool) []acp.ToolCallContent {
+func resultBlocks(parts []cliMsgBlock, name string, isError, subagent bool) []acp.ToolCallContent {
 	blocks := make([]acp.ToolCallContent, 0, len(parts))
 	firstText := true
 	for _, part := range parts {
@@ -374,13 +372,22 @@ func resultBlocks(parts []cliMsgBlock, name string, isError, subagent, includeDo
 			firstText = false
 			blocks = append(blocks, acp.ToolContent(acp.TextBlock(formatResultText(name, text, isError))))
 		case "image":
-			if part.Source != nil && part.Source.Data != "" && (name == "Bash" || part.Source.Type == "base64") {
+			if part.Source == nil {
+				blocks = append(blocks, acp.ToolContent(acp.TextBlock(formatRichResultText("[image: file reference]", isError))))
+				continue
+			}
+			switch {
+			case part.Source.Type == "base64" && part.Source.Data != "":
 				blocks = append(blocks, acp.ToolContent(acp.ImageBlock(part.Source.Data, part.Source.MediaType)))
+			case part.Source.Type == "base64":
+				continue
+			case part.Source.Type == "url" && strings.TrimSpace(part.Source.URL) != "":
+				blocks = append(blocks, acp.ToolContent(acp.TextBlock(formatRichResultText("[image: "+part.Source.URL+"]", isError))))
+			default:
+				blocks = append(blocks, acp.ToolContent(acp.TextBlock(formatRichResultText("[image: file reference]", isError))))
 			}
 		case "document":
-			if includeDocuments {
-				blocks = append(blocks, acp.ToolContent(acp.TextBlock(documentPlaceholder(part))))
-			}
+			blocks = append(blocks, acp.ToolContent(acp.TextBlock(formatRichResultText(documentPlaceholder(part), isError))))
 		}
 	}
 	return blocks
@@ -392,6 +399,13 @@ func formatResultText(name, text string, isError bool) string {
 	}
 	if name == "Read" {
 		return markdownEscape(text)
+	}
+	return text
+}
+
+func formatRichResultText(text string, isError bool) string {
+	if isError {
+		return codeFence(text)
 	}
 	return text
 }
@@ -514,15 +528,6 @@ func decodeToolResult(raw json.RawMessage) (string, []cliMsgBlock, bool) {
 		return "", parts, true
 	}
 	return string(raw), nil, false
-}
-
-func hasResultBlockType(parts []cliMsgBlock, blockType string) bool {
-	for _, part := range parts {
-		if part.Type == blockType {
-			return true
-		}
-	}
-	return false
 }
 
 func hasNonTextResultBlock(parts []cliMsgBlock) bool {

@@ -70,11 +70,12 @@ type Server struct {
 }
 
 type sessionEntry struct {
-	id        acpsdk.SessionId
-	agent     *codeagent.Agent
-	workspace *workspaceEntry
-	cancel    context.CancelFunc
-	closing   bool
+	id         acpsdk.SessionId
+	agent      *codeagent.Agent
+	workspace  *workspaceEntry
+	cancel     context.CancelFunc
+	promptDone chan struct{}
+	closing    bool
 }
 
 type workspaceEntry struct {
@@ -498,6 +499,26 @@ func (s *Server) registerSession(id acpsdk.SessionId, w *workspaceEntry) {
 	}
 }
 
+func (s *Server) replaceLoadedSession(id acpsdk.SessionId, w *workspaceEntry) error {
+	s.mu.Lock()
+	old := s.sessions[id]
+	if old != nil && (old.closing || old.cancel != nil) {
+		s.mu.Unlock()
+		return fmt.Errorf("session %s has a prompt in progress or is closing", id)
+	}
+	if s.sessionDirs == nil {
+		s.sessionDirs = map[acpsdk.SessionId]string{}
+	}
+	s.sessionDirs[id] = w.agent.SessionsDir()
+	s.sessions[id] = &sessionEntry{id: id, agent: w.agent, workspace: w}
+	s.mu.Unlock()
+
+	if old != nil {
+		s.releaseWorkspace(old.workspace)
+	}
+	return nil
+}
+
 func normalizeCwd(cwd string) (string, error) {
 	cwd, _, err := acp.NormalizeSessionRoots(cwd, nil)
 	return cwd, err
@@ -573,35 +594,54 @@ func (s *Server) lookupSession(id acpsdk.SessionId) *sessionEntry {
 	return s.sessions[id]
 }
 
-func (s *Server) retainSession(id acpsdk.SessionId, cancel context.CancelFunc) (*sessionEntry, func(), error) {
-	s.mu.Lock()
-	sess := s.sessions[id]
-	if sess == nil {
-		s.mu.Unlock()
-		return nil, nil, fmt.Errorf("session %s not found", id)
-	}
-	if sess.closing {
-		s.mu.Unlock()
-		return nil, nil, fmt.Errorf("session %s is closing", id)
-	}
-	if sess.cancel != nil {
-		s.mu.Unlock()
-		return nil, nil, fmt.Errorf("session %s already has a prompt in progress", id)
-	}
-	sess.workspace.refs++
-	sess.cancel = cancel
-	s.mu.Unlock()
-	return sess, func() {
+func (s *Server) retainSession(ctx context.Context, id acpsdk.SessionId, cancel context.CancelFunc) (*sessionEntry, func(), error) {
+	for {
 		s.mu.Lock()
-		if s.sessions[id] == sess {
-			if sess.closing {
-				delete(s.sessions, id)
-			} else {
-				sess.cancel = nil
+		sess := s.sessions[id]
+		if sess == nil {
+			s.mu.Unlock()
+			return nil, nil, fmt.Errorf("session %s not found", id)
+		}
+		if sess.closing {
+			s.mu.Unlock()
+			return nil, nil, fmt.Errorf("session %s is closing", id)
+		}
+		if sess.cancel != nil {
+			done := sess.promptDone
+			s.mu.Unlock()
+			if done == nil {
+				return nil, nil, fmt.Errorf("session %s already has a prompt in progress", id)
+			}
+			select {
+			case <-done:
+				continue
+			case <-ctx.Done():
+				return nil, nil, ctx.Err()
 			}
 		}
+
+		done := make(chan struct{})
+		sess.workspace.refs++
+		sess.cancel = cancel
+		sess.promptDone = done
 		s.mu.Unlock()
-	}, nil
+		return sess, func() {
+			closeDone := false
+			s.mu.Lock()
+			if sess.promptDone == done {
+				sess.cancel = nil
+				sess.promptDone = nil
+				closeDone = true
+				if s.sessions[id] == sess && sess.closing {
+					delete(s.sessions, id)
+				}
+			}
+			s.mu.Unlock()
+			if closeDone {
+				close(done)
+			}
+		}, nil
+	}
 }
 
 func (s *Server) Cancel(_ context.Context, params acpsdk.CancelNotification) error {
@@ -621,7 +661,7 @@ func (s *Server) Prompt(ctx context.Context, params acpsdk.PromptRequest) (acpsd
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	sess, unregister, err := s.retainSession(params.SessionId, cancel)
+	sess, unregister, err := s.retainSession(ctx, params.SessionId, cancel)
 	if err != nil {
 		return acpsdk.PromptResponse{}, err
 	}
@@ -790,7 +830,10 @@ func (s *Server) loadAndAttach(ctx context.Context, cwdParam string, id acpsdk.S
 		}
 		return nil, nil, fmt.Errorf("session %s not found: %w", id, err)
 	}
-	s.registerSession(id, w)
+	if err := s.replaceLoadedSession(id, w); err != nil {
+		s.releaseWorkspace(w)
+		return nil, nil, err
+	}
 	return w, w.agent.Messages(string(id)), nil
 }
 
@@ -853,6 +896,7 @@ func notifyContent(notify func(acpsdk.SessionUpdate), role agent.MessageRole, c 
 			title,
 			opts...,
 		))
+		return
 	case c.ToolResult != nil:
 		status := acpsdk.ToolCallStatusCompleted
 		if c.ToolResult.IsError {
@@ -865,13 +909,17 @@ func notifyContent(notify func(acpsdk.SessionUpdate), role agent.MessageRole, c 
 				acpsdk.ToolContent(acpsdk.TextBlock(c.ToolResult.Content)),
 			}),
 		))
-	case c.Reasoning != nil && c.Reasoning.Summary != "":
+		return
+	}
+
+	if c.Reasoning != nil && c.Reasoning.Summary != "" {
 		notify(acpsdk.UpdateAgentThoughtText(c.Reasoning.Summary))
-	case c.Text != "":
+	}
+	for _, block := range acp.ContentToBlocks([]agent.Content{c}) {
 		if role == agent.RoleUser {
-			notify(acpsdk.UpdateUserMessageText(c.Text))
+			notify(acpsdk.UpdateUserMessage(block))
 		} else {
-			notify(acpsdk.UpdateAgentMessageText(c.Text))
+			notify(acpsdk.UpdateAgentMessage(block))
 		}
 	}
 }

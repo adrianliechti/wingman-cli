@@ -12,6 +12,7 @@ import (
 // optional transports must be advertised through capabilities.
 func ValidateMCPServers(servers []acpsdk.McpServer, capabilities acpsdk.McpCapabilities) error {
 	seen := make(map[string]bool, len(servers))
+	seenACPIDs := make(map[acpsdk.McpServerAcpId]bool, len(servers))
 	for i, server := range servers {
 		count := 0
 		for _, present := range []bool{server.Stdio != nil, server.Http != nil, server.Sse != nil, server.Acp != nil} {
@@ -29,10 +30,8 @@ func ValidateMCPServers(servers []acpsdk.McpServer, capabilities acpsdk.McpCapab
 			if strings.TrimSpace(server.Stdio.Command) == "" {
 				return fmt.Errorf("MCP server %d (%s): stdio command is required", i+1, name)
 			}
-			for _, variable := range server.Stdio.Env {
-				if strings.TrimSpace(variable.Name) == "" {
-					return fmt.Errorf("MCP server %d (%s): environment variable name is required", i+1, name)
-				}
+			if err := validateEnvironment(server.Stdio.Env); err != nil {
+				return fmt.Errorf("MCP server %d (%s): %w", i+1, name, err)
 			}
 		case server.Http != nil:
 			name = strings.TrimSpace(server.Http.Name)
@@ -42,6 +41,9 @@ func ValidateMCPServers(servers []acpsdk.McpServer, capabilities acpsdk.McpCapab
 			if strings.TrimSpace(server.Http.Url) == "" {
 				return fmt.Errorf("MCP server %d (%s): HTTP URL is required", i+1, name)
 			}
+			if err := validateHeaders(server.Http.Headers); err != nil {
+				return fmt.Errorf("MCP server %d (%s): %w", i+1, name, err)
+			}
 		case server.Sse != nil:
 			name = strings.TrimSpace(server.Sse.Name)
 			if !capabilities.Sse {
@@ -50,11 +52,21 @@ func ValidateMCPServers(servers []acpsdk.McpServer, capabilities acpsdk.McpCapab
 			if strings.TrimSpace(server.Sse.Url) == "" {
 				return fmt.Errorf("MCP server %d (%s): SSE URL is required", i+1, name)
 			}
+			if err := validateHeaders(server.Sse.Headers); err != nil {
+				return fmt.Errorf("MCP server %d (%s): %w", i+1, name, err)
+			}
 		case server.Acp != nil:
 			name = strings.TrimSpace(server.Acp.Name)
 			if !capabilities.Acp {
 				return fmt.Errorf("MCP server %d (%s): ACP transport is not supported", i+1, name)
 			}
+			if server.Acp.Id == "" {
+				return fmt.Errorf("MCP server %d (%s): ACP id is required", i+1, name)
+			}
+			if seenACPIDs[server.Acp.Id] {
+				return fmt.Errorf("duplicate ACP MCP server id %q", server.Acp.Id)
+			}
+			seenACPIDs[server.Acp.Id] = true
 		}
 		if name == "" {
 			return fmt.Errorf("MCP server %d has no name", i+1)
@@ -63,6 +75,37 @@ func ValidateMCPServers(servers []acpsdk.McpServer, capabilities acpsdk.McpCapab
 			return fmt.Errorf("duplicate MCP server name %q", name)
 		}
 		seen[name] = true
+	}
+	return nil
+}
+
+func validateEnvironment(variables []acpsdk.EnvVariable) error {
+	seen := make(map[string]bool, len(variables))
+	for _, variable := range variables {
+		name := strings.TrimSpace(variable.Name)
+		if name == "" {
+			return fmt.Errorf("environment variable name is required")
+		}
+		if seen[name] {
+			return fmt.Errorf("duplicate environment variable %q", name)
+		}
+		seen[name] = true
+	}
+	return nil
+}
+
+func validateHeaders(headers []acpsdk.HttpHeader) error {
+	seen := make(map[string]bool, len(headers))
+	for _, header := range headers {
+		name := strings.TrimSpace(header.Name)
+		if name == "" {
+			return fmt.Errorf("HTTP header name is required")
+		}
+		key := strings.ToLower(name)
+		if seen[key] {
+			return fmt.Errorf("duplicate HTTP header %q", name)
+		}
+		seen[key] = true
 	}
 	return nil
 }

@@ -377,6 +377,42 @@ func TestBashImageResultSurfacesImage(t *testing.T) {
 	}
 }
 
+func TestReadImageResultPreservesMixedContent(t *testing.T) {
+	raw := json.RawMessage(`[
+		{"type":"text","text":"File preview: *draft*"},
+		{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}
+	]`)
+	blocks := toolResultContent("Read", cliMsgBlock{Content: raw})
+	if len(blocks) != 2 {
+		t.Fatalf("content = %+v", blocks)
+	}
+	if blocks[0].Content == nil || blocks[0].Content.Content.Text == nil || blocks[0].Content.Content.Text.Text != markdownEscape("File preview: *draft*") {
+		t.Fatalf("text block = %+v", blocks[0])
+	}
+	if blocks[1].Content == nil || blocks[1].Content.Content.Image == nil || blocks[1].Content.Content.Image.Data != "AAAA" || blocks[1].Content.Content.Image.MimeType != "image/png" {
+		t.Fatalf("image block = %+v", blocks[1])
+	}
+}
+
+func TestReadImageResultUsesPlaceholderForNonInlineSource(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  json.RawMessage
+		want string
+	}{
+		{name: "url", raw: json.RawMessage(`[{"type":"image","source":{"type":"url","url":"https://example.test/image.png"}}]`), want: `[image: https://example.test/image.png]`},
+		{name: "file", raw: json.RawMessage(`[{"type":"image","source":{"type":"file"}}]`), want: `[image: file reference]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			blocks := toolResultContent("Read", cliMsgBlock{Content: tc.raw})
+			if len(blocks) != 1 || blocks[0].Content == nil || blocks[0].Content.Content.Text == nil ||
+				blocks[0].Content.Content.Text.Text != tc.want {
+				t.Fatalf("content = %+v", blocks)
+			}
+		})
+	}
+}
+
 type toolUpdateClient struct {
 	stubClient
 	updates chan acp.SessionUpdate

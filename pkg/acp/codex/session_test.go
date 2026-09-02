@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,6 +82,70 @@ func TestCancelInterruptsTurnThatStartsAfterCancellation(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("late-started turn was not interrupted")
+	}
+}
+
+func TestPromptToInputPreservesBlobResources(t *testing.T) {
+	imageMIME := "image/png"
+	binaryMIME := "application/pdf"
+	blocks := []acp.ContentBlock{
+		acp.ResourceBlock(acp.EmbeddedResourceResource{BlobResourceContents: &acp.BlobResourceContents{
+			Uri: "file:///work/image.png", MimeType: &imageMIME, Blob: "IMAGE",
+		}}),
+		acp.ResourceBlock(acp.EmbeddedResourceResource{BlobResourceContents: &acp.BlobResourceContents{
+			Uri: "file:///work/report.pdf", MimeType: &binaryMIME, Blob: "PDF",
+		}}),
+	}
+	got := promptToInput(blocks)
+	if len(got) != 2 {
+		t.Fatalf("input = %#v", got)
+	}
+	image, ok := got[0].(map[string]any)
+	if !ok || image["type"] != "image" || image["url"] != "data:image/png;base64,IMAGE" {
+		t.Fatalf("image resource = %#v", got[0])
+	}
+	binary, ok := got[1].(map[string]any)
+	text, _ := binary["text"].(string)
+	if !ok || binary["type"] != "text" || !strings.Contains(text, `mimeType="application/pdf" encoding="base64"`) || !strings.Contains(text, "PDF") {
+		t.Fatalf("binary resource = %#v", got[1])
+	}
+}
+
+func TestRegisterSessionClosesReplacementAndAgentCloseCancelsSessions(t *testing.T) {
+	a := newAgent(&codexClient{}, "default", "")
+	old := a.registerSession("thread-1", "default", "", nil)
+	oldCtx, cancelOld := context.WithCancel(context.Background())
+	old.mu.Lock()
+	old.cancelTurn = cancelOld
+	old.mu.Unlock()
+
+	replacement := a.registerSession("thread-1", "default", "", nil)
+	select {
+	case <-oldCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("replaced session was not cancelled")
+	}
+	if !old.isClosed() || a.lookup("thread-1") != replacement {
+		t.Fatal("replacement session was not installed cleanly")
+	}
+
+	replacementCtx, cancelReplacement := context.WithCancel(context.Background())
+	replacement.mu.Lock()
+	replacement.cancelTurn = cancelReplacement
+	replacement.mu.Unlock()
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatalf("second close: %v", err)
+	}
+	select {
+	case <-replacementCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("agent close did not cancel the live session")
+	}
+	if !replacement.isClosed() || a.lookup("thread-1") != nil {
+		t.Fatal("agent close did not remove and close its sessions")
 	}
 }
 

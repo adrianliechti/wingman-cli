@@ -215,6 +215,10 @@ func (a *Agent) registerSession(id acp.SessionId, model, effort string, addition
 	model, effort = normalizeSessionConfig(a.models, model, effort)
 	s := newSession(id, model, effort, additionalDirectories)
 	a.mu.Lock()
+	old := a.sessions[id]
+	if old != nil && old != s {
+		old.markClosed()
+	}
 	a.sessions[id] = s
 	a.mu.Unlock()
 	return s
@@ -302,6 +306,14 @@ func (a *Agent) Prompt(ctx context.Context, params acp.PromptRequest) (acp.Promp
 	s := a.lookup(params.SessionId)
 	if s == nil {
 		return acp.PromptResponse{}, fmt.Errorf("session %s not found", params.SessionId)
+	}
+	s.promptMu.Lock()
+	defer s.promptMu.Unlock()
+	if s.isClosed() {
+		return acp.PromptResponse{}, fmt.Errorf("session %s is closed", params.SessionId)
+	}
+	if ctx.Err() != nil {
+		return acp.PromptResponse{StopReason: acp.StopReasonCancelled, UserMessageId: params.MessageId}, nil
 	}
 	if handled, err := a.handleCommand(ctx, s, params.Prompt); handled {
 		if err != nil {
@@ -523,6 +535,7 @@ func (a *Agent) CloseSession(ctx context.Context, params acp.CloseSessionRequest
 	delete(a.sessions, params.SessionId)
 	a.mu.Unlock()
 	if s != nil {
+		s.markClosed()
 		a.interruptSession(ctx, s)
 	}
 	_ = a.codex.threadUnsubscribe(ctx, threadUnsubscribeParams{ThreadID: string(params.SessionId)})
@@ -535,6 +548,7 @@ func (a *Agent) UnstableDeleteSession(ctx context.Context, params acp.UnstableDe
 	delete(a.sessions, params.SessionId)
 	a.mu.Unlock()
 	if s != nil {
+		s.markClosed()
 		a.interruptSession(ctx, s)
 	}
 	_ = a.codex.threadUnsubscribe(ctx, threadUnsubscribeParams{ThreadID: string(params.SessionId)})

@@ -19,7 +19,9 @@ import (
 type session struct {
 	id acp.SessionId
 
+	promptMu              sync.Mutex
 	mu                    sync.Mutex
+	closed                bool
 	modelID               string
 	effort                string
 	mode                  string
@@ -29,6 +31,22 @@ type session struct {
 	cancelTurn            context.CancelFunc
 	interruptPending      bool
 	interruptIssued       bool
+}
+
+func (s *session) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
+func (s *session) markClosed() {
+	s.mu.Lock()
+	s.closed = true
+	cancel := s.cancelTurn
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 type turnStartResult struct {
@@ -104,6 +122,10 @@ func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, cc
 	threadID := string(s.id)
 
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return acp.StopReasonCancelled, nil, nil
+	}
 	s.cancelTurn = cancel
 	s.interruptPending = false
 	s.interruptIssued = false
@@ -616,9 +638,25 @@ func promptToInput(blocks []acp.ContentBlock) []any {
 		case b.ResourceLink != nil:
 			out = append(out, textInput(formatURIAsLink(b.ResourceLink.Name, b.ResourceLink.Uri)))
 		case b.Resource != nil:
-			if text, uri := resourceContents(b.Resource.Resource); text != "" {
-				link := formatURIAsLink("", uri)
-				body := fmt.Sprintf("%s\n<context ref=%q>\n%s\n</context>", link, uri, text)
+			resource := b.Resource.Resource
+			switch {
+			case resource.TextResourceContents != nil:
+				r := resource.TextResourceContents
+				link := formatURIAsLink("", r.Uri)
+				body := fmt.Sprintf("%s\n<context ref=%q>\n%s\n</context>", link, r.Uri, r.Text)
+				out = append(out, textInput(body))
+			case resource.BlobResourceContents != nil:
+				r := resource.BlobResourceContents
+				mimeType := "application/octet-stream"
+				if r.MimeType != nil && *r.MimeType != "" {
+					mimeType = *r.MimeType
+				}
+				if strings.HasPrefix(strings.ToLower(mimeType), "image/") && r.Blob != "" {
+					out = append(out, map[string]any{"type": "image", "url": "data:" + mimeType + ";base64," + r.Blob})
+					break
+				}
+				link := formatURIAsLink("", r.Uri)
+				body := fmt.Sprintf("%s\n<context ref=%q mimeType=%q encoding=%q>\n%s\n</context>", link, r.Uri, mimeType, "base64", r.Blob)
 				out = append(out, textInput(body))
 			}
 		}
@@ -628,19 +666,6 @@ func promptToInput(blocks []acp.ContentBlock) []any {
 
 func textInput(text string) map[string]any {
 	return map[string]any{"type": "text", "text": text, "text_elements": []any{}}
-}
-
-func resourceContents(res any) (text, uri string) {
-	b, err := json.Marshal(res)
-	if err != nil {
-		return "", ""
-	}
-	var v struct {
-		Text string `json:"text"`
-		URI  string `json:"uri"`
-	}
-	_ = json.Unmarshal(b, &v)
-	return v.Text, v.URI
 }
 
 func formatURIAsLink(name, uri string) string {

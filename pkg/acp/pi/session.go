@@ -23,7 +23,9 @@ type session struct {
 	proc    *process
 	cleanup func()
 
+	promptMu       sync.Mutex
 	mu             sync.Mutex
+	closed         bool
 	models         []modelEntry
 	currentModel   string
 	thinkingLevels []string
@@ -31,6 +33,7 @@ type session struct {
 
 	cancelRequested atomic.Bool
 	cancelTurn      context.CancelFunc
+	closeOnce       sync.Once
 }
 
 func newSession(id acp.SessionId, cwd string, proc *process) *session {
@@ -67,10 +70,25 @@ func (s *session) refreshConfiguration(ctx context.Context) error {
 }
 
 func (s *session) close() {
-	s.proc.dispose()
-	if s.cleanup != nil {
-		s.cleanup()
-	}
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closed = true
+		cancel := s.cancelTurn
+		s.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		s.proc.dispose()
+		if s.cleanup != nil {
+			s.cleanup()
+		}
+	})
+}
+
+func (s *session) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
 }
 
 func (s *session) cancel() {
@@ -97,6 +115,10 @@ func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, pr
 	defer cancel()
 
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return acp.StopReasonCancelled, nil
+	}
 	s.cancelTurn = cancel
 	s.mu.Unlock()
 	defer func() {
@@ -792,26 +814,27 @@ func promptToPi(blocks []acp.ContentBlock) (string, []piImage) {
 			b.WriteString("\n[Context] " + block.ResourceLink.Uri)
 
 		case block.Resource != nil:
-			if text, uri := resourceContents(block.Resource.Resource); text != "" {
-				b.WriteString("\n[Embedded Context] " + uri + "\n" + text)
+			resource := block.Resource.Resource
+			switch {
+			case resource.TextResourceContents != nil:
+				r := resource.TextResourceContents
+				b.WriteString("\n[Embedded Context] " + r.Uri + "\n" + r.Text)
+			case resource.BlobResourceContents != nil:
+				r := resource.BlobResourceContents
+				mimeType := "application/octet-stream"
+				if r.MimeType != nil && *r.MimeType != "" {
+					mimeType = *r.MimeType
+				}
+				if strings.HasPrefix(strings.ToLower(mimeType), "image/") && r.Blob != "" {
+					images = append(images, piImage{Type: "image", MimeType: mimeType, Data: r.Blob})
+					break
+				}
+				b.WriteString("\n[Embedded Context] " + r.Uri + " (" + mimeType + ", base64)\n" + r.Blob)
 			}
 		}
 	}
 
 	return b.String(), images
-}
-
-func resourceContents(res any) (text, uri string) {
-	data, err := json.Marshal(res)
-	if err != nil {
-		return "", ""
-	}
-	var v struct {
-		Text string `json:"text"`
-		URI  string `json:"uri"`
-	}
-	_ = json.Unmarshal(data, &v)
-	return v.Text, v.URI
 }
 
 func splitDataURL(s string) (mime, data string, ok bool) {

@@ -54,6 +54,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("initialize", func(t *testing.T) { testInitialize(t, factory) })
 	t.Run("session_contract", func(t *testing.T) { testSessionContract(t, factory) })
 	t.Run("cancel_contract", func(t *testing.T) { testCancelContract(t, factory) })
+	t.Run("prompt_replacement_contract", func(t *testing.T) { testPromptReplacementContract(t, factory) })
 }
 
 type harness struct {
@@ -122,6 +123,16 @@ func testSessionContract(t *testing.T, factory Factory) {
 	if _, err := h.conn.NewSession(ctx, acp.NewSessionRequest{Cwd: "relative", McpServers: []acp.McpServer{}}); err == nil {
 		t.Fatal("session/new accepted a relative cwd")
 	}
+	if _, err := h.conn.NewSession(ctx, acp.NewSessionRequest{Cwd: t.TempDir(), McpServers: []acp.McpServer{{}}}); err == nil {
+		t.Fatal("session/new accepted an MCP server without a transport")
+	}
+	if init.AgentCapabilities.SessionCapabilities.AdditionalDirectories != nil {
+		if _, err := h.conn.NewSession(ctx, acp.NewSessionRequest{
+			Cwd: t.TempDir(), AdditionalDirectories: []string{"relative"}, McpServers: []acp.McpServer{},
+		}); err == nil {
+			t.Fatal("session/new accepted a relative additional directory")
+		}
+	}
 
 	newReq := acp.NewSessionRequest{Cwd: t.TempDir(), McpServers: []acp.McpServer{}}
 	if init.AgentCapabilities.SessionCapabilities.AdditionalDirectories != nil {
@@ -167,7 +178,10 @@ func testSessionContract(t *testing.T, factory Factory) {
 	}
 
 	messageID := uuid.NewString()
-	prompt := []acp.ContentBlock{acp.TextBlock(NormalPrompt)}
+	prompt := []acp.ContentBlock{
+		acp.TextBlock(NormalPrompt),
+		acp.ResourceLinkBlock("contract.txt", "file:///contract/context.txt"),
+	}
 	if init.AgentCapabilities.PromptCapabilities.Image {
 		prompt = append(prompt, acp.ImageBlock("AA==", "image/png"))
 	}
@@ -222,6 +236,9 @@ func testSessionContract(t *testing.T, factory Factory) {
 			if _, err := h.conn.CloseSession(ctx, acp.CloseSessionRequest{SessionId: forked.SessionId}); err != nil {
 				t.Fatalf("close forked session: %v", err)
 			}
+			if _, err := h.conn.CloseSession(ctx, acp.CloseSessionRequest{SessionId: forked.SessionId}); err != nil {
+				t.Fatalf("idempotent close of forked session: %v", err)
+			}
 		}
 	}
 
@@ -233,6 +250,9 @@ func testSessionContract(t *testing.T, factory Factory) {
 	if caps.Close != nil {
 		if _, err := h.conn.CloseSession(ctx, acp.CloseSessionRequest{SessionId: session.SessionId}); err != nil {
 			t.Fatalf("session/close advertised but failed: %v", err)
+		}
+		if _, err := h.conn.CloseSession(ctx, acp.CloseSessionRequest{SessionId: session.SessionId}); err != nil {
+			t.Fatalf("idempotent session/close: %v", err)
 		}
 		if _, err := h.conn.Prompt(ctx, acp.PromptRequest{SessionId: session.SessionId, Prompt: []acp.ContentBlock{acp.TextBlock("after close")}}); err == nil {
 			t.Fatal("closed session still accepted a prompt")
@@ -259,6 +279,7 @@ func testSessionContract(t *testing.T, factory Factory) {
 	}
 
 	if init.AgentCapabilities.LoadSession {
+		loadUpdateStart := len(h.client.snapshot())
 		loaded, err := h.conn.LoadSession(ctx, acp.LoadSessionRequest{
 			SessionId:             session.SessionId,
 			Cwd:                   newReq.Cwd,
@@ -270,16 +291,91 @@ func testSessionContract(t *testing.T, factory Factory) {
 		}
 		validateModes(t, loaded.Modes)
 		validateConfigOptions(t, loaded.ConfigOptions)
-		validateUpdates(t, session.SessionId, updatesForSession(h.client.snapshot(), session.SessionId))
+		validateUpdates(t, session.SessionId, updatesForSession(h.client.snapshot()[loadUpdateStart:], session.SessionId))
 	}
 
 	if caps.Delete != nil {
 		if _, err := h.conn.UnstableDeleteSession(ctx, acp.UnstableDeleteSessionRequest{SessionId: session.SessionId}); err != nil {
 			t.Fatalf("session/delete advertised but failed: %v", err)
 		}
+		if _, err := h.conn.UnstableDeleteSession(ctx, acp.UnstableDeleteSessionRequest{SessionId: session.SessionId}); err != nil {
+			t.Fatalf("idempotent session/delete: %v", err)
+		}
 	} else if init.AgentCapabilities.LoadSession && caps.Close != nil {
 		if _, err := h.conn.CloseSession(ctx, acp.CloseSessionRequest{SessionId: session.SessionId}); err != nil {
 			t.Fatalf("close loaded session: %v", err)
+		}
+	}
+}
+
+func testPromptReplacementContract(t *testing.T, factory Factory) {
+	h := newHarness(t, factory)
+	init := initialize(t, h)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	session, err := h.conn.NewSession(ctx, acp.NewSessionRequest{Cwd: t.TempDir(), McpServers: []acp.McpServer{}})
+	if err != nil {
+		t.Fatalf("session/new: %v", err)
+	}
+
+	type outcome struct {
+		resp acp.PromptResponse
+		err  error
+	}
+	firstID, secondID := uuid.NewString(), uuid.NewString()
+	firstDone := make(chan outcome, 1)
+	go func() {
+		resp, err := h.conn.Prompt(ctx, acp.PromptRequest{
+			SessionId: session.SessionId, MessageId: &firstID,
+			Prompt: []acp.ContentBlock{acp.TextBlock(CancelPrompt)},
+		})
+		firstDone <- outcome{resp: resp, err: err}
+	}()
+	if !h.client.waitForText(ctx, CancelText) {
+		t.Fatalf("timed out waiting for %q", CancelText)
+	}
+
+	secondDone := make(chan outcome, 1)
+	go func() {
+		resp, err := h.conn.Prompt(ctx, acp.PromptRequest{
+			SessionId: session.SessionId, MessageId: &secondID,
+			Prompt: []acp.ContentBlock{
+				acp.TextBlock(NormalPrompt),
+				acp.ResourceLinkBlock("replacement.txt", "file:///contract/replacement.txt"),
+			},
+		})
+		secondDone <- outcome{resp: resp, err: err}
+	}()
+
+	assertPromptOutcome := func(name string, done <-chan outcome, want acp.StopReason, messageID string) {
+		t.Helper()
+		select {
+		case got := <-done:
+			if got.err != nil {
+				t.Fatalf("%s prompt: %v", name, got.err)
+			}
+			if got.resp.StopReason != want {
+				t.Fatalf("%s stop reason = %q, want %q", name, got.resp.StopReason, want)
+			}
+			if got.resp.UserMessageId == nil || *got.resp.UserMessageId != messageID {
+				t.Fatalf("%s userMessageId = %v, want %q", name, got.resp.UserMessageId, messageID)
+			}
+			validateUsage(t, got.resp.Usage)
+		case <-ctx.Done():
+			t.Fatalf("%s prompt did not terminate: %v", name, ctx.Err())
+		}
+	}
+	assertPromptOutcome("replaced", firstDone, acp.StopReasonCancelled, firstID)
+	assertPromptOutcome("replacement", secondDone, acp.StopReasonEndTurn, secondID)
+
+	updates := h.client.snapshot()
+	validateUpdates(t, session.SessionId, updates)
+	if !containsText(updates, NormalText) {
+		t.Fatalf("replacement output did not contain %q", NormalText)
+	}
+	if init.AgentCapabilities.SessionCapabilities.Close != nil {
+		if _, err := h.conn.CloseSession(ctx, acp.CloseSessionRequest{SessionId: session.SessionId}); err != nil {
+			t.Fatalf("session/close: %v", err)
 		}
 	}
 }
@@ -469,7 +565,8 @@ func validateUsage(t *testing.T, usage *acp.Usage) {
 
 func validateUpdates(t *testing.T, sessionID acp.SessionId, updates []acp.SessionNotification) {
 	t.Helper()
-	seenTools := map[acp.ToolCallId]bool{}
+	type toolLifecycle struct{ terminal bool }
+	tools := map[acp.ToolCallId]toolLifecycle{}
 	for _, notification := range updates {
 		if notification.SessionId != sessionID {
 			t.Fatalf("notification sessionId = %q, want %q", notification.SessionId, sessionID)
@@ -477,28 +574,85 @@ func validateUpdates(t *testing.T, sessionID acp.SessionId, updates []acp.Sessio
 		u := notification.Update
 		for _, chunk := range []*acp.SessionUpdateAgentMessageChunk{u.AgentMessageChunk} {
 			if chunk != nil {
-				if chunk.Content.Text != nil && chunk.Content.Text.Text == "" {
-					t.Fatal("empty agent_message_chunk")
-				}
+				validateContentBlock(t, chunk.Content, "agent_message_chunk")
 				validateMessageID(t, chunk.MessageId)
 			}
 		}
 		if u.AgentThoughtChunk != nil {
-			if u.AgentThoughtChunk.Content.Text != nil && u.AgentThoughtChunk.Content.Text.Text == "" {
-				t.Fatal("empty agent_thought_chunk")
-			}
+			validateContentBlock(t, u.AgentThoughtChunk.Content, "agent_thought_chunk")
 			validateMessageID(t, u.AgentThoughtChunk.MessageId)
 		}
 		if u.UserMessageChunk != nil {
+			validateContentBlock(t, u.UserMessageChunk.Content, "user_message_chunk")
 			validateMessageID(t, u.UserMessageChunk.MessageId)
 		}
 		if u.ToolCall != nil {
-			seenTools[u.ToolCall.ToolCallId] = true
+			call := u.ToolCall
+			if call.ToolCallId == "" || call.Title == "" {
+				t.Fatalf("invalid tool_call: %#v", call)
+			}
+			if _, exists := tools[call.ToolCallId]; exists {
+				t.Fatalf("duplicate tool_call %q", call.ToolCallId)
+			}
+			validateToolStatus(t, call.Status)
+			tools[call.ToolCallId] = toolLifecycle{terminal: terminalToolStatus(call.Status)}
 		}
-		if u.ToolCallUpdate != nil && !seenTools[u.ToolCallUpdate.ToolCallId] {
-			t.Fatalf("tool_call_update %q arrived before tool_call", u.ToolCallUpdate.ToolCallId)
+		if u.ToolCallUpdate != nil {
+			update := u.ToolCallUpdate
+			state, exists := tools[update.ToolCallId]
+			if !exists {
+				t.Fatalf("tool_call_update %q arrived before tool_call", update.ToolCallId)
+			}
+			if state.terminal {
+				t.Fatalf("tool_call_update %q arrived after a terminal status", update.ToolCallId)
+			}
+			if update.Status != nil {
+				validateToolStatus(t, *update.Status)
+				state.terminal = terminalToolStatus(*update.Status)
+				tools[update.ToolCallId] = state
+			}
 		}
 	}
+	for id, state := range tools {
+		if !state.terminal {
+			t.Fatalf("tool_call %q never reached a terminal status", id)
+		}
+	}
+}
+
+func validateContentBlock(t *testing.T, block acp.ContentBlock, label string) {
+	t.Helper()
+	variants := 0
+	for _, present := range []bool{
+		block.Text != nil, block.Image != nil, block.Audio != nil,
+		block.ResourceLink != nil, block.Resource != nil,
+	} {
+		if present {
+			variants++
+		}
+	}
+	if variants != 1 {
+		t.Fatalf("%s has %d content variants", label, variants)
+	}
+	if block.Text != nil && block.Text.Text == "" {
+		t.Fatalf("empty %s", label)
+	}
+	if block.Image != nil && (block.Image.Data == "" || block.Image.MimeType == "") {
+		t.Fatalf("invalid image in %s", label)
+	}
+}
+
+func validateToolStatus(t *testing.T, status acp.ToolCallStatus) {
+	t.Helper()
+	switch status {
+	case "", acp.ToolCallStatusPending, acp.ToolCallStatusInProgress, acp.ToolCallStatusCompleted, acp.ToolCallStatusFailed:
+	default:
+		t.Fatalf("invalid tool status %q", status)
+	}
+}
+
+func terminalToolStatus(status acp.ToolCallStatus) bool {
+	return status == acp.ToolCallStatusCompleted || status == acp.ToolCallStatusFailed
 }
 
 func updatesForSession(updates []acp.SessionNotification, sessionID acp.SessionId) []acp.SessionNotification {
