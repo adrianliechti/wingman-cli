@@ -46,9 +46,17 @@ type File struct {
 }
 
 type Usage struct {
+	// InputTokens and OutputTokens are inclusive totals. Cache reads and cache
+	// creation are subsets of InputTokens; reasoning is a subset of
+	// OutputTokens. The JSON names retain session compatibility with earlier
+	// versions of wingman-agent.
 	InputTokens  int64 `json:"input_tokens"`
-	CachedTokens int64 `json:"cached_tokens"`
 	OutputTokens int64 `json:"output_tokens"`
+
+	ReasoningTokens int64 `json:"reasoning_tokens,omitempty"`
+
+	CacheReadInputTokens     int64 `json:"cached_tokens"`
+	CacheCreationInputTokens int64 `json:"cache_write_tokens,omitempty"`
 
 	// LastInputTokens is the input size of the most recent request — the
 	// current context occupancy, unlike the cumulative counters above.
@@ -56,6 +64,12 @@ type Usage struct {
 	// ContextWindow is the provider-reported maximum context size when the
 	// transport supplies it directly.
 	ContextWindow int64 `json:"context_window,omitempty"`
+}
+
+// TotalTokens returns the provider-neutral total without double-counting cache
+// or reasoning subsets.
+func (u Usage) TotalTokens() int64 {
+	return u.InputTokens + u.OutputTokens
 }
 
 type ToolCall struct {

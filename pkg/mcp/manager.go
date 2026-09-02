@@ -17,6 +17,7 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/internal/process"
 	"github.com/adrianliechti/wingman-agent/pkg/httpclient"
+	"github.com/adrianliechti/wingman-agent/pkg/telemetry"
 )
 
 type Manager struct {
@@ -27,9 +28,11 @@ type Manager struct {
 	elicit atomic.Pointer[ElicitFunc]
 
 	toolListChanged atomic.Pointer[ToolListChangedFunc]
+	telemetry       atomic.Pointer[telemetry.Telemetry]
 
-	mu       sync.RWMutex
-	sessions map[string]*mcp.ClientSession
+	mu                  sync.RWMutex
+	sessions            map[string]*mcp.ClientSession
+	sessionObservations map[*mcp.ClientSession]*telemetry.MCPSession
 }
 
 type ToolListChangedFunc func(serverName string)
@@ -38,7 +41,8 @@ func NewManager(cfg *Config) *Manager {
 	return &Manager{
 		Config: cfg,
 
-		sessions: make(map[string]*mcp.ClientSession),
+		sessions:            make(map[string]*mcp.ClientSession),
+		sessionObservations: make(map[*mcp.ClientSession]*telemetry.MCPSession),
 	}
 }
 
@@ -95,10 +99,35 @@ func (m *Manager) AddServer(ctx context.Context, name string, server ServerConfi
 }
 
 func (m *Manager) AddSession(name string, session *mcp.ClientSession) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.addSession(context.Background(), name, session, m.Servers[name])
+}
 
+func (m *Manager) addSession(ctx context.Context, name string, session *mcp.ClientSession, server ServerConfig) {
+	if session == nil {
+		return
+	}
+	var observation *telemetry.MCPSession
+	if tel := m.telemetry.Load(); tel != nil {
+		observation = tel.StartMCPSession(ctx, mcpSessionRequest(session, server))
+	}
+	m.mu.Lock()
 	m.sessions[name] = session
+	if observation != nil {
+		m.sessionObservations[session] = observation
+	}
+	m.mu.Unlock()
+
+	if observation != nil {
+		go func() {
+			observation.End(telemetry.Outcome{Err: session.Wait()})
+		}()
+	}
+}
+
+// SetTelemetry instruments clients created by this manager. It should normally
+// be called before Connect so initialization is covered as well.
+func (m *Manager) SetTelemetry(tel *telemetry.Telemetry) {
+	m.telemetry.Store(tel)
 }
 
 func (m *Manager) SetToolListChangedHandler(handler ToolListChangedFunc) {
@@ -110,11 +139,20 @@ func (m *Manager) SetToolListChangedHandler(handler ToolListChangedFunc) {
 }
 
 func (m *Manager) Close() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	sessions := make([]*mcp.ClientSession, 0, len(m.sessions))
+	observations := make([]*telemetry.MCPSession, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		sessions = append(sessions, session)
+		observations = append(observations, m.sessionObservations[session])
+	}
+	m.mu.RUnlock()
 
-	for _, s := range m.sessions {
-		s.Close()
+	for i, session := range sessions {
+		if observations[i] != nil {
+			observations[i].End(telemetry.Outcome{})
+		}
+		_ = session.Close()
 	}
 }
 
@@ -134,7 +172,7 @@ func (m *Manager) Session(name string) *mcp.ClientSession {
 }
 
 func (m *Manager) connect(ctx context.Context, name string, server ServerConfig) error {
-	client := m.newClient(name)
+	client := m.newClient(name, server)
 
 	transport, err := createTransport(server, m.Dir)
 
@@ -151,15 +189,13 @@ func (m *Manager) connect(ctx context.Context, name string, server ServerConfig)
 		return fmt.Errorf("%s: %w", name, err)
 	}
 
-	m.mu.Lock()
-	m.sessions[name] = session
-	m.mu.Unlock()
+	m.addSession(ctx, name, session, server)
 
 	return nil
 }
 
-func (m *Manager) newClient(name string) *mcp.Client {
-	return mcp.NewClient(&mcp.Implementation{
+func (m *Manager) newClient(name string, servers ...ServerConfig) *mcp.Client {
+	client := mcp.NewClient(&mcp.Implementation{
 		Name:    "wingman",
 		Version: "1.0.0",
 	}, &mcp.ClientOptions{
@@ -170,6 +206,15 @@ func (m *Manager) newClient(name string) *mcp.Client {
 			}
 		},
 	})
+	if tel := m.telemetry.Load(); tel != nil {
+		var server ServerConfig
+		if len(servers) > 0 {
+			server = servers[0]
+		}
+		client.AddSendingMiddleware(mcpClientTelemetryMiddleware(tel, mcpTransport(server)))
+		client.AddReceivingMiddleware(mcpServerTelemetryMiddleware(tel, mcpTransport(server)))
+	}
+	return client
 }
 
 func createTransport(server ServerConfig, dir string) (mcp.Transport, error) {

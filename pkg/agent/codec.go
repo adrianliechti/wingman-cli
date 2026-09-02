@@ -219,9 +219,11 @@ func reasoningToInput(r *Reasoning) *responses.ResponseReasoningItemParam {
 
 func responseToUsage(r responses.Response) Usage {
 	return Usage{
-		InputTokens:  r.Usage.InputTokens,
-		CachedTokens: r.Usage.InputTokensDetails.CachedTokens,
-		OutputTokens: r.Usage.OutputTokens,
+		InputTokens:              r.Usage.InputTokens,
+		OutputTokens:             r.Usage.OutputTokens,
+		ReasoningTokens:          r.Usage.OutputTokensDetails.ReasoningTokens,
+		CacheReadInputTokens:     r.Usage.InputTokensDetails.CachedTokens,
+		CacheCreationInputTokens: r.Usage.InputTokensDetails.CacheWriteTokens,
 	}
 }
 

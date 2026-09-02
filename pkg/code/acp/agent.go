@@ -783,15 +783,10 @@ func (a *Agent) Send(ctx context.Context, id string, input []agent.Content) (ite
 			sess.mu.Lock()
 			lastInputTokens := sess.usage.LastInputTokens
 			contextWindow := sess.usage.ContextWindow
-			sess.usage = agent.Usage{
-				InputTokens:     int64(resp.Usage.InputTokens),
-				OutputTokens:    int64(resp.Usage.OutputTokens),
-				LastInputTokens: lastInputTokens,
-				ContextWindow:   contextWindow,
-			}
-			if resp.Usage.CachedReadTokens != nil {
-				sess.usage.CachedTokens = int64(*resp.Usage.CachedReadTokens)
-			}
+			usage := usageFromACP(resp.Usage)
+			usage.LastInputTokens = lastInputTokens
+			usage.ContextWindow = contextWindow
+			sess.usage = usage
 			sess.mu.Unlock()
 		}
 		select {
@@ -834,6 +829,36 @@ func (a *Agent) Send(ctx context.Context, id string, input []agent.Content) (ite
 			}
 		}
 	}, nil
+}
+
+func usageFromACP(usage *acpsdk.Usage) agent.Usage {
+	if usage == nil {
+		return agent.Usage{}
+	}
+	cacheRead := optionalACPTokenCount(usage.CachedReadTokens)
+	cacheCreation := optionalACPTokenCount(usage.CachedWriteTokens)
+	reasoning := optionalACPTokenCount(usage.ThoughtTokens)
+	return agent.Usage{
+		InputTokens:              tokenCount64(usage.InputTokens) + cacheRead + cacheCreation,
+		OutputTokens:             tokenCount64(usage.OutputTokens) + reasoning,
+		ReasoningTokens:          reasoning,
+		CacheReadInputTokens:     cacheRead,
+		CacheCreationInputTokens: cacheCreation,
+	}
+}
+
+func optionalACPTokenCount(value *int) int64 {
+	if value == nil {
+		return 0
+	}
+	return tokenCount64(*value)
+}
+
+func tokenCount64(value int) int64 {
+	if value <= 0 {
+		return 0
+	}
+	return int64(value)
 }
 
 func (a *Agent) cancelPrompt(id acpsdk.SessionId) {

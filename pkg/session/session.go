@@ -451,13 +451,15 @@ func normalizeStateForSave(state agent.State) (agent.State, error) {
 	}
 	if state.Usage != normalized.Usage {
 		delta := agent.Usage{
-			InputTokens:     state.Usage.InputTokens - normalized.Usage.InputTokens,
-			CachedTokens:    state.Usage.CachedTokens - normalized.Usage.CachedTokens,
-			OutputTokens:    state.Usage.OutputTokens - normalized.Usage.OutputTokens,
-			LastInputTokens: state.Usage.LastInputTokens,
-			ContextWindow:   state.Usage.ContextWindow,
+			InputTokens:              state.Usage.InputTokens - normalized.Usage.InputTokens,
+			OutputTokens:             state.Usage.OutputTokens - normalized.Usage.OutputTokens,
+			ReasoningTokens:          state.Usage.ReasoningTokens - normalized.Usage.ReasoningTokens,
+			CacheReadInputTokens:     state.Usage.CacheReadInputTokens - normalized.Usage.CacheReadInputTokens,
+			CacheCreationInputTokens: state.Usage.CacheCreationInputTokens - normalized.Usage.CacheCreationInputTokens,
+			LastInputTokens:          state.Usage.LastInputTokens,
+			ContextWindow:            state.Usage.ContextWindow,
 		}
-		if delta.InputTokens < 0 || delta.CachedTokens < 0 || delta.OutputTokens < 0 {
+		if delta.InputTokens < 0 || delta.OutputTokens < 0 || delta.ReasoningTokens < 0 || delta.CacheReadInputTokens < 0 || delta.CacheCreationInputTokens < 0 {
 			return agent.State{}, fmt.Errorf("cumulative session usage cannot decrease")
 		}
 		sequence++

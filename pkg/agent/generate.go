@@ -9,6 +9,8 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
 	"github.com/openai/openai-go/v3/shared"
+
+	"github.com/adrianliechti/wingman-agent/pkg/telemetry"
 )
 
 // GenerateOptions describes a stateless, tool-free model request. It is used
@@ -38,6 +40,19 @@ func (c *Config) Generate(ctx context.Context, opts GenerateOptions) (GenerateRe
 	if modelID == "" {
 		modelID = c.utilityModelName()
 	}
+	captureContent := c.Telemetry.CapturesMessageContent()
+	inferenceRequest := telemetry.InferenceRequest{
+		Model:          modelID,
+		ConversationID: conversationID(ctx, c.CacheKey),
+		ReasoningLevel: strings.TrimSpace(opts.Effort),
+	}
+	if captureContent {
+		inferenceRequest.Content = telemetry.InferenceContent{
+			InputMessages:      telemetryStringInput(opts.Input),
+			SystemInstructions: telemetrySystemInstructions(opts.Instructions),
+		}
+	}
+	ctx, operation := c.Telemetry.StartInference(ctx, inferenceRequest)
 	params := responses.ResponseNewParams{
 		Model:        modelID,
 		Instructions: openai.String(opts.Instructions),
@@ -64,8 +79,11 @@ func (c *Config) Generate(ctx context.Context, opts GenerateOptions) (GenerateRe
 
 	resp, err := c.client.Responses.New(ctx, params)
 	if err != nil {
+		operation.End(telemetry.InferenceResult{Outcome: telemetryOutcome(err)})
 		return GenerateResult{}, err
 	}
+	usage := responseToUsage(*resp)
+	operation.End(inferenceResult(resp, usage, nil, captureContent))
 	text := strings.TrimSpace(recoverySummaryOutput(resp))
 	if opts.OutputSchema != nil && text != "" {
 		var value any
@@ -73,5 +91,5 @@ func (c *Config) Generate(ctx context.Context, opts GenerateOptions) (GenerateRe
 			return GenerateResult{}, fmt.Errorf("decode structured model response: %w", err)
 		}
 	}
-	return GenerateResult{Text: text, Usage: responseToUsage(*resp)}, nil
+	return GenerateResult{Text: text, Usage: usage}, nil
 }

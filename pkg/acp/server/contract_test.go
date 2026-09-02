@@ -112,7 +112,7 @@ func (b *contractModelBackend) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					"name": "glob", "arguments": `{"pattern":"*"}`, "status": "completed",
 				},
 			})
-			writeContractSSE(w, completedEvent(2, 11, 2, 3, nil))
+			writeContractSSE(w, completedEvent(2, 11, 2, 0, 3, 0, nil))
 			return
 		}
 		writeContractSSE(w, map[string]any{
@@ -120,7 +120,7 @@ func (b *contractModelBackend) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			"item_id": "contract-message", "output_index": 0, "content_index": 0,
 			"delta": acptest.NormalText,
 		})
-		writeContractSSE(w, completedEvent(2, 13, 4, 5, nil))
+		writeContractSSE(w, completedEvent(2, 13, 4, 0, 5, 0, nil))
 	default:
 		http.NotFound(w, r)
 	}

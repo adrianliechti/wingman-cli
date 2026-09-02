@@ -29,11 +29,21 @@ type Tool struct {
 	Execute     func(ctx context.Context, args map[string]any) (Result, error)
 	Hidden      bool
 	Effect      func(args map[string]any) Effect
+	Telemetry   TelemetryMetadata
 
 	// Timeout replaces the harness default tool timeout for this tool.
 	// An explicitly configured Config.ToolTimeout takes precedence; negative
 	// values disable the deadline.
 	Timeout time.Duration
+}
+
+// TelemetryMetadata carries non-sensitive protocol identity used by the
+// agent's OpenTelemetry instrumentation. It must never contain arguments or
+// results.
+type TelemetryMetadata struct {
+	ToolType           string
+	MCPMethod          string
+	MCPProtocolVersion string
 }
 
 // Result separates tool-reported failure from executor/transport failure and

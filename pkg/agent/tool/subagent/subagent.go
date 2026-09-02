@@ -270,9 +270,11 @@ func (r *subagentRunner) runTurn(execCtx, reportCtx context.Context, tk *task.Ta
 
 	usage := r.sub.UsageSnapshot()
 	delta := tool.UsageDelta{
-		InputTokens:  usage.InputTokens - before.InputTokens,
-		CachedTokens: usage.CachedTokens - before.CachedTokens,
-		OutputTokens: usage.OutputTokens - before.OutputTokens,
+		InputTokens:              usage.InputTokens - before.InputTokens,
+		OutputTokens:             usage.OutputTokens - before.OutputTokens,
+		ReasoningTokens:          usage.ReasoningTokens - before.ReasoningTokens,
+		CacheReadInputTokens:     usage.CacheReadInputTokens - before.CacheReadInputTokens,
+		CacheCreationInputTokens: usage.CacheCreationInputTokens - before.CacheCreationInputTokens,
 	}
 	tool.ReportUsage(reportCtx, delta)
 	runMessages := r.sub.MessagesSnapshot()
@@ -280,7 +282,11 @@ func (r *subagentRunner) runTurn(execCtx, reportCtx context.Context, tk *task.Ta
 		runMessages = runMessages[startIdx:]
 	}
 	trailer := runTrailer(runMessages, agent.Usage{
-		InputTokens: delta.InputTokens, CachedTokens: delta.CachedTokens, OutputTokens: delta.OutputTokens,
+		InputTokens:              delta.InputTokens,
+		OutputTokens:             delta.OutputTokens,
+		ReasoningTokens:          delta.ReasoningTokens,
+		CacheReadInputTokens:     delta.CacheReadInputTokens,
+		CacheCreationInputTokens: delta.CacheCreationInputTokens,
 	}, time.Since(started))
 	text := strings.TrimSpace(finalText(runMessages))
 

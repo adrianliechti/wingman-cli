@@ -130,8 +130,14 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 	if err != nil {
 		return nil, err
 	}
+	closeTelemetry := func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = cfg.Telemetry.Shutdown(shutdownCtx)
+		cancel()
+	}
 	ws, err := code.NewWorkspace(workDir)
 	if err != nil {
+		closeTelemetry()
 		return nil, err
 	}
 	serverCtx, cancel := context.WithCancel(ctx)
@@ -155,6 +161,7 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 	if err != nil {
 		cancel()
 		ws.Close()
+		closeTelemetry()
 		return nil, err
 	}
 
@@ -274,6 +281,11 @@ func (s *Server) Close() {
 		s.preview.Close()
 		s.workspace.Close()
 		s.terminals.Close()
+		if s.config != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = s.config.Telemetry.Shutdown(shutdownCtx)
+			cancel()
+		}
 	})
 }
 
@@ -644,12 +656,14 @@ func (s *Server) sendSessionState(sid string) {
 
 func (s *Server) sendSessionSnapshot(sid string, messages []agent.Message, u agent.Usage) {
 	frame := Frame{
-		Type:         EvtSessionState,
-		Phase:        s.sessionPhase(sid),
-		Messages:     convertMessages(messages),
-		InputTokens:  u.InputTokens,
-		CachedTokens: u.CachedTokens,
-		OutputTokens: u.OutputTokens,
+		Type:                     EvtSessionState,
+		Phase:                    s.sessionPhase(sid),
+		Messages:                 convertMessages(messages),
+		InputTokens:              u.InputTokens,
+		OutputTokens:             u.OutputTokens,
+		ReasoningTokens:          u.ReasoningTokens,
+		CacheReadInputTokens:     u.CacheReadInputTokens,
+		CacheCreationInputTokens: u.CacheCreationInputTokens,
 
 		LastInputTokens: u.LastInputTokens,
 		ContextWindow:   u.ContextWindow,

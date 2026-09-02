@@ -25,7 +25,13 @@ func TestGenerateUsesStatelessStructuredRequestWithoutPromptCacheKey(t *testing.
 		body := `{
             "id":"resp_1","object":"response","status":"completed",
             "output":[{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"{\"insert_text\":\"value\"}","annotations":[]}]}],
-            "usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":3},"output_tokens":4}
+            "usage":{
+              "input_tokens":12,
+              "input_tokens_details":{"cached_tokens":3,"cache_write_tokens":2},
+              "output_tokens":4,
+              "output_tokens_details":{"reasoning_tokens":1},
+              "total_tokens":16
+            }
         }`
 		return &http.Response{
 			StatusCode: http.StatusOK,
@@ -60,7 +66,12 @@ func TestGenerateUsesStatelessStructuredRequestWithoutPromptCacheKey(t *testing.
 	if result.Text != `{"insert_text":"value"}` {
 		t.Fatalf("text = %q", result.Text)
 	}
-	if result.Usage.InputTokens != 12 || result.Usage.CachedTokens != 3 || result.Usage.OutputTokens != 4 {
+	if result.Usage.InputTokens != 12 ||
+		result.Usage.OutputTokens != 4 ||
+		result.Usage.ReasoningTokens != 1 ||
+		result.Usage.CacheReadInputTokens != 3 ||
+		result.Usage.CacheCreationInputTokens != 2 ||
+		result.Usage.TotalTokens() != 16 {
 		t.Fatalf("usage = %+v", result.Usage)
 	}
 	if requestBody["store"] != false || requestBody["max_output_tokens"] != float64(256) {

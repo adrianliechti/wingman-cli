@@ -98,8 +98,11 @@ type Frame struct {
 	PromptFields []tool.ElicitField `json:"prompt_fields,omitempty"`
 
 	InputTokens  int64 `json:"input_tokens,omitempty"`
-	CachedTokens int64 `json:"cached_tokens,omitempty"`
 	OutputTokens int64 `json:"output_tokens,omitempty"`
+
+	ReasoningTokens          int64 `json:"reasoning_tokens,omitempty"`
+	CacheReadInputTokens     int64 `json:"cached_tokens,omitempty"`
+	CacheCreationInputTokens int64 `json:"cache_write_tokens,omitempty"`
 
 	LastInputTokens int64 `json:"last_input_tokens,omitempty"`
 	ContextWindow   int64 `json:"context_window,omitempty"`

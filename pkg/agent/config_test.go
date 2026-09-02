@@ -173,6 +173,39 @@ func TestClientConfigProviderPriorityAndFallback(t *testing.T) {
 	assertClientConfig(t, "http://localhost:4242/v1", "-")
 }
 
+func TestDefaultTelemetryOptionsFollowBackend(t *testing.T) {
+	for _, name := range []string{
+		"WINGMAN_URL", "WINGMAN_TOKEN", "OPENAI_API_KEY", "OPENAI_BASE_URL",
+		"OPENROUTER_API_KEY", "OLLAMA_HOST", "OLLAMA_API_KEY",
+	} {
+		unsetEnv(t, name)
+	}
+
+	t.Run("fallback", func(t *testing.T) {
+		opts := defaultTelemetryOptions()
+		if opts.ServiceName != "" || opts.ProviderName != "wingman" || opts.ServerAddress != "localhost" || opts.ServerPort != 4242 {
+			t.Fatalf("telemetry options = %+v", opts)
+		}
+	})
+
+	t.Run("OpenAI", func(t *testing.T) {
+		t.Setenv("OPENAI_API_KEY", "test")
+		t.Setenv("OPENAI_BASE_URL", "https://openai.test/v1")
+		opts := defaultTelemetryOptions()
+		if opts.ProviderName != "openai" || opts.ServerAddress != "openai.test" || opts.ServerPort != 443 {
+			t.Fatalf("telemetry options = %+v", opts)
+		}
+	})
+
+	t.Run("Ollama", func(t *testing.T) {
+		t.Setenv("OLLAMA_HOST", "ollama.test")
+		opts := defaultTelemetryOptions()
+		if opts.ProviderName != "ollama" || opts.ServerAddress != "ollama.test" || opts.ServerPort != 80 {
+			t.Fatalf("telemetry options = %+v", opts)
+		}
+	})
+}
+
 func assertClientConfig(t *testing.T, wantBaseURL, wantToken string) {
 	t.Helper()
 	baseURL, token := clientConfig()
