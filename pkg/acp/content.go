@@ -13,10 +13,12 @@ import (
 func ContentToBlocks(input []agent.Content) []acpsdk.ContentBlock {
 	out := make([]acpsdk.ContentBlock, 0, len(input))
 	for _, c := range input {
-		switch {
-		case c.Text != "":
+		// agent.Content is not a tagged union: text and an attachment may be
+		// carried by the same value. Preserve both when that happens.
+		if c.Text != "" {
 			out = append(out, acpsdk.TextBlock(c.Text))
-		case c.File != nil && c.File.Data != "":
+		}
+		if c.File != nil && c.File.Data != "" {
 			if mime, data, ok := splitDataURL(c.File.Data); ok {
 				out = append(out, acpsdk.ImageBlock(data, mime))
 			}

@@ -87,7 +87,7 @@ func (b *contractModelBackend) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	case "/responses":
 		body, _ := io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "text/event-stream")
-		if strings.Contains(string(body), acptest.CancelPrompt) {
+		if strings.Contains(string(body), acptest.CancelPrompt) && !strings.Contains(string(body), acptest.NormalPrompt) {
 			writeContractSSE(w, map[string]any{
 				"type": "response.output_text.delta", "sequence_number": 1,
 				"item_id": "cancel-message", "output_index": 0, "content_index": 0,

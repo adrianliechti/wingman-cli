@@ -6,11 +6,14 @@ import (
 	"sync"
 )
 
+type notificationHandler func(threadID, method string, params json.RawMessage)
+
 type codexClient struct {
 	rpc *rpcClient
 
-	mu       sync.Mutex
-	handlers map[string]*threadHandlers
+	mu                   sync.Mutex
+	handlers             map[string]*threadHandlers
+	onGlobalNotification notificationHandler
 }
 
 type threadHandlers struct {
@@ -38,6 +41,18 @@ func (c *codexClient) setThreadHandlers(threadID string, h *threadHandlers) {
 	}
 }
 
+func (c *codexClient) setGlobalNotificationHandler(h notificationHandler) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onGlobalNotification = h
+}
+
+func (c *codexClient) notificationHandlers(threadID string) (notificationHandler, *threadHandlers) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.onGlobalNotification, c.handlers[threadID]
+}
+
 func (c *codexClient) handlersFor(threadID string) *threadHandlers {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -52,8 +67,12 @@ func (c *codexClient) dispatchNotification(method string, params json.RawMessage
 	if probe.ThreadID == "" {
 		return
 	}
-	if h := c.handlersFor(probe.ThreadID); h != nil && h.onNotification != nil {
-		h.onNotification(method, params)
+	global, local := c.notificationHandlers(probe.ThreadID)
+	if global != nil {
+		global(probe.ThreadID, method, params)
+	}
+	if local != nil && local.onNotification != nil {
+		local.onNotification(method, params)
 	}
 }
 
@@ -173,6 +192,11 @@ type threadReadResponse struct {
 
 type threadUnsubscribeParams struct {
 	ThreadID string `json:"threadId"`
+}
+
+type threadSetNameParams struct {
+	ThreadID string `json:"threadId"`
+	Name     string `json:"name"`
 }
 
 type threadSettingsUpdateParams struct {
@@ -405,6 +429,10 @@ func (c *codexClient) threadRead(ctx context.Context, p threadReadParams) (threa
 
 func (c *codexClient) threadUnsubscribe(ctx context.Context, p threadUnsubscribeParams) error {
 	return c.rpc.call(ctx, "thread/unsubscribe", p, nil)
+}
+
+func (c *codexClient) threadSetName(ctx context.Context, p threadSetNameParams) error {
+	return c.rpc.call(ctx, "thread/name/set", p, nil)
 }
 
 func (c *codexClient) threadSettingsUpdate(ctx context.Context, p threadSettingsUpdateParams) error {

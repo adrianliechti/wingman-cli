@@ -542,13 +542,16 @@ func (p *taskPlan) entriesLocked() []acp.PlanEntry {
 
 func isPlanTool(name string) bool { return name == "TodoWrite" }
 
-// shouldEmitToolCall reports whether a tool_use should surface as its own
-// ACP tool_call. TodoWrite renders as a plan update instead, and Task/Agent
-// (subagent launches) are excluded so a permission prompt for one never
-// surfaces a stray tool_call ahead of however the subagent's own activity
-// is rendered.
-func shouldEmitToolCall(name string) bool {
+// shouldEagerlyEmitToolCall reports whether a permission request may publish
+// the tool before its assistant tool_use arrives. TodoWrite renders as a plan
+// update, while Task/Agent wait for the assistant event so subagent calls never
+// appear merely because a permission prompt raced ahead of the model output.
+func shouldEagerlyEmitToolCall(name string) bool {
 	return !isPlanTool(name) && name != "Agent" && name != "Task"
+}
+
+func shouldTrackToolCall(name string) bool {
+	return !isPlanTool(name)
 }
 
 func planEntriesFromTodoWrite(rawInput json.RawMessage) (entries []acp.PlanEntry, ok bool) {

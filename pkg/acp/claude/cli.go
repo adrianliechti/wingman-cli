@@ -1,10 +1,20 @@
 package claude
 
 import (
+	"bufio"
 	"encoding/json"
+	"io"
 
 	"github.com/coder/acp-go-sdk"
 )
+
+const maxCLIMessageSize = 32 * 1024 * 1024
+
+func newCLIScanner(r io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxCLIMessageSize)
+	return scanner
+}
 
 func mcpConfigJSON(servers []acp.McpServer) string {
 	if len(servers) == 0 {
@@ -89,16 +99,17 @@ type cliMessage struct {
 }
 
 type cliMsgBlock struct {
-	Type      string          `json:"type"`
-	Text      string          `json:"text,omitempty"`
-	Thinking  string          `json:"thinking,omitempty"`
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   json.RawMessage `json:"content,omitempty"`
-	IsError   bool            `json:"is_error,omitempty"`
-	Source    *cliImageSource `json:"source,omitempty"`
+	Type      string           `json:"type"`
+	Text      string           `json:"text,omitempty"`
+	Thinking  string           `json:"thinking,omitempty"`
+	ID        string           `json:"id,omitempty"`
+	Name      string           `json:"name,omitempty"`
+	Input     json.RawMessage  `json:"input,omitempty"`
+	ToolUseID string           `json:"tool_use_id,omitempty"`
+	Content   json.RawMessage  `json:"content,omitempty"`
+	IsError   bool             `json:"is_error,omitempty"`
+	Title     string           `json:"title,omitempty"`
+	Source    *cliResultSource `json:"source,omitempty"`
 }
 
 type cliResult struct {
@@ -134,15 +145,23 @@ type cliInputMessage struct {
 }
 
 type cliInputContent struct {
-	Type   string          `json:"type"`
-	Text   string          `json:"text,omitempty"`
-	Source *cliImageSource `json:"source,omitempty"`
+	Type   string               `json:"type"`
+	Text   string               `json:"text,omitempty"`
+	Source *cliInputImageSource `json:"source,omitempty"`
 }
 
-type cliImageSource struct {
+type cliInputImageSource struct {
 	Type      string `json:"type"`
-	MediaType string `json:"media_type"`
-	Data      string `json:"data"`
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
+}
+
+type cliResultSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
 }
 
 type controlRequest struct {

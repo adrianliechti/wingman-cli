@@ -113,7 +113,7 @@ func isFatalTurnError(info json.RawMessage) bool {
 	}
 	var s string
 	if json.Unmarshal(info, &s) == nil {
-		return s == "unauthorized" || s == "usageLimitExceeded"
+		return s == "unauthorized" || s == "usageLimitExceeded" || s == "rateLimitExceeded"
 	}
 	var obj map[string]struct {
 		HTTPStatusCode int `json:"httpStatusCode"`
@@ -309,18 +309,6 @@ func (d *eventDispatcher) handle(method string, params json.RawMessage) {
 
 	case "thread/compacted":
 		d.update(acp.UpdateAgentMessageText("*Context compacted to fit the model's context window.*\n\n"))
-
-	case "thread/name/updated":
-		var p struct {
-			ThreadName string `json:"threadName"`
-		}
-		if json.Unmarshal(params, &p) == nil && p.ThreadName != "" {
-			name := p.ThreadName
-			d.update(acp.SessionUpdate{SessionInfoUpdate: &acp.SessionSessionInfoUpdate{
-				SessionUpdate: "session_info_update",
-				Title:         &name,
-			}})
-		}
 
 	case "configWarning":
 		var p struct {
@@ -802,7 +790,7 @@ func toolStatusFor(s string) acp.ToolCallStatus {
 	switch s {
 	case "inProgress":
 		return acp.ToolCallStatusInProgress
-	case "failed", "declined":
+	case "failed", "declined", "interrupted":
 		return acp.ToolCallStatusFailed
 	default:
 		return acp.ToolCallStatusCompleted

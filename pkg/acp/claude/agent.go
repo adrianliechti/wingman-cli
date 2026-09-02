@@ -214,9 +214,7 @@ func (a *Agent) NewSession(ctx context.Context, params acp.NewSessionRequest) (a
 	modelID, effort := normalizeSessionConfig(a.models, a.defaultModel, a.defaultEffort)
 	s := a.newSession(id, cwd, modelID, effort, additional)
 	s.mcpServers = params.McpServers
-	a.mu.Lock()
-	a.sessions[id] = s
-	a.mu.Unlock()
+	a.storeSession(s)
 	a.sendAvailableCommands(s)
 
 	return acp.NewSessionResponse{
@@ -230,6 +228,14 @@ func (a *Agent) Prompt(ctx context.Context, params acp.PromptRequest) (acp.Promp
 	s := a.lookup(params.SessionId)
 	if s == nil {
 		return acp.PromptResponse{}, fmt.Errorf("session %s not found", params.SessionId)
+	}
+	s.promptMu.Lock()
+	defer s.promptMu.Unlock()
+	if s.isClosed() {
+		return acp.PromptResponse{}, fmt.Errorf("session %s is closed", params.SessionId)
+	}
+	if ctx.Err() != nil {
+		return acp.PromptResponse{StopReason: acp.StopReasonCancelled, UserMessageId: params.MessageId}, nil
 	}
 	stop, usage, err := s.runTurn(ctx, params.Prompt)
 	if err != nil {
@@ -418,10 +424,18 @@ func (a *Agent) adoptSession(id acp.SessionId, cwd string, additionalDirs []stri
 	s.mcpServers = mcpServers
 	s.resumeFrom = resumeFrom
 	s.forkOnResume = fork
-	a.mu.Lock()
-	a.sessions[id] = s
-	a.mu.Unlock()
+	a.storeSession(s)
 	return s
+}
+
+func (a *Agent) storeSession(s *session) {
+	a.mu.Lock()
+	old := a.sessions[s.id]
+	a.sessions[s.id] = s
+	a.mu.Unlock()
+	if old != nil && old != s {
+		old.close()
+	}
 }
 
 func newUUID() string {

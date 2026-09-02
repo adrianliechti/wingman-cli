@@ -21,6 +21,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
+	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/session"
 )
 
@@ -55,6 +56,19 @@ func TestNotifyContentIgnoresPartialToolCall(t *testing.T) {
 	})
 	if called {
 		t.Fatal("partial tool call was sent to ACP")
+	}
+}
+
+func TestNotifyContentPreservesMixedTextAndImage(t *testing.T) {
+	var updates []acpsdk.SessionUpdate
+	notifyContent(func(update acpsdk.SessionUpdate) { updates = append(updates, update) }, agent.RoleUser, agent.Content{
+		Text: "describe this",
+		File: &agent.File{Data: "data:image/png;base64,AA=="},
+	})
+	if len(updates) != 2 || updates[0].UserMessageChunk == nil || updates[0].UserMessageChunk.Content.Text == nil ||
+		updates[0].UserMessageChunk.Content.Text.Text != "describe this" || updates[1].UserMessageChunk == nil ||
+		updates[1].UserMessageChunk.Content.Image == nil || updates[1].UserMessageChunk.Content.Image.Data != "AA==" {
+		t.Fatalf("updates = %#v", updates)
 	}
 }
 
@@ -109,6 +123,92 @@ func TestClassifyPromptStreamError(t *testing.T) {
 	reason, err = classifyPromptStreamError(want)
 	if !errors.Is(err, want) || reason != "" {
 		t.Fatalf("failed stream = %q, %v", reason, err)
+	}
+}
+
+func TestRetainSessionQueuesPromptsAndHonorsWaitingContext(t *testing.T) {
+	const id = acpsdk.SessionId("session-1")
+	w := &workspaceEntry{refs: 1}
+	s := &Server{sessions: map[acpsdk.SessionId]*sessionEntry{
+		id: {id: id, workspace: w},
+	}}
+
+	_, finishFirst, err := s.retainSession(context.Background(), id, func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type retained struct {
+		finish func()
+		err    error
+	}
+	second := make(chan retained, 1)
+	go func() {
+		_, finish, err := s.retainSession(context.Background(), id, func() {})
+		second <- retained{finish: finish, err: err}
+	}()
+	select {
+	case got := <-second:
+		t.Fatalf("second prompt was not queued: %v", got.err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	waitCtx, cancelWait := context.WithCancel(context.Background())
+	cancelWait()
+	if _, _, err := s.retainSession(waitCtx, id, func() {}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("waiting prompt error = %v, want context.Canceled", err)
+	}
+
+	finishFirst()
+	var got retained
+	select {
+	case got = <-second:
+	case <-time.After(time.Second):
+		t.Fatal("queued prompt did not start after the prior prompt finished")
+	}
+	if got.err != nil || got.finish == nil {
+		t.Fatalf("queued prompt = %#v", got)
+	}
+	got.finish()
+	// Prompt retains are normally paired with the Prompt method's deferred
+	// workspace releases. Keep that invariant in this isolated lifecycle test.
+	s.releaseWorkspace(w)
+	s.releaseWorkspace(w)
+}
+
+func TestReplaceLoadedSessionSwapsWorkspaceAndRejectsBusySession(t *testing.T) {
+	const id = acpsdk.SessionId("session-1")
+	oldAgent := &codeagent.Agent{}
+	newAgent := &codeagent.Agent{}
+	oldWorkspace := &workspaceEntry{agent: oldAgent, key: "old", refs: 2}
+	newWorkspace := &workspaceEntry{agent: newAgent, key: "new", refs: 1}
+	oldSession := &sessionEntry{id: id, agent: oldAgent, workspace: oldWorkspace}
+	s := &Server{
+		sessions:    map[acpsdk.SessionId]*sessionEntry{id: oldSession},
+		sessionDirs: map[acpsdk.SessionId]string{id: "old-dir"},
+		workspaces: map[string]*workspaceEntry{
+			"old": oldWorkspace,
+			"new": newWorkspace,
+		},
+	}
+
+	if err := s.replaceLoadedSession(id, newWorkspace); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.lookupSession(id); got == oldSession || got.workspace != newWorkspace || got.agent != newAgent {
+		t.Fatalf("replacement session = %#v", got)
+	}
+	if oldWorkspace.refs != 1 || newWorkspace.refs != 1 {
+		t.Fatalf("workspace refs = old:%d new:%d", oldWorkspace.refs, newWorkspace.refs)
+	}
+
+	busy := s.lookupSession(id)
+	busy.cancel = func() {}
+	thirdWorkspace := &workspaceEntry{agent: &codeagent.Agent{}, key: "third", refs: 1}
+	if err := s.replaceLoadedSession(id, thirdWorkspace); err == nil {
+		t.Fatal("busy session was replaced")
+	}
+	if s.lookupSession(id) != busy || thirdWorkspace.refs != 1 {
+		t.Fatal("failed replacement changed session ownership")
 	}
 }
 

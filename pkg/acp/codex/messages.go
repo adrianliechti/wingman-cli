@@ -28,3 +28,10 @@ func agentThoughtUpdate(text, id string) acp.SessionUpdate {
 	}
 	return u
 }
+
+func sessionTitleUpdate(title string) acp.SessionUpdate {
+	return acp.SessionUpdate{SessionInfoUpdate: &acp.SessionSessionInfoUpdate{
+		SessionUpdate: "session_info_update",
+		Title:         &title,
+	}}
+}

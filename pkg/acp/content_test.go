@@ -25,6 +25,27 @@ func TestPromptContentRoundTrip(t *testing.T) {
 	}
 }
 
+func TestContentToBlocksPreservesTextAndImageFromOneContent(t *testing.T) {
+	blocks := ContentToBlocks([]agent.Content{{
+		Text: "describe this",
+		File: &agent.File{Data: "data:image/png;base64,aGVsbG8="},
+	}})
+	if len(blocks) != 2 || blocks[0].Text == nil || blocks[0].Text.Text != "describe this" ||
+		blocks[1].Image == nil || blocks[1].Image.Data != "aGVsbG8=" || blocks[1].Image.MimeType != "image/png" {
+		t.Fatalf("blocks = %+v", blocks)
+	}
+}
+
+func TestContentToBlocksIgnoresMalformedAttachmentsWithoutDroppingText(t *testing.T) {
+	blocks := ContentToBlocks([]agent.Content{{
+		Text: "keep me",
+		File: &agent.File{Data: "not-a-data-url"},
+	}})
+	if len(blocks) != 1 || blocks[0].Text == nil || blocks[0].Text.Text != "keep me" {
+		t.Fatalf("blocks = %+v", blocks)
+	}
+}
+
 func TestContentFromBlocksKeepsResourceLinks(t *testing.T) {
 	got := ContentFromBlocks([]acpsdk.ContentBlock{
 		acpsdk.ResourceLinkBlock("docs", "file:///workspace/docs.md"),

@@ -76,6 +76,34 @@ func TestPermissionsApprovalDispatchAndSafeFallback(t *testing.T) {
 	}
 }
 
+func TestMessageOnlyElicitations(t *testing.T) {
+	tests := []struct {
+		name   string
+		params elicitationParams
+		want   bool
+	}{
+		{name: "form without schema", params: elicitationParams{Mode: "form"}, want: true},
+		{name: "openai slash null schema", params: elicitationParams{Mode: "openai/form", RequestedSchema: json.RawMessage(`null`)}, want: true},
+		{name: "openai camel empty object", params: elicitationParams{Mode: "openaiForm", RequestedSchema: json.RawMessage(`{"type":"object","properties":{}}`)}, want: true},
+		{name: "structured field", params: elicitationParams{Mode: "openaiForm", RequestedSchema: json.RawMessage(`{"type":"object","properties":{"code":{"type":"string"}},"required":["code"]}`)}},
+		{name: "missing properties", params: elicitationParams{Mode: "form", RequestedSchema: json.RawMessage(`{"type":"object"}`)}},
+		{name: "null properties", params: elicitationParams{Mode: "form", RequestedSchema: json.RawMessage(`{"type":"object","properties":null}`)}},
+		{name: "unknown mode", params: elicitationParams{Mode: "unknown"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isMessageOnlyElicitation(tt.params); got != tt.want {
+				t.Errorf("isMessageOnlyElicitation(%#v) = %v, want %v", tt.params, got, tt.want)
+			}
+		})
+	}
+
+	structured := elicitationParams{Mode: "openaiForm", RequestedSchema: json.RawMessage(`{"type":"object","properties":{"code":{"type":"string"}}}`)}
+	if got := (&approver{}).handleElicitation(structured); got.Action != "decline" {
+		t.Fatalf("structured fallback action = %q, want decline", got.Action)
+	}
+}
+
 func TestPermissionsGrantMetadata(t *testing.T) {
 	permissions := map[string]any{
 		"network": map[string]any{"enabled": true},

@@ -133,9 +133,10 @@ func (s *sessionState) finalizeTurn(t *turn) {
 }
 
 type event struct {
-	msg  agent.Message
-	err  error
-	done bool
+	msg             agent.Message
+	err             error
+	done            bool
+	remoteCancelled bool
 }
 
 const (
@@ -485,6 +486,9 @@ func (a *Agent) NewSession(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if resp.SessionId == "" {
+		return "", errors.New("ACP agent returned an empty session ID")
+	}
 
 	id := string(resp.SessionId)
 	sess := &sessionState{
@@ -770,8 +774,12 @@ func (a *Agent) Send(ctx context.Context, id string, input []agent.Content) (ite
 			SessionId: sess.id,
 			Prompt:    acp.ContentToBlocks(input),
 		})
+		remoteCancelled := err == nil && resp.StopReason == acpsdk.StopReasonCancelled
+		if remoteCancelled {
+			err = context.Canceled
+		}
 
-		if err == nil && resp.Usage != nil {
+		if resp.Usage != nil {
 			sess.mu.Lock()
 			lastInputTokens := sess.usage.LastInputTokens
 			contextWindow := sess.usage.ContextWindow
@@ -787,7 +795,7 @@ func (a *Agent) Send(ctx context.Context, id string, input []agent.Content) (ite
 			sess.mu.Unlock()
 		}
 		select {
-		case t.events <- event{done: true, err: err}:
+		case t.events <- event{done: true, err: err, remoteCancelled: remoteCancelled}:
 		case <-t.done:
 		}
 	}()
@@ -813,7 +821,7 @@ func (a *Agent) Send(ctx context.Context, id string, input []agent.Content) (ite
 				return
 			case ev := <-t.events:
 				if ev.done {
-					completed = ev.err == nil ||
+					completed = ev.remoteCancelled || ev.err == nil ||
 						(!errors.Is(ev.err, context.Canceled) && !errors.Is(ev.err, context.DeadlineExceeded))
 					if ev.err != nil {
 						yield(agent.Message{}, ev.err)
@@ -943,27 +951,6 @@ func (a *Agent) shutdown() {
 }
 
 func (a *Agent) SessionUpdate(_ context.Context, n acpsdk.SessionNotification) error {
-	if n.Update.ConfigOptionUpdate != nil {
-		sess := a.session(string(n.SessionId))
-		if sess == nil {
-			a.rememberPendingUpdate(string(n.SessionId), n.Update)
-			return nil
-		}
-		a.refreshConfig(sess, n.Update.ConfigOptionUpdate.ConfigOptions)
-		return nil
-	}
-
-	if n.Update.CurrentModeUpdate != nil {
-		if sess := a.session(string(n.SessionId)); sess != nil {
-			sess.mu.Lock()
-			sess.modeID = string(n.Update.CurrentModeUpdate.CurrentModeId)
-			sess.mu.Unlock()
-		} else {
-			a.rememberPendingUpdate(string(n.SessionId), n.Update)
-		}
-		return nil
-	}
-
 	sess := a.session(string(n.SessionId))
 	if sess == nil {
 		if isSessionStateUpdate(n.Update) {
@@ -1083,26 +1070,29 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 		if t.ignoreUserUpdates {
 			return agent.Message{}, false
 		}
-		text := blockText(u.UserMessageChunk.Content)
-		if text == "" {
+		content, ok := messageBlockContent(u.UserMessageChunk.Content)
+		if !ok {
 			return agent.Message{}, false
 		}
 		id := ""
 		if u.UserMessageChunk.MessageId != nil {
 			id = *u.UserMessageChunk.MessageId
 		}
-		return emit(agent.RoleUser, agent.Content{Text: text}, "user:"+id), true
+		return emit(agent.RoleUser, content, "user:"+id), true
 
 	case u.AgentMessageChunk != nil:
-		text := blockText(u.AgentMessageChunk.Content)
-		if text == "" {
+		content, ok := messageBlockContent(u.AgentMessageChunk.Content)
+		if !ok {
 			return agent.Message{}, false
 		}
 		id := ""
 		if u.AgentMessageChunk.MessageId != nil {
 			id = *u.AgentMessageChunk.MessageId
 		}
-		return emit(agent.RoleAssistant, agent.Content{Text: text, TextID: id}, "agent:"+id), true
+		if content.Text != "" {
+			content.TextID = id
+		}
+		return emit(agent.RoleAssistant, content, "agent:"+id), true
 
 	case u.AgentThoughtChunk != nil:
 		text := blockText(u.AgentThoughtChunk.Content)
@@ -1202,6 +1192,14 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 
 	}
 	return agent.Message{}, false
+}
+
+func messageBlockContent(block acpsdk.ContentBlock) (agent.Content, bool) {
+	contents := acp.ContentFromBlocks([]acpsdk.ContentBlock{block})
+	if len(contents) != 1 {
+		return agent.Content{}, false
+	}
+	return contents[0], true
 }
 
 func (a *Agent) reportToolProgress(t *turn, update *acpsdk.SessionToolCallUpdate) {

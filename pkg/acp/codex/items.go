@@ -193,6 +193,8 @@ func subAgentTitle(it subAgentItem) string {
 		return "Interact with subagent " + name
 	case "interrupted":
 		return "Interrupt subagent " + name
+	case "completed":
+		return "Complete subagent " + name
 	}
 	return "Subagent " + name
 }
@@ -402,6 +404,7 @@ func guardianActionSummary(raw json.RawMessage) string {
 		Command       string   `json:"command"`
 		Program       string   `json:"program"`
 		Argv          []string `json:"argv"`
+		ProcessID     string   `json:"processId"`
 		Files         []string `json:"files"`
 		Host          string   `json:"host"`
 		Target        string   `json:"target"`
@@ -422,6 +425,8 @@ func guardianActionSummary(raw json.RawMessage) string {
 			cmd = []string{a.Program}
 		}
 		return strings.TrimSpace("exec " + strings.Join(cmd, " "))
+	case "writeStdin":
+		return "write stdin to process " + a.ProcessID
 	case "applyPatch":
 		if len(a.Files) == 1 {
 			return "apply_patch touching " + a.Files[0]
