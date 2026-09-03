@@ -40,12 +40,13 @@ func TestBuildArgsDisablesUnsupportedCodexFeatures(t *testing.T) {
 
 func TestResolveModelsIncludesStandardAndFastOpenAIModels(t *testing.T) {
 	models := resolveModels(map[string]bool{
+		"gpt-6-astra":     true,
 		"gpt-5.6-luna":    true,
 		"claude-sonnet-5": true,
 		"gpt-5.4":         true,
 	})
 
-	if want := []string{"gpt-5.4", "gpt-5.6-luna"}; !slices.Equal(models, want) {
+	if want := []string{"gpt-6-astra", "gpt-5.4", "gpt-5.6-luna"}; !slices.Equal(models, want) {
 		t.Fatalf("models = %q, want %q", models, want)
 	}
 }

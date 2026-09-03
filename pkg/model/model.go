@@ -82,6 +82,7 @@ func (m Model) ids() []string {
 
 var gptEfforts = []string{"none", "low", "medium", "high", "xhigh"}
 var gpt56Efforts = []string{"none", "low", "medium", "high", "xhigh", "max"}
+var gpt6AstraEfforts = []string{"low", "medium", "high", "xhigh", "max"}
 var claudeAlwaysThinkingEfforts = []string{"low", "medium", "high", "xhigh", "max"}
 
 // Models lists every known model in preference order: the first entry of a
@@ -287,6 +288,23 @@ var Models = []Model{
 
 	// OpenAI
 
+	{
+		ID: "gpt-6-astra",
+
+		Namespace: "openai",
+
+		Name: "GPT 6 Astra",
+
+		Class: ClassLarge,
+
+		Output: 128000,
+
+		Context:          1050000,
+		ContextThreshold: 272_000,
+
+		Effort:  "low",
+		Efforts: gpt6AstraEfforts,
+	},
 	{
 		ID: "gpt-5.6-sol",
 

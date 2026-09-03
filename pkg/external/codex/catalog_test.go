@@ -5,11 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
 func TestBuildModelCatalogFiltersAndSynthesizesModels(t *testing.T) {
 	data, err := buildModelCatalog([]string{
+		"gpt-6-astra",
 		"gpt-5.6-terra",
 		"gpt-5.4",
 		"gpt-5.3-codex",
@@ -28,6 +30,8 @@ func TestBuildModelCatalogFiltersAndSynthesizesModels(t *testing.T) {
 			Visibility        string `json:"visibility"`
 			Priority          int    `json:"priority"`
 			ContextWindow     int    `json:"context_window"`
+			DefaultEffort     string `json:"default_reasoning_level"`
+			ShellType         string `json:"shell_type"`
 			MultiAgentVersion string `json:"multi_agent_version"`
 			ModelMessages     *struct {
 				Instructions string `json:"instructions_template"`
@@ -55,11 +59,19 @@ func TestBuildModelCatalogFiltersAndSynthesizesModels(t *testing.T) {
 		}
 	}
 
-	if want := []string{"gpt-5.6-terra", "gpt-5.4", "gpt-5.3-codex"}; !slices.Equal(gotIDs, want) {
+	if want := []string{"gpt-6-astra", "gpt-5.6-terra", "gpt-5.4", "gpt-5.3-codex"}; !slices.Equal(gotIDs, want) {
 		t.Fatalf("model ids = %q, want %q", gotIDs, want)
 	}
 
-	synthesized := catalog.Models[2]
+	astra := catalog.Models[0]
+	if astra.DefaultEffort != "low" || astra.ShellType != "unified_exec" {
+		t.Errorf("Astra catalog metadata = effort %q, shell %q", astra.DefaultEffort, astra.ShellType)
+	}
+	if !strings.Contains(astra.ModelMessages.Instructions, "You are Codex, an agent based on GPT-6") {
+		t.Error("Astra catalog is missing its GPT-6 instructions")
+	}
+
+	synthesized := catalog.Models[3]
 	if synthesized.DisplayName != "GPT 5.3 Codex" {
 		t.Errorf("synthesized display name = %q", synthesized.DisplayName)
 	}

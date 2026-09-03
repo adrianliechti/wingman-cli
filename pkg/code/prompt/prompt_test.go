@@ -24,8 +24,8 @@ func TestVariantFor(t *testing.T) {
 	}
 
 	for _, id := range []string{
-		"gpt-5.6-sol", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.2", "gpt-5.1", "gpt-4o",
-		"claude-opus-5", "claude-opus-4-8", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-6", "claude-fable-5-1", "claude-fable-5", "claude-mythos-5-1", "claude-mythos-5",
+		"gpt-6-astra", "gpt-5.6-sol", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.2", "gpt-5.1", "gpt-4o",
+		"claude-sonnet-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-6", "claude-sonnet-4-5", "claude-opus-4-5", "claude-haiku-4-5", "claude-fable-5-1", "claude-fable-5", "claude-mythos-5-1", "claude-mythos-5",
 		"gemini-3.7-flash", "gemini-3.6-flash", "glm-5.3", "glm-5.2", "kimi-k3", "minimax-m3", "grok-4.6",
 		"qwen3.8-max", "qwen3.8", "qwen3.7-plus", "qwen3.5-plus",
 	} {
@@ -43,6 +43,12 @@ func TestVariantFor(t *testing.T) {
 	if VariantFor("gpt-5.6-sol").Agent != VariantFor("gpt-5.3-codex").Agent {
 		t.Error("gpt-5.6 and GPT-5.3 models should share the default GPT prompt")
 	}
+	if VariantFor("gpt-6-astra").Agent == VariantFor("gpt-5.6-sol").Agent {
+		t.Error("GPT-6 Astra should use its model-specific prompt")
+	}
+	if !strings.Contains(VariantFor("gpt-6-astra").Agent, "# When to ask the user for permission") {
+		t.Error("GPT-6 Astra prompt is missing its permission guidance")
+	}
 
 	if VariantFor("gpt-5.1").Agent == VariantFor("gpt-5.6-sol").Agent {
 		t.Error("GPT-5.1 should keep its model-specific prompt")
@@ -59,8 +65,20 @@ func TestVariantFor(t *testing.T) {
 	if VariantFor("claude-opus-5").Agent == VariantFor("claude-sonnet-5").Agent {
 		t.Error("Claude Opus 5 should keep its model-specific prompt")
 	}
-	if VariantFor("claude-opus-4-7").Agent != VariantFor("claude-opus-4-8").Agent {
-		t.Error("Claude Opus 4 models should share the Opus prompt")
+	if VariantFor("claude-opus-4-8").Agent == VariantFor("claude-opus-4-7").Agent {
+		t.Error("Claude Opus 4.8 should keep its model-specific prompt")
+	}
+	if VariantFor("claude-opus-4-7").Agent != VariantFor("claude-sonnet-5").Agent {
+		t.Error("Claude Opus 4.7 and Sonnet 5 should share the adapted general Claude prompt")
+	}
+	if VariantFor("claude-fable-5-1").Agent != VariantFor("claude-fable-5").Agent {
+		t.Error("Claude Fable 5 variants should share the Fable prompt")
+	}
+	if VariantFor("claude-mythos-5-1").Agent != VariantFor("claude-mythos-5").Agent {
+		t.Error("Claude Mythos 5 variants should share the Mythos prompt")
+	}
+	if VariantFor("claude-fable-5-1").Agent == VariantFor("claude-mythos-5-1").Agent {
+		t.Error("Claude Fable and Mythos should keep their distinct captured prompts")
 	}
 
 	if VariantFor("gpt-5.5").Agent == VariantFor("gpt-5.6-sol").Agent {
@@ -98,6 +116,78 @@ func TestVariantFor(t *testing.T) {
 	}
 }
 
+func TestClaudePromptFamilies(t *testing.T) {
+	for _, selected := range model.Models {
+		if selected.Namespace != "anthropic" {
+			continue
+		}
+
+		if got := VariantFor(selected.ID).Agent; got == VariantFor("").Agent {
+			t.Errorf("VariantFor(%s).Agent = default, want a captured Claude family prompt", selected.ID)
+		}
+	}
+
+	fable := VariantFor("claude-fable-5-1").Agent
+	for _, want := range []string{
+		"# Communicating with the user",
+		"Write it for a teammate who stepped away",
+		"Fable and Mythos share the same underlying model",
+		"You are operating autonomously",
+	} {
+		if !strings.Contains(fable, want) {
+			t.Errorf("Fable prompt missing captured guidance %q", want)
+		}
+	}
+
+	mythos := VariantFor("claude-mythos-5-1").Agent
+	if strings.Contains(mythos, "Fable and Mythos share the same underlying model") {
+		t.Error("Mythos prompt inherited Fable-only identity guidance")
+	}
+	for _, want := range []string{"# Communicating with the user", "You are operating autonomously"} {
+		if !strings.Contains(mythos, want) {
+			t.Errorf("Mythos prompt missing captured guidance %q", want)
+		}
+	}
+
+	opus5 := VariantFor("claude-opus-5").Agent
+	for _, want := range []string{
+		"# Delivering work",
+		"# Corrections",
+		"Do not call the `agent` tool unless the user requested it.",
+		"Do not start a deep-research workflow unless the user explicitly requested deep research.",
+	} {
+		if !strings.Contains(opus5, want) {
+			t.Errorf("Opus 5 prompt missing captured guidance %q", want)
+		}
+	}
+
+	opus48 := VariantFor("claude-opus-4-8").Agent
+	for _, unwanted := range []string{"# Communicating with the user", "# Delivering work", "# Corrections"} {
+		if strings.Contains(opus48, unwanted) {
+			t.Errorf("Opus 4.8 prompt contains guidance absent from its lean captured prompt %q", unwanted)
+		}
+	}
+	if !strings.Contains(opus48, "If what you find contradicts how it was described") {
+		t.Error("Opus 4.8 prompt is missing its pre-mutation state check")
+	}
+
+	general := VariantFor("claude-sonnet-5").Agent
+	for _, want := range []string{"# Doing tasks", "# Executing actions with care", "# Text output"} {
+		if !strings.Contains(general, want) {
+			t.Errorf("general Claude prompt missing captured guidance %q", want)
+		}
+	}
+
+	for _, id := range []string{"claude-sonnet-5", "claude-opus-5", "claude-opus-4-8", "claude-fable-5-1", "claude-mythos-5-1"} {
+		agent := VariantFor(id).Agent
+		for _, vendorOnly := range []string{"# Environment", "<total_tokens>", "gitStatus:", "TaskCreate", "https://github.com/anthropics/claude-code"} {
+			if strings.Contains(agent, vendorOnly) {
+				t.Errorf("%s prompt contains unadapted Claude Code instruction %q", id, vendorOnly)
+			}
+		}
+	}
+}
+
 func TestBuildInstructionsRendersModelTemplate(t *testing.T) {
 	for _, id := range []string{
 		"claude-sonnet-5",
@@ -107,6 +197,7 @@ func TestBuildInstructionsRendersModelTemplate(t *testing.T) {
 		"claude-fable-5",
 		"claude-mythos-5-1",
 		"claude-mythos-5",
+		"gpt-6-astra",
 		"gpt-5.6-sol",
 		"gpt-5.5",
 		"gpt-5.4",
@@ -225,7 +316,7 @@ func TestBuildInstructionsSharedSections(t *testing.T) {
 }
 
 func TestBuildInstructionsAlwaysExplainsProjectInstructionScope(t *testing.T) {
-	for _, id := range []string{"claude-opus-5", "gpt-5.6-sol", "gpt-5.2", "gpt-5.1-codex"} {
+	for _, id := range []string{"claude-opus-5", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.2", "gpt-5.1-codex"} {
 		t.Run(id, func(t *testing.T) {
 			got := BuildInstructions(VariantFor(id).Agent, SectionData{})
 			if !strings.Contains(got, "# Project Guidelines\n") || !strings.Contains(got, "check for applicable instruction files") {
@@ -248,6 +339,7 @@ func TestAgentPromptPolicy(t *testing.T) {
 		"claude-fable-5",
 		"claude-mythos-5-1",
 		"claude-mythos-5",
+		"gpt-6-astra",
 		"gpt-5.6-sol",
 		"gpt-5.5",
 		"gpt-5.4",
@@ -287,6 +379,7 @@ func TestAgentPromptsExcludeRemovedTools(t *testing.T) {
 		"claude-opus-4-8",
 		"claude-fable-5-1",
 		"claude-mythos-5-1",
+		"gpt-6-astra",
 		"gpt-5.6-sol",
 		"gpt-5.5",
 		"gpt-5.4",
@@ -322,7 +415,7 @@ func TestReferenceSpecificCopyrightHeaderGuidance(t *testing.T) {
 		})
 	}
 
-	for _, id := range []string{"gpt-5.6-sol", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"} {
+	for _, id := range []string{"gpt-6-astra", "gpt-5.6-sol", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"} {
 		t.Run(id+"/absent", func(t *testing.T) {
 			if agent := strings.ToLower(VariantFor(id).Agent); strings.Contains(agent, guidance) {
 				t.Errorf("agent prompt contains guidance absent from its reference: %q", guidance)

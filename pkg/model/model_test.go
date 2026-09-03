@@ -23,6 +23,7 @@ func TestCurrentProviderModels(t *testing.T) {
 		{"grok-4.6", "Grok 4.6", ClassLarge, 500_000, 500_000},
 		{"claude-fable-5-1", "Claude Fable 5.1", ClassLarge, 1_000_000, 128_000},
 		{"claude-mythos-5-1", "Claude Mythos 5.1", ClassLarge, 1_000_000, 128_000},
+		{"gpt-6-astra", "GPT 6 Astra", ClassLarge, 1_050_000, 128_000},
 	}
 
 	for _, tc := range cases {
@@ -40,6 +41,7 @@ func TestCurrentProviderModels(t *testing.T) {
 
 func TestCurrentProviderModelAvailability(t *testing.T) {
 	available := Available(map[string]bool{
+		"gpt-6-astra":  true,
 		"gpt-5.4-nano": true,
 		"kimi-k3":      true,
 		"glm-5.3":      true,
@@ -52,7 +54,7 @@ func TestCurrentProviderModelAvailability(t *testing.T) {
 		ids = append(ids, m.ID)
 	}
 
-	if want := []string{"glm-5.3", "kimi-k3", "MiniMax-M3", "grok-4.6"}; !slices.Equal(ids, want) {
+	if want := []string{"gpt-6-astra", "glm-5.3", "kimi-k3", "MiniMax-M3", "grok-4.6"}; !slices.Equal(ids, want) {
 		t.Fatalf("Available() ids = %v, want %v", ids, want)
 	}
 }
@@ -118,6 +120,7 @@ func TestOllamaModelMappingUsesLongestPrefix(t *testing.T) {
 		{"qwen/qwen3.8-max", "Qwen 3.8 Max", 1_000_000},
 		{"qwen/qwen3.8-2.4t-a95b", "Qwen 3.8 Max", 1_000_000},
 		{"openai/gpt-5.6-sol", "GPT 5.6 Sol", 1_050_000},
+		{"openai/gpt-6-astra", "GPT 6 Astra", 1_050_000},
 		{"GPT-5.6-SOL:27B-MLX", "GPT 5.6 Sol", 1_050_000},
 	}
 
@@ -154,6 +157,7 @@ func TestProviderPrefixedModelMapping(t *testing.T) {
 		"anthropic/claude-fable-5-1":  "Claude Fable 5.1",
 		"anthropic/claude-mythos-5-1": "Claude Mythos 5.1",
 		"openai/gpt-5.6-sol":          "GPT 5.6 Sol",
+		"openai/gpt-6-astra":          "GPT 6 Astra",
 		"google/gemini-3.1-pro":       "Gemini 3.1 Pro",
 		"z-ai/glm-5.3":                "GLM 5.3",
 		"deepseek/deepseek-v4-pro":    "DeepSeek V4 Pro",
@@ -188,6 +192,7 @@ func TestCurrentProviderModelClassification(t *testing.T) {
 		{"glm-5.3", "glm", ClassMedium},
 		{"MiniMax-M3", "minimax", ClassLarge},
 		{"grok-4.6", "grok", ClassLarge},
+		{"gpt-6-astra", "gpt", ClassLarge},
 	}
 
 	for _, tc := range cases {

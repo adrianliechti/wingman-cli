@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/adrianliechti/wingman-agent/pkg/model"
@@ -139,6 +140,27 @@ func TestEffortDefaultsByRole(t *testing.T) {
 	}
 }
 
+func TestAstraEffortDefaultsAndClampsOverrides(t *testing.T) {
+	a := upstreamAgent("gpt-6-astra")
+	s := &sessionState{}
+
+	if got := a.effortFor(s); got != "low" {
+		t.Fatalf("Astra effort = %q, want low", got)
+	}
+
+	a.effortByRole[modelRoleMain] = "none"
+	if got := a.effortFor(s); got != "low" {
+		t.Fatalf("Astra effort for unsupported none override = %q, want low", got)
+	}
+	if current, values := a.Effort(""); current != "low" || !slices.Equal(values, []string{"auto", "low", "medium", "high", "xhigh", "max"}) {
+		t.Fatalf("Astra effort selector = %q/%v", current, values)
+	}
+
+	if err := a.SetEffort(context.Background(), "", "none"); err == nil {
+		t.Fatal("SetEffort accepted unsupported Astra effort none")
+	}
+}
+
 func TestSetModelAndEffortScopeToCurrentMode(t *testing.T) {
 	a := upstreamAgent("claude-sonnet-5", "claude-opus-4-8", "claude-fable-5")
 	s := &sessionState{}
@@ -216,6 +238,7 @@ func TestSetModelResetsEffort(t *testing.T) {
 
 func TestModelClass(t *testing.T) {
 	tests := map[string]model.Class{
+		"gpt-6-astra":       model.ClassLarge,
 		"claude-opus-5":     model.ClassLarge,
 		"claude-opus-4-8":   model.ClassLarge,
 		"gpt-5.6-sol":       model.ClassLarge,

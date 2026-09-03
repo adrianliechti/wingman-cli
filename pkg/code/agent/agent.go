@@ -356,6 +356,30 @@ func effortValuesFor(id string) []string {
 	return effortValues
 }
 
+func clampEffortForModel(value string, m model.Model) string {
+	if value == "" || len(m.Efforts) == 0 || slices.Contains(m.Efforts, value) {
+		return value
+	}
+
+	rank := slices.Index(effortValues, value)
+	if rank < 0 {
+		return value
+	}
+
+	clamped := m.Efforts[0]
+	for _, supported := range m.Efforts {
+		supportedRank := slices.Index(effortValues, supported)
+		if supportedRank < 0 {
+			continue
+		}
+		if supportedRank > rank {
+			break
+		}
+		clamped = supported
+	}
+	return clamped
+}
+
 func (a *Agent) Effort(sessionID string) (string, []string) {
 	s := a.session(sessionID)
 	a.modelMu.Lock()
@@ -371,6 +395,9 @@ func (a *Agent) Effort(sessionID string) (string, []string) {
 	a.modelMu.Unlock()
 	if current == "" {
 		current = "auto"
+	} else {
+		m, _ := model.Find(currentModel)
+		current = clampEffortForModel(current, m)
 	}
 	return current, slices.Clone(effortValuesFor(currentModel))
 }
@@ -379,22 +406,26 @@ func (a *Agent) effortFor(s *sessionState) string {
 	a.modelMu.Lock()
 	defer a.modelMu.Unlock()
 	role := activeModelRole(s)
+	requested := ""
 	if s != nil && s.effortByRole[role] != "" {
-		return s.effortByRole[role]
-	}
-	if a.effortByRole[role] != "" {
-		return a.effortByRole[role]
+		requested = s.effortByRole[role]
+	} else if a.effortByRole[role] != "" {
+		requested = a.effortByRole[role]
 	}
 	current, _ := a.roleModelLocked(s, string(role))
 	m, _ := model.Find(current)
-	if effort := m.Effort; effort != "" {
-		return effort
+	if requested == "" {
+		requested = m.Effort
 	}
-	// xhigh is the planning default only where a large model backs it.
-	if role == modelRolePlan && model.ClassOf(current) == model.ClassLarge {
-		return "xhigh"
+	if requested == "" {
+		// xhigh is the planning default only where a large model backs it.
+		if role == modelRolePlan && model.ClassOf(current) == model.ClassLarge {
+			requested = "xhigh"
+		} else {
+			requested = "high"
+		}
 	}
-	return "high"
+	return clampEffortForModel(requested, m)
 }
 
 func (a *Agent) SetEffort(_ context.Context, sessionID, value string) error {
