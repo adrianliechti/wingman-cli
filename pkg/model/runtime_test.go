@@ -6,6 +6,7 @@ import (
 )
 
 func TestModelRuntimeFields(t *testing.T) {
+	t.Setenv("WINGMAN_CONTEXT_WINDOW_MODE", "")
 	t.Setenv("WINGMAN_LARGE_CONTEXT", "")
 
 	cases := []struct {
@@ -36,6 +37,7 @@ func TestModelRuntimeFields(t *testing.T) {
 		{"kimi-k3", 1_048_576, nil},
 		{"minimax-m3", 512_000, nil},
 		{"grok-4.6", 200_000, nil},
+		{"qwen3.8", 262_144, qwen38Efforts},
 		{"some-unknown-model", 0, nil},
 		{"", 0, nil},
 	}
@@ -51,11 +53,21 @@ func TestModelRuntimeFields(t *testing.T) {
 		}
 	}
 
-	t.Setenv("WINGMAN_LARGE_CONTEXT", "true")
+	t.Setenv("WINGMAN_CONTEXT_WINDOW_MODE", "full")
 	for id, want := range map[string]int{"gpt-6-astra": 1_050_000, "gpt-5.6-sol": 1_050_000, "MiniMax-M3": 1_000_000, "grok-4.6": 500_000} {
 		m, _ := Find(id)
 		if got := m.ContextTokens(); got != want {
-			t.Errorf("Find(%q).ContextTokens() with large context = %d, want %d", id, got, want)
+			t.Errorf("Find(%q).ContextTokens() with full context mode = %d, want %d", id, got, want)
 		}
+	}
+}
+
+func TestLegacyLargeContextEnvironmentAlias(t *testing.T) {
+	t.Setenv("WINGMAN_CONTEXT_WINDOW_MODE", "")
+	t.Setenv("WINGMAN_LARGE_CONTEXT", "true")
+
+	m, _ := Find("gpt-5.6-sol")
+	if got := m.ContextTokens(); got != 1_050_000 {
+		t.Fatalf("legacy WINGMAN_LARGE_CONTEXT window = %d, want 1050000", got)
 	}
 }

@@ -31,6 +31,12 @@ const (
 )
 
 func ContextWindowFor(id string) int {
+	if value := strings.TrimSpace(os.Getenv("WINGMAN_CONTEXT_WINDOW")); value != "" {
+		if window, err := strconv.Atoi(value); err == nil && window > 0 {
+			return window
+		}
+	}
+
 	if candidate, ok := model.Find(id); ok {
 		window := candidate.ContextTokens()
 		if window > 0 {

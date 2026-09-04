@@ -63,17 +63,25 @@ func (m Model) ContextTokens() int {
 		context = m.Input + m.Output
 	}
 
-	large := false
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("WINGMAN_LARGE_CONTEXT"))) {
-	case "1", "true", "yes", "on":
-		large = true
-	}
-
-	if !large && m.ContextThreshold > 0 && m.ContextThreshold < context {
+	if !fullContextWindowEnabled() && m.ContextThreshold > 0 && m.ContextThreshold < context {
 		return m.ContextThreshold
 	}
 
 	return context
+}
+
+func fullContextWindowEnabled() bool {
+	if mode := strings.ToLower(strings.TrimSpace(os.Getenv("WINGMAN_CONTEXT_WINDOW_MODE"))); mode != "" {
+		return mode == "full"
+	}
+
+	// Deprecated compatibility alias for WINGMAN_CONTEXT_WINDOW_MODE=full.
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("WINGMAN_LARGE_CONTEXT"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m Model) ids() []string {
@@ -84,6 +92,7 @@ var gptEfforts = []string{"none", "low", "medium", "high", "xhigh"}
 var gpt56Efforts = []string{"none", "low", "medium", "high", "xhigh", "max"}
 var gpt6AstraEfforts = []string{"low", "medium", "high", "xhigh", "max"}
 var claudeAlwaysThinkingEfforts = []string{"low", "medium", "high", "xhigh", "max"}
+var qwen38Efforts = []string{"none", "low", "medium", "xhigh"}
 
 // Models lists every known model in preference order: the first entry of a
 // family, filter or class is the one picked automatically.
@@ -847,6 +856,8 @@ var Models = []Model{
 		Output: 65536,
 
 		Context: 262144,
+
+		Efforts: qwen38Efforts,
 	},
 
 	{

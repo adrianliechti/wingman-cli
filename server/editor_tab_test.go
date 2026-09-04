@@ -573,6 +573,11 @@ func TestEditorTabGenerationTargetUsesCompatibleLowestEffort(t *testing.T) {
 	if modelID != "custom-model" || effort != "" {
 		t.Fatalf("unknown target = %q/%q", modelID, effort)
 	}
+
+	modelID, effort = resolveGenerationTarget(cfg, "utility", "qwen3.8:27b-mlx")
+	if modelID != "qwen3.8:27b-mlx" || effort != "none" {
+		t.Fatalf("Qwen 3.8 utility target = %q/%q", modelID, effort)
+	}
 }
 
 func TestHandleEditorTab(t *testing.T) {

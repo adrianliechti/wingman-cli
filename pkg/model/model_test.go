@@ -6,7 +6,7 @@ import (
 )
 
 func TestCurrentProviderModels(t *testing.T) {
-	t.Setenv("WINGMAN_LARGE_CONTEXT", "1")
+	t.Setenv("WINGMAN_CONTEXT_WINDOW_MODE", "full")
 
 	cases := []struct {
 		id      string
@@ -90,6 +90,21 @@ func TestAlwaysThinkingClaudeEfforts(t *testing.T) {
 	}
 }
 
+func TestQwen38Efforts(t *testing.T) {
+	want := []string{"none", "low", "medium", "xhigh"}
+	for _, id := range []string{"qwen3.8", "qwen3.8:27b-mlx", "qwen/qwen3.8-27b"} {
+		t.Run(id, func(t *testing.T) {
+			got, ok := Find(id)
+			if !ok {
+				t.Fatalf("Find(%q) failed", id)
+			}
+			if !slices.Equal(got.Efforts, want) {
+				t.Fatalf("Find(%q).Efforts = %v, want %v", id, got.Efforts, want)
+			}
+		})
+	}
+}
+
 func TestDeepSeekFlash0731IsPreferred(t *testing.T) {
 	available := Available(map[string]bool{
 		"deepseek/deepseek-v4-flash":      true,
@@ -105,7 +120,7 @@ func TestDeepSeekFlash0731IsPreferred(t *testing.T) {
 }
 
 func TestOllamaModelMappingUsesLongestPrefix(t *testing.T) {
-	t.Setenv("WINGMAN_LARGE_CONTEXT", "1")
+	t.Setenv("WINGMAN_CONTEXT_WINDOW_MODE", "full")
 
 	cases := []struct {
 		id      string

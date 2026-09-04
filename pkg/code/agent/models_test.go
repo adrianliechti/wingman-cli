@@ -161,6 +161,27 @@ func TestAstraEffortDefaultsAndClampsOverrides(t *testing.T) {
 	}
 }
 
+func TestQwen38EffortDefaultsAndClampsOverrides(t *testing.T) {
+	a := upstreamAgent("qwen3.8:27b-mlx")
+	s := &sessionState{}
+
+	if got := a.effortFor(s); got != "medium" {
+		t.Fatalf("Qwen 3.8 default effort = %q, want medium", got)
+	}
+
+	a.effortByRole[modelRoleMain] = "max"
+	if got := a.effortFor(s); got != "xhigh" {
+		t.Fatalf("Qwen 3.8 max effort = %q, want xhigh", got)
+	}
+	if current, values := a.Effort(""); current != "xhigh" || !slices.Equal(values, []string{"auto", "none", "low", "medium", "xhigh"}) {
+		t.Fatalf("Qwen 3.8 effort selector = %q/%v", current, values)
+	}
+
+	if err := a.SetEffort(context.Background(), "", "high"); err == nil {
+		t.Fatal("SetEffort accepted unsupported Qwen 3.8 effort high")
+	}
+}
+
 func TestSetModelAndEffortScopeToCurrentMode(t *testing.T) {
 	a := upstreamAgent("claude-sonnet-5", "claude-opus-4-8", "claude-fable-5")
 	s := &sessionState{}

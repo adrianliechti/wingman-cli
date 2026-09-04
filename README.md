@@ -223,7 +223,9 @@ backend at `http://localhost:4242/v1`.
 | `WINGMAN_MODEL_TAB` | Optional model override for web-editor Tab predictions (default: the utility role, then the current coding model) |
 | `WINGMAN_EFFORT` | Coding reasoning effort: `none`/`low`/`medium`/`high`/`xhigh`/`max` (default: `high`) |
 | `WINGMAN_EFFORT_PLAN` | Plan-mode reasoning effort (default: `xhigh` on large models, else `high`) |
-| `WINGMAN_LARGE_CONTEXT` | `1` compacts against the model's full context window instead of stopping at the provider's long-context price threshold |
+| `WINGMAN_CONTEXT_WINDOW` | Effective context window in tokens; overrides model catalog values for compaction and usage reporting |
+| `WINGMAN_CONTEXT_WINDOW_MODE` | `full` compacts against the model's full catalog window instead of stopping at the provider's long-context price threshold |
+| `WINGMAN_LARGE_CONTEXT` | Deprecated alias for `WINGMAN_CONTEXT_WINDOW_MODE=full` |
 
 **Behavior**
 

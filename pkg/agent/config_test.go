@@ -9,6 +9,8 @@ import (
 )
 
 func TestContextWindowFor(t *testing.T) {
+	unsetEnv(t, "WINGMAN_CONTEXT_WINDOW")
+	unsetEnv(t, "WINGMAN_CONTEXT_WINDOW_MODE")
 	unsetEnv(t, "WINGMAN_LARGE_CONTEXT")
 
 	cases := []struct {
@@ -38,6 +40,7 @@ func TestContextWindowFor(t *testing.T) {
 		{"grok-4.6", 200_000},
 		{"deepseek-v4-pro", 1_000_000},
 		{"mistral-medium-latest", 262_144},
+		{"qwen3.8:27b-mlx", 262_144},
 		{"qwen3.7-plus", 1_000_000},
 		{"GPT-5.5", 272_000},
 		{"some-unknown-model", DefaultContextWindow},
@@ -50,11 +53,37 @@ func TestContextWindowFor(t *testing.T) {
 		}
 	}
 
-	t.Setenv("WINGMAN_LARGE_CONTEXT", "1")
+	t.Setenv("WINGMAN_CONTEXT_WINDOW_MODE", "full")
 	for modelID, want := range map[string]int{"gpt-5.6-sol": 1_050_000, "minimax-m3": 1_000_000, "grok-4.6": 500_000} {
 		if got := ContextWindowFor(modelID); got != want {
-			t.Errorf("ContextWindowFor(%q) with WINGMAN_LARGE_CONTEXT = %d, want %d", modelID, got, want)
+			t.Errorf("ContextWindowFor(%q) with full context mode = %d, want %d", modelID, got, want)
 		}
+	}
+}
+
+func TestContextWindowForEnvironmentOverride(t *testing.T) {
+	t.Setenv("WINGMAN_CONTEXT_WINDOW", " 131072 ")
+	t.Setenv("WINGMAN_CONTEXT_WINDOW_MODE", "full")
+	t.Setenv("WINGMAN_LARGE_CONTEXT", "1")
+
+	for _, modelID := range []string{"qwen3.8:27b-mlx", "gpt-5.6-sol", "some-unknown-model", ""} {
+		if got := ContextWindowFor(modelID); got != 131_072 {
+			t.Errorf("ContextWindowFor(%q) = %d, want environment override 131072", modelID, got)
+		}
+	}
+}
+
+func TestContextWindowForIgnoresInvalidEnvironmentOverride(t *testing.T) {
+	t.Setenv("WINGMAN_CONTEXT_WINDOW_MODE", "")
+	t.Setenv("WINGMAN_LARGE_CONTEXT", "")
+
+	for _, value := range []string{"invalid", "0", "-1"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("WINGMAN_CONTEXT_WINDOW", value)
+			if got := ContextWindowFor("qwen3.8"); got != 262_144 {
+				t.Errorf("ContextWindowFor(qwen3.8) = %d, want catalog fallback 262144", got)
+			}
+		})
 	}
 }
 
