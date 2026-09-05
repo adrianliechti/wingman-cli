@@ -39,6 +39,8 @@ type Model struct {
 
 	Effort  string
 	Efforts []string
+
+	Verbosity string
 }
 
 func (m Model) InputTokens() int {
@@ -311,8 +313,9 @@ var Models = []Model{
 		Context:          1050000,
 		ContextThreshold: 272_000,
 
-		Effort:  "low",
-		Efforts: gpt6AstraEfforts,
+		Effort:    "low",
+		Efforts:   gpt6AstraEfforts,
+		Verbosity: "low",
 	},
 	{
 		ID: "gpt-5.6-sol",

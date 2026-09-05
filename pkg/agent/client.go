@@ -12,6 +12,7 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/model"
 	"github.com/adrianliechti/wingman-agent/pkg/telemetry"
 )
 
@@ -130,6 +131,9 @@ func complete(ctx context.Context, client *openai.Client, r *request, yield func
 	}
 	if r.cacheKey != "" {
 		params.PromptCacheKey = openai.String(r.cacheKey)
+	}
+	if m, ok := model.Find(r.model); ok && m.Verbosity != "" {
+		params.Text.Verbosity = responses.ResponseTextConfigVerbosity(m.Verbosity)
 	}
 
 	if r.effort != "" {
