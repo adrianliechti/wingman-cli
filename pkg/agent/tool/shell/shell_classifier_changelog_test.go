@@ -47,6 +47,31 @@ func TestClassifierChangelogDangerous(t *testing.T) {
 		// 2.1.205: rm -rf on a variable that cannot be resolved
 		{"recursive remove of variable", "rm -rf $BUILD_DIR"},
 
+		// 2.1.261: rm -rf on positional parameters and inside double-quoted sh -c scripts
+		{"recursive remove of positional parameter", `rm -rf "$1"`},
+		{"recursive remove of all positional parameters", "rm -rf $@"},
+		{"recursive remove inside double quoted sh -c", `sh -c "rm -rf $DIR"`},
+
+		// 2.1.251: assignments to integer-attributed shell variables are evaluated
+		// as arithmetic at once, expanding even single-quoted substitutions
+		{"integer variable arithmetic assignment", "OPTIND=1/0"},
+		{"random arithmetic assignment", "RANDOM=2+2"},
+		{"quoted substitution in integer variable", "TMOUT='a[$(rm -rf /tmp/x)]'"},
+		{"exported integer variable arithmetic", "export OPTIND=1/0"},
+		{"zsh integer declaration with payload", `integer x='a[$(rm -rf /tmp/x)]'`},
+
+		// 2.1.260: zsh REPORTTIME, REPORTMEMORY and DIRSTACKSIZE assignments hide substitutions
+		{"zsh reporttime substitution", "REPORTTIME=$(rm -rf /tmp/x)"},
+		{"zsh reportmemory substitution prefix", "REPORTMEMORY=$(sudo id) ls"},
+		{"zsh quoted dirstacksize payload", "DIRSTACKSIZE='a[$(rm -rf /tmp/x)]'"},
+
+		// 2.1.257: [[ ]] conditionals that zsh parses differently from bash
+		{"substitution in double bracket comparison", "[[ a == $(rm -rf /tmp/x) ]]"},
+
+		// 2.1.246: malformed commands with a dangling operator
+		{"dangling and operator", "ls &&"},
+		{"dangling or operator", "git status ||"},
+
 		// 2.1.214: PowerShell-session bypass equivalent — nested shell payloads
 		{"bash dash c payload", `bash -c "rm -rf /tmp/x"`},
 		{"bash lc cluster payload", `bash -lc "sudo ls"`},
@@ -248,6 +273,10 @@ func TestClassifierChangelogRoutineCommandsStayQuiet(t *testing.T) {
 		name    string
 		command string
 	}{
+		// 2.1.251: integer literals assigned to integer shell variables stay quiet
+		{"integer literal env prefix", "COLUMNS=120 LINES=40 git log --oneline -3"},
+		{"getopts index reset", "OPTIND=1; getopts abc opt"},
+		{"quoted integer literal", "TMOUT='300'"},
 		// 2.1.207: compound cd with a /dev/null redirect must not prompt
 		{"cd with dev null", "cd /tmp && make > /dev/null"},
 		{"stderr to dev null", "go build ./... 2>/dev/null"},

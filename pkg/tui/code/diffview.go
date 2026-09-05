@@ -12,6 +12,10 @@ import (
 func (a *App) showDiffView() {
 	t := theme.Default
 
+	if a.toggleDiffPanel() {
+		return
+	}
+
 	if !a.agent.Workspace().HasChanges() {
 		a.showToast("Change tracking is still starting", t.Yellow)
 		return

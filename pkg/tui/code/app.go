@@ -62,6 +62,9 @@ type App struct {
 	popup   *Popup
 	overlay Overlay
 
+	diffPanel        diffPanel
+	diffPanelShowing bool
+
 	// cmdTokenStart is the rune index of the slash token driving the command
 	// popup; cmdPopupInline tracks which command set the popup was built for.
 	cmdTokenStart  int
@@ -625,6 +628,7 @@ func (a *App) Run() error {
 			a.expireToast(now)
 			a.expireBackgroundStatus(now)
 			a.expireUsage(now)
+			a.pollDiffPanel(false)
 			if a.getPhase() != PhaseIdle {
 				a.spinnerFrame++
 				a.invalidate()
@@ -687,10 +691,15 @@ func (a *App) shutdown() {
 	}
 }
 
+// width is the chat column: the terminal minus the diff pane, its divider,
+// and the gap before it while the pane is showing.
 func (a *App) width() int {
 	w, _ := a.term.Size()
 	if w <= 0 {
 		return 80
+	}
+	if panel := a.diffPanelWidth(w); panel > 0 {
+		return w - panel - 2
 	}
 	return w
 }
@@ -781,6 +790,13 @@ func (p selPos) before(q selPos) bool {
 // handleMouse routes wheel to chat scrolling and left-button drags to
 // text selection; the two coexist without a mode switch.
 func (a *App) handleMouse(ev inline.MouseEvent) {
+	if a.diffPanelShowing && ev.X-1 > a.width() {
+		if ev.Kind == inline.MouseWheel {
+			a.scrollDiffPanel(ev.WheelDelta * 3)
+		}
+		return
+	}
+
 	switch ev.Kind {
 	case inline.MouseWheel:
 		a.scrollChat(ev.WheelDelta * 3)

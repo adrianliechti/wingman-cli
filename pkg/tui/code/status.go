@@ -170,6 +170,9 @@ func (a *App) footerLine(width int) string {
 	if current == code.PlanModeID {
 		hints[2] = hint("tab", "agent")
 	}
+	if a.diffPanelShowing {
+		hints = append(hints, hint("/diff", "hide diff"))
+	}
 
 	sep := dim("  ")
 	rightWidth := ansi.Width(rightText)

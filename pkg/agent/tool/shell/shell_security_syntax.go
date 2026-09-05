@@ -109,7 +109,8 @@ func hasBackslashEscapedWhitespace(command string) bool {
 // assignment can defer a command substitution until $((name)) or $[name].
 // Numeric-only expressions are kept quiet.
 func hasDynamicArithmeticEvaluation(command string, statements []string) bool {
-	if hasDynamicParameterArithmetic(command) || hasDynamicArrayTargetEvaluation(statements) || hasDynamicDoubleBracketArithmetic(statements) {
+	if hasDynamicParameterArithmetic(command) || hasDynamicArrayTargetEvaluation(statements) ||
+		hasDynamicDoubleBracketArithmetic(statements) || hasIntegerVariableArithmetic(statements) {
 		return true
 	}
 
@@ -314,6 +315,8 @@ func hasDynamicArrayTargetEvaluation(statements []string) bool {
 		}
 		args := resolved[1:]
 		switch cmd {
+		case "integer":
+			return true
 		case "declare", "typeset", "local":
 			for _, arg := range args {
 				if arg == "--integer" || strings.HasPrefix(arg, "-") && strings.Contains(strings.TrimLeft(arg, "-"), "i") {
@@ -337,6 +340,77 @@ func hasDynamicArrayTargetEvaluation(statements []string) bool {
 		}
 	}
 	return false
+}
+
+// Bash and zsh give these variables the integer attribute, so an assignment
+// is evaluated as arithmetic immediately: a single-quoted `a[$(payload)]`
+// value expands and `1/0` aborts the line. Plain integer literals stay quiet.
+var integerShellVariables = map[string]bool{
+	"OPTIND": true, "OPTERR": true, "RANDOM": true, "SECONDS": true, "LINENO": true, "SHLVL": true, "HISTCMD": true,
+	"TMOUT": true, "COLUMNS": true, "LINES": true, "HISTSIZE": true, "HISTFILESIZE": true, "SAVEHIST": true, "MAILCHECK": true,
+	"REPORTTIME": true, "REPORTMEMORY": true, "DIRSTACKSIZE": true, "KEYTIMEOUT": true, "LISTMAX": true, "PERIOD": true,
+	"LOGCHECK": true, "BAUD": true, "UID": true, "EUID": true, "GID": true, "EGID": true, "PPID": true,
+}
+
+func hasIntegerVariableArithmetic(statements []string) bool {
+	for _, segment := range statements {
+		words, ok := splitShellWords(strings.TrimSpace(segment))
+		if !ok || len(words) == 0 {
+			continue
+		}
+		for _, word := range words {
+			if !isEnvAssignment(word) {
+				break
+			}
+			if integerAssignmentIsDynamic(word) {
+				return true
+			}
+		}
+		resolved, cmd, unresolved := unwrapCommandWords(words)
+		if unresolved || len(resolved) < 2 {
+			continue
+		}
+		switch cmd {
+		case "export", "readonly", "declare", "typeset", "local":
+			for _, arg := range resolved[1:] {
+				if !strings.HasPrefix(arg, "-") && integerAssignmentIsDynamic(arg) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func integerAssignmentIsDynamic(word string) bool {
+	eq := strings.IndexByte(word, '=')
+	if eq <= 0 {
+		return false
+	}
+	name := strings.TrimSuffix(word[:eq], "+")
+	if bracket := strings.IndexByte(name, '['); bracket >= 0 {
+		name = name[:bracket]
+	}
+	return integerShellVariables[name] && !isIntegerLiteral(word[eq+1:])
+}
+
+func isIntegerLiteral(value string) bool {
+	value = strings.Trim(value, `"'`)
+	if value == "" {
+		return true
+	}
+	if value[0] == '+' || value[0] == '-' {
+		value = value[1:]
+	}
+	if value == "" {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func variableTargetArgumentIsDynamic(arg string) bool {

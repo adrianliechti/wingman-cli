@@ -176,14 +176,25 @@ func (a *App) streamCells(width int) []string {
 // status-rich composer and popup or footer pinned at the bottom. Queued input
 // previews live at the tail of the scrollable chat until their turns start.
 func (a *App) render() {
-	width, height := a.term.Size()
-	if width <= 0 || height <= 0 {
+	termWidth, height := a.term.Size()
+	if termWidth <= 0 || height <= 0 {
 		return
 	}
 
 	if a.overlay != nil {
-		a.term.RenderAlt(a.overlay.Render(width, height), nil)
+		a.term.RenderAlt(a.overlay.Render(termWidth, height), nil)
 		return
+	}
+
+	// The chat rewraps whenever the diff pane appears or disappears.
+	panelWidth := a.diffPanelWidth(termWidth)
+	if showing := panelWidth > 0; showing != a.diffPanelShowing {
+		a.diffPanelShowing = showing
+		a.rebuildChat()
+	}
+	width := termWidth
+	if panelWidth > 0 {
+		width = termWidth - panelWidth - 2
 	}
 
 	// Selection mode: the popup is the only live element — the composer and
@@ -309,6 +320,17 @@ func (a *App) render() {
 			if keep > 0 {
 				frame[idx] = ansi.Pad(ansi.Truncate(frame[idx], keep, "…"), keep) + " " + indicator
 			}
+		}
+	}
+
+	if panelWidth > 0 {
+		divider := colored(theme.Default.BrBlack, "│")
+		panel := a.diffPanel.render(panelWidth, height)
+		for len(frame) < height {
+			frame = append(frame, "")
+		}
+		for i := range height {
+			frame[i] = ansi.Pad(ansi.Truncate(frame[i], width, "…"), width) + " " + divider + panel[i]
 		}
 	}
 

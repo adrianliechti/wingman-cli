@@ -590,7 +590,7 @@ Toggle between modes using `Tab` or the explicit `/plan` and `/agent` commands.
 | `/plan` | Enter planning mode |
 | `/agent` | Return to execution mode |
 | `/problems` | Show LSP diagnostics for the workspace |
-| `/diff` | Show working tree changes |
+| `/diff` | Show working tree changes; on wide terminals toggles a live diff pane beside the chat |
 | `/resume` | Resume the most recent saved session |
 | `/clear` | Clear chat history |
 | `/quit` | Exit application |
