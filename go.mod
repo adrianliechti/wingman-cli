@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2
-	github.com/adrianliechti/go-kernel v0.0.0-20260826171614-5d85ef129006
+	github.com/adrianliechti/go-extract v0.0.0-20260906123702-488d5cedbae8
 	github.com/adrianliechti/go-shell v0.1.7
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/bmatcuk/doublestar/v4 v4.10.0

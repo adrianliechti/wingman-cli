@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	kernel "github.com/adrianliechti/go-kernel"
+	"github.com/adrianliechti/go-extract"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
@@ -53,12 +53,12 @@ func readDocument(
 		return tool.Result{}, false, nil
 	}
 
-	doc, err := kernel.Extract(ctx, kernel.Input{
+	doc, err := extract.Extract(ctx, extract.Input{
 		Name: filepath.Base(inputPath),
 		Data: data,
-	}, kernel.Options{DiscardAttachmentData: true})
+	}, extract.Options{DiscardAttachmentData: true})
 	if err != nil {
-		if errors.Is(err, kernel.ErrUnsupportedFormat) {
+		if errors.Is(err, extract.ErrUnsupportedFormat) {
 			if !explicit {
 				return tool.Result{}, false, nil
 			}
@@ -89,8 +89,8 @@ func readDocument(
 	return tool.Result{Content: content, Metadata: metadata}, true, nil
 }
 
-func documentExtractionWarning(doc *kernel.Document) string {
-	if doc == nil || doc.Format != kernel.FormatPDF {
+func documentExtractionWarning(doc *extract.Document) string {
+	if doc == nil || doc.Format != extract.FormatPDF {
 		return ""
 	}
 	pages := doc.Metadata["pages_needing_ocr"]
