@@ -27,7 +27,7 @@ print(work(41))
 	}
 
 	registry := NewRegistry()
-	manager := dap.NewManager(root, registry.Descriptors()...)
+	manager := dap.NewManager(root, liveManagedTools(t), registry.Descriptors()...)
 	defer manager.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -103,7 +103,7 @@ func TestLiveViteLaunchStartsPackageScript(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile.Configuration["runtimeArgs"] = []string{"--headless=new"}
-	manager := dap.NewManager(root, registry.Descriptors()...)
+	manager := dap.NewManager(root, liveManagedTools(t), registry.Descriptors()...)
 	defer manager.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -166,7 +166,7 @@ setInterval(() => {}, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := dap.NewManager(root, registry.Descriptors()...)
+	manager := dap.NewManager(root, liveManagedTools(t), registry.Descriptors()...)
 	defer manager.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -198,7 +198,8 @@ setInterval(() => {}, 1000)
 }
 
 func liveJavaScriptAdapterAvailable() bool {
-	return absoluteCommandPath(newJavaScriptAdapter().command) != ""
+	tools, _ := devtools.New()
+	return tools.Resolve("js-debug-adapter") != ""
 }
 
 func sameFile(first, second string) bool {
@@ -214,13 +215,23 @@ func failedSessionOutput(manager *dap.Manager) string {
 	return ""
 }
 
-func liveAdapterResolver(t *testing.T, ctx context.Context, root, command string) func(string) string {
+func liveManagedTools(t *testing.T) *devtools.Manager {
+	t.Helper()
+	tools, err := devtools.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tools
+}
+
+func liveAdapterResolver(t *testing.T, ctx context.Context, root, command string) *devtools.Manager {
 	t.Helper()
 	if os.Getenv("WINGMAN_LIVE_DEVTOOLS") == "" {
-		if absoluteCommandPath(command) == "" {
-			t.Skipf("%s is not installed; also set WINGMAN_LIVE_DEVTOOLS=1 to provision it", command)
+		tools := liveManagedTools(t)
+		if tools.Resolve(command) == "" {
+			t.Skipf("managed %s is not installed; also set WINGMAN_LIVE_DEVTOOLS=1 to provision it", command)
 		}
-		return nil
+		return tools
 	}
 	t.Setenv("WINGMAN_HOME", filepath.Join(t.TempDir(), "wingman"))
 	tools, err := devtools.New()
@@ -235,7 +246,7 @@ func liveAdapterResolver(t *testing.T, ctx context.Context, root, command string
 	if tools.Resolve(command) == "" {
 		t.Fatalf("managed %s was not installed", command)
 	}
-	return tools.Resolve
+	return tools
 }
 
 func TestLiveCodeLLDBAutoBuildLaunch(t *testing.T) {
@@ -290,11 +301,8 @@ fn main() {
 		t.Fatalf("unbuilt project did not plan an automatic build: %+v", profile.PreLaunch)
 	}
 
-	manager := dap.NewManager(root, registry.Descriptors()...)
+	manager := dap.NewManager(root, resolver, registry.Descriptors()...)
 	defer manager.Close()
-	if resolver != nil {
-		manager.SetCommandResolver(resolver)
-	}
 	session, err := manager.Start(ctx, dap.StartOptions{
 		Adapter:       "codelldb",
 		ProjectDir:    ".",
@@ -374,11 +382,8 @@ static int Work(int input)
 		t.Fatalf("unbuilt project did not plan an automatic build: %+v", profile.PreLaunch)
 	}
 
-	manager := dap.NewManager(root, registry.Descriptors()...)
+	manager := dap.NewManager(root, resolver, registry.Descriptors()...)
 	defer manager.Close()
-	if resolver != nil {
-		manager.SetCommandResolver(resolver)
-	}
 	session, err := manager.Start(ctx, dap.StartOptions{
 		Adapter:       "netcoredbg",
 		ProjectDir:    ".",

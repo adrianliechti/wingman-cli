@@ -30,37 +30,6 @@ func TestResolveProjectWalksToWorkspaceRoot(t *testing.T) {
 	}
 }
 
-func TestResolverUsesProjectManagedSystemPrecedence(t *testing.T) {
-	root := t.TempDir()
-	project := filepath.Join(root, "app")
-	if err := os.MkdirAll(project, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	name := Candidates(runtime.GOOS, "example-tool")[0]
-	projectCommand := filepath.Join(project, "node_modules", ".bin", name)
-	if err := os.MkdirAll(filepath.Dir(projectCommand), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(projectCommand, []byte("tool"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	resolver := Resolver{
-		Workspace: root,
-		Lookup:    func(string) string { return filepath.Join(root, "system", name) },
-		Managed:   func(string) string { return filepath.Join(root, "managed", name) },
-	}
-	got := resolver.Candidates([]string{project}, "example-tool")
-	wantSources := []Source{SourceProject, SourceManaged, SourceSystem}
-	if len(got) != len(wantSources) {
-		t.Fatalf("candidates = %#v", got)
-	}
-	for index, source := range wantSources {
-		if got[index].Source != source {
-			t.Fatalf("candidate sources = %#v, want %v", got, wantSources)
-		}
-	}
-}
-
 func TestRunnableRejectsMissingShebangInterpreter(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows launchers do not use shebangs")

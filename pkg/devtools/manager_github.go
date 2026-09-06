@@ -34,15 +34,15 @@ const (
 var githubRecipes = []recipe{
 	{
 		ID: "vscode-js-debug", Label: "JavaScript debugger", Kind: installerGitHub,
-		Commands: []string{"js-debug-adapter"}, BestEffort: true,
+		Commands: []string{"js-debug-adapter"},
 	},
 	{
 		ID: "codelldb", Label: "Rust debugger", Kind: installerGitHub,
-		Commands: []string{"codelldb"}, BestEffort: true,
+		Commands: []string{"codelldb"},
 	},
 	{
 		ID: "netcoredbg", Label: ".NET debugger", Kind: installerGitHub,
-		Commands: []string{"netcoredbg"}, BestEffort: true,
+		Commands: []string{"netcoredbg"},
 	},
 }
 
@@ -75,9 +75,8 @@ type githubInstallSpec struct {
 	executable string
 }
 
-// Direct-download recipes are intentionally isolated here. Package manager
-// recipes never call this path, and failures remain non-fatal because every
-// curated GitHub recipe is explicitly best-effort.
+// Direct-download recipes are isolated here and verify official release
+// assets before replacing an installation, just like package-manager updates.
 func (m *Manager) installGitHub(ctx context.Context, item recipe, stage string) (string, error) {
 	spec, err := githubSpec(item.ID, runtime.GOOS, runtime.GOARCH)
 	if err != nil {

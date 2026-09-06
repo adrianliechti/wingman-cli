@@ -357,7 +357,7 @@ func TestSessionFinishSuppressesExpectedDisconnectError(t *testing.T) {
 
 func TestBreakpointValidationDoesNotMutateStoredState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "main.go")
-	manager := NewManager(t.TempDir())
+	manager := NewManager(t.TempDir(), nil)
 	if _, err := manager.SetBreakpoints(context.Background(), path, []SourceBreakpoint{{Line: 0}}); err == nil {
 		t.Fatal("manager accepted an invalid breakpoint")
 	}

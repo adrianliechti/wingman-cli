@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -12,71 +11,10 @@ import (
 	"github.com/adrianliechti/wingman-agent/internal/process"
 )
 
-// Source identifies where a command was found. Project tools remain
-// authoritative, Wingman's package-managed tools provide the predictable
-// default, and system tools are the final fallback.
-type Source string
-
-const (
-	SourceProject Source = "project"
-	SourceSystem  Source = "system"
-	SourceManaged Source = "managed"
-)
-
-type Resolution struct {
-	Path    string
-	Source  Source
-	Project string
-}
-
-// Resolver applies the command precedence shared by LSP, DAP, and managed
-// tool planning. Lookup and Managed are injectable so callers can cache or
-// test discovery without changing the ordering rules.
-type Resolver struct {
-	Workspace string
-	Lookup    func(string) string
-	Managed   func(string) string
-}
-
-func (r Resolver) Candidates(projects []string, command string) []Resolution {
-	var result []Resolution
-	seen := make(map[string]bool)
-	add := func(path string, source Source, project string) {
-		if path == "" {
-			return
-		}
-		path = filepath.Clean(path)
-		if seen[path] {
-			return
-		}
-		seen[path] = true
-		result = append(result, Resolution{Path: path, Source: source, Project: project})
-	}
-
-	if r.Workspace != "" {
-		for _, project := range projects {
-			add(ResolveProject(project, r.Workspace, command), SourceProject, filepath.Clean(project))
-		}
-	}
-
-	if r.Managed != nil {
-		add(r.Managed(command), SourceManaged, "")
-	}
-	lookup := r.Lookup
-	if lookup == nil {
-		lookup = Resolve
-	}
-	add(lookup(command), SourceSystem, "")
-	return result
-}
-
-func (r Resolver) Resolve(projects []string, command string, accept func(string) bool) Resolution {
-	for _, candidate := range r.Candidates(projects, command) {
-		if accept == nil || accept(candidate.Path) {
-			return candidate
-		}
-	}
-	return Resolution{}
+// ManagedTools resolves commands from Wingman's managed installations.
+// Missing tools return an empty path and never fall back to another copy.
+type ManagedTools interface {
+	Resolve(string) string
 }
 
 // ProbeExecutes requests only a successful --version run instead of a version

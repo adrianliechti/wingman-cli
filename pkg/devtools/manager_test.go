@@ -172,7 +172,218 @@ func TestUpdateKeepsCurrentInstallationWhenInstallerFails(t *testing.T) {
 	}
 }
 
-func TestUpdateSkipsManagedInstallWhenEveryProjectHasAProjectTool(t *testing.T) {
+func TestStatusChecksToolsWithoutInstallation(t *testing.T) {
+	for _, source := range []string{"missing", "managed", "project", "system"} {
+		t.Run(source, func(t *testing.T) {
+			t.Setenv("WINGMAN_MANAGED_TOOLS", "on")
+			root := filepath.Join(t.TempDir(), "tools")
+			workspace := t.TempDir()
+			manager := newManager(root)
+			manager.look = func(string) (string, error) { return "", exec.ErrNotFound }
+			manager.install = func(context.Context, recipe, string) (string, error) {
+				t.Fatal("status checking or reusing an installed debugger invoked the installer")
+				return "", nil
+			}
+			switch source {
+			case "managed":
+				if err := writeTestCommand(filepath.Join(root, "delve"), "dlv"); err != nil {
+					t.Fatal(err)
+				}
+			case "project":
+				if err := writeTestCommand(filepath.Join(workspace, ".venv"), "dlv"); err != nil {
+					t.Fatal(err)
+				}
+			case "system":
+				system := t.TempDir()
+				if err := writeTestCommand(system, "dlv"); err != nil {
+					t.Fatal(err)
+				}
+				manager.look = func(string) (string, error) { return resolveInstalledCommand(system, "dlv"), nil }
+			}
+			requirements := []Requirement{{Alternatives: []string{"dlv"}, Workspace: workspace}}
+			statuses, err := manager.Status(context.Background(), requirements)
+			if err != nil || len(statuses) != 1 {
+				t.Fatalf("Status = %+v, %v", statuses, err)
+			}
+			if status := statuses[0]; status.Tool != "delve" || status.Label != "Go debugger" || status.Installed != (source == "managed") || !status.Installable {
+				t.Fatalf("tool status = %+v", status)
+			}
+			if source != "managed" {
+				if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("status check changed tools directory: %v", err)
+				}
+				t.Setenv("WINGMAN_MANAGED_TOOLS", "off")
+				statuses, err := manager.Status(context.Background(), requirements)
+				if err != nil || statuses[0].Installable {
+					t.Fatalf("disabled status = %+v, %v", statuses, err)
+				}
+			}
+		})
+	}
+}
+
+func TestUpdateValidatesVersionBeforeReplacingInstalledTool(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test versions use POSIX scripts")
+	}
+	manager := newManager(t.TempDir())
+	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	manager.now = func() time.Time { return now }
+	item := manager.byCommand["tsc"]
+	root := filepath.Join(manager.root, item.ID)
+	writeVersion := func(root, version string) error {
+		for _, command := range item.Commands {
+			if err := writeTestCommand(root, command); err != nil {
+				return err
+			}
+		}
+		return os.WriteFile(filepath.Join(root, "bin", "tsc"), []byte("#!/bin/sh\nprintf 'Version "+version+"\\n'\n"), 0o755)
+	}
+	if err := writeVersion(root, "7.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.writeStatus(root, "working-version"); err != nil {
+		t.Fatal(err)
+	}
+	checkedAt := now
+	now = now.Add(2 * updateInterval)
+	manager.install = func(_ context.Context, _ recipe, stage string) (string, error) {
+		return "incompatible-version", writeVersion(stage, "6.0.0")
+	}
+	requirements := []Requirement{{Alternatives: []string{"tsc"}, MinimumMajorVersions: map[string]int{"tsc": 7}}}
+	if changed, err := manager.Update(context.Background(), requirements); changed || err == nil || IsUnavailable(err) {
+		t.Fatalf("incompatible update = %v, %v", changed, err)
+	}
+	if !requirements[0].installed(context.Background(), manager.Resolve) {
+		t.Fatal("working tool was replaced by incompatible update")
+	}
+	if stamp, version, err := readStatus(root); err != nil || !stamp.Equal(checkedAt) || version != "working-version" {
+		t.Fatalf("failed update changed active status: %v, %q, %v", stamp, version, err)
+	}
+}
+
+func TestCancelledInstallDoesNotActivateCompletedStage(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existing=%v", existing), func(t *testing.T) {
+			manager := newManager(t.TempDir())
+			root := filepath.Join(manager.root, "gopls")
+			if existing {
+				if err := writeTestCommand(root, "gopls"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(root, "original"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			manager.install = func(_ context.Context, _ recipe, stage string) (string, error) {
+				if err := writeTestCommand(stage, "gopls"); err != nil {
+					return "", err
+				}
+				cancel()
+				return "new-version", nil
+			}
+			if changed, err := manager.Update(ctx, []Requirement{{Alternatives: []string{"gopls"}}}); changed || !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancelled completed install = %v, %v", changed, err)
+			}
+			if existing {
+				if _, err := os.Stat(filepath.Join(root, "original")); err != nil {
+					t.Fatalf("original installation was replaced: %v", err)
+				}
+			} else if manager.Resolve("gopls") != "" {
+				t.Fatal("cancelled installation was activated")
+			}
+			if _, err := os.Stat(manager.retryPath(manager.byCommand["gopls"])); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("cancellation created retry backoff: %v", err)
+			}
+		})
+	}
+}
+
+func TestUpdateOnDemandRechecksConsentAfterWaiting(t *testing.T) {
+	manager := newManager(t.TempDir())
+	if err := writeTestCommand(filepath.Join(manager.root, "delve"), "dlv"); err != nil {
+		t.Fatal(err)
+	}
+	requirements := []Requirement{{Alternatives: []string{"dlv"}}}
+	statuses, err := manager.Status(context.Background(), requirements)
+	if err != nil || len(statuses) != 1 || !statuses[0].Installed {
+		t.Fatalf("initial status = %+v, %v", statuses, err)
+	}
+	manager.install = func(context.Context, recipe, string) (string, error) {
+		t.Error("installed missing debugger without confirmation")
+		return "", errors.New("unexpected install")
+	}
+	manager.updates <- struct{}{}
+	result := make(chan error, 1)
+	go func() {
+		_, err := manager.UpdateOnDemand(context.Background(), requirements, false)
+		result <- err
+	}()
+	removeErr := os.Remove(manager.Resolve("dlv"))
+	<-manager.updates
+	if removeErr != nil {
+		t.Fatal(removeErr)
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrInstallRequired) {
+			t.Fatalf("queued update = %v, want installation confirmation", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("queued update did not finish")
+	}
+}
+
+func TestUpdateOnDemandRefreshesManagedDebuggerAndRetriesFailures(t *testing.T) {
+	manager := newManager(t.TempDir())
+	manager.look = func(string) (string, error) { return "", exec.ErrNotFound }
+	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+	manager.now = func() time.Time { return now }
+	attempts := 0
+	manager.install = func(_ context.Context, item recipe, stage string) (string, error) {
+		attempts++
+		if attempts == 1 {
+			return "", errors.New("download failed")
+		}
+		return "", writeTestCommand(stage, "dlv")
+	}
+	requirements := []Requirement{{Alternatives: []string{"dlv"}}}
+	if changed, err := manager.UpdateOnDemand(context.Background(), requirements, true); changed || !IsUnavailable(err) {
+		t.Fatalf("failed install = %v, %v", changed, err)
+	}
+	if changed, err := manager.UpdateOnDemand(context.Background(), requirements, true); !changed || err != nil {
+		t.Fatalf("immediate retry = %v, %v", changed, err)
+	}
+	if manager.Resolve("dlv") == "" {
+		t.Fatal("installed debugger was not resolved")
+	}
+	if changed, err := manager.UpdateOnDemand(context.Background(), requirements, true); changed || err != nil {
+		t.Fatalf("reuse fresh debugger = %v, %v", changed, err)
+	}
+	if attempts != 2 {
+		t.Fatalf("install attempts = %d, want 2", attempts)
+	}
+	now = now.Add(2 * updateInterval)
+	var phases []ProgressPhase
+	if changed, err := manager.UpdateOnDemand(context.Background(), requirements, false, func(progress Progress) { phases = append(phases, progress.Phase) }); !changed || err != nil {
+		t.Fatalf("refresh debugger = %v, %v", changed, err)
+	}
+	if attempts != 3 || !reflect.DeepEqual(phases, []ProgressPhase{ProgressChecking, ProgressUpdating}) {
+		t.Fatalf("update attempts = %d, phases = %v", attempts, phases)
+	}
+	now = now.Add(updateInterval)
+	manager.install = func(context.Context, recipe, string) (string, error) { return "", errors.New("update failed") }
+	if changed, err := manager.UpdateOnDemand(context.Background(), requirements, true); changed || err == nil || IsUnavailable(err) {
+		t.Fatalf("failed refresh = %v, %v", changed, err)
+	}
+	if manager.Resolve("dlv") == "" {
+		t.Fatal("failed update removed the working managed debugger")
+	}
+}
+
+func TestUpdateInstallsManagedToolEvenWhenEveryProjectHasAProjectTool(t *testing.T) {
 	root := t.TempDir()
 	workspace := t.TempDir()
 	projects := []string{filepath.Join(workspace, "one"), filepath.Join(workspace, "two")}
@@ -188,19 +399,24 @@ func TestUpdateSkipsManagedInstallWhenEveryProjectHasAProjectTool(t *testing.T) 
 	manager := newManager(root)
 	manager.look = func(string) (string, error) { return "", exec.ErrNotFound }
 	installCount := 0
-	manager.install = func(context.Context, recipe, string) (string, error) {
+	manager.install = func(_ context.Context, item recipe, stage string) (string, error) {
 		installCount++
+		for _, command := range item.Commands {
+			if err := writeTestCommand(stage, command); err != nil {
+				return "", err
+			}
+		}
 		return "", nil
 	}
 	changed, err := manager.Update(context.Background(), []Requirement{{
 		Alternatives: []string{"typescript-language-server"}, Workspace: workspace, Projects: projects,
 	}})
-	if err != nil || changed || installCount != 0 {
+	if err != nil || !changed || installCount != 1 {
 		t.Fatalf("Update = %v, %v; installs = %d", changed, err, installCount)
 	}
 }
 
-func TestUpdateInstallsFallbackWhenOneProjectLacksProjectTool(t *testing.T) {
+func TestUpdateInstallsManagedToolForMultipleProjects(t *testing.T) {
 	root := t.TempDir()
 	workspace := t.TempDir()
 	projects := []string{filepath.Join(workspace, "one"), filepath.Join(workspace, "two")}
@@ -291,7 +507,7 @@ func TestUpdateRejectsProjectCommandBelowMinimumVersion(t *testing.T) {
 	}
 }
 
-func TestSystemFallbackMustRunForEveryProject(t *testing.T) {
+func TestManagedToolMustRunForEveryProject(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test helper uses a POSIX script")
 	}
@@ -305,24 +521,40 @@ func TestSystemFallbackMustRunForEveryProject(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(projects[0], ".available"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	command := filepath.Join(t.TempDir(), "rust-analyzer")
+	manager := newManager(t.TempDir())
+	command := filepath.Join(manager.root, "rust-analyzer", "bin", "rust-analyzer")
+	if err := os.MkdirAll(filepath.Dir(command), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(command, []byte("#!/bin/sh\n[ -f .available ] || exit 1\nprintf 'rust-analyzer 1.0.0\\n'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	manager := newManager(t.TempDir())
-	manager.look = func(string) (string, error) { return command, nil }
 	requirement := Requirement{
 		Alternatives: []string{"rust-analyzer"}, Workspace: workspace, Projects: projects,
 		MinimumMajorVersions: map[string]int{"rust-analyzer": tooling.ProbeExecutes},
 	}
-	if manager.requirementAvailable(context.Background(), requirement, tooling.SourceSystem) {
-		t.Fatal("system fallback was accepted despite failing in one project")
+	if requirement.installed(context.Background(), manager.Resolve) {
+		t.Fatal("managed tool was accepted despite failing in one project")
 	}
-	if err := os.WriteFile(filepath.Join(projects[1], ".available"), nil, 0o644); err != nil {
+	if err := manager.writeStatus(filepath.Join(manager.root, "rust-analyzer"), "test-version"); err != nil {
 		t.Fatal(err)
 	}
-	if !manager.requirementAvailable(context.Background(), requirement, tooling.SourceSystem) {
-		t.Fatal("system fallback was rejected after succeeding in every project")
+	attempts := 0
+	manager.install = func(context.Context, recipe, string) (string, error) {
+		attempts++
+		if err := os.WriteFile(filepath.Join(projects[1], ".available"), nil, 0o644); err != nil {
+			return "", err
+		}
+		return "", errUpToDate
+	}
+	if changed, err := manager.Update(context.Background(), []Requirement{requirement}); err != nil || !changed {
+		t.Fatalf("repair freshly checked tool after project toolchain changed = %v, %v", changed, err)
+	}
+	if !requirement.installed(context.Background(), manager.Resolve) {
+		t.Fatal("managed tool was rejected after succeeding in every project")
+	}
+	if changed, err := manager.Update(context.Background(), []Requirement{requirement}); err != nil || changed || attempts != 1 {
+		t.Fatalf("reuse repaired tool = %v, %v, attempts %d", changed, err, attempts)
 	}
 }
 
@@ -567,6 +799,48 @@ func TestActivatePendingUpdateBeforeToolsStart(t *testing.T) {
 	}
 }
 
+func TestSuccessfulUpdateSupersedesPendingUpdate(t *testing.T) {
+	manager := newManager(t.TempDir())
+	pending := filepath.Join(manager.root, ".gopls-pending")
+	for _, root := range []string{filepath.Join(manager.root, "gopls"), pending} {
+		if err := writeTestCommand(root, "gopls"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manager.install = func(_ context.Context, _ recipe, stage string) (string, error) {
+		if err := writeTestCommand(stage, "gopls"); err != nil {
+			return "", err
+		}
+		return "", os.WriteFile(resolveInstalledCommand(stage, "gopls"), []byte("latest"), 0o755)
+	}
+	changed, err := manager.Update(context.Background(), []Requirement{{Alternatives: []string{"gopls"}}})
+	if err != nil || !changed {
+		t.Fatalf("update = %t, %v", changed, err)
+	}
+	manager.activatePendingUpdates()
+	active, err := os.ReadFile(manager.Resolve("gopls"))
+	if err != nil || string(active) != "latest" {
+		t.Fatalf("restart replaced the latest installation: %q, %v", active, err)
+	}
+	if _, err := os.Stat(pending); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("superseded pending update remains: %v", err)
+	}
+}
+
+func TestIncompletePendingUpdatePreservesInstalledTool(t *testing.T) {
+	manager := newManager(t.TempDir())
+	if err := writeTestCommand(filepath.Join(manager.root, "gopls"), "gopls"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(manager.root, ".gopls-pending"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager.activatePendingUpdates()
+	if manager.Resolve("gopls") == "" {
+		t.Fatal("incomplete pending update replaced the installed tool")
+	}
+}
+
 func TestRecoverInterruptedUpdateRestoresNewestBackup(t *testing.T) {
 	root := t.TempDir()
 	oldTime := time.Now().Add(-time.Hour)
@@ -684,7 +958,7 @@ func TestCatalogHasUserFacingLabelsAndUniqueCommands(t *testing.T) {
 	}
 }
 
-func TestProjectVirtualEnvironmentSuppressesManagedPythonInstall(t *testing.T) {
+func TestManagedPythonInstallLeavesProjectVirtualEnvironmentUntouched(t *testing.T) {
 	workspace := t.TempDir()
 	command := filepath.Join(workspace, ".venv", "bin", "debugpy-adapter")
 	if runtime.GOOS == "windows" {
@@ -699,14 +973,13 @@ func TestProjectVirtualEnvironmentSuppressesManagedPythonInstall(t *testing.T) {
 
 	manager := newManager(t.TempDir())
 	manager.look = func(string) (string, error) { return "", exec.ErrNotFound }
-	manager.install = func(context.Context, recipe, string) (string, error) {
-		t.Fatal("managed installer ran despite project .venv adapter")
-		return "", nil
+	manager.install = func(_ context.Context, _ recipe, stage string) (string, error) {
+		return "", writeTestCommand(stage, "debugpy-adapter")
 	}
 	changed, err := manager.Update(context.Background(), []Requirement{{
 		Alternatives: []string{"debugpy-adapter"}, Workspace: workspace, Projects: []string{workspace},
 	}})
-	if err != nil || changed {
+	if err != nil || !changed {
 		t.Fatalf("Update = %v, %v", changed, err)
 	}
 	if contents, err := os.ReadFile(command); err != nil || string(contents) != "project adapter" {
@@ -736,7 +1009,7 @@ func TestSystemToolDoesNotSuppressManagedPackage(t *testing.T) {
 	}
 }
 
-func TestSystemFallbackPreventsUnavailableInstallError(t *testing.T) {
+func TestSystemToolDoesNotHideUnavailableManagedInstall(t *testing.T) {
 	workspace := t.TempDir()
 	manager := newManager(t.TempDir())
 	manager.look = func(command string) (string, error) {
@@ -751,8 +1024,8 @@ func TestSystemFallbackPreventsUnavailableInstallError(t *testing.T) {
 	if changed || err == nil {
 		t.Fatalf("Update = %v, %v", changed, err)
 	}
-	if IsUnavailable(err) {
-		t.Fatalf("usable system fallback was marked unavailable: %v", err)
+	if !IsUnavailable(err) {
+		t.Fatalf("missing managed tool was not marked unavailable: %v", err)
 	}
 }
 

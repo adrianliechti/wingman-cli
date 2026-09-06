@@ -46,8 +46,8 @@ func Find(directories []string, command string) string {
 	return ""
 }
 
-// Runnable also validates the interpreter of a script launcher. This prevents
-// a stale project or system shim from hiding a working managed fallback.
+// Runnable also validates the interpreter of a script launcher so a broken
+// script is not treated as an available command.
 func Runnable(path string) bool {
 	if !Executable(path) || runtime.GOOS == "windows" {
 		return Executable(path)

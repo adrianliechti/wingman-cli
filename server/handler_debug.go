@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 	"github.com/adrianliechti/wingman-agent/pkg/debugadapter"
+	"github.com/adrianliechti/wingman-agent/pkg/devtools"
 	"github.com/adrianliechti/wingman-agent/pkg/terminal"
 )
 
@@ -112,6 +114,16 @@ type debugPlanRequest struct {
 	Action      string `json:"action"`
 	TargetID    string `json:"target_id"`
 	CurrentPath string `json:"current_path"`
+	Install     bool   `json:"install,omitempty"`
+}
+
+type debugPlanEvent struct {
+	Type     string                `json:"type"`
+	Progress *devtools.Progress    `json:"progress,omitempty"`
+	Plan     *debugLaunchPlan      `json:"plan,omitempty"`
+	Error    string                `json:"error,omitempty"`
+	Tools    []devtools.ToolStatus `json:"tools,omitempty"`
+	Warning  string                `json:"warning,omitempty"`
 }
 
 func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
@@ -133,26 +145,6 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "target_id and current_path are required", http.StatusBadRequest)
 		return
 	}
-	var adapterInfo []dap.AdapterInfo
-	err := s.workspace.WithDAPManager(func(manager *dap.Manager) error {
-		values, err := manager.Adapters(r.Context())
-		adapterInfo = values
-		return err
-	})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
-	}
-	if len(adapterInfo) == 0 {
-		var missing []dap.AdapterRequirement
-		_ = s.workspace.WithDAPManager(func(manager *dap.Manager) error {
-			missing, _ = manager.MissingRequirements(r.Context())
-			return nil
-		})
-		http.Error(w, dap.MissingAdapterError(missing).Error(), http.StatusNotFound)
-		return
-	}
-
 	currentFile, ok := s.resolveExistingRegularFile(w, request.CurrentPath)
 	if !ok {
 		return
@@ -174,14 +166,123 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "debug target is no longer available", http.StatusBadRequest)
 		return
 	}
+
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	if s.ctx != nil {
+		stop := context.AfterFunc(s.ctx, cancel)
+		defer stop()
+	}
+	streaming := strings.Contains(r.Header.Get("Accept"), "application/x-ndjson")
+	encoder := json.NewEncoder(w)
+	controller := http.NewResponseController(w)
+	emit := func(event debugPlanEvent) {
+		if !streaming {
+			writeJSON(w, event)
+			return
+		}
+		if err := encoder.Encode(event); err != nil {
+			cancel()
+			return
+		}
+		if err := controller.Flush(); err != nil {
+			cancel()
+		}
+	}
+	fail := func(err error, status int) {
+		if streaming {
+			emit(debugPlanEvent{Type: "error", Error: err.Error()})
+		} else {
+			http.Error(w, err.Error(), status)
+		}
+	}
+	if streaming {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Accel-Buffering", "no")
+		if err := controller.Flush(); err != nil {
+			return
+		}
+	}
+	statuses, err := s.workspace.DebugToolStatus(ctx, selected.Language)
+	if err != nil {
+		fail(err, http.StatusServiceUnavailable)
+		return
+	}
+	missing := slices.ContainsFunc(statuses, func(status devtools.ToolStatus) bool { return !status.Installed })
+	if missing && !request.Install {
+		emit(debugPlanEvent{Type: "installation_required", Tools: statuses})
+		return
+	}
+	if streaming {
+		emit(debugPlanEvent{Type: "tools", Tools: statuses})
+	}
+	if slices.ContainsFunc(statuses, func(status devtools.ToolStatus) bool { return !status.Installed && !status.Installable }) {
+		fail(errors.New("managed debugger installation is disabled or unavailable; enable managed tool installation and retry"), http.StatusServiceUnavailable)
+		return
+	}
+	previousTool := ""
+	changed, installErr := s.workspace.UpdateDebugTools(ctx, selected.Language, request.Install, func(progress devtools.Progress) {
+		if streaming {
+			// A completed dependency should show its installed state while
+			// setup continues with the next tool (for example Java's host).
+			if progress.Phase == devtools.ProgressChecking && previousTool != "" {
+				if snapshot, err := s.workspace.DebugToolStatus(ctx, selected.Language); err == nil {
+					emit(debugPlanEvent{Type: "tools", Tools: snapshot})
+				}
+			}
+			previousTool = progress.Tool
+			emit(debugPlanEvent{Type: "progress", Progress: &progress})
+		}
+	})
+	if changed {
+		s.broadcast(Frame{Type: EvtCapabilitiesChanged})
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	if errors.Is(installErr, dap.ErrActiveSession) || errors.Is(installErr, dap.ErrBusy) {
+		fail(installErr, http.StatusConflict)
+		return
+	}
+	statuses, err = s.workspace.DebugToolStatus(ctx, selected.Language)
+	if err != nil {
+		fail(err, http.StatusServiceUnavailable)
+		return
+	}
+	missing = slices.ContainsFunc(statuses, func(status devtools.ToolStatus) bool { return !status.Installed })
+	if missing && !request.Install {
+		emit(debugPlanEvent{Type: "installation_required", Tools: statuses})
+		return
+	}
+	if streaming {
+		emit(debugPlanEvent{Type: "tools", Tools: statuses})
+	}
+	if missing {
+		if installErr == nil {
+			installErr = errors.New("required debugger tools are unavailable; retry installation")
+		}
+		fail(installErr, http.StatusServiceUnavailable)
+		return
+	}
+	var adapterInfo []dap.AdapterInfo
+	err = s.workspace.WithDAPManager(func(manager *dap.Manager) error {
+		values, err := manager.Adapters(ctx)
+		adapterInfo = values
+		return err
+	})
+	if err != nil {
+		fail(errors.Join(err, installErr), http.StatusServiceUnavailable)
+		return
+	}
 	adapterInfo, err = selectTargetDebugAdapter(adapterInfo, *selected)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		fail(errors.Join(err, installErr), http.StatusBadRequest)
 		return
 	}
 	projectDir, err := selectTargetDebugProject(s.workspace.RootPath, adapterInfo[0], *selected)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		fail(err, http.StatusBadRequest)
 		return
 	}
 	profile, err := s.workspace.DebugRegistry().Plan(adapterInfo[0].Language, debugadapter.Request{
@@ -189,7 +290,7 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 		Target: *selected,
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		fail(err, http.StatusUnprocessableEntity)
 		return
 	}
 	plan := debugLaunchPlan{
@@ -206,10 +307,18 @@ func (s *Server) handleDebugPlan(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if err := s.validateDebugPlan(&plan, adapterInfo); err != nil {
-		http.Error(w, "invalid deterministic debug configuration: "+err.Error(), http.StatusUnprocessableEntity)
+		fail(fmt.Errorf("invalid deterministic debug configuration: %w", err), http.StatusUnprocessableEntity)
 		return
 	}
-	writeJSON(w, plan)
+	if streaming {
+		warning := ""
+		if installErr != nil {
+			warning = "Could not update debugger tools. Using the installed version.\n" + installErr.Error()
+		}
+		emit(debugPlanEvent{Type: "plan", Plan: &plan, Warning: warning})
+	} else {
+		writeJSON(w, plan)
+	}
 }
 
 func (s *Server) handleDebugStart(w http.ResponseWriter, r *http.Request) {
@@ -236,7 +345,7 @@ func (s *Server) handleDebugStart(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		code := http.StatusBadRequest
-		if errors.Is(err, dap.ErrActiveSession) {
+		if errors.Is(err, dap.ErrActiveSession) || errors.Is(err, dap.ErrBusy) {
 			code = http.StatusConflict
 		}
 		http.Error(w, err.Error(), code)

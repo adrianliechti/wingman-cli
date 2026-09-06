@@ -35,20 +35,7 @@ type nodePackage struct {
 	Scripts        map[string]string `json:"scripts"`
 }
 
-type javaScriptAdapter struct {
-	command string
-	args    []string
-}
-
-func newJavaScriptAdapter() javaScriptAdapter {
-	if command := strings.TrimSpace(os.Getenv("WINGMAN_JS_DEBUG_ADAPTER")); command != "" {
-		return javaScriptAdapter{command: command, args: []string{"0", "127.0.0.1"}}
-	}
-	if server := explicitJavaScriptDebugServer(); server != "" {
-		return javaScriptAdapter{command: "node", args: []string{server, "0", "127.0.0.1"}}
-	}
-	return javaScriptAdapter{command: "js-debug-adapter", args: []string{"0", "127.0.0.1"}}
-}
+type javaScriptAdapter struct{}
 
 func (javaScriptAdapter) Language() string { return javascriptLanguage }
 
@@ -57,8 +44,8 @@ func (adapter javaScriptAdapter) Descriptor() dap.AdapterDescriptor {
 		Name:             "vscode-js-debug",
 		Language:         javascriptLanguage,
 		AdapterID:        "pwa-node",
-		Command:          adapter.command,
-		Args:             slices.Clone(adapter.args),
+		Command:          "js-debug-adapter",
+		Args:             []string{"0", "127.0.0.1"},
 		Transport:        dap.TransportTCP,
 		ReadyPrefix:      "Debug server listening at ",
 		TerminalStrategy: dap.TerminalRunInTerminal,
@@ -530,13 +517,4 @@ func localTypeScriptRuntime(request Request) string {
 		workspaceDir = projectDir
 	}
 	return tooling.ResolveProject(projectDir, workspaceDir, "tsx")
-}
-
-func explicitJavaScriptDebugServer() string {
-	if explicit := strings.TrimSpace(os.Getenv("WINGMAN_JS_DEBUG_SERVER")); explicit != "" {
-		if info, err := os.Stat(explicit); err == nil && !info.IsDir() {
-			return filepath.Clean(explicit)
-		}
-	}
-	return ""
 }

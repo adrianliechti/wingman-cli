@@ -3669,6 +3669,241 @@ test("uses accessible desktop panels and command navigation", async ({
 	).toEqual([]);
 });
 
+test("asks before installing the debugger and shows popup state and retry", async ({
+	page,
+}) => {
+	await writeFile(
+		workspacePath("completion.go"),
+		"package main\n\nfunc main() {}\n",
+	);
+	await page.route(/\/api\/capabilities$/, async (route) => {
+		const response = await route.fetch();
+		await route.fulfill({
+			json: { ...(await response.json()), debug: false, tab: false },
+		});
+	});
+	await page.addInitScript(() => {
+		const originalFetch = window.fetch.bind(window);
+		const state = window as typeof window & { debugInstallRequests: number };
+		state.debugInstallRequests = 0;
+		let installedPlan: unknown;
+		const tools = [
+			{
+				tool: "delve",
+				label: "Go debugger",
+				installed: false,
+				installable: true,
+			},
+		];
+		window.fetch = (input, init) => {
+			if (input !== "/api/debug/plan") return originalFetch(input, init);
+			const install = JSON.parse(init?.body as string).install;
+			if (!install && !installedPlan) {
+				return Promise.resolve(
+					new Response(
+						JSON.stringify({ type: "installation_required", tools }) + "\n",
+					),
+				);
+			}
+			if (install) state.debugInstallRequests++;
+			if (install && state.debugInstallRequests === 1) {
+				return Promise.resolve(
+					new Response(
+						JSON.stringify({
+							type: "error",
+							error:
+								"Debugger setup is already in progress. Try again when it finishes.",
+						}) + "\n",
+					),
+				);
+			}
+			const encoder = new TextEncoder();
+			return Promise.resolve(
+				new Response(
+					new ReadableStream({
+						start(controller) {
+							if (installedPlan)
+								controller.enqueue(
+									encoder.encode(
+										JSON.stringify({
+											type: "tools",
+											tools: tools.map((tool) => ({
+												...tool,
+												installed: true,
+											})),
+										}) + "\n",
+									),
+								);
+							controller.enqueue(
+								encoder.encode(
+									JSON.stringify({
+										type: "progress",
+										progress: {
+											tool: "delve",
+											label: "Go debugger",
+											phase: installedPlan ? "updating" : "installing",
+											current: 1,
+											total: 1,
+										},
+									}) + "\n",
+								),
+							);
+							window.addEventListener(
+								"finish-debug-setup",
+								(event) => {
+									let result = (event as CustomEvent).detail;
+									if (result.type === "update-failed")
+										result = {
+											type: "plan",
+											plan: installedPlan,
+											warning:
+												"Could not update debugger tools. Using the installed version.",
+										};
+									if (result.type === "plan") {
+										installedPlan = result.plan;
+										controller.enqueue(
+											encoder.encode(
+												JSON.stringify({
+													type: "tools",
+													tools: tools.map((tool) => ({
+														...tool,
+														installed: true,
+													})),
+												}) + "\n",
+											),
+										);
+									}
+									controller.enqueue(
+										encoder.encode(JSON.stringify(result) + "\n"),
+									);
+									controller.close();
+								},
+								{ once: true },
+							);
+						},
+					}),
+					{ headers: { "Content-Type": "application/x-ndjson" } },
+				),
+			);
+		};
+	});
+	await composer(page);
+	await page.getByRole("treeitem", { name: /completion\.go/ }).click();
+	await page
+		.locator(".codelens-decoration")
+		.getByText("Debug", { exact: true })
+		.click();
+	const popup = page.getByRole("dialog", { name: "Debug main" });
+	await expect(popup.getByText("Not installed", { exact: true })).toBeVisible();
+	await expect(
+		popup.getByRole("button", { name: "Install debugger" }),
+	).toBeVisible();
+	const installRequests = () =>
+		page.evaluate(
+			() =>
+				(window as typeof window & { debugInstallRequests: number })
+					.debugInstallRequests,
+		);
+	expect(await installRequests()).toBe(0);
+	await popup.getByRole("button", { name: "Cancel" }).click();
+	await expect(popup).toHaveCount(0);
+	await page
+		.locator(".codelens-decoration")
+		.getByText("Debug", { exact: true })
+		.click();
+	await expect(popup.getByText("Not installed", { exact: true })).toBeVisible();
+	expect(await installRequests()).toBe(0);
+	await popup.getByRole("button", { name: "Install debugger" }).click();
+	await expect(
+		popup.getByText(
+			"Debugger setup is already in progress. Try again when it finishes.",
+		),
+	).toBeVisible();
+	await expect(popup.getByText("Not installed", { exact: true })).toBeVisible();
+	await expect(
+		popup.getByText("Installation failed", { exact: true }),
+	).toHaveCount(0);
+	await popup.getByRole("button", { name: "Retry" }).click();
+	await expect(popup.getByRole("status")).toContainText(
+		"Installing Go debugger…",
+	);
+	await expect(
+		popup.getByRole("button", { name: "Start debugging" }),
+	).toHaveCount(0);
+	await page.evaluate(() =>
+		window.dispatchEvent(
+			new CustomEvent("finish-debug-setup", {
+				detail: { type: "error", error: "Debugger download failed" },
+			}),
+		),
+	);
+	await expect(popup.getByText("Debugger download failed")).toBeVisible();
+	await expect(
+		popup.getByText("Installation failed", { exact: true }),
+	).toBeVisible();
+	await popup.getByRole("button", { name: "Retry" }).click();
+	await expect(popup.getByRole("status")).toContainText(
+		"Installing Go debugger…",
+	);
+	await page.evaluate(() =>
+		window.dispatchEvent(
+			new CustomEvent("finish-debug-setup", {
+				detail: {
+					type: "plan",
+					plan: {
+						action: "debug",
+						title: "Debug main",
+						adapter: "delve",
+						terminal_available: true,
+						project_dir: ".",
+						request: "launch",
+						io: "output",
+						configuration: { program: "." },
+						breakpoints: [],
+						function_breakpoints: [],
+					},
+				},
+			}),
+		),
+	);
+	await expect(
+		popup.getByRole("button", { name: "Start debugging" }),
+	).toBeVisible();
+	await expect(popup.getByRole("status")).toHaveCount(0);
+	await expect(popup.getByText("Installed", { exact: true })).toBeVisible();
+	expect(await installRequests()).toBe(3);
+	await popup.getByRole("button", { name: "Cancel" }).click();
+	await expect(popup).toHaveCount(0);
+	await page
+		.locator(".codelens-decoration")
+		.getByText("Debug", { exact: true })
+		.click();
+	await expect(popup.getByRole("status")).toContainText(
+		"Updating Go debugger…",
+	);
+	await expect(popup.getByText("Updating…", { exact: true })).toBeVisible();
+	await page.evaluate(() =>
+		window.dispatchEvent(
+			new CustomEvent("finish-debug-setup", {
+				detail: { type: "update-failed" },
+			}),
+		),
+	);
+	await expect(popup.getByText("Installed", { exact: true })).toBeVisible();
+	await expect(
+		popup.getByText(
+			"Could not update debugger tools. Using the installed version.",
+		),
+	).toBeVisible();
+	await expect(
+		popup.getByRole("button", { name: "Start debugging" }),
+	).toBeVisible();
+	await expect(
+		popup.getByRole("button", { name: "Install debugger" }),
+	).toHaveCount(0);
+	expect(await installRequests()).toBe(3);
+});
+
 test("stops the active debugger when the Debug tab closes", async ({
 	page,
 }) => {

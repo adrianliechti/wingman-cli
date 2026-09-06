@@ -30,17 +30,6 @@ var (
 
 type javaAdapter struct {
 	bundles []string
-	managed bool
-}
-
-func newJavaAdapter(tools ToolDirectory) javaAdapter {
-	if bundles := DiscoverJavaDebugBundles(); len(bundles) > 0 {
-		return javaAdapter{bundles: bundles}
-	}
-	if tools != nil {
-		return javaAdapter{bundles: managedJavaDebugBundles(tools.ToolDir("java-debug")), managed: true}
-	}
-	return javaAdapter{}
 }
 
 // ServerInitialization loads the java-debug plug-in into JDT LS; the Java DAP
@@ -55,19 +44,13 @@ func (adapter javaAdapter) ServerInitialization() (string, any) {
 func (javaAdapter) Language() string { return "Java" }
 
 func (adapter javaAdapter) Descriptor() dap.AdapterDescriptor {
-	command := ""
-	if adapter.managed {
-		// This is an availability token. Java's TransportConnect connector
-		// starts the actual adapter inside JDT LS.
-		command = "java-debug-adapter"
-	} else if len(adapter.bundles) > 0 {
-		command = "jdtls"
-	}
 	return dap.AdapterDescriptor{
-		Name:             "java-debug",
-		Language:         "Java",
-		AdapterID:        "java",
-		Command:          command,
+		Name:      "java-debug",
+		Language:  "Java",
+		AdapterID: "java",
+		// The actual adapter starts inside managed JDT LS. This command is
+		// an availability token for the managed java-debug bundle.
+		Command:          "java-debug-adapter",
 		Transport:        dap.TransportConnect,
 		TerminalStrategy: dap.TerminalRunInTerminal,
 		Markers:          []string{"pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", ".project", ".classpath"},
@@ -253,25 +236,6 @@ func javaProjectName(request Request) string {
 func hasWord(source []byte, word string) bool {
 	pattern := regexp.MustCompile(`\b` + regexp.QuoteMeta(word) + `\b`)
 	return pattern.Match(source)
-}
-
-// DiscoverJavaDebugBundles returns explicitly supplied JDT LS debug plug-ins.
-func DiscoverJavaDebugBundles() []string {
-	var explicit []string
-	for _, value := range filepath.SplitList(os.Getenv("WINGMAN_JAVA_DEBUG_BUNDLE")) {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if info, err := os.Stat(value); err == nil && !info.IsDir() {
-			explicit = append(explicit, filepath.Clean(value))
-		}
-	}
-	if len(explicit) > 0 {
-		slices.Sort(explicit)
-		return slices.Compact(explicit)
-	}
-	return nil
 }
 
 // CommandExecutor is the single language-service capability host connectors

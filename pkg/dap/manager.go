@@ -19,7 +19,10 @@ import (
 
 const detectionCacheTTL = 30 * time.Second
 
-var ErrActiveSession = errors.New("a debug session is already active")
+var (
+	ErrActiveSession = errors.New("a debug session is already active")
+	ErrBusy          = errors.New("debugger setup or launch is already in progress; try again when it finishes")
+)
 
 type detectedAdapter struct {
 	adapter  AdapterDescriptor
@@ -30,7 +33,6 @@ type Manager struct {
 	root      string
 	adapters  []AdapterDescriptor
 	lookup    func(string) string
-	managed   func(string) string
 	start     sessionStarter
 	terminal  TerminalLauncher
 	connector AdapterConnector
@@ -49,8 +51,12 @@ type Manager struct {
 
 type sessionStarter func(context.Context, string, Plan, StartOptions) (*Session, error)
 
-func NewManager(root string, adapters ...AdapterDescriptor) *Manager {
-	return newManager(root, adapters, resolveAdapterCommand, startSession)
+func NewManager(root string, tools tooling.ManagedTools, adapters ...AdapterDescriptor) *Manager {
+	resolve := func(string) string { return "" }
+	if tools != nil {
+		resolve = tools.Resolve
+	}
+	return newManager(root, adapters, resolve, startSession)
 }
 
 // SetTerminalLauncher connects the protocol client to the editor's PTY host.
@@ -68,15 +74,6 @@ func (m *Manager) SetAdapterConnector(connector AdapterConnector) {
 	m.mu.Lock()
 	m.connector = connector
 	m.mu.Unlock()
-}
-
-// SetCommandResolver adds an application-managed candidate after project
-// discovery and before the standard system fallback.
-func (m *Manager) SetCommandResolver(resolve func(string) string) {
-	m.detectMu.Lock()
-	m.managed = resolve
-	m.detectedAt = time.Time{}
-	m.detectMu.Unlock()
 }
 
 // SetAdapters replaces descriptors used by future discovery and sessions.
@@ -131,27 +128,13 @@ func (m *Manager) detect(ctx context.Context) ([]detectedAdapter, error) {
 		if len(projects) == 0 {
 			continue
 		}
-		var availableProjects, missingProjects []string
-		command := ""
-		for _, project := range projects {
-			resolved := resolveProjectCommand(m.root, m.lookup, m.managed, candidate.Command, project)
-			if resolved == "" {
-				missingProjects = append(missingProjects, project)
-				continue
-			}
-			availableProjects = append(availableProjects, project)
-			if command == "" {
-				command = resolved
-			}
-		}
-		if len(missingProjects) > 0 {
-			missing = append(missing, detectedAdapter{adapter: candidate, projects: missingProjects})
-		}
-		if len(availableProjects) == 0 {
+		command := m.lookup(candidate.Command)
+		if command == "" {
+			missing = append(missing, detectedAdapter{adapter: candidate, projects: projects})
 			continue
 		}
 		candidate.Command = command
-		detected = append(detected, detectedAdapter{adapter: candidate, projects: availableProjects})
+		detected = append(detected, detectedAdapter{adapter: candidate, projects: projects})
 	}
 	m.detected = detected
 	m.missing = missing
@@ -221,19 +204,34 @@ func (m *Manager) Adapters(ctx context.Context) ([]AdapterInfo, error) {
 	return result, nil
 }
 
-func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, error) {
-	m.startMu.Lock()
-	defer m.startMu.Unlock()
-
+// BeginPreparation reserves an idle debugger until the returned release
+// function is called. Tool updates share this reservation with Start because
+// refreshing a hosted adapter can restart its language server.
+func (m *Manager) BeginPreparation() (func(), error) {
+	if !m.startMu.TryLock() {
+		return nil, ErrBusy
+	}
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.closed {
-		m.mu.Unlock()
+		m.startMu.Unlock()
 		return nil, errors.New("DAP manager is closed")
 	}
 	if m.session != nil && m.session.Status().State != StateTerminated {
-		m.mu.Unlock()
+		m.startMu.Unlock()
 		return nil, ErrActiveSession
 	}
+	return m.startMu.Unlock, nil
+}
+
+func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, error) {
+	release, err := m.BeginPreparation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	m.mu.Lock()
 	for path, breakpoints := range options.Breakpoints {
 		if err := validateSourceBreakpoints(breakpoints); err != nil {
 			m.mu.Unlock()
@@ -276,14 +274,12 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 	if err != nil {
 		return nil, err
 	}
-	if registered, managed := m.registeredAdapter(selected.adapter.Name); registered != nil {
-		command := resolveProjectCommand(m.root, m.lookup, managed, registered.Command, plan.ProjectDir)
-		if command == "" {
-			return nil, fmt.Errorf("debug adapter %s is not available for project %s", registered.Name, plan.ProjectDir)
-		}
-		plan.Adapter.Command = command
-		plan.Adapter.Args = slices.Clone(registered.Args)
+	registered := m.registeredAdapter(selected.adapter.Name)
+	if registered == nil || registered.Command == "" {
+		return nil, fmt.Errorf("debug adapter %s is not available for project %s", selected.adapter.Name, plan.ProjectDir)
 	}
+	plan.Adapter.Command = registered.Command
+	plan.Adapter.Args = slices.Clone(registered.Args)
 	if plan.Adapter.Transport == TransportConnect {
 		if preparer, ok := options.adapterConnector.(AdapterPlanPreparer); ok {
 			plan, err = preparer.PrepareAdapter(ctx, plan)
@@ -327,28 +323,17 @@ func (m *Manager) Start(ctx context.Context, options StartOptions) (*Session, er
 	return session, nil
 }
 
-func (m *Manager) registeredAdapter(name string) (*AdapterDescriptor, func(string) string) {
+func (m *Manager) registeredAdapter(name string) *AdapterDescriptor {
 	m.detectMu.Lock()
 	defer m.detectMu.Unlock()
 	for _, adapter := range m.adapters {
 		if strings.EqualFold(adapter.Name, name) {
 			value := cloneAdapters([]AdapterDescriptor{adapter})[0]
-			return &value, m.managed
+			value.Command = m.lookup(value.Command)
+			return &value
 		}
 	}
-	return nil, m.managed
-}
-
-func resolveProjectCommand(workspace string, lookup, managed func(string) string, command, project string) string {
-	if command == "" {
-		return ""
-	}
-	resolution := tooling.Resolver{
-		Workspace: workspace,
-		Lookup:    lookup,
-		Managed:   managed,
-	}.Resolve([]string{project}, command, nil)
-	return resolution.Path
+	return nil
 }
 
 // mergeSourceBreakpoints keeps a plan's initial stops and folds in the
@@ -753,8 +738,4 @@ func (m *Manager) Close() {
 	if session != nil {
 		session.Close()
 	}
-}
-
-func resolveAdapterCommand(command string) string {
-	return tooling.Resolve(command)
 }

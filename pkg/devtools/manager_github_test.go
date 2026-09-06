@@ -44,9 +44,6 @@ func TestJavaScriptDebuggerUsesVerifiedLatestRelease(t *testing.T) {
 	}
 
 	item := manager.byCommand["js-debug-adapter"]
-	if !item.BestEffort {
-		t.Fatal("GitHub recipe is not marked best-effort")
-	}
 	stage := t.TempDir()
 	version, err := manager.installRecipe(context.Background(), item, stage)
 	if err != nil {
@@ -94,9 +91,6 @@ func TestCodeLLDBUsesVerifiedPlatformRelease(t *testing.T) {
 	manager := newManager(t.TempDir())
 	manager.fetch = githubTestFetcher(t, spec.releaseURL, assetURL, metadata, archive)
 	item := manager.byCommand[spec.command]
-	if !item.BestEffort {
-		t.Fatal("CodeLLDB recipe is not marked best-effort")
-	}
 	stage := t.TempDir()
 	version, err := manager.installRecipe(context.Background(), item, stage)
 	if err != nil {
@@ -136,9 +130,6 @@ func TestNetCoreDbgUsesVerifiedPlatformRelease(t *testing.T) {
 	manager := newManager(t.TempDir())
 	manager.fetch = githubTestFetcher(t, spec.releaseURL, assetURL, metadata, archive)
 	item := manager.byCommand[spec.command]
-	if !item.BestEffort {
-		t.Fatal("NetCoreDbg recipe is not marked best-effort")
-	}
 	stage := t.TempDir()
 	version, err := manager.installRecipe(context.Background(), item, stage)
 	if err != nil {
@@ -242,7 +233,7 @@ func TestGitHubAssetValidationRestrictsRepositoryAndDigest(t *testing.T) {
 	}
 }
 
-func TestBestEffortGitHubFailureIsNotUnavailable(t *testing.T) {
+func TestGitHubInstallFailureIsUnavailable(t *testing.T) {
 	manager := newManager(t.TempDir())
 	manager.look = func(string) (string, error) { return "", errors.New("not found") }
 	manager.install = func(context.Context, recipe, string) (string, error) {
@@ -252,8 +243,8 @@ func TestBestEffortGitHubFailureIsNotUnavailable(t *testing.T) {
 	if changed || err == nil {
 		t.Fatalf("Update = %v, %v", changed, err)
 	}
-	if IsUnavailable(err) {
-		t.Fatalf("best-effort adapter failure was marked unavailable: %v", err)
+	if !IsUnavailable(err) {
+		t.Fatalf("missing managed adapter was not marked unavailable: %v", err)
 	}
 }
 

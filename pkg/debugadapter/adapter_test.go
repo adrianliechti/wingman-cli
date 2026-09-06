@@ -466,7 +466,7 @@ func TestJavaAdapterPlansMavenProjectName(t *testing.T) {
 	}
 }
 
-func TestRegistryWiresInstalledJavaDebugBundle(t *testing.T) {
+func TestRegistryUsesManagedJavaDebugBundleOverExternalOverride(t *testing.T) {
 	root := t.TempDir()
 	bundle := filepath.Join(root, "com.microsoft.java.debug.plugin-test.jar")
 	if err := os.WriteFile(bundle, []byte("jar"), 0o644); err != nil {
@@ -481,14 +481,14 @@ func TestRegistryWiresInstalledJavaDebugBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 	registry := NewRegistry(toolDirectoryStub{"java-debug": filepath.Dir(managed)})
-	want := map[string]any{"bundles": []string{bundle}}
+	want := map[string]any{"bundles": []string{filepath.Join(managed, "com.microsoft.java.debug.plugin-managed.jar")}}
 	if got := registry.ServerInitializations()["jdtls"]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("jdtls initialization = %#v", got)
 	}
 	found := false
 	for _, descriptor := range registry.Descriptors() {
 		if descriptor.Name == "java-debug" {
-			found = descriptor.Command == "jdtls" && descriptor.Transport == "connect"
+			found = descriptor.Command == "java-debug-adapter" && descriptor.Transport == "connect"
 		}
 	}
 	if !found {
@@ -536,7 +536,29 @@ func TestRegistryRequestsAndLoadsManagedJavaDebugger(t *testing.T) {
 	}
 }
 
-func TestRegistryUsesExplicitJavaScriptDebugServer(t *testing.T) {
+func TestManagedRegistryIgnoresExternalAdapterOverrides(t *testing.T) {
+	root := t.TempDir()
+	bundle := filepath.Join(root, "external-java-debug.jar")
+	if err := os.WriteFile(bundle, []byte("jar"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WINGMAN_JAVA_DEBUG_BUNDLE", bundle)
+	t.Setenv("WINGMAN_JS_DEBUG_SERVER", bundle)
+	t.Setenv("WINGMAN_JS_DEBUG_ADAPTER", "/external/js-debug-adapter")
+	registry := NewRegistry(toolDirectoryStub{})
+	if options := registry.ServerInitializations()["jdtls"]; options != nil {
+		t.Fatalf("external Java bundle was loaded: %+v", options)
+	}
+	commands := make(map[string]string)
+	for _, adapter := range registry.Descriptors() {
+		commands[adapter.Name] = adapter.Command
+	}
+	if commands["java-debug"] != "java-debug-adapter" || commands["vscode-js-debug"] != "js-debug-adapter" {
+		t.Fatalf("managed adapter commands = %v", commands)
+	}
+}
+
+func TestRegistryIgnoresExplicitJavaScriptDebugServerWithoutToolDirectory(t *testing.T) {
 	server := filepath.Join(t.TempDir(), "dapDebugServer.js")
 	if err := os.WriteFile(server, []byte("// server"), 0o644); err != nil {
 		t.Fatal(err)
@@ -546,14 +568,14 @@ func TestRegistryUsesExplicitJavaScriptDebugServer(t *testing.T) {
 	found := false
 	for _, descriptor := range registry.Descriptors() {
 		if descriptor.Name == "vscode-js-debug" {
-			found = descriptor.Command == "node" &&
+			found = descriptor.Command == "js-debug-adapter" &&
 				descriptor.Transport == "tcp" &&
 				descriptor.ReadyPrefix == "Debug server listening at " &&
-				reflect.DeepEqual(descriptor.Args, []string{server, "0", "127.0.0.1"})
+				reflect.DeepEqual(descriptor.Args, []string{"0", "127.0.0.1"})
 		}
 	}
 	if !found {
-		t.Fatal("explicit JavaScript debug server was not configured")
+		t.Fatal("managed JavaScript debug server was not configured")
 	}
 }
 

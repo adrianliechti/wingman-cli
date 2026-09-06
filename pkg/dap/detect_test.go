@@ -301,9 +301,44 @@ func TestManagerRejectsSecondActiveSession(t *testing.T) {
 	if _, err := manager.Start(context.Background(), StartOptions{}); !errors.Is(err, ErrActiveSession) {
 		t.Fatalf("Start error = %v, want ErrActiveSession", err)
 	}
+	if _, err := manager.BeginPreparation(); !errors.Is(err, ErrActiveSession) {
+		t.Fatalf("setup error = %v, want ErrActiveSession", err)
+	}
+	manager.session = nil
+	release, err := manager.BeginPreparation()
+	if err != nil {
+		t.Fatalf("setup after session ended = %v", err)
+	}
+	release()
 }
 
-func TestManagerFindsAdapterInNestedProjectEnvironment(t *testing.T) {
+func TestManagerPreparationExcludesLaunchAndAllowsClose(t *testing.T) {
+	manager := NewManager(t.TempDir(), nil)
+	release, err := manager.BeginPreparation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if _, err := manager.BeginPreparation(); !errors.Is(err, ErrBusy) {
+		t.Fatalf("concurrent setup = %v, want ErrBusy", err)
+	}
+	if _, err := manager.Start(context.Background(), StartOptions{}); !errors.Is(err, ErrBusy) {
+		t.Fatalf("launch during setup = %v, want ErrBusy", err)
+	}
+	// Close must not wait for setup: the workspace cancels installers during
+	// shutdown, and they may still be unwinding their progress callbacks.
+	manager.Close()
+}
+
+func TestManagerPreparationRejectsClosedManager(t *testing.T) {
+	manager := NewManager(t.TempDir(), nil)
+	manager.Close()
+	if _, err := manager.BeginPreparation(); err == nil {
+		t.Fatal("closed manager accepted setup")
+	}
+}
+
+func TestManagerRejectsAdapterInNestedProjectEnvironment(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "services", "api")
 	writeTestFile(t, filepath.Join(project, "pyproject.toml"), "[project]\n")
@@ -328,12 +363,16 @@ func TestManagerFindsAdapterInNestedProjectEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(values) != 1 || values[0].adapter.Command != adapterPath {
-		t.Fatalf("detected adapters = %#v, want nested command %q", values, adapterPath)
+	if len(values) != 0 {
+		t.Fatalf("detected adapters = %#v, unexpected project command %q", values, adapterPath)
 	}
 }
 
-func TestManagerPrefersProjectAdapterOverPath(t *testing.T) {
+type testManagedTools map[string]string
+
+func (m testManagedTools) Resolve(command string) string { return m[command] }
+
+func TestManagerManagedResolverIgnoresProjectAndSystemAdapters(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, "pyproject.toml"), "[project]\n")
 	writeTestFile(t, filepath.Join(root, "main.py"), "print('ready')\n")
@@ -351,13 +390,34 @@ func TestManagerPrefersProjectAdapterOverPath(t *testing.T) {
 	manager := newManager(root, []AdapterDescriptor{{
 		Name: "debugpy", Command: "debugpy-adapter", Markers: []string{"pyproject.toml"}, SourceExtensions: []string{".py"},
 	}}, func(string) string { return filepath.Join(root, "path", "debugpy-adapter") }, nil)
-	manager.SetCommandResolver(func(string) string { return filepath.Join(root, "managed", "debugpy-adapter") })
+	managed := filepath.Join(root, "managed", "debugpy-adapter")
+	tools := testManagedTools{"debugpy-adapter": managed}
+	manager.lookup = tools.Resolve
 	values, err := manager.detect(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(values) != 1 || values[0].adapter.Command != local {
-		t.Fatalf("detected adapters = %#v, want project command %q", values, local)
+	if len(values) != 1 || values[0].adapter.Command != managed {
+		t.Fatalf("detected adapters = %#v, want managed command %q", values, managed)
+	}
+	failure := errors.New("captured launch")
+	manager.start = func(_ context.Context, _ string, plan Plan, _ StartOptions) (*Session, error) {
+		if plan.Adapter.Command != managed {
+			t.Fatalf("launched %q instead of managed adapter %q", plan.Adapter.Command, managed)
+		}
+		return nil, failure
+	}
+	if _, err := manager.Start(context.Background(), StartOptions{Adapter: "debugpy"}); !errors.Is(err, failure) {
+		t.Fatalf("managed launch = %v", err)
+	}
+	// Removing the managed tool after discovery must not change the source at launch.
+	tools["debugpy-adapter"] = ""
+	if _, err := manager.Start(context.Background(), StartOptions{Adapter: "debugpy"}); err == nil || errors.Is(err, failure) {
+		t.Fatalf("missing managed launch = %v", err)
+	}
+	manager.InvalidateDetection()
+	if values, err := manager.Adapters(context.Background()); err != nil || len(values) != 0 {
+		t.Fatalf("unmanaged fallback = %+v, %v", values, err)
 	}
 }
 
@@ -368,12 +428,7 @@ func TestManagerPrefersManagedAdapterOverSystemFallback(t *testing.T) {
 	manager := newManager(root, []AdapterDescriptor{{
 		Name: "delve", Command: "dlv", Markers: []string{"go.mod"}, SourceExtensions: []string{".go"},
 	}}, func(string) string { return filepath.Join(root, "path", "dlv") }, nil)
-	manager.SetCommandResolver(func(command string) string {
-		if command == "dlv" {
-			return managed
-		}
-		return ""
-	})
+	manager.lookup = testManagedTools{"dlv": managed}.Resolve
 
 	values, err := manager.detect(context.Background())
 	if err != nil {
@@ -392,12 +447,7 @@ func TestManagerUsesManagedAdapterWhenSystemIsMissing(t *testing.T) {
 	manager := newManager(root, []AdapterDescriptor{{
 		Name: "delve", Command: "dlv", Markers: []string{"go.mod"}, SourceExtensions: []string{".go"},
 	}}, func(string) string { return "" }, nil)
-	manager.SetCommandResolver(func(command string) string {
-		if command == "dlv" {
-			return managed
-		}
-		return ""
-	})
+	manager.lookup = testManagedTools{"dlv": managed}.Resolve
 	values, err := manager.detect(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -407,7 +457,7 @@ func TestManagerUsesManagedAdapterWhenSystemIsMissing(t *testing.T) {
 	}
 }
 
-func TestManagerKeepsProjectLocalAdapterScopedToItsProject(t *testing.T) {
+func TestManagerRejectsProjectAdaptersAcrossProjects(t *testing.T) {
 	root := t.TempDir()
 	projects := []string{filepath.Join(root, "one"), filepath.Join(root, "two")}
 	for _, project := range projects {
@@ -433,14 +483,14 @@ func TestManagerKeepsProjectLocalAdapterScopedToItsProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(values) != 1 || !reflect.DeepEqual(values[0].projects, []string{projects[0]}) {
+	if len(values) != 0 {
 		t.Fatalf("available projects = %#v", values)
 	}
 	missing, err := manager.MissingRequirements(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(missing) != 1 || !reflect.DeepEqual(missing[0].Projects, []string{projects[1]}) {
+	if len(missing) != 1 || !reflect.DeepEqual(missing[0].Projects, projects) {
 		t.Fatalf("missing requirements = %#v", missing)
 	}
 }

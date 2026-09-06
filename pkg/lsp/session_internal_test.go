@@ -104,7 +104,7 @@ func TestManagerActivitiesAreReadOnlyAndProjectScoped(t *testing.T) {
 	root := t.TempDir()
 	session := &Session{
 		server: Server{
-			Name: "kotlin-lsp", Label: "Kotlin",
+			Name: "gopls", Label: "Go",
 		},
 		rootURI:  fileuri.FromPath(root),
 		progress: map[string]WorkProgress{"index": {Title: "Indexing"}},
@@ -112,10 +112,10 @@ func TestManagerActivitiesAreReadOnlyAndProjectScoped(t *testing.T) {
 	session.alive.Store(true)
 	manager := NewManager(root)
 	defer manager.cancel()
-	manager.sessions["kotlin"] = session
+	manager.sessions["go"] = session
 
 	activities := manager.Activities()
-	if len(activities) != 1 || activities[0].Server != "kotlin-lsp" || activities[0].Label != "Kotlin" || activities[0].ProjectDir != root || !activities[0].Analyzing || len(activities[0].Operations) != 1 {
+	if len(activities) != 1 || activities[0].Server != "gopls" || activities[0].Label != "Go" || activities[0].ProjectDir != root || !activities[0].Analyzing || len(activities[0].Operations) != 1 {
 		t.Fatalf("activities = %+v", activities)
 	}
 }

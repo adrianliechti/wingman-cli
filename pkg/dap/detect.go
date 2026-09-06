@@ -54,7 +54,7 @@ func MissingAdapterError(requirements []AdapterRequirement) error {
 		}
 		details = append(details, command)
 	}
-	return fmt.Errorf("debugging needs %s, but it was not found in the project, Wingman's package-managed tools, standard user tool locations, or PATH; install it through your normal software distribution and retry", strings.Join(details, ", "))
+	return fmt.Errorf("debugging needs %s, but no usable adapter is installed", strings.Join(details, ", "))
 }
 
 func detectProjects(ctx context.Context, workspace string, markers, sourceExtensions []string) ([]string, error) {

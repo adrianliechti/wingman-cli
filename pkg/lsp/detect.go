@@ -32,43 +32,30 @@ func serverVersionSupported(server Server, command, workingDir string) bool {
 	return tooling.MajorVersionAtLeast(ctx, command, server.MinimumMajorVersion, workingDir)
 }
 
-func detectAll(workingDir string, managedResolver func(string) string) []projectRoot {
-	index := indexWorkspace(workingDir)
-	commands := make(map[string]string)
-	versions := make(map[string]bool)
-	resolver := tooling.Resolver{
-		Workspace: workingDir,
-		Managed:   managedResolver,
-		Lookup: func(command string) string {
-			if cached, ok := commands[command]; ok {
-				return cached
-			}
-			resolved := tooling.Resolve(command)
-			commands[command] = resolved
-			return resolved
-		},
+func detectAll(workingDir string, managedTools tooling.ManagedTools) []projectRoot {
+	if managedTools == nil {
+		return nil
 	}
+	index := indexWorkspace(workingDir)
+	versions := make(map[string]bool)
 
 	var roots []projectRoot
 	seen := make(map[string]bool)
 
 	for _, project := range knownProjects {
 		for _, dir := range projectDirs(index, project) {
-			for _, candidate := range project.Servers {
-				server, ok := resolveServer(dir, candidate, resolver, versions)
-				if !ok {
-					continue
-				}
-				if server.Label == "" {
-					server.Label = projectLabel(project)
-				}
+			server, ok := resolveServer(dir, project.Servers, managedTools, versions)
+			if !ok {
+				continue
+			}
+			if server.Label == "" {
+				server.Label = projectLabel(project)
+			}
 
-				root := projectRoot{Dir: dir, Server: server}
-				if key := projectKey(root); !seen[key] {
-					seen[key] = true
-					roots = append(roots, root)
-				}
-				break
+			root := projectRoot{Dir: dir, Server: server}
+			if key := projectKey(root); !seen[key] {
+				seen[key] = true
+				roots = append(roots, root)
 			}
 		}
 	}
@@ -116,16 +103,20 @@ func projectDirs(index *workspaceIndex, project projectType) []string {
 	return dirs
 }
 
-func resolveServer(dir string, candidate Server, resolver tooling.Resolver, versions map[string]bool) (Server, bool) {
-	for _, resolution := range resolver.Candidates([]string{dir}, candidate.Command) {
-		versionKey := resolution.Path + "\x00" + strconv.Itoa(candidate.MinimumMajorVersion) + "\x00" + dir
+func resolveServer(dir string, servers []Server, tools tooling.ManagedTools, versions map[string]bool) (Server, bool) {
+	for _, candidate := range servers {
+		command := tools.Resolve(candidate.Command)
+		if command == "" {
+			continue
+		}
+		versionKey := command + "\x00" + strconv.Itoa(candidate.MinimumMajorVersion) + "\x00" + dir
 		supported, checked := versions[versionKey]
 		if !checked {
-			supported = serverVersionSupported(candidate, resolution.Path, dir)
+			supported = serverVersionSupported(candidate, command, dir)
 			versions[versionKey] = supported
 		}
 		if supported {
-			candidate.Command = resolution.Path
+			candidate.Command = command
 			return candidate, true
 		}
 	}

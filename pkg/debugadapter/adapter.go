@@ -91,20 +91,16 @@ type ToolDirectory interface {
 	ToolDir(id string) string
 }
 
-// NewRegistry accepts an optional managed-tool directory while keeping the
-// no-argument form useful for source discovery and standalone callers.
+// NewRegistry uses managed adapters and optionally loads their bundled files.
 func NewRegistry(toolDirectories ...ToolDirectory) *Registry {
-	var tools ToolDirectory
+	java := javaAdapter{}
 	if len(toolDirectories) > 0 {
-		tools = toolDirectories[0]
+		if tools := toolDirectories[0]; tools != nil {
+			java.bundles = managedJavaDebugBundles(tools.ToolDir("java-debug"))
+		}
 	}
 	return NewRegistryWith(
-		goAdapter{},
-		pythonAdapter{},
-		newJavaAdapter(tools),
-		rustAdapter{},
-		dotnetAdapter{},
-		newJavaScriptAdapter(),
+		goAdapter{}, pythonAdapter{}, java, rustAdapter{}, dotnetAdapter{}, javaScriptAdapter{},
 	)
 }
 

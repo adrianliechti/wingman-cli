@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/adrianliechti/wingman-agent/internal/tooling"
 	"github.com/adrianliechti/wingman-agent/pkg/fileuri"
 )
 
@@ -32,7 +33,7 @@ type Manager struct {
 	roots                 []projectRoot
 	detectedAt            time.Time
 	initializationOptions map[string][]byte
-	commandResolver       func(string) string
+	managedTools          tooling.ManagedTools
 }
 
 // ServerActivity describes one live language-server session without starting
@@ -63,11 +64,10 @@ func WithServerInitializationOptions(name string, value any) ManagerOption {
 	}
 }
 
-// WithCommandResolver adds an application-managed candidate after project
-// discovery and before the standard system fallback.
-func WithCommandResolver(resolve func(string) string) ManagerOption {
+// WithManagedTools requires Wingman's managed copy for supported language tools.
+func WithManagedTools(tools tooling.ManagedTools) ManagerOption {
 	return func(manager *Manager) {
-		manager.commandResolver = resolve
+		manager.managedTools = tools
 	}
 }
 
@@ -109,7 +109,7 @@ func (m *Manager) detect() []projectRoot {
 	m.detectMu.Lock()
 	defer m.detectMu.Unlock()
 	if m.detectedAt.IsZero() || time.Since(m.detectedAt) >= detectionCacheTTL {
-		m.roots = detectAll(m.workingDir, m.commandResolver)
+		m.roots = detectAll(m.workingDir, m.managedTools)
 		for index := range m.roots {
 			if options := m.initializationOptions[serverOptionsKey(m.roots[index].Server.Name)]; len(options) > 0 {
 				m.roots[index].Server.InitializationOptions = slices.Clone(options)

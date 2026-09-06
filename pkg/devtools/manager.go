@@ -46,10 +46,8 @@ const (
 	installerGitHub installerKind = "github"
 )
 
-// Requirement lists equivalent commands in preference order. Project and
-// virtual-environment commands satisfy the requirement before a managed
-// package is selected. System commands remain runtime fallbacks, but do not
-// suppress installation of Wingman's package-managed copy.
+// Requirement lists equivalent commands in preference order. The first
+// command with a managed recipe selects the package to install or update.
 type Requirement struct {
 	Alternatives         []string
 	Workspace            string
@@ -71,11 +69,19 @@ const (
 // Progress identifies the managed tool currently being checked, installed, or
 // updated.
 type Progress struct {
-	Tool    string
-	Label   string
-	Phase   ProgressPhase
-	Current int
-	Total   int
+	Tool    string        `json:"tool"`
+	Label   string        `json:"label"`
+	Phase   ProgressPhase `json:"phase"`
+	Current int           `json:"current"`
+	Total   int           `json:"total"`
+}
+
+// ToolStatus describes an installation without downloading or changing tools.
+type ToolStatus struct {
+	Tool        string `json:"tool"`
+	Label       string `json:"label"`
+	Installed   bool   `json:"installed"`
+	Installable bool   `json:"installable"`
 }
 
 type recipe struct {
@@ -85,8 +91,35 @@ type recipe struct {
 	Packages    []string
 	Commands    []string
 	WorkingDirs []string
-	BestEffort  bool
 }
+
+type selectedTool struct {
+	recipe
+	requirements []Requirement
+}
+
+// ready validates both the installation and its project-specific version
+// requirements. It works for the active directory and for a staged update.
+func (s selectedTool) ready(ctx context.Context, root string) bool {
+	if !installationReady(s.recipe, root) {
+		return false
+	}
+	resolve := func(command string) string {
+		if !slices.Contains(s.Commands, command) {
+			return ""
+		}
+		return resolveInstalledCommand(root, command)
+	}
+	for _, requirement := range s.requirements {
+		if !requirement.installed(ctx, resolve) {
+			return false
+		}
+	}
+	return true
+}
+
+// ErrInstallRequired means an update-only request encountered a missing tool.
+var ErrInstallRequired = errors.New("managed tool installation requires confirmation")
 
 // UnavailableError means no usable copy of a required tool remains after an
 // automatic installation failure. Refresh failures for an existing copy do
@@ -136,7 +169,6 @@ func UnavailableTools(err error) []string {
 
 // The catalog is deliberately small and deterministic. Ecosystem-specific
 // recipes live beside their installers; SDKs and compilers remain external.
-// Direct downloads are limited to recipes explicitly marked best-effort.
 var catalog = allRecipes()
 
 // ToolLabel returns the user-facing name stored with a managed tool's recipe.
@@ -218,6 +250,9 @@ func (m *Manager) Root() string { return m.root }
 
 // CanManage reports whether command has a curated latest-version recipe.
 func (m *Manager) CanManage(command string) bool {
+	if m == nil {
+		return false
+	}
 	_, ok := m.byCommand[command]
 	return ok
 }
@@ -237,14 +272,75 @@ func (m *Manager) ToolDir(id string) string {
 	return ""
 }
 
-// Resolve returns the absolute path of a managed command, if installed.
+// Resolve returns a command only from a complete managed installation.
 func (m *Manager) Resolve(command string) string {
+	if m == nil {
+		return ""
+	}
 	item, ok := m.byCommand[command]
 	if !ok {
 		return ""
 	}
 	root := filepath.Join(m.root, item.ID)
+	if !installationReady(item, root) {
+		return ""
+	}
 	return resolveInstalledCommand(root, command)
+}
+
+// Status uses the same managed-only resolution as discovery and launch.
+func (m *Manager) Status(ctx context.Context, requirements []Requirement) ([]ToolStatus, error) {
+	statuses := make(map[string]ToolStatus)
+	for _, requirement := range requirements {
+		status := ToolStatus{Tool: strings.Join(requirement.Alternatives, " or ")}
+		status.Label = status.Tool
+		if m != nil {
+			if item, ok := m.managedRecipe(requirement); ok {
+				status.Tool, status.Label = item.ID, item.Label
+				status.Installable = !Disabled()
+			}
+		}
+		status.Installed = requirement.installed(ctx, m.Resolve)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if previous, exists := statuses[status.Tool]; exists {
+			status.Installed = previous.Installed && status.Installed
+		}
+		statuses[status.Tool] = status
+	}
+	result := make([]ToolStatus, 0, len(statuses))
+	for _, status := range statuses {
+		result = append(result, status)
+	}
+	slices.SortFunc(result, func(a, b ToolStatus) int { return strings.Compare(a.Tool, b.Tool) })
+	return result, nil
+}
+
+func (requirement Requirement) installed(ctx context.Context, resolve func(string) string) bool {
+	projects := requirement.Projects
+	if len(projects) == 0 {
+		projects = []string{requirement.Workspace}
+	}
+	for _, project := range projects {
+		available := false
+		for _, command := range requirement.Alternatives {
+			path := resolve(command)
+			if path == "" {
+				continue
+			}
+			probeCtx, cancel := context.WithTimeout(ctx, versionProbeTimeout)
+			available = tooling.MajorVersionAtLeast(probeCtx, path, requirement.MinimumMajorVersions[command], project)
+			cancel()
+			if available {
+				break
+			}
+		}
+		if !available {
+			return false
+		}
+	}
+	return true
 }
 
 // Update installs the latest release for every selected requirement. A fresh
@@ -252,6 +348,17 @@ func (m *Manager) Resolve(command string) string {
 // after a short backoff. Successful updates replace the prior directory and
 // remove it rather than accumulating versions.
 func (m *Manager) Update(ctx context.Context, requirements []Requirement, progress ...func(Progress)) (bool, error) {
+	return m.update(ctx, requirements, true, false, progress...)
+}
+
+// UpdateOnDemand checks for updates during an explicit user action. It keeps
+// the daily refresh interval. Missing tools require install=true, which also
+// allows immediate retries after a failed installation.
+func (m *Manager) UpdateOnDemand(ctx context.Context, requirements []Requirement, install bool, progress ...func(Progress)) (bool, error) {
+	return m.update(ctx, requirements, install, true, progress...)
+}
+
+func (m *Manager) update(ctx context.Context, requirements []Requirement, allowInstall, onDemand bool, progress ...func(Progress)) (bool, error) {
 	if Disabled() {
 		return false, nil
 	}
@@ -262,23 +369,19 @@ func (m *Manager) Update(ctx context.Context, requirements []Requirement, progre
 		return false, ctx.Err()
 	}
 
-	type selection struct {
-		item           recipe
-		systemFallback bool
-	}
-	selected := make(map[string]selection)
+	selected := make(map[string]selectedTool)
 	for _, requirement := range requirements {
 		item, managed := m.managedRecipe(requirement)
-		if !managed || m.requirementAvailable(ctx, requirement, tooling.SourceProject) {
+		if !managed {
 			continue
 		}
-		item.WorkingDirs = requirementWorkingDirs(requirement)
-		systemFallback := m.requirementAvailable(ctx, requirement, tooling.SourceSystem)
-		if current, exists := selected[item.ID]; exists {
-			item.WorkingDirs = appendUniquePaths(current.item.WorkingDirs, item.WorkingDirs...)
-			systemFallback = current.systemFallback && systemFallback
+		current, exists := selected[item.ID]
+		if !exists {
+			current.recipe = item
 		}
-		selected[item.ID] = selection{item: item, systemFallback: systemFallback}
+		current.WorkingDirs = appendUniquePaths(current.WorkingDirs, requirementWorkingDirs(requirement)...)
+		current.requirements = append(current.requirements, requirement)
+		selected[item.ID] = current
 	}
 
 	ids := make([]string, 0, len(selected))
@@ -305,19 +408,23 @@ func (m *Manager) Update(ctx context.Context, requirements []Requirement, progre
 			updateErrors = append(updateErrors, err)
 			break
 		}
-		selectedTool := selected[id]
-		item := selectedTool.item
-		reportProgress(progress, item, ProgressChecking, index+1, len(ids))
+		item := selected[id]
+		reportProgress(progress, item.recipe, ProgressChecking, index+1, len(ids))
 		if err := recoverInterruptedUpdate(m.root, item.ID); err != nil {
 			updateErrors = append(updateErrors, fmt.Errorf("recover %s: %w", item.ID, err))
 			continue
 		}
-		if m.fresh(item) {
+		root := filepath.Join(m.root, item.ID)
+		ready := item.ready(ctx, root)
+		if !ready && !allowInstall {
+			updateErrors = append(updateErrors, fmt.Errorf("%s: %w", item.Label, ErrInstallRequired))
 			continue
 		}
-		ready := installationReady(item, filepath.Join(m.root, item.ID))
-		if m.retryDeferred(item) {
-			if !ready && !selectedTool.systemFallback && !item.BestEffort {
+		if ready && m.fresh(item.recipe) {
+			continue
+		}
+		if (!onDemand || ready) && m.retryDeferred(item.recipe) {
+			if !ready {
 				updateErrors = append(updateErrors, &UnavailableError{
 					Tool: item.ID,
 					Err:  errors.New("automatic installation was attempted recently; Wingman will retry in about an hour"),
@@ -329,8 +436,14 @@ func (m *Manager) Update(ctx context.Context, requirements []Requirement, progre
 		if ready {
 			phase = ProgressUpdating
 		}
-		reportProgress(progress, item, phase, index+1, len(ids))
+		reportProgress(progress, item.recipe, phase, index+1, len(ids))
 		updated, err := m.updateOne(ctx, item)
+		available := item.ready(ctx, root)
+		if err == nil && !ready {
+			// Installing a rustup component can repair an existing launcher
+			// without replacing its files. Discovery must still be refreshed.
+			updated = true
+		}
 		changed = changed || updated
 		if err != nil {
 			if contextErr := ctx.Err(); contextErr != nil {
@@ -339,16 +452,15 @@ func (m *Manager) Update(ctx context.Context, requirements []Requirement, progre
 			}
 			var retryErr error
 			if !updated {
-				retryErr = m.deferRetry(item)
+				retryErr = m.deferRetry(item.recipe)
 			}
-			available := selectedTool.systemFallback || ready || installationReady(item, filepath.Join(m.root, item.ID))
-			if !available && !item.BestEffort {
+			if !available {
 				err = &UnavailableError{Tool: item.ID, Err: err}
 			}
 			updateErrors = append(updateErrors, fmt.Errorf("update %s: %w", item.ID, errors.Join(err, retryErr)))
 			continue
 		}
-		_ = os.Remove(m.retryPath(item))
+		_ = os.Remove(m.retryPath(item.recipe))
 	}
 	return changed, errors.Join(updateErrors...)
 }
@@ -369,43 +481,6 @@ func (m *Manager) managedRecipe(requirement Requirement) (recipe, bool) {
 		}
 	}
 	return recipe{}, false
-}
-
-func (m *Manager) requirementAvailable(ctx context.Context, requirement Requirement, source tooling.Source) bool {
-	if source == tooling.SourceProject && strings.TrimSpace(requirement.Workspace) == "" {
-		return false
-	}
-	projects := requirement.Projects
-	if len(projects) == 0 {
-		projects = []string{requirement.Workspace}
-	}
-	for _, project := range projects {
-		available := false
-		for _, command := range requirement.Alternatives {
-			path := ""
-			switch source {
-			case tooling.SourceProject:
-				path = tooling.ResolveProject(project, requirement.Workspace, command)
-			case tooling.SourceSystem:
-				path, _ = m.look(command)
-			default:
-				return false
-			}
-			if path == "" {
-				continue
-			}
-			probeCtx, cancel := context.WithTimeout(ctx, versionProbeTimeout)
-			available = tooling.MajorVersionAtLeast(probeCtx, path, requirement.MinimumMajorVersions[command], project)
-			cancel()
-			if available {
-				break
-			}
-		}
-		if !available {
-			return false
-		}
-	}
-	return true
 }
 
 func requirementWorkingDirs(requirement Requirement) []string {
@@ -482,7 +557,10 @@ func (m *Manager) fresh(item recipe) bool {
 	return age >= 0 && age < updateInterval
 }
 
-func (m *Manager) updateOne(ctx context.Context, item recipe) (bool, error) {
+func (m *Manager) updateOne(ctx context.Context, item selectedTool) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if err := os.MkdirAll(m.root, 0o755); err != nil {
 		return false, err
 	}
@@ -497,17 +575,29 @@ func (m *Manager) updateOne(ctx context.Context, item recipe) (bool, error) {
 	}
 	installCtx, cancel := context.WithTimeout(ctx, installTimeout)
 	defer cancel()
-	version, err := m.install(installCtx, item, stage)
+	version, err := m.install(installCtx, item.recipe, stage)
+	if contextErr := installCtx.Err(); contextErr != nil {
+		return false, contextErr
+	}
 	if err != nil {
 		if errors.Is(err, errUpToDate) {
-			return false, m.refreshStatus(item)
+			if !item.ready(installCtx, filepath.Join(m.root, item.ID)) {
+				return false, errors.New("installed tool cannot run for this project")
+			}
+			if err := installCtx.Err(); err != nil {
+				return false, err
+			}
+			return false, m.refreshStatus(item.recipe)
 		}
 		return false, err
 	}
-	if !installationReady(item, stage) {
-		return false, errors.New("installer did not provide a complete tool")
+	if !item.ready(installCtx, stage) {
+		return false, errors.New("installer did not provide a complete, compatible tool")
 	}
 	if err := m.writeStatus(stage, version); err != nil {
+		return false, err
+	}
+	if err := installCtx.Err(); err != nil {
 		return false, err
 	}
 	return replaceDirectory(stage, filepath.Join(m.root, item.ID))
@@ -648,37 +738,32 @@ func (m *Manager) installRecipe(ctx context.Context, item recipe, stage string) 
 }
 
 func resolveInstalledCommand(root, command string) string {
-	directories := []string{
+	return tooling.Find([]string{
 		filepath.Join(root, "bin"),
 		filepath.Join(root, "Scripts"),
 		filepath.Join(root, "node_modules", ".bin"),
-	}
-	for _, directory := range directories {
-		for _, name := range tooling.Candidates(runtime.GOOS, command) {
-			candidate := filepath.Join(directory, name)
-			if tooling.Runnable(candidate) {
-				return candidate
-			}
-		}
-	}
-	return ""
+	}, command)
 }
 
 // replaceDirectory reports whether stage became the active installation. An
 // error after activation only means the previous directory could not yet be
 // removed; recovery retries that cleanup on the next update.
 func replaceDirectory(stage, target string) (bool, error) {
+	pending := filepath.Join(filepath.Dir(target), "."+filepath.Base(target)+"-pending")
+	if filepath.Clean(stage) != filepath.Clean(pending) {
+		// A newer installation supersedes any earlier update waiting for
+		// restart, including when the active directory can now be replaced.
+		if err := os.RemoveAll(pending); err != nil {
+			return false, err
+		}
+	}
 	backup := filepath.Join(filepath.Dir(target), "."+filepath.Base(target)+"-old-"+uuid.NewString())
 	hadTarget := false
 	if _, err := os.Stat(target); err == nil {
 		hadTarget = true
 		if err := os.Rename(target, backup); err != nil {
-			pending := filepath.Join(filepath.Dir(target), "."+filepath.Base(target)+"-pending")
 			if filepath.Clean(stage) == filepath.Clean(pending) {
 				return false, err
-			}
-			if removeErr := os.RemoveAll(pending); removeErr != nil {
-				return false, errors.Join(err, removeErr)
 			}
 			if pendingErr := os.Rename(stage, pending); pendingErr != nil {
 				return false, errors.Join(err, pendingErr)
@@ -715,7 +800,7 @@ func (m *Manager) activatePendingUpdates() {
 	defer release()
 	for _, item := range catalog {
 		pending := filepath.Join(m.root, "."+item.ID+"-pending")
-		if _, err := os.Stat(pending); err != nil {
+		if !installationReady(item, pending) {
 			continue
 		}
 		_, _ = replaceDirectory(pending, filepath.Join(m.root, item.ID))

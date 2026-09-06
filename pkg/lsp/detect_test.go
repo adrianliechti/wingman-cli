@@ -13,7 +13,23 @@ import (
 	"go.lsp.dev/protocol"
 
 	"github.com/adrianliechti/wingman-agent/internal/tooling"
+	"github.com/adrianliechti/wingman-agent/pkg/devtools"
 )
+
+func TestEveryLanguageServerHasManagedInstaller(t *testing.T) {
+	t.Setenv("WINGMAN_HOME", t.TempDir())
+	tools, err := devtools.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, project := range knownProjects {
+		for _, server := range project.Servers {
+			if !tools.CanManage(server.Command) {
+				t.Errorf("%s registers %s without a managed installer", project.Name, server.Command)
+			}
+		}
+	}
+}
 
 func TestManagerInitializationOptionsAreStableSessionIdentity(t *testing.T) {
 	manager := NewManager(t.TempDir(), WithServerInitializationOptions("jdtls", map[string]any{
@@ -75,7 +91,11 @@ func TestServerVersionSupported(t *testing.T) {
 	}
 }
 
-func TestDetectAllPrefersNativeTypeScriptSevenLSP(t *testing.T) {
+type testManagedTools map[string]string
+
+func (m testManagedTools) Resolve(command string) string { return m[command] }
+
+func TestDetectAllChecksManagedTypeScriptVersionWithoutExternalFallback(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test helper uses POSIX shell scripts")
 	}
@@ -97,17 +117,24 @@ func TestDetectAllPrefersNativeTypeScriptSevenLSP(t *testing.T) {
 	if err := os.WriteFile(managed, []byte("#!/bin/sh\nprintf 'Version 6.0.0\\n'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	roots := detectAll(root, func(command string) string {
-		if command == "tsc" {
-			return managed
-		}
-		return ""
-	})
+	tools := testManagedTools{"tsc": managed, "typescript-language-server": ""}
+	if roots := detectAll(root, tools); len(roots) != 0 {
+		t.Fatalf("managed TypeScript below the minimum fell back to project server: %+v", roots)
+	}
+	tools["typescript-language-server"] = filepath.Join(t.TempDir(), "typescript-language-server")
+	roots := detectAll(root, tools)
+	if len(roots) != 1 || roots[0].Server.Name != "typescript-language-server" || roots[0].Server.Command != tools["typescript-language-server"] {
+		t.Fatalf("managed TypeScript 6 should use managed language server: %+v", roots)
+	}
+	if err := os.WriteFile(managed, []byte("#!/bin/sh\nprintf 'Version 7.0.2\\n'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	roots = detectAll(root, tools)
 	if len(roots) != 1 {
 		t.Fatalf("detected roots = %+v, want one TypeScript root", roots)
 	}
-	if roots[0].Server.Name != "typescript-go" || roots[0].Server.Command != tsc {
-		t.Fatalf("detected server = %+v, want native TypeScript server %q", roots[0].Server, tsc)
+	if roots[0].Server.Name != "typescript-go" || roots[0].Server.Command != managed {
+		t.Fatalf("detected server = %+v, want managed native TypeScript server %q", roots[0].Server, managed)
 	}
 }
 
@@ -133,10 +160,7 @@ func TestDetectRequirementsRecognizesSourceAndGradleMarkers(t *testing.T) {
 	}{
 		{name: "shell script", marker: "scripts/build.sh", project: "bash", command: "bash-language-server"},
 		{name: "YAML document", marker: "config/release.yml", project: "yaml", command: "yaml-language-server"},
-		{name: "PHP Composer project", marker: "composer.json", project: "php", command: "intelephense"},
 		{name: "Java Gradle settings", marker: "settings.gradle", project: "java", command: "jdtls"},
-		{name: "Kotlin Gradle project", marker: "build.gradle.kts", source: "src/main/kotlin/example/App.kt", project: "kotlin", command: "kotlin-lsp"},
-		{name: "Kotlin Maven project", marker: "pom.xml", source: "src/main/kotlin/example/App.kt", project: "kotlin", command: "kotlin-lsp"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -194,19 +218,7 @@ func TestWorkspaceScopedLanguagesUseOneRoot(t *testing.T) {
 	}
 }
 
-func TestKotlinRequirementNeedsKotlinSource(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "build.gradle.kts"), []byte("plugins { java }\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for _, requirement := range DetectRequirements(root) {
-		if requirement.Project == "kotlin" {
-			t.Fatalf("Java-only Gradle project detected as Kotlin: %+v", DetectRequirements(root))
-		}
-	}
-}
-
-func TestDetectAllUsesManagedServerAsFallback(t *testing.T) {
+func TestDetectAllUsesManagedServer(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", filepath.Join(root, "home"))
 	t.Setenv("PATH", "")
@@ -214,12 +226,7 @@ func TestDetectAllUsesManagedServerAsFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	managed := filepath.Join(root, "managed", "gopls")
-	roots := detectAll(root, func(command string) string {
-		if command == "gopls" {
-			return managed
-		}
-		return ""
-	})
+	roots := detectAll(root, testManagedTools{"gopls": managed})
 	if len(roots) != 1 || roots[0].Server.Command != managed {
 		t.Fatalf("roots = %+v, want managed command %q", roots, managed)
 	}
@@ -241,14 +248,37 @@ func TestDetectAllPrefersManagedServerOverSystemFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	managed := filepath.Join(root, "managed", "gopls")
-	roots := detectAll(root, func(command string) string {
-		if command == "gopls" {
-			return managed
-		}
-		return ""
-	})
+	roots := detectAll(root, testManagedTools{"gopls": managed})
 	if len(roots) != 1 || roots[0].Server.Command != managed {
 		t.Fatalf("roots = %+v, want managed command %q", roots, managed)
+	}
+}
+
+func TestJavaDebugHostUsesOnlyManagedJDTLS(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "pom.xml"), []byte("<project/>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(root, "node_modules", ".bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, tooling.Candidates(runtime.GOOS, "jdtls")[0]), []byte("host"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	managed := filepath.Join(root, "managed", "jdtls")
+	tools := testManagedTools{"jdtls": managed}
+	manager := NewManager(root, WithManagedTools(tools))
+	defer manager.Close()
+	roots := manager.detect()
+	if len(roots) != 1 || roots[0].Server.Command != managed {
+		t.Fatalf("Java hosts = %+v", roots)
+	}
+	tools["jdtls"] = ""
+	manager.InvalidateDetection()
+	if roots := manager.detect(); len(roots) != 0 {
+		t.Fatalf("unmanaged Java host was accepted: %+v", roots)
 	}
 }
 

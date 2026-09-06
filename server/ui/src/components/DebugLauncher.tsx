@@ -1,4 +1,12 @@
-import { Bug, Check, Loader2, Monitor, MonitorPlay, Play } from "lucide-react";
+import {
+	Bug,
+	Check,
+	Download,
+	Loader2,
+	Monitor,
+	MonitorPlay,
+	Play,
+} from "lucide-react";
 import {
 	type ReactNode,
 	useCallback,
@@ -11,6 +19,8 @@ import {
 	type DebugLaunchPlan,
 	type DebugSession,
 	type DebugTarget,
+	type DebugToolProgress,
+	type DebugToolStatus,
 	generateDebugPlan,
 	startDebugPlan,
 } from "../api/debug";
@@ -34,7 +44,7 @@ interface Props {
 	onFailed?: (message: string) => void;
 }
 
-type Phase = "planning" | "review" | "starting" | "error";
+type Phase = "planning" | "install" | "review" | "starting" | "error";
 
 export function DebugLauncher({ open, seed, ...callbacks }: Props) {
 	const requestKey = open
@@ -62,6 +72,9 @@ function DebugLauncherContent({
 	const requestRef = useRef<AbortController | null>(null);
 	const [phase, setPhase] = useState<Phase>(seed ? "planning" : "error");
 	const [plan, setPlan] = useState<DebugLaunchPlan | null>(null);
+	const [progress, setProgress] = useState<DebugToolProgress | null>(null);
+	const [tools, setTools] = useState<DebugToolStatus[]>([]);
+	const [installRequested, setInstallRequested] = useState(false);
 	const [pauseAtEntry, setPauseAtEntry] = useState(false);
 	const [configurationText, setConfigurationText] = useState("{}");
 	const [error, setError] = useState(
@@ -71,6 +84,9 @@ function DebugLauncherContent({
 	const action = seed?.action;
 	const currentPath = seed?.currentPath;
 	const targetID = seed?.target.id;
+	const canInstall =
+		tools.some((tool) => !tool.installed) &&
+		tools.every((tool) => tool.installed || tool.installable);
 
 	useEffect(() => {
 		if (!open || !action || currentPath === undefined || !targetID) return;
@@ -82,11 +98,25 @@ function DebugLauncherContent({
 				action,
 				target_id: targetID,
 				current_path: currentPath,
+				install: installRequested,
 			},
 			controller.signal,
+			(update) => {
+				if (!controller.signal.aborted) setProgress(update);
+			},
+			(statuses) => {
+				if (!controller.signal.aborted) setTools(statuses);
+			},
 		)
-			.then((generated) => {
+			.then((result) => {
 				if (controller.signal.aborted) return;
+				if (result.type === "installation_required") {
+					setTools(result.tools);
+					setPhase("install");
+					return;
+				}
+				const generated = result.plan;
+				setError(result.warning ?? "");
 				setPlan(generated);
 				setPauseAtEntry(
 					generated.breakpoints.length > 0 ||
@@ -100,8 +130,11 @@ function DebugLauncherContent({
 				setError(errorMessage(cause));
 				setPhase("error");
 			});
-		return () => controller.abort();
-	}, [action, attempt, currentPath, open, targetID]);
+		return () => {
+			controller.abort();
+			requestRef.current?.abort();
+		};
+	}, [action, attempt, currentPath, installRequested, open, targetID]);
 
 	const close = useCallback(() => {
 		requestRef.current?.abort();
@@ -112,6 +145,7 @@ function DebugLauncherContent({
 		requestRef.current?.abort();
 		setPhase("planning");
 		setPlan(null);
+		setProgress(null);
 		setPauseAtEntry(false);
 		setConfigurationText("{}");
 		setError("");
@@ -174,12 +208,60 @@ function DebugLauncherContent({
 			initialFocus="first"
 		>
 			<div className="w-full space-y-3">
+				{tools.length > 0 && (
+					<ul
+						aria-label="Debugger setup"
+						className="space-y-2 rounded-md border border-border-subtle bg-bg-surface/30 px-3 py-2.5 text-[11px]"
+					>
+						{tools.map((tool) => (
+							<li
+								key={tool.tool}
+								className="flex items-center justify-between gap-3"
+							>
+								<span className="text-fg-muted">{tool.label}</span>
+								<span className="flex items-center gap-1.5 text-fg-dim">
+									{phase === "planning" &&
+									progress?.tool === tool.tool &&
+									progress.phase === "updating" ? (
+										"Updating…"
+									) : tool.installed ? (
+										<>
+											<Check size={12} className="text-success" /> Installed
+										</>
+									) : phase === "planning" &&
+									  progress?.tool === tool.tool &&
+									  progress.phase !== "checking" ? (
+										"Installing…"
+									) : phase === "error" && installRequested && progress ? (
+										"Installation failed"
+									) : (
+										"Not installed"
+									)}
+								</span>
+							</li>
+						))}
+					</ul>
+				)}
+				{phase === "install" && (
+					<p className="text-[11px] leading-relaxed text-fg-muted">
+						{canInstall
+							? "Install the missing debugger tools in Wingman to continue?"
+							: "Wingman's debugger installation is disabled or unavailable. Enable managed tool installation, then check again."}
+					</p>
+				)}
 				{phase === "planning" && (
 					<Busy
 						label={
-							seed?.target.kind === "browser-script"
-								? "Preparing browser tools and development server…"
-								: "Preparing launch…"
+							progress
+								? `${progress.phase === "checking" ? "Checking" : progress.phase === "updating" ? "Updating" : "Installing"} ${progress.label}…`
+								: installRequested
+									? "Preparing installation…"
+									: "Checking debugger…"
+						}
+						detail={
+							progress && progress.phase !== "checking"
+								? "This may take a few minutes."
+								: undefined
 						}
 					/>
 				)}
@@ -250,6 +332,19 @@ function DebugLauncherContent({
 					<button type="button" className={dialogButtonClass} onClick={close}>
 						Cancel
 					</button>
+					{phase === "install" && (
+						<button
+							type="button"
+							className={dialogPrimaryButtonClass}
+							onClick={() => {
+								if (canInstall) setInstallRequested(true);
+								retry();
+							}}
+						>
+							{canInstall && <Download size={12} />}
+							{canInstall ? "Install debugger" : "Check again"}
+						</button>
+					)}
 					{phase === "error" && seed && (
 						<button
 							type="button"
@@ -349,10 +444,16 @@ function ToggleOption({
 	);
 }
 
-function Busy({ label }: { label: string }) {
+function Busy({ label, detail }: { label: string; detail?: string }) {
 	return (
-		<div className="flex items-center gap-2 rounded-md border border-border-subtle bg-bg-surface/30 px-3 py-3 text-[11px] text-fg-muted">
-			<Loader2 size={12} className="animate-spin" /> {label}
+		<div
+			role="status"
+			className="rounded-md border border-border-subtle bg-bg-surface/30 px-3 py-3 text-[11px] text-fg-muted"
+		>
+			<div className="flex items-center gap-2">
+				<Loader2 size={12} className="shrink-0 animate-spin" /> {label}
+			</div>
+			{detail && <p className="mt-1.5 text-fg-dim">{detail}</p>}
 		</div>
 	);
 }

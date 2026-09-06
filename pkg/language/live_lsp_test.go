@@ -25,7 +25,7 @@ func TestLiveReactTypeScriptDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := language.New(root, filepath.Join(t.TempDir(), "graph.json"), lsp.WithCommandResolver(tools.Resolve))
+	service := language.New(root, filepath.Join(t.TempDir(), "graph.json"), lsp.WithManagedTools(tools))
 	defer service.Close()
 	server := service.Manager().FindServer(file)
 	if server == nil {

@@ -264,7 +264,7 @@ func (m *webE2EModel) handler(w http.ResponseWriter, r *http.Request) {
 }
 
 func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
-	testenv.WingmanHome(t)
+	copyTestGopls(t, testenv.WingmanHome(t))
 	workDir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(workDir, "theme-preview.html"),

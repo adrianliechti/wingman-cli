@@ -272,18 +272,12 @@ func (w *Workspace) WarmUp() {
 		}
 
 		debugRegistry := debugadapter.NewRegistry(w.DevTools)
-		var languageOptions []lsp.ManagerOption
-		if w.DevTools != nil {
-			languageOptions = append(languageOptions, lsp.WithCommandResolver(w.DevTools.Resolve))
-		}
+		languageOptions := []lsp.ManagerOption{lsp.WithManagedTools(w.DevTools)}
 		for server, options := range debugRegistry.ServerInitializations() {
 			languageOptions = append(languageOptions, lsp.WithServerInitializationOptions(server, options))
 		}
 		languageService := language.New(w.RootPath, filepath.Join(projectGraphDir(w.RootPath), "graph.json"), languageOptions...)
-		dapManager := dap.NewManager(w.RootPath, debugRegistry.Descriptors()...)
-		if w.DevTools != nil {
-			dapManager.SetCommandResolver(w.DevTools.Resolve)
-		}
+		dapManager := dap.NewManager(w.RootPath, w.DevTools, debugRegistry.Descriptors()...)
 		dapManager.SetAdapterConnector(debugadapter.NewConnector(languageService))
 		graphEngine := languageService.Graph()
 		lspTools := lsptool.NewTools(languageService)
@@ -321,7 +315,7 @@ func (w *Workspace) WarmUp() {
 }
 
 // ManagedToolSet selects the curated editor capabilities a frontend uses.
-// Browser runtimes and adapters without a managed recipe remain external.
+// Language runtimes and build tools remain external.
 type ManagedToolSet uint8
 
 const (
@@ -334,17 +328,58 @@ const (
 // updates invalidate discovery caches immediately; active sessions keep
 // running and use the new command on their next start.
 func (w *Workspace) UpdateManagedTools(ctx context.Context, tools ManagedToolSet, progress ...func(devtools.Progress)) (bool, error) {
+	return w.updateManagedTools(ctx, tools, "", true, progress...)
+}
+
+// DebugToolStatus checks the selected language's debugger and host dependencies
+// without installing anything.
+func (w *Workspace) DebugToolStatus(ctx context.Context, language string) ([]devtools.ToolStatus, error) {
 	w.mu.RLock()
 	manager := w.DevTools
+	w.mu.RUnlock()
+	requirements, err := w.managedToolRequirements(ctx, ManagedDAPTools, language)
+	if err != nil {
+		return nil, err
+	}
+	return manager.Status(ctx, requirements)
+}
+
+// UpdateDebugTools installs or refreshes the selected language's managed
+// debugger and host dependencies, checking for updates at most once per day.
+func (w *Workspace) UpdateDebugTools(ctx context.Context, language string, install bool, progress ...func(devtools.Progress)) (bool, error) {
+	if strings.TrimSpace(language) == "" {
+		return false, errors.New("debugger language is required")
+	}
+	return w.updateManagedTools(ctx, ManagedDAPTools, language, install, progress...)
+}
+
+func (w *Workspace) updateManagedTools(ctx context.Context, tools ManagedToolSet, language string, install bool, progress ...func(devtools.Progress)) (bool, error) {
+	w.mu.RLock()
+	manager := w.DevTools
+	dapManager := w.DAP
 	closed := w.closed
 	w.mu.RUnlock()
 	if closed || manager == nil {
 		return false, nil
 	}
+	if dapManager != nil {
+		release, err := dapManager.BeginPreparation()
+		if err != nil {
+			return false, err
+		}
+		defer release()
+	}
 
-	requirements, detectErr := w.managedToolRequirements(ctx, tools)
-	changed, updateErr := manager.Update(ctx, requirements, progress...)
-	if !changed {
+	requirements, detectErr := w.managedToolRequirements(ctx, tools, language)
+	onDemand := language != ""
+	var changed bool
+	var updateErr error
+	if onDemand {
+		changed, updateErr = manager.UpdateOnDemand(ctx, requirements, install, progress...)
+	} else {
+		changed, updateErr = manager.Update(ctx, requirements, progress...)
+	}
+	if !changed && !onDemand {
 		return false, errors.Join(detectErr, updateErr)
 	}
 
@@ -352,7 +387,7 @@ func (w *Workspace) UpdateManagedTools(ctx context.Context, tools ManagedToolSet
 	w.dapLifeMu.RLock()
 	w.mu.RLock()
 	languageService := w.Language
-	dapManager := w.DAP
+	dapManager = w.DAP
 	closed = w.closed
 	w.mu.RUnlock()
 	if !closed {
@@ -374,13 +409,12 @@ func (w *Workspace) UpdateManagedTools(ctx context.Context, tools ManagedToolSet
 	}
 	w.dapLifeMu.RUnlock()
 	w.lspLifeMu.RUnlock()
-	return true, errors.Join(detectErr, updateErr)
+	return changed, errors.Join(detectErr, updateErr)
 }
 
-// managedToolRequirements keeps frontend scope explicit. Only tools with a
-// curated managed recipe are returned; other adapters remain discoverable but
-// are not provisioned here.
-func (w *Workspace) managedToolRequirements(ctx context.Context, tools ManagedToolSet) ([]devtools.Requirement, error) {
+// managedToolRequirements keeps frontend and language scope explicit. The
+// devtools manager selects curated recipes from these detected requirements.
+func (w *Workspace) managedToolRequirements(ctx context.Context, tools ManagedToolSet, language string) ([]devtools.Requirement, error) {
 	root := w.RootPath
 	registry := w.DebugRegistry()
 
@@ -388,7 +422,13 @@ func (w *Workspace) managedToolRequirements(ctx context.Context, tools ManagedTo
 	var detectErr error
 	needsJavaHost := false
 	if tools&ManagedDAPTools != 0 {
-		adapterRequirements, detectErr = dap.DetectRequirements(ctx, root, registry.Descriptors())
+		descriptors := registry.Descriptors()
+		if language != "" {
+			descriptors = slices.DeleteFunc(descriptors, func(descriptor dap.AdapterDescriptor) bool {
+				return !strings.EqualFold(descriptor.Language, language)
+			})
+		}
+		adapterRequirements, detectErr = dap.DetectRequirements(ctx, root, descriptors)
 		needsJavaHost = slices.ContainsFunc(adapterRequirements, func(requirement dap.AdapterRequirement) bool {
 			return strings.EqualFold(requirement.Language, "Java")
 		})

@@ -416,25 +416,14 @@ tab with output, controls, variables, and the call stack.
 | JavaScript/TypeScript | [vscode-js-debug](https://github.com/microsoft/vscode-js-debug) | Node entry files and Node scripts in `package.json` |
 | React/Vite | vscode-js-debug browser profile | Vite development scripts in `package.json` |
 
-Wingman automatically provisions package-backed adapters such as Delve and
-debugpy. It installs official checksummed GitHub releases of vscode-js-debug,
-CodeLLDB, and NetCoreDbg on a best-effort basis because those adapters have no
-suitable cross-platform package. A blocked GitHub connection is non-fatal and
-project or system adapters remain valid fallbacks.
+Debuggers use Wingman's managed installations. If the selected debugger is
+missing, the launch popup asks you to install it and shows progress, errors,
+and retry. Opening the web UI does not install debuggers.
 
 Unbuilt .NET and Rust targets are built with `dotnet build` or `cargo build`.
 Click the editor gutter to add breakpoints.
 Closing the Debug tab stops the session. Runnable samples live in
 [`examples/debug`](examples/debug).
-
-Kotlin is currently LSP-only. JetBrains' full Run/Debug support remains an
-[open feature request](https://github.com/Kotlin/kotlin-lsp/issues/46), and the
-experimental attach adapter currently accepts breakpoints without reliably
-[stopping the JVM](https://github.com/Kotlin/kotlin-lsp/issues/198), so Wingman
-does not register it as a working debugger.
-Kotlin language support remains available when `kotlin-lsp` or
-`kotlin-language-server` is installed externally; project builds and imports
-still need their usual compatible JDK.
 
 ## 🛠️ Built-in Tools
 
@@ -454,30 +443,51 @@ Wingman comes with powerful built-in tools:
 
 ### LSP and DAP installation
 
-Wingman detects language servers and debuggers from project files. A runnable
-project-local command, including one under `.venv`, `venv`, `env`,
-`node_modules/.bin`, or `vendor/bin`, is authoritative. Otherwise Wingman
-installs the following curated tools under `$WINGMAN_HOME/tools`.
-Language runtimes and SDKs remain external; current JDT LS releases require
-JDK 21 or newer.
+Wingman registers only language servers and debuggers with managed installers.
+It detects the supported projects below and always uses its installation under
+`$WINGMAN_HOME/tools` (normally `~/.wingman/tools`). A missing or unusable
+managed copy does not fall back to `.venv`, `node_modules/.bin`, `PATH`, or an
+alternative system language server. Discovery, installation checks, and launch
+share this policy across the web UI, CLI, TUI, and ACP.
 
-Package recipes request the package manager's latest stable release whenever
-their daily refresh is due. Rust Analyzer is the latest component supplied by
-the project's active rustup toolchain, so a pinned project toolchain stays
-reproducible. The JavaScript, Rust, and .NET debuggers use their latest official
-GitHub releases on a best-effort basis. Wingman does not update project-local
-or system fallback tools.
+Project interpreters, runtimes, SDKs, build tools, and browsers remain external.
+For example, Python programs still run with their project's interpreter, and
+Java builds still need a compatible JDK. Project and system language servers
+and debuggers are never selected.
+
+The web UI installs language tools at startup. Debuggers are installed on demand
+when you click **Run** or **Debug** beside an entry point and choose **Install
+debugger** in the launch popup. The popup shows which tools are installed,
+asks before installing missing tools, and shows setup progress with cancellation
+and retry. Only the selected language's debugger and its host dependencies are
+installed. Java debugging uses both managed JDT LS and the managed java-debug
+plug-in; external Java and JavaScript debugger overrides are not used by Wingman.
+
+Managed language tools check for updates at startup. Installed debuggers check
+when their launch popup opens. Both refresh at most once per day and request
+the latest release from their configured source. Failed refreshes preserve the
+existing managed copy; the debug popup shows a warning and still permits launch.
+Tool setup and debug launches cannot run concurrently. An active debug session
+blocks tool updates, keeping its language-server host running.
+Failed checks back off for an hour, while a missing debugger can be retried
+immediately from the popup. Updates are staged and validated before replacing
+the previous installation, so versions do not accumulate.
+
+Rust Analyzer uses a managed launcher for the component supplied by each
+project's active rustup toolchain. Wingman installs the component through
+rustup and respects pinned toolchains; it does not upgrade the Rust toolchain.
+Other project-local and system tools are not updated by Wingman.
 
 | Capability | Language | Executable | Install method | Source |
 |------------|----------|------------|----------------|--------|
 | LSP | Go | `gopls` | Go | [`golang.org/x/tools/gopls`](https://pkg.go.dev/golang.org/x/tools/gopls) |
 | DAP | Go | `dlv` | Go | [`github.com/go-delve/delve/cmd/dlv`](https://pkg.go.dev/github.com/go-delve/delve/cmd/dlv) |
 | LSP | Rust | `rust-analyzer` | rustup component | `rustup component add rust-analyzer` |
-| DAP | Rust | `codelldb` | GitHub release, best effort | Latest checksummed platform [CodeLLDB](https://github.com/vadimcn/codelldb/releases/latest) VSIX |
+| DAP | Rust | `codelldb` | GitHub release | Latest checksummed platform [CodeLLDB](https://github.com/vadimcn/codelldb/releases/latest) VSIX |
 | LSP | C#/.NET | `csharp-ls` | .NET tool / NuGet | [`csharp-ls`](https://www.nuget.org/packages/csharp-ls) |
-| DAP | C#/.NET | `netcoredbg` | GitHub release, best effort | Latest checksummed platform [NetCoreDbg](https://github.com/Samsung/netcoredbg/releases/latest) archive |
+| DAP | C#/.NET | `netcoredbg` | GitHub release | Latest checksummed platform [NetCoreDbg](https://github.com/Samsung/netcoredbg/releases/latest) archive |
 | LSP | TypeScript/JavaScript | `typescript-language-server` | npm | [`typescript-language-server`](https://www.npmjs.com/package/typescript-language-server), [`typescript`](https://www.npmjs.com/package/typescript) |
-| DAP | JavaScript/TypeScript | `js-debug-adapter` | GitHub release, best effort | Latest checksummed standalone [vscode-js-debug](https://github.com/microsoft/vscode-js-debug/releases/latest) DAP archive |
+| DAP | JavaScript/TypeScript | `js-debug-adapter` | GitHub release | Latest checksummed standalone [vscode-js-debug](https://github.com/microsoft/vscode-js-debug/releases/latest) DAP archive |
 | LSP | Python | `basedpyright-langserver` | pip / PyPI | [`basedpyright`](https://pypi.org/project/basedpyright/) |
 | DAP | Python | `debugpy-adapter` | pip / PyPI | [`debugpy`](https://pypi.org/project/debugpy/) |
 | LSP | Java | `jdtls` | Maven | Maven `LATEST` for `org.eclipse.jdt.ls:org.eclipse.jdt.ls.product:tar.gz` from the [Eclipse JDT LS Maven repository](https://repo.eclipse.org/repository/ls-maven2-releases/org/eclipse/jdt/ls/org.eclipse.jdt.ls.product/) |
@@ -489,84 +499,54 @@ or system fallback tools.
 | LSP | YAML | `yaml-language-server` | npm | [`yaml-language-server`](https://www.npmjs.com/package/yaml-language-server) |
 | LSP | Dockerfile | `docker-langserver` | npm | [`dockerfile-language-server-nodejs`](https://www.npmjs.com/package/dockerfile-language-server-nodejs) |
 
-Optional support that has no suitable package-manager recipe is never
-downloaded automatically:
+Browser debugging requires Chrome, Chromium, Edge, Brave, or a browser supplied
+through `CHROME_PATH`. Browsers are installed externally.
 
-| Capability | Command or setting | Supply externally |
-|------------|--------------------|-------------------|
-| Browser debugging | Chrome, Chromium, Edge, Brave, or `CHROME_PATH` | OS/company browser package |
-| Kotlin LSP | `kotlin-lsp` or `kotlin-language-server` | [JetBrains Kotlin LSP](https://github.com/Kotlin/kotlin-lsp) or another distribution |
-
-Resolution order is project-local, Wingman's managed installation,
-then `PATH` and standard user tool directories as a final fallback. Wingman
-never installs into or modifies a project's `.venv`; if the complete Python
-tool is already there it is reused, otherwise Wingman creates its own isolated
-environment under `$WINGMAN_HOME/tools`.
+Wingman installs Python language and debugger packages in its own isolated
+environments under `$WINGMAN_HOME/tools`, leaving project virtual environments
+untouched.
 
 Go, npm, pip, NuGet, and Maven installs honor their normal registry, proxy,
 credentials, mirror, and project configuration. JDT LS and java-debug prefer a
 project `mvnw` and otherwise use `mvn`. JDT LS's complete product archive comes
 through the Eclipse Maven repository, while the Java debug plug-in comes from
 Maven Central, so an enterprise Maven mirror can proxy, cache, or allowlist
-both. `WINGMAN_JAVA_DEBUG_BUNDLE` still overrides the managed Java debug
-plug-in when an externally supplied bundle is required. Rust Analyzer is
-installed with rustup in the project directory, preserving
+both. Rust Analyzer is installed with rustup in the project directory, preserving
 `rust-toolchain.toml` and rustup override selection; rustup mirrors can be set
 with `RUSTUP_DIST_SERVER`. The three direct GitHub recipes use proxy environment
 variables, support `GITHUB_TOKEN` or `GH_TOKEN`, allowlist official release
 asset names for the current platform, verify GitHub's SHA-256 digest, and never
 replace a working adapter after a failed refresh. CodeLLDB is managed on its
 official macOS, Linux, and Windows release platforms. NetCoreDbg is managed on
-Linux x64/ARM64, macOS ARM64, and Windows x64; elsewhere an inherited copy is
-still used. No Open VSX or browser archive downloader is used. In particular,
+Linux x64/ARM64, macOS ARM64, and Windows x64; unsupported platforms report an
+installation error. No Open VSX or browser archive downloader is used. In particular,
 `@puppeteer/browsers` is not installed automatically because the npm package
 subsequently downloads the browser from a separate binary host.
 
-Set `WINGMAN_MANAGED_TOOLS=off` to disable automatic package installation;
-already-installed managed tools keep working and system tools remain the final
-fallback.
+Set `WINGMAN_MANAGED_TOOLS=off` to disable managed installation and updates.
+Already-installed managed tools keep working. This setting does not enable
+system fallback for managed capabilities.
 
 The npm-managed TypeScript packages provide LSP support only. Browser and Node
-debugging use vscode-js-debug, which can be project-local, best-effort managed,
-or supplied by the system. A Chromium browser is an additional runtime for
+debugging use managed vscode-js-debug. A Chromium browser is an additional runtime for
 browser targets, not a DAP package.
 
-### Additional LSP support
+### Supported LSP projects
 
 | Language | Server | Detected By |
 |----------|--------|-------------|
 | Go | `gopls` | `go.mod`, `go.work` |
-| TypeScript/JS | `typescript-language-server`, `vtsls` | `tsconfig.json`, `package.json` |
-| Deno | `deno lsp` | `deno.json`, `deno.jsonc` |
-| Python | `basedpyright`, `pyright`, `pylsp`, `jedi-language-server` | `pyproject.toml`, `requirements.txt` |
+| TypeScript/JS | Managed `tsc` (7+) or `typescript-language-server` | `tsconfig.json`, `package.json` |
+| Python | Managed `basedpyright` | `pyproject.toml`, `requirements.txt` |
 | Rust | `rust-analyzer` | `Cargo.toml` |
-| C/C++ | `clangd`, `ccls` | `compile_commands.json`, `CMakeLists.txt` |
 | Java | `jdtls` | `pom.xml`, `build.gradle`, `settings.gradle` |
-| C# | `omnisharp`, `csharp-ls` | `*.csproj`, `*.sln` |
-| F# | `fsautocomplete` | `*.fsproj`, `*.sln` |
-| Ruby | `ruby-lsp`, `solargraph` | `Gemfile` |
-| PHP | `intelephense`, `phpactor` (inherited only) | `composer.json`, `artisan` |
-| Swift | `sourcekit-lsp` | `Package.swift` |
-| Kotlin | `kotlin-lsp`, `kotlin-language-server` | Kotlin sources in Gradle or Maven projects |
-| Scala | `metals` | `build.sbt` |
-| Dart | `dart language-server` | `pubspec.yaml` |
-| Zig | `zls` | `build.zig` |
-| Lua | `lua-language-server` | `.luarc.json` |
-| Elixir | `elixir-ls`, `lexical` | `mix.exs` |
-| Haskell | `haskell-language-server` | `stack.yaml`, `*.cabal` |
-| OCaml | `ocamllsp` | `dune-project` |
-| Clojure | `clojure-lsp` | `deps.edn`, `project.clj` |
-| Gleam | `gleam lsp` | `gleam.toml` |
-| Nix | `nixd` | `flake.nix`, `default.nix` |
+| C# | Managed `csharp-ls` | `*.csproj`, `*.sln` |
 | Vue | `vue-language-server` | `package.json` |
 | Svelte | `svelteserver` | `package.json` |
 | Astro | `astro-ls` | `package.json` |
 | Bash | `bash-language-server` | `.bashrc`, `*.sh`, `*.bash`, `*.zsh`, `*.ksh` |
-| Terraform | `terraform-ls` | `main.tf`, `.terraform` |
-| YAML | `yaml-language-server` | `.yamllint`, `docker-compose.yml` |
+| YAML | `yaml-language-server` | `*.yaml`, `*.yml` |
 | Docker | `docker-langserver` | `Dockerfile` |
-| Typst | `tinymist` | `typst.toml` |
-| LaTeX | `texlab` | `.latexmkrc` |
 
 The LSP tool provides these operations:
 - **diagnostics** / **workspaceDiagnostics** — Compiler errors and warnings

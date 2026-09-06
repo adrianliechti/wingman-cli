@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/adrianliechti/wingman-agent/pkg/devtools"
 	"github.com/adrianliechti/wingman-agent/pkg/terminal"
 )
 
@@ -16,9 +17,7 @@ func TestLiveDelveLaunch(t *testing.T) {
 	if os.Getenv("WINGMAN_LIVE_DAP") == "" {
 		t.Skip("set WINGMAN_LIVE_DAP=1 to run a real Delve session")
 	}
-	if resolveAdapterCommand("dlv") == "" {
-		t.Skip("dlv is not installed")
-	}
+	tools := liveDelveTools(t)
 
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/daptest\n\ngo 1.24\n")
@@ -35,7 +34,7 @@ func main() {
 }
 `)
 
-	manager := NewManager(root, liveDelveAdapter())
+	manager := NewManager(root, tools, liveDelveAdapter())
 	defer manager.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -103,15 +102,13 @@ func TestLiveDelveWorkspacePackage(t *testing.T) {
 	if os.Getenv("WINGMAN_LIVE_DAP") == "" {
 		t.Skip("set WINGMAN_LIVE_DAP=1 to run a real Delve session")
 	}
-	if resolveAdapterCommand("dlv") == "" {
-		t.Skip("dlv is not installed")
-	}
+	tools := liveDelveTools(t)
 
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager := NewManager(root, liveDelveAdapter())
+	manager := NewManager(root, tools, liveDelveAdapter())
 	defer manager.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -162,9 +159,7 @@ func TestLiveDelveTerminal(t *testing.T) {
 	if os.Getenv("WINGMAN_LIVE_DAP") == "" {
 		t.Skip("set WINGMAN_LIVE_DAP=1 to run a real Delve session")
 	}
-	if resolveAdapterCommand("dlv") == "" {
-		t.Skip("dlv is not installed")
-	}
+	tools := liveDelveTools(t)
 
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/dapterminal\n\ngo 1.24\n")
@@ -186,7 +181,7 @@ func main() {
 
 	terminals := terminal.NewManager(root)
 	defer terminals.Close()
-	manager := NewManager(root, liveDelveAdapter())
+	manager := NewManager(root, tools, liveDelveAdapter())
 	manager.SetTerminalLauncher(liveTerminalLauncher{manager: terminals})
 	defer manager.Close()
 
@@ -232,9 +227,7 @@ func TestLiveDelveTerminalManagerCloseCleansProcess(t *testing.T) {
 	if os.Getenv("WINGMAN_LIVE_DAP") == "" {
 		t.Skip("set WINGMAN_LIVE_DAP=1 to run a real Delve session")
 	}
-	if resolveAdapterCommand("dlv") == "" {
-		t.Skip("dlv is not installed")
-	}
+	tools := liveDelveTools(t)
 
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/dapclose\n\ngo 1.24\n")
@@ -254,7 +247,7 @@ func main() {
 
 	terminals := terminal.NewManager(root)
 	defer terminals.Close()
-	manager := NewManager(root, liveDelveAdapter())
+	manager := NewManager(root, tools, liveDelveAdapter())
 	manager.SetTerminalLauncher(liveTerminalLauncher{manager: terminals})
 	defer manager.Close()
 
@@ -380,4 +373,16 @@ func sourceLineContaining(t *testing.T, path, needle string) int {
 	}
 	t.Fatalf("%s does not contain %q", path, needle)
 	return 0
+}
+
+func liveDelveTools(t *testing.T) *devtools.Manager {
+	t.Helper()
+	tools, err := devtools.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tools.Resolve("dlv") == "" {
+		t.Skip("managed dlv is not installed")
+	}
+	return tools
 }

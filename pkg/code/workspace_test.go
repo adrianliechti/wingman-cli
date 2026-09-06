@@ -16,6 +16,7 @@ import (
 
 	"github.com/adrianliechti/wingman-agent/internal/testenv"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
+	"github.com/adrianliechti/wingman-agent/pkg/dap"
 	"github.com/adrianliechti/wingman-agent/pkg/debugadapter"
 	"github.com/adrianliechti/wingman-agent/pkg/devtools"
 	wingmcp "github.com/adrianliechti/wingman-agent/pkg/mcp"
@@ -46,6 +47,39 @@ func TestWorkspaceCloseCancelsManagedToolUpdates(t *testing.T) {
 	}
 }
 
+func TestDebugToolSetupBlocksLaunchAndCanCloseWorkspace(t *testing.T) {
+	testenv.UserHome(t)
+	testenv.WingmanHome(t)
+	t.Setenv("WINGMAN_MANAGED_TOOLS", "on")
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/demo\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace.WarmUp()
+	t.Cleanup(workspace.Close)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	checked := false
+	_, err = workspace.UpdateDebugTools(ctx, "Go", true, func(progress devtools.Progress) {
+		if progress.Phase != devtools.ProgressChecking {
+			return
+		}
+		checked = true
+		if _, err := workspace.DAP.Start(ctx, dap.StartOptions{}); !errors.Is(err, dap.ErrBusy) {
+			t.Errorf("launch during update = %v, want ErrBusy", err)
+		}
+		cancel()
+		workspace.Close()
+	})
+	if !checked || !errors.Is(err, context.Canceled) {
+		t.Fatalf("setup = %v, checking = %t", err, checked)
+	}
+}
+
 type managedToolDirectoryStub struct{}
 
 func (managedToolDirectoryStub) ToolDir(string) string { return "" }
@@ -69,7 +103,7 @@ func TestManagedToolRequirementsIncludeJavaDebuggerAndHost(t *testing.T) {
 		return devtools.Requirement{}, false
 	}
 
-	lspOnly, err := workspace.managedToolRequirements(context.Background(), ManagedLSPTools)
+	lspOnly, err := workspace.managedToolRequirements(context.Background(), ManagedLSPTools, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +111,7 @@ func TestManagedToolRequirementsIncludeJavaDebuggerAndHost(t *testing.T) {
 		t.Fatalf("LSP-only JDT LS requirement = %+v, found %t", requirement, ok)
 	}
 
-	dapOnly, err := workspace.managedToolRequirements(context.Background(), ManagedDAPTools)
+	dapOnly, err := workspace.managedToolRequirements(context.Background(), ManagedDAPTools, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +126,7 @@ func TestManagedToolRequirementsIncludeJavaDebuggerAndHost(t *testing.T) {
 		t.Fatalf("DAP-only Java debugger requirement was not detected: %+v", dapOnly)
 	}
 
-	editor, err := workspace.managedToolRequirements(context.Background(), ManagedEditorTools)
+	editor, err := workspace.managedToolRequirements(context.Background(), ManagedEditorTools, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +141,7 @@ func TestManagedDAPRequirementsIncludeJavaScriptDebugger(t *testing.T) {
 		t.Fatal(err)
 	}
 	workspace := &Workspace{RootPath: root}
-	requirements, err := workspace.managedToolRequirements(context.Background(), ManagedDAPTools)
+	requirements, err := workspace.managedToolRequirements(context.Background(), ManagedDAPTools, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,6 +151,59 @@ func TestManagedDAPRequirementsIncludeJavaScriptDebugger(t *testing.T) {
 		}
 	}
 	t.Fatalf("JavaScript debugger requirement not detected: %+v", requirements)
+}
+
+func TestManagedDebugRequirementsSelectOnlyRequestedLanguage(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("WINGMAN_JAVA_DEBUG_BUNDLE", "")
+	for name, contents := range map[string]string{
+		"go.mod":       "module example.com/demo\n\ngo 1.25\n",
+		"pom.xml":      "<project/>\n",
+		"package.json": "{}\n",
+		"main.py":      "print('hello')\n",
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	workspace := &Workspace{
+		RootPath:      root,
+		debugRegistry: debugadapter.NewRegistry(managedToolDirectoryStub{}),
+	}
+	for _, test := range []struct {
+		language string
+		commands []string
+	}{
+		{language: "Go", commands: []string{"dlv"}},
+		{language: "Python", commands: []string{"debugpy-adapter"}},
+		{language: "Java", commands: []string{"java-debug-adapter", "jdtls"}},
+	} {
+		t.Run(test.language, func(t *testing.T) {
+			requirements, err := workspace.managedToolRequirements(context.Background(), ManagedDAPTools, test.language)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var commands []string
+			for _, requirement := range requirements {
+				commands = append(commands, requirement.Alternatives...)
+			}
+			slices.Sort(commands)
+			if !slices.Equal(commands, test.commands) {
+				t.Fatalf("commands = %v, want %v", commands, test.commands)
+			}
+		})
+	}
+	requirements, err := workspace.managedToolRequirements(context.Background(), ManagedLSPTools, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, requirement := range requirements {
+		for _, command := range requirement.Alternatives {
+			if slices.Contains([]string{"dlv", "debugpy-adapter", "java-debug-adapter", "js-debug-adapter"}, command) {
+				t.Fatalf("startup language tools include debugger %q", command)
+			}
+		}
+	}
 }
 
 func TestWarmUpCreatesLSPManagerOutsideGitRepository(t *testing.T) {
