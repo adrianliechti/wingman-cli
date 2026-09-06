@@ -39,6 +39,14 @@ func (f *flagSet) String(p *string, spec, usage string) {
 	})
 }
 
+// Strings appends each occurrence of a repeatable flag.
+func (f *flagSet) Strings(p *[]string, spec, usage string) {
+	f.add(spec, usage, func(v string) error {
+		*p = append(*p, v)
+		return nil
+	})
+}
+
 func (f *flagSet) Int(p *int, spec, usage string) {
 	f.add(spec, usage, func(v string) error {
 		n, err := strconv.Atoi(v)

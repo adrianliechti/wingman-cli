@@ -13,7 +13,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"golang.org/x/oauth2"
 
 	"github.com/adrianliechti/wingman-agent/internal/process"
 	"github.com/adrianliechti/wingman-agent/pkg/httpclient"
@@ -24,6 +26,9 @@ type Manager struct {
 	*Config
 
 	Dir string
+
+	// Credentials holds OAuth state for remote servers.
+	Credentials *CredentialStore
 
 	elicit atomic.Pointer[ElicitFunc]
 
@@ -40,6 +45,8 @@ type ToolListChangedFunc func(serverName string)
 func NewManager(cfg *Config) *Manager {
 	return &Manager{
 		Config: cfg,
+
+		Credentials: DefaultCredentialStore(),
 
 		sessions:            make(map[string]*mcp.ClientSession),
 		sessionObservations: make(map[*mcp.ClientSession]*telemetry.MCPSession),
@@ -174,7 +181,13 @@ func (m *Manager) Session(name string) *mcp.ClientSession {
 func (m *Manager) connect(ctx context.Context, name string, server ServerConfig) error {
 	client := m.newClient(name, server)
 
-	transport, err := createTransport(server, m.Dir)
+	handler, err := m.oauthHandler(name, server)
+
+	if err != nil {
+		return fmt.Errorf("MCP server %s: %w", name, err)
+	}
+
+	transport, err := createTransport(server, m.Dir, handler)
 
 	if err != nil {
 		return fmt.Errorf("MCP server %s: %w", name, err)
@@ -217,7 +230,29 @@ func (m *Manager) newClient(name string, servers ...ServerConfig) *mcp.Client {
 	return client
 }
 
-func createTransport(server ServerConfig, dir string) (mcp.Transport, error) {
+// oauthHandler equips remote servers with stored credentials. Without a
+// usable token the flow fails and points the user at 'wingman mcp login'.
+func (m *Manager) oauthHandler(name string, server ServerConfig) (auth.OAuthHandler, error) {
+	if server.URL == "" || hasAuthorizationHeader(server.Headers) {
+		return nil, nil
+	}
+
+	store := m.Credentials
+
+	if store == nil {
+		store = DefaultCredentialStore()
+	}
+
+	return newOAuthHandler(oauthOptions{
+		store:  store,
+		server: server,
+		fetcher: func(context.Context, *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
+			return nil, fmt.Errorf("%w: run 'wingman mcp login %s'", ErrLoginRequired, name)
+		},
+	})
+}
+
+func createTransport(server ServerConfig, dir string, handler auth.OAuthHandler) (mcp.Transport, error) {
 	if server.Dir != "" {
 		dir = server.Dir
 	}
@@ -250,6 +285,15 @@ func createTransport(server ServerConfig, dir string) (mcp.Transport, error) {
 		}
 
 		if server.Transport == "sse" {
+			// The SSE transport has no OAuth hook, so stored tokens ride on the client.
+			if handler != nil {
+				if ts, err := handler.TokenSource(context.Background()); err == nil && ts != nil {
+					client := *httpClient
+					client.Transport = &oauth2.Transport{Source: ts, Base: httpClient.Transport}
+					httpClient = &client
+				}
+			}
+
 			return &mcp.SSEClientTransport{
 				Endpoint: server.URL,
 
@@ -261,6 +305,8 @@ func createTransport(server ServerConfig, dir string) (mcp.Transport, error) {
 			Endpoint: server.URL,
 
 			HTTPClient: httpClient,
+
+			OAuthHandler: handler,
 		}, nil
 	}
 

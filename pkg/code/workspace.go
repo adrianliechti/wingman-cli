@@ -1461,8 +1461,7 @@ func projectKey(workingDir string) string {
 }
 
 func globalMCPConfigPath() string {
-	path, _ := layout.WingmanPath("mcp.json")
-	return path
+	return mcp.GlobalConfigPath()
 }
 
 func projectStateDir(workingDir string) string {

@@ -381,6 +381,25 @@ Remote (HTTP/SSE) servers are also supported via the `url` and optional `headers
 
 Configs are loaded from two locations and merged: `~/.wingman/mcp.json` (global, shared across all projects) and `./mcp.json` (project root). When a server name appears in both, the project config wins.
 
+`wingman mcp` manages both files from the command line:
+
+```bash
+wingman mcp add fs -- npx -y @modelcontextprotocol/server-filesystem .   # stdio server
+wingman mcp add remote --url https://mcp.example.com/mcp                 # remote server
+wingman mcp add api --url https://api.example.com/mcp -H "X-Api-Key: …" --scope project
+wingman mcp list
+wingman mcp get remote
+wingman mcp remove fs
+```
+
+Remote servers that require OAuth are logged in through your browser. `wingman mcp add`
+connects right away and starts the login when the server asks for it; `wingman mcp login NAME`
+repeats it later and `wingman mcp logout NAME` forgets the stored credentials. Wingman registers
+itself dynamically with the authorization server (pass `--client-id` for a pre-registered client)
+and receives the redirect on `http://localhost:3142/callback` (`--callback-port` changes the port).
+Tokens live in `~/.wingman/mcp-credentials.json` and are refreshed automatically; when a refresh
+is no longer possible, the agent reports that a login is required instead of opening a browser.
+
 ### Debugging (experimental)
 
 Use the inline **Run | Debug** actions above a detected entry point. Wingman

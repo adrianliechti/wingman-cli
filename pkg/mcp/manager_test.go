@@ -66,7 +66,7 @@ func TestCreateCommandTransportIncludesServerEnvironment(t *testing.T) {
 		Command: "server",
 		Args:    []string{"--stdio"},
 		Env:     map[string]string{"MCP_TOKEN": "secret"},
-	}, t.TempDir())
+	}, t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

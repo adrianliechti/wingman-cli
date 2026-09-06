@@ -4,20 +4,12 @@ import (
 	"os/exec"
 	"path"
 	"runtime"
+
+	"github.com/adrianliechti/wingman-agent/internal/browser"
 )
 
 func openBrowser(url string) {
-	var name string
-	var args []string
-	switch runtime.GOOS {
-	case "windows":
-		name, args = "rundll32", []string{"url.dll,FileProtocolHandler", url}
-	case "darwin":
-		name, args = "open", []string{url}
-	default:
-		name, args = "xdg-open", []string{url}
-	}
-	_ = startDetached(name, args...)
+	_ = browser.Open(url)
 }
 
 func revealPath(target string, isDir bool) error {

@@ -51,6 +51,8 @@ func main() {
 		runACP(ctx, args[1:])
 	case "run":
 		runRun(ctx, args[1:])
+	case "mcp":
+		runMCP(ctx, args[1:])
 	default:
 		if !strings.HasPrefix(args[0], "-") {
 			fatal(fmt.Errorf("unknown command %q (run 'wingman --help' for usage)", args[0]))
@@ -97,6 +99,7 @@ Usage:
   wingman server [flags]        Run the web UI server
   wingman acp [target] [flags]  Run as an ACP stdio server (wingman | claude | codex | pi)
   wingman run <target> [args]   Run an external agent through wingman
+  wingman mcp <command>         Manage MCP servers (list, get, add, remove, login, logout)
 
 Run targets:
   claude, claude-desktop, codex, copilot, gemini, goose, junie, opencode, pi
