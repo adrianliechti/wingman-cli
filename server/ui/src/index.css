@@ -516,3 +516,42 @@ html[data-window-chrome="windows-overlay"] .window-app-menu {
 .wingman-static-diff .diff-hidden-lines .center a {
 	display: none;
 }
+
+/* Change the layout around the existing content; never mount a second chat. */
+[data-mobile-layout] {
+	padding-top: env(safe-area-inset-top);
+	padding-bottom: env(safe-area-inset-bottom);
+}
+[data-mobile-layout] [data-window-titlebar],
+[data-mobile-layout] [data-panel-frame],
+[data-mobile-layout] [data-layout-panel="sessions"],
+[data-mobile-layout] [data-layout-panel="workspace"],
+[data-mobile-layout] #wingman-layout > [role="separator"] {
+	display: none !important;
+}
+[data-mobile-layout] #pane-split > [role="separator"],
+[data-mobile-layout] #pane-split > [data-mobile-active="false"] {
+	display: none !important;
+}
+[data-mobile-layout] #pane-split > [data-mobile-active="true"],
+[data-mobile-layout] [data-layout-panel="center"] {
+	flex: 1 1 100% !important;
+}
+@media (pointer: coarse) and (max-width: 1024px) {
+	.chat-composer-textarea {
+		font-size: 16px;
+	}
+	[data-chat-composer] button {
+		min-height: 44px;
+		min-width: 36px;
+	}
+	[data-chat-composer] [aria-haspopup="dialog"] {
+		max-width: 40vw;
+	}
+	[data-mobile-sessions] [data-session-id] > button {
+		min-height: 52px;
+	}
+	[data-mobile-sessions] [data-session-id] .text-\[12px\] {
+		font-size: 14px;
+	}
+}

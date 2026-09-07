@@ -1,4 +1,6 @@
 import { useMainLayout } from "./hooks/useMainLayout.ts";
+import { useMobileLayout } from "./hooks/useMobileLayout.ts";
+import { MobileNavigation } from "./components/MobileNavigation";
 import {
 	useWorkspace,
 	backendSettingsQuery,
@@ -273,6 +275,7 @@ function moveWorkspaceTab(tab: CenterTab, from: string, to: string): CenterTab {
 }
 
 export default function App() {
+	const mobile = useMobileLayout();
 	const { backend: agentId, selectBackend, drafts, setDraft } = useWorkspace();
 	const client = workspaceClient();
 	const [initialTab] = useState<CenterTab>(() => {
@@ -2448,6 +2451,7 @@ export default function App() {
 				>
 					<Panel
 						id="pane-left"
+						data-mobile-active={activeTab.pane !== "right"}
 						minSize="160px"
 						className="min-h-0 min-w-0 overflow-hidden"
 					>
@@ -2456,6 +2460,7 @@ export default function App() {
 					<ResizeHandle label="Resize right pane" hidden={false} />
 					<Panel
 						id="pane-right"
+						data-mobile-active={activeTab.pane === "right"}
 						minSize="160px"
 						defaultSize="35%"
 						onResize={handleRightPaneResize}
@@ -2733,7 +2738,8 @@ export default function App() {
 	return (
 		<div
 			ref={appRef}
-			className="relative flex h-screen flex-col bg-bg text-fg"
+			data-mobile-layout={mobile || undefined}
+			className="relative flex h-dvh flex-col bg-bg text-fg"
 			style={
 				{
 					"--left-panel-width": `${LEFT_PANEL_DEFAULT_SIZE}px`,
@@ -2742,6 +2748,24 @@ export default function App() {
 				} as CSSProperties
 			}
 		>
+			{mobile && (
+				<MobileNavigation
+					title={
+						activeTab.type === "chat"
+							? chatTabLabel(activeTab)
+							: activeTab.label
+					}
+					connected={connected}
+					running={phase !== "idle"}
+					currentSessionId={sessionId}
+					runningSessionIds={runningSessionIds}
+					onSelectBackend={handleBackendSelect}
+					onSelectSession={(id) => void handleSessionSelect(id, "keep")}
+					onDeleteSession={(id, title) => setSessionDelete({ id, title })}
+					onNewSession={() => void handleNewSession()}
+					onBackToChat={activeTab.type === "chat" ? undefined : focusChat}
+				/>
+			)}
 			<div
 				data-panel-frame="sessions"
 				aria-hidden="true"
@@ -2931,7 +2955,7 @@ export default function App() {
 					collapsedSize="0px"
 					collapsible
 					groupResizeBehavior="preserve-pixel-size"
-					onResize={handleLeftPanelResize}
+					onResize={mobile ? undefined : handleLeftPanelResize}
 					data-layout-panel="sessions"
 					inert={leftPanelCollapsed}
 					className="h-full overflow-hidden"
@@ -2977,7 +3001,7 @@ export default function App() {
 					collapsedSize="0px"
 					collapsible
 					groupResizeBehavior="preserve-pixel-size"
-					onResize={handleRightPanelResize}
+					onResize={mobile ? undefined : handleRightPanelResize}
 					data-layout-panel="workspace"
 					inert={rightPanelCollapsed}
 					className="h-full overflow-hidden"

@@ -150,71 +150,59 @@ func TestDetectRequirementsDoesNotRequireInstalledServer(t *testing.T) {
 	}
 }
 
-func TestDetectRequirementsRecognizesSourceAndGradleMarkers(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		marker  string
-		source  string
-		project string
-		command string
-	}{
-		{name: "shell script", marker: "scripts/build.sh", project: "bash", command: "bash-language-server"},
-		{name: "YAML document", marker: "config/release.yml", project: "yaml", command: "yaml-language-server"},
-		{name: "Java Gradle settings", marker: "settings.gradle", project: "java", command: "jdtls"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			root := t.TempDir()
-			path := filepath.Join(root, filepath.FromSlash(test.marker))
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(path, nil, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if test.source != "" {
-				source := filepath.Join(root, filepath.FromSlash(test.source))
-				if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(source, []byte("fun main() {}\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
+func TestDetectRequirementsRecognizesGradleSettings(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "settings.gradle"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 
-			for _, requirement := range DetectRequirements(root) {
-				if requirement.Project == test.project && slices.Contains(requirement.Commands, test.command) {
-					return
-				}
+	requirements := DetectRequirements(root)
+	if len(requirements) != 1 || requirements[0].Project != "java" || !slices.Contains(requirements[0].Commands, "jdtls") {
+		t.Fatalf("Java requirement not detected: %+v", requirements)
+	}
+}
+
+func TestPythonDetectionRequiresTyWithoutFallback(t *testing.T) {
+	for _, marker := range []string{"pyproject.toml", "ty.toml", "requirements.txt"} {
+		t.Run(marker, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, marker), nil, 0o600); err != nil {
+				t.Fatal(err)
 			}
-			t.Fatalf("%s requirement not detected: %+v", test.project, DetectRequirements(root))
+			requirements := DetectRequirements(root)
+			if len(requirements) != 1 || !reflect.DeepEqual(requirements[0].Commands, []string{"ty"}) {
+				t.Fatalf("Python requirements = %+v", requirements)
+			}
+			tools := testManagedTools{"basedpyright-langserver": filepath.Join(t.TempDir(), "basedpyright-langserver")}
+			if roots := detectAll(root, tools); len(roots) != 0 {
+				t.Fatalf("Python used another server when ty was missing: %+v", roots)
+			}
+			tools["ty"] = filepath.Join(t.TempDir(), "ty")
+			roots := detectAll(root, tools)
+			if len(roots) != 1 || roots[0].Server.Name != "ty" || !reflect.DeepEqual(roots[0].Server.Args, []string{"server"}) {
+				t.Fatalf("Python server = %+v", roots)
+			}
 		})
 	}
 }
 
-func TestWorkspaceScopedLanguagesUseOneRoot(t *testing.T) {
-	root := t.TempDir()
-	for _, name := range []string{"scripts/build.sh", "examples/run.sh", "config/app.yml", "deploy/app.yaml"} {
-		path := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	requirements := DetectRequirements(root)
-	for _, project := range []string{"bash", "yaml"} {
-		var matches []string
-		for _, requirement := range requirements {
-			if requirement.Project == project {
-				matches = requirement.Directories
-				break
+func TestClangdDetectionRoutesSourcesAndHeaders(t *testing.T) {
+	for _, marker := range []string{"compile_commands.json", "compile_flags.txt", ".clangd", "CMakeLists.txt", "meson.build"} {
+		t.Run(marker, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, marker), nil, 0o600); err != nil {
+				t.Fatal(err)
 			}
-		}
-		if !reflect.DeepEqual(matches, []string{root}) {
-			t.Errorf("%s directories = %v, want one workspace root %q", project, matches, root)
-		}
+			manager := NewManager(root, WithManagedTools(testManagedTools{"clangd": filepath.Join(t.TempDir(), "clangd")}))
+			defer manager.Close()
+			for file, language := range map[string]string{"main.c": "c", "main.C": "cpp", "main.cpp": "cpp", "lib.h": "cpp", "lib.hpp": "cpp"} {
+				path := filepath.Join(root, "src", file)
+				server := manager.FindServer(path)
+				if server == nil || server.Name != "clangd" || server.LanguageIDForPath(path) != language {
+					t.Errorf("server for %s = %+v, want clangd with language %s", file, server, language)
+				}
+			}
+		})
 	}
 }
 
@@ -315,7 +303,7 @@ func TestIndexWorkspaceSkipsIgnoredContents(t *testing.T) {
 
 	index := indexWorkspace(root)
 	entries := index.matching("package.json")
-	if len(entries) != 1 || entries[0].path != filepath.Join(root, "package.json") {
+	if len(entries) != 1 || entries[0] != filepath.Join(root, "package.json") {
 		t.Fatalf("indexed package.json entries = %+v, want only the root marker", entries)
 	}
 	if !index.hasChild(root, "package.json") {
@@ -325,41 +313,17 @@ func TestIndexWorkspaceSkipsIgnoredContents(t *testing.T) {
 
 func TestIndexWorkspaceKeepsHiddenDirectoryMarker(t *testing.T) {
 	root := t.TempDir()
-	marker := filepath.Join(root, ".metals")
+	marker := filepath.Join(root, ".project")
 	if err := os.Mkdir(marker, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	for _, entry := range indexWorkspace(root).matching(".metals") {
-		if entry.path == marker && entry.isDir {
+	for _, path := range indexWorkspace(root).matching(".project") {
+		if path == marker {
 			return
 		}
 	}
 	t.Fatalf("hidden directory marker %q was not recorded", marker)
-}
-
-func TestHasNestedFileMatchesFilesOnly(t *testing.T) {
-	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, "component.vue"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	index := indexWorkspace(root)
-	if index.hasNestedFile(root, []string{"*.vue"}) {
-		t.Fatal("directory should not satisfy a source-file requirement")
-	}
-
-	nested := filepath.Join(root, "src")
-	if err := os.Mkdir(nested, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(nested, "component.vue"), []byte("<template/>\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	if !indexWorkspace(root).hasNestedFile(root, []string{"*.vue"}) {
-		t.Fatal("nested source file should satisfy requirement")
-	}
 }
 
 func TestProjectDirsAppliesExcludes(t *testing.T) {

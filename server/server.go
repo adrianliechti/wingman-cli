@@ -26,6 +26,7 @@ import (
 	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 	"github.com/adrianliechti/wingman-agent/pkg/devtools"
+	"github.com/adrianliechti/wingman-agent/pkg/remote"
 	"github.com/adrianliechti/wingman-agent/pkg/settings"
 	"github.com/adrianliechti/wingman-agent/pkg/system"
 	"github.com/adrianliechti/wingman-agent/pkg/terminal"
@@ -42,6 +43,8 @@ const DefaultPort = 9000
 
 type ServerOptions struct {
 	NoBrowser           bool
+	RemoteURL           string
+	RemoteToken         string
 	disableManagedTools bool
 }
 
@@ -239,6 +242,12 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 
 	csrf := http.NewCrossOriginProtection()
 	s.handler = csrf.Handler(s.checkInstance(s.mux))
+	if opts.RemoteURL != "" {
+		if err := s.startRemote(remote.ClientOptions{Relay: opts.RemoteURL, Token: opts.RemoteToken}); err != nil {
+			s.Close()
+			return nil, err
+		}
+	}
 
 	return s, nil
 }

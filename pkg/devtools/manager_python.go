@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,7 +16,8 @@ import (
 )
 
 var pythonRecipes = []recipe{
-	{ID: "basedpyright", Label: "Python language tools", Kind: installerPython, Packages: []string{"basedpyright"}, Commands: []string{"basedpyright", "basedpyright-langserver"}},
+	{ID: "ty", Label: "Python language tools", Kind: installerPython, Packages: []string{"ty"}, Commands: []string{"ty"}, WheelsOnly: true},
+	{ID: "clangd", Label: "C/C++ language tools", Kind: installerPython, Packages: []string{"clangd"}, Commands: []string{"clangd"}, WheelsOnly: true},
 	{ID: "debugpy", Label: "Python debugger", Kind: installerPython, Packages: []string{"debugpy"}, Commands: []string{"debugpy-adapter"}},
 }
 
@@ -37,6 +39,9 @@ func (m *Manager) installPython(ctx context.Context, item recipe, stage string) 
 		venvPython = filepath.Join(stage, "Scripts", "python.exe")
 	}
 	args := []string{"-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--upgrade"}
+	if item.WheelsOnly {
+		args = append(args, "--only-binary=:all:")
+	}
 	args = append(args, item.Packages...)
 	if output, err := m.run(ctx, venvPython, args, workingDir, os.Environ()); err != nil {
 		return "", commandError(output, err)
@@ -62,6 +67,11 @@ func (m *Manager) writePythonLaunchers(ctx context.Context, item recipe, stage, 
 	}
 	for _, command := range item.Commands {
 		entry := strings.Fields(entries[command])
+		// Wheels can ship native executables instead of console scripts.
+		// Those binaries already survive moving the staged environment.
+		if len(entry) == 0 && nativePythonExecutable(resolveInstalledCommand(stage, command)) {
+			continue
+		}
 		if len(entry) == 0 || !pythonEntryPointPattern.MatchString(entry[0]) {
 			return fmt.Errorf("Python package did not provide a valid %s console script", command)
 		}
@@ -85,6 +95,25 @@ func (m *Manager) writePythonLaunchers(ctx context.Context, item recipe, stage, 
 		}
 	}
 	return nil
+}
+
+func nativePythonExecutable(path string) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	var magic [4]byte
+	if _, err := io.ReadFull(file, magic[:]); err != nil {
+		return false
+	}
+	switch string(magic[:]) {
+	case "\x7fELF", // Linux
+		"\xfe\xed\xfa\xce", "\xce\xfa\xed\xfe", "\xfe\xed\xfa\xcf", "\xcf\xfa\xed\xfe", // Mach-O
+		"\xca\xfe\xba\xbe", "\xbe\xba\xfe\xca", "\xca\xfe\xba\xbf", "\xbf\xba\xfe\xca": // Universal Mach-O
+		return true
+	}
+	return string(magic[:2]) == "MZ" // Windows
 }
 
 func pythonEntryPointCode(module, function string, windows bool) string {

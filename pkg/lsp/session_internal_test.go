@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,41 @@ import (
 	"go.lsp.dev/jsonrpc2"
 	"go.lsp.dev/protocol"
 )
+
+type initializationRecorder struct {
+	protocol.UnimplementedServer
+	params *protocol.InitializeParams
+}
+
+func (r *initializationRecorder) Initialize(_ context.Context, params *protocol.InitializeParams) (*protocol.InitializeResult, error) {
+	r.params = params
+	return &protocol.InitializeResult{}, nil
+}
+
+func (*initializationRecorder) Initialized(context.Context, *protocol.InitializedParams) error {
+	return nil
+}
+
+func TestInitializationAndWorkspaceRequestsUseTheSameProjectURI(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "project with spaces")
+	uri := fileuri.FromPath(root)
+	rpc := &initializationRecorder{}
+	session := &Session{rootURI: uri, rpc: rpc}
+	if err := session.initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	folders, set := rpc.params.WorkspaceFolders.Get()
+	if !set || len(folders) != 1 || folders[0].URI.String() != uri || folders[0].Name != "project with spaces" {
+		t.Fatalf("initial workspace folders = %+v (set=%v)", folders, set)
+	}
+	if capability := rpc.params.Capabilities.Workspace.WorkspaceFolders; capability == nil || !*capability {
+		t.Fatal("workspace folder support was not advertised")
+	}
+	response, err := (&sessionClient{session: session}).WorkspaceFolders(t.Context())
+	if err != nil || !reflect.DeepEqual(response, folders) {
+		t.Fatalf("workspace folder request = %+v, %v", response, err)
+	}
+}
 
 func TestCapabilityEnabledHandlesBooleanOrOptions(t *testing.T) {
 	if CapabilityEnabled(nil) || CapabilityEnabled(protocol.Boolean(false)) || CapabilityEnabled(false) {

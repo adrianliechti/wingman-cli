@@ -15,6 +15,7 @@ and the capabilities described below stay aligned with the current release.
 | [`plugins/release-tools/`](plugins/release-tools) | `.wingman/plugins/release-tools/` or `~/.wingman/plugins/release-tools/` | An Agent Plugin bundling a portable skill, three MCP transports, resources, and a lifecycle hook |
 | [`non-interactive/`](non-interactive) | Run in place | A read-only `wingman exec` run with validated JSON Schema output |
 | [`debug/`](debug) | Open as a workspace | Small runnable targets for languages with a managed LSP and a supported DAP profile |
+| [`c/`](c) | Open as a workspace | A C program with separate source/header files and managed clangd through PyPI |
 
 Project instructions need no template: put an `AGENTS.md` (or `CLAUDE.md`) with
 plain Markdown guidelines in the project root.

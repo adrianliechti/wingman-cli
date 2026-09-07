@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -137,6 +138,10 @@ func connect(ctx context.Context, workingDir string, server Server) (*Session, e
 type sessionClient struct {
 	protocol.UnimplementedClient
 	session *Session
+}
+
+func (c *sessionClient) WorkspaceFolders(context.Context) ([]protocol.WorkspaceFolder, error) {
+	return c.session.workspaceFolders(), nil
 }
 
 func (c *sessionClient) PublishDiagnostics(_ context.Context, params *protocol.PublishDiagnosticsParams) error {
@@ -823,16 +828,25 @@ func (s *Session) PrepareCallHierarchy(ctx context.Context, uri string, line, co
 	})
 }
 
+func (s *Session) workspaceFolders() []protocol.WorkspaceFolder {
+	path, _ := fileuri.Path(s.rootURI)
+	return []protocol.WorkspaceFolder{{URI: lspuri.MustParse(s.rootURI), Name: filepath.Base(path)}}
+}
+
 func (s *Session) initialize(ctx context.Context) error {
 	processID := int32(os.Getpid())
 	rootURI := lspuri.MustParse(s.rootURI)
 	params := &protocol.InitializeParams{
+		WorkspaceFoldersInitializeParams: protocol.WorkspaceFoldersInitializeParams{
+			WorkspaceFolders: protocol.NewNullable(s.workspaceFolders()),
+		},
 		ProcessID:             &processID,
 		RootURI:               &rootURI,
 		InitializationOptions: protocol.LSPAny(s.server.InitializationOptions),
 		Capabilities: protocol.ClientCapabilities{
 			Workspace: &protocol.WorkspaceClientCapabilities{
-				ApplyEdit: pointer(true),
+				ApplyEdit:        pointer(true),
+				WorkspaceFolders: pointer(true),
 				WorkspaceEdit: &protocol.WorkspaceEditClientCapabilities{
 					DocumentChanges:         pointer(true),
 					FailureHandling:         protocol.FailureHandlingKindTextOnlyTransactional,

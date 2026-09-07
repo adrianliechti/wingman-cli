@@ -16,6 +16,7 @@ require (
 	github.com/google/go-dap v0.12.0
 	github.com/google/jsonschema-go v0.4.3
 	github.com/google/uuid v1.6.0
+	github.com/hashicorp/yamux v0.1.2
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/odvcencio/gotreesitter v0.52.0
 	github.com/openai/openai-go/v3 v3.56.0
@@ -23,6 +24,7 @@ require (
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/sahilm/fuzzy v0.1.3
 	github.com/sergi/go-diff v1.4.0
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/yuin/goldmark v1.8.6
 	go.lsp.dev/jsonrpc2 v1.0.1
 	go.lsp.dev/protocol v1.0.1
