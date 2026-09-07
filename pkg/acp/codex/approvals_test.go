@@ -50,7 +50,7 @@ func TestPermissionsApprovalDispatchAndSafeFallback(t *testing.T) {
 	c := &codexClient{handlers: make(map[string]*threadHandlers)}
 	called := false
 	c.setThreadHandlers("thread-1", &threadHandlers{
-		onPermissionsApproval: func(p permissionsApprovalParams) permissionsApprovalResponse {
+		onPermissionsApproval: func(_ context.Context, p permissionsApprovalParams) permissionsApprovalResponse {
 			called = true
 			if p.ItemID != "permission-1" || p.Permissions["network"] == nil {
 				t.Fatalf("params = %#v", p)

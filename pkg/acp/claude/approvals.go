@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	acpcommon "github.com/adrianliechti/wingman-agent/pkg/acp"
 	"github.com/coder/acp-go-sdk"
 )
 
@@ -97,6 +98,10 @@ func pendingToolCall(id string, kind acp.ToolKind) acp.ToolCallUpdate {
 }
 
 func (a *approver) handle(req controlRequest) {
+	if a.ctx.Err() != nil {
+		a.respondDeny(req.RequestID)
+		return
+	}
 	if req.Request.Subtype != "can_use_tool" {
 		a.respondError(req.RequestID, "unsupported control request: "+req.Request.Subtype)
 		return
@@ -150,10 +155,12 @@ func (a *approver) handle(req controlRequest) {
 			options[i].Meta = map[string]any{"permission": permissionMetadataForAlwaysAllow(req.Request)}
 		}
 	}
-	resp, err := a.conn.RequestPermission(a.ctx, acp.RequestPermissionRequest{
-		SessionId: a.sid,
-		ToolCall:  tc,
-		Options:   options,
+	resp, err := acpcommon.Call(a.ctx, func() (acp.RequestPermissionResponse, error) {
+		return a.conn.RequestPermission(a.ctx, acp.RequestPermissionRequest{
+			SessionId: a.sid,
+			ToolCall:  tc,
+			Options:   options,
+		})
 	})
 	allow, always := false, false
 	if err == nil && resp.Outcome.Cancelled == nil && resp.Outcome.Selected != nil {
@@ -175,7 +182,7 @@ func (a *approver) handle(req controlRequest) {
 	}
 	a.respondAllow(req.RequestID, req.Request.Input, perms)
 
-	if name == "ExitPlanMode" && a.applyMode != nil {
+	if name == "ExitPlanMode" && a.applyMode != nil && a.ctx.Err() == nil {
 		a.applyMode(defaultModeID)
 	}
 }
@@ -485,10 +492,12 @@ func (a *approver) handleAskUserQuestion(req controlRequest, parentToolUseID str
 		}
 		opts = append(opts, acp.PermissionOption{OptionId: "ask-skip", Name: "Skip", Kind: acp.PermissionOptionKindRejectOnce})
 
-		resp, err := a.conn.RequestPermission(a.ctx, acp.RequestPermissionRequest{
-			SessionId: a.sid,
-			ToolCall:  tc,
-			Options:   opts,
+		resp, err := acpcommon.Call(a.ctx, func() (acp.RequestPermissionResponse, error) {
+			return a.conn.RequestPermission(a.ctx, acp.RequestPermissionRequest{
+				SessionId: a.sid,
+				ToolCall:  tc,
+				Options:   opts,
+			})
 		})
 		if err != nil {
 			continue
@@ -514,14 +523,20 @@ func (a *approver) handleAskUserQuestion(req controlRequest, parentToolUseID str
 // return means the client failed the elicitation call despite advertising it,
 // and the caller should fall back to the permission flow.
 func (a *approver) askViaElicitation(req controlRequest, questions []askQuestion) bool {
-	resp, err := a.conn.UnstableCreateElicitation(a.ctx, acp.UnstableCreateElicitationRequest{
-		Form: &acp.UnstableCreateElicitationForm{
-			Message:         askMessage(questions),
-			Mode:            "form",
-			RequestedSchema: askElicitationSchema(questions),
-			Meta:            map[string]any{"sessionId": string(a.sid)},
-		},
+	resp, err := acpcommon.Call(a.ctx, func() (acp.UnstableCreateElicitationResponse, error) {
+		return a.conn.UnstableCreateElicitation(a.ctx, acp.UnstableCreateElicitationRequest{
+			Form: &acp.UnstableCreateElicitationForm{
+				Message:         askMessage(questions),
+				Mode:            "form",
+				RequestedSchema: askElicitationSchema(questions),
+				Meta:            map[string]any{"sessionId": string(a.sid)},
+			},
+		})
 	})
+	if a.ctx.Err() != nil {
+		a.respondDeny(req.RequestID)
+		return true
+	}
 	if err != nil {
 		return false
 	}
@@ -575,6 +590,9 @@ func (a *approver) respondDeny(requestID string) {
 }
 
 func (a *approver) writeResponse(requestID string, body map[string]any) {
+	if a.ctx != nil && a.ctx.Err() != nil && body["behavior"] == "allow" {
+		body = map[string]any{"behavior": "deny", "message": "Request cancelled"}
+	}
 	_ = a.out.writeJSON(controlResponse{
 		Type:     "control_response",
 		Response: controlResponseBody{Subtype: "success", RequestID: requestID, Response: body},

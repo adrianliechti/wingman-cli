@@ -2,12 +2,14 @@ package codex
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type rpcMessage struct {
@@ -28,21 +30,29 @@ type rpcError struct {
 func (e *rpcError) Error() string { return fmt.Sprintf("rpc error %d: %s", e.Code, e.Message) }
 
 type rpcClient struct {
-	w  io.Writer
-	r  io.Reader
-	mu sync.Mutex
+	w         io.Writer
+	r         io.Reader
+	writeGate chan struct{}
 
-	nextID  atomic.Int64
-	pending sync.Map
+	nextID   atomic.Int64
+	pending  sync.Map
+	incoming sync.Map // request ID -> *incomingRequest
 
 	onNotification func(method string, params json.RawMessage)
 	onRequest      func(ctx context.Context, method string, params json.RawMessage) (any, *rpcError)
 
-	done chan struct{}
+	done      chan struct{}
+	closeOnce sync.Once
+	err       error // written before done is closed
+}
+
+type incomingRequest struct {
+	threadID string
+	cancel   context.CancelFunc
 }
 
 func newRPCClient(w io.Writer, r io.Reader) *rpcClient {
-	return &rpcClient{w: w, r: r, done: make(chan struct{})}
+	return &rpcClient{w: w, r: r, writeGate: make(chan struct{}, 1), done: make(chan struct{})}
 }
 
 func (c *rpcClient) start() {
@@ -50,24 +60,27 @@ func (c *rpcClient) start() {
 }
 
 func (c *rpcClient) readLoop() {
-	defer close(c.done)
 	scanner := bufio.NewScanner(c.r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		if len(line) == 0 {
+		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		var msg rpcMessage
 		if err := json.Unmarshal(line, &msg); err != nil {
-			continue
+			c.close(fmt.Errorf("decode app-server message: %w", err))
+			return
 		}
 
 		switch {
 		case msg.Method != "" && len(msg.ID) > 0:
 			c.dispatchRequest(msg)
 		case msg.Method != "":
+			if msg.Method == "serverRequest/resolved" {
+				c.resolveRequest(msg.Params)
+			}
 			if c.onNotification != nil {
 				c.onNotification(msg.Method, msg.Params)
 			}
@@ -78,16 +91,62 @@ func (c *rpcClient) readLoop() {
 			}
 		}
 	}
+	err := scanner.Err()
+	if err == nil {
+		err = io.EOF
+	}
+	c.close(err)
+}
+
+func (c *rpcClient) close(cause error) {
+	c.closeOnce.Do(func() {
+		c.err = fmt.Errorf("%w: %w", errRPCClosed, cause)
+		close(c.done)
+		c.incoming.Range(func(_, value any) bool {
+			value.(*incomingRequest).cancel()
+			return true
+		})
+		if closer, ok := c.w.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		if closer, ok := c.r.(io.Closer); ok {
+			_ = closer.Close()
+		}
+	})
+}
+
+func (c *rpcClient) closedError() error {
+	<-c.done
+	return c.err
 }
 
 func (c *rpcClient) dispatchRequest(msg rpcMessage) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var scope struct {
+		ThreadID string `json:"threadId"`
+	}
+	_ = json.Unmarshal(msg.Params, &scope)
+	request := &incomingRequest{threadID: scope.ThreadID, cancel: cancel}
+	key := string(msg.ID)
+	if _, loaded := c.incoming.LoadOrStore(key, request); loaded {
+		cancel()
+		c.close(fmt.Errorf("duplicate app-server request id %s", key))
+		return
+	}
+	select {
+	case <-c.done:
+		cancel()
+	default:
+	}
 	go func() {
+		defer cancel()
+		defer c.incoming.CompareAndDelete(key, request)
 		var (
 			result any
 			rerr   *rpcError
 		)
 		if c.onRequest != nil {
-			result, rerr = c.onRequest(context.Background(), msg.Method, msg.Params)
+			result, rerr = c.onRequest(ctx, msg.Method, msg.Params)
 		} else {
 			rerr = &rpcError{Code: -32601, Message: "method not found"}
 		}
@@ -102,16 +161,38 @@ func (c *rpcClient) dispatchRequest(msg rpcMessage) {
 				resp.Result = b
 			}
 		}
-		_ = c.send(resp)
+		ctx, cancel := context.WithTimeout(context.Background(), rpcRequestTimeout)
+		defer cancel()
+		_ = c.send(ctx, resp)
 	}()
+}
+
+func (c *rpcClient) resolveRequest(params json.RawMessage) {
+	var p struct {
+		ThreadID  string          `json:"threadId"`
+		RequestID json.RawMessage `json:"requestId"`
+	}
+	if json.Unmarshal(params, &p) != nil {
+		return
+	}
+	if value, ok := c.incoming.Load(string(p.RequestID)); ok {
+		request := value.(*incomingRequest)
+		if p.ThreadID == request.threadID {
+			request.cancel()
+		}
+	}
 }
 
 var errRPCClosed = fmt.Errorf("codex app-server connection closed")
 
-func (c *rpcClient) send(msg rpcMessage) error {
+const rpcRequestTimeout = 30 * time.Second
+
+func (c *rpcClient) send(ctx context.Context, msg rpcMessage) error {
 	select {
 	case <-c.done:
-		return errRPCClosed
+		return c.closedError()
+	case <-ctx.Done():
+		return ctx.Err()
 	default:
 	}
 	msg.Jsonrpc = "2.0"
@@ -119,15 +200,43 @@ func (c *rpcClient) send(msg rpcMessage) error {
 	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if _, err := c.w.Write(append(b, '\n')); err != nil {
-		return err
+	select {
+	case c.writeGate <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.done:
+		return c.closedError()
 	}
-	return nil
+	// Once a write starts, abandoning it may leave a partial JSON frame. Retire
+	// the transport on cancellation instead of letting a later call use it.
+	written := make(chan error, 1)
+	go func() {
+		defer func() { <-c.writeGate }()
+		data := append(b, '\n')
+		n, err := c.w.Write(data)
+		if err == nil && n != len(data) {
+			err = io.ErrShortWrite
+		}
+		written <- err
+	}()
+	select {
+	case err := <-written:
+		if err != nil {
+			c.close(err)
+			return c.closedError()
+		}
+		return nil
+	case <-ctx.Done():
+		c.close(fmt.Errorf("write cancelled: %w", ctx.Err()))
+		return ctx.Err()
+	case <-c.done:
+		return c.closedError()
+	}
 }
 
 func (c *rpcClient) call(ctx context.Context, method string, params any, out any) error {
+	ctx, cancel := context.WithTimeout(ctx, rpcRequestTimeout)
+	defer cancel()
 	id := c.nextID.Add(1)
 	idRaw, _ := json.Marshal(id)
 	ch := make(chan rpcMessage, 1)
@@ -142,9 +251,14 @@ func (c *rpcClient) call(ctx context.Context, method string, params any, out any
 		}
 		req.Params = b
 	}
-	if err := c.send(req); err != nil {
+	if err := c.send(ctx, req); err != nil {
 		c.pending.Delete(string(idRaw))
-		return err
+		select {
+		case resp := <-ch:
+			return decodeRPCResponse(resp, out)
+		default:
+			return err
+		}
 	}
 
 	select {
@@ -153,14 +267,24 @@ func (c *rpcClient) call(ctx context.Context, method string, params any, out any
 		return ctx.Err()
 	case <-c.done:
 		c.pending.Delete(string(idRaw))
-		return errRPCClosed
+		// A peer can close immediately after replying. Preserve that reply.
+		select {
+		case resp := <-ch:
+			return decodeRPCResponse(resp, out)
+		default:
+			return c.closedError()
+		}
 	case resp := <-ch:
-		if resp.Error != nil {
-			return resp.Error
-		}
-		if out != nil && len(resp.Result) > 0 {
-			return json.Unmarshal(resp.Result, out)
-		}
-		return nil
+		return decodeRPCResponse(resp, out)
 	}
+}
+
+func decodeRPCResponse(resp rpcMessage, out any) error {
+	if resp.Error != nil {
+		return resp.Error
+	}
+	if out != nil && len(resp.Result) > 0 {
+		return json.Unmarshal(resp.Result, out)
+	}
+	return nil
 }

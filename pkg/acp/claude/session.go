@@ -24,7 +24,7 @@ type session struct {
 	cwd   string
 	agent *Agent
 
-	promptMu       sync.Mutex
+	promptMu       acpcommon.PromptGate
 	mu             sync.Mutex
 	closed         bool
 	modelID        string
@@ -106,8 +106,12 @@ func (s *session) runTurn(ctx context.Context, prompt []acp.ContentBlock) (acp.S
 		s.mu.Unlock()
 	}()
 
-	p.beginTurn()
-	if err := p.out.writeJSON(promptMessage(prompt)); err != nil {
+	p.beginTurn(turnCtx)
+	input := promptMessage(prompt)
+	p.turnMu.Lock()
+	input.UUID = p.turnID
+	p.turnMu.Unlock()
+	if err := p.out.writeJSON(input); err != nil {
 		p.finishTurn()
 		s.dropProc(p)
 		return "", nil, fmt.Errorf("write prompt: %w", err)
@@ -133,6 +137,12 @@ func (s *session) runTurn(ctx context.Context, prompt []acp.ContentBlock) (acp.S
 		s.pushTitleUpdate(ctx)
 		return r.stop, r.usage, nil
 	case <-p.dead:
+		// Preserve a result already read immediately before process EOF.
+		select {
+		case r := <-p.results:
+			return r.stop, r.usage, r.err
+		default:
+		}
 		s.dropProc(p)
 		return "", nil, fmt.Errorf("claude process exited unexpectedly")
 	}
@@ -195,6 +205,7 @@ func (s *session) ensureProc() (*claudeProc, error) {
 	args := s.cliArgsLocked()
 	procCtx, kill := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(procCtx, a.path, args...)
+	cmd.WaitDelay = 2 * time.Second
 	process.Hide(cmd)
 	cmd.Dir = s.cwd
 	if a.env != nil {
@@ -218,7 +229,7 @@ func (s *session) ensureProc() (*claudeProc, error) {
 
 	p := &claudeProc{
 		cmd:             cmd,
-		out:             &streamWriter{w: stdin},
+		out:             &streamWriter{w: acpcommon.NewConnectionWriter(stdin, 0)},
 		stdin:           stdin,
 		sig:             sig,
 		kill:            kill,
@@ -269,6 +280,9 @@ type claudeProc struct {
 
 	turnMu          sync.Mutex
 	turnActive      bool
+	turnID          string
+	turnCtx         context.Context
+	turnCancel      context.CancelFunc
 	subagentMu      sync.Mutex
 	subagentParents map[string]string
 	results         chan turnResult
@@ -276,8 +290,13 @@ type claudeProc struct {
 	shutdownOnce    sync.Once
 }
 
-func (p *claudeProc) beginTurn() {
+func (p *claudeProc) beginTurn(ctx context.Context) {
 	p.turnMu.Lock()
+	if p.turnCancel != nil {
+		p.turnCancel()
+	}
+	p.turnCtx, p.turnCancel = context.WithCancel(ctx)
+	p.turnID = uuid.NewString()
 	p.turnActive = true
 	p.turnMu.Unlock()
 }
@@ -287,6 +306,10 @@ func (p *claudeProc) finishTurn() bool {
 	defer p.turnMu.Unlock()
 	wasActive := p.turnActive
 	p.turnActive = false
+	if p.turnCancel != nil {
+		p.turnCancel()
+		p.turnCancel = nil
+	}
 	return wasActive
 }
 
@@ -317,18 +340,23 @@ func (p *claudeProc) isDead() bool {
 func (p *claudeProc) shutdown() {
 	p.shutdownOnce.Do(func() {
 		_ = p.stdin.Close()
+		exited := make(chan struct{})
+		go func() {
+			_ = p.cmd.Wait()
+			close(exited)
+		}()
 		select {
-		case <-p.dead:
+		case <-exited:
 		case <-time.After(5 * time.Second):
 			p.kill()
-			<-p.dead
+			<-exited
 		}
-		_ = p.cmd.Wait()
 	})
 }
 
 func (p *claudeProc) read(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, r io.Reader) {
 	defer close(p.dead)
+	defer p.finishTurn()
 	stderr := p.session.agent.stderr
 	app := &approver{ctx: ctx, conn: conn, sid: sid, out: p.out, cwd: p.cwd, emitted: p.emitted, parentForAgent: p.parentForAgent,
 		askForm:   p.session.agent.supportsFormElicitation(),
@@ -366,11 +394,33 @@ func (p *claudeProc) read(ctx context.Context, conn *acp.AgentSideConnection, si
 		case "control_request":
 			var req controlRequest
 			if json.Unmarshal(line, &req) == nil {
-				go app.handle(req)
+				// Capture this turn before launching the dialog goroutine. A later
+				// turn must never inherit an earlier request's permission answer.
+				perTurn := *app
+				p.turnMu.Lock()
+				perTurn.ctx = p.turnCtx
+				p.turnMu.Unlock()
+				if perTurn.ctx == nil {
+					app.respondDeny(req.RequestID)
+					continue
+				}
+				go perTurn.handle(req)
 			}
 		case "result":
+			var result cliResult
+			if json.Unmarshal(line, &result) != nil {
+				continue
+			}
+			p.turnMu.Lock()
+			matches := result.UserMessageUUID == "" || result.UserMessageUUID == p.turnID
+			p.turnMu.Unlock()
+			if !matches {
+				continue
+			}
 			tr, usageUpd := resultToTurn(line)
-			p.finishTurn()
+			if !p.finishTurn() {
+				continue
+			}
 			if usageUpd != nil {
 				_ = acpcommon.Notify(ctx, conn, sid, *usageUpd)
 			}

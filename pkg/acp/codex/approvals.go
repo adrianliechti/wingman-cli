@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"maps"
 	"strings"
-	"sync"
 
 	"github.com/coder/acp-go-sdk"
+	"github.com/google/uuid"
 )
 
 const (
@@ -48,15 +48,23 @@ type approver struct {
 	conn      *acp.AgentSideConnection
 	sessionID acp.SessionId
 	client    acp.ClientCapabilities
-
-	mu          sync.Mutex
-	pendingURLs map[acp.UnstableElicitationId]struct{}
 }
 
 func newApprover(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, client acp.ClientCapabilities) *approver {
 	return &approver{
 		ctx: ctx, conn: conn, sessionID: sid, client: client,
-		pendingURLs: make(map[acp.UnstableElicitationId]struct{}),
+	}
+}
+
+func (a *approver) forRequest(requestCtx context.Context) (*approver, func()) {
+	ctx, cancel := context.WithCancel(a.ctx)
+	stop := context.AfterFunc(requestCtx, cancel)
+	if requestCtx.Err() != nil {
+		cancel()
+	}
+	return newApprover(ctx, a.conn, a.sessionID, a.client), func() {
+		stop()
+		cancel()
 	}
 }
 
@@ -70,12 +78,12 @@ func (a *approver) ask(tc acp.ToolCallUpdate) (id acp.PermissionOptionId, ok boo
 }
 
 func (a *approver) askWithOptions(tc acp.ToolCallUpdate, options []acp.PermissionOption) (id acp.PermissionOptionId, ok bool) {
-	resp, err := a.conn.RequestPermission(a.ctx, acp.RequestPermissionRequest{
-		SessionId: a.sessionID,
-		ToolCall:  tc,
-		Options:   options,
+	resp, err := callClient(a.ctx, a.conn, func() (acp.RequestPermissionResponse, error) {
+		return a.conn.RequestPermission(a.ctx, acp.RequestPermissionRequest{
+			SessionId: a.sessionID, ToolCall: tc, Options: options,
+		})
 	})
-	if err != nil || resp.Outcome.Cancelled != nil || resp.Outcome.Selected == nil {
+	if err != nil || a.ctx.Err() != nil || resp.Outcome.Cancelled != nil || resp.Outcome.Selected == nil {
 		return "", false
 	}
 	return resp.Outcome.Selected.OptionId, true
@@ -422,15 +430,17 @@ func (a *approver) handleFormElicitation(p elicitationParams) elicitationRespons
 		schema.Properties = map[string]any{}
 	}
 
-	resp, err := a.conn.UnstableCreateElicitation(a.ctx, acp.UnstableCreateElicitationRequest{
-		Form: &acp.UnstableCreateElicitationForm{
-			Meta:            a.elicitationMeta(p.Meta),
-			Message:         p.Message,
-			Mode:            "form",
-			RequestedSchema: schema,
-		},
+	resp, err := callClient(a.ctx, a.conn, func() (acp.UnstableCreateElicitationResponse, error) {
+		return a.conn.UnstableCreateElicitation(a.ctx, acp.UnstableCreateElicitationRequest{
+			Form: &acp.UnstableCreateElicitationForm{
+				Meta:            a.elicitationMeta(p.Meta),
+				Message:         p.Message,
+				Mode:            "form",
+				RequestedSchema: schema,
+			},
+		})
 	})
-	if err != nil || resp.Cancel != nil {
+	if err != nil || a.ctx.Err() != nil || resp.Cancel != nil {
 		return elicitationResponse{Action: "cancel", Content: nil, Meta: nil}
 	}
 	if resp.Decline != nil {
@@ -443,46 +453,34 @@ func (a *approver) handleFormElicitation(p elicitationParams) elicitationRespons
 }
 
 func (a *approver) handleURLElicitation(p elicitationParams) elicitationResponse {
-	id := acp.UnstableElicitationId(p.ElicitationID)
-	if id == "" || p.URL == "" {
+	if p.ElicitationID == "" || p.URL == "" {
 		return elicitationResponse{Action: "cancel", Content: nil, Meta: nil}
 	}
-	resp, err := a.conn.UnstableCreateElicitation(a.ctx, acp.UnstableCreateElicitationRequest{
-		Url: &acp.UnstableCreateElicitationUrl{
-			Meta:          a.elicitationMeta(p.Meta),
-			ElicitationId: id,
-			Message:       p.Message,
-			Mode:          "url",
-			Url:           p.URL,
-		},
+	// MCP servers can reuse their own IDs across sessions. ACP requires each
+	// outstanding URL interaction to have a unique ID on the client connection.
+	id := acp.UnstableElicitationId(uuid.NewString())
+	resp, err := callClient(a.ctx, a.conn, func() (acp.UnstableCreateElicitationResponse, error) {
+		return a.conn.UnstableCreateElicitation(a.ctx, acp.UnstableCreateElicitationRequest{
+			Url: &acp.UnstableCreateElicitationUrl{
+				Meta:          a.elicitationMeta(p.Meta),
+				ElicitationId: id,
+				Message:       p.Message,
+				Mode:          "url",
+				Url:           p.URL,
+			},
+		})
 	})
-	if err != nil || resp.Cancel != nil {
+	if err != nil || a.ctx.Err() != nil || resp.Cancel != nil {
 		return elicitationResponse{Action: "cancel", Content: nil, Meta: nil}
 	}
 	if resp.Decline != nil {
 		return elicitationResponse{Action: "decline", Content: nil, Meta: resp.Decline.Meta}
 	}
 	if resp.Accept != nil {
-		a.mu.Lock()
-		a.pendingURLs[id] = struct{}{}
-		a.mu.Unlock()
-		return elicitationResponse{Action: "accept", Content: resp.Accept.Content, Meta: resp.Accept.Meta}
+		// Consent to open a URL does not mean its external workflow has finished.
+		// serverRequest/resolved only closes the app-server request, so it cannot
+		// justify an ACP elicitation/complete notification. Completion is optional.
+		return elicitationResponse{Action: "accept", Meta: resp.Accept.Meta}
 	}
 	return elicitationResponse{Action: "cancel", Content: nil, Meta: nil}
-}
-
-func (a *approver) handleNotification(method string) {
-	if method != "serverRequest/resolved" {
-		return
-	}
-	a.mu.Lock()
-	ids := make([]acp.UnstableElicitationId, 0, len(a.pendingURLs))
-	for id := range a.pendingURLs {
-		ids = append(ids, id)
-	}
-	clear(a.pendingURLs)
-	a.mu.Unlock()
-	for _, id := range ids {
-		_ = a.conn.UnstableCompleteElicitation(a.ctx, acp.UnstableCompleteElicitationNotification{ElicitationId: id})
-	}
 }

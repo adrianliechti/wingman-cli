@@ -21,10 +21,12 @@ type Agent struct {
 	conn  *acp.AgentSideConnection
 	codex *codexClient
 
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	closeOnce sync.Once
-	closed    chan struct{}
+	cmd         *exec.Cmd
+	stdin       io.WriteCloser
+	closeOnce   sync.Once
+	closed      chan struct{}
+	processErr  error
+	processDone chan struct{}
 
 	mu       sync.Mutex
 	sessions map[acp.SessionId]*session
@@ -93,8 +95,7 @@ func (a *Agent) handleGlobalNotification(threadID, method string, params json.Ra
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			for _, id := range ids {
-				_ = conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: id,
-					Update: acp.UpdateAgentMessageText(note)})
+				_ = notifyClient(ctx, conn, id, acp.UpdateAgentMessageText(note))
 			}
 		}()
 		return
@@ -115,7 +116,7 @@ func (a *Agent) handleGlobalNotification(threadID, method string, params json.Ra
 	go func(id acp.SessionId, title string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = acpcommon.Notify(ctx, conn, id, sessionTitleUpdate(title))
+		_ = notifyClient(ctx, conn, id, sessionTitleUpdate(title))
 	}(acp.SessionId(threadID), p.ThreadName)
 }
 
@@ -160,6 +161,8 @@ func (a *Agent) Initialize(ctx context.Context, req acp.InitializeRequest) (acp.
 	a.loadModels(ctx)
 
 	return acp.InitializeResponse{
+		// v2 changes the prompt lifecycle, permissions, and replay. Negotiate
+		// the SDK's implemented version even when the client requests a newer one.
 		ProtocolVersion: acp.ProtocolVersionNumber,
 		AgentInfo: &acp.Implementation{
 			Name:    "codex-acp",
@@ -217,7 +220,9 @@ func (a *Agent) NewSession(ctx context.Context, params acp.NewSessionRequest) (a
 	}
 
 	s := a.registerSession(acp.SessionId(resp.Thread.ID), resp.Model, derefEffort(resp.ReasoningEffort), additional)
-	a.sendAvailableCommands(ctx, s.id)
+	if err := a.sendAvailableCommands(ctx, s.id); err != nil {
+		return acp.NewSessionResponse{}, err
+	}
 	return acp.NewSessionResponse{
 		SessionId:     s.id,
 		Modes:         buildSessionModeState(s.mode),
@@ -244,12 +249,12 @@ func (a *Agent) registerSession(id acp.SessionId, model, effort string, addition
 	return s
 }
 
-func (a *Agent) sendAvailableCommands(ctx context.Context, id acp.SessionId) {
+func (a *Agent) sendAvailableCommands(ctx context.Context, id acp.SessionId) error {
 	conn := a.connection()
 	if conn == nil {
-		return
+		return nil
 	}
-	_ = acpcommon.Notify(ctx, conn, id, acp.SessionUpdate{AvailableCommandsUpdate: &acp.SessionAvailableCommandsUpdate{
+	return notifyClient(ctx, conn, id, acp.SessionUpdate{AvailableCommandsUpdate: &acp.SessionAvailableCommandsUpdate{
 		SessionUpdate:     "available_commands_update",
 		AvailableCommands: availableCommands(),
 	}})
@@ -324,8 +329,14 @@ func (a *Agent) Prompt(ctx context.Context, params acp.PromptRequest) (acp.Promp
 	if s == nil {
 		return acp.PromptResponse{}, fmt.Errorf("session %s not found", params.SessionId)
 	}
-	s.promptMu.Lock()
-	defer s.promptMu.Unlock()
+	select {
+	case s.promptGate <- struct{}{}:
+		defer func() { <-s.promptGate }()
+	case <-ctx.Done():
+		return acp.PromptResponse{StopReason: acp.StopReasonCancelled, UserMessageId: params.MessageId}, nil
+	case <-s.closedCh:
+		return acp.PromptResponse{}, fmt.Errorf("session %s is closed", params.SessionId)
+	}
 	if s.isClosed() {
 		return acp.PromptResponse{}, fmt.Errorf("session %s is closed", params.SessionId)
 	}
@@ -384,10 +395,7 @@ func (a *Agent) handleCommand(ctx context.Context, s *session, prompt []acp.Cont
 	case "rename":
 		if command.args == "" {
 			if conn := a.connection(); conn != nil {
-				_ = conn.SessionUpdate(ctx, acp.SessionNotification{
-					SessionId: s.id,
-					Update:    acp.UpdateAgentMessageText("Usage: /rename <new name>"),
-				})
+				return true, notifyClient(ctx, conn, s.id, acp.UpdateAgentMessageText("Usage: /rename <new name>"))
 			}
 			return true, nil
 		}
@@ -417,21 +425,17 @@ func (a *Agent) togglePlanMode(ctx context.Context, s *session) error {
 	s.collaborationMode = next
 	s.mu.Unlock()
 	if conn := a.connection(); conn != nil {
-		_ = conn.SessionUpdate(ctx, acp.SessionNotification{
-			SessionId: s.id,
-			Update: acp.SessionUpdate{ConfigOptionUpdate: &acp.SessionConfigOptionUpdate{
-				SessionUpdate: "config_option_update",
-				ConfigOptions: buildConfigOptions(a.models, modelID, effort, next),
-			}},
-		})
+		if err := notifyClient(ctx, conn, s.id, acp.SessionUpdate{ConfigOptionUpdate: &acp.SessionConfigOptionUpdate{
+			SessionUpdate: "config_option_update",
+			ConfigOptions: buildConfigOptions(a.models, modelID, effort, next),
+		}}); err != nil {
+			return err
+		}
 		label := "Plan mode enabled."
 		if next == defaultCollaborationMode {
 			label = "Plan mode disabled."
 		}
-		_ = conn.SessionUpdate(ctx, acp.SessionNotification{
-			SessionId: s.id,
-			Update:    acp.UpdateAgentMessageText(label),
-		})
+		return notifyClient(ctx, conn, s.id, acp.UpdateAgentMessageText(label))
 	}
 	return nil
 }
@@ -639,6 +643,7 @@ func (a *Agent) ResumeSession(ctx context.Context, params acp.ResumeSessionReque
 	}
 	resp, err := a.codex.threadResume(ctx, threadResumeParams{
 		ThreadID:      string(params.SessionId),
+		ExcludeTurns:  true,
 		Cwd:           cwd,
 		ModelProvider: a.resumeModelProvider(ctx),
 		Config:        sessionConfig(cwd, additional, params.McpServers),
@@ -647,7 +652,9 @@ func (a *Agent) ResumeSession(ctx context.Context, params acp.ResumeSessionReque
 		return acp.ResumeSessionResponse{}, fmt.Errorf("thread/resume: %w", err)
 	}
 	s := a.registerSession(params.SessionId, resp.Model, derefEffort(resp.ReasoningEffort), additional)
-	a.sendAvailableCommands(ctx, s.id)
+	if err := a.sendAvailableCommands(ctx, s.id); err != nil {
+		return acp.ResumeSessionResponse{}, err
+	}
 	return acp.ResumeSessionResponse{
 		Modes:         buildSessionModeState(s.mode),
 		ConfigOptions: buildConfigOptions(a.models, s.modelID, s.effort, s.collaborationMode),
@@ -664,6 +671,7 @@ func (a *Agent) LoadSession(ctx context.Context, params acp.LoadSessionRequest) 
 	}
 	resp, err := a.codex.threadResume(ctx, threadResumeParams{
 		ThreadID:      string(params.SessionId),
+		ExcludeTurns:  true,
 		Cwd:           cwd,
 		ModelProvider: a.resumeModelProvider(ctx),
 		Config:        sessionConfig(cwd, additional, params.McpServers),
@@ -671,16 +679,19 @@ func (a *Agent) LoadSession(ctx context.Context, params acp.LoadSessionRequest) 
 	if err != nil {
 		return acp.LoadSessionResponse{}, fmt.Errorf("thread/resume: %w", err)
 	}
-	s := a.registerSession(params.SessionId, resp.Model, derefEffort(resp.ReasoningEffort), additional)
-	a.sendAvailableCommands(ctx, s.id)
-
-	thread := resp.Thread
-	if read, err := a.codex.threadRead(ctx, threadReadParams{ThreadID: string(params.SessionId), IncludeTurns: true}); err == nil {
-		thread = read.Thread
+	read, err := a.codex.threadReadWithHistory(ctx, string(params.SessionId))
+	if err != nil {
+		return acp.LoadSessionResponse{}, fmt.Errorf("read session history: %w", err)
 	}
-
+	thread := read.Thread
+	s := a.registerSession(params.SessionId, resp.Model, derefEffort(resp.ReasoningEffort), additional)
+	if err := a.sendAvailableCommands(ctx, s.id); err != nil {
+		return acp.LoadSessionResponse{}, err
+	}
 	outputs := rolloutCommandOutputs(string(params.SessionId), threadPath(thread))
-	streamThreadHistory(ctx, a.connection(), s.id, thread.Turns, outputs)
+	if err := streamThreadHistory(ctx, a.connection(), s.id, thread.Turns, outputs); err != nil {
+		return acp.LoadSessionResponse{}, fmt.Errorf("send session history: %w", err)
+	}
 	return acp.LoadSessionResponse{
 		Modes:         buildSessionModeState(s.mode),
 		ConfigOptions: buildConfigOptions(a.models, s.modelID, s.effort, s.collaborationMode),
@@ -698,6 +709,7 @@ func (a *Agent) UnstableForkSession(ctx context.Context, params acp.UnstableFork
 	}
 	resp, err := a.codex.threadFork(ctx, threadForkParams{
 		ThreadID:      string(params.SessionId),
+		ExcludeTurns:  true,
 		Cwd:           cwd,
 		ModelProvider: a.resumeModelProvider(ctx),
 		Config:        sessionConfig(cwd, additional, servers),
@@ -718,7 +730,9 @@ func (a *Agent) UnstableForkSession(ctx context.Context, params acp.UnstableFork
 		s.mode, s.collaborationMode = mode, collaborationMode
 		s.mu.Unlock()
 	}
-	a.sendAvailableCommands(ctx, s.id)
+	if err := a.sendAvailableCommands(ctx, s.id); err != nil {
+		return acp.UnstableForkSessionResponse{}, err
+	}
 	return acp.UnstableForkSessionResponse{
 		SessionId:     s.id,
 		Modes:         buildSessionModeState(s.mode),

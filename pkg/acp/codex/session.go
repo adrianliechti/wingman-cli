@@ -13,17 +13,16 @@ import (
 
 	"github.com/coder/acp-go-sdk"
 
-	acpcommon "github.com/adrianliechti/wingman-agent/pkg/acp"
-
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 )
 
 type session struct {
 	id acp.SessionId
 
-	promptMu              sync.Mutex
+	promptGate            chan struct{}
 	mu                    sync.Mutex
 	closed                bool
+	closedCh              chan struct{}
 	modelID               string
 	effort                string
 	mode                  string
@@ -32,7 +31,8 @@ type session struct {
 	currentTurnID         string
 	cancelTurn            context.CancelFunc
 	interruptPending      bool
-	interruptIssued       bool
+	interruptDone         chan struct{}
+	startCleanup          <-chan struct{}
 }
 
 func (s *session) isClosed() bool {
@@ -43,7 +43,10 @@ func (s *session) isClosed() bool {
 
 func (s *session) markClosed() {
 	s.mu.Lock()
-	s.closed = true
+	if !s.closed {
+		s.closed = true
+		close(s.closedCh)
+	}
 	cancel := s.cancelTurn
 	s.mu.Unlock()
 	if cancel != nil {
@@ -59,6 +62,7 @@ type turnStartResult struct {
 func newSession(id acp.SessionId, model, effort string, additionalDirectories []string) *session {
 	return &session{
 		id: id, modelID: model, effort: effort, mode: defaultModeID,
+		promptGate: make(chan struct{}, 1), closedCh: make(chan struct{}),
 		collaborationMode:     defaultCollaborationMode,
 		additionalDirectories: append([]string(nil), additionalDirectories...),
 	}
@@ -71,16 +75,22 @@ func (s *session) interrupt(ctx context.Context, cc *codexClient) {
 	if cancel != nil && turnID == "" {
 		s.interruptPending = true
 	}
-	if turnID != "" {
-		s.interruptIssued = true
+	issue := turnID != "" && s.interruptDone == nil
+	if issue {
+		s.interruptDone = make(chan struct{})
 	}
+	done := s.interruptDone
 	s.mu.Unlock()
 
 	if cancel != nil {
 		cancel()
 	}
-	if turnID != "" {
-		_ = cc.turnInterrupt(ctx, turnInterruptParams{ThreadID: string(s.id), TurnID: turnID})
+	if issue {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		err := cc.turnInterrupt(ctx, turnInterruptParams{ThreadID: string(s.id), TurnID: turnID})
+		retireTimedOutTurnControl(cc, "turn/interrupt", err)
+		close(done)
 	}
 }
 
@@ -130,7 +140,7 @@ func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, cc
 	}
 	s.cancelTurn = cancel
 	s.interruptPending = false
-	s.interruptIssued = false
+	s.interruptDone = nil
 	model := s.modelID
 	effort := s.effort
 	mode := modeFor(s.mode)
@@ -142,25 +152,94 @@ func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, cc
 		s.currentTurnID = ""
 		s.cancelTurn = nil
 		s.interruptPending = false
-		s.interruptIssued = false
+		s.interruptDone = nil
 		s.mu.Unlock()
 	}()
 
 	disp := newEventDispatcher(turnCtx, conn, s.id)
-	app := newApprover(turnCtx, conn, s.id, clientCapabilities)
-	cc.setThreadHandlers(threadID, &threadHandlers{
-		onNotification: func(method string, params json.RawMessage) {
-			app.handleNotification(method)
-			disp.handle(method, params)
-		},
-		onExecApproval:        app.handleExec,
-		onFileApproval:        app.handleFile,
-		onPermissionsApproval: app.handlePermissions,
-		onElicitation:         app.handleElicitation,
-	})
-	defer cc.setThreadHandlers(threadID, nil)
 
-	run := func(input []any) (turnCompleted, error) {
+	run := func(input []any) (_ turnCompleted, runErr error) {
+		runCtx, cancelRun := context.WithCancel(turnCtx)
+		defer cancelRun()
+		// A cancelled prompt may have returned before turn/start identified its
+		// backend turn. Finish that turn's bounded cleanup before starting another.
+		s.mu.Lock()
+		cleanup := s.startCleanup
+		s.mu.Unlock()
+		if cleanup != nil {
+			select {
+			case <-cleanup:
+			case <-runCtx.Done():
+				return turnCompleted{}, runCtx.Err()
+			case <-cc.rpc.done:
+				return turnCompleted{}, cc.rpc.closedError()
+			}
+		}
+		stream := newTurnStream(runCtx)
+		disp = newEventDispatcher(runCtx, conn, s.id)
+		app := newApprover(runCtx, conn, s.id, clientCapabilities)
+		handlers := &threadHandlers{
+			onNotification: stream.enqueue,
+			onExecApproval: func(ctx context.Context, p execApprovalParams) execApprovalResponse {
+				approval, cancel := app.forRequest(ctx)
+				defer cancel()
+				if !stream.acceptsRequest(approval.ctx, p.TurnID) {
+					return execApprovalResponse{Decision: "cancel"}
+				}
+				return approval.handleExec(p)
+			},
+			onFileApproval: func(ctx context.Context, p fileApprovalParams) fileApprovalResponse {
+				approval, cancel := app.forRequest(ctx)
+				defer cancel()
+				if !stream.acceptsRequest(approval.ctx, p.TurnID) {
+					return fileApprovalResponse{Decision: "cancel"}
+				}
+				return approval.handleFile(p)
+			},
+			onPermissionsApproval: func(ctx context.Context, p permissionsApprovalParams) permissionsApprovalResponse {
+				approval, cancel := app.forRequest(ctx)
+				defer cancel()
+				if !stream.acceptsRequest(approval.ctx, p.TurnID) {
+					return rejectPermissionsResponse()
+				}
+				return approval.handlePermissions(p)
+			},
+			onElicitation: func(ctx context.Context, p elicitationParams) elicitationResponse {
+				approval, cancel := app.forRequest(ctx)
+				defer cancel()
+				if !stream.acceptsRequest(approval.ctx, p.TurnID) {
+					return elicitationResponse{Action: "cancel"}
+				}
+				return approval.handleElicitation(p)
+			},
+		}
+		cc.setThreadHandlers(threadID, handlers)
+		defer cc.removeThreadHandlers(threadID, handlers)
+		defer func() {
+			cancelRun()
+			s.mu.Lock()
+			id, done := s.currentTurnID, s.interruptDone
+			issue := runErr != nil && id != "" && done == nil
+			if issue {
+				done = make(chan struct{})
+				s.interruptDone = done
+				s.startCleanup = done
+			}
+			s.mu.Unlock()
+			if issue {
+				go func() {
+					interruptTurnSoon(cc, threadID, id)
+					close(done)
+				}()
+			}
+			if done != nil && turnCtx.Err() != nil {
+				<-done
+			}
+			s.mu.Lock()
+			s.currentTurnID = ""
+			s.interruptDone = nil
+			s.mu.Unlock()
+		}()
 		params := turnStartParams{
 			ThreadID:       threadID,
 			Input:          input,
@@ -182,42 +261,74 @@ func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, cc
 		}()
 
 		var result turnStartResult
+		cleanupLateStart := func() {
+			done := make(chan struct{})
+			s.mu.Lock()
+			s.startCleanup = done
+			s.mu.Unlock()
+			go func() {
+				defer close(done)
+				interruptLateStartedTurn(cc, threadID, started, cancelStart)
+			}()
+		}
 		select {
 		case result = <-started:
 			cancelStart()
 		case <-turnCtx.Done():
-			go interruptLateStartedTurn(cc, threadID, started, cancelStart)
+			cleanupLateStart()
 			return turnCompleted{}, turnCtx.Err()
+		case err := <-stream.failed:
+			cleanupLateStart()
+			return turnCompleted{}, err
 		}
 		if result.err != nil {
+			retireTimedOutTurnControl(cc, "turn/start", result.err)
 			return turnCompleted{}, fmt.Errorf("turn/start: %w", result.err)
 		}
 		resp := result.response
+		if resp.Turn.ID == "" {
+			return turnCompleted{}, fmt.Errorf("turn/start returned an empty turn id")
+		}
+		stream.started(resp.Turn.ID)
 		s.mu.Lock()
 		interruptPending := s.interruptPending
-		if !interruptPending {
-			s.currentTurnID = resp.Turn.ID
-		}
+		s.currentTurnID = resp.Turn.ID
 		s.mu.Unlock()
 		if interruptPending || turnCtx.Err() != nil {
-			go interruptTurnSoon(cc, threadID, resp.Turn.ID)
 			return turnCompleted{}, context.Canceled
 		}
 
-		select {
-		case <-turnCtx.Done():
-			s.mu.Lock()
-			interruptIssued := s.interruptIssued
-			s.mu.Unlock()
-			if !interruptIssued {
-				go interruptTurnSoon(cc, threadID, resp.Turn.ID)
+		for {
+			event, err := stream.next(cc.rpc)
+			if err != nil {
+				return turnCompleted{}, err
 			}
-			return turnCompleted{}, turnCtx.Err()
-		case tc := <-disp.done:
-			s.mu.Lock()
-			s.currentTurnID = ""
-			s.mu.Unlock()
-			return tc, nil
+			if event.processed != nil {
+				close(event.processed)
+				continue
+			}
+			owned, err := stream.owns(event.rpcMessage)
+			if err != nil {
+				return turnCompleted{}, err
+			}
+			if !owned {
+				continue
+			}
+			if event.Method == "thread/closed" {
+				return turnCompleted{}, fmt.Errorf("codex thread %s closed during the turn", threadID)
+			}
+			disp.handle(event.Method, event.Params)
+			if err := disp.getFailure(); err != nil {
+				return turnCompleted{}, err
+			}
+			select {
+			case tc := <-disp.done:
+				if tc.Turn.Status != "completed" && tc.Turn.Status != "interrupted" {
+					return turnCompleted{}, fmt.Errorf("turn/completed returned unexpected turn status %q", tc.Turn.Status)
+				}
+				return tc, nil
+			default:
+			}
 		}
 	}
 
@@ -236,7 +347,17 @@ func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, cc
 	}
 
 	plan := disp.takeCompletedPlan()
-	if plan == nil || !requestPlanImplementation(turnCtx, conn, s.id, plan) {
+	if plan == nil {
+		return acp.StopReasonEndTurn, disp.getUsage(), nil
+	}
+	approved, err := requestPlanImplementation(turnCtx, conn, s.id, plan)
+	if turnCtx.Err() != nil {
+		return acp.StopReasonCancelled, disp.getUsage(), nil
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	if !approved {
 		return acp.StopReasonEndTurn, disp.getUsage(), nil
 	}
 	if err := cc.threadSettingsUpdate(turnCtx, newThreadSettingsUpdate(threadID, model, effort, defaultCollaborationMode)); err != nil {
@@ -245,10 +366,12 @@ func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, cc
 	s.mu.Lock()
 	s.collaborationMode = defaultCollaborationMode
 	s.mu.Unlock()
-	disp.update(acp.SessionUpdate{ConfigOptionUpdate: &acp.SessionConfigOptionUpdate{
+	if err := notifyClient(turnCtx, conn, s.id, acp.SessionUpdate{ConfigOptionUpdate: &acp.SessionConfigOptionUpdate{
 		SessionUpdate: "config_option_update",
 		ConfigOptions: buildConfigOptions(models, model, effort, defaultCollaborationMode),
-	}})
+	}}); err != nil {
+		return "", nil, err
+	}
 
 	tc, err = run(promptToInput([]acp.ContentBlock{acp.TextBlock("Implement the approved plan.")}))
 	if err != nil {
@@ -268,6 +391,16 @@ func interruptLateStartedTurn(cc *codexClient, threadID string, started <-chan t
 	result := <-started
 	if result.err == nil {
 		interruptTurnSoon(cc, threadID, result.response.Turn.ID)
+	} else {
+		retireTimedOutTurnControl(cc, "turn/start", result.err)
+	}
+}
+
+func retireTimedOutTurnControl(cc *codexClient, method string, err error) {
+	if errors.Is(err, context.DeadlineExceeded) {
+		// A timed-out start may still create an unidentified turn; a timed-out
+		// interrupt may leave it running. Neither transport is safe to reuse.
+		cc.rpc.close(fmt.Errorf("%s acknowledgement timed out: %w", method, err))
 	}
 }
 
@@ -277,10 +410,11 @@ func interruptTurnSoon(cc *codexClient, threadID, turnID string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_ = cc.turnInterrupt(ctx, turnInterruptParams{ThreadID: threadID, TurnID: turnID})
+	err := cc.turnInterrupt(ctx, turnInterruptParams{ThreadID: threadID, TurnID: turnID})
+	retireTimedOutTurnControl(cc, "turn/interrupt", err)
 }
 
-func requestPlanImplementation(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, plan *completedPlan) bool {
+func requestPlanImplementation(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, plan *completedPlan) (bool, error) {
 	const (
 		implement = acp.PermissionOptionId("implement_plan")
 		revise    = acp.PermissionOptionId("revise_plan")
@@ -293,36 +427,44 @@ func requestPlanImplementation(ctx context.Context, conn *acp.AgentSideConnectio
 		acp.WithStartStatus(acp.ToolCallStatusPending),
 		acp.WithStartRawInput(map[string]any{"plan": plan.text}),
 	)
-	if err := acpcommon.Notify(ctx, conn, sid, start); err != nil {
-		return false
+	if err := notifyClient(ctx, conn, sid, start); err != nil {
+		return false, err
 	}
-	response, err := conn.RequestPermission(ctx, acp.RequestPermissionRequest{
-		SessionId: sid,
-		ToolCall: acp.ToolCallUpdate{
-			ToolCallId: id,
-			Title:      new("Implement this plan?"),
-			Kind:       acp.Ptr(acp.ToolKindSwitchMode),
-			Status:     acp.Ptr(acp.ToolCallStatusPending),
-			RawInput:   map[string]any{"plan": plan.text},
-		},
-		Options: []acp.PermissionOption{
-			{OptionId: implement, Name: "Yes, implement this plan", Kind: acp.PermissionOptionKindAllowOnce},
-			{OptionId: revise, Name: "No, and tell Codex what to do differently", Kind: acp.PermissionOptionKindRejectOnce},
-		},
+	response, err := callClient(ctx, conn, func() (acp.RequestPermissionResponse, error) {
+		return conn.RequestPermission(ctx, acp.RequestPermissionRequest{
+			SessionId: sid,
+			ToolCall: acp.ToolCallUpdate{
+				ToolCallId: id,
+				Title:      new("Implement this plan?"),
+				Kind:       acp.Ptr(acp.ToolKindSwitchMode),
+				Status:     acp.Ptr(acp.ToolCallStatusPending),
+				RawInput:   map[string]any{"plan": plan.text},
+			},
+			Options: []acp.PermissionOption{
+				{OptionId: implement, Name: "Yes, implement this plan", Kind: acp.PermissionOptionKindAllowOnce},
+				{OptionId: revise, Name: "No, and tell Codex what to do differently", Kind: acp.PermissionOptionKindRejectOnce},
+			},
+		})
 	})
-	approved := err == nil && response.Outcome.Selected != nil && response.Outcome.Selected.OptionId == implement
+	if err != nil {
+		return false, err
+	}
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	approved := response.Outcome.Selected != nil && response.Outcome.Selected.OptionId == implement
 	output := "User kept the session in plan mode."
 	if approved {
 		output = "User approved the plan."
 	}
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
-	_ = acpcommon.Notify(finishCtx, conn, sid, acp.UpdateToolCall(
+	err = notifyClient(finishCtx, conn, sid, acp.UpdateToolCall(
 		id,
 		acp.WithUpdateStatus(acp.ToolCallStatusCompleted),
 		acp.WithUpdateRawOutput(output),
 	))
-	return approved
+	return approved, err
 }
 
 func sandboxPolicyWithRoots(policy any, roots []string) any {
@@ -339,18 +481,23 @@ func sandboxPolicyWithRoots(policy any, roots []string) any {
 	return copy
 }
 
-func streamThreadHistory(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, turns []rawTurn, toolOutputs map[string]string) {
+func streamThreadHistory(ctx context.Context, conn *acp.AgentSideConnection, sid acp.SessionId, turns []rawTurn, toolOutputs map[string]string) error {
+	var sendErr error
 	send := func(u acp.SessionUpdate) {
-		if ctx.Err() != nil {
+		if sendErr != nil {
 			return
 		}
-		_ = acpcommon.Notify(ctx, conn, sid, u)
+		sendErr = notifyClient(ctx, conn, sid, u)
 	}
 	for _, turn := range turns {
 		for _, raw := range turn.Items {
 			replayItem(send, raw, toolOutputs)
+			if sendErr != nil {
+				return sendErr
+			}
 		}
 	}
+	return nil
 }
 
 func replayToolResult(send func(acp.SessionUpdate), id, status string, content []acp.ToolCallContent) {
@@ -378,7 +525,7 @@ func replayToolText(send func(acp.SessionUpdate), id, status string, outputs map
 	if out == "" {
 		return
 	}
-	replayToolResult(send, id, status, []acp.ToolCallContent{acp.ToolContent(acp.TextBlock(out))})
+	replayToolResult(send, id, status, []acp.ToolCallContent{acp.ToolContent(acp.TextBlock(boundedToolOutput(out)))})
 }
 
 func replayItem(send func(acp.SessionUpdate), raw json.RawMessage, toolOutputs map[string]string) {

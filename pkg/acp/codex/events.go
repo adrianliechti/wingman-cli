@@ -3,7 +3,6 @@ package codex
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -19,7 +18,7 @@ type eventDispatcher struct {
 	sessionID acp.SessionId
 	done      chan turnCompleted
 
-	toolOut         map[string]*strings.Builder
+	toolOut         map[string]*toolOutput
 	seenReasoning   map[string]bool
 	seenAgentText   map[string]bool
 	guardianStarted map[string]bool
@@ -29,6 +28,7 @@ type eventDispatcher struct {
 
 	mu            sync.Mutex
 	failure       error
+	lastError     *turnError
 	usage         *acp.Usage
 	completedPlan *completedPlan
 }
@@ -44,7 +44,7 @@ func newEventDispatcher(ctx context.Context, conn *acp.AgentSideConnection, sid 
 		conn:            conn,
 		sessionID:       sid,
 		done:            make(chan turnCompleted, 1),
-		toolOut:         map[string]*strings.Builder{},
+		toolOut:         map[string]*toolOutput{},
 		seenReasoning:   map[string]bool{},
 		seenAgentText:   map[string]bool{},
 		guardianStarted: map[string]bool{},
@@ -130,25 +130,23 @@ func (d *eventDispatcher) update(u acp.SessionUpdate) {
 }
 
 func (d *eventDispatcher) updateWithContext(ctx context.Context, u acp.SessionUpdate) {
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || d.getFailure() != nil {
 		return
 	}
-	_ = d.conn.SessionUpdate(ctx, acp.SessionNotification{
-		SessionId: d.sessionID,
-		Update:    u,
-	})
+	if err := notifyClient(ctx, d.conn, d.sessionID, u); err != nil && d.ctx.Err() == nil {
+		d.setFailure(fmt.Errorf("send ACP update: %w", err))
+	}
 }
 
 func (d *eventDispatcher) appendToolOut(itemID, text string) {
 	b := d.toolOut[itemID]
 	if b == nil {
-		b = &strings.Builder{}
+		b = &toolOutput{}
 		d.toolOut[itemID] = b
 	}
-	b.WriteString(text)
-	d.update(acp.UpdateToolCall(acp.ToolCallId(itemID), acp.WithUpdateContent([]acp.ToolCallContent{
-		acp.ToolContent(acp.TextBlock(b.String())),
-	})))
+	// ACP content replaces the previous content. Re-sending every growing
+	// snapshot causes quadratic traffic; emit the bounded output at completion.
+	b.append(text)
 }
 
 func (d *eventDispatcher) handle(method string, params json.RawMessage) {
@@ -223,23 +221,18 @@ func (d *eventDispatcher) handle(method string, params json.RawMessage) {
 
 	case "error":
 		var p struct {
-			Error struct {
-				Message        string          `json:"message"`
-				CodexErrorInfo json.RawMessage `json:"codexErrorInfo"`
-			} `json:"error"`
+			Error     turnError `json:"error"`
+			WillRetry *bool     `json:"willRetry"`
 		}
 		if json.Unmarshal(params, &p) != nil {
 			return
 		}
+		d.lastError = &p.Error
 		if p.Error.Message != "" {
 			d.update(acp.UpdateAgentMessageText(p.Error.Message + "\n\n"))
 		}
-		if isFatalTurnError(p.Error.CodexErrorInfo) {
-			msg := p.Error.Message
-			if msg == "" {
-				msg = "codex turn failed"
-			}
-			d.setFailure(errors.New(msg))
+		if (p.WillRetry != nil && !*p.WillRetry) || (p.WillRetry == nil && isFatalTurnError(p.Error.CodexErrorInfo)) {
+			d.setFailure(&p.Error)
 
 			select {
 			case d.done <- turnCompleted{}:
@@ -293,7 +286,18 @@ func (d *eventDispatcher) handle(method string, params json.RawMessage) {
 
 	case "turn/completed":
 		var tc turnCompleted
-		if json.Unmarshal(params, &tc) == nil {
+		if err := json.Unmarshal(params, &tc); err != nil {
+			d.setFailure(fmt.Errorf("decode turn/completed: %w", err))
+		} else {
+			if tc.Turn.Status == "failed" {
+				if tc.Turn.Error == nil {
+					tc.Turn.Error = d.lastError
+				}
+				if tc.Turn.Error == nil {
+					tc.Turn.Error = &turnError{}
+				}
+				d.setFailure(tc.Turn.Error)
+			}
 			select {
 			case d.done <- tc:
 			default:
@@ -427,9 +431,15 @@ func (d *eventDispatcher) handleItemCompleted(params json.RawMessage) {
 		_ = json.Unmarshal(env.Item, &it)
 		opts := []acp.ToolCallUpdateOpt{acp.WithUpdateStatus(toolStatusFor(it.Status))}
 
-		if _, streamed := d.toolOut[id]; !streamed && it.AggregatedOutput != nil && *it.AggregatedOutput != "" {
+		output := ""
+		if buffered := d.toolOut[id]; buffered != nil {
+			output = buffered.String()
+		} else if it.AggregatedOutput != nil {
+			output = boundedToolOutput(*it.AggregatedOutput)
+		}
+		if output != "" {
 			opts = append(opts, acp.WithUpdateContent([]acp.ToolCallContent{
-				acp.ToolContent(acp.TextBlock(*it.AggregatedOutput)),
+				acp.ToolContent(acp.TextBlock(output)),
 			}))
 		}
 		delete(d.toolOut, id)

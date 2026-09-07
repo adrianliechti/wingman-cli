@@ -193,7 +193,9 @@ func (a *Agent) Prompt(ctx context.Context, params acp.PromptRequest) (acp.Promp
 	if s == nil {
 		return acp.PromptResponse{}, fmt.Errorf("session %s not found", params.SessionId)
 	}
-	s.promptMu.Lock()
+	if err := s.promptMu.Lock(ctx); err != nil {
+		return acp.PromptResponse{StopReason: acp.StopReasonCancelled}, nil
+	}
 	defer s.promptMu.Unlock()
 	if s.isClosed() {
 		return acp.PromptResponse{}, fmt.Errorf("session %s is closed", params.SessionId)

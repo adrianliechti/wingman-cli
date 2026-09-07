@@ -3,6 +3,8 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"slices"
 	"sync"
 )
 
@@ -18,10 +20,10 @@ type codexClient struct {
 
 type threadHandlers struct {
 	onNotification        func(method string, params json.RawMessage)
-	onExecApproval        func(params execApprovalParams) execApprovalResponse
-	onFileApproval        func(params fileApprovalParams) fileApprovalResponse
-	onPermissionsApproval func(params permissionsApprovalParams) permissionsApprovalResponse
-	onElicitation         func(params elicitationParams) elicitationResponse
+	onExecApproval        func(context.Context, execApprovalParams) execApprovalResponse
+	onFileApproval        func(context.Context, fileApprovalParams) fileApprovalResponse
+	onPermissionsApproval func(context.Context, permissionsApprovalParams) permissionsApprovalResponse
+	onElicitation         func(context.Context, elicitationParams) elicitationResponse
 }
 
 func newCodexClient(rpc *rpcClient) *codexClient {
@@ -38,6 +40,15 @@ func (c *codexClient) setThreadHandlers(threadID string, h *threadHandlers) {
 		delete(c.handlers, threadID)
 	} else {
 		c.handlers[threadID] = h
+	}
+}
+
+func (c *codexClient) removeThreadHandlers(threadID string, h *threadHandlers) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// A replaced session may still be unwinding its cancelled prompt.
+	if c.handlers[threadID] == h {
+		delete(c.handlers, threadID)
 	}
 }
 
@@ -75,7 +86,7 @@ func (c *codexClient) dispatchNotification(method string, params json.RawMessage
 	}
 }
 
-func (c *codexClient) dispatchRequest(_ context.Context, method string, params json.RawMessage) (any, *rpcError) {
+func (c *codexClient) dispatchRequest(ctx context.Context, method string, params json.RawMessage) (any, *rpcError) {
 	switch method {
 	case "item/commandExecution/requestApproval":
 		var p execApprovalParams
@@ -83,7 +94,7 @@ func (c *codexClient) dispatchRequest(_ context.Context, method string, params j
 			return nil, &rpcError{Code: -32602, Message: err.Error()}
 		}
 		if h := c.handlersFor(p.ThreadID); h != nil && h.onExecApproval != nil {
-			return h.onExecApproval(p), nil
+			return h.onExecApproval(ctx, p), nil
 		}
 		return execApprovalResponse{Decision: "cancel"}, nil
 	case "item/fileChange/requestApproval":
@@ -92,7 +103,7 @@ func (c *codexClient) dispatchRequest(_ context.Context, method string, params j
 			return nil, &rpcError{Code: -32602, Message: err.Error()}
 		}
 		if h := c.handlersFor(p.ThreadID); h != nil && h.onFileApproval != nil {
-			return h.onFileApproval(p), nil
+			return h.onFileApproval(ctx, p), nil
 		}
 		return fileApprovalResponse{Decision: "cancel"}, nil
 	case "item/permissions/requestApproval":
@@ -101,7 +112,7 @@ func (c *codexClient) dispatchRequest(_ context.Context, method string, params j
 			return nil, &rpcError{Code: -32602, Message: err.Error()}
 		}
 		if h := c.handlersFor(p.ThreadID); h != nil && h.onPermissionsApproval != nil {
-			return h.onPermissionsApproval(p), nil
+			return h.onPermissionsApproval(ctx, p), nil
 		}
 		return rejectPermissionsResponse(), nil
 	case "mcpServer/elicitation/request":
@@ -110,7 +121,7 @@ func (c *codexClient) dispatchRequest(_ context.Context, method string, params j
 			return nil, &rpcError{Code: -32602, Message: err.Error()}
 		}
 		if h := c.handlersFor(p.ThreadID); h != nil && h.onElicitation != nil {
-			return h.onElicitation(p), nil
+			return h.onElicitation(ctx, p), nil
 		}
 		return elicitationResponse{Action: "decline"}, nil
 	}
@@ -148,10 +159,11 @@ type threadStartResponse struct {
 }
 
 type threadInfo struct {
-	ID    string    `json:"id"`
-	Cwd   string    `json:"cwd"`
-	Path  *string   `json:"path,omitempty"`
-	Turns []rawTurn `json:"turns,omitempty"`
+	ID          string    `json:"id"`
+	Cwd         string    `json:"cwd"`
+	Path        *string   `json:"path,omitempty"`
+	HistoryMode string    `json:"historyMode,omitempty"`
+	Turns       []rawTurn `json:"turns,omitempty"`
 }
 
 type rawTurn struct {
@@ -161,6 +173,7 @@ type rawTurn struct {
 
 type threadResumeParams struct {
 	ThreadID      string         `json:"threadId"`
+	ExcludeTurns  bool           `json:"excludeTurns,omitempty"`
 	Cwd           string         `json:"cwd,omitempty"`
 	Model         string         `json:"model,omitempty"`
 	ModelProvider string         `json:"modelProvider,omitempty"`
@@ -175,6 +188,7 @@ type threadResumeResponse struct {
 
 type threadForkParams struct {
 	ThreadID      string         `json:"threadId"`
+	ExcludeTurns  bool           `json:"excludeTurns,omitempty"`
 	Cwd           string         `json:"cwd,omitempty"`
 	ModelProvider string         `json:"modelProvider,omitempty"`
 	Config        map[string]any `json:"config,omitempty"`
@@ -193,6 +207,19 @@ type threadReadParams struct {
 
 type threadReadResponse struct {
 	Thread threadInfo `json:"thread"`
+}
+
+type threadTurnsListParams struct {
+	ThreadID      string  `json:"threadId"`
+	Cursor        *string `json:"cursor,omitempty"`
+	Limit         int     `json:"limit"`
+	SortDirection string  `json:"sortDirection"`
+	ItemsView     string  `json:"itemsView"`
+}
+
+type threadTurnsListResponse struct {
+	Data       []rawTurn `json:"data"`
+	NextCursor *string   `json:"nextCursor"`
 }
 
 type threadUnsubscribeParams struct {
@@ -288,8 +315,26 @@ type turnStartResponse struct {
 }
 
 type turn struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
+	ID     string     `json:"id"`
+	Status string     `json:"status"`
+	Error  *turnError `json:"error,omitempty"`
+}
+
+type turnError struct {
+	Message           string          `json:"message"`
+	CodexErrorInfo    json.RawMessage `json:"codexErrorInfo,omitempty"`
+	AdditionalDetails string          `json:"additionalDetails,omitempty"`
+}
+
+func (e *turnError) Error() string {
+	message := e.Message
+	if message == "" {
+		message = "codex turn failed"
+	}
+	if e.AdditionalDetails != "" {
+		message += ": " + e.AdditionalDetails
+	}
+	return message
 }
 
 type turnCompleted struct {
@@ -374,6 +419,7 @@ type permissionsApprovalResponse struct {
 
 type elicitationParams struct {
 	ThreadID        string          `json:"threadId"`
+	TurnID          string          `json:"turnId"`
 	ServerName      string          `json:"serverName"`
 	Mode            string          `json:"mode"`
 	Message         string          `json:"message"`
@@ -390,7 +436,12 @@ type elicitationResponse struct {
 }
 
 func (c *codexClient) initialize(ctx context.Context, p initializeParams) error {
-	return c.rpc.call(ctx, "initialize", p, nil)
+	if err := c.rpc.call(ctx, "initialize", p, nil); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, rpcRequestTimeout)
+	defer cancel()
+	return c.rpc.send(ctx, rpcMessage{Method: "initialized", Params: json.RawMessage(`{}`)})
 }
 
 func (c *codexClient) threadStart(ctx context.Context, p threadStartParams) (threadStartResponse, error) {
@@ -430,6 +481,41 @@ func (c *codexClient) threadRead(ctx context.Context, p threadReadParams) (threa
 	var out threadReadResponse
 	err := c.rpc.call(ctx, "thread/read", p, &out)
 	return out, err
+}
+
+func (c *codexClient) threadReadWithHistory(ctx context.Context, threadID string) (threadReadResponse, error) {
+	read, err := c.threadRead(ctx, threadReadParams{ThreadID: threadID})
+	if err != nil {
+		return read, err
+	}
+	// Legacy stores re-read their rollout for each page. Older app-servers do
+	// not report historyMode or implement pagination, so keep their full read.
+	if read.Thread.HistoryMode != "paginated" {
+		return c.threadRead(ctx, threadReadParams{ThreadID: threadID, IncludeTurns: true})
+	}
+	read.Thread.Turns = nil
+	var cursor *string
+	seen := make(map[string]bool)
+	for {
+		var page threadTurnsListResponse
+		if err := c.rpc.call(ctx, "thread/turns/list", threadTurnsListParams{
+			ThreadID: threadID, Cursor: cursor, Limit: 50, SortDirection: "desc", ItemsView: "full",
+		}, &page); err != nil {
+			return threadReadResponse{}, fmt.Errorf("thread/turns/list: %w", err)
+		}
+		read.Thread.Turns = append(read.Thread.Turns, page.Data...)
+		cursor = page.NextCursor
+		if cursor == nil || *cursor == "" {
+			break
+		}
+		if seen[*cursor] {
+			return threadReadResponse{}, fmt.Errorf("Codex returned a repeated thread history cursor")
+		}
+		seen[*cursor] = true
+	}
+	// Pages contain newest turns first, but each turn's items are chronological.
+	slices.Reverse(read.Thread.Turns)
+	return read, nil
 }
 
 func (c *codexClient) threadUnsubscribe(ctx context.Context, p threadUnsubscribeParams) error {

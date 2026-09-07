@@ -145,14 +145,15 @@ type cliMsgBlock struct {
 }
 
 type cliResult struct {
-	Subtype      string                   `json:"subtype"`
-	StopReason   string                   `json:"stop_reason"`
-	IsError      bool                     `json:"is_error"`
-	Result       string                   `json:"result"`
-	Errors       []string                 `json:"errors"`
-	Usage        *cliUsage                `json:"usage,omitempty"`
-	ModelUsage   map[string]cliModelUsage `json:"modelUsage,omitempty"`
-	TotalCostUSD float64                  `json:"total_cost_usd,omitempty"`
+	UserMessageUUID string                   `json:"user_message_uuid,omitempty"`
+	Subtype         string                   `json:"subtype"`
+	StopReason      string                   `json:"stop_reason"`
+	IsError         bool                     `json:"is_error"`
+	Result          string                   `json:"result"`
+	Errors          []string                 `json:"errors"`
+	Usage           *cliUsage                `json:"usage,omitempty"`
+	ModelUsage      map[string]cliModelUsage `json:"modelUsage,omitempty"`
+	TotalCostUSD    float64                  `json:"total_cost_usd,omitempty"`
 }
 
 type cliUsage struct {
@@ -168,6 +169,7 @@ type cliModelUsage struct {
 
 type cliInput struct {
 	Type    string          `json:"type"`
+	UUID    string          `json:"uuid,omitempty"`
 	Message cliInputMessage `json:"message"`
 }
 

@@ -45,21 +45,25 @@ func Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		sessionDirs: map[acpsdk.SessionId]string{},
 		workspaces:  map[string]*workspaceEntry{},
 	}
-	s.conn = acpsdk.NewAgentSideConnection(s, out, in)
+	writer := acpcommon.NewConnectionWriter(out, 0)
+	defer writer.Close()
+	s.conn = acpsdk.NewAgentSideConnection(s, writer, in)
 	s.conn.SetLogger(slog.Default())
 
 	select {
 	case <-s.conn.Done():
+	case <-writer.Done():
 	case <-ctx.Done():
 	}
 
 	s.mu.Lock()
+	s.closing = true
 	sessionIDs := slices.Collect(maps.Keys(s.sessions))
 	s.mu.Unlock()
 	for _, id := range sessionIDs {
 		_, _ = s.CloseSession(context.Background(), acpsdk.CloseSessionRequest{SessionId: id})
 	}
-	return nil
+	return writer.Err()
 }
 
 var serverMCPCapabilities = acpsdk.McpCapabilities{Http: true, Sse: true}
@@ -72,6 +76,7 @@ type Server struct {
 	sessions    map[acpsdk.SessionId]*sessionEntry
 	sessionDirs map[acpsdk.SessionId]string
 	workspaces  map[string]*workspaceEntry
+	closing     bool
 
 	formElicitation atomic.Bool
 }
@@ -132,6 +137,9 @@ func (s *Server) Logout(_ context.Context, _ acpsdk.LogoutRequest) (acpsdk.Logou
 }
 
 func (s *Server) Elicit(ctx context.Context, req tool.ElicitRequest) (tool.ElicitResult, error) {
+	if err := ctx.Err(); err != nil {
+		return tool.ElicitResult{Action: tool.ElicitCancel}, err
+	}
 	if result, handled := environmentElicitation(req); handled {
 		return result, nil
 	}
@@ -140,11 +148,15 @@ func (s *Server) Elicit(ctx context.Context, req tool.ElicitRequest) (tool.Elici
 	}
 
 	params := acpsdk.NewUnstableCreateElicitationRequestForm(elicitationSchema(req))
+	// The SDK does not yet expose top-level sessionId for form requests.
+	params.Form.Meta = map[string]any{"sessionId": code.SessionIDFromContext(ctx)}
 	params.Form.Message = req.Message
 	if params.Form.Message == "" {
 		params.Form.Message = "Additional input is needed."
 	}
-	response, err := s.conn.UnstableCreateElicitation(ctx, params)
+	response, err := acpcommon.Call(ctx, func() (acpsdk.UnstableCreateElicitationResponse, error) {
+		return s.conn.UnstableCreateElicitation(ctx, params)
+	})
 	if err != nil {
 		// The client advertised form support, so an RPC failure is not evidence
 		// that the user accepted the schema defaults. Treat it as cancellation;
@@ -287,25 +299,24 @@ func (s *Server) Confirm(ctx context.Context, message string) (bool, error) {
 		acpsdk.WithStartKind(acpsdk.ToolKindOther),
 		acpsdk.WithStartStatus(acpsdk.ToolCallStatusPending),
 	)
-	if err := s.conn.SessionUpdate(ctx, acpsdk.SessionNotification{
-		SessionId: acpsdk.SessionId(sid),
-		Update:    start,
-	}); err != nil {
+	if err := acpcommon.Notify(ctx, s.conn, acpsdk.SessionId(sid), start); err != nil {
 		return false, err
 	}
 
-	response, err := s.conn.RequestPermission(ctx, acpsdk.RequestPermissionRequest{
-		SessionId: acpsdk.SessionId(sid),
-		ToolCall: acpsdk.ToolCallUpdate{
-			ToolCallId: toolCallID,
-			Title:      new(message),
-			Kind:       acpsdk.Ptr(acpsdk.ToolKindOther),
-			Status:     acpsdk.Ptr(acpsdk.ToolCallStatusPending),
-		},
-		Options: []acpsdk.PermissionOption{
-			{Kind: acpsdk.PermissionOptionKindAllowOnce, Name: "Allow", OptionId: allow},
-			{Kind: acpsdk.PermissionOptionKindRejectOnce, Name: "Reject", OptionId: "reject"},
-		},
+	response, err := acpcommon.Call(ctx, func() (acpsdk.RequestPermissionResponse, error) {
+		return s.conn.RequestPermission(ctx, acpsdk.RequestPermissionRequest{
+			SessionId: acpsdk.SessionId(sid),
+			ToolCall: acpsdk.ToolCallUpdate{
+				ToolCallId: toolCallID,
+				Title:      new(message),
+				Kind:       acpsdk.Ptr(acpsdk.ToolKindOther),
+				Status:     acpsdk.Ptr(acpsdk.ToolCallStatusPending),
+			},
+			Options: []acpsdk.PermissionOption{
+				{Kind: acpsdk.PermissionOptionKindAllowOnce, Name: "Allow", OptionId: allow},
+				{Kind: acpsdk.PermissionOptionKindRejectOnce, Name: "Reject", OptionId: "reject"},
+			},
+		})
 	})
 	if err != nil {
 		s.finishPermissionToolCall(ctx, acpsdk.SessionId(sid), toolCallID, acpsdk.ToolCallStatusFailed)
@@ -327,10 +338,7 @@ func (s *Server) finishPermissionToolCall(ctx context.Context, sid acpsdk.Sessio
 	// caller's deadline. Keep this cleanup bounded in case the client is gone.
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
-	return s.conn.SessionUpdate(finishCtx, acpsdk.SessionNotification{
-		SessionId: sid,
-		Update:    acpsdk.UpdateToolCall(id, acpsdk.WithUpdateStatus(status)),
-	})
+	return acpcommon.Notify(finishCtx, s.conn, sid, acpsdk.UpdateToolCall(id, acpsdk.WithUpdateStatus(status)))
 }
 
 func (s *Server) NewSession(ctx context.Context, params acpsdk.NewSessionRequest) (acpsdk.NewSessionResponse, error) {
@@ -349,7 +357,10 @@ func (s *Server) NewSession(ctx context.Context, params acpsdk.NewSessionRequest
 		return acpsdk.NewSessionResponse{}, err
 	}
 	acpSid := acpsdk.SessionId(sid)
-	s.registerSession(acpSid, w)
+	if err := s.registerSession(acpSid, w); err != nil {
+		s.releaseWorkspace(w)
+		return acpsdk.NewSessionResponse{}, err
+	}
 
 	return acpsdk.NewSessionResponse{
 		SessionId:     acpSid,
@@ -366,6 +377,10 @@ func (s *Server) acquireWorkspace(ctx context.Context, cwd string, requestedServ
 	key := workspaceKey(cwd, requested)
 
 	s.mu.Lock()
+	if s.closing || ctx.Err() != nil {
+		s.mu.Unlock()
+		return nil, errors.New("ACP connection is closing")
+	}
 	if w, ok := s.workspaces[key]; ok {
 		w.refs++
 		s.mu.Unlock()
@@ -387,6 +402,12 @@ func (s *Server) acquireWorkspace(ctx context.Context, cwd string, requestedServ
 	wa := codeagent.New(ws, s.config, s)
 
 	s.mu.Lock()
+	if s.closing || ctx.Err() != nil {
+		s.mu.Unlock()
+		_ = wa.Close()
+		ws.Close()
+		return nil, errors.New("ACP connection is closing")
+	}
 	if existing, ok := s.workspaces[key]; ok {
 
 		existing.refs++
@@ -525,8 +546,12 @@ func (s *Server) releaseWorkspace(w *workspaceEntry) {
 	w.ws.Close()
 }
 
-func (s *Server) registerSession(id acpsdk.SessionId, w *workspaceEntry) {
+func (s *Server) registerSession(id acpsdk.SessionId, w *workspaceEntry) error {
 	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return errors.New("ACP connection is closing")
+	}
 	if s.sessionDirs == nil {
 		s.sessionDirs = map[acpsdk.SessionId]string{}
 	}
@@ -540,10 +565,15 @@ func (s *Server) registerSession(id acpsdk.SessionId, w *workspaceEntry) {
 	if exists {
 		s.releaseWorkspace(w)
 	}
+	return nil
 }
 
 func (s *Server) replaceLoadedSession(id acpsdk.SessionId, w *workspaceEntry) error {
 	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return errors.New("ACP connection is closing")
+	}
 	old := s.sessions[id]
 	if old != nil && (old.closing || old.cancel != nil) {
 		s.mu.Unlock()
@@ -640,6 +670,10 @@ func (s *Server) lookupSession(id acpsdk.SessionId) *sessionEntry {
 func (s *Server) retainSession(ctx context.Context, id acpsdk.SessionId, cancel context.CancelFunc) (*sessionEntry, func(), error) {
 	for {
 		s.mu.Lock()
+		if err := ctx.Err(); err != nil {
+			s.mu.Unlock()
+			return nil, nil, err
+		}
 		sess := s.sessions[id]
 		if sess == nil {
 			s.mu.Unlock()
@@ -748,7 +782,11 @@ func (s *Server) Prompt(ctx context.Context, params acpsdk.PromptRequest) (acpsd
 		s.pushSessionInfo(ctx, sess)
 	}()
 
+	var notifyErr error
 	notify := func(u acpsdk.SessionUpdate) {
+		if notifyErr != nil {
+			return
+		}
 		sendCtx := ctx
 		// Finish tool calls already announced in_progress; the SDK won't write on a cancelled ctx.
 		if ctx.Err() != nil {
@@ -756,10 +794,10 @@ func (s *Server) Prompt(ctx context.Context, params acpsdk.PromptRequest) (acpsd
 			defer cancel()
 			sendCtx = detached
 		}
-		_ = s.conn.SessionUpdate(sendCtx, acpsdk.SessionNotification{
-			SessionId: params.SessionId,
-			Update:    u,
-		})
+		notifyErr = acpcommon.Notify(sendCtx, s.conn, params.SessionId, u)
+		if notifyErr != nil {
+			cancel()
+		}
 	}
 
 	// ACP agent_message_chunk updates cannot be retracted. Deliberately leave
@@ -770,6 +808,9 @@ func (s *Server) Prompt(ctx context.Context, params acpsdk.PromptRequest) (acpsd
 		return acpsdk.PromptResponse{}, err
 	}
 	for msg, err := range stream {
+		if notifyErr != nil {
+			return acpsdk.PromptResponse{}, notifyErr
+		}
 		if err != nil {
 			reason, streamErr := classifyPromptStreamError(err)
 			if streamErr != nil {
@@ -780,6 +821,9 @@ func (s *Server) Prompt(ctx context.Context, params acpsdk.PromptRequest) (acpsd
 		for _, c := range msg.Content {
 			notifyContent(notify, agent.RoleAssistant, c)
 		}
+	}
+	if notifyErr != nil {
+		return acpsdk.PromptResponse{}, notifyErr
 	}
 	return promptResponse(sess, acpsdk.StopReasonEndTurn, params.MessageId), nil
 }
@@ -890,7 +934,9 @@ func (s *Server) LoadSession(ctx context.Context, params acpsdk.LoadSessionReque
 	if err != nil {
 		return acpsdk.LoadSessionResponse{}, err
 	}
-	s.replayMessages(ctx, params.SessionId, messages)
+	if err := s.replayMessages(ctx, params.SessionId, messages); err != nil {
+		return acpsdk.LoadSessionResponse{}, err
+	}
 	return acpsdk.LoadSessionResponse{
 		Modes:         modeState(w.agent, string(params.SessionId)),
 		ConfigOptions: sessionConfigOptions(w.agent, string(params.SessionId)),
@@ -924,12 +970,12 @@ func (s *Server) loadAndAttach(ctx context.Context, cwdParam string, id acpsdk.S
 	return w, w.agent.Messages(string(id)), nil
 }
 
-func (s *Server) replayMessages(ctx context.Context, sid acpsdk.SessionId, messages []agent.Message) {
+func (s *Server) replayMessages(ctx context.Context, sid acpsdk.SessionId, messages []agent.Message) error {
+	var notifyErr error
 	notify := func(u acpsdk.SessionUpdate) {
-		_ = s.conn.SessionUpdate(ctx, acpsdk.SessionNotification{
-			SessionId: sid,
-			Update:    u,
-		})
+		if notifyErr == nil {
+			notifyErr = acpcommon.Notify(ctx, s.conn, sid, u)
+		}
 	}
 	for _, m := range messages {
 		if m.Hidden {
@@ -937,8 +983,12 @@ func (s *Server) replayMessages(ctx context.Context, sid acpsdk.SessionId, messa
 		}
 		for _, c := range m.Content {
 			notifyContent(notify, m.Role, c)
+			if notifyErr != nil {
+				return notifyErr
+			}
 		}
 	}
+	return ctx.Err()
 }
 
 func notifyContent(notify func(acpsdk.SessionUpdate), role agent.MessageRole, c agent.Content) {

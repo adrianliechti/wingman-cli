@@ -31,10 +31,13 @@ type Agent struct {
 	workspace *code.Workspace
 	def       code.AgentDef
 
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	conn      *acpsdk.ClientSideConnection
-	closeOnce sync.Once
+	cmd           *exec.Cmd
+	stdin         io.WriteCloser
+	stdout        io.Closer
+	conn          *acpsdk.ClientSideConnection
+	closeOnce     sync.Once
+	transportOnce sync.Once
+	processDone   chan struct{}
 
 	serverDone <-chan struct{}
 	serverW    io.Closer
@@ -43,8 +46,10 @@ type Agent struct {
 
 	caps acpsdk.AgentCapabilities
 
-	uiMu sync.RWMutex
-	ui   code.UI
+	uiMu          sync.RWMutex
+	ui            code.UI
+	updatePending map[string]bool
+	updateRunning bool
 
 	configMu      sync.RWMutex
 	models        []model.Model
@@ -101,22 +106,37 @@ type toolCall struct {
 }
 
 type turn struct {
-	ctx    context.Context
-	events chan event
-	done   chan struct{}
-	cancel context.CancelFunc
+	ctx      context.Context
+	events   chan event
+	done     chan struct{}
+	cancel   context.CancelFunc
+	updateMu sync.Mutex
 
 	mu                sync.Mutex
 	emitted           []agent.Message
 	lastContentKey    string
 	ignoreUserUpdates bool
+	streamErr         error
 }
 
 // send drops the message once the turn is finished.
 func (t *turn) send(msg agent.Message) {
 	select {
+	case <-t.done:
+		return
+	case <-t.ctx.Done():
+		return
+	default:
+	}
+	select {
 	case t.events <- event{msg: msg}:
 	case <-t.done:
+	case <-t.ctx.Done():
+	default:
+		t.mu.Lock()
+		t.streamErr = errors.New("ACP session update buffer exhausted; the consumer stopped reading")
+		t.mu.Unlock()
+		t.cancel()
 	}
 }
 
@@ -176,10 +196,9 @@ func (s *sessionState) finalizeTurn(t *turn) {
 }
 
 type event struct {
-	msg             agent.Message
-	err             error
-	done            bool
-	remoteCancelled bool
+	msg  agent.Message
+	err  error
+	done bool
 }
 
 const (
@@ -195,6 +214,7 @@ func New(ctx context.Context, ws *code.Workspace, def code.AgentDef) (*Agent, er
 
 	cwd := ws.RootPath
 	cmd := exec.Command(def.Command, def.Args...)
+	cmd.WaitDelay = 2 * time.Second
 	process.Hide(cmd)
 	cmd.Dir = cwd
 	cmd.Env = os.Environ()
@@ -207,26 +227,43 @@ func New(ctx context.Context, ws *code.Workspace, def code.AgentDef) (*Agent, er
 	if err != nil {
 		return nil, fmt.Errorf("agent %q: stdin pipe: %w", def.Name, err)
 	}
-	stdout, err := cmd.StdoutPipe()
+	// Own stdout so Wait can observe process death while the reader drains
+	// final frames, even when a subprocess inherited the output pipe.
+	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
 		_ = stdin.Close()
 		return nil, fmt.Errorf("agent %q: stdout pipe: %w", def.Name, err)
 	}
+	cmd.Stdout = stdoutWriter
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
+		_ = stdoutWriter.Close()
 		return nil, fmt.Errorf("agent %q: start: %w", def.Name, err)
 	}
+	_ = stdoutWriter.Close()
 
 	a := &Agent{
 		workspace: ws,
 		def:       def,
 		cmd:       cmd,
-		stdin:     stdin,
+		stdin:     acp.NewConnectionWriter(stdin, 0),
+		stdout:    stdout,
 		sessions:  map[string]*sessionState{},
 		pending:   map[string][]acpsdk.SessionUpdate{},
 	}
-	a.conn = acpsdk.NewClientSideConnection(a, stdin, stdout)
+	a.conn = acpsdk.NewClientSideConnection(a, a.stdin, stdout)
+	a.watchWriter(a.stdin.(*acp.ConnectionWriter))
+	a.processDone = make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(a.processDone)
+		select {
+		case <-a.conn.Done():
+		case <-time.After(100 * time.Millisecond):
+			a.abortTransport()
+		}
+	}()
 
 	a.conn.SetLogger(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
 		Level: slog.LevelWarn,
@@ -255,7 +292,8 @@ func NewInProcess(
 	a := &Agent{
 		workspace: ws,
 		def:       code.AgentDef{Name: name},
-		stdin:     clientW,
+		stdin:     acp.NewConnectionWriter(clientW, 0),
+		stdout:    clientR,
 		sessions:  map[string]*sessionState{},
 		pending:   map[string][]acpsdk.SessionUpdate{},
 		cleanup:   cleanup,
@@ -266,14 +304,17 @@ func NewInProcess(
 		a.steer = s.Steer
 	}
 
-	srvConn := acpsdk.NewAgentSideConnection(serverAgent, serverW, serverR)
+	serverWriter := acp.NewConnectionWriter(serverW, 0)
+	srvConn := acpsdk.NewAgentSideConnection(serverAgent, serverWriter, serverR)
 	if setupServer != nil {
 		setupServer(srvConn)
 	}
 	a.serverDone = srvConn.Done()
-	a.serverW = serverW
+	a.serverW = serverWriter
 
-	a.conn = acpsdk.NewClientSideConnection(a, clientW, clientR)
+	a.conn = acpsdk.NewClientSideConnection(a, a.stdin, clientR)
+	a.watchWriter(a.stdin.(*acp.ConnectionWriter))
+	a.watchWriter(serverWriter)
 	a.conn.SetLogger(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
 		Level: slog.LevelWarn,
 	})))
@@ -294,29 +335,30 @@ func (a *Agent) initialize(ctx context.Context) (acpsdk.InitializeResponse, erro
 	initCtx, cancel := context.WithTimeout(ctx, initTimeout)
 	defer cancel()
 	title := "Wingman"
-	resp, err := a.conn.Initialize(initCtx, acpsdk.InitializeRequest{
-		ProtocolVersion: acpsdk.ProtocolVersionNumber,
-		ClientInfo: &acpsdk.Implementation{
-			Name: "wingman", Title: &title, Version: "0.1.0",
-		},
-		ClientCapabilities: acpsdk.ClientCapabilities{
-			Fs: acpsdk.FileSystemCapabilities{
-				ReadTextFile:  true,
-				WriteTextFile: true,
+	resp, err := acp.Call(initCtx, func() (acpsdk.InitializeResponse, error) {
+		return a.conn.Initialize(initCtx, acpsdk.InitializeRequest{
+			ProtocolVersion: acpsdk.ProtocolVersionNumber,
+			ClientInfo: &acpsdk.Implementation{
+				Name: "wingman", Title: &title, Version: "0.1.0",
 			},
-			Elicitation: &acpsdk.ElicitationCapabilities{
-				Form: &acpsdk.ElicitationFormCapabilities{},
+			ClientCapabilities: acpsdk.ClientCapabilities{
+				Fs: acpsdk.FileSystemCapabilities{
+					ReadTextFile:  true,
+					WriteTextFile: true,
+				},
+				Elicitation: &acpsdk.ElicitationCapabilities{
+					Form: &acpsdk.ElicitationFormCapabilities{},
+				},
 			},
-		},
+		})
 	})
 	if err != nil {
 		return acpsdk.InitializeResponse{}, err
 	}
-	// ACP negotiates down: the agent may answer with any version at or below
-	// the one we offered, and both sides then speak that. Only a version above
-	// ours is unusable.
-	if resp.ProtocolVersion > acpsdk.ProtocolVersionNumber {
-		return acpsdk.InitializeResponse{}, fmt.Errorf("unsupported ACP protocol version %d (want %d or lower)", resp.ProtocolVersion, acpsdk.ProtocolVersionNumber)
+	// Major protocol versions can contain breaking changes. Accept only a
+	// version this implementation actually supports.
+	if resp.ProtocolVersion != acpsdk.ProtocolVersionNumber {
+		return acpsdk.InitializeResponse{}, fmt.Errorf("unsupported ACP protocol version %d (want %d)", resp.ProtocolVersion, acpsdk.ProtocolVersionNumber)
 	}
 	return resp, nil
 }
@@ -619,6 +661,13 @@ func (a *Agent) LoadSessionStream(ctx context.Context, id string) iter.Seq2[[]ag
 			cancel: cancel,
 		}
 		sess.mu.Lock()
+		if sess.loaded {
+			snap := agent.CloneMessages(sess.messages)
+			sess.mu.Unlock()
+			cancel()
+			yield(snap, nil)
+			return
+		}
 		if sess.inflight != nil {
 			sess.mu.Unlock()
 			cancel()
@@ -628,10 +677,14 @@ func (a *Agent) LoadSessionStream(ctx context.Context, id string) iter.Seq2[[]ag
 		sess.inflight = t
 		sess.mu.Unlock()
 
+		rpcCtx, cancelRPC := context.WithCancel(context.WithoutCancel(loadCtx))
+		responseDone := make(chan struct{})
+		cleanupDone := a.drainTurn(t, sess.id, responseDone, cancelRPC, false)
 		ok := false
 		defer func() {
 			close(t.done)
 			cancel()
+			<-cleanupDone
 			sess.toolCallsMu.Lock()
 			clear(sess.toolCalls)
 			sess.toolCallsMu.Unlock()
@@ -652,8 +705,10 @@ func (a *Agent) LoadSessionStream(ctx context.Context, id string) iter.Seq2[[]ag
 
 		loadErrCh := make(chan error, 1)
 		go func() {
+			defer close(responseDone)
+			defer cancelRPC()
 			if a.caps.LoadSession {
-				resp, err := a.conn.LoadSession(loadCtx, acpsdk.LoadSessionRequest{
+				resp, err := a.conn.LoadSession(rpcCtx, acpsdk.LoadSessionRequest{
 					SessionId:  acpsdk.SessionId(id),
 					Cwd:        a.workspace.RootPath,
 					McpServers: []acpsdk.McpServer{},
@@ -665,7 +720,7 @@ func (a *Agent) LoadSessionStream(ctx context.Context, id string) iter.Seq2[[]ag
 				loadErrCh <- err
 				return
 			}
-			resp, err := a.conn.ResumeSession(loadCtx, acpsdk.ResumeSessionRequest{
+			resp, err := a.conn.ResumeSession(rpcCtx, acpsdk.ResumeSessionRequest{
 				SessionId:  acpsdk.SessionId(id),
 				Cwd:        a.workspace.RootPath,
 				McpServers: []acpsdk.McpServer{},
@@ -679,8 +734,14 @@ func (a *Agent) LoadSessionStream(ctx context.Context, id string) iter.Seq2[[]ag
 
 		for {
 			select {
-			case <-ctx.Done():
-				yield(nil, ctx.Err())
+			case <-loadCtx.Done():
+				t.mu.Lock()
+				err := t.streamErr
+				t.mu.Unlock()
+				if err == nil {
+					err = loadCtx.Err()
+				}
+				yield(nil, err)
 				return
 			case err := <-loadErrCh:
 				if err != nil {
@@ -773,6 +834,9 @@ func (a *Agent) session(id string) *sessionState {
 }
 
 func (a *Agent) Send(ctx context.Context, id string, input []agent.Content) (iter.Seq2[agent.Message, error], error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if len(input) == 0 {
 		return nil, code.ErrEmptyInput
 	}
@@ -805,8 +869,14 @@ func (a *Agent) Send(ctx context.Context, id string, input []agent.Content) (ite
 	})
 	sess.mu.Unlock()
 
+	// Keep the original request alive through session/cancel. Its response is
+	// the fence after the final notifications for this turn.
+	rpcCtx, cancelRPC := context.WithCancel(context.WithoutCancel(sendCtx))
+	responseDone := make(chan struct{})
+	cleanupDone := a.drainTurn(t, sess.id, responseDone, cancelRPC, true)
 	go func() {
-		resp, err := a.conn.Prompt(sendCtx, acpsdk.PromptRequest{
+		defer cancelRPC()
+		resp, err := a.conn.Prompt(rpcCtx, acpsdk.PromptRequest{
 			SessionId: sess.id,
 			Prompt:    acp.ContentToBlocks(input),
 		})
@@ -829,23 +899,23 @@ func (a *Agent) Send(ctx context.Context, id string, input []agent.Content) (ite
 			sess.usage = usage
 			sess.mu.Unlock()
 		}
+		close(responseDone)
 		select {
-		case t.events <- event{done: true, err: err, remoteCancelled: remoteCancelled}:
+		case t.events <- event{done: true, err: err}:
 		case <-t.done:
 		}
 	}()
 
 	return func(yield func(agent.Message, error) bool) {
-		completed := false
 		defer func() {
 			cancel()
 			close(t.done)
-			if !completed {
-				a.cancelPrompt(sess.id)
-			}
+			<-cleanupDone
 			sess.finalizeTurn(t)
 		}()
 		flushCancelled := func() bool {
+			t.updateMu.Lock()
+			defer t.updateMu.Unlock()
 			for _, msg := range sess.cancelOutstandingToolCalls(t) {
 				if !yield(msg, nil) {
 					return false
@@ -855,20 +925,33 @@ func (a *Agent) Send(ctx context.Context, id string, input []agent.Content) (ite
 		}
 		for {
 			select {
-			case <-ctx.Done():
+			case <-sendCtx.Done():
 				if flushCancelled() {
-					yield(agent.Message{}, ctx.Err())
+					t.mu.Lock()
+					err := t.streamErr
+					t.mu.Unlock()
+					if err == nil {
+						err = sendCtx.Err()
+					}
+					yield(agent.Message{}, err)
 				}
 				return
 			case ev := <-t.events:
 				if ev.done {
-					completed = ev.remoteCancelled || ev.err == nil ||
-						(!errors.Is(ev.err, context.Canceled) && !errors.Is(ev.err, context.DeadlineExceeded))
 					if !flushCancelled() {
 						return
 					}
-					if ev.err != nil {
-						yield(agent.Message{}, ev.err)
+					err := ev.err
+					if sendCtx.Err() != nil {
+						t.mu.Lock()
+						err = t.streamErr
+						t.mu.Unlock()
+						if err == nil {
+							err = sendCtx.Err()
+						}
+					}
+					if err != nil {
+						yield(agent.Message{}, err)
 					}
 					return
 				}
@@ -889,8 +972,10 @@ func stopReasonError(reason acpsdk.StopReason) error {
 		return errors.New("the agent stopped: output token limit reached")
 	case acpsdk.StopReasonMaxTurnRequests:
 		return errors.New("the agent stopped: maximum requests per turn reached")
-	default:
+	case acpsdk.StopReasonEndTurn, acpsdk.StopReasonCancelled:
 		return nil
+	default:
+		return fmt.Errorf("agent returned an invalid stop reason %q", reason)
 	}
 }
 
@@ -924,7 +1009,9 @@ func tokenCount64(value int) int64 {
 func (a *Agent) cancelPrompt(id acpsdk.SessionId) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_ = a.conn.Cancel(ctx, acpsdk.CancelNotification{SessionId: id})
+	_, _ = acp.Call(ctx, func() (struct{}, error) {
+		return struct{}{}, a.conn.Cancel(ctx, acpsdk.CancelNotification{SessionId: id})
+	})
 }
 
 func (a *Agent) TurnFeatures(string) code.TurnFeatures {
@@ -997,16 +1084,19 @@ func (a *Agent) shutdown() {
 		a.mu.Unlock()
 
 		if a.caps.SessionCapabilities.Close != nil && len(sessions) > 0 {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
 			for _, sess := range sessions {
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				_, _ = a.conn.CloseSession(ctx, acpsdk.CloseSessionRequest{SessionId: sess.id})
-				cancel()
+				if ctx.Err() != nil {
+					break
+				}
+				_, _ = acp.Call(ctx, func() (acpsdk.CloseSessionResponse, error) {
+					return a.conn.CloseSession(ctx, acpsdk.CloseSessionRequest{SessionId: sess.id})
+				})
 			}
 		}
 
-		if a.stdin != nil {
-			_ = a.stdin.Close()
-		}
+		a.abortTransport()
 
 		if a.serverDone != nil {
 			select {
@@ -1024,16 +1114,11 @@ func (a *Agent) shutdown() {
 		if a.cmd == nil || a.cmd.Process == nil {
 			return
 		}
-		exited := make(chan struct{})
-		go func() {
-			_ = a.cmd.Wait()
-			close(exited)
-		}()
 		select {
-		case <-exited:
+		case <-a.processDone:
 		case <-time.After(2 * time.Second):
 			_ = a.cmd.Process.Kill()
-			<-exited
+			<-a.processDone
 		}
 	})
 }
@@ -1047,6 +1132,7 @@ func (a *Agent) SessionUpdate(_ context.Context, n acpsdk.SessionNotification) e
 		return nil
 	}
 	if a.applySessionStateUpdate(sess, n.Update) {
+		a.notifySessionChange(string(n.SessionId))
 		return nil
 	}
 	sess.mu.Lock()
@@ -1055,14 +1141,20 @@ func (a *Agent) SessionUpdate(_ context.Context, n acpsdk.SessionNotification) e
 	if t == nil {
 		return nil
 	}
+	t.updateMu.Lock()
+	defer t.updateMu.Unlock()
+	select {
+	case <-t.ctx.Done():
+		return nil
+	case <-t.done:
+		return nil
+	default:
+	}
 	msg, ok := a.translateUpdate(sess, t, n.Update)
 	if !ok {
 		return nil
 	}
-	select {
-	case t.events <- event{msg: msg}:
-	case <-t.done:
-	}
+	t.send(msg)
 	return nil
 }
 
@@ -1149,8 +1241,11 @@ func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpd
 			t.emitted = append(t.emitted, agent.Message{Role: role, Content: []agent.Content{c}})
 		}
 		t.lastContentKey = contentKey
+		// The live delta must not share pointers with the accumulated history.
+		// Later reasoning chunks mutate that history while the UI reads deltas.
+		delta := agent.CloneContent([]agent.Content{c})
 		t.mu.Unlock()
-		return agent.Message{Role: role, Content: []agent.Content{c}}
+		return agent.Message{Role: role, Content: delta}
 	}
 
 	switch {
@@ -1374,10 +1469,18 @@ func (a *Agent) RequestPermission(ctx context.Context, p acpsdk.RequestPermissio
 	cancelled := acpsdk.RequestPermissionResponse{
 		Outcome: acpsdk.RequestPermissionOutcome{Cancelled: &acpsdk.RequestPermissionOutcomeCancelled{}},
 	}
+	ctx, release := a.interactionContext(ctx, string(p.SessionId))
+	defer release()
+	if ctx.Err() != nil {
+		return cancelled, nil
+	}
 	if len(p.Options) == 0 {
 		return cancelled, nil
 	}
 	selected := func(id acpsdk.PermissionOptionId) acpsdk.RequestPermissionResponse {
+		if ctx.Err() != nil {
+			return cancelled
+		}
 		return acpsdk.RequestPermissionResponse{
 			Outcome: acpsdk.RequestPermissionOutcome{
 				Selected: &acpsdk.RequestPermissionOutcomeSelected{OptionId: id},
@@ -1418,16 +1521,18 @@ func (a *Agent) RequestPermission(ctx context.Context, p acpsdk.RequestPermissio
 	if !hasDescription {
 		descriptions = nil
 	}
-	res, err := ui.Elicit(code.WithSessionID(ctx, string(p.SessionId)), tool.ElicitRequest{
-		Message: permissionMessage(p),
-		Fields: []tool.ElicitField{{
-			Name:             "choice",
-			Type:             "string",
-			Required:         true,
-			Enum:             names,
-			EnumDescriptions: descriptions,
-			Strict:           true,
-		}},
+	res, err := acp.Call(ctx, func() (tool.ElicitResult, error) {
+		return ui.Elicit(code.WithSessionID(ctx, string(p.SessionId)), tool.ElicitRequest{
+			Message: permissionMessage(p),
+			Fields: []tool.ElicitField{{
+				Name:             "choice",
+				Type:             "string",
+				Required:         true,
+				Enum:             names,
+				EnumDescriptions: descriptions,
+				Strict:           true,
+			}},
+		})
 	})
 	if err == nil {
 		switch res.Action {
@@ -1450,7 +1555,12 @@ func (a *Agent) RequestPermission(ctx context.Context, p acpsdk.RequestPermissio
 		}
 	}
 
-	ok, err := ui.Confirm(code.WithSessionID(ctx, string(p.SessionId)), permissionMessage(p))
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return cancelled, nil
+	}
+	ok, err := acp.Call(ctx, func() (bool, error) {
+		return ui.Confirm(code.WithSessionID(ctx, string(p.SessionId)), permissionMessage(p))
+	})
 	if err != nil {
 		return cancelled, nil
 	}
@@ -1475,8 +1585,16 @@ func (a *Agent) UnstableCreateElicitation(ctx context.Context, p acpsdk.Unstable
 	// elicitations. Native adapters preserve it as metadata; use that exact
 	// scope before falling back to the only active turn.
 	sid := elicitationSessionID(p.Form.Meta)
-	if sid == "" || a.session(sid) == nil {
+	if sid != "" && a.session(sid) == nil {
+		return cancel, nil
+	}
+	if sid == "" {
 		sid = a.activeSessionID()
+	}
+	ctx, release := a.interactionContext(ctx, sid)
+	defer release()
+	if ctx.Err() != nil {
+		return cancel, nil
 	}
 	if sid != "" {
 		ctx = code.WithSessionID(ctx, sid)
@@ -1498,7 +1616,9 @@ func (a *Agent) UnstableCreateElicitation(ctx context.Context, p acpsdk.Unstable
 	if ui == nil {
 		return acpsdk.UnstableCreateElicitationResponse{Decline: &acpsdk.UnstableCreateElicitationDecline{Action: "decline"}}, nil
 	}
-	res, err := ui.Elicit(ctx, req)
+	res, err := acp.Call(ctx, func() (tool.ElicitResult, error) {
+		return ui.Elicit(ctx, req)
+	})
 	if err != nil {
 		return cancel, nil
 	}

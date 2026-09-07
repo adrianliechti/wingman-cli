@@ -81,7 +81,7 @@ func TestClaudeToolMetadataIncludesParent(t *testing.T) {
 
 func TestClaudeSystemIdleFailsOnlyActiveTurn(t *testing.T) {
 	p := &claudeProc{results: make(chan turnResult, 1), subagentParents: map[string]string{}}
-	p.beginTurn()
+	p.beginTurn(context.Background())
 	p.handleSystem(context.Background(), nil, "s", cliEnvelope{Type: "system", Subtype: "session_state_changed", State: "idle"})
 	r := <-p.results
 	if r.err == nil {

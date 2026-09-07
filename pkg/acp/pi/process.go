@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	acpcommon "github.com/adrianliechti/wingman-agent/pkg/acp"
 	"github.com/google/uuid"
 
 	processutil "github.com/adrianliechti/wingman-agent/internal/process"
@@ -39,7 +40,9 @@ type process struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
 
-	writeMu sync.Mutex
+	writeMu   acpcommon.PromptGate
+	closeOnce sync.Once
+	failOnce  sync.Once
 
 	mu      sync.Mutex
 	pending map[string]chan rpcResponse
@@ -57,6 +60,7 @@ func spawn(opts spawnOptions) (*process, error) {
 	args := append([]string{"--mode", "rpc", "--no-themes"}, opts.Args...)
 
 	cmd := exec.Command(path, args...)
+	cmd.WaitDelay = 2 * time.Second
 	processutil.Hide(cmd)
 	cmd.Dir = opts.Dir
 	cmd.Stderr = opts.Stderr
@@ -86,7 +90,7 @@ func spawn(opts spawnOptions) (*process, error) {
 
 	p := &process{
 		cmd:     cmd,
-		stdin:   stdin,
+		stdin:   acpcommon.NewConnectionWriter(stdin, 0),
 		pending: map[string]chan rpcResponse{},
 		done:    make(chan struct{}),
 	}
@@ -155,16 +159,18 @@ func (p *process) handleIdleEvent(raw json.RawMessage) {
 }
 
 func (p *process) failPending() {
-	close(p.done)
+	p.failOnce.Do(func() {
+		close(p.done)
 
-	p.mu.Lock()
-	pending := p.pending
-	p.pending = map[string]chan rpcResponse{}
-	p.mu.Unlock()
+		p.mu.Lock()
+		pending := p.pending
+		p.pending = map[string]chan rpcResponse{}
+		p.mu.Unlock()
 
-	for _, ch := range pending {
-		ch <- rpcResponse{Error: errProcessClosed.Error()}
-	}
+		for _, ch := range pending {
+			ch <- rpcResponse{Error: errProcessClosed.Error()}
+		}
+	})
 }
 
 func (p *process) setHandler(h func(json.RawMessage)) {
@@ -174,12 +180,18 @@ func (p *process) setHandler(h func(json.RawMessage)) {
 }
 
 func (p *process) writeLine(v any) error {
+	return p.writeLineContext(context.Background(), v)
+}
+
+func (p *process) writeLineContext(ctx context.Context, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
 
-	p.writeMu.Lock()
+	if err := p.writeMu.Lock(ctx); err != nil {
+		return err
+	}
 	defer p.writeMu.Unlock()
 
 	select {
@@ -188,13 +200,26 @@ func (p *process) writeLine(v any) error {
 	default:
 	}
 
-	if _, err := p.stdin.Write(append(data, '\n')); err != nil {
+	_, err = acpcommon.Call(ctx, func() (int, error) {
+		n, err := p.stdin.Write(append(data, '\n'))
+		if err == nil && n != len(data)+1 {
+			err = io.ErrShortWrite
+		}
+		return n, err
+	})
+	if err != nil {
+		// The frame may be partial. Close before allowing another writer in.
+		_ = p.stdin.Close()
+		p.failPending()
 		return err
 	}
 	return nil
 }
 
 func (p *process) request(ctx context.Context, cmd map[string]any) (rpcResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return rpcResponse{}, err
+	}
 	id := uuid.NewString()
 	cmd["id"] = id
 
@@ -203,7 +228,7 @@ func (p *process) request(ctx context.Context, cmd map[string]any) (rpcResponse,
 	p.pending[id] = ch
 	p.mu.Unlock()
 
-	if err := p.writeLine(cmd); err != nil {
+	if err := p.writeLineContext(ctx, cmd); err != nil {
 		p.mu.Lock()
 		delete(p.pending, id)
 		p.mu.Unlock()
@@ -279,24 +304,26 @@ func (p *process) sendExtensionResponse(v map[string]any) {
 }
 
 func (p *process) dispose() {
-	if p.stdin != nil {
-		_ = p.stdin.Close()
-	}
+	p.closeOnce.Do(func() {
+		if p.stdin != nil {
+			_ = p.stdin.Close()
+		}
 
-	if p.cmd == nil || p.cmd.Process == nil {
-		return
-	}
+		if p.cmd == nil || p.cmd.Process == nil {
+			return
+		}
 
-	exited := make(chan struct{})
-	go func() {
-		_ = p.cmd.Wait()
-		close(exited)
-	}()
+		exited := make(chan struct{})
+		go func() {
+			_ = p.cmd.Wait()
+			close(exited)
+		}()
 
-	select {
-	case <-exited:
-	case <-time.After(2 * time.Second):
-		_ = p.cmd.Process.Kill()
-		<-exited
-	}
+		select {
+		case <-exited:
+		case <-time.After(2 * time.Second):
+			_ = p.cmd.Process.Kill()
+			<-exited
+		}
+	})
 }

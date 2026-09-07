@@ -36,15 +36,23 @@ func newContractAgent(t *testing.T) acptest.Agent {
 }
 
 type contractAppServer struct {
-	conn net.Conn
-	mu   sync.Mutex
+	conn        net.Conn
+	mu          sync.Mutex
+	initialized bool
 }
 
 func (s *contractAppServer) run() {
 	scanner := bufio.NewScanner(s.conn)
 	for scanner.Scan() {
 		var msg rpcMessage
-		if json.Unmarshal(scanner.Bytes(), &msg) != nil || msg.Method == "" || len(msg.ID) == 0 {
+		if json.Unmarshal(scanner.Bytes(), &msg) != nil || msg.Method == "" {
+			continue
+		}
+		if msg.Method == "initialized" && len(msg.ID) == 0 {
+			s.initialized = true
+			continue
+		}
+		if len(msg.ID) == 0 {
 			continue
 		}
 		s.handle(msg)
@@ -59,6 +67,10 @@ func (s *contractAppServer) handle(msg rpcMessage) {
 	case "initialize", "thread/unsubscribe", "thread/archive", "thread/settings/update":
 		s.respond(msg, map[string]any{})
 	case "model/list":
+		if !s.initialized {
+			s.respondError(msg, -32600, "missing initialized notification")
+			return
+		}
 		s.respond(msg, map[string]any{"data": []any{map[string]any{
 			"id": "contract-model", "displayName": "Contract Model", "description": "ACP contract model",
 			"supportedReasoningEfforts": []any{map[string]any{"reasoningEffort": "medium", "description": "Balanced"}},

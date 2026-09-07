@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
+	acpcommon "github.com/adrianliechti/wingman-agent/pkg/acp"
 	"github.com/coder/acp-go-sdk"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
@@ -23,7 +23,7 @@ type session struct {
 	proc    *process
 	cleanup func()
 
-	promptMu       sync.Mutex
+	promptMu       acpcommon.PromptGate
 	mu             sync.Mutex
 	closed         bool
 	models         []modelEntry
@@ -31,9 +31,8 @@ type session struct {
 	thinkingLevels []string
 	thinking       string
 
-	cancelRequested atomic.Bool
-	cancelTurn      context.CancelFunc
-	closeOnce       sync.Once
+	cancelTurn context.CancelFunc
+	closeOnce  sync.Once
 }
 
 func newSession(id acp.SessionId, cwd string, proc *process) *session {
@@ -92,8 +91,6 @@ func (s *session) isClosed() bool {
 }
 
 func (s *session) cancel() {
-	s.cancelRequested.Store(true)
-
 	s.mu.Lock()
 	cancel := s.cancelTurn
 	s.mu.Unlock()
@@ -109,8 +106,6 @@ type turnResult struct {
 }
 
 func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, prompt []acp.ContentBlock) (acp.StopReason, error) {
-	s.cancelRequested.Store(false)
-
 	turnCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -134,6 +129,7 @@ func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, pr
 		conn:      conn,
 		sess:      s,
 		done:      make(chan turnResult, 1),
+		settled:   make(chan struct{}),
 		tools:     map[string]bool{},
 		mutations: map[string]bool{},
 		snapshots: map[string]fileSnapshot{},
@@ -150,10 +146,27 @@ func (s *session) runTurn(ctx context.Context, conn *acp.AgentSideConnection, pr
 	select {
 	case <-turnCtx.Done():
 		abortCtx, abortCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_ = s.proc.abort(abortCtx)
+		err := s.proc.abort(abortCtx)
 		abortCancel()
+		if err == nil {
+			select {
+			case <-t.settled:
+				return acp.StopReasonCancelled, nil
+			case <-s.proc.done:
+			case <-time.After(2 * time.Second):
+			}
+		}
+		// An abort response only acknowledges the command. Without the settled
+		// event, old output could otherwise complete the next prompt.
+		s.close()
 		return acp.StopReasonCancelled, nil
 	case <-s.proc.done:
+		// The final settled event can precede EOF in the same read batch.
+		select {
+		case res := <-t.done:
+			return res.stop, res.err
+		default:
+		}
 		return "", errors.New("pi process exited unexpectedly")
 	case res := <-t.done:
 		return res.stop, res.err
@@ -165,7 +178,9 @@ type turn struct {
 	conn *acp.AgentSideConnection
 	sess *session
 
-	done chan turnResult
+	done       chan turnResult
+	settled    chan struct{}
+	settleOnce sync.Once
 
 	tools     map[string]bool
 	mutations map[string]bool
@@ -188,7 +203,7 @@ func (t *turn) emit(u acp.SessionUpdate) {
 		defer cancel()
 		ctx = detached
 	}
-	_ = t.conn.SessionUpdate(ctx, acp.SessionNotification{SessionId: t.sess.id, Update: u})
+	_ = acpcommon.Notify(ctx, t.conn, t.sess.id, u)
 }
 
 func (t *turn) resolve(stop acp.StopReason, err error) {
@@ -202,8 +217,7 @@ func (t *turn) onPromptResult(err error) {
 	if err == nil {
 		return
 	}
-	if t.sess.cancelRequested.Load() {
-		t.resolve(acp.StopReasonCancelled, nil)
+	if t.ctx != nil && t.ctx.Err() != nil {
 		return
 	}
 	if isAuthError(err) {
@@ -242,7 +256,17 @@ func (t *turn) handle(raw json.RawMessage) {
 		t.handleToolEnd(raw)
 
 	case "extension_ui_request":
-		t.handleExtensionUI(raw)
+		// The backend can send abort responses and settled events while the
+		// client is displaying a dialog. Keep the RPC reader available for them.
+		var request struct {
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal(raw, &request)
+		if request.Method == "confirm" || request.Method == "select" {
+			go t.handleExtensionUI(raw)
+		} else {
+			t.handleExtensionUI(raw)
+		}
 
 	case "auto_retry_start":
 		t.emit(acp.UpdateAgentMessageText("Retrying...\n\n"))
@@ -258,10 +282,13 @@ func (t *turn) handle(raw json.RawMessage) {
 
 	case "agent_settled":
 		reason := acp.StopReasonEndTurn
-		if t.sess.cancelRequested.Load() {
+		if t.ctx != nil && t.ctx.Err() != nil {
 			reason = acp.StopReasonCancelled
 		}
 		t.resolve(reason, nil)
+		if t.settled != nil {
+			t.settleOnce.Do(func() { close(t.settled) })
+		}
 	}
 }
 
@@ -527,13 +554,15 @@ func (t *turn) askConfirm(id, title, message string) bool {
 		tc.Content = []acp.ToolCallContent{acp.ToolContent(acp.TextBlock(message))}
 	}
 
-	resp, err := t.conn.RequestPermission(t.ctx, acp.RequestPermissionRequest{
-		SessionId: t.sess.id,
-		ToolCall:  tc,
-		Options: []acp.PermissionOption{
-			{OptionId: "yes", Name: "Yes", Kind: acp.PermissionOptionKindAllowOnce},
-			{OptionId: "no", Name: "No", Kind: acp.PermissionOptionKindRejectOnce},
-		},
+	resp, err := acpcommon.Call(t.ctx, func() (acp.RequestPermissionResponse, error) {
+		return t.conn.RequestPermission(t.ctx, acp.RequestPermissionRequest{
+			SessionId: t.sess.id,
+			ToolCall:  tc,
+			Options: []acp.PermissionOption{
+				{OptionId: "yes", Name: "Yes", Kind: acp.PermissionOptionKindAllowOnce},
+				{OptionId: "no", Name: "No", Kind: acp.PermissionOptionKindRejectOnce},
+			},
+		})
 	})
 	if err != nil || resp.Outcome.Selected == nil {
 		return false
@@ -567,10 +596,12 @@ func (t *turn) askSelect(id, title string, options []string) (string, bool) {
 		})
 	}
 
-	resp, err := t.conn.RequestPermission(t.ctx, acp.RequestPermissionRequest{
-		SessionId: t.sess.id,
-		ToolCall:  tc,
-		Options:   opts,
+	resp, err := acpcommon.Call(t.ctx, func() (acp.RequestPermissionResponse, error) {
+		return t.conn.RequestPermission(t.ctx, acp.RequestPermissionRequest{
+			SessionId: t.sess.id,
+			ToolCall:  tc,
+			Options:   opts,
+		})
 	})
 	if err != nil || resp.Outcome.Selected == nil {
 		return "", false

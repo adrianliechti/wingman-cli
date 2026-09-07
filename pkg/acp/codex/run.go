@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -37,6 +38,7 @@ func Spawn(ctx context.Context, opts Options) (*Agent, error) {
 
 	args := append(append([]string{}, opts.ExtraArgs...), "app-server")
 	cmd := exec.CommandContext(ctx, codexPath, args...)
+	cmd.WaitDelay = 2 * time.Second
 	process.Hide(cmd)
 	cmd.Dir = opts.Dir
 	cmd.Stderr = opts.Stderr
@@ -50,24 +52,41 @@ func Spawn(ctx context.Context, opts Options) (*Agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("codex: stdin pipe: %w", err)
 	}
-	stdout, err := cmd.StdoutPipe()
+	// Own the read end so Wait can observe process death without closing stdout
+	// underneath the RPC reader before it drains the final notifications.
+	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
 		_ = stdin.Close()
 		return nil, fmt.Errorf("codex: stdout pipe: %w", err)
 	}
+	cmd.Stdout = stdoutWriter
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
+		_ = stdoutWriter.Close()
 		return nil, fmt.Errorf("codex: start %s: %w", codexPath, err)
 	}
+	_ = stdoutWriter.Close()
 
 	rpc := newRPCClient(stdin, stdout)
 	client := newCodexClient(rpc)
-	rpc.start()
-
 	a := newAgent(client, opts.Model, opts.Effort)
 	a.cmd = cmd
 	a.stdin = stdin
+	a.processDone = make(chan struct{})
+	rpc.start()
+	go func() {
+		a.processErr = cmd.Wait()
+		close(a.processDone)
+		// A tool subprocess can inherit stdout and keep it open after Codex
+		// exits. Allow buffered frames to drain, then fail instead of waiting
+		// forever for that unrelated process to close its copy of the pipe.
+		select {
+		case <-rpc.done:
+		case <-time.After(100 * time.Millisecond):
+			rpc.close(errors.Join(fmt.Errorf("app-server process exited"), a.processErr))
+		}
+	}()
 	return a, nil
 }
 
@@ -94,17 +113,15 @@ func (a *Agent) Close() error {
 			_ = a.stdin.Close()
 		}
 		if a.cmd != nil && a.cmd.Process != nil {
-			exited := make(chan struct{})
-			go func() {
-				_ = a.cmd.Wait()
-				close(exited)
-			}()
 			select {
-			case <-exited:
+			case <-a.processDone:
 			case <-time.After(2 * time.Second):
 				_ = a.cmd.Process.Kill()
-				<-exited
+				<-a.processDone
 			}
+		}
+		if a.codex != nil && a.codex.rpc != nil {
+			a.codex.rpc.close(io.EOF)
 		}
 		close(a.closed)
 	})
@@ -118,7 +135,9 @@ func Run(ctx context.Context, opts Options, in io.Reader, out io.Writer, logger 
 	}
 	defer a.Close()
 
-	conn := acp.NewAgentSideConnection(a, out, in)
+	writer := newClientWriter(out)
+	defer writer.Close()
+	conn := acp.NewAgentSideConnection(a, writer, in)
 	if logger != nil {
 		conn.SetLogger(logger)
 	}
@@ -127,6 +146,18 @@ func Run(ctx context.Context, opts Options, in io.Reader, out io.Writer, logger 
 	select {
 	case <-conn.Done():
 	case <-a.Done():
+		// Prefer an intentional client/context shutdown if it raced backend EOF.
+		select {
+		case <-conn.Done():
+			return nil
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+		_ = a.Close()
+		return errors.Join(a.codex.rpc.closedError(), a.processErr)
+	case <-writer.Done():
+		return writer.Err()
 	case <-ctx.Done():
 	}
 	return nil
