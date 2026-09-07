@@ -135,7 +135,11 @@ function MarkdownCodeBlock({ children, ...props }: CodePreProps) {
 	const code = codeElement ? String(codeElement.props.children ?? "") : "";
 	const language = props["data-lang"] ?? "plaintext";
 	const label = props["data-filename"] ?? props["data-code-title"] ?? language;
-	const [loadedLanguage, setLoadedLanguage] = useState<string | null>(null);
+	const [loaded, setLoaded] = useState<{
+		source: string;
+		languageId: string | null;
+	} | null>(null);
+	const loadedLanguage = loaded?.source === language ? loaded.languageId : null;
 	const [copied, setCopied] = useState(false);
 	const [showMermaidSource, setShowMermaidSource] = useState(false);
 	const copyTimer = useRef<number | undefined>(undefined);
@@ -144,9 +148,8 @@ function MarkdownCodeBlock({ children, ...props }: CodePreProps) {
 
 	useEffect(() => {
 		let active = true;
-		setLoadedLanguage(null);
 		void loadMonacoLanguage(language).then((languageId) => {
-			if (active) setLoadedLanguage(languageId);
+			if (active) setLoaded({ source: language, languageId });
 		});
 		return () => {
 			active = false;

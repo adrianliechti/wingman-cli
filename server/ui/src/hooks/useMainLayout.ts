@@ -9,8 +9,7 @@ export function useMainLayout(initial: LayoutState) {
 			value:
 				| LayoutState["tabs"]
 				| ((previous: LayoutState["tabs"]) => LayoutState["tabs"]),
-		) =>
-			dispatchLayout({ field: "tabs", value, fallbackId: crypto.randomUUID() }),
+		) => dispatchLayout({ field: "tabs", value }),
 		[],
 	);
 	const setActiveTabId = useCallback(

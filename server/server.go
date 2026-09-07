@@ -79,8 +79,9 @@ type Server struct {
 	tab              *editorTabService
 	transforms       *editorTransformService
 	commitMessages   *gitCommitMessageService
-	tabSettingsMu    sync.Mutex
+	settingsMu       sync.Mutex
 	tabEnabled       atomic.Bool
+	terminalPosition atomic.Value
 	tabRequestMu     sync.Mutex
 	tabRequestID     uint64
 	tabRequestCancel context.CancelFunc
@@ -155,8 +156,10 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 	s.transforms = newEditorTransformService(cfg)
 	s.commitMessages = newGitCommitMessageService(cfg)
 	s.tabEnabled.Store(true)
+	s.terminalPosition.Store(settings.WindowTerminalPositionTab)
 	if userSettings, loadErr := settings.Load(); loadErr == nil {
 		s.tabEnabled.Store(userSettings.EditorTabCompletion)
+		s.terminalPosition.Store(userSettings.WindowTerminalPosition)
 	}
 
 	ws.WarmUp()
@@ -449,6 +452,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 		r.Post("/editor/tab", s.handleEditorTab)
 		r.Post("/editor/transform", s.handleEditorTransform)
 		r.Post("/settings/editor.tab.completion", s.handleEditorTabSettings)
+		r.Post("/settings/window.terminal.position", s.handleWindowTerminalSettings)
 		r.Get("/skills", s.handleSkills)
 		r.Get("/capabilities", s.handleCapabilities)
 	})
@@ -549,17 +553,18 @@ func (s *Server) send(f Frame) {
 }
 
 type capabilitiesResponse struct {
-	Git           bool                `json:"git"`
-	GitInit       bool                `json:"git_init"`
-	LSP           bool                `json:"lsp"`
-	Debug         bool                `json:"debug"`
-	Tasks         bool                `json:"tasks"`
-	Terminal      bool                `json:"terminal"`
-	Tab           bool                `json:"tab"`
-	EditorTab     bool                `json:"editor.tab.completion"`
-	Platform      string              `json:"platform"`
-	WorkspaceName string              `json:"workspace_name"`
-	ManagedTools  *managedToolsStatus `json:"managed_tools,omitempty"`
+	Git                    bool                            `json:"git"`
+	GitInit                bool                            `json:"git_init"`
+	LSP                    bool                            `json:"lsp"`
+	Debug                  bool                            `json:"debug"`
+	Tasks                  bool                            `json:"tasks"`
+	Terminal               bool                            `json:"terminal"`
+	Tab                    bool                            `json:"tab"`
+	EditorTab              bool                            `json:"editor.tab.completion"`
+	WindowTerminalPosition settings.WindowTerminalPosition `json:"window.terminal.position"`
+	Platform               string                          `json:"platform"`
+	WorkspaceName          string                          `json:"workspace_name"`
+	ManagedTools           *managedToolsStatus             `json:"managed_tools,omitempty"`
 }
 
 type managedToolsStatus struct {
@@ -590,21 +595,30 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	ws := s.workspace
 	hasChanges := ws.HasChanges()
 	caps := capabilitiesResponse{
-		Git:           hasChanges,
-		GitInit:       !hasChanges,
-		LSP:           ws.HasLSP(),
-		Debug:         s.debugAvailable(r.Context()),
-		Tasks:         true,
-		Terminal:      terminal.Supported(),
-		Tab:           s.tab != nil,
-		EditorTab:     s.tab != nil && s.tabEnabled.Load(),
-		Platform:      runtime.GOOS,
-		WorkspaceName: filepath.Base(ws.RootPath),
+		Git:                    hasChanges,
+		GitInit:                !hasChanges,
+		LSP:                    ws.HasLSP(),
+		Debug:                  s.debugAvailable(r.Context()),
+		Tasks:                  true,
+		Terminal:               terminal.Supported(),
+		Tab:                    s.tab != nil,
+		EditorTab:              s.tab != nil && s.tabEnabled.Load(),
+		WindowTerminalPosition: s.windowTerminalPosition(),
+		Platform:               runtime.GOOS,
+		WorkspaceName:          filepath.Base(ws.RootPath),
 	}
 	if status := s.managedToolsStatus(); status.State != "" {
 		caps.ManagedTools = &status
 	}
 	writeJSON(w, caps)
+}
+
+func (s *Server) windowTerminalPosition() settings.WindowTerminalPosition {
+	position, ok := s.terminalPosition.Load().(settings.WindowTerminalPosition)
+	if !ok || !position.Valid() {
+		return settings.WindowTerminalPositionTab
+	}
+	return position
 }
 
 func (s *Server) debugAvailable(ctx context.Context) bool {

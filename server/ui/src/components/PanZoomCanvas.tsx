@@ -3,6 +3,7 @@ import {
 	type ReactNode,
 	useCallback,
 	useEffect,
+	useLayoutEffect,
 	useRef,
 	useState,
 } from "react";
@@ -39,9 +40,11 @@ export function PanZoomCanvas({
 	const [transform, setTransform] = useState({ x: 48, y: 48, k: 1 });
 	const [dragging, setDragging] = useState(false);
 	const transformRef = useRef(transform);
-	transformRef.current = transform;
 	const contentRef = useRef({ width, height });
-	contentRef.current = { width, height };
+	useLayoutEffect(() => {
+		transformRef.current = transform;
+		contentRef.current = { width, height };
+	}, [transform, width, height]);
 	const dragRef = useRef<{
 		pointerId: number;
 		startX: number;

@@ -55,7 +55,7 @@ func main() {
 
 		TitleBar: shell.TitleBarOptions{
 			Overlay:         true,
-			ControlsOffsetX: 4,
+			ControlsOffsetX: 6,
 			ControlsOffsetY: 4,
 
 			Height: 40,

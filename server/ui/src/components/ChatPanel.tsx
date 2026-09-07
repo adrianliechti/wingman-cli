@@ -28,6 +28,7 @@ import type { Phase, TurnInputIntent, TurnInputState } from "../types/protocol";
 import { ToolProgressContext } from "./chat/progress";
 import { type PendingImage, processImage } from "./chat/images";
 import { PromptBar } from "./chat/PromptBar";
+import { ScrollSnapshot } from "./chat/ScrollSnapshot";
 import { TurnView } from "./chat/TurnView";
 import { buildTurns, findEntryElement, type Turn } from "./chat/turns";
 import { FilePicker } from "./FilePicker";
@@ -38,6 +39,7 @@ import { TurnQueue } from "./TurnQueue";
 
 interface Props {
 	sessionId?: string;
+	placeholder?: string;
 	entries: ChatEntry[];
 	phase: Phase;
 	modes: ModeOption[];
@@ -115,6 +117,7 @@ function wordEndAt(text: string, caret: number): number {
 
 export function ChatPanel({
 	sessionId,
+	placeholder = "Message Wingman…",
 	entries,
 	phase,
 	modes,
@@ -143,7 +146,6 @@ export function ChatPanel({
 	const scheme = useColorScheme();
 	const [input, setInput] = useState("");
 	const [caret, setCaret] = useState(0);
-	const [skillActive, setSkillActive] = useState(0);
 	const [dismissedToken, setDismissedToken] = useState<string | null>(null);
 	const [files, setFiles] = useState<string[]>([]);
 	const [images, setImages] = useState<PendingImage[]>([]);
@@ -156,23 +158,24 @@ export function ChatPanel({
 		pendingInputs.length > 0 &&
 		pendingInputs.every((item) => item.state === "sending");
 	const [revealSettling, setRevealSettling] = useState(false);
+	if (!queueSettling && revealSettling) setRevealSettling(false);
 	useEffect(() => {
-		if (!queueSettling) {
-			setRevealSettling(false);
-			return;
-		}
+		if (!queueSettling) return;
 		const timer = setTimeout(() => setRevealSettling(true), 400);
 		return () => clearTimeout(timer);
 	}, [queueSettling]);
 	const showQueue =
 		pendingInputs.length > 0 && (!queueSettling || revealSettling);
+	const historyPadding =
+		entries.length === 0 ? "" : showQueue ? "pb-56" : "pb-24";
 	const containerRef = useRef<HTMLDivElement>(null);
 	const contentRef = useRef<HTMLDivElement>(null);
 	const spacerRef = useRef<HTMLDivElement>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const imageInputRef = useRef<HTMLInputElement>(null);
-	const composerRef = useRef<HTMLDivElement>(null);
-	const filePickerButtonRef = useRef<HTMLButtonElement>(null);
+	const [composer, setComposer] = useState<HTMLDivElement | null>(null);
+	const [filePickerButton, setFilePickerButton] =
+		useState<HTMLButtonElement | null>(null);
 	const turns = useMemo(() => buildTurns(entries), [entries]);
 
 	const submitPendingRef = useRef(false);
@@ -276,20 +279,20 @@ export function ChatPanel({
 		onSeedConsumed?.(seed.nonce);
 	}, [onSeedConsumed, seed]);
 
-	const prevPhaseRef = useRef(phase);
-	/* This is intentionally a pre-commit DOM snapshot for the phase-driven
-	   auto-collapse. Function components do not have a getSnapshotBeforeUpdate
-	   hook, and a layout effect would run after the working entries have
-	   already collapsed. */
-	if (prevPhaseRef.current !== "idle" && phase === "idle") {
-		if (userScrolledRef.current) captureAnchorForTurns(turns);
-	}
-	prevPhaseRef.current = phase;
-
 	const skillToken = slashTokenAt(input, caret);
 	const tokenKey = skillToken
 		? `${skillToken.start}:${skillToken.query}`
 		: null;
+	const [skillSelection, setSkillSelection] = useState<{
+		token: string | null;
+		index: number;
+	}>({ token: tokenKey, index: 0 });
+	const skillActive =
+		skillSelection.token === tokenKey ? skillSelection.index : 0;
+	const setSkillActive = useCallback(
+		(index: number) => setSkillSelection({ token: tokenKey, index }),
+		[tokenKey],
+	);
 
 	const tokenOpen = !!skillToken;
 	const skills = useSkills(sessionId, tokenOpen);
@@ -305,11 +308,6 @@ export function ChatPanel({
 		);
 	}, [skills, skillQuery]);
 
-	const [prevTokenKey, setPrevTokenKey] = useState(tokenKey);
-	if (prevTokenKey !== tokenKey) {
-		setPrevTokenKey(tokenKey);
-		setSkillActive(0);
-	}
 	const activeSkill = Math.min(
 		skillActive,
 		Math.max(0, skillMatches.length - 1),
@@ -605,6 +603,7 @@ export function ChatPanel({
 			skillMatches,
 			activeSkill,
 			selectSkill,
+			setSkillActive,
 			tokenKey,
 			editingQueueId,
 			history,
@@ -727,6 +726,13 @@ export function ChatPanel({
 			onDragLeave={handleDragLeave}
 			onDrop={handleDrop}
 		>
+			<ScrollSnapshot
+				phase={phase}
+				capture={() => {
+					if (userScrolledRef.current) captureAnchorForTurns(turns);
+				}}
+				restore={applyPendingAnchor}
+			/>
 			{dragOver && (
 				<div className="absolute inset-2 z-30 pointer-events-none rounded-lg border-2 border-dashed border-accent bg-accent/5 flex items-center justify-center">
 					<span className="text-[12px] text-fg-muted bg-bg/80 px-3 py-1 rounded">
@@ -735,7 +741,8 @@ export function ChatPanel({
 				</div>
 			)}
 			<div
-				className={`h-full overflow-y-auto [overflow-anchor:none] ${showQueue ? "pb-56" : "pb-24"}`}
+				data-chat-history
+				className={`h-full overflow-y-auto [overflow-anchor:none] ${historyPadding}`}
 				ref={containerRef}
 			>
 				{loading && entries.length === 0 ? (
@@ -825,7 +832,7 @@ export function ChatPanel({
 						</>
 					) : (
 						<div
-							ref={composerRef}
+							ref={setComposer}
 							data-chat-composer
 							className="relative rounded-xl"
 						>
@@ -843,7 +850,7 @@ export function ChatPanel({
 							)}
 							{showSkills && (
 								<SkillPicker
-									anchor={composerRef.current}
+									anchor={composer}
 									skills={skillMatches}
 									active={activeSkill}
 									onSelect={selectSkill}
@@ -918,7 +925,7 @@ export function ChatPanel({
 									}
 									onKeyDown={handleKeyDown}
 									onPaste={handlePaste}
-									placeholder="Message Wingman…"
+									placeholder={placeholder}
 									rows={1}
 								/>
 							</div>
@@ -927,7 +934,7 @@ export function ChatPanel({
 								<div className="flex items-center gap-0 min-w-0">
 									<div className="relative flex items-center">
 										<button
-											ref={filePickerButtonRef}
+											ref={setFilePickerButton}
 											type="button"
 											className="w-7 h-7 flex items-center justify-center rounded text-fg-dim hover:text-fg hover:bg-bg-hover cursor-pointer transition-colors"
 											onClick={() => setShowPicker((s) => !s)}
@@ -937,7 +944,7 @@ export function ChatPanel({
 										</button>
 										{showPicker && (
 											<FilePicker
-												anchor={filePickerButtonRef.current}
+												anchor={filePickerButton}
 												onSelect={addFile}
 												onClose={() => setShowPicker(false)}
 											/>

@@ -155,7 +155,7 @@ export type LayoutAction = {
 	[K in keyof LayoutState]: {
 		field: K;
 		value: LayoutState[K] | ((previous: LayoutState[K]) => LayoutState[K]);
-	} & (K extends "tabs" ? { fallbackId: string } : object);
+	};
 }[keyof LayoutState];
 export function layoutReducer(
 	state: LayoutState,
@@ -167,40 +167,26 @@ export function layoutReducer(
 			: action.value;
 	if (value === state[action.field]) return state;
 	const next = { ...state, [action.field]: value } as LayoutState;
-	if (!next.tabs.some((tab) => tab.type === "chat")) {
-		const previousChat =
-			state.tabs.find(
-				(tab) =>
-					tab.type === "chat" && tab.sessionId === state.currentSessionId,
-			) ?? state.tabs.find((tab) => tab.type === "chat");
-		// Generate the identity when dispatching, so replaying an action is pure.
-		const fallbackId =
-			action.field === "tabs" ? action.fallbackId : state.activeTabId;
-		next.tabs = [
-			draftChatTab(previousChat?.backendId ?? "wingman", fallbackId),
-			...next.tabs,
-		];
-	}
 	if (!next.tabs.some((tab) => paneOf(tab) === "left"))
 		next.tabs = next.tabs.map((tab) => ({ ...tab, pane: undefined }));
 	const active =
 		next.tabs.find((tab) => tab.id === next.activeTabId) ?? next.tabs[0];
-	next.activeTabId = active.id;
+	next.activeTabId = active?.id ?? "";
 	const left = next.tabs.filter((tab) => paneOf(tab) === "left");
 	const right = next.tabs.filter((tab) => paneOf(tab) === "right");
 	next.leftActiveId =
-		paneOf(active) === "left"
+		active && paneOf(active) === "left"
 			? active.id
 			: (left.find((tab) => tab.id === next.leftActiveId)?.id ??
 				left[0]?.id ??
 				"");
 	next.rightActiveId =
-		paneOf(active) === "right"
+		active && paneOf(active) === "right"
 			? active.id
 			: (right.find((tab) => tab.id === next.rightActiveId)?.id ??
 				right[0]?.id ??
 				"");
-	if (active.type === "chat") next.currentSessionId = active.sessionId ?? "";
+	if (active?.type === "chat") next.currentSessionId = active.sessionId ?? "";
 	else if (
 		!next.tabs.some(
 			(tab) => tab.type === "chat" && tab.sessionId === next.currentSessionId,

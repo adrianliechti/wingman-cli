@@ -1,5 +1,5 @@
 import { Check, ChevronRight, Copy } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
 	collectionEntries,
 	collectionSummary,
@@ -252,10 +252,12 @@ export function DataGraph({ value }: { value: unknown }) {
 		[graph, collapsed],
 	);
 
-	useEffect(() => {
+	const [previousGraph, setPreviousGraph] = useState(graph);
+	if (previousGraph !== graph) {
+		setPreviousGraph(graph);
 		setCollapsed(new Set());
 		setSelected(null);
-	}, [graph]);
+	}
 
 	const toggleCollapse = useCallback((id: string) => {
 		setCollapsed((previous) => {

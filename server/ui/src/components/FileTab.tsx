@@ -257,6 +257,7 @@ export const FileTab = forwardRef<FileTabHandle, Props>(function FileTab(
 		if (
 			!tabEnabled ||
 			document.external ||
+			document.untitled ||
 			!file ||
 			!editorRef.current ||
 			!monacoRef.current
@@ -268,12 +269,12 @@ export const FileTab = forwardRef<FileTabHandle, Props>(function FileTab(
 			editor: editorRef.current,
 			path: file.path,
 		});
-	}, [document.external, file, tabEnabled]);
+	}, [document.external, document.untitled, file, tabEnabled]);
 
 	const selectionTarget = (
 		editor: Parameters<OnMount>[0],
 	): TransformTarget | null => {
-		if (document.external || !file) return null;
+		if (document.external || document.untitled || !file) return null;
 		const model = editor.getModel();
 		const selection = editor.getSelection();
 		if (!model || !selection || selection.isEmpty()) return null;
@@ -329,7 +330,8 @@ export const FileTab = forwardRef<FileTabHandle, Props>(function FileTab(
 
 	useImperativeHandle(ref, () => ({
 		hasSelection: () => {
-			if (document.external || !file || view !== "code") return false;
+			if (document.external || document.untitled || !file || view !== "code")
+				return false;
 			const selection = editorRef.current?.getSelection();
 			return !!selection && !selection.isEmpty();
 		},
@@ -383,7 +385,8 @@ export const FileTab = forwardRef<FileTabHandle, Props>(function FileTab(
 		disposeLSPIntegration();
 		const editor = editorRef.current;
 		const monaco = monacoRef.current;
-		if (document.external || !file || !editor || !monaco) return;
+		if (document.external || document.untitled || !file || !editor || !monaco)
+			return;
 
 		const bridge = createMonacoLSPBridge({
 			monaco,
@@ -409,7 +412,13 @@ export const FileTab = forwardRef<FileTabHandle, Props>(function FileTab(
 			() => bridge.organizeImports(),
 		);
 		void bridge.refreshDiagnostics();
-	}, [disposeLSPIntegration, document.external, file, toast]);
+	}, [
+		disposeLSPIntegration,
+		document.external,
+		document.untitled,
+		file,
+		toast,
+	]);
 
 	useEffect(() => {
 		if (languageServicesKeyRef.current === languageServicesKey) return;
@@ -612,7 +621,7 @@ export const FileTab = forwardRef<FileTabHandle, Props>(function FileTab(
 									});
 								},
 							);
-							if (!document.external) {
+							if (!document.external && !document.untitled) {
 								debugBridgeRef.current = createMonacoDebugBridge({
 									monaco,
 									editor,

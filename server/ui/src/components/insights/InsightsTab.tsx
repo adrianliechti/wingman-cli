@@ -8,7 +8,7 @@ import {
 	RefreshCw,
 	ShieldCheck,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
 	type GraphNode,
 	fetchGraphOverview,
@@ -82,7 +82,8 @@ export function InsightsTab({
 }) {
 	const [view, setView] = useState<GraphView>(memory.view);
 	const [focus, setFocus] = useState<Focus | null>(memory.focus);
-	const analysisButtonRef = useRef<HTMLButtonElement | null>(null);
+	const [analysisButton, setAnalysisButton] =
+		useState<HTMLButtonElement | null>(null);
 	const [analysisOpen, setAnalysisOpen] = useState(false);
 	const queryClient = useQueryClient();
 	const overviewQuery = useQuery({
@@ -182,7 +183,7 @@ export function InsightsTab({
 				))}
 				<div className="flex-1" />
 				<button
-					ref={analysisButtonRef}
+					ref={setAnalysisButton}
 					type="button"
 					onClick={() => setAnalysisOpen((open) => !open)}
 					aria-haspopup="menu"
@@ -209,7 +210,7 @@ export function InsightsTab({
 			<FloatingMenu
 				open={analysisOpen}
 				onOpenChange={setAnalysisOpen}
-				reference={analysisButtonRef.current}
+				reference={analysisButton}
 				placement="bottom-end"
 				label="Insights analyses"
 				className="z-[100] w-72 rounded-md border border-border bg-bg-elevated/95 py-1 shadow-xl backdrop-blur-sm"

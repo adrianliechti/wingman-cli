@@ -5,6 +5,7 @@ import {
 	useCallback,
 	useContext,
 	useEffect,
+	useEffectEvent,
 	useId,
 	useRef,
 	useState,
@@ -136,6 +137,7 @@ export function Dialog({
 	const descriptionId = useId();
 	const panelRef = useRef<HTMLDivElement>(null);
 	const returnFocusRef = useRef<HTMLElement | null>(null);
+	const handleClose = useEffectEvent(onClose);
 
 	useEffect(() => {
 		if (!open) return;
@@ -151,7 +153,7 @@ export function Dialog({
 		const onKeyDown = (event: KeyboardEvent) => {
 			if (event.key === "Escape") {
 				event.preventDefault();
-				onClose();
+				handleClose();
 				return;
 			}
 			if (event.key !== "Tab") return;
@@ -173,7 +175,7 @@ export function Dialog({
 			document.removeEventListener("keydown", onKeyDown);
 			returnFocusRef.current?.focus();
 		};
-	}, [initialFocus, onClose, open]);
+	}, [initialFocus, open]);
 
 	if (!open) return null;
 	return createPortal(

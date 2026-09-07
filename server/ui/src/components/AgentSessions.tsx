@@ -12,6 +12,7 @@ import { FloatingMenu } from "./ui/Floating";
 
 interface Props {
 	currentSessionId: string;
+	backendId?: string;
 	onSessionSelect: (id: string, disposition?: TabDisposition) => void;
 	onSessionDelete?: (id: string, title: string) => void;
 	runningSessionIds?: Set<string>;
@@ -20,12 +21,14 @@ interface Props {
 
 export function AgentSessions({
 	currentSessionId,
+	backendId,
 	onSessionSelect,
 	onSessionDelete,
 	runningSessionIds,
 	touch = false,
 }: Props) {
-	const { backend } = useWorkspace();
+	const { backend: selectedBackend } = useWorkspace();
+	const backend = backendId ?? selectedBackend;
 	const {
 		data: sessions = [],
 		isPending,

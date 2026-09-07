@@ -548,6 +548,10 @@ export function FileTree({ onFileSelect, onFileMove, platform }: Props) {
 			</span>
 			<input
 				autoFocus
+				autoCapitalize="none"
+				autoComplete="off"
+				autoCorrect="off"
+				spellCheck={false}
 				value={createValue}
 				onChange={(event) => setCreateValue(event.target.value)}
 				onKeyDown={(event) => {
@@ -641,6 +645,10 @@ export function FileTree({ onFileSelect, onFileMove, platform }: Props) {
 						{isRenaming ? (
 							<input
 								autoFocus
+								autoCapitalize="none"
+								autoComplete="off"
+								autoCorrect="off"
+								spellCheck={false}
 								value={renameValue}
 								onChange={(e) => setRenameValue(e.target.value)}
 								onClick={(e) => e.stopPropagation()}

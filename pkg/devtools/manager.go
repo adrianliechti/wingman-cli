@@ -78,10 +78,11 @@ type Progress struct {
 
 // ToolStatus describes an installation without downloading or changing tools.
 type ToolStatus struct {
-	Tool        string `json:"tool"`
-	Label       string `json:"label"`
-	Installed   bool   `json:"installed"`
-	Installable bool   `json:"installable"`
+	Tool              string `json:"tool"`
+	Label             string `json:"label"`
+	Installed         bool   `json:"installed"`
+	Installable       bool   `json:"installable"`
+	UnavailableReason string `json:"unavailable_reason,omitempty"`
 }
 
 type recipe struct {
@@ -211,6 +212,10 @@ type Manager struct {
 	run     commandRunner
 	fetch   fetcher
 	install recipeInstaller
+	// prerequisite returns a user-facing reason when a recipe cannot run or,
+	// when install is true, cannot be installed. Tests can leave it nil to
+	// exercise the updater independently of the host machine.
+	prerequisite func(recipe, bool) string
 
 	byCommand map[string]recipe
 	updates   chan struct{}
@@ -224,6 +229,7 @@ func New() (*Manager, error) {
 	}
 	manager := newManager(root)
 	manager.install = manager.installRecipe
+	manager.prerequisite = manager.missingPrerequisite
 	manager.activatePendingUpdates()
 	return manager, nil
 }
@@ -266,7 +272,7 @@ func (m *Manager) ToolDir(id string) string {
 	}
 	root := filepath.Join(m.root, filepath.Base(id))
 	for _, item := range catalog {
-		if item.ID == id && installationReady(item, root) {
+		if item.ID == id && m.prerequisiteReason(item, false) == "" && installationReady(item, root) {
 			return root
 		}
 	}
@@ -280,6 +286,9 @@ func (m *Manager) Resolve(command string) string {
 	}
 	item, ok := m.byCommand[command]
 	if !ok {
+		return ""
+	}
+	if m.prerequisiteReason(item, false) != "" {
 		return ""
 	}
 	root := filepath.Join(m.root, item.ID)
@@ -298,7 +307,9 @@ func (m *Manager) Status(ctx context.Context, requirements []Requirement) ([]Too
 		if m != nil {
 			if item, ok := m.managedRecipe(requirement); ok {
 				status.Tool, status.Label = item.ID, item.Label
-				status.Installable = !Disabled()
+				item.WorkingDirs = requirementWorkingDirs(requirement)
+				status.UnavailableReason = m.prerequisiteReason(item, true)
+				status.Installable = !Disabled() && status.UnavailableReason == ""
 			}
 		}
 		status.Installed = requirement.installed(ctx, m.Resolve)
@@ -387,7 +398,9 @@ func (m *Manager) update(ctx context.Context, requirements []Requirement, allowI
 
 	ids := make([]string, 0, len(selected))
 	for id := range selected {
-		ids = append(ids, id)
+		if m.prerequisiteReason(selected[id].recipe, true) == "" {
+			ids = append(ids, id)
+		}
 	}
 	slices.Sort(ids)
 	if len(ids) == 0 {
@@ -464,6 +477,63 @@ func (m *Manager) update(ctx context.Context, requirements []Requirement, allowI
 		_ = os.Remove(m.retryPath(item.recipe))
 	}
 	return changed, errors.Join(updateErrors...)
+}
+
+func (m *Manager) prerequisiteReason(item recipe, install bool) string {
+	if m == nil || m.prerequisite == nil {
+		return ""
+	}
+	return m.prerequisite(item, install)
+}
+
+func (m *Manager) missingPrerequisite(item recipe, install bool) string {
+	missing := func(command, reason string) string {
+		if _, err := m.look(command); err != nil {
+			return reason
+		}
+		return ""
+	}
+
+	switch item.Kind {
+	case installerGo:
+		return missing("go", "Requires Go")
+	case installerRustup:
+		return missing("rustup", "Requires Rustup")
+	case installerNPM:
+		if reason := missing("node", "Requires Node.js"); reason != "" {
+			return reason
+		}
+		if install {
+			return missing("npm", "Requires npm")
+		}
+	case installerPython:
+		command := "python3"
+		if runtime.GOOS == "windows" {
+			command = "python"
+		}
+		return missing(command, "Requires Python")
+	case installerDotnet:
+		return missing("dotnet", "Requires the .NET SDK")
+	case installerMaven:
+		if reason := missing("java", "Requires Java"); reason != "" {
+			return reason
+		}
+		if install {
+			if _, _, err := m.mavenCommand(item, m.root); err != nil {
+				return "Requires Maven or a Maven wrapper"
+			}
+		}
+	case installerGitHub:
+		switch item.ID {
+		case "vscode-js-debug":
+			return missing("node", "Requires Node.js")
+		case "codelldb":
+			return missing("cargo", "Requires Rust")
+		case "netcoredbg":
+			return missing("dotnet", "Requires the .NET SDK")
+		}
+	}
+	return ""
 }
 
 func reportProgress(reports []func(Progress), item recipe, phase ProgressPhase, current, total int) {

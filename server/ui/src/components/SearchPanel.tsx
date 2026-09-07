@@ -81,7 +81,8 @@ export function SearchPanel({
 	const [files, setFiles] = useState<WorkspaceSearchFile[]>([]);
 	const [summary, setSummary] = useState<WorkspaceSearchSummary>(EMPTY_SUMMARY);
 	const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-	const [loading, setLoading] = useState(false);
+	const [searching, setSearching] = useState(false);
+	const loading = active && query !== "" && searching;
 	const [applying, setApplying] = useState(false);
 	const [error, setError] = useState("");
 	const [refreshKey, setRefreshKey] = useState(0);
@@ -95,7 +96,6 @@ export function SearchPanel({
 	useEffect(() => {
 		if (!active) {
 			requestRef.current?.abort();
-			setLoading(false);
 			return;
 		}
 		const trimmedQuery = query;
@@ -104,10 +104,6 @@ export function SearchPanel({
 			searchIdentityRef.current = "";
 			dismissedFilesRef.current.clear();
 			dismissedMatchesRef.current.clear();
-			setFiles([]);
-			setSummary(EMPTY_SUMMARY);
-			setError("");
-			setLoading(false);
 			return;
 		}
 		const searchIdentity = JSON.stringify([
@@ -136,7 +132,7 @@ export function SearchPanel({
 			setSummary(EMPTY_SUMMARY);
 			setCollapsed(new Set());
 			setError("");
-			setLoading(true);
+			setSearching(true);
 
 			void streamWorkspaceSearch(
 				{
@@ -200,7 +196,7 @@ export function SearchPanel({
 				.finally(() => {
 					if (requestRef.current === activeController) {
 						requestRef.current = null;
-						setLoading(false);
+						setSearching(false);
 					}
 				});
 		}, 180);
@@ -334,8 +330,20 @@ export function SearchPanel({
 					<div className="col-start-1 row-start-1 flex h-7 min-w-0 items-center rounded-md border border-border-subtle bg-bg-input focus-within:border-border-strong">
 						<input
 							ref={findInputRef}
+							autoCapitalize="none"
+							autoComplete="off"
+							autoCorrect="off"
 							value={query}
-							onChange={(event) => setQuery(event.target.value)}
+							onChange={(event) => {
+								const nextQuery = event.target.value;
+								setQuery(nextQuery);
+								if (!nextQuery) {
+									setFiles([]);
+									setSummary(EMPTY_SUMMARY);
+									setError("");
+									setSearching(false);
+								}
+							}}
 							placeholder="Search"
 							aria-label="Search workspace"
 							spellCheck={false}
@@ -375,6 +383,9 @@ export function SearchPanel({
 							<div className="col-start-1 row-start-2 flex h-7 min-w-0 items-center rounded-md border border-border-subtle bg-bg-input focus-within:border-border-strong">
 								<input
 									ref={replaceInputRef}
+									autoCapitalize="none"
+									autoComplete="off"
+									autoCorrect="off"
 									value={replacement}
 									onChange={(event) => setReplacement(event.target.value)}
 									placeholder="Replace"
@@ -425,6 +436,9 @@ export function SearchPanel({
 									Files to include
 								</span>
 								<input
+									autoCapitalize="none"
+									autoComplete="off"
+									autoCorrect="off"
 									value={include}
 									onChange={(event) => setInclude(event.target.value)}
 									placeholder="e.g. *.ts, src/**"
@@ -437,6 +451,9 @@ export function SearchPanel({
 									Files to exclude
 								</span>
 								<input
+									autoCapitalize="none"
+									autoComplete="off"
+									autoCorrect="off"
 									value={exclude}
 									onChange={(event) => setExclude(event.target.value)}
 									placeholder="e.g. dist/**, **/*.test.*"
@@ -534,6 +551,8 @@ function VirtualSearchResults({
 	) => void;
 	onOpenFile: Props["onOpenFile"];
 }) {
+	"use no memo"; // TanStack Virtual's imperative instance must not be compiler-memoized.
+
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const items = useMemo<SearchVirtualItem[]>(() => {
 		const result: SearchVirtualItem[] = [];
@@ -573,6 +592,7 @@ function VirtualSearchResults({
 		},
 		[stickyIndexes],
 	);
+	// oxlint-disable-next-line react/incompatible-library -- Compiler memoization is explicitly disabled for this component.
 	const virtualizer = useVirtualizer({
 		count: items.length,
 		getScrollElement: () => scrollRef.current,

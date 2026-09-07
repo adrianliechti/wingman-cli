@@ -11,6 +11,7 @@ export interface Capabilities {
 	terminal: boolean;
 	tab: boolean;
 	"editor.tab.completion": boolean;
+	"window.terminal.position": "tab" | "bottom";
 	platform: string;
 	workspace_name: string;
 	managed_tools?: ManagedToolsStatus;

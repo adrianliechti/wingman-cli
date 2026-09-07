@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/task"
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool/shell"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 )
@@ -35,6 +37,32 @@ func taskEntry(t *task.Task) TaskEntry {
 		Elapsed:     int64(t.Elapsed() / time.Second),
 		Seq:         t.Seq(),
 	}
+}
+
+const execTaskPrefix = "exec-"
+
+func execTaskEntry(session shell.ExecSessionInfo) TaskEntry {
+	description := session.Description
+	if description == "" {
+		description = session.Command
+	}
+	return TaskEntry{
+		ID:          fmt.Sprintf("%s%d", execTaskPrefix, session.ID),
+		Description: description,
+		AgentType:   "command",
+		Status:      string(task.StatusRunning),
+		Activity:    "Command running",
+		Elapsed:     int64(time.Since(session.Started) / time.Second),
+		Seq:         1,
+	}
+}
+
+func execSessionID(taskID string) (int, bool) {
+	if !strings.HasPrefix(taskID, execTaskPrefix) {
+		return 0, false
+	}
+	id, err := strconv.Atoi(strings.TrimPrefix(taskID, execTaskPrefix))
+	return id, err == nil && id > 0
 }
 
 func (s *backendRuntime) sessionTasks(sessionID string) *task.Registry {
@@ -165,14 +193,16 @@ func (s *backendRuntime) deliverTaskResults(sessionID string, batch []task.Event
 
 func (s *backendRuntime) handleTasks(w http.ResponseWriter, r *http.Request) {
 	reg := s.sessionTasks(r.PathValue("id"))
-	if reg == nil {
-		writeJSON(w, []TaskEntry{})
-		return
-	}
-
 	out := []TaskEntry{}
-	for _, t := range reg.List() {
-		out = append(out, taskEntry(t))
+	if reg != nil {
+		for _, t := range reg.List() {
+			out = append(out, taskEntry(t))
+		}
+	}
+	if agent, ok := s.agent.(*codeagent.Agent); ok {
+		for _, session := range agent.ExecSessions(r.PathValue("id")) {
+			out = append(out, execTaskEntry(session))
+		}
 	}
 	writeJSON(w, out)
 }
@@ -183,21 +213,38 @@ func (s *backendRuntime) handleTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "background agents unavailable", http.StatusNotFound)
 		return
 	}
-	t := reg.Get(r.PathValue("taskID"))
-	if t == nil {
-		http.Error(w, "task not found", http.StatusNotFound)
+	if t := reg.Get(r.PathValue("taskID")); t != nil {
+		writeJSON(w, struct {
+			TaskEntry
+			Result     string            `json:"result,omitempty"`
+			Transcript []TranscriptEntry `json:"transcript"`
+		}{
+			TaskEntry:  taskEntry(t),
+			Result:     t.Result(),
+			Transcript: transcriptEntries(t.PeekMessages()),
+		})
 		return
 	}
-
-	writeJSON(w, struct {
-		TaskEntry
-		Result     string            `json:"result,omitempty"`
-		Transcript []TranscriptEntry `json:"transcript"`
-	}{
-		TaskEntry:  taskEntry(t),
-		Result:     t.Result(),
-		Transcript: transcriptEntries(t.PeekMessages()),
-	})
+	if id, ok := execSessionID(r.PathValue("taskID")); ok {
+		if agent, agentOK := s.agent.(*codeagent.Agent); agentOK {
+			if session, found := agent.ExecSession(r.PathValue("id"), id); found {
+				transcript := []TranscriptEntry{}
+				if session.Output != "" {
+					transcript = append(transcript, TranscriptEntry{
+						ID:      fmt.Sprintf("exec-output-%d", id),
+						Type:    "assistant",
+						Content: session.Output,
+					})
+				}
+				writeJSON(w, struct {
+					TaskEntry
+					Transcript []TranscriptEntry `json:"transcript"`
+				}{TaskEntry: execTaskEntry(session), Transcript: transcript})
+				return
+			}
+		}
+	}
+	http.Error(w, "task not found", http.StatusNotFound)
 }
 
 func (s *backendRuntime) handleTaskStop(w http.ResponseWriter, r *http.Request) {
@@ -206,9 +253,26 @@ func (s *backendRuntime) handleTaskStop(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "background agents unavailable", http.StatusNotFound)
 		return
 	}
-	if err := reg.Stop(r.PathValue("taskID")); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	taskID := r.PathValue("taskID")
+	if reg.Get(taskID) != nil {
+		if err := reg.Stop(taskID); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	} else if id, ok := execSessionID(taskID); ok {
+		agent, agentOK := s.agent.(*codeagent.Agent)
+		if !agentOK {
+			http.Error(w, "background command unavailable", http.StatusNotFound)
+			return
+		}
+		if err := agent.StopExecSession(r.PathValue("id"), id); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	} else {
+		http.Error(w, "task not found", http.StatusNotFound)
 		return
 	}
+	s.sendSession(r.PathValue("id"), Frame{Type: EvtTasksChanged})
 	w.WriteHeader(http.StatusNoContent)
 }

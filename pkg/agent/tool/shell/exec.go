@@ -43,6 +43,16 @@ type ExecExit struct {
 	Elapsed     time.Duration
 }
 
+// ExecSessionInfo is a read-only snapshot of a command that exec_command
+// returned while it continued running in the background.
+type ExecSessionInfo struct {
+	ID          int
+	Command     string
+	Description string
+	Output      string
+	Started     time.Time
+}
+
 type ExecManager struct {
 	onExit func(ExecExit)
 
@@ -54,6 +64,49 @@ type ExecManager struct {
 
 func NewExecManager(onExit func(ExecExit)) *ExecManager {
 	return &ExecManager{onExit: onExit, sessions: map[int]*execSession{}}
+}
+
+// BackgroundSessions returns the live command sessions that are no longer
+// owned by a waiting tool call. Callers can expose these alongside other
+// background work without draining output needed by exec_session.
+func (m *ExecManager) BackgroundSessions() []ExecSessionInfo {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	out := make([]ExecSessionInfo, 0, len(m.sessions))
+	for _, session := range m.sessions {
+		if !session.backgrounded || session.exited() {
+			continue
+		}
+		out = append(out, session.snapshot())
+	}
+	slices.SortFunc(out, func(a, b ExecSessionInfo) int { return a.ID - b.ID })
+	return out
+}
+
+// BackgroundSession returns one live background command without consuming its
+// buffered output.
+func (m *ExecManager) BackgroundSession(id int) (ExecSessionInfo, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	session := m.sessions[id]
+	if session == nil || !session.backgrounded || session.exited() {
+		return ExecSessionInfo{}, false
+	}
+	return session.snapshot(), true
+}
+
+// StopBackgroundSession terminates a live command returned by exec_command.
+func (m *ExecManager) StopBackgroundSession(id int) error {
+	m.mu.Lock()
+	session := m.sessions[id]
+	if session == nil || !session.backgrounded || session.exited() {
+		m.mu.Unlock()
+		return fmt.Errorf("background command session %d not found", id)
+	}
+	m.mu.Unlock()
+	session.cancel()
+	return nil
 }
 
 func (m *ExecManager) Close() {
@@ -214,6 +267,16 @@ type execSession struct {
 	inputUncertain bool
 }
 
+func (s *execSession) snapshot() ExecSessionInfo {
+	return ExecSessionInfo{
+		ID:          s.id,
+		Command:     s.command,
+		Description: s.description,
+		Output:      s.peek(),
+		Started:     s.started,
+	}
+}
+
 func (s *execSession) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -241,6 +304,16 @@ func (s *execSession) drain() string {
 	if s.dropped > 0 {
 		out = fmt.Sprintf("[%d bytes of earlier output dropped]\n", s.dropped) + out
 		s.dropped = 0
+	}
+	return out
+}
+
+func (s *execSession) peek() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := sanitizeOutput(s.unread.String())
+	if s.dropped > 0 {
+		out = fmt.Sprintf("[%d bytes of earlier output dropped]\n", s.dropped) + out
 	}
 	return out
 }

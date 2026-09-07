@@ -19,7 +19,7 @@ export function ModelPicker({ sessionId }: Props) {
 	const [open, setOpen] = useState(false);
 	const [dragPct, setDragPct] = useState<number | null>(null);
 	const [dragging, setDragging] = useState(false);
-	const btnRef = useRef<HTMLButtonElement>(null);
+	const [button, setButton] = useState<HTMLButtonElement | null>(null);
 	const trackRef = useRef<HTMLDivElement>(null);
 
 	const modelMutation = useMutation({
@@ -146,7 +146,7 @@ export function ModelPicker({ sessionId }: Props) {
 	return (
 		<div className="relative">
 			<button
-				ref={btnRef}
+				ref={setButton}
 				type="button"
 				onClick={toggle}
 				className="flex items-center gap-1 px-2 h-7 rounded text-[11.5px] text-fg-muted hover:text-fg hover:bg-bg-hover cursor-pointer transition-colors max-w-[260px]"
@@ -170,7 +170,7 @@ export function ModelPicker({ sessionId }: Props) {
 			<FloatingSurface
 				open={open}
 				onOpenChange={setOpen}
-				reference={btnRef.current}
+				reference={button}
 				placement="top-start"
 				role="dialog"
 				label="Model and reasoning effort"

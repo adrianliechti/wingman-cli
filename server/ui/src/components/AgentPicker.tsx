@@ -1,5 +1,5 @@
 import { Bot, ChevronDown } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { useWorkspace } from "../state/workspaceContext.ts";
 import { workspaceClient } from "../state/workspaceClient.ts";
 import { formatAgentName } from "../utils/agents";
@@ -8,13 +8,15 @@ import { FloatingMenu } from "./ui/Floating";
 export const BUILTIN_AGENT_ID = "wingman";
 
 interface Props {
-	onSelect: (id: string) => void;
+	onSelect: (id: string) => void | Promise<void>;
+	currentId?: string;
 }
-export function AgentPicker({ onSelect }: Props) {
-	const { backend: current } = useWorkspace();
+export function AgentPicker({ onSelect, currentId }: Props) {
+	const { backend } = useWorkspace();
+	const current = currentId ?? backend;
 	const agents = workspaceClient().scope.backends;
 	const [open, setOpen] = useState(false);
-	const btnRef = useRef<HTMLButtonElement>(null);
+	const [button, setButton] = useState<HTMLButtonElement | null>(null);
 	const toggleOpen = () => setOpen((value) => !value);
 	const select = (id: string) => {
 		setOpen(false);
@@ -31,7 +33,7 @@ export function AgentPicker({ onSelect }: Props) {
 	return (
 		<div className="relative min-w-0">
 			<button
-				ref={btnRef}
+				ref={setButton}
 				type="button"
 				onClick={toggleOpen}
 				className="flex h-7 min-w-0 max-w-[180px] cursor-pointer items-center gap-1 rounded px-2 text-[11.5px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg disabled:cursor-wait disabled:opacity-70"
@@ -46,7 +48,7 @@ export function AgentPicker({ onSelect }: Props) {
 			<FloatingMenu
 				open={open}
 				onOpenChange={setOpen}
-				reference={btnRef.current}
+				reference={button}
 				placement="bottom-start"
 				label="Agent"
 				className="z-[100] min-w-[180px] max-w-[260px] bg-bg-elevated/95 backdrop-blur-sm border border-border rounded-md shadow-xl"

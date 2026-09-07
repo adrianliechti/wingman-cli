@@ -134,9 +134,17 @@ export function EditorContextMenu({
 	onClose,
 }: Props) {
 	const [altKey, setAltKey] = useState(initialAltKey);
-	useEffect(() => {
+	const [previousOpening, setPreviousOpening] = useState({
+		initialAltKey,
+		openAt,
+	});
+	if (
+		previousOpening.initialAltKey !== initialAltKey ||
+		previousOpening.openAt !== openAt
+	) {
+		setPreviousOpening({ initialAltKey, openAt });
 		setAltKey(initialAltKey);
-	}, [initialAltKey, openAt]);
+	}
 	useEffect(() => {
 		const handleKeyDown = (event: KeyboardEvent) => {
 			if (event.altKey) setAltKey(true);

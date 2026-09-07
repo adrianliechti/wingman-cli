@@ -119,7 +119,7 @@ export function TasksPanel({ sessionId, onOpenTask }: Props) {
 			await stopMutation.mutateAsync(id);
 		} catch (stopError) {
 			toast({
-				title: "Agent is still running",
+				title: "Background task is still running",
 				description:
 					stopError instanceof Error ? stopError.message : String(stopError),
 				tone: "error",
@@ -138,8 +138,8 @@ export function TasksPanel({ sessionId, onOpenTask }: Props) {
 				{tasks.length === 0 && schedules.length === 0 && (
 					<PanelEmptyState
 						icon={Bot}
-						title="No agents running"
-						hint="Background agents and scheduled tasks for this session appear here."
+						title="No background tasks"
+						hint="Background agents, commands, and scheduled tasks for this session appear here."
 					/>
 				)}
 				{schedules.length > 0 && (
@@ -211,7 +211,7 @@ export function TasksPanel({ sessionId, onOpenTask }: Props) {
 				))}
 				{schedules.length > 0 && tasks.length > 0 && (
 					<div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wide text-fg-dim">
-						Agents
+						Background
 					</div>
 				)}
 				{tasks.map((t) => (
@@ -232,7 +232,9 @@ export function TasksPanel({ sessionId, onOpenTask }: Props) {
 							<button
 								type="button"
 								className="group/action ml-2 flex w-5 shrink-0 items-center justify-center text-fg-dim transition-colors hover:text-danger focus-visible:text-danger"
-								title="Stop agent"
+								title={
+									t.agent_type === "command" ? "Stop command" : "Stop agent"
+								}
 								onClick={() => void stop(t.id)}
 							>
 								<span className="group-hover:hidden group-focus/action:hidden">

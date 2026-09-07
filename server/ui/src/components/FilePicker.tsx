@@ -53,6 +53,10 @@ export function FilePicker({ anchor, onSelect, onClose }: Props) {
 			<div className="px-3 py-2 border-b border-border-subtle">
 				<input
 					ref={inputRef}
+					autoCapitalize="none"
+					autoComplete="off"
+					autoCorrect="off"
+					spellCheck={false}
 					type="text"
 					value={query}
 					onChange={(e) => {

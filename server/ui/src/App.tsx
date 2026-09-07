@@ -21,15 +21,18 @@ import {
 	GitCompare,
 	GitCompareArrows,
 	Globe2,
+	History,
 	Lightbulb,
 	Loader2,
 	type LucideIcon,
 	MessageSquare,
+	MessageSquarePlus,
 	Menu as MenuIcon,
 	Monitor,
 	MonitorPlay,
+	PanelBottom,
 	PanelLeftOpen,
-	PanelRightOpen,
+	PanelTop,
 	Plus,
 	RefreshCw,
 	Search,
@@ -46,7 +49,6 @@ import {
 	type ReactNode,
 	useCallback,
 	useEffect,
-	useMemo,
 	useRef,
 	useState,
 } from "react";
@@ -72,7 +74,11 @@ import {
 	type ModeState,
 	type SessionInfo,
 } from "./api/sessions";
-import { setEditorTabCompletion } from "./api/settings";
+import {
+	setEditorTabCompletion,
+	setWindowTerminalPosition,
+} from "./api/settings";
+import { listSchedules, listTasks } from "./api/tasks";
 import {
 	deleteTerminal,
 	getTerminal,
@@ -97,6 +103,7 @@ import {
 	placeCenterTab,
 	syncDebugTab,
 } from "./mainLayout";
+import { formatAgentName } from "./utils/agents";
 import {
 	CommandPalette,
 	type PaletteAction,
@@ -133,10 +140,10 @@ import {
 	useToast,
 } from "./components/ui/Feedback";
 import { FloatingMenu, FloatingSurface } from "./components/ui/Floating";
-import { AgentPicker } from "./components/AgentPicker";
 import { AgentSessions } from "./components/AgentSessions";
 import { useCapabilities } from "./hooks/useCapabilities";
-import { useOpenDocuments } from "./hooks/useOpenDocuments";
+import { useAutoHidingScrollbars } from "./hooks/useAutoHidingScrollbars";
+import { type OpenDocument, useOpenDocuments } from "./hooks/useOpenDocuments";
 import { useServerQueryInvalidation } from "./hooks/useServerQueryInvalidation";
 import { type ChatEntry, useWebSocket } from "./hooks/useWebSocket";
 import type {
@@ -158,8 +165,12 @@ import {
 	type WorkspaceEditEnvelope,
 	type WorkspaceEditSummary,
 } from "./workspaceEdit";
-
-type WorkspaceTab = "changes" | "files" | "inspect" | "agents";
+import {
+	contextRemainingPercent,
+	shouldShowContextIndicator,
+} from "./utils/usage";
+type WorkspaceTab = "changes" | "files" | "inspect";
+type ChatAuxiliaryView = "sessions" | "agents";
 type DebugContentView = "output" | "terminal";
 type CloseRequest = { kind: "file" | "terminal"; tab: CenterTab } | null;
 type SaveConflictRequest = { path: string; closeTabId?: string } | null;
@@ -171,24 +182,22 @@ type WorkspaceEditRequest = {
 	applying: boolean;
 } | null;
 type SessionDeleteRequest = { id: string; title: string } | null;
-type FilePathRequest =
-	| { kind: "new"; path: string; submitting: boolean; error?: string }
-	| {
-			kind: "save-as";
-			path: string;
-			sourcePath: string;
-			sourceTabId: string;
-			content: string;
-			submitting: boolean;
-			error?: string;
-	  };
-const LEFT_PANEL_DEFAULT_SIZE = 240;
-const LEFT_PANEL_MIN_SIZE = 240;
-const LEFT_PANEL_MAX_SIZE = 360;
-const RIGHT_PANEL_MIN_SIZE = 280;
-const RIGHT_PANEL_DEFAULT_SIZE = RIGHT_PANEL_MIN_SIZE;
-const RIGHT_PANEL_MAX_SIZE = 480;
+type FilePathRequest = {
+	path: string;
+	sourcePath: string;
+	sourceTabId: string;
+	content: string;
+	untitled: boolean;
+	closeAfterSave?: boolean;
+	submitting: boolean;
+	error?: string;
+};
+const SIDE_PANEL_MIN_SIZE = 240;
+const SIDE_PANEL_DEFAULT_SIZE = SIDE_PANEL_MIN_SIZE;
+const SIDE_PANEL_MAX_SIZE = 480;
 const CENTER_PANEL_MIN_SIZE = 320;
+const TERMINAL_PANEL_DEFAULT_SIZE = 240;
+const TERMINAL_PANEL_MIN_SIZE = 120;
 const DEBUG_DETAILS_MIN_SIZE = 240;
 const DEBUG_DETAILS_MAX_SIZE = 480;
 // Width per workspace tab below which the label is replaced by its icon.
@@ -197,6 +206,12 @@ const WORKSPACE_TAB_LABEL_MIN_WIDTH = 58;
 const EMPTY_ENTRIES: never[] = [];
 const EMPTY_MODES: ModeOption[] = [];
 const EMPTY_SHELLS: ShellEntry[] = [];
+const EMPTY_CENTER_TAB = {
+	id: "",
+	type: "empty" as const,
+	label: "",
+	pane: undefined,
+};
 const EMPTY_USAGE = {
 	inputTokens: 0,
 	cachedTokens: 0,
@@ -209,7 +224,6 @@ const IS_MAC =
 	window.shell?.platform === "macos" ||
 	(!window.shell && /Mac|iPhone|iPad/.test(navigator.platform));
 const TERMINAL_SHORTCUT = IS_MAC ? "⌃⌥T" : "Ctrl+Alt+T";
-const TERMINAL_SHELL_MENU_HINT = IS_MAC ? "Option-click" : "Alt-click";
 
 function markdownFenceFor(text: string): string {
 	const fenceFor = (marker: "`" | "~") => {
@@ -275,6 +289,7 @@ function moveWorkspaceTab(tab: CenterTab, from: string, to: string): CenterTab {
 }
 
 export default function App() {
+	useAutoHidingScrollbars();
 	const mobile = useMobileLayout();
 	const { backend: agentId, selectBackend, drafts, setDraft } = useWorkspace();
 	const client = workspaceClient();
@@ -321,6 +336,7 @@ export default function App() {
 		dirtyPaths,
 		openDocument,
 		openCreatedDocument,
+		openUntitledDocument,
 		updateDraft,
 		saveDocument,
 		discardDocument,
@@ -346,14 +362,14 @@ export default function App() {
 				queryKey: queryKeys.capabilities,
 			});
 			toast({
-				title: `editor.tab.completion ${tabEnabled ? "disabled" : "enabled"}`,
+				title: `Tab Completion ${tabEnabled ? "disabled" : "enabled"}`,
 				description: tabEnabled
 					? undefined
 					: "Completions use model requests while you type.",
 			});
 		} catch (error) {
 			toast({
-				title: "Could not change editor.tab.completion",
+				title: "Could not change Tab Completion",
 				description: String(error),
 				tone: "error",
 			});
@@ -361,11 +377,17 @@ export default function App() {
 	}, [queryClient, tabEnabled, toast]);
 	const [requestedWorkspaceTab, setRequestedWorkspaceTab] =
 		useState<WorkspaceTab>("files");
+	const terminalDocked =
+		capabilities?.["window.terminal.position"] === "bottom";
+	const [activeDockedTerminalId, setActiveDockedTerminalId] = useState("");
+	const lastCenterActiveIdRef = useRef(initialTab.id);
 	const [problemsRefreshKey, setProblemsRefreshKey] = useState(0);
 	const [workspaceSearching, setWorkspaceSearching] = useState(false);
 	const [searchFocusKey, setSearchFocusKey] = useState(0);
-	const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(true);
-	const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
+	const [sidePanelCollapsed, setSidePanelCollapsed] = useState(false);
+	const [chatAuxiliaryViews, setChatAuxiliaryViews] = useState<
+		Record<string, ChatAuxiliaryView | undefined>
+	>({});
 	const workspaceTabsRef = useRef<HTMLDivElement>(null);
 	// The workspace tablist shares the title bar with the native window
 	// controls, so its width is whatever the panel leaves over. Once a tab is too
@@ -385,15 +407,14 @@ export default function App() {
 		const observer = new ResizeObserver(updateCompactMode);
 		observer.observe(element);
 		return () => observer.disconnect();
-	}, [rightPanelCollapsed, showAgents, showChanges, showInspect]);
+	}, [sidePanelCollapsed, showChanges, showInspect]);
 	const appRef = useRef<HTMLDivElement>(null);
-	const leftPanelWidthRef = useRef(LEFT_PANEL_DEFAULT_SIZE);
-	const rightPanelDefaultWidth = RIGHT_PANEL_DEFAULT_SIZE;
-	const rightPanelWidthRef = useRef(rightPanelDefaultWidth);
-	const leftPanelRef = usePanelRef();
-	const rightPanelRef = usePanelRef();
+	const sidePanelWidthRef = useRef(SIDE_PANEL_DEFAULT_SIZE);
+	const sidePanelRef = usePanelRef();
 	const debugDetailsPanelRef = usePanelRef();
-	const debugDetailsWidthRef = useRef(DEBUG_DETAILS_MIN_SIZE);
+	const [debugDetailsWidth, setDebugDetailsWidth] = useState(
+		DEBUG_DETAILS_MIN_SIZE,
+	);
 	const terminalShells =
 		useQuery({
 			...terminalQueries.shells(),
@@ -585,7 +606,8 @@ export default function App() {
 				setTabs((prev) =>
 					prev.some((item) => item.id === tab.id) ? prev : [...prev, tab],
 				);
-				setActiveTabId(tab.id);
+				if (terminalDocked) setActiveDockedTerminalId(tab.id);
+				else setActiveTabId(tab.id);
 			} catch (error) {
 				toast({
 					title: "Could not create terminal",
@@ -596,7 +618,7 @@ export default function App() {
 				terminalCreatingRef.current = false;
 			}
 		},
-		[queryClient, toast, setActiveTabId, setTabs],
+		[queryClient, toast, terminalDocked, setActiveTabId, setTabs],
 	);
 
 	useEffect(() => {
@@ -665,10 +687,66 @@ export default function App() {
 		return () => window.removeEventListener("keydown", onKey, true);
 	}, [activeTabId, createTerminal, paletteOpen]);
 
-	const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
-	const leftTabs = tabs.filter((tab) => paneOf(tab) === "left");
+	const terminalTabs = tabs.filter((tab) => tab.type === "terminal");
+	const centerTabs = terminalDocked
+		? tabs.filter((tab) => tab.type !== "terminal")
+		: tabs;
+	const activeTab =
+		centerTabs.find((tab) => tab.id === activeTabId) ??
+		centerTabs[0] ??
+		EMPTY_CENTER_TAB;
+	const activeTaskSessionId =
+		activeTab.type === "chat" &&
+		activeTab.sessionId &&
+		!isDraft(activeTab.sessionId)
+			? activeTab.sessionId
+			: "";
+	const activeTasksQuery = useQuery({
+		queryKey: queryKeys.tasks.list(activeTaskSessionId),
+		enabled: showAgents && !!activeTaskSessionId,
+		queryFn: ({ signal }) => listTasks(activeTaskSessionId, signal),
+		refetchInterval: (query) =>
+			query.state.data?.some((task) => task.status === "running")
+				? 3000
+				: query.state.data?.length === 0
+					? 3000
+					: false,
+	});
+	const activeSchedulesQuery = useQuery({
+		queryKey: queryKeys.tasks.schedules(activeTaskSessionId),
+		enabled: showAgents && !!activeTaskSessionId,
+		queryFn: ({ signal }) => listSchedules(activeTaskSessionId, signal),
+		refetchInterval: (query) =>
+			(query.state.data?.length ?? 0) > 0 ? 30000 : false,
+	});
+	const activeTasks = activeTasksQuery.data ?? [];
+	const activeSchedules = activeSchedulesQuery.data ?? [];
+	const activeBackgroundAgentActivity = {
+		available: activeTasks.length > 0 || activeSchedules.length > 0,
+		working: activeTasks.some((task) => task.status === "running"),
+	};
+	const activeTaskPhase = activeTaskSessionId
+		? sessions[activeTaskSessionId]?.phase
+		: undefined;
+	useEffect(() => {
+		if (!showAgents || !activeTaskSessionId || !activeTaskPhase) return;
+		void queryClient.invalidateQueries({
+			queryKey: queryKeys.tasks.session(activeTaskSessionId),
+		});
+	}, [activeTaskPhase, activeTaskSessionId, queryClient, showAgents]);
+	const activeDockedTerminal =
+		terminalTabs.find((tab) => tab.id === activeDockedTerminalId) ??
+		terminalTabs[0];
+	const activeDockedTerminalTabId = activeDockedTerminal?.id ?? "";
+	useEffect(() => {
+		const selected = tabs.find((tab) => tab.id === activeTabId);
+		if (selected && selected.type !== "terminal") {
+			lastCenterActiveIdRef.current = activeTab.id;
+		}
+	}, [activeTab.id, activeTabId, tabs]);
+	const leftTabs = centerTabs.filter((tab) => paneOf(tab) === "left");
 	const rightTabs = leftTabs.length
-		? tabs.filter((tab) => paneOf(tab) === "right")
+		? centerTabs.filter((tab) => paneOf(tab) === "right")
 		: [];
 	const rightTab =
 		(activeTab.pane === "right"
@@ -676,14 +754,14 @@ export default function App() {
 			: undefined) ??
 		rightTabs.find((tab) => tab.id === rightActiveId) ??
 		rightTabs[0];
-	const leftPool = leftTabs.length ? leftTabs : tabs;
+	const leftPool = leftTabs.length ? leftTabs : centerTabs;
 	const leftTab =
 		(activeTab.pane !== "right"
 			? leftPool.find((tab) => tab.id === activeTab.id)
 			: undefined) ??
 		leftPool.find((tab) => tab.id === leftActiveId) ??
 		leftPool[0] ??
-		activeTab;
+		(activeTab.id ? activeTab : undefined);
 	const activeDocument =
 		activeTab.type === "file" && activeTab.path
 			? documents[activeTab.path]
@@ -720,7 +798,6 @@ export default function App() {
 			: currentSessionId || sessionKey(agentId, "");
 	const workspaceTab =
 		(requestedWorkspaceTab === "changes" && !showChanges) ||
-		(requestedWorkspaceTab === "agents" && !showAgents) ||
 		(requestedWorkspaceTab === "inspect" && !showInspect)
 			? "files"
 			: requestedWorkspaceTab;
@@ -751,9 +828,41 @@ export default function App() {
 	const activateTab = useCallback(
 		(tab: CenterTab) => {
 			setActiveTabId(tab.id);
-			if (tab.type === "chat") setCurrentSessionId(tab.sessionId ?? "");
+			if (tab.type === "chat") {
+				setCurrentSessionId(tab.sessionId ?? "");
+				selectBackend(
+					tab.backendId ??
+						(tab.sessionId
+							? splitSessionKey(tab.sessionId).backendId
+							: agentId),
+				);
+			}
 		},
-		[setActiveTabId, setCurrentSessionId],
+		[agentId, selectBackend, setActiveTabId, setCurrentSessionId],
+	);
+	const toggleChatAuxiliary = useCallback(
+		(tabId: string, view: ChatAuxiliaryView) => {
+			setChatAuxiliaryViews((current) =>
+				current[tabId] === view ? {} : { [tabId]: view },
+			);
+		},
+		[],
+	);
+	const showActiveChatAuxiliary = useCallback(
+		(view: ChatAuxiliaryView) => {
+			const tab =
+				activeTab.type === "chat"
+					? activeTab
+					: (tabs.find(
+							(candidate) =>
+								candidate.type === "chat" &&
+								candidate.sessionId === currentSessionId,
+						) ?? tabs.find((candidate) => candidate.type === "chat"));
+			if (!tab) return;
+			activateTab(tab);
+			setChatAuxiliaryViews({ [tab.id]: view });
+		},
+		[activateTab, activeTab, currentSessionId, tabs],
 	);
 	const keepTab = useCallback(
 		(id: string) => {
@@ -791,7 +900,11 @@ export default function App() {
 	);
 
 	const openChatTab = useCallback(
-		(sid: string, disposition: TabDisposition = "keep", adoptDraft = false) => {
+		(
+			sid: string,
+			disposition: TabDisposition = "keep",
+			adoptDraftId?: string,
+		) => {
 			const existing = tabs.find(
 				(t) => t.type === "chat" && t.sessionId === sid,
 			);
@@ -802,12 +915,9 @@ export default function App() {
 
 			// Allocating a session for the draft must retain its component key so
 			// unsent composer state survives. Browsing history never adopts it.
-			const draft = adoptDraft
+			const draft = adoptDraftId
 				? tabs.find(
-						(t) =>
-							t.type === "chat" &&
-							!t.sessionId &&
-							(t.backendId ?? agentId) === splitSessionKey(sid).backendId,
+						(t) => t.id === adoptDraftId && t.type === "chat" && !t.sessionId,
 					)
 				: undefined;
 			const tab: CenterTab = {
@@ -829,7 +939,7 @@ export default function App() {
 			}
 			showCenterTab(tab, disposition);
 		},
-		[activateTab, showCenterTab, tabs, agentId, setTabs],
+		[activateTab, showCenterTab, tabs, setTabs],
 	);
 
 	const openFile = useCallback(
@@ -876,6 +986,19 @@ export default function App() {
 		},
 		[activateTab, keepTab, openDocument, showCenterTab, tabs, setTabs],
 	);
+
+	const openUntitledFile = useCallback(() => {
+		const usedLabels = new Set(tabs.map((tab) => tab.label));
+		let sequence = 1;
+		let label = "Untitled";
+		while (usedLabels.has(label)) {
+			sequence++;
+			label = `Untitled ${sequence}`;
+		}
+		const path = `untitled:${crypto.randomUUID()}`;
+		openUntitledDocument(path);
+		showCenterTab({ id: `file:${path}`, type: "file", label, path }, "keep");
+	}, [openUntitledDocument, showCenterTab, tabs]);
 
 	const handleFileMove = useCallback(
 		(from: string, to: string) => {
@@ -1049,10 +1172,12 @@ export default function App() {
 
 	useEffect(() => {
 		if (!showDebug) {
+			// oxlint-disable-next-line react/set-state-in-effect -- Synchronize the external debugger with tabs, terminal state, and the query cache.
 			applyDebugSession(undefined);
 			return;
 		}
 		if (debugStateQuery.data) {
+			// oxlint-disable-next-line react/set-state-in-effect -- Synchronize the external debugger with tabs, terminal state, and the query cache.
 			applyDebugSession(debugStateQuery.data.session);
 		}
 	}, [applyDebugSession, debugStateQuery.data, showDebug]);
@@ -1121,9 +1246,14 @@ export default function App() {
 			const idx = tabs.findIndex((t) => t.id === id);
 			if (idx < 0) return;
 			const closing = tabs[idx];
-			if (!isClosableTab(closing)) return;
 			if (closing.type === "file" && closing.path) closeDocument(closing.path);
 			setTabs((prev) => prev.filter((tab) => tab.id !== id));
+			setChatAuxiliaryViews((current) => {
+				if (!(id in current)) return current;
+				const next = { ...current };
+				delete next[id];
+				return next;
+			});
 			setFileViews((prev) => {
 				if (!(id in prev)) return prev;
 				const next = { ...prev };
@@ -1132,19 +1262,39 @@ export default function App() {
 			});
 			if (activeTabId === id) {
 				const remaining = tabs.filter((t) => t.id !== id);
+				const navigable = terminalDocked
+					? remaining.filter((tab) => tab.type !== "terminal")
+					: remaining;
 				const paneIdx = tabs
-					.filter((t) => paneOf(t) === paneOf(closing))
+					.filter(
+						(tab) =>
+							(!terminalDocked || tab.type !== "terminal") &&
+							paneOf(tab) === paneOf(closing),
+					)
 					.findIndex((t) => t.id === id);
-				const paneTabs = remaining.filter((t) => paneOf(t) === paneOf(closing));
-				const fallback = remaining.some((t) => t.type === "chat")
-					? (paneTabs[Math.min(paneIdx, paneTabs.length - 1)] ??
-						remaining[Math.min(idx, remaining.length - 1)] ??
-						draftChatTab())
-					: draftChatTab();
-				activateTab(fallback);
+				const paneTabs = navigable.filter(
+					(tab) => paneOf(tab) === paneOf(closing),
+				);
+				const fallback =
+					paneTabs[Math.min(paneIdx, paneTabs.length - 1)] ??
+					navigable[Math.min(idx, navigable.length - 1)];
+				if (fallback) activateTab(fallback);
+				else {
+					setActiveTabId("");
+					setCurrentSessionId("");
+				}
 			}
 		},
-		[tabs, activeTabId, activateTab, closeDocument, setTabs],
+		[
+			tabs,
+			activeTabId,
+			activateTab,
+			closeDocument,
+			terminalDocked,
+			setActiveTabId,
+			setCurrentSessionId,
+			setTabs,
+		],
 	);
 
 	const closeTerminal = useCallback(
@@ -1199,6 +1349,22 @@ export default function App() {
 		[closeTabNow, saveDocument, toast],
 	);
 
+	const requestSaveAs = useCallback(
+		(tab: CenterTab, document: OpenDocument, closeAfterSave = false) => {
+			if (!tab.path) return;
+			setFilePathRequest({
+				path: document.untitled ? "" : tab.path,
+				sourcePath: tab.path,
+				sourceTabId: tab.id,
+				content: document.draft,
+				untitled: document.untitled,
+				closeAfterSave: closeAfterSave || undefined,
+				submitting: false,
+			});
+		},
+		[],
+	);
+
 	const submitFilePath = useCallback(async () => {
 		const request = filePathRequest;
 		if (!request || request.submitting) return;
@@ -1211,7 +1377,7 @@ export default function App() {
 			return;
 		}
 
-		if (request.kind === "save-as" && path === request.sourcePath) {
+		if (!request.untitled && path === request.sourcePath) {
 			const result = await saveFile(request.sourcePath);
 			if (result?.ok || result?.conflict) setFilePathRequest(null);
 			return;
@@ -1224,44 +1390,46 @@ export default function App() {
 			error: undefined,
 		});
 		try {
-			const content = request.kind === "save-as" ? request.content : "";
-			const created = await createWorkspaceFile(path, { content });
+			const created = await createWorkspaceFile(path, {
+				content: request.content,
+			});
 			if (!created) throw new Error("The created file response was empty.");
-			openCreatedDocument(created);
-
-			if (request.kind === "new") {
-				openFile(created.path, undefined, undefined, undefined, "keep");
-			} else {
-				const nextId = `file:${created.path}`;
-				closeDocument(request.sourcePath);
-				setTabs((current) =>
-					current.map((tab) =>
-						tab.id === request.sourceTabId
-							? {
-									...tab,
-									id: nextId,
-									label: created.path.split("/").pop() || created.path,
-									path: created.path,
-									external: undefined,
-									preview: undefined,
-								}
-							: tab,
-					),
-				);
-				setLeftActiveId((current) =>
-					current === request.sourceTabId ? nextId : current,
-				);
-				setRightActiveId((current) =>
-					current === request.sourceTabId ? nextId : current,
-				);
-				setFileViews((current) => {
-					if (!(request.sourceTabId in current)) return current;
-					const next = { ...current, [nextId]: current[request.sourceTabId] };
-					delete next[request.sourceTabId];
-					return next;
-				});
-				setActiveTabId(nextId);
+			if (request.closeAfterSave) {
+				closeTabNow(request.sourceTabId);
+				setFilePathRequest(null);
+				return;
 			}
+
+			openCreatedDocument(created);
+			const nextId = `file:${created.path}`;
+			closeDocument(request.sourcePath);
+			setTabs((current) =>
+				current.map((tab) =>
+					tab.id === request.sourceTabId
+						? {
+								...tab,
+								id: nextId,
+								label: created.path.split("/").pop() || created.path,
+								path: created.path,
+								external: undefined,
+								preview: undefined,
+							}
+						: tab,
+				),
+			);
+			setLeftActiveId((current) =>
+				current === request.sourceTabId ? nextId : current,
+			);
+			setRightActiveId((current) =>
+				current === request.sourceTabId ? nextId : current,
+			);
+			setFileViews((current) => {
+				if (!(request.sourceTabId in current)) return current;
+				const next = { ...current, [nextId]: current[request.sourceTabId] };
+				delete next[request.sourceTabId];
+				return next;
+			});
+			setActiveTabId(nextId);
 			setFilePathRequest(null);
 		} catch (error) {
 			setFilePathRequest((current) =>
@@ -1276,9 +1444,9 @@ export default function App() {
 		}
 	}, [
 		closeDocument,
+		closeTabNow,
 		filePathRequest,
 		openCreatedDocument,
-		openFile,
 		saveFile,
 		setTabs,
 		setActiveTabId,
@@ -1328,27 +1496,24 @@ export default function App() {
 			const command = (event as CustomEvent<unknown>).detail;
 			switch (command) {
 				case "new-file":
-					setFilePathRequest({ kind: "new", path: "", submitting: false });
+					openUntitledFile();
 					break;
 				case "open-folder":
 					if (dirtyPaths.size > 0) setOpenFolderRequest(true);
 					else void openFolder();
 					break;
 				case "save":
-					if (canSaveFile && activeTab.path) {
-						void saveFile(activeTab.path);
+					if (canSaveFile && activeTab.path && activeDocument) {
+						if (activeDocument.untitled) {
+							requestSaveAs(activeTab, activeDocument);
+						} else {
+							void saveFile(activeTab.path);
+						}
 					}
 					break;
 				case "save-as":
 					if (canSaveFile && activeTab.path && activeDocument) {
-						setFilePathRequest({
-							kind: "save-as",
-							path: activeTab.path,
-							sourcePath: activeTab.path,
-							sourceTabId: activeTab.id,
-							content: activeDocument.draft,
-							submitting: false,
-						});
+						requestSaveAs(activeTab, activeDocument);
 					}
 					break;
 			}
@@ -1360,14 +1525,16 @@ export default function App() {
 		activeTab,
 		canSaveFile,
 		dirtyPaths.size,
+		openUntitledFile,
 		openFolder,
+		requestSaveAs,
 		saveFile,
 	]);
 
 	const requestCloseTab = useCallback(
 		async (id: string) => {
 			const tab = tabs.find((item) => item.id === id);
-			if (!tab || !isClosableTab(tab)) return;
+			if (!tab) return;
 			if (tab.type === "debug") {
 				try {
 					const current = await queryClient.fetchQuery({
@@ -1448,7 +1615,7 @@ export default function App() {
 			setTabMenu({
 				x,
 				y,
-				tabId: tab && isClosableTab(tab) ? tab.id : undefined,
+				tabId: tab?.id,
 			});
 		},
 		[tabs, setTabMenu],
@@ -1580,8 +1747,14 @@ export default function App() {
 	const saveAndCloseFile = useCallback(async () => {
 		const request = closeRequest;
 		if (request?.kind !== "file" || !request.tab.path) return;
+		const document = documents[request.tab.path];
+		if (document?.untitled) {
+			setCloseRequest(null);
+			requestSaveAs(request.tab, document, true);
+			return;
+		}
 		await saveFile(request.tab.path, request.tab.id);
-	}, [closeRequest, saveFile]);
+	}, [closeRequest, documents, requestSaveAs, saveFile]);
 
 	const overwriteChangedFile = useCallback(async () => {
 		const request = saveConflict;
@@ -1634,15 +1807,60 @@ export default function App() {
 		[tabs, setActiveTabId, setTabs],
 	);
 	const handleNewSession = useCallback(
-		async () => openDraft(agentId),
-		[agentId, openDraft],
-	);
-	const handleBackendSelect = useCallback(
-		(backend: string) => {
+		async (requestedBackend?: string) => {
+			const backend =
+				requestedBackend ??
+				(activeTab.type === "chat"
+					? (activeTab.backendId ??
+						(activeTab.sessionId
+							? splitSessionKey(activeTab.sessionId).backendId
+							: agentId))
+					: currentSessionId
+						? splitSessionKey(currentSessionId).backendId
+						: agentId);
+			try {
+				await queryClient.ensureQueryData(backendSettingsQuery(backend));
+			} catch {
+				// The chat can still expose the harness error after it opens.
+			}
+			const tab = draftChatTab(backend);
 			selectBackend(backend);
+			setTabs((current) => [...current, tab]);
+			activateTab(tab);
+		},
+		[
+			activateTab,
+			activeTab,
+			agentId,
+			currentSessionId,
+			queryClient,
+			selectBackend,
+			setTabs,
+		],
+	);
+	const backendSelectionRef = useRef(0);
+	const handleBackendSelect = useCallback(
+		async (backend: string) => {
+			const selection = ++backendSelectionRef.current;
+			try {
+				await queryClient.ensureQueryData(backendSettingsQuery(backend));
+			} catch {
+				// Selecting the harness should still work when its settings endpoint
+				// supplies the actionable error state.
+			}
+			if (selection !== backendSelectionRef.current) return;
+			selectBackend(backend);
+			if (activeTab.type === "chat" && !activeTab.sessionId) {
+				setTabs((current) =>
+					current.map((tab) =>
+						tab.id === activeTab.id ? { ...tab, backendId: backend } : tab,
+					),
+				);
+				return;
+			}
 			openDraft(backend);
 		},
-		[selectBackend, openDraft],
+		[activeTab, openDraft, queryClient, selectBackend, setTabs],
 	);
 
 	const handleSessionDeleted = useCallback(
@@ -1676,7 +1894,7 @@ export default function App() {
 	}, [handleSessionDeleted, queryClient, sessionDelete, toast]);
 
 	const handleSessionSelect = useCallback(
-		async (id: string, disposition: TabDisposition = "keep") => {
+		(id: string, disposition: TabDisposition = "keep") => {
 			selectBackend(splitSessionKey(id).backendId);
 			openChatTab(id, disposition);
 		},
@@ -1684,14 +1902,19 @@ export default function App() {
 	);
 	const draftCreations = useRef(new Map<string, Promise<string>>());
 	const createSessionForDraft = useCallback(
-		(key: string): Promise<string> => {
+		(key: string, draftTabId?: string): Promise<string> => {
 			const owner = splitSessionKey(key).backendId;
-			const draft = tabs.find(
-				(tab) =>
-					tab.type === "chat" &&
-					!tab.sessionId &&
-					(tab.backendId ?? agentId) === owner,
-			);
+			const draft = draftTabId
+				? tabs.find(
+						(tab) =>
+							tab.id === draftTabId && tab.type === "chat" && !tab.sessionId,
+					)
+				: tabs.find(
+						(tab) =>
+							tab.type === "chat" &&
+							!tab.sessionId &&
+							(tab.backendId ?? agentId) === owner,
+					);
 			const draftID = draft?.id ?? key;
 			const previous = draftCreations.current.get(draftID);
 			if (previous) return previous;
@@ -1699,11 +1922,14 @@ export default function App() {
 				const settings = drafts[key];
 				if (settings && Object.keys(settings).length)
 					await client.command(id, { type: "settings", ...settings });
-				openChatTab(id, "keep", true);
+				openChatTab(id, "keep", draftID);
 				return id;
 			});
 			draftCreations.current.set(draftID, request);
-			void request.catch(() => draftCreations.current.delete(draftID));
+			void request.then(
+				() => draftCreations.current.delete(draftID),
+				() => draftCreations.current.delete(draftID),
+			);
 			return request;
 		},
 		[client, drafts, tabs, agentId, openChatTab],
@@ -1727,9 +1953,12 @@ export default function App() {
 			files?: string[],
 			images?: string[],
 			intent: TurnInputIntent = "follow_up",
+			draftTabId?: string,
 		): Promise<boolean> => {
 			try {
-				const sid = isDraft(key) ? await createSessionForDraft(key) : key;
+				const sid = isDraft(key)
+					? await createSessionForDraft(key, draftTabId)
+					: key;
 				return sendChat(sid, text, files, images, intent);
 			} catch {
 				return false;
@@ -1862,21 +2091,13 @@ export default function App() {
 		[selectModeForSession, sessionId],
 	);
 
-	const handleLeftPanelResize = useCallback(({ inPixels }: PanelSize) => {
+	const handleSidePanelResize = useCallback(({ inPixels }: PanelSize) => {
 		const collapsed = inPixels < 1;
-		setLeftPanelCollapsed(collapsed);
+		setSidePanelCollapsed(collapsed);
 		if (collapsed) return;
 		const width = Math.round(inPixels);
-		leftPanelWidthRef.current = width;
-		appRef.current?.style.setProperty("--left-panel-width", `${width}px`);
-	}, []);
-	const handleRightPanelResize = useCallback(({ inPixels }: PanelSize) => {
-		const collapsed = inPixels < 1;
-		setRightPanelCollapsed(collapsed);
-		if (collapsed) return;
-		const width = Math.round(inPixels);
-		rightPanelWidthRef.current = width;
-		appRef.current?.style.setProperty("--right-panel-width", `${width}px`);
+		sidePanelWidthRef.current = width;
+		appRef.current?.style.setProperty("--side-panel-width", `${width}px`);
 	}, []);
 	const handleRightPaneResize = useCallback(({ inPixels }: PanelSize) => {
 		if (inPixels <= 0) return;
@@ -1885,40 +2106,64 @@ export default function App() {
 			`${Math.round(inPixels)}px`,
 		);
 	}, []);
+	const handleTerminalDockResize = useCallback(({ inPixels }: PanelSize) => {
+		if (inPixels <= 0) return;
+		appRef.current?.style.setProperty(
+			"--terminal-panel-height",
+			`${Math.round(inPixels)}px`,
+		);
+	}, []);
 	const handleDebugDetailsResize = useCallback(({ inPixels }: PanelSize) => {
 		const visible = inPixels > 0;
 		setDebugDetailsVisible(visible);
-		if (visible) debugDetailsWidthRef.current = Math.round(inPixels);
+		if (visible) setDebugDetailsWidth(Math.round(inPixels));
 	}, []);
-	const toggleLeftPanel = useCallback(() => {
-		const panel = leftPanelRef.current;
+	const toggleSidePanel = useCallback(() => {
+		const panel = sidePanelRef.current;
 		if (panel?.isCollapsed()) {
-			panel.resize(`${leftPanelWidthRef.current}px`);
-			setLeftPanelCollapsed(false);
+			panel.resize(`${sidePanelWidthRef.current}px`);
+			setSidePanelCollapsed(false);
 		} else {
 			panel?.collapse();
-			setLeftPanelCollapsed(true);
+			setSidePanelCollapsed(true);
 		}
-	}, [leftPanelRef]);
-	const toggleRightPanel = useCallback(() => {
-		const panel = rightPanelRef.current;
-		if (panel?.isCollapsed()) {
-			panel.resize(`${rightPanelWidthRef.current}px`);
-			setRightPanelCollapsed(false);
-		} else {
-			panel?.collapse();
-			setRightPanelCollapsed(true);
+	}, [sidePanelRef]);
+	const toggleTerminalPlacement = async () => {
+		const dockAtBottom = !terminalDocked;
+		try {
+			await setWindowTerminalPosition(dockAtBottom ? "bottom" : "tab");
+			if (dockAtBottom) {
+				const selected = tabs.find((tab) => tab.id === activeTabId);
+				if (selected?.type === "terminal") {
+					setActiveDockedTerminalId(selected.id);
+					const fallback =
+						tabs.find((tab) => tab.id === lastCenterActiveIdRef.current) ??
+						tabs.find((tab) => tab.type !== "terminal");
+					if (fallback) setActiveTabId(fallback.id);
+				}
+			} else if (activeDockedTerminalTabId) {
+				setActiveTabId(activeDockedTerminalTabId);
+			}
+			void queryClient.invalidateQueries({
+				queryKey: queryKeys.capabilities,
+			});
+		} catch (error) {
+			toast({
+				title: "Could not change Terminal Position",
+				description: String(error),
+				tone: "error",
+			});
 		}
-	}, [rightPanelRef]);
-	const showRightPanel = useCallback(
+	};
+	const showSidePanel = useCallback(
 		(tab: WorkspaceTab) => {
 			setRequestedWorkspaceTab(tab);
-			if (rightPanelRef.current?.isCollapsed()) {
-				rightPanelRef.current.resize(`${rightPanelWidthRef.current}px`);
-				setRightPanelCollapsed(false);
+			if (sidePanelRef.current?.isCollapsed()) {
+				sidePanelRef.current.resize(`${sidePanelWidthRef.current}px`);
+				setSidePanelCollapsed(false);
 			}
 		},
-		[rightPanelRef],
+		[sidePanelRef],
 	);
 	const toggleDebugDetails = useCallback(() => {
 		const panel = debugDetailsPanelRef.current;
@@ -2002,18 +2247,17 @@ export default function App() {
 		[setTabs],
 	);
 	const showWorkspaceSearch = useCallback(() => {
-		showRightPanel("files");
+		showSidePanel("files");
 		setWorkspaceSearching(true);
 		setSearchFocusKey((value) => value + 1);
-	}, [showRightPanel]);
+	}, [showSidePanel]);
 	// react-resizable-panels only reports collapse through onResize, which does
-	// not fire for the initial layout. Sync both panels from their real state
+	// not fire for the initial layout. Sync the panel from its real state
 	// once mounted so titlebar controls (like the reopen button) render before
 	// the first manual resize.
 	useEffect(() => {
-		setLeftPanelCollapsed(leftPanelRef.current?.isCollapsed() ?? true);
-		setRightPanelCollapsed(rightPanelRef.current?.isCollapsed() ?? false);
-	}, [leftPanelRef, rightPanelRef]);
+		setSidePanelCollapsed(sidePanelRef.current?.isCollapsed() ?? false);
+	}, [sidePanelRef]);
 	useEffect(() => {
 		const onKey = (event: KeyboardEvent) => {
 			if (
@@ -2029,140 +2273,143 @@ export default function App() {
 		return () => window.removeEventListener("keydown", onKey);
 	}, [showWorkspaceSearch]);
 
-	const paletteActions = useMemo<PaletteAction[]>(() => {
-		const actions: PaletteAction[] = [];
-		if (paletteEditorActions) {
-			actions.push(
-				{
-					id: "editor.chat-about-selection",
-					label: "Chat about this…",
-					hint: "Selected text",
-					icon: <MessageSquare size={12} className="text-fg-dim shrink-0" />,
-					run: () => void paletteEditorActions.chatAboutSelection(),
-				},
-				{
-					id: "editor.transform-selection",
-					label: "Transform selection…",
-					hint: "Selected text",
-					icon: <Sparkles size={12} className="text-fg-dim shrink-0" />,
-					run: () => void paletteEditorActions.transformSelection(),
-				},
-			);
-		}
-		actions.push(
-			{
-				id: "new-session",
-				label: "New session",
-				icon: <Plus size={12} className="text-fg-dim shrink-0" />,
-				run: () => void handleNewSession(),
-			},
-			{
-				id: "toggle-agent-sessions",
-				label: leftPanelCollapsed
-					? "Show Agent Sessions"
-					: "Hide Agent Sessions",
-				icon: <PanelLeftOpen size={12} className="text-fg-dim shrink-0" />,
-				run: toggleLeftPanel,
-			},
-			{
-				id: "toggle-workspace-panel",
-				label: rightPanelCollapsed
-					? "Show Workspace Panel"
-					: "Hide Workspace Panel",
-				icon: <PanelRightOpen size={12} className="text-fg-dim shrink-0" />,
-				run: toggleRightPanel,
-			},
-		);
-		if (showChanges) {
-			actions.push({
-				id: "show-changes",
-				label: "Show changes",
-				icon: <GitCompare size={12} className="text-fg-dim shrink-0" />,
-				run: () => showRightPanel("changes"),
-			});
-		}
-		if (showTerminal) {
-			if (terminalShells.length === 0) {
-				actions.push({
-					id: "new-terminal",
-					label: "New Terminal",
-					hint: TERMINAL_SHORTCUT,
-					icon: <SquareTerminal size={12} className="text-fg-dim shrink-0" />,
-					run: () => void createTerminal(),
-				});
-			} else {
-				for (const [index, shell] of terminalShells.entries()) {
-					actions.push({
-						id: `new-terminal-${index}`,
-						label: `New Terminal (${terminalShellName(shell.name)})`,
-						hint: index === 0 ? TERMINAL_SHORTCUT : undefined,
-						icon: <SquareTerminal size={12} className="text-fg-dim shrink-0" />,
-						run: () => void createTerminal(shell.id),
-					});
-				}
-			}
-		}
-		if (tabAvailable) {
-			actions.push({
-				id: "editor.tab.completion",
-				label: `${tabEnabled ? "Disable" : "Enable"} editor.tab.completion`,
-				hint: `${tabEnabled ? "On" : "Off"} · uses model requests while typing`,
-				icon: <Sparkles size={12} className="text-fg-dim shrink-0" />,
-				run: () => void toggleEditorTabCompletion(),
-			});
-		}
-		actions.push({
+	const paletteActions: PaletteAction[] = [
+		...(paletteEditorActions
+			? [
+					{
+						id: "editor.chat-about-selection",
+						label: "Chat about this…",
+						hint: "Selected text",
+						icon: <MessageSquare size={12} className="text-fg-dim shrink-0" />,
+						run: () => void paletteEditorActions.chatAboutSelection(),
+					},
+					{
+						id: "editor.transform-selection",
+						label: "Transform selection…",
+						hint: "Selected text",
+						icon: <Sparkles size={12} className="text-fg-dim shrink-0" />,
+						run: () => void paletteEditorActions.transformSelection(),
+					},
+				]
+			: []),
+		...client.scope.backends.map((backend) => ({
+			id: `new-session:${backend.id}`,
+			label:
+				client.scope.backends.length > 1
+					? `New Chat (${formatAgentName(backend.id, backend.name)})`
+					: "New Chat",
+			icon: <MessageSquarePlus size={12} className="text-fg-dim shrink-0" />,
+			run: () => void handleNewSession(backend.id),
+		})),
+		...(tabs.some((tab) => tab.type === "chat")
+			? [
+					{
+						id: "show-sessions",
+						label: "Show sessions",
+						icon: <History size={12} className="text-fg-dim shrink-0" />,
+						run: () => showActiveChatAuxiliary("sessions"),
+					},
+				]
+			: []),
+		{
+			id: "toggle-side-panel",
+			label: sidePanelCollapsed ? "Show Side Panel" : "Hide Side Panel",
+			icon: <PanelLeftOpen size={12} className="text-fg-dim shrink-0" />,
+			run: toggleSidePanel,
+		},
+		...(showChanges
+			? [
+					{
+						id: "show-changes",
+						label: "Show changes",
+						icon: <GitCompare size={12} className="text-fg-dim shrink-0" />,
+						run: () => showSidePanel("changes"),
+					},
+				]
+			: []),
+		...(showTerminal
+			? [
+					...(terminalShells.length === 0
+						? [
+								{
+									id: "new-terminal",
+									label: "New Terminal",
+									hint: TERMINAL_SHORTCUT,
+									icon: (
+										<SquareTerminal
+											size={12}
+											className="text-fg-dim shrink-0"
+										/>
+									),
+									run: () => void createTerminal(),
+								},
+							]
+						: terminalShells.map((shell, index) => ({
+								id: `new-terminal-${index}`,
+								label: `New Terminal (${terminalShellName(shell.name)})`,
+								hint: index === 0 ? TERMINAL_SHORTCUT : undefined,
+								icon: (
+									<SquareTerminal size={12} className="text-fg-dim shrink-0" />
+								),
+								run: () => void createTerminal(shell.id),
+							}))),
+					{
+						id: "terminal-placement",
+						label: terminalDocked
+							? "Show Terminal in Tab"
+							: "Show Terminal at Bottom",
+						icon: terminalDocked ? (
+							<PanelTop size={12} className="text-fg-dim shrink-0" />
+						) : (
+							<PanelBottom size={12} className="text-fg-dim shrink-0" />
+						),
+						run: () => void toggleTerminalPlacement(),
+					},
+				]
+			: []),
+		...(tabAvailable
+			? [
+					{
+						id: "editor.tab.completion",
+						label: `${tabEnabled ? "Disable" : "Enable"} Tab Completion`,
+						hint: `${tabEnabled ? "On" : "Off"} · uses model requests while typing`,
+						icon: <Sparkles size={12} className="text-fg-dim shrink-0" />,
+						run: () => void toggleEditorTabCompletion(),
+					},
+				]
+			: []),
+		{
 			id: "find-in-files",
 			label: "Find in files",
 			hint: IS_MAC ? "⇧⌘F" : "Ctrl+Shift+F",
 			icon: <Search size={12} className="text-fg-dim shrink-0" />,
 			run: showWorkspaceSearch,
-		});
-		actions.push({
+		},
+		{
 			id: "code-graph",
 			label: "Open insights",
 			icon: <Lightbulb size={12} className="text-fg-dim shrink-0" />,
 			run: openInsightsTab,
-		});
-		actions.push({
+		},
+		{
 			id: "show-files",
 			label: "Show files",
 			icon: <FileText size={12} className="text-fg-dim shrink-0" />,
-			run: () => showRightPanel("files"),
-		});
-		for (const m of modes) {
-			if (m.id === mode) continue;
-			const Icon = /plan|read|only/i.test(m.id) ? Compass : Wrench;
-			actions.push({
-				id: `mode-${m.id}`,
-				label: `Switch to ${m.name} mode`,
-				hint: m.description,
-				icon: <Icon size={12} className="text-fg-dim shrink-0" />,
-				run: () => void selectMode(m.id),
-			});
-		}
-		return actions;
-	}, [
-		paletteEditorActions,
-		handleNewSession,
-		showChanges,
-		showTerminal,
-		tabAvailable,
-		tabEnabled,
-		toggleEditorTabCompletion,
-		leftPanelCollapsed,
-		rightPanelCollapsed,
-		terminalShells,
-		toggleLeftPanel,
-		toggleRightPanel,
-		showRightPanel,
-		showWorkspaceSearch,
-		openInsightsTab,
-		createTerminal,
-		modes,
-		mode,
-		selectMode,
-	]);
+			run: () => showSidePanel("files"),
+		},
+		...modes
+			.filter((candidate) => candidate.id !== mode)
+			.map((candidate) => {
+				const Icon = /plan|read|only/i.test(candidate.id) ? Compass : Wrench;
+				return {
+					id: `mode-${candidate.id}`,
+					label: `Switch to ${candidate.name} mode`,
+					hint: candidate.description,
+					icon: <Icon size={12} className="text-fg-dim shrink-0" />,
+					run: () => void selectMode(candidate.id),
+				};
+			}),
+	];
 
 	const runningSessionIds = new Set(
 		Object.values(sessions)
@@ -2171,7 +2418,14 @@ export default function App() {
 	);
 
 	const chatTabLabel = (tab: CenterTab): string => {
-		if (!tab.sessionId) return tab.label;
+		if (!tab.sessionId) {
+			const backend = tab.backendId ?? agentId;
+			if (backend === "wingman") return tab.label;
+			const definition = client.scope.backends.find(
+				(item) => item.id === backend,
+			);
+			return formatAgentName(backend, definition?.name);
+		}
 		const sess = sessions[tab.sessionId];
 		const firstUser = sess?.entries.find(
 			(e) => e.type === "user" && e.content.trim(),
@@ -2189,7 +2443,7 @@ export default function App() {
 			tab.type === "chat" && tab.sessionId
 				? (sessions[tab.sessionId]?.phase ?? "idle") !== "idle"
 				: false,
-		closable: isClosableTab(tab),
+		closable: true,
 	});
 	const leftStripItems: TabStripItem[] = leftPool.map(stripItem);
 	const rightStripItems: TabStripItem[] = rightTabs.map(stripItem);
@@ -2197,56 +2451,75 @@ export default function App() {
 	const renderTabContent = (tab: CenterTab): ReactNode => {
 		if (tab.type === "chat") {
 			const key = tab.sessionId || sessionKey(tab.backendId ?? agentId, "");
+			const backendId = splitSessionKey(key).backendId;
+			const backend = client.scope.backends.find(
+				(candidate) => candidate.id === backendId,
+			);
 			const sess = key ? sessions[key] : undefined;
 			const modeState = modeStates[key];
 			return (
-				<ChatPanel
-					key={tab.id}
+				<ChatTabLayout
+					view={chatAuxiliaryViews[tab.id]}
 					sessionId={key}
-					entries={sess?.entries ?? EMPTY_ENTRIES}
-					phase={sess?.phase ?? "idle"}
-					modes={modeState?.modes ?? EMPTY_MODES}
-					mode={modeState?.mode ?? ""}
-					onSelectMode={(next) => void selectModeForSession(key, next)}
-					onSend={(text, files, images, intent) =>
-						sendForSession(key, text, files, images, intent)
-					}
-					onCancel={(clear) => {
-						if (key) cancel(key, clear ?? false);
+					backendId={backendId}
+					showAgents={showAgents}
+					runningSessionIds={runningSessionIds}
+					onSessionSelect={(id, disposition) => {
+						setChatAuxiliaryViews({ [chatTabId(id)]: "sessions" });
+						void handleSessionSelect(id, disposition);
 					}}
-					pendingInputs={sess?.pendingInputs ?? EMPTY_ENTRIES}
-					queuePaused={sess?.queuePaused ?? false}
-					canSteer={sess?.canSteer ?? false}
-					onRemoveQueued={(id, state) => {
-						if (!key) return;
-						if (state === "queued" || state === "sending") {
-							removeQueued(key, id);
+					onSessionDelete={(id, title) => setSessionDelete({ id, title })}
+					onOpenTask={openTask}
+				>
+					<ChatPanel
+						key={tab.id}
+						sessionId={key}
+						placeholder={`Message ${formatAgentName(backendId, backend?.name)}…`}
+						entries={sess?.entries ?? EMPTY_ENTRIES}
+						phase={sess?.phase ?? "idle"}
+						modes={modeState?.modes ?? EMPTY_MODES}
+						mode={modeState?.mode ?? ""}
+						onSelectMode={(next) => void selectModeForSession(key, next)}
+						onSend={(text, files, images, intent) =>
+							sendForSession(key, text, files, images, intent, tab.id)
 						}
-					}}
-					onUpdateQueued={(id, text, files, images) =>
-						key ? updateQueued(key, id, text, files, images) : false
-					}
-					onResumeQueue={() => {
-						if (key) resumeQueue(key);
-					}}
-					onClearQueue={() => {
-						if (key) clearQueue(key);
-					}}
-					loading={!isDraft(key) && (!sess || sess.status === "loading")}
-					loadError={sess?.status === "error" ? sess.error : null}
-					error={sess?.error ?? null}
-					onDismissError={() => {
-						if (key) dismissError(key);
-					}}
-					prompts={sess?.prompts ?? []}
-					onPromptReply={(id, reply) => {
-						void respondPrompt(key, id, reply);
-					}}
-					onOpenFile={openFile}
-					seed={tab.id === activeTabId ? composerSeed : null}
-					onSeedConsumed={consumeComposerSeed}
-					toolProgress={sess?.toolProgress ?? {}}
-				/>
+						onCancel={(clear) => {
+							if (key) cancel(key, clear ?? false);
+						}}
+						pendingInputs={sess?.pendingInputs ?? EMPTY_ENTRIES}
+						queuePaused={sess?.queuePaused ?? false}
+						canSteer={sess?.canSteer ?? false}
+						onRemoveQueued={(id, state) => {
+							if (!key) return;
+							if (state === "queued" || state === "sending") {
+								removeQueued(key, id);
+							}
+						}}
+						onUpdateQueued={(id, text, files, images) =>
+							key ? updateQueued(key, id, text, files, images) : false
+						}
+						onResumeQueue={() => {
+							if (key) resumeQueue(key);
+						}}
+						onClearQueue={() => {
+							if (key) clearQueue(key);
+						}}
+						loading={!isDraft(key) && (!sess || sess.status === "loading")}
+						loadError={sess?.status === "error" ? sess.error : null}
+						error={sess?.error ?? null}
+						onDismissError={() => {
+							if (key) dismissError(key);
+						}}
+						prompts={sess?.prompts ?? []}
+						onPromptReply={(id, reply) => {
+							void respondPrompt(key, id, reply);
+						}}
+						onOpenFile={openFile}
+						seed={tab.id === activeTabId ? composerSeed : null}
+						onSeedConsumed={consumeComposerSeed}
+						toolProgress={sess?.toolProgress ?? {}}
+					/>
+				</ChatTabLayout>
 			);
 		}
 		if (tab.type === "debug") {
@@ -2288,9 +2561,7 @@ export default function App() {
 					<Panel
 						id="debug-details"
 						panelRef={debugDetailsPanelRef}
-						defaultSize={
-							debugDetailsVisible ? `${debugDetailsWidthRef.current}px` : "0px"
-						}
+						defaultSize={debugDetailsVisible ? `${debugDetailsWidth}px` : "0px"}
 						minSize={`${DEBUG_DETAILS_MIN_SIZE}px`}
 						maxSize={`${DEBUG_DETAILS_MAX_SIZE}px`}
 						collapsedSize="0px"
@@ -2312,17 +2583,7 @@ export default function App() {
 				</Group>
 			);
 		}
-		if (tab.type === "terminal" && tab.terminalId) {
-			return (
-				<TerminalView
-					key={tab.terminalId}
-					id={tab.terminalId}
-					active
-					onExit={() => closeTabNow(tab.id)}
-					onTitle={setTerminalTitle}
-				/>
-			);
-		}
+		if (tab.type === "terminal") return null;
 		if (tab.type === "task" && tab.taskId) {
 			return (
 				<TaskTab
@@ -2366,6 +2627,7 @@ export default function App() {
 			);
 		}
 		if (tab.path && documents[tab.path]) {
+			const document = documents[tab.path];
 			return (
 				<FileTab
 					key={`${tab.id}:${tab.path}`}
@@ -2373,7 +2635,7 @@ export default function App() {
 						if (handle) fileTabHandlesRef.current.set(tab.id, handle);
 						else fileTabHandlesRef.current.delete(tab.id);
 					}}
-					document={documents[tab.path]}
+					document={document}
 					tabEnabled={tabEnabled}
 					line={tab.line}
 					column={tab.column}
@@ -2384,6 +2646,10 @@ export default function App() {
 						updateDraft(tab.path!, value);
 					}}
 					onSave={async () => {
+						if (document.untitled) {
+							requestSaveAs(tab, document);
+							return { ok: false };
+						}
 						return saveFile(tab.path!);
 					}}
 					onReload={() => void reloadDocument(tab.path!, tab.external ?? false)}
@@ -2418,8 +2684,10 @@ export default function App() {
 	const renderPane = (tab: CenterTab | undefined): ReactNode => (
 		<div
 			className="relative h-full min-h-0 min-w-0 overflow-hidden bg-bg"
-			onPointerDownCapture={() => {
+			onPointerDownCapture={(event) => {
 				if (!tab) return;
+				if ((event.target as Element).closest("[data-chat-auxiliary-panel]"))
+					return;
 				if (tab.id !== activeTabId) activateTab(tab);
 				if (tab.preview) keepTab(tab.id);
 			}}
@@ -2433,7 +2701,7 @@ export default function App() {
 					<TabCrashed error={error} errorInfo={errorInfo} />
 				)}
 			>
-				{tab ? renderTabContent(tab) : null}
+				{tab ? renderTabContent(tab) : <EmptyWorkspace />}
 			</ErrorBoundary>
 		</div>
 	);
@@ -2482,27 +2750,15 @@ export default function App() {
 		</div>
 	);
 
-	const canCreateNew = !!(
-		sessionId && (sessions[sessionId]?.entries.length ?? 0) > 0
-	);
-	const leftPanelDocked = !leftPanelCollapsed;
-	const rightPanelDocked = !rightPanelCollapsed;
-	const collapsedRightTitlebarWidth = 40;
-	const agentSessionsContent = (
-		<AgentSessions
-			currentSessionId={sessionId}
-			onSessionSelect={(id, disposition) => {
-				void handleSessionSelect(id, disposition);
-			}}
-			onSessionDelete={(id, title) => setSessionDelete({ id, title })}
-			runningSessionIds={runningSessionIds}
-		/>
-	);
+	const sidePanelDocked = !sidePanelCollapsed;
+	const collapsedSideTitlebarWidth = 40;
+	const activeChatAuxiliary =
+		activeTab.type === "chat" ? chatAuxiliaryViews[activeTab.id] : undefined;
 	const titlebarActions = (
 		<div
 			data-window-interactive
 			data-titlebar-actions
-			className="flex shrink-0 items-center"
+			className="flex shrink-0 items-center pr-2"
 		>
 			{activeTab.type === "chat" &&
 				(usage.inputTokens > 0 || outputTokens > 0) && (
@@ -2515,16 +2771,54 @@ export default function App() {
 						outputEstimated={streamEstimate > 0}
 					/>
 				)}
-			{canCreateNew && (
-				<button
-					type="button"
-					className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
-					onClick={handleNewSession}
-					title="New session"
-					aria-label="New session"
-				>
-					<Plus size={13} />
-				</button>
+			{activeTab.type === "chat" && (
+				<>
+					{showAgents && activeBackgroundAgentActivity.available && (
+						<button
+							type="button"
+							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:text-fg-muted ${activeChatAuxiliary === "agents" ? "bg-bg-active text-fg" : "text-fg-muted hover:bg-bg-hover"}`}
+							onClick={() => toggleChatAuxiliary(activeTab.id, "agents")}
+							aria-pressed={activeChatAuxiliary === "agents"}
+							title={
+								activeChatAuxiliary === "agents"
+									? "Hide background tasks"
+									: "Show background tasks"
+							}
+							aria-label={
+								activeChatAuxiliary === "agents"
+									? "Hide background tasks"
+									: "Show background tasks"
+							}
+						>
+							<Bot
+								size={13}
+								className={
+									activeBackgroundAgentActivity.working
+										? "animate-pulse text-accent"
+										: undefined
+								}
+							/>
+						</button>
+					)}
+					<button
+						type="button"
+						className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:text-fg-muted ${activeChatAuxiliary === "sessions" ? "bg-bg-active text-fg" : "text-fg-dim hover:bg-bg-hover"}`}
+						onClick={() => toggleChatAuxiliary(activeTab.id, "sessions")}
+						aria-pressed={activeChatAuxiliary === "sessions"}
+						title={
+							activeChatAuxiliary === "sessions"
+								? "Hide sessions"
+								: "Show sessions"
+						}
+						aria-label={
+							activeChatAuxiliary === "sessions"
+								? "Hide sessions"
+								: "Show sessions"
+						}
+					>
+						<History size={13} />
+					</button>
+				</>
 			)}
 			{activePreviewKind && (
 				<button
@@ -2601,62 +2895,54 @@ export default function App() {
 					)}
 				</>
 			)}
-			{showTerminal && (
-				<TerminalLauncher
-					shells={terminalShells}
-					onCreate={(shell) => void createTerminal(shell)}
-				/>
-			)}
+			<NewItemLauncher
+				onNewChat={() => void handleNewSession()}
+				onNewTerminal={showTerminal ? () => void createTerminal() : undefined}
+				onNewTextFile={workspaceSwitching ? undefined : openUntitledFile}
+			/>
+			<WorkspaceActivity
+				hasLSP={capabilities?.lsp ?? false}
+				tools={capabilities?.managed_tools}
+			/>
 		</div>
 	);
 
+	const sidePanelTabs: {
+		id: WorkspaceTab;
+		icon: LucideIcon;
+		label: string;
+	}[] = [
+		{ id: "files", icon: FolderTree, label: "Files" },
+		...(showChanges
+			? ([{ id: "changes", icon: GitCompareArrows, label: "Changes" }] as const)
+			: []),
+		...(showInspect
+			? ([{ id: "inspect", icon: Stethoscope, label: "Inspect" }] as const)
+			: []),
+	];
 	const workspaceTabs = (
 		<div
 			ref={workspaceTabsRef}
 			className="flex h-10 w-full min-w-0 shrink-0 items-stretch overflow-hidden"
 			role="tablist"
-			aria-label="Workspace panels"
+			aria-label="Side panel views"
 		>
-			<WorkspaceTabButton
-				active={workspaceTab === "files"}
-				icon={FolderTree}
-				label="Files"
-				iconOnly={workspaceTabsCompact}
-				onClick={() => setRequestedWorkspaceTab("files")}
-			/>
-			{showChanges && (
+			{sidePanelTabs.map((tab) => (
 				<WorkspaceTabButton
-					active={workspaceTab === "changes"}
-					icon={GitCompareArrows}
-					label="Changes"
+					key={tab.id}
+					active={workspaceTab === tab.id}
+					icon={tab.icon}
+					label={tab.label}
 					iconOnly={workspaceTabsCompact}
-					onClick={() => setRequestedWorkspaceTab("changes")}
+					onClick={() => setRequestedWorkspaceTab(tab.id)}
 				/>
-			)}
-			{showInspect && (
-				<WorkspaceTabButton
-					active={workspaceTab === "inspect"}
-					icon={Stethoscope}
-					label="Inspect"
-					iconOnly={workspaceTabsCompact}
-					onClick={() => setRequestedWorkspaceTab("inspect")}
-				/>
-			)}
-			{showAgents && (
-				<WorkspaceTabButton
-					active={workspaceTab === "agents"}
-					icon={Bot}
-					label="Agents"
-					iconOnly={workspaceTabsCompact}
-					onClick={() => setRequestedWorkspaceTab("agents")}
-				/>
-			)}
+			))}
 		</div>
 	);
-	const inspectorContent = (
+	const sidePanelContent = (
 		<aside
 			className="flex h-full flex-col bg-transparent"
-			aria-label="Workspace"
+			aria-label="Side panel"
 		>
 			<div
 				className="relative min-h-0 flex-1 overflow-hidden pt-0.5"
@@ -2667,7 +2953,7 @@ export default function App() {
 						workspaceTab === "inspect" ? "flex h-full flex-col" : "hidden"
 					}
 				>
-					<div className="flex h-9 shrink-0 items-center border-b border-border-subtle bg-bg-surface/20 px-3">
+					<div className="flex h-9 shrink-0 items-center px-3">
 						<span className="text-[10px] font-medium uppercase tracking-wide text-fg-dim">
 							Diagnostics
 						</span>
@@ -2689,10 +2975,8 @@ export default function App() {
 						/>
 					</div>
 				</div>
-				{workspaceTab === "inspect" ? null : workspaceTab === "agents" &&
-				  showAgents ? (
-					<TasksPanel sessionId={sessionId} onOpenTask={openTask} />
-				) : workspaceTab === "changes" && showChanges ? (
+				{workspaceTab === "inspect" ? null : workspaceTab === "changes" &&
+				  showChanges ? (
 					<DiffsPanel
 						git={capabilities?.git ?? false}
 						canInit={capabilities?.git_init ?? false}
@@ -2734,6 +3018,189 @@ export default function App() {
 			</div>
 		</aside>
 	);
+	const renderSidePanelTitlebar = () => {
+		return (
+			<div
+				data-window-interactive
+				data-titlebar-side-panel="left"
+				data-titlebar-left-panel
+				className={`relative z-20 flex shrink-0 items-center overflow-hidden ${sidePanelDocked ? "pl-2" : "gap-1 px-1"}`}
+				style={{
+					width: sidePanelDocked
+						? "calc(var(--side-panel-width) - var(--window-controls-inset) - var(--window-menu-inset))"
+						: `${collapsedSideTitlebarWidth}px`,
+				}}
+			>
+				{sidePanelCollapsed ? (
+					<button
+						type="button"
+						data-window-panel-toggle="left"
+						className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:!bg-bg-hover hover:text-fg"
+						onClick={toggleSidePanel}
+						title="Show Side Panel"
+						aria-label="Show Side Panel"
+					>
+						<PanelLeftOpen size={13} />
+					</button>
+				) : (
+					<div
+						data-titlebar-workspace-tabs
+						className="min-w-0 flex-1 self-stretch"
+					>
+						{workspaceTabs}
+					</div>
+				)}
+			</div>
+		);
+	};
+	const sidePanelElement = (
+		<Panel
+			id="side-panel"
+			panelRef={sidePanelRef}
+			defaultSize={`${SIDE_PANEL_DEFAULT_SIZE}px`}
+			minSize={`${SIDE_PANEL_MIN_SIZE}px`}
+			maxSize={`${SIDE_PANEL_MAX_SIZE}px`}
+			collapsedSize="0px"
+			collapsible
+			groupResizeBehavior="preserve-pixel-size"
+			onResize={mobile ? undefined : handleSidePanelResize}
+			data-layout-panel="side"
+			data-panel-side="left"
+			inert={sidePanelCollapsed}
+			className="h-full overflow-hidden"
+		>
+			<div
+				data-panel-content="side"
+				className={`mr-auto h-full overflow-hidden transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
+					sidePanelCollapsed
+						? "pointer-events-none -translate-x-full opacity-0"
+						: "translate-x-0 opacity-100"
+				}`}
+				style={{ width: "var(--side-panel-width)" }}
+			>
+				{sidePanelContent}
+			</div>
+		</Panel>
+	);
+	const sidePanelResizeHandle = (
+		<ResizeHandle label="Resize Side Panel" hidden={sidePanelCollapsed} />
+	);
+	const terminalDockVisible = terminalDocked && !!activeDockedTerminal;
+	const visibleTerminalId = terminalDockVisible
+		? activeDockedTerminal?.id
+		: activeTab.type === "terminal"
+			? activeTab.id
+			: undefined;
+	const terminalSurfaceStyle = (tab: CenterTab): CSSProperties => {
+		if (terminalDockVisible)
+			return {
+				left: 0,
+				right: "177px",
+				bottom: 0,
+				height: "var(--terminal-panel-height)",
+			};
+		if (!rightTab) return { inset: 0 };
+		return paneOf(tab) === "right"
+			? {
+					top: 0,
+					right: 0,
+					bottom: 0,
+					left: "calc(100% - var(--right-pane-width))",
+				}
+			: { top: 0, right: "var(--right-pane-width)", bottom: 0, left: 0 };
+	};
+	const centerMain = (
+		<main className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden bg-bg">
+			<div className="min-h-0 flex-1 overflow-hidden">
+				{renderCenterContent()}
+			</div>
+		</main>
+	);
+	const centerPanelElement = (
+		<Panel
+			id="center"
+			minSize={`${CENTER_PANEL_MIN_SIZE}px`}
+			data-layout-panel="center"
+			className="relative flex h-full min-w-0 flex-col overflow-hidden bg-bg"
+		>
+			<Group
+				id="center-terminal-layout"
+				orientation="vertical"
+				className="h-full min-h-0 overflow-hidden"
+			>
+				<Panel
+					id="center-content"
+					minSize="200px"
+					className="flex min-h-0 flex-col overflow-hidden"
+				>
+					{centerMain}
+				</Panel>
+				{terminalDockVisible && (
+					<ResizeHandle
+						label="Resize Terminal Dock"
+						hidden={false}
+						orientation="vertical"
+					/>
+				)}
+				{terminalDockVisible && (
+					<Panel
+						id="terminal-dock"
+						defaultSize={`${TERMINAL_PANEL_DEFAULT_SIZE}px`}
+						minSize={`${TERMINAL_PANEL_MIN_SIZE}px`}
+						maxSize="60%"
+						onResize={handleTerminalDockResize}
+						data-layout-panel="terminal"
+						className="min-h-0 overflow-hidden border-t border-border-subtle"
+					>
+						<div className="flex h-full min-h-0" aria-label="Terminal dock">
+							<div
+								className="min-w-0 flex-1 overflow-hidden"
+								role="tabpanel"
+								aria-label={activeDockedTerminal.label}
+							/>
+							<div
+								data-terminal-tabs-separator
+								aria-hidden="true"
+								className="w-px shrink-0 bg-border"
+							/>
+							<TerminalDockTabs
+								tabs={terminalTabs}
+								activeTabId={activeDockedTerminal.id}
+								onActivate={setActiveDockedTerminalId}
+								onClose={(id) => void requestCloseTab(id)}
+								onCloseMany={(ids) => void closeTabs(ids)}
+								onNew={() => void createTerminal()}
+							/>
+						</div>
+					</Panel>
+				)}
+			</Group>
+			{terminalTabs.map((tab) => {
+				const visible = tab.id === visibleTerminalId;
+				return (
+					<div
+						key={tab.id}
+						data-terminal-surface={tab.id}
+						className={visible ? "absolute z-10 overflow-hidden" : "hidden"}
+						style={visible ? terminalSurfaceStyle(tab) : undefined}
+					>
+						<ErrorBoundary
+							fallback={(error, _reset, errorInfo) => (
+								<TabCrashed error={error} errorInfo={errorInfo} />
+							)}
+						>
+							<TerminalView
+								id={tab.terminalId!}
+								active={visible}
+								onExit={() => closeTabNow(tab.id)}
+								onTitle={setTerminalTitle}
+							/>
+						</ErrorBoundary>
+					</div>
+				);
+			})}
+		</Panel>
+	);
 
 	return (
 		<div
@@ -2742,9 +3209,9 @@ export default function App() {
 			className="relative flex h-dvh flex-col bg-bg text-fg"
 			style={
 				{
-					"--left-panel-width": `${LEFT_PANEL_DEFAULT_SIZE}px`,
-					"--right-panel-width": `${rightPanelDefaultWidth}px`,
+					"--side-panel-width": `${SIDE_PANEL_DEFAULT_SIZE}px`,
 					"--right-pane-width": "0px",
+					"--terminal-panel-height": `${TERMINAL_PANEL_DEFAULT_SIZE}px`,
 				} as CSSProperties
 			}
 		>
@@ -2767,24 +3234,15 @@ export default function App() {
 				/>
 			)}
 			<div
-				data-panel-frame="sessions"
+				data-panel-frame="side"
+				data-panel-side="left"
 				aria-hidden="true"
 				className={`pointer-events-none absolute inset-y-0 left-0 z-0 rounded-[10px] bg-bg-surface/40 transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
-					leftPanelCollapsed
+					sidePanelCollapsed
 						? "-translate-x-full opacity-0"
 						: "translate-x-0 opacity-100"
 				}`}
-				style={{ width: "var(--left-panel-width)" }}
-			/>
-			<div
-				data-panel-frame="workspace"
-				aria-hidden="true"
-				className={`pointer-events-none absolute inset-y-0 right-0 z-0 rounded-[10px] bg-bg-surface/40 transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
-					rightPanelCollapsed
-						? "translate-x-full opacity-0"
-						: "translate-x-0 opacity-100"
-				}`}
-				style={{ width: "var(--right-panel-width)" }}
+				style={{ width: "var(--side-panel-width)" }}
 			/>
 			<header
 				data-window-titlebar
@@ -2796,8 +3254,8 @@ export default function App() {
 					aria-hidden="true"
 					className="pointer-events-none absolute bottom-0 h-px bg-border-subtle"
 					style={{
-						left: leftPanelDocked ? "var(--left-panel-width)" : "0px",
-						right: rightPanelDocked ? "var(--right-panel-width)" : "0px",
+						left: sidePanelDocked ? "var(--side-panel-width)" : "0px",
+						right: "0px",
 					}}
 				/>
 				<div
@@ -2809,37 +3267,11 @@ export default function App() {
 					canOpenFolder={!workspaceSwitching}
 					canSave={canSaveFile}
 				/>
-				<div
-					data-window-interactive
-					data-titlebar-left-panel
-					className={`flex shrink-0 items-center gap-0.5 overflow-hidden ${leftPanelDocked ? "pl-2 pr-0" : "px-1"}`}
-					style={{
-						width: leftPanelDocked
-							? "calc(var(--left-panel-width) - var(--window-controls-inset) - var(--window-menu-inset))"
-							: "40px",
-					}}
-				>
-					{leftPanelDocked && (
-						<div data-titlebar-agent className="min-w-0 flex-1 overflow-hidden">
-							<AgentPicker onSelect={handleBackendSelect} />
-						</div>
-					)}
-					{leftPanelCollapsed && (
-						<button
-							type="button"
-							className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
-							onClick={toggleLeftPanel}
-							title="Show Agent Sessions"
-							aria-label="Show Agent Sessions"
-						>
-							<PanelLeftOpen size={13} />
-						</button>
-					)}
-				</div>
+				{renderSidePanelTitlebar()}
 
 				<TabStrip
 					items={leftStripItems}
-					activeTabId={leftTab.id}
+					activeTabId={leftTab?.id ?? ""}
 					dragTabId={dragTabId}
 					onActivate={activateTab}
 					onClose={(tab) => void requestCloseTab(tab.id)}
@@ -2854,10 +3286,12 @@ export default function App() {
 						x={tabMenu.x}
 						y={tabMenu.y}
 						tabId={tabMenu.tabId}
-						tabCount={tabs.length}
+						tabCount={centerTabs.length}
 						preview={!!tabs.find((tab) => tab.id === tabMenu.tabId)?.preview}
 						pane={paneOf(
-							tabs.find((tab) => tab.id === tabMenu.tabId) ?? leftTab,
+							tabs.find((tab) => tab.id === tabMenu.tabId) ??
+								leftTab ??
+								EMPTY_CENTER_TAB,
 						)}
 						canMoveRight={leftTabs.length > 1}
 						onMove={moveTabToPane}
@@ -2866,10 +3300,10 @@ export default function App() {
 						onCloseTab={(id) => void closeTabs([id])}
 						onCloseOthers={(id) =>
 							void closeTabs(
-								tabs.filter((tab) => tab.id !== id).map((tab) => tab.id),
+								centerTabs.filter((tab) => tab.id !== id).map((tab) => tab.id),
 							)
 						}
-						onCloseAll={() => void closeTabs(tabs.map((tab) => tab.id))}
+						onCloseAll={() => void closeTabs(centerTabs.map((tab) => tab.id))}
 					/>
 				)}
 
@@ -2878,9 +3312,7 @@ export default function App() {
 					<div
 						className="flex shrink-0 items-stretch overflow-hidden"
 						style={{
-							width: `max(0px, calc(var(--right-pane-width) - ${
-								rightPanelDocked ? 0 : collapsedRightTitlebarWidth
-							}px))`,
+							width: "var(--right-pane-width)",
 						}}
 					>
 						<TabStrip
@@ -2900,43 +3332,6 @@ export default function App() {
 					</div>
 				)}
 				<div
-					data-window-interactive
-					data-titlebar-right-panel
-					className={`relative z-20 flex shrink-0 items-center overflow-hidden ${rightPanelDocked ? "pr-2" : "gap-1 px-1"}`}
-					style={{
-						width: rightPanelDocked
-							? "max(0px, calc(var(--right-panel-width) - var(--window-controls-reserve-end)))"
-							: `${collapsedRightTitlebarWidth}px`,
-					}}
-				>
-					{rightPanelCollapsed && (
-						<button
-							type="button"
-							data-window-panel-toggle="right"
-							className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:!bg-bg-hover hover:text-fg"
-							onClick={toggleRightPanel}
-							title="Show Workspace Panel"
-							aria-label="Show Workspace Panel"
-						>
-							<PanelRightOpen size={13} />
-						</button>
-					)}
-					{rightPanelDocked && (
-						<div
-							data-titlebar-workspace-tabs
-							className="min-w-0 flex-1 self-stretch"
-						>
-							{workspaceTabs}
-						</div>
-					)}
-					{rightPanelDocked && (
-						<WorkspaceActivity
-							hasLSP={capabilities?.lsp ?? false}
-							tools={capabilities?.managed_tools}
-						/>
-					)}
-				</div>
-				<div
 					className="window-titlebar-controls-spacer-end shrink-0"
 					aria-hidden="true"
 				/>
@@ -2946,78 +3341,9 @@ export default function App() {
 				orientation="horizontal"
 				className="relative z-10 flex-1 overflow-hidden"
 			>
-				<Panel
-					id="sessions"
-					panelRef={leftPanelRef}
-					defaultSize="0px"
-					minSize={`${LEFT_PANEL_MIN_SIZE}px`}
-					maxSize={`${LEFT_PANEL_MAX_SIZE}px`}
-					collapsedSize="0px"
-					collapsible
-					groupResizeBehavior="preserve-pixel-size"
-					onResize={mobile ? undefined : handleLeftPanelResize}
-					data-layout-panel="sessions"
-					inert={leftPanelCollapsed}
-					className="h-full overflow-hidden"
-				>
-					<div
-						data-panel-content="sessions"
-						className={`h-full overflow-hidden transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
-							leftPanelCollapsed
-								? "pointer-events-none -translate-x-full opacity-0"
-								: "translate-x-0 opacity-100"
-						}`}
-						style={{ width: "var(--left-panel-width)" }}
-					>
-						{agentSessionsContent}
-					</div>
-				</Panel>
-				<ResizeHandle
-					label="Resize Agent Sessions"
-					hidden={leftPanelCollapsed}
-				/>
-				<Panel
-					id="center"
-					minSize={`${CENTER_PANEL_MIN_SIZE}px`}
-					data-layout-panel="center"
-					className="flex min-w-0 flex-col overflow-hidden bg-bg"
-				>
-					<main className="flex flex-1 flex-col overflow-hidden min-h-0 bg-bg">
-						<div className="min-h-0 flex-1 overflow-hidden">
-							{renderCenterContent()}
-						</div>
-					</main>
-				</Panel>
-				<ResizeHandle
-					label="Resize Workspace Panel"
-					hidden={rightPanelCollapsed}
-				/>
-				<Panel
-					id="workspace"
-					panelRef={rightPanelRef}
-					defaultSize={`${rightPanelDefaultWidth}px`}
-					minSize={`${RIGHT_PANEL_MIN_SIZE}px`}
-					maxSize={`${RIGHT_PANEL_MAX_SIZE}px`}
-					collapsedSize="0px"
-					collapsible
-					groupResizeBehavior="preserve-pixel-size"
-					onResize={mobile ? undefined : handleRightPanelResize}
-					data-layout-panel="workspace"
-					inert={rightPanelCollapsed}
-					className="h-full overflow-hidden"
-				>
-					<div
-						data-panel-content="workspace"
-						className={`ml-auto h-full overflow-hidden transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
-							rightPanelCollapsed
-								? "pointer-events-none translate-x-full opacity-0"
-								: "translate-x-0 opacity-100"
-						}`}
-						style={{ width: "var(--right-panel-width)" }}
-					>
-						{inspectorContent}
-					</div>
-				</Panel>
+				{sidePanelElement}
+				{sidePanelResizeHandle}
+				{centerPanelElement}
 			</Group>
 
 			{paletteOpen && (
@@ -3080,7 +3406,7 @@ export default function App() {
 
 			<Dialog
 				open={filePathRequest !== null}
-				title={filePathRequest?.kind === "save-as" ? "Save As" : "New File"}
+				title="Save As"
 				description="Enter a path relative to the current workspace."
 				onClose={() => {
 					if (!filePathRequest?.submitting) setFilePathRequest(null);
@@ -3097,6 +3423,7 @@ export default function App() {
 					<label className="flex w-full flex-col gap-1.5 text-[11px] text-fg-muted">
 						<span>File path</span>
 						<input
+							autoCapitalize="none"
 							value={filePathRequest?.path ?? ""}
 							onChange={(event) =>
 								setFilePathRequest((current) =>
@@ -3109,13 +3436,10 @@ export default function App() {
 										: current,
 								)
 							}
-							onFocus={(event) => {
-								if (filePathRequest?.kind === "save-as") {
-									event.currentTarget.select();
-								}
-							}}
+							onFocus={(event) => event.currentTarget.select()}
 							disabled={filePathRequest?.submitting}
 							autoComplete="off"
+							autoCorrect="off"
 							spellCheck={false}
 							className="h-9 rounded-md border border-border-strong bg-bg px-2.5 text-[12px] text-fg outline-none focus:border-focus"
 						/>
@@ -3138,11 +3462,7 @@ export default function App() {
 						className={dialogPrimaryButtonClass}
 						disabled={filePathRequest?.submitting}
 					>
-						{filePathRequest?.submitting
-							? "Saving..."
-							: filePathRequest?.kind === "save-as"
-								? "Save"
-								: "Create"}
+						{filePathRequest?.submitting ? "Saving..." : "Save"}
 					</button>
 				</form>
 			</Dialog>
@@ -3346,6 +3666,90 @@ export default function App() {
 	);
 }
 
+function EmptyWorkspace() {
+	return (
+		<div
+			data-empty-workspace
+			className="flex h-full items-center justify-center bg-bg"
+		>
+			<picture className="opacity-20">
+				<source
+					media="(prefers-color-scheme: light)"
+					srcSet="/icon_light.svg"
+				/>
+				<img
+					src="/icon_dark.svg"
+					alt=""
+					aria-hidden="true"
+					className="h-16 w-16"
+				/>
+			</picture>
+		</div>
+	);
+}
+
+function ChatTabLayout({
+	children,
+	view,
+	sessionId,
+	backendId,
+	showAgents,
+	runningSessionIds,
+	onSessionSelect,
+	onSessionDelete,
+	onOpenTask,
+}: {
+	children: ReactNode;
+	view?: ChatAuxiliaryView;
+	sessionId: string;
+	backendId: string;
+	showAgents: boolean;
+	runningSessionIds: Set<string>;
+	onSessionSelect: (id: string, disposition?: TabDisposition) => void;
+	onSessionDelete: (id: string, title: string) => void;
+	onOpenTask: (task: TaskEntry) => void;
+}) {
+	return (
+		<div className="flex h-full min-h-0 min-w-0 overflow-hidden">
+			<div className="min-h-0 min-w-0 flex-1">{children}</div>
+			<aside
+				data-chat-auxiliary-panel
+				data-view={view ?? "closed"}
+				aria-label={
+					view === "sessions"
+						? "Sessions"
+						: view === "agents"
+							? "Background tasks"
+							: "Chat details"
+				}
+				inert={!view}
+				className={`h-full shrink-0 overflow-hidden transition-[width] duration-150 ${view ? "border-l border-border-subtle" : ""}`}
+				style={{ width: view ? "min(240px, 50%)" : "0px" }}
+			>
+				<div className="h-full w-60 max-w-full bg-bg">
+					<div className={view === "sessions" ? "h-full" : "hidden"}>
+						<AgentSessions
+							backendId={backendId}
+							currentSessionId={sessionId}
+							runningSessionIds={runningSessionIds}
+							onSessionSelect={onSessionSelect}
+							onSessionDelete={onSessionDelete}
+						/>
+					</div>
+					{showAgents && (
+						<div className={view === "agents" ? "h-full" : "hidden"}>
+							<TasksPanel
+								sessionId={isDraft(sessionId) ? "" : sessionId}
+								onOpenTask={onOpenTask}
+							/>
+						</div>
+					)}
+				</div>
+			</aside>
+		</div>
+	);
+}
+
 function formatTokens(n: number): string {
 	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
 	if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
@@ -3371,15 +3775,209 @@ function debugOperationLabel(operation: DebugOperation): string {
 	}
 }
 
-function ResizeHandle({ label, hidden }: { label: string; hidden: boolean }) {
+function TerminalDockTabs({
+	tabs,
+	activeTabId,
+	onActivate,
+	onClose,
+	onCloseMany,
+	onNew,
+}: {
+	tabs: CenterTab[];
+	activeTabId: string;
+	onActivate: (id: string) => void;
+	onClose: (id: string) => void;
+	onCloseMany: (ids: string[]) => void;
+	onNew: () => void;
+}) {
+	const [menu, setMenu] = useState<{ x: number; y: number; tabId: string }>();
+	const openMenu = (tabId: string, x: number, y: number) => {
+		onActivate(tabId);
+		setMenu({ x, y, tabId });
+	};
+
+	return (
+		<aside className="flex w-44 shrink-0 flex-col bg-bg">
+			<div className="flex h-8 shrink-0 items-center gap-1 px-2">
+				<span className="min-w-0 flex-1 truncate text-[10px] font-medium uppercase tracking-wide text-fg-dim">
+					Terminals
+				</span>
+				<button
+					type="button"
+					className="flex h-6 w-6 items-center justify-center rounded text-fg-dim hover:bg-bg-hover hover:text-fg"
+					onClick={onNew}
+					title="New terminal"
+					aria-label="New terminal"
+				>
+					<Plus size={11} />
+				</button>
+			</div>
+			<div
+				className="min-h-0 flex-1 overflow-y-auto py-1"
+				role="tablist"
+				aria-label="Terminal tabs"
+				aria-orientation="vertical"
+			>
+				{tabs.map((tab, index) => {
+					const active = tab.id === activeTabId;
+					return (
+						<button
+							key={tab.id}
+							type="button"
+							role="tab"
+							aria-selected={active}
+							tabIndex={active ? 0 : -1}
+							className={`flex w-full min-w-0 items-center gap-2 border-l-2 px-2 py-1.5 text-left text-[11px] transition-colors ${
+								active
+									? "border-accent bg-bg-active text-fg"
+									: "border-transparent text-fg-dim hover:bg-bg-hover hover:text-fg-muted"
+							}`}
+							onClick={() => onActivate(tab.id)}
+							onContextMenu={(event) => {
+								event.preventDefault();
+								openMenu(tab.id, event.clientX, event.clientY);
+							}}
+							onKeyDown={(event) => {
+								if (event.key === "Delete") {
+									event.preventDefault();
+									onClose(tab.id);
+									return;
+								}
+								if (
+									event.key === "ContextMenu" ||
+									(event.shiftKey && event.key === "F10")
+								) {
+									event.preventDefault();
+									const bounds = event.currentTarget.getBoundingClientRect();
+									openMenu(tab.id, bounds.left + 12, bounds.bottom);
+									return;
+								}
+								if (event.key !== "ArrowUp" && event.key !== "ArrowDown")
+									return;
+								const offset = event.key === "ArrowUp" ? -1 : 1;
+								const next = tabs[(index + offset + tabs.length) % tabs.length];
+								event.preventDefault();
+								if (!next) return;
+								const tablist = event.currentTarget.parentElement;
+								onActivate(next.id);
+								requestAnimationFrame(() => {
+									tablist
+										?.querySelector<HTMLButtonElement>(
+											`[role="tab"][aria-selected="true"]`,
+										)
+										?.focus();
+								});
+							}}
+							title={tab.label}
+						>
+							<SquareTerminal size={12} className="shrink-0" />
+							<span className="truncate">{tab.label}</span>
+						</button>
+					);
+				})}
+			</div>
+			{menu && (
+				<TerminalTabContextMenu
+					x={menu.x}
+					y={menu.y}
+					tabId={menu.tabId}
+					tabs={tabs}
+					onClose={() => setMenu(undefined)}
+					onCloseTab={onClose}
+					onCloseMany={onCloseMany}
+				/>
+			)}
+		</aside>
+	);
+}
+
+function TerminalTabContextMenu({
+	x,
+	y,
+	tabId,
+	tabs,
+	onClose,
+	onCloseTab,
+	onCloseMany,
+}: {
+	x: number;
+	y: number;
+	tabId: string;
+	tabs: CenterTab[];
+	onClose: () => void;
+	onCloseTab: (id: string) => void;
+	onCloseMany: (ids: string[]) => void;
+}) {
+	const actions = [
+		{ label: "Close", disabled: false, run: () => onCloseTab(tabId) },
+		{
+			label: "Close Others",
+			disabled: tabs.length < 2,
+			run: () =>
+				onCloseMany(
+					tabs.filter((tab) => tab.id !== tabId).map((tab) => tab.id),
+				),
+		},
+		{
+			label: "Close All",
+			disabled: tabs.length === 0,
+			run: () => onCloseMany(tabs.map((tab) => tab.id)),
+		},
+	];
+	return (
+		<FloatingMenu
+			open
+			onOpenChange={(open) => !open && onClose()}
+			reference={{ x, y }}
+			label="Terminal actions"
+			className="z-[140] min-w-[150px] rounded-md border border-border bg-bg-elevated/95 py-1 shadow-xl backdrop-blur-sm"
+		>
+			{actions.map((action) => (
+				<button
+					key={action.label}
+					type="button"
+					role="menuitem"
+					disabled={action.disabled}
+					onClick={() => {
+						onClose();
+						action.run();
+					}}
+					className="flex w-full px-3 py-1.5 text-left text-[11.5px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg disabled:cursor-default disabled:opacity-40"
+				>
+					{action.label}
+				</button>
+			))}
+		</FloatingMenu>
+	);
+}
+
+function ResizeHandle({
+	label,
+	hidden,
+	orientation = "horizontal",
+}: {
+	label: string;
+	hidden: boolean;
+	orientation?: "horizontal" | "vertical";
+}) {
 	return (
 		<Separator
 			aria-label={label}
 			disabled={hidden}
-			className={`relative z-20 -mx-1.5 w-3 shrink-0 cursor-col-resize bg-transparent outline-none ${
-				hidden ? "pointer-events-none" : ""
-			}`}
-		/>
+			className={`relative z-20 shrink-0 bg-transparent outline-none ${
+				orientation === "vertical"
+					? "-my-1.5 h-3 w-full cursor-row-resize"
+					: "-mx-1.5 w-3 cursor-col-resize"
+			} ${hidden ? "pointer-events-none" : ""}`}
+		>
+			{orientation === "vertical" && (
+				<span
+					data-terminal-dock-separator
+					aria-hidden="true"
+					className="pointer-events-none absolute inset-x-0 top-1/2 h-px bg-border-strong"
+				/>
+			)}
+		</Separator>
 	);
 }
 
@@ -3391,10 +3989,6 @@ function estimateStreamingTokens(entries: ChatEntry[]): number {
 		chars += e.content.length;
 	}
 	return Math.floor(chars / 4);
-}
-
-function isClosableTab(tab: CenterTab): boolean {
-	return tab.type !== "chat" || !!tab.sessionId;
 }
 
 function TabCrashed({
@@ -3530,7 +4124,7 @@ function AppMenu({
 			>
 				<AppMenuItem
 					icon={<FilePlus size={12} />}
-					label="New File…"
+					label="New Text File"
 					shortcut="Ctrl+N"
 					disabled={!canCreateFile}
 					onClick={() => run("new-file")}
@@ -3644,70 +4238,90 @@ function WorkspaceTabButton({
 	);
 }
 
-function TerminalLauncher({
-	shells,
-	onCreate,
+function NewItemLauncher({
+	onNewChat,
+	onNewTerminal,
+	onNewTextFile,
 }: {
-	shells: ShellEntry[];
-	onCreate: (shell?: string) => void;
+	onNewChat: () => void;
+	onNewTerminal?: () => void;
+	onNewTextFile?: () => void;
 }) {
 	const [open, setOpen] = useState(false);
-	const launcherRef = useRef<HTMLDivElement>(null);
-
-	const label = terminalShellName(shells[0]?.name ?? "shell");
-	const hasChoices = shells.length > 1;
+	const [launcher, setLauncher] = useState<HTMLDivElement | null>(null);
+	const run = (action: () => void) => {
+		setOpen(false);
+		action();
+	};
 
 	return (
 		<div
-			ref={launcherRef}
+			ref={setLauncher}
 			className="relative self-center flex h-8 w-8 shrink-0"
 		>
 			<button
 				type="button"
 				className="flex h-8 w-8 items-center justify-center rounded-md text-fg-dim transition-colors hover:bg-bg-hover hover:text-fg-muted"
-				onClick={(event) => {
-					if (event.altKey && hasChoices) {
-						setOpen(true);
-						return;
-					}
-					onCreate();
-				}}
-				title={`New ${label} terminal${hasChoices ? ` · ${TERMINAL_SHELL_MENU_HINT} to choose shell` : ""}`}
-				aria-label={`New ${label} terminal`}
-				aria-haspopup={hasChoices ? "menu" : undefined}
-				aria-expanded={hasChoices ? open : undefined}
+				onClick={() => setOpen((value) => !value)}
+				title="New…"
+				aria-label="New"
+				aria-haspopup="menu"
+				aria-expanded={open}
 			>
-				<SquareTerminal size={13} />
+				<Plus size={14} />
 			</button>
 			<FloatingMenu
 				open={open}
 				onOpenChange={setOpen}
-				reference={launcherRef.current}
+				reference={launcher}
 				placement="bottom-end"
-				label="Terminal shell"
+				label="New"
 				maxHeight={220}
-				className="z-[100] min-w-[160px] overflow-y-auto rounded-md border border-border bg-bg-elevated/95 py-1 shadow-xl backdrop-blur-sm"
+				className="z-[100] min-w-[160px] overflow-y-auto rounded-md border border-border bg-bg-elevated/95 py-1 text-[11.5px] shadow-xl backdrop-blur-sm"
 			>
-				{shells.map((shell, index) => (
-					<button
-						type="button"
-						role="menuitem"
-						key={shell.id}
-						onClick={() => {
-							setOpen(false);
-							onCreate(shell.id);
-						}}
-						className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11.5px] text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg"
-					>
-						<SquareTerminal size={12} className="shrink-0 text-fg-dim" />
-						<span className="flex-1 truncate">{shell.name}</span>
-						{index === 0 && (
-							<span className="text-[10px] text-fg-dim">default</span>
-						)}
-					</button>
-				))}
+				<NewItemMenuButton
+					icon={<MessageSquarePlus size={12} />}
+					label="Chat"
+					onClick={() => run(onNewChat)}
+				/>
+				{onNewTerminal && (
+					<NewItemMenuButton
+						icon={<SquareTerminal size={12} />}
+						label="Terminal"
+						onClick={() => run(onNewTerminal)}
+					/>
+				)}
+				{onNewTextFile && (
+					<NewItemMenuButton
+						icon={<FilePlus size={12} />}
+						label="Text File"
+						onClick={() => run(onNewTextFile)}
+					/>
+				)}
 			</FloatingMenu>
 		</div>
+	);
+}
+
+function NewItemMenuButton({
+	icon,
+	label,
+	onClick,
+}: {
+	icon: ReactNode;
+	label: string;
+	onClick: () => void;
+}) {
+	return (
+		<button
+			type="button"
+			role="menuitem"
+			onClick={onClick}
+			className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-fg-muted transition-colors hover:bg-bg-hover hover:text-fg"
+		>
+			<span className="text-fg-dim">{icon}</span>
+			<span>{label}</span>
+		</button>
 	);
 }
 
@@ -3727,12 +4341,15 @@ function UsageIndicator({
 	outputEstimated: boolean;
 }) {
 	const [open, setOpen] = useState(false);
-	const buttonRef = useRef<HTMLButtonElement>(null);
+	const [button, setButton] = useState<HTMLButtonElement | null>(null);
 	const hasContext = contextWindow > 0 && lastInputTokens > 0;
 	const used = hasContext ? Math.min(lastInputTokens, contextWindow) : 0;
 	const usedPercent = hasContext ? Math.round((used / contextWindow) * 100) : 0;
-	const leftPercent = hasContext ? Math.max(0, 100 - usedPercent) : 0;
+	const leftPercent =
+		contextRemainingPercent(lastInputTokens, contextWindow) ?? 0;
 	const freeTokens = hasContext ? Math.max(0, contextWindow - used) : 0;
+	const visible = shouldShowContextIndicator(lastInputTokens, contextWindow);
+	if (!visible && open) setOpen(false);
 	const tone = !hasContext
 		? "text-fg-dim"
 		: leftPercent <= 10
@@ -3744,13 +4361,14 @@ function UsageIndicator({
 	const hoverSummary = hasContext
 		? `${leftPercent}% context left · ${formatTokens(used)} of ${formatTokens(contextWindow)} used · ↑${formatTokens(inputTokens)} · ↓${outputEstimated ? "~" : ""}${formatTokens(outputTokens)}`
 		: `↑${formatTokens(inputTokens)} input · ↓${outputEstimated ? "~" : ""}${formatTokens(outputTokens)} output`;
+	if (!visible) return null;
 
 	return (
 		<>
 			<button
-				ref={buttonRef}
+				ref={setButton}
 				type="button"
-				className={`flex h-full shrink-0 items-center border-l border-border-subtle bg-bg px-2 text-[11px] tabular-nums transition-colors hover:bg-bg-hover ${tone}`}
+				className={`flex h-8 shrink-0 items-center rounded-md px-2 text-[11px] tabular-nums transition-colors hover:bg-bg-hover ${tone}`}
 				title={hoverSummary}
 				aria-label={hasContext ? `${leftPercent}% context left` : "Token usage"}
 				aria-haspopup="dialog"
@@ -3762,7 +4380,7 @@ function UsageIndicator({
 			<FloatingSurface
 				open={open}
 				onOpenChange={setOpen}
-				reference={buttonRef.current}
+				reference={button}
 				placement="bottom-end"
 				gap={6}
 				role="dialog"

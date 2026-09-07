@@ -49,6 +49,8 @@ export function SearchView({
 	onExplore: (node: GraphNode) => void;
 	onOpenFile: (path: string, line?: number) => void;
 }) {
+	"use no memo"; // TanStack Virtual's imperative instance must not be compiler-memoized.
+
 	const [mode, setMode] = useState<SearchMode>("symbols");
 	const [query, setQuery] = useState(seed?.query ?? "");
 	const [kind, setKind] = useState("");
@@ -152,6 +154,7 @@ export function SearchView({
 		[contentRows],
 	);
 
+	// oxlint-disable-next-line react/incompatible-library -- Compiler memoization is explicitly disabled for this component.
 	const symbolVirtualizer = useVirtualizer({
 		count: mode === "symbols" ? (symbols?.nodes.length ?? 0) : 0,
 		getScrollElement: () => resultsRef.current,
@@ -159,6 +162,7 @@ export function SearchView({
 		estimateSize: () => 27,
 		overscan: 12,
 	});
+	// oxlint-disable-next-line react/incompatible-library -- Compiler memoization is explicitly disabled for this component.
 	const contentVirtualizer = useVirtualizer({
 		count: mode === "content" ? contentRows.length : 0,
 		getScrollElement: () => resultsRef.current,
@@ -198,6 +202,9 @@ export function SearchView({
 				<div className="flex min-w-40 flex-1 items-center gap-1 rounded-md border border-border bg-bg-input px-2 py-1 focus-within:border-border-strong">
 					<input
 						ref={inputRef}
+						autoCapitalize="none"
+						autoComplete="off"
+						autoCorrect="off"
 						value={query}
 						onChange={(event) => setQuery(event.target.value)}
 						placeholder={
@@ -283,6 +290,9 @@ export function SearchView({
 					{mode === "content" && <option value="matches">matches</option>}
 				</select>
 				<input
+					autoCapitalize="none"
+					autoComplete="off"
+					autoCorrect="off"
 					value={file}
 					onChange={(event) => setFile(event.target.value)}
 					placeholder="path filter"

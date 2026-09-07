@@ -646,6 +646,32 @@ func (a *Agent) Tasks(id string) *task.Registry {
 	return s.tasks
 }
 
+// ExecSessions exposes commands that exec_command left running so web clients
+// can present them with the session's other background work.
+func (a *Agent) ExecSessions(id string) []shell.ExecSessionInfo {
+	s := a.session(id)
+	if s == nil || s.execManager == nil {
+		return nil
+	}
+	return s.execManager.BackgroundSessions()
+}
+
+func (a *Agent) ExecSession(id string, execID int) (shell.ExecSessionInfo, bool) {
+	s := a.session(id)
+	if s == nil || s.execManager == nil {
+		return shell.ExecSessionInfo{}, false
+	}
+	return s.execManager.BackgroundSession(execID)
+}
+
+func (a *Agent) StopExecSession(id string, execID int) error {
+	s := a.session(id)
+	if s == nil || s.execManager == nil {
+		return fmt.Errorf("session not found")
+	}
+	return s.execManager.StopBackgroundSession(execID)
+}
+
 // Schedules exposes the session's scheduled tasks so UI surfaces can list
 // them alongside its background agents.
 func (a *Agent) Schedules(id string) schedule.Store {
@@ -664,7 +690,7 @@ func (a *Agent) RunningTaskCount() int {
 	total := 0
 	for _, s := range a.sessions {
 		running, _ := s.tasks.Counts()
-		total += running
+		total += running + len(s.execManager.BackgroundSessions())
 	}
 	return total
 }

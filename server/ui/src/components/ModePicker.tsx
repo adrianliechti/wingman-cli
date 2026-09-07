@@ -1,5 +1,5 @@
 import { Compass, Wrench } from "lucide-react";
-import { useRef, useState } from "react";
+import { useState } from "react";
 import type { ModeOption } from "../api/sessions";
 import { FloatingMenu } from "./ui/Floating";
 
@@ -17,7 +17,7 @@ interface Props {
 
 export function ModePicker({ modes, current, onSelect }: Props) {
 	const [open, setOpen] = useState(false);
-	const btnRef = useRef<HTMLButtonElement>(null);
+	const [button, setButton] = useState<HTMLButtonElement | null>(null);
 
 	if (modes.length === 0) return null;
 
@@ -29,7 +29,7 @@ export function ModePicker({ modes, current, onSelect }: Props) {
 	return (
 		<div className="relative">
 			<button
-				ref={btnRef}
+				ref={setButton}
 				type="button"
 				onClick={() => setOpen((v) => !v)}
 				className={`flex items-center gap-1 px-2 h-7 rounded text-[11.5px] cursor-pointer transition-colors ${
@@ -47,7 +47,7 @@ export function ModePicker({ modes, current, onSelect }: Props) {
 			<FloatingMenu
 				open={open}
 				onOpenChange={setOpen}
-				reference={btnRef.current}
+				reference={button}
 				placement="top-start"
 				label="Session mode"
 				className="z-[100] w-[320px] bg-bg-elevated/95 backdrop-blur-sm border border-border rounded-md shadow-xl py-1"

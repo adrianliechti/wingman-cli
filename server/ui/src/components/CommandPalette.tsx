@@ -163,12 +163,6 @@ export function CommandPalette({
 		switchModel,
 	]);
 
-	const [prevQuery, setPrevQuery] = useState(query);
-	if (prevQuery !== query) {
-		setPrevQuery(query);
-		setActive(0);
-	}
-
 	useEffect(() => {
 		listRef.current
 			?.querySelector(`[data-idx="${active}"]`)
@@ -216,9 +210,16 @@ export function CommandPalette({
 				<div className="px-3 py-2.5 border-b border-border-subtle">
 					<input
 						autoFocus
+						autoCapitalize="none"
+						autoComplete="off"
+						autoCorrect="off"
+						spellCheck={false}
 						type="text"
 						value={query}
-						onChange={(e) => setQuery(e.target.value)}
+						onChange={(event) => {
+							setQuery(event.target.value);
+							setActive(0);
+						}}
 						onKeyDown={onKeyDown}
 						placeholder="Type a command, session, skill or file…"
 						role="combobox"

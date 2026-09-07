@@ -43,6 +43,8 @@ export function GitHistoryPanel({
 	onCompare: OpenCompare;
 	onToggle: () => void;
 }) {
+	"use no memo"; // TanStack Virtual's imperative instance must not be compiler-memoized.
+
 	const historyQuery = useQuery({
 		queryKey: queryKeys.git.history,
 		enabled: open,
@@ -60,6 +62,7 @@ export function GitHistoryPanel({
 	const [menu, setMenu] = useState<CommitMenu | null>(null);
 	const [alternateCopy, setAlternateCopy] = useState(false);
 	const historyScrollRef = useRef<HTMLDivElement>(null);
+	// oxlint-disable-next-line react/incompatible-library -- Compiler memoization is explicitly disabled for this component.
 	const historyVirtualizer = useVirtualizer({
 		count: commits.length,
 		getScrollElement: () => historyScrollRef.current,

@@ -94,12 +94,17 @@ export function MermaidPreview({ text, path }: { text: string; path: string }) {
 	);
 	const [error, setError] = useState<string | null>(null);
 
-	useEffect(() => {
-		let active = true;
-		let nextURL: string | null = null;
+	const [previousInput, setPreviousInput] = useState({ text, scheme });
+	if (previousInput.text !== text || previousInput.scheme !== scheme) {
+		setPreviousInput({ text, scheme });
 		setImageURL(null);
 		setSize(null);
 		setError(null);
+	}
+
+	useEffect(() => {
+		let active = true;
+		let nextURL: string | null = null;
 
 		void loadMermaid()
 			.then(async (mermaid) => {

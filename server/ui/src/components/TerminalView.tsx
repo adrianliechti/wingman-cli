@@ -1,6 +1,6 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ITheme } from "@xterm/xterm";
-import { useEffect, useRef } from "react";
+import { useEffect, useEffectEvent, useRef } from "react";
 import { getTerminalWebSocketURL } from "../api/websocket";
 import { useColorScheme } from "../hooks/useColorScheme";
 
@@ -17,10 +17,8 @@ export function TerminalView({ id, active, onExit, onTitle }: Props) {
 	const fitRef = useRef<FitAddon | null>(null);
 	const scheme = useColorScheme();
 
-	const exitRef = useRef(onExit);
-	exitRef.current = onExit;
-	const titleRef = useRef(onTitle);
-	titleRef.current = onTitle;
+	const handleExit = useEffectEvent(onExit);
+	const handleTitle = useEffectEvent(onTitle);
 
 	useEffect(() => {
 		const host = hostRef.current;
@@ -63,7 +61,7 @@ export function TerminalView({ id, active, onExit, onTitle }: Props) {
 		ws.onmessage = (e) => {
 			if (typeof e.data === "string") {
 				try {
-					if (JSON.parse(e.data).type === "exit") exitRef.current(id);
+					if (JSON.parse(e.data).type === "exit") handleExit(id);
 				} catch {}
 				return;
 			}
@@ -77,7 +75,7 @@ export function TerminalView({ id, active, onExit, onTitle }: Props) {
 		// OSC 0/2 — shells and full-screen apps name their window this way. The
 		// scrollback replay re-emits the last one, so a reattach keeps the name.
 		const titleSub = term.onTitleChange((title) =>
-			titleRef.current(id, title.trim().slice(0, 80)),
+			handleTitle(id, title.trim().slice(0, 80)),
 		);
 
 		const observer = new ResizeObserver(() => {

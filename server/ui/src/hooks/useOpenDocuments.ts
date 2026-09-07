@@ -13,6 +13,7 @@ import {
 export interface OpenDocument {
 	path: string;
 	external: boolean;
+	untitled: boolean;
 	file: FileContent | null;
 	draft: string;
 	savedContent: string;
@@ -171,6 +172,7 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 				[path]: {
 					path,
 					external: false,
+					untitled: false,
 					file,
 					draft: content,
 					savedContent: content,
@@ -187,10 +189,46 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 		[queueLSPEvent, updateDocuments],
 	);
 
+	const openUntitledDocument = useCallback(
+		(path: string) => {
+			const file: FileContent = {
+				path,
+				content: "",
+				language: "plaintext",
+				revision: "",
+				size: 0,
+			};
+			requestRef.current[path] = (requestRef.current[path] ?? 0) + 1;
+			updateDocuments((current) => ({
+				...current,
+				[path]: {
+					path,
+					external: false,
+					untitled: true,
+					file,
+					draft: "",
+					savedContent: "",
+					loading: false,
+					saving: false,
+					error: null,
+					saveError: null,
+					conflict: false,
+					revision: 0,
+				},
+			}));
+		},
+		[updateDocuments],
+	);
+
 	const updateDraft = useCallback(
 		(path: string, draft: string) => {
 			const document = documentsRef.current[path];
-			if (document && !document.external && !document.file?.binary) {
+			if (
+				document &&
+				!document.external &&
+				!document.untitled &&
+				!document.file?.binary
+			) {
 				scheduleLSPChange(path, draft);
 			}
 			updateDocuments((current) => {
@@ -210,6 +248,9 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 			let document = documentsRef.current[path];
 			if (!document || document.external || document.file?.binary) {
 				return { ok: true };
+			}
+			if (document.untitled) {
+				return { ok: false, error: "Choose a name before saving this file." };
 			}
 			flushLSPChange(path);
 			// Saving a clean buffer is a no-op; save participants must not get a
@@ -314,7 +355,12 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 	const discardDocument = useCallback(
 		(path: string) => {
 			const document = documentsRef.current[path];
-			if (document && !document.external && !document.file?.binary) {
+			if (
+				document &&
+				!document.external &&
+				!document.untitled &&
+				!document.file?.binary
+			) {
 				cancelPendingLSPChange(path);
 				queueLSPEvent("save", path, document.savedContent);
 			}
@@ -428,6 +474,7 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 							...(base ?? {
 								path: target.path,
 								external: false,
+								untitled: false,
 								file: target.file,
 								draft: target.original,
 								savedContent: target.original,
@@ -467,7 +514,12 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 		(path: string) => {
 			const document = documentsRef.current[path];
 			cancelPendingLSPChange(path);
-			if (document && !document.external && !document.file?.binary) {
+			if (
+				document &&
+				!document.external &&
+				!document.untitled &&
+				!document.file?.binary
+			) {
 				queueLSPEvent("close", path);
 			}
 			requestRef.current[path] = (requestRef.current[path] ?? 0) + 1;
@@ -612,7 +664,7 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 				(document) =>
 					!document.external &&
 					!document.file?.binary &&
-					document.draft !== document.savedContent,
+					(document.untitled || document.draft !== document.savedContent),
 			)
 			.map((document) => document.path),
 	);
@@ -632,6 +684,7 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 		dirtyPaths,
 		openDocument,
 		openCreatedDocument,
+		openUntitledDocument,
 		updateDraft,
 		saveDocument,
 		discardDocument,
@@ -646,6 +699,7 @@ function emptyDocument(path: string, external: boolean): OpenDocument {
 	return {
 		path,
 		external,
+		untitled: false,
 		file: null,
 		draft: "",
 		savedContent: "",

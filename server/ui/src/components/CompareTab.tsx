@@ -110,6 +110,8 @@ function VirtualCompareFiles({
 	collapsed: Set<string>;
 	onToggle: (path: string) => void;
 }) {
+	"use no memo"; // TanStack Virtual's imperative instance must not be compiler-memoized.
+
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const items = useMemo<CompareVirtualItem[]>(() => {
 		const result: CompareVirtualItem[] = [];
@@ -145,6 +147,7 @@ function VirtualCompareFiles({
 		},
 		[stickyIndexes],
 	);
+	// oxlint-disable-next-line react/incompatible-library -- Compiler memoization is explicitly disabled for this component.
 	const virtualizer = useVirtualizer({
 		count: items.length,
 		getScrollElement: () => scrollRef.current,

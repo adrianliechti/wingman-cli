@@ -107,7 +107,11 @@ export function FloatingSurface({
 		};
 	}, [reference]);
 
-	const { refs, floatingStyles, context } = useFloating({
+	const {
+		refs: { setReference, setFloating },
+		floatingStyles,
+		context,
+	} = useFloating({
 		open,
 		onOpenChange,
 		placement,
@@ -152,12 +156,12 @@ export function FloatingSurface({
 	});
 
 	useLayoutEffect(() => {
-		refs.setReference(
+		setReference(
 			(reference && isPoint(reference)
 				? virtualReference
 				: reference) as ReferenceType | null,
 		);
-	}, [reference, refs, virtualReference]);
+	}, [reference, setReference, virtualReference]);
 
 	const dismiss = useDismiss(context);
 	const roleProps = useRole(context, { role });
@@ -174,7 +178,7 @@ export function FloatingSurface({
 				returnFocus={returnFocus}
 			>
 				<div
-					ref={refs.setFloating}
+					ref={setFloating}
 					aria-label={label}
 					className={className}
 					style={floatingStyles}

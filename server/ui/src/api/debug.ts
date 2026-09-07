@@ -84,6 +84,7 @@ export interface DebugToolStatus {
 	label: string;
 	installed: boolean;
 	installable: boolean;
+	unavailable_reason?: string;
 }
 
 export type DebugPlanResult =
