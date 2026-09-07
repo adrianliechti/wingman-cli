@@ -249,6 +249,12 @@ func (in *inputReader) consumeEscape() {
 		in.consumeMouse(seq)
 		return
 	}
+	if buf[1] == '[' {
+		if key, ok := pasteKey(seq); ok {
+			in.emit(key)
+			return
+		}
+	}
 	switch seq {
 	case "I":
 		in.emit(FocusEvent{Focused: true})

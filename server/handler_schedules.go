@@ -20,15 +20,15 @@ type ScheduleEntry struct {
 	Failures int    `json:"failures,omitempty"`
 }
 
-func (s *Server) sessionSchedules(sessionID string) schedule.Store {
-	ca, ok := s.activeAgent().(*codeagent.Agent)
+func (s *backendRuntime) sessionSchedules(sessionID string) schedule.Store {
+	ca, ok := s.agent.(*codeagent.Agent)
 	if !ok {
 		return nil
 	}
 	return ca.Schedules(sessionID)
 }
 
-func (s *Server) handleSchedules(w http.ResponseWriter, r *http.Request) {
+func (s *backendRuntime) handleSchedules(w http.ResponseWriter, r *http.Request) {
 	store := s.sessionSchedules(r.PathValue("id"))
 	if store == nil {
 		writeJSON(w, []ScheduleEntry{})
@@ -69,7 +69,7 @@ func (s *Server) handleSchedules(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
-func (s *Server) handleScheduleDelete(w http.ResponseWriter, r *http.Request) {
+func (s *backendRuntime) handleScheduleDelete(w http.ResponseWriter, r *http.Request) {
 	store := s.sessionSchedules(r.PathValue("id"))
 	if store == nil {
 		http.Error(w, "scheduled tasks unavailable", http.StatusNotFound)
@@ -94,15 +94,15 @@ func (s *Server) handleScheduleDelete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleSchedulePause(w http.ResponseWriter, r *http.Request) {
+func (s *backendRuntime) handleSchedulePause(w http.ResponseWriter, r *http.Request) {
 	s.handleScheduleStatus(w, r, schedule.StatusPaused)
 }
 
-func (s *Server) handleScheduleResume(w http.ResponseWriter, r *http.Request) {
+func (s *backendRuntime) handleScheduleResume(w http.ResponseWriter, r *http.Request) {
 	s.handleScheduleStatus(w, r, schedule.StatusActive)
 }
 
-func (s *Server) handleScheduleStatus(w http.ResponseWriter, r *http.Request, status string) {
+func (s *backendRuntime) handleScheduleStatus(w http.ResponseWriter, r *http.Request, status string) {
 	store := s.sessionSchedules(r.PathValue("id"))
 	if store == nil {
 		http.Error(w, "scheduled tasks unavailable", http.StatusNotFound)

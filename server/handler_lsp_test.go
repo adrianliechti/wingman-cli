@@ -77,7 +77,7 @@ func TestLSPDefinitionRequestValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.Close()
-	web := httptest.NewServer(app)
+	web := httptest.NewServer(scopedTestHandler(app))
 	defer web.Close()
 
 	tests := []struct {
@@ -130,7 +130,7 @@ func greet() {}
 		t.Fatal(err)
 	}
 	defer app.Close()
-	web := httptest.NewServer(app)
+	web := httptest.NewServer(scopedTestHandler(app))
 	defer web.Close()
 
 	post := func(t *testing.T, endpoint, body string, out any) {
@@ -269,7 +269,7 @@ func TestWorkspaceDiagnosticsResponseIncludesCoverage(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.Close()
-	web := httptest.NewServer(app)
+	web := httptest.NewServer(scopedTestHandler(app))
 	defer web.Close()
 
 	response, err := http.Get(web.URL + "/api/lsp/diagnostics")
@@ -307,7 +307,7 @@ func TestLSPStatusReturnsAnEmptyActivityList(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/api/lsp/status", nil)
 	response := httptest.NewRecorder()
-	app.ServeHTTP(response, request)
+	serveTestHTTP(app, response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
 	}
@@ -332,7 +332,7 @@ func TestLSPFileDiagnosticsRequestValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.Close()
-	web := httptest.NewServer(app)
+	web := httptest.NewServer(scopedTestHandler(app))
 	defer web.Close()
 
 	tests := []struct {

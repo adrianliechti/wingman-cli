@@ -169,6 +169,11 @@ func (a *App) handleOpenWorkspace(w http.ResponseWriter, r *http.Request) {
 
 	a.mu.Lock()
 	current := a.server
+	if current != nil && request.Replace && r.Header.Get("X-Wingman-Instance") != current.InstanceID() {
+		a.mu.Unlock()
+		http.Error(w, "workspace instance changed; reload the workspace", http.StatusConflict)
+		return
+	}
 	if current != nil && !request.Replace {
 		a.mu.Unlock()
 		http.Error(w, "workspace already open", http.StatusConflict)

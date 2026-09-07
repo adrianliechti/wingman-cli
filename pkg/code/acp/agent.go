@@ -17,6 +17,7 @@ import (
 	"time"
 
 	acpsdk "github.com/coder/acp-go-sdk"
+	"github.com/google/uuid"
 	"github.com/sergi/go-diff/diffmatchpatch"
 
 	"github.com/adrianliechti/wingman-agent/internal/process"
@@ -48,6 +49,8 @@ type Agent struct {
 
 	uiMu          sync.RWMutex
 	ui            code.UI
+	updateMu      sync.RWMutex
+	updateHandler func(string)
 	updatePending map[string]bool
 	updateRunning bool
 
@@ -865,6 +868,7 @@ func (a *Agent) Send(ctx context.Context, id string, input []agent.Content) (ite
 	sess.inflight = t
 	sess.messages = append(sess.messages, agent.Message{
 		Role:    agent.RoleUser,
+		InputID: agent.InputIDFromContext(ctx),
 		Content: input,
 	})
 	sess.mu.Unlock()
@@ -1037,7 +1041,7 @@ func (a *Agent) Steer(ctx context.Context, id string, input code.TurnInput) erro
 		return err
 	}
 	sess.mu.Lock()
-	steered := agent.Message{Role: agent.RoleUser, Content: input.Content}
+	steered := agent.Message{Role: agent.RoleUser, Content: input.Content, InputID: input.ID}
 	if sess.inflight == t {
 		t.mu.Lock()
 		t.emitted = append(t.emitted, steered)
@@ -1232,6 +1236,29 @@ func (a *Agent) applySessionStateUpdate(sess *sessionState, update acpsdk.Sessio
 func (a *Agent) translateUpdate(sess *sessionState, t *turn, u acpsdk.SessionUpdate) (agent.Message, bool) {
 	emit := func(role agent.MessageRole, c agent.Content, contentKey string) agent.Message {
 		t.mu.Lock()
+		var previous *agent.Content
+		if n := len(t.emitted); n > 0 && t.emitted[n-1].Role == role && t.lastContentKey == contentKey {
+			content := t.emitted[n-1].Content
+			if len(content) > 0 {
+				previous = &content[len(content)-1]
+			}
+		}
+		if c.Text != "" && c.TextID == "" {
+			if previous != nil && previous.Text != "" {
+				c.TextID = previous.TextID
+			}
+			if c.TextID == "" {
+				c.TextID = uuid.NewString()
+			}
+		}
+		if c.Reasoning != nil && c.Reasoning.ID == "" {
+			if previous != nil && previous.Reasoning != nil {
+				c.Reasoning.ID = previous.Reasoning.ID
+			}
+			if c.Reasoning.ID == "" {
+				c.Reasoning.ID = uuid.NewString()
+			}
+		}
 		if n := len(t.emitted); n > 0 && t.emitted[n-1].Role == role {
 			contents := t.emitted[n-1].Content
 			if len(contents) == 0 || t.lastContentKey != contentKey || !mergeACPContent(&contents[len(contents)-1], c) {
@@ -1654,18 +1681,19 @@ func (a *Agent) activeSessionID() string {
 	}
 	a.mu.Unlock()
 
-	if len(ids) == 1 {
-		return ids[0]
-	}
+	active := ""
 	for i, sess := range states {
 		sess.mu.Lock()
 		inflight := sess.inflight != nil
 		sess.mu.Unlock()
 		if inflight {
-			return ids[i]
+			if active != "" {
+				return ""
+			}
+			active = ids[i]
 		}
 	}
-	return ""
+	return active
 }
 
 func elicitFieldsFromSchema(schema acpsdk.UnstableElicitationSchema) []tool.ElicitField {
@@ -2083,4 +2111,10 @@ func rawValueToString(v any) string {
 		return string(data)
 	}
 	return fmt.Sprintf("%v", v)
+}
+
+func (a *Agent) SetSessionUpdateHandler(handler func(string)) {
+	a.updateMu.Lock()
+	a.updateHandler = handler
+	a.updateMu.Unlock()
 }

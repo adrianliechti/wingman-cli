@@ -1,7 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { Loader2, MessageSquare, Trash2 } from "lucide-react";
 import { useState } from "react";
-import { agentQueries } from "../api/agents";
+import {
+	useWorkspace,
+	backendSettingsQuery,
+} from "../state/workspaceContext.ts";
+import { splitSessionKey } from "../state/sessionStore.ts";
 import { sessionQueries, type SessionInfo } from "../api/sessions";
 import type { TabDisposition } from "../types/tabs";
 import { FloatingMenu } from "./ui/Floating";
@@ -21,8 +25,10 @@ export function AgentSessions({
 	runningSessionIds,
 	switchingAgent,
 }: Props) {
-	const sessions = useQuery(sessionQueries.list()).data ?? [];
-	const canDelete = useQuery(agentQueries.current()).data?.can_delete ?? false;
+	const { backend } = useWorkspace();
+	const sessions = useQuery(sessionQueries.list(backend)).data ?? [];
+	const canDelete =
+		useQuery(backendSettingsQuery(backend)).data?.canDelete ?? false;
 
 	const [menu, setMenu] = useState<{
 		id: string;
@@ -61,7 +67,8 @@ export function AgentSessions({
 							</div>
 							{group.sessions.map((s) => {
 								const active = s.id === currentSessionId;
-								const displayTitle = s.title || s.id.substring(0, 8);
+								const displayTitle =
+									s.title || splitSessionKey(s.id).sessionId.substring(0, 8);
 								return (
 									<div
 										key={s.id}

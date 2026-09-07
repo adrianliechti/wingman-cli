@@ -9,12 +9,6 @@ import (
 	"strings"
 )
 
-func Read() ([]Content, error) {
-	text, textErr := readText()
-	imageDataURL, imageErr := readImage()
-	return readContents(text, textErr, imageDataURL, imageErr)
-}
-
 func readText() (string, error) {
 	output, waylandErr := exec.Command("wl-paste", "--no-newline").Output()
 	if waylandErr == nil {

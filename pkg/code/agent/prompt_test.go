@@ -41,3 +41,14 @@ func TestPromptContextUsesLastActiveSession(t *testing.T) {
 		t.Fatalf("confirmation session = %q, want explicit", ui.sessionID)
 	}
 }
+
+func TestWebPromptContextNeverGuessesAnOwner(t *testing.T) {
+	a := &Agent{options: Options{RequireSessionContext: true}, sessions: map[string]*sessionState{"one": {}, "two": {}}}
+	a.lastActive.Store("one")
+	if got := code.SessionIDFromContext(a.promptContext(context.Background())); got != "" {
+		t.Fatalf("guessed session %q", got)
+	}
+	if got := code.SessionIDFromContext(a.promptContext(code.WithSessionID(context.Background(), "two"))); got != "two" {
+		t.Fatalf("lost explicit owner %q", got)
+	}
+}

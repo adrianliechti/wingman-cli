@@ -1,3 +1,5 @@
+import { workspaceURL } from "./http.ts";
+import { scopedFetch } from "./http.ts";
 import { queryOptions } from "@tanstack/react-query";
 import type { FileContent, FileEntry } from "../types/protocol";
 import { APIError, fetchJSON, fetchOK } from "./http.ts";
@@ -9,11 +11,11 @@ export interface FileHit {
 }
 
 export function workspaceFilePreviewURL(path: string): string {
-	return `/api/files/preview?path=${encodeURIComponent(path)}`;
+	return workspaceURL(`/api/files/preview?path=${encodeURIComponent(path)}`);
 }
 
 export function workspaceFileDownloadURL(path: string): string {
-	return `/api/files/download?path=${encodeURIComponent(path)}`;
+	return workspaceURL(`/api/files/download?path=${encodeURIComponent(path)}`);
 }
 
 export function isWorkspaceFileConflict(error: unknown): boolean {
@@ -114,7 +116,9 @@ export async function readWorkspaceFile(
 	external = false,
 ): Promise<FileContent> {
 	const endpoint = external ? "/api/lsp/file" : "/api/files/read";
-	const response = await fetch(`${endpoint}?path=${encodeURIComponent(path)}`);
+	const response = await scopedFetch(
+		`${endpoint}?path=${encodeURIComponent(path)}`,
+	);
 	if (!response.ok) throw await responseError(response, "Failed to load file");
 	return response.json() as Promise<FileContent>;
 }
@@ -123,7 +127,7 @@ export async function createWorkspaceFile(
 	path: string,
 	options: CreateFileOptions = {},
 ): Promise<FileContent | null> {
-	const response = await fetch("/api/files", {
+	const response = await scopedFetch("/api/files", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ path, ...options }),
@@ -136,7 +140,7 @@ export async function createWorkspaceFile(
 export async function writeWorkspaceFile(
 	input: WriteFileInput,
 ): Promise<WriteFileResult> {
-	const response = await fetch("/api/files/write", {
+	const response = await scopedFetch("/api/files/write", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(input),
@@ -155,7 +159,7 @@ export async function writeWorkspaceFile(
 export async function writeWorkspaceFiles(
 	files: BatchWriteFileInput[],
 ): Promise<BatchWriteFileResult> {
-	const response = await fetch("/api/files/write-batch", {
+	const response = await scopedFetch("/api/files/write-batch", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ files }),

@@ -10,14 +10,11 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 )
 
-func newPromptTestServer() *Server {
-	return &Server{
-		pendingPrompts: map[string]pendingPrompt{},
-		confirmAll:     map[string]bool{},
-	}
+func newPromptTestServer() *backendRuntime {
+	return &backendRuntime{Server: &Server{ctx: context.Background()}, sessions: map[string]*sessionController{}}
 }
 
-func waitForPendingPrompt(t *testing.T, s *Server, sessionID string) string {
+func waitForPendingPrompt(t *testing.T, s *backendRuntime, sessionID string) string {
 	t.Helper()
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
@@ -25,14 +22,15 @@ func waitForPendingPrompt(t *testing.T, s *Server, sessionID string) string {
 	defer timer.Stop()
 
 	for {
-		s.promptsMu.Lock()
-		for id, prompt := range s.pendingPrompts {
-			if prompt.sid == sessionID {
-				s.promptsMu.Unlock()
+		c := s.session(sessionID)
+		c.mu.Lock()
+		for id, prompt := range c.prompts {
+			if prompt.view.ID != "" {
+				c.mu.Unlock()
 				return id
 			}
 		}
-		s.promptsMu.Unlock()
+		c.mu.Unlock()
 
 		select {
 		case <-ticker.C:
@@ -59,7 +57,7 @@ func TestConfirmUsesActionAndSessionScope(t *testing.T) {
 	}()
 
 	promptID := waitForPendingPrompt(t, s, "session-1")
-	s.resolvePrompt(ClientMessage{
+	s.session(code.SessionIDFromContext(ctx)).resolvePrompt(Command{
 		PromptID: promptID,
 		Action:   string(tool.ElicitAccept),
 		Scope:    PromptScopeSession,
@@ -95,7 +93,7 @@ func TestElicitUsesActionAndStructuredContent(t *testing.T) {
 
 	promptID := waitForPendingPrompt(t, s, "session-2")
 	content := map[string]any{"language": "Go"}
-	s.resolvePrompt(ClientMessage{
+	s.session(code.SessionIDFromContext(ctx)).resolvePrompt(Command{
 		PromptID: promptID,
 		Action:   string(tool.ElicitAccept),
 		Content:  content,

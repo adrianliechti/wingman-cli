@@ -594,7 +594,7 @@ func TestEndRunPreservesQueuedUserInput(t *testing.T) {
 	a := &Agent{
 		Config:       &Config{},
 		running:      true,
-		pendingInput: [][]Content{{{Text: "queued"}}},
+		pendingInput: []Message{{Role: RoleUser, InputID: "queued-id", Content: []Content{{Text: "queued"}}}},
 	}
 
 	if err := a.recordEvents(RuntimeEvent{Type: EventTurnStarted, TurnID: "turn"}); err != nil {
@@ -607,7 +607,7 @@ func TestEndRunPreservesQueuedUserInput(t *testing.T) {
 	if a.running || len(a.pendingInput) != 0 {
 		t.Fatalf("run state was not cleared: running=%v pending=%d", a.running, len(a.pendingInput))
 	}
-	if len(a.Messages) != 1 || a.Messages[0].Role != RoleUser || a.Messages[0].Content[0].Text != "queued" {
+	if len(a.Messages) != 1 || a.Messages[0].Role != RoleUser || a.Messages[0].Content[0].Text != "queued" || a.Messages[0].InputID != "queued-id" {
 		t.Fatalf("queued input was not preserved: %+v", a.Messages)
 	}
 }
@@ -630,7 +630,7 @@ func TestQueueInputOnlyAcceptsDuringRunAndOwnsItsSlice(t *testing.T) {
 
 	a.queueMu.Lock()
 	defer a.queueMu.Unlock()
-	if len(a.pendingInput) != 1 || a.pendingInput[0][0].Text != "guidance" || a.pendingInput[0][0].File.Name != "before.txt" {
+	if len(a.pendingInput) != 1 || a.pendingInput[0].Content[0].Text != "guidance" || a.pendingInput[0].Content[0].File.Name != "before.txt" {
 		t.Fatalf("pending input = %#v", a.pendingInput)
 	}
 }

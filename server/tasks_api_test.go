@@ -21,25 +21,24 @@ func TestTasksAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.Close()
-	web := httptest.NewServer(app)
+	web := httptest.NewServer(scopedTestHandler(app))
 	defer web.Close()
 
-	res, err := http.Post(web.URL+"/api/sessions", "application/json", strings.NewReader("{}"))
+	res, err := http.Post(web.URL+"/api/v2/backends/wingman/sessions", "application/json", strings.NewReader(`{"id":"create-test","type":"create"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var created struct {
-		ID string `json:"id"`
-	}
-	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
+	var receipt Receipt
+	if err := json.NewDecoder(res.Body).Decode(&receipt); err != nil {
 		t.Fatal(err)
 	}
 	res.Body.Close()
+	created := struct{ ID string }{receipt.Ref.SessionID}
 	if created.ID == "" {
 		t.Fatal("no session id")
 	}
 
-	res, err = http.Get(web.URL + "/api/sessions/" + created.ID + "/tasks")
+	res, err = http.Get(web.URL + "/api/v2/backends/wingman/sessions/" + created.ID + "/tasks")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +54,7 @@ func TestTasksAPI(t *testing.T) {
 		t.Fatalf("tasks = %+v, want empty", tasks)
 	}
 
-	res, err = http.Get(web.URL + "/api/sessions/" + created.ID + "/tasks/nope")
+	res, err = http.Get(web.URL + "/api/v2/backends/wingman/sessions/" + created.ID + "/tasks/nope")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +63,7 @@ func TestTasksAPI(t *testing.T) {
 		t.Fatalf("unknown task status = %d, want 404", res.StatusCode)
 	}
 
-	reg := app.sessionTasks(created.ID)
+	reg := app.runtimes["wingman"].sessionTasks(created.ID)
 	if reg == nil {
 		t.Fatal("no registry for coder session")
 	}
@@ -83,7 +82,7 @@ func TestTasksAPI(t *testing.T) {
 	}
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		res, err = http.Get(web.URL + "/api/sessions/" + created.ID + "/tasks/" + launched.ID)
+		res, err = http.Get(web.URL + "/api/v2/backends/wingman/sessions/" + created.ID + "/tasks/" + launched.ID)
 		if err != nil {
 			t.Fatal(err)
 		}

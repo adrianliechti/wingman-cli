@@ -37,8 +37,8 @@ func taskEntry(t *task.Task) TaskEntry {
 	}
 }
 
-func (s *Server) sessionTasks(sessionID string) *task.Registry {
-	ca, ok := s.activeAgent().(*codeagent.Agent)
+func (s *backendRuntime) sessionTasks(sessionID string) *task.Registry {
+	ca, ok := s.agent.(*codeagent.Agent)
 	if !ok {
 		return nil
 	}
@@ -48,7 +48,7 @@ func (s *Server) sessionTasks(sessionID string) *task.Registry {
 // ensureTaskPump starts (once per registry) the goroutine that forwards
 // background-agent completions of a session into its turn queue — the web
 // counterpart of the TUI pump.
-func (s *Server) ensureTaskPump(sessionID string) {
+func (s *backendRuntime) ensureTaskPump(sessionID string) {
 	reg := s.sessionTasks(sessionID)
 	if reg == nil {
 		return
@@ -62,6 +62,10 @@ func (s *Server) ensureTaskPump(sessionID string) {
 		s.taskPumpMu.Unlock()
 		return
 	}
+	if !s.beginOperation() {
+		s.taskPumpMu.Unlock()
+		return
+	}
 	s.taskPumps[reg] = true
 	s.taskPumpMu.Unlock()
 	serverCtx := s.ctx
@@ -70,6 +74,7 @@ func (s *Server) ensureTaskPump(sessionID string) {
 	}
 
 	go func() {
+		defer s.operations.Done()
 		defer func() {
 			s.taskPumpMu.Lock()
 			delete(s.taskPumps, reg)
@@ -93,9 +98,8 @@ func (s *Server) ensureTaskPump(sessionID string) {
 					}
 					break
 				}
-				// Events are exactly-once: on delivery failure (agent being
-				// swapped, transient steer error) retry with backoff instead
-				// of dropping the notification.
+				// Retry failed delivery with the same input identity. Runtime
+				// ownership stays fixed for the lifetime of this pump.
 				for attempt := 0; !s.deliverTaskResults(sessionID, batch); attempt++ {
 					if attempt >= 24 {
 						fmt.Fprintf(os.Stderr, "giving up delivering %d background agent result(s) for session %s\n", len(batch), sessionID)
@@ -114,7 +118,18 @@ func (s *Server) ensureTaskPump(sessionID string) {
 	}()
 }
 
-func (s *Server) deliverTaskResults(sessionID string, batch []task.Event) bool {
+func (s *backendRuntime) deliverTaskResults(sessionID string, batch []task.Event) bool {
+	c := s.session(sessionID)
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	if c.deleted || s.ctx.Err() != nil || len(batch) == 0 {
+		return true
+	}
+	receiptID := fmt.Sprintf("task:%s:%d", batch[0].ID, batch[0].Seq)
+	if _, ok := c.deliveredTasks[receiptID]; ok {
+		return true
+	}
+
 	s.sendSession(sessionID, Frame{Type: EvtTasksChanged})
 
 	var blocks []string
@@ -122,7 +137,7 @@ func (s *Server) deliverTaskResults(sessionID string, batch []task.Event) bool {
 		blocks = append(blocks, ev.Notification())
 	}
 
-	_, turns := s.activeRuntime()
+	turns := s.turns
 	if turns == nil {
 		return false
 	}
@@ -131,6 +146,7 @@ func (s *Server) deliverTaskResults(sessionID string, batch []task.Event) bool {
 	_, err := turns.Submit(s.ctx, sessionID, code.TurnInput{
 		ID:     fmt.Sprintf("task-%s-%d", first.ID, first.Seq),
 		Intent: code.TurnInputSteer,
+		Origin: "task",
 		Content: []agent.Content{{
 			Text:   strings.Join(blocks, "\n\n"),
 			Hidden: true,
@@ -143,10 +159,11 @@ func (s *Server) deliverTaskResults(sessionID string, batch []task.Event) bool {
 		fmt.Fprintf(os.Stderr, "deliver background agent results (%s): %v\n", sessionID, err)
 		return false
 	}
+	c.deliveredTasks[receiptID] = true
 	return true
 }
 
-func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
+func (s *backendRuntime) handleTasks(w http.ResponseWriter, r *http.Request) {
 	reg := s.sessionTasks(r.PathValue("id"))
 	if reg == nil {
 		writeJSON(w, []TaskEntry{})
@@ -160,7 +177,7 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
-func (s *Server) handleTask(w http.ResponseWriter, r *http.Request) {
+func (s *backendRuntime) handleTask(w http.ResponseWriter, r *http.Request) {
 	reg := s.sessionTasks(r.PathValue("id"))
 	if reg == nil {
 		http.Error(w, "background agents unavailable", http.StatusNotFound)
@@ -174,16 +191,16 @@ func (s *Server) handleTask(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, struct {
 		TaskEntry
-		Result     string                `json:"result,omitempty"`
-		Transcript []ConversationMessage `json:"transcript"`
+		Result     string            `json:"result,omitempty"`
+		Transcript []TranscriptEntry `json:"transcript"`
 	}{
 		TaskEntry:  taskEntry(t),
 		Result:     t.Result(),
-		Transcript: convertMessages(t.PeekMessages()),
+		Transcript: transcriptEntries(t.PeekMessages()),
 	})
 }
 
-func (s *Server) handleTaskStop(w http.ResponseWriter, r *http.Request) {
+func (s *backendRuntime) handleTaskStop(w http.ResponseWriter, r *http.Request) {
 	reg := s.sessionTasks(r.PathValue("id"))
 	if reg == nil {
 		http.Error(w, "background agents unavailable", http.StatusNotFound)

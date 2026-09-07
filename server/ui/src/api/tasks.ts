@@ -1,14 +1,17 @@
+import { isDraft } from "../state/sessionStore.ts";
+import { sessionPath } from "../state/workspaceClient.ts";
 import type { ScheduleEntry, TaskDetail, TaskEntry } from "../types/protocol";
 import { fetchJSON, fetchOK } from "./http.ts";
 
 function sessionAPIBase(sessionId: string): string {
-	return `/api/sessions/${encodeURIComponent(sessionId)}`;
+	return sessionPath(sessionId);
 }
 
 export function listTasks(
 	sessionId: string,
 	signal?: AbortSignal,
 ): Promise<TaskEntry[]> {
+	if (isDraft(sessionId)) return Promise.resolve([]);
 	return fetchJSON<TaskEntry[]>(`${sessionAPIBase(sessionId)}/tasks`, {
 		signal,
 	});
@@ -18,6 +21,7 @@ export function listSchedules(
 	sessionId: string,
 	signal?: AbortSignal,
 ): Promise<ScheduleEntry[]> {
+	if (isDraft(sessionId)) return Promise.resolve([]);
 	return fetchJSON<ScheduleEntry[]>(`${sessionAPIBase(sessionId)}/schedules`, {
 		signal,
 	});

@@ -2,6 +2,7 @@ package clipboard
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -20,6 +21,66 @@ func TestReadContents(t *testing.T) {
 	_, err = readContents("", errors.New("text unavailable"), "", errors.New("image unavailable"))
 	if err == nil || !strings.Contains(err.Error(), "clipboard text") || !strings.Contains(err.Error(), "clipboard image") {
 		t.Fatalf("combined error = %v", err)
+	}
+}
+
+func TestClipboardReadFallbackPreservesNativeContent(t *testing.T) {
+	for _, image := range []bool{false, true} {
+		textReader := func() (string, error) { return "native text", nil }
+		imageReader := func() (string, error) { return "", errors.New("image unavailable") }
+		if image {
+			textReader = func() (string, error) { return "", errors.New("text unavailable") }
+			imageReader = func() (string, error) { return "native image", nil }
+		}
+		contents, err := readWithFallback(textReader, imageReader, func() ([]Content, error) {
+			t.Fatal("native contents must not trigger another clipboard read")
+			return nil, nil
+		})
+		if err != nil || len(contents) != 1 {
+			t.Fatalf("native read = %#v, %v", contents, err)
+		}
+	}
+}
+
+func TestClipboardReadFallbackRecoversEmptyOrUnavailableLinuxClipboard(t *testing.T) {
+	image := "data:image/png;base64,aW1hZ2U="
+	want := []Content{{Text: "Windows\r\n世界 🦋"}, {Image: &image}}
+	for _, nativeErr := range []error{nil, errors.New("no display")} {
+		reader := func() (string, error) { return "", nativeErr }
+		calls := 0
+		got, err := readWithFallback(reader, reader, func() ([]Content, error) {
+			calls++
+			return want, nil
+		})
+		if err != nil || !reflect.DeepEqual(got, want) || calls != 1 {
+			t.Fatalf("fallback read = %#v, %v (%d calls)", got, err, calls)
+		}
+	}
+}
+
+func TestClipboardReadFallbackReturnsFailuresAndEmptyClipboard(t *testing.T) {
+	failed := func() (string, error) { return "", errors.New("no display") }
+	_, err := readWithFallback(failed, failed, func() ([]Content, error) {
+		return nil, errors.New("interop unavailable")
+	})
+	if err == nil || !strings.Contains(err.Error(), "no display") || !strings.Contains(err.Error(), "Windows clipboard: interop unavailable") {
+		t.Fatalf("combined failures = %v", err)
+	}
+	contents, err := readWithFallback(failed, failed, func() ([]Content, error) { return nil, nil })
+	if err != nil || len(contents) != 0 {
+		t.Fatalf("empty Windows clipboard = %#v, %v", contents, err)
+	}
+}
+
+func TestPowerShellClipboardUsesUTF8AndSTA(t *testing.T) {
+	for _, sta := range []bool{false, true} {
+		args := buildPowerShellArgs("clipboard script", sta)
+		if strings.Contains(strings.Join(args, " "), "-Sta") != sta {
+			t.Fatalf("STA flag = %v, want %v", args, sta)
+		}
+		if args[len(args)-2] != "-Command" || args[len(args)-1] != powerShellEncodingPrefix+"clipboard script" {
+			t.Fatalf("script and encoding = %v", args)
+		}
 	}
 }
 

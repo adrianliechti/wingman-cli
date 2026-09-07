@@ -3,7 +3,6 @@ import { Loader2 } from "lucide-react";
 import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
 import { queryKeys } from "../api/query";
 import { getTask } from "../api/tasks";
-import { messagesToEntries } from "../hooks/useWebSocket";
 import { MarkdownContent } from "./MarkdownContent";
 import { TurnView } from "./chat/TurnView";
 import { buildTurns } from "./chat/turns";
@@ -48,7 +47,7 @@ export function TaskTab({ sessionId, taskId }: Props) {
 
 	const { turns, resultShown } = useMemo(() => {
 		if (!detail) return { turns: [], resultShown: false };
-		const entries = messagesToEntries(detail.transcript);
+		const entries = detail.transcript;
 		const lastText = [...entries].reverse().find((e) => e.type === "assistant");
 		return {
 			turns: buildTurns(entries),

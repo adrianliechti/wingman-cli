@@ -11,9 +11,12 @@ import (
 // variables are resolved once when the agent starts and are combined with the
 // explicitly supplied options.
 type Options struct {
-	DisableShell     bool
-	DisableWebSearch bool
-	DisableWebFetch  bool
+	// RequireSessionContext disables single-client prompt routing fallbacks.
+	RequireSessionContext  bool
+	IsolateSessionSettings bool
+	DisableShell           bool
+	DisableWebSearch       bool
+	DisableWebFetch        bool
 
 	// Telemetry overrides the pipeline on the underlying agent.Config. A nil
 	// value inherits that config, including automatic standard OTEL environment
@@ -35,6 +38,8 @@ func resolveOptions(options []Options) Options {
 		DisableWebFetch:  environmentEnabled("WINGMAN_DISABLE_WEBFETCH"),
 	}
 	for _, option := range options {
+		resolved.RequireSessionContext = resolved.RequireSessionContext || option.RequireSessionContext
+		resolved.IsolateSessionSettings = resolved.IsolateSessionSettings || option.IsolateSessionSettings
 		resolved.DisableShell = resolved.DisableShell || option.DisableShell
 		resolved.DisableWebSearch = resolved.DisableWebSearch || option.DisableWebSearch
 		resolved.DisableWebFetch = resolved.DisableWebFetch || option.DisableWebFetch

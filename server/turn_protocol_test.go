@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"errors"
 	"testing"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
@@ -10,79 +9,11 @@ import (
 )
 
 func TestTurnQueueEntryPreservesEditableInput(t *testing.T) {
-	meta := ClientMessage{
-		ID: "input-1", Intent: string(code.TurnInputFollowUp), Text: "fix it",
-		Files: []string{"main.go"}, Images: []string{"data:image/png;base64,abc"},
-	}
-	entry := turnQueueEntry(meta, code.TurnInputQueued, 2)
-	meta.Files[0] = "mutated"
-	meta.Images[0] = "mutated"
-
-	if entry.ID != "input-1" || entry.State != "queued" || entry.Position != 2 || entry.Text != "fix it" {
+	input := code.TurnInput{ID: "input-1", Intent: code.TurnInputFollowUp, Display: &code.TurnInputDisplay{Text: "fix it", Files: []string{"main.go"}, Images: []string{"image"}}}
+	entry := turnQueueEntry(input, code.TurnInputQueued, 2)
+	input.Display.Files[0] = "mutated"
+	if entry.ID != "input-1" || entry.Text != "fix it" || entry.Files[0] != "main.go" || entry.Position != 2 {
 		t.Fatalf("entry = %#v", entry)
-	}
-	if entry.Files[0] != "main.go" || entry.Images[0] != "data:image/png;base64,abc" {
-		t.Fatalf("attachments = %#v", entry)
-	}
-}
-
-func TestTurnInputFrameCarriesSingleInputPayload(t *testing.T) {
-	frame := turnInputFrame("input-1", ClientMessage{
-		Intent: string(code.TurnInputSteer), Text: "guide",
-		Files: []string{"main.go"}, Images: []string{"image"},
-	}, code.TurnInputQueued, 2, errors.New("waiting"))
-
-	if frame.Input == nil {
-		t.Fatal("input payload is missing")
-	}
-	entry := frame.Input
-	if entry.ID != "input-1" || entry.State != "queued" || entry.Intent != "steer" ||
-		entry.Position != 2 || entry.Text != "guide" {
-		t.Fatalf("input = %+v", entry)
-	}
-	if frame.Message != "waiting" || len(entry.Files) != 1 || len(entry.Images) != 1 {
-		t.Fatalf("frame metadata = %+v", frame)
-	}
-
-	b, err := json.Marshal(frame)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(b, &fields); err != nil {
-		t.Fatal(err)
-	}
-	for _, legacy := range []string{"id", "state", "intent", "position", "text", "queue"} {
-		if _, ok := fields[legacy]; ok {
-			t.Errorf("legacy duplicate field %q is still present: %s", legacy, b)
-		}
-	}
-}
-
-func TestTurnQueueFrameJSONCarriesCapabilitiesAndOrdering(t *testing.T) {
-	frame := Frame{
-		Type: EvtTurnQueue, Session: "session-1", Paused: true, CanSteer: true,
-		Queue: []TurnQueueEntry{{ID: "input-2", State: "queued", Intent: "follow_up", Position: 1, Text: "next"}},
-	}
-	b, err := json.Marshal(frame)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var decoded struct {
-		Type     string           `json:"type"`
-		Session  string           `json:"session"`
-		Paused   bool             `json:"paused"`
-		CanSteer bool             `json:"can_steer"`
-		Queue    []TurnQueueEntry `json:"queue"`
-	}
-	if err := json.Unmarshal(b, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if decoded.Type != EvtTurnQueue || decoded.Session != "session-1" || !decoded.Paused || !decoded.CanSteer {
-		t.Fatalf("frame = %#v", decoded)
-	}
-	if len(decoded.Queue) != 1 || decoded.Queue[0].ID != "input-2" || decoded.Queue[0].Position != 1 {
-		t.Fatalf("queue = %#v", decoded.Queue)
 	}
 }
 

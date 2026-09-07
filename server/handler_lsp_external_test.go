@@ -61,7 +61,7 @@ func TestExternalGoIntelliSense(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.Close()
-	web := httptest.NewServer(app)
+	web := httptest.NewServer(scopedTestHandler(app))
 	defer web.Close()
 
 	response, err := http.Post(web.URL+"/api/lsp/completions", "application/json", strings.NewReader(
@@ -152,7 +152,7 @@ func TestExternalDefinitionNavigation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.Close()
-	web := httptest.NewServer(app)
+	web := httptest.NewServer(scopedTestHandler(app))
 	defer web.Close()
 
 	var locations []lsp.Location

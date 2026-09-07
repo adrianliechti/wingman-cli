@@ -1,3 +1,8 @@
+import {
+	initializeWorkspace,
+	fetchBootstrap,
+} from "./state/workspaceClient.ts";
+import { WorkspaceProvider } from "./state/WorkspaceProvider.tsx";
 import { loader } from "@monaco-editor/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import * as monaco from "monaco-editor";
@@ -12,7 +17,7 @@ import { createRoot } from "react-dom/client";
 import "./devicon-slim.css";
 import "./index.css";
 import App from "./App.tsx";
-import { serverQueryClient } from "./api/query.ts";
+import { createServerQueryClient } from "./api/query.ts";
 import { AppCrashed } from "./AppCrashed.tsx";
 import { ErrorBoundary } from "./components/ErrorBoundary.tsx";
 import { ToastProvider } from "./components/ui/Feedback.tsx";
@@ -101,18 +106,27 @@ StandaloneServices.initialize({
 	},
 });
 
-createRoot(document.getElementById("root")!).render(
-	<StrictMode>
-		<QueryClientProvider client={serverQueryClient}>
-			<ErrorBoundary
-				fallback={(error, _reset, errorInfo) => (
-					<AppCrashed error={error} errorInfo={errorInfo} />
-				)}
-			>
-				<ToastProvider>
-					<App />
-				</ToastProvider>
-			</ErrorBoundary>
-		</QueryClientProvider>
-	</StrictMode>,
-);
+const root = createRoot(document.getElementById("root")!);
+fetchBootstrap()
+	.then((scope) => {
+		initializeWorkspace(scope);
+		const queryClient = createServerQueryClient();
+		root.render(
+			<StrictMode>
+				<QueryClientProvider client={queryClient}>
+					<ErrorBoundary
+						fallback={(error, _reset, errorInfo) => (
+							<AppCrashed error={error} errorInfo={errorInfo} />
+						)}
+					>
+						<ToastProvider>
+							<WorkspaceProvider>
+								<App />
+							</WorkspaceProvider>
+						</ToastProvider>
+					</ErrorBoundary>
+				</QueryClientProvider>
+			</StrictMode>,
+		);
+	})
+	.catch((error) => root.render(<AppCrashed error={error} errorInfo={null} />));

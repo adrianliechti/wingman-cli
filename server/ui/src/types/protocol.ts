@@ -1,44 +1,4 @@
-interface SendMessage {
-	type: "send";
-	session: string;
-	id: string;
-	intent?: TurnInputIntent;
-	text: string;
-	files?: string[];
-	images?: string[];
-}
-
-interface CancelMessage {
-	type: "cancel";
-	session: string;
-	clear_queue?: boolean;
-}
-
-interface QueueRemoveMessage {
-	type: "queue_remove";
-	session: string;
-	id: string;
-}
-
-interface QueueUpdateMessage {
-	type: "queue_update";
-	session: string;
-	id: string;
-	text: string;
-	files?: string[];
-	images?: string[];
-}
-
-interface QueueSessionMessage {
-	type: "queue_resume" | "queue_clear";
-	session: string;
-}
-
-interface SyncMessage {
-	type: "sync";
-	sessions: string[];
-}
-
+import type { ChatEntry } from "./session.ts";
 export type PromptAction = "accept" | "decline" | "cancel";
 export type PromptScope = "once" | "session";
 
@@ -50,179 +10,6 @@ export type PromptReply =
 	  }
 	| { action: Exclude<PromptAction, "accept"> };
 
-type PromptResponseMessage = {
-	type: "prompt_response";
-	prompt_id: string;
-} & PromptReply;
-
-interface FocusMessage {
-	type: "focus";
-}
-
-export type ClientMessage =
-	| SendMessage
-	| CancelMessage
-	| QueueRemoveMessage
-	| QueueUpdateMessage
-	| QueueSessionMessage
-	| SyncMessage
-	| PromptResponseMessage
-	| FocusMessage;
-
-interface SessionMessage {
-	session: string;
-}
-
-interface SessionStateMessage extends SessionMessage {
-	type: "session_state";
-	phase: Phase;
-	messages?: ConversationMessage[];
-	input_tokens?: number;
-	cached_tokens?: number;
-	output_tokens?: number;
-	last_input_tokens?: number;
-	context_window?: number;
-}
-
-interface TextDeltaMessage extends SessionMessage {
-	type: "text_delta";
-	id?: string;
-	text: string;
-}
-
-interface ReasoningDeltaMessage extends SessionMessage {
-	type: "reasoning_delta";
-	id: string;
-	part?: number;
-	text: string;
-}
-
-interface ToolCallMessage extends SessionMessage {
-	type: "tool_call";
-	id: string;
-	name: string;
-	kind?: string;
-	args: string;
-	locations?: ToolLocation[];
-	hint: string;
-	partial?: boolean;
-}
-
-interface ToolResultMessage extends SessionMessage {
-	type: "tool_result";
-	id: string;
-	name: string;
-	kind?: string;
-	args?: string;
-	locations?: ToolLocation[];
-	hint?: string;
-	content: string;
-}
-
-interface ToolProgressMessage extends SessionMessage {
-	type: "tool_progress";
-	id: string;
-	text?: string;
-}
-
-interface StreamResetMessage extends SessionMessage {
-	type: "stream_reset";
-}
-
-interface StreamCommitMessage extends SessionMessage {
-	type: "stream_commit";
-}
-
-interface PhaseMessage extends SessionMessage {
-	type: "phase";
-	phase: Phase;
-}
-
-interface UsageMessage extends SessionMessage {
-	type: "usage";
-	input_tokens: number;
-	cached_tokens: number;
-	output_tokens: number;
-	last_input_tokens?: number;
-	context_window?: number;
-}
-
-interface ErrorMessage extends SessionMessage {
-	type: "error";
-	message: string;
-}
-
-export type PromptKind = "ask" | "confirm";
-
-export interface PromptField {
-	name: string;
-	type?: "string" | "number" | "integer" | "boolean";
-	title?: string;
-	description?: string;
-	required?: boolean;
-	enum?: string[];
-	enum_descriptions?: string[];
-	enum_previews?: string[];
-	strict?: boolean;
-	multiple?: boolean;
-	custom_answer_for?: string;
-	default?: unknown;
-}
-
-interface PromptMessage extends SessionMessage {
-	type: "prompt";
-	prompt_id: string;
-	prompt_kind: PromptKind;
-	message: string;
-	prompt_fields?: PromptField[];
-}
-
-interface PromptCancelMessage extends SessionMessage {
-	type: "prompt_cancel";
-	prompt_id: string;
-}
-
-interface SessionsChangedMessage {
-	type: "sessions_changed";
-}
-
-interface DiffsChangedMessage {
-	type: "diffs_changed";
-}
-
-interface GitIndexChangedMessage {
-	type: "git_index_changed";
-}
-
-interface FilesChangedMessage {
-	type: "files_changed";
-}
-
-interface DiagnosticsChangedMessage {
-	type: "diagnostics_changed";
-}
-
-interface TasksChangedMessage {
-	type: "tasks_changed";
-	session?: string;
-}
-
-interface TerminalsChangedMessage {
-	type: "terminals_changed";
-}
-
-interface SkillsChangedMessage {
-	type: "skills_changed";
-}
-
-interface CapabilitiesChangedMessage {
-	type: "capabilities_changed";
-}
-
-interface AgentChangedMessage {
-	type: "agent_changed";
-}
-
 export type TurnInputIntent = "follow_up" | "steer";
 export type TurnInputState =
 	| "sending"
@@ -233,100 +20,27 @@ export type TurnInputState =
 	| "cancelled"
 	| "failed";
 
-export interface TurnQueueEntry {
-	id: string;
-	state: TurnInputState;
-	intent?: TurnInputIntent;
-	position?: number;
-	text?: string;
-	files?: string[];
-	images?: string[];
-}
-
-interface TurnInputMessage extends SessionMessage {
-	type: "turn_input";
-	input: TurnQueueEntry;
-	message?: string;
-}
-
-interface TurnQueueMessage extends SessionMessage {
-	type: "turn_queue";
-	queue?: TurnQueueEntry[];
-	paused?: boolean;
-	can_steer?: boolean;
-}
-
-interface ModelChangedMessage {
-	type: "model_changed";
-}
-
-export type ServerMessage =
-	| SessionStateMessage
-	| TextDeltaMessage
-	| ReasoningDeltaMessage
-	| ToolCallMessage
-	| ToolResultMessage
-	| StreamResetMessage
-	| StreamCommitMessage
-	| ToolProgressMessage
-	| PhaseMessage
-	| UsageMessage
-	| ErrorMessage
-	| PromptMessage
-	| PromptCancelMessage
-	| SessionsChangedMessage
-	| DiffsChangedMessage
-	| GitIndexChangedMessage
-	| FilesChangedMessage
-	| DiagnosticsChangedMessage
-	| CapabilitiesChangedMessage
-	| AgentChangedMessage
-	| ModelChangedMessage
-	| TurnInputMessage
-	| TurnQueueMessage
-	| TasksChangedMessage
-	| TerminalsChangedMessage
-	| SkillsChangedMessage;
+export type ServerMessage = {
+	type:
+		| "files_changed"
+		| "diffs_changed"
+		| "git_index_changed"
+		| "sessions_changed"
+		| "diagnostics_changed"
+		| "capabilities_changed"
+		| "model_changed"
+		| "tasks_changed"
+		| "terminals_changed"
+		| "skills_changed";
+	session?: string;
+	backend?: string;
+};
 
 export type Phase = "idle" | "thinking" | "streaming" | "tool_running";
 
 export interface ToolLocation {
 	path: string;
 	line?: number;
-}
-
-export interface ConversationMessage {
-	role: string;
-	content: ConversationContent[];
-}
-
-interface ConversationContent {
-	text?: string;
-	text_id?: string;
-	image?: {
-		data: string;
-		name?: string;
-	};
-	reasoning?: {
-		id?: string;
-		summary?: string;
-	};
-	tool_call?: {
-		id: string;
-		name: string;
-		kind?: string;
-		args: string;
-		locations?: ToolLocation[];
-		hint?: string;
-	};
-	tool_result?: {
-		id?: string;
-		name: string;
-		kind?: string;
-		args: string;
-		locations?: ToolLocation[];
-		content: string;
-	};
 }
 
 export interface FileEntry {
@@ -431,7 +145,7 @@ export interface ScheduleEntry {
 
 export interface TaskDetail extends TaskEntry {
 	result?: string;
-	transcript: ConversationMessage[];
+	transcript: ChatEntry[];
 }
 
 export interface TerminalEntry {
@@ -486,4 +200,20 @@ export interface LSPServiceActivity {
 export interface LSPActivityStatus {
 	analyzing: boolean;
 	services: LSPServiceActivity[];
+}
+export type PromptKind = "ask" | "confirm";
+
+export interface PromptField {
+	name: string;
+	type?: "string" | "number" | "integer" | "boolean";
+	title?: string;
+	description?: string;
+	required?: boolean;
+	enum?: string[];
+	enum_descriptions?: string[];
+	enum_previews?: string[];
+	strict?: boolean;
+	multiple?: boolean;
+	custom_answer_for?: string;
+	default?: unknown;
 }

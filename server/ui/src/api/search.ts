@@ -1,3 +1,4 @@
+import { scopedFetch } from "./http.ts";
 export interface WorkspaceSearchRequest {
 	query: string;
 	replacement: string;
@@ -47,7 +48,7 @@ export async function streamWorkspaceSearch(
 	onFile: (file: WorkspaceSearchFile) => void,
 	signal?: AbortSignal,
 ): Promise<WorkspaceSearchSummary> {
-	const response = await fetch("/api/files/content-search", {
+	const response = await scopedFetch("/api/files/content-search", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(request),

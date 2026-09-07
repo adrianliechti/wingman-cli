@@ -5,11 +5,11 @@ import {
 	invalidateAllServerQueries,
 	invalidateForServerMessage,
 	queryKeys,
-	serverQueryClient,
+	createServerQueryClient,
 } from "../src/api/query.ts";
 
 test("server defaults keep fresh data quiet and stale data recoverable", () => {
-	const defaults = serverQueryClient.getDefaultOptions();
+	const defaults = createServerQueryClient().getDefaultOptions();
 
 	assert.equal(defaults.queries?.staleTime, Infinity);
 	assert.equal(defaults.queries?.retry, false);
@@ -29,27 +29,6 @@ test("skills events invalidate every session-scoped skill catalog", () => {
 
 	assert.equal(client.getQueryState(first)?.isInvalidated, true);
 	assert.equal(client.getQueryState(second)?.isInvalidated, true);
-});
-
-test("agent events invalidate dependent server catalogs", () => {
-	const client = new QueryClient();
-	const keys = [
-		queryKeys.capabilities,
-		queryKeys.agents.current,
-		queryKeys.models.current("session"),
-		queryKeys.modes.current("session"),
-		queryKeys.sessions.list,
-		queryKeys.skills.list("session"),
-		queryKeys.tasks.list("session"),
-		queryKeys.diagnostics.workspace,
-	] as const;
-	for (const key of keys) client.setQueryData(key, {});
-
-	invalidateForServerMessage(client, { type: "agent_changed" });
-
-	for (const key of keys) {
-		assert.equal(client.getQueryState(key)?.isInvalidated, true);
-	}
 });
 
 test("diff events invalidate diff and Git query families", () => {
@@ -94,7 +73,7 @@ test("Git index events refresh status before dependent diff views", async () => 
 
 test("task events only invalidate the affected session when identified", () => {
 	const client = new QueryClient();
-	const first = queryKeys.tasks.list("one");
+	const first = queryKeys.tasks.list(JSON.stringify(["wingman", "one"]));
 	const second = queryKeys.tasks.list("two");
 	client.setQueryData(first, []);
 	client.setQueryData(second, []);
@@ -111,7 +90,7 @@ test("task events only invalidate the affected session when identified", () => {
 test("reconnect invalidation covers every server query family", () => {
 	const client = new QueryClient();
 	const keys = [
-		queryKeys.models.current("session"),
+		["server", "backend-settings", "wingman"],
 		queryKeys.terminals.list,
 		queryKeys.tasks.list("session"),
 	] as const;

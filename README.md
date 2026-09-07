@@ -572,13 +572,20 @@ Toggle between modes using `Tab` or the explicit `/plan` and `/agent` commands.
 | `Ctrl+P` | Open the searchable command center |
 | `Tab` | Toggle Agent/Plan mode (or autocomplete slash commands) |
 | `@` | Open fuzzy file picker to add file context |
-| `Ctrl+V` | Paste image or text directly from the system clipboard |
+| `Ctrl+V` / `Ctrl+Alt+V` | Paste image or text directly from the system clipboard on macOS and Windows (including WSL) |
+| `Shift+Insert` | Paste using the terminal, or Wingman's clipboard action when the key is forwarded |
 | `Cmd+V` / `Ctrl+Shift+V` | Paste text using the terminal's native shortcut |
 | `Ctrl+O` | Open the searchable transcript inspector |
 | `Ctrl+Y` | Copy the complete last assistant response to clipboard |
 | `Ctrl+L` | Clear chat history |
 | `Escape` | Cancel stream, close modal, or clear input |
 | `Ctrl+C` | Cancel stream or clear input; press twice to exit |
+
+These are terminal UI shortcuts. `Ctrl+V` works on macOS as well as Windows;
+`Cmd+V` remains the terminal's native text paste on macOS. If a Windows terminal
+captures `Ctrl+V`, use `Ctrl+Alt+V` to invoke Wingman's clipboard reader. Under WSL,
+Wingman falls back to the Windows clipboard when the Linux clipboard is unavailable
+or empty. In a remote SSH session, use the terminal's native text paste.
 
 ## 📝 Commands
 

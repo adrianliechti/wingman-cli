@@ -62,7 +62,7 @@ func TestFileListingExcludesMetadataAndIncludesHiddenEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.Close()
-	web := httptest.NewServer(app)
+	web := httptest.NewServer(scopedTestHandler(app))
 	defer web.Close()
 
 	res, err := http.Get(web.URL + "/api/files")
@@ -115,7 +115,7 @@ func TestFileCreateAndConflictAwareWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.Close()
-	web := httptest.NewServer(app)
+	web := httptest.NewServer(scopedTestHandler(app))
 	defer web.Close()
 
 	postJSON := func(endpoint string, body any) *http.Response {
@@ -291,7 +291,7 @@ func TestFileBatchWriteChecksEveryRevisionBeforeWriting(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.Close()
-	web := httptest.NewServer(app)
+	web := httptest.NewServer(scopedTestHandler(app))
 	defer web.Close()
 
 	post := func(files []fileBatchWrite) *http.Response {
@@ -485,7 +485,7 @@ func TestFilePreviewServesWebsiteAssetsInline(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.Close()
-	web := httptest.NewServer(app)
+	web := httptest.NewServer(scopedTestHandler(app))
 	defer web.Close()
 
 	jar, err := cookiejar.New(nil)

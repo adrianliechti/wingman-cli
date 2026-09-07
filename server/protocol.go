@@ -2,62 +2,25 @@ package server
 
 import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
-	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 )
 
 const (
-	MsgSend           = "send"
-	MsgCancel         = "cancel"
-	MsgQueueRemove    = "queue_remove"
-	MsgQueueUpdate    = "queue_update"
-	MsgQueueResume    = "queue_resume"
-	MsgQueueClear     = "queue_clear"
-	MsgSync           = "sync"
-	MsgPromptResponse = "prompt_response"
-	MsgFocus          = "focus"
-)
-
-type ClientMessage struct {
-	Type       string   `json:"type"`
-	SessionID  string   `json:"session,omitempty"`
-	Text       string   `json:"text,omitempty"`
-	Files      []string `json:"files,omitempty"`
-	Images     []string `json:"images,omitempty"`
-	ID         string   `json:"id,omitempty"`
-	Intent     string   `json:"intent,omitempty"`
-	ClearQueue bool     `json:"clear_queue,omitempty"`
-	Sessions   []string `json:"sessions,omitempty"`
-
-	PromptID string         `json:"prompt_id,omitempty"`
-	Action   string         `json:"action,omitempty"`
-	Scope    string         `json:"scope,omitempty"`
-	Content  map[string]any `json:"content,omitempty"`
-}
-
-const (
-	EvtSessionState        = "session_state"
 	EvtTextDelta           = "text_delta"
 	EvtReasoningDelta      = "reasoning_delta"
 	EvtToolCall            = "tool_call"
 	EvtToolResult          = "tool_result"
 	EvtToolProgress        = "tool_progress"
 	EvtStreamReset         = "stream_reset"
-	EvtStreamCommit        = "stream_commit"
 	EvtPhase               = "phase"
-	EvtUsage               = "usage"
 	EvtError               = "error"
-	EvtPrompt              = "prompt"
-	EvtPromptCancel        = "prompt_cancel"
 	EvtFilesChanged        = "files_changed"
 	EvtDiffsChanged        = "diffs_changed"
 	EvtGitIndexChanged     = "git_index_changed"
 	EvtSessionsChanged     = "sessions_changed"
 	EvtDiagnosticsChanged  = "diagnostics_changed"
 	EvtCapabilitiesChanged = "capabilities_changed"
-	EvtAgentChanged        = "agent_changed"
 	EvtModelChanged        = "model_changed"
 	EvtTurnInput           = "turn_input"
-	EvtTurnQueue           = "turn_queue"
 	EvtTasksChanged        = "tasks_changed"
 	EvtTerminalsChanged    = "terminals_changed"
 	EvtSkillsChanged       = "skills_changed"
@@ -69,9 +32,12 @@ const (
 	PromptScopeSession = "session"
 )
 
+// Frame carries internal adapter updates and workspace resource invalidations.
+// Session frames are projected by sessionController; only sessionEvent is public.
 type Frame struct {
 	Type    string `json:"type"`
 	Session string `json:"session,omitempty"`
+	Backend string `json:"backend,omitempty"`
 
 	Text      string               `json:"text,omitempty"`
 	ID        string               `json:"id,omitempty"`
@@ -83,34 +49,13 @@ type Frame struct {
 	Content   string               `json:"content,omitempty"`
 	Phase     string               `json:"phase,omitempty"`
 	Message   string               `json:"message,omitempty"`
-	State     string               `json:"state,omitempty"`
-	Intent    string               `json:"intent,omitempty"`
 	Part      int                  `json:"part,omitempty"`
-	Position  int                  `json:"position,omitempty"`
-	Paused    bool                 `json:"paused,omitempty"`
-	CanSteer  bool                 `json:"can_steer,omitempty"`
 	Partial   bool                 `json:"partial,omitempty"`
 	Input     *TurnQueueEntry      `json:"input,omitempty"`
-	Queue     []TurnQueueEntry     `json:"queue,omitempty"`
-
-	PromptID     string             `json:"prompt_id,omitempty"`
-	PromptKind   string             `json:"prompt_kind,omitempty"`
-	PromptFields []tool.ElicitField `json:"prompt_fields,omitempty"`
-
-	InputTokens  int64 `json:"input_tokens,omitempty"`
-	OutputTokens int64 `json:"output_tokens,omitempty"`
-
-	ReasoningTokens          int64 `json:"reasoning_tokens,omitempty"`
-	CacheReadInputTokens     int64 `json:"cached_tokens,omitempty"`
-	CacheCreationInputTokens int64 `json:"cache_write_tokens,omitempty"`
-
-	LastInputTokens int64 `json:"last_input_tokens,omitempty"`
-	ContextWindow   int64 `json:"context_window,omitempty"`
-
-	Messages []ConversationMessage `json:"messages,omitempty"`
 }
 
 type TurnQueueEntry struct {
+	Origin   string   `json:"origin,omitempty"`
 	ID       string   `json:"id"`
 	State    string   `json:"state"`
 	Intent   string   `json:"intent"`
@@ -121,6 +66,7 @@ type TurnQueueEntry struct {
 }
 
 type ConversationMessage struct {
+	InputID string                `json:"input_id,omitempty"`
 	Role    string                `json:"role"`
 	Content []ConversationContent `json:"content"`
 }

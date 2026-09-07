@@ -1,30 +1,13 @@
+import { sessionKey } from "../state/sessionStore.ts";
 import { QueryClient, type QueryKey } from "@tanstack/react-query";
 import type { ServerMessage } from "../types/protocol";
 
 export const queryKeys = {
 	all: ["server"] as const,
 	capabilities: ["server", "capabilities"] as const,
-	agents: {
-		all: ["server", "agents"] as const,
-		list: ["server", "agents", "list"] as const,
-		current: ["server", "agents", "current"] as const,
-	},
-	models: {
-		all: ["server", "models"] as const,
-		list: ["server", "models", "list"] as const,
-		current: (sessionId?: string) =>
-			["server", "models", "current", sessionId ?? ""] as const,
-		effort: (sessionId?: string) =>
-			["server", "models", "effort", sessionId ?? ""] as const,
-	},
-	modes: {
-		all: ["server", "modes"] as const,
-		current: (sessionId?: string) =>
-			["server", "modes", sessionId ?? ""] as const,
-	},
 	sessions: {
 		all: ["server", "sessions"] as const,
-		list: ["server", "sessions", "list"] as const,
+		list: (backend: string) => ["server", "sessions", "list", backend] as const,
 	},
 	skills: {
 		all: ["server", "skills"] as const,
@@ -106,19 +89,20 @@ export const queryKeys = {
 	},
 } satisfies Record<string, QueryKey | Record<string, unknown>>;
 
-export const serverQueryClient = new QueryClient({
-	defaultOptions: {
-		queries: {
-			// The WebSocket bridge invalidates normal server changes. Infinity keeps
-			// fresh data quiet while TanStack's focus/reconnect defaults can still
-			// recover queries that were explicitly invalidated or use staleTime: 0.
-			staleTime: Infinity,
-			// Expected HTTP errors should surface immediately. Volatile reads use
-			// polling, focus, reconnect, or WebSocket invalidation for recovery.
-			retry: false,
+export const createServerQueryClient = () =>
+	new QueryClient({
+		defaultOptions: {
+			queries: {
+				// The WebSocket bridge invalidates normal server changes. Infinity keeps
+				// fresh data quiet while TanStack's focus/reconnect defaults can still
+				// recover queries that were explicitly invalidated or use staleTime: 0.
+				staleTime: Infinity,
+				// Expected HTTP errors should surface immediately. Volatile reads use
+				// polling, focus, reconnect, or WebSocket invalidation for recovery.
+				retry: false,
+			},
 		},
-	},
-});
+	});
 
 export function invalidateAllServerQueries(client: QueryClient): void {
 	void client.invalidateQueries({ queryKey: queryKeys.all });
@@ -146,16 +130,6 @@ export async function invalidateGitIndexQueries(
 	);
 }
 
-const TASK_TOOLS = new Set([
-	"agent",
-	"task_send",
-	"task_stop",
-	"schedule_task",
-	"pause_task",
-	"resume_task",
-	"remove_task",
-]);
-
 export function invalidateForServerMessage(
 	client: QueryClient,
 	message: ServerMessage,
@@ -168,13 +142,8 @@ export function invalidateForServerMessage(
 		case "capabilities_changed":
 			invalidate(queryKeys.capabilities);
 			break;
-		case "agent_changed":
-			// The active agent owns sessions, models, modes, tasks, and other
-			// backend-specific state. Treat switching it as a server boundary.
-			invalidate(queryKeys.all);
-			break;
 		case "model_changed":
-			invalidate(queryKeys.models.all);
+			invalidate(["server", "backend-settings"]);
 			break;
 		case "sessions_changed":
 			invalidate(queryKeys.sessions.all);
@@ -204,18 +173,11 @@ export function invalidateForServerMessage(
 		case "tasks_changed":
 			invalidate(
 				message.session
-					? queryKeys.tasks.session(message.session)
+					? queryKeys.tasks.session(
+							sessionKey(message.backend ?? "wingman", message.session),
+						)
 					: queryKeys.tasks.all,
 			);
-			break;
-		case "tool_result":
-			if (TASK_TOOLS.has(message.name)) {
-				invalidate(
-					message.session
-						? queryKeys.tasks.session(message.session)
-						: queryKeys.tasks.all,
-				);
-			}
 			break;
 	}
 }

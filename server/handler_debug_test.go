@@ -36,7 +36,7 @@ func TestDebugTargetsReturnsGoCodeLensCandidates(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/debug/targets", body)
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
-	app.ServeHTTP(response, request)
+	serveTestHTTP(app, response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
@@ -62,7 +62,7 @@ func TestDebugTargetsRejectsTrailingJSON(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/debug/targets", bytes.NewBufferString(`{"path":"main.go"} {"path":"main.go"}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
-	app.ServeHTTP(response, request)
+	serveTestHTTP(app, response, request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
@@ -74,7 +74,7 @@ func TestDebugPlanRequiresCodeLensTarget(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/debug/plan", bytes.NewBufferString(`{"action":"debug"}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
-	app.ServeHTTP(response, request)
+	serveTestHTTP(app, response, request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
@@ -120,7 +120,7 @@ printf '#!/bin/sh\nexit 0\n' > "$GOBIN/dlv"
 	}
 
 	response := httptest.NewRecorder()
-	app.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/debug/targets", strings.NewReader(`{"path":"main.go"}`)))
+	serveTestHTTP(app, response, httptest.NewRequest(http.MethodPost, "/api/debug/targets", strings.NewReader(`{"path":"main.go"}`)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("targets status = %d: %s", response.Code, response.Body.String())
 	}
@@ -141,7 +141,7 @@ printf '#!/bin/sh\nexit 0\n' > "$GOBIN/dlv"
 		request := httptest.NewRequest(http.MethodPost, "/api/debug/plan", bytes.NewReader(body))
 		request.Header.Set("Accept", accept)
 		response = httptest.NewRecorder()
-		app.ServeHTTP(response, request)
+		serveTestHTTP(app, response, request)
 		var result debugPlanEvent
 		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 			t.Fatalf("%s: %v: %s", accept, err, response.Body.String())
@@ -167,7 +167,7 @@ printf '#!/bin/sh\nexit 0\n' > "$GOBIN/dlv"
 			request := httptest.NewRequest(http.MethodPost, "/api/debug/plan", bytes.NewReader(confirmedBody))
 			request.Header.Set("Accept", accept)
 			response := httptest.NewRecorder()
-			app.ServeHTTP(response, request)
+			serveTestHTTP(app, response, request)
 			if !strings.Contains(response.Body.String(), dap.ErrBusy.Error()) {
 				t.Fatalf("%s: busy response = %d: %s", accept, response.Code, response.Body.String())
 			}
@@ -182,7 +182,7 @@ printf '#!/bin/sh\nexit 0\n' > "$GOBIN/dlv"
 	request := httptest.NewRequest(http.MethodPost, "/api/debug/plan", bytes.NewReader(confirmedBody))
 	request.Header.Set("Accept", "application/x-ndjson")
 	response = httptest.NewRecorder()
-	app.ServeHTTP(response, request)
+	serveTestHTTP(app, response, request)
 	if response.Code != http.StatusOK || !response.Flushed || response.Header().Get("Content-Type") != "application/x-ndjson" {
 		t.Fatalf("plan response = %d, %v: %s", response.Code, response.Header(), response.Body.String())
 	}
@@ -230,7 +230,7 @@ printf '#!/bin/sh\nexit 0\n' > "$GOBIN/dlv"
 	}
 	request = httptest.NewRequest(http.MethodPost, "/api/debug/plan", bytes.NewReader(body))
 	response = httptest.NewRecorder()
-	app.ServeHTTP(response, request)
+	serveTestHTTP(app, response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("reused plan status = %d: %s", response.Code, response.Body.String())
 	}
@@ -248,7 +248,7 @@ printf '#!/bin/sh\nexit 0\n' > "$GOBIN/dlv"
 	request = httptest.NewRequest(http.MethodPost, "/api/debug/plan", bytes.NewReader(body))
 	request.Header.Set("Accept", "application/x-ndjson")
 	response = httptest.NewRecorder()
-	app.ServeHTTP(response, request)
+	serveTestHTTP(app, response, request)
 	decoder = json.NewDecoder(response.Body)
 	updating := false
 	var warning string
@@ -313,7 +313,7 @@ func TestDebugPlanFindsToolInstalledAfterCachedDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := httptest.NewRecorder()
-	app.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/debug/plan", bytes.NewReader(body)))
+	serveTestHTTP(app, response, httptest.NewRequest(http.MethodPost, "/api/debug/plan", bytes.NewReader(body)))
 	var plan debugLaunchPlan
 	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &plan) != nil || plan.Adapter != "delve" {
 		t.Fatalf("plan = %d: %s", response.Code, response.Body.String())
@@ -377,7 +377,7 @@ func TestDebugPlanRechecksHostAfterUpdateLockFailure(t *testing.T) {
 			defer os.Chmod(tools, 0o755)
 			request := httptest.NewRequest(http.MethodPost, "/api/debug/plan", bytes.NewReader(body))
 			request.Header.Set("Accept", "application/x-ndjson")
-			app.ServeHTTP(response, request)
+			serveTestHTTP(app, response, request)
 			decoder := json.NewDecoder(response.Body)
 			var last debugPlanEvent
 			for decoder.More() {
@@ -421,14 +421,14 @@ func TestDebugBreakpointsPersistWithoutActiveSession(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPut, "/api/debug/breakpoints", bytes.NewBufferString(`{"path":"main.go","breakpoints":[{"line":3}]}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
-	app.ServeHTTP(response, request)
+	serveTestHTTP(app, response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("set status = %d, body = %s", response.Code, response.Body.String())
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "/api/debug/state?path=main.go", nil)
 	response = httptest.NewRecorder()
-	app.ServeHTTP(response, request)
+	serveTestHTTP(app, response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("state status = %d, body = %s", response.Code, response.Body.String())
 	}
@@ -446,7 +446,7 @@ func TestDebugInspectionWithoutActiveSession(t *testing.T) {
 	app := newDebugTestServer(t, root)
 	request := httptest.NewRequest(http.MethodGet, "/api/debug/inspection", nil)
 	response := httptest.NewRecorder()
-	app.ServeHTTP(response, request)
+	serveTestHTTP(app, response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
@@ -464,7 +464,7 @@ func TestDebugSessionWithoutActiveSession(t *testing.T) {
 	app := newDebugTestServer(t, root)
 	request := httptest.NewRequest(http.MethodGet, "/api/debug/session", nil)
 	response := httptest.NewRecorder()
-	app.ServeHTTP(response, request)
+	serveTestHTTP(app, response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
@@ -492,7 +492,7 @@ func TestDebugFrameInspectionRequiresStateVersion(t *testing.T) {
 		request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
 		request.Header.Set("Content-Type", "application/json")
 		response := httptest.NewRecorder()
-		app.ServeHTTP(response, request)
+		serveTestHTTP(app, response, request)
 		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "state_version") {
 			t.Fatalf("%s: status = %d, body = %q", test.path, response.Code, response.Body.String())
 		}
@@ -617,7 +617,7 @@ func main() {
 
 	request := httptest.NewRequest(http.MethodGet, "/api/debug/inspection", nil)
 	response := httptest.NewRecorder()
-	app.ServeHTTP(response, request)
+	serveTestHTTP(app, response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
@@ -639,7 +639,7 @@ func main() {
 	request = httptest.NewRequest(http.MethodPost, "/api/debug/scopes", bytes.NewReader(scopesBody))
 	request.Header.Set("Content-Type", "application/json")
 	response = httptest.NewRecorder()
-	app.ServeHTTP(response, request)
+	serveTestHTTP(app, response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("scopes status = %d, body = %s", response.Code, response.Body.String())
 	}

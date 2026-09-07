@@ -1,9 +1,11 @@
+import { useMainLayout } from "./hooks/useMainLayout.ts";
 import {
-	useMutation,
-	useQueries,
-	useQuery,
-	useQueryClient,
-} from "@tanstack/react-query";
+	useWorkspace,
+	backendSettingsQuery,
+} from "./state/workspaceContext.ts";
+import { isDraft, sessionKey, splitSessionKey } from "./state/sessionStore.ts";
+import { workspaceClient } from "./state/workspaceClient.ts";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 	Bot,
 	Bug,
@@ -53,7 +55,6 @@ import {
 	Separator,
 	usePanelRef,
 } from "react-resizable-panels";
-import { agentQueries, setCurrentAgent } from "./api/agents";
 import { getInspectAvailability } from "./api/capabilities";
 import {
 	controlDebug,
@@ -64,11 +65,7 @@ import {
 import { createWorkspaceFile } from "./api/files";
 import { queryKeys } from "./api/query";
 import {
-	createSession,
 	deleteSession,
-	loadSession,
-	sessionQueries,
-	setMode,
 	type ModeOption,
 	type ModeState,
 	type SessionInfo,
@@ -97,7 +94,6 @@ import {
 	type PaneSide,
 	placeCenterTab,
 	syncDebugTab,
-	withSessionFallback,
 } from "./mainLayout";
 import {
 	CommandPalette,
@@ -135,7 +131,7 @@ import {
 	useToast,
 } from "./components/ui/Feedback";
 import { FloatingMenu, FloatingSurface } from "./components/ui/Floating";
-import { AgentPicker, BUILTIN_AGENT_ID } from "./components/AgentPicker";
+import { AgentPicker } from "./components/AgentPicker";
 import { AgentSessions } from "./components/AgentSessions";
 import { useCapabilities } from "./hooks/useCapabilities";
 import { useOpenDocuments } from "./hooks/useOpenDocuments";
@@ -277,33 +273,46 @@ function moveWorkspaceTab(tab: CenterTab, from: string, to: string): CenterTab {
 }
 
 export default function App() {
+	const { backend: agentId, selectBackend, drafts, setDraft } = useWorkspace();
+	const client = workspaceClient();
+	const [initialTab] = useState<CenterTab>(() => {
+		const sid = decodeURIComponent(
+			location.pathname.split("/").filter(Boolean)[1] ?? "",
+		);
+		if (sid) {
+			const key = sessionKey(agentId, sid);
+			return {
+				id: chatTabId(key),
+				type: "chat",
+				backendId: agentId,
+				sessionId: key,
+				label: "Session",
+			};
+		}
+		return draftChatTab(agentId);
+	});
+
 	const {
 		connected,
 		sessions,
-		toolProgress,
-		hasSession,
 		sendChat,
 		cancel,
 		removeQueued,
 		updateQueued,
 		resumeQueue,
 		clearQueue,
-		dismissPending,
 		dismissError,
 		respondPrompt,
-		removeSession,
-		clearSessions,
 		subscribe,
+		observe,
 	} = useWebSocket();
 	useServerQueryInvalidation(subscribe, connected);
 	const queryClient = useQueryClient();
 	const toast = useToast();
-	const createSessionMutation = useMutation({
-		mutationFn: createSession,
-		onSuccess: () => {
-			void queryClient.invalidateQueries({ queryKey: queryKeys.sessions.all });
-		},
-	}).mutateAsync;
+	const createSessionMutation = useCallback(
+		() => client.create(agentId, crypto.randomUUID()),
+		[client, agentId],
+	);
 	const {
 		documents,
 		dirtyPaths,
@@ -395,15 +404,29 @@ export default function App() {
 	const debugTerminalIDsRef = useRef(new Set<string>());
 	const exitedDebugTerminalIDsRef = useRef(new Set<string>());
 
-	const [tabs, setTabs] = useState<CenterTab[]>([draftChatTab()]);
+	const {
+		tabs,
+		activeTabId,
+		leftActiveId,
+		rightActiveId,
+		currentSessionId,
+		setTabs,
+		setActiveTabId,
+		setLeftActiveId,
+		setRightActiveId,
+		setCurrentSessionId,
+	} = useMainLayout({
+		tabs: [initialTab],
+		activeTabId: initialTab.id,
+		leftActiveId: initialTab.id,
+		rightActiveId: "",
+		currentSessionId: initialTab.sessionId ?? "",
+	});
+
 	const fileTabHandlesRef = useRef(new Map<string, FileTabHandle>());
-	const [activeTabId, setActiveTabId] = useState(chatTabId(""));
 	const [dragTabId, setDragTabId] = useState<string | null>(null);
-	const [leftActiveId, setLeftActiveId] = useState(chatTabId(""));
-	const [rightActiveId, setRightActiveId] = useState("");
 	const activePaneRef = useRef<"right" | undefined>(undefined);
 	const [fileViews, setFileViews] = useState<Record<string, FileView>>({});
-	const [currentSessionId, setCurrentSessionId] = useState("");
 	const [paletteOpen, setPaletteOpen] = useState(false);
 	const [paletteEditorActions, setPaletteEditorActions] =
 		useState<FileTabHandle | null>(null);
@@ -465,13 +488,13 @@ export default function App() {
 						pane,
 					});
 				}
-				return withSessionFallback(next);
+				return next;
 			});
 			// Keep the initiating editor focused. In particular, promoting a preview
 			// tab must not create and activate a second editor for the same file.
 			if (!keepActive) setActiveTabId(firstExisting?.id ?? `file:${paths[0]}`);
 		},
-		[activeTabId, tabs],
+		[activeTabId, tabs, setActiveTabId, setTabs],
 	);
 
 	const runWorkspaceEdit = useCallback(
@@ -570,13 +593,14 @@ export default function App() {
 				terminalCreatingRef.current = false;
 			}
 		},
-		[queryClient, toast],
+		[queryClient, toast, setActiveTabId, setTabs],
 	);
 
 	useEffect(() => {
 		if (!showTerminal || !terminalsQuery.data) return;
 		const entries = terminalsQuery.data;
 		const ids = new Set(entries.map((entry) => entry.id));
+		const debugTerminalIDs = [...debugTerminalIDsRef.current];
 		setTabs((prev) => {
 			const next = prev.filter(
 				(tab) => tab.type !== "terminal" || ids.has(tab.terminalId ?? ""),
@@ -584,7 +608,7 @@ export default function App() {
 			const known = new Set(
 				next.flatMap((tab) => (tab.terminalId ? [tab.terminalId] : [])),
 			);
-			for (const id of debugTerminalIDsRef.current) known.add(id);
+			for (const id of debugTerminalIDs) known.add(id);
 			for (const entry of entries) {
 				if (known.has(entry.id)) continue;
 				next.push({
@@ -596,7 +620,7 @@ export default function App() {
 			}
 			return next;
 		});
-	}, [showTerminal, terminalsQuery.data]);
+	}, [showTerminal, terminalsQuery.data, setTabs]);
 
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
@@ -688,7 +712,9 @@ export default function App() {
 								? "Show table preview"
 								: "Show data preview";
 	const sessionId =
-		activeTab.type === "chat" ? (activeTab.sessionId ?? "") : currentSessionId;
+		activeTab.type === "chat"
+			? activeTab.sessionId || sessionKey(activeTab.backendId ?? agentId, "")
+			: currentSessionId || sessionKey(agentId, "");
 	const workspaceTab =
 		(requestedWorkspaceTab === "changes" && !showChanges) ||
 		(requestedWorkspaceTab === "agents" && !showAgents) ||
@@ -701,37 +727,41 @@ export default function App() {
 	const phase = activeSession?.phase ?? "idle";
 	const usage = activeSession?.usage ?? EMPTY_USAGE;
 
-	const agentId = useQuery(agentQueries.current()).data?.agent ?? "";
-	const [switchingAgent, setSwitchingAgent] = useState<string | null>(null);
-
-	const deepLinkRef = useRef<string | null>(null);
-
 	useEffect(() => {
-		if (!agentId) return;
-		if (!sessionId && deepLinkRef.current) return;
-		const path = sessionId
-			? `/${encodeURIComponent(agentId)}/${encodeURIComponent(sessionId)}`
-			: "/";
-		if (window.location.pathname !== path) {
-			window.history.replaceState(null, "", path);
-		}
+		const ref = splitSessionKey(sessionId);
+		const path = ref.sessionId
+			? `/${encodeURIComponent(ref.backendId)}/${encodeURIComponent(ref.sessionId)}`
+			: `/${encodeURIComponent(agentId)}`;
+		if (location.pathname !== path) window.history.replaceState(null, "", path);
 	}, [agentId, sessionId]);
+	const observedKeys = JSON.stringify(
+		tabs
+			.filter((tab) => tab.type === "chat" && tab.sessionId)
+			.map((tab) => tab.sessionId!),
+	);
+	useEffect(() => observe(JSON.parse(observedKeys)), [observe, observedKeys]);
 
 	const streamEstimate =
 		phase !== "idle" ? estimateStreamingTokens(entries) : 0;
 	const outputTokens = usage.outputTokens + streamEstimate;
 
-	const activateTab = useCallback((tab: CenterTab) => {
-		setActiveTabId(tab.id);
-		if (tab.type === "chat") setCurrentSessionId(tab.sessionId ?? "");
-	}, []);
-	const keepTab = useCallback((id: string) => {
-		setTabs((current) =>
-			current.map((tab) =>
-				tab.id === id && tab.preview ? { ...tab, preview: undefined } : tab,
-			),
-		);
-	}, []);
+	const activateTab = useCallback(
+		(tab: CenterTab) => {
+			setActiveTabId(tab.id);
+			if (tab.type === "chat") setCurrentSessionId(tab.sessionId ?? "");
+		},
+		[setActiveTabId, setCurrentSessionId],
+	);
+	const keepTab = useCallback(
+		(id: string) => {
+			setTabs((current) =>
+				current.map((tab) =>
+					tab.id === id && tab.preview ? { ...tab, preview: undefined } : tab,
+				),
+			);
+		},
+		[setTabs],
+	);
 	const showCenterTab = useCallback(
 		(candidate: CenterTab, disposition: TabDisposition) => {
 			const placement = placeCenterTab(
@@ -751,10 +781,10 @@ export default function App() {
 					return next;
 				});
 			}
-			setTabs(withSessionFallback(placement.tabs));
+			setTabs(placement.tabs);
 			activateTab(candidate);
 		},
-		[activateTab, activeTab.pane, closeDocument, dirtyPaths, tabs],
+		[activateTab, activeTab.pane, closeDocument, dirtyPaths, tabs, setTabs],
 	);
 
 	const openChatTab = useCallback(
@@ -770,11 +800,17 @@ export default function App() {
 			// Allocating a session for the draft must retain its component key so
 			// unsent composer state survives. Browsing history never adopts it.
 			const draft = adoptDraft
-				? tabs.find((t) => t.type === "chat" && !t.sessionId)
+				? tabs.find(
+						(t) =>
+							t.type === "chat" &&
+							!t.sessionId &&
+							(t.backendId ?? agentId) === splitSessionKey(sid).backendId,
+					)
 				: undefined;
 			const tab: CenterTab = {
 				id: draft ? draft.id : chatTabId(sid),
 				type: "chat",
+				backendId: splitSessionKey(sid).backendId,
 				label: "Session",
 				sessionId: sid,
 				pane: draft?.pane,
@@ -790,7 +826,7 @@ export default function App() {
 			}
 			showCenterTab(tab, disposition);
 		},
-		[activateTab, showCenterTab, tabs],
+		[activateTab, showCenterTab, tabs, agentId, setTabs],
 	);
 
 	const openFile = useCallback(
@@ -835,7 +871,7 @@ export default function App() {
 			};
 			showCenterTab(tab, disposition);
 		},
-		[activateTab, keepTab, openDocument, showCenterTab, tabs],
+		[activateTab, keepTab, openDocument, showCenterTab, tabs, setTabs],
 	);
 
 	const handleFileMove = useCallback(
@@ -847,9 +883,9 @@ export default function App() {
 			setTabs((current) =>
 				current.map((tab) => moveWorkspaceTab(tab, from, to)),
 			);
-			setActiveTabId((current) => movedTabs.get(current)?.id ?? current);
-			setLeftActiveId((current) => movedTabs.get(current)?.id ?? current);
-			setRightActiveId((current) => movedTabs.get(current)?.id ?? current);
+			setActiveTabId(movedTabs.get(activeTabId)?.id ?? activeTabId);
+			setLeftActiveId(movedTabs.get(leftActiveId)?.id ?? leftActiveId);
+			setRightActiveId(movedTabs.get(rightActiveId)?.id ?? rightActiveId);
 			setFileViews((current) => {
 				let changed = false;
 				const next = { ...current };
@@ -862,13 +898,24 @@ export default function App() {
 				return changed ? next : current;
 			});
 		},
-		[moveDocuments, tabs],
+		[
+			moveDocuments,
+			tabs,
+			setRightActiveId,
+			setLeftActiveId,
+			rightActiveId,
+			setActiveTabId,
+			activeTabId,
+			setTabs,
+			leftActiveId,
+		],
 	);
 
 	const openTask = useCallback(
 		(task: TaskEntry) => {
 			if (!sessionId) return;
 			const id = `task:${sessionId}:${task.id}`;
+			const pane = activePaneRef.current;
 			setTabs((prev) =>
 				prev.some((t) => t.id === id)
 					? prev
@@ -880,13 +927,13 @@ export default function App() {
 								label: task.description,
 								sessionId,
 								taskId: task.id,
-								pane: activePaneRef.current,
+								pane,
 							},
 						],
 			);
 			setActiveTabId(id);
 		},
-		[sessionId],
+		[sessionId, setActiveTabId, setTabs],
 	);
 
 	const openDiff = useCallback(
@@ -977,14 +1024,13 @@ export default function App() {
 				!exitedDebugTerminalIDsRef.current.has(session.terminal_id)
 					? session.terminal_id
 					: undefined;
-			setTabs((current) =>
-				syncDebugTab(current, terminalId, active, activePaneRef.current),
-			);
+			const pane = activePaneRef.current;
+			setTabs((current) => syncDebugTab(current, terminalId, active, pane));
 			if (!terminalId)
 				setDebugContentView((view) => (view === "terminal" ? "output" : view));
 			queryClient.setQueryData(queryKeys.debug.session, { session });
 		},
-		[queryClient],
+		[queryClient, setTabs],
 	);
 	const debugStateQuery = useQuery({
 		queryKey: queryKeys.debug.state,
@@ -1074,9 +1120,7 @@ export default function App() {
 			const closing = tabs[idx];
 			if (!isClosableTab(closing)) return;
 			if (closing.type === "file" && closing.path) closeDocument(closing.path);
-			setTabs((prev) =>
-				withSessionFallback(prev.filter((tab) => tab.id !== id)),
-			);
+			setTabs((prev) => prev.filter((tab) => tab.id !== id));
 			setFileViews((prev) => {
 				if (!(id in prev)) return prev;
 				const next = { ...prev };
@@ -1097,7 +1141,7 @@ export default function App() {
 				activateTab(fallback);
 			}
 		},
-		[tabs, activeTabId, activateTab, closeDocument],
+		[tabs, activeTabId, activateTab, closeDocument, setTabs],
 	);
 
 	const closeTerminal = useCallback(
@@ -1227,7 +1271,17 @@ export default function App() {
 					: current,
 			);
 		}
-	}, [closeDocument, filePathRequest, openCreatedDocument, openFile, saveFile]);
+	}, [
+		closeDocument,
+		filePathRequest,
+		openCreatedDocument,
+		openFile,
+		saveFile,
+		setTabs,
+		setActiveTabId,
+		setRightActiveId,
+		setLeftActiveId,
+	]);
 
 	const openFolder = useCallback(async () => {
 		if (workspaceSwitching) return;
@@ -1394,7 +1448,7 @@ export default function App() {
 				tabId: tab && isClosableTab(tab) ? tab.id : undefined,
 			});
 		},
-		[tabs],
+		[tabs, setTabMenu],
 	);
 
 	const moveTabToPane = useCallback(
@@ -1419,7 +1473,7 @@ export default function App() {
 			);
 			activateTab(tab);
 		},
-		[activateTab, leftTabs, tabs],
+		[activateTab, leftTabs, tabs, setTabs],
 	);
 
 	// Each strip shows only its pane's tabs; drop positions are translated
@@ -1442,7 +1496,7 @@ export default function App() {
 				moveTabToPane(dragTabId, side, index);
 			}
 		},
-		[dragTabId, moveTabToPane, tabs],
+		[dragTabId, moveTabToPane, tabs, setTabs],
 	);
 
 	const handleZoneDrop = useCallback(
@@ -1542,70 +1596,59 @@ export default function App() {
 		if (request.closeTabId) closeTabNow(request.closeTabId);
 	}, [closeTabNow, saveConflict, saveDocument, toast]);
 
-	const setTerminalTitle = useCallback((id: string, title: string) => {
-		if (!title) return;
-		setTabs((prev) =>
-			prev.map((tab) =>
-				tab.type === "terminal" && tab.terminalId === id
-					? { ...tab, label: title }
-					: tab,
-			),
-		);
-	}, []);
-
-	useEffect(() => {
-		if (tabs.some((t) => t.id === activeTabId)) return;
-		activateTab(tabs[0] ?? draftChatTab());
-	}, [tabs, activeTabId, activateTab]);
+	const setTerminalTitle = useCallback(
+		(id: string, title: string) => {
+			if (!title) return;
+			setTabs((prev) =>
+				prev.map((tab) =>
+					tab.type === "terminal" && tab.terminalId === id
+						? { ...tab, label: title }
+						: tab,
+				),
+			);
+		},
+		[setTabs],
+	);
 
 	useEffect(() => {
 		activePaneRef.current = activeTab.pane;
-		if (activeTab.pane === "right") setRightActiveId(activeTab.id);
-		else setLeftActiveId(activeTab.id);
-	}, [activeTab.id, activeTab.pane]);
+	}, [activeTab.pane]);
 
-	useEffect(() => {
-		if (tabs.length === 0) return;
-		if (tabs.some((tab) => paneOf(tab) === "left")) return;
-		setTabs((prev) =>
-			prev.map((tab) => (tab.pane ? { ...tab, pane: undefined } : tab)),
-		);
-	}, [tabs]);
-
-	useEffect(() => {
-		if (!currentSessionId) return;
-		if (
-			tabs.some(
-				(tab) => tab.type === "chat" && tab.sessionId === currentSessionId,
-			)
-		) {
-			return;
-		}
-		const fallback = tabs.find((tab) => tab.type === "chat");
-		setCurrentSessionId(fallback?.sessionId ?? "");
-	}, [currentSessionId, tabs]);
-
-	const handleNewSession = useCallback(async () => {
-		try {
-			const id = await createSessionMutation();
-			openChatTab(id, "keep", true);
-		} catch (error) {
-			toast({
-				title: "Could not create session",
-				description: error instanceof Error ? error.message : String(error),
-				tone: "error",
-			});
-		}
-	}, [createSessionMutation, openChatTab, toast]);
+	const openDraft = useCallback(
+		(backend: string) => {
+			const tab =
+				tabs.find(
+					(tab) =>
+						tab.type === "chat" && !tab.sessionId && tab.backendId === backend,
+				) ?? draftChatTab(backend);
+			setTabs((current) =>
+				current.some((item) => item.id === tab.id)
+					? current
+					: [...current, tab],
+			);
+			setActiveTabId(tab.id);
+		},
+		[tabs, setActiveTabId, setTabs],
+	);
+	const handleNewSession = useCallback(
+		async () => openDraft(agentId),
+		[agentId, openDraft],
+	);
+	const handleBackendSelect = useCallback(
+		(backend: string) => {
+			selectBackend(backend);
+			openDraft(backend);
+		},
+		[selectBackend, openDraft],
+	);
 
 	const handleSessionDeleted = useCallback(
 		(id: string) => {
-			removeSession(id);
 			setCurrentSessionId((prev) => (prev === id ? "" : prev));
 			const tab = tabs.find((t) => t.type === "chat" && t.sessionId === id);
 			if (tab) closeTabNow(tab.id);
 		},
-		[removeSession, tabs, closeTabNow],
+		[tabs, closeTabNow, setCurrentSessionId],
 	);
 
 	const confirmSessionDelete = useCallback(async () => {
@@ -1614,7 +1657,7 @@ export default function App() {
 			await deleteSession(sessionDelete.id);
 			const id = sessionDelete.id;
 			queryClient.setQueryData(
-				queryKeys.sessions.list,
+				queryKeys.sessions.list(splitSessionKey(sessionDelete.id).backendId),
 				(current: SessionInfo[] = []) =>
 					current.filter((session) => session.id !== id),
 			);
@@ -1629,106 +1672,50 @@ export default function App() {
 		}
 	}, [handleSessionDeleted, queryClient, sessionDelete, toast]);
 
-	const [sessionLoad, setSessionLoad] = useState<{
-		id: string;
-		loading: boolean;
-		error: string | null;
-	}>({ id: "", loading: false, error: null });
-	const loadReqRef = useRef(0);
-	const sessionLoadRequestsRef = useRef(
-		new Map<string, Promise<string | null>>(),
-	);
-
 	const handleSessionSelect = useCallback(
 		async (id: string, disposition: TabDisposition = "keep") => {
-			const req = ++loadReqRef.current;
+			selectBackend(splitSessionKey(id).backendId);
 			openChatTab(id, disposition);
-			if (hasSession(id)) {
-				setSessionLoad({ id: "", loading: false, error: null });
-				return;
-			}
-			setSessionLoad({ id, loading: true, error: null });
-			let request = sessionLoadRequestsRef.current.get(id);
-			if (!request) {
-				request = (async () => {
-					try {
-						await loadSession(id);
-						return null;
-					} catch (error) {
-						return error instanceof Error
-							? error.message
-							: "Failed to load session.";
-					}
-				})();
-				sessionLoadRequestsRef.current.set(id, request);
-				void request.finally(() => {
-					if (sessionLoadRequestsRef.current.get(id) === request) {
-						sessionLoadRequestsRef.current.delete(id);
-					}
-				});
-			}
-			const error = await request;
-			if (loadReqRef.current !== req) return;
-			setSessionLoad({ id, loading: false, error });
 		},
-		[openChatTab, hasSession],
+		[selectBackend, openChatTab],
 	);
-
+	const draftCreations = useRef(new Map<string, Promise<string>>());
+	const createSessionForDraft = useCallback(
+		(key: string): Promise<string> => {
+			const owner = splitSessionKey(key).backendId;
+			const draft = tabs.find(
+				(tab) =>
+					tab.type === "chat" &&
+					!tab.sessionId &&
+					(tab.backendId ?? agentId) === owner,
+			);
+			const draftID = draft?.id ?? key;
+			const previous = draftCreations.current.get(draftID);
+			if (previous) return previous;
+			const request = client.create(owner, draftID).then(async (id) => {
+				const settings = drafts[key];
+				if (settings && Object.keys(settings).length)
+					await client.command(id, { type: "settings", ...settings });
+				openChatTab(id, "keep", true);
+				return id;
+			});
+			draftCreations.current.set(draftID, request);
+			void request.catch(() => draftCreations.current.delete(draftID));
+			return request;
+		},
+		[client, drafts, tabs, agentId, openChatTab],
+	);
 	useEffect(() => {
-		if (!subscribe) return;
-		return subscribe((msg) => {
-			if (msg.type !== "agent_changed") return;
-			clearSessions();
-			setTabs((prev) => [
-				draftChatTab(),
-				...prev.filter((t) => t.type !== "chat"),
-			]);
-			setActiveTabId(chatTabId(""));
-			setCurrentSessionId("");
-			const target = deepLinkRef.current;
-			deepLinkRef.current = null;
-			if (target) {
-				void handleSessionSelect(target);
-			} else {
-				void handleNewSession();
-			}
-		});
-	}, [subscribe, clearSessions, handleSessionSelect, handleNewSession]);
-
-	useEffect(() => {
-		const [agent, sid] = window.location.pathname
-			.split("/")
-			.filter(Boolean)
-			.map(decodeURIComponent);
-		(async () => {
-			deepLinkRef.current = sid ?? null;
-			try {
-				const currentState = await queryClient.fetchQuery(
-					agentQueries.current(),
-				);
-				const current = currentState.agent || BUILTIN_AGENT_ID;
-				if (!agent || agent === current) {
-					if (sid) void handleSessionSelect(sid);
-					deepLinkRef.current = null;
-					return;
-				}
-				await setCurrentAgent(agent);
-				await queryClient.invalidateQueries({
-					queryKey: queryKeys.agents.current,
-					exact: true,
-				});
-			} catch {
-				deepLinkRef.current = null;
-			}
-		})();
-		// eslint-disable-next-line react-hooks/exhaustive-deps -- initial URL only
-	}, [queryClient]);
-
-	const createSessionForDraft = useCallback(async (): Promise<string> => {
-		const id = await createSessionMutation();
-		openChatTab(id, "keep", true);
-		return id;
-	}, [createSessionMutation, openChatTab]);
+		const deleted = new Set(
+			Object.values(sessions)
+				.filter((session) => session.status === "deleted")
+				.map((session) => session.id),
+		);
+		if (tabs.some((tab) => tab.sessionId && deleted.has(tab.sessionId)))
+			setTabs((current) =>
+				current.filter((tab) => !tab.sessionId || !deleted.has(tab.sessionId)),
+			);
+	}, [sessions, tabs, setTabs]);
 
 	const sendForSession = useCallback(
 		async (
@@ -1739,7 +1726,7 @@ export default function App() {
 			intent: TurnInputIntent = "follow_up",
 		): Promise<boolean> => {
 			try {
-				const sid = key || (await createSessionForDraft());
+				const sid = isDraft(key) ? await createSessionForDraft(key) : key;
 				return sendChat(sid, text, files, images, intent);
 			} catch {
 				return false;
@@ -1764,7 +1751,7 @@ export default function App() {
 			try {
 				const id = await createSessionMutation();
 				openChatTab(id, "keep");
-				if (!sendChat(id, command)) {
+				if (!(await sendChat(id, command))) {
 					throw new Error("The chat connection is not ready");
 				}
 			} catch (error) {
@@ -1821,59 +1808,48 @@ export default function App() {
 		[focusChat, handleSend],
 	);
 
-	const visibleSessionKeys = useMemo(() => {
-		const keys = new Set<string>([sessionId]);
-		for (const tab of [leftTab, rightTab]) {
-			if (tab?.type === "chat") keys.add(tab.sessionId ?? "");
-		}
-		return [...keys];
-	}, [leftTab, rightTab, sessionId]);
-	const modeQueries = useQueries({
-		queries: visibleSessionKeys.map((key) => sessionQueries.mode(key)),
+	const visibleKeys = new Set<string>([sessionId]);
+	for (const tab of [leftTab, rightTab]) {
+		if (tab?.type === "chat")
+			visibleKeys.add(
+				tab.sessionId || sessionKey(tab.backendId ?? agentId, ""),
+			);
+	}
+	const visibleSessionKeys = [...visibleKeys];
+	const defaultQueries = useQueries({
+		queries: visibleSessionKeys.map((key) => ({
+			...backendSettingsQuery(splitSessionKey(key).backendId),
+			enabled: isDraft(key),
+		})),
 	});
-	const modeStates = useMemo<Record<string, ModeState>>(
-		() =>
-			Object.fromEntries(
-				visibleSessionKeys.flatMap((key, index) => {
-					const data = modeQueries[index]?.data;
-					return data ? [[key, data]] : [];
-				}),
-			),
-		[modeQueries, visibleSessionKeys],
+	const modeStates: Record<string, ModeState> = Object.fromEntries(
+		visibleSessionKeys.map((key, index) => {
+			const settings = isDraft(key)
+				? { ...defaultQueries[index]?.data, ...drafts[key] }
+				: sessions[key]?.settings;
+			return [
+				key,
+				{ modes: settings?.modes ?? EMPTY_MODES, mode: settings?.mode ?? "" },
+			];
+		}),
 	);
-
 	const selectModeForSession = useCallback(
 		async (key: string, next: string) => {
-			const previous = queryClient.getQueryData<ModeState>(
-				queryKeys.modes.current(key),
-			);
+			if (isDraft(key)) {
+				setDraft(key, { mode: next });
+				return;
+			}
 			try {
-				const sid = key || (await createSessionForDraft());
-				queryClient.setQueryData<ModeState>(queryKeys.modes.current(key), {
-					modes: previous?.modes ?? [],
-					mode: next,
-				});
-				const data = await setMode(sid, next);
-				queryClient.setQueryData<ModeState>(queryKeys.modes.current(sid), {
-					modes: data.modes,
-					mode: data.mode,
-				});
-				if (key !== sid) {
-					queryClient.removeQueries({
-						queryKey: queryKeys.modes.current(key),
-						exact: true,
-					});
-				}
+				await client.command(key, { type: "settings", mode: next });
 			} catch (error) {
-				queryClient.setQueryData(queryKeys.modes.current(key), previous);
 				toast({
 					title: "Could not change mode",
-					description: error instanceof Error ? error.message : String(error),
+					description: String(error),
 					tone: "error",
 				});
 			}
 		},
-		[createSessionForDraft, queryClient, toast],
+		[client, setDraft, toast],
 	);
 
 	const modes = modeStates[sessionId]?.modes ?? EMPTY_MODES;
@@ -1968,13 +1944,12 @@ export default function App() {
 			!exitedDebugTerminalIDsRef.current.has(debugSession.terminal_id)
 				? debugSession.terminal_id
 				: undefined;
-		setTabs((current) =>
-			syncDebugTab(current, terminalId, true, activePaneRef.current),
-		);
+		const pane = activePaneRef.current;
+		setTabs((current) => syncDebugTab(current, terminalId, true, pane));
 		if (terminalId) setDebugContentView("terminal");
 		showDebugDetails();
 		setActiveTabId("debug");
-	}, [debugSession, showDebugDetails]);
+	}, [debugSession, showDebugDetails, setActiveTabId, setTabs]);
 	const showDebugSession = useCallback(
 		(session: DebugSession) => {
 			if (session.terminal_id)
@@ -1989,26 +1964,40 @@ export default function App() {
 			showDebugDetails();
 			setActiveTabId("debug");
 		},
-		[applyDebugSession, invalidateDebugDetails, queryClient, showDebugDetails],
+		[
+			applyDebugSession,
+			invalidateDebugDetails,
+			queryClient,
+			showDebugDetails,
+			setActiveTabId,
+		],
 	);
 	const showDebugFailure = useCallback(
 		(session: DebugSession) => {
 			applyDebugSession(session);
 			invalidateDebugDetails();
-			setTabs((current) =>
-				syncDebugTab(current, undefined, true, activePaneRef.current),
-			);
+			const pane = activePaneRef.current;
+			setTabs((current) => syncDebugTab(current, undefined, true, pane));
 			setDebugContentView("output");
 			showDebugDetails();
 			setActiveTabId("debug");
 		},
-		[applyDebugSession, invalidateDebugDetails, showDebugDetails],
+		[
+			applyDebugSession,
+			invalidateDebugDetails,
+			showDebugDetails,
+			setActiveTabId,
+			setTabs,
+		],
 	);
-	const handleDebugTerminalExit = useCallback((id: string) => {
-		exitedDebugTerminalIDsRef.current.add(id);
-		setTabs((current) => syncDebugTab(current, undefined, false));
-		setDebugContentView("output");
-	}, []);
+	const handleDebugTerminalExit = useCallback(
+		(id: string) => {
+			exitedDebugTerminalIDsRef.current.add(id);
+			setTabs((current) => syncDebugTab(current, undefined, false));
+			setDebugContentView("output");
+		},
+		[setTabs],
+	);
 	const showWorkspaceSearch = useCallback(() => {
 		showRightPanel("files");
 		setWorkspaceSearching(true);
@@ -2204,7 +2193,7 @@ export default function App() {
 
 	const renderTabContent = (tab: CenterTab): ReactNode => {
 		if (tab.type === "chat") {
-			const key = tab.sessionId ?? "";
+			const key = tab.sessionId || sessionKey(tab.backendId ?? agentId, "");
 			const sess = key ? sessions[key] : undefined;
 			const modeState = modeStates[key];
 			return (
@@ -2229,8 +2218,6 @@ export default function App() {
 						if (!key) return;
 						if (state === "queued" || state === "sending") {
 							removeQueued(key, id);
-						} else {
-							dismissPending(key, id);
 						}
 					}}
 					onUpdateQueued={(id, text, files, images) =>
@@ -2242,21 +2229,20 @@ export default function App() {
 					onClearQueue={() => {
 						if (key) clearQueue(key);
 					}}
-					loading={sessionLoad.loading && sessionLoad.id === key}
-					loadError={sessionLoad.id === key ? sessionLoad.error : null}
+					loading={!isDraft(key) && (!sess || sess.status === "loading")}
+					loadError={sess?.status === "error" ? sess.error : null}
 					error={sess?.error ?? null}
 					onDismissError={() => {
 						if (key) dismissError(key);
 					}}
-					prompt={sess?.prompt ?? null}
-					onPromptReply={(reply) => {
-						const pending = sess?.prompt;
-						if (key && pending) respondPrompt(key, pending.id, reply);
+					prompts={sess?.prompts ?? []}
+					onPromptReply={(id, reply) => {
+						void respondPrompt(key, id, reply);
 					}}
 					onOpenFile={openFile}
 					seed={tab.id === activeTabId ? composerSeed : null}
 					onSeedConsumed={consumeComposerSeed}
-					toolProgress={toolProgress}
+					toolProgress={sess?.toolProgress ?? {}}
 				/>
 			);
 		}
@@ -2505,7 +2491,6 @@ export default function App() {
 			}}
 			onSessionDelete={(id, title) => setSessionDelete({ id, title })}
 			runningSessionIds={runningSessionIds}
-			switchingAgent={switchingAgent}
 		/>
 	);
 	const titlebarActions = (
@@ -2812,7 +2797,7 @@ export default function App() {
 				>
 					{leftPanelDocked && (
 						<div data-titlebar-agent className="min-w-0 flex-1 overflow-hidden">
-							<AgentPicker onSwitchingChange={setSwitchingAgent} />
+							<AgentPicker onSelect={handleBackendSelect} />
 						</div>
 					)}
 					{leftPanelCollapsed && (

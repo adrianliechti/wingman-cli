@@ -326,3 +326,28 @@ func TestPlanEffortOverride(t *testing.T) {
 		t.Fatalf("session plan effort overridden: %q", got)
 	}
 }
+
+func TestWebSessionSettingsDoNotChangeOtherSessionsOrDefaults(t *testing.T) {
+	a := upstreamAgent("gpt-5.4", "gpt-5.5")
+	a.options.IsolateSessionSettings = true
+	a.modelByRole[modelRoleMain] = "gpt-5.4"
+	a.sessions["one"] = &sessionState{}
+	a.sessions["two"] = &sessionState{}
+	if err := a.SetModel(context.Background(), "one", "gpt-5.5"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SetEffort(context.Background(), "one", "high"); err != nil {
+		t.Fatal(err)
+	}
+	if _, got := a.Models("one"); got != "gpt-5.5" {
+		t.Fatalf("first model: %s", got)
+	}
+	for _, sid := range []string{"two", ""} {
+		if _, got := a.Models(sid); got != "gpt-5.4" {
+			t.Fatalf("%q model changed: %s", sid, got)
+		}
+		if got, _ := a.Effort(sid); got == "high" {
+			t.Fatalf("%q effort changed", sid)
+		}
+	}
+}

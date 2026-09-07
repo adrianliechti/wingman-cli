@@ -155,9 +155,8 @@ func New(ws *code.Workspace, cfg *harness.Config, ui code.UI, options ...Options
 	a.prompts = &tool.Elicitation{Elicit: a.elicit, Confirm: a.confirm}
 
 	// MCP servers elicit through the same UI surface as the elicit tool. Their
-	// requests arrive on the transport context, which carries no session, so
-	// route them to the most recently active session (or any live one before
-	// the first turn) for display.
+	// requests may arrive without session correlation. Web embedders require
+	// an explicit session; single-client embedders retain their routing fallback.
 	if ws.MCP != nil {
 		ws.MCP.SetElicit(a.elicit)
 		tel := cfg.Telemetry
@@ -313,8 +312,10 @@ func (a *Agent) SetModel(_ context.Context, sessionID, id string) error {
 	if a.effortByRole == nil {
 		a.effortByRole = map[modelRole]string{}
 	}
-	a.modelByRole[role] = id
-	a.effortByRole[role] = ""
+	if !a.options.IsolateSessionSettings || sessionID == "" {
+		a.modelByRole[role] = id
+		a.effortByRole[role] = ""
+	}
 	// Switching models resets the reasoning effort to the new model's default:
 	// a level the previous model allowed (e.g. "max") may exceed what this one
 	// supports, so drop back to the default instead of carrying it over.
@@ -448,7 +449,9 @@ func (a *Agent) SetEffort(_ context.Context, sessionID, value string) error {
 	if a.effortByRole == nil {
 		a.effortByRole = map[modelRole]string{}
 	}
-	a.effortByRole[role] = value
+	if !a.options.IsolateSessionSettings || sessionID == "" {
+		a.effortByRole[role] = value
+	}
 	if s != nil {
 		if s.effortByRole == nil {
 			s.effortByRole = map[modelRole]string{}
@@ -708,7 +711,7 @@ func (a *Agent) Steer(_ context.Context, id string, input code.TurnInput) error 
 	if s == nil {
 		return fmt.Errorf("session %s not found", id)
 	}
-	if !s.aa.QueueInput(input.Content) {
+	if !s.aa.QueueInputWithID(input.Content, input.ID) {
 		return code.ErrNoActiveTurn
 	}
 	return nil
@@ -1033,7 +1036,7 @@ func userHooksConfigPath() string {
 }
 
 func (a *Agent) promptContext(ctx context.Context) context.Context {
-	if code.SessionIDFromContext(ctx) != "" {
+	if a.options.RequireSessionContext || code.SessionIDFromContext(ctx) != "" {
 		return ctx
 	}
 

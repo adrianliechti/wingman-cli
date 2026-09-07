@@ -1,9 +1,8 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { File, MessageSquare, Sparkles } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { fileQueries, type FileHit } from "../api/files";
-import { modelQueries, setCurrentModel, type ModelInfo } from "../api/models";
-import { queryKeys } from "../api/query";
+import { useSessionSettings, useWorkspace } from "../state/workspaceContext.ts";
 import { sessionQueries, type SessionInfo } from "../api/sessions";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { type Skill, useSkills } from "../hooks/useSkills";
@@ -29,7 +28,6 @@ interface Item {
 	run: () => void;
 }
 
-const EMPTY_MODELS: ModelInfo[] = [];
 const EMPTY_SESSIONS: SessionInfo[] = [];
 const EMPTY_FILES: FileHit[] = [];
 
@@ -51,16 +49,17 @@ export function CommandPalette({
 	onOpenFile,
 }: Props) {
 	const toast = useToast();
-	const queryClient = useQueryClient();
 	const listId = useId();
 	const [query, setQuery] = useState("");
 	const [active, setActive] = useState(0);
 	const listRef = useRef<HTMLDivElement>(null);
 	const skills = useSkills(sessionId);
-	const sessionList = useQuery(sessionQueries.list()).data ?? EMPTY_SESSIONS;
-	const models = useQuery(modelQueries.list()).data ?? EMPTY_MODELS;
-	const currentModel =
-		useQuery(modelQueries.current(sessionId)).data?.model ?? "";
+	const { backend } = useWorkspace();
+	const sessionList =
+		useQuery(sessionQueries.list(backend)).data ?? EMPTY_SESSIONS;
+	const { settings, setSettings } = useSessionSettings(sessionId);
+	const models = settings.models;
+	const currentModel = settings.model;
 	const debouncedQuery = useDebouncedValue(query.trim(), 80);
 	const fileQuery = useQuery({
 		...fileQueries.search(debouncedQuery),
@@ -72,12 +71,7 @@ export function CommandPalette({
 			: EMPTY_FILES;
 
 	const switchModel = useMutation({
-		mutationFn: (model: string) => setCurrentModel(model, sessionId),
-		onSuccess: (data, model) => {
-			queryClient.setQueryData(queryKeys.models.current(sessionId), {
-				model: data.model || model,
-			});
-		},
+		mutationFn: (model: string) => setSettings({ model }),
 		onError: (error) => {
 			toast({
 				title: "Could not change model",

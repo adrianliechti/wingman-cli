@@ -18,6 +18,7 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	codeagent "github.com/adrianliechti/wingman-agent/pkg/code/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/ansi"
+	"github.com/adrianliechti/wingman-agent/pkg/tui/clipboard"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/inline"
 )
 
@@ -145,6 +146,56 @@ func TestTUIE2ESendsAndRendersTurn(t *testing.T) {
 	messages := h.agent.Messages(h.sessionID)
 	if messages[0].Role != agent.RoleUser || messages[0].Content[0].Text != "hello e2e" {
 		t.Fatalf("user message = %+v", messages[0])
+	}
+}
+
+func TestTUIE2EPasteWaitsForExplicitSubmit(t *testing.T) {
+	model := tuiModelServer(t)
+	defer model.Close()
+	t.Setenv("WINGMAN_URL", model.URL)
+	t.Setenv("WINGMAN_MODEL", "gpt-5.4")
+	t.Setenv("WINGMAN_CALLER", "e2e")
+	const pasted = "pasted first line\r\n第二行 🦋"
+	for name, sequence := range map[string]string{
+		"Ctrl+V":       "\x16",
+		"Ctrl+Alt+V":   "\x1b\x16",
+		"CSI-u":        "\x1b[118;5:1u\x1b[118;5:3u",
+		"xterm":        "\x1b[27;5;118~",
+		"native paste": "\x1b[200~" + pasted + "\x1b[201~",
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newTUIE2EHarness(t)
+			var reads atomic.Int32
+			ready := make(chan struct{})
+			h.app.post(func() {
+				h.app.clipboardRead = func() ([]clipboard.Content, error) {
+					reads.Add(1)
+					return []clipboard.Content{{Text: pasted}}, nil
+				}
+				close(ready)
+			})
+			<-ready
+			if _, err := io.WriteString(h.input, sequence); err != nil {
+				t.Fatal(err)
+			}
+			waitForTUI(t, func() bool { return strings.Contains(h.output.Text(), "第二行") })
+			if messages := h.agent.Messages(h.sessionID); len(messages) != 0 {
+				t.Fatalf("paste submitted without Enter: %+v", messages)
+			}
+			wantReads := int32(1)
+			if name == "native paste" {
+				wantReads = 0
+			}
+			if reads.Load() != wantReads {
+				t.Fatalf("clipboard reads = %d, want %d", reads.Load(), wantReads)
+			}
+			h.postText(t, "")
+			waitForTUI(t, func() bool { return len(h.agent.Messages(h.sessionID)) >= 2 })
+			messages := h.agent.Messages(h.sessionID)
+			if text := messages[0].Content[0].Text; text != "pasted first line\n第二行 🦋" {
+				t.Fatalf("submitted paste = %q", text)
+			}
+		})
 	}
 }
 

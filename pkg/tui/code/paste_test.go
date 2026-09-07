@@ -2,11 +2,13 @@ package code
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/clipboard"
+	"github.com/adrianliechti/wingman-agent/pkg/tui/inline"
 )
 
 func TestNormalizePastedText(t *testing.T) {
@@ -139,6 +141,91 @@ func TestPasteFromClipboardUsesInjectedReader(t *testing.T) {
 
 	if got := a.editor.Text(); got != "one\ntwo" {
 		t.Fatalf("editor text = %q, want normalized paste", got)
+	}
+}
+
+func TestClipboardShortcutUsesFocusedInput(t *testing.T) {
+	for _, target := range []string{"composer", "picker", "overlay search"} {
+		for _, alt := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/alt=%t", target, alt), func(t *testing.T) {
+				a := &App{
+					agent: newUITestAgent(nil), editor: NewEditor(),
+					queue: make(chan func(), 1), quit: make(chan struct{}),
+					clipboardRead: func() ([]clipboard.Content, error) {
+						return []clipboard.Content{{Text: "hello\r\nworld"}}, nil
+					},
+				}
+				switch target {
+				case "picker":
+					a.popup = newPopup(popupList, "Pick", nil, nil)
+				case "overlay search":
+					overlay := newTwoPaneOverlay("Search", "", 0, nil, nil, nil)
+					overlay.searching = true
+					a.overlay = overlay
+				}
+				a.handleKey(inline.KeyEvent{Key: inline.KeyCtrl, Rune: 'v', Alt: alt})
+				select {
+				case fn := <-a.queue:
+					fn()
+				case <-time.After(time.Second):
+					t.Fatal("paste shortcut was swallowed before reading the clipboard")
+				}
+				switch target {
+				case "composer":
+					if a.editor.Text() != "hello\nworld" {
+						t.Fatalf("composer = %q", a.editor.Text())
+					}
+				case "picker":
+					if a.popup.query != "hello world" || a.editor.Text() != "" {
+						t.Fatalf("picker = %q; hidden composer = %q", a.popup.query, a.editor.Text())
+					}
+				case "overlay search":
+					if a.overlay.(*twoPaneOverlay).query != "hello world" || a.editor.Text() != "" {
+						t.Fatal("paste did not stay in the focused overlay search")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestDelayedClipboardDoesNotPasteIntoAnotherTarget(t *testing.T) {
+	for _, target := range []string{"session", "popup", "overlay", "prompt"} {
+		t.Run(target, func(t *testing.T) {
+			started, release := make(chan struct{}), make(chan struct{})
+			a := &App{
+				agent: newUITestAgent(nil), editor: NewEditor(), sessionID: "first",
+				queue: make(chan func(), 1), quit: make(chan struct{}),
+				clipboardRead: func() ([]clipboard.Content, error) {
+					close(started)
+					<-release
+					return []clipboard.Content{{Text: "first target only"}}, nil
+				},
+			}
+			a.pasteFromClipboard()
+			<-started
+			switch target {
+			case "session":
+				a.sessionID = "second"
+			case "popup":
+				a.popup = newPopup(popupList, "Pick", nil, nil)
+			case "overlay":
+				a.overlay = newTwoPaneOverlay("Search", "", 0, nil, nil, nil)
+			case "prompt":
+				a.askActive = true
+				a.askResponse = make(chan string, 1)
+			}
+			close(release)
+			select {
+			case fn := <-a.queue:
+				fn()
+			case <-time.After(time.Second):
+				t.Fatal("paste did not complete")
+			}
+			if a.editor.Text() != "" || (a.popup != nil && a.popup.query != "") {
+				t.Fatal("delayed clipboard text was inserted into another target")
+			}
+		})
 	}
 }
 

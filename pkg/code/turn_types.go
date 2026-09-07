@@ -61,6 +61,27 @@ type TurnInput struct {
 	ID      string          `json:"id"`
 	Content []agent.Content `json:"content"`
 	Intent  TurnInputIntent `json:"intent"`
+	// Display is the original visible input, persisted with the execution payload.
+	// A nil display denotes an older queue record and is normalized on read.
+	Display *TurnInputDisplay `json:"display,omitempty"`
+	Origin  string            `json:"origin,omitempty"`
+}
+
+type TurnInputDisplay struct {
+	Text   string   `json:"text"`
+	Files  []string `json:"files,omitempty"`
+	Images []string `json:"images,omitempty"`
+}
+
+func CloneTurnInput(input TurnInput) TurnInput {
+	input.Content = agent.CloneContent(input.Content)
+	if input.Display != nil {
+		display := *input.Display
+		display.Files = append([]string(nil), display.Files...)
+		display.Images = append([]string(nil), display.Images...)
+		input.Display = &display
+	}
+	return input
 }
 
 // TurnQueueState contains only inputs that have not started. Active and
@@ -83,12 +104,14 @@ type TurnInputSnapshot struct {
 	State    TurnInputState
 	Intent   TurnInputIntent
 	Position int
+	Input    TurnInput
 }
 
 type TurnSnapshot struct {
 	Inputs   []TurnInputSnapshot
 	Paused   bool
 	Features TurnFeatures
+	Error    error
 }
 
 type TurnEvent struct {
@@ -97,6 +120,7 @@ type TurnEvent struct {
 	State     TurnInputState
 	Intent    TurnInputIntent
 	Position  int
+	Input     TurnInput
 	// StreamEvent carries a transport lifecycle boundary separately from
 	// conversational messages.
 	StreamEvent agent.StreamEvent

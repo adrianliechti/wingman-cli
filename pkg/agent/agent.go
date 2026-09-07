@@ -53,7 +53,7 @@ type Agent struct {
 	queueMu         sync.Mutex
 	running         bool
 	finishing       bool
-	pendingInput    [][]Content
+	pendingInput    []Message
 	startOnce       sync.Once
 	toolRunsMu      sync.Mutex
 	toolRuns        map[string]*toolRun
@@ -75,7 +75,9 @@ func (a *Agent) Running() bool {
 // QueueInput adds guidance to the active run. The agent consumes queued input
 // at the next safe model boundary. It returns false when no run is active so
 // callers can preserve the input as a normal follow-up instead.
-func (a *Agent) QueueInput(input []Content) bool {
+func (a *Agent) QueueInput(input []Content) bool { return a.QueueInputWithID(input, "") }
+
+func (a *Agent) QueueInputWithID(input []Content, id string) bool {
 	if len(input) == 0 {
 		return false
 	}
@@ -85,7 +87,9 @@ func (a *Agent) QueueInput(input []Content) bool {
 	if !a.running || a.finishing {
 		return false
 	}
-	a.pendingInput = append(a.pendingInput, input)
+	message := userMessage(input)
+	message.InputID = id
+	a.pendingInput = append(a.pendingInput, message)
 	return true
 }
 
@@ -167,7 +171,9 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 		hookContext = append(hookContext, out.AdditionalContext...)
 	}
 
-	messages := []Message{userMessage(input)}
+	message := userMessage(input)
+	message.InputID = InputIDFromContext(ctx)
+	messages := []Message{message}
 	if len(hookContext) > 0 {
 		messages = append(messages, hiddenContextMessage(strings.Join(hookContext, "\n\n")))
 	}
@@ -426,7 +432,7 @@ func (a *Agent) Send(ctx context.Context, input []Content) (iter.Seq2[Message, e
 
 			queuedMessages := make([]Message, 0, len(queued))
 			for _, in := range queued {
-				queuedMessages = append(queuedMessages, userMessage(in))
+				queuedMessages = append(queuedMessages, in)
 			}
 			if err := a.appendMessages(queuedMessages...); err != nil {
 				stop(err)
@@ -643,7 +649,7 @@ func (a *Agent) finishTurn(turnID string, status RuntimeStatus, outcomeErr error
 	a.finishing = true
 	queuedMessages := make([]Message, 0, len(a.pendingInput))
 	for _, input := range a.pendingInput {
-		queuedMessages = append(queuedMessages, userMessage(input))
+		queuedMessages = append(queuedMessages, input)
 	}
 	a.pendingInput = nil
 	a.queueMu.Unlock()

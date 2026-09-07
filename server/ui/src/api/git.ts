@@ -1,3 +1,4 @@
+import { scopedFetch } from "./http.ts";
 import type {
 	CompareMode,
 	GitBranches,
@@ -119,7 +120,7 @@ export async function fetchGitComparison(
 	].join("\n");
 
 	try {
-		const response = await fetch(endpoint, { signal });
+		const response = await scopedFetch(endpoint, { signal });
 		if (!response.ok) throw await responseError(response, requestContext);
 		return (await response.json()) as GitCompare;
 	} catch (value) {

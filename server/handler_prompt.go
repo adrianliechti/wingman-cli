@@ -2,136 +2,107 @@ package server
 
 import (
 	"context"
-
-	"github.com/google/uuid"
+	"errors"
+	"sort"
 
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
+	"github.com/google/uuid"
 )
 
 type pendingPrompt struct {
-	sid     string
-	kind    string
-	message string
-	fields  []tool.ElicitField
-	reply   chan ClientMessage
+	view  PromptView
+	reply chan Command
 }
 
-func (s *Server) Elicit(ctx context.Context, req tool.ElicitRequest) (tool.ElicitResult, error) {
-	reply, err := s.prompt(ctx, PromptKindAsk, req.Message, req.Fields)
+func (b *backendRuntime) Elicit(ctx context.Context, req tool.ElicitRequest) (tool.ElicitResult, error) {
+	reply, err := b.prompt(ctx, PromptKindAsk, req.Message, req.Fields)
 	if err != nil {
 		return tool.ElicitResult{}, err
 	}
-
-	switch tool.ElicitAction(reply.Action) {
-	case tool.ElicitAccept:
-		return tool.ElicitResult{Action: tool.ElicitAccept, Content: reply.Content}, nil
-	case tool.ElicitDecline:
-		return tool.ElicitResult{Action: tool.ElicitDecline}, nil
-	case tool.ElicitCancel:
-		return tool.ElicitResult{Action: tool.ElicitCancel}, nil
-	}
-
-	return tool.ElicitResult{Action: tool.ElicitCancel}, nil
+	return tool.ElicitResult{Action: tool.ElicitAction(reply.Action), Content: reply.Content}, nil
 }
 
-func (s *Server) Confirm(ctx context.Context, message string) (bool, error) {
+func (b *backendRuntime) Confirm(ctx context.Context, message string) (bool, error) {
 	sid := code.SessionIDFromContext(ctx)
-
-	s.promptsMu.Lock()
-	all := s.confirmAll[sid]
-	s.promptsMu.Unlock()
+	if sid == "" {
+		return false, errors.New("prompt requires an explicit session")
+	}
+	c := b.session(sid)
+	c.mu.Lock()
+	all := c.confirmAll && c.state.Status != "deleted" && ctx.Err() == nil && b.ctx.Err() == nil
+	c.mu.Unlock()
 	if all {
 		return true, nil
 	}
-
-	reply, err := s.prompt(ctx, PromptKindConfirm, message, nil)
+	reply, err := b.prompt(ctx, PromptKindConfirm, message, nil)
 	if err != nil {
 		return false, err
 	}
-
-	approved := tool.ElicitAction(reply.Action) == tool.ElicitAccept
-	if approved && reply.Scope == PromptScopeSession {
-		s.promptsMu.Lock()
-		s.confirmAll[sid] = true
-		s.promptsMu.Unlock()
-	}
-
-	return approved, nil
+	return reply.Action == string(tool.ElicitAccept), nil
 }
 
-func (s *Server) prompt(ctx context.Context, kind, message string, fields []tool.ElicitField) (ClientMessage, error) {
+func (b *backendRuntime) prompt(ctx context.Context, kind, message string, fields []tool.ElicitField) (Command, error) {
 	sid := code.SessionIDFromContext(ctx)
-	id := uuid.NewString()
-	p := pendingPrompt{
-		sid:     sid,
-		kind:    kind,
-		message: message,
-		fields:  fields,
-		reply:   make(chan ClientMessage, 1),
+	if sid == "" {
+		return Command{}, errors.New("prompt requires an explicit session")
 	}
-
-	s.promptsMu.Lock()
-	s.pendingPrompts[id] = p
-	s.promptsMu.Unlock()
-
-	defer func() {
-		s.promptsMu.Lock()
-		delete(s.pendingPrompts, id)
-		s.promptsMu.Unlock()
-		s.sendSession(sid, Frame{Type: EvtPromptCancel, PromptID: id})
-	}()
-
-	s.sendSession(sid, Frame{
-		Type:         EvtPrompt,
-		PromptID:     id,
-		PromptKind:   kind,
-		Message:      message,
-		PromptFields: fields,
-	})
-
+	c := b.session(sid)
+	id := uuid.NewString()
+	p := pendingPrompt{view: PromptView{ID: id, Kind: kind, Message: message, Fields: fields}, reply: make(chan Command, 1)}
+	c.mu.Lock()
+	if c.state.Status == "deleted" {
+		c.mu.Unlock()
+		return Command{}, errors.New("session deleted")
+	}
+	c.prompts[id] = p
+	c.publishPromptsLocked()
+	c.mu.Unlock()
+	defer func() { c.mu.Lock(); delete(c.prompts, id); c.publishPromptsLocked(); c.mu.Unlock() }()
 	select {
 	case reply := <-p.reply:
 		return reply, nil
 	case <-ctx.Done():
-		return ClientMessage{}, ctx.Err()
+		return Command{}, ctx.Err()
+	case <-b.ctx.Done():
+		return Command{}, b.ctx.Err()
 	}
 }
 
-func (s *Server) resolvePrompt(msg ClientMessage) {
-	switch tool.ElicitAction(msg.Action) {
+func (c *sessionController) publishPromptsLocked() {
+	c.state.Prompts = make([]PromptView, 0, len(c.prompts))
+	for _, p := range c.prompts {
+		c.state.Prompts = append(c.state.Prompts, p.view)
+	}
+	sort.Slice(c.state.Prompts, func(i, j int) bool { return c.state.Prompts[i].ID < c.state.Prompts[j].ID })
+	c.publishStateLocked()
+}
+
+func (c *sessionController) resolvePrompt(command Command) error {
+	switch tool.ElicitAction(command.Action) {
 	case tool.ElicitAccept, tool.ElicitDecline, tool.ElicitCancel:
 	default:
-		return
+		return errors.New("invalid prompt action")
 	}
-	s.promptsMu.Lock()
-	p, ok := s.pendingPrompts[msg.PromptID]
-	s.promptsMu.Unlock()
-	if !ok {
-		return
-	}
-	select {
-	case p.reply <- msg:
-	default:
-	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.resolvePromptLocked(command)
 }
 
-func (s *Server) pendingPromptFramesFor(sid string) []Frame {
-	s.promptsMu.Lock()
-	defer s.promptsMu.Unlock()
-	var out []Frame
-	for id, p := range s.pendingPrompts {
-		if p.sid != sid {
-			continue
-		}
-		out = append(out, Frame{
-			Type:         EvtPrompt,
-			Session:      sid,
-			PromptID:     id,
-			PromptKind:   p.kind,
-			Message:      p.message,
-			PromptFields: p.fields,
-		})
+func (c *sessionController) resolvePromptLocked(command Command) error {
+	if c.state.Status == "deleted" || c.backend.ctx.Err() != nil {
+		return errors.New("session closed")
 	}
-	return out
+	p, ok := c.prompts[command.PromptID]
+	if !ok {
+		return errors.New("prompt already resolved or expired")
+	}
+	// Removal is the atomic winner selection for responses from multiple clients.
+	delete(c.prompts, command.PromptID)
+	if p.view.Kind == PromptKindConfirm && command.Action == string(tool.ElicitAccept) && command.Scope == PromptScopeSession {
+		c.confirmAll = true
+	}
+	p.reply <- command
+	c.publishPromptsLocked()
+	return nil
 }

@@ -59,15 +59,15 @@ interface Props {
 		text: string,
 		files?: string[],
 		images?: string[],
-	) => boolean;
+	) => boolean | Promise<boolean>;
 	onResumeQueue?: () => void;
 	onClearQueue?: () => void;
 	loading?: boolean;
 	loadError?: string | null;
 	error?: string | null;
 	onDismissError?: () => void;
-	prompt?: PendingPrompt | null;
-	onPromptReply?: (reply: PromptReply) => void;
+	prompts?: PendingPrompt[];
+	onPromptReply?: (id: string, reply: PromptReply) => void;
 	onOpenFile?: (path: string, line?: number) => void;
 	seed?: {
 		text: string;
@@ -133,7 +133,7 @@ export function ChatPanel({
 	loadError,
 	error,
 	onDismissError,
-	prompt,
+	prompts = [],
 	onPromptReply,
 	onOpenFile,
 	seed,
@@ -451,7 +451,7 @@ export function ChatPanel({
 			let sent = false;
 			try {
 				if (editingQueueId && onUpdateQueued) {
-					sent = onUpdateQueued(
+					sent = await onUpdateQueued(
 						editingQueueId,
 						text,
 						files.length > 0 ? files : undefined,
@@ -813,12 +813,16 @@ export function ChatPanel({
 							</button>
 						</div>
 					)}
-					{prompt && onPromptReply ? (
-						<PromptBar
-							key={prompt.id}
-							prompt={prompt}
-							onReply={onPromptReply}
-						/>
+					{prompts.length > 0 && onPromptReply ? (
+						<>
+							{prompts.map((prompt) => (
+								<PromptBar
+									key={prompt.id}
+									prompt={prompt}
+									onReply={(reply) => onPromptReply(prompt.id, reply)}
+								/>
+							))}
+						</>
 					) : (
 						<div
 							ref={composerRef}

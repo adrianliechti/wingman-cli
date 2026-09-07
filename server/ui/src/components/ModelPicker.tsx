@@ -1,13 +1,6 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { useCallback, useMemo, useRef, useState } from "react";
-import {
-	modelQueries,
-	setCurrentEffort,
-	setCurrentModel,
-	type EffortState,
-	type ModelInfo,
-} from "../api/models";
-import { queryKeys } from "../api/query";
+import { useSessionSettings } from "../state/workspaceContext.ts";
 import { ModelProviderIcon } from "./ModelProviderIcon";
 import { useToast } from "./ui/Feedback";
 import { FloatingSurface } from "./ui/Floating";
@@ -16,20 +9,13 @@ interface Props {
 	sessionId?: string;
 }
 
-const EMPTY_MODELS: ModelInfo[] = [];
-const EMPTY_EFFORTS: string[] = [];
-
 export function ModelPicker({ sessionId }: Props) {
 	const toast = useToast();
-	const queryClient = useQueryClient();
-	const models = useQuery(modelQueries.list()).data ?? EMPTY_MODELS;
-	const currentModel = useQuery(modelQueries.current(sessionId)).data;
-	const currentEffort = useQuery(modelQueries.effort(sessionId)).data;
-	const model = currentModel?.model ?? "";
-	const effort = currentEffort?.effort || "auto";
-	const effortOptions = Array.isArray(currentEffort?.options)
-		? currentEffort.options
-		: EMPTY_EFFORTS;
+	const { settings, setSettings } = useSessionSettings(sessionId);
+	const models = settings.models;
+	const model = settings.model;
+	const effort = settings.effort || "auto";
+	const effortOptions = settings.efforts;
 	const [open, setOpen] = useState(false);
 	const [dragPct, setDragPct] = useState<number | null>(null);
 	const [dragging, setDragging] = useState(false);
@@ -37,12 +23,7 @@ export function ModelPicker({ sessionId }: Props) {
 	const trackRef = useRef<HTMLDivElement>(null);
 
 	const modelMutation = useMutation({
-		mutationFn: (id: string) => setCurrentModel(id, sessionId),
-		onSuccess: (data, id) => {
-			queryClient.setQueryData(queryKeys.models.current(sessionId), {
-				model: data.model || id,
-			});
-		},
+		mutationFn: (id: string) => setSettings({ model: id }),
 		onError: (error) =>
 			toast({
 				title: "Could not change model",
@@ -51,16 +32,7 @@ export function ModelPicker({ sessionId }: Props) {
 			}),
 	});
 	const effortMutation = useMutation({
-		mutationFn: (value: string) => setCurrentEffort(value, sessionId),
-		onSuccess: (data, value) => {
-			queryClient.setQueryData<EffortState>(
-				queryKeys.models.effort(sessionId),
-				(current) => ({
-					...current,
-					effort: data.effort || value,
-				}),
-			);
-		},
+		mutationFn: (value: string) => setSettings({ effort: value }),
 		onError: (error) =>
 			toast({
 				title: "Could not change effort",

@@ -6,7 +6,6 @@ import {
 	moveTab,
 	placeCenterTab,
 	syncDebugTab,
-	withSessionFallback,
 } from "../src/mainLayout.ts";
 
 const chat = (sessionId = "s1"): CenterTab => ({
@@ -95,15 +94,6 @@ test("preview replacement stays within the candidate's pane", () => {
 	assert.equal(tabs[1].preview, true);
 });
 
-test("withSessionFallback prepends a draft chat when none remains", () => {
-	const tabs = withSessionFallback([file("a.go")]);
-	assert.deepEqual(
-		tabs.map((t) => t.id),
-		["chat:", "file:a.go"],
-	);
-	assert.equal(withSessionFallback([chat()]).length, 1);
-});
-
 test("syncDebugTab absorbs the matching terminal tab", () => {
 	const tabs = syncDebugTab([chat(), terminal("t1")], "t1", true);
 	assert.deepEqual(
@@ -144,6 +134,69 @@ test("moveTab is a no-op for same position or unknown ids", () => {
 	assert.equal(moveTab(tabs, "missing", 1), tabs);
 });
 
-test("draftChatTab id stays stable", () => {
-	assert.equal(draftChatTab().id, "chat:");
+test("new drafts have distinct request identities", () => {
+	const first = draftChatTab();
+	const second = draftChatTab();
+	assert.notEqual(first.id, second.id);
+	assert.equal(first.backendId, "wingman");
+});
+
+test("layout reducer closes a selected session and repairs both pane selections atomically", async () => {
+	const { layoutReducer } = await import("../src/mainLayout.ts");
+	const first = chat("one");
+	const second = { ...chat("two"), pane: "right" as const };
+	const next = layoutReducer(
+		{
+			tabs: [first, second],
+			activeTabId: second.id,
+			leftActiveId: first.id,
+			rightActiveId: second.id,
+			currentSessionId: "two",
+		},
+		{ field: "tabs", value: [first], fallbackId: "unused" },
+	);
+	assert.equal(next.activeTabId, first.id);
+	assert.equal(next.currentSessionId, "one");
+	assert.equal(next.rightActiveId, "");
+});
+test("layout reducer promotes the remaining pane after the last left tab closes", async () => {
+	const { layoutReducer } = await import("../src/mainLayout.ts");
+	const first = chat("one");
+	const second = { ...chat("two"), pane: "right" as const };
+	const next = layoutReducer(
+		{
+			tabs: [first, second],
+			activeTabId: second.id,
+			leftActiveId: first.id,
+			rightActiveId: second.id,
+			currentSessionId: "two",
+		},
+		{ field: "tabs", value: [second], fallbackId: "unused" },
+	);
+	assert.equal(next.tabs[0].pane, undefined);
+	assert.equal(next.leftActiveId, second.id);
+	assert.equal(next.rightActiveId, "");
+});
+
+test("closing the final session retains its backend and reducer replay retains draft identity", async () => {
+	const { layoutReducer } = await import("../src/mainLayout.ts");
+	const last = { ...chat("native"), backendId: "two" };
+	const state = {
+		tabs: [last],
+		activeTabId: last.id,
+		leftActiveId: last.id,
+		rightActiveId: "",
+		currentSessionId: "native",
+	};
+	const action = {
+		field: "tabs",
+		value: [],
+		fallbackId: "event-identity",
+	} as const;
+	const first = layoutReducer(state, { ...action, value: [] });
+	const replay = layoutReducer(state, { ...action, value: [] });
+	assert.deepEqual(first, replay);
+	assert.equal(first.tabs[0].backendId, "two");
+	assert.equal(first.tabs[0].sessionId, "");
+	assert.equal(first.activeTabId, first.tabs[0].id);
 });

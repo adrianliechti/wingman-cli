@@ -1,3 +1,4 @@
+import { splitSessionKey } from "../state/sessionStore.ts";
 import { queryOptions } from "@tanstack/react-query";
 import { fetchJSON } from "./http.ts";
 import { queryKeys } from "./query.ts";
@@ -16,7 +17,7 @@ export function skillsQuery(sessionId?: string) {
 		staleTime: 0,
 		queryFn: ({ signal }) => {
 			const endpoint = sessionId
-				? `/api/skills?session=${encodeURIComponent(sessionId)}`
+				? `/api/skills?backend=${encodeURIComponent(splitSessionKey(sessionId).backendId)}&session=${encodeURIComponent(splitSessionKey(sessionId).sessionId)}`
 				: "/api/skills";
 			return fetchJSON<Skill[]>(endpoint, { signal });
 		},

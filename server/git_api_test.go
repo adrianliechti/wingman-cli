@@ -41,7 +41,7 @@ func TestGitAPIStageCommitPushAndPull(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.Close()
-	web := httptest.NewServer(app)
+	web := httptest.NewServer(scopedTestHandler(app))
 	defer web.Close()
 
 	status := getGitStatus(t, web.URL)
@@ -138,7 +138,7 @@ func TestGitAPIBranchFetchIsExplicit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.Close()
-	web := httptest.NewServer(app)
+	web := httptest.NewServer(scopedTestHandler(app))
 	defer web.Close()
 
 	postGit(t, web.URL, "stage", "")
@@ -176,7 +176,7 @@ func TestGitAPIInitCreatesRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.Close()
-	web := httptest.NewServer(app)
+	web := httptest.NewServer(scopedTestHandler(app))
 	defer web.Close()
 
 	res, err := http.Get(web.URL + "/api/git/status")
@@ -232,7 +232,7 @@ func TestGitAPIInitRemovesDanglingShadowPointer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.Close()
-	web := httptest.NewServer(app)
+	web := httptest.NewServer(scopedTestHandler(app))
 	defer web.Close()
 
 	caps := getCapabilities(t, web.URL)
@@ -260,7 +260,7 @@ func TestGitAPIRejectsInvalidPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.Close()
-	web := httptest.NewServer(app)
+	web := httptest.NewServer(scopedTestHandler(app))
 	defer web.Close()
 
 	res, err := http.Post(web.URL+"/api/git/stage", "application/json", strings.NewReader(`{"paths":["../outside"]}`))
@@ -289,7 +289,7 @@ func TestGitAPIStageAll(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.Close()
-	web := httptest.NewServer(app)
+	web := httptest.NewServer(scopedTestHandler(app))
 	defer web.Close()
 
 	postGit(t, web.URL, "stage", "")
@@ -310,7 +310,7 @@ func TestGitAPIRejectsLooseJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.Close()
-	web := httptest.NewServer(app)
+	web := httptest.NewServer(scopedTestHandler(app))
 	defer web.Close()
 
 	for name, body := range map[string]string{
@@ -356,7 +356,7 @@ func TestGitAPIHistoryAndCompare(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.Close()
-	web := httptest.NewServer(app)
+	web := httptest.NewServer(scopedTestHandler(app))
 	defer web.Close()
 
 	postGit(t, web.URL, "stage", `{"paths":["base.txt"]}`)

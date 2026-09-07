@@ -1036,6 +1036,12 @@ func (a *App) handleKey(ev inline.KeyEvent) {
 	if ev.Key != inline.KeyCtrl || ev.Rune != 'c' {
 		a.disarmQuitGate()
 	}
+	// Clipboard shortcuts and terminal paste must use the same focused target,
+	// including picker queries and overlay search fields.
+	if ev.Key == inline.KeyCtrl && ev.Rune == 'v' {
+		a.pasteFromClipboard()
+		return
+	}
 
 	if a.overlay != nil {
 		if a.overlay.HandleKey(ev) {
@@ -1097,9 +1103,6 @@ func (a *App) handleKey(ev inline.KeyEvent) {
 			return
 		case 'l':
 			a.clearChat()
-			return
-		case 'v':
-			a.pasteFromClipboard()
 			return
 		case 'p':
 			a.showCommandCenter()
@@ -1371,10 +1374,16 @@ func (a *App) copyLastResponse() {
 }
 
 func (a *App) pasteFromClipboard() {
+	sessionID, popup, overlay, askResponse := a.sessionID, a.popup, a.overlay, a.askResponse
 	go func() {
 		contents, err := a.readClipboard()
 
 		a.post(func() {
+			// OS clipboard access can be slow. Never deliver it to a session or
+			// prompt the user opened after pressing paste.
+			if a.sessionID != sessionID || a.popup != popup || a.overlay != overlay || a.askResponse != askResponse {
+				return
+			}
 			a.applyClipboardContents(contents, err)
 		})
 	}()

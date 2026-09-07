@@ -20,26 +20,25 @@ func TestSchedulesAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.Close()
-	web := httptest.NewServer(app)
+	web := httptest.NewServer(scopedTestHandler(app))
 	defer web.Close()
 
-	res, err := http.Post(web.URL+"/api/sessions", "application/json", strings.NewReader("{}"))
+	res, err := http.Post(web.URL+"/api/v2/backends/wingman/sessions", "application/json", strings.NewReader(`{"id":"create-test","type":"create"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var created struct {
-		ID string `json:"id"`
-	}
-	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
+	var receipt Receipt
+	if err := json.NewDecoder(res.Body).Decode(&receipt); err != nil {
 		t.Fatal(err)
 	}
 	res.Body.Close()
+	created := struct{ ID string }{receipt.Ref.SessionID}
 
 	if got := getSchedules(t, web.URL, created.ID); len(got) != 0 {
 		t.Fatalf("schedules = %+v, want empty", got)
 	}
 
-	store := app.sessionSchedules(created.ID)
+	store := app.runtimes["wingman"].sessionSchedules(created.ID)
 	if store == nil {
 		t.Fatal("session has no schedule store")
 	}
@@ -95,7 +94,7 @@ func TestSchedulesAPI(t *testing.T) {
 		t.Fatalf("resumed schedule = %+v", got[0])
 	}
 
-	req, _ := http.NewRequest(http.MethodDelete, web.URL+"/api/sessions/"+created.ID+"/schedules/nope", nil)
+	req, _ := http.NewRequest(http.MethodDelete, web.URL+"/api/v2/backends/wingman/sessions/"+created.ID+"/schedules/nope", nil)
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +104,7 @@ func TestSchedulesAPI(t *testing.T) {
 		t.Fatalf("delete unknown schedule status = %d, want 404", res.StatusCode)
 	}
 
-	req, _ = http.NewRequest(http.MethodDelete, web.URL+"/api/sessions/"+created.ID+"/schedules/job-1", nil)
+	req, _ = http.NewRequest(http.MethodDelete, web.URL+"/api/v2/backends/wingman/sessions/"+created.ID+"/schedules/job-1", nil)
 	res, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +123,7 @@ func postScheduleAction(t *testing.T, baseURL, sessionID, scheduleID, action str
 	t.Helper()
 
 	res, err := http.Post(
-		baseURL+"/api/sessions/"+sessionID+"/schedules/"+scheduleID+"/"+action,
+		baseURL+"/api/v2/backends/wingman/sessions/"+sessionID+"/schedules/"+scheduleID+"/"+action,
 		"application/json",
 		nil,
 	)
@@ -137,7 +136,7 @@ func postScheduleAction(t *testing.T, baseURL, sessionID, scheduleID, action str
 func getSchedules(t *testing.T, baseURL, sessionID string) []ScheduleEntry {
 	t.Helper()
 
-	res, err := http.Get(baseURL + "/api/sessions/" + sessionID + "/schedules")
+	res, err := http.Get(baseURL + "/api/v2/backends/wingman/sessions/" + sessionID + "/schedules")
 	if err != nil {
 		t.Fatal(err)
 	}

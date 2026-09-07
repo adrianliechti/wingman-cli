@@ -22,13 +22,20 @@ func TestLauncherSmoke(t *testing.T) {
 
 	get := func(path string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
-		app.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		req := httptest.NewRequest("GET", path, nil)
+		if app.server != nil {
+			req.Header.Set("X-Wingman-Instance", app.server.InstanceID())
+		}
+		app.ServeHTTP(rec, req)
 		return rec
 	}
 
 	post := func(path, body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest("POST", path, strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
+		if app.server != nil {
+			req.Header.Set("X-Wingman-Instance", app.server.InstanceID())
+		}
 		rec := httptest.NewRecorder()
 		app.ServeHTTP(rec, req)
 		return rec
@@ -83,6 +90,13 @@ func TestLauncherSmoke(t *testing.T) {
 		t.Fatalf("second open should fail")
 	}
 
+	stale := httptest.NewRequest("POST", "/app/workspaces/open", strings.NewReader(`{"path":"`+workspace+`","replace":true}`))
+	stale.Header.Set("X-Wingman-Instance", "old-instance")
+	rejected := httptest.NewRecorder()
+	app.ServeHTTP(rejected, stale)
+	if rejected.Code != http.StatusConflict {
+		t.Fatalf("stale workspace replacement: %d", rejected.Code)
+	}
 	replacement := t.TempDir()
 	if rec := post("/app/workspaces/open", `{"path":"`+replacement+`","replace":true}`); rec.Code != http.StatusNoContent {
 		t.Fatalf("replace workspace: %d %q", rec.Code, rec.Body.String())

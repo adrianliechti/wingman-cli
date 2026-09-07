@@ -91,14 +91,13 @@ func emitE2ETabNoop(w http.ResponseWriter) {
 func (m *webE2EModel) handleTool(w http.ResponseWriter) {
 	if m.toolRequests.Add(1) == 1 {
 		args, _ := json.Marshal(map[string]any{
-			"file_path": m.filePath,
-			"content":   "created by the browser e2e test\n",
+			"edits": []map[string]any{{"file_path": m.filePath, "old_string": "", "new_string": "created by the browser e2e test\n"}},
 		})
 		emitE2EEvent(w, map[string]any{
 			"type": "response.output_item.done", "sequence_number": 1, "output_index": 0,
 			"item": map[string]any{
 				"type": "function_call", "id": "fc_write", "call_id": "call_write",
-				"name": "write", "arguments": string(args), "status": "completed",
+				"name": "edit", "arguments": string(args), "status": "completed",
 			},
 		})
 		emitE2EEvent(w, map[string]any{
@@ -251,6 +250,8 @@ func (m *webE2EModel) handler(w http.ResponseWriter, r *http.Request) {
 			close(m.steerRelease)
 		}
 		w.WriteHeader(http.StatusNoContent)
+	case "/model-stats":
+		writeJSON(w, map[string]int32{"requests": m.requests.Load()})
 	case "/cancelled":
 		select {
 		case <-m.cancelObserved:
@@ -394,6 +395,7 @@ func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
 	cmd.Dir = filepath.Join("ui")
 	cmd.Env = append(os.Environ(),
 		"E2E_BASE_URL="+web.URL,
+		"E2E_INSTANCE="+app.scope.InstanceID,
 		"E2E_CONTROL_URL="+modelServer.URL,
 		"E2E_WORKSPACE="+workDir,
 	)

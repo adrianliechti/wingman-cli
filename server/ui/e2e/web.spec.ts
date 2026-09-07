@@ -1,3 +1,4 @@
+import { emptySession, sessionKey } from "../src/state/sessionStore.ts";
 import {
 	expect,
 	test,
@@ -9,6 +10,69 @@ import AxeBuilder from "@axe-core/playwright";
 import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+
+test.use({
+	extraHTTPHeaders: { "X-Wingman-Instance": process.env.E2E_INSTANCE ?? "" },
+});
+
+async function mockSavedSessions(
+	page: Page,
+	sessions: { id: string; title: string; updated_at: string }[],
+	loaded: string[] = [],
+	backend = "wingman",
+) {
+	const scope = await (await page.request.get("/api/v2/bootstrap")).json();
+	await page.route(
+		new RegExp(`/api/v2/backends/${backend}/sessions$`),
+		async (route) => {
+			if (route.request().method() === "GET")
+				await route.fulfill({ json: sessions });
+			else await route.continue();
+		},
+	);
+	await page.routeWebSocket(/\/api\/v2\/events/, (socket) => {
+		const server = socket.connectToServer();
+		socket.onMessage((message) => {
+			const command = JSON.parse(String(message));
+			if (
+				command.type === "subscribe" &&
+				command.ref.backendId === backend &&
+				sessions.some((session) => session.id === command.ref.sessionId)
+			) {
+				const id = command.ref.sessionId;
+				if (!loaded.includes(id)) loaded.push(id);
+				socket.send(
+					JSON.stringify({
+						type: "session.snapshot",
+						subscriptionId: command.subscriptionId,
+						ref: {
+							workspaceId: scope.workspaceId,
+							backendId: backend,
+							sessionId: id,
+						},
+						epoch: `fixture:${id}`,
+						revision: 0,
+						entries: [],
+						state: {
+							...emptySession(sessionKey(backend, id)),
+							status: "ready",
+						},
+					}),
+				);
+			} else server.send(message);
+		});
+	});
+}
+function sessionRow(page: Page, id: string) {
+	return page.locator(
+		`[data-session-id=${JSON.stringify(sessionKey("wingman", id))}]`,
+	);
+}
+function sessionTab(page: Page, id: string) {
+	return page.locator(
+		`[data-center-tab=${JSON.stringify(`chat:${sessionKey("wingman", id)}`)}]`,
+	);
+}
 
 function controlURL(): string {
 	const url = process.env.E2E_CONTROL_URL;
@@ -27,6 +91,17 @@ async function composer(page: Page) {
 	const input = page.getByPlaceholder("Message Wingman…");
 	await expect(input).toBeVisible();
 	return input;
+}
+
+async function resetCompletionFile(request: APIRequestContext) {
+	// Browser contexts are isolated, but these tests share the saved workspace.
+	const original = await request.get("/api/files/read?path=completion.go");
+	expect(original.ok()).toBeTruthy();
+	const { revision } = await original.json();
+	const reset = await request.post("/api/files/write", {
+		data: { path: "completion.go", content: "package main\n", revision },
+	});
+	expect(reset.ok()).toBeTruthy();
 }
 
 async function openTabFixture(page: Page, file: RegExp, lineText: string) {
@@ -392,25 +467,7 @@ test("reuses and promotes preview tabs while browsing sessions", async ({
 		},
 	];
 	const loadRequests: string[] = [];
-	let releaseLoads = () => {};
-	const loadsReleased = new Promise<void>((resolve) => {
-		releaseLoads = resolve;
-	});
-	await page.route(/\/api\/sessions$/, async (route) => {
-		if (route.request().method() === "GET") {
-			await route.fulfill({ json: savedSessions });
-			return;
-		}
-		await route.fulfill({ json: {} });
-	});
-	await page.route(
-		/\/api\/sessions\/preview-session-[^/]+\/load$/,
-		async (route) => {
-			loadRequests.push(route.request().url());
-			await loadsReleased;
-			await route.fulfill({ status: 204 });
-		},
-	);
+	await mockSavedSessions(page, savedSessions, loadRequests);
 
 	const input = await composer(page);
 	await page.getByLabel("Show Agent Sessions").click();
@@ -418,19 +475,13 @@ test("reuses and promotes preview tabs while browsing sessions", async ({
 		.getByRole("tablist", { name: "Open tabs" })
 		.getByRole("tab");
 	const initialTabs = await tabs.count();
-	const draftTab = page.locator('[data-center-tab="chat:"]');
-	const firstSession = page.locator('[data-session-id="preview-session-one"]');
-	const secondSession = page.locator('[data-session-id="preview-session-two"]');
-	const thirdSession = page.locator(
-		'[data-session-id="preview-session-three"]',
-	);
-	const firstTab = page.locator('[data-center-tab="chat:preview-session-one"]');
-	const secondTab = page.locator(
-		'[data-center-tab="chat:preview-session-two"]',
-	);
-	const thirdTab = page.locator(
-		'[data-center-tab="chat:preview-session-three"]',
-	);
+	const draftTab = page.locator('[data-center-tab^="draft:"]');
+	const firstSession = sessionRow(page, "preview-session-one");
+	const secondSession = sessionRow(page, "preview-session-two");
+	const thirdSession = sessionRow(page, "preview-session-three");
+	const firstTab = sessionTab(page, "preview-session-one");
+	const secondTab = sessionTab(page, "preview-session-two");
+	const thirdTab = sessionTab(page, "preview-session-three");
 
 	await firstSession.click();
 	await expect(firstTab).toHaveAttribute("data-tab-preview", "true");
@@ -456,44 +507,27 @@ test("reuses and promotes preview tabs while browsing sessions", async ({
 	await expect(firstTab).not.toHaveAttribute("data-tab-preview", "true");
 	await expect(tabs).toHaveCount(initialTabs + 3);
 	await expect.poll(() => loadRequests.length).toBe(3);
-	releaseLoads();
 });
 
 test("restores Agent when the last session preview is replaced", async ({
 	page,
 }) => {
-	await page.route(/\/api\/sessions$/, async (route) => {
-		if (route.request().method() === "GET") {
-			await route.fulfill({
-				json: [
-					{
-						id: "sole-session-preview",
-						title: "Sole session preview",
-						updated_at: "2026-08-14T10:00:00Z",
-					},
-				],
-			});
-			return;
-		}
-		await route.fulfill({ json: { id: "initial-kept-session" } });
-	});
-	await page.route(
-		/\/api\/sessions\/sole-session-preview\/load$/,
-		async (route) => {
-			await route.fulfill({ status: 204 });
+	await mockSavedSessions(page, [
+		{
+			id: "sole-session-preview",
+			title: "Sole session preview",
+			updated_at: "2026-08-14T10:00:00Z",
 		},
-	);
+	]);
 
 	const input = await composer(page);
-	await input.fill("Keep this session open");
+	await input.fill("render markdown");
 	await input.press("Enter");
-	const initialSession = page.locator('[data-center-tab="chat:"]');
+	const initialSession = page.locator('[data-center-tab^="draft:"]');
 	await expect(initialSession).toBeVisible();
 	await page.getByLabel("Show Agent Sessions").click();
-	const previewRow = page.locator('[data-session-id="sole-session-preview"]');
-	const previewTab = page.locator(
-		'[data-center-tab="chat:sole-session-preview"]',
-	);
+	const previewRow = sessionRow(page, "sole-session-preview");
+	const previewTab = sessionTab(page, "sole-session-preview");
 	await previewRow.click();
 	await expect(previewTab).toHaveAttribute("data-tab-preview", "true");
 
@@ -515,23 +549,23 @@ test("restores Agent when the last session preview is replaced", async ({
 });
 
 test("uses canonical product names for agents", async ({ page }) => {
-	await page.route(/\/api\/agents$/, async (route) => {
+	await page.route(/\/api\/v2\/bootstrap$/, async (route) => {
+		const response = await route.fetch();
+		const scope = await response.json();
 		await route.fulfill({
-			json: [
-				{ id: "wingman", name: "Wingman" },
-				{ id: "claude", name: "claude" },
-				{ id: "codex", name: "codex" },
-				{ id: "copilot", name: "copilot" },
-				{ id: "opencode", name: "opencode" },
-				{ id: "pi", name: "pi" },
-			],
+			json: {
+				...scope,
+				backends: [
+					{ id: "wingman", name: "Wingman" },
+					...["claude", "codex", "copilot", "opencode", "pi"].map((id) => ({
+						id,
+						name: id,
+					})),
+				],
+			},
 		});
 	});
-	await page.route(/\/api\/agent$/, async (route) => {
-		await route.fulfill({ json: { agent: "opencode", can_delete: false } });
-	});
-
-	await composer(page);
+	await page.goto("/opencode");
 	await page.getByLabel("Show Agent Sessions").click();
 	const picker = page.getByTitle("Agent: OpenCode");
 	await expect(picker).toBeVisible();
@@ -1349,7 +1383,7 @@ test("shows and copies diagnostics for comparison failures", async ({
 test("keeps the session context menu above panel clipping", async ({
 	page,
 }) => {
-	await page.route(/\/api\/sessions$/, async (route) => {
+	await page.route(/\/api\/v2\/backends\/wingman\/sessions$/, async (route) => {
 		await route.fulfill({
 			json: [
 				{
@@ -1360,8 +1394,18 @@ test("keeps the session context menu above panel clipping", async ({
 			],
 		});
 	});
-	await page.route(/\/api\/agent$/, async (route) => {
-		await route.fulfill({ json: { agent: "wingman", can_delete: true } });
+	await page.route(/\/api\/v2\/backends\/wingman\/settings$/, async (route) => {
+		await route.fulfill({
+			json: {
+				models: [],
+				model: "",
+				modes: [],
+				mode: "",
+				efforts: [],
+				effort: "",
+				canDelete: true,
+			},
+		});
 	});
 	await composer(page);
 	await page.getByLabel("Show Agent Sessions").click();
@@ -1955,6 +1999,7 @@ test("applies one command-driven quick action without moving the cursor", async 
 	page,
 	request,
 }) => {
+	await resetCompletionFile(request);
 	let workspaceURI = "";
 	let invokedRequests = 0;
 	let commandExecutions = 0;
@@ -2453,23 +2498,13 @@ test("keeps composer pickers visible in a constrained window", async ({
 test("keeps scheduled-agent actions above inspector clipping", async ({
 	page,
 }) => {
-	await page.route(/\/api\/sessions$/, async (route) => {
-		await route.fulfill({
-			json: [
-				{
-					id: "agent-menu-check",
-					title: "Agent menu check",
-					updated_at: "2026-08-11T00:00:00Z",
-				},
-			],
-		});
-	});
-	await page.route(
-		/\/api\/sessions\/agent-menu-check\/load$/,
-		async (route) => {
-			await route.fulfill({ status: 204 });
+	await mockSavedSessions(page, [
+		{
+			id: "agent-menu-check",
+			title: "Agent menu check",
+			updated_at: "2026-08-11T00:00:00Z",
 		},
-	);
+	]);
 	await page.route(/\/api\/capabilities$/, async (route) => {
 		await route.fulfill({
 			json: {
@@ -2480,22 +2515,28 @@ test("keeps scheduled-agent actions above inspector clipping", async ({
 			},
 		});
 	});
-	await page.route(/\/api\/sessions\/[^/]+\/tasks$/, async (route) => {
-		await route.fulfill({ json: [] });
-	});
-	await page.route(/\/api\/sessions\/[^/]+\/schedules$/, async (route) => {
-		await route.fulfill({
-			json: [
-				{
-					id: "deploy-check",
-					prompt: "Check deploy",
-					schedule: "every 1h",
-					status: "active",
-					next_in: "in 42m",
-				},
-			],
-		});
-	});
+	await page.route(
+		/\/api\/v2\/backends\/wingman\/sessions\/[^/]+\/tasks$/,
+		async (route) => {
+			await route.fulfill({ json: [] });
+		},
+	);
+	await page.route(
+		/\/api\/v2\/backends\/wingman\/sessions\/[^/]+\/schedules$/,
+		async (route) => {
+			await route.fulfill({
+				json: [
+					{
+						id: "deploy-check",
+						prompt: "Check deploy",
+						schedule: "every 1h",
+						status: "active",
+						next_in: "in 42m",
+					},
+				],
+			});
+		},
+	);
 	await composer(page);
 	await page.getByLabel("Show Agent Sessions").click();
 	await page.getByTitle("Agent menu check").click();
@@ -2932,10 +2973,12 @@ test("runs a coding tool and renders its result", async ({ page }) => {
 	await input.press("Enter");
 
 	await page.getByRole("button", { name: "1 tool" }).click();
-	const tool = page.getByText("write", { exact: true });
+	const tool = page.getByRole("button", { name: /^Edit file/ });
 	await expect(tool).toBeVisible();
 	await tool.click();
-	await expect(page.getByText(/Created .*e2e-result\.txt/)).toBeVisible();
+	await expect(
+		page.getByText(/Applied 1 edits across 1 files atomically/),
+	).toBeVisible();
 	await expect(
 		page.getByText("Created the requested file", { exact: true }),
 	).toBeVisible();
@@ -3054,6 +3097,7 @@ test("steers an active turn without merging response boundaries", async ({
 
 	await input.fill("steer this turn");
 	await input.press("Enter");
+	await expect(input).toHaveValue("");
 	await expect(
 		page.getByText("steer this turn", { exact: true }),
 	).toBeVisible();
@@ -3157,7 +3201,11 @@ test("renders markdown files in a browser preview", async ({ page }) => {
 	await expect(page.locator(".monaco-editor")).toBeVisible();
 });
 
-test("uses Wingman's dynamic editor context menu", async ({ page }) => {
+test("uses Wingman's dynamic editor context menu", async ({
+	page,
+	request,
+}) => {
+	await resetCompletionFile(request);
 	await page.setViewportSize({ width: 640, height: 400 });
 	let definitionRequested = false;
 	await page.route(/\/api\/lsp\/definition$/, async (route) => {
@@ -4101,4 +4149,137 @@ test("follows debugger stops into the source editor", async ({ page }) => {
 	});
 	expect(evaluations[0]).not.toHaveProperty("context");
 	await expect(page.locator(".monaco-hover:visible")).toContainText("70");
+});
+
+test("recovers an unfinished response in another browser and after reload", async ({
+	page,
+	context,
+}) => {
+	const input = await composer(page);
+	await input.fill("cancel this request");
+	await input.press("Enter");
+	await expect(
+		page.getByText("Long-running work", { exact: true }),
+	).toBeVisible();
+	const observer = await context.newPage();
+	await observer.goto(page.url());
+	await expect(
+		observer.getByText("Long-running work", { exact: true }),
+	).toBeVisible();
+	await page.reload();
+	await expect(
+		page.getByText("Long-running work", { exact: true }),
+	).toBeVisible();
+	await observer.getByTitle("Stop (Esc)").click();
+	await expect(page.getByTitle("Stop (Esc)")).toHaveCount(0);
+	await observer.close();
+});
+
+test("retries a lost input receipt without executing the input twice", async ({
+	page,
+	request,
+}) => {
+	const input = await composer(page);
+	const before = await (
+		await request.get(`${controlURL()}/model-stats`)
+	).json();
+	const requestIDs: string[] = [];
+	await page.route(
+		"**/api/v2/backends/wingman/sessions/*/commands",
+		async (route) => {
+			const command = route.request().postDataJSON();
+			if (command.type !== "send") {
+				await route.continue();
+				return;
+			}
+			requestIDs.push(command.id);
+			if (requestIDs.length === 1) {
+				await route.fetch();
+				await route.abort("failed");
+			} else await route.continue();
+		},
+	);
+	await input.fill("render markdown");
+	await input.press("Enter");
+	await expect(
+		page.getByText("Input delivery was not confirmed", { exact: true }),
+	).toBeVisible();
+	await expect(input).toHaveValue("render markdown");
+	await expect(
+		page.getByRole("heading", { name: "Migration result" }),
+	).toBeVisible();
+	await input.press("Enter");
+	await expect(input).toHaveValue("");
+	expect(requestIDs).toHaveLength(2);
+	expect(requestIDs[0]).toBe(requestIDs[1]);
+	const after = await (await request.get(`${controlURL()}/model-stats`)).json();
+	expect(after.requests - before.requests).toBe(1);
+	await expect(
+		page.getByRole("main").getByText("render markdown", { exact: true }),
+	).toHaveCount(1);
+});
+
+test("keeps unsent drafts available when the workspace instance changes", async ({
+	page,
+}) => {
+	let changed = false;
+	let closeConnection = () => {};
+	await page.route(/\/api\/v2\/bootstrap$/, async (route) => {
+		const response = await route.fetch();
+		const scope = await response.json();
+		await route.fulfill({
+			json: changed ? { ...scope, instanceId: "replacement" } : scope,
+		});
+	});
+	await page.routeWebSocket(/\/api\/v2\/events/, (socket) => {
+		socket.connectToServer();
+		closeConnection = () => socket.close();
+	});
+	const input = await composer(page);
+	await input.fill("Keep this unsent draft");
+	changed = true;
+	closeConnection();
+	await expect(
+		page.getByRole("button", { name: "Reload workspace" }),
+	).toBeVisible();
+	await expect(input).toHaveValue("Keep this unsent draft");
+});
+
+test("closing the last session keeps its backend for the next draft", async ({
+	page,
+}) => {
+	const scope = await (await page.request.get("/api/v2/bootstrap")).json();
+	await page.route("**/api/v2/bootstrap", (route) =>
+		route.fulfill({
+			json: {
+				...scope,
+				backends: [...scope.backends, { id: "fixture", name: "Fixture" }],
+			},
+		}),
+	);
+	await page.route("**/api/v2/backends/fixture/settings", (route) =>
+		route.fulfill({ json: emptySession("").settings }),
+	);
+	await mockSavedSessions(
+		page,
+		[
+			{
+				id: "saved",
+				title: "Saved session",
+				updated_at: new Date().toISOString(),
+			},
+		],
+		[],
+		"fixture",
+	);
+	await page.goto("/fixture/saved");
+	const tabs = page.getByRole("tablist", { name: "Open tabs" });
+	const saved = tabs.getByRole("tab");
+	await expect(saved).toHaveCount(1);
+	await saved.press("Delete");
+	await expect(
+		tabs.locator('[data-center-tab^="draft:fixture:"]'),
+	).toBeVisible();
+	await expect(page).toHaveURL(/\/fixture$/);
+	await expect(page.getByPlaceholder("Message Wingman…")).toBeVisible();
 });

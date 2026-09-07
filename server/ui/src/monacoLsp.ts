@@ -1,3 +1,4 @@
+import { scopedFetch } from "./api/http.ts";
 import type { Monaco } from "@monaco-editor/react";
 import type * as MonacoTypes from "monaco-editor";
 import type {
@@ -401,7 +402,7 @@ export function createMonacoLSPBridge({
 				const target = lspLocationTarget(targetURI, workspaceURI);
 				if (!target) return null;
 				if (!target.external && target.path === file.path) return targetURI;
-				const fileResponse = await fetch(
+				const fileResponse = await scopedFetch(
 					`${target.external ? "/api/lsp/file" : "/api/files/read"}?path=${encodeURIComponent(target.path)}`,
 					{ signal },
 				);
@@ -1318,7 +1319,7 @@ async function postJSON<T>(
 	body: unknown,
 	signal: AbortSignal,
 ): Promise<T | undefined> {
-	const response = await fetch(endpoint, {
+	const response = await scopedFetch(endpoint, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(body),
@@ -1333,7 +1334,7 @@ async function postJSONRequired<T>(
 	body: unknown,
 	signal: AbortSignal,
 ): Promise<T> {
-	const response = await fetch(endpoint, {
+	const response = await scopedFetch(endpoint, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(body),
@@ -1350,7 +1351,7 @@ async function getEditorCapabilities(
 	path: string,
 	signal: AbortSignal,
 ): Promise<LSPEditorCapabilities> {
-	const response = await fetch(
+	const response = await scopedFetch(
 		`/api/lsp/capabilities?path=${encodeURIComponent(path)}`,
 		{ signal },
 	);

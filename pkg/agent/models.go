@@ -13,7 +13,8 @@ const (
 )
 
 type Message struct {
-	Role MessageRole `json:"role"`
+	InputID string      `json:"input_id,omitempty"`
+	Role    MessageRole `json:"role"`
 
 	Content []Content `json:"content"`
 	Hidden  bool      `json:"hidden,omitempty"`

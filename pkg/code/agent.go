@@ -149,3 +149,10 @@ type HistoryVersionProvider interface {
 type CommandProvider interface {
 	Commands(sessionID string) []Command
 }
+
+// SessionUpdateSource reports backend metadata updates that can arrive outside
+// a Send stream (ACP configuration, commands, title, modes and usage).
+// The callback runs after releasing adapter locks.
+type SessionUpdateSource interface {
+	SetSessionUpdateHandler(func(sessionID string))
+}
