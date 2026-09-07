@@ -27,12 +27,12 @@ export function ModePicker({ modes, current, onSelect }: Props) {
 	const label = active?.name ?? current ?? "Mode";
 
 	return (
-		<div className="relative">
+		<div data-composer-mode className="relative shrink-0 max-w-[140px]">
 			<button
 				ref={setButton}
 				type="button"
 				onClick={() => setOpen((v) => !v)}
-				className={`flex items-center gap-1 px-2 h-7 rounded text-[11.5px] cursor-pointer transition-colors ${
+				className={`flex items-center gap-1 px-2 h-7 max-w-full rounded text-[11.5px] cursor-pointer transition-colors ${
 					planLike
 						? "text-warning hover:bg-bg-hover"
 						: "text-fg-muted hover:text-fg hover:bg-bg-hover"
@@ -42,7 +42,7 @@ export function ModePicker({ modes, current, onSelect }: Props) {
 				aria-expanded={open}
 			>
 				<Icon size={12} className="shrink-0" />
-				<span>{label}</span>
+				<span className="truncate">{label}</span>
 			</button>
 			<FloatingMenu
 				open={open}

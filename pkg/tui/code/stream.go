@@ -33,12 +33,22 @@ func (a *App) setPhase(phase AppPhase) {
 	}
 }
 
-// queuePhase updates the phase from agent goroutines and schedules a repaint.
+type phaseUpdate struct {
+	epoch uint64
+	phase AppPhase
+}
+
+// Called while sessionMu protects the active session. Coalesce phase changes
+// with the repaint instead of blocking the event producer on the UI queue.
 func (a *App) queuePhase(phase AppPhase) {
-	a.post(func() {
-		a.setPhase(phase)
-		a.invalidate()
-	})
+	a.pendingPhase.Store(&phaseUpdate{epoch: a.sessionEpoch, phase: phase})
+	a.requestRender()
+}
+
+func (a *App) applyPendingPhase() {
+	if update := a.pendingPhase.Swap(nil); update != nil && update.epoch == a.sessionEpoch {
+		a.setPhase(update.phase)
+	}
 }
 
 // syncMessages flushes newly committed messages to scrollback.
@@ -497,6 +507,8 @@ func (a *App) requestRender() {
 	time.AfterFunc(delay, func() {
 		a.post(func() {
 			a.renderPending.Store(false)
+			a.applyPendingPhase()
+			a.refreshMetadata()
 			a.renderLast.Store(time.Now().UnixNano())
 			a.invalidate()
 		})
@@ -508,13 +520,17 @@ func (a *App) handleTurnEvent(ev code.TurnEvent) {
 		if recovered := recover(); recovered != nil {
 			a.sessionMu.Lock()
 			visible := a.sessionID == ev.SessionID
+			epoch := a.sessionEpoch
 			if visible {
 				a.clearStreamingState()
+				a.queuePhase(PhaseIdle)
 			}
 			a.sessionMu.Unlock()
 			if visible {
-				a.queuePhase(PhaseIdle)
 				a.post(func() {
+					if a.sessionEpoch != epoch {
+						return
+					}
 					a.appendChat(cellNotice(fmt.Sprintf("Internal error: %v", recovered), theme.Default.Red, a.width()))
 				})
 			}
@@ -550,6 +566,11 @@ func (a *App) handleTurnEvent(ev code.TurnEvent) {
 			// preserving the user cell ahead of any output from this turn.
 			a.promotePendingEcho(ev.InputID)
 			a.queuePhase(PhaseThinking)
+		})
+	case code.TurnInputSteered:
+		a.withCurrentSession(ev.SessionID, func() {
+			a.promotePendingEcho(ev.InputID)
+			a.requestRender()
 		})
 	case code.TurnInputCompleted, code.TurnInputCancelled, code.TurnInputFailed:
 		a.post(func() {
@@ -605,9 +626,7 @@ func (a *App) handleStreamMessage(msg agent.Message) {
 			a.requestRender()
 
 		case c.Reasoning != nil && c.Reasoning.Summary != "":
-			if a.getPhase() != PhaseThinking {
-				a.queuePhase(PhaseThinking)
-			}
+			a.queuePhase(PhaseThinking)
 			a.streamStateMu.Lock()
 			if a.streamCurrent.reasoning != "" && c.Reasoning.ID != a.streamCurrent.reasoningID {
 				a.archiveStreamStateLocked()
@@ -618,12 +637,10 @@ func (a *App) handleStreamMessage(msg agent.Message) {
 				a.streamCurrent.reasoningHeadingSet = false
 			}
 			a.streamCurrent.reasoning += c.Reasoning.Summary
-			headerChanged := false
 			if !a.streamCurrent.reasoningHeadingSet {
 				currentPart := a.streamCurrent.reasoning[a.streamCurrent.reasoningPartStart:]
 				header := extractReasoningHeader(currentPart)
-				headerChanged = header != ""
-				if headerChanged {
+				if header != "" {
 					a.streamCurrent.reasoningHeadingSet = true
 					if a.streamCurrent.reasoningHeadings != "" {
 						a.streamCurrent.reasoningHeadings += "\n"
@@ -635,17 +652,9 @@ func (a *App) handleStreamMessage(msg agent.Message) {
 			a.streamCurrent.reasoningPart = c.Reasoning.Part
 			a.streamCurrent.retryAttempt = true
 			a.streamStateMu.Unlock()
-			// Ordinary reasoning tokens no longer change the visible chat tail.
-			// Repaint only when a complete structured heading becomes available;
-			// the spinner ticker handles the ongoing activity animation.
-			if headerChanged {
-				a.requestRender()
-			}
 
 		case c.Text != "":
-			if a.getPhase() != PhaseStreaming {
-				a.queuePhase(PhaseStreaming)
-			}
+			a.queuePhase(PhaseStreaming)
 			a.streamStateMu.Lock()
 			if a.streamCurrent.reasoning != "" ||
 				(a.streamCurrent.text != "" && c.TextID != "" && a.streamCurrent.textID != "" && c.TextID != a.streamCurrent.textID) {
@@ -665,6 +674,7 @@ func (a *App) finishTurn(sessionID string, state code.TurnInputState, turnErr er
 
 	a.sessionMu.Lock()
 	visible := a.sessionID == sessionID
+	epoch := a.sessionEpoch
 	var nextPhase AppPhase
 	if visible {
 		nextPhase = PhaseIdle
@@ -674,24 +684,26 @@ func (a *App) finishTurn(sessionID string, state code.TurnInputState, turnErr er
 				break
 			}
 		}
+		// Retire the finished stream before TurnManager starts the next input.
+		// A deferred cleanup could otherwise erase the next turn's live output.
+		a.clearStreamingState()
+		a.queuePhase(nextPhase)
 	}
 	a.sessionMu.Unlock()
 
 	if visible {
-		epoch := a.currentEpoch()
 		a.post(func() {
 			if a.sessionID != sessionID || a.sessionEpoch != epoch {
 				return
 			}
 
-			a.clearStreamingState()
-			a.setPhase(nextPhase)
+			a.applyPendingPhase()
 			a.syncMessages()
 			a.refreshUsage()
 
 			switch {
 			case state == code.TurnInputCompleted:
-				if nextPhase == PhaseIdle {
+				if a.getPhase() == PhaseIdle {
 					a.flushTurnSeparator()
 					a.revealUsage(time.Now())
 					a.bellIfUnfocused()
@@ -699,10 +711,11 @@ func (a *App) finishTurn(sessionID string, state code.TurnInputState, turnErr er
 			case state == code.TurnInputCancelled || errors.Is(turnErr, context.Canceled):
 				a.flushToolGap()
 				a.appendChat(cellNotice("Cancelled", t.Yellow, a.width()))
-				a.resetTurnStats()
 			default:
 				a.flushToolGap()
 				a.appendChat(cellNotice(fmt.Sprintf("Error: %v", turnErr), t.Red, a.width()))
+			}
+			if state != code.TurnInputCompleted && a.getPhase() == PhaseIdle {
 				a.resetTurnStats()
 			}
 
@@ -713,12 +726,6 @@ func (a *App) finishTurn(sessionID string, state code.TurnInputState, turnErr er
 	if state == code.TurnInputCompleted {
 		a.saveSessionID(sessionID)
 	}
-}
-
-func (a *App) currentEpoch() uint64 {
-	a.sessionMu.Lock()
-	defer a.sessionMu.Unlock()
-	return a.sessionEpoch
 }
 
 // flushToolGap commits the blank line a trailing tool cell is still owed, so

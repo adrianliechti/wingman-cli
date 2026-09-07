@@ -93,13 +93,6 @@ func (a *App) loadSessionInfo(info corecode.SessionInfo) {
 
 	a.turns.CancelAll(previousID)
 	a.activateSession(info.ID)
-	a.clearPendingContent()
-
-	usage := a.agent.Usage(a.sessionID)
-	a.inputTokens = usage.InputTokens
-	a.outputTokens = usage.OutputTokens
-	a.lastInputTokens = usage.LastInputTokens
-	a.contextWindow = usage.ContextWindow
 
 	a.showWelcome = false
 	a.chat = nil

@@ -15,7 +15,11 @@ import {
 	useMemo,
 	useRef,
 	useState,
+	useSyncExternalStore,
 } from "react";
+import { ComposerDraft } from "../state/composerDraft.ts";
+import { useSessionSettings } from "../state/workspaceContext.ts";
+import { useToast } from "./ui/Feedback.tsx";
 import { useColorScheme } from "../hooks/useColorScheme";
 import { type Skill, useSkills } from "../hooks/useSkills";
 import type {
@@ -33,18 +37,17 @@ import { TurnView } from "./chat/TurnView";
 import { buildTurns, findEntryElement, type Turn } from "./chat/turns";
 import { FilePicker } from "./FilePicker";
 import { ModelPicker } from "./ModelPicker";
-import { ModePicker, type ModeOption } from "./ModePicker";
+import { ModePicker } from "./ModePicker";
 import { SkillPicker } from "./SkillPicker";
 import { TurnQueue } from "./TurnQueue";
 
 interface Props {
+	draft: ComposerDraft;
+	draftId: string;
 	sessionId?: string;
 	placeholder?: string;
 	entries: ChatEntry[];
 	phase: Phase;
-	modes: ModeOption[];
-	mode: string;
-	onSelectMode: (next: string) => void;
 	onSend: (
 		text: string,
 		files?: string[],
@@ -116,13 +119,12 @@ function wordEndAt(text: string, caret: number): number {
 }
 
 export function ChatPanel({
+	draft,
+	draftId,
 	sessionId,
 	placeholder = "Message Wingman…",
 	entries,
 	phase,
-	modes,
-	mode,
-	onSelectMode,
 	onSend,
 	onCancel,
 	pendingInputs = [],
@@ -144,16 +146,20 @@ export function ChatPanel({
 	toolProgress,
 }: Props) {
 	const scheme = useColorScheme();
-	const [input, setInput] = useState("");
-	const [caret, setCaret] = useState(0);
+	const toast = useToast();
+	const { settings, setSettings } = useSessionSettings(sessionId, draftId);
+	const {
+		text: input,
+		files,
+		images,
+		editingQueueId,
+		submitting,
+		error: sendError,
+	} = useSyncExternalStore(draft.subscribe, draft.getSnapshot);
+	const [caret, setCaret] = useState(input.length);
 	const [dismissedToken, setDismissedToken] = useState<string | null>(null);
-	const [files, setFiles] = useState<string[]>([]);
-	const [images, setImages] = useState<PendingImage[]>([]);
 	const [showPicker, setShowPicker] = useState(false);
-	const [submitting, setSubmitting] = useState(false);
-	const [sendError, setSendError] = useState<string | null>(null);
 	const inputError = sendError ?? error;
-	const [editingQueueId, setEditingQueueId] = useState<string | null>(null);
 	const queueSettling =
 		pendingInputs.length > 0 &&
 		pendingInputs.every((item) => item.state === "sending");
@@ -253,31 +259,32 @@ export function ChatPanel({
 
 	// setDraft replaces the composer text and keeps the tracked caret in sync;
 	// every programmatic text change must go through it (or set both).
-	const setDraft = useCallback((text: string) => {
-		setInput(text);
-		setCaret(text.length);
-	}, []);
+	const setDraft = useCallback(
+		(text: string) => {
+			draft.update({ text });
+			setCaret(text.length);
+		},
+		[draft],
+	);
 
 	// Start empty so a seed delivered while switching from an editor is applied
 	// by the newly mounted chat panel, not mistaken for one it already consumed.
-	const [prevSeed, setPrevSeed] = useState<Props["seed"]>(null);
-	if (seed && seed !== prevSeed) {
-		setPrevSeed(seed);
-		setDraft(
-			seed.append && input.trim() ? `${input}\n\n${seed.text}` : seed.text,
-		);
-		const seedFiles = seed.files;
-		if (seedFiles?.length) {
-			setFiles((current) => [...new Set([...current, ...seedFiles])]);
-		}
-	}
-
+	const consumedSeed = useRef<number | undefined>(undefined);
 	useEffect(() => {
-		if (!seed) return;
+		if (!seed || consumedSeed.current === seed.nonce) return;
+		consumedSeed.current = seed.nonce;
+		const current = draft.getSnapshot();
+		setDraft(
+			seed.append && current.text.trim()
+				? `${current.text}\n\n${seed.text}`
+				: seed.text,
+		);
+		if (seed.files?.length)
+			draft.update({ files: [...new Set([...current.files, ...seed.files])] });
 		historyIdxRef.current = null;
 		textareaRef.current?.focus();
 		onSeedConsumed?.(seed.nonce);
-	}, [onSeedConsumed, seed]);
+	}, [draft, onSeedConsumed, seed, setDraft]);
 
 	const skillToken = slashTokenAt(input, caret);
 	const tokenKey = skillToken
@@ -437,19 +444,20 @@ export function ChatPanel({
 			intent?: TurnInputIntent,
 			overrideText?: string,
 		): Promise<boolean> => {
-			const text = (overrideText ?? input).trim();
-			if ((!text && images.length === 0 && files.length === 0) || submitting) {
+			const current = draft.getSnapshot();
+			const text = (overrideText ?? current.text).trim();
+			if (
+				(!text && current.images.length === 0 && current.files.length === 0) ||
+				current.submitting
+			) {
 				return false;
 			}
 			submitPendingRef.current = true;
-			setSubmitting(true);
-			setSendError(null);
-			const imageData =
-				images.length > 0 ? images.map((i) => i.dataUrl) : undefined;
-			let sent = false;
-			try {
+			const sent = await draft.submit(({ images, files, editingQueueId }) => {
+				const imageData =
+					images.length > 0 ? images.map((i) => i.dataUrl) : undefined;
 				if (editingQueueId && onUpdateQueued) {
-					sent = await onUpdateQueued(
+					return onUpdateQueued(
 						editingQueueId,
 						text,
 						files.length > 0 ? files : undefined,
@@ -458,44 +466,24 @@ export function ChatPanel({
 				} else {
 					const nextIntent =
 						intent ?? (isActive && canSteer ? "steer" : "follow_up");
-					sent = await onSend(
+					return onSend(
 						text,
 						files.length > 0 ? files : undefined,
 						imageData,
 						nextIntent,
 					);
 				}
-			} catch {
-				sent = false;
-			} finally {
-				setSubmitting(false);
-			}
+			});
 			if (!sent) {
 				submitPendingRef.current = false;
-				setSendError("Message was not accepted. Your draft has been kept.");
 				return false;
 			}
-			setDraft("");
-			setFiles([]);
-			setImages([]);
-			setEditingQueueId(null);
 			historyIdxRef.current = null;
 			historyDraftRef.current = "";
 			textareaRef.current?.focus();
 			return true;
 		},
-		[
-			input,
-			submitting,
-			images,
-			editingQueueId,
-			onUpdateQueued,
-			isActive,
-			canSteer,
-			onSend,
-			files,
-			setDraft,
-		],
+		[draft, onUpdateQueued, isActive, canSteer, onSend],
 	);
 
 	// selectSkill completes the slash token at the caret in place; only a lone
@@ -517,7 +505,9 @@ export function ChatPanel({
 			const insert = `/${s.name}`;
 			const trailing = input.slice(end);
 			const glue = trailing.startsWith(" ") ? "" : " ";
-			setInput(input.slice(0, tok.start) + insert + glue + trailing);
+			draft.update({
+				text: input.slice(0, tok.start) + insert + glue + trailing,
+			});
 			const pos = tok.start + insert.length + 1;
 			setCaret(pos);
 			requestAnimationFrame(() => {
@@ -528,7 +518,7 @@ export function ChatPanel({
 				}
 			});
 		},
-		[input, caret, handleSubmit],
+		[draft, input, caret, handleSubmit],
 	);
 
 	const handleKeyDown = useCallback(
@@ -615,42 +605,62 @@ export function ChatPanel({
 	const editPendingInput = useCallback(
 		(item: PendingTurnInput) => {
 			setDraft(item.text);
-			setFiles(item.files);
-			setImages(
-				item.images.map((dataUrl) => ({ id: crypto.randomUUID(), dataUrl })),
-			);
-			setEditingQueueId(item.state === "queued" ? item.id : null);
-			setSendError(null);
+			draft.update({
+				files: item.files,
+				images: item.images.map((dataUrl) => ({
+					id: crypto.randomUUID(),
+					dataUrl,
+				})),
+				editingQueueId: item.state === "queued" ? item.id : null,
+			});
 			textareaRef.current?.focus();
 		},
-		[setDraft],
+		[draft, setDraft],
 	);
 
-	const addFile = useCallback((path: string) => {
-		setFiles((prev) => (prev.includes(path) ? prev : [...prev, path]));
-		setShowPicker(false);
-		textareaRef.current?.focus();
-	}, []);
+	const addFile = useCallback(
+		(path: string) => {
+			const { files } = draft.getSnapshot();
+			if (!files.includes(path)) draft.update({ files: [...files, path] });
+			setShowPicker(false);
+			textareaRef.current?.focus();
+		},
+		[draft],
+	);
 
-	const removeFile = useCallback((path: string) => {
-		setFiles((prev) => prev.filter((p) => p !== path));
-	}, []);
+	const removeFile = useCallback(
+		(path: string) => {
+			draft.update({
+				files: draft.getSnapshot().files.filter((p) => p !== path),
+			});
+		},
+		[draft],
+	);
 
-	const addImageFiles = useCallback(async (fileList: FileList | File[]) => {
-		const next: PendingImage[] = [];
-		for (const f of Array.from(fileList)) {
-			if (!f.type.startsWith("image/")) continue;
-			try {
-				const dataUrl = await processImage(f);
-				next.push({ id: crypto.randomUUID(), dataUrl, name: f.name });
-			} catch {}
-		}
-		if (next.length > 0) setImages((prev) => [...prev, ...next]);
-	}, []);
+	const addImageFiles = useCallback(
+		async (fileList: FileList | File[]) => {
+			const next: PendingImage[] = [];
+			for (const f of Array.from(fileList)) {
+				if (!f.type.startsWith("image/")) continue;
+				try {
+					const dataUrl = await processImage(f);
+					next.push({ id: crypto.randomUUID(), dataUrl, name: f.name });
+				} catch {}
+			}
+			if (next.length > 0)
+				draft.update({ images: [...draft.getSnapshot().images, ...next] });
+		},
+		[draft],
+	);
 
-	const removeImage = useCallback((id: string) => {
-		setImages((prev) => prev.filter((i) => i.id !== id));
-	}, []);
+	const removeImage = useCallback(
+		(id: string) => {
+			draft.update({
+				images: draft.getSnapshot().images.filter((i) => i.id !== id),
+			});
+		},
+		[draft],
+	);
 
 	const [dragOver, setDragOver] = useState(false);
 	const dragDepthRef = useRef(0);
@@ -811,7 +821,7 @@ export function ChatPanel({
 								type="button"
 								className="shrink-0 opacity-70 hover:opacity-100"
 								onClick={() => {
-									setSendError(null);
+									draft.dismissError();
 									onDismissError?.();
 								}}
 								aria-label="Dismiss error"
@@ -842,7 +852,7 @@ export function ChatPanel({
 									<button
 										type="button"
 										className="text-fg-dim hover:text-fg"
-										onClick={() => setEditingQueueId(null)}
+										onClick={() => draft.update({ editingQueueId: null })}
 									>
 										Cancel
 									</button>
@@ -917,7 +927,7 @@ export function ChatPanel({
 									value={input}
 									onChange={(e) => {
 										historyIdxRef.current = null;
-										setInput(e.target.value);
+										draft.update({ text: e.target.value });
 										setCaret(e.target.selectionStart);
 									}}
 									onSelect={(e) =>
@@ -930,9 +940,9 @@ export function ChatPanel({
 								/>
 							</div>
 
-							<div className="flex items-center justify-between px-1.5 pb-1.5 pt-1 gap-1">
-								<div className="flex items-center gap-0 min-w-0">
-									<div className="relative flex items-center">
+							<div className="flex flex-wrap items-center justify-between px-1.5 pb-1.5 pt-1 gap-1">
+								<div className="flex flex-1 items-center gap-0 min-w-7">
+									<div className="relative flex shrink-0 items-center">
 										<button
 											ref={setFilePickerButton}
 											type="button"
@@ -962,14 +972,22 @@ export function ChatPanel({
 										}}
 									/>
 									<ModePicker
-										modes={modes}
-										current={mode}
-										onSelect={onSelectMode}
+										modes={settings.modes}
+										current={settings.mode}
+										onSelect={(mode) =>
+											void setSettings({ mode }).catch((error) =>
+												toast({
+													title: "Could not change mode",
+													description: String(error),
+													tone: "error",
+												}),
+											)
+										}
 									/>
-									<ModelPicker sessionId={sessionId} />
+									<ModelPicker settings={settings} setSettings={setSettings} />
 								</div>
 
-								<div className="flex items-center gap-0">
+								<div className="flex shrink-0 items-center gap-0">
 									<button
 										type="button"
 										className="w-7 h-7 flex items-center justify-center rounded text-fg-dim hover:text-fg hover:bg-bg-hover cursor-pointer transition-colors"

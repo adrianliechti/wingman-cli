@@ -100,7 +100,7 @@ func NewRegistry(toolDirectories ...ToolDirectory) *Registry {
 		}
 	}
 	return NewRegistryWith(
-		goAdapter{}, pythonAdapter{}, java, rustAdapter{}, dotnetAdapter{}, javaScriptAdapter{},
+		goAdapter{}, pythonAdapter{}, java, rustAdapter{}, cAdapter{}, dotnetAdapter{}, javaScriptAdapter{},
 	)
 }
 

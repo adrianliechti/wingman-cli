@@ -527,8 +527,6 @@ func (m *Manager) missingPrerequisite(item recipe, install bool) string {
 		switch item.ID {
 		case "vscode-js-debug":
 			return missing("node", "Requires Node.js")
-		case "codelldb":
-			return missing("cargo", "Requires Rust")
 		case "netcoredbg":
 			return missing("dotnet", "Requires the .NET SDK")
 		}

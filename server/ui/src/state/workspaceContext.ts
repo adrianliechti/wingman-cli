@@ -39,22 +39,33 @@ export function backendSettingsQuery(backend: string) {
 			),
 	};
 }
-export function useSessionSettings(key = "") {
+export function draftSettingsKey(key: string, draftId: string) {
+	return JSON.stringify([splitSessionKey(key).backendId, draftId]);
+}
+export function useSessionSettings(key = "", draftId = key) {
 	const client = workspaceClient();
 	const { backend, drafts, setDraft } = useWorkspace();
 	const draft = isDraft(key);
 	const owner = key ? splitSessionKey(key).backendId : backend;
-	const catalogs = useQuery({ ...backendSettingsQuery(owner), enabled: draft });
+	const settingsKey = JSON.stringify([owner, draftId]);
+	const hasDefaults = owner === "wingman";
+	const catalogs = useQuery({
+		...backendSettingsQuery(owner),
+		enabled: draft && hasDefaults,
+	});
 	const views = useSyncExternalStore(
 		client.store.subscribe,
 		client.store.getSnapshot,
 	);
 	useEffect(() => client.watch(key), [client, key]);
 	const settings = draft
-		? { ...(catalogs.data ?? EMPTY_SETTINGS), ...drafts[key] }
+		? {
+				...((hasDefaults && catalogs.data) || EMPTY_SETTINGS),
+				...drafts[settingsKey],
+			}
 		: (views[key]?.settings ?? EMPTY_SETTINGS);
 	const setSettings = async (patch: SettingsPatch) => {
-		if (draft) setDraft(key, patch);
+		if (draft) setDraft(settingsKey, patch);
 		else await client.command(key, { type: "settings", ...patch });
 	};
 	return { settings, setSettings };

@@ -110,6 +110,127 @@ async function openNewChat(page: Page) {
 	await menu.getByRole("menuitem", { name: "Chat", exact: true }).click();
 }
 
+async function mockACPBackend(page: Page, backend = "codex") {
+	await page.route(new RegExp(`/api/v2/backends/${backend}/`), (route) =>
+		route.fulfill({ json: [] }),
+	);
+	await page.route(
+		(url) =>
+			url.pathname === "/api/skills" &&
+			url.searchParams.get("backend") === backend,
+		(route) => route.fulfill({ json: [] }),
+	);
+	const creations: { id: string }[] = [];
+	const commands: {
+		type: string;
+		model?: string;
+		mode?: string;
+		text?: string;
+	}[] = [];
+	const settings = {
+		models: [
+			{ id: `${backend}-test`, name: "Test model" },
+			{ id: `${backend}-other`, name: "Other model" },
+		],
+		model: `${backend}-test`,
+		modes: [
+			{ id: "agent", name: "Agent" },
+			{ id: "plan", name: "Plan" },
+		],
+		mode: "agent",
+		efforts: ["default"],
+		effort: "default",
+		canDelete: false,
+	};
+	const scope = await (await page.request.get("/api/v2/bootstrap")).json();
+	await page.route(/\/api\/v2\/bootstrap$/, (route) =>
+		route.fulfill({
+			json: {
+				...scope,
+				backends: [
+					{ id: "wingman", name: "Wingman" },
+					{ id: backend, name: backend },
+				],
+			},
+		}),
+	);
+	// ACP's initialize response has no session configuration. Only session/new
+	// supplies the model and mode, even if backend defaults were already cached.
+	await page.route(
+		new RegExp(`/api/v2/backends/${backend}/settings$`),
+		(route) => route.fulfill({ json: emptySession("").settings }),
+	);
+	await page.route(
+		new RegExp(`/api/v2/backends/${backend}/sessions$`),
+		async (route) => {
+			if (route.request().method() === "GET") {
+				await route.fulfill({ json: [] });
+				return;
+			}
+			creations.push(route.request().postDataJSON());
+			await route.fulfill({
+				json: {
+					ref: {
+						workspaceId: scope.workspaceId,
+						backendId: backend,
+						sessionId: "new-session",
+					},
+					epoch: "acp-epoch",
+					outcome: "created",
+				},
+			});
+		},
+	);
+	let publish = () => {};
+	await page.routeWebSocket(/\/api\/v2\/events/, (socket) => {
+		const server = socket.connectToServer();
+		let subscription: { subscriptionId: string; ref: object } | undefined;
+		let revision = 0;
+		publish = () => {
+			if (!subscription) return;
+			socket.send(
+				JSON.stringify({
+					type: "session.snapshot",
+					...subscription,
+					epoch: "acp-epoch",
+					revision: revision++,
+					state: { ...emptySession(""), status: "ready", settings },
+					entries: [],
+				}),
+			);
+		};
+		socket.onMessage((message) => {
+			const request = JSON.parse(String(message));
+			if (request.type === "subscribe" && request.ref.backendId === backend) {
+				subscription = {
+					subscriptionId: request.subscriptionId,
+					ref: request.ref,
+				};
+				publish();
+			} else if (
+				request.type === "unsubscribe" &&
+				request.subscriptionId === subscription?.subscriptionId
+			) {
+				subscription = undefined;
+			} else server.send(message);
+		});
+	});
+	await page.route(
+		new RegExp(`/api/v2/backends/${backend}/sessions/new-session/commands$`),
+		async (route) => {
+			const command = route.request().postDataJSON();
+			commands.push(command);
+			if (command.type === "settings") {
+				if (command.model) settings.model = command.model;
+				if (command.mode) settings.mode = command.mode;
+				publish();
+			}
+			await route.fulfill({ json: { outcome: "accepted" } });
+		},
+	);
+	return { creations, commands };
+}
+
 async function openSessions(page: Page) {
 	await page
 		.getByRole("button", { name: "Show sessions", exact: true })
@@ -723,7 +844,313 @@ test("does not restore a chat when the last session preview is replaced", async 
 	).toHaveCount(0);
 });
 
+test("command palette arrow keys remain stable while scrolling under the pointer", async ({
+	page,
+}) => {
+	await composer(page);
+	await page.keyboard.press("Control+k");
+	const palette = page.getByRole("dialog", { name: "Command palette" });
+	const input = palette.getByRole("combobox", { name: "Search commands" });
+	const options = palette.getByRole("option");
+	await expect(options.nth(15)).toBeAttached();
+	await options.nth(3).hover();
+	await expect(options.nth(3)).toHaveAttribute("aria-selected", "true");
+	for (let index = 4; index <= 15; index++) {
+		await input.press("ArrowDown");
+		await expect(options.nth(index)).toHaveAttribute("aria-selected", "true");
+	}
+	for (let index = 14; index >= 0; index--) {
+		await input.press("ArrowUp");
+		await expect(options.nth(index)).toHaveAttribute("aria-selected", "true");
+	}
+	await input.fill("no-match-for-this-query");
+	await expect(options).toHaveCount(0);
+	await input.press("ArrowDown");
+	await input.fill("new chat");
+	await expect(options.first()).toHaveAttribute("aria-selected", "true");
+});
+
+test("new ACP chats load mode and model before the first message", async ({
+	page,
+}) => {
+	const backend = await mockACPBackend(page);
+	await composer(page);
+	await page.keyboard.press("Control+k");
+	const palette = page.getByRole("dialog", { name: "Command palette" });
+	await palette
+		.getByRole("combobox", { name: "Search commands" })
+		.fill("new chat");
+	await palette
+		.getByRole("option", { name: "New Chat (Codex)", exact: true })
+		.click();
+	const input = page.getByPlaceholder("Message Codex…");
+	await expect(input).toBeVisible();
+	await expect(page.getByTitle("Mode: Agent")).toBeVisible();
+	await expect(page.getByTitle("codex-test · default")).toBeVisible();
+	await expect(input).toHaveValue("");
+	expect(backend.creations).toHaveLength(1);
+	expect(backend.commands).toEqual([]);
+
+	await page.getByTitle("Mode: Agent").click();
+	await page.getByRole("menuitemradio", { name: "Plan", exact: true }).click();
+	await expect(page.getByTitle("Mode: Plan")).toBeVisible();
+	await page.getByTitle("codex-test · default").click();
+	await page.getByRole("option", { name: "Other model", exact: true }).click();
+	await expect(page.getByTitle("codex-other · default")).toBeVisible();
+	await input.fill("First message");
+	await input.press("Enter");
+	await expect
+		.poll(() => backend.commands.filter((command) => command.type === "send"))
+		.toHaveLength(1);
+	expect(backend.creations).toHaveLength(1);
+});
+
+for (const action of [
+	"keep composing",
+	"switch tab",
+	"close chat",
+	"send early",
+] as const) {
+	test(`ACP chat initialization handles ${action}`, async ({ page }) => {
+		const backend = await mockACPBackend(page);
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let started = false;
+		await page.route(/\/api\/v2\/backends\/codex\/sessions$/, async (route) => {
+			if (route.request().method() === "POST") {
+				started = true;
+				await gate;
+			}
+			await route.fallback();
+		});
+		try {
+			await page.goto("/codex");
+			const input = page.getByPlaceholder("Message Codex…");
+			await expect(input).toBeVisible();
+			await expect.poll(() => started).toBe(true);
+			const chatTab = page.locator('[data-center-tab^="draft:codex:"]');
+			const tabID = await chatTab.getAttribute("data-center-tab");
+			await input.fill("Keep this while Codex starts");
+			await input.evaluate((element) =>
+				element.setAttribute("data-original-composer", "true"),
+			);
+			if (action === "send early") {
+				await input.press("Enter");
+			} else if (action !== "keep composing") {
+				await page.getByRole("treeitem", { name: /editable\.txt/ }).click();
+				if (action === "close chat") {
+					await chatTab.hover();
+					await chatTab.locator("[data-tab-close]").click();
+				}
+			}
+			const creationResponse = page.waitForResponse(
+				(response) =>
+					response.url().endsWith("/api/v2/backends/codex/sessions") &&
+					response.request().method() === "POST",
+			);
+			release();
+			await (await creationResponse).finished();
+			await expect.poll(() => backend.creations.length).toBe(1);
+			if (action === "send early") {
+				await expect
+					.poll(() =>
+						backend.commands.filter((command) => command.type === "send"),
+					)
+					.toHaveLength(1);
+				await expect(input).toHaveValue("");
+				await expect(page.getByTitle("codex-test · default")).toBeVisible();
+			} else if (action === "keep composing") {
+				await expect(page.getByTitle("codex-test · default")).toBeVisible();
+				await expect(chatTab).toHaveAttribute("data-center-tab", tabID!);
+				await expect(input).toHaveAttribute("data-original-composer", "true");
+				await expect(input).toHaveValue("Keep this while Codex starts");
+				expect(backend.commands).toEqual([]);
+			} else {
+				if (action === "switch tab") {
+					await expect(chatTab).toHaveAttribute("aria-label", /^Session\./);
+				} else {
+					// Let React apply the creation response before checking that a
+					// closed draft stays closed.
+					await page.evaluate(
+						() =>
+							new Promise<void>((resolve) => {
+								requestAnimationFrame(() =>
+									requestAnimationFrame(() => resolve()),
+								);
+							}),
+					);
+				}
+				await expect(
+					page.getByRole("tab", { name: /^editable\.txt/ }),
+				).toHaveAttribute("aria-selected", "true");
+				if (action === "close chat") {
+					await expect(chatTab).toHaveCount(0);
+				} else {
+					await chatTab.click();
+					await expect(page.getByTitle("codex-test · default")).toBeVisible();
+					await expect(chatTab).toHaveAttribute("data-center-tab", tabID!);
+					await expect(input).toHaveValue("Keep this while Codex starts");
+				}
+				expect(backend.commands).toEqual([]);
+			}
+			expect(backend.creations).toHaveLength(1);
+		} finally {
+			release();
+		}
+	});
+}
+
+test("chat drafts keep their own content and settings across tab switches", async ({
+	page,
+}) => {
+	await page.route(/\/api\/v2\/backends\/wingman\/settings$/, (route) =>
+		route.fulfill({
+			json: {
+				...emptySession("").settings,
+				models: [
+					{ id: "first", name: "First model" },
+					{ id: "second", name: "Second model" },
+				],
+				model: "first",
+				effort: "default",
+				efforts: ["default"],
+				modes: [
+					{ id: "agent", name: "Agent" },
+					{ id: "plan", name: "Plan" },
+				],
+				mode: "agent",
+			},
+		}),
+	);
+	const input = await composer(page);
+	const firstTab = page.locator('[data-center-tab^="draft:wingman:"]').first();
+	await input.fill("Draft in the first tab");
+	await page.locator('input[type="file"][accept="image/*"]').setInputFiles({
+		name: "context.gif",
+		mimeType: "image/gif",
+		buffer: Buffer.from(
+			"R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==",
+			"base64",
+		),
+	});
+	await expect(page.getByTitle("context.gif")).toBeVisible();
+	await page.getByTitle("Mode: Agent").click();
+	await page.getByRole("menuitemradio", { name: "Plan", exact: true }).click();
+	await page.getByTitle("first · default").click();
+	await page.getByRole("option", { name: "Second model", exact: true }).click();
+	await page.keyboard.press("Escape");
+	await openNewChat(page);
+	await expect(input).toHaveValue("");
+	await expect(page.getByTitle("Mode: Agent")).toBeVisible();
+	await expect(page.getByTitle("first · default")).toBeVisible();
+	await expect(page.getByTitle("context.gif")).toHaveCount(0);
+	await input.fill("Draft in the second tab");
+	await firstTab.click();
+	await expect(input).toHaveValue("Draft in the first tab");
+	await expect(page.getByTitle("Mode: Plan")).toBeVisible();
+	await expect(page.getByTitle("second · default")).toBeVisible();
+	await expect(page.getByTitle("context.gif")).toBeVisible();
+	await page.getByRole("treeitem", { name: /editable\.txt/ }).click();
+	for (const action of ["Switch to First model", "Switch to Agent mode"]) {
+		await page.keyboard.press("Control+k");
+		const palette = page.getByRole("dialog", { name: "Command palette" });
+		await palette
+			.getByRole("combobox", { name: "Search commands" })
+			.fill(action);
+		await palette.getByRole("option", { name: action, exact: true }).click();
+	}
+	await firstTab.click();
+	await expect(page.getByTitle("Mode: Agent")).toBeVisible();
+	await expect(page.getByTitle("first · default")).toBeVisible();
+	await expect(input).toHaveValue("Draft in the first tab");
+	await page.locator('[data-center-tab^="draft:wingman:"]').last().click();
+	await expect(input).toHaveValue("Draft in the second tab");
+});
+
+test("ACP chat delivery preserves newer edits and stays pending across tab switches", async ({
+	page,
+}) => {
+	const backend = await mockACPBackend(page);
+	const receipt = Promise.withResolvers<void>();
+	let attempts = 0;
+	await page.route(
+		/\/api\/v2\/backends\/codex\/sessions\/new-session\/commands$/,
+		async (route) => {
+			if (route.request().postDataJSON().type === "send") {
+				attempts++;
+				await receipt.promise;
+			}
+			await route.fallback();
+		},
+	);
+	try {
+		await page.goto("/codex");
+		await expect(page.getByTitle("codex-test · default")).toBeVisible();
+		const input = page.getByPlaceholder("Message Codex…");
+		await input.fill("First message");
+		await input.press("Enter");
+		await expect.poll(() => attempts).toBe(1);
+		await input.fill("A newer draft");
+		await page.getByRole("treeitem", { name: /editable\.txt/ }).click();
+		await page.locator('[data-center-tab^="draft:codex:"]').click();
+		await expect(input).toHaveValue("A newer draft");
+		await expect(
+			page.getByTitle("Send (Enter)", { exact: true }),
+		).toBeDisabled();
+		await input.press("Enter");
+		receipt.resolve();
+		await expect(
+			page.getByTitle("Send (Enter)", { exact: true }),
+		).toBeEnabled();
+		await expect(input).toHaveValue("A newer draft");
+		expect(attempts).toBe(1);
+		await input.press("Enter");
+		await expect(input).toHaveValue("");
+		expect(
+			backend.commands
+				.filter((command) => command.type === "send")
+				.map((command) => command.text),
+		).toEqual(["First message", "A newer draft"]);
+	} finally {
+		receipt.resolve();
+	}
+});
+
+test("ACP chat initialization errors allow retrying the same session creation", async ({
+	page,
+}) => {
+	const backend = await mockACPBackend(page);
+	const attempts: { id: string }[] = [];
+	await page.route(/\/api\/v2\/backends\/codex\/sessions$/, async (route) => {
+		if (route.request().method() === "POST") {
+			attempts.push(route.request().postDataJSON());
+			if (attempts.length === 1) {
+				await route.fulfill({ status: 502, body: "Codex startup failed" });
+				return;
+			}
+		}
+		await route.fallback();
+	});
+	await page.goto("/codex");
+	await expect(
+		page.getByText("Codex startup failed", { exact: false }),
+	).toBeVisible();
+	expect(attempts).toHaveLength(1);
+	const input = page.getByPlaceholder("Message Codex…");
+	await input.fill("Retry startup");
+	await input.press("Enter");
+	await expect
+		.poll(() => backend.commands.filter((command) => command.type === "send"))
+		.toHaveLength(1);
+	await expect(page.getByTitle("codex-test · default")).toBeVisible();
+	expect(attempts).toHaveLength(2);
+	expect(attempts[0].id).toBe(attempts[1].id);
+});
+
 test("uses canonical product names for agents", async ({ page }) => {
+	await mockACPBackend(page, "claude");
 	await page.route(/\/api\/v2\/bootstrap$/, async (route) => {
 		const response = await route.fetch();
 		const scope = await response.json();
@@ -740,21 +1167,7 @@ test("uses canonical product names for agents", async ({ page }) => {
 			},
 		});
 	});
-	await page.route(/\/api\/v2\/backends\/claude\/settings$/, (route) =>
-		route.fulfill({
-			json: {
-				models: [{ id: "claude-test", name: "Claude Test" }],
-				model: "claude-test",
-				modes: [{ id: "agent", name: "Agent" }],
-				mode: "agent",
-				efforts: ["default"],
-				effort: "default",
-				canDelete: true,
-			},
-		}),
-	);
-	await page.goto("/opencode");
-	await expect(page.getByPlaceholder("Message OpenCode…")).toBeVisible();
+	await composer(page);
 	await page.keyboard.press("Control+k");
 	const palette = page.getByRole("dialog", { name: "Command palette" });
 	await expect(palette).toBeVisible();
@@ -2962,6 +3375,87 @@ test("keeps the desktop workspace mounted across viewport sizes", async ({
 	}
 });
 
+test("composer hides mode then model as session history narrows the chat", async ({
+	page,
+}) => {
+	await page.route(/\/api\/v2\/backends\/wingman\/settings$/, (route) =>
+		route.fulfill({
+			json: {
+				...emptySession("").settings,
+				models: [
+					{
+						id: "long-model",
+						name: "A model with a long provider and version name",
+					},
+				],
+				model: "long-model",
+				effort: "default",
+				modes: [
+					{ id: "agent", name: "Agent mode with a longer descriptive name" },
+				],
+				mode: "agent",
+			},
+		}),
+	);
+	const input = await composer(page);
+	await input.fill("Keep this draft while resizing");
+	const composerBox = page.locator("[data-chat-composer]");
+	const mode = composerBox.locator("[data-composer-mode]");
+	const model = composerBox.locator("[data-composer-model]");
+	await openSessions(page);
+	for (const [width, showMode, showModel] of [
+		[1280, true, true],
+		[900, false, true],
+		[740, false, false],
+		[680, false, false],
+		[1280, true, true],
+	] as const) {
+		await page.setViewportSize({ width, height: 800 });
+		await expect(mode, `mode at viewport ${width}`).toBeVisible({
+			visible: showMode,
+		});
+		await expect(model).toBeVisible({ visible: showModel });
+		await expect(input).toHaveValue("Keep this draft while resizing");
+		await expect(composerBox.getByTitle("Add file context")).toBeVisible();
+		await expect(composerBox.getByTitle("Attach image")).toBeVisible();
+		await expect(composerBox.getByTitle("Send (Enter)")).toBeEnabled();
+		await expect
+			.poll(() =>
+				composerBox.evaluate((element) => {
+					const bounds = element.getBoundingClientRect();
+					const buttons = [...element.querySelectorAll("button")]
+						.filter((button) => button.getClientRects().length > 0)
+						.map((button) => button.getBoundingClientRect());
+					return buttons.every(
+						(button, index) =>
+							button.left >= bounds.left &&
+							button.right <= bounds.right &&
+							buttons
+								.slice(index + 1)
+								.every(
+									(other) =>
+										Math.min(button.right, other.right) -
+											Math.max(button.left, other.left) <=
+											1 ||
+										Math.min(button.bottom, other.bottom) -
+											Math.max(button.top, other.top) <=
+											1,
+								),
+					);
+				}),
+			)
+			.toBe(true);
+	}
+	// Closing history changes the available space without resizing the window.
+	await page.setViewportSize({ width: 900, height: 800 });
+	await expect(mode).toBeHidden();
+	await page
+		.getByRole("button", { name: "Hide sessions", exact: true })
+		.click();
+	await expect(mode).toBeVisible();
+	await expect(model).toBeVisible();
+});
+
 test("keeps workspace tabs in the titlebar at small viewport sizes", async ({
 	page,
 }) => {
@@ -3215,6 +3709,32 @@ test("docks only terminals at the bottom with tabs on the right", async ({
 	const chatComposer = page.locator("[data-chat-composer]");
 	const wingmanLogo = page.getByRole("img", { name: "Wingman" });
 	await expect(chatComposer).toBeVisible();
+	await openSessions(page);
+	await expect
+		.poll(async () => {
+			const sessions = await page
+				.locator('[data-chat-auxiliary-panel][data-view="sessions"]')
+				.boundingBox();
+			const divider = await page
+				.locator("[data-terminal-tabs-separator]")
+				.boundingBox();
+			return sessions && divider ? Math.abs(sessions.x - divider.x) : Infinity;
+		})
+		.toBeLessThan(1);
+	await expect
+		.poll(async () => {
+			const surface = await originalSurface.boundingBox();
+			const divider = await page
+				.locator("[data-terminal-tabs-separator]")
+				.boundingBox();
+			return surface && divider
+				? Math.abs(surface.x + surface.width - divider.x)
+				: Infinity;
+		})
+		.toBeLessThan(1);
+	await page
+		.getByRole("button", { name: "Hide sessions", exact: true })
+		.click();
 	await expect
 		.poll(async () => {
 			const dockBox = await dock.boundingBox();

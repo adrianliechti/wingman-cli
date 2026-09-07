@@ -2,7 +2,8 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { File, MessageSquare, Sparkles } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { fileQueries, type FileHit } from "../api/files";
-import { useSessionSettings, useWorkspace } from "../state/workspaceContext.ts";
+import { useWorkspace, type SettingsPatch } from "../state/workspaceContext.ts";
+import type { SessionSettings } from "../state/sessionStore.ts";
 import { sessionQueries, type SessionInfo } from "../api/sessions";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { type Skill, useSkills } from "../hooks/useSkills";
@@ -33,6 +34,8 @@ const EMPTY_FILES: FileHit[] = [];
 
 interface Props {
 	sessionId?: string;
+	settings: SessionSettings;
+	setSettings: (patch: SettingsPatch) => Promise<void>;
 	onClose: () => void;
 	actions: PaletteAction[];
 	onRunSkill: (skill: PaletteSkill) => void;
@@ -42,6 +45,8 @@ interface Props {
 
 export function CommandPalette({
 	sessionId,
+	settings,
+	setSettings,
 	onClose,
 	actions,
 	onRunSkill,
@@ -51,13 +56,12 @@ export function CommandPalette({
 	const toast = useToast();
 	const listId = useId();
 	const [query, setQuery] = useState("");
-	const [active, setActive] = useState(0);
+	const [activeKey, setActiveKey] = useState<string | null>(null);
 	const listRef = useRef<HTMLDivElement>(null);
 	const skills = useSkills(sessionId);
 	const { backend } = useWorkspace();
 	const sessionList =
 		useQuery(sessionQueries.list(backend)).data ?? EMPTY_SESSIONS;
-	const { settings, setSettings } = useSessionSettings(sessionId);
 	const models = settings.models;
 	const currentModel = settings.model;
 	const debouncedQuery = useDebouncedValue(query.trim(), 80);
@@ -98,7 +102,7 @@ export function CommandPalette({
 			});
 		}
 		const modelHits = models.filter(
-			(m) => m.id !== currentModel && match(m.name, m.id),
+			(m) => m.id !== currentModel && match(`Switch to ${m.name}`, m.id),
 		);
 		for (const m of modelHits.slice(0, q ? modelHits.length : 5)) {
 			out.push({
@@ -163,13 +167,16 @@ export function CommandPalette({
 		switchModel,
 	]);
 
+	const active = Math.max(
+		0,
+		items.findIndex((item) => item.key === activeKey),
+	);
+	const selectedKey = items[active]?.key;
 	useEffect(() => {
 		listRef.current
 			?.querySelector(`[data-idx="${active}"]`)
 			?.scrollIntoView({ block: "nearest" });
-	}, [active]);
-
-	const clamped = Math.min(active, Math.max(0, items.length - 1));
+	}, [active, selectedKey]);
 
 	const runItem = (item: Item) => {
 		onClose();
@@ -182,13 +189,13 @@ export function CommandPalette({
 			onClose();
 		} else if (e.key === "ArrowDown") {
 			e.preventDefault();
-			setActive(Math.min(clamped + 1, items.length - 1));
+			setActiveKey(items[Math.min(active + 1, items.length - 1)]?.key ?? null);
 		} else if (e.key === "ArrowUp") {
 			e.preventDefault();
-			setActive(Math.max(clamped - 1, 0));
+			setActiveKey(items[Math.max(active - 1, 0)]?.key ?? null);
 		} else if (e.key === "Enter") {
 			e.preventDefault();
-			const item = items[clamped];
+			const item = items[active];
 			if (item) runItem(item);
 		}
 	};
@@ -218,7 +225,7 @@ export function CommandPalette({
 						value={query}
 						onChange={(event) => {
 							setQuery(event.target.value);
-							setActive(0);
+							setActiveKey(null);
 						}}
 						onKeyDown={onKeyDown}
 						placeholder="Type a command, session, skill or file…"
@@ -227,7 +234,7 @@ export function CommandPalette({
 						aria-expanded="true"
 						aria-controls={listId}
 						aria-activedescendant={
-							items[clamped] ? `${listId}-${clamped}` : undefined
+							selectedKey ? `${listId}-${active}` : undefined
 						}
 						aria-autocomplete="list"
 						className="w-full bg-transparent text-fg text-[13px] outline-none placeholder:text-fg-dim"
@@ -252,7 +259,7 @@ export function CommandPalette({
 									</div>
 								) : null;
 							lastGroup = item.group;
-							const isActive = i === clamped;
+							const isActive = i === active;
 							return (
 								<div key={item.key}>
 									{header}
@@ -263,7 +270,7 @@ export function CommandPalette({
 										role="option"
 										aria-selected={isActive}
 										onClick={() => runItem(item)}
-										onMouseEnter={() => setActive(i)}
+										onMouseMove={() => setActiveKey(item.key)}
 										className={`w-full flex items-center gap-2 px-3 py-1.5 text-left cursor-pointer transition-colors ${
 											isActive
 												? "bg-bg-active text-fg"

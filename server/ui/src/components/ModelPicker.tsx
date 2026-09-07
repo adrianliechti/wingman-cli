@@ -1,17 +1,18 @@
 import { useMutation } from "@tanstack/react-query";
 import { useCallback, useMemo, useRef, useState } from "react";
-import { useSessionSettings } from "../state/workspaceContext.ts";
+import type { SettingsPatch } from "../state/workspaceContext.ts";
+import type { SessionSettings } from "../state/sessionStore.ts";
 import { ModelProviderIcon } from "./ModelProviderIcon";
 import { useToast } from "./ui/Feedback";
 import { FloatingSurface } from "./ui/Floating";
 
 interface Props {
-	sessionId?: string;
+	settings: SessionSettings;
+	setSettings: (patch: SettingsPatch) => Promise<void>;
 }
 
-export function ModelPicker({ sessionId }: Props) {
+export function ModelPicker({ settings, setSettings }: Props) {
 	const toast = useToast();
-	const { settings, setSettings } = useSessionSettings(sessionId);
 	const models = settings.models;
 	const model = settings.model;
 	const effort = settings.effort || "auto";
@@ -144,12 +145,12 @@ export function ModelPicker({ sessionId }: Props) {
 	if (!model) return null;
 
 	return (
-		<div className="relative">
+		<div data-composer-model className="relative min-w-0 max-w-[260px]">
 			<button
 				ref={setButton}
 				type="button"
 				onClick={toggle}
-				className="flex items-center gap-1 px-2 h-7 rounded text-[11.5px] text-fg-muted hover:text-fg hover:bg-bg-hover cursor-pointer transition-colors max-w-[260px]"
+				className="flex items-center gap-1 px-2 h-7 rounded text-[11.5px] text-fg-muted hover:text-fg hover:bg-bg-hover cursor-pointer transition-colors max-w-full"
 				title={`${model} · ${effort}`}
 				aria-haspopup="dialog"
 				aria-expanded={open}

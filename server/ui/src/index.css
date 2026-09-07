@@ -166,6 +166,7 @@ select,
 /* The entire rounded composer is the input affordance. Its textarea remains
    visually transparent while focus is shown on the outer surface only. */
 [data-chat-composer] {
+	container: chat-composer / inline-size;
 	background: var(--color-bg-input);
 	border: 1px solid var(--color-border-subtle);
 	transition:
@@ -177,6 +178,19 @@ select,
 }
 [data-chat-composer]:focus-within {
 	border-color: var(--color-border-strong);
+}
+
+/* History and split panes reduce the composer independently of the viewport.
+   Keep the model longer than the mode, reserving room for message actions. */
+@container chat-composer (width < 420px) {
+	[data-composer-mode] {
+		display: none;
+	}
+}
+@container chat-composer (width < 260px) {
+	[data-composer-model] {
+		display: none;
+	}
 }
 
 .chat-composer-textarea,

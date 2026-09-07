@@ -39,8 +39,10 @@ type App struct {
 	sessionID    string
 	sessionEpoch uint64
 
-	phase      atomic.Int32
-	phaseStart time.Time
+	phase           atomic.Int32
+	pendingPhase    atomic.Pointer[phaseUpdate]
+	phaseStart      time.Time
+	metadataPending atomic.Bool
 
 	spinnerFrame int
 	quitDeadline time.Time
@@ -202,13 +204,21 @@ func New(ctx context.Context, coderAgent code.Agent, sessionID string) *App {
 
 	a.turns = code.NewTurnManager(tool.WithProgressSink(ctx, a.onToolProgress), coderAgent, a.handleTurnEvent)
 	setAgentUI(coderAgent, a)
+	if source, ok := coderAgent.(code.SessionUpdateSource); ok {
+		source.SetSessionUpdateHandler(a.onSessionUpdate)
+	}
 
 	return a
 }
 
 // onToolProgress receives live status text for active current or archived
 // tool calls. Archived calls occur when ACP runs tools in parallel.
-func (a *App) onToolProgress(_ context.Context, callID, text string) {
+func (a *App) onToolProgress(ctx context.Context, callID, text string) {
+	a.sessionMu.Lock()
+	defer a.sessionMu.Unlock()
+	if id := code.SessionIDFromContext(ctx); id != "" && id != a.sessionID {
+		return
+	}
 	a.streamStateMu.Lock()
 	updated := false
 	if callID == a.streamCurrent.toolID && a.streamCurrent.toolResult == nil {
@@ -241,6 +251,8 @@ func (a *App) activateSession(id string) {
 	a.sessionMu.Lock()
 	a.sessionID = id
 	a.sessionEpoch++
+	a.pendingPhase.Store(nil)
+	a.metadataPending.Store(false)
 	a.clearStreamingState()
 	a.setPhase(PhaseIdle)
 	a.sessionMu.Unlock()
@@ -252,8 +264,37 @@ func (a *App) activateSession(id string) {
 	a.historyRevisionSet = false
 	a.resetTurnStats()
 	a.usageVisibleUntil = time.Time{}
+	a.pendingEchoMu.Lock()
+	a.pendingEcho = nil
+	a.pendingEchoMu.Unlock()
+	a.clearPendingContent()
+	if a.editor != nil {
+		a.editor.SetText("")
+	}
+	a.refreshUsage()
 
 	a.startTaskPump()
+}
+
+func (a *App) onSessionUpdate(id string) {
+	a.withCurrentSession(id, func() {
+		// Updates may also arrive synchronously from a settings command on the
+		// UI thread. Schedule one refresh without waiting for space in its queue.
+		a.metadataPending.Store(true)
+		a.requestRender()
+	})
+}
+
+func (a *App) refreshMetadata() {
+	if !a.metadataPending.Swap(false) {
+		return
+	}
+	a.refreshUsage()
+	a.refreshCommandCenter()
+	if a.popup != nil && a.popup.kind == popupCommands && a.editor != nil {
+		a.popup = nil
+		a.syncCommandPopup()
+	}
 }
 
 // startTaskPump forwards background-agent completions of the current session
@@ -585,17 +626,15 @@ func (a *App) Run() error {
 		}
 
 		a.post(func() {
-			a.setPhase(PhaseIdle)
+			if a.getPhase() == PhasePreparing {
+				a.setPhase(PhaseIdle)
+			}
 			a.invalidate()
 		})
 	}()
 
+	a.refreshUsage()
 	if messages := a.agent.Messages(a.sessionID); len(messages) > 0 {
-		usage := a.agent.Usage(a.sessionID)
-		a.inputTokens = usage.InputTokens
-		a.outputTokens = usage.OutputTokens
-		a.lastInputTokens = usage.LastInputTokens
-		a.contextWindow = usage.ContextWindow
 		a.syncMessages()
 	}
 
@@ -663,6 +702,9 @@ func (a *App) Run() error {
 
 func (a *App) shutdown() {
 	a.saveSession()
+	if source, ok := a.agent.(code.SessionUpdateSource); ok {
+		source.SetSessionUpdateHandler(nil)
+	}
 
 	a.turns.SetHandler(nil)
 	a.turns.Close()
@@ -1294,11 +1336,6 @@ func (a *App) clearChat() {
 	}
 	a.turns.CancelAll(previousID)
 	a.activateSession(id)
-	a.clearPendingContent()
-	a.inputTokens = 0
-	a.outputTokens = 0
-	a.lastInputTokens = 0
-	a.contextWindow = 0
 	a.chat = nil
 	a.chatScroll = 0
 	a.follow = true

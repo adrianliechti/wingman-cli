@@ -45,29 +45,11 @@ type rustAdapter struct {
 func (rustAdapter) Language() string { return "Rust" }
 
 func (rustAdapter) Descriptor() dap.AdapterDescriptor {
-	return dap.AdapterDescriptor{
-		Name:             "codelldb",
-		Language:         "Rust",
-		AdapterID:        "lldb",
-		Command:          "codelldb",
-		Transport:        dap.TransportStdio,
-		TerminalStrategy: dap.TerminalRunInTerminal,
-		Markers:          []string{"Cargo.toml", "Cargo.lock"},
-		SourceExtensions: []string{".rs"},
-		Defaults: map[string]any{
-			"type":            "lldb",
-			"sourceLanguages": []string{"rust"},
-		},
-		ConfigurationPaths: []dap.ConfigurationPath{
-			{Key: "program", AllowMissing: true},
-			{Key: "cwd", Directory: true},
-		},
-		IOConfigKey: "terminal",
-		IOValues: map[dap.IOMode]string{
-			dap.IOOutput:   "console",
-			dap.IOTerminal: "integrated",
-		},
-	}
+	descriptor := lldbDescriptor("codelldb", "Rust")
+	descriptor.Markers = []string{"Cargo.toml", "Cargo.lock"}
+	descriptor.SourceExtensions = []string{".rs"}
+	descriptor.Defaults["sourceLanguages"] = []string{"rust"}
+	return descriptor
 }
 
 func (rustAdapter) Matches(path string) bool {

@@ -37,7 +37,7 @@ var githubRecipes = []recipe{
 		Commands: []string{"js-debug-adapter"},
 	},
 	{
-		ID: "codelldb", Label: "Rust debugger", Kind: installerGitHub,
+		ID: "codelldb", Label: "LLDB debugger", Kind: installerGitHub,
 		Commands: []string{"codelldb"},
 	},
 	{

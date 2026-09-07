@@ -55,6 +55,36 @@ func TestDebugTargetsReturnsGoCodeLensCandidates(t *testing.T) {
 	}
 }
 
+func TestDebugTargetsReturnsNativeCodeLensCandidates(t *testing.T) {
+	for _, extension := range []string{".c", ".cpp", ".cc", ".cxx", ".c++", ".C"} {
+		t.Run(extension, func(t *testing.T) {
+			root := t.TempDir()
+			path := "main" + extension
+			writeDebugTestFile(t, root, path, "int main() { return 0; }\n")
+			app := newDebugTestServer(t, root)
+			// Code lenses use the editor buffer, which may differ from disk.
+			body, err := json.Marshal(map[string]string{"path": path, "content": "// draft\n\nint main() { return 42; }\n"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			serveTestHTTP(app, response, httptest.NewRequest(http.MethodPost, "/api/debug/targets", bytes.NewReader(body)))
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+			}
+			var result struct {
+				Targets []debugadapter.Target `json:"targets"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Targets) != 1 || result.Targets[0].Name != "main" || result.Targets[0].Line != 3 || result.Targets[0].Language != "C/C++" {
+				t.Fatalf("native targets = %+v", result.Targets)
+			}
+		})
+	}
+}
+
 func TestDebugTargetsRejectsTrailingJSON(t *testing.T) {
 	root := t.TempDir()
 	writeDebugTestFile(t, root, "main.go", "package main\n\nfunc main() {}\n")

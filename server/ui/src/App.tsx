@@ -3,11 +3,13 @@ import { useMobileLayout } from "./hooks/useMobileLayout.ts";
 import { MobileNavigation } from "./components/MobileNavigation";
 import {
 	useWorkspace,
-	backendSettingsQuery,
+	useSessionSettings,
+	draftSettingsKey,
 } from "./state/workspaceContext.ts";
+import { ComposerDraft } from "./state/composerDraft.ts";
 import { isDraft, sessionKey, splitSessionKey } from "./state/sessionStore.ts";
 import { workspaceClient } from "./state/workspaceClient.ts";
-import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 	Bot,
 	Bug,
@@ -68,12 +70,7 @@ import {
 } from "./api/debug";
 import { createWorkspaceFile } from "./api/files";
 import { queryKeys } from "./api/query";
-import {
-	deleteSession,
-	type ModeOption,
-	type ModeState,
-	type SessionInfo,
-} from "./api/sessions";
+import { deleteSession, type SessionInfo } from "./api/sessions";
 import {
 	setEditorTabCompletion,
 	setWindowTerminalPosition,
@@ -198,13 +195,13 @@ const SIDE_PANEL_MAX_SIZE = 480;
 const CENTER_PANEL_MIN_SIZE = 320;
 const TERMINAL_PANEL_DEFAULT_SIZE = 240;
 const TERMINAL_PANEL_MIN_SIZE = 120;
+const RIGHT_PANEL_WIDTH = "min(240px, 50%)";
 const DEBUG_DETAILS_MIN_SIZE = 240;
 const DEBUG_DETAILS_MAX_SIZE = 480;
 // Width per workspace tab below which the label is replaced by its icon.
 const WORKSPACE_TAB_LABEL_MIN_WIDTH = 58;
 
 const EMPTY_ENTRIES: never[] = [];
-const EMPTY_MODES: ModeOption[] = [];
 const EMPTY_SHELLS: ShellEntry[] = [];
 const EMPTY_CENTER_TAB = {
 	id: "",
@@ -291,7 +288,7 @@ function moveWorkspaceTab(tab: CenterTab, from: string, to: string): CenterTab {
 export default function App() {
 	useAutoHidingScrollbars();
 	const mobile = useMobileLayout();
-	const { backend: agentId, selectBackend, drafts, setDraft } = useWorkspace();
+	const { backend: agentId, selectBackend, drafts } = useWorkspace();
 	const client = workspaceClient();
 	const [initialTab] = useState<CenterTab>(() => {
 		const sid = decodeURIComponent(
@@ -900,11 +897,7 @@ export default function App() {
 	);
 
 	const openChatTab = useCallback(
-		(
-			sid: string,
-			disposition: TabDisposition = "keep",
-			adoptDraftId?: string,
-		) => {
+		(sid: string, disposition: TabDisposition = "keep") => {
 			const existing = tabs.find(
 				(t) => t.type === "chat" && t.sessionId === sid,
 			);
@@ -913,33 +906,16 @@ export default function App() {
 				return;
 			}
 
-			// Allocating a session for the draft must retain its component key so
-			// unsent composer state survives. Browsing history never adopts it.
-			const draft = adoptDraftId
-				? tabs.find(
-						(t) => t.id === adoptDraftId && t.type === "chat" && !t.sessionId,
-					)
-				: undefined;
 			const tab: CenterTab = {
-				id: draft ? draft.id : chatTabId(sid),
+				id: chatTabId(sid),
 				type: "chat",
 				backendId: splitSessionKey(sid).backendId,
 				label: "Session",
 				sessionId: sid,
-				pane: draft?.pane,
 			};
-			if (draft) {
-				setTabs((current) =>
-					current.map((candidate) =>
-						candidate.id === draft.id ? tab : candidate,
-					),
-				);
-				activateTab(tab);
-				return;
-			}
 			showCenterTab(tab, disposition);
 		},
-		[activateTab, showCenterTab, tabs, setTabs],
+		[showCenterTab, tabs],
 	);
 
 	const openFile = useCallback(
@@ -1807,7 +1783,7 @@ export default function App() {
 		[tabs, setActiveTabId, setTabs],
 	);
 	const handleNewSession = useCallback(
-		async (requestedBackend?: string) => {
+		(requestedBackend?: string) => {
 			const backend =
 				requestedBackend ??
 				(activeTab.type === "chat"
@@ -1818,37 +1794,15 @@ export default function App() {
 					: currentSessionId
 						? splitSessionKey(currentSessionId).backendId
 						: agentId);
-			try {
-				await queryClient.ensureQueryData(backendSettingsQuery(backend));
-			} catch {
-				// The chat can still expose the harness error after it opens.
-			}
 			const tab = draftChatTab(backend);
 			selectBackend(backend);
 			setTabs((current) => [...current, tab]);
 			activateTab(tab);
 		},
-		[
-			activateTab,
-			activeTab,
-			agentId,
-			currentSessionId,
-			queryClient,
-			selectBackend,
-			setTabs,
-		],
+		[activateTab, activeTab, agentId, currentSessionId, selectBackend, setTabs],
 	);
-	const backendSelectionRef = useRef(0);
 	const handleBackendSelect = useCallback(
-		async (backend: string) => {
-			const selection = ++backendSelectionRef.current;
-			try {
-				await queryClient.ensureQueryData(backendSettingsQuery(backend));
-			} catch {
-				// Selecting the harness should still work when its settings endpoint
-				// supplies the actionable error state.
-			}
-			if (selection !== backendSelectionRef.current) return;
+		(backend: string) => {
 			selectBackend(backend);
 			if (activeTab.type === "chat" && !activeTab.sessionId) {
 				setTabs((current) =>
@@ -1860,7 +1814,7 @@ export default function App() {
 			}
 			openDraft(backend);
 		},
-		[activeTab, openDraft, queryClient, selectBackend, setTabs],
+		[activeTab, openDraft, selectBackend, setTabs],
 	);
 
 	const handleSessionDeleted = useCallback(
@@ -1901,6 +1855,16 @@ export default function App() {
 		[selectBackend, openChatTab],
 	);
 	const draftCreations = useRef(new Map<string, Promise<string>>());
+	const [composerDrafts] = useState(() => new Map<string, ComposerDraft>());
+	useEffect(() => {
+		const open = new Set(tabs.map((tab) => tab.id));
+		for (const id of composerDrafts.keys()) {
+			if (!open.has(id)) composerDrafts.delete(id);
+		}
+	}, [composerDrafts, tabs]);
+	const [draftErrors, setDraftErrors] = useState<
+		Record<string, string | undefined>
+	>({});
 	const createSessionForDraft = useCallback(
 		(key: string, draftTabId?: string): Promise<string> => {
 			const owner = splitSessionKey(key).backendId;
@@ -1916,24 +1880,68 @@ export default function App() {
 							(tab.backendId ?? agentId) === owner,
 					);
 			const draftID = draft?.id ?? key;
-			const previous = draftCreations.current.get(draftID);
+			const creationKey = JSON.stringify([owner, draftID]);
+			const previous = draftCreations.current.get(creationKey);
 			if (previous) return previous;
-			const request = client.create(owner, draftID).then(async (id) => {
-				const settings = drafts[key];
-				if (settings && Object.keys(settings).length)
-					await client.command(id, { type: "settings", ...settings });
-				openChatTab(id, "keep", draftID);
-				return id;
-			});
-			draftCreations.current.set(draftID, request);
+			setDraftErrors((current) =>
+				current[creationKey]
+					? { ...current, [creationKey]: undefined }
+					: current,
+			);
+			const request = client
+				.create(owner, draftID)
+				.then(async (id) => {
+					const settings = drafts[draftSettingsKey(key, draftID)];
+					if (settings && Object.keys(settings).length)
+						await client.command(id, { type: "settings", ...settings });
+					if (draft) {
+						// Keep the composer mounted and preserve current navigation. The
+						// draft may have moved, closed, or changed backend during startup.
+						setTabs((current) =>
+							current.map((tab) =>
+								tab.id === draftID &&
+								!tab.sessionId &&
+								(tab.backendId ?? agentId) === owner
+									? { ...tab, sessionId: id }
+									: tab,
+							),
+						);
+					} else openChatTab(id);
+					return id;
+				})
+				.catch((error) => {
+					setDraftErrors((current) => ({
+						...current,
+						[creationKey]: String(error),
+					}));
+					throw error;
+				});
+			draftCreations.current.set(creationKey, request);
 			void request.then(
-				() => draftCreations.current.delete(draftID),
-				() => draftCreations.current.delete(draftID),
+				() => draftCreations.current.delete(creationKey),
+				() => draftCreations.current.delete(creationKey),
 			);
 			return request;
 		},
-		[client, drafts, tabs, agentId, openChatTab],
+		[client, drafts, tabs, agentId, openChatTab, setTabs],
 	);
+	const draftInitializationAttempts = useRef(new Set<string>());
+	useEffect(() => {
+		if (!connected) return;
+		// ACP exposes model and mode settings on session/new, not initialize.
+		// Allocate when a chat opens, sharing the request with an early send.
+		for (const tab of tabs) {
+			const backend = tab.backendId ?? agentId;
+			if (tab.type !== "chat" || tab.sessionId || backend === "wingman")
+				continue;
+			const creationKey = JSON.stringify([backend, tab.id]);
+			if (draftInitializationAttempts.current.has(creationKey)) continue;
+			draftInitializationAttempts.current.add(creationKey);
+			void createSessionForDraft(sessionKey(backend, ""), tab.id).catch(() => {
+				/* The draft shows the error; sending retries the request. */
+			});
+		}
+	}, [tabs, agentId, connected, createSessionForDraft]);
 	useEffect(() => {
 		const deleted = new Set(
 			Object.values(sessions)
@@ -2040,56 +2048,26 @@ export default function App() {
 		[focusChat, handleSend],
 	);
 
-	const visibleKeys = new Set<string>([sessionId]);
-	for (const tab of [leftTab, rightTab]) {
-		if (tab?.type === "chat")
-			visibleKeys.add(
-				tab.sessionId || sessionKey(tab.backendId ?? agentId, ""),
-			);
-	}
-	const visibleSessionKeys = [...visibleKeys];
-	const defaultQueries = useQueries({
-		queries: visibleSessionKeys.map((key) => ({
-			...backendSettingsQuery(splitSessionKey(key).backendId),
-			enabled: isDraft(key),
-		})),
-	});
-	const modeStates: Record<string, ModeState> = Object.fromEntries(
-		visibleSessionKeys.map((key, index) => {
-			const settings = isDraft(key)
-				? { ...defaultQueries[index]?.data, ...drafts[key] }
-				: sessions[key]?.settings;
-			return [
-				key,
-				{ modes: settings?.modes ?? EMPTY_MODES, mode: settings?.mode ?? "" },
-			];
-		}),
-	);
-	const selectModeForSession = useCallback(
-		async (key: string, next: string) => {
-			if (isDraft(key)) {
-				setDraft(key, { mode: next });
-				return;
-			}
-			try {
-				await client.command(key, { type: "settings", mode: next });
-			} catch (error) {
-				toast({
-					title: "Could not change mode",
-					description: String(error),
-					tone: "error",
-				});
-			}
-		},
-		[client, setDraft, toast],
-	);
-
-	const modes = modeStates[sessionId]?.modes ?? EMPTY_MODES;
-	const mode = modeStates[sessionId]?.mode ?? "";
-	const selectMode = useCallback(
-		(next: string) => selectModeForSession(sessionId, next),
-		[selectModeForSession, sessionId],
-	);
+	const settingsTabId =
+		activeTab.type === "chat"
+			? activeTab.id
+			: tabs.find(
+					(tab) =>
+						tab.type === "chat" &&
+						!tab.sessionId &&
+						(tab.backendId ?? agentId) === splitSessionKey(sessionId).backendId,
+				)?.id;
+	const { settings: activeSettings, setSettings: setActiveSettings } =
+		useSessionSettings(sessionId, settingsTabId);
+	const { modes, mode } = activeSettings;
+	const selectMode = (mode: string) =>
+		setActiveSettings({ mode }).catch((error) => {
+			toast({
+				title: "Could not change mode",
+				description: String(error),
+				tone: "error",
+			});
+		});
 
 	const handleSidePanelResize = useCallback(({ inPixels }: PanelSize) => {
 		const collapsed = inPixels < 1;
@@ -2456,7 +2434,14 @@ export default function App() {
 				(candidate) => candidate.id === backendId,
 			);
 			const sess = key ? sessions[key] : undefined;
-			const modeState = modeStates[key];
+			let composerDraft = composerDrafts.get(tab.id);
+			if (!composerDraft) {
+				composerDraft = new ComposerDraft();
+				composerDrafts.set(tab.id, composerDraft);
+			}
+			const draftError = !tab.sessionId
+				? draftErrors[JSON.stringify([backendId, tab.id])]
+				: undefined;
 			return (
 				<ChatTabLayout
 					view={chatAuxiliaryViews[tab.id]}
@@ -2473,13 +2458,12 @@ export default function App() {
 				>
 					<ChatPanel
 						key={tab.id}
+						draftId={tab.id}
+						draft={composerDraft}
 						sessionId={key}
 						placeholder={`Message ${formatAgentName(backendId, backend?.name)}…`}
 						entries={sess?.entries ?? EMPTY_ENTRIES}
 						phase={sess?.phase ?? "idle"}
-						modes={modeState?.modes ?? EMPTY_MODES}
-						mode={modeState?.mode ?? ""}
-						onSelectMode={(next) => void selectModeForSession(key, next)}
 						onSend={(text, files, images, intent) =>
 							sendForSession(key, text, files, images, intent, tab.id)
 						}
@@ -2504,8 +2488,14 @@ export default function App() {
 						onClearQueue={() => {
 							if (key) clearQueue(key);
 						}}
-						loading={!isDraft(key) && (!sess || sess.status === "loading")}
-						loadError={sess?.status === "error" ? sess.error : null}
+						loading={
+							isDraft(key)
+								? backendId !== "wingman" && !draftError
+								: !sess || sess.status === "loading"
+						}
+						loadError={
+							draftError ?? (sess?.status === "error" ? sess.error : null)
+						}
 						error={sess?.error ?? null}
 						onDismissError={() => {
 							if (key) dismissError(key);
@@ -3095,7 +3085,7 @@ export default function App() {
 		if (terminalDockVisible)
 			return {
 				left: 0,
-				right: "177px",
+				right: RIGHT_PANEL_WIDTH,
 				bottom: 0,
 				height: "var(--terminal-panel-height)",
 			};
@@ -3348,6 +3338,8 @@ export default function App() {
 
 			{paletteOpen && (
 				<CommandPalette
+					settings={activeSettings}
+					setSettings={setActiveSettings}
 					sessionId={sessionId}
 					onClose={() => {
 						setPaletteOpen(false);
@@ -3724,9 +3716,9 @@ function ChatTabLayout({
 				}
 				inert={!view}
 				className={`h-full shrink-0 overflow-hidden transition-[width] duration-150 ${view ? "border-l border-border-subtle" : ""}`}
-				style={{ width: view ? "min(240px, 50%)" : "0px" }}
+				style={{ width: view ? RIGHT_PANEL_WIDTH : "0px" }}
 			>
-				<div className="h-full w-60 max-w-full bg-bg">
+				<div className="h-full w-full bg-bg">
 					<div className={view === "sessions" ? "h-full" : "hidden"}>
 						<AgentSessions
 							backendId={backendId}
@@ -3797,7 +3789,10 @@ function TerminalDockTabs({
 	};
 
 	return (
-		<aside className="flex w-44 shrink-0 flex-col bg-bg">
+		<aside
+			className="flex shrink-0 flex-col bg-bg"
+			style={{ width: `calc(${RIGHT_PANEL_WIDTH} - 1px)` }}
+		>
 			<div className="flex h-8 shrink-0 items-center gap-1 px-2">
 				<span className="min-w-0 flex-1 truncate text-[10px] font-medium uppercase tracking-wide text-fg-dim">
 					Terminals

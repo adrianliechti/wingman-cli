@@ -255,7 +255,6 @@ func TestDebuggerRuntimePrerequisitesAreReportedWithoutInstallation(t *testing.T
 		"debugpy-adapter":    "Requires Python",
 		"java-debug-adapter": "Requires Java",
 		"js-debug-adapter":   "Requires Node.js",
-		"codelldb":           "Requires Rust",
 		"netcoredbg":         "Requires the .NET SDK",
 	} {
 		t.Run(command, func(t *testing.T) {
@@ -270,6 +269,17 @@ func TestDebuggerRuntimePrerequisitesAreReportedWithoutInstallation(t *testing.T
 				t.Fatalf("status = %+v, want reason %q", statuses[0], reason)
 			}
 		})
+	}
+}
+
+func TestLLDBCanBeInstalledWithoutRust(t *testing.T) {
+	t.Setenv("WINGMAN_MANAGED_TOOLS", "on")
+	manager := newManager(t.TempDir())
+	manager.prerequisite = manager.missingPrerequisite
+	manager.look = func(string) (string, error) { return "", exec.ErrNotFound }
+	statuses, err := manager.Status(context.Background(), []Requirement{{Alternatives: []string{"codelldb"}}})
+	if err != nil || len(statuses) != 1 || !statuses[0].Installable || statuses[0].UnavailableReason != "" {
+		t.Fatalf("LLDB requires a language runtime: %+v, %v", statuses, err)
 	}
 }
 

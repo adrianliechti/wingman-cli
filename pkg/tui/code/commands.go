@@ -293,9 +293,6 @@ func (a *App) submitInput() {
 		return
 	}
 
-	a.editor.AddHistory(query)
-	a.editor.SetText("")
-
 	displayText := query
 
 	imageCount := a.countPendingImages()
@@ -333,10 +330,12 @@ func (a *App) submitInput() {
 		input = append(input, agent.Content{Text: block, Hidden: true})
 	}
 
-	a.clearPendingContent()
-	a.showWelcome = false
-
-	a.submitAgentInput(input, displayText)
+	if a.submitAgentInput(input, displayText) {
+		a.editor.AddHistory(query)
+		a.editor.SetText("")
+		a.clearPendingContent()
+		a.showWelcome = false
+	}
 }
 
 func (a *App) hasAgentCommand(name string) bool {
@@ -348,34 +347,28 @@ func (a *App) hasAgentCommand(name string) bool {
 	return false
 }
 
-func (a *App) submitAgentInput(input []agent.Content, echo string) {
+func (a *App) submitAgentInput(input []agent.Content, echo string) bool {
 	id := uuid.NewString()
+	// Active and Steered can arrive before Submit returns. Install the preview
+	// first so those events move it ahead of the turn's first streamed output.
+	if echo != "" {
+		a.pendingEchoMu.Lock()
+		a.pendingEcho = append(a.pendingEcho, pendingEchoItem{ID: id, Text: echo, State: code.TurnInputQueued})
+		a.pendingEchoMu.Unlock()
+	}
 
-	snap, err := a.turns.Submit(a.ctx, a.sessionID, code.TurnInput{
+	_, err := a.turns.Submit(a.ctx, a.sessionID, code.TurnInput{
 		ID: id, Content: input, Intent: code.TurnInputSteer,
 	})
 	if err != nil {
+		a.removePendingEcho(id)
 		a.appendChat(cellNotice(fmt.Sprintf("Could not submit turn: %v", err), theme.Default.Red, a.width()))
-		return
-	}
-
-	// A native steer is already part of the active turn. Put it into the live
-	// transcript at the point where it was accepted so later model output
-	// appears beneath it. Only inputs still waiting for a turn remain previews
-	// at the bottom of the chat.
-	if echo != "" {
-		switch snap.State {
-		case code.TurnInputSteered:
-			a.appendLiveUserEcho(echo)
-		case code.TurnInputQueued:
-			a.pendingEchoMu.Lock()
-			a.pendingEcho = append(a.pendingEcho, pendingEchoItem{ID: id, Text: echo, State: snap.State})
-			a.pendingEchoMu.Unlock()
-		}
+		return false
 	}
 
 	a.syncMessages()
 	a.invalidate()
+	return true
 }
 
 func (a *App) showHelp() {
