@@ -923,7 +923,7 @@ func TestUpdateLockRecoversLegacyStaleDirectory(t *testing.T) {
 
 func TestCatalogContainsCuratedManagedTools(t *testing.T) {
 	manager := newManager(t.TempDir())
-	for _, command := range []string{"gopls", "dlv", "rust-analyzer", "csharp-ls", "jdtls", "java-debug-adapter", "typescript-language-server", "basedpyright", "debugpy-adapter", "js-debug-adapter", "codelldb", "netcoredbg"} {
+	for _, command := range []string{"gopls", "dlv", "rust-analyzer", "csharp-ls", "jdtls", "java-debug-adapter", "typescript-language-server", "ty", "clangd", "debugpy-adapter", "js-debug-adapter", "codelldb", "netcoredbg"} {
 		if !manager.CanManage(command) {
 			t.Errorf("CanManage(%q) = false", command)
 		}

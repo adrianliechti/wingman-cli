@@ -78,8 +78,8 @@ func projectDirs(index *workspaceIndex, project projectType) []string {
 	seen := make(map[string]bool)
 
 	for _, marker := range project.Markers {
-		for _, entry := range index.matching(marker) {
-			dir := filepath.Dir(entry.path)
+		for _, path := range index.matching(marker) {
+			dir := filepath.Dir(path)
 			if seen[dir] {
 				continue
 			}
@@ -95,11 +95,8 @@ func projectDirs(index *workspaceIndex, project projectType) []string {
 				return true
 			}
 		}
-		return len(project.Requires) > 0 && !index.hasNestedFile(dir, project.Requires)
+		return false
 	})
-	if project.WorkspaceRoot && len(dirs) > 0 {
-		return []string{index.root}
-	}
 	return dirs
 }
 
@@ -123,21 +120,14 @@ func resolveServer(dir string, servers []Server, tools tooling.ManagedTools, ver
 	return Server{}, false
 }
 
-type workspaceEntry struct {
-	path  string
-	name  string
-	isDir bool
-}
-
 // workspaceIndex holds one scan of the workspace, indexed so that marker
 // lookups cost a map hit instead of a pass over every entry.
 type workspaceIndex struct {
-	root   string
-	byName map[string][]workspaceEntry
-	byGlob map[string][]workspaceEntry
+	byName map[string][]string
+	byGlob map[string][]string
 }
 
-func (i *workspaceIndex) matching(pattern string) []workspaceEntry {
+func (i *workspaceIndex) matching(pattern string) []string {
 	if isGlob(pattern) {
 		return i.byGlob[pattern]
 	}
@@ -145,20 +135,9 @@ func (i *workspaceIndex) matching(pattern string) []workspaceEntry {
 }
 
 func (i *workspaceIndex) hasChild(dir, pattern string) bool {
-	for _, entry := range i.matching(pattern) {
-		if filepath.Dir(entry.path) == dir {
+	for _, path := range i.matching(pattern) {
+		if filepath.Dir(path) == dir {
 			return true
-		}
-	}
-	return false
-}
-
-func (i *workspaceIndex) hasNestedFile(dir string, patterns []string) bool {
-	for _, pattern := range patterns {
-		for _, entry := range i.matching(pattern) {
-			if !entry.isDir && isSubPath(dir, entry.path) {
-				return true
-			}
 		}
 	}
 	return false
@@ -168,9 +147,8 @@ func indexWorkspace(workingDir string) *workspaceIndex {
 	globs := markerGlobs()
 
 	index := &workspaceIndex{
-		root:   workingDir,
-		byName: make(map[string][]workspaceEntry),
-		byGlob: make(map[string][]workspaceEntry),
+		byName: make(map[string][]string),
+		byGlob: make(map[string][]string),
 	}
 
 	_ = filepath.WalkDir(workingDir, func(path string, entry fs.DirEntry, err error) error {
@@ -179,12 +157,11 @@ func indexWorkspace(workingDir string) *workspaceIndex {
 		}
 
 		name := entry.Name()
-		item := workspaceEntry{path: path, name: name, isDir: entry.IsDir()}
-		index.byName[name] = append(index.byName[name], item)
+		index.byName[name] = append(index.byName[name], path)
 
 		for _, glob := range globs {
 			if matchesName(glob, name) {
-				index.byGlob[glob] = append(index.byGlob[glob], item)
+				index.byGlob[glob] = append(index.byGlob[glob], path)
 			}
 		}
 
@@ -200,7 +177,7 @@ func indexWorkspace(workingDir string) *workspaceIndex {
 var markerGlobs = sync.OnceValue(func() []string {
 	var globs []string
 	for _, project := range knownProjects {
-		for _, patterns := range [][]string{project.Markers, project.Requires, project.Excludes} {
+		for _, patterns := range [][]string{project.Markers, project.Excludes} {
 			for _, pattern := range patterns {
 				if isGlob(pattern) && !slices.Contains(globs, pattern) {
 					globs = append(globs, pattern)

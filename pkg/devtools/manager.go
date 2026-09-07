@@ -91,6 +91,7 @@ type recipe struct {
 	Packages    []string
 	Commands    []string
 	WorkingDirs []string
+	WheelsOnly  bool
 }
 
 type selectedTool struct {

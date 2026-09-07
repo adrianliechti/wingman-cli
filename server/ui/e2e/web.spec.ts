@@ -4283,3 +4283,241 @@ test("closing the last session keeps its backend for the next draft", async ({
 	await expect(page).toHaveURL(/\/fixture$/);
 	await expect(page.getByPlaceholder("Message Wingman…")).toBeVisible();
 });
+
+test.describe("phone navigation", () => {
+	test.use({
+		viewport: { width: 390, height: 700 },
+		hasTouch: true,
+		isMobile: true,
+	});
+
+	test("keeps the same draft mounted across phone and desktop layouts", async ({
+		page,
+	}) => {
+		const input = await composer(page);
+		await expect(page.locator("[data-mobile-navigation]")).toBeVisible();
+		await expect(
+			page.getByRole("tree", { name: "Workspace files" }),
+		).not.toBeVisible();
+		await expect(
+			page.getByRole("combobox", { name: "Agent", exact: true }),
+		).toBeVisible();
+		await input.fill("Keep this draft through rotation and resizing");
+		await input.evaluate((element) =>
+			element.setAttribute("data-original-composer", "yes"),
+		);
+		expect(
+			await input.evaluate((element) => getComputedStyle(element).fontSize),
+		).toBe("16px");
+		for (const width of [820, 1200, 390]) {
+			await page.setViewportSize({ width, height: 700 });
+			await expect(input).toHaveValue(
+				"Keep this draft through rotation and resizing",
+			);
+			await expect(input).toHaveAttribute("data-original-composer", "yes");
+			if (width <= 1024)
+				await expect(page.locator("[data-mobile-navigation]")).toBeVisible();
+			else {
+				await expect(page.locator("[data-window-titlebar]")).toBeVisible();
+				await expect(page.locator("[data-mobile-navigation]")).toHaveCount(0);
+			}
+		}
+		const box = await input.boundingBox();
+		expect(box!.x).toBeGreaterThanOrEqual(0);
+		expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+		await page
+			.getByRole("button", { name: "Show sessions", exact: true })
+			.tap();
+		await expect(
+			page.getByRole("dialog", { name: "Sessions", exact: true }),
+		).toBeVisible();
+		await page
+			.getByRole("button", { name: "Close sessions", exact: true })
+			.tap();
+		await expect(input).toHaveValue(
+			"Keep this draft through rotation and resizing",
+		);
+	});
+
+	test("switches agents and opens the selected agent's sessions without nested popups", async ({
+		page,
+	}) => {
+		const scope = await (await page.request.get("/api/v2/bootstrap")).json();
+		await page.route("**/api/v2/bootstrap", (route) =>
+			route.fulfill({
+				json: {
+					...scope,
+					backends: [
+						...scope.backends,
+						{ id: "fixture", name: "Fixture" },
+						...Array.from({ length: 20 }, (_, index) => ({
+							id: `agent-${index}`,
+							name: `Agent ${index}`,
+						})),
+					],
+				},
+			}),
+		);
+		await page.route("**/api/v2/backends/fixture/settings", (route) =>
+			route.fulfill({ json: emptySession("").settings }),
+		);
+		await mockSavedSessions(
+			page,
+			[
+				{
+					id: "phone-saved",
+					title: "From another browser",
+					updated_at: new Date().toISOString(),
+				},
+			],
+			[],
+			"fixture",
+		);
+		await composer(page);
+		const picker = page.getByRole("combobox", { name: "Agent", exact: true });
+		await expect(picker).toBeVisible();
+		const box = await picker.boundingBox();
+		expect(box!.height).toBeGreaterThanOrEqual(44);
+		await picker.selectOption("fixture");
+		await expect(page).toHaveURL(/\/fixture$/);
+		await expect(picker).toHaveValue("fixture");
+		await page
+			.getByRole("button", { name: "Show sessions", exact: true })
+			.tap();
+		const dialog = page.getByRole("dialog", { name: "Sessions", exact: true });
+		await expect(dialog).toBeVisible();
+		await dialog.getByRole("button", { name: /From another browser/ }).tap();
+		await expect(dialog).not.toBeVisible();
+		await expect(page).toHaveURL(/\/fixture\/phone-saved$/);
+		await expect(picker).toHaveValue("fixture");
+		await expect(page.getByPlaceholder("Message Wingman…")).toBeVisible();
+	});
+
+	test("keeps model controls inside the viewport and above the chat", async ({
+		page,
+	}) => {
+		await composer(page);
+		const trigger = page.locator(
+			'[data-chat-composer] button[aria-haspopup="dialog"]',
+		);
+		await expect(trigger).toBeVisible();
+		await trigger.tap();
+		const picker = page.getByRole("dialog", {
+			name: "Model and reasoning effort",
+		});
+		await expect(picker).toBeVisible();
+		await expectFloatingInViewport(page, picker);
+		expect(
+			await picker.evaluate((element) => {
+				const box = element.getBoundingClientRect();
+				return element.contains(
+					document.elementFromPoint(
+						box.x + box.width / 2,
+						box.y + box.height / 2,
+					),
+				);
+			}),
+		).toBe(true);
+		await page.screenshot({
+			path: test.info().outputPath("phone-model-picker.png"),
+		});
+		await page.keyboard.press("Escape");
+		await expect(picker).not.toBeVisible();
+	});
+});
+
+test.describe("remote access", () => {
+	test.use({
+		viewport: { width: 390, height: 700 },
+		hasTouch: true,
+		isMobile: true,
+	});
+
+	test("pairs a phone and shares the running session with a local browser", async ({
+		page,
+		context,
+	}) => {
+		const pairURL = process.env.E2E_PAIR_URL!;
+		const requestURLs: string[] = [];
+		page.on("request", (request) => requestURLs.push(request.url()));
+		await page.goto(pairURL);
+		const input = page.getByPlaceholder("Message Wingman…");
+		await expect(input).toBeVisible();
+		await expect(page.locator("[data-mobile-navigation]")).toBeVisible();
+		const secret = new URL(pairURL).hash.split(".")[1];
+		expect(requestURLs.some((url) => url.includes(secret))).toBe(false);
+		const cookies = await context.cookies(process.env.E2E_RELAY_URL!);
+		expect(
+			cookies.find((cookie) => cookie.name === "wingman_remote")?.httpOnly,
+		).toBe(true);
+		await input.fill("cancel this request");
+		await input.press("Enter");
+		await expect(
+			page.getByText("Long-running work", { exact: true }),
+		).toBeVisible();
+		const observer = await context.newPage();
+		await observer.goto(
+			new URL(new URL(page.url()).pathname, process.env.E2E_BASE_URL!).href,
+		);
+		await expect(
+			observer.getByText("Long-running work", { exact: true }),
+		).toBeVisible();
+		await page.reload();
+		await expect(
+			page.getByText("Long-running work", { exact: true }),
+		).toBeVisible();
+		await expect
+			.poll(
+				async () =>
+					(await page.locator("[data-mobile-navigation]").boundingBox())?.y ??
+					-1,
+			)
+			.toBeGreaterThanOrEqual(0);
+		await page.screenshot({ path: test.info().outputPath("remote-phone.png") });
+		await observer.getByTitle("Stop (Esc)").tap();
+		await expect(page.getByTitle("Stop (Esc)")).toHaveCount(0);
+		await observer.close();
+	});
+
+	test("retries a lost receipt through the relay without another model invocation", async ({
+		page,
+		request,
+	}) => {
+		await page.goto(process.env.E2E_PAIR_URL!);
+		const input = page.getByPlaceholder("Message Wingman…");
+		await expect(input).toBeVisible();
+		const before = await (
+			await request.get(`${controlURL()}/model-stats`)
+		).json();
+		const ids: string[] = [];
+		await page.route(
+			"**/api/v2/backends/wingman/sessions/*/commands",
+			async (route) => {
+				const command = route.request().postDataJSON();
+				if (command.type !== "send") return route.continue();
+				ids.push(command.id);
+				if (ids.length === 1) {
+					await route.fetch();
+					await route.abort("failed");
+				} else await route.continue();
+			},
+		);
+		await input.fill("render markdown");
+		await input.press("Enter");
+		await expect(
+			page.getByText("Input delivery was not confirmed", { exact: true }),
+		).toBeVisible();
+		await expect(input).toHaveValue("render markdown");
+		await expect(
+			page.getByRole("heading", { name: "Migration result" }),
+		).toBeVisible();
+		await input.press("Enter");
+		await expect(input).toHaveValue("");
+		expect(ids).toHaveLength(2);
+		expect(ids[0]).toBe(ids[1]);
+		const after = await (
+			await request.get(`${controlURL()}/model-stats`)
+		).json();
+		expect(after.requests - before.requests).toBe(1);
+	});
+});

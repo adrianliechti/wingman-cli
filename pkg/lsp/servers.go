@@ -19,6 +19,9 @@ type Server struct {
 }
 
 func (s Server) LanguageIDForPath(path string) string {
+	if s.LanguageID == "cpp" && filepath.Ext(path) == ".c" {
+		return "c"
+	}
 	if s.LanguageID != "typescript" {
 		return s.LanguageID
 	}
@@ -35,13 +38,11 @@ func (s Server) LanguageIDForPath(path string) string {
 }
 
 type projectType struct {
-	Name          string
-	Label         string
-	WorkspaceRoot bool
-	Markers       []string
-	Servers       []Server
-	Excludes      []string
-	Requires      []string
+	Name     string
+	Label    string
+	Markers  []string
+	Servers  []Server
+	Excludes []string
 }
 
 var knownProjects = []projectType{
@@ -100,14 +101,27 @@ var knownProjects = []projectType{
 	},
 	{
 		Name:    "python",
-		Markers: []string{"pyproject.toml", "setup.py", "requirements.txt", "Pipfile", "setup.cfg", "pyrightconfig.json"},
+		Markers: []string{"pyproject.toml", "ty.toml", "setup.py", "requirements.txt", "Pipfile", "setup.cfg"},
 		Servers: []Server{
 			{
-				Name:       "basedpyright",
-				Command:    "basedpyright-langserver",
-				Args:       []string{"--stdio"},
+				Name:       "ty",
+				Command:    "ty",
+				Args:       []string{"server"},
 				Languages:  []string{"py", "pyi"},
 				LanguageID: "python",
+			},
+		},
+	},
+	{
+		Name:    "cpp",
+		Label:   "C/C++",
+		Markers: []string{"compile_commands.json", "compile_flags.txt", ".clangd", "CMakeLists.txt", "meson.build"},
+		Servers: []Server{
+			{
+				Name:       "clangd",
+				Command:    "clangd",
+				Languages:  []string{"c", "h", "cc", "hh", "cpp", "hpp", "cxx", "hxx", "c++", "h++", "ipp", "tpp"},
+				LanguageID: "cpp",
 			},
 		},
 	},
@@ -135,90 +149,6 @@ var knownProjects = []projectType{
 				Args:       []string{},
 				Languages:  []string{"cs"},
 				LanguageID: "csharp",
-			},
-		},
-	},
-	{
-		Name:     "vue",
-		Markers:  []string{"package.json", "package-lock.json", "bun.lock", "bun.lockb", "yarn.lock", "pnpm-lock.yaml"},
-		Requires: []string{"*.vue"},
-		Servers: []Server{
-			{
-				Name:       "vue-language-server",
-				Command:    "vue-language-server",
-				Args:       []string{"--stdio"},
-				Languages:  []string{"vue"},
-				LanguageID: "vue",
-			},
-		},
-	},
-	{
-		Name:     "svelte",
-		Markers:  []string{"package.json", "package-lock.json", "bun.lock", "bun.lockb", "yarn.lock", "pnpm-lock.yaml"},
-		Requires: []string{"*.svelte"},
-		Servers: []Server{
-			{
-				Name:       "svelteserver",
-				Command:    "svelteserver",
-				Args:       []string{"--stdio"},
-				Languages:  []string{"svelte"},
-				LanguageID: "svelte",
-			},
-		},
-	},
-	{
-		Name:     "astro",
-		Markers:  []string{"package.json", "package-lock.json", "bun.lock", "bun.lockb", "yarn.lock", "pnpm-lock.yaml"},
-		Requires: []string{"*.astro"},
-		Servers: []Server{
-			{
-				Name:       "astro-ls",
-				Command:    "astro-ls",
-				Args:       []string{"--stdio"},
-				Languages:  []string{"astro"},
-				LanguageID: "astro",
-			},
-		},
-	},
-	{
-		Name:          "bash",
-		WorkspaceRoot: true,
-		Markers:       []string{".bashrc", ".bash_profile", ".zshrc", "*.sh", "*.bash", "*.zsh", "*.ksh"},
-		Servers: []Server{
-			{
-				Name:       "bash-language-server",
-				Command:    "bash-language-server",
-				Args:       []string{"start"},
-				Languages:  []string{"sh", "bash", "zsh", "ksh"},
-				LanguageID: "shellscript",
-			},
-		},
-	},
-	{
-		Name:          "yaml",
-		Label:         "YAML",
-		WorkspaceRoot: true,
-		Markers:       []string{"*.yaml", "*.yml"},
-		Servers: []Server{
-			{
-				Name:       "yaml-language-server",
-				Command:    "yaml-language-server",
-				Args:       []string{"--stdio"},
-				Languages:  []string{"yaml", "yml"},
-				LanguageID: "yaml",
-			},
-		},
-	},
-	{
-		Name:    "docker",
-		Markers: []string{"Dockerfile", "Containerfile"},
-		Servers: []Server{
-			{
-				Name:       "docker-langserver",
-				Command:    "docker-langserver",
-				Args:       []string{"--stdio"},
-				Languages:  []string{"dockerfile"},
-				LanguageID: "dockerfile",
 			},
 		},
 	},

@@ -47,6 +47,8 @@ func main() {
 		}
 	case "server":
 		runServer(ctx, args[1:])
+	case "relay":
+		runRelay(ctx, args[1:])
 	case "acp":
 		runACP(ctx, args[1:])
 	case "run":
@@ -97,6 +99,7 @@ Usage:
   wingman exec [flags] [PROMPT] Run non-interactively (alias: e)
   wingman exec resume [ID]      Resume a non-interactive session
   wingman server [flags]        Run the web UI server
+  wingman relay [flags]         Run a relay for remote web access
   wingman acp [target] [flags]  Run as an ACP stdio server (wingman | claude | codex | pi)
   wingman run <target> [args]   Run an external agent through wingman
   wingman mcp <command>         Manage MCP servers (list, get, add, remove, login, logout)
@@ -119,6 +122,16 @@ Exec flags:
   --effort LEVEL                Override the reasoning effort for this session
   --agent, -a NAME              Use wingman or any detected/configured agent
   --cd, -C PATH                 Set the workspace root
+
+Server flags:
+  --port N                      Local port (default: 9000)
+  --no-browser                  Do not open a browser on startup
+  --remote URL                  Connect through a Wingman relay
+  --remote-token TOKEN          Relay registration token
+
+Relay flags:
+  --port N                      HTTP port behind a gateway (default: 8080)
+  --token TOKEN                 Required registration token (or WINGMAN_RELAY_TOKEN)
 
 Resume:
   wingman exec resume --last [PROMPT]

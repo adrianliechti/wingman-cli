@@ -132,6 +132,36 @@ wingman --agent claude --continue # resume the latest native Claude session
 wingman --agent pi --continue     # resume the latest native Pi session
 ```
 
+### Remote web access
+
+Run the relay behind an HTTPS gateway. It serves HTTP on `:8080` by default;
+`--port` changes that port. The gateway handles TLS and certificates.
+
+```bash
+# On the relay host; use a strong shared registration token.
+WINGMAN_RELAY_TOKEN="your-secret" wingman relay --port 8080
+
+# In your project directory; use the same token.
+WINGMAN_REMOTE_TOKEN="your-secret" wingman server --remote https://relay.example.com
+```
+
+Open the pairing link printed by the workspace server, or scan its QR code
+on your phone. Local and remote browsers use the same running sessions.
+The phone layout provides an agent selector, session list, and chat controls.
+
+The gateway must preserve `Host`, set `X-Forwarded-Proto: https`, and forward
+WebSocket upgrades and streaming responses. Use a dedicated origin without a
+URL path prefix. Keep the relay's HTTP port on the gateway's private network.
+Remote access grants the same capabilities as the local web UI, including
+files and terminals; keep the pairing link private and use a trusted relay.
+
+`WINGMAN_REMOTE_URL` can replace `--remote`; `--remote-token` and `--token`
+can replace their respective environment variables. The link survives tunnel
+reconnections and expires when the workspace server restarts.
+
+See [remote-control.md](docs/remote-control.md) for the architecture, Docker
+build, tests, and operating limits.
+
 ### Non-interactive mode
 
 Use `wingman exec` (or `wingman e`) to run a prompt without opening the TUI.
@@ -488,23 +518,22 @@ Other project-local and system tools are not updated by Wingman.
 | DAP | C#/.NET | `netcoredbg` | GitHub release | Latest checksummed platform [NetCoreDbg](https://github.com/Samsung/netcoredbg/releases/latest) archive |
 | LSP | TypeScript/JavaScript | `typescript-language-server` | npm | [`typescript-language-server`](https://www.npmjs.com/package/typescript-language-server), [`typescript`](https://www.npmjs.com/package/typescript) |
 | DAP | JavaScript/TypeScript | `js-debug-adapter` | GitHub release | Latest checksummed standalone [vscode-js-debug](https://github.com/microsoft/vscode-js-debug/releases/latest) DAP archive |
-| LSP | Python | `basedpyright-langserver` | pip / PyPI | [`basedpyright`](https://pypi.org/project/basedpyright/) |
+| LSP | Python | `ty` | pip / PyPI | [`ty`](https://pypi.org/project/ty/) |
+| LSP | C/C++ | `clangd` | pip / PyPI | [`clangd`](https://pypi.org/project/clangd/) (third-party LLVM binary wheels) |
 | DAP | Python | `debugpy-adapter` | pip / PyPI | [`debugpy`](https://pypi.org/project/debugpy/) |
 | LSP | Java | `jdtls` | Maven | Maven `LATEST` for `org.eclipse.jdt.ls:org.eclipse.jdt.ls.product:tar.gz` from the [Eclipse JDT LS Maven repository](https://repo.eclipse.org/repository/ls-maven2-releases/org/eclipse/jdt/ls/org.eclipse.jdt.ls.product/) |
 | DAP | Java | `java-debug-adapter` availability token; hosted by `jdtls` | Maven | Maven `LATEST` for [`com.microsoft.java:com.microsoft.java.debug.plugin`](https://central.sonatype.com/artifact/com.microsoft.java/com.microsoft.java.debug.plugin) |
-| LSP | Vue | `vue-language-server` | npm | [`@vue/language-server`](https://www.npmjs.com/package/@vue/language-server), [`typescript`](https://www.npmjs.com/package/typescript) |
-| LSP | Svelte | `svelteserver` | npm | [`svelte-language-server`](https://www.npmjs.com/package/svelte-language-server), [`typescript`](https://www.npmjs.com/package/typescript) |
-| LSP | Astro | `astro-ls` | npm | [`@astrojs/language-server`](https://www.npmjs.com/package/@astrojs/language-server), [`typescript`](https://www.npmjs.com/package/typescript) |
-| LSP | Bash | `bash-language-server` | npm | [`bash-language-server`](https://www.npmjs.com/package/bash-language-server) |
-| LSP | YAML | `yaml-language-server` | npm | [`yaml-language-server`](https://www.npmjs.com/package/yaml-language-server) |
-| LSP | Dockerfile | `docker-langserver` | npm | [`dockerfile-language-server-nodejs`](https://www.npmjs.com/package/dockerfile-language-server-nodejs) |
 
 Browser debugging requires Chrome, Chromium, Edge, Brave, or a browser supplied
 through `CHROME_PATH`. Browsers are installed externally.
 
-Wingman installs Python language and debugger packages in its own isolated
+Wingman installs pip packages in its own isolated
 environments under `$WINGMAN_HOME/tools`, leaving project virtual environments
 untouched.
+
+Python uses `ty server` as its only language server. Both ty and clangd install
+from prebuilt PyPI wheels, using the configured pip index (including JFrog
+Artifactory). Platforms without a compatible wheel report an installation error.
 
 Go, npm, pip, NuGet, and Maven installs honor their normal registry, proxy,
 credentials, mirror, and project configuration. JDT LS and java-debug prefer a
@@ -537,16 +566,15 @@ browser targets, not a DAP package.
 |----------|--------|-------------|
 | Go | `gopls` | `go.mod`, `go.work` |
 | TypeScript/JS | Managed `tsc` (7+) or `typescript-language-server` | `tsconfig.json`, `package.json` |
-| Python | Managed `basedpyright` | `pyproject.toml`, `requirements.txt` |
+| Python | Managed `ty` | `pyproject.toml`, `ty.toml`, `requirements.txt` |
+| C/C++ | Managed `clangd` | `compile_commands.json`, `compile_flags.txt`, `.clangd`, `CMakeLists.txt`, `meson.build` |
 | Rust | `rust-analyzer` | `Cargo.toml` |
 | Java | `jdtls` | `pom.xml`, `build.gradle`, `settings.gradle` |
 | C# | Managed `csharp-ls` | `*.csproj`, `*.sln` |
-| Vue | `vue-language-server` | `package.json` |
-| Svelte | `svelteserver` | `package.json` |
-| Astro | `astro-ls` | `package.json` |
-| Bash | `bash-language-server` | `.bashrc`, `*.sh`, `*.bash`, `*.zsh`, `*.ksh` |
-| YAML | `yaml-language-server` | `*.yaml`, `*.yml` |
-| Docker | `docker-langserver` | `Dockerfile` |
+
+C/C++ projects should provide a `compile_commands.json` compilation database or
+`compile_flags.txt` so clangd can resolve their include paths and compiler flags.
+See [`examples/c`](examples/c) for a small runnable C project.
 
 The LSP tool provides these operations:
 - **diagnostics** / **workspaceDiagnostics** — Compiler errors and warnings

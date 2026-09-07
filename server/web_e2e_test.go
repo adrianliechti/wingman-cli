@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/adrianliechti/wingman-agent/internal/testenv"
+	"github.com/adrianliechti/wingman-agent/pkg/remote"
 )
 
 type webE2EModel struct {
@@ -385,6 +386,16 @@ func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
 	defer app.Close()
 	web := httptest.NewServer(app)
 	defer web.Close()
+	relay := remote.NewRelay("test-token")
+	relayWeb := httptest.NewServer(relay)
+	defer func() { relay.Close(); relayWeb.Close() }()
+	credentials := remote.NewCredentials()
+	stopRemote := connectTestRemote(t, app, relayWeb.URL, credentials)
+	defer stopRemote()
+	pairURL, err := remote.PairURL(relayWeb.URL, credentials)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	playwrightArgs := []string{"playwright", "test", "e2e/web.spec.ts", "--config", "playwright.config.ts"}
 	grepPattern := os.Getenv("E2E_GREP")
@@ -398,6 +409,8 @@ func TestWebUIE2ECodingAgentWorkflows(t *testing.T) {
 		"E2E_INSTANCE="+app.scope.InstanceID,
 		"E2E_CONTROL_URL="+modelServer.URL,
 		"E2E_WORKSPACE="+workDir,
+		"E2E_RELAY_URL="+relayWeb.URL,
+		"E2E_PAIR_URL="+pairURL,
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
