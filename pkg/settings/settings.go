@@ -14,9 +14,21 @@ import (
 
 const MaxWorkspaces = 3
 
+type WindowTerminalPosition string
+
+const (
+	WindowTerminalPositionTab    WindowTerminalPosition = "tab"
+	WindowTerminalPositionBottom WindowTerminalPosition = "bottom"
+)
+
+func (position WindowTerminalPosition) Valid() bool {
+	return position == WindowTerminalPositionTab || position == WindowTerminalPositionBottom
+}
+
 type Settings struct {
-	EditorTabCompletion bool     `json:"editor.tab.completion"`
-	Workspaces          []string `json:"workspaces,omitempty"`
+	EditorTabCompletion    bool                   `json:"editor.tab.completion"`
+	WindowTerminalPosition WindowTerminalPosition `json:"window.terminal.position"`
+	Workspaces             []string               `json:"workspaces,omitempty"`
 }
 
 func (s *Settings) AddWorkspace(path string) {
@@ -76,7 +88,10 @@ func Update(update func(*Settings)) (Settings, error) {
 }
 
 func load() (Settings, error) {
-	value := Settings{EditorTabCompletion: true}
+	value := Settings{
+		EditorTabCompletion:    true,
+		WindowTerminalPosition: WindowTerminalPositionTab,
+	}
 	path, err := path()
 	if err != nil {
 		return Settings{}, err
@@ -90,6 +105,9 @@ func load() (Settings, error) {
 	}
 	if err := json.Unmarshal(data, &value); err != nil {
 		return Settings{}, err
+	}
+	if !value.WindowTerminalPosition.Valid() {
+		value.WindowTerminalPosition = WindowTerminalPositionTab
 	}
 	return value, nil
 }

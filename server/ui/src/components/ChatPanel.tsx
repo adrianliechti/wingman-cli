@@ -38,6 +38,7 @@ import { TurnQueue } from "./TurnQueue";
 
 interface Props {
 	sessionId?: string;
+	placeholder?: string;
 	entries: ChatEntry[];
 	phase: Phase;
 	modes: ModeOption[];
@@ -115,6 +116,7 @@ function wordEndAt(text: string, caret: number): number {
 
 export function ChatPanel({
 	sessionId,
+	placeholder = "Message Wingman…",
 	entries,
 	phase,
 	modes,
@@ -143,7 +145,6 @@ export function ChatPanel({
 	const scheme = useColorScheme();
 	const [input, setInput] = useState("");
 	const [caret, setCaret] = useState(0);
-	const [skillActive, setSkillActive] = useState(0);
 	const [dismissedToken, setDismissedToken] = useState<string | null>(null);
 	const [files, setFiles] = useState<string[]>([]);
 	const [images, setImages] = useState<PendingImage[]>([]);
@@ -166,6 +167,8 @@ export function ChatPanel({
 	}, [queueSettling]);
 	const showQueue =
 		pendingInputs.length > 0 && (!queueSettling || revealSettling);
+	const historyPadding =
+		entries.length === 0 ? "" : showQueue ? "pb-56" : "pb-24";
 	const containerRef = useRef<HTMLDivElement>(null);
 	const contentRef = useRef<HTMLDivElement>(null);
 	const spacerRef = useRef<HTMLDivElement>(null);
@@ -290,6 +293,16 @@ export function ChatPanel({
 	const tokenKey = skillToken
 		? `${skillToken.start}:${skillToken.query}`
 		: null;
+	const [skillSelection, setSkillSelection] = useState<{
+		token: string | null;
+		index: number;
+	}>({ token: tokenKey, index: 0 });
+	const skillActive =
+		skillSelection.token === tokenKey ? skillSelection.index : 0;
+	const setSkillActive = useCallback(
+		(index: number) => setSkillSelection({ token: tokenKey, index }),
+		[tokenKey],
+	);
 
 	const tokenOpen = !!skillToken;
 	const skills = useSkills(sessionId, tokenOpen);
@@ -305,11 +318,6 @@ export function ChatPanel({
 		);
 	}, [skills, skillQuery]);
 
-	const [prevTokenKey, setPrevTokenKey] = useState(tokenKey);
-	if (prevTokenKey !== tokenKey) {
-		setPrevTokenKey(tokenKey);
-		setSkillActive(0);
-	}
 	const activeSkill = Math.min(
 		skillActive,
 		Math.max(0, skillMatches.length - 1),
@@ -735,7 +743,8 @@ export function ChatPanel({
 				</div>
 			)}
 			<div
-				className={`h-full overflow-y-auto [overflow-anchor:none] ${showQueue ? "pb-56" : "pb-24"}`}
+				data-chat-history
+				className={`h-full overflow-y-auto [overflow-anchor:none] ${historyPadding}`}
 				ref={containerRef}
 			>
 				{loading && entries.length === 0 ? (
@@ -918,7 +927,7 @@ export function ChatPanel({
 									}
 									onKeyDown={handleKeyDown}
 									onPaste={handlePaste}
-									placeholder="Message Wingman…"
+									placeholder={placeholder}
 									rows={1}
 								/>
 							</div>

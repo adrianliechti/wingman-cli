@@ -127,10 +127,12 @@ test("uncertain retries preserve the request ID and copy the submitted envelope"
 	});
 	ready(client);
 	const files = ["one.go"];
-	const first = client.send(key, "hello", files);
+	const first = client.send(key, "hello", files, [], "follow_up");
 	files.push("unrelated.go");
 	await assert.rejects(first, /response lost/);
-	await client.send(key, "hello", ["one.go"]);
+	// The server may have advanced the phase while its receipt was lost. A UI
+	// retry can therefore infer "steer", but it must resend the saved envelope.
+	await client.send(key, "hello", ["one.go"], [], "steer");
 	assert.equal(commands[0].id, commands[1].id);
 	assert.deepEqual(commands[0].files, ["one.go"]);
 	assert.deepEqual(commands[0], commands[1]);

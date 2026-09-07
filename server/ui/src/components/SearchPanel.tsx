@@ -334,6 +334,9 @@ export function SearchPanel({
 					<div className="col-start-1 row-start-1 flex h-7 min-w-0 items-center rounded-md border border-border-subtle bg-bg-input focus-within:border-border-strong">
 						<input
 							ref={findInputRef}
+							autoCapitalize="none"
+							autoComplete="off"
+							autoCorrect="off"
 							value={query}
 							onChange={(event) => setQuery(event.target.value)}
 							placeholder="Search"
@@ -375,6 +378,9 @@ export function SearchPanel({
 							<div className="col-start-1 row-start-2 flex h-7 min-w-0 items-center rounded-md border border-border-subtle bg-bg-input focus-within:border-border-strong">
 								<input
 									ref={replaceInputRef}
+									autoCapitalize="none"
+									autoComplete="off"
+									autoCorrect="off"
 									value={replacement}
 									onChange={(event) => setReplacement(event.target.value)}
 									placeholder="Replace"
@@ -425,6 +431,9 @@ export function SearchPanel({
 									Files to include
 								</span>
 								<input
+									autoCapitalize="none"
+									autoComplete="off"
+									autoCorrect="off"
 									value={include}
 									onChange={(event) => setInclude(event.target.value)}
 									placeholder="e.g. *.ts, src/**"
@@ -437,6 +446,9 @@ export function SearchPanel({
 									Files to exclude
 								</span>
 								<input
+									autoCapitalize="none"
+									autoComplete="off"
+									autoCorrect="off"
 									value={exclude}
 									onChange={(event) => setExclude(event.target.value)}
 									placeholder="e.g. dist/**, **/*.test.*"

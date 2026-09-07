@@ -276,7 +276,10 @@ export class WorkspaceClient {
 		// Capture the envelope before any await; a composer may replace its arrays.
 		files = [...files];
 		images = [...images];
-		const fingerprint = JSON.stringify([key, text, files, images, intent]);
+		// An unconfirmed delivery keeps its original intent as part of the saved
+		// command. The session phase may advance before the user retries, so intent
+		// must not split the retry identity and allocate a second request ID.
+		const fingerprint = JSON.stringify([key, text, files, images]);
 		let entry = this.sends.get(fingerprint);
 		if (!entry) {
 			const epoch = await this.ready(key);

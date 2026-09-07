@@ -541,7 +541,7 @@ function GitChanges({
 				className="min-h-0 overflow-hidden"
 			>
 				<div className="flex h-full min-h-0 flex-col overflow-hidden bg-transparent">
-					<div className="relative h-9 px-2 flex items-center gap-1 shrink-0 border-b border-border-subtle bg-bg-surface/20">
+					<div className="relative h-9 px-2 flex items-center gap-1 shrink-0">
 						<BranchPicker
 							status={status}
 							disabled={disabled}
@@ -947,6 +947,10 @@ function BranchPicker({
 						<Search size={11} className="ml-2 text-fg-dim shrink-0" />
 						<input
 							ref={searchRef}
+							autoCapitalize="none"
+							autoComplete="off"
+							autoCorrect="off"
+							spellCheck={false}
 							value={query}
 							onChange={(event) => setQuery(event.target.value)}
 							placeholder="Find a branch…"
@@ -1020,6 +1024,10 @@ function BranchPicker({
 						>
 							<input
 								autoFocus
+								autoCapitalize="none"
+								autoComplete="off"
+								autoCorrect="off"
+								spellCheck={false}
 								value={newBranch}
 								onChange={(event) => setNewBranch(event.target.value)}
 								placeholder="feature/name"
@@ -1147,8 +1155,8 @@ function ChangeGroup({
 }) {
 	if (files.length === 0) return null;
 	return (
-		<div className="pb-1">
-			<div className="h-7 px-3 flex items-center text-[10.5px] font-medium text-fg-dim">
+		<div className="shrink-0 pb-1">
+			<div className="sticky top-0 z-10 h-7 px-3 flex items-center bg-bg-surface/80 text-[10.5px] font-medium text-fg-dim backdrop-blur-md">
 				<span>{title}</span>
 				<span className="ml-1.5 min-w-4 h-4 px-1 rounded-full bg-bg-active text-[9px] leading-4 text-center tabular-nums">
 					{files.length}

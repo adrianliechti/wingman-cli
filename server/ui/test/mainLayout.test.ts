@@ -153,7 +153,7 @@ test("layout reducer closes a selected session and repairs both pane selections 
 			rightActiveId: second.id,
 			currentSessionId: "two",
 		},
-		{ field: "tabs", value: [first], fallbackId: "unused" },
+		{ field: "tabs", value: [first] },
 	);
 	assert.equal(next.activeTabId, first.id);
 	assert.equal(next.currentSessionId, "one");
@@ -171,14 +171,14 @@ test("layout reducer promotes the remaining pane after the last left tab closes"
 			rightActiveId: second.id,
 			currentSessionId: "two",
 		},
-		{ field: "tabs", value: [second], fallbackId: "unused" },
+		{ field: "tabs", value: [second] },
 	);
 	assert.equal(next.tabs[0].pane, undefined);
 	assert.equal(next.leftActiveId, second.id);
 	assert.equal(next.rightActiveId, "");
 });
 
-test("closing the final session retains its backend and reducer replay retains draft identity", async () => {
+test("closing the final session leaves the center workspace empty", async () => {
 	const { layoutReducer } = await import("../src/mainLayout.ts");
 	const last = { ...chat("native"), backendId: "two" };
 	const state = {
@@ -191,12 +191,13 @@ test("closing the final session retains its backend and reducer replay retains d
 	const action = {
 		field: "tabs",
 		value: [],
-		fallbackId: "event-identity",
 	} as const;
 	const first = layoutReducer(state, { ...action, value: [] });
 	const replay = layoutReducer(state, { ...action, value: [] });
 	assert.deepEqual(first, replay);
-	assert.equal(first.tabs[0].backendId, "two");
-	assert.equal(first.tabs[0].sessionId, "");
-	assert.equal(first.activeTabId, first.tabs[0].id);
+	assert.deepEqual(first.tabs, []);
+	assert.equal(first.activeTabId, "");
+	assert.equal(first.leftActiveId, "");
+	assert.equal(first.rightActiveId, "");
+	assert.equal(first.currentSessionId, "");
 });

@@ -198,6 +198,9 @@ export function SearchView({
 				<div className="flex min-w-40 flex-1 items-center gap-1 rounded-md border border-border bg-bg-input px-2 py-1 focus-within:border-border-strong">
 					<input
 						ref={inputRef}
+						autoCapitalize="none"
+						autoComplete="off"
+						autoCorrect="off"
 						value={query}
 						onChange={(event) => setQuery(event.target.value)}
 						placeholder={
@@ -283,6 +286,9 @@ export function SearchView({
 					{mode === "content" && <option value="matches">matches</option>}
 				</select>
 				<input
+					autoCapitalize="none"
+					autoComplete="off"
+					autoCorrect="off"
 					value={file}
 					onChange={(event) => setFile(event.target.value)}
 					placeholder="path filter"

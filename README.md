@@ -372,7 +372,11 @@ Completions use model requests while you type; requests are edit-gated,
 debounced, and limited server-wide to one active request and one start every
 1.5 seconds.
 
-Wingman's `~/.wingman/config.json` stores this preference and recent launcher
+`window.terminal.position` controls whether terminals open in a main tab
+(`tab`, the default) or in the bottom dock (`bottom`). It can also be changed
+from the command palette and is stored in the same config file.
+
+Wingman's `~/.wingman/config.json` stores these preferences and recent launcher
 workspaces only;
 backend URLs and authentication tokens are read from environment variables and
 are never persisted in this file.

@@ -8,10 +8,12 @@ import { FloatingMenu } from "./ui/Floating";
 export const BUILTIN_AGENT_ID = "wingman";
 
 interface Props {
-	onSelect: (id: string) => void;
+	onSelect: (id: string) => void | Promise<void>;
+	currentId?: string;
 }
-export function AgentPicker({ onSelect }: Props) {
-	const { backend: current } = useWorkspace();
+export function AgentPicker({ onSelect, currentId }: Props) {
+	const { backend } = useWorkspace();
+	const current = currentId ?? backend;
 	const agents = workspaceClient().scope.backends;
 	const [open, setOpen] = useState(false);
 	const btnRef = useRef<HTMLButtonElement>(null);

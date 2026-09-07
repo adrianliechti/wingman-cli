@@ -22,9 +22,13 @@ func TestSettingsDefaultAndUpdate(t *testing.T) {
 	if !initial.EditorTabCompletion {
 		t.Fatal("editor.tab.completion is disabled by default")
 	}
+	if initial.WindowTerminalPosition != WindowTerminalPositionTab {
+		t.Fatalf("window.terminal.position = %q, want tab", initial.WindowTerminalPosition)
+	}
 
 	updated, err := Update(func(value *Settings) {
 		value.EditorTabCompletion = false
+		value.WindowTerminalPosition = WindowTerminalPositionBottom
 		value.AddWorkspace("first")
 	})
 	if err != nil {
@@ -39,6 +43,12 @@ func TestSettingsDefaultAndUpdate(t *testing.T) {
 	}
 	if loaded.EditorTabCompletion {
 		t.Fatal("disabled editor.tab.completion was not persisted")
+	}
+	if loaded.WindowTerminalPosition != WindowTerminalPositionBottom {
+		t.Fatalf(
+			"window.terminal.position = %q, want bottom",
+			loaded.WindowTerminalPosition,
+		)
 	}
 
 	path := filepath.Join(home, "config.json")
@@ -55,6 +65,9 @@ func TestSettingsDefaultAndUpdate(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"editor.tab.completion": false`) {
 		t.Fatalf("disabled editor.tab.completion was omitted from %s", data)
+	}
+	if !strings.Contains(string(data), `"window.terminal.position": "bottom"`) {
+		t.Fatalf("window.terminal.position was omitted from %s", data)
 	}
 }
 
@@ -74,6 +87,28 @@ func TestSettingsMissingTabPreferenceDefaultsOn(t *testing.T) {
 	}
 	if !loaded.EditorTabCompletion {
 		t.Fatal("missing editor.tab.completion did not default on")
+	}
+	if loaded.WindowTerminalPosition != WindowTerminalPositionTab {
+		t.Fatal("missing window.terminal.position did not default to tab")
+	}
+}
+
+func TestSettingsInvalidTerminalPositionDefaultsToTab(t *testing.T) {
+	home := testenv.WingmanHome(t)
+	if err := os.WriteFile(
+		filepath.Join(home, "config.json"),
+		[]byte(`{"window.terminal.position":"side"}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.WindowTerminalPosition != WindowTerminalPositionTab {
+		t.Fatalf("invalid position defaulted to %q, want tab", loaded.WindowTerminalPosition)
 	}
 }
 

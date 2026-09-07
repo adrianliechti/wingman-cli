@@ -222,6 +222,90 @@ func TestStatusChecksToolsWithoutInstallation(t *testing.T) {
 	}
 }
 
+func TestMissingPrerequisiteMakesManagedToolNotApplicable(t *testing.T) {
+	manager := newManager(t.TempDir())
+	manager.prerequisite = manager.missingPrerequisite
+	manager.look = func(string) (string, error) { return "", exec.ErrNotFound }
+	manager.install = func(context.Context, recipe, string) (string, error) {
+		t.Fatal("automatic update invoked an installer without its runtime")
+		return "", nil
+	}
+	requirements := []Requirement{{Alternatives: []string{"gopls"}}}
+	var phases []ProgressPhase
+	changed, err := manager.Update(context.Background(), requirements, func(progress Progress) {
+		phases = append(phases, progress.Phase)
+	})
+	if err != nil || changed || len(phases) != 0 {
+		t.Fatalf("Update = %v, %v; phases = %v", changed, err, phases)
+	}
+
+	statuses, err := manager.Status(context.Background(), requirements)
+	if err != nil || len(statuses) != 1 {
+		t.Fatalf("Status = %+v, %v", statuses, err)
+	}
+	status := statuses[0]
+	if status.Installed || status.Installable || status.UnavailableReason != "Requires Go" {
+		t.Fatalf("status = %+v", status)
+	}
+}
+
+func TestDebuggerRuntimePrerequisitesAreReportedWithoutInstallation(t *testing.T) {
+	for command, reason := range map[string]string{
+		"dlv":                "Requires Go",
+		"debugpy-adapter":    "Requires Python",
+		"java-debug-adapter": "Requires Java",
+		"js-debug-adapter":   "Requires Node.js",
+		"codelldb":           "Requires Rust",
+		"netcoredbg":         "Requires the .NET SDK",
+	} {
+		t.Run(command, func(t *testing.T) {
+			manager := newManager(t.TempDir())
+			manager.prerequisite = manager.missingPrerequisite
+			manager.look = func(string) (string, error) { return "", exec.ErrNotFound }
+			statuses, err := manager.Status(context.Background(), []Requirement{{Alternatives: []string{command}}})
+			if err != nil || len(statuses) != 1 {
+				t.Fatalf("Status = %+v, %v", statuses, err)
+			}
+			if statuses[0].Installable || statuses[0].UnavailableReason != reason {
+				t.Fatalf("status = %+v, want reason %q", statuses[0], reason)
+			}
+		})
+	}
+}
+
+func TestMavenRecipeUsesWrapperAsInstallerPrerequisite(t *testing.T) {
+	workspace := t.TempDir()
+	manager := newManager(t.TempDir())
+	manager.prerequisite = manager.missingPrerequisite
+	manager.look = func(command string) (string, error) {
+		if command == "java" {
+			return "/runtime/java", nil
+		}
+		return "", exec.ErrNotFound
+	}
+	manager.install = func(context.Context, recipe, string) (string, error) {
+		t.Fatal("automatic update invoked Maven without Maven or a wrapper")
+		return "", nil
+	}
+	requirements := []Requirement{{Alternatives: []string{"jdtls"}, Workspace: workspace}}
+	if changed, err := manager.Update(context.Background(), requirements); err != nil || changed {
+		t.Fatalf("Update without Maven = %v, %v", changed, err)
+	}
+	statuses, err := manager.Status(context.Background(), requirements)
+	if err != nil || len(statuses) != 1 || statuses[0].UnavailableReason != "Requires Maven or a Maven wrapper" {
+		t.Fatalf("Status without Maven = %+v, %v", statuses, err)
+	}
+
+	wrapper := filepath.Join(workspace, "mvnw")
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	statuses, err = manager.Status(context.Background(), requirements)
+	if err != nil || len(statuses) != 1 || !statuses[0].Installable || statuses[0].UnavailableReason != "" {
+		t.Fatalf("Status with wrapper = %+v, %v", statuses, err)
+	}
+}
+
 func TestUpdateValidatesVersionBeforeReplacingInstalledTool(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test versions use POSIX scripts")

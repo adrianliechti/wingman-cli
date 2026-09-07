@@ -797,14 +797,14 @@ func (s *Server) handleEditorTabSettings(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "editor.tab.completion is required", http.StatusBadRequest)
 		return
 	}
-	s.tabSettingsMu.Lock()
+	s.settingsMu.Lock()
 	updated, err := settings.Update(func(value *settings.Settings) {
 		value.EditorTabCompletion = *request.Enabled
 	})
 	if err == nil {
 		s.tabEnabled.Store(updated.EditorTabCompletion)
 	}
-	s.tabSettingsMu.Unlock()
+	s.settingsMu.Unlock()
 	if err != nil {
 		http.Error(w, "could not save editor.tab.completion", http.StatusInternalServerError)
 		return

@@ -234,6 +234,8 @@ function DebugLauncherContent({
 										"Installing…"
 									) : phase === "error" && installRequested && progress ? (
 										"Installation failed"
+									) : tool.unavailable_reason ? (
+										tool.unavailable_reason
 									) : (
 										"Not installed"
 									)}
@@ -246,7 +248,9 @@ function DebugLauncherContent({
 					<p className="text-[11px] leading-relaxed text-fg-muted">
 						{canInstall
 							? "Install the missing debugger tools in Wingman to continue?"
-							: "Wingman's debugger installation is disabled or unavailable. Enable managed tool installation, then check again."}
+							: tools.some((tool) => tool.unavailable_reason)
+								? "Install the required runtime or build tool, then check again."
+								: "Wingman's debugger installation is disabled. Enable managed tool installation, then check again."}
 					</p>
 				)}
 				{phase === "planning" && (
@@ -311,6 +315,8 @@ function DebugLauncherContent({
 								</div>
 								<textarea
 									aria-label="Adapter launch options"
+									autoCapitalize="none"
+									autoCorrect="off"
 									value={configurationText}
 									onChange={(event) => setConfigurationText(event.target.value)}
 									rows={6}
