@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/adrianliechti/wingman-agent/pkg/agent"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
 	"github.com/adrianliechti/wingman-agent/pkg/model"
 	"github.com/adrianliechti/wingman-agent/pkg/tui"
@@ -114,6 +115,49 @@ func modelIdentity(available []model.Model, current string) string {
 	return model.Name(current)
 }
 
+// Cache only visible cell inputs. Spinner ticks, cursor movement, and hidden
+// reasoning deltas do not require parsing and wrapping the same Markdown again.
+type streamCellKey struct {
+	hidden                                                 bool
+	user, text, headings, toolName, toolHint, toolProgress string
+	toolResult                                             *agent.ToolResult
+	width                                                  int
+	theme                                                  theme.Theme
+}
+
+type streamCellCache struct {
+	key                              streamCellKey
+	user, tool, assistant, reasoning []string
+}
+
+func (c *streamCellCache) update(snapshot streamSnapshot, width int, hidden bool) {
+	key := streamCellKey{
+		user: snapshot.userText, text: snapshot.text, headings: snapshot.reasoningHeadings,
+		toolName: snapshot.toolName, toolHint: snapshot.toolHint, toolProgress: snapshot.toolProgress,
+		toolResult: snapshot.toolResult, width: width, hidden: hidden, theme: theme.Default,
+	}
+	if c.key == key {
+		return
+	}
+	*c = streamCellCache{key: key}
+	if key.user != "" {
+		if isCommandEcho(key.user) {
+			c.user = cellCommand(key.user, width)
+		} else {
+			c.user = cellUser(key.user, width)
+		}
+	}
+	if key.toolName != "" && !key.hidden {
+		c.tool = snapshot.toolLines(width, false)
+	}
+	if strings.TrimSpace(key.text) != "" {
+		c.assistant = cellAssistant(key.text, width, key.theme.BrBlack)
+	}
+	if key.headings != "" {
+		c.reasoning = cellReasoningHeadings(key.headings, width)
+	}
+}
+
 // streamCells renders the in-flight turn tail shown below the committed chat.
 // Displaced snapshots keep earlier reasoning headings, messages, and tools
 // visible while ACP waits until turn completion to commit the complete
@@ -123,24 +167,30 @@ func modelIdentity(available []model.Model, current string) string {
 // copy of the state).
 func (a *App) streamCells(width int) []string {
 	snapshots := a.snapshotStreamState()
+	if len(a.streamCellCache) > len(snapshots) {
+		clear(a.streamCellCache[len(snapshots):])
+		a.streamCellCache = a.streamCellCache[:len(snapshots)]
+	}
+	for len(a.streamCellCache) < len(snapshots) {
+		a.streamCellCache = append(a.streamCellCache, streamCellCache{})
+	}
 
 	flow := a.flow
 	var lines []string
 
-	for _, snapshot := range snapshots {
+	for i, snapshot := range snapshots {
+		cached := &a.streamCellCache[i]
+		hidden := snapshot.toolName != "" && a.isToolHidden(snapshot.toolName)
+		cached.update(snapshot, width, hidden)
 		if snapshot.userText != "" {
 			if flow.gap() {
 				lines = append(lines, "")
 			}
-			if isCommandEcho(snapshot.userText) {
-				lines = append(lines, cellCommand(snapshot.userText, width)...)
-			} else {
-				lines = append(lines, cellUser(snapshot.userText, width)...)
-			}
+			lines = append(lines, cached.user...)
 		}
 
-		if snapshot.toolName != "" && !a.isToolHidden(snapshot.toolName) {
-			cell := snapshot.toolLines(width, false)
+		if snapshot.toolName != "" && !hidden {
+			cell := cached.tool
 			if flow.beforeTool(len(cell) > 1) {
 				lines = append(lines, "")
 			}
@@ -151,11 +201,11 @@ func (a *App) streamCells(width int) []string {
 			if flow.gap() {
 				lines = append(lines, "")
 			}
-			lines = append(lines, cellAssistant(snapshot.text, width, theme.Default.BrBlack)...)
+			lines = append(lines, cached.assistant...)
 		}
 
 		if snapshot.reasoningHeadings != "" {
-			cell := cellReasoningHeadings(snapshot.reasoningHeadings, width)
+			cell := cached.reasoning
 			if flow.beforeThought(len(cell) > 1) {
 				lines = append(lines, "")
 			}

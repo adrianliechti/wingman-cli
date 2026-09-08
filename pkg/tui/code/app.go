@@ -129,9 +129,10 @@ type App struct {
 	renderLast    atomic.Int64
 	dirty         bool
 
-	streamStateMu sync.Mutex
-	streamCurrent streamSnapshot
-	streamHistory []streamSnapshot
+	streamStateMu   sync.Mutex
+	streamCurrent   streamSnapshot
+	streamHistory   []streamSnapshot
+	streamCellCache []streamCellCache
 }
 
 // streamSnapshot is one ordered piece of an in-flight turn. ACP commits the

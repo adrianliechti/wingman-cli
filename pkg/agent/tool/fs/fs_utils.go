@@ -156,77 +156,52 @@ func equalPathRune(a, b rune) bool {
 	return false
 }
 
-// resolveForCompare resolves symlinks (and Windows junctions) for containment
-// comparisons, falling back to resolving the parent when the leaf does not
-// exist yet (e.g. a file about to be created).
+// resolveForCompare also handles paths whose parent directories do not exist
+// yet. Resolution errors leave matching to the original path spelling; actual
+// access still goes through os.Root.
 func resolveForCompare(path string) string {
-	if resolved, err := pathutil.Resolve(path); err == nil {
+	if resolved, err := pathutil.ResolveExistingPrefix(path); err == nil {
 		return resolved
 	}
-
-	dir := filepath.Dir(path)
-	if dir == path {
-		return path
-	}
-	if resolvedDir, err := pathutil.Resolve(dir); err == nil {
-		return filepath.Join(resolvedDir, filepath.Base(path))
-	}
-
 	return path
 }
 
-// resolveInWorkspace reports where an in-workspace relative path actually
-// lives after resolving links, and whether that location is still inside the
-// resolved workspace root. os.Root rejects absolute link targets — which
-// Windows junctions always are — so in-root aliases fall back to direct
-// access through this check.
-func resolveInWorkspace(workingDir, rel string) (string, bool) {
-	resolved := resolveForCompare(filepath.Join(workingDir, rel))
-
-	resolvedRoot, err := pathutil.Resolve(workingDir)
-	if err != nil {
-		return "", false
-	}
-
-	if _, ok := relPathLiteral(resolved, resolvedRoot); !ok {
-		return "", false
-	}
-
-	return resolved, true
-}
-
-// fallbackRoot serves in-workspace paths whose literal spelling os.Root
-// refused (absolute in-root symlink, Windows junction): it re-anchors an
-// os.Root at the resolved workspace root and returns the resolved relative
-// path. Going back through os.Root — instead of plain os calls on the
-// resolved path — keeps containment kernel-enforced, so a link retargeted
-// after resolution fails closed rather than escaping.
-func fallbackRoot(workingDir, rel string) (*os.Root, string, bool) {
+// resolveRootPath converts absolute in-root links and Windows junctions into a
+// relative path that can be retried through the existing root handle. The
+// root's name must still refer to that handle's directory; retargeting a
+// workspace link must not switch an already opened workspace to another tree.
+func resolveRootPath(root *os.Root, rel string) (string, bool) {
+	workingDir := root.Name()
 	abs := filepath.Join(workingDir, rel)
-	resolved := resolveForCompare(abs)
-
+	resolved, err := pathutil.ResolveExistingPrefix(abs)
+	if err != nil {
+		return "", false
+	}
 	resolvedRoot, err := pathutil.Resolve(workingDir)
 	if err != nil {
-		return nil, "", false
+		return "", false
 	}
 
 	// No alias involved — the original failure was not link-related and a
 	// retry through the same bytes would just repeat it.
 	if resolved == filepath.Clean(abs) && resolvedRoot == filepath.Clean(workingDir) {
-		return nil, "", false
+		return "", false
 	}
 
 	sub, ok := relPathLiteral(resolved, resolvedRoot)
 	if !ok || sub == "" {
-		return nil, "", false
+		return "", false
 	}
-
-	r, err := os.OpenRoot(resolvedRoot)
+	openedInfo, err := root.Stat(".")
 	if err != nil {
-		return nil, "", false
+		return "", false
+	}
+	namedInfo, err := os.Stat(resolvedRoot)
+	if err != nil || !os.SameFile(openedInfo, namedInfo) {
+		return "", false
 	}
 
-	return r, sub, true
+	return sub, true
 }
 
 type fileTarget struct {
@@ -261,9 +236,8 @@ func statFileTarget(root *os.Root, target fileTarget) (os.FileInfo, error) {
 	if rooted {
 		info, err := targetRoot.Stat(rel)
 		if err != nil {
-			if fr, sub, ok := fallbackRoot(targetRoot.Name(), rel); ok {
-				defer fr.Close()
-				return fr.Stat(sub)
+			if sub, ok := resolveRootPath(targetRoot, rel); ok {
+				return targetRoot.Stat(sub)
 			}
 		}
 		return info, err
@@ -282,9 +256,8 @@ func readFileTarget(root *os.Root, target fileTarget) ([]byte, error) {
 	if rooted {
 		content, err := targetRoot.ReadFile(rel)
 		if err != nil {
-			if fr, sub, ok := fallbackRoot(targetRoot.Name(), rel); ok {
-				defer fr.Close()
-				return fr.ReadFile(sub)
+			if sub, ok := resolveRootPath(targetRoot, rel); ok {
+				return targetRoot.ReadFile(sub)
 			}
 		}
 		return content, err
@@ -303,9 +276,8 @@ func openFileTarget(root *os.Root, target fileTarget) (*os.File, error) {
 	if rooted {
 		f, err := targetRoot.Open(rel)
 		if err != nil {
-			if fr, sub, ok := fallbackRoot(targetRoot.Name(), rel); ok {
-				defer fr.Close()
-				return fr.Open(sub)
+			if sub, ok := resolveRootPath(targetRoot, rel); ok {
+				return targetRoot.Open(sub)
 			}
 		}
 		return f, err
@@ -324,9 +296,8 @@ func writeFileTarget(root *os.Root, target fileTarget, content string) error {
 	if rooted {
 		err := writeRootFile(targetRoot, rel, content)
 		if err != nil {
-			if fr, sub, ok := fallbackRoot(targetRoot.Name(), rel); ok {
-				defer fr.Close()
-				return writeRootFile(fr, sub, content)
+			if sub, ok := resolveRootPath(targetRoot, rel); ok {
+				return writeRootFile(targetRoot, sub, content)
 			}
 		}
 		return err
@@ -387,14 +358,7 @@ func resolveSearchTarget(pathArg, workingDir string, workspaceRoot *os.Root, all
 	if !allowed {
 		if rel, ok := relPathWithinWorkspace(pathArg, workingDir); ok {
 			searchDirFS := pathpkg.Clean(filepath.ToSlash(rel))
-			if searchDirFS != "." {
-				if _, statErr := workspaceRoot.Stat(searchDirFS); statErr != nil {
-					if target, ok := linkedSearchTarget(workingDir, searchDirFS); ok {
-						return target, nil
-					}
-				}
-			}
-			return &searchTarget{Root: workspaceRoot, SearchDirFS: searchDirFS}, nil
+			return (&searchTarget{Root: workspaceRoot, SearchDirFS: searchDirFS}).resolveLinks(), nil
 		}
 		rootClean, sub, allowed = matchAllowedRoot(pathArg, allowedReadRoots)
 		if !allowed {
@@ -431,47 +395,53 @@ func resolveSearchTarget(pathArg, workingDir string, workspaceRoot *os.Root, all
 			reportPrefix = ""
 		}
 	}
-	return &searchTarget{
+	return (&searchTarget{
 		Root:         r,
 		SearchDirFS:  searchDirFS,
 		reportPrefix: reportPrefix,
 		close:        func() { r.Close() },
-	}, nil
+	}).resolveLinks(), nil
 }
 
-// linkedSearchTarget serves search paths that traverse an in-root alias
-// (absolute symlink, Windows junction) that os.Root refuses, by opening a
-// dedicated root at the resolved location while reporting the caller's
-// spelling.
-func linkedSearchTarget(workingDir, searchDirFS string) (*searchTarget, bool) {
-	resolved, ok := resolveInWorkspace(workingDir, filepath.FromSlash(searchDirFS))
+// resolveLinks handles explicitly requested paths through in-root links for
+// both workspace and allowed-root searches. OpenRoot on the existing handle
+// keeps directory replacement from redirecting the search outside its boundary.
+func (st *searchTarget) resolveLinks() *searchTarget {
+	if st.SearchDirFS == "." {
+		return st
+	}
+	if _, err := st.Root.Stat(st.SearchDirFS); err == nil {
+		return st
+	}
+	resolved, ok := resolveRootPath(st.Root, filepath.FromSlash(st.SearchDirFS))
 	if !ok {
-		return nil, false
+		return st
 	}
 
-	info, err := os.Stat(resolved)
+	info, err := st.Root.Stat(resolved)
 	if err != nil {
-		return nil, false
+		return st
 	}
 
-	prefix := filepath.FromSlash(searchDirFS)
+	prefix := st.ReportPath(st.SearchDirFS)
 	dir, sub := resolved, "."
 	if !info.IsDir() {
 		dir, sub = filepath.Dir(resolved), filepath.Base(resolved)
 		prefix = filepath.Dir(prefix)
 	}
 
-	r, err := os.OpenRoot(dir)
+	r, err := st.Root.OpenRoot(dir)
 	if err != nil {
-		return nil, false
+		return st
 	}
 
+	st.Close()
 	return &searchTarget{
 		Root:         r,
 		SearchDirFS:  filepath.ToSlash(sub),
 		reportPrefix: prefix,
 		close:        func() { r.Close() },
-	}, true
+	}
 }
 
 func relPathWithinWorkspace(absPath, workingDir string) (string, bool) {

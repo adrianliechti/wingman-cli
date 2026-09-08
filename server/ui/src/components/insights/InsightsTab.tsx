@@ -112,15 +112,14 @@ export function InsightsTab({
 		memory.focus = focus;
 	}, [focus]);
 
-	const explore = useCallback((node: GraphNode) => {
-		setFocus((previous) => {
-			if (previous) {
-				memory.history = [...memory.history.slice(-24), previous];
-			}
-			return { id: node.id, name: node.name, file: node.file };
-		});
-		setView("search");
-	}, []);
+	const explore = useCallback(
+		(node: GraphNode) => {
+			if (focus) memory.history = [...memory.history.slice(-24), focus];
+			setFocus({ id: node.id, name: node.name, file: node.file });
+			setView("search");
+		},
+		[focus],
+	);
 
 	const goBack = useCallback(() => {
 		const previous = memory.history[memory.history.length - 1];

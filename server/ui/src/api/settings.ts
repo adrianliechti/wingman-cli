@@ -17,3 +17,13 @@ export async function setWindowTerminalPosition(
 		body: JSON.stringify({ "window.terminal.position": position }),
 	});
 }
+
+export async function setWindowSidebarPosition(
+	position: "left" | "right",
+): Promise<void> {
+	await fetchOK("/api/settings/window.sidebar.position", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ "window.sidebar.position": position }),
+	});
+}

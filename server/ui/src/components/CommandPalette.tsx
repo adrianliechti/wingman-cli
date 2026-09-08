@@ -70,7 +70,7 @@ export function CommandPalette({
 		enabled: debouncedQuery.length >= 2,
 	});
 	const files =
-		debouncedQuery.length >= 2
+		debouncedQuery.length >= 2 && debouncedQuery === query.trim()
 			? (fileQuery.data ?? EMPTY_FILES).slice(0, 8)
 			: EMPTY_FILES;
 
@@ -184,6 +184,7 @@ export function CommandPalette({
 	};
 
 	const onKeyDown = (e: React.KeyboardEvent) => {
+		if (e.nativeEvent.isComposing) return;
 		if (e.key === "Escape") {
 			e.preventDefault();
 			onClose();

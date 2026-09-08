@@ -151,6 +151,7 @@ export function Dialog({
 			target?.focus();
 		});
 		const onKeyDown = (event: KeyboardEvent) => {
+			if (event.isComposing) return;
 			if (event.key === "Escape") {
 				event.preventDefault();
 				handleClose();

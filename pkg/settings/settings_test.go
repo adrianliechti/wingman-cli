@@ -25,10 +25,14 @@ func TestSettingsDefaultAndUpdate(t *testing.T) {
 	if initial.WindowTerminalPosition != WindowTerminalPositionTab {
 		t.Fatalf("window.terminal.position = %q, want tab", initial.WindowTerminalPosition)
 	}
+	if initial.WindowSidebarPosition != WindowSidebarPositionRight {
+		t.Fatalf("window.sidebar.position = %q, want right", initial.WindowSidebarPosition)
+	}
 
 	updated, err := Update(func(value *Settings) {
 		value.EditorTabCompletion = false
 		value.WindowTerminalPosition = WindowTerminalPositionBottom
+		value.WindowSidebarPosition = WindowSidebarPositionLeft
 		value.AddWorkspace("first")
 	})
 	if err != nil {
@@ -50,6 +54,9 @@ func TestSettingsDefaultAndUpdate(t *testing.T) {
 			loaded.WindowTerminalPosition,
 		)
 	}
+	if loaded.WindowSidebarPosition != WindowSidebarPositionLeft {
+		t.Fatalf("window.sidebar.position = %q, want left", loaded.WindowSidebarPosition)
+	}
 
 	path := filepath.Join(home, "config.json")
 	info, err := os.Stat(path)
@@ -68,6 +75,9 @@ func TestSettingsDefaultAndUpdate(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"window.terminal.position": "bottom"`) {
 		t.Fatalf("window.terminal.position was omitted from %s", data)
+	}
+	if !strings.Contains(string(data), `"window.sidebar.position": "left"`) {
+		t.Fatalf("window.sidebar.position was omitted from %s", data)
 	}
 }
 
@@ -90,6 +100,28 @@ func TestSettingsMissingTabPreferenceDefaultsOn(t *testing.T) {
 	}
 	if loaded.WindowTerminalPosition != WindowTerminalPositionTab {
 		t.Fatal("missing window.terminal.position did not default to tab")
+	}
+	if loaded.WindowSidebarPosition != WindowSidebarPositionRight {
+		t.Fatal("missing window.sidebar.position did not default to right")
+	}
+}
+
+func TestSettingsInvalidSidebarPositionDefaultsToRight(t *testing.T) {
+	home := testenv.WingmanHome(t)
+	if err := os.WriteFile(
+		filepath.Join(home, "config.json"),
+		[]byte(`{"window.sidebar.position":"bottom"}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.WindowSidebarPosition != WindowSidebarPositionRight {
+		t.Fatalf("invalid position defaulted to %q, want right", loaded.WindowSidebarPosition)
 	}
 }
 

@@ -20,6 +20,7 @@ import {
 import { ComposerDraft } from "../state/composerDraft.ts";
 import { useSessionSettings } from "../state/workspaceContext.ts";
 import { useToast } from "./ui/Feedback.tsx";
+import { atTextareaEdge } from "../utils/textareaNavigation";
 import { useColorScheme } from "../hooks/useColorScheme";
 import { type Skill, useSkills } from "../hooks/useSkills";
 import type {
@@ -523,6 +524,7 @@ export function ChatPanel({
 
 	const handleKeyDown = useCallback(
 		(e: React.KeyboardEvent) => {
+			if (e.nativeEvent.isComposing) return;
 			if (showSkills) {
 				switch (e.key) {
 					case "ArrowDown":
@@ -553,11 +555,11 @@ export function ChatPanel({
 			if (e.key === "Escape" && isActive) {
 				onCancel();
 			}
+			if (e.shiftKey || e.altKey || e.metaKey || e.ctrlKey) return;
 			if (e.key === "ArrowUp" && !editingQueueId && history.length > 0) {
 				const ta = e.currentTarget as HTMLTextAreaElement;
-				const onFirstLine = !ta.value
-					.slice(0, ta.selectionStart)
-					.includes("\n");
+				if (ta.selectionStart !== ta.selectionEnd) return;
+				const onFirstLine = atTextareaEdge(ta, "first");
 				if (onFirstLine) {
 					e.preventDefault();
 					const navigating = historyIdxRef.current !== null;
@@ -571,7 +573,8 @@ export function ChatPanel({
 			}
 			if (e.key === "ArrowDown" && historyIdxRef.current !== null) {
 				const ta = e.currentTarget as HTMLTextAreaElement;
-				const onLastLine = !ta.value.slice(ta.selectionEnd).includes("\n");
+				if (ta.selectionStart !== ta.selectionEnd) return;
+				const onLastLine = atTextareaEdge(ta, "last");
 				if (onLastLine) {
 					e.preventDefault();
 					const idx = (historyIdxRef.current as number) + 1;

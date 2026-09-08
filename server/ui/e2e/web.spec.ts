@@ -1,4 +1,5 @@
 import { emptySession, sessionKey } from "../src/state/sessionStore.ts";
+import type { ChatEntry } from "../src/types/session.ts";
 import {
 	expect,
 	test,
@@ -20,6 +21,7 @@ async function mockSavedSessions(
 	sessions: { id: string; title: string; updated_at: string }[],
 	loaded: string[] = [],
 	backend = "wingman",
+	entries: ChatEntry[] = [],
 ) {
 	const scope = await (await page.request.get("/api/v2/bootstrap")).json();
 	await page.route(
@@ -52,7 +54,7 @@ async function mockSavedSessions(
 						},
 						epoch: `fixture:${id}`,
 						revision: 0,
-						entries: [],
+						entries,
 						state: {
 							...emptySession(sessionKey(backend, id)),
 							status: "ready",
@@ -868,6 +870,114 @@ test("command palette arrow keys remain stable while scrolling under the pointer
 	await input.press("ArrowDown");
 	await input.fill("new chat");
 	await expect(options.first()).toHaveAttribute("aria-selected", "true");
+});
+
+test("the command palette waits for file results matching its current query", async ({
+	page,
+}) => {
+	await writeFile(workspacePath("review-palette-alpha.txt"), "alpha\n");
+	await writeFile(workspacePath("review-palette-beta.txt"), "beta\n");
+	await composer(page);
+	await page.keyboard.press("Control+k");
+	const palette = page.getByRole("dialog", { name: "Command palette" });
+	const input = palette.getByRole("combobox", { name: "Search commands" });
+	await input.fill("review-palette-alpha");
+	await expect(
+		palette.getByRole("option", { name: /review-palette-alpha/ }),
+	).toBeVisible();
+	await page.clock.install();
+	await page.clock.pauseAt(new Date(Date.now() + 1000));
+	await input.fill("review-palette-beta");
+	await input.press("Enter");
+	await expect(palette).toBeVisible();
+	await expect(
+		page.getByRole("tab", { name: /review-palette-alpha/ }),
+	).toHaveCount(0);
+	await page.clock.resume();
+	await palette.getByRole("option", { name: /review-palette-beta/ }).click();
+	await expect(
+		page.getByRole("tab", { name: /review-palette-beta/ }),
+	).toBeVisible();
+});
+
+test("prompt history arrows preserve drafts, selection, and multiline editing", async ({
+	page,
+}) => {
+	await mockSavedSessions(
+		page,
+		[
+			{
+				id: "history-arrows",
+				title: "History arrows",
+				updated_at: "2026-09-08T10:00:00Z",
+			},
+		],
+		[],
+		"wingman",
+		[
+			{ id: "first", type: "user", content: "first prompt" },
+			{ id: "second", type: "user", content: "second prompt" },
+		],
+	);
+	const input = await composer(page);
+	await page.keyboard.press("Control+k");
+	const palette = page.getByRole("dialog", { name: "Command palette" });
+	await palette
+		.getByRole("combobox", { name: "Search commands" })
+		.fill("History arrows");
+	await palette.getByRole("option", { name: "History arrows" }).click();
+	await expect(page.getByText("second prompt", { exact: true })).toBeVisible();
+	await input.fill("unfinished draft");
+	await input.press("Shift+ArrowUp");
+	await expect(input).toHaveValue("unfinished draft");
+	await input.evaluate((node: HTMLTextAreaElement) =>
+		node.setSelectionRange(0, node.value.length),
+	);
+	await input.press("ArrowUp");
+	await expect(input).toHaveValue("unfinished draft");
+	await input.evaluate((node: HTMLTextAreaElement) =>
+		node.setSelectionRange(node.value.length, node.value.length),
+	);
+	await input.press("ArrowUp");
+	await expect(input).toHaveValue("second prompt");
+	await input.press("ArrowUp");
+	await expect(input).toHaveValue("first prompt");
+	await input.press("ArrowUp");
+	await expect(input).toHaveValue("first prompt");
+	await input.press("ArrowDown");
+	await expect(input).toHaveValue("second prompt");
+	await input.press("ArrowDown");
+	await expect(input).toHaveValue("unfinished draft");
+	await input.fill("line one\nline two");
+	await input.press("ArrowUp");
+	await expect(input).toHaveValue("line one\nline two");
+	await input.dispatchEvent("keydown", { key: "ArrowUp", isComposing: true });
+	await expect(input).toHaveValue("line one\nline two");
+	await input.fill("edited recall");
+	await input.press("ArrowDown");
+	await expect(input).toHaveValue("edited recall");
+	const wrapped = "a wrapped prompt ".repeat(40);
+	await input.fill(wrapped);
+	await input.press("ArrowUp");
+	await expect(input).toHaveValue(wrapped);
+});
+
+test("composition keys do not submit prompts or run palette commands", async ({
+	page,
+}) => {
+	const input = await composer(page);
+	await input.fill("未確定の入力");
+	await input.dispatchEvent("keydown", { key: "Enter", isComposing: true });
+	await expect(input).toHaveValue("未確定の入力");
+	await page.keyboard.press("Control+k");
+	const palette = page.getByRole("dialog", { name: "Command palette" });
+	const search = palette.getByRole("combobox", { name: "Search commands" });
+	await search.fill("New Chat");
+	await expect(palette.getByRole("option").first()).toBeVisible();
+	await search.dispatchEvent("keydown", { key: "Enter", isComposing: true });
+	await expect(palette).toBeVisible();
+	await search.press("Escape");
+	await expect(input).toHaveValue("未確定の入力");
 });
 
 test("new ACP chats load mode and model before the first message", async ({
@@ -2092,6 +2202,129 @@ test("shows file actions above panel clipping", async ({ page }) => {
 	).toBeVisible();
 });
 
+test("background file refresh preserves the language server's unsaved buffer", async ({
+	page,
+}) => {
+	await writeFile(workspacePath("review-lsp.txt"), "on disk\n");
+	const events: { event: string; path: string; content: string }[] = [];
+	await page.route(/\/api\/lsp\/document$/, async (route) => {
+		events.push(route.request().postDataJSON());
+		await route.fulfill({ status: 204 });
+	});
+	await composer(page);
+	await page.getByRole("treeitem", { name: "review-lsp.txt" }).click();
+	const editor = page.locator(".monaco-editor");
+	await expect(editor).toBeVisible();
+	await editor.click();
+	await page.keyboard.press("Control+End");
+	await page.keyboard.insertText("unsaved change");
+	await expect.poll(() => events.at(-1)?.content).toContain("unsaved change");
+	const refresh = page.waitForResponse(
+		/\/api\/files\/read\?path=review-lsp.txt/,
+	);
+	await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+	await (await refresh).finished();
+	// Allow the document refresh and debounced LSP queue to finish.
+	await page.waitForTimeout(250);
+	expect(events.at(-1)?.content).toContain("unsaved change");
+	await expect(
+		page.getByRole("tab", { name: /review-lsp.txt/ }),
+	).toHaveAttribute("aria-label", /unsaved changes/);
+});
+
+test("renaming a file while it loads completes the editor at its new path", async ({
+	page,
+}) => {
+	await writeFile(workspacePath("review-loading.txt"), "loaded after rename\n");
+	let releaseRead!: () => void;
+	const held = new Promise<void>((resolve) => {
+		releaseRead = resolve;
+	});
+	await page.route(
+		/\/api\/files\/read\?path=review-loading.txt$/,
+		async (route) => {
+			const response = await route.fetch();
+			await held;
+			await route.fulfill({ response });
+		},
+	);
+	await composer(page);
+	const file = page.getByRole("treeitem", { name: "review-loading.txt" });
+	const read = page.waitForRequest(
+		/\/api\/files\/read\?path=review-loading.txt$/,
+	);
+	await file.click();
+	await read;
+	await file.click({ button: "right" });
+	await page.getByRole("menuitem", { name: "Rename", exact: true }).click();
+	const name = page.getByRole("textbox", { name: "Rename review-loading.txt" });
+	await name.fill("review-loaded.txt");
+	await name.press("Enter");
+	await expect(
+		page.getByRole("tab", { name: /review-loaded.txt/ }),
+	).toBeVisible();
+	releaseRead();
+	await expect(page.locator(".monaco-editor .view-lines")).toContainText(
+		"loaded after rename",
+	);
+});
+
+test("saving preserves edits made while the write is pending", async ({
+	page,
+	request,
+}) => {
+	await writeFile(workspacePath("review-save.txt"), "original\n");
+	let releaseWrite!: () => void;
+	const held = new Promise<void>((resolve) => {
+		releaseWrite = resolve;
+	});
+	let writes = 0;
+	await page.route(/\/api\/files\/write$/, async (route) => {
+		writes++;
+		const response = await route.fetch();
+		if (writes === 1) await held;
+		await route.fulfill({ response });
+	});
+	const events: { event: string; content: string }[] = [];
+	await page.route(/\/api\/lsp\/document$/, async (route) => {
+		events.push(route.request().postDataJSON());
+		await route.fulfill({ status: 204 });
+	});
+	await composer(page);
+	await page.getByRole("treeitem", { name: "review-save.txt" }).click();
+	const editor = page.locator(".monaco-editor");
+	await expect(editor).toBeVisible();
+	await editor.click();
+	await page.keyboard.press("Control+End");
+	await page.keyboard.insertText("first edit");
+	await page.keyboard.press("ControlOrMeta+S");
+	await expect.poll(() => writes).toBe(1);
+	await page.keyboard.insertText(" and newer edit");
+	await expect.poll(() => events.at(-1)?.content).toContain("newer edit");
+	await page.keyboard.press("ControlOrMeta+S");
+	releaseWrite();
+	await expect
+		.poll(() => events.filter((event) => event.event === "save").length)
+		.toBeGreaterThan(0);
+	await expect.poll(() => events.at(-1)?.content).toContain("newer edit");
+	const tab = page.getByRole("tab", { name: /review-save.txt/ });
+	await expect(tab).toHaveAttribute("aria-label", /unsaved changes/);
+	await expect(
+		page.getByRole("dialog", { name: "Overwrite newer file?" }),
+	).toHaveCount(0);
+	expect(writes).toBe(1);
+	const firstSave = await (
+		await request.get("/api/files/read?path=review-save.txt")
+	).json();
+	expect(firstSave.content).toBe("original\nfirst edit");
+	await page.keyboard.press("ControlOrMeta+S");
+	await expect(tab).not.toHaveAttribute("aria-label", /unsaved changes/);
+	const finalSave = await (
+		await request.get("/api/files/read?path=review-save.txt")
+	).json();
+	expect(finalSave.content).toContain("and newer edit");
+});
+
 test("creates, saves, refreshes, and protects files changed on disk", async ({
 	page,
 	request,
@@ -2513,6 +2746,15 @@ test("save awaits LSP actions that add and remove Go imports", async ({
 }) => {
 	let workspaceURI = "";
 	const sourceActions: string[] = [];
+	let releaseActions!: () => void;
+	const actionsHeld = new Promise<void>((resolve) => {
+		releaseActions = resolve;
+	});
+	let writes = 0;
+	await page.route(/\/api\/files\/write$/, async (route) => {
+		writes++;
+		await route.continue();
+	});
 	await page.route(/\/api\/lsp\/capabilities\?/, async (route) => {
 		const response = await route.fetch();
 		const capabilities = (await response.json()) as Record<string, unknown>;
@@ -2532,7 +2774,10 @@ test("save awaits LSP actions that add and remove Go imports", async ({
 			only?: string[];
 		};
 		const kind = body.only?.[0] ?? "";
-		if (kind) sourceActions.push(kind);
+		if (kind) {
+			sourceActions.push(kind);
+			await actionsHeld;
+		}
 		const documentURI = `${workspaceURI.replace(/\/$/, "")}/completion.go`;
 		const edit =
 			kind === "source.addMissingImports"
@@ -2594,9 +2839,16 @@ test("save awaits LSP actions that add and remove Go imports", async ({
 		'package main\n\nimport "os"\n\nfunc main() { fmt.Println("ok") }\n',
 	);
 	await page.keyboard.press("ControlOrMeta+S");
+	await expect.poll(() => sourceActions.length).toBe(1);
+	await page.keyboard.press("ControlOrMeta+S");
+	releaseActions();
 	await expect
 		.poll(() => sourceActions)
 		.toEqual(["source.addMissingImports", "source.organizeImports"]);
+	await expect(
+		page.getByRole("tab", { name: /completion\.go/ }),
+	).not.toHaveAttribute("aria-label", /unsaved changes/);
+	expect(writes).toBe(1);
 	const read = await request.get("/api/files/read?path=completion.go");
 	const saved = (await read.json()) as { content: string };
 	expect(saved.content).toContain('import "fmt"');
@@ -3241,7 +3493,7 @@ test("keeps scheduled-agent actions above inspector clipping", async ({
 	).toBeVisible();
 });
 
-test("uses one compact left side panel with stable tab order", async ({
+test("uses one compact right side panel with stable tab order", async ({
 	page,
 }) => {
 	await composer(page);
@@ -3255,11 +3507,11 @@ test("uses one compact left side panel with stable tab order", async ({
 		.evaluateAll((tabs) => tabs.map((tab) => tab.getAttribute("aria-label")));
 
 	await expect(sidePanel).toHaveCount(1);
-	await expect(sidePanel).toHaveAttribute("data-panel-side", "left");
+	await expect(sidePanel).toHaveAttribute("data-panel-side", "right");
 	await expect(sidePanel).toHaveCSS("width", "240px");
-	await expect(frame).toHaveAttribute("data-panel-side", "left");
+	await expect(frame).toHaveAttribute("data-panel-side", "right");
 	await expect(frame).toHaveCSS("width", "240px");
-	await expect(toolbar.locator("[data-titlebar-left-panel]")).toHaveCSS(
+	await expect(toolbar.locator("[data-titlebar-side-panel]")).toHaveCSS(
 		"width",
 		"240px",
 	);
@@ -3280,15 +3532,15 @@ test("uses one compact left side panel with stable tab order", async ({
 			const firstTab = await openTabs.getByRole("tab").first().boundingBox();
 			if (!panel || !frameBox || !firstTab) return false;
 			return (
-				Math.abs(panel.x) <= 1 &&
+				Math.abs(panel.x + panel.width - page.viewportSize()!.width) <= 1 &&
 				Math.abs(frameBox.x - panel.x) <= 1 &&
-				Math.abs(firstTab.x - (panel.x + panel.width)) <= 1
+				Math.abs(firstTab.x) <= 1
 			);
 		})
 		.toBe(true);
 	await page.reload();
 	await expect(page.getByPlaceholder("Message Wingman…")).toBeVisible();
-	await expect(sidePanel).toHaveAttribute("data-panel-side", "left");
+	await expect(sidePanel).toHaveAttribute("data-panel-side", "right");
 	expect(
 		await sideTabs
 			.getByRole("tab")
@@ -3312,7 +3564,7 @@ test("resizes and collapses the unified side panel", async ({ page }) => {
 		handleBox!.y + handleBox!.height / 2,
 	);
 	await page.mouse.down();
-	await page.mouse.move(handleBox!.x + 120, handleBox!.y + 20, { steps: 5 });
+	await page.mouse.move(handleBox!.x - 120, handleBox!.y + 20, { steps: 5 });
 	await expect
 		.poll(async () => (await sidePanel.boundingBox())?.width ?? 0)
 		.toBeGreaterThan(330);
@@ -3320,7 +3572,7 @@ test("resizes and collapses the unified side panel", async ({ page }) => {
 		.poll(async () => {
 			const panelBox = await sidePanel.boundingBox();
 			const titleBox = await toolbar
-				.locator("[data-titlebar-left-panel]")
+				.locator("[data-titlebar-side-panel]")
 				.boundingBox();
 			return !!(
 				panelBox &&
@@ -3329,7 +3581,7 @@ test("resizes and collapses the unified side panel", async ({ page }) => {
 			);
 		})
 		.toBe(true);
-	await page.mouse.move(handleBox!.x + 1_000, handleBox!.y + 20);
+	await page.mouse.move(handleBox!.x - 1_000, handleBox!.y + 20);
 	await expect(sidePanel).toHaveCSS("width", "480px");
 	await page.mouse.up();
 	await expect(frame).toHaveCSS("width", "480px");
@@ -3341,13 +3593,13 @@ test("resizes and collapses the unified side panel", async ({ page }) => {
 		expandedHandle!.y + expandedHandle!.height / 2,
 	);
 	await page.mouse.down();
-	await page.mouse.move(expandedHandle!.x - 1_000, expandedHandle!.y);
+	await page.mouse.move(expandedHandle!.x + 1_000, expandedHandle!.y);
 	await page.mouse.up();
 	await expect(sidePanel).toHaveCSS("width", "0px");
 	await expect(sideContent).toHaveCSS("width", "480px");
 	await expect(sideContent).toHaveCSS("opacity", "0");
 	await expect(frame).toHaveCSS("opacity", "0");
-	await expect(toolbar.locator("[data-titlebar-left-panel]")).toHaveCSS(
+	await expect(toolbar.locator("[data-titlebar-side-panel]")).toHaveCSS(
 		"width",
 		"40px",
 	);
@@ -3355,6 +3607,151 @@ test("resizes and collapses the unified side panel", async ({ page }) => {
 	await expect(sidePanel).toHaveCSS("width", "480px");
 	await expect(sideContent).toHaveCSS("opacity", "1");
 });
+test("moves the sidebar between sides and persists its position", async ({
+	page,
+	request,
+}) => {
+	const input = await composer(page);
+	const sidePanel = page.locator('[data-layout-panel="side"]');
+	const center = page.locator('[data-layout-panel="center"]');
+	const frame = page.locator('[data-panel-frame="side"]');
+	const titlebar = page.locator("[data-titlebar-side-panel]");
+	const handle = page.getByRole("separator", { name: "Resize Side Panel" });
+	const runCommand = async (name: string) => {
+		await page.keyboard.press("Control+k");
+		await page.getByRole("option", { name, exact: true }).click();
+	};
+	const resizeSidebar = async (delta: number) => {
+		const box = await handle.boundingBox();
+		expect(box).not.toBeNull();
+		const x = box!.x + box!.width / 2;
+		const y = box!.y + box!.height / 2;
+		await page.mouse.move(x, y);
+		await page.mouse.down();
+		await page.mouse.move(x + delta, y, { steps: 5 });
+		await page.mouse.up();
+	};
+	try {
+		await runCommand("Move Side Panel Left");
+		await expect(sidePanel).toHaveAttribute("data-panel-side", "left");
+		await input.fill("Keep this draft when moving the sidebar");
+		await sidePanel.evaluate((element) => {
+			element.setAttribute("data-mount-marker", "original");
+		});
+		await center.evaluate((element) => {
+			element.setAttribute("data-mount-marker", "original");
+		});
+		await resizeSidebar(120);
+		await expect(sidePanel).toHaveCSS("width", "360px");
+		await runCommand("Move Side Panel Right");
+		await expect(sidePanel).toHaveAttribute("data-panel-side", "right");
+		await expect(sidePanel).toHaveCSS("width", "360px");
+		await expect(sidePanel).toHaveAttribute("data-mount-marker", "original");
+		await expect(center).toHaveAttribute("data-mount-marker", "original");
+		await expect(input).toHaveValue("Keep this draft when moving the sidebar");
+		await expect
+			.poll(async () => {
+				const panelBox = await sidePanel.boundingBox();
+				const centerBox = await center.boundingBox();
+				const frameBox = await frame.boundingBox();
+				const titleBox = await titlebar.boundingBox();
+				if (!panelBox || !centerBox || !frameBox || !titleBox) return false;
+				return (
+					Math.abs(panelBox.x - (centerBox.x + centerBox.width)) < 1 &&
+					Math.abs(frameBox.x - panelBox.x) < 1 &&
+					Math.abs(titleBox.x - panelBox.x) < 1 &&
+					Math.abs(titleBox.width - panelBox.width) < 1
+				);
+			})
+			.toBe(true);
+		await resizeSidebar(-80);
+		await expect(sidePanel).toHaveCSS("width", "440px");
+		await runCommand("Move Side Panel Left");
+		await expect(sidePanel).toHaveAttribute("data-panel-side", "left");
+		await expect(sidePanel).toHaveCSS("width", "440px");
+		await runCommand("Hide Side Panel");
+		await expect(sidePanel).toHaveCSS("width", "0px");
+		await runCommand("Move Side Panel Right");
+		await expect(sidePanel).toHaveAttribute("data-panel-side", "right");
+		await expect(sidePanel).toHaveCSS("width", "0px");
+		await expect(frame).toHaveCSS("opacity", "0");
+		await expect(titlebar).toHaveCSS("width", "40px");
+		await page.getByRole("button", { name: "Show Side Panel" }).click();
+		await expect(sidePanel).toHaveCSS("width", "440px");
+		await expect(center).toHaveAttribute("data-mount-marker", "original");
+		await expect(input).toHaveValue("Keep this draft when moving the sidebar");
+
+		const capabilities = await (await request.get("/api/capabilities")).json();
+		expect(capabilities["window.sidebar.position"]).toBe("right");
+		await page.reload();
+		await expect(sidePanel).toHaveAttribute("data-panel-side", "right");
+		await expect(sidePanel).toHaveCSS("width", "240px");
+		await expect(titlebar).toHaveAttribute("data-titlebar-side-panel", "right");
+		await runCommand("Move Side Panel Left");
+		await expect(sidePanel).toHaveAttribute("data-panel-side", "left");
+		await page.reload();
+		await expect(sidePanel).toHaveAttribute("data-panel-side", "left");
+		await expect(sidePanel).toHaveCSS("width", "240px");
+	} finally {
+		const response = await request.post(
+			"/api/settings/window.sidebar.position",
+			{
+				data: { "window.sidebar.position": "right" },
+			},
+		);
+		expect(response.ok()).toBeTruthy();
+	}
+});
+
+for (const position of ["left", "right"] as const) {
+	test(`aligns the ${position} sidebar with desktop window controls`, async ({
+		page,
+	}) => {
+		await page.route("/api/capabilities", async (route) => {
+			const response = await route.fetch();
+			await route.fulfill({
+				json: {
+					...(await response.json()),
+					"window.sidebar.position": position,
+				},
+			});
+		});
+		await composer(page);
+		const sidePanel = page.locator('[data-layout-panel="side"]');
+		const titlebar = page.locator("[data-titlebar-side-panel]");
+		await expect(sidePanel).toHaveAttribute("data-panel-side", position);
+		for (const chrome of [
+			{ kind: "macos", left: 80, right: 0, menu: 0 },
+			{ kind: "windows-overlay", left: 0, right: 144, menu: 32 },
+		]) {
+			await page.evaluate(({ kind, left, right }) => {
+				const root = document.documentElement;
+				root.dataset.windowChrome = kind;
+				root.style.setProperty("--shell-titlebar-inset-left", `${left}px`);
+				root.style.setProperty("--shell-titlebar-inset-right", `${right}px`);
+			}, chrome);
+			await expect
+				.poll(async () => {
+					const panelBox = await sidePanel.boundingBox();
+					const titleBox = await titlebar.boundingBox();
+					if (!panelBox || !titleBox) return false;
+					const inset = position === "left" ? chrome.left + chrome.menu : 0;
+					const endInset =
+						position === "right" ? Math.max(0, chrome.right - 6) : 0;
+					return (
+						Math.abs(titleBox.x - (panelBox.x + inset)) < 1 &&
+						Math.abs(titleBox.width - (panelBox.width - inset - endInset)) < 1
+					);
+				})
+				.toBe(true);
+			for (const tab of await titlebar.getByRole("tab").all()) {
+				await expect(tab).toBeVisible();
+				expect((await tab.boundingBox())!.width).toBeGreaterThan(20);
+			}
+		}
+	});
+}
+
 test("keeps the desktop workspace mounted across viewport sizes", async ({
 	page,
 }) => {
@@ -3657,6 +4054,42 @@ test("runs a command in a terminal tab", async ({ page }) => {
 		await remainingTerminals.first().press("Delete");
 		await expect(remainingTerminals).toHaveCount(remaining - 1);
 	}
+});
+
+test("terminal reconnect restores scrollback and accepts new input", async ({
+	page,
+}) => {
+	let connections = 0;
+	let disconnect = () => {};
+	await page.routeWebSocket(/\/api\/terminals\/[^/]+\/ws(?:\?|$)/, (socket) => {
+		connections++;
+		socket.connectToServer();
+		disconnect = () =>
+			socket.close({ code: 1012, reason: "connection interrupted" });
+	});
+	await composer(page);
+	await openNewTerminal(page);
+	const screen = page.locator(".xterm-screen:visible");
+	await screen.click();
+	await page.keyboard.type('echo reconnect""-before');
+	await page.keyboard.press("Enter");
+	const rows = page.locator(".xterm-rows:visible");
+	await expect(rows).toContainText("reconnect-before");
+	const initialConnections = connections;
+	expect(initialConnections).toBeGreaterThan(0);
+	disconnect();
+	await expect.poll(() => connections).toBeGreaterThan(initialConnections);
+	await expect(page.getByText("Reconnecting terminal…")).toHaveCount(0);
+	await expect(rows).toContainText("reconnect-before");
+	expect((await rows.innerText()).match(/reconnect-before/g)).toHaveLength(1);
+	await screen.click();
+	await page.keyboard.type('echo reconnect""-after');
+	await page.keyboard.press("Enter");
+	await expect(rows).toContainText("reconnect-after");
+	await page
+		.locator('[data-center-tab^="terminal:"][aria-selected="true"]')
+		.press("Delete");
+	await expect(page.locator('[data-center-tab^="terminal:"]')).toHaveCount(0);
 });
 
 test("docks only terminals at the bottom with tabs on the right", async ({
@@ -4333,6 +4766,56 @@ test("protects unsaved file edits when closing a tab", async ({
 	expect((await response.json()).content).toBe("original\n");
 });
 
+test("closing multiple dirty tabs prompts in order and waits for pending saves", async ({
+	page,
+}) => {
+	for (const name of ["review-close-a.txt", "review-close-b.txt"])
+		await writeFile(workspacePath(name), "original\n");
+	await composer(page);
+	for (const name of ["review-close-a.txt", "review-close-b.txt"]) {
+		await page.getByRole("treeitem", { name }).click();
+		await page.locator(".monaco-editor").click();
+		await page.keyboard.press("Control+End");
+		await page.keyboard.insertText("unsaved");
+		await expect(
+			page.getByRole("tab", { name: new RegExp(name) }),
+		).toHaveAttribute("aria-label", /unsaved changes/);
+	}
+	const lastTab = page.getByRole("tab", { name: /review-close-b.txt/ });
+	await lastTab.click({ button: "right" });
+	await page.getByRole("menuitem", { name: "Close All", exact: true }).click();
+	const dialog = page.getByRole("dialog", {
+		name: "Save changes before closing?",
+	});
+	await expect(dialog).toContainText("review-close-a.txt");
+	await dialog.getByRole("button", { name: "Discard" }).click();
+	await expect(dialog).toContainText("review-close-b.txt");
+	await dialog.getByRole("button", { name: "Cancel" }).click();
+	await expect(
+		page.getByRole("tab", { name: /review-close-a.txt/ }),
+	).toHaveCount(0);
+	await expect(lastTab).toBeVisible();
+
+	let releaseWrite!: () => void;
+	const held = new Promise<void>((resolve) => {
+		releaseWrite = resolve;
+	});
+	await page.route(/\/api\/files\/write$/, async (route) => {
+		await held;
+		await route.continue();
+	});
+	await lastTab.press("Delete");
+	const write = page.waitForRequest(/\/api\/files\/write$/);
+	await dialog.getByRole("button", { name: "Save", exact: true }).click();
+	await write;
+	await expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
+	await page.keyboard.press("Escape");
+	await expect(dialog).toBeVisible();
+	releaseWrite();
+	await expect(lastTab).toHaveCount(0);
+	await expect(dialog).toHaveCount(0);
+});
+
 test("uses accessible desktop panels and command navigation", async ({
 	page,
 }) => {
@@ -4357,7 +4840,9 @@ test("uses accessible desktop panels and command navigation", async ({
 	await expect(
 		palette.getByText("Hide Side Panel", { exact: true }),
 	).toBeVisible();
-	await expect(palette.getByText(/Move Side Panel/)).toHaveCount(0);
+	await expect(
+		palette.getByText("Move Side Panel Left", { exact: true }),
+	).toBeVisible();
 	await expect(
 		palette.getByText(/^New Terminal(?: \(.+\))?$/).first(),
 	).toBeVisible();

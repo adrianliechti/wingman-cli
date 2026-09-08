@@ -27,6 +27,7 @@ export interface OpenDocument {
 
 export interface SaveResult {
 	ok: boolean;
+	dirty?: boolean;
 	error?: string;
 	conflict?: boolean;
 }
@@ -41,6 +42,12 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 	const [documents, setDocuments] = useState<Record<string, OpenDocument>>({});
 	const documentsRef = useRef(documents);
 	const requestRef = useRef<Record<string, number>>({});
+	const savesRef = useRef(
+		new Map<
+			string,
+			{ file: FileContent | null; promise: Promise<SaveResult> }
+		>(),
+	);
 	const lspQueuesRef = useRef(new Map<string, Promise<void>>());
 	const lspChangeTimersRef = useRef(
 		new Map<string, { timer: number; content: string }>(),
@@ -113,6 +120,7 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 				[path]: {
 					...(current[path] ?? emptyDocument(path, external)),
 					loading: true,
+					saving: false,
 					error: null,
 				},
 			}));
@@ -243,7 +251,7 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 		[scheduleLSPChange, updateDocuments],
 	);
 
-	const saveDocument = useCallback(
+	const performSaveDocument = useCallback(
 		async (path: string, force = false): Promise<SaveResult> => {
 			let document = documentsRef.current[path];
 			if (!document || document.external || document.file?.binary) {
@@ -252,6 +260,7 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 			if (document.untitled) {
 				return { ok: false, error: "Choose a name before saving this file." };
 			}
+			const file = document.file;
 			flushLSPChange(path);
 			// Saving a clean buffer is a no-op; save participants must not get a
 			// chance to rewrite an unmodified file on disk.
@@ -259,36 +268,44 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 				queueLSPEvent("save", path, document.draft);
 				return { ok: true };
 			}
-			await runEditorSaveParticipants(path);
-			document = documentsRef.current[path];
-			if (!document || document.external || document.file?.binary) {
-				return { ok: true };
-			}
-			// A source action can update the active Monaco model while the save is
-			// waiting, so synchronize and persist the newest buffer.
-			flushLSPChange(path);
-			if (document.draft === document.savedContent) {
-				queueLSPEvent("save", path, document.draft);
-				return { ok: true };
-			}
-			if (document.conflict && !force) {
-				return {
-					ok: false,
-					conflict: true,
-					error: "This file changed on disk after it was opened.",
-				};
-			}
 			updateDocuments((current) => ({
 				...current,
 				[path]: { ...current[path], saving: true, saveError: null },
 			}));
 			try {
+				await runEditorSaveParticipants(path);
+				document = documentsRef.current[path];
+				if (!document || document.file !== file) {
+					return {
+						ok: false,
+						error: "The file was closed, moved, or reloaded while saving.",
+					};
+				}
+				// Save participants may change the buffer. Persist their newest edits.
+				flushLSPChange(path);
+				if (document.draft === document.savedContent) {
+					queueLSPEvent("save", path, document.draft);
+					return { ok: true };
+				}
+				if (document.conflict && !force) {
+					return {
+						ok: false,
+						conflict: true,
+						error: "This file changed on disk after it was opened.",
+					};
+				}
 				const result = await writeWorkspaceFile({
 					path,
 					content: document.draft,
 					revision: document.file?.revision,
 					force,
 				});
+				if (documentsRef.current[path]?.file !== file) {
+					return {
+						ok: false,
+						error: "The file was closed, moved, or reloaded while saving.",
+					};
+				}
 				if (!result.ok) {
 					updateDocuments((current) => {
 						const latest = current[path];
@@ -330,13 +347,17 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 						},
 					};
 				});
+				const latest = documentsRef.current[path];
+				const dirty = latest.draft !== document.draft;
+				cancelPendingLSPChange(path);
 				queueLSPEvent("save", path, document.draft);
-				return { ok: true };
+				if (dirty) queueLSPEvent("change", path, latest.draft);
+				return { ok: true, dirty };
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				updateDocuments((current) => {
 					const latest = current[path];
-					if (!latest) return current;
+					if (!latest || latest.file !== file) return current;
 					return {
 						...current,
 						[path]: {
@@ -347,9 +368,31 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 					};
 				});
 				return { ok: false, error: message };
+			} finally {
+				updateDocuments((current) => {
+					const latest = current[path];
+					if (!latest?.saving || latest.file !== file) return current;
+					return { ...current, [path]: { ...latest, saving: false } };
+				});
 			}
 		},
-		[flushLSPChange, queueLSPEvent, updateDocuments],
+		[cancelPendingLSPChange, flushLSPChange, queueLSPEvent, updateDocuments],
+	);
+
+	const saveDocument = useCallback(
+		(path: string, force = false): Promise<SaveResult> => {
+			const file = documentsRef.current[path]?.file ?? null;
+			const pending = savesRef.current.get(path);
+			if (pending?.file === file) return pending.promise;
+			const promise = performSaveDocument(path, force);
+			savesRef.current.set(path, { file, promise });
+			void promise.finally(() => {
+				if (savesRef.current.get(path)?.promise === promise)
+					savesRef.current.delete(path);
+			});
+			return promise;
+		},
+		[performSaveDocument],
 	);
 
 	const discardDocument = useCallback(
@@ -541,6 +584,7 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 				const movedPath = `${to}${path.slice(from.length)}`;
 				cancelPendingLSPChange(path);
 				queueLSPEvent("close", path);
+				if (document.loading) continue;
 				queueLSPEvent(
 					document.draft === document.savedContent ? "open" : "change",
 					movedPath,
@@ -560,14 +604,23 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 					next[movedPath] = {
 						...document,
 						path: movedPath,
+						saving: false,
 						file: document.file ? { ...document.file, path: movedPath } : null,
 					};
 					changed = true;
 				}
 				return changed ? next : current;
 			});
+			for (const document of Object.values(documentsRef.current)) {
+				if (
+					document.loading &&
+					(document.path === to || document.path.startsWith(`${to}/`))
+				) {
+					void readDocument(document.path, document.external);
+				}
+			}
 		},
-		[cancelPendingLSPChange, queueLSPEvent, updateDocuments],
+		[cancelPendingLSPChange, queueLSPEvent, readDocument, updateDocuments],
 	);
 
 	const refreshOpenDocuments = useCallback(async () => {
@@ -575,6 +628,7 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 			(document) =>
 				!document.external &&
 				!document.loading &&
+				!document.saving &&
 				document.file &&
 				!document.file.binary,
 		);
@@ -591,10 +645,10 @@ export function useOpenDocuments(subscribe?: Subscribe) {
 					let synchronize = false;
 					updateDocuments((current) => {
 						const latest = current[document.path];
-						if (!latest) return current;
+						if (!latest || latest.saving) return current;
 						if (latest.file?.revision !== baseRevision) return current;
 						if (file.revision === latest.file?.revision) {
-							synchronize = true;
+							synchronize = latest.draft === latest.savedContent;
 							if (!latest.conflict) return current;
 							return {
 								...current,

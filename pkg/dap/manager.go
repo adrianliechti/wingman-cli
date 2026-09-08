@@ -521,34 +521,23 @@ func ResolveConfigurationPaths(workspace, projectDir string, fields []Configurat
 }
 
 func ensurePotentialPathInside(workspace, path string, allowMissing bool) error {
-	if !allowMissing {
-		return ensureResolvedPathInside(workspace, path)
+	resolvedWorkspace, err := pathutil.Resolve(workspace)
+	if err != nil {
+		return fmt.Errorf("resolve workspace symlinks: %w", err)
 	}
-	probe := path
-	for {
-		if _, err := os.Lstat(probe); err == nil {
-			if err := ensureResolvedPathInside(workspace, probe); err != nil {
-				return err
-			}
-			if probe != path {
-				info, err := os.Stat(probe)
-				if err != nil {
-					return fmt.Errorf("inspect existing parent: %w", err)
-				}
-				if !info.IsDir() {
-					return errors.New("existing parent is not a directory")
-				}
-			}
-			return nil
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("inspect path: %w", err)
-		}
-		parent := filepath.Dir(probe)
-		if parent == probe {
-			return errors.New("no existing parent directory")
-		}
-		probe = parent
+	resolve := pathutil.Resolve
+	if allowMissing {
+		resolve = pathutil.ResolveExistingPrefix
 	}
+	resolvedPath, err := resolve(path)
+	if err != nil {
+		return fmt.Errorf("resolve symlinks: %w", err)
+	}
+	rel, err := filepath.Rel(resolvedWorkspace, resolvedPath)
+	if err != nil || !filepath.IsLocal(rel) {
+		return errors.New("must stay inside the workspace after resolving symlinks")
+	}
+	return nil
 }
 
 func selectProjectDir(workspace string, projects []string, requested string, configuration map[string]any) (string, error) {
@@ -619,26 +608,10 @@ func ResolveWorkspaceDirectory(workspace, value string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("project_dir %q is not a directory", value)
 	}
-	if err := ensureResolvedPathInside(workspace, abs); err != nil {
+	if err := ensurePotentialPathInside(workspace, abs, false); err != nil {
 		return "", fmt.Errorf("project_dir %q: %w", value, err)
 	}
 	return filepath.Clean(abs), nil
-}
-
-func ensureResolvedPathInside(workspace, path string) error {
-	resolvedWorkspace, err := pathutil.Resolve(workspace)
-	if err != nil {
-		return fmt.Errorf("resolve workspace symlinks: %w", err)
-	}
-	resolvedPath, err := pathutil.Resolve(path)
-	if err != nil {
-		return fmt.Errorf("resolve symlinks: %w", err)
-	}
-	rel, err := filepath.Rel(resolvedWorkspace, resolvedPath)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return errors.New("must stay inside the workspace after resolving symlinks")
-	}
-	return nil
 }
 
 func nearestProject(projects []string, target string) string {

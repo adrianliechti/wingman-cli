@@ -38,16 +38,6 @@ export type WriteFileResult =
 	| { ok: true; revision: string }
 	| { ok: false; conflict: true; error: string };
 
-export interface BatchWriteFileInput {
-	path: string;
-	content: string;
-	revision: string;
-}
-
-export type BatchWriteFileResult =
-	| { ok: true; revisions: Record<string, string> }
-	| { ok: false; conflict: true; error: string };
-
 export async function deleteWorkspaceFile(path: string): Promise<void> {
 	await fetchOK(`/api/files?path=${encodeURIComponent(path)}`, {
 		method: "DELETE",
@@ -154,29 +144,6 @@ export async function writeWorkspaceFile(
 	}
 	if (!response.ok) throw await responseError(response, "Failed to save file");
 	return { ok: true, ...((await response.json()) as { revision: string }) };
-}
-
-export async function writeWorkspaceFiles(
-	files: BatchWriteFileInput[],
-): Promise<BatchWriteFileResult> {
-	const response = await scopedFetch("/api/files/write-batch", {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ files }),
-	});
-	if (response.status === 409) {
-		return {
-			ok: false,
-			conflict: true,
-			error: (await response.text()).trim() || "A file changed on disk.",
-		};
-	}
-	if (!response.ok)
-		throw await responseError(response, "Failed to apply workspace edit");
-	return {
-		ok: true,
-		...((await response.json()) as { revisions: Record<string, string> }),
-	};
 }
 
 async function responseError(

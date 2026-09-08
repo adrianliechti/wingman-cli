@@ -25,9 +25,21 @@ func (position WindowTerminalPosition) Valid() bool {
 	return position == WindowTerminalPositionTab || position == WindowTerminalPositionBottom
 }
 
+type WindowSidebarPosition string
+
+const (
+	WindowSidebarPositionLeft  WindowSidebarPosition = "left"
+	WindowSidebarPositionRight WindowSidebarPosition = "right"
+)
+
+func (position WindowSidebarPosition) Valid() bool {
+	return position == WindowSidebarPositionLeft || position == WindowSidebarPositionRight
+}
+
 type Settings struct {
 	EditorTabCompletion    bool                   `json:"editor.tab.completion"`
 	WindowTerminalPosition WindowTerminalPosition `json:"window.terminal.position"`
+	WindowSidebarPosition  WindowSidebarPosition  `json:"window.sidebar.position"`
 	Workspaces             []string               `json:"workspaces,omitempty"`
 }
 
@@ -91,6 +103,7 @@ func load() (Settings, error) {
 	value := Settings{
 		EditorTabCompletion:    true,
 		WindowTerminalPosition: WindowTerminalPositionTab,
+		WindowSidebarPosition:  WindowSidebarPositionRight,
 	}
 	path, err := path()
 	if err != nil {
@@ -108,6 +121,9 @@ func load() (Settings, error) {
 	}
 	if !value.WindowTerminalPosition.Valid() {
 		value.WindowTerminalPosition = WindowTerminalPositionTab
+	}
+	if !value.WindowSidebarPosition.Valid() {
+		value.WindowSidebarPosition = WindowSidebarPositionRight
 	}
 	return value, nil
 }

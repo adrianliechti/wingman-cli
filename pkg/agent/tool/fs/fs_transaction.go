@@ -159,11 +159,8 @@ func transactionLocation(workspaceRoot *os.Root, target fileTarget) (*os.Root, s
 	}
 	path = filepath.Clean(filepath.FromSlash(path))
 
-	if fallback, sub, ok := fallbackRoot(root.Name(), path); ok {
-		if closeRoot != nil {
-			closeRoot()
-		}
-		return fallback, filepath.Clean(sub), func() { _ = fallback.Close() }, nil
+	if sub, ok := resolveRootPath(root, path); ok {
+		path = filepath.Clean(sub)
 	}
 	return root, path, closeRoot, nil
 }

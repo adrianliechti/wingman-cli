@@ -1,6 +1,6 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ITheme } from "@xterm/xterm";
-import { useEffect, useEffectEvent, useRef } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { getTerminalWebSocketURL } from "../api/websocket";
 import { useColorScheme } from "../hooks/useColorScheme";
 
@@ -16,6 +16,7 @@ export function TerminalView({ id, active, onExit, onTitle }: Props) {
 	const termRef = useRef<Terminal | null>(null);
 	const fitRef = useRef<FitAddon | null>(null);
 	const scheme = useColorScheme();
+	const [reconnecting, setReconnecting] = useState(false);
 
 	const handleExit = useEffectEvent(onExit);
 	const handleTitle = useEffectEvent(onTitle);
@@ -42,9 +43,11 @@ export function TerminalView({ id, active, onExit, onTitle }: Props) {
 		termRef.current = term;
 		fitRef.current = fit;
 
-		const ws = new WebSocket(getTerminalWebSocketURL(id));
-		ws.binaryType = "arraybuffer";
-
+		let ws: WebSocket;
+		let reconnectTimer: number | undefined;
+		let reconnectDelay = 500;
+		let attached = false;
+		let stopped = false;
 		const pending: string[] = [];
 		const send = (msg: Record<string, unknown>) => {
 			const data = JSON.stringify(msg);
@@ -52,21 +55,42 @@ export function TerminalView({ id, active, onExit, onTitle }: Props) {
 			else if (ws.readyState === WebSocket.CONNECTING) pending.push(data);
 		};
 
-		ws.onopen = () => {
-			for (const data of pending) ws.send(data);
-			pending.length = 0;
-			send({ type: "resize", cols: term.cols, rows: term.rows });
+		const connect = () => {
+			ws = new WebSocket(getTerminalWebSocketURL(id));
+			ws.binaryType = "arraybuffer";
+			ws.onopen = () => {
+				// Every attachment replays the server's scrollback. Clear the old
+				// screen first so reconnecting does not duplicate terminal output.
+				if (attached) term.reset();
+				attached = true;
+				reconnectDelay = 500;
+				term.options.disableStdin = false;
+				setReconnecting(false);
+				for (const data of pending) ws.send(data);
+				pending.length = 0;
+				send({ type: "resize", cols: term.cols, rows: term.rows });
+			};
+			ws.onmessage = (e) => {
+				if (typeof e.data === "string") {
+					try {
+						if (JSON.parse(e.data).type === "exit") {
+							stopped = true;
+							handleExit(id);
+						}
+					} catch {}
+					return;
+				}
+				term.write(new Uint8Array(e.data as ArrayBuffer));
+			};
+			ws.onclose = () => {
+				if (stopped) return;
+				term.options.disableStdin = true;
+				setReconnecting(true);
+				reconnectTimer = window.setTimeout(connect, reconnectDelay);
+				reconnectDelay = Math.min(reconnectDelay * 2, 10_000);
+			};
 		};
-
-		ws.onmessage = (e) => {
-			if (typeof e.data === "string") {
-				try {
-					if (JSON.parse(e.data).type === "exit") handleExit(id);
-				} catch {}
-				return;
-			}
-			term.write(new Uint8Array(e.data as ArrayBuffer));
-		};
+		connect();
 
 		const dataSub = term.onData((data) => send({ type: "input", data }));
 		const resizeSub = term.onResize(({ cols, rows }) =>
@@ -85,11 +109,15 @@ export function TerminalView({ id, active, onExit, onTitle }: Props) {
 		observer.observe(host);
 
 		return () => {
+			stopped = true;
+			window.clearTimeout(reconnectTimer);
 			observer.disconnect();
 			dataSub.dispose();
 			resizeSub.dispose();
 			titleSub.dispose();
 			ws.onmessage = null;
+			ws.onopen = null;
+			ws.onclose = null;
 			ws.close();
 			term.dispose();
 			termRef.current = null;
@@ -111,7 +139,19 @@ export function TerminalView({ id, active, onExit, onTitle }: Props) {
 		return () => window.clearTimeout(handle);
 	}, [active]);
 
-	return <div ref={hostRef} className="h-full w-full px-2 py-1 bg-bg" />;
+	return (
+		<div className="relative h-full w-full bg-bg">
+			<div ref={hostRef} className="h-full w-full px-2 py-1" />
+			{reconnecting && (
+				<div
+					role="status"
+					className="absolute top-2 right-2 rounded bg-bg-elevated px-2 py-1 text-[11px] text-fg-muted"
+				>
+					Reconnecting terminal…
+				</div>
+			)}
+		</div>
+	);
 }
 
 function safeFit(fit: FitAddon) {
