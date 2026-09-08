@@ -79,17 +79,34 @@ func TestSkillDirectoryLinks(t *testing.T) {
 						}
 					}
 
-					linkedFile := filepath.Join(source, "review", "references", "guide.md")
-					for _, check := range []struct {
-						tool tool.Tool
-						args map[string]any
-					}{
-						{ReadTool(root), map[string]any{"file_path": linkedFile}},
-						{WriteTool(root), map[string]any{"file_path": linkedFile, "content": "overwrite"}},
-						{EditTool(root), map[string]any{"file_path": linkedFile, "old_string": "Shared", "new_string": "Changed"}},
+					localFile := filepath.Join(workspace, "local.txt")
+					if err := os.WriteFile(localFile, []byte("original"), 0644); err != nil {
+						t.Fatal(err)
+					}
+					for _, path := range paths {
+						file := filepath.Join(path, "references", "guide.md")
+						for _, check := range []struct {
+							tool tool.Tool
+							args map[string]any
+						}{
+							{ReadTool(root), map[string]any{"file_path": file}},
+							{WriteTool(root), map[string]any{"file_path": file, "content": "overwrite"}},
+							{EditTool(root), map[string]any{"edits": []any{
+								map[string]any{"file_path": localFile, "old_string": "original", "new_string": "changed"},
+								map[string]any{"file_path": file, "old_string": "Shared", "new_string": "Changed"},
+							}}},
+						} {
+							if _, err := check.tool.Execute(context.Background(), check.args); err == nil {
+								t.Errorf("%s accessed %q without an access grant", check.tool.Name, file)
+							}
+						}
+					}
+					for file, want := range map[string]string{
+						localFile: "original",
+						filepath.Join(target, "references", "guide.md"): "Shared review guidance.\n",
 					} {
-						if _, err := check.tool.Execute(context.Background(), check.args); err == nil {
-							t.Errorf("%s followed external skill link without an access grant", check.tool.Name)
+						if data, err := os.ReadFile(file); err != nil || string(data) != want {
+							t.Errorf("rejected mutation changed %s: %q, %v", file, data, err)
 						}
 					}
 					// Granting a skill root must not let a resource link escape
@@ -99,10 +116,21 @@ func TestSkillDirectoryLinks(t *testing.T) {
 						t.Fatal(err)
 					}
 					testenv.DirLink(t, kind, outside, filepath.Join(target, "escape"))
-					if _, err := read.Execute(context.Background(), map[string]any{
-						"file_path": filepath.Join(source, "review", "escape", "private.txt"),
-					}); err == nil {
-						t.Error("resource link escaped the allowed skill root")
+					testenv.DirLink(t, kind, filepath.Join(target, "escape"), filepath.Join(target, "chain"))
+					for _, link := range []string{"escape", "chain"} {
+						path := filepath.Join(source, "review", link)
+						for _, check := range []struct {
+							tool tool.Tool
+							args map[string]any
+						}{
+							{read, map[string]any{"file_path": filepath.Join(path, "private.txt")}},
+							{grep, map[string]any{"path": path, "pattern": "private"}},
+							{glob, map[string]any{"path": path, "pattern": "**/*"}},
+						} {
+							if result, err := check.tool.Execute(context.Background(), check.args); err == nil {
+								t.Errorf("%s escaped the allowed skill root through %s: %q", check.tool.Name, link, result.Content)
+							}
+						}
 					}
 				})
 			}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"maps"
 	"os"
-	"path/filepath"
 	"slices"
 	"sync"
 	"time"
@@ -32,13 +31,6 @@ func NewFreshness(root *os.Root) *Freshness {
 	return &Freshness{root: root, states: map[string]fileState{}}
 }
 
-func (f *Freshness) keyFor(target fileTarget) string {
-	if target.AbsPath != "" {
-		return target.AbsPath
-	}
-	return filepath.Join(f.root.Name(), target.RelPath)
-}
-
 // record is skipped for background-agent tool calls: their modifications must
 // stay visible as "changed on disk" to the main agent, and their reads must
 // not add baseline entries the main agent never saw.
@@ -50,7 +42,7 @@ func (f *Freshness) record(ctx context.Context, target fileTarget) {
 	if err != nil || info.IsDir() {
 		return
 	}
-	key := f.keyFor(target)
+	key := target.AbsPath
 	f.mu.Lock()
 	f.states[key] = fileState{target: target, modTime: info.ModTime(), size: info.Size()}
 	f.mu.Unlock()
@@ -61,7 +53,7 @@ func (f *Freshness) forget(ctx context.Context, target fileTarget) {
 		return
 	}
 	f.mu.Lock()
-	delete(f.states, f.keyFor(target))
+	delete(f.states, target.AbsPath)
 	f.mu.Unlock()
 }
 
@@ -71,7 +63,7 @@ func (f *Freshness) stale(ctx context.Context, target fileTarget, info os.FileIn
 	if f == nil || tool.IsBackgroundOrigin(ctx) {
 		return false
 	}
-	key := f.keyFor(target)
+	key := target.AbsPath
 	f.mu.Lock()
 	st, ok := f.states[key]
 	f.mu.Unlock()

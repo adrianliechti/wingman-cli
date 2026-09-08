@@ -3,7 +3,6 @@ package fs
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
@@ -105,17 +104,6 @@ func applyEditOp(content string, op editOp, pathArg string) (string, error) {
 	}
 
 	return newContent, nil
-}
-
-func writeRootFile(root *os.Root, path, content string) error {
-	dir := filepath.Dir(path)
-	if dir != "." && dir != "" {
-		if err := root.MkdirAll(dir, 0755); err != nil {
-			return err
-		}
-	}
-
-	return root.WriteFile(path, []byte(content), 0666)
 }
 
 func findActualEditString(content, oldText string) string {

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	. "github.com/adrianliechti/wingman-agent/pkg/agent/tool/fs"
 )
 
@@ -79,22 +80,37 @@ func TestSandboxWildcardRoot(t *testing.T) {
 	root, _, cleanup := createTestRoot(t)
 	defer cleanup()
 
-	outside := filepath.Join(os.TempDir(), "wingman-wildcard-root-test.txt")
-	if err := os.WriteFile(outside, []byte("system config"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(outside)
-
-	if _, err := ReadTool(root).Execute(context.Background(), map[string]any{"file_path": outside}); err == nil {
-		t.Fatal("expected outside-workspace rejection without a wildcard root")
-	}
-
-	out, err := ReadTool(root, "*").Execute(context.Background(), map[string]any{"file_path": outside})
-	if err != nil {
-		t.Fatalf("wildcard root read failed: %v", err)
-	}
-	if !strings.Contains(out.Content, "system config") {
-		t.Errorf("expected file content, got: %s", out.Content)
+	outside := filepath.Join(t.TempDir(), "config.txt")
+	for _, check := range []struct {
+		makeTool func(*os.Root, ...string) tool.Tool
+		args     map[string]any
+		want     string
+		wantFile string
+	}{
+		{ReadTool, map[string]any{"file_path": outside}, "system config", "system config"},
+		{GrepTool, map[string]any{"path": outside, "pattern": "system"}, outside, "system config"},
+		{GlobTool, map[string]any{"path": filepath.Dir(outside), "pattern": "*.txt"}, outside, "system config"},
+		{WriteTool, map[string]any{"file_path": outside, "content": "written config"}, "Updated", "written config"},
+		{EditTool, map[string]any{"file_path": outside, "old_string": "system", "new_string": "edited"}, "Applied", "edited config"},
+	} {
+		t.Run(check.makeTool(root).Name, func(t *testing.T) {
+			if err := os.WriteFile(outside, []byte("system config"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := check.makeTool(root).Execute(context.Background(), check.args); err == nil {
+				t.Fatal("accepted an outside path without a wildcard root")
+			}
+			if data, err := os.ReadFile(outside); err != nil || string(data) != "system config" {
+				t.Fatalf("denied operation changed file: %q, %v", data, err)
+			}
+			out, err := check.makeTool(root, "*").Execute(context.Background(), check.args)
+			if err != nil || !strings.Contains(out.Content, check.want) {
+				t.Fatalf("wildcard operation = %q, %v; want %q", out.Content, err, check.want)
+			}
+			if data, err := os.ReadFile(outside); err != nil || string(data) != check.wantFile {
+				t.Fatalf("wildcard file = %q, %v; want %q", data, err, check.wantFile)
+			}
+		})
 	}
 }
 

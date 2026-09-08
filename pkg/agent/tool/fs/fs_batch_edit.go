@@ -167,7 +167,7 @@ func parseBatchEdits(root *os.Root, args map[string]any, allowedWriteRoots []str
 			return nil, 0, fmt.Errorf("edits[%d]: %w", index, err)
 		}
 
-		key := batchTargetKey(root.Name(), target)
+		key := normalizePathForComparison(resolveForCompare(target.AbsPath))
 		fileIndex, exists := byTarget[key]
 		if !exists {
 			fileIndex = len(files)
@@ -221,17 +221,4 @@ func compatibleBatchEntries(args map[string]any) ([]map[string]any, error) {
 		entries = append(entries, entry)
 	}
 	return entries, nil
-}
-
-func batchTargetKey(workspace string, target fileTarget) string {
-	var path string
-	switch {
-	case target.InWorkspace:
-		path = filepath.Join(workspace, target.RelPath)
-	case target.AbsPath != "":
-		path = target.AbsPath
-	default:
-		path = filepath.Join(target.RootPath, target.RelPath)
-	}
-	return normalizePathForComparison(resolveForCompare(filepath.Clean(path)))
 }

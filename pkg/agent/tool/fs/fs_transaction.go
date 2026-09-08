@@ -147,12 +147,12 @@ func closeTransactionRoots(tx *fileTransaction) {
 // behavior for absolute in-root links while keeping containment enforced by
 // os.Root during staging and renames.
 func transactionLocation(workspaceRoot *os.Root, target fileTarget) (*os.Root, string, func(), error) {
-	root, path, closeRoot, rooted, err := fileTargetRoot(workspaceRoot, target)
+	root, path, closeRoot, err := fileTargetRoot(workspaceRoot, target)
 	if err != nil {
 		return nil, "", nil, err
 	}
-	if !rooted {
-		root, path, closeRoot, err = absoluteTransactionLocation(target.AbsPath)
+	if root == nil {
+		root, path, closeRoot, err = absoluteTransactionLocation(path)
 		if err != nil {
 			return nil, "", nil, err
 		}
