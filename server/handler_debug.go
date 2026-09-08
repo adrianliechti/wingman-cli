@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/adrianliechti/wingman-agent/internal/pathutil"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 	"github.com/adrianliechti/wingman-agent/pkg/debugadapter"
 	"github.com/adrianliechti/wingman-agent/pkg/devtools"
@@ -868,8 +869,8 @@ func normalizeDebugFrame(root string, frame *dap.StackFrame) {
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(root, path)
 	}
-	resolvedRoot, rootErr := filepath.EvalSymlinks(filepath.Clean(root))
-	resolvedPath, pathErr := filepath.EvalSymlinks(filepath.Clean(path))
+	resolvedRoot, rootErr := pathutil.Resolve(filepath.Clean(root))
+	resolvedPath, pathErr := pathutil.Resolve(filepath.Clean(path))
 	if rootErr != nil || pathErr != nil {
 		frame.Source.Path = ""
 		return

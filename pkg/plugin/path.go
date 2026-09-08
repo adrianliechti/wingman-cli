@@ -1,14 +1,12 @@
 package plugin
 
 import (
-	"errors"
 	"fmt"
-	"io/fs"
-	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
+
+	"github.com/adrianliechti/wingman-agent/internal/pathutil"
 )
 
 // resolvePath canonicalises the longest existing prefix of path and re-appends
@@ -16,44 +14,11 @@ import (
 // created can still be checked for containment. A dangling symlink is an error
 // rather than a resolvable path.
 func resolvePath(path string) (string, error) {
-	if !filepath.IsAbs(path) {
-		abs, err := filepath.Abs(path)
-		if err != nil {
-			return "", fmt.Errorf("resolve %s: %w", path, err)
-		}
-		path = abs
+	resolved, err := pathutil.ResolveExistingPrefix(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", path, err)
 	}
-
-	existing := filepath.Clean(path)
-
-	var missing []string
-
-	for {
-		resolved, err := filepath.EvalSymlinks(existing)
-
-		if err == nil {
-			for _, m := range slices.Backward(missing) {
-				resolved = filepath.Join(resolved, m)
-			}
-			return filepath.Clean(resolved), nil
-		}
-
-		if !errors.Is(err, fs.ErrNotExist) {
-			return "", fmt.Errorf("resolve %s: %w", path, err)
-		}
-
-		if info, statErr := os.Lstat(existing); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
-			return "", fmt.Errorf("resolve %s: dangling symlink at %s", path, existing)
-		}
-
-		parent := filepath.Dir(existing)
-		if parent == existing {
-			return "", fmt.Errorf("resolve %s: no existing ancestor", path)
-		}
-
-		missing = append(missing, filepath.Base(existing))
-		existing = parent
-	}
+	return resolved, nil
 }
 
 // contains reports whether path is root itself or lies beneath it. Both are

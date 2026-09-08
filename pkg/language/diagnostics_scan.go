@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/adrianliechti/wingman-agent/internal/pathutil"
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 )
 
@@ -265,7 +266,7 @@ func discoverDiagnosticFiles(ctx context.Context, root string, extensions []stri
 	var files []string
 	total := 0
 	truncated := false
-	filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+	pathutil.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if ctx.Err() != nil {
 			return filepath.SkipAll
 		}

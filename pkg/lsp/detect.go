@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/adrianliechti/wingman-agent/internal/pathutil"
 	"github.com/adrianliechti/wingman-agent/internal/tooling"
 )
 
@@ -151,7 +152,7 @@ func indexWorkspace(workingDir string) *workspaceIndex {
 		byGlob: make(map[string][]string),
 	}
 
-	_ = filepath.WalkDir(workingDir, func(path string, entry fs.DirEntry, err error) error {
+	_ = pathutil.WalkDir(workingDir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil || path == workingDir {
 			return nil
 		}

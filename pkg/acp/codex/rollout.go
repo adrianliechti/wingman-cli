@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/adrianliechti/wingman-agent/internal/pathutil"
 )
 
 func rolloutCommandOutputs(sessionID, explicitPath string) map[string]string {
@@ -70,7 +72,7 @@ func parseRolloutOutputs(r io.Reader) map[string]string {
 func findRolloutFile(root, sessionID string) string {
 	suffix := sessionID + ".jsonl"
 	var found string
-	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	_ = pathutil.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}

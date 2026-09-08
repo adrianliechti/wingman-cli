@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/adrianliechti/wingman-agent/internal/pathutil"
 	"github.com/adrianliechti/wingman-agent/internal/tooling"
 )
 
@@ -625,11 +626,11 @@ func ResolveWorkspaceDirectory(workspace, value string) (string, error) {
 }
 
 func ensureResolvedPathInside(workspace, path string) error {
-	resolvedWorkspace, err := filepath.EvalSymlinks(workspace)
+	resolvedWorkspace, err := pathutil.Resolve(workspace)
 	if err != nil {
 		return fmt.Errorf("resolve workspace symlinks: %w", err)
 	}
-	resolvedPath, err := filepath.EvalSymlinks(path)
+	resolvedPath, err := pathutil.Resolve(path)
 	if err != nil {
 		return fmt.Errorf("resolve symlinks: %w", err)
 	}

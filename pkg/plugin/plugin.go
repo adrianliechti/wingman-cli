@@ -76,7 +76,7 @@ func discover(root, dataRoot string, plugins []Plugin, diagnostics []Diagnostic,
 
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if info, err := os.Stat(filepath.Join(root, entry.Name())); err == nil && info.IsDir() {
 			names = append(names, entry.Name())
 		}
 	}

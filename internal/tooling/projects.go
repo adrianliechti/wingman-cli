@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/adrianliechti/wingman-agent/internal/pathutil"
 )
 
 type ProjectSpec struct {
@@ -41,7 +43,7 @@ func DetectProjects(ctx context.Context, workspace string, specs []ProjectSpec) 
 		}
 	}
 
-	err := filepath.WalkDir(workspace, func(path string, entry fs.DirEntry, walkErr error) error {
+	err := pathutil.WalkDir(workspace, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}

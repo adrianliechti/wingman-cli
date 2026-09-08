@@ -15,6 +15,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/adrianliechti/wingman-agent/internal/pathutil"
 	"github.com/odvcencio/gotreesitter"
 	"github.com/odvcencio/gotreesitter/grammars"
 )
@@ -321,7 +322,7 @@ func indexRepo(ctx context.Context, root string, resolver CallResolver) (*Graph,
 
 func collectFiles(ctx context.Context, root string) ([]string, error) {
 	var paths []string
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	err := pathutil.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}

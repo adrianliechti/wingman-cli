@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/adrianliechti/wingman-agent/internal/pathutil"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 	"github.com/adrianliechti/wingman-agent/pkg/lsp"
 )
@@ -425,7 +426,7 @@ func findJavaSource(projectDir, mainClass string) (string, error) {
 	expected := simpleName + ".java"
 	var fallback string
 	visited := 0
-	err := filepath.WalkDir(projectDir, func(path string, entry fs.DirEntry, walkErr error) error {
+	err := pathutil.WalkDir(projectDir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}

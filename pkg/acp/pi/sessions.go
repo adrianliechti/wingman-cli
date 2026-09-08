@@ -6,11 +6,11 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
 
+	"github.com/adrianliechti/wingman-agent/internal/pathutil"
 	"github.com/coder/acp-go-sdk"
 	"github.com/google/uuid"
 )
@@ -30,7 +30,7 @@ type sessionFileInfo struct {
 
 func listSessionFiles(sessionsDir string) []sessionFileInfo {
 	var files []string
-	_ = filepath.WalkDir(sessionsDir, func(path string, d fs.DirEntry, err error) error {
+	_ = pathutil.WalkDir(sessionsDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -73,7 +73,7 @@ func listSessionFiles(sessionsDir string) []sessionFileInfo {
 }
 
 func canonicalPath(path string) string {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+	if resolved, err := pathutil.Resolve(path); err == nil {
 		return resolved
 	}
 	return path

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/adrianliechti/wingman-agent/internal/pathutil"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/task"
 	"github.com/adrianliechti/wingman-agent/pkg/agent/tool"
 	"github.com/adrianliechti/wingman-agent/pkg/code"
@@ -49,7 +50,7 @@ type SessionRef struct {
 
 func workspaceScope(root string) WorkspaceScope {
 	// Connection identity is for the opened root, independent of legacy disk layout.
-	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+	if resolved, err := pathutil.Resolve(root); err == nil {
 		root = resolved
 	}
 	sum := sha256.Sum256([]byte(filepath.Clean(root)))

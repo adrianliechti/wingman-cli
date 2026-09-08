@@ -14,6 +14,7 @@ import (
 
 	"github.com/coder/acp-go-sdk"
 
+	"github.com/adrianliechti/wingman-agent/internal/pathutil"
 	acpcommon "github.com/adrianliechti/wingman-agent/pkg/acp"
 )
 
@@ -57,7 +58,7 @@ func projectDirFor(cwd string) string {
 		return ""
 	}
 	resolved := cwd
-	if r, err := filepath.EvalSymlinks(cwd); err == nil {
+	if r, err := pathutil.Resolve(cwd); err == nil {
 		resolved = r
 	}
 	return filepath.Join(root, encodeCwd(resolved))

@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/adrianliechti/wingman-agent/internal/pathutil"
 	"github.com/adrianliechti/wingman-agent/internal/tooling"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
 )
@@ -196,7 +197,7 @@ func (registry *Registry) DetectWorkspace(ctx context.Context, root string) ([]T
 	root = filepath.Clean(root)
 	visited := 0
 	var result []Target
-	err := filepath.WalkDir(root, func(filePath string, entry fs.DirEntry, walkErr error) error {
+	err := pathutil.WalkDir(root, func(filePath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}

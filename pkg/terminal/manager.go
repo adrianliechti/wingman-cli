@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/adrianliechti/wingman-agent/internal/pathutil"
 	"github.com/google/uuid"
 )
 
@@ -110,11 +111,11 @@ func (m *Manager) commandDir(value string) (string, error) {
 	if err != nil || !info.IsDir() {
 		return "", fmt.Errorf("terminal working directory %q is not a directory", value)
 	}
-	resolvedRoot, err := filepath.EvalSymlinks(root)
+	resolvedRoot, err := pathutil.Resolve(root)
 	if err != nil {
 		return "", fmt.Errorf("resolve terminal workspace symlinks: %w", err)
 	}
-	resolvedDir, err := filepath.EvalSymlinks(dir)
+	resolvedDir, err := pathutil.Resolve(dir)
 	if err != nil {
 		return "", fmt.Errorf("resolve terminal working directory symlinks: %w", err)
 	}

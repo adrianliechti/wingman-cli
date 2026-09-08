@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/adrianliechti/wingman-agent/internal/pathutil"
 	"github.com/adrianliechti/wingman-agent/internal/process"
 	"github.com/adrianliechti/wingman-agent/internal/tooling"
 	"github.com/adrianliechti/wingman-agent/pkg/dap"
@@ -291,30 +292,5 @@ func rustProjectDir(request Request) (string, error) {
 // a possibly unbuilt output path so comparisons remain correct through
 // symlinked temporary/workspace directories as well.
 func canonicalCargoPath(value string) (string, error) {
-	path, err := filepath.Abs(filepath.Clean(value))
-	if err != nil {
-		return "", err
-	}
-	probe := path
-	var missing []string
-	for {
-		if _, err := os.Lstat(probe); err == nil {
-			resolved, err := filepath.EvalSymlinks(probe)
-			if err != nil {
-				return "", err
-			}
-			for index := len(missing) - 1; index >= 0; index-- {
-				resolved = filepath.Join(resolved, missing[index])
-			}
-			return filepath.Clean(resolved), nil
-		} else if !os.IsNotExist(err) {
-			return "", err
-		}
-		parent := filepath.Dir(probe)
-		if parent == probe {
-			return path, nil
-		}
-		missing = append(missing, filepath.Base(probe))
-		probe = parent
-	}
+	return pathutil.ResolveExistingPrefix(value)
 }

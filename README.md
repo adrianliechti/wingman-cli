@@ -384,6 +384,11 @@ Set `WINGMAN_HOME` to relocate the complete `~/.wingman` directory, including
 settings, project memory and sessions, global MCP configuration, skills,
 plugins, and plugin data.
 
+Workspace and session roots can be directory symbolic links on macOS and Windows,
+or directory junctions on Windows (`mklink /J`). Workspace scans use the selected
+root and skip directory links encountered inside it. Terminal and debugger path
+checks compare resolved locations so nested links cannot bypass workspace boundaries.
+
 ### Project Configuration
 
 Create an `AGENTS.md` (or `CLAUDE.md`) file in your project root to provide context-specific instructions. Wingman walks up from your working directory and reads all matching files it finds, so you can layer project and workspace-level guidelines:
@@ -720,6 +725,10 @@ Drop a plugin directory into any of these, project before personal, first name w
 
 - `.wingman/plugins/<name>/`, `.agents/plugins/<name>/`, `.claude/plugins/<name>/` (project)
 - `~/.wingman/plugins/<name>/`, `~/.agents/plugins/<name>/`, `~/.claude/plugins/<name>/` (personal)
+
+The plugins folder or an individual plugin directory can be a symbolic link or a
+Windows junction to another checkout. Plugin components must remain within the
+resolved plugin root, and plugin data must remain within its configured data root.
 
 A portable Agent Plugin starts with a `plugin.json` manifest and two standard component types. A complete package can also carry resources and client-owned extensions such as hooks:
 

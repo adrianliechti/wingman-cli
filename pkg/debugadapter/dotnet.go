@@ -266,6 +266,8 @@ func dotnetProgramPath(projectRoot, projectFile string, metadata dotnetProjectMe
 func findBuiltDotnetAssembly(projectRoot, fileName, targetFramework string) string {
 	binDir := filepath.Join(projectRoot, "bin")
 	var candidates []string
+	// bin is discovered beneath the project, not an explicitly selected root.
+	// Keep skipping it when it is itself a directory link.
 	_ = filepath.WalkDir(binDir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return nil

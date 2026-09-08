@@ -63,3 +63,44 @@ func TestResolveBrokenDirectoryLink(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveExistingPrefixDirectoryLinks(t *testing.T) {
+	for _, kind := range []string{"symlink", "junction"} {
+		t.Run(kind, func(t *testing.T) {
+			base := t.TempDir()
+			target, link := filepath.Join(base, "target"), filepath.Join(base, "link")
+			if err := os.Mkdir(target, 0755); err != nil {
+				t.Fatal(err)
+			}
+			testenv.DirLink(t, kind, target, link)
+			resolved, err := pathutil.Resolve(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, suffix := range []string{"", filepath.Join("missing", "output")} {
+				path := filepath.Join(link, suffix)
+				if got, err := pathutil.ResolveExistingPrefix(path); err != nil || got != filepath.Join(resolved, suffix) {
+					t.Fatalf("ResolveExistingPrefix(%q) = %q, %v", path, got, err)
+				}
+			}
+			if err := os.Remove(target); err != nil {
+				t.Fatal(err)
+			}
+			for _, suffix := range []string{"", filepath.Join("missing", "output")} {
+				if _, err := pathutil.ResolveExistingPrefix(filepath.Join(link, suffix)); err == nil {
+					t.Fatalf("accepted dangling %s with suffix %q", kind, suffix)
+				}
+			}
+		})
+	}
+}
+
+func TestResolveExistingPrefixRejectsFileParent(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pathutil.ResolveExistingPrefix(filepath.Join(file, "output")); err == nil {
+		t.Fatal("accepted a regular file as the parent of an output path")
+	}
+}
