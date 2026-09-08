@@ -13,6 +13,7 @@ import (
 
 	"go.yaml.in/yaml/v4"
 
+	"github.com/adrianliechti/wingman-agent/internal/pathutil"
 	"github.com/adrianliechti/wingman-agent/pkg/layout"
 )
 
@@ -345,8 +346,8 @@ func projectDiscoveryRoots(root string) []string {
 // LoadDir loads skills beneath dir. Directories without SKILL.md are grouping
 // directories and are traversed recursively; a skill directory is a leaf so
 // supporting resources below it cannot be mistaken for additional skills.
-// Symlinked directories are followed once, with their resolved paths used to
-// prevent cycles.
+// Symbolic links and Windows junctions are followed once, with their resolved
+// paths used to prevent cycles.
 func LoadDir(dir string) []Skill {
 	return loadDir(dir, true, "")
 }
@@ -365,11 +366,7 @@ func loadDir(dir string, report bool, excludedRoot string) []Skill {
 		if excludedRoot != "" && filepath.Clean(current) == excludedRoot {
 			return
 		}
-		resolved, err := filepath.EvalSymlinks(current)
-		if err != nil {
-			return
-		}
-		resolved, err = filepath.Abs(resolved)
+		resolved, err := pathutil.Resolve(current)
 		if err != nil || visited[resolved] {
 			return
 		}

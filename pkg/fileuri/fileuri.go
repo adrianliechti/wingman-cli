@@ -26,7 +26,7 @@ func FromPath(path string) string {
 	}
 
 	if hasWindowsDrivePrefix(slashPath) {
-		slashPath = "/" + slashPath
+		slashPath = "/" + strings.TrimPrefix(slashPath, "/")
 	}
 	return (&url.URL{Scheme: "file", Path: slashPath}).String()
 }
@@ -42,7 +42,7 @@ func Path(value string) (string, bool) {
 	if uri.Host != "" {
 		path = "//" + uri.Host + path
 	} else if hasWindowsDrivePrefix(path) {
-		path = path[1:]
+		path = strings.TrimPrefix(path, "/")
 	}
 	return filepath.FromSlash(path), true
 }

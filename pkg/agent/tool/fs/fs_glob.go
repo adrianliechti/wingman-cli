@@ -138,7 +138,7 @@ func GlobTool(root *os.Root, allowedReadRoots ...string) tool.Tool {
 }
 
 func resolveGlobSearch(searchDir, pattern, workingDir string, workspaceRoot *os.Root, allowedReadRoots []string) (*searchTarget, string, error) {
-	pattern = filepath.ToSlash(strings.TrimSpace(pattern))
+	pattern = filepath.ToSlash(normalizePathArg(strings.TrimSpace(pattern)))
 
 	if filepath.IsAbs(pattern) {
 		dir, rest := doublestar.SplitPattern(pattern)

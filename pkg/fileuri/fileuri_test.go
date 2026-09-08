@@ -1,11 +1,29 @@
 package fileuri_test
 
 import (
+	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/adrianliechti/wingman-agent/pkg/fileuri"
 )
+
+func TestWindowsDriveURIs(t *testing.T) {
+	for _, path := range []string{"F:/go/pkg/mod", "/F:/go/pkg/mod", "F:/", "/F:/"} {
+		t.Run(path, func(t *testing.T) {
+			wantPath := strings.TrimPrefix(path, "/")
+			wantURI := "file:///" + wantPath
+			uri := fileuri.FromPath(path)
+			if uri != wantURI {
+				t.Fatalf("FromPath(%q) = %q, want %q", path, uri, wantURI)
+			}
+			if got, ok := fileuri.Path(uri); !ok || got != filepath.FromSlash(wantPath) {
+				t.Fatalf("Path(%q) = (%q, %v), want %q", uri, got, ok, filepath.FromSlash(wantPath))
+			}
+		})
+	}
+}
 
 func TestRoundTrip(t *testing.T) {
 	if runtime.GOOS == "windows" {

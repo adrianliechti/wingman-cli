@@ -107,7 +107,7 @@ func applyEditOp(content string, op editOp, pathArg string) (string, error) {
 	return newContent, nil
 }
 
-func writeRootFile(root *os.Root, path, content string) (err error) {
+func writeRootFile(root *os.Root, path, content string) error {
 	dir := filepath.Dir(path)
 	if dir != "." && dir != "" {
 		if err := root.MkdirAll(dir, 0755); err != nil {
@@ -115,21 +115,7 @@ func writeRootFile(root *os.Root, path, content string) (err error) {
 		}
 	}
 
-	outFile, err := root.Create(path)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if closeErr := outFile.Close(); closeErr != nil && err == nil {
-			err = fmt.Errorf("failed to close file: %w", closeErr)
-		}
-	}()
-
-	if _, err := outFile.WriteString(content); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
-	}
-
-	return nil
+	return root.WriteFile(path, []byte(content), 0666)
 }
 
 func findActualEditString(content, oldText string) string {

@@ -789,3 +789,26 @@ func TestGrepAllowedReadRoots(t *testing.T) {
 		}
 	})
 }
+
+func TestGrepWildcardReadRoot(t *testing.T) {
+	root, _, cleanup := createTestRoot(t)
+	defer cleanup()
+	dir := t.TempDir()
+	file := filepath.Join(dir, "table.go")
+	if err := os.WriteFile(file, []byte("type Table struct{}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{dir, file} {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			result, err := GrepTool(root, "*").Execute(context.Background(), map[string]any{
+				"path": path, "pattern": "Table",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(result.Content, file) {
+				t.Fatalf("result = %q, want %q", result.Content, file)
+			}
+		})
+	}
+}

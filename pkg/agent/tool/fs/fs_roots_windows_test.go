@@ -7,7 +7,7 @@ func TestAllowedRootCanBeOnDifferentWindowsVolume(t *testing.T) {
 	systemRoot := `D:\Wingman\skills\.system`
 	skillFile := `D:\Wingman\skills\.system\feature-dev\SKILL.md`
 
-	if !isOutsideWorkspace(skillFile, workspace) {
+	if _, ok := relPathWithinWorkspace(skillFile, workspace); ok {
 		t.Fatalf("%q was treated as inside workspace %q", skillFile, workspace)
 	}
 	root, sub, ok := matchAllowedRoot(skillFile, []string{systemRoot})
