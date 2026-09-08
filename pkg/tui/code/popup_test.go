@@ -1,12 +1,46 @@
 package code
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/adrianliechti/wingman-agent/pkg/tui/ansi"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/inline"
 )
+
+func TestPopupArrowsKeepSelectionVisibleAndStopAtBoundaries(t *testing.T) {
+	items := make([]PopupItem, 30)
+	for i := range items {
+		items[i] = PopupItem{ID: fmt.Sprint(i), Label: fmt.Sprintf("command %02d", i)}
+	}
+	for _, kind := range []popupKind{popupCommands, popupPalette} {
+		popup := newPopup(kind, "commands", items, nil)
+		popup.maxRows = 5
+		check := func(want int) {
+			t.Helper()
+			item, ok := popup.Current()
+			if !ok || item.ID != items[want].ID {
+				t.Fatalf("selected %+v, want %s", item, items[want].ID)
+			}
+			if output := ansi.Strip(strings.Join(popup.Render(80), "\n")); !strings.Contains(output, "→   "+items[want].Label) {
+				t.Fatalf("selected command was not visible: %s", output)
+			}
+		}
+		popup.HandleKey(inline.KeyEvent{Key: inline.KeyUp})
+		check(0)
+		for i := 1; i < len(items); i++ {
+			popup.HandleKey(inline.KeyEvent{Key: inline.KeyDown})
+			check(i)
+		}
+		popup.HandleKey(inline.KeyEvent{Key: inline.KeyDown})
+		check(len(items) - 1)
+		for i := len(items) - 2; i >= 0; i-- {
+			popup.HandleKey(inline.KeyEvent{Key: inline.KeyUp})
+			check(i)
+		}
+	}
+}
 
 func TestPopupRecoversAfterEmptySearchAndCanAcceptEmptyMulti(t *testing.T) {
 	p := newPopup(popupPalette, "commands", []PopupItem{{ID: "one", Label: "one"}}, nil)

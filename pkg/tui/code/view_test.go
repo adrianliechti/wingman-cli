@@ -2,6 +2,7 @@ package code
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -11,6 +12,38 @@ import (
 	"github.com/adrianliechti/wingman-agent/pkg/tui/inline"
 	"github.com/adrianliechti/wingman-agent/pkg/tui/theme"
 )
+
+func TestStreamCellsRefreshForContentLayoutAndTheme(t *testing.T) {
+	previousTheme := theme.Default
+	t.Cleanup(func() { theme.Default = previousTheme })
+	theme.SetDark()
+	a := &App{}
+	check := func(width int) {
+		t.Helper()
+		fresh := &App{streamCurrent: a.streamCurrent, streamHistory: a.streamHistory, flow: a.flow, promptActive: a.promptActive}
+		if got, want := a.streamCells(width), fresh.streamCells(width); !slices.Equal(got, want) {
+			t.Fatalf("stale live cells:\n%q\nwant:\n%q", got, want)
+		}
+	}
+	a.streamCurrent.text = "First **reply**"
+	check(80)
+	check(80)
+	a.streamCurrent.text += " with more text"
+	check(80)
+	check(18)
+	theme.SetLight()
+	check(18)
+	a.appendLiveUserEcho("follow up")
+	check(80)
+	a.streamCurrent = streamSnapshot{toolName: "shell", toolHint: "go test", toolProgress: "running"}
+	check(80)
+	a.streamCurrent.completeTool(&agent.ToolResult{Name: "shell", Content: "all tests passed"})
+	check(80)
+	a.promptActive = true
+	check(80)
+	a.clearStreamingState()
+	check(80)
+}
 
 type namedUITestAgent struct{ *uiTestAgent }
 

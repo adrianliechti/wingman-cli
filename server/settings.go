@@ -40,3 +40,37 @@ func (s *Server) handleWindowTerminalSettings(w http.ResponseWriter, r *http.Req
 		"window.terminal.position": updated.WindowTerminalPosition,
 	})
 }
+
+func (s *Server) handleWindowSidebarSettings(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Position *settings.WindowSidebarPosition `json:"window.sidebar.position"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	if request.Position == nil || !request.Position.Valid() {
+		http.Error(w, "window.sidebar.position must be left or right", http.StatusBadRequest)
+		return
+	}
+
+	s.settingsMu.Lock()
+	updated, err := settings.Update(func(value *settings.Settings) {
+		value.WindowSidebarPosition = *request.Position
+	})
+	if err == nil {
+		s.sidebarPosition.Store(updated.WindowSidebarPosition)
+	}
+	s.settingsMu.Unlock()
+	if err != nil {
+		http.Error(w, "could not save window.sidebar.position", http.StatusInternalServerError)
+		return
+	}
+
+	s.broadcast(Frame{Type: EvtCapabilitiesChanged})
+	writeJSON(w, map[string]settings.WindowSidebarPosition{
+		"window.sidebar.position": updated.WindowSidebarPosition,
+	})
+}
