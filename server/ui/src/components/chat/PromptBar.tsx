@@ -341,6 +341,7 @@ function PromptQuestion({
 		"w-full bg-bg border border-border rounded px-2 py-1 text-fg text-[12px] font-mono outline-none focus:border-warning transition-colors placeholder:text-fg-dim";
 
 	const handleKeyDown = (e: React.KeyboardEvent) => {
+		if (e.nativeEvent.isComposing) return;
 		if (e.key === "Enter" && !e.shiftKey && onSubmit) {
 			e.preventDefault();
 			onSubmit();

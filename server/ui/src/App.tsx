@@ -34,6 +34,7 @@ import {
 	MonitorPlay,
 	PanelBottom,
 	PanelLeftOpen,
+	PanelRightOpen,
 	PanelTop,
 	Plus,
 	RefreshCw,
@@ -73,6 +74,7 @@ import { queryKeys } from "./api/query";
 import { deleteSession, type SessionInfo } from "./api/sessions";
 import {
 	setEditorTabCompletion,
+	setWindowSidebarPosition,
 	setWindowTerminalPosition,
 } from "./api/settings";
 import { listSchedules, listTasks } from "./api/tasks";
@@ -382,6 +384,16 @@ export default function App() {
 	const [workspaceSearching, setWorkspaceSearching] = useState(false);
 	const [searchFocusKey, setSearchFocusKey] = useState(0);
 	const [sidePanelCollapsed, setSidePanelCollapsed] = useState(false);
+	const preferredSidebarPosition =
+		capabilities?.["window.sidebar.position"] ?? "right";
+	const [sidebarLayout, setSidebarLayout] = useState({
+		position: preferredSidebarPosition,
+		defaultSize: `${SIDE_PANEL_DEFAULT_SIZE}px`,
+		revision: 0,
+	});
+	const sidebarPosition = sidebarLayout.position;
+	const sidebarOnRight = sidebarPosition === "right";
+	const SidePanelOpenIcon = sidebarOnRight ? PanelRightOpen : PanelLeftOpen;
 	const [chatAuxiliaryViews, setChatAuxiliaryViews] = useState<
 		Record<string, ChatAuxiliaryView | undefined>
 	>({});
@@ -404,10 +416,22 @@ export default function App() {
 		const observer = new ResizeObserver(updateCompactMode);
 		observer.observe(element);
 		return () => observer.disconnect();
-	}, [sidePanelCollapsed, showChanges, showInspect]);
+	}, [sidePanelCollapsed, sidebarPosition, showChanges, showInspect]);
 	const appRef = useRef<HTMLDivElement>(null);
 	const sidePanelWidthRef = useRef(SIDE_PANEL_DEFAULT_SIZE);
 	const sidePanelRef = usePanelRef();
+	// Capture the size before moving the DOM. A fresh panel ID makes the resize
+	// group recalculate its order without restoring a cached size or remounting.
+	useEffect(() => {
+		if (sidebarLayout.position === preferredSidebarPosition) return;
+		setSidebarLayout({
+			position: preferredSidebarPosition,
+			defaultSize: sidePanelRef.current?.isCollapsed()
+				? "0px"
+				: `${sidePanelWidthRef.current}px`,
+			revision: sidebarLayout.revision + 1,
+		});
+	}, [preferredSidebarPosition, sidebarLayout, sidePanelRef]);
 	const debugDetailsPanelRef = usePanelRef();
 	const [debugDetailsWidth, setDebugDetailsWidth] = useState(
 		DEBUG_DETAILS_MIN_SIZE,
@@ -565,6 +589,7 @@ export default function App() {
 	);
 
 	const closeWorkspaceEditPreview = useCallback(() => {
+		if (workspaceEditRequest?.applying) return;
 		workspaceEditRequest?.resolve(false);
 		setWorkspaceEditRequest(null);
 	}, [workspaceEditRequest]);
@@ -771,6 +796,8 @@ export default function App() {
 		!activeDocument.file.binary &&
 		!activeDocument.saving
 	);
+	const closingFileSaving = !!(closeRequest?.kind === "file" && closeRequest.tab.path && documents[closeRequest.tab.path]?.saving);
+	const conflictFileSaving = !!(saveConflict && documents[saveConflict.path]?.saving);
 	const activePreviewKind =
 		activeTab.type === "file" ? textPreviewKind(activeTab.path ?? "") : null;
 	const activeFileView =
@@ -1316,7 +1343,7 @@ export default function App() {
 				});
 				return result;
 			}
-			if (closeTabId) {
+			if (closeTabId && !result.dirty) {
 				setCloseRequest(null);
 				closeTabNow(closeTabId);
 			}
@@ -1745,7 +1772,7 @@ export default function App() {
 			return;
 		}
 		setSaveConflict(null);
-		if (request.closeTabId) closeTabNow(request.closeTabId);
+		if (request.closeTabId && !result.dirty) closeTabNow(request.closeTabId);
 	}, [closeTabNow, saveConflict, saveDocument, toast]);
 
 	const setTerminalTitle = useCallback(
@@ -2106,6 +2133,20 @@ export default function App() {
 			setSidePanelCollapsed(true);
 		}
 	}, [sidePanelRef]);
+	const toggleSidebarPlacement = async () => {
+		try {
+			await setWindowSidebarPosition(sidebarOnRight ? "left" : "right");
+			void queryClient.invalidateQueries({
+				queryKey: queryKeys.capabilities,
+			});
+		} catch (error) {
+			toast({
+				title: "Could not change Sidebar Position",
+				description: String(error),
+				tone: "error",
+			});
+		}
+	};
 	const toggleTerminalPlacement = async () => {
 		const dockAtBottom = !terminalDocked;
 		try {
@@ -2292,8 +2333,18 @@ export default function App() {
 		{
 			id: "toggle-side-panel",
 			label: sidePanelCollapsed ? "Show Side Panel" : "Hide Side Panel",
-			icon: <PanelLeftOpen size={12} className="text-fg-dim shrink-0" />,
+			icon: <SidePanelOpenIcon size={12} className="text-fg-dim shrink-0" />,
 			run: toggleSidePanel,
+		},
+		{
+			id: "window.sidebar.position",
+			label: sidebarOnRight ? "Move Side Panel Left" : "Move Side Panel Right",
+			icon: sidebarOnRight ? (
+				<PanelLeftOpen size={12} className="text-fg-dim shrink-0" />
+			) : (
+				<PanelRightOpen size={12} className="text-fg-dim shrink-0" />
+			),
+			run: () => void toggleSidebarPlacement(),
 		},
 		...(showChanges
 			? [
@@ -2741,6 +2792,11 @@ export default function App() {
 	);
 
 	const sidePanelDocked = !sidePanelCollapsed;
+	const sidePanelTransitionClass = `transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
+		sidePanelCollapsed
+			? `opacity-0 ${sidebarOnRight ? "translate-x-full" : "-translate-x-full"}`
+			: "translate-x-0 opacity-100"
+	}`;
 	const collapsedSideTitlebarWidth = 40;
 	const activeChatAuxiliary =
 		activeTab.type === "chat" ? chatAuxiliaryViews[activeTab.id] : undefined;
@@ -3012,25 +3068,26 @@ export default function App() {
 		return (
 			<div
 				data-window-interactive
-				data-titlebar-side-panel="left"
-				data-titlebar-left-panel
-				className={`relative z-20 flex shrink-0 items-center overflow-hidden ${sidePanelDocked ? "pl-2" : "gap-1 px-1"}`}
+				data-titlebar-side-panel={sidebarPosition}
+				className={`relative z-20 flex shrink-0 items-center overflow-hidden ${sidePanelDocked ? (sidebarOnRight ? "pr-2" : "pl-2") : "gap-1 px-1"}`}
 				style={{
 					width: sidePanelDocked
-						? "calc(var(--side-panel-width) - var(--window-controls-inset) - var(--window-menu-inset))"
+						? sidebarOnRight
+							? "calc(var(--side-panel-width) - var(--window-controls-reserve-end))"
+							: "calc(var(--side-panel-width) - var(--window-controls-inset) - var(--window-menu-inset))"
 						: `${collapsedSideTitlebarWidth}px`,
 				}}
 			>
 				{sidePanelCollapsed ? (
 					<button
 						type="button"
-						data-window-panel-toggle="left"
+						data-window-panel-toggle={sidebarPosition}
 						className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim transition-colors hover:!bg-bg-hover hover:text-fg"
 						onClick={toggleSidePanel}
 						title="Show Side Panel"
 						aria-label="Show Side Panel"
 					>
-						<PanelLeftOpen size={13} />
+						<SidePanelOpenIcon size={13} />
 					</button>
 				) : (
 					<div
@@ -3045,9 +3102,10 @@ export default function App() {
 	};
 	const sidePanelElement = (
 		<Panel
-			id="side-panel"
+			key="side-panel"
+			id={`side-panel-${sidebarLayout.revision}`}
 			panelRef={sidePanelRef}
-			defaultSize={`${SIDE_PANEL_DEFAULT_SIZE}px`}
+			defaultSize={sidebarLayout.defaultSize}
 			minSize={`${SIDE_PANEL_MIN_SIZE}px`}
 			maxSize={`${SIDE_PANEL_MAX_SIZE}px`}
 			collapsedSize="0px"
@@ -3055,17 +3113,13 @@ export default function App() {
 			groupResizeBehavior="preserve-pixel-size"
 			onResize={mobile ? undefined : handleSidePanelResize}
 			data-layout-panel="side"
-			data-panel-side="left"
+			data-panel-side={sidebarPosition}
 			inert={sidePanelCollapsed}
 			className="h-full overflow-hidden"
 		>
 			<div
 				data-panel-content="side"
-				className={`mr-auto h-full overflow-hidden transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
-					sidePanelCollapsed
-						? "pointer-events-none -translate-x-full opacity-0"
-						: "translate-x-0 opacity-100"
-				}`}
+				className={`${sidebarOnRight ? "ml-auto" : "mr-auto"} h-full overflow-hidden ${sidePanelTransitionClass} ${sidePanelCollapsed ? "pointer-events-none" : ""}`}
 				style={{ width: "var(--side-panel-width)" }}
 			>
 				{sidePanelContent}
@@ -3073,7 +3127,11 @@ export default function App() {
 		</Panel>
 	);
 	const sidePanelResizeHandle = (
-		<ResizeHandle label="Resize Side Panel" hidden={sidePanelCollapsed} />
+		<ResizeHandle
+			key="side-panel-resize"
+			label="Resize Side Panel"
+			hidden={sidePanelCollapsed}
+		/>
 	);
 	const terminalDockVisible = terminalDocked && !!activeDockedTerminal;
 	const visibleTerminalId = terminalDockVisible
@@ -3108,6 +3166,7 @@ export default function App() {
 	);
 	const centerPanelElement = (
 		<Panel
+			key="center"
 			id="center"
 			minSize={`${CENTER_PANEL_MIN_SIZE}px`}
 			data-layout-panel="center"
@@ -3225,13 +3284,9 @@ export default function App() {
 			)}
 			<div
 				data-panel-frame="side"
-				data-panel-side="left"
+				data-panel-side={sidebarPosition}
 				aria-hidden="true"
-				className={`pointer-events-none absolute inset-y-0 left-0 z-0 rounded-[10px] bg-bg-surface/40 transition-[transform,opacity] duration-200 ease-[cubic-bezier(0.2,0,0,1)] ${
-					sidePanelCollapsed
-						? "-translate-x-full opacity-0"
-						: "translate-x-0 opacity-100"
-				}`}
+				className={`pointer-events-none absolute inset-y-0 ${sidebarOnRight ? "right-0" : "left-0"} z-0 rounded-[10px] bg-bg-surface/40 ${sidePanelTransitionClass}`}
 				style={{ width: "var(--side-panel-width)" }}
 			/>
 			<header
@@ -3244,8 +3299,14 @@ export default function App() {
 					aria-hidden="true"
 					className="pointer-events-none absolute bottom-0 h-px bg-border-subtle"
 					style={{
-						left: sidePanelDocked ? "var(--side-panel-width)" : "0px",
-						right: "0px",
+						left:
+							sidePanelDocked && !sidebarOnRight
+								? "var(--side-panel-width)"
+								: "0px",
+						right:
+							sidePanelDocked && sidebarOnRight
+								? "var(--side-panel-width)"
+								: "0px",
 					}}
 				/>
 				<div
@@ -3257,7 +3318,7 @@ export default function App() {
 					canOpenFolder={!workspaceSwitching}
 					canSave={canSaveFile}
 				/>
-				{renderSidePanelTitlebar()}
+				{!sidebarOnRight && renderSidePanelTitlebar()}
 
 				<TabStrip
 					items={leftStripItems}
@@ -3321,6 +3382,7 @@ export default function App() {
 						{activeTab.pane === "right" && titlebarActions}
 					</div>
 				)}
+				{sidebarOnRight && renderSidePanelTitlebar()}
 				<div
 					className="window-titlebar-controls-spacer-end shrink-0"
 					aria-hidden="true"
@@ -3331,9 +3393,9 @@ export default function App() {
 				orientation="horizontal"
 				className="relative z-10 flex-1 overflow-hidden"
 			>
-				{sidePanelElement}
-				{sidePanelResizeHandle}
-				{centerPanelElement}
+				{sidebarOnRight
+					? [centerPanelElement, sidePanelResizeHandle, sidePanelElement]
+					: [sidePanelElement, sidePanelResizeHandle, centerPanelElement]}
 			</Group>
 
 			{paletteOpen && (
@@ -3492,11 +3554,12 @@ export default function App() {
 						? `“${closeRequest.tab.label}” has unsaved changes.`
 						: undefined
 				}
-				onClose={() => setCloseRequest(null)}
+				onClose={() => { if (!closingFileSaving) setCloseRequest(null); }}
 			>
 				<button
 					type="button"
 					className={dialogButtonClass}
+					disabled={closingFileSaving}
 					onClick={() => setCloseRequest(null)}
 				>
 					Cancel
@@ -3504,6 +3567,7 @@ export default function App() {
 				<button
 					type="button"
 					className={`${dialogButtonClass} text-danger`}
+					disabled={closingFileSaving}
 					onClick={() => {
 						if (closeRequest?.kind !== "file" || !closeRequest.tab.path) return;
 						discardDocument(closeRequest.tab.path);
@@ -3518,8 +3582,9 @@ export default function App() {
 					type="button"
 					className={dialogPrimaryButtonClass}
 					onClick={() => void saveAndCloseFile()}
+					disabled={closingFileSaving}
 				>
-					Save
+					{closingFileSaving ? "Saving…" : "Save"}
 				</button>
 			</Dialog>
 
@@ -3531,12 +3596,13 @@ export default function App() {
 						? `“${saveConflict.path.split("/").pop() || saveConflict.path}” changed on disk since you opened it. Overwriting will replace those changes.`
 						: undefined
 				}
-				onClose={() => setSaveConflict(null)}
+				onClose={() => { if (!conflictFileSaving) setSaveConflict(null); }}
 			>
 				<button
 					type="button"
 					className={dialogButtonClass}
 					onClick={() => setSaveConflict(null)}
+					disabled={conflictFileSaving}
 				>
 					Cancel
 				</button>
@@ -3549,6 +3615,7 @@ export default function App() {
 						setSaveConflict(null);
 						void reloadDocument(path, false);
 					}}
+					disabled={conflictFileSaving}
 				>
 					Reload from disk
 				</button>
@@ -3556,6 +3623,7 @@ export default function App() {
 					type="button"
 					className={dialogPrimaryButtonClass}
 					onClick={() => void overwriteChangedFile()}
+					disabled={conflictFileSaving}
 				>
 					Overwrite
 				</button>
@@ -3566,7 +3634,7 @@ export default function App() {
 				title={workspaceEditRequest?.label ?? "Apply workspace edit?"}
 				description={
 					workspaceEditRequest
-						? `${workspaceEditRequest.summary.edits} ${workspaceEditRequest.summary.edits === 1 ? "edit" : "edits"} across ${workspaceEditRequest.summary.files.length} ${workspaceEditRequest.summary.files.length === 1 ? "file" : "files"}. The files will be saved together after their disk revisions are checked.`
+						? `${workspaceEditRequest.summary.edits} ${workspaceEditRequest.summary.edits === 1 ? "edit" : "edits"} across ${workspaceEditRequest.summary.files.length} ${workspaceEditRequest.summary.files.length === 1 ? "file" : "files"}. Changes will remain unsaved in the editors until you save them.`
 						: undefined
 				}
 				onClose={closeWorkspaceEditPreview}
@@ -3594,7 +3662,7 @@ export default function App() {
 					disabled={workspaceEditRequest?.applying}
 					onClick={() => void confirmWorkspaceEdit()}
 				>
-					{workspaceEditRequest?.applying ? "Applying…" : "Apply and Save"}
+					{workspaceEditRequest?.applying ? "Applying…" : "Apply edits"}
 				</button>
 			</Dialog>
 

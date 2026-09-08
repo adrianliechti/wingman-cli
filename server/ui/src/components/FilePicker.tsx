@@ -23,12 +23,13 @@ export function FilePicker({ anchor, onSelect, onClose }: Props) {
 	}, []);
 
 	const onKey = (e: React.KeyboardEvent) => {
+		if (e.nativeEvent.isComposing) return;
 		if (e.key === "Escape") {
 			e.preventDefault();
 			onClose();
 		} else if (e.key === "ArrowDown") {
 			e.preventDefault();
-			setActive((a) => Math.min(a + 1, hits.length - 1));
+			setActive((a) => Math.max(0, Math.min(a + 1, hits.length - 1)));
 		} else if (e.key === "ArrowUp") {
 			e.preventDefault();
 			setActive((a) => Math.max(a - 1, 0));

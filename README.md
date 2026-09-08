@@ -376,6 +376,10 @@ debounced, and limited server-wide to one active request and one start every
 (`tab`, the default) or in the bottom dock (`bottom`). It can also be changed
 from the command palette and is stored in the same config file.
 
+`window.sidebar.position` places the side panel on the `right` (the default) or
+`left`. Use **Move Side Panel Left** / **Move Side Panel Right** in the command
+palette to change it. The preference is stored in the same config file.
+
 Wingman's `~/.wingman/config.json` stores these preferences and recent launcher
 workspaces only;
 backend URLs and authentication tokens are read from environment variables and

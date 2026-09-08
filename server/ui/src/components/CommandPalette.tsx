@@ -184,6 +184,7 @@ export function CommandPalette({
 	};
 
 	const onKeyDown = (e: React.KeyboardEvent) => {
+		if (e.nativeEvent.isComposing) return;
 		if (e.key === "Escape") {
 			e.preventDefault();
 			onClose();

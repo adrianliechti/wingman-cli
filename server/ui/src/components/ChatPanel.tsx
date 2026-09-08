@@ -523,6 +523,7 @@ export function ChatPanel({
 
 	const handleKeyDown = useCallback(
 		(e: React.KeyboardEvent) => {
+			if (e.nativeEvent.isComposing) return;
 			if (showSkills) {
 				switch (e.key) {
 					case "ArrowDown":
@@ -553,8 +554,10 @@ export function ChatPanel({
 			if (e.key === "Escape" && isActive) {
 				onCancel();
 			}
+			if (e.shiftKey || e.altKey || e.metaKey || e.ctrlKey) return;
 			if (e.key === "ArrowUp" && !editingQueueId && history.length > 0) {
 				const ta = e.currentTarget as HTMLTextAreaElement;
+				if (ta.selectionStart !== ta.selectionEnd) return;
 				const onFirstLine = !ta.value
 					.slice(0, ta.selectionStart)
 					.includes("\n");
@@ -571,6 +574,7 @@ export function ChatPanel({
 			}
 			if (e.key === "ArrowDown" && historyIdxRef.current !== null) {
 				const ta = e.currentTarget as HTMLTextAreaElement;
+				if (ta.selectionStart !== ta.selectionEnd) return;
 				const onLastLine = !ta.value.slice(ta.selectionEnd).includes("\n");
 				if (onLastLine) {
 					e.preventDefault();

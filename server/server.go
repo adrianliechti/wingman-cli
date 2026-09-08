@@ -82,6 +82,7 @@ type Server struct {
 	settingsMu       sync.Mutex
 	tabEnabled       atomic.Bool
 	terminalPosition atomic.Value
+	sidebarPosition  atomic.Value
 	tabRequestMu     sync.Mutex
 	tabRequestID     uint64
 	tabRequestCancel context.CancelFunc
@@ -157,9 +158,11 @@ func New(ctx context.Context, workDir string, opts *ServerOptions) (*Server, err
 	s.commitMessages = newGitCommitMessageService(cfg)
 	s.tabEnabled.Store(true)
 	s.terminalPosition.Store(settings.WindowTerminalPositionTab)
+	s.sidebarPosition.Store(settings.WindowSidebarPositionRight)
 	if userSettings, loadErr := settings.Load(); loadErr == nil {
 		s.tabEnabled.Store(userSettings.EditorTabCompletion)
 		s.terminalPosition.Store(userSettings.WindowTerminalPosition)
+		s.sidebarPosition.Store(userSettings.WindowSidebarPosition)
 	}
 
 	ws.WarmUp()
@@ -453,6 +456,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 		r.Post("/editor/transform", s.handleEditorTransform)
 		r.Post("/settings/editor.tab.completion", s.handleEditorTabSettings)
 		r.Post("/settings/window.terminal.position", s.handleWindowTerminalSettings)
+		r.Post("/settings/window.sidebar.position", s.handleWindowSidebarSettings)
 		r.Get("/skills", s.handleSkills)
 		r.Get("/capabilities", s.handleCapabilities)
 	})
@@ -562,6 +566,7 @@ type capabilitiesResponse struct {
 	Tab                    bool                            `json:"tab"`
 	EditorTab              bool                            `json:"editor.tab.completion"`
 	WindowTerminalPosition settings.WindowTerminalPosition `json:"window.terminal.position"`
+	WindowSidebarPosition  settings.WindowSidebarPosition  `json:"window.sidebar.position"`
 	Platform               string                          `json:"platform"`
 	WorkspaceName          string                          `json:"workspace_name"`
 	ManagedTools           *managedToolsStatus             `json:"managed_tools,omitempty"`
@@ -604,6 +609,7 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		Tab:                    s.tab != nil,
 		EditorTab:              s.tab != nil && s.tabEnabled.Load(),
 		WindowTerminalPosition: s.windowTerminalPosition(),
+		WindowSidebarPosition:  s.windowSidebarPosition(),
 		Platform:               runtime.GOOS,
 		WorkspaceName:          filepath.Base(ws.RootPath),
 	}
@@ -617,6 +623,14 @@ func (s *Server) windowTerminalPosition() settings.WindowTerminalPosition {
 	position, ok := s.terminalPosition.Load().(settings.WindowTerminalPosition)
 	if !ok || !position.Valid() {
 		return settings.WindowTerminalPositionTab
+	}
+	return position
+}
+
+func (s *Server) windowSidebarPosition() settings.WindowSidebarPosition {
+	position, ok := s.sidebarPosition.Load().(settings.WindowSidebarPosition)
+	if !ok || !position.Valid() {
+		return settings.WindowSidebarPositionRight
 	}
 	return position
 }

@@ -12,6 +12,7 @@ export interface Capabilities {
 	tab: boolean;
 	"editor.tab.completion": boolean;
 	"window.terminal.position": "tab" | "bottom";
+	"window.sidebar.position": "left" | "right";
 	platform: string;
 	workspace_name: string;
 	managed_tools?: ManagedToolsStatus;

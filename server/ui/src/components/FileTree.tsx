@@ -487,6 +487,7 @@ export function FileTree({ onFileSelect, onFileMove, platform }: Props) {
 	};
 
 	const handleTreeKey = (event: React.KeyboardEvent, node: TreeNode) => {
+		if (event.target !== event.currentTarget || event.nativeEvent.isComposing) return;
 		const visible = flattenVisible(nodes);
 		const index = visible.findIndex((item) => item.node.path === node.path);
 		if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -555,6 +556,7 @@ export function FileTree({ onFileSelect, onFileMove, platform }: Props) {
 				value={createValue}
 				onChange={(event) => setCreateValue(event.target.value)}
 				onKeyDown={(event) => {
+					if (event.nativeEvent.isComposing) return;
 					if (event.key === "Enter") void commitCreate(target);
 					else if (event.key === "Escape") {
 						createCanceledRef.current = true;
@@ -650,9 +652,11 @@ export function FileTree({ onFileSelect, onFileMove, platform }: Props) {
 								autoCorrect="off"
 								spellCheck={false}
 								value={renameValue}
+								aria-label={`Rename ${node.name}`}
 								onChange={(e) => setRenameValue(e.target.value)}
 								onClick={(e) => e.stopPropagation()}
 								onKeyDown={(e) => {
+									if (e.nativeEvent.isComposing) return;
 									if (e.key === "Enter") commitRename(node);
 									else if (e.key === "Escape") {
 										renameCanceledRef.current = true;
